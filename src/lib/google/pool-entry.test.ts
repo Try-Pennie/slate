@@ -211,3 +211,47 @@ describe("onboardIntoPool budget (#2317)", () => {
     expect(d.synced).toEqual([]);
   });
 });
+
+// #2705: a hydration pass that SKIPPED because another lane held the calendar
+// measured nothing about it. Counting it as failed refused the activation as
+// `calendar_unhydrated` and paged the reader to the sync lane for an error nobody
+// recorded (L11). It has its own count, the retry kind, like the budget.
+describe("onboardIntoPool contended calendars (#2705)", () => {
+  const two = [
+    { id: "c1", user_id: "u1", calendar_id: "primary" },
+    { id: "c2", user_id: "u1", calendar_id: "team@trypennie.com" },
+  ];
+  for (const skipped of ["claimed", "token-moved"] as const) {
+    it(`counts a pass skipped as ${skipped} as contended, not failed`, async () => {
+      const d = deps({
+        calendars: two,
+        hydrateCalendar: vi.fn(async (cal: { id: string }) =>
+          cal.id === "c1" ? { ok: false, events: 0, skipped } : { ok: true, events: 2 },
+        ) as unknown as PoolEntryDeps["hydrateCalendar"],
+      });
+      const res = await onboardIntoPool("u1", d);
+      expect(res).toMatchObject({ calendars: 2, hydrated: 1, failed: 0, contended: 1 });
+      // Part of the cache was built by somebody else's pass, not this one, so a
+      // fresh age would be a claim this run did not measure.
+      expect(d.synced).toEqual([]);
+    });
+  }
+
+  it("still counts a skip that is a real fault on this calendar as failed", async () => {
+    // A missing mailbox or a vanished calendar is not another lane holding it, so
+    // it must not be answered with "try again in an hour".
+    const d = deps({
+      hydrateCalendar: vi.fn(async () => ({ ok: false, events: 0, skipped: "no-mailbox" })) as unknown as PoolEntryDeps["hydrateCalendar"],
+    });
+    const res = await onboardIntoPool("u1", d);
+    expect(res).toMatchObject({ hydrated: 0, failed: 1, contended: 0 });
+  });
+
+  it("counts a plain failure with no skip as failed", async () => {
+    const d = deps({
+      hydrateCalendar: vi.fn(async () => ({ ok: false, events: 0 })) as unknown as PoolEntryDeps["hydrateCalendar"],
+    });
+    const res = await onboardIntoPool("u1", d);
+    expect(res).toMatchObject({ failed: 1, contended: 0 });
+  });
+});

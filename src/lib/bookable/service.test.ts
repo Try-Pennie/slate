@@ -85,6 +85,7 @@ function deps(...outcomes: Reachability[]) {
       calendars: 1,
       hydrated: 1,
       failed: 0,
+      contended: 0,
       watch: "renewed" as PoolEntryResult["watch"],
       outOfBudget: false,
     })),
@@ -273,7 +274,7 @@ describe("onboarding on the way INTO the pool (#2302)", () => {
     // arm of the activation gate.
     currentUser = { id: "u1", bookable: false, email: "unread@trypennie.com" };
     const d = deps("reachable");
-    d.onboardIntoPool = vi.fn(async () => ({ calendars: 1, hydrated: 0, failed: 1, watch: "renewed" as PoolEntryResult["watch"], outOfBudget: false }));
+    d.onboardIntoPool = vi.fn(async () => ({ calendars: 1, hydrated: 0, failed: 1, contended: 0, watch: "renewed" as PoolEntryResult["watch"], outOfBudget: false }));
     const res = await applyBookableByUserId("u1", true, d);
     expect(res.status).toBe("blocked");
     expect(res).toMatchObject({ reason: "calendar_unhydrated" });
@@ -287,7 +288,7 @@ describe("onboarding on the way INTO the pool (#2302)", () => {
     // sharp edge of the rule and is deliberate.
     currentUser = { id: "u1", bookable: false, email: "partial@trypennie.com" };
     const d = deps("reachable");
-    d.onboardIntoPool = vi.fn(async () => ({ calendars: 2, hydrated: 1, failed: 1, watch: "renewed" as PoolEntryResult["watch"], outOfBudget: false }));
+    d.onboardIntoPool = vi.fn(async () => ({ calendars: 2, hydrated: 1, failed: 1, contended: 0, watch: "renewed" as PoolEntryResult["watch"], outOfBudget: false }));
     const res = await applyBookableByUserId("u1", true, d);
     expect(res.status).toBe("blocked");
     expect(updates).toEqual([]);
@@ -298,7 +299,7 @@ describe("onboarding on the way INTO the pool (#2302)", () => {
     // clean run look identical from a failure count alone.
     currentUser = { id: "u1", bookable: false, email: "nocal@trypennie.com" };
     const d = deps("reachable");
-    d.onboardIntoPool = vi.fn(async () => ({ calendars: 0, hydrated: 0, failed: 0, watch: "skipped" as PoolEntryResult["watch"], outOfBudget: false }));
+    d.onboardIntoPool = vi.fn(async () => ({ calendars: 0, hydrated: 0, failed: 0, contended: 0, watch: "skipped" as PoolEntryResult["watch"], outOfBudget: false }));
     const res = await applyBookableByUserId("u1", true, d);
     expect(res.status).toBe("blocked");
     expect(updates).toEqual([]);
@@ -350,7 +351,7 @@ describe("onboarding on the way INTO the pool (#2302)", () => {
     // stops happening.
     currentUser = { id: "u1", bookable: false, email: "unread@trypennie.com" };
     const d = deps("reachable");
-    d.onboardIntoPool = vi.fn(async () => ({ calendars: 1, hydrated: 0, failed: 1, watch: "renewed" as PoolEntryResult["watch"], outOfBudget: false }));
+    d.onboardIntoPool = vi.fn(async () => ({ calendars: 1, hydrated: 0, failed: 1, contended: 0, watch: "renewed" as PoolEntryResult["watch"], outOfBudget: false }));
     await applyBookableByUserId("u1", true, d);
     // The mark written on the way in survives, which is what brings them back next
     // hour. What must NOT be here is a bookable write.
@@ -473,7 +474,7 @@ describe("importing cal.com hours on activation (#2627)", () => {
     expect(blocked.importHours).not.toHaveBeenCalled();
 
     const unread = deps("reachable");
-    unread.onboardIntoPool = vi.fn(async () => ({ calendars: 1, hydrated: 0, failed: 1, watch: "renewed" as PoolEntryResult["watch"], outOfBudget: false }));
+    unread.onboardIntoPool = vi.fn(async () => ({ calendars: 1, hydrated: 0, failed: 1, contended: 0, watch: "renewed" as PoolEntryResult["watch"], outOfBudget: false }));
     await applyBookableByUserId("u1", true, unread);
     expect(unread.importHours).not.toHaveBeenCalled();
 
@@ -546,6 +547,7 @@ describe("the activation gate's deadline (#2317)", () => {
       calendars: 3,
       hydrated: 1,
       failed: 0,
+      contended: 0,
       watch: "renewed" as PoolEntryResult["watch"],
       outOfBudget: true,
     }));
@@ -564,8 +566,46 @@ describe("the activation gate's deadline (#2317)", () => {
       calendars: 3,
       hydrated: 1,
       failed: 1,
+      contended: 0,
       watch: "renewed" as PoolEntryResult["watch"],
       outOfBudget: true,
+    }));
+    const res = await applyBookableByUserId("u1", true, d);
+    expect(res).toMatchObject({ status: "blocked", reason: "calendar_unhydrated" });
+  });
+
+  it("refuses with calendar_contended when another lane held a calendar (#2705)", async () => {
+    // The pass measured nothing about that calendar, so the refusal is the retry
+    // kind and the message must not send anybody to read sync errors that were
+    // never recorded.
+    currentUser = { id: "u1", bookable: false, email: "racing@trypennie.com" };
+    const d = deps("reachable");
+    d.onboardIntoPool = vi.fn(async () => ({
+      calendars: 2,
+      hydrated: 1,
+      failed: 0,
+      contended: 1,
+      watch: "renewed" as PoolEntryResult["watch"],
+      outOfBudget: false,
+    }));
+    const res = await applyBookableByUserId("u1", true, d);
+    expect(res).toMatchObject({ status: "blocked", reason: "calendar_contended" });
+    expect(updates).toEqual([]);
+    const text = d.notify.mock.calls[0][2];
+    expect(text).toContain("racing@trypennie.com");
+    expect(text).not.toMatch(/sync lane/);
+  });
+
+  it("a MEASURED failure outranks a contended calendar (#2705)", async () => {
+    currentUser = { id: "u1", bookable: false, email: "broken@trypennie.com" };
+    const d = deps("reachable");
+    d.onboardIntoPool = vi.fn(async () => ({
+      calendars: 3,
+      hydrated: 1,
+      failed: 1,
+      contended: 1,
+      watch: "renewed" as PoolEntryResult["watch"],
+      outOfBudget: false,
     }));
     const res = await applyBookableByUserId("u1", true, d);
     expect(res).toMatchObject({ status: "blocked", reason: "calendar_unhydrated" });

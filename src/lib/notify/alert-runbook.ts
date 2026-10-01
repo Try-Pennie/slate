@@ -225,6 +225,9 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // not finish acting on it, so an agent Twilio withholds may still be in the
   // pool, or somebody's calls are still with an agent who has left it.
   twilio_write_failures: "the-roster-or-routing-data-is-wrong",
+  // #2459. A roster run that cannot finish acting on what it read, like the
+  // Twilio writes above: the first question is which person and which error.
+  departed_sessions_unconverged: "the-roster-or-routing-data-is-wrong",
   // #2114. Slate is holding somebody out of the pool and Twilio no longer has a
   // worker for them, so nothing can say whether the tag went or the worker did.
   // The repair is in Twilio or on the agent's profile, both upstream of any run.
@@ -243,6 +246,9 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // to establish is the same one, whether the person is really meant to be taking
   // calls and what the roster says about them.
   agents_awaiting_activation: "the-roster-or-routing-data-is-wrong",
+  // #2481. The waiting page's twin for the rows that lost their mark, so the same
+  // family and the same first question.
+  agents_stranded_outside_pool: "the-roster-or-routing-data-is-wrong",
   // #2090. The finding is about a roster row (somebody working who is not in the
   // pool), and the first question is the same one: is this person meant to be
   // taking calls, and what does the roster say about them.

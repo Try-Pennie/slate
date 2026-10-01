@@ -30,6 +30,7 @@ import {
   CALENDAR_WINDOW_VERDICT_LANE,
   OFFSITE_ORIGIN_VERDICT_LANE,
   AWAITING_ACTIVATION_VERDICT_LANE,
+  STRANDED_HIRES_VERDICT_LANE,
   REGAL_CALL_FEED_VERDICT_LANE,
   REGAL_CALL_OUTCOMES_VERDICT_LANE,
   parkedDetector,
@@ -309,6 +310,11 @@ const VERDICT_SUBJECT: Record<string, { what: string; cost: string; look: string
     what: "the check asking whether anybody the roster counts as working has been stuck waiting to become bookable",
     cost: "a new hire whose activation keeps being refused would stay out of every pool with nothing saying why",
     look: 'the Worker logs for msg="awaiting activation" under tag=monitor, and whether the users table can be read at all',
+  },
+  [STRANDED_HIRES_VERDICT_LANE]: {
+    what: "the check asking whether any signed in Sales hire is outside the booking pool with nothing pending and no hold recorded",
+    cost: "a hire whose pending activation was lost would stay out of every pool for good, reading exactly like somebody held back on purpose",
+    look: 'the Worker logs for msg="stranded hires" under tag=monitor, and whether the users, agent_calendars and audit_log tables can be read',
   },
   [REGAL_CALL_FEED_VERDICT_LANE]: {
     what: "the pair of checks asking whether calls from Regal are reaching Slate and whether Slate can read them",

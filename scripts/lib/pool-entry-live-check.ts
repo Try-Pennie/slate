@@ -81,6 +81,10 @@ export const OUTCOMES = {
     exit: 16,
     meaning: "the activation budget ran out before every calendar was attempted",
   },
+  "readable-contended": {
+    exit: 18,
+    meaning: "another job was refreshing one of the readable agent's calendars at the same moment, so the read stood down; run it again",
+  },
   "gate-admitted-unhydrated": {
     exit: 17,
     meaning: "the shipped gate predicate admits a result in which a calendar was neither hydrated nor failed",
@@ -168,6 +172,7 @@ function failed(code: OutcomeCode, detail?: string): DirectionVerdict {
 
 function counts(r: PoolEntryResult): string {
   return `${r.hydrated} of ${r.calendars} calendar(s) hydrated, ${r.failed} failed, watch ${r.watch}` +
+    (r.contended > 0 ? `, ${r.contended} held by another job` : "") +
     (r.outOfBudget ? ", out of budget" : "");
 }
 
@@ -190,6 +195,8 @@ export function judgeReadable(probe: ProbeAnswer, entry: EntryReading): Directio
   // A measured failure outranks the budget, as the gate ranks them (#2317).
   if (r.failed > 0) return failed("readable-not-hydrated", `${OUTCOMES["readable-not-hydrated"].meaning} (${detail})`);
   if (r.outOfBudget) return failed("readable-out-of-budget", `${OUTCOMES["readable-out-of-budget"].meaning} (${detail})`);
+  // #2705: ranked as the gate ranks it, below the budget and any measured failure.
+  if (r.contended > 0) return failed("readable-contended", `${OUTCOMES["readable-contended"].meaning} (${detail})`);
   const everyCalendar = r.hydrated === r.calendars;
   const shippedAdmits = poolEntryRefusal(r) === null;
   if (!everyCalendar && shippedAdmits) {

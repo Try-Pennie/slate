@@ -146,6 +146,7 @@ const healthy = () => ({
   "verdict:calendar-window": ago(5 * MIN),
   "verdict:offsite-origin": ago(5 * MIN),
   "verdict:awaiting-activation": ago(5 * MIN),
+  "verdict:stranded-hires": ago(5 * MIN),
   "verdict:regal-call-feed": ago(5 * MIN),
   // #2944: the call outcome ratio judges every tick with calls flowing.
   "verdict:regal-call-outcomes": ago(10 * MIN),

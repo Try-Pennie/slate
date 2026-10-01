@@ -103,6 +103,14 @@ const PREVIEW_CROSS_SYSTEM_CAL: CalcomUpcomingBooking = {
 };
 const PREVIEW_CROSS_SYSTEM_URL = `https://slate.trypennie.app/admin/bookings/${PREVIEW_CROSS_SYSTEM_SLATE.id}`;
 
+/** A convergence result with only the named counts set, for the #2459 preview. */
+function previewConvergence(over: Partial<SessionConvergenceResult>): SessionConvergenceResult {
+  return {
+    departed: 13, alreadyRevoked: 12, revoked: 0, revokeFailed: 0, restored: 0, restoreFailed: 0,
+    foreignBans: 0, deferred: 0, unlisted: 0, listingComplete: true, ...over,
+  };
+}
+
 /** The one pair the real judge finds in these inputs; throws if it finds anything else. */
 function previewCrossSystemPair(slate: SlateUpcomingBooking, cal: CalcomUpcomingBooking): CrossSystemPair {
   const pairs = findCrossSystemBookings([slate], [cal], PREVIEW_CROSS_SYSTEM_NOW);
@@ -113,6 +121,12 @@ import {
   formatAwaitingActivationAlert,
   formatAwaitingActivationRecovery,
 } from "@/lib/monitor/awaiting-activation";
+import { formatStrandedHiresAlert, formatStrandedHiresRecovery } from "@/lib/monitor/stranded-hires";
+import {
+  formatSessionConvergenceAlert,
+  formatSessionConvergenceRecovery,
+  type SessionConvergenceResult,
+} from "@/lib/offboarding/session-convergence-alert";
 import {
   judgeRegalCallers,
   formatRegalCallAlert,
@@ -280,6 +294,7 @@ import {
   bookableUnverifiedAlert,
   bookableUnhydratedAlert,
   bookableTimedOutAlert,
+  bookableContendedAlert,
   bookableTraitUnrecordedAlert,
   boundaryCatchAlert,
   embedOriginMismatchAlert,
@@ -2191,6 +2206,28 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "recovery",
     text: formatAwaitingActivationRecovery(),
   },
+  // #2481. Invented people (L155). One and several read differently, and past
+  // eight the names are capped, so each is its own state.
+  {
+    key: "agents_stranded_outside_pool",
+    state: "one hire stranded",
+    channel: "alert",
+    text: formatStrandedHiresAlert([{ id: "u1", name: "Robin Example", email: "rexample@trypennie.com" }]),
+  },
+  {
+    key: "agents_stranded_outside_pool",
+    state: "more hires stranded than the message names",
+    channel: "alert",
+    text: formatStrandedHiresAlert(
+      Array.from({ length: 10 }, (_, i) => ({ id: `u${i}`, name: null, email: `hire${i}@trypennie.com` })),
+    ),
+  },
+  {
+    key: "agents_stranded_outside_pool",
+    state: "nobody stranded",
+    channel: "recovery",
+    text: formatStrandedHiresRecovery(),
+  },
   // #2090. Invented people, never real agents (L155). The two axes read differently
   // because the remedies do: a switch somebody turned off, or somebody who left.
   {
@@ -3663,6 +3700,16 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   // #2114: the half AFTER the read. Each count is previewed on its own as well as
   // together, because each one sends a reader somewhere different and the combined
   // message is the only place their ordering can be read.
+  // #2459. Each unhealthy shape reads differently, worst first: somebody active
+  // locked out, then a ban that would not land, then a list that could not be read.
+  { key: "departed_sessions_unconverged", state: "the account list could not be read", channel: "alert",
+    text: formatSessionConvergenceAlert({ ok: false, reason: "could not list auth users: 503 Service Unavailable" }) },
+  { key: "departed_sessions_unconverged", state: "somebody active is locked out", channel: "alert",
+    text: formatSessionConvergenceAlert({ ok: true, result: previewConvergence({ restoreFailed: 1 }) }) },
+  { key: "departed_sessions_unconverged", state: "bans refused and the list partial", channel: "alert",
+    text: formatSessionConvergenceAlert({ ok: true, result: previewConvergence({ revokeFailed: 3, listingComplete: false }) }) },
+  { key: "departed_sessions_unconverged", state: "converging cleanly again", channel: "recovery",
+    text: formatSessionConvergenceRecovery() },
   { key: "twilio_write_failures", state: "a flip keeps throwing", channel: "alert",
     text: twilioWriteFailureAlert({ flips: 2, sweeps: 0, attributes: 0 }) },
   { key: "twilio_write_failures", state: "a coverage move could not be queued", channel: "alert",
@@ -3786,6 +3833,12 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     // the account: sending this reader to the sync lane would send them to read
     // errors nobody recorded.
     text: bookableTimedOutAlert("sam.okafor@trypennie.com", ACTIVATION_BUDGET_MS) },
+  { key: "bookable_blocked:*", state: "another lane was loading one calendar", channel: "alert",
+    // #2705. Its own state for the same reason as the budget: it says nothing is
+    // wrong with the account, so it must not send the reader to the sync lane.
+    text: bookableContendedAlert("kit.alvarez@trypennie.com", 1) },
+  { key: "bookable_blocked:*", state: "another lane was loading several calendars", channel: "alert",
+    text: bookableContendedAlert("dana.whitfield@trypennie.com", 2) },
   { key: "bookable_unverified:*", state: "transient error persisted", channel: "alert",
     text: bookableUnverifiedAlert("dana.whitfield@trypennie.com") },
   { key: "ooo_approvals_digest", state: "one approval, one recipient", channel: "alert",

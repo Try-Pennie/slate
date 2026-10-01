@@ -56,7 +56,7 @@ const unlicensed = subject({
 });
 
 function entry(over: Partial<PoolEntryResult> = {}): PoolEntryResult {
-  return { calendars: 1, hydrated: 1, failed: 0, watch: "current", outOfBudget: false, ...over };
+  return { calendars: 1, hydrated: 1, failed: 0, contended: 0, watch: "current", outOfBudget: false, ...over };
 }
 
 // ---- inputs ---------------------------------------------------------------
@@ -143,6 +143,9 @@ function readable(probe: Parameters<typeof judgeReadable>[0], e: Parameters<type
     [null, { kind: "result", result: entry({ calendars: 2, hydrated: 1, failed: 0, outOfBudget: false }) },
       "gate-admitted-unhydrated",
       "a calendar neither hydrated nor failed while the SHIPPED predicate admits is the gate letting somebody in unread"],
+    [null, { kind: "result", result: entry({ calendars: 2, hydrated: 1, failed: 0, contended: 1 }) },
+      "readable-contended",
+      "a calendar another lane held refuses as contended, not as a failed calendar (#2705)"],
   ];
   for (const [p, e, code, msg] of cases) {
     const v = readable(p, e);
@@ -164,6 +167,15 @@ function readable(probe: Parameters<typeof judgeReadable>[0], e: Parameters<type
     "and ranks a measured failure over the budget");
   eq(poolEntryRefusal(null), "calendar_unhydrated", "and refuses a throw as unhydrated");
   eq(poolEntryRefusal(entry({ calendars: 0, hydrated: 0 })), "calendar_unhydrated", "and refuses no calendars");
+  // #2705: a pass another lane held measured nothing, so it is the retry kind.
+  eq(poolEntryRefusal(entry({ calendars: 2, hydrated: 1, contended: 1 })), "calendar_contended",
+    "and names a calendar another lane held");
+  eq(poolEntryRefusal(entry({ calendars: 1, hydrated: 0, contended: 1 })), "calendar_contended",
+    "even when it was the only calendar");
+  eq(poolEntryRefusal(entry({ calendars: 3, hydrated: 1, failed: 1, contended: 1 })), "calendar_unhydrated",
+    "and ranks a measured failure over contention");
+  eq(poolEntryRefusal(entry({ calendars: 3, hydrated: 1, contended: 1, outOfBudget: true })), "activation_timed_out",
+    "and ranks the budget over contention, since the run stopped for the budget");
 }
 
 // ---- unprovisioned direction ----------------------------------------------

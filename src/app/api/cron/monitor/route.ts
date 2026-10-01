@@ -192,6 +192,8 @@ import {
   offsiteOriginReachedVerdict,
   AWAITING_ACTIVATION_VERDICT_LANE,
   awaitingActivationReachedVerdict,
+  STRANDED_HIRES_VERDICT_LANE,
+  strandedHiresReachedVerdict,
   REGAL_CALL_FEED_VERDICT_LANE,
   regalCallFeedReachedVerdict,
   REGAL_CALL_OUTCOMES_VERDICT_LANE,
@@ -340,6 +342,7 @@ import {
   runAwaitingActivationCheck,
   type AwaitingActivationRow,
 } from "@/lib/monitor/awaiting-activation";
+import { runStrandedHiresCheck, type StrandedHireRow } from "@/lib/monitor/stranded-hires";
 import { runBelowLeadTierCheck, BELOW_LEAD_TIER_KEY, type BelowLeadTierResult } from "@/lib/monitor/below-lead-tier";
 import {
   loadUpcomingBookingsInBuckets,
@@ -1893,6 +1896,66 @@ export async function GET(req: NextRequest) {
       });
     }
 
+    // --- A hire stranded outside the pool (#2481): on Sales, signed in, a calendar
+    // that syncs, not bookable, no pending mark and no recorded hold. The waiting
+    // check above reads the mark, so it cannot see somebody whose mark a roster
+    // write erased (#2381). Its own reads, in its own boundary, and not gated: it
+    // has no arming switch and consumes no shared setup state. On an ordinary tick
+    // it is one read of the few non bookable rows; the calendar and audit reads run
+    // only when a candidate exists. ---
+    const strandedHires = await steps.run("stranded_hires", null, () =>
+      runStrandedHiresCheck({
+        loadCandidates: () =>
+          selectAllPages<StrandedHireRow>("monitor stranded-hires roster", (from, to) =>
+            db
+              .from("users")
+              .select("id, name, email, attributes, bookable, deactivated_at, bookable_pending_since, auth_user_id")
+              .eq("bookable", false)
+              .is("deactivated_at", null)
+              .not("auth_user_id", "is", null)
+              .eq("is_test", false)
+              .range(from, to),
+          ),
+        loadSyncedCalendarUserIds: async (ids) => {
+          const rows = await selectAllPages<{ user_id: string }>("monitor stranded-hires calendars", (from, to) =>
+            db
+              .from("agent_calendars")
+              .select("user_id")
+              .in("user_id", ids)
+              .not("last_success_at", "is", null)
+              .range(from, to),
+          );
+          return new Set(rows.map((r) => r.user_id));
+        },
+        loadDecidedUserIds: async (ids) => {
+          const rows = await selectAllPages<{ target_id: string }>("monitor stranded-hires audit", (from, to) =>
+            db
+              .from("audit_log")
+              .select("target_id")
+              .eq("action", "agent.bookable")
+              .in("target_id", ids)
+              .not("actor_id", "is", null)
+              .range(from, to),
+          );
+          return new Set(rows.map((r) => r.target_id));
+        },
+        // alert-key: agents_stranded_outside_pool
+        notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+        // alert-key: agents_stranded_outside_pool
+        resolve: (key, text) => resolveAlert(key, text),
+        cooldownMs: cooldownMs.agents_stranded_outside_pool,
+      }),
+    );
+    if (strandedHires) {
+      log.info("monitor", {
+        msg: "stranded hires",
+        status: strandedHires.status,
+        ...(strandedHires.status === "unreadable" ? { error: strandedHires.error } : {}),
+        ...(strandedHires.status === "stranded" ? { stranded: strandedHires.agents.length } : {}),
+        ...(strandedHires.status === "clear" ? { measured: strandedHires.measured } : {}),
+      });
+    }
+
     // --- A booking below the lead's Salesforce tier (#2593): an Ultra High lead
     // booked with the Low team. A rate cannot see it (two bookings in twelve
     // hundred was the incident), and the cal.com Slack workflow that covers it
@@ -3390,6 +3453,8 @@ export async function GET(req: NextRequest) {
         AWAITING_ACTIVATION_VERDICT_LANE,
         awaitingActivationReachedVerdict(awaitingActivation),
       ),
+      // #2481: the stranded hire check, stamped on any read that concluded.
+      recordDetectorVerdict(STRANDED_HIRES_VERDICT_LANE, strandedHiresReachedVerdict(strandedHires)),
       recordDetectorVerdict(
         REGAL_CALL_FEED_VERDICT_LANE,
         regalCallFeedReachedVerdict(regalQuiet, regalUnreadable),

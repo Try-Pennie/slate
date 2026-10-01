@@ -34,6 +34,7 @@ import {
   CALENDAR_WINDOW_VERDICT_LANE,
   OFFSITE_ORIGIN_VERDICT_LANE,
   AWAITING_ACTIVATION_VERDICT_LANE,
+  STRANDED_HIRES_VERDICT_LANE,
   REGAL_CALL_FEED_VERDICT_LANE,
   REGAL_CALL_OUTCOMES_VERDICT_LANE,
   type DetectorVerdictLane,
@@ -81,6 +82,7 @@ const STAMP: Record<WorkerStampedVerdictLane, () => Promise<void>> = {
   [CALENDAR_WINDOW_VERDICT_LANE]: () => recordHeartbeat("verdict:calendar-window"),
   [OFFSITE_ORIGIN_VERDICT_LANE]: () => recordHeartbeat("verdict:offsite-origin"),
   [AWAITING_ACTIVATION_VERDICT_LANE]: () => recordHeartbeat("verdict:awaiting-activation"),
+  [STRANDED_HIRES_VERDICT_LANE]: () => recordHeartbeat("verdict:stranded-hires"),
   [REGAL_CALL_FEED_VERDICT_LANE]: () => recordHeartbeat("verdict:regal-call-feed"),
   [REGAL_CALL_OUTCOMES_VERDICT_LANE]: () => recordHeartbeat("verdict:regal-call-outcomes"),
 };

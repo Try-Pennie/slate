@@ -42,14 +42,17 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
  * the caller then does with the throw is the caller's decision, and
  * `offboarding/service.ts` explains the one it made.
  *
- * WHERE IT IS NOT CALLED, stated so this module is not read as broader coverage
- * than it has (L400). `offboarding/service.ts` is the only caller, so the
- * lifecycle endpoints and the admin roster page are covered. The hourly
- * Salesforce roster reap (`src/lib/salesforce/sync.ts`) writes `deactivated_at`
- * with its own bulk update and never comes through here, so somebody reaped that
- * way keeps a mintable refresh token. They are still refused on their very next
- * request by `gateSessionRow`, which is the control that closes the hole; this
- * one is missing for them, and #2378 records it as the follow up.
+ * WHERE IT IS CALLED, stated so this module is not read as broader or narrower
+ * coverage than it has (L400). `offboarding/service.ts` calls it for one person
+ * at the moment of the lifecycle change, which covers the lifecycle endpoints and
+ * the admin roster page. The hourly Salesforce roster reap departs people with a
+ * batch write that never comes through there, so they are banned by
+ * `offboarding/session-convergence.ts` (#2459), which runs after the reap on
+ * every roster run and bans every departed person Supabase Auth does not already
+ * hold as banned, and lifts this module's ban from anybody active again. That also
+ * retries a ban or a restore the single person path failed to make. Because that
+ * convergence recognises Slate's ban by its length, a change to
+ * `REVOKE_BAN_DURATION` moves its threshold with it (it is derived, not copied).
  */
 
 /**

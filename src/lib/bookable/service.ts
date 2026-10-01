@@ -21,6 +21,7 @@ import {
   bookableUnverifiedAlert,
   bookableUnhydratedAlert,
   bookableTimedOutAlert,
+  bookableContendedAlert,
 } from "@/lib/notify/misc-alert-copy";
 import { isDefinitiveFailure } from "@/lib/google/sync-health";
 import type { ThrottledNotify } from "@/lib/monitor/alert-deps";
@@ -64,7 +65,15 @@ export type BlockedReason =
    * that do not exist is advice that can never work (the same distinction #1396
    * drew between a gone account and one that never had Calendar).
    */
-  | "activation_timed_out";
+  | "activation_timed_out"
+  /**
+   * #2705: another lane held one of the agent's calendars while the gate tried to
+   * load it (the hydration claim was taken, or the sync token moved under the
+   * fetch). The retry kind, like `activation_timed_out`, and its own reason
+   * because what it says is different: nothing was slow and nothing is broken, the
+   * gate simply lost a race with a pass that is loading the same calendar.
+   */
+  | "calendar_contended";
 
 export type BookableResult =
   | { status: "not_found" }
@@ -383,11 +392,13 @@ async function applyBookableToRow(
     // predicate so the live proof (#2316) judges Google's answer by the same rule.
     const refusal = poolEntryRefusal(entry);
     if (refusal !== null) {
-      const timedOut = refusal === "activation_timed_out";
       const reason: BlockedReason = refusal;
-      const message = timedOut
-        ? bookableTimedOutAlert(user!.email, ACTIVATION_BUDGET_MS)
-        : bookableUnhydratedAlert(user!.email, entry?.hydrated ?? 0, entry?.calendars ?? 0);
+      const message =
+        refusal === "activation_timed_out"
+          ? bookableTimedOutAlert(user!.email, ACTIVATION_BUDGET_MS)
+          : refusal === "calendar_contended"
+            ? bookableContendedAlert(user!.email, entry?.contended ?? 0)
+            : bookableUnhydratedAlert(user!.email, entry?.hydrated ?? 0, entry?.calendars ?? 0);
       await deps.notify(`bookable_blocked:${user!.id}`, BOOKABLE_BLOCKED_COOLDOWN_MS, message);
       log.warn("bookable-api", {
         msg: "activation blocked",
@@ -396,6 +407,7 @@ async function applyBookableToRow(
         calendars: entry?.calendars ?? 0,
         hydrated: entry?.hydrated ?? 0,
         failed: entry?.failed ?? 0,
+        contended: entry?.contended ?? 0,
         out_of_budget: entry?.outOfBudget ?? false,
       });
       // Nothing written, so `bookable_pending_since` survives and the hourly roster
