@@ -10,7 +10,7 @@
  * that quietly stopped filling would report a show rate about whichever calls
  * happened to land, which is worse than reporting nothing.
  *
- * So this compares OUTCOME ROWS WRITTEN against COMPLETED CALLS RECEIVED over the
+ * So this compares HUMAN OUTCOME ROWS WRITTEN against COMPLETED ADVISOR CALLS RECEIVED over the
  * last two hours. The received count comes from the detector's per reason counts
  * (the same RPC the feed checks read), which is a DIFFERENT writer from the one
  * being judged, so a broken outcome write cannot also silence its own measurement
@@ -29,7 +29,7 @@
  * Pure apart from the injected reads, streak and dispatcher
  * (scripts/test-regal-call-outcomes-monitor.ts).
  */
-import { REGAL_CALL_REASONS, type RegalCallReason } from "@/lib/regal/inbound-call";
+import type { RegalCallReason } from "@/lib/regal/inbound-call";
 import type { RegalReasonCounts } from "./regal-call-feed";
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 
@@ -57,11 +57,11 @@ export const REGAL_OUTCOME_WINDOW_MS = 2 * 60 * 60_000;
  */
 export const REGAL_OUTCOME_EMPTY_WINDOW_MS = 15 * 60_000;
 
-/** At or above this share of completed calls with an outcome row is healthy. */
+/** At or above this share of completed advisor calls with an outcome row is healthy. */
 export const REGAL_OUTCOME_MIN_RATIO = 0.8;
 
 /**
- * Fewer completed calls than this in the window is too few to judge a rate on.
+ * Fewer completed advisor calls than this in the window is too few to judge a rate on.
  * A working day brings several hundred an hour (about 6,000 a weekday), so this
  * only ever bites at the edges of the day, where one refused call among a few
  * would otherwise page about nothing.
@@ -69,24 +69,35 @@ export const REGAL_OUTCOME_MIN_RATIO = 0.8;
 export const REGAL_OUTCOME_MIN_CALLS = 20;
 
 /**
- * The detector reasons that are a COMPLETED call with a readable event id, which
- * is exactly the set an outcome row could exist for. Excluded: an event that is
- * not a completed call, and a body or event id the detector could not read, since
- * the outcome side refuses those too. Derived from the vocabulary rather than
- * listed, so a new detector reason is counted by default and has to be excluded on
- * purpose (L96).
+ * The detector reasons that are a completed call with a HUMAN advisor on it (#2950).
+ * Only those can decide a show (a human call of at least 300 s), so only those may
+ * count as an outcome that should have been stored. Left out on purpose:
+ * - `agent_email_null`, an unanswered dialer attempt. It arrives with no talk time
+ *   and is refused rather than stored as zero (measured 2026-10-01: every one of 9
+ *   in the first five minutes was refused `talk_time_unreadable`). Counting it read a
+ *   working feed as 76% stored, under the floor, on the day it shipped.
+ * - `ai_agent`, which is not the advisor's call.
+ * - every unreadable and non completed reason, which the outcome side refuses too.
+ * Every detector reason sits in exactly one of these two lists, and the suite fails
+ * when one sits in neither, so a reason added later is sorted on purpose rather
+ * than silently left out of the count.
  */
-const NOT_A_COMPLETED_CALL: readonly RegalCallReason[] = [
+export const HUMAN_CALL_REASONS: readonly RegalCallReason[] = ["candidate", "foreign_domain", "no_slate_user"];
+
+/** The detector reasons that carry no human advisor, or that could not be read. */
+export const NOT_HUMAN_CALL_REASONS: readonly RegalCallReason[] = [
   "not_call_completed",
+  "ai_agent",
+  "agent_email_null",
   "body_unreadable",
   "event_id_unreadable",
+  "ai_flag_unreadable",
+  "agent_email_unreadable",
+  "timestamp_unreadable",
 ];
-export const COMPLETED_CALL_REASONS: readonly RegalCallReason[] = REGAL_CALL_REASONS.filter(
-  (r) => !NOT_A_COMPLETED_CALL.includes(r),
-);
 
-export function completedCallsFrom(counts: RegalReasonCounts): number {
-  return COMPLETED_CALL_REASONS.reduce((sum, r) => sum + (counts[r] ?? 0), 0);
+export function humanCallsFrom(counts: RegalReasonCounts): number {
+  return HUMAN_CALL_REASONS.reduce((sum, r) => sum + (counts[r] ?? 0), 0);
 }
 
 const n = (x: number): string => x.toLocaleString("en-US");
@@ -104,7 +115,7 @@ function windowPhrase(minutes: number): string {
 }
 
 export function formatRegalCallOutcomesAlert(m: { received: number; written: number; windowMinutes: number }): string {
-  const calls = `${n(m.received)} completed ${m.received === 1 ? "call" : "calls"}`;
+  const calls = `${n(m.received)} completed advisor ${m.received === 1 ? "call" : "calls"}`;
   const stored = m.written === 0 ? `None of the ${calls}` : `Only ${n(m.written)} of the ${calls}`;
   return (
     `${stored} Regal posted in the last ${windowPhrase(m.windowMinutes)} ${m.received === 1 && m.written === 0 ? "was" : "were"} ` +
@@ -118,7 +129,7 @@ export function formatRegalCallOutcomesAlert(m: { received: number; written: num
 
 export function formatRegalCallOutcomesRecovery(m: { received: number; written: number; windowMinutes: number }): string {
   return (
-    `Call outcomes are being stored again: ${n(m.written)} of the ${n(m.received)} completed calls Regal ` +
+    `Call outcomes are being stored again: ${n(m.written)} of the ${n(m.received)} completed advisor calls Regal ` +
     `posted in the last ${windowPhrase(m.windowMinutes)} (${percent(m.written, m.received)}).`
   );
 }
@@ -133,7 +144,8 @@ export type RegalCallOutcomesResult =
 export interface RegalCallOutcomesDeps {
   /** The detector's per reason counts received at or after `sinceIso`. THROWS on a read error. */
   loadReasonCounts: (sinceIso: string) => Promise<RegalReasonCounts>;
-  /** Outcome rows received at or after `sinceIso`. THROWS on a read error. */
+  /** HUMAN outcome rows (not an AI call, an advisor on it) received at or after
+   *  `sinceIso`, the same population `humanCallsFrom` counts. THROWS on a read error. */
   countOutcomes: (sinceIso: string) => Promise<number>;
   /** When the table stored its first row, or null for an empty table. THROWS on a read error. */
   firstOutcomeAtMs: () => Promise<number | null>;
@@ -172,7 +184,7 @@ export async function runRegalCallOutcomesCheck(deps: RegalCallOutcomesDeps): Pr
   } catch (err) {
     return { status: "unmeasured", why: err instanceof Error ? err.message : String(err) };
   }
-  const received = completedCallsFrom(counts);
+  const received = humanCallsFrom(counts);
   // Nothing measured: neither healthy nor a page, and the streak and the alert are
   // left exactly as they were.
   if (received === 0) return { status: "no-calls" };

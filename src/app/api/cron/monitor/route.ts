@@ -326,8 +326,9 @@ import {
   type CoverageGapAgent,
 } from "@/lib/monitor/ooo-coverage-gap";
 import { ACTIONABLE_ITEM_STATUSES } from "@/lib/booking/bulk-reassign";
-import { unwrap, unwrapCount } from "@/lib/db/result";
+import { unwrap } from "@/lib/db/result";
 import { parseStampMs } from "@/lib/date/stamp";
+import { countHumanOutcomesSince, type OutcomeCountDb } from "@/lib/monitor/regal-call-outcomes-store";
 import { ACTIVE_BOOKING_STATUSES } from "@/lib/booking/bulk-reassign-store";
 import { loadOooCoverageBookings, loadSnapshottedBookingIds } from "@/lib/monitor/ooo-coverage-bookings";
 import { inIdChunks } from "@/lib/db/id-batch";
@@ -2217,9 +2218,9 @@ export async function GET(req: NextRequest) {
     }
 
     // --- Call outcomes (#2944): is a regal_call_outcomes row being written for each
-    // completed call Regal posts? The show rate in the Slate vs cal.com split is
-    // computed from that table, which fills in silence. Completed calls received
-    // come from the detector's per reason counts (a different writer from the one
+    // completed advisor call Regal posts? The show rate in the Slate vs cal.com split
+    // is computed from that table, which fills in silence. Advisor calls received
+    // (human reasons only, #2950) come from the detector's per reason counts (a different writer from the one
     // judged), outcome rows from a server side count, both over the last two hours.
     // Under 80% on two consecutive checks pages; only a measured healthy ratio
     // clears; a window with no calls decides nothing. Same Regal arming switch. ---
@@ -2228,16 +2229,8 @@ export async function GET(req: NextRequest) {
         ? null
         : runRegalCallOutcomesCheck({
             loadReasonCounts: loadRegalCounts,
-            // A head count: no rows come back, so the 1,000 row cap cannot shorten
-            // it, and unwrapCount throws on a failed count rather than scoring it 0.
-            countOutcomes: async (sinceIso) =>
-              unwrapCount(
-                await db
-                  .from("regal_call_outcomes")
-                  .select("id", { count: "exact", head: true })
-                  .gte("received_at", sinceIso),
-                "monitor regal call outcome count",
-              ),
+            // Human rows only, the population the received side counts (#2950).
+            countOutcomes: (sinceIso) => countHumanOutcomesSince(db as unknown as OutcomeCountDb, sinceIso),
             // The oldest stored row, so a freshly created table is judged only over
             // the time it has existed. One indexed row, never a list.
             firstOutcomeAtMs: async () => {
