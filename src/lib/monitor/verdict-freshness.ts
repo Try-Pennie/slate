@@ -20,9 +20,10 @@
  * only on a measured verdict and watched against its own bound.
  *
  * PURE, so scripts/test-verdict-freshness.ts drives every branch node natively.
- * Every import here is a type except one, `SHIPPED_FAILURE_RATE_THRESHOLDS`, which
- * is a constants module whose own imports are types: a park's un-park window is
- * DERIVED from the window the check judges rather than restated beside it (L63).
+ * Every import here is a type. A park's un-park window is DERIVED from the window
+ * the check judges rather than restated beside it (L63); when a park needs one,
+ * import that check's shipped thresholds for it, as the failure rate park did
+ * (#2499, removed in #2513).
  */
 import type { LaneWatchdogOutcome } from "@/lib/monitor/health";
 import type { TruthResult } from "@/lib/monitor/availability-truth";
@@ -38,7 +39,6 @@ import type { OffsiteOriginResult } from "@/lib/monitor/offsite-origin";
 import type { AwaitingActivationResult } from "@/lib/monitor/awaiting-activation";
 import type { RegalFeedQuietResult, RegalFeedUnreadableResult } from "@/lib/monitor/regal-call-feed";
 import type { monitorSetupGates } from "@/lib/monitor/setup-gates";
-import { SHIPPED_FAILURE_RATE_THRESHOLDS } from "@/lib/monitor/failure-rate-thresholds";
 
 /**
  * The lane names these detectors stamp, namespaced away from the cron lane
@@ -483,38 +483,15 @@ export const PARKED_VERDICT_DETECTORS: Partial<Record<DetectorVerdictLane, Parke
   // for four days. Note this arms the WATCH on the probe concluding, not the drift
   // page itself, which is a separate switch and still off (#1371).
   //
-  // The failure rate park was removed on 2026-09-16 (#2484) and PUT BACK on
-  // 2026-09-17 (#2499), because the reason #2484 gave for removing it was measured
-  // wrong. It said a single canary pass now clears the floor, and no canary pass
-  // can ever clear it: `booking-failure-rate-store.ts` passes `p_include_test:
-  // false` to the outcome mix RPC and has done since #1637, so a test attempt
-  // counts ZERO whatever the floor is. So the detector cannot conclude until real
-  // Low leads book, and the un-parked watch would have paged "never concluded"
-  // every four days, and daily once the page itself is armed (#1367), naming
-  // something nobody could do that morning (L111, L36).
-  //
-  // The other two options were weighed and this is the reversible one. Letting the
-  // canary count toward the floor again would reverse #1637 on purpose and have the
-  // detector conclude about the CANARY rather than about leads, which is a verdict
-  // on the wrong population. Accepting a page every four days that nobody can act
-  // on is how a channel stops being read by the second week.
-  //
-  // A test made in a REAL bucket from a page that is not the production site cannot
-  // un-park it either (#2752): the tally records the host page class through the off
-  // site page's own predicate and the reading passes `p_include_offsite: false`, so
-  // ten tester attempts from localhost no longer reach the floor. A test from the
-  // production site, or with no host recorded, still counts.
-  [FAILURE_RATE_VERDICT_LANE]: {
-    reason:
-      "no real lead has booked yet, and the smoke canary cannot stand in for one: the outcome mix read passes p_include_test false (#1637), so every canary attempt counts zero toward the floor of attempts the check needs before it will judge. It can only conclude once the Low pilot page is live and real leads are booking",
-    issue: 2513,
-    // The window the check itself judges, read from the shipped thresholds rather
-    // than restated here. This number means "is the detector concluding NOW", and
-    // now for this check is one of its own rolling windows: a verdict from before
-    // the window it is in says nothing about whether it can judge today. Restating
-    // it is what went stale when #2484 moved the window from one hour to four.
-    unparkWithinMs: SHIPPED_FAILURE_RATE_THRESHOLDS.windowMs,
-  },
+  // The failure rate park was removed on 2026-09-16 (#2484), PUT BACK on
+  // 2026-09-17 (#2499), and removed for good on 2026-10-01 (#2513). It was parked
+  // because the smoke canary can never reach the check's floor: the outcome mix
+  // read passes `p_include_test: false` (#1637), so only real leads count, and
+  // before the Low pilot there were none. The pilot went live on 2026-09-29, 82
+  // real leads booked through the production site on 2026-10-01, and the detector
+  // stamped a verdict on the monitor tick of 2026-10-01 13:51 UTC. This arms the
+  // WATCH on the check concluding; the failing bookings page itself is a separate
+  // switch on /admin/alerts (#1367).
   // The below lead tier watch (#2593) was parked here until 2026-09-30 (#2696):
   // no real lead had an upcoming booking to compare. The Low pilot went live on
   // 2026-09-29 and the lane concluded on the monitor tick of 2026-09-30 18:33 UTC,
@@ -525,7 +502,7 @@ export const PARKED_VERDICT_DETECTORS: Partial<Record<DetectorVerdictLane, Parke
  * The park entry for a lane, or null when it is armed.
  *
  * `registry` is injectable for ONE reason and it is not convenience: the shipped
- * registry is currently EMPTY (#2484 armed the last entry), so without a seam the
+ * registry is currently EMPTY (#2513 armed the last entry), so without a seam the
  * park mechanism has nothing to drive it and its whole suite would have to be
  * deleted rather than kept. A mechanism that ships with no exercised test is one
  * that breaks silently the next time somebody parks a detector (L535).

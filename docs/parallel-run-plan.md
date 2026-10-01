@@ -63,22 +63,20 @@ design rather than of any configuration that could drift:
 ## Arming the failing bookings page on flip day
 
 The failing bookings page is one of the three signals that would say "Low bookings
-have stopped" (#2484), and it is OFF. There are TWO switches behind it, and the
-work that calibrated the floors threw neither:
+have stopped" (#2484). There are TWO switches behind it, and both are now on
+(confirmed 2026-10-01):
 
 1. **Somebody ticks it on, by hand, under Admin, Alerts**: "Send a Slack alert when
    customers are failing to book". It is `monitor_alert_config.failure_rate_armed`,
-   stored false, and an unset value reads as false (`resolveFailureRateArmed`, the
-   observe first default from L56). No deploy applies it, no code change has ever
-   set it, and #2489 armed the WATCH on the detector rather than the page itself.
-   #1367 is the issue that closes when somebody ticks it.
+   and an unset value reads as false (`resolveFailureRateArmed`, the observe first
+   default from L56), so no deploy applies it. It read true on 2026-10-01 (#1367).
 
-2. **Its never concluded watch is parked until real leads book** (#2499). The check
-   refuses to judge until a floor of booking attempts has accumulated inside its
-   rolling window, and the smoke canary cannot supply them: the read excludes test
-   attempts (#1637), so a canary attempt counts zero. The park comes out on #2513,
-   and nobody has to remember it, because the watchdog pages by itself the moment a
-   parked detector reaches a verdict.
+2. **Its never concluded watch is armed** (#2513, 2026-10-01). It was parked
+   (#2499) because the check refuses to judge until a floor of booking attempts has
+   accumulated inside its rolling window, and the smoke canary cannot supply them:
+   the read excludes test attempts (#1637). Real Low leads booking through the pilot
+   cleared the floor, the detector reached a verdict on 2026-10-01, and the park
+   came out.
 
 **Read the check after the first busy hour rather than reading the silence.** Below
 the floor every tick reports `insufficient`, which renders exactly like a healthy

@@ -154,14 +154,10 @@ const healthy = () => ({
   // neverIsStale ON, so a healthy fleet has both a few minutes old.
   "uptime:api-health": ago(3 * MIN),
   "uptime:availability-canary": ago(3 * MIN),
-  // `verdict:booking-failure-rate` is deliberately ABSENT, and that is the healthy
-  // state rather than a gap in the fixture (#2499). The check cannot reach a
-  // verdict before real Low leads book: the outcome mix read excludes test
-  // attempts (#1637), so the smoke canary contributes nothing toward the floor
-  // however the floor is set. It is parked for exactly that reason, so a healthy
-  // fleet today has never stamped it, and stamping it here would say the pilot has
-  // started. #2489 added a stamp on the belief a canary pass could clear the new
-  // floor; #2513 is what removes the park and puts the stamp back.
+  // #2513: armed again once real Low leads booked through Slate, and the pilot
+  // keeps enough attempts inside its window for a verdict on essentially every
+  // tick. It was deliberately absent here while it was parked (#2499).
+  "verdict:booking-failure-rate": ago(5 * MIN),
 });
 
 beforeEach(() => {
@@ -207,9 +203,9 @@ describe("alertOnStaleLanes (#803)", () => {
   // action nobody could take. Parking is quiet about the blindness, loud about
   // the park, and loud again the moment a parked detector concludes anyway.
   //
-  // The failure rate watch is parked in the shipped registry again (#2499), and the
-  // cases below still INSTALL their own entry for the duration of the test and
-  // remove it after, rather than leaning on that one.
+  // The shipped registry is empty since #2513 armed the failure rate watch, and the
+  // cases below INSTALL their own entry for the duration of the test and remove it
+  // after, rather than leaning on whatever the registry holds.
   //
   // That is deliberate rather than convenient. The wiring these prove (the
   // watchdog is quiet about a parked detector's blindness, loud about the park,
@@ -232,7 +228,7 @@ describe("alertOnStaleLanes (#803)", () => {
      * Install the park, run the body, and always put back whatever was there.
      *
      * It RESTORES rather than deletes, which is not a detail: the shipped registry
-     * parks this same lane (#2499), so deleting the key took the real entry out for
+     * parked this same lane between #2499 and #2513, so deleting the key took the real entry out for
      * every test that ran after one of these, in file order. That turned eleven
      * unrelated cases red and each of them passed alone, which is the shape of a
      * shared mutable fixture rather than of a defect in the thing under test (L205).
@@ -307,13 +303,22 @@ describe("alertOnStaleLanes (#803)", () => {
     it("treats an unreadable verdict record as still parked, not as concluding", async () => {
       // #1172: the epoch-0 sentinel is a record that could not be READ. Reading it
       // as a verdict would arm a detector off a corrupt row.
-      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), [PARKED]: 0 });
+      // Installs the park like its siblings: the shipped registry is empty since
+      // #2513, so without it this would judge an ARMED lane and pass vacuously.
+      await withPark(async () => {
+        heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), [PARKED]: 0 });
 
-      await alertOnStaleLanes();
+        await alertOnStaleLanes();
 
-      expect(
-        dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === `detector_unpark:${PARKED}`),
-      ).toBeUndefined();
+        expect(
+          dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === `detector_unpark:${PARKED}`),
+        ).toBeUndefined();
+        // And it really was judged as parked: the park whisper went out, so the
+        // absence above is the park's doing rather than the lane being armed.
+        expect(
+          dispatch.sendThrottledInfo.mock.calls.find((c) => c[0] === "detector_parked"),
+        ).toBeDefined();
+      });
     });
 
     it("all-clears the un-park page once the detector is armed", async () => {

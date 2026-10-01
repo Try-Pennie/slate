@@ -45,7 +45,7 @@ import {
   UPTIME_STALE_BOUNDS_MS,
   VERDICT_STALE_BOUNDS_MS,
 } from "@/lib/monitor/health";
-import { PARKED_VERDICT_DETECTORS } from "@/lib/monitor/verdict-freshness";
+import { FAILURE_RATE_VERDICT_LANE, PARKED_VERDICT_DETECTORS } from "@/lib/monitor/verdict-freshness";
 import {
   checksGatedByStep,
   monitorStepFailingAlert,
@@ -3058,7 +3058,20 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "detector_parked",
     state: "the checks that cannot conclude before cutover",
     channel: "info",
-    text: verdictParkedInfoText(Object.keys(PARKED_VERDICT_DETECTORS)),
+    // Rendered from the shipped registry while anything is parked. Since #2513
+    // nothing is, and the watchdog sends no whisper for an empty list, so the
+    // preview shows the shape a park takes through an example entry rather than
+    // rendering "0 monitoring checks are parked", a message nobody can receive.
+    text:
+      Object.keys(PARKED_VERDICT_DETECTORS).length > 0
+        ? verdictParkedInfoText(Object.keys(PARKED_VERDICT_DETECTORS))
+        : verdictParkedInfoText([FAILURE_RATE_VERDICT_LANE], {
+            [FAILURE_RATE_VERDICT_LANE]: {
+              reason: "no real lead has booked yet, so it never sees enough attempts to judge",
+              issue: 2513,
+              unparkWithinMs: 4 * 60 * 60_000,
+            },
+          }),
   },
   // There WAS a second state here rendering one named lane, back when two were
   // parked and the whisper had a visibly different singular form to read. Since
