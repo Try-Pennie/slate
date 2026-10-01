@@ -360,11 +360,11 @@ function spy(over: Partial<ReminderDeps> = {}) {
   const tels = card.content.split("\r\n").filter((l) => l.startsWith("TEL"));
   eq(tels, ["TEL;TYPE=WORK,VOICE:+12197588170"], "carrying the calling number and no other phone");
   assert(card.content.includes("jordan@trypennie.com"), "and the advisor's address, which is the sender");
-  // Named Pennie although the booking names its advisor (Dan, 2026-10-01): a
-  // redistributed lead keeps the calling number and gets a different advisor.
-  assert(card.content.split("\r\n").includes("FN:Pennie"), "the contact is named Pennie, not the advisor");
-  assert(!card.content.includes("Jordan Lee"), "and the advisor's name is nowhere on the card");
-  eq(card.filename, "Pennie.vcf", "nor in its file name");
+  // Named after the advisor again (Dan reversed the earlier call, 2026-10-01).
+  assert(card.content.split("\r\n").includes("FN:Jordan Lee (Pennie)"), "the contact is named after the advisor, with Pennie beside it");
+  assert(card.content.split("\r\n").includes("ORG:Pennie"), "and the organisation is still Pennie");
+  eq(card.filename, "Jordan Lee Pennie.vcf", "and so is its file");
+  assert(withNumber.body.includes("My contact card is attached"), "and the email calls it the advisor's own card");
 
   const noLead = msgs[1]!;
   eq(noLead.attachments?.length ?? 0, 0, "a booking with no lead id gets no card");
@@ -728,6 +728,34 @@ for (const [label, fetchPhoto] of failingFetches) {
   eq(msgs[1]?.attachments?.length ?? 0, 0, "a reminder with no calling number has no card");
   eq(result.withLogo, 1, "only the card is counted as a logo");
   eq(result.withPhoto + result.withLogo, result.withCallingNumber, "every card carries exactly one picture");
+}
+
+// --- #2985: the inbox shows the advisor's NAME as the sender -----------------------
+//
+// Dan, 2026-10-01: the reminder arrived from the bare address. The message now
+// carries the advisor's real name, and "Pennie" when there is none, never an
+// address dressed up as a name (realAdvisorName refuses one).
+{
+  const senderFor = async (agentName: string | null) => {
+    const names: (string | undefined)[] = [];
+    const froms: string[] = [];
+    const s = spy({
+      loadDue: async () => [due({ agentName })],
+      send: async (msg) => {
+        names.push(msg.fromName);
+        froms.push(msg.from);
+        return "gmail-id";
+      },
+    });
+    await runBookingReminders(s.deps);
+    eq(froms.join(","), "jordan@trypennie.com", "#2985: still sent from the advisor's own mailbox");
+    return names;
+  };
+  eq((await senderFor("Jordan Lee")).join(","), "Jordan Lee", "#2985: the sender name is the advisor's real name");
+  eq((await senderFor("  Jordan Lee  ")).join(","), "Jordan Lee", "#2985: trimmed, as realAdvisorName trims it");
+  eq((await senderFor(null)).join(","), "Pennie", "#2985: no name on record reads as Pennie");
+  eq((await senderFor("jordan@trypennie.com")).join(","), "Pennie", "#2985: an address in the name field reads as Pennie, not as a name");
+  eq((await senderFor("")).join(","), "Pennie", "#2985: an empty name reads as Pennie");
 }
 
 finish();

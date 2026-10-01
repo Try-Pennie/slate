@@ -332,6 +332,9 @@ describe("GET /api/cron/booking-reminders", () => {
     expect(callingNumber.readLeadCallingNumbersLive).toHaveBeenCalledWith(["00QUi000010889ZMAQ"]);
     expect(state.sent[0]?.body).toContain("(219) 758-8170");
     expect(state.sent[0]?.attachments?.[0]?.content).toContain("TEL;TYPE=WORK,VOICE:+12197588170");
+    // Named after the advisor, with Pennie beside it (Dan, 2026-10-01).
+    expect(state.sent[0]?.attachments?.[0]?.content).toContain("FN:Jordan Lee (Pennie)\r\n");
+    expect((state.sent[0]?.attachments?.[0] as { filename?: string } | undefined)?.filename).toBe("Jordan Lee Pennie.vcf");
     // It read the invite first and changed only the calling number line.
     expect(calendar.getEventOnPrimary).toHaveBeenCalledWith("jordan@trypennie.com", "evt-1");
     expect(calendar.updateEventDescription).toHaveBeenCalledWith(
@@ -360,6 +363,7 @@ describe("GET /api/cron/booking-reminders", () => {
     const card = msg?.attachments?.[0] as { content: string; filename?: string } | undefined;
     expect(card?.content).toContain("FN:Pennie\r\n");
     expect(card?.filename).toBe("Pennie.vcf");
+    expect(msg?.body).toContain("Our contact card is attached");
   });
 
   it("still sends, without a number, when Salesforce cannot be read", async () => {

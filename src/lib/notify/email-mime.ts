@@ -12,7 +12,14 @@ export interface MailAttachment {
 }
 
 export interface MimeMessage {
+  /** The sending mailbox: the address Gmail authenticates as and sends from. */
   from: string;
+  /**
+   * The name an inbox shows for the sender (#2985), so the From header reads
+   * `Name <address>` rather than the bare address. Encoded by `formatFromHeader`;
+   * omitted, blank, or only control characters, the header is the bare address.
+   */
+  fromName?: string;
   to: string[];
   cc?: string[];
   bcc?: string[];
@@ -173,6 +180,63 @@ function alternativeBody(body: string, boundary: string): string {
 }
 
 /**
+ * RFC 5322 atext plus space, less `=` and `?`: a display name made only of these
+ * needs no quoting. `=` and `?` are left out so an unquoted name can never read as
+ * an RFC 2047 encoded word; inside quotes a client must not decode one.
+ */
+const PLAIN_PHRASE = /^[A-Za-z0-9!#$%&'*+\-/^_`{|}~ ]+$/;
+/** Printable ASCII and space: quotable as an RFC 5322 quoted string. */
+const PRINTABLE_ASCII = /^[\x20-\x7E]+$/;
+/** RFC 2047 caps an encoded word at 75 characters, `=?UTF-8?B?` and `?=` included. */
+const ENCODED_WORD_MAX = 75;
+const ENCODED_WORD_OVERHEAD = "=?UTF-8?B?".length + "?=".length;
+
+function base64Utf8(text: string): string {
+  return btoa(String.fromCharCode(...new TextEncoder().encode(text)));
+}
+
+/**
+ * Non ASCII as RFC 2047 B encoded words, split on CHARACTER boundaries so no word
+ * carries half a UTF-8 sequence, and each word stays inside 75 characters. Words
+ * are separated by a space, which a decoder drops between adjacent encoded words.
+ */
+function encodedWords(text: string): string {
+  const words: string[] = [];
+  let current = "";
+  for (const ch of text) {
+    const next = current + ch;
+    if (current && ENCODED_WORD_OVERHEAD + base64Utf8(next).length > ENCODED_WORD_MAX) {
+      words.push(current);
+      current = ch;
+    } else {
+      current = next;
+    }
+  }
+  if (current) words.push(current);
+  return words.map((w) => `=?UTF-8?B?${base64Utf8(w)}?=`).join(" ");
+}
+
+/**
+ * The From header's value (#2985): `Name <address>` when a display name is given,
+ * the bare address otherwise.
+ *
+ * Every control character, CR and LF above all, becomes a space first, so a name
+ * can never end the header and start another (a `Bcc:` smuggled in through a name
+ * field). Then: a name of atext and spaces goes as is, any other printable ASCII
+ * (a comma, a quote, a period) as a quoted string with `\` and `"` escaped
+ * (RFC 5322 3.2.4), and anything non ASCII as RFC 2047 encoded words.
+ */
+export function formatFromHeader(address: string, name?: string): string {
+  const clean = (name ?? "").replace(/[\x00-\x1F\x7F]/g, " ").replace(/ {2,}/g, " ").trim();
+  if (!clean) return address;
+  let phrase: string;
+  if (PLAIN_PHRASE.test(clean)) phrase = clean;
+  else if (PRINTABLE_ASCII.test(clean)) phrase = `"${clean.replace(/[\\"]/g, (c) => `\\${c}`)}"`;
+  else phrase = encodedWords(clean);
+  return `${phrase} <${address}>`;
+}
+
+/**
  * Build the message. `boundary` is a parameter so tests are deterministic; the
  * caller passes a unique one in prod. Encodes the Subject as RFC 2047 base64 so
  * non-ASCII (e.g. a smart date) is safe.
@@ -185,11 +249,9 @@ function alternativeBody(body: string, boundary: string): string {
  * is not a prefix of, so a parser can never read an inner delimiter as an outer one.
  */
 export function buildMimeMessage(msg: MimeMessage, boundary: string): string {
-  const encodedSubject = `=?UTF-8?B?${btoa(
-    String.fromCharCode(...new TextEncoder().encode(msg.subject)),
-  )}?=`;
+  const encodedSubject = `=?UTF-8?B?${base64Utf8(msg.subject)}?=`;
   const headers = [
-    `From: ${msg.from}`,
+    `From: ${formatFromHeader(msg.from, msg.fromName)}`,
     `To: ${msg.to.join(", ")}`,
     ...(msg.cc?.length ? [`Cc: ${msg.cc.join(", ")}`] : []),
     ...(msg.bcc?.length ? [`Bcc: ${msg.bcc.join(", ")}`] : []),
