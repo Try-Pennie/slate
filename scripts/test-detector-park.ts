@@ -333,15 +333,12 @@ const FIXTURE_REGISTRY = {
   // A parked detector reaching a verdict is good news that needs an edit, so the
   // page has to name the file as well as the fact.
   //
-  // Every message here is built for a lane that is REALLY parked, and since #1831
-  // that is the failure rate check rather than the truth probe. Asking for the
-  // truth probe's un-park copy now would compare "#undefined" against
+  // The shipped half runs only for lanes that are REALLY parked, and since #2513
+  // there are none, so the FIXTURE below is what carries this copy's coverage.
+  // Asking for an armed lane's un-park copy would compare "#undefined" against
   // "#undefined": the copy reads the registry through an optional chain, so both
   // sides of the assertion go missing together and it passes while proving nothing
-  // (L1, L70). The explicit no-undefined check below is what keeps that from
-  // coming back the next time a lane is armed.
-  // It is rendered through the FIXTURE registry as well as the shipped one, so the
-  // copy stays covered on the day the shipped entry goes away again.
+  // (L1, L70). The explicit no-undefined check below keeps that from coming back.
   for (const lane of parked) {
     const shippedAlert = verdictUnparkAlertText(lane);
     assert(/reached a verdict/i.test(shippedAlert), "the shipped page says what changed");

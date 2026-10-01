@@ -502,7 +502,7 @@ export const PARKED_VERDICT_DETECTORS: Partial<Record<DetectorVerdictLane, Parke
  * The park entry for a lane, or null when it is armed.
  *
  * `registry` is injectable for ONE reason and it is not convenience: the shipped
- * registry is currently EMPTY (#2484 armed the last entry), so without a seam the
+ * registry is currently EMPTY (#2513 armed the last entry), so without a seam the
  * park mechanism has nothing to drive it and its whole suite would have to be
  * deleted rather than kept. A mechanism that ships with no exercised test is one
  * that breaks silently the next time somebody parks a detector (L535).

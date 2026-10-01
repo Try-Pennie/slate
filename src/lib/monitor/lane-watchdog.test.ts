@@ -303,13 +303,22 @@ describe("alertOnStaleLanes (#803)", () => {
     it("treats an unreadable verdict record as still parked, not as concluding", async () => {
       // #1172: the epoch-0 sentinel is a record that could not be READ. Reading it
       // as a verdict would arm a detector off a corrupt row.
-      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), [PARKED]: 0 });
+      // Installs the park like its siblings: the shipped registry is empty since
+      // #2513, so without it this would judge an ARMED lane and pass vacuously.
+      await withPark(async () => {
+        heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), [PARKED]: 0 });
 
-      await alertOnStaleLanes();
+        await alertOnStaleLanes();
 
-      expect(
-        dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === `detector_unpark:${PARKED}`),
-      ).toBeUndefined();
+        expect(
+          dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === `detector_unpark:${PARKED}`),
+        ).toBeUndefined();
+        // And it really was judged as parked: the park whisper went out, so the
+        // absence above is the park's doing rather than the lane being armed.
+        expect(
+          dispatch.sendThrottledInfo.mock.calls.find((c) => c[0] === "detector_parked"),
+        ).toBeDefined();
+      });
     });
 
     it("all-clears the un-park page once the detector is armed", async () => {
