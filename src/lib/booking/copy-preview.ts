@@ -76,6 +76,7 @@ import {
   MANAGE_PHONE_NOT_FOUND,
   PHONE_COPY,
   advisorWillCall,
+  callComesFrom,
   callWhen,
   doneBody,
   doneHeading,
@@ -154,6 +155,8 @@ const DAY_SHORT = DateTime.fromISO(SLOT_ISO, { zone: ZONE }).toFormat("ccc, LLL 
 const TIME = formatSlotTime(SLOT_ISO, ZONE);
 const ZONE_LABEL = "EDT";
 const PHONE = "(215) 555-0100";
+/** #1334: a Regal calling line, as Salesforce stores it (E.164). */
+const CALLING_NUMBER = "+12197588170";
 const EMAIL = "dana@example.com";
 const ADVISOR = "Aisha Bello";
 
@@ -564,6 +567,8 @@ export function bookerCopyScreens(): CopyScreen[] {
         { state: "the lead's own row", text: LIVE_COPY.youLabel },
         { state: "the number we hold", text: advisorWillCall(PHONE) },
         { state: "no number on the booking", text: advisorWillCall(null) },
+        // #1334: said only when Salesforce holds it; otherwise nothing at all.
+        { state: "the number the call will come from, when it is known", text: callComesFrom(CALLING_NUMBER) ?? "" },
         { state: "what they can still do", text: LIVE_COPY.changeYourPlans },
         { state: "the softer control", text: LIVE_COPY.reschedule },
         { state: "the irreversible one", text: LIVE_COPY.cancel },
@@ -720,6 +725,12 @@ export function inviteCopyScreens(): CopyScreen[] {
           state: "and with no number on the booking",
           text: eventDescription(null, manageUrl),
         },
+        // #1334: once the reminder lane reads the number the call comes from, it
+        // writes it into the invite, so it sits next to the appointment.
+        {
+          state: "the body once the number we call from is known",
+          text: eventDescription(PHONE, manageUrl, { isTest: false, callingNumber: CALLING_NUMBER }),
+        },
         // #2660: a TEST booking's invite opens with the test line, so the event
         // on the tester's calendar says what it is without being opened.
         {
@@ -789,7 +800,10 @@ export function reminderCopyScreens(): CopyScreen[] {
     timezone: ZONE,
     manageUrl,
     nowMs: REMINDER_NOW_MS,
+    callingNumber: null as string | null,
   };
+  /** #1334: the number the call will come from, known, with the card attached. */
+  const withCallingNumber = { ...tomorrow, callingNumber: CALLING_NUMBER };
   const laterToday = { ...tomorrow, startsAtIso: TODAY_ISO };
   const otherZone = { ...tomorrow, timezone: "America/Los_Angeles" };
 
@@ -799,13 +813,19 @@ export function reminderCopyScreens(): CopyScreen[] {
       purpose:
         "The one message Pennie composes and sends a lead itself, a day before their " +
         "call, from the advisor's own mailbox. It has to say who is calling and when, " +
-        "that there is nothing to set up, and how to move it.",
+        "the number the call comes from when we know it, and how to move it.",
       lines: [
         {
           state: "the subject line, which is most of what gets read",
           text: reminderSubject(tomorrow),
         },
-        { state: "the body", text: reminderBody(tomorrow) },
+        { state: "the body, when the number we call from is not known", text: reminderBody(tomorrow) },
+        // #1334: the number the call comes from, so the lead can save it and get
+        // past call screening. The attached card carries that number and no other.
+        {
+          state: "the body, when the number we call from is known (a contact card is attached)",
+          text: reminderBody(withCallingNumber),
+        },
       ],
     },
     {

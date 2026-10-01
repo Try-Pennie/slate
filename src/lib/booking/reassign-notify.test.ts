@@ -97,6 +97,10 @@ function makeDeps(): BookingDeps {
     readLeadXbc: async () => {
       throw new Error("Salesforce is not reachable from this test");
     },
+    // #1334: nor does any correct a lead's number.
+    readCallingNumber: async () => {
+      throw new Error("Salesforce is not reachable from this test");
+    },
     resolveBucketByCode: async () => ({ bucket, eventType }),
     roundRobinCandidates: async () => ["target"],
     busyIntervalsForAgent: async () => [],

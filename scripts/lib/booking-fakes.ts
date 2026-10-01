@@ -158,6 +158,10 @@ export interface FakeOpts {
   leadXbc?: Record<string, string | null>;
   /** #2638: the Salesforce read fails, which must refuse rather than route. */
   leadXbcThrows?: boolean;
+  /** #1334: the calling number Salesforce holds for any lead (default none). */
+  callingNumber?: string | null;
+  /** #1334: the calling number read fails. */
+  callingNumberThrows?: boolean;
   /**
    * findActiveBookingsForPerson throws, which is what a failed bookings read now
    * does (#1641). The booker path fails CLOSED on it: the second booking is
@@ -311,6 +315,8 @@ export function makeDeps(opts: FakeOpts) {
     insertBooking: [] as Record<string, unknown>[],
     /** #2638: every lead id Salesforce was asked about, and every code resolved. */
     readLeadXbc: [] as string[],
+    /** #1334: every lead the calling number was read for. */
+    readCallingNumber: [] as (string | null)[],
     resolveBucketByCode: [] as string[],
     deleteEvent: [] as { id: string }[],
     enqueueEventDeletion: [] as { email: string; eventId: string; bookingId: string | null }[],
@@ -531,6 +537,11 @@ export function makeDeps(opts: FakeOpts) {
       if (opts.leadXbcThrows) throw new Error("SF query failed: 503 unavailable");
       const table = opts.leadXbc ?? {};
       return Object.prototype.hasOwnProperty.call(table, leadId) ? table[leadId] : undefined;
+    },
+    readCallingNumber: async (leadId) => {
+      calls.readCallingNumber.push(leadId);
+      if (opts.callingNumberThrows) throw new Error("SF query failed: 503 unavailable");
+      return opts.callingNumber ?? null;
     },
     resolveBucketByCode: async (code) =>
       (calls.resolveBucketByCode.push(code), opts.unknownBucket)

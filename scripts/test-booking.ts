@@ -309,4 +309,23 @@ assert(!desc.includes(" - ") && !desc.includes("\u2014"), "lead-facing copy has 
   assert(!desc.includes(TEST_MODE_COPY.line), "and never carries the test line");
 }
 
+// #1334: the invite names the number the call will come FROM when it is known, so it
+// sits on the lead's phone next to the appointment, and says nothing when it is not.
+{
+  const withFrom = eventDescription("+12035615295", "https://x/m/t", { isTest: false, callingNumber: "+12197588170" });
+  assert(withFrom.includes("(219) 758-8170"), "the calling number is named, formatted for the lead");
+  assert(
+    withFrom.startsWith("Booked via Pennie. Phone: +12035615295\n"),
+    "the advisor's dial line stays first and as stored",
+  );
+  assert(withFrom.endsWith("Reschedule or cancel: https://x/m/t"), "and the manage link is still the last line");
+  assert(
+    eventDescription("+12035615295", "https://x/m/t", { isTest: false, callingNumber: null }) === desc.replace(
+      "https://slate.trypennie.app/booking/manage/tok123",
+      "https://x/m/t",
+    ),
+    "with no calling number the invite is exactly as before",
+  );
+}
+
 finish();

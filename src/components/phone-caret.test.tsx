@@ -46,6 +46,7 @@ const manageProps = {
   theme: "light" as const,
   durationMin: 20,
   attendeePhone: "(215) 555-0100",
+  callingNumber: null,
   attendeeEmail: "dana@example.com",
   advisorName: "Aisha Bello",
   advisorRole: "Senior Loan Advisor",

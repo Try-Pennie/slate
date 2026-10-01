@@ -18,6 +18,9 @@ import {
 } from "@/lib/booking/reminder-rate-store";
 import { SHIPPED_REMINDER_FAILURE_RATE_THRESHOLDS } from "@/lib/monitor/failure-rate-thresholds";
 import { log } from "@/lib/log";
+import { updateEventDescription } from "@/lib/google/calendar";
+import { readLeadCallingNumbersLive } from "@/lib/salesforce/lead-calling-number";
+import { bookingLeadId } from "@/lib/booking/lookup-identity";
 
 export const dynamic = "force-dynamic";
 
@@ -100,11 +103,15 @@ export async function GET(req: NextRequest) {
         agent_name: string | null;
         timezone: string;
         manage_token: string;
+        salesforce_id: string | null;
+        external_id: string | null;
+        gcal_event_id: string | null;
+        attendee_phone: string | null;
       }>("bookings due a reminder", (from, to) =>
         db
           .from("bookings")
           .select(
-            "id, starts_at, created_at, reminder_sent_for, status, attendee_email, agent_email, agent_name, timezone, manage_token, buckets!inner(is_test)",
+            "id, starts_at, created_at, reminder_sent_for, status, attendee_email, agent_email, agent_name, timezone, manage_token, salesforce_id, external_id, gcal_event_id, attendee_phone, buckets!inner(is_test)",
           )
           .in("status", ["confirmed", "rescheduled"])
           .gt("starts_at", nowIso)
@@ -140,6 +147,11 @@ export async function GET(req: NextRequest) {
             agentName: r.agent_name ?? r.agent_email,
             timezone: r.timezone,
             manageUrl: `${appUrl()}/booking/manage/${r.manage_token}`,
+            // #1334: who to ask Salesforce about, and the invite to write the
+            // calling number into.
+            leadId: bookingLeadId(r),
+            gcalEventId: r.gcal_event_id,
+            attendeePhone: r.attendee_phone,
           }),
         );
     },
@@ -181,6 +193,19 @@ export async function GET(req: NextRequest) {
       // short reason rather than the provider's body.
       await sendThrottledAlert("booking_reminder_failed", REMINDER_ALERT_COOLDOWN_MS, text);
     },
+    // #1334: one Salesforce read per tick (a token exchange and one SOQL query for
+    // the leads being sent to). It throws on a refusal, and the lane then sends
+    // every reminder without a number rather than none.
+    readCallingNumbers: (leadIds) => readLeadCallingNumbersLive(leadIds),
+    // `sendUpdates=none`: Google syncs the description to the attendee either way,
+    // and mailing "your event was updated" for a line we added is noise.
+    refreshInvite: (agentEmail, eventId, description) => updateEventDescription(agentEmail, eventId, description),
+    warn: (msg, bookingId, err) =>
+      log.warn("booking-reminder", {
+        msg,
+        ...(bookingId ? { booking_id: bookingId } : {}),
+        reason: shortErrorReason(err),
+      }),
   });
 
   if (run.failed > 0) {
@@ -194,6 +219,9 @@ export async function GET(req: NextRequest) {
     held: run.held,
     lost: run.lost,
     attempted: run.attempted,
+    with_calling_number: run.withCallingNumber,
+    calling_number_unread: run.callingNumberUnread,
+    invite_refresh_failed: run.inviteRefreshFailed,
   });
 
   /**

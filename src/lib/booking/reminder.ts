@@ -1,5 +1,6 @@
 import { DateTime } from "luxon";
 import { formatClockTime } from "@/lib/date/parse";
+import { callComesFrom } from "./manage-copy.ts";
 
 /**
  * The 24 hour reminder email (#2359): the decision and the copy, kept pure so both
@@ -159,6 +160,12 @@ export interface ReminderCopyInput {
    * silently keeping the old behaviour (L168).
    */
   nowMs: number;
+  /**
+   * The number the call will come FROM, read from Salesforce (#1334), or null when
+   * it is not known. REQUIRED rather than optional, so `tsc` names every caller
+   * that has to decide (L168). Null says nothing about a number at all.
+   */
+  callingNumber: string | null;
 }
 
 /**
@@ -211,10 +218,18 @@ export function reminderSubject(input: ReminderCopyInput): string {
  */
 export function reminderBody(input: ReminderCopyInput): string {
   const when = `${dayWord(input)} at ${timeLabel(input)}`;
+  // #1334: with the calling number known, the lead has one thing worth doing before
+  // the call, saving it, so "nothing you need to set up" stops being true. The
+  // sentence is the manage page's own (`callComesFrom`), and the card it points at
+  // is attached by the lane (`advisorContactCard`) only when this branch is taken.
+  const from = callComesFrom(input.callingNumber);
+  const numberLines = from
+    ? [`We will call you on the number you gave us. ${from} My contact card is attached, so one tap adds it.`]
+    : ["We will call you on the number you gave us, so there is nothing you need to set up."];
   return [
     `Hi, this is a reminder that your call with ${input.agentName} at Pennie is ${when}.`,
     "",
-    "We will call you on the number you gave us, so there is nothing you need to set up.",
+    ...numberLines,
     "",
     `If that time no longer works, you can pick another or cancel here: ${input.manageUrl}`,
     "",

@@ -7,6 +7,7 @@ import {
   getBookingByToken,
   getBookingAdvisorName,
   getBookingAdvisorPhoto,
+  getBookingCallingNumber,
 } from "@/lib/booking/service";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { currentTestPassFor } from "@/lib/embed/test-pass-gate";
@@ -53,12 +54,18 @@ export default async function ManagePage({
   // the photo can be unavailable, and the component draws the initials circle
   // then, so it can never hold the page up or leave an empty frame.
   const assignedUserId = found?.booking.assigned_user_id ?? null;
-  const [advisorName, advisorPhotoUrl] = found
+  // #1334: the number the call will come FROM, read beside the advisor for the same
+  // reason the photo is: independent reads, one round trip. Only for a call still to
+  // come, since a call that is over has nothing left to screen. Null on every way it
+  // can be unknown, under a deadline, so it can never hold the page up.
+  const live = found?.booking.status === "confirmed" || found?.booking.status === "rescheduled";
+  const [advisorName, advisorPhotoUrl, callingNumber] = found
     ? await Promise.all([
         getBookingAdvisorName(assignedUserId),
         getBookingAdvisorPhoto(assignedUserId),
+        live ? getBookingCallingNumber(found.booking) : Promise.resolve(null),
       ])
-    : [null, null];
+    : [null, null, null];
 
   // #706: paint the theme at the document root so dark renders don't leave a
   // beige gutter behind the content card. Always standalone (never embedded).
@@ -91,6 +98,7 @@ export default async function ManagePage({
         durationMin={found.eventType.duration_min}
         attendeePhone={found.booking.attendee_phone ?? null}
         attendeeEmail={found.booking.attendee_email ?? null}
+        callingNumber={callingNumber}
         advisorName={advisorName}
         advisorPhotoUrl={advisorPhotoUrl}
         advisorRole={ADVISOR_ROLE}

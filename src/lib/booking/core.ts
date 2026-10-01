@@ -4,6 +4,7 @@ import type {
   BusySource,
 } from "@/lib/db/types";
 import { TEST_MODE_COPY } from "@/lib/booking/booker-copy";
+import { callComesFrom } from "@/lib/booking/manage-copy";
 
 /**
  * Pure, side-effect-free cores of the booking flow, split out from
@@ -698,10 +699,21 @@ export function eventDescription(
    * being opened. The same sentence every other test surface carries, from the
    * one builder, never restated here (L41).
    */
-  opts: { isTest: boolean } = { isTest: false },
+  opts: {
+    isTest: boolean;
+    /**
+     * The number the call will come FROM (#1334), when it is known. It is written
+     * at lead creation plus about a minute, so the booking path does not wait on
+     * it; the reminder lane refreshes the invite once it reads one. Absent or null
+     * says nothing about a number.
+     */
+    callingNumber?: string | null;
+  } = { isTest: false },
 ): string {
   const lines = ["Booked via Pennie."];
   if (phone) lines[0] = `Booked via Pennie. Phone: ${phone}`;
+  const from = callComesFrom(opts.callingNumber ?? null);
+  if (from) lines.push(from);
   lines.push(`Reschedule or cancel: ${manageUrl}`);
   if (opts.isTest) lines.unshift(TEST_MODE_COPY.line);
   return lines.join("\n");

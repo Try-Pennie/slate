@@ -10,6 +10,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
 
 const HOUR = 60 * 60_000;
 const NOW = Date.UTC(2026, 8, 16, 14, 0, 0);
+const LEAD = "00QUi000010889ZMAQ";
 
 const due = (over: Partial<DueBooking> = {}): DueBooking => ({
   id: "bk-1",
@@ -24,6 +25,9 @@ const due = (over: Partial<DueBooking> = {}): DueBooking => ({
   agentName: "Jordan Lee",
   timezone: "America/New_York",
   manageUrl: "https://slate.trypennie.app/manage/abc",
+  leadId: LEAD,
+  gcalEventId: "evt-1",
+  attendeePhone: "+12035615295",
   ...over,
 });
 
@@ -32,6 +36,7 @@ function spy(over: Partial<ReminderDeps> = {}) {
   const order: string[] = [];
   const sent: { to: string; subject: string }[] = [];
   const alerts: string[] = [];
+  const warnings: string[] = [];
   const deps: ReminderDeps = {
     now: () => NOW,
     loadDue: async () => [due()],
@@ -48,9 +53,18 @@ function spy(over: Partial<ReminderDeps> = {}) {
       order.push("alert");
       alerts.push(text);
     },
+    // No calling number known by default, so the suites above judge the send path
+    // exactly as it was; the calling number has its own section at the end.
+    readCallingNumbers: async () => new Map(),
+    refreshInvite: async () => {
+      order.push("refresh");
+    },
+    warn: (msg) => {
+      warnings.push(msg);
+    },
     ...over,
   };
-  return { deps, order, sent, alerts };
+  return { deps, order, sent, alerts, warnings };
 }
 
 // --- the claim comes BEFORE the send, which is what makes a crash safe -----------
@@ -287,6 +301,139 @@ function spy(over: Partial<ReminderDeps> = {}) {
   eq(froms.join(","), "trios@trypennie.com", "from the NEW advisor's mailbox, so a reply reaches them");
   assert(bodies[0]!.includes("Taylor Rios"), "and signed by the new advisor");
   assert(!bodies[0]!.includes("Alex Sage"), "with no trace of the first");
+}
+
+// --- the number we will call FROM (#1334) --------------------------------------------
+//
+// Read from Salesforce once per tick for the bookings actually being sent, named in
+// the email with the advisor's contact card attached, and written into the invite.
+// Every way of not knowing it sends the reminder exactly as before: the number is a
+// help to the lead, and the reminder itself is the promise.
+{
+  const asked: string[][] = [];
+  const refreshed: { agent: string; event: string; description: string }[] = [];
+  const msgs: import("../src/lib/notify/email-mime.ts").MimeMessage[] = [];
+  const s = spy({
+    loadDue: async () => [due(), due({ id: "bk-2", leadId: null, gcalEventId: "evt-2" })],
+    readCallingNumbers: async (ids) => {
+      asked.push(ids);
+      return new Map([["00QUi000010889Z", "+12197588170"]]);
+    },
+    send: async (msg) => {
+      msgs.push(msg);
+      return "gmail-id";
+    },
+    refreshInvite: async (agent, event, description) => {
+      refreshed.push({ agent, event, description });
+    },
+  });
+  const result = await runBookingReminders(s.deps);
+  eq(asked.length, 1, "one Salesforce read for the whole tick, not one per booking");
+  eq(asked[0], [LEAD], "asking only about the leads that have a lead id");
+  eq(result.sent, 2, "both reminders go out");
+  eq(result.withCallingNumber, 1, "one carried a calling number, and the run says so");
+
+  const withNumber = msgs[0]!;
+  assert(withNumber.body.includes("(219) 758-8170"), "the reminder names the calling number");
+  eq(withNumber.attachments?.length ?? 0, 1, "and attaches one contact card");
+  const card = withNumber.attachments![0]!;
+  eq(card.mimeType, "text/vcard", "a vCard");
+  const tels = card.content.split("\r\n").filter((l) => l.startsWith("TEL"));
+  eq(tels, ["TEL;TYPE=WORK,VOICE:+12197588170"], "carrying the calling number and no other phone");
+  assert(card.content.includes("jordan@trypennie.com"), "and the advisor's address, which is the sender");
+
+  const noLead = msgs[1]!;
+  eq(noLead.attachments?.length ?? 0, 0, "a booking with no lead id gets no card");
+  assert(!noLead.body.includes("(219)"), "and no number");
+
+  eq(refreshed.length, 1, "the invite is refreshed only where a number is known");
+  eq(refreshed[0]!.agent, "jordan@trypennie.com", "on the advisor's calendar");
+  eq(refreshed[0]!.event, "evt-1", "the booking's own event");
+  assert(refreshed[0]!.description.includes("(219) 758-8170"), "with the calling number in the description");
+  assert(refreshed[0]!.description.includes("https://slate.trypennie.app/manage/abc"), "and the manage link kept");
+  assert(refreshed[0]!.description.includes("Phone: +12035615295"), "and the lead's own number kept for the advisor");
+}
+
+// The ORDER: the invite is touched only AFTER the reminder went out, so a failure
+// writing the invite can never cost the lead their reminder.
+{
+  const s = spy({ readCallingNumbers: async () => new Map([["00QUi000010889Z", "+12197588170"]]) });
+  await runBookingReminders(s.deps);
+  eq(s.order.join(" -> "), "claim:bk-1 -> send:lead@example.com -> refresh", "claim, send, then the invite");
+}
+
+// A failed Salesforce read sends every reminder without a number, and says so.
+{
+  const msgs: import("../src/lib/notify/email-mime.ts").MimeMessage[] = [];
+  const s = spy({
+    readCallingNumbers: async () => {
+      throw new Error("SF query failed: 503");
+    },
+    send: async (msg) => {
+      msgs.push(msg);
+      return "gmail-id";
+    },
+  });
+  const result = await runBookingReminders(s.deps);
+  eq(result.sent, 1, "the reminder still goes out when Salesforce cannot be read");
+  eq(msgs[0]!.attachments?.length ?? 0, 0, "with no card");
+  assert(/nothing you need to set up/.test(msgs[0]!.body), "and the copy that names no number");
+  eq(result.callingNumberUnread, true, "the run reports the read failed, so the log can say why no number went out");
+  eq(s.order.includes("refresh"), false, "and the invite is left alone");
+  eq(s.alerts.length, 0, "it is not a paging fault: no reminder was lost");
+  eq(s.warnings.length, 1, "but the failed read is logged with its reason");
+}
+
+// A lost claim writes nothing to the invite. The number is read before the claims
+// (one batched read per tick), so a lost booking may have been asked about; what
+// matters is that nothing is sent or written for it.
+{
+  const s = spy({
+    claim: async () => false,
+    readCallingNumbers: async () => new Map([["00QUi000010889Z", "+12197588170"]]),
+  });
+  await runBookingReminders(s.deps);
+  eq(s.order.includes("refresh"), false, "a lost claim writes nothing to the invite");
+}
+// The read is skipped entirely when nothing is sendable.
+{
+  let read = false;
+  const s = spy({
+    loadDue: async () => [due({ attendeeEmail: null })],
+    readCallingNumbers: async () => {
+      read = true;
+      return new Map();
+    },
+  });
+  await runBookingReminders(s.deps);
+  eq(read, false, "a tick with nothing sendable never calls Salesforce");
+}
+
+// A failed invite refresh is logged by the caller, counted, and costs nothing else.
+{
+  const s = spy({
+    readCallingNumbers: async () => new Map([["00QUi000010889Z", "+12197588170"]]),
+    refreshInvite: async () => {
+      throw new Error("events.patch.description: 503");
+    },
+  });
+  const result = await runBookingReminders(s.deps);
+  eq(result.sent, 1, "the reminder counts as sent");
+  eq(result.inviteRefreshFailed, 1, "the invite that could not be written is counted");
+  eq(result.failed, 0, "and is not a reminder failure");
+  eq(s.alerts.length, 0, "nor a page");
+  eq(s.warnings.length, 1, "but it is logged with its reason, never silent");
+}
+
+// No event id on the booking: nothing to refresh, and nothing tried.
+{
+  const s = spy({
+    loadDue: async () => [due({ gcalEventId: null })],
+    readCallingNumbers: async () => new Map([["00QUi000010889Z", "+12197588170"]]),
+  });
+  const result = await runBookingReminders(s.deps);
+  eq(result.sent, 1, "sent with the number");
+  eq(s.order.includes("refresh"), false, "and no invite write without an event to write to");
 }
 
 finish();

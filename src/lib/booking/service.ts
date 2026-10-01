@@ -124,6 +124,12 @@ import type {
 import type { PersonIdentity, PersonWorld } from "@/lib/booking/person-dedupe";
 import { personStrongIds } from "@/lib/booking/person-dedupe";
 import { readLeadXbcLive } from "@/lib/salesforce/lead-xbc";
+import {
+  CALLING_NUMBER_PAGE_DEADLINE_MS,
+  readCallingNumberLive,
+  withDeadline,
+} from "@/lib/salesforce/lead-calling-number";
+import { bookingLeadId } from "@/lib/booking/lookup-identity";
 import { toE164 } from "@/lib/phone";
 import { escapeLike } from "@/lib/sql-like";
 import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
@@ -879,6 +885,9 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     // #2638: the lead's XBC for a booker confirm whose link carried none. Throws
     // on a failed read, which the confirm answers with a retriable 503.
     readLeadXbc: readLeadXbcLive,
+    // #1334: the calling number, for an invite description rebuilt after the lead
+    // corrects their number. Throws on a refused read; the caller omits the line.
+    readCallingNumber: readCallingNumberLive,
     roundRobinCandidates,
     // The org's opening hours (#1295). Throws on an unreadable week rather than
     // degrading, so a narrowing can never be silently re-opened by a failed read.
@@ -2920,6 +2929,29 @@ export function getBookingAdvisorPhoto(
     supabaseAdmin() as unknown as AdvisorPhotoReader,
     assignedUserId,
   );
+}
+
+/**
+ * The number a booking's call will come FROM (#1334), for the manage page: the
+ * lead's Salesforce `AssignedRegalPhone__c`, or null on every way it can be
+ * unknown (no lead id, an empty or unreadable field, a refused or slow read). The
+ * page then says nothing about a number. Under a deadline, because a lead opening
+ * their booking must never wait on Salesforce for a line of help text; a refused
+ * read is logged with its reason so "nobody had a number" and "Salesforce was
+ * down" stay apart.
+ */
+export function getBookingCallingNumber(
+  booking: Pick<Booking, "id" | "salesforce_id" | "external_id">,
+): Promise<string | null> {
+  const read = readCallingNumberLive(bookingLeadId(booking)).catch((err) => {
+    log.warn("manage-page", {
+      msg: "calling number unread, page shown without it",
+      booking_id: booking.id,
+      reason: shortErrorReason(err),
+    });
+    return null;
+  });
+  return withDeadline(read, CALLING_NUMBER_PAGE_DEADLINE_MS);
 }
 
 const PENDING_DELETION_ALERT_KEY = "pending_event_deletions";

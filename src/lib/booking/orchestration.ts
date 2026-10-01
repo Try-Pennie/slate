@@ -42,6 +42,7 @@ import {
   type MatchStrength,
 } from "./person-dedupe.ts";
 import {
+  bookingLeadId,
   bookingMatchesLookupIds,
   lookupStrongIds,
   type LookupIdentity,
@@ -801,6 +802,12 @@ export interface BookingDeps {
    * is the misroute the read exists to prevent. See `src/lib/routing/lead-code.ts`.
    */
   readLeadXbc: LeadXbcReader;
+  /**
+   * The number a lead's call will come FROM (#1334), from Salesforce Lead
+   * `AssignedRegalPhone__c`: E.164, or null when not known. THROWS on a refused
+   * read; its callers then say nothing about a number rather than fail the action.
+   */
+  readCallingNumber(leadId: string | null): Promise<string | null>;
   /** `preview` = a dry run (#380): route read-only, skipping the #321 shadow-study
    *  log + the unfair-ordering alert so previews don't pollute real-assignment data. */
   /**
@@ -5461,12 +5468,33 @@ export async function updateBookingContact(
   // The invite carries the joined name, never the first name, so a first name that
   // moved on its own leaves it exactly as it is and nothing is sent to rewrite it.
   if (booking.gcal_event_id && booking.agent_email && !contactUnchanged(changed)) {
+    // #1334: the description is rebuilt whole, so it asks for the calling number the
+    // reminder lane may already have written there; leaving it out would remove it
+    // from the invite for good. Any way of not knowing it writes the invite without
+    // that line rather than failing the lead's correction.
+    let callingNumber: string | null = null;
+    if (changed.phone) {
+      try {
+        callingNumber = await deps.readCallingNumber(bookingLeadId(booking));
+      } catch (err) {
+        log.warn("manage-contact", {
+          msg: "calling number unread, invite written without it",
+          booking_id: booking.id,
+          reason: shortErrorReason(err),
+        });
+      }
+    }
     try {
       await deps.updateEventContact(booking.agent_email, booking.gcal_event_id, {
         // Each field is sent only when it moved, so the PATCH says exactly what
         // changed and `sendUpdates` is decided by whether the invitee did.
         ...(changed.phone
-          ? { description: eventDescription(stored, manageUrl(deps, token), { isTest: bucket.is_test }) }
+          ? {
+              description: eventDescription(stored, manageUrl(deps, token), {
+                isTest: bucket.is_test,
+                callingNumber,
+              }),
+            }
           : {}),
         ...(changed.name ? { summary: eventSummary(eventType.name, nextName ?? null) } : {}),
         ...(changed.email ? { attendeeEmail: nextEmail ?? undefined, attendeeName: nextName ?? undefined } : {}),

@@ -14,6 +14,7 @@ const service = vi.hoisted(() => ({
   getBookingByToken: vi.fn(),
   getBookingAdvisorName: vi.fn(async () => null as string | null),
   getBookingAdvisorPhoto: vi.fn(async () => null as string | null),
+  getBookingCallingNumber: vi.fn(async (_booking: unknown) => null as string | null),
   bookingDetailExtras: vi.fn((_booking: unknown) => ({
     contact: { name: "Dana", email: "dana@example.com", phone: "+12155550100" },
     calendarLinks: { google: "g", outlook: "o", office365: "m", ics: "i" } as Record<string, string> | null,
@@ -148,5 +149,27 @@ describe("manage page advisor wiring (#1338)", () => {
     await renderPage();
     expect(service.getBookingAdvisorName).not.toHaveBeenCalled();
     expect(service.getBookingAdvisorPhoto).not.toHaveBeenCalled();
+    expect(service.getBookingCallingNumber).not.toHaveBeenCalled();
+  });
+
+  // #1334: the number the call will come FROM, read for THIS booking's lead.
+  it("hands the page the calling number read for this booking", async () => {
+    service.getBookingCallingNumber.mockResolvedValueOnce("+12197588170");
+    const props = await renderPage();
+    expect(service.getBookingCallingNumber.mock.calls.at(-1)?.[0]).toMatchObject({ id: "bk1" });
+    expect(props?.callingNumber).toBe("+12197588170");
+  });
+
+  it("passes null through when no calling number is known", async () => {
+    const props = await renderPage();
+    expect(props?.callingNumber).toBeNull();
+  });
+
+  // A cancelled or completed call has no call left to screen, so nothing is read.
+  it("does not read a calling number for a call that is over", async () => {
+    service.getBookingByToken.mockResolvedValue({ ...found, booking: { ...found.booking, status: "cancelled" } });
+    const props = await renderPage();
+    expect(service.getBookingCallingNumber).not.toHaveBeenCalled();
+    expect(props?.callingNumber).toBeNull();
   });
 });

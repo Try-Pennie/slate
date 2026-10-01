@@ -28,39 +28,54 @@ export function isLeadId(id: string): boolean {
   return /^00Q[a-zA-Z0-9]{12}(?:[a-zA-Z0-9]{3})?$/.test(id);
 }
 
-/** One query's worth of records, shaped as this reader asks for them. */
-export interface LeadXbcRecord {
-  Id: string;
-  XBC__c?: unknown;
-}
+/** One query's worth of Lead records: the id plus whichever field was asked for. */
+export type LeadFieldRecord = { Id: string; [field: string]: unknown };
+
+/** The XBC reader's records, kept as a name for the callers that already use it. */
+export type LeadXbcRecord = LeadFieldRecord;
 
 /** Runs one SOQL query to completion (every page) and THROWS on a refusal. */
-export type LeadSoqlRunner = (soql: string) => Promise<LeadXbcRecord[]>;
+export type LeadSoqlRunner = (soql: string) => Promise<LeadFieldRecord[]>;
 
 /**
- * The XBC value per lead, keyed by `leadIdKey`.
+ * One Lead field's raw value per lead, keyed by `leadIdKey`. Shared out of the XBC
+ * reader for the calling number (#1334), so both are read one way rather than two.
  *
  * Three answers per id, and the map keeps them apart:
- *  - a string: what Salesforce holds, verbatim (decoding is the caller's job);
+ *  - a value: what Salesforce holds, verbatim (decoding is the caller's job);
  *  - null: Salesforce returned the lead and the field is empty;
  *  - missing: Salesforce returned no such lead.
  *
  * Chunked by ENCODED length through `chunkSoqlValues` (L81), since the limit that
  * refuses a long list is the byte cap on the GET URI, not a count of ids. Any
  * query that fails throws, so a partial map is never mistaken for a whole one.
+ * `field` is a constant at every call site, never caller supplied text.
  */
+export async function readLeadField(
+  leadIds: string[],
+  field: string,
+  run: LeadSoqlRunner,
+): Promise<Map<string, unknown>> {
+  const out = new Map<string, unknown>();
+  if (leadIds.length === 0) return out;
+  for (const chunk of chunkSoqlValues(leadIds)) {
+    const records = await run(`SELECT Id, ${field} FROM Lead WHERE Id IN (${sfInList(chunk)})`);
+    for (const r of records) {
+      const v = r[field];
+      out.set(leadIdKey(r.Id), v === undefined ? null : v);
+    }
+  }
+  return out;
+}
+
+/** The XBC value per lead, keyed by `leadIdKey`: `readLeadField` as text. */
 export async function readLeadXbcs(
   leadIds: string[],
   run: LeadSoqlRunner,
 ): Promise<Map<string, string | null>> {
   const out = new Map<string, string | null>();
-  if (leadIds.length === 0) return out;
-  for (const chunk of chunkSoqlValues(leadIds)) {
-    const records = await run(`SELECT Id, XBC__c FROM Lead WHERE Id IN (${sfInList(chunk)})`);
-    for (const r of records) {
-      const v = r.XBC__c;
-      out.set(leadIdKey(r.Id), v === null || v === undefined ? null : String(v));
-    }
+  for (const [key, v] of await readLeadField(leadIds, "XBC__c", run)) {
+    out.set(key, v === null || v === undefined ? null : String(v));
   }
   return out;
 }
@@ -91,5 +106,5 @@ export async function readOneLeadXbc(
 export async function readLeadXbcLive(leadId: string): Promise<string | null | undefined> {
   const { sfToken, querySoqlAll } = await import("@/lib/salesforce/rest");
   const { token, instanceUrl } = await sfToken();
-  return readOneLeadXbc(leadId, (soql) => querySoqlAll<LeadXbcRecord>(instanceUrl, token, soql));
+  return readOneLeadXbc(leadId, (soql) => querySoqlAll<LeadFieldRecord>(instanceUrl, token, soql));
 }

@@ -17,7 +17,7 @@ import { DateTime } from "luxon";
 import ManageBooking from "@/components/ManageBooking";
 import { RESCHEDULE_REASONS, CANCEL_REASONS } from "@/lib/booking/core";
 import { NEAREST_TIMES_COPY } from "@/lib/booking/booker-copy";
-import { RESCHEDULE_COPY, LIVE_COPY, DONE_COPY, movedNote, rescheduleNoTimes } from "@/lib/booking/manage-copy";
+import { RESCHEDULE_COPY, LIVE_COPY, DONE_COPY, movedNote, rescheduleNoTimes, callComesFrom } from "@/lib/booking/manage-copy";
 
 // Regression coverage for the booker hardening (#168): cancel must use an
 // in-DOM confirm (not native confirm()) and surface a failed POST instead of
@@ -39,6 +39,8 @@ const baseProps = {
   durationMin: 20,
   attendeePhone: "(215) 555-0100",
   attendeeEmail: "dana@example.com",
+  // #1334: no calling number known unless a test says otherwise.
+  callingNumber: null as string | null,
   // #1338: the advisor is resolved live server-side and passed in; null means
   // unresolvable, and then no name is rendered anywhere.
   advisorName: "Aisha Bello",
@@ -1018,4 +1020,45 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+// #2957: the details block overflowed the card at 390px. jsdom does no layout, so
+// the overflow itself was measured with a headless browser at 390 and 320px in both
+// themes; this pins the three classes that fix it, so a refactor back to a bare
+// `1fr` (whose min-content floor is what widened the column) fails here.
+describe("ManageBooking details fit a phone (#2957)", () => {
+  it("lets the value column shrink and the zone picker fill it", () => {
+    mockFetch({});
+    const { container } = render(<ManageBooking {...baseProps} />);
+    const dl = container.querySelector("dl")!;
+    expect(dl.className).toContain("grid-cols-[64px_minmax(0,1fr)]");
+    for (const dd of dl.querySelectorAll("dd")) expect(dd.className).toContain("min-w-0");
+    const picker = container.querySelector("#manage-tz")!.parentElement!;
+    expect(picker.className).toContain("min-w-0");
+    expect(picker.className).toContain("flex-1");
+  });
+});
+
+// #1334: the number the call will come FROM, said beside the number the lead will be
+// called AT, so a lead can save it before the call and get past call screening.
+describe("ManageBooking calling number (#1334)", () => {
+  it("names the calling number when it is known", () => {
+    mockFetch({});
+    render(<ManageBooking {...baseProps} callingNumber="+12197588170" />);
+    expect(screen.getByText(callComesFrom("+12197588170")!)).toBeTruthy();
+  });
+
+  it("says nothing about a calling number when it is not known", () => {
+    mockFetch({});
+    const { container } = render(<ManageBooking {...baseProps} callingNumber={null} />);
+    expect(container.textContent).not.toMatch(/come from/i);
+    // The lead's own number is still there: only the calling line is absent.
+    expect(screen.getByText(/Your advisor will call you at/)).toBeTruthy();
+  });
+
+  it("does not show it on a call that is over", () => {
+    mockFetch({});
+    const { container } = render(<ManageBooking {...baseProps} status="cancelled" callingNumber="+12197588170" />);
+    expect(container.textContent).not.toMatch(/come from/i);
+  });
 });
