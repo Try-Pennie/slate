@@ -5502,28 +5502,48 @@ export async function updateBookingContact(
           deps.deadlineTimer,
         )
       : null;
-    try {
-      let description: string | undefined;
-      if (changed.phone) {
-        // An invite that cannot be read (or is gone) is never overwritten blind: the
-        // throw lands in the stale invite branch below, as a failed write does.
+    // The description read is its OWN step, so it cannot cost the rest of the
+    // correction: a name or email moved with the phone still reaches the invite when
+    // the description cannot be read. An invite that cannot be read (or is gone) has
+    // only its description left as it was, never overwritten blind, and is reported
+    // stale exactly as a failed write is.
+    let description: string | undefined;
+    let descriptionStale = false;
+    if (changed.phone) {
+      try {
         const current = await deps.readEventDescription(booking.agent_email, booking.gcal_event_id);
         if (current === null) throw new Error("the invite is gone");
         description = withCallingNumberLine(withPhoneLine(current, stored), callingNumber);
+      } catch (err) {
+        descriptionStale = true;
+        log.warn("manage-contact", {
+          msg: "invite description unread, left as it was",
+          booking_id: booking.id,
+          reason: shortErrorReason(err),
+        });
       }
-      await deps.updateEventContact(booking.agent_email, booking.gcal_event_id, {
-        // Each field is sent only when it moved, so the PATCH says exactly what
-        // changed and `sendUpdates` is decided by whether the invitee did.
-        ...(description !== undefined ? { description } : {}),
-        ...(changed.name ? { summary: eventSummary(eventType.name, nextName ?? null) } : {}),
-        ...(changed.email ? { attendeeEmail: nextEmail ?? undefined, attendeeName: nextName ?? undefined } : {}),
-      });
-    } catch (err) {
-      log.warn("manage-contact", {
-        msg: "invite not refreshed",
-        booking_id: booking.id,
-        reason: shortErrorReason(err),
-      });
+    }
+    const patch = {
+      // Each field is sent only when it moved, so the PATCH says exactly what
+      // changed and `sendUpdates` is decided by whether the invitee did.
+      ...(description !== undefined ? { description } : {}),
+      ...(changed.name ? { summary: eventSummary(eventType.name, nextName ?? null) } : {}),
+      ...(changed.email ? { attendeeEmail: nextEmail ?? undefined, attendeeName: nextName ?? undefined } : {}),
+    };
+    let patchFailed = false;
+    if (Object.keys(patch).length > 0) {
+      try {
+        await deps.updateEventContact(booking.agent_email, booking.gcal_event_id, patch);
+      } catch (err) {
+        patchFailed = true;
+        log.warn("manage-contact", {
+          msg: "invite not refreshed",
+          booking_id: booking.id,
+          reason: shortErrorReason(err),
+        });
+      }
+    }
+    if (descriptionStale || patchFailed) {
       return {
         ok: true,
         phone: stored,

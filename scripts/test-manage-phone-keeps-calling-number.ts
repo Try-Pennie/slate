@@ -9,7 +9,7 @@
 // put it back. So the correction reads what the invite says NOW and changes only the
 // phone line, and the calling number line only when Salesforce answered with one.
 // Everything else on the invite, the reassign explanation (#969) included, survives.
-import { updateBookingPhone } from "../src/lib/booking/orchestration.ts";
+import { updateBookingContact, updateBookingPhone } from "../src/lib/booking/orchestration.ts";
 import { bucket, eventType, makeBooking, makeDeps } from "./lib/booking-fakes.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 const TOKEN = "tok-manage";
@@ -101,6 +101,28 @@ async function run() {
     assert(res.ok, "the lead's correction is still saved");
     assert(calls.updateEventContact.length === 0, "nothing is written to an invite nobody could read");
     assert(!!(res as { staleInvite?: unknown }).staleInvite, "and the stale invite is reported");
+  }
+
+  // The description read must not take the REST of the correction down with it: a
+  // name or email corrected together with the phone still reaches Google when the
+  // description cannot be read, and only the description is left as it was.
+  for (const [label, opts] of [
+    ["an invite that cannot be read", { inviteReadThrows: true }],
+    ["an invite that is gone", { inviteDescription: null }],
+  ] as const) {
+    const { deps, calls } = world({ ...opts, callingNumber: "+12197588170" });
+    const res = await updateBookingContact(
+      TOKEN,
+      { name: "Dana Rivera", email: "dana.new@example.com", phone: "(215) 555-9999" },
+      deps,
+    );
+    assert(res.ok, `${label}: the correction is saved`);
+    const patch = calls.updateEventContact[0]?.patch;
+    assert(calls.updateEventContact.length === 1, `${label}: the other fields are still sent to the invite`);
+    assert(!!patch?.summary && patch.summary.includes("Dana Rivera"), `${label}: with the new name in the title`);
+    assert(patch?.attendeeEmail === "dana.new@example.com", `${label}: and the new address invited`);
+    assert(patch?.description === undefined, `${label}: and the description left untouched`);
+    assert(!!(res as { staleInvite?: unknown }).staleInvite, `${label}: and the stale description reported`);
   }
 
   // A correction that changes nothing writes nothing, so it asks nothing either.
