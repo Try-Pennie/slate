@@ -3,7 +3,7 @@ import { classifyReminderSendFailure } from "./reminder-rate.ts";
 import type { MimeMessage } from "@/lib/notify/email-mime";
 import { parseStampMs } from "@/lib/date/stamp";
 import { isLeadId, leadIdKey } from "@/lib/salesforce/lead-xbc";
-import { advisorContactCard, type CardPhoto } from "./advisor-contact-card.ts";
+import { advisorContactCard, realAdvisorName, type CardPhoto } from "./advisor-contact-card.ts";
 import { cardPhotoUrl, fetchCardPhoto, type PhotoFetcher } from "./advisor-card-photo.ts";
 import { storedPhotoUrl } from "@/lib/stored-photo";
 import { PENNIE_CARD_LOGO } from "./pennie-card-logo.ts";
@@ -42,6 +42,9 @@ export const REMINDER_CALLING_NUMBER_DEADLINE_MS = 10_000;
  * arrived, so a retry is the only path that can deliver twice. The gap is made
  * visible with an alert instead of silently recovered (L12).
  */
+
+/** The sender name a reminder carries when the advisor has no real name on record (#2985). */
+export const SENDER_NAME_FALLBACK = "Pennie";
 
 export interface DueBooking {
   id: string;
@@ -311,6 +314,9 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
         // The advisor's own mailbox, so a lead who replies reaches the person they
         // are about to speak to (Dan, 2026-09-15).
         from: row.agentEmail,
+        // The inbox shows the advisor's NAME as the sender, not the bare address
+        // (#2985, Dan 2026-10-01). Pennie when there is no real name on record.
+        fromName: realAdvisorName(row.agentName) ?? SENDER_NAME_FALLBACK,
         to: [row.attendeeEmail],
         subject: reminderSubject(copy),
         body: reminderBody(copy),

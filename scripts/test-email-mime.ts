@@ -1,7 +1,7 @@
 // Tests for the pure MIME assembly used by the Gmail sender.
 // Run: node --experimental-strip-types scripts/test-email-mime.ts
 import { buildMimeMessage, base64Mime, quotedPrintable, plainTextToHtml } from "../src/lib/notify/email-mime.ts";
-import { assert, finish } from "./lib/harness.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
 
 assert(base64Mime("hi") === "aGk=", "base64Mime encodes ascii");
 
@@ -260,6 +260,84 @@ function checkAlternative(alt: { headers: string; body: string }[], label: strin
   const raw = buildMimeMessage({ from: "a@x.com", to: ["b@y.com"], subject: "s", body }, "U");
   const alt = parts(splitHead(raw).body, "U");
   assert(decodeQuotedPrintable(alt[1]?.body ?? "").includes("José’s call… done"), "#2895: non ASCII survives the html part");
+}
+
+// ---- #2985: the sender's display name ------------------------------------------
+// The reminder arrived showing the bare address as its sender. The From header now
+// carries a display name, encoded per RFC 5322 (quoted when it holds a special) and
+// RFC 2047 (encoded words for non ASCII), and a name can never add a header.
+
+/** The headers of a message, unfolded (RFC 5322 2.2.3), one entry per header. */
+function headerLines(raw: string): string[] {
+  return splitHead(raw).headers.replace(/\r\n[ \t]/g, " ").split("\r\n");
+}
+function fromHeader(fromName: string | undefined): { raw: string; from: string; lines: string[] } {
+  const raw = buildMimeMessage(
+    { from: "aromagnoli@trypennie.com", ...(fromName === undefined ? {} : { fromName }), to: ["lead@x.com"], subject: "s", body: "b" },
+    "F",
+  );
+  const lines = headerLines(raw);
+  return { raw, from: lines.find((l) => l.startsWith("From: ")) ?? "", lines };
+}
+
+/**
+ * An independent RFC 2047 decoder for the display name, written from the RFC rather
+ * than from the encoder (L70): every encoded word, B or Q, in UTF-8, with the
+ * whitespace BETWEEN two adjacent encoded words dropped as 6.2 requires.
+ */
+function decodeEncodedWords(text: string): string {
+  const joined = text.replace(/(\?=)\s+(=\?)/g, "$1$2");
+  return joined.replace(/=\?([^?]+)\?([BbQq])\?([^?]*)\?=/g, (_m, charset: string, enc: string, data: string) => {
+    assert(charset.toUpperCase() === "UTF-8", "#2985: encoded words declare UTF-8");
+    const bytes =
+      enc.toUpperCase() === "B"
+        ? Buffer.from(data, "base64")
+        : Buffer.from(data.replace(/_/g, " ").replace(/=([0-9A-F]{2})/gi, (_x, h: string) => String.fromCharCode(parseInt(h, 16))), "latin1");
+    return new TextDecoder().decode(bytes);
+  });
+}
+
+{
+  const { from } = fromHeader("Alex Romagnoli");
+  eq(from, "From: Alex Romagnoli <aromagnoli@trypennie.com>", "#2985: a plain name reads Name <address>");
+}
+{
+  const { from } = fromHeader("Romagnoli, Alex");
+  eq(from, 'From: "Romagnoli, Alex" <aromagnoli@trypennie.com>', "#2985: a name with a comma is quoted, so it is not read as two addresses");
+}
+{
+  const { from } = fromHeader('Alex "AJ" Romagnoli');
+  eq(from, 'From: "Alex \\"AJ\\" Romagnoli" <aromagnoli@trypennie.com>', "#2985: a quote inside the name is escaped inside a quoted string");
+  const back = fromHeader("C:\\path");
+  eq(back.from, 'From: "C:\\\\path" <aromagnoli@trypennie.com>', "#2985: a backslash is escaped too");
+  // A name that LOOKS like an encoded word goes inside quotes, where a client must
+  // not decode it, so it cannot pose as a different name.
+  eq(fromHeader("=?UTF-8?B?QQ==?=").from, 'From: "=?UTF-8?B?QQ==?=" <aromagnoli@trypennie.com>', "#2985: a name shaped like an encoded word is quoted");
+}
+{
+  const name = "José Núñez";
+  const { from } = fromHeader(name);
+  assert(/^From: (=\?UTF-8\?B\?[A-Za-z0-9+/=]+\?= ?)+ <aromagnoli@trypennie\.com>$/.test(from), `#2985: a non ASCII name is RFC 2047 encoded (${from})`);
+  eq(decodeEncodedWords(from.slice("From: ".length, from.lastIndexOf(" <"))), name, "#2985: and decodes back to the name");
+  // A long non ASCII name: every encoded word stays inside RFC 2047's 75 characters.
+  const long = "Ánđrëå Ŝøłøméñţšïñöþøúłøš Ŧëřñåñđëž ðë łå Çřůž Ÿ Ɓøñäπäřţë";
+  const big = fromHeader(long);
+  const words = big.from.match(/=\?[^?]+\?[BQ]\?[^?]*\?=/g) ?? [];
+  assert(words.length > 1, "#2985: a long non ASCII name is split into several encoded words");
+  assert(words.every((w) => w.length <= 75), "#2985: no encoded word exceeds 75 characters");
+  eq(decodeEncodedWords(big.from.slice("From: ".length, big.from.lastIndexOf(" <"))), long, "#2985: and the split name decodes back whole");
+}
+{
+  const { raw, from, lines } = fromHeader("Evil\r\nBcc: victim@x.com\nX-Injected: 1\r");
+  assert(!lines.some((l) => /^bcc:/i.test(l) || /^x-injected:/i.test(l)), "#2985: CR and LF in a name can never add a header");
+  assert(!/\r(?!\n)|(?<!\r)\n/.test(splitHead(raw).headers), "#2985: no bare CR or LF in the headers");
+  assert(from.endsWith(" <aromagnoli@trypennie.com>") && from.includes("Evil"), "#2985: the name survives as one line on the From header");
+}
+{
+  const none = fromHeader(undefined);
+  eq(none.from, "From: aromagnoli@trypennie.com", "#2985: no name keeps the bare address");
+  eq(fromHeader("   ").from, "From: aromagnoli@trypennie.com", "#2985: a blank name keeps the bare address");
+  eq(fromHeader("\r\n").from, "From: aromagnoli@trypennie.com", "#2985: a name of only line breaks keeps the bare address");
 }
 
 finish();

@@ -730,5 +730,33 @@ for (const [label, fetchPhoto] of failingFetches) {
   eq(result.withPhoto + result.withLogo, result.withCallingNumber, "every card carries exactly one picture");
 }
 
+// --- #2985: the inbox shows the advisor's NAME as the sender -----------------------
+//
+// Dan, 2026-10-01: the reminder arrived from the bare address. The message now
+// carries the advisor's real name, and "Pennie" when there is none, never an
+// address dressed up as a name (realAdvisorName refuses one).
+{
+  const senderFor = async (agentName: string | null) => {
+    const names: (string | undefined)[] = [];
+    const froms: string[] = [];
+    const s = spy({
+      loadDue: async () => [due({ agentName })],
+      send: async (msg) => {
+        names.push(msg.fromName);
+        froms.push(msg.from);
+        return "gmail-id";
+      },
+    });
+    await runBookingReminders(s.deps);
+    eq(froms.join(","), "jordan@trypennie.com", "#2985: still sent from the advisor's own mailbox");
+    return names;
+  };
+  eq((await senderFor("Jordan Lee")).join(","), "Jordan Lee", "#2985: the sender name is the advisor's real name");
+  eq((await senderFor("  Jordan Lee  ")).join(","), "Jordan Lee", "#2985: trimmed, as realAdvisorName trims it");
+  eq((await senderFor(null)).join(","), "Pennie", "#2985: no name on record reads as Pennie");
+  eq((await senderFor("jordan@trypennie.com")).join(","), "Pennie", "#2985: an address in the name field reads as Pennie, not as a name");
+  eq((await senderFor("")).join(","), "Pennie", "#2985: an empty name reads as Pennie");
+}
+
 finish();
 
