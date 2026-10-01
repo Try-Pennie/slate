@@ -78,6 +78,25 @@ export function bookableTimedOutAlert(email: string, budgetMs: number): string {
   );
 }
 
+/**
+ * Activation refused: another lane was loading one of the agent's calendars at the
+ * same moment (#2705).
+ *
+ * Its own message for the reason `bookableTimedOutAlert` has one: nothing was
+ * measured about the calendar and nothing is wrong with it. The gate stood down
+ * rather than write over a pass that was already refreshing it, so the sync lane
+ * holds no error to read and the retry is the whole remedy.
+ */
+export function bookableContendedAlert(email: string, contended: number): string {
+  const which = contended === 1 ? "one of their calendars" : `${contended} of their calendars`;
+  return (
+    `Blocked making ${email} bookable because Slate was already refreshing ${which} in ` +
+    `another job at the same moment, so this attempt stood down rather than read it twice. ` +
+    `Nothing is wrong with the account. The agent was NOT added to the booking pool yet: ` +
+    `the hourly roster sync retries on its own, and nothing needs doing unless it keeps happening.`
+  );
+}
+
 /** Activation refused: the calendar could not be verified (transient). */
 export function bookableUnverifiedAlert(email: string): string {
   return `Could NOT verify ${email}'s Google calendar (a transient error persisted through one retry). The agent was NOT added to the booking pool; this is likely a temporary Google issue, so retry shortly.`;

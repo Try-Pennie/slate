@@ -1,6 +1,6 @@
 import { ensureWatches, hydrateCalendar, loadAgentCalendars, markAgentsSynced } from "@/lib/google/sync";
 import type { AgentCalendar } from "@/lib/db/types";
-import type { WatchResult } from "@/lib/google/sync";
+import type { HydrateResult, HydrateSkip, WatchResult } from "@/lib/google/sync";
 import { log } from "@/lib/log";
 
 /**
@@ -32,7 +32,7 @@ import { log } from "@/lib/log";
 export interface PoolEntryDeps {
   ensureWatches: (userId: string) => Promise<WatchResult>;
   loadAgentCalendars: (userId: string) => Promise<AgentCalendar[]>;
-  hydrateCalendar: (cal: AgentCalendar) => Promise<{ ok: boolean; events: number }>;
+  hydrateCalendar: (cal: AgentCalendar) => Promise<HydrateResult>;
   markAgentsSynced: (userIds: string[]) => Promise<void>;
 }
 
@@ -62,7 +62,24 @@ export interface PoolEntryResult {
    * sends a reader to the sync lane to look for an error nobody recorded (L11).
    */
   outOfBudget: boolean;
+  /**
+   * Calendars whose pass stood down because ANOTHER lane held them (#2705): the
+   * claim was taken, or the sync token moved under the fetch. Nothing was measured
+   * about such a calendar, so it is the same kind of fact as `outOfBudget` and the
+   * opposite of `failed`: counting it as failed refused an activation that raced the
+   * hydration lane as `calendar_unhydrated` and sent the reader to the sync lane for
+   * an error nobody recorded (L11).
+   */
+  contended: number;
 }
+
+/**
+ * The skips that mean "another writer had this calendar", and nothing else. The
+ * other skips are faults on THIS calendar or on the database (no mailbox, a vanished
+ * calendar, a refused claim or token read), so they stay failures: answering those
+ * with "it retries next hour" would be advice that never works.
+ */
+const CONTENDED_SKIPS: ReadonlySet<HydrateSkip> = new Set<HydrateSkip>(["claimed", "token-moved"]);
 
 export interface PoolEntryOptions {
   /**
@@ -94,7 +111,7 @@ export async function onboardIntoPool(
   // Google call on a run that cannot finish.
   if (!withinBudget()) {
     log.warn("pool-entry", { msg: "no budget left to start", user_id: userId });
-    return { calendars: 0, hydrated: 0, failed: 0, watch: "skipped", outOfBudget: true };
+    return { calendars: 0, hydrated: 0, failed: 0, contended: 0, watch: "skipped", outOfBudget: true };
   }
 
   const watch = await deps.ensureWatches(userId);
@@ -109,6 +126,7 @@ export async function onboardIntoPool(
   const cals = await deps.loadAgentCalendars(userId);
   let hydrated = 0;
   let failed = 0;
+  let contended = 0;
   let outOfBudget = false;
   for (const cal of cals) {
     if (!withinBudget()) {
@@ -121,6 +139,7 @@ export async function onboardIntoPool(
     try {
       const res = await deps.hydrateCalendar(cal);
       if (res.ok) hydrated += 1;
+      else if (res.skipped !== undefined && CONTENDED_SKIPS.has(res.skipped)) contended += 1;
       else failed += 1;
     } catch (err) {
       failed += 1;
@@ -136,7 +155,9 @@ export async function onboardIntoPool(
   // built and part of it was never attempted, and a fresh age over that is a claim
   // nobody measured. Left unstamped, the rotation still sorts them first and the
   // monitors still see a never synced agent, correctly.
-  if (hydrated > 0 && !outOfBudget) await deps.markAgentsSynced([userId]);
+  // A contended calendar is the same: its cache is whatever the other pass left, which
+  // this run did not establish (#2705).
+  if (hydrated > 0 && !outOfBudget && contended === 0) await deps.markAgentsSynced([userId]);
 
   log.info("pool-entry", {
     msg: "onboarded",
@@ -145,7 +166,8 @@ export async function onboardIntoPool(
     calendars: cals.length,
     hydrated,
     failed,
+    contended,
     out_of_budget: outOfBudget,
   });
-  return { calendars: cals.length, hydrated, failed, watch: watch.status, outOfBudget };
+  return { calendars: cals.length, hydrated, failed, contended, watch: watch.status, outOfBudget };
 }

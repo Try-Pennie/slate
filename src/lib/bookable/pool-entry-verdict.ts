@@ -14,11 +14,18 @@ import type { PoolEntryResult } from "@/lib/google/pool-entry";
  * would send them away from the only evidence there is. A throw ranks with the
  * measured failures because it is the least informative outcome and must not be
  * the one that produces the most reassuring advice (L93).
+ *
+ * A calendar another lane held (#2705) is the retry kind too, ranked below the
+ * budget: when both hold, the run stopped because the budget ran out, and that is
+ * the sentence that describes what happened. Below any measured failure, for the
+ * same reason the budget is.
  */
 export function poolEntryRefusal(
   entry: PoolEntryResult | null,
-): "calendar_unhydrated" | "activation_timed_out" | null {
-  if (entry !== null && entry.hydrated > 0 && entry.failed === 0 && !entry.outOfBudget) return null;
-  const timedOut = entry !== null && entry.failed === 0 && entry.outOfBudget;
-  return timedOut ? "activation_timed_out" : "calendar_unhydrated";
+): "calendar_unhydrated" | "activation_timed_out" | "calendar_contended" | null {
+  if (entry === null || entry.failed > 0) return "calendar_unhydrated";
+  if (entry.outOfBudget) return "activation_timed_out";
+  if (entry.contended > 0) return "calendar_contended";
+  if (entry.hydrated > 0) return null;
+  return "calendar_unhydrated";
 }

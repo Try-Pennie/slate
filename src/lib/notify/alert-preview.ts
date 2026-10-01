@@ -280,6 +280,7 @@ import {
   bookableUnverifiedAlert,
   bookableUnhydratedAlert,
   bookableTimedOutAlert,
+  bookableContendedAlert,
   bookableTraitUnrecordedAlert,
   boundaryCatchAlert,
   embedOriginMismatchAlert,
@@ -3786,6 +3787,12 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     // the account: sending this reader to the sync lane would send them to read
     // errors nobody recorded.
     text: bookableTimedOutAlert("sam.okafor@trypennie.com", ACTIVATION_BUDGET_MS) },
+  { key: "bookable_blocked:*", state: "another lane was loading one calendar", channel: "alert",
+    // #2705. Its own state for the same reason as the budget: it says nothing is
+    // wrong with the account, so it must not send the reader to the sync lane.
+    text: bookableContendedAlert("kit.alvarez@trypennie.com", 1) },
+  { key: "bookable_blocked:*", state: "another lane was loading several calendars", channel: "alert",
+    text: bookableContendedAlert("dana.whitfield@trypennie.com", 2) },
   { key: "bookable_unverified:*", state: "transient error persisted", channel: "alert",
     text: bookableUnverifiedAlert("dana.whitfield@trypennie.com") },
   { key: "ooo_approvals_digest", state: "one approval, one recipient", channel: "alert",

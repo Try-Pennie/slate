@@ -1560,6 +1560,7 @@ export async function setBookable(form: FormData): Promise<void> {
       google_unverified: "blocked-transient",
       calendar_unhydrated: "blocked-unread",
       activation_timed_out: "blocked-timeout",
+      calendar_contended: "blocked-contended",
     };
     redirect(`${back}?bookable=${outcome[result.reason]}`);
     return;
