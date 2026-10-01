@@ -11,10 +11,9 @@
 //  - a value that is not a Salesforce Lead id is never asked about;
 //  - the deadline the manage page reads under answers null when Salesforce is slow,
 //    on an injected sleep rather than a real one (L524).
+import { readWithinDeadline, type ScheduleTimer } from "../src/lib/read-within-deadline.ts";
 import {
   callingNumberWithinDeadline,
-  readWithinDeadline,
-  type ScheduleTimer,
   callingNumberOf,
   readLeadCallingNumbers,
   readOneCallingNumber,

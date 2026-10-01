@@ -14,6 +14,7 @@ import { judgeTestOrigin, testOriginRefusalSentence } from "@/lib/embed/test-pas
 import { currentTestPassFor } from "@/lib/embed/test-pass-gate";
 import { embedTestOrigins, embedTestPassSecret } from "@/lib/env";
 import { log } from "@/lib/log";
+import { readBookEntryQuery } from "@/lib/booking/book-link";
 
 export const dynamic = "force-dynamic";
 // Lead-facing: the brand is Pennie; Slate stays internal.
@@ -38,6 +39,11 @@ export default async function BookEntry({
   searchParams: Promise<SP>;
 }) {
   const sp = await searchParams;
+  // #2982: the query is read through the one shared reader of this page's URL
+  // contract (`book-link.ts`), beside the link Slate builds for a lead booking
+  // again, which deliberately does NOT come here: it carries a manage token,
+  // and this public page is framed by host pages and their scripts.
+  const entry = readBookEntryQuery(sp);
 
   // A blank or unreadable code is ROUTED, not refused (#1908). cal.com catches
   // every one with its own catch-all to the Low pool, and that rule carries about
@@ -50,8 +56,8 @@ export default async function BookEntry({
   // Salesforce and routed on, by the same resolver the confirm uses, so the times
   // shown and the pool booked agree. A failed read throws to the error boundary,
   // which offers a retry, rather than showing the catch-all's times.
-  const requestedCode = first(sp, "xbc");
-  const resolved = await resolveLandingCode(requestedCode, first(sp, "external_id") || null);
+  const requestedCode = entry.requestedCode;
+  const resolved = await resolveLandingCode(requestedCode, entry.externalId);
   const bucketCode = resolved.code;
   const embedded = first(sp, "embed") === "1";
   const theme = first(sp, "theme") === "dark" ? ("dark" as const) : ("light" as const);
@@ -108,7 +114,7 @@ export default async function BookEntry({
   // it under that name), so both ends grade the identical identity. Since #2663 a
   // strong id matches either id column, so this also recognises a booking an API
   // caller made with only `externalId`.
-  const externalId = first(sp, "external_id") || null;
+  const externalId = entry.externalId;
   // Asked in the WORLD of the bucket being landed on (#2660): a tester who pastes
   // a real lead's id into a test link is never shown that lead's call, and a real
   // lead never meets a tester's.
@@ -116,22 +122,14 @@ export default async function BookEntry({
     ? await existingCallForLanding({ salesforceId: externalId }, { isTest })
     : null;
 
-  const phone =
-    first(sp, "phone") ||
-    first(sp, "attendeePhoneNumber") ||
-    first(sp, "smsReminderNumber");
-
-  const prefill: Record<string, string> = {};
-  for (const [k, v] of Object.entries(sp)) {
-    prefill[k] = Array.isArray(v) ? (v[0] ?? "") : (v ?? "");
-  }
+  const prefill = entry.prefill;
 
   // #2208: through the SAME resolver `/booking/{id}` uses, because both routes
   // grade the same identity and a second copy of this rule would let one of them
   // go on asking a recognised lead to retype what Slate holds (L613).
   const attendee = await landingAttendee(
     { salesforceId: externalId },
-    { name: first(sp, "name"), email: first(sp, "email"), phone },
+    entry.link,
     { isTest },
   );
 

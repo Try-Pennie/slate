@@ -383,6 +383,7 @@ describe("the preview shows what the booker actually renders (#1343)", () => {
 describe("the preview shows what the manage page actually renders (#1343)", () => {
   const manageProps = {
     token: "tok1",
+    rebookHref: "/book?xbc=411",
     bucketCode: "411",
     rescheduleTimesFrom: "pool" as const,
     startsAt: slotIso,

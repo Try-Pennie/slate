@@ -26,6 +26,9 @@ import { RESCHEDULE_COPY, LIVE_COPY, DONE_COPY, movedNote, rescheduleNoTimes, ca
 const baseProps = {
   token: "tok1",
   bucketCode: "411",
+  // #2982: built server side from the booking by `rebookHref`; the component
+  // renders it as given.
+  rebookHref: "/booking/manage/tok1/rebook?xbc=411",
   // #2827: a routed booking, whose move times are its bucket's pool.
   rescheduleTimesFrom: "pool" as const,
   startsAt: "2026-06-20T15:00:00.000Z",
@@ -853,7 +856,8 @@ describe("ManageBooking", () => {
   });
 
   // #634: a cancelled booking must not dead-end the lead. The terminal state
-  // offers a warm "Book a new time" link back into the same bucket.
+  // offers a warm "Book a new time" link back into the same bucket, and since
+  // #2982 that link carries the lead's identity (the server builds it).
   it("offers a rebook link into the same bucket after cancelling", async () => {
     mockFetch({ cancel: { ok: true } });
     render(<ManageBooking {...baseProps} />);
@@ -864,13 +868,13 @@ describe("ManageBooking", () => {
 
     expect(await screen.findByText("This booking is cancelled")).toBeTruthy();
     const rebook = screen.getByRole("link", { name: /book a new time/i });
-    expect(rebook.getAttribute("href")).toBe("/book?xbc=411");
+    expect(rebook.getAttribute("href")).toBe(baseProps.rebookHref);
   });
 
   it("shows the rebook link when the booking is already cancelled on load", () => {
     render(<ManageBooking {...baseProps} status="cancelled" />);
     const rebook = screen.getByRole("link", { name: /book a new time/i });
-    expect(rebook.getAttribute("href")).toBe("/book?xbc=411");
+    expect(rebook.getAttribute("href")).toBe(baseProps.rebookHref);
   });
 
   it("does not show a rebook link on an active booking", () => {

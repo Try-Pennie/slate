@@ -1029,6 +1029,49 @@ describe("Booker refuses a second booking (#1337)", () => {
     expect((calls[0].body as { reason?: string }).reason).toBeTruthy();
   });
 
+  // #2982: "Book a new time" after a cancel here stays on this page, so the new
+  // booking must carry the same identity the cancelled one was recognised by: the
+  // Lead id, the lead's details and the link's prefill (its source among them).
+  it("books again after a cancel with the lead's Lead id, details and source", async () => {
+    const calls: { url: string; body: Record<string, unknown> }[] = [];
+    global.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      calls.push({ url: u, body: JSON.parse(String(init?.body ?? "{}")) });
+      return { ok: true, status: 200, json: async () => ({ startsAt: slotIso }) } as Response;
+    }) as unknown as typeof fetch;
+
+    render(
+      <Booker
+        {...baseProps}
+        salesforceId="00QUi00000ABCdeMAH"
+        attendee={{ name: "Dana Lead", email: "dana@example.com", phone: "+12035615295" }}
+        prefill={{ source: "my-offers-result", external_id: "00QUi00000ABCdeMAH" }}
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", rescheduleTimesFrom: "pool", mayCancel: true, phone: null }}
+      />,
+    );
+    await screen.findByText("You already have a call booked");
+    fireEvent.click(screen.getByRole("button", { name: BOOKER_CANCEL_COPY.start }));
+    fireEvent.click(screen.getAllByRole("radio")[0]);
+    fireEvent.click(screen.getByRole("button", { name: BOOKER_CANCEL_COPY.confirm }));
+    await screen.findByText(BOOKER_CANCEL_COPY.doneHeading);
+
+    fireEvent.click(screen.getByRole("button", { name: BOOKER_CANCEL_COPY.doneBookAgain }));
+    await pickFirstDay();
+    await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+    // The details form is back, already holding what the link gave: nothing to retype.
+    expect((screen.getByLabelText("Email") as HTMLInputElement).value).toBe("dana@example.com");
+    await userEvent.click(screen.getByRole("button", { name: /confirm booking/i }));
+
+    await waitFor(() => expect(calls.some((c) => c.url === "/booking")).toBe(true));
+    const book = calls.find((c) => c.url === "/booking")!;
+    expect(book.body.salesforceId).toBe("00QUi00000ABCdeMAH");
+    expect(book.body.attendee).toMatchObject({ name: "Dana Lead", email: "dana@example.com" });
+    expect((book.body.prefill as Record<string, string>).source).toBe("my-offers-result");
+  });
+
   it("keeps the call when they back out of the confirmation", async () => {
     const calls: string[] = [];
     global.fetch = vi.fn(async (url: RequestInfo | URL) => {

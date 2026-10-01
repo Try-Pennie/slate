@@ -44,7 +44,7 @@ import { EMBED_MESSAGE, LINK_FAILED } from "@/lib/embed/lifecycle-events";
  * `scripts/test-booker-route-boundaries.ts` fails a booker route with no boundary
  * or with one that is not this component.
  */
-export type BookerBoundaryPage = "/book" | "/booking/[id]";
+export type BookerBoundaryPage = "/book" | "/booking/[id]" | "/booking/manage/[token]/rebook";
 
 export default function BookerErrorBoundary({
   error,

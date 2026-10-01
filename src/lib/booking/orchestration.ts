@@ -81,7 +81,8 @@ import {
 import { storedFirstName, validateAttendee } from "../attendee.ts";
 import { leadCallingZone, withinLeadCallingWindow } from "./lead-calling-window.ts";
 import { shortErrorReason } from "../notify/error-text.ts";
-import { callingNumberWithinDeadline, type ScheduleTimer } from "../salesforce/lead-calling-number.ts";
+import { callingNumberWithinDeadline } from "../salesforce/lead-calling-number.ts";
+import type { ScheduleTimer } from "../read-within-deadline.ts";
 import { log } from "@/lib/log";
 import { readBookingSource } from "./booking-source.ts";
 import type { FullApiCaller } from "./api-callers.ts";

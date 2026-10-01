@@ -71,6 +71,14 @@ interface ManageBookingProps {
    * Required, so no surface can forget to decide it.
    */
   rescheduleTimesFrom: RescheduleTimesFrom;
+  /**
+   * "Book a new time" on a call that is over (#2982), built server side by
+   * `rebookHref`: the bucket and this booking's manage token, which /book resolves
+   * server side into the Lead id, the lead's details and the source page, so the
+   * rebooked call is tied to their Lead and they retype nothing. Required, so no
+   * surface can fall back to a bare bucket link.
+   */
+  rebookHref: string;
   startsAt: string;
   status: string;
   eventName: string;
@@ -160,6 +168,7 @@ function initialsOf(name: string): string {
 export default function ManageBooking({
   token,
   bucketCode,
+  rebookHref,
   testPass = null,
   rescheduleTimesFrom,
   startsAt,
@@ -585,7 +594,7 @@ export default function ManageBooking({
                     {doneBody(status)}
                   </p>
                   <a
-                    href={`/book?xbc=${encodeURIComponent(bucketCode)}`}
+                    href={rebookHref}
                     className="pn-btn pn-btn--primary mt-4 inline-flex min-h-[44px] rounded-lg px-5 text-sm"
                   >
                     {DONE_COPY.bookAgain}

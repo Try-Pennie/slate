@@ -448,6 +448,7 @@ export {
   BookingNotChangeableError,
 } from "@/lib/booking/orchestration";
 import { log } from "@/lib/log";
+import { REBOOK_COLUMNS, loadRebookRow, type RebookLookup } from "@/lib/booking/book-link";
 import { pageRaceBoundHitAfterResponse } from "@/lib/booking/race-bound-page";
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { resolveAdvisorName, type AdvisorNameReader } from "@/lib/booking/advisor-name";
@@ -2354,6 +2355,34 @@ export async function landingAttendee(
   const complete = link.name.trim() && link.email.trim() && link.phone.trim();
   if (complete) return attendeeForLanding(link, null);
   return attendeeForLanding(link, await knownContactForLanding(identity, world));
+}
+
+/**
+ * The booking a "Book a new time" link names by its manage token (#2982), for the
+ * rebook page under the manage path. ONE row by token, only the columns a rebook
+ * needs, under a deadline. Every failure is `failed` (the page then draws the
+ * bucket's booker without prefill) and is logged with neither the token nor
+ * anything about the lead; a token naming nothing usable is `absent`.
+ */
+export function rebookRowForToken(token: string): Promise<RebookLookup> {
+  return loadRebookRow(token, {
+    readByToken: async (t) => {
+      const { data, error } = await supabaseAdmin()
+        .from("bookings")
+        .select(REBOOK_COLUMNS)
+        .eq("manage_token", t)
+        .maybeSingle();
+      // Checked at runtime by `parseRebookRow`, never cast.
+      return { data, error };
+    },
+    // The error's CODE only, never its message or the Error itself: a PostgREST or
+    // fetch failure can quote the request, whose filter is the token.
+    warn: (msg, err) => {
+      const code = err && typeof err === "object" && "code" in err ? String((err as { code: unknown }).code) : null;
+      const kind = err instanceof Error ? err.name : err === null ? null : typeof err;
+      log.warn("rebook", { msg, code, kind });
+    },
+  });
 }
 
 /** The lead's own details on a booking (#2164), for a caller that is not moving it. */

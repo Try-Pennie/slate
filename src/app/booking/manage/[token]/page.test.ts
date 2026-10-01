@@ -62,10 +62,10 @@ function findManageProps(node: any): Record<string, unknown> | null {
   return findManageProps(node.props?.children ?? null);
 }
 
-async function renderPage() {
+async function renderPage(sp: Record<string, string> = {}) {
   const tree = await ManagePage({
     params: Promise.resolve({ token: "tok1" }),
-    searchParams: Promise.resolve({}),
+    searchParams: Promise.resolve(sp),
   });
   return findManageProps(tree);
 }
@@ -116,6 +116,38 @@ describe("manage page advisor wiring (#1338)", () => {
     expect(props?.durationMin).toBe(20);
     expect(props?.attendeePhone).toBe("+12155550100");
     expect(props?.attendeeEmail).toBe("dana@example.com");
+  });
+
+  // #2982: "Book a new time" opens the rebook booker under THIS page's own path,
+  // which resolves the Lead id, details and source server side. No contact data
+  // may ride on the URL, and the token must not reach the public /book page.
+  it("hands the page a rebook link naming the booking by token and carrying no contact data", async () => {
+    service.getBookingByToken.mockResolvedValue({
+      ...found,
+      booking: {
+        ...found.booking,
+        status: "cancelled",
+        salesforce_id: "00QUi00000ABCdeMAH",
+        attendee_name: "Dana Lead",
+        source: "my-offers-result",
+      },
+    });
+    const props = await renderPage();
+    const href = String(props?.rebookHref);
+    const url = new URL(href, "https://slate.example");
+    expect(url.pathname).toBe("/booking/manage/tok1/rebook");
+    expect([...url.searchParams.keys()]).toEqual(["xbc"]);
+    expect(url.searchParams.get("xbc")).toBe("411");
+    for (const secret of ["00QUi00000ABCdeMAH", "Dana", "dana", "5550100"]) {
+      expect(href).not.toContain(secret);
+    }
+  });
+
+  it("carries a dark manage page's theme onto the rebook booker", async () => {
+    const dark = new URL(String((await renderPage({ theme: "dark" }))?.rebookHref), "https://slate.example");
+    expect(dark.searchParams.get("theme")).toBe("dark");
+    const light = new URL(String((await renderPage())?.rebookHref), "https://slate.example");
+    expect(light.searchParams.has("theme")).toBe(false);
   });
 
   // #2165: the add to calendar links come from the one builder the confirm and the
