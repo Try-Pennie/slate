@@ -78,11 +78,23 @@ export const REGAL_OUTCOME_MIN_CALLS = 20;
  *   working feed as 76% stored, under the floor, on the day it shipped.
  * - `ai_agent`, which is not the advisor's call.
  * - every unreadable and non completed reason, which the outcome side refuses too.
- * Listed rather than derived: a new detector reason is left out until somebody
- * decides it carries a human advisor, which errs toward a quieter check, never a
- * false page.
+ * Every detector reason sits in exactly one of these two lists, and the suite fails
+ * when one sits in neither, so a reason added later is sorted on purpose rather
+ * than silently left out of the count.
  */
 export const HUMAN_CALL_REASONS: readonly RegalCallReason[] = ["candidate", "foreign_domain", "no_slate_user"];
+
+/** The detector reasons that carry no human advisor, or that could not be read. */
+export const NOT_HUMAN_CALL_REASONS: readonly RegalCallReason[] = [
+  "not_call_completed",
+  "ai_agent",
+  "agent_email_null",
+  "body_unreadable",
+  "event_id_unreadable",
+  "ai_flag_unreadable",
+  "agent_email_unreadable",
+  "timestamp_unreadable",
+];
 
 export function humanCallsFrom(counts: RegalReasonCounts): number {
   return HUMAN_CALL_REASONS.reduce((sum, r) => sum + (counts[r] ?? 0), 0);

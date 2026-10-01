@@ -4,10 +4,11 @@
 // The show rate in the Slate vs cal.com split is computed from regal_call_outcomes,
 // and that table fills in silence: a refused body, a failed insert or a migration
 // that never reached production all leave the detector's counter ticking over while
-// the outcome rows stop. So the monitor lane compares outcome rows written against
-// completed calls received over the last two hours. This pins:
+// the outcome rows stop. So the monitor lane compares human outcome rows written
+// against completed advisor calls received over the last two hours (#2950). This pins:
 //
-//   1. which received events count as completed calls (the denominator);
+//   1. which received events count as advisor calls (the denominator), and that every
+//      detector reason is sorted one way or the other on purpose;
 //   2. the page: under 80% on TWO consecutive checks, never on the first;
 //   3. the all clear: off a MEASURED healthy ratio only, which also clears the streak;
 //   4. a window with no calls: "no calls", never healthy and never a page, and it
@@ -20,6 +21,7 @@ import {
   formatRegalCallOutcomesAlert,
   formatRegalCallOutcomesRecovery,
   HUMAN_CALL_REASONS,
+  NOT_HUMAN_CALL_REASONS,
   REGAL_CALL_OUTCOMES_KEY,
   REGAL_OUTCOME_WINDOW_MS,
   REGAL_OUTCOME_MIN_RATIO,
@@ -41,9 +43,18 @@ eq(REGAL_OUTCOME_MIN_RATIO, 0.8, "the floor is 80%");
 // attempt arrives with no talk time and is correctly refused, and an AI call is not
 // the advisor's call, so neither can decide a show and neither may count as missing.
 eq([...HUMAN_CALL_REASONS].sort(), ["candidate", "foreign_domain", "no_slate_user"], "only calls with a human advisor are counted");
-for (const r of REGAL_CALL_REASONS.filter((x) => !["candidate", "foreign_domain", "no_slate_user"].includes(x))) {
-  assert(!HUMAN_CALL_REASONS.includes(r), `${r} is not counted: it has no human advisor on it, or could not be read`);
+// Every detector reason is sorted into exactly one list, so a reason Regal adds later
+// fails here until somebody decides whether it carries a human advisor (L113).
+for (const r of REGAL_CALL_REASONS) {
+  const inHuman = HUMAN_CALL_REASONS.includes(r);
+  const inNot = NOT_HUMAN_CALL_REASONS.includes(r);
+  assert(inHuman !== inNot, `${r} is sorted into exactly one of the human and not human lists`);
 }
+eq(
+  HUMAN_CALL_REASONS.length + NOT_HUMAN_CALL_REASONS.length,
+  REGAL_CALL_REASONS.length,
+  "the two lists cover the vocabulary and name nothing outside it",
+);
 eq(
   humanCallsFrom({ candidate: 10, foreign_domain: 3, no_slate_user: 2, ai_agent: 600, agent_email_null: 300, not_call_completed: 4 }),
   15,
