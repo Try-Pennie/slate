@@ -9,8 +9,8 @@
  * Floors fitted to the whole are floors part of it can never clear: as the floor
  * under learned floors they raise them past the traffic Slate sees, and the alarm
  * false pages (108 to 283 times in two normal weeks, measured in
- * `scripts/lib/volume-floor-scope.ts`). Low's two page measurement was refitted by
- * hand for the pages (#2878), which a split, or a third page, undoes again.
+ * `scripts/lib/volume-floor-scope.ts`). Low's measurement was refitted by hand for
+ * the pages Slate carries (#2878, #2870), which a split undoes again.
  *
  * WHAT. Once a day the refit (`volume-relearn.ts`) counts, per tier, the bookings
  * Slate took and the bookings cal.com took over the same 24 hours. Slate's share is

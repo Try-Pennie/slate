@@ -14,6 +14,7 @@ import { DateTime } from "luxon";
 import {
   LOW_PAGES,
   LOW_PAGES_NOT_ON_SLATE,
+  pagesOnSlate,
   LOW_PAGES_ON_SLATE,
   pagesNotOnSlateLines,
   isPageTraffic,
@@ -121,6 +122,13 @@ const REPLAY_HOURS = offlineHoursFor(fixture);
   eq(Object.keys(LOW_PAGES_NOT_ON_SLATE), [], "and none is held off");
   assert(FLOOR_SCOPE.label.includes("Income Verification"), `the Low floors take Income Verification in (${FLOOR_SCOPE.label})`);
   eq(pagesNotOnSlateLines(), [], "so no surface says a page is not judged");
+  // The switch is empty today, so its held off path is driven with a sample entry
+  // rather than left untested until the next page is held back.
+  const sample = { "income-verification": { reason: "come from a page not wired to Slate", issue: 1 } } as const;
+  eq(pagesOnSlate(sample).map((p) => p.id), ["application-review-follow-up", "application-review"], "a held off page leaves the carried set");
+  const held = pagesNotOnSlateLines(sample);
+  eq(held, ["Income Verification Phone Call is not judged: its leads come from a page not wired to Slate."], "and is stated in plain words");
+  assert(!/[\u2014\u2013]/.test(held[0]!), "with no dash");
 }
 
 // --- 2. the committed per page floors are the committed measurement's ---

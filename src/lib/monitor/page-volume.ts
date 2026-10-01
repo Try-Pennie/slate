@@ -114,16 +114,26 @@ export const LOW_PAGES_NOT_ON_SLATE: Readonly<Partial<Record<LowPageId, HeldOffS
   // surfaces behind the Slate switch, so every Low page is judged.
 };
 
+/**
+ * The Low pages whose leads Slate carries, in the measurement's order. Takes the
+ * switch as an input so the held off path is tested while the switch is empty.
+ */
+export function pagesOnSlate(held: Readonly<Partial<Record<LowPageId, HeldOffSlate>>> = LOW_PAGES_NOT_ON_SLATE): readonly LowPage[] {
+  return LOW_PAGES.filter((p) => !(p.id in held));
+}
+
 /** The Low pages whose leads Slate carries, in the measurement's order. */
-export const LOW_PAGES_ON_SLATE: readonly LowPage[] = LOW_PAGES.filter((p) => !(p.id in LOW_PAGES_NOT_ON_SLATE));
+export const LOW_PAGES_ON_SLATE: readonly LowPage[] = pagesOnSlate();
 
 /**
  * One sentence per page held off Slate, for the surfaces that list the pages, so a
  * page missing from a table reads as a decision rather than an oversight (L678).
  */
-export function pagesNotOnSlateLines(): string[] {
+export function pagesNotOnSlateLines(
+  heldOff: Readonly<Partial<Record<LowPageId, HeldOffSlate>>> = LOW_PAGES_NOT_ON_SLATE,
+): string[] {
   return LOW_PAGES.flatMap((p) => {
-    const held = LOW_PAGES_NOT_ON_SLATE[p.id];
+    const held = heldOff[p.id];
     return held ? [`${p.name} is not judged: its leads ${held.reason}.`] : [];
   });
 }
