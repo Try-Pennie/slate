@@ -6,7 +6,7 @@ import StandaloneTheme from "@/components/StandaloneTheme";
 import LegalFooter from "@/components/LegalFooter";
 import { ClientErrorBeacon } from "@/components/ClientErrorBeacon";
 import { existingCallForLanding, landingAttendee, rebookRowForToken } from "@/lib/booking/service";
-import { rebookEntry } from "@/lib/booking/book-link";
+import { REBOOK_ROUTE, rebookEntry } from "@/lib/booking/book-link";
 import { resolveLandingCode } from "@/lib/routing/landing-code";
 import { loadLandingBucketIsTest } from "@/lib/booking/landing-bucket";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
@@ -93,7 +93,7 @@ export default async function RebookPage({
 
   return (
     <StandaloneBookerShell embedded={false} theme={theme}>
-      <ClientErrorBeacon page="/booking/manage/rebook" bucketCode={bucketCode} />
+      <ClientErrorBeacon page={REBOOK_ROUTE} bucketCode={bucketCode} />
       <Booker
         bucketCode={bucketCode}
         requestedCode={requestedCode}

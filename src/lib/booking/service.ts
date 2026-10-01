@@ -2375,7 +2375,6 @@ export function rebookRowForToken(token: string): Promise<RebookLookup> {
       // Checked at runtime by `parseRebookRow`, never cast.
       return { data, error };
     },
-    deadline: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
     // The error's CODE only, never its message or the Error itself: a PostgREST or
     // fetch failure can quote the request, whose filter is the token.
     warn: (msg, err) => {

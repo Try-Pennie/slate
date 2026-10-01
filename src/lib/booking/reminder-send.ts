@@ -8,7 +8,7 @@ import { cardPhotoUrl, fetchCardPhoto, type PhotoFetcher } from "./advisor-card-
 import { storedPhotoUrl } from "@/lib/stored-photo";
 import { PENNIE_CARD_LOGO } from "./pennie-card-logo.ts";
 import { withCallingNumberLine } from "./core.ts";
-import { readWithinDeadline, type ScheduleTimer } from "@/lib/salesforce/lead-calling-number";
+import { readWithinDeadline, type ScheduleTimer } from "@/lib/read-within-deadline";
 
 /**
  * How long the lane waits for the tick's one calling number read (#1334). Longer

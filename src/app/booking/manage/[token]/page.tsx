@@ -93,10 +93,10 @@ export default async function ManagePage({
         // #2827: a call booked through an advisor's own link can only move to a
         // time that advisor can take, so its picker reads that advisor's times.
         rescheduleTimesFrom={rescheduleTimesFrom(found.booking)}
-        // #2982: "Book a new time" names this booking by the token already in this
-        // page's URL, and /book reads its Lead id, details and source server side,
-        // so no contact data rides on a URL.
-        rebookHref={rebookHref({ bucketCode: found.bucket.code, manageToken: token })}
+        // #2982: "Book a new time" opens the rebook booker under THIS page's own
+        // path, which reads the Lead id, details and source server side by the
+        // same token, so no contact data rides on a URL; this page's theme carries.
+        rebookHref={rebookHref({ bucketCode: found.bucket.code, manageToken: token, theme })}
         startsAt={found.booking.starts_at}
         status={found.booking.status}
         eventName={found.eventType.name}

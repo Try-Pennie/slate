@@ -13,6 +13,7 @@
  */
 
 import { BOOKING_SOURCE_PARAM, PAGE_SOURCES } from "./booking-source.ts";
+import { readWithinDeadline, type ScheduleTimer } from "../read-within-deadline.ts";
 
 type SP = Readonly<Record<string, string | string[] | undefined>>;
 
@@ -51,15 +52,21 @@ export function readBookEntryQuery(sp: SP): BookEntryQuery {
   };
 }
 
+/** The rebook page's route, one name for its error beacon and its boundary. */
+export const REBOOK_ROUTE = "/booking/manage/[token]/rebook" as const;
+
 /**
  * "Book a new time" for a call that is over (#2982): the rebook booker under this
  * booking's own manage path. The bucket rides as `xbc` only so a lookup that
  * FAILS can still draw that bucket's booker without prefill; a bucket code is not
  * contact data, and a lookup that succeeds uses the booking's own bucket instead.
+ * A dark manage page carries `theme=dark`, so the lead does not land on a light
+ * booker (the manage page is never embedded, so there is no `embed` to carry).
  */
-export function rebookHref(b: { bucketCode: string; manageToken: string }): string {
+export function rebookHref(b: { bucketCode: string; manageToken: string; theme: "light" | "dark" }): string {
   const q = new URLSearchParams();
   q.set("xbc", b.bucketCode);
+  if (b.theme === "dark") q.set("theme", "dark");
   return `/booking/manage/${encodeURIComponent(b.manageToken)}/rebook?${q.toString()}`;
 }
 
@@ -121,36 +128,32 @@ export type RebookLookup =
 export interface RebookDeps {
   /** ONE row by manage token (`.maybeSingle()`), as supabase answers it. */
   readByToken: (token: string) => Promise<{ data: unknown; error: unknown }>;
-  /** Resolves after `ms`; injected so tests never wait on a real clock (L524). */
-  deadline: (ms: number) => Promise<void>;
+  /** The shared deadline's timer, injected so tests never wait on a real clock (L524). */
+  timer?: ScheduleTimer;
   /** Told only WHY the read failed: never the token, never anything about the lead. */
   warn: (msg: string, err: unknown) => void;
   timeoutMs?: number;
 }
-
-const TIMED_OUT: unique symbol = Symbol("timed-out");
 
 /**
  * The booking a rebook token names. Every way the read can fail is `failed`,
  * which the page answers with the bare bucket booker rather than an error, since
  * the lead can still book; a token naming nothing usable is `absent`, which the
  * page answers with the manage page's own not found state, never another booking.
+ *
+ * Under the shared `readWithinDeadline`, which reports a throw or a timeout once
+ * and clears its timer however the race ends.
  */
 export async function loadRebookRow(token: string, deps: RebookDeps): Promise<RebookLookup> {
-  let res: { data: unknown; error: unknown } | typeof TIMED_OUT;
-  try {
-    res = await Promise.race([
-      deps.readByToken(token),
-      deps.deadline(deps.timeoutMs ?? REBOOK_LOOKUP_TIMEOUT_MS).then((): typeof TIMED_OUT => TIMED_OUT),
-    ]);
-  } catch (err) {
-    deps.warn("rebook lookup threw, booking without prefill", err);
-    return { kind: "failed" };
-  }
-  if (res === TIMED_OUT) {
-    deps.warn("rebook lookup timed out, booking without prefill", null);
-    return { kind: "failed" };
-  }
+  const res = await readWithinDeadline(
+    () => deps.readByToken(token),
+    deps.timeoutMs ?? REBOOK_LOOKUP_TIMEOUT_MS,
+    (err) => deps.warn("rebook lookup did not answer, booking without prefill", err),
+    deps.timer,
+  );
+  // The read itself always answers an object, so null is the deadline's own
+  // answer: a throw or a timeout, already reported.
+  if (res === null) return { kind: "failed" };
   if (res.error) {
     deps.warn("rebook lookup failed, booking without prefill", res.error);
     return { kind: "failed" };

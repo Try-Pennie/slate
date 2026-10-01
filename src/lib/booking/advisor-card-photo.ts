@@ -18,7 +18,7 @@
  *  - only `image/jpeg` or `image/png`, and only when the bytes agree with the
  *    label, since the card declares the type and a reader trusts it.
  */
-import { readWithinDeadline, type ScheduleTimer } from "@/lib/salesforce/lead-calling-number";
+import { readWithinDeadline, type ScheduleTimer } from "@/lib/read-within-deadline";
 import type { CardPhoto } from "./advisor-contact-card.ts";
 
 /**

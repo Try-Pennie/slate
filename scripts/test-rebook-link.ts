@@ -20,6 +20,7 @@ import {
   rebookHref,
   type RebookDeps,
 } from "../src/lib/booking/book-link.ts";
+import type { ScheduleTimer } from "../src/lib/read-within-deadline.ts";
 import { readBookingSource } from "../src/lib/booking/booking-source.ts";
 
 const TOKEN = "tok_rebook_fixture_0001";
@@ -36,12 +37,16 @@ const DATA = {
 async function main() {
   // --- the link: under the manage path, the bucket and nothing about the lead -
   {
-    const href = rebookHref({ bucketCode: "100", manageToken: TOKEN });
+    const href = rebookHref({ bucketCode: "100", manageToken: TOKEN, theme: "light" });
     const url = new URL(href, "https://slate.example");
     eq(url.pathname, `/booking/manage/${TOKEN}/rebook`, "served under the manage path the lead is on");
     eq([...url.searchParams.keys()].join(","), "xbc", "only the bucket rides on the query");
     eq(url.searchParams.get("xbc"), "100", "the bucket, for a lookup that fails");
     assert(!href.startsWith("/book?") && !href.startsWith("/book/"), "the token never reaches the public /book page");
+    // The manage page's theme carries over, so a dark page does not open a light booker.
+    const dark = new URL(rebookHref({ bucketCode: "100", manageToken: TOKEN, theme: "dark" }), "https://slate.example");
+    eq(dark.searchParams.get("theme"), "dark", "a dark manage page opens a dark booker");
+    eq(dark.searchParams.get("xbc"), "100", "and still names the bucket");
   }
 
   // --- the runtime shape check, never a cast ---------------------------------
@@ -85,14 +90,25 @@ async function main() {
   {
     const asked: string[] = [];
     const warned: string[] = [];
-    let release: () => void = () => {};
-    const deps = (answer: () => Promise<{ data: unknown; error: unknown }>, deadline?: () => Promise<void>): RebookDeps => ({
+    // The shared deadline's timer, injected: it never fires unless a test says so,
+    // and every timer it starts must be CLEARED however the read ends.
+    let started = 0;
+    let cleared = 0;
+    const neverFires: ScheduleTimer = () => {
+      started += 1;
+      return () => { cleared += 1; };
+    };
+    const firesAtOnce: ScheduleTimer = (_ms, fire) => {
+      started += 1;
+      queueMicrotask(fire);
+      return () => { cleared += 1; };
+    };
+    const deps = (answer: () => Promise<{ data: unknown; error: unknown }>, timer: ScheduleTimer = neverFires): RebookDeps => ({
       readByToken: (t) => {
         asked.push(t);
         return answer();
       },
-      // Never fires unless a test hands it a deadline of its own.
-      deadline: deadline ?? (() => new Promise<void>((r) => { release = r; })),
+      timer,
       warn: (msg, err) => warned.push(`${msg} ${String(err)}`),
     });
 
@@ -111,10 +127,11 @@ async function main() {
     eq((await loadRebookRow(TOKEN, deps(async () => { throw new Error("network"); }))).kind, "failed", "a thrown read: failed");
     eq((await loadRebookRow(TOKEN, deps(async () => ({ data: { ...DATA, bucket: null }, error: null })))).kind, "failed", "an unreadable row: failed, never a half filled identity");
     // A read that never answers is bounded by the deadline.
-    const hung = loadRebookRow(TOKEN, deps(() => new Promise(() => {}), async () => {}));
+    const hung = loadRebookRow(TOKEN, deps(() => new Promise(() => {}), firesAtOnce));
     eq((await hung).kind, "failed", "a read that never answers: failed at the deadline");
-    eq(warned.length, 4, "every failure is logged");
-    release();
+    eq(warned.length, 4, "every failure is logged, once each");
+    assert(started > 0, "every lookup runs under the deadline");
+    eq(cleared, started, "every deadline timer is cleared, however the read ended");
   }
 
   // --- what the real wiring logs: the code only, never the token or the lead --
@@ -126,6 +143,7 @@ async function main() {
     assert(body.includes("log.warn(\"rebook\", { msg, code, kind })"), "the log line carries the message, the error code and its kind");
     assert(!/log\.warn\([^)]*,\s*err\)/.test(body), "the error itself (which can quote the token) is never handed to the log");
     assert(body.includes("REBOOK_COLUMNS"), "the read selects only the rebook columns");
+    assert(!body.includes("setTimeout"), "no bare timer: the deadline is the shared, cleared one");
     assert(body.includes(".maybeSingle()"), "the read is one row");
   }
 

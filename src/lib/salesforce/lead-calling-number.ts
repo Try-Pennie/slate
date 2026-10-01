@@ -23,6 +23,9 @@
  */
 import { parsePhoneNumberFromString } from "libphonenumber-js";
 import { isLeadId, leadIdKey, readLeadField, type LeadSoqlRunner } from "./lead-xbc.ts";
+// The deadline lives in a neutral module (#2982): it bounds reads well beyond
+// Salesforce, so its home is not this file.
+import { readWithinDeadline, realTimer, type ScheduleTimer } from "../read-within-deadline.ts";
 
 /** The Lead field the Pipedream workflow writes (verified live 2026-09-30). */
 export const CALLING_NUMBER_FIELD = "AssignedRegalPhone__c";
@@ -33,14 +36,6 @@ export const CALLING_NUMBER_FIELD = "AssignedRegalPhone__c";
  * must cost them the line about the number, never the page or the save.
  */
 export const CALLING_NUMBER_DEADLINE_MS = 2_500;
-
-/** Starts a timer and returns the function that clears it. Injected in tests. */
-export type ScheduleTimer = (ms: number, fire: () => void) => () => void;
-
-const realTimer: ScheduleTimer = (ms, fire) => {
-  const t = setTimeout(fire, ms);
-  return () => clearTimeout(t);
-};
 
 /**
  * A stored value as a calling number in E.164, or null. Strict on purpose: only a
@@ -103,48 +98,6 @@ export function callingNumberWithinDeadline(
   timer: ScheduleTimer = realTimer,
 ): Promise<string | null> {
   return readWithinDeadline(read, CALLING_NUMBER_DEADLINE_MS, onUnread, timer);
-}
-
-/**
- * The deadline itself, shared by every calling number read: the lead-facing ones
- * above and the reminder lane's batched read, which takes a longer bound of its own.
- * Null on a refusal or a timeout, each reported through `onUnread`, and the timer
- * cleared however the race ends.
- */
-export async function readWithinDeadline<T>(
-  read: () => Promise<T | null>,
-  ms: number,
-  onUnread: (err: unknown) => void,
-  timer: ScheduleTimer = realTimer,
-): Promise<T | null> {
-  const TIMED_OUT = Symbol("timed out");
-  // Reported exactly ONCE per read, whichever way it ends first: a read that timed
-  // out and rejects later has already been reported, and saying so twice would read
-  // in the logs as two failures (L467).
-  let reported = false;
-  const report = (err: unknown) => {
-    if (reported) return;
-    reported = true;
-    onUnread(err);
-  };
-  const attempt = read().catch((err: unknown) => {
-    report(err);
-    return null;
-  });
-  let cancel = () => {};
-  const expired = new Promise<typeof TIMED_OUT>((resolve) => {
-    cancel = timer(ms, () => resolve(TIMED_OUT));
-  });
-  try {
-    const got = await Promise.race([attempt, expired]);
-    if (got === TIMED_OUT) {
-      report(new Error(`no answer within ${ms}ms`));
-      return null;
-    }
-    return got;
-  } finally {
-    cancel();
-  }
 }
 
 /** A runner against the real org: one token exchange, through the shared client. */
