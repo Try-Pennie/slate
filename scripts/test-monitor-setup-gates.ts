@@ -152,6 +152,7 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
       !allDown.awaitingActivation.run &&
       !allDown.regalCalls.run &&
       !allDown.regalCallsUnreadable.run &&
+      !allDown.regalCallOutcomes.run &&
       !allDown.availabilityScan.run &&
       !allDown.availabilityTruth.run &&
       !allDown.lowVolume.run &&
@@ -165,6 +166,7 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
       allUp.awaitingActivation.run &&
       allUp.regalCalls.run &&
       allUp.regalCallsUnreadable.run &&
+      allUp.regalCallOutcomes.run &&
       allUp.availabilityScan.run &&
       allUp.availabilityTruth.run &&
       allUp.lowVolume.run &&
@@ -216,7 +218,7 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
   // settings. Those four do their own reads inside their own boundaries.
   for (const read of ["buckets", "slotHealth", "businessHours", "workingHours", "horizonDays"] as const) {
     const o = monitorSetupGates(with_({ [read]: false }));
-    for (const name of ["failureRate", "awaitingActivation", "regalCalls", "regalCallsUnreadable"] as const) {
+    for (const name of ["failureRate", "awaitingActivation", "regalCalls", "regalCallsUnreadable", "regalCallOutcomes"] as const) {
       assert(o[name].run, `${read} unreadable: ${name} still runs`);
     }
   }

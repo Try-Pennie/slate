@@ -2267,7 +2267,7 @@ export async function GET(req: NextRequest) {
         msg: "regal call outcomes",
         status: regalOutcomes.status,
         ...("received" in regalOutcomes ? { received: regalOutcomes.received, written: regalOutcomes.written } : {}),
-        ...(regalOutcomes.status === "short" ? { paged: regalOutcomes.paged } : {}),
+        ...(regalOutcomes.status === "short" ? { paged: regalOutcomes.paged, ...(regalOutcomes.pageError ? { page_error: regalOutcomes.pageError } : {}) } : {}),
         ...(regalOutcomes.status === "unmeasured" ? { why: regalOutcomes.why } : {}),
       });
     }

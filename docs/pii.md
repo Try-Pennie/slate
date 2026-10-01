@@ -131,10 +131,10 @@ retention, and covered by §1 of the retention doc.
 Regal also POSTS to Slate: its reporting webhook sends every completed call to
 `POST /api/regal/calls`, and that body carries the lead's phone, email and
 Salesforce lead id (`traits`, `userId`, `properties.contact_phone`) plus an AI
-written summary of what was said (`properties.notes`). **None of it is stored.**
-`src/lib/regal/inbound-call.ts` reads three things out of the body and drops the
-rest at the edge: Regal's `eventId`, the call's instant, and the acting AGENT's
-email. `regal_call_events` holds only those, the agent email only on the rows about
+written summary of what was said (`properties.notes`). **For the detector's table,
+none of it is stored:** its classifier in `src/lib/regal/inbound-call.ts` keeps three
+things and drops the rest at the edge: Regal's `eventId`, the call's instant, and the
+acting AGENT's email. `regal_call_events` holds only those, the agent email only on the rows about
 a Slate user, and deletes everything after three days (`prune-regal-calls`). The
 agent email is **staff data, not lead PII**: it is a Pennie employee's work address,
 already held on `users.email`, so this feed adds nothing to the lead inventory above,

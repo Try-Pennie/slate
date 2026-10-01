@@ -138,7 +138,7 @@ export type RegalCallOutcomesResult =
   | { status: "unmeasured"; why: string }
   | { status: "no-calls" }
   | { status: "too-few"; received: number; written: number }
-  | { status: "short"; received: number; written: number; paged: boolean }
+  | { status: "short"; received: number; written: number; paged: boolean; pageError?: string }
   | { status: "healthy"; received: number; written: number };
 
 export interface RegalCallOutcomesDeps {
@@ -194,11 +194,16 @@ export async function runRegalCallOutcomesCheck(deps: RegalCallOutcomesDeps): Pr
     // Disarmed measures and logs, and records nothing that could page later.
     if (!deps.armed) return { status: "short", received, written, paged: false };
     const persistent = await deps.streak();
-    if (persistent) {
-      const text = formatRegalCallOutcomesAlert({ received, written, windowMinutes });
-      await deps.notify(REGAL_CALL_OUTCOMES_KEY, deps.cooldownMs, text).catch(() => {});
+    if (!persistent) return { status: "short", received, written, paged: false };
+    const text = formatRegalCallOutcomesAlert({ received, written, windowMinutes });
+    // A send that failed is reported as not paged, with why, so the tick log never
+    // claims an alert went out that nobody received (L12).
+    try {
+      await deps.notify(REGAL_CALL_OUTCOMES_KEY, deps.cooldownMs, text);
+    } catch (err) {
+      return { status: "short", received, written, paged: false, pageError: err instanceof Error ? err.message : String(err) };
     }
-    return { status: "short", received, written, paged: persistent };
+    return { status: "short", received, written, paged: true };
   }
 
   // A MEASURED healthy ratio: the only thing that ends the condition.
