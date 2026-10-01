@@ -710,14 +710,39 @@ export function eventDescription(
     callingNumber?: string | null;
   } = { isTest: false },
 ): string {
-  const lines = ["Booked via Pennie."];
-  if (phone) lines[0] = `Booked via Pennie. Phone: ${phone}`;
-  lines.push(`${MANAGE_LINK_PREFIX}${manageUrl}`);
+  const lines = [bookedLine(phone), `${MANAGE_LINK_PREFIX}${manageUrl}`];
   if (opts.isTest) lines.unshift(TEST_MODE_COPY.line);
   return withCallingNumberLine(lines.join("\n"), opts.callingNumber ?? null);
 }
 
 const MANAGE_LINK_PREFIX = "Reschedule or cancel: ";
+const BOOKED_PREFIX = "Booked via Pennie.";
+
+/** The first line of a booking's invite: who booked it, and the number to dial. */
+function bookedLine(phone: string | null): string {
+  return phone ? `${BOOKED_PREFIX} Phone: ${phone}` : BOOKED_PREFIX;
+}
+
+/**
+ * An invite description with the lead's phone line set, and NOTHING else changed
+ * (#1334). A phone correction used to rebuild the whole description, which dropped
+ * any line it did not know about: the calling number the reminder lane wrote, and the
+ * reassign explanation (#969). It now edits the one line, so those survive.
+ *
+ * The line is replaced where it stands; an invite that has none (the reassign one)
+ * gets it at the top, below the test line when there is one, which is where
+ * `eventDescription` puts it.
+ */
+export function withPhoneLine(description: string, phone: string | null): string {
+  const lines = description === "" ? [] : description.split("\n");
+  const at = lines.findIndex((l) => l.startsWith(BOOKED_PREFIX));
+  if (at !== -1) {
+    lines[at] = bookedLine(phone);
+    return lines.join("\n");
+  }
+  lines.splice(lines[0] === TEST_MODE_COPY.line ? 1 : 0, 0, bookedLine(phone));
+  return lines.join("\n");
+}
 
 /**
  * An invite description with the calling number line set, and NOTHING else changed

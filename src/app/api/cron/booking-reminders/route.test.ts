@@ -126,7 +126,11 @@ const calendar = vi.hoisted(() => ({
     description: "Booked via Pennie. Phone: +12035615295\nReschedule or cancel: https://slate.example/booking/manage/tok-1",
   }) as { description?: string } | null),
 }));
-vi.mock("@/lib/salesforce/lead-calling-number", () => callingNumber);
+// Only the live read is replaced; the deadline helper the lane uses stays real.
+vi.mock("@/lib/salesforce/lead-calling-number", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/salesforce/lead-calling-number")>()),
+  ...callingNumber,
+}));
 vi.mock("@/lib/google/calendar", () => calendar);
 
 import { GET } from "./route";

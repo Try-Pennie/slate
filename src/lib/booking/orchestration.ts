@@ -21,6 +21,8 @@ import {
   deterministicEventId,
   EventGone,
   eventDescription,
+  withCallingNumberLine,
+  withPhoneLine,
   eventSummary,
   idempotencyKeyFor,
   selectAgent,
@@ -814,6 +816,12 @@ export interface BookingDeps {
    * tests inject one so a hung read is judged without waiting for real (L524).
    */
   deadlineTimer?: ScheduleTimer;
+  /**
+   * What an invite's description says NOW ("" when it has none), or null when the
+   * event is gone (#1334). Throws when it cannot be read. Read so a correction can
+   * edit one line rather than rebuild the whole description.
+   */
+  readEventDescription(agentEmail: string, eventId: string): Promise<string | null>;
   /** `preview` = a dry run (#380): route read-only, skipping the #321 shadow-study
    *  log + the unfair-ordering alert so previews don't pollute real-assignment data. */
   /**
@@ -5401,7 +5409,8 @@ export async function updateBookingContact(
 
   const found = await deps.loadBookingContext(token);
   if (!found) return { ok: false, error: MANAGE_PHONE_NOT_FOUND };
-  const { booking, bucket, eventType } = found;
+  // No bucket: the invite is edited in place, so its test line (#2660) stays as written.
+  const { booking, eventType } = found;
   // A call that has happened or been called off has no details left to correct,
   // and offering one would say we had not noticed. The page already hides the
   // control in those states; this is the same rule on the server, because a
@@ -5474,18 +5483,19 @@ export async function updateBookingContact(
   // The invite carries the joined name, never the first name, so a first name that
   // moved on its own leaves it exactly as it is and nothing is sent to rewrite it.
   if (booking.gcal_event_id && booking.agent_email && !contactUnchanged(changed)) {
-    // #1334: the description is rebuilt whole, so it asks for the calling number the
-    // reminder lane may already have written there; leaving it out would remove it
-    // from the invite for good. Any way of not knowing it writes the invite without
-    // that line rather than failing the lead's correction.
-    // Bounded by the manage page's own deadline, through the same helper, so a slow
-    // Salesforce never stalls the lead's own correction.
+    // #1334: the description is EDITED, never rebuilt. It reads what the invite says
+    // now and changes the phone line, plus the calling number line only when
+    // Salesforce answered with one, so every way of not knowing it (a refusal, a
+    // timeout, an empty field) keeps the line the reminder lane already wrote, and
+    // text this path did not compose (the reassign explanation, #969) survives.
+    // The read is bounded by the manage page's own deadline, through the same
+    // helper, so a slow Salesforce never stalls the lead's own correction.
     const callingNumber = changed.phone
       ? await callingNumberWithinDeadline(
           () => deps.readCallingNumber(bookingLeadId(booking)),
           (err) =>
             log.warn("manage-contact", {
-              msg: "calling number unread, invite written without it",
+              msg: "calling number unread, invite line left as it was",
               booking_id: booking.id,
               reason: shortErrorReason(err),
             }),
@@ -5493,17 +5503,18 @@ export async function updateBookingContact(
         )
       : null;
     try {
+      let description: string | undefined;
+      if (changed.phone) {
+        // An invite that cannot be read (or is gone) is never overwritten blind: the
+        // throw lands in the stale invite branch below, as a failed write does.
+        const current = await deps.readEventDescription(booking.agent_email, booking.gcal_event_id);
+        if (current === null) throw new Error("the invite is gone");
+        description = withCallingNumberLine(withPhoneLine(current, stored), callingNumber);
+      }
       await deps.updateEventContact(booking.agent_email, booking.gcal_event_id, {
         // Each field is sent only when it moved, so the PATCH says exactly what
         // changed and `sendUpdates` is decided by whether the invitee did.
-        ...(changed.phone
-          ? {
-              description: eventDescription(stored, manageUrl(deps, token), {
-                isTest: bucket.is_test,
-                callingNumber,
-              }),
-            }
-          : {}),
+        ...(description !== undefined ? { description } : {}),
         ...(changed.name ? { summary: eventSummary(eventType.name, nextName ?? null) } : {}),
         ...(changed.email ? { attendeeEmail: nextEmail ?? undefined, attendeeName: nextName ?? undefined } : {}),
       });

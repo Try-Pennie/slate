@@ -25,7 +25,7 @@ import type {
   OwnerAlertEvent,
   RoutingTrace,
 } from "../../src/lib/db/types.ts";
-import { deterministicEventId, EventGone } from "../../src/lib/booking/core.ts";
+import { deterministicEventId, EventGone, eventDescription } from "../../src/lib/booking/core.ts";
 import type { PersonIdentity, PersonWorld } from "../../src/lib/booking/person-dedupe.ts";
 import { GoogleHttpError } from "../../src/lib/google/http-error.ts";
 import type { OwnerAlertEventBody } from "../../src/lib/booking/owner-alert.ts";
@@ -164,6 +164,10 @@ export interface FakeOpts {
   callingNumberThrows?: boolean;
   /** #1334: the calling number read never answers; the deadline then fires at once. */
   callingNumberHangs?: boolean;
+  /** #1334: what the booking's invite says now (null: the event is gone). */
+  inviteDescription?: string | null;
+  /** #1334: the invite cannot be read. */
+  inviteReadThrows?: boolean;
   /**
    * findActiveBookingsForPerson throws, which is what a failed bookings read now
    * does (#1641). The booker path fails CLOSED on it: the second booking is
@@ -547,6 +551,15 @@ export function makeDeps(opts: FakeOpts) {
       if (opts.callingNumberThrows) throw new Error("SF query failed: 503 unavailable");
       if (opts.callingNumberHangs) return new Promise<string | null>(() => {});
       return opts.callingNumber ?? null;
+    },
+    readEventDescription: async () => {
+      if (opts.inviteReadThrows) throw new Error("events.get: 503");
+      if (opts.inviteDescription !== undefined) return opts.inviteDescription;
+      // By default the invite says what the booking path wrote for the booking.
+      const b = opts.existing?.booking;
+      return eventDescription(b?.attendee_phone ?? null, `https://slate.test/booking/manage/${b?.manage_token ?? ""}`, {
+        isTest: opts.existing?.bucket.is_test ?? false,
+      });
     },
     // The deadline expires at once only for a read that hangs, so no other suite
     // races a real answer against it; every timer's clear is counted.

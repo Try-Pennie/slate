@@ -5,7 +5,12 @@
 // This is a scheduled job that sends something a REAL PERSON reads, so the property
 // under test is that it is safe to run twice. Every dependency is injected, so the
 // ordering that makes it safe is asserted rather than assumed.
-import { runBookingReminders, type ReminderDeps, type DueBooking } from "../src/lib/booking/reminder-send.ts";
+import {
+  REMINDER_CALLING_NUMBER_DEADLINE_MS,
+  runBookingReminders,
+  type ReminderDeps,
+  type DueBooking,
+} from "../src/lib/booking/reminder-send.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const HOUR = 60 * 60_000;
@@ -387,6 +392,36 @@ function spy(over: Partial<ReminderDeps> = {}) {
   eq(s.order.includes("refresh"), false, "and the invite is left alone");
   eq(s.alerts.length, 0, "it is not a paging fault: no reminder was lost");
   eq(s.warnings.length, 1, "but the failed read is logged with its reason");
+}
+
+// A Salesforce that never answers must not stall the lane before any claim or send:
+// the read runs under the lane's own deadline, and on timeout every reminder goes
+// without a number, logged and counted exactly like a refused read.
+{
+  const msgs: import("../src/lib/notify/email-mime.ts").MimeMessage[] = [];
+  const timer = { ms: 0, set: 0, cleared: 0 };
+  const s = spy({
+    readCallingNumbers: () => new Promise(() => {}),
+    deadlineTimer: (ms, fire) => {
+      timer.ms = ms;
+      timer.set += 1;
+      queueMicrotask(fire);
+      return () => {
+        timer.cleared += 1;
+      };
+    },
+    send: async (msg) => {
+      msgs.push(msg);
+      return "gmail-id";
+    },
+  });
+  const result = await runBookingReminders(s.deps);
+  eq(result.sent, 1, "a hung Salesforce read still lets the reminder go out");
+  eq(msgs[0]!.attachments?.length ?? 0, 0, "without a card");
+  eq(result.callingNumberUnread, true, "counted as unread");
+  eq(s.warnings.length, 1, "and logged");
+  eq(timer.ms, REMINDER_CALLING_NUMBER_DEADLINE_MS, "under the lane's own deadline");
+  eq(timer.cleared, timer.set, "whose timer is cleared");
 }
 
 // A lost claim writes nothing to the invite. The number is read before the claims

@@ -5,6 +5,16 @@ import { parseStampMs } from "@/lib/date/stamp";
 import { isLeadId, leadIdKey } from "@/lib/salesforce/lead-xbc";
 import { advisorContactCard } from "./advisor-contact-card.ts";
 import { withCallingNumberLine } from "./core.ts";
+import { readWithinDeadline, type ScheduleTimer } from "@/lib/salesforce/lead-calling-number";
+
+/**
+ * How long the lane waits for the tick's one calling number read (#1334). Longer
+ * than the 2.5s a waiting lead gets, because nobody is watching this and the read
+ * is a token exchange plus a query; far shorter than the five minute cadence and
+ * the shared invocation budget, so a hung Salesforce costs every reminder its
+ * number, never the reminder itself.
+ */
+export const REMINDER_CALLING_NUMBER_DEADLINE_MS = 10_000;
 
 /**
  * The 24 hour reminder lane's orchestration (#2359).
@@ -85,6 +95,8 @@ export interface ReminderDeps {
    * is gone. Throws when it cannot be read, so nothing is written blind.
    */
   readInviteDescription(agentEmail: string, eventId: string): Promise<string | null>;
+  /** The timer the calling number deadline runs on; absent means the real clock. */
+  deadlineTimer?: ScheduleTimer;
   /** A degraded step that is not a lost reminder: logged with its reason, never paged. */
   warn(msg: string, bookingId: string | null, err: unknown): void;
 }
@@ -209,14 +221,20 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
     ...new Set(sendable.map((r) => r.leadId).filter((id): id is string => !!id && isLeadId(id))),
   ];
   if (leadIds.length > 0) {
-    try {
-      callingNumbers = await deps.readCallingNumbers(leadIds);
-    } catch (err) {
-      // This flag is what tells "nobody had a number" apart from "Salesforce could
-      // not be read" in the run the caller logs; the reason goes to the log.
-      run.callingNumberUnread = true;
-      deps.warn("calling numbers unread, reminders sent without one", null, err);
-    }
+    // Under the lane's own deadline, so a hung Salesforce cannot hold every claim
+    // and send behind it. A refusal and a timeout are the same outcome here, each
+    // logged with its own reason; the flag is what tells "nobody had a number"
+    // apart from "Salesforce could not be read" in the run the caller logs.
+    const read = await readWithinDeadline(
+      () => deps.readCallingNumbers(leadIds),
+      REMINDER_CALLING_NUMBER_DEADLINE_MS,
+      (err) => {
+        run.callingNumberUnread = true;
+        deps.warn("calling numbers unread, reminders sent without one", null, err);
+      },
+      deps.deadlineTimer,
+    );
+    if (read) callingNumbers = read;
   }
 
   for (const row of sendable) {

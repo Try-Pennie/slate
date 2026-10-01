@@ -43,6 +43,7 @@ import {
   updateEventTimeOnCalendar,
   updateEventDescription,
   updateEventContact,
+  getEventOnPrimary,
 } from "@/lib/google/calendar";
 import {
   insertOwnerAlert,
@@ -1050,6 +1051,11 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     updateEventTime,
     updateEventDescription,
     updateEventContact,
+    // #1334: what an invite says now, so a phone correction edits one line of it.
+    readEventDescription: async (email, eventId) => {
+      const event = await getEventOnPrimary(email, eventId);
+      return event === null ? null : (event.description ?? "");
+    },
     emitWebhook,
     appBaseUrl: appUrl,
     newManageToken: () => nanoid(24),

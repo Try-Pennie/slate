@@ -101,6 +101,9 @@ function makeDeps(): BookingDeps {
     readCallingNumber: async () => {
       throw new Error("Salesforce is not reachable from this test");
     },
+    readEventDescription: async () => {
+      throw new Error("no test here edits an invite's description");
+    },
     resolveBucketByCode: async () => ({ bucket, eventType }),
     roundRobinCandidates: async () => ["target"],
     busyIntervalsForAgent: async () => [],

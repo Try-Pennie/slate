@@ -97,11 +97,26 @@ export async function readOneCallingNumber(
  * so a fast read leaves nothing holding the isolate for the full wait; it is
  * injected so a test never waits for real (L524).
  */
-export async function callingNumberWithinDeadline(
+export function callingNumberWithinDeadline(
   read: () => Promise<string | null>,
   onUnread: (err: unknown) => void,
   timer: ScheduleTimer = realTimer,
 ): Promise<string | null> {
+  return readWithinDeadline(read, CALLING_NUMBER_DEADLINE_MS, onUnread, timer);
+}
+
+/**
+ * The deadline itself, shared by every calling number read: the lead-facing ones
+ * above and the reminder lane's batched read, which takes a longer bound of its own.
+ * Null on a refusal or a timeout, each reported through `onUnread`, and the timer
+ * cleared however the race ends.
+ */
+export async function readWithinDeadline<T>(
+  read: () => Promise<T | null>,
+  ms: number,
+  onUnread: (err: unknown) => void,
+  timer: ScheduleTimer = realTimer,
+): Promise<T | null> {
   const TIMED_OUT = Symbol("timed out");
   const attempt = read().catch((err: unknown) => {
     onUnread(err);
@@ -109,12 +124,12 @@ export async function callingNumberWithinDeadline(
   });
   let cancel = () => {};
   const expired = new Promise<typeof TIMED_OUT>((resolve) => {
-    cancel = timer(CALLING_NUMBER_DEADLINE_MS, () => resolve(TIMED_OUT));
+    cancel = timer(ms, () => resolve(TIMED_OUT));
   });
   try {
     const got = await Promise.race([attempt, expired]);
     if (got === TIMED_OUT) {
-      onUnread(new Error(`no answer within ${CALLING_NUMBER_DEADLINE_MS}ms`));
+      onUnread(new Error(`no answer within ${ms}ms`));
       return null;
     }
     return got;

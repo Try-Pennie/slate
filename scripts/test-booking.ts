@@ -6,6 +6,7 @@ import {
   busyBlockFor,
   eventDescription,
   withCallingNumberLine,
+  withPhoneLine,
   idempotencyKeyFor,
   selectAgent,
   selectReassignTarget,
@@ -340,6 +341,21 @@ assert(!desc.includes(" - ") && !desc.includes("\u2014"), "lead-facing copy has 
   );
   assert(withCallingNumberLine(withFrom, null) === withFrom, "an unknown number never removes a line");
   assert(withCallingNumberLine("", "+12197588170").startsWith("The call will come from"), "an empty description gets the line alone");
+
+  // The phone line is edited in place by the same rule the builder writes it with.
+  assert(
+    withPhoneLine(eventDescription("+12035615295", "https://x/m/t", { isTest: true, callingNumber: "+12197588170" }), "+12155559999") ===
+      eventDescription("+12155559999", "https://x/m/t", { isTest: true, callingNumber: "+12197588170" }),
+    "editing the phone line gives the same text as building with the new phone, test line and calling line kept",
+  );
+  assert(
+    withPhoneLine("Booked via Pennie. Phone: +12035615295\nhttps://x", null) === "Booked via Pennie.\nhttps://x",
+    "a removed phone leaves the plain booked line",
+  );
+  assert(
+    withPhoneLine("Some text nobody here wrote.", "+12155559999") === "Booked via Pennie. Phone: +12155559999\nSome text nobody here wrote.",
+    "an invite with no phone line gets one at the top, and keeps the rest",
+  );
 }
 
 finish();

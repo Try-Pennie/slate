@@ -1,29 +1,39 @@
-// A phone correction on the manage page rewrites the invite's description, and must
-// not drop the number the call will come FROM (#1334).
+// A phone correction on the manage page edits the invite's description IN PLACE, and
+// never drops the number the call will come FROM (#1334).
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-manage-phone-keeps-calling-number.ts
 //
 // The reminder lane writes the calling number into the invite once it can read it.
-// A lead who then corrects their own number gets the description rebuilt from
-// scratch, and a rebuild that did not ask for the calling number would silently
-// remove it from the invite for good: no second reminder follows to put it back.
-// So the correction asks Salesforce too, and any way of not knowing it leaves the
-// line out rather than holding up, or failing, the correction.
+// A lead who then corrects their own number used to get the description rebuilt from
+// scratch, so any way of not reading the calling number again (a refusal, a timeout,
+// an empty field) silently removed the line for good: no second reminder follows to
+// put it back. So the correction reads what the invite says NOW and changes only the
+// phone line, and the calling number line only when Salesforce answered with one.
+// Everything else on the invite, the reassign explanation (#969) included, survives.
 import { updateBookingPhone } from "../src/lib/booking/orchestration.ts";
-import { bucket, createAsserter, eventType, makeBooking, makeDeps } from "./lib/booking-fakes.ts";
-
-const { assert, finish } = createAsserter();
+import { bucket, eventType, makeBooking, makeDeps } from "./lib/booking-fakes.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
 const TOKEN = "tok-manage";
 const LEAD = "00QUi000010889ZMAQ";
+const LINK = "Reschedule or cancel: https://slate.test/booking/manage/tok-manage";
+const FROM_219 = "The call will come from (219) 758-8170. Save it to your contacts so your phone lets it through.";
+/** The invite after the reminder lane wrote the calling number into it. */
+const WITH_LINE = `Booked via Pennie. Phone: +12035615295\n${FROM_219}\n${LINK}`;
 
 function world(
-  opts: { callingNumber?: string | null; callingNumberThrows?: boolean; callingNumberHangs?: boolean; leadId?: string | null } = {},
+  opts: {
+    callingNumber?: string | null;
+    callingNumberThrows?: boolean;
+    callingNumberHangs?: boolean;
+    inviteDescription?: string | null;
+    inviteReadThrows?: boolean;
+  } = {},
 ) {
   const booking = makeBooking({
     id: "bk-1",
     manage_token: TOKEN,
     attendee_phone: "+12035615295",
     gcal_event_id: "gcal-1",
-    salesforce_id: opts.leadId === undefined ? LEAD : opts.leadId,
+    salesforce_id: LEAD,
     external_id: null,
   });
   return makeDeps({
@@ -31,46 +41,70 @@ function world(
     callingNumber: opts.callingNumber,
     callingNumberThrows: opts.callingNumberThrows,
     callingNumberHangs: opts.callingNumberHangs,
+    inviteDescription: opts.inviteDescription === undefined ? WITH_LINE : opts.inviteDescription,
+    inviteReadThrows: opts.inviteReadThrows,
   });
 }
 
+const written = (calls: ReturnType<typeof world>["calls"]) => calls.updateEventContact[0]?.patch.description ?? "";
+
 async function run() {
+  // A known number: the phone line moves, the calling line stays (or is updated).
   {
     const { deps, calls } = world({ callingNumber: "+12197588170" });
     const res = await updateBookingPhone(TOKEN, "(215) 555-9999", deps);
     assert(res.ok, "the correction is accepted");
-    assert(calls.readCallingNumber.length === 1 && calls.readCallingNumber[0] === LEAD, "Salesforce is asked about this booking's lead");
-    const description = calls.updateEventContact[0]?.patch.description ?? "";
-    assert(description.includes("+12155559999"), "the invite carries the corrected number for the advisor");
-    assert(description.includes("(219) 758-8170"), "and keeps the number the call will come from");
+    assert(calls.readCallingNumber[0] === LEAD, "Salesforce is asked about this booking's lead");
+    eq(written(calls), `Booked via Pennie. Phone: +12155559999\n${FROM_219}\n${LINK}`, "only the phone line changed");
   }
   {
-    const { deps, calls } = world({ callingNumber: null });
+    const { deps, calls } = world({ callingNumber: "+13025550100" });
+    await updateBookingPhone(TOKEN, "(215) 555-9999", deps);
+    const d = written(calls);
+    assert(d.includes("(302) 555-0100") && !d.includes("(219)"), "a changed calling number replaces the old line");
+  }
+
+  // Every way of NOT knowing the number keeps the line the lane already wrote.
+  for (const [label, opts] of [
+    ["an empty field", { callingNumber: null }],
+    ["a refused read", { callingNumberThrows: true }],
+    ["a read that never answers", { callingNumberHangs: true }],
+  ] as const) {
+    const { deps, calls } = world(opts);
     const res = await updateBookingPhone(TOKEN, "(215) 555-9999", deps);
-    assert(res.ok, "with no calling number known the correction still goes through");
-    const description = calls.updateEventContact[0]?.patch.description ?? "";
-    assert(!/come from/i.test(description), "and the invite says nothing about a calling number");
+    assert(res.ok, `${label}: the correction still goes through`);
+    eq(written(calls), `Booked via Pennie. Phone: +12155559999\n${FROM_219}\n${LINK}`, `${label}: the calling number line is kept`);
   }
   {
-    const { deps, calls } = world({ callingNumberThrows: true });
-    const res = await updateBookingPhone(TOKEN, "(215) 555-9999", deps);
-    assert(res.ok, "a failed Salesforce read never fails the lead's correction");
-    const description = calls.updateEventContact[0]?.patch.description ?? "";
-    assert(description.includes("+12155559999") && !/come from/i.test(description), "the invite is written without the line");
-  }
-  {
-    // A Salesforce that never answers must not stall the lead's own correction: it is
-    // bounded by the same deadline the manage page uses, and the invite goes without
-    // the line. The deadline timer fires at once here, so no test waits for real.
     const { deps, calls } = world({ callingNumberHangs: true });
-    const res = await updateBookingPhone(TOKEN, "(215) 555-9999", deps);
-    assert(res.ok, "a Salesforce that never answers does not hold the correction");
-    const description = calls.updateEventContact[0]?.patch.description ?? "";
-    assert(description.includes("+12155559999") && !/come from/i.test(description), "the invite is written without the line");
-    assert(calls.deadlineTimers.set === 1 && calls.deadlineTimers.cleared === 1, "under one deadline, whose timer is cleared");
+    await updateBookingPhone(TOKEN, "(215) 555-9999", deps);
+    assert(calls.deadlineTimers.set === 1 && calls.deadlineTimers.cleared === 1, "the hung read ran under one deadline, whose timer is cleared");
   }
+
+  // Text the booking path did not write survives the edit.
   {
-    // A correction that changes nothing writes nothing, so it asks nothing either.
+    const reassign =
+      "Your appointment time has not changed. You have been matched with a different Pennie advisor who will be with you at this time. There is nothing you need to do.";
+    const { deps, calls } = world({ inviteDescription: `${reassign}\n${FROM_219}`, callingNumber: null });
+    await updateBookingPhone(TOKEN, "(215) 555-9999", deps);
+    const d = written(calls);
+    assert(d.includes(reassign), "the reassign explanation is kept word for word");
+    assert(d.includes("Phone: +12155559999"), "and the corrected number is added for the advisor");
+    assert(d.includes(FROM_219), "and the calling number line is kept");
+  }
+
+  // An invite that cannot be read is never overwritten blind: the save stands and the
+  // stale invite is reported, exactly as a failed invite write is.
+  {
+    const { deps, calls } = world({ inviteReadThrows: true, callingNumber: "+12197588170" });
+    const res = await updateBookingPhone(TOKEN, "(215) 555-9999", deps);
+    assert(res.ok, "the lead's correction is still saved");
+    assert(calls.updateEventContact.length === 0, "nothing is written to an invite nobody could read");
+    assert(!!(res as { staleInvite?: unknown }).staleInvite, "and the stale invite is reported");
+  }
+
+  // A correction that changes nothing writes nothing, so it asks nothing either.
+  {
     const { deps, calls } = world({ callingNumber: "+12197588170" });
     await updateBookingPhone(TOKEN, "(203) 561-5295", deps);
     assert(calls.readCallingNumber.length === 0, "an unchanged number costs no Salesforce read");
