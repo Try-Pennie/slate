@@ -38,6 +38,7 @@ import type { AvailabilityScanResult } from "@/lib/monitor/availability-scan";
 import type { CalendarWindowResult } from "@/lib/monitor/calendar-window-coverage";
 import type { OffsiteOriginResult } from "@/lib/monitor/offsite-origin";
 import type { AwaitingActivationResult } from "@/lib/monitor/awaiting-activation";
+import type { StrandedHiresResult } from "@/lib/monitor/stranded-hires";
 import type { RegalFeedQuietResult, RegalFeedUnreadableResult } from "@/lib/monitor/regal-call-feed";
 import type { RegalCallOutcomesResult } from "@/lib/monitor/regal-call-outcomes";
 import type { monitorSetupGates } from "@/lib/monitor/setup-gates";
@@ -168,6 +169,12 @@ export const AVAILABILITY_SCAN_VERDICT_LANE = "verdict:availability-scan";
 export const CALENDAR_WINDOW_VERDICT_LANE = "verdict:calendar-window";
 export const OFFSITE_ORIGIN_VERDICT_LANE = "verdict:offsite-origin";
 export const AWAITING_ACTIVATION_VERDICT_LANE = "verdict:awaiting-activation";
+/**
+ * The stranded hire check (#2481). Silent on a healthy roster AND on a broken
+ * read, and the shape it looks for is rare by construction, so the stamp is the
+ * only thing that can tell a working detector from a blind one.
+ */
+export const STRANDED_HIRES_VERDICT_LANE = "verdict:stranded-hires";
 export const REGAL_CALL_FEED_VERDICT_LANE = "verdict:regal-call-feed";
 /**
  * The call outcome ratio (#2944): outcome rows written against completed calls
@@ -212,6 +219,7 @@ export type DetectorVerdictLane =
   | typeof CALENDAR_WINDOW_VERDICT_LANE
   | typeof OFFSITE_ORIGIN_VERDICT_LANE
   | typeof AWAITING_ACTIVATION_VERDICT_LANE
+  | typeof STRANDED_HIRES_VERDICT_LANE
   | typeof REGAL_CALL_FEED_VERDICT_LANE
   | typeof REGAL_CALL_OUTCOMES_VERDICT_LANE
   | typeof AVAILABILITY_LATENCY_VERDICT_LANE;
@@ -404,6 +412,16 @@ export function offsiteOriginReachedVerdict(result: OffsiteOriginResult | null):
  * armed or not: the switch decides whether it pages, not whether it looked.
  */
 export function awaitingActivationReachedVerdict(result: AwaitingActivationResult | null): boolean {
+  return result !== null && result.status !== "unreadable";
+}
+
+/**
+ * Did the stranded hire check read the roster and judge it? (#2481)
+ *
+ * `clear` is the ordinary answer and stamps; `stranded` stamps too. Only an
+ * unreadable read, or a step that threw, is no verdict.
+ */
+export function strandedHiresReachedVerdict(result: StrandedHiresResult | null): boolean {
   return result !== null && result.status !== "unreadable";
 }
 

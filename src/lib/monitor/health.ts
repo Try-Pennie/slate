@@ -599,6 +599,9 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // Waiting to become bookable concludes on every tick the roster reads, and an
   // empty queue is its ordinary answer.
   "verdict:awaiting-activation": 6 * 60 * MIN,
+  // The stranded hire check concludes on every tick the roster reads, and nobody
+  // stranded is its ordinary answer, so six hours of silence is six hours blind.
+  "verdict:stranded-hires": 6 * 60 * MIN,
   // The Regal feed pair concludes whenever the reason count RPC answers for both,
   // and a quiet day is itself a verdict, so a weekend with no calls does not make
   // it silent the way it makes the Regal call detector silent. The one real gap

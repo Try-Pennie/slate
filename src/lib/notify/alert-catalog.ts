@@ -356,6 +356,14 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "person decides either way, and the same lane sees it (#2318).",
   },
   {
+    key: "agents_stranded_outside_pool",
+    kind: "condition",
+    why:
+      "A signed in Sales hire with a syncing calendar sits outside the pool with no " +
+      "pending activation and no recorded hold; it ends when they are made bookable " +
+      "or a hold is recorded, and the monitor lane re-reads the roster every pass (#2481).",
+  },
+  {
     key: "schedule_parity_drift",
     kind: "condition",
     why:

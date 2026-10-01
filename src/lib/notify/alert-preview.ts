@@ -113,6 +113,7 @@ import {
   formatAwaitingActivationAlert,
   formatAwaitingActivationRecovery,
 } from "@/lib/monitor/awaiting-activation";
+import { formatStrandedHiresAlert, formatStrandedHiresRecovery } from "@/lib/monitor/stranded-hires";
 import {
   judgeRegalCallers,
   formatRegalCallAlert,
@@ -2191,6 +2192,28 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "nobody past the grace",
     channel: "recovery",
     text: formatAwaitingActivationRecovery(),
+  },
+  // #2481. Invented people (L155). One and several read differently, and past
+  // eight the names are capped, so each is its own state.
+  {
+    key: "agents_stranded_outside_pool",
+    state: "one hire stranded",
+    channel: "alert",
+    text: formatStrandedHiresAlert([{ id: "u1", name: "Robin Example", email: "rexample@trypennie.com" }]),
+  },
+  {
+    key: "agents_stranded_outside_pool",
+    state: "more hires stranded than the message names",
+    channel: "alert",
+    text: formatStrandedHiresAlert(
+      Array.from({ length: 10 }, (_, i) => ({ id: `u${i}`, name: null, email: `hire${i}@trypennie.com` })),
+    ),
+  },
+  {
+    key: "agents_stranded_outside_pool",
+    state: "nobody stranded",
+    channel: "recovery",
+    text: formatStrandedHiresRecovery(),
   },
   // #2090. Invented people, never real agents (L155). The two axes read differently
   // because the remedies do: a switch somebody turned off, or somebody who left.

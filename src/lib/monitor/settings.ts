@@ -55,6 +55,7 @@ export const ALERT_KEYS = [
   "schedule_parity_drift",
   "agents_on_unset_hours",
   "agents_awaiting_activation",
+  "agents_stranded_outside_pool",
   "booking_below_lead_tier",
   "cross_system_booking",
   "regal_call_unroutable",
@@ -217,6 +218,12 @@ export const ALERT_FIELDS: {
     urgency: "alert",
     label: "Agents waiting to become bookable",
     help: "Somebody the roster counts as working has sat outside the booking pool for more than four hours, so no lead is ever offered their diary. The first four hours are silent, because the hourly roster sync retries on its own and an ordinary Google blip clears inside them. It ends when the activation succeeds or somebody decides either way.",
+  },
+  {
+    key: "agents_stranded_outside_pool",
+    urgency: "alert",
+    label: "Agents nothing will ever add to the pool",
+    help: "Somebody on the Sales profile has signed in and their calendar syncs, and they are not bookable with no activation pending and nobody on record holding them back. Nothing retries them, so they stay out of every pool until a person acts. It is checked every 5 minutes, and ends when they are made bookable or tagged Redistribute in Twilio.",
   },
   {
     key: "booking_below_lead_tier",
@@ -438,6 +445,10 @@ export const MONITOR_DEFAULTS = {
     // than minutes, and a cooldown shorter than the grace would repeat the same
     // names before anything could have changed.
     agents_awaiting_activation: 6 * 60 * 60_000,
+    // Stranded outside the pool (#2481). Six hours, like the waiting page beside it:
+    // the repair is a person pressing one button on an agent page, which happens
+    // inside a working morning, and the state costs leads every hour it stands.
+    agents_stranded_outside_pool: 6 * 60 * 60_000,
     // Below the lead's tier (#2593), per booking. Six hours: the repair is a person
     // reassigning one call, and calls are usually booked a day or more ahead, so a
     // reminder inside the same working day is worth its noise while a repeat every
