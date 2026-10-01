@@ -31,6 +31,15 @@
  * beside Low is judged only once it has been learned, and until then it is UNJUDGED
  * and says so on /admin/alerts rather than reading as quiet (L678).
  *
+ * ULTRA HIGH HAS NO ANCHOR, BY MEASUREMENT (#2888). Re-measured 2026-10-01 over
+ * 2026-07-30 to 2026-10-01 15:45 UTC, which ends just before the split sent half
+ * of every tier to Slate (`MEASURE_END=2026-10-01T15:45:00Z`, so the count is the
+ * whole tier, not cal.com's half): 3,404 bookings, and no hour the alarm judges
+ * carries a floor above zero, so the command refused to save it. Thinning only
+ * lowers a floor, so no share Slate carries could give it one either. It is judged
+ * from its own learned floors alone, and this measurement cannot be taken again
+ * once cal.com stops taking Ultra High leads at cutover (#65).
+ *
  * No `@/` imports, so node scripts can drive it.
  */
 import { DEBT_TIER } from "../xbc.ts";

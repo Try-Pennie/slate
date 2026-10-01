@@ -8,6 +8,7 @@
 // regressed can never reach the network from a test (L2): it fails here instead.
 import { spawnSync } from "node:child_process";
 import { assert, finish } from "./lib/harness.ts";
+import { measureEndOrRefusal } from "./lib/calcom-routing-responses.ts";
 
 const NO_NETWORK = "data:text/javascript,globalThis.fetch=()=>{throw new Error('network refused in test')}";
 
@@ -21,6 +22,7 @@ function childEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
     MEASURE_DAYS: "",
     MEASURE_PACE_MS: "",
     MEASURE_TIER: "",
+    MEASURE_END: "",
     REFIT: "",
     RECORD_CLOSED_DAYS: "",
     ...extra,
@@ -90,6 +92,33 @@ for (const mode of [{}, { REFIT: "1" }, { RECORD_CLOSED_DAYS: "1" }] as Record<s
   assert(!r.err.includes("network refused"), "before any cal.com call");
   const ok = run({ MEASURE_PACE_MS: "0" }, "scripts/measure-lead-hours.ts");
   assert(ok.err.includes("network refused"), "and a readable pace still reaches for cal.com");
+}
+
+// #2888, #2494: MEASURE_END pins the end of the measured span. Since the split went
+// to 50/50 on every tier (2026-10-01 15:46 UTC) cal.com carries about half of each
+// tier, so a span ending now measures half the traffic it claims to; the span has
+// to end before the split, and an end that cannot be read must be refused rather
+// than read as "now", which is the one end that silently measures the wrong thing.
+{
+  const now = Date.parse("2026-10-01T19:00:00Z");
+  const blank = measureEndOrRefusal("", now);
+  assert(blank.ok && blank.endMs === now, "a blank MEASURE_END is the moment of the run");
+  const pinned = measureEndOrRefusal("2026-10-01T15:45:00Z", now);
+  assert(pinned.ok && pinned.endMs === Date.parse("2026-10-01T15:45:00Z"), "an instant with a zone is taken as written");
+  const offset = measureEndOrRefusal("2026-10-01T11:45:00-04:00", now);
+  assert(offset.ok && offset.endMs === Date.parse("2026-10-01T15:45:00Z"), "an offset reads as the same instant");
+  for (const bad of ["yesterday", "2026-10-01T15:45:00", "2026-10-01", "2026-13-01T00:00:00Z", "2026-10-02T00:00:00Z"]) {
+    const r = measureEndOrRefusal(bad, now);
+    assert(!r.ok && r.refusal.startsWith("FAILED (bad-input): MEASURE_END"), `MEASURE_END=${bad} is refused by name`);
+  }
+}
+for (const script of ["scripts/measure-volume-floors.ts", "scripts/measure-lead-hours.ts"]) {
+  const r = run({ MEASURE_END: "not-a-time", MEASURE_PACE_MS: "0" }, script);
+  assert(r.status === 1, `${script} exits 1 on an unreadable MEASURE_END (got ${r.status})`);
+  assert(r.err.includes("FAILED (bad-input): MEASURE_END"), `${script} names the end as what it could not read`);
+  assert(!r.err.includes("network refused"), `${script} refuses before any cal.com call`);
+  const ok = run({ MEASURE_END: "2026-10-01T15:45:00Z", MEASURE_PACE_MS: "0" }, script);
+  assert(ok.err.includes("network refused"), `${script} with a readable MEASURE_END still reaches for cal.com`);
 }
 
 finish();
