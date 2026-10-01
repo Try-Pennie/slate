@@ -418,6 +418,8 @@ export interface Matched {
     beganBeforeWindow: number;
     unresolved: number;
     otherEventTypes: Record<string, number>;
+    /** Applications and bookings carrying an instant that does not parse: the run refuses on any. */
+    unreadable: number;
   };
 }
 
@@ -441,8 +443,14 @@ export function matchBookings(input: {
   const cohort = new Map<string, AppOutcome>();
   let outsideTiers = 0;
   let noTier = 0;
+  let unreadable = 0;
   for (const a of input.applications) {
     const created = Date.parse(a.createdAt);
+    // A NaN compares false against both bounds and would leave the cohort in silence (L50).
+    if (!Number.isFinite(created)) {
+      unreadable++;
+      continue;
+    }
     if (!(created >= window.startMs && created < window.cohortEndMs)) continue;
     const tier = a.xbc !== null && /^\d/.test(a.xbc.trim()) ? a.xbc.trim()[0] : null;
     if (tier === null) {
@@ -493,6 +501,7 @@ export function matchBookings(input: {
     beganBeforeWindow: cal.beganBeforeWindow,
     unresolved: cal.unresolved,
     otherEventTypes: cal.otherEventTypes,
+    unreadable,
   };
 
   const attach = (chain: Chain, key: string) => {
@@ -509,6 +518,10 @@ export function matchBookings(input: {
   };
 
   for (const chain of [...slateChains(input.slate), ...cal.chains]) {
+    if (!Number.isFinite(chain.createdMs) || (chain.finalStartMs !== null && !Number.isFinite(chain.finalStartMs))) {
+      counts.unreadable++;
+      continue;
+    }
     if (chain.submissionKey !== null) {
       counts.byId++;
       attach(chain, chain.submissionKey);
@@ -722,6 +735,20 @@ export function judgePilotCompare(input: CompareInput): { exit: number; lines: s
     `Salesforce now holds: active ${String(settings.active)}, ${String(settings.percent)}%, tiers ${settings.tiers ?? "empty"}, last modified ${settings.lastModified ?? "unknown"}.`,
   ];
 
+  const unreadableRows = c.unreadable + calls.calls.filter((call) => !Number.isFinite(Date.parse(call.startedAt))).length;
+  if (unreadableRows > 0) {
+    return {
+      exit: PILOT_COMPARE_EXIT.inputUnreadable,
+      lines: [
+        `FAILED (input-unreadable): ${plural(unreadableRows, "row")} carried a time that could not be read (an application's creation, a ` +
+          "booking's creation or start, or a call's start). An unreadable time compares false against every bound, so it would leave the " +
+          "cohort or miss a show in silence (L50).",
+        ...header,
+        comparedLine,
+      ],
+      proposedReadout: null,
+    };
+  }
   if (judged.length === 0) {
     return {
       exit: PILOT_COMPARE_EXIT.noApplications,

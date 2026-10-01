@@ -107,7 +107,7 @@ is why the store start check exists.
 | 12 | provisional: before the fixed readout date, or none is fixed yet |
 | 13 | a rehearsal over days outside the window |
 | 14 | what Salesforce holds now contradicts the assumed split |
-| 15 | an input could not be read (`PILOT_COMPARE_LIFT`, the rehearsal values, `READOUT_DATE`) |
+| 15 | an input could not be read (`PILOT_COMPARE_LIFT`, the rehearsal values, `READOUT_DATE`), or a row carried a time that does not parse |
 
 ## Where the code lives
 

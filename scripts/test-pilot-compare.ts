@@ -458,6 +458,20 @@ function run(
   assert(r.lines.some((l) => /^By the system that took the booking \(NOT randomised/.test(l)), "and the by system row is labelled as not randomised");
 }
 
+// --- 7b. an unreadable instant is refused, never compared (L50) ---------------------------------
+{
+  // A NaN compares false against everything: an application would silently leave the
+  // cohort, a booking would attach to any span, a call would quietly be no show.
+  const c = cohort(150, { slate: [0.4, 0.6], calcom: [0.3, 0.5] });
+  const badApp = run({ ...c, apps: [...c.apps, app("slate", { createdAt: "not a date" })] });
+  eq(badApp.exit, PILOT_COMPARE_EXIT.inputUnreadable, "an application whose creation time cannot be read refuses the run");
+  assert(badApp.lines.some((l) => /1 row/.test(l) && /could not be read/.test(l)), `and counts it (${badApp.lines[0]})`);
+  const badBooking = run({ ...c, slate: [...c.slate, slateRow(c.apps[0], { startsAt: "soon" })] });
+  eq(badBooking.exit, PILOT_COMPARE_EXIT.inputUnreadable, "a booking whose start cannot be read refuses the run");
+  const badCall = run({ ...c, calls: [...c.calls, { ...c.calls[0], startedAt: "later" }] });
+  eq(badCall.exit, PILOT_COMPARE_EXIT.inputUnreadable, "a call whose start cannot be read refuses the run");
+}
+
 // --- 8. the Salesforce reads refuse a short answer ----------------------------------------------
 {
   const pages = (list: SoqlPage<{ Id: string }>[]) => {

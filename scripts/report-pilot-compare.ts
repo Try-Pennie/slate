@@ -38,7 +38,7 @@
 // | 12 | provisional: before the fixed readout date, or none is fixed yet |
 // | 13 | a rehearsal over days outside the window |
 // | 14 | what Salesforce holds now contradicts the assumed split |
-// | 15 | an input could not be read |
+// | 15 | an input could not be read, or a row carried a time that does not parse |
 //
 // It is deliberately NOT named `test-*.ts`: that glob is the offline unit suite.
 import { loadEnvFiles } from "./smoke-env.ts";
