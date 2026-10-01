@@ -82,6 +82,8 @@ wrangler secret put BOOKING_API_KEY_TRYPENNIE # optional; trypennie's own bookin
 wrangler secret put BOOKING_API_KEY_TRYPENNIE_2 # trypennie's rotation slot. SET since 2026-09-28 (#2865): it holds the value trypennie's Vercel SLATE_BOOKING_API_KEY was given, the old shared key, kept rather than rotated so trypennie changes nothing.
 wrangler secret put BOOKING_API_KEY_CANARY  # required for the smoke canary (#2822); its own key, recorded as "canary". The GitHub repo secret of the SAME NAME must hold the SAME value: every canary lane, the deploy probe and every heartbeat stamp send it, and a value the Worker does not hold fails them with a 401 and an alert. Empty here = every canary lane fails loudly.
 # wrangler secret put BOOKING_API_KEY_CANARY_2  # optional; the canary's rotation slot, set only when rotating.
+wrangler secret put BOOKING_API_KEY_MARCIA  # optional; Marcia's own booking API key (#2940), held by the Marcia 5.0 Pipedream workflow as its slate_api_key step prop. It opens POST /api/bookings/cancel (and its DELETE twin) and NOTHING else: every other route refuses it 401. Logs and the rate ceiling name the caller "marcia". Empty = Marcia's cancels are refused 401 and no other caller is affected.
+# wrangler secret put BOOKING_API_KEY_MARCIA_2  # optional; Marcia's rotation slot, set only when rotating.
 # wrangler secret put BOOKING_API_RETIRED_KEY_HASHES # optional, and NOT SET today (#2879): hashes of RETIRED booking keys, never the keys, as label:sha256:<hash> entries, comma separated (an entry without the sha256: part is refused as unreadable, so a raw key pasted by mistake is caught). A refused request presenting one pages retired_booking_key naming its host and route. Empty = inert. Nothing is retired yet: the old shared key's value is still LIVE as BOOKING_API_KEY_TRYPENNIE_2, and a key in a live slot authenticates, so its hash would never fire (the hash command and the Worker both refuse one). Arm it at the NEXT rotation, once the old value is out of its slot: put it in .env.local as RETIRED_BOOKING_API_KEY, run `pnpm -s hash:retired-key <label> | npx wrangler secret put BOOKING_API_RETIRED_KEY_HASHES`, and once that succeeds run `pnpm -s hash:retired-key --record <label>`, commit docs/retired-booking-key-hashes.txt, then delete the .env.local line. The secret is REPLACED whole and cannot be read back, so the first step prints the whole list from that committed file (hashes, not keys) plus the new entry and writes nothing, and the second adds the entry to the file. A failed put is simply run again, both steps are safe to repeat for the same key, and a missing list file is refused rather than read as empty.
 openssl rand -hex 32 | wrangler secret put EMBED_TEST_PASS_SECRET  # required for partner testing (#2666); signs the short lived pass /book hands a page on an EMBED_TEST_ORIGINS website. Piped so the value never appears. Empty = the public test bucket is OFF: /book says so, the routes answer 403 TEST_PASS_OFF, and the canary's gate read pages. Rotating it ends every open test page's pass (a reload fixes it).
 wrangler secret put GITHUB_CANARY_TOKEN     # optional; fine-grained GitHub token (Actions read/write on Try-Pennie/slate) so the monitor lane can re-fire the smoke-canary workflow when GitHub drops a scheduled run. Empty = gap-filler is a no-op (GitHub's schedule alone runs the canary).
@@ -297,9 +299,10 @@ stamped source file is never left behind for the next commit to carry.
   with a `409` and a Slack alert fires (the agent stays out of the pool until the
   calendar is fixed). Unset key ⇒ the endpoint returns 503 (disabled).
 - **Direct booking API (optional):** each integrator gets its OWN key
-  (`BOOKING_API_KEY_REGAL`, `_TRYPENNIE`, `_CANARY`, above), never a shared one, so
+  (`BOOKING_API_KEY_REGAL`, `_TRYPENNIE`, `_CANARY`, `_MARCIA`, above), never a shared one, so
   every call is attributed to its caller and one can be revoked alone (#2645,
-  #2865). A new integrator is a new caller in `BOOKING_API_CALLERS`. Every key
+  #2865). A new integrator is a new caller in `BOOKING_API_CALLERS`; one that only
+  cancels also goes in `CANCEL_ONLY_CALLERS`, as Marcia does (#2940). Every key
   unset ⇒ `POST /api/bookings` returns 503. Rotate through the caller's `_2` slot
   (both are accepted at once). Full request/response/error contract:
   `docs/booking-api.md`.

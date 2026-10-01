@@ -12,6 +12,8 @@ import { join } from "node:path";
 import {
   BOOKING_API_CALLERS,
   CANARY_CALLERS,
+  CANCEL_ONLY_CALLERS,
+  FULL_API_CALLERS,
   bookingApiKeyEnvName,
   parseApiKeys,
   authenticateBearer,
@@ -26,9 +28,13 @@ const none = { primary: "", secondary: "" };
 {
   eq(
     [...BOOKING_API_CALLERS].sort().join(","),
-    "canary,regal,trypennie",
-    "the three callers the booking API knows, and no shared caller (#2865)",
+    "canary,marcia,regal,trypennie",
+    "the four callers the booking API knows, and no shared caller (#2865, #2940)",
   );
+  // #2940: Marcia (the Pipedream SMS workflow) holds a key that opens the cancel and
+  // nothing else. Every other caller keeps the whole API.
+  eq([...CANCEL_ONLY_CALLERS].sort().join(","), "marcia", "Marcia is the only cancel only caller");
+  eq([...FULL_API_CALLERS].sort().join(","), "canary,regal,trypennie", "every other caller keeps the whole API");
   // CANARY_CALLERS gates the smoke endpoints, which can stamp the canary's own
   // heartbeat: a partner key there could keep a dead canary looking alive.
   eq([...CANARY_CALLERS].sort().join(","), "canary", "only the canary may call the smoke endpoints");
@@ -46,6 +52,49 @@ const none = { primary: "", secondary: "" };
   }
   eq(bookingApiKeyEnvName("regal", "primary"), "BOOKING_API_KEY_REGAL", "a named caller's primary");
   eq(bookingApiKeyEnvName("trypennie", "secondary"), "BOOKING_API_KEY_TRYPENNIE_2", "a named caller's rotation slot");
+  eq(bookingApiKeyEnvName("marcia", "primary"), "BOOKING_API_KEY_MARCIA", "Marcia's primary (#2940)");
+  eq(bookingApiKeyEnvName("marcia", "secondary"), "BOOKING_API_KEY_MARCIA_2", "Marcia's rotation slot (#2940)");
+}
+
+// --- #2940: an unset Marcia key fails closed for Marcia ONLY -----------------------
+{
+  // The day this deploys, nobody has set BOOKING_API_KEY_MARCIA. Every other caller
+  // must go on authenticating exactly as before, and nothing may answer for Marcia.
+  const withoutMarcia = parseApiKeys([
+    { caller: "regal", primary: "regal-secret", secondary: "" },
+    { caller: "trypennie", primary: "trypennie-secret", secondary: "" },
+    { caller: "canary", primary: "canary-secret", secondary: "" },
+    { caller: "marcia", ...none },
+  ]);
+  for (const [caller, secret] of [["regal", "regal-secret"], ["trypennie", "trypennie-secret"], ["canary", "canary-secret"]] as const) {
+    const r = authenticateBearer(`Bearer ${secret}`, withoutMarcia);
+    assert(r.ok === true && r.caller === caller, `${caller} still authenticates with Marcia's key unset`);
+  }
+  const orphan = authenticateBearer("Bearer marcia-secret", withoutMarcia);
+  assert(orphan.ok === false && orphan.status === 401, "a Marcia key the Worker does not hold is refused (401)");
+  // Marcia alone and unset: the surface is OFF (503), never open.
+  const res = authenticateBearer("Bearer anything", parseApiKeys([{ caller: "marcia", ...none }]));
+  assert(res.ok === false && res.status === 503, "Marcia alone and unset -> 503, fails closed");
+
+  // Set, it names Marcia, in either slot.
+  const withMarcia = parseApiKeys([
+    { caller: "regal", primary: "regal-secret", secondary: "" },
+    { caller: "marcia", primary: "marcia-secret", secondary: "marcia-next" },
+  ]);
+  const m = authenticateBearer("Bearer marcia-secret", withMarcia);
+  assert(m.ok === true && m.caller === "marcia" && m.keyId === "marcia:primary", "Marcia's key names Marcia");
+  const m2 = authenticateBearer("Bearer marcia-next", withMarcia);
+  assert(m2.ok === true && m2.caller === "marcia" && m2.keyId === "marcia:secondary", "and its rotation slot too");
+
+  // A key set built for the FULL API (every route but the cancel) does not hold
+  // Marcia's key at all, so her key is refused there even when it is configured.
+  const fullOnly = parseApiKeys(
+    FULL_API_CALLERS.map((caller) => ({ caller, primary: `${caller}-secret`, secondary: "" })),
+  );
+  const refused = authenticateBearer("Bearer marcia-secret", fullOnly);
+  assert(refused.ok === false && refused.status === 401, "Marcia's key is refused by a full API key set");
+  const regal = authenticateBearer("Bearer regal-secret", fullOnly);
+  assert(regal.ok === true && regal.caller === "regal", "and Regal's is accepted by it (positive control)");
 }
 
 // --- parseApiKeys: build the labelled key set from each caller's two slots -------

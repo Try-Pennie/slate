@@ -1,6 +1,6 @@
 import { bookingApiKeyFor } from "@/lib/env";
 import {
-  BOOKING_API_CALLERS,
+  FULL_API_CALLERS,
   parseApiKeys,
   type ApiKey,
   type BookingApiCaller,
@@ -13,10 +13,13 @@ import {
  * accepted everywhere at once rather than wherever somebody remembered to add it.
  *
  * `callers` narrows WHO may call a surface (the smoke endpoints pass
- * `CANARY_CALLERS`); it defaults to every caller.
+ * `CANARY_CALLERS`). It defaults to every caller whose key opens the whole API,
+ * which leaves out the cancel only callers (#2940): the cancel names
+ * `BOOKING_API_CALLERS` itself, and every other route refuses Marcia's key without
+ * having to say so.
  */
 export function configuredBookingApiKeys(
-  callers: readonly BookingApiCaller[] = BOOKING_API_CALLERS,
+  callers: readonly BookingApiCaller[] = FULL_API_CALLERS,
 ): ApiKey[] {
   return parseApiKeys(
     callers.map((caller) => ({

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // POST /api/bookings/cancel (#2591): the key authed cancel in a form a Regal journey can
 // send, because its webhook step offers GET, POST, PUT and PATCH and no DELETE. It is
@@ -59,7 +59,7 @@ vi.mock("@/lib/api/errors", () => errors);
 vi.mock("@/lib/monitor/record-api-outcome", () => monitor);
 
 import { POST } from "./route";
-import { DELETE } from "../route";
+import { DELETE, POST as BOOK, GET as LOOKUP } from "../route";
 import { CANCEL_REASONS } from "@/lib/booking/core";
 import { BookingWriteFailedError } from "@/lib/booking/gated-write";
 
@@ -261,5 +261,116 @@ describe("POST /api/bookings/cancel: a lead's opt out by text (#2940)", () => {
     const res = await viaPost({ ...REGAL_OPT_OUT_BODY, reason: "text_optout" });
     expect(res.status).toBe(400);
     expect(service.cancelDirectBooking).not.toHaveBeenCalled();
+  });
+});
+
+// #2940, as rebuilt on 2026-10-01: Marcia (Pennie's Pipedream SMS workflow) cancels the
+// Slate booking itself, beside its cal.com cancel, on its OWN key. These are the two
+// bodies its Pipedream code step sends, field for field (the opt out path and the
+// cancel request path differ only by the reason), so a rename of any field here
+// breaks this test rather than Marcia's next real opt out.
+describe("POST /api/bookings/cancel on Marcia's own key (#2940)", () => {
+  const MARCIA_KEY = "marcia-secret";
+  const MARCIA_OPT_OUT_BODY = {
+    bookingId: "5f14aac7-ad33-4b8c-98cd-5fc5f5d7babc",
+    salesforceId: "00QUi0000108JOMMA2",
+    reason: "text_opt_out",
+  };
+  const MARCIA_CANCEL_REQUEST_BODY = {
+    bookingId: "5f14aac7-ad33-4b8c-98cd-5fc5f5d7babc",
+    salesforceId: "00QUi0000108JOMMA2",
+    reason: "other",
+    reasonDetail: "Asked Marcia by text to cancel",
+  };
+  const marciaKeyFor = (marcia: string) => (caller: string, slot: string) =>
+    caller === "regal" && slot === "primary" ? "real-secret" : caller === "marcia" && slot === "primary" ? marcia : "";
+
+  beforeEach(async () => {
+    env.bookingApiKeyFor.mockImplementation(marciaKeyFor(MARCIA_KEY));
+    service.bookViaApi.mockReset();
+    service.previewBooking.mockReset();
+    service.lookupPersonBookings.mockReset();
+    service.getPersonBookingById.mockReset();
+    service.listBookings.mockReset();
+    const real = await vi.importActual<typeof import("@/lib/booking/reason-options")>(
+      "@/lib/booking/reason-options",
+    );
+    reasons.loadReasonOptions.mockResolvedValue(
+      real.resolveReasonOptions([
+        { action: "cancel", code: "no_longer_interested", label: "No longer interested", sort_order: 0, active: true, locked: false, system_only: false },
+        { action: "cancel", code: "other", label: "Other", sort_order: 1, active: true, locked: true, system_only: false },
+      ]),
+    );
+  });
+
+  afterEach(() => {
+    env.bookingApiKeyFor.mockImplementation((caller: string, slot: string) =>
+      caller !== "regal" ? "" : slot === "primary" ? regalKey.primary() : regalKey.secondary(),
+    );
+  });
+
+  it("cancels on the opt out path, recorded as an opt out by text", async () => {
+    const res = await viaPost(MARCIA_OPT_OUT_BODY, `Bearer ${MARCIA_KEY}`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ outcome: "cancelled", booking: VIEW });
+    expect(service.cancelDirectBooking).toHaveBeenCalledExactlyOnceWith({
+      bookingId: MARCIA_OPT_OUT_BODY.bookingId,
+      identity: { externalId: null, salesforceId: MARCIA_OPT_OUT_BODY.salesforceId },
+      reason: { code: "text_opt_out", detail: null },
+    });
+  });
+
+  it("cancels on the cancel request path, as other with Marcia's detail", async () => {
+    const res = await viaPost(MARCIA_CANCEL_REQUEST_BODY, `Bearer ${MARCIA_KEY}`);
+    expect(res.status).toBe(200);
+    expect(service.cancelDirectBooking).toHaveBeenCalledExactlyOnceWith({
+      bookingId: MARCIA_CANCEL_REQUEST_BODY.bookingId,
+      identity: { externalId: null, salesforceId: MARCIA_CANCEL_REQUEST_BODY.salesforceId },
+      reason: { code: "other", detail: "Asked Marcia by text to cancel" },
+    });
+  });
+
+  it("answers 404 NOT_FOUND for a booking already cancelled, which Marcia reads as a skip", async () => {
+    service.cancelDirectBooking.mockRejectedValue(new service.BookingNotFoundError("Booking not found"));
+    const res = await viaPost(MARCIA_OPT_OUT_BODY, `Bearer ${MARCIA_KEY}`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "Booking not found", code: "NOT_FOUND" });
+  });
+
+  it("refuses Marcia with 401 while her key is unset, and Regal still cancels", async () => {
+    env.bookingApiKeyFor.mockImplementation(marciaKeyFor(""));
+    const refused = await viaPost(MARCIA_OPT_OUT_BODY, `Bearer ${MARCIA_KEY}`);
+    expect(refused.status).toBe(401);
+    expect(service.cancelDirectBooking).not.toHaveBeenCalled();
+    const regal = await viaPost(MARCIA_OPT_OUT_BODY, "Bearer real-secret");
+    expect(regal.status).toBe(200);
+  });
+
+  it("may cancel through DELETE /api/bookings too, the same cancel", async () => {
+    const res = await viaDelete(MARCIA_OPT_OUT_BODY, `Bearer ${MARCIA_KEY}`);
+    expect(res.status).toBe(200);
+    expect(service.cancelDirectBooking).toHaveBeenCalledTimes(1);
+  });
+
+  it("may NOT book with her key: POST /api/bookings refuses it and books nothing", async () => {
+    const res = await BOOK(
+      new Request("http://localhost/api/bookings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${MARCIA_KEY}`, "content-type": "application/json" },
+        body: JSON.stringify({ bucketCode: "411", start: "2026-10-02T15:00:00Z", salesforceId: "00QUi0000108JOMMA2" }),
+      }) as never,
+    );
+    expect(res.status).toBe(401);
+    expect(service.bookViaApi).not.toHaveBeenCalled();
+    expect(service.previewBooking).not.toHaveBeenCalled();
+  });
+
+  it("may NOT read bookings with her key: GET /api/bookings refuses it", async () => {
+    const url = new URL("http://localhost/api/bookings?salesforceId=00QUi0000108JOMMA2");
+    const req = Object.assign(new Request(url, { headers: { authorization: `Bearer ${MARCIA_KEY}` } }), { nextUrl: url });
+    const res = await LOOKUP(req as never);
+    expect(res.status).toBe(401);
+    expect(service.lookupPersonBookings).not.toHaveBeenCalled();
+    expect(service.listBookings).not.toHaveBeenCalled();
   });
 });

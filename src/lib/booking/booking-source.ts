@@ -27,8 +27,10 @@
  * A null column is a THIRD thing: a booking recorded before this field existed.
  *
  * The booking API is a FOURTH (#2876). A call that names no page records WHO made
- * it, `api-<caller>`, one value per caller in `BOOKING_API_CALLERS`, derived from
- * that list so a caller added there gets its source by construction. It used to
+ * it, `api-<caller>`, one value per caller that may BOOK (`FULL_API_CALLERS`),
+ * derived from that list so a caller added there gets its source by construction.
+ * A cancel only caller (Marcia, #2940) can never create a booking, so it has no
+ * source and the database constraint needs no value for it. It used to
  * record `not-given`, which the per page volume alarm reads as a booking that could
  * be any page's, so a steady stream of Regal or trypennie API bookings excused a
  * landing page gone dark. An API source is not page traffic and is not unsourced
@@ -38,7 +40,7 @@
  * agree by test: `scripts/test-booking-source.ts`.
  */
 
-import { BOOKING_API_CALLERS, type BookingApiCaller } from "./api-callers.ts";
+import { FULL_API_CALLERS, type FullApiCaller } from "./api-callers.ts";
 
 /** The URL key a landing page sets. */
 export const BOOKING_SOURCE_PARAM = "source";
@@ -66,14 +68,14 @@ export const SOURCE_NOT_GIVEN = "not-given";
 export const SOURCE_UNRECOGNISED = "unrecognised";
 
 /** What a booking API call naming no page records: its caller (#2876). */
-export type ApiSource = `api-${BookingApiCaller}`;
+export type ApiSource = `api-${FullApiCaller}`;
 
-export function apiSourceFor(caller: BookingApiCaller): ApiSource {
+export function apiSourceFor(caller: FullApiCaller): ApiSource {
   return `api-${caller}`;
 }
 
-/** One per caller holding a key, derived from the caller list rather than typed out. */
-export const API_SOURCES: readonly ApiSource[] = BOOKING_API_CALLERS.map(apiSourceFor);
+/** One per caller that may book, derived from the caller list rather than typed out. */
+export const API_SOURCES: readonly ApiSource[] = FULL_API_CALLERS.map(apiSourceFor);
 
 const API_SET: ReadonlySet<string> = new Set(API_SOURCES);
 
@@ -161,7 +163,7 @@ function isPageSource(value: string): value is PageSource {
  */
 export function readBookingSource(
   prefill: Record<string, unknown> | null | undefined,
-  apiCaller?: BookingApiCaller,
+  apiCaller?: FullApiCaller,
 ): SourceReading {
   const absent: SourceReading = {
     source: apiCaller === undefined ? SOURCE_NOT_GIVEN : apiSourceFor(apiCaller),

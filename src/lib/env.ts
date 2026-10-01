@@ -157,6 +157,12 @@ const BOOKING_API_KEYS: Record<BookingApiCaller, Record<KeySlot, () => string>> 
     primary: () => process.env.BOOKING_API_KEY_CANARY ?? "",
     secondary: () => process.env.BOOKING_API_KEY_CANARY_2 ?? "",
   },
+  // #2940: Marcia's key opens the cancel alone. Unset = Marcia is refused and no
+  // other caller notices.
+  marcia: {
+    primary: () => process.env.BOOKING_API_KEY_MARCIA ?? "",
+    secondary: () => process.env.BOOKING_API_KEY_MARCIA_2 ?? "",
+  },
 };
 export const bookingApiKeyFor = (caller: BookingApiCaller, slot: KeySlot): string =>
   BOOKING_API_KEYS[caller][slot]();
