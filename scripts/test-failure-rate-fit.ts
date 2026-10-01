@@ -18,6 +18,7 @@ import {
   MEASURED_ATTEMPT_TRAFFIC,
   SHIPPED_FAILURE_RATE_THRESHOLDS,
   deriveFailureRateThresholds,
+  failuresToBreach,
   minAttemptsFor,
   type AttemptTrafficMeasurement,
 } from "../src/lib/monitor/failure-rate-thresholds.ts";
@@ -51,9 +52,9 @@ eq(
 // --- the floor: how many failures a page takes at it -------------------------------
 {
   const n = minAttemptsFor(FAILURE_RATE_FIT);
-  const failuresToBreach = (attempts: number) => Math.floor((attempts * FAILURE_RATE_FIT.failPct) / 100) + 1;
-  assert(failuresToBreach(n) >= FAILURE_RATE_FIT.failuresToBreachAtFloor, `at the floor of ${n} a page takes ${FAILURE_RATE_FIT.failuresToBreachAtFloor} failures`);
-  assert(failuresToBreach(n - 1) < FAILURE_RATE_FIT.failuresToBreachAtFloor, "and the floor is the smallest that does");
+  const failuresAt = (attempts: number) => failuresToBreach(attempts, FAILURE_RATE_FIT.failPct);
+  assert(failuresAt(n) >= FAILURE_RATE_FIT.failuresToBreachAtFloor, `at the floor of ${n} a page takes ${FAILURE_RATE_FIT.failuresToBreachAtFloor} failures`);
+  assert(failuresAt(n - 1) < FAILURE_RATE_FIT.failuresToBreachAtFloor, "and the floor is the smallest that does");
   eq(minAttemptsFor({ ...FAILURE_RATE_FIT, failPct: 20, failuresToBreachAtFloor: 3 }), 10, "three failures at 20 percent is the old floor of ten");
 }
 
@@ -93,10 +94,21 @@ eq(
     Math.floor(reach * MEASURED_ATTEMPT_TRAFFIC.slateShare) >= SHIPPED_FAILURE_RATE_THRESHOLDS.minAttempts,
     `Slate's share of ${Math.round(FAILURE_RATE_FIT.windowCoverage * 100)} percent of ${hours} hour windows reaches the floor`,
   );
+  // The quantity the floor exists to guard: how many failed bookings it takes to page
+  // at the floor (L139, L63). Asserted on the shipped pair, through the same judge
+  // arithmetic the check uses, and seen to fail on #2484's pair, which took three.
+  const atFloor = failuresToBreach(SHIPPED_FAILURE_RATE_THRESHOLDS.minAttempts, SHIPPED_FAILURE_RATE_THRESHOLDS.failPct);
   assert(
-    (1 / SHIPPED_FAILURE_RATE_THRESHOLDS.minAttempts) * 100 <= SHIPPED_FAILURE_RATE_THRESHOLDS.failPct,
-    "one failed booking at the floor does not by itself exceed the share (L139)",
+    atFloor >= FAILURE_RATE_FIT.failuresToBreachAtFloor,
+    `a page at the shipped floor takes ${atFloor} failed bookings, at least ${FAILURE_RATE_FIT.failuresToBreachAtFloor}`,
   );
+  eq(failuresToBreach(10, 20), 3, "negative control: #2484's floor of 10 at 20 percent paged on 3 failures");
+  assert(failuresToBreach(10, 20) < FAILURE_RATE_FIT.failuresToBreachAtFloor, "so the assertion above would refuse that fit");
+  // And the count agrees with the judge itself: exactly that many failures at the
+  // floor exceed failPct, one fewer does not.
+  const n = SHIPPED_FAILURE_RATE_THRESHOLDS.minAttempts;
+  const pct = SHIPPED_FAILURE_RATE_THRESHOLDS.failPct;
+  assert((atFloor / n) * 100 > pct && ((atFloor - 1) / n) * 100 <= pct, "the count matches the share the check exceeds");
 }
 
 // --- reachedBy, both ends -----------------------------------------------------------

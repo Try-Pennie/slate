@@ -19,7 +19,7 @@ import {
   type RateThresholds,
   type RateWindowState,
 } from "../src/lib/monitor/booking-failure-rate.ts";
-import { MEASURED_ATTEMPT_TRAFFIC, SHIPPED_FAILURE_RATE_THRESHOLDS } from "../src/lib/monitor/failure-rate-thresholds.ts";
+import { FAILURE_RATE_FIT, MEASURED_ATTEMPT_TRAFFIC, SHIPPED_FAILURE_RATE_THRESHOLDS } from "../src/lib/monitor/failure-rate-thresholds.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 /** Em/en dash detector built from escapes: writing the characters themselves
@@ -547,11 +547,18 @@ function harness(overrides: {
     Math.floor(reach * MEASURED_ATTEMPT_TRAFFIC.slateShare) >= SHIPPED_FAILURE_RATE_THRESHOLDS.minAttempts,
     "Slate's share of the measured traffic reaches the attempt floor inside the shipped window",
   );
-  const onePct = (1 / SHIPPED_FAILURE_RATE_THRESHOLDS.minAttempts) * 100;
-  assert(
-    onePct <= SHIPPED_FAILURE_RATE_THRESHOLDS.failPct,
-    "one failed booking at the floor does not by itself exceed the share",
-  );
+  // Driven through the real judge: at the floor, one failure fewer than the fit
+  // demands is healthy, and that many is a breach (L63: the guarded quantity).
+  const n = SHIPPED_FAILURE_RATE_THRESHOLDS.minAttempts;
+  const k = FAILURE_RATE_FIT.failuresToBreachAtFloor;
+  const at = (failures: number) =>
+    judgeFailureRate(
+      { day: "2026-10-01", attempts: 0, failures: 0, byCode: {}, samples: [{ atMs: 1_000, attempts: n, failures, byCode: {} }] },
+      1_000,
+      SHIPPED_FAILURE_RATE_THRESHOLDS,
+    ).status;
+  eq(at(k - 1), "healthy", `${k - 1} failures out of the floor of ${n} do not page`);
+  eq(at(k), "breach", `${k} failures out of the floor of ${n} do`);
 }
 
 finish();

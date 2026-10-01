@@ -221,6 +221,28 @@ const fixture = JSON.parse(readFileSync("scripts/fixtures/calcom-low-bookings.js
   });
   eq(built.forms.P, [0, 1, 0, 0, 0, 0], "one booked Low response, in the second bucket");
   eq(Object.keys(built.forms), ["P"], "a page with no bookings in the tier is not kept");
+
+  // #2888: MEASURE_END pins endMs, but the cal.com reader pages up to the present,
+  // so rows after the pinned end DO arrive here. They must be dropped, or a span
+  // pinned before the split would quietly count cal.com's post-split half.
+  const pinned = buildFixture({
+    rows: [
+      { formName: "P", createdAt: new Date(s + 7 * MIN).toISOString(), tier: "1", booked: true },
+      { formName: "P", createdAt: new Date(s + 30 * MIN).toISOString(), tier: "1", booked: true },
+      { formName: "P", createdAt: new Date(s + 3 * 60 * MIN).toISOString(), tier: "1", booked: true },
+      { formName: "R", createdAt: new Date(s + 40 * MIN).toISOString(), tier: "1", booked: true },
+    ],
+    tier: "1",
+    startMs: s,
+    endMs: s + 30 * MIN,
+    bucketMinutes: 5,
+    zone: ZONE,
+    measuredOn: "2026-09-01",
+    formNames: [],
+    closedDates: [],
+  });
+  eq(pinned.forms.P, [0, 1, 0, 0, 0, 0], "a booking at or after the pinned end is not counted");
+  eq(Object.keys(pinned.forms), ["P"], "and a page whose only bookings fall after the end is not kept");
   // #2764: the org's closed days are recorded WITH the measurement, so a refit from
   // the committed file leaves out exactly the days the fit left out, with no read.
   eq(built.closedDates, ["2026-09-01"], "only the closed days inside the measured span are recorded, in order");

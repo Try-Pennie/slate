@@ -46,8 +46,10 @@ import type { RateThresholds } from "./booking-failure-rate.ts";
  * Ultra High is left out because cal.com's measurement of it is too thin to be
  * committed (3,404 bookings in nine weeks, re-measured 2026-10-01 for #2888 and
  * refused as fitting no floor). It is about seven percent of the traffic, so
- * leaving it out UNDERSTATES what the check sees, which errs toward a window that
- * concludes more often than measured rather than less.
+ * leaving it out UNDERSTATES what the check sees. Both effects of that run one way:
+ * the derivation can pick a window LONGER than the real traffic needs (a slower
+ * page), never a shorter one, and the real traffic reaches the floor in at least
+ * the measured 85 percent of windows. The cost is speed, not blindness.
  *
  * The measurement predates the split, so it is cal.com's WHOLE traffic, and the
  * split is applied as `slateShare`. Re-measuring after 2026-10-01 15:46 UTC would
@@ -120,10 +122,18 @@ export const MEASURED_ATTEMPT_TRAFFIC: AttemptTrafficMeasurement = {
   slateShareSource: "trypennie's split, half of every tier on every page since 2026-10-01 15:46 UTC",
 };
 
+/**
+ * How many failed bookings out of `attempts` it takes for the share to EXCEED
+ * `failPct`, the comparison `judgeFailureRate` makes: the quantity the floor guards.
+ */
+export function failuresToBreach(attempts: number, failPct: number): number {
+  return Math.floor((attempts * failPct) / 100) + 1;
+}
+
 /** The smallest attempt count at which a page takes `failuresToBreachAtFloor` failures. */
 export function minAttemptsFor(fit: FailureRateFit): number {
   for (let n = 1; ; n++) {
-    if (Math.floor((n * fit.failPct) / 100) + 1 >= fit.failuresToBreachAtFloor) return n;
+    if (failuresToBreach(n, fit.failPct) >= fit.failuresToBreachAtFloor) return n;
   }
 }
 
