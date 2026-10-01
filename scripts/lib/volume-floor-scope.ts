@@ -7,7 +7,8 @@
  * the admin page read too. Dan, 2026-09-29 (#2878): the Low pilot launches on the
  * two pages already wired to Slate, Completed Application Review and its Follow Up
  * (`/booking/[SO_ID]` and `/my-offers/result`), so the Low floors are those two
- * pages' traffic. Income Verification follows when #2870 wires it.
+ * pages' traffic. Income Verification joined on 2026-10-01 (#2870), so the floors
+ * are the whole Low tier's.
  *
  * The scope has to MATCH what Slate carries, in both directions: floors fitted to
  * the whole tier while only one page flipped paged 108 to 283 times in two held out

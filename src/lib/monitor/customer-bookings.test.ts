@@ -391,14 +391,11 @@ describe("measurePageSources", () => {
     expect(m.unsourced).toBe(0);
   });
 
-  it("asks only about the pages Slate carries, so a page held off it is never reported as silent (#2878)", async () => {
-    const { db } = sourceDb([row("booking"), row("booking-agent-eligible")]);
+  it("asks about every Low page, Income Verification included, since #2870 put it on Slate", async () => {
+    const { db } = sourceDb([row("booking"), row("booking-agent-eligible"), row("offerhub")]);
     const m = await measurePageSources(db, NOW);
-    expect(m.pages.map((p) => p.id)).toEqual(["application-review-follow-up", "application-review"]);
+    expect(m.pages.map((p) => p.id)).toEqual(["income-verification", "application-review-follow-up", "application-review"]);
     expect(m.pages.every((p) => p.recorded)).toBe(true);
-    // The pages Slate carries both recorded a booking, so nothing names Income
-    // Verification as a page that recorded none, though it recorded nothing.
-    expect(m.pages.some((p) => p.id === "income-verification")).toBe(false);
   });
 
   it("throws on a failed read rather than answering zero", async () => {

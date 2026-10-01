@@ -91,10 +91,11 @@ export interface HeldOffSlate {
 /**
  * THE ONE SWITCH for which Low pages send their leads to Slate (#2878).
  *
- * Dan, 2026-09-29: the Low pilot launches on the two trypennie pages already wired
+ * Dan, 2026-09-29: the Low pilot launched on the two trypennie pages already wired
  * to Slate, `/booking/[SO_ID]` and `/my-offers/result`, which are the Completed
- * Application Review page and its Follow Up. Income Verification's leads come from
- * `/offerportal` and `/portal`, which are not wired (#2870).
+ * Application Review page and its Follow Up. Income Verification's surfaces
+ * (`/offerportal`, `/portal`, offerhub, `/booking/portal`) joined on 2026-10-01
+ * (#2870), so the switch holds nothing today.
  *
  * Everything that judges or describes Low volume reads `LOW_PAGES_ON_SLATE`, derived
  * from this: the Low floors' scope (`FLOOR_SCOPE`, refitted from the committed
@@ -109,10 +110,8 @@ export interface HeldOffSlate {
  * floors already cover every Low page, so nothing else moves.
  */
 export const LOW_PAGES_NOT_ON_SLATE: Readonly<Partial<Record<LowPageId, HeldOffSlate>>> = {
-  "income-verification": {
-    reason: "come from trypennie's /offerportal and /portal, which do not send them to Slate yet",
-    issue: 2870,
-  },
+  // Empty since #2870: trypennie's #519 (merged 2026-10-01) put Income Verification's
+  // surfaces behind the Slate switch, so every Low page is judged.
 };
 
 /** The Low pages whose leads Slate carries, in the measurement's order. */
