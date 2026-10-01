@@ -357,8 +357,16 @@ const FIXTURE_REGISTRY = {
     "the page names the issue that arms it",
   );
   assert(!DASHES.test(alert), "the un-park page has no dashes");
+  // Driven through a TWO lane fixture: the shipped registry is empty since #2513,
+  // and a uniqueness check over an empty list is 0 === 0, which proves nothing.
+  const pair = {
+    ...FIXTURE_REGISTRY,
+    [LOW_VOLUME_VERDICT_LANE]: { ...FIXTURE_REGISTRY[FIXTURE_LANE]!, issue: 1561 },
+  };
+  const pairLanes = Object.keys(pair);
+  assert(pairLanes.length === 2, "the uniqueness fixture really holds two parked lanes");
   assert(
-    new Set(parked.map((l) => verdictUnparkAlertText(l))).size === parked.length,
+    new Set(pairLanes.map((l) => verdictUnparkAlertText(l, pair))).size === pairLanes.length,
     "each detector's un-park page describes that detector",
   );
 
