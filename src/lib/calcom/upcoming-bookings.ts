@@ -285,18 +285,50 @@ export type CalcomListedByUidRead =
 export async function readCalcomListedBookingByUid(
   opts: { get: CalcomGetter; uid: string } & Deadline,
 ): Promise<CalcomListedByUidRead> {
-  if (opts.clock() >= opts.deadlineAtMs) return { ok: false, reason: "deadline", status: 0 };
-  let res: { status: number; json: unknown };
-  try {
-    res = await opts.get(`/bookings/${encodeURIComponent(opts.uid)}`, CALCOM_BOOKINGS_API_VERSION, requestTimeout(opts));
-  } catch {
-    return { ok: false, reason: thrownReason(opts), status: 0 };
+  return readOneByUid(opts, reduceListedRow);
+}
+
+/**
+ * The most rounds of links past the listing a reschedule chain is followed. #2945
+ * found the listing held both halves of all 215 reschedule pairs in a week, so a link
+ * missing at all is rare and ten in a row means the chain loops or the data is wrong.
+ */
+export const CALCOM_RESCHEDULE_MAX_HOPS = 10;
+
+export type FollowedChains =
+  | { ok: true; rows: CalcomListedBooking[]; notFound: string[] }
+  | { ok: false; reason: CalcomReadRefusal; uid: string; status: number }
+  | { ok: false; reason: "too-many-hops"; uid: string; hops: number };
+
+/**
+ * Follow every reschedule chain to its end (#2946). The created window listing can
+ * lack a chain's later links (a page shifts under a live walk), and a link read by
+ * uid can name a further one the listing lacked too, so this reads missing links in
+ * rounds until none is left, at most `maxHops` rounds. A uid cal.com refuses (a 404)
+ * is reported in `notFound` and its chain stays unresolved, which the comparison
+ * counts; any other failure refuses by uid, because a shorter chain would be judged
+ * at the wrong start.
+ */
+export async function followRescheduleChains(
+  rows: readonly CalcomListedBooking[],
+  fetchByUid: (uid: string) => Promise<CalcomListedByUidRead>,
+  maxHops = CALCOM_RESCHEDULE_MAX_HOPS,
+): Promise<FollowedChains> {
+  const byUid = new Map(rows.map((r) => [r.uid, r]));
+  const notFound = new Set<string>();
+  for (let hop = 0; ; hop++) {
+    const wanted = [...new Set([...byUid.values()].map((r) => r.rescheduledToUid))].filter(
+      (u): u is string => u !== null && !byUid.has(u) && !notFound.has(u),
+    );
+    if (wanted.length === 0) return { ok: true, rows: [...byUid.values()], notFound: [...notFound] };
+    if (hop >= maxHops) return { ok: false, reason: "too-many-hops", uid: wanted[0], hops: hop };
+    for (const uid of wanted) {
+      const one = await fetchByUid(uid);
+      if (one.ok) byUid.set(one.row.uid, one.row);
+      else if (one.reason === "refused") notFound.add(uid);
+      else return { ok: false, reason: one.reason, uid, status: one.status };
+    }
   }
-  if (res.status !== 200) return { ok: false, reason: "refused", status: res.status };
-  const data = (res.json as { data?: unknown } | null)?.data;
-  const row = Array.isArray(data) ? null : reduceListedRow(data);
-  if (row === null) return { ok: false, reason: "unreadable", status: res.status };
-  return { ok: true, row };
 }
 
 const optionalText = (v: unknown): string | null => (typeof v === "string" && v.trim() !== "" ? v.trim() : null);
@@ -352,6 +384,18 @@ export type CalcomBookingRead =
  * measured about the booking.
  */
 export async function readCalcomBookingByUid(opts: { get: CalcomGetter; uid: string } & Deadline): Promise<CalcomBookingRead> {
+  return readOneByUid(opts, reduceRow);
+}
+
+/**
+ * The one by uid read both shapes share (L370): the deadline, the timeout, the
+ * refusal mapping and the guard against a list where one booking belongs live here
+ * once, and only the reducer differs.
+ */
+async function readOneByUid<T>(
+  opts: { get: CalcomGetter; uid: string } & Deadline,
+  reduce: (item: unknown) => T | null,
+): Promise<{ ok: true; row: T } | { ok: false; reason: CalcomReadRefusal; status: number }> {
   if (opts.clock() >= opts.deadlineAtMs) return { ok: false, reason: "deadline", status: 0 };
   let res: { status: number; json: unknown };
   try {
@@ -361,7 +405,7 @@ export async function readCalcomBookingByUid(opts: { get: CalcomGetter; uid: str
   }
   if (res.status !== 200) return { ok: false, reason: "refused", status: res.status };
   const data = (res.json as { data?: unknown } | null)?.data;
-  const row = Array.isArray(data) ? null : reduceRow(data);
+  const row = Array.isArray(data) ? null : reduce(data);
   if (row === null) return { ok: false, reason: "unreadable", status: res.status };
   return { ok: true, row };
 }

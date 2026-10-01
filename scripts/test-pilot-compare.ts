@@ -468,6 +468,13 @@ function run(
   assert(badApp.lines.some((l) => /1 row/.test(l) && /could not be read/.test(l)), `and counts it (${badApp.lines[0]})`);
   const badBooking = run({ ...c, slate: [...c.slate, slateRow(c.apps[0], { startsAt: "soon" })] });
   eq(badBooking.exit, PILOT_COMPARE_EXIT.inputUnreadable, "a booking whose start cannot be read refuses the run");
+  // An application read only by email (made before the window) is matched on its
+  // creation time too, so an unreadable one would drop a contact match in silence.
+  const badContact = run(c, { contact: [app("calcom", { createdAt: "yesterday-ish" })] });
+  eq(badContact.exit, PILOT_COMPARE_EXIT.inputUnreadable, "an application read by email whose creation time cannot be read refuses the run");
+  const dupBad = app("slate", { createdAt: "not a date" });
+  const once = run({ ...c, apps: [...c.apps, dupBad] }, { contact: [dupBad] });
+  assert(once.lines.some((l) => /FAILED \(input-unreadable\): 1 row /.test(l)), `one application in both lists is counted once (${once.lines[0]})`);
   const badCall = run({ ...c, calls: [...c.calls, { ...c.calls[0], startedAt: "later" }] });
   eq(badCall.exit, PILOT_COMPARE_EXIT.inputUnreadable, "a call whose start cannot be read refuses the run");
 }

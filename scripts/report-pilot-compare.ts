@@ -57,7 +57,7 @@ import {
   type RegalCall,
   type PilotSettings,
 } from "./lib/pilot-compare.ts";
-import { CALCOM_LISTING_STATUSES, phoneKey, type CalcomListedBooking } from "../src/lib/calcom/upcoming-bookings.ts";
+import { CALCOM_LISTING_STATUSES, followRescheduleChains, phoneKey, type CalcomListedBooking } from "../src/lib/calcom/upcoming-bookings.ts";
 
 loadEnvFiles(ENV_FILES);
 const env = process.env;
@@ -182,19 +182,22 @@ const calcom: CalcomListedBooking[] = [];
       for (const row of read.rows) byId.set(row.id, row);
     }
   }
-  // A reschedule's new booking the listing did not hold (a page can shift under a
-  // live walk) is read directly by uid, so a chain is judged at its real last start.
-  const uids = new Set([...byId.values()].map((r) => r.uid));
-  const wanted = [...byId.values()].map((r) => r.rescheduledToUid).filter((u): u is string => u !== null && !uids.has(u));
-  for (const uid of wanted) {
+  // A reschedule's later links the listing did not hold (a page can shift under a live
+  // walk) are read directly by uid, round after round to the chain's end, so a chain
+  // is judged at its real last start. A uid cal.com will not return stays an
+  // unresolved chain, counted in the report; any other failure refuses by uid.
+  const followed = await followRescheduleChains([...byId.values()], async (uid) => {
     const one = await calcomListedBookingByUid(uid, deadlineAtMs);
-    // A uid cal.com will not return stays an unresolved chain, counted in the report.
-    if (one !== null && one.ok) byId.set(one.row.id, one.row);
-    else if (one !== null && one.reason !== "refused") {
-      print(refusal(PILOT_COMPARE_EXIT.calcomUnreadable, `cal.com booking ${uid} could not be read: ${one.reason}.`).lines, PILOT_COMPARE_EXIT.calcomUnreadable);
-    }
+    return one ?? { ok: false, reason: "refused", status: 0 };
+  });
+  if (!followed.ok) {
+    const why =
+      followed.reason === "too-many-hops"
+        ? `a reschedule chain was still going after ${followed.hops} links past the listing (next uid ${followed.uid}), so it loops or the data is wrong`
+        : `cal.com booking ${followed.uid} could not be read: ${followed.reason}`;
+    print(refusal(PILOT_COMPARE_EXIT.calcomUnreadable, `${why}.`).lines, PILOT_COMPARE_EXIT.calcomUnreadable);
   }
-  calcom.push(...byId.values());
+  calcom.push(...followed.rows);
 }
 
 // --- Salesforce again: the applications behind cal.com bookings that carry no id ----------

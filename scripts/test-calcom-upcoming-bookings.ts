@@ -26,8 +26,11 @@ import {
   readCalcomBookingsCreated,
   readCalcomListedBookingByUid,
   phoneKey,
+  followRescheduleChains,
   CALCOM_WINDOW_PAGE_TIMEOUT_MS,
   type CalcomListedRead,
+  type CalcomListedByUidRead,
+  type CalcomListedBooking,
   type CalcomBookingRead,
   type CalcomUpcomingRead,
 } from "../src/lib/calcom/upcoming-bookings.ts";
@@ -432,6 +435,70 @@ async function byUid(page: Page, over: { budgetMs?: number; stepMs?: number } = 
   const g = getter([{ status: 200, json: { data: raw(7, { createdAt: "2026-10-02T15:00:00.000Z", rescheduledFromUid: "uid6" }) } }], clk);
   const r = await readCalcomListedBookingByUid({ get: g.get, uid: "uid7", clock: clk.now, deadlineAtMs: 2_000_000 });
   assert(r.ok && r.row.rescheduledFromUid === "uid6", "one booking by uid reads in the listed shape");
+}
+{
+  // Both by uid reads share one implementation: the listed one maps every refusal the
+  // same way the upcoming one does.
+  const one = async (page: Page, budgetMs = 60_000) => {
+    const clk = clock();
+    const g = getter([page], clk);
+    return readCalcomListedBookingByUid({ get: g.get, uid: "u1", clock: clk.now, deadlineAtMs: 1_000_000 + budgetMs });
+  };
+  eq(await one({ status: 404, json: {} }), { ok: false, reason: "refused", status: 404 }, "listed by uid: a 404 is a refusal");
+  eq(await one({ status: 200, json: { data: [raw(1)] } }), { ok: false, reason: "unreadable", status: 200 }, "listed by uid: a list is unreadable");
+  eq(await one(new Error("down")), { ok: false, reason: "unreachable", status: 0 }, "listed by uid: a throw is unreachable");
+  eq(await one({ status: 200, json: { data: raw(1) } }, 0), { ok: false, reason: "deadline", status: 0 }, "listed by uid: nothing starts after the deadline");
+}
+
+// --- following a reschedule chain to its end (#2946) ----------------------------------
+// The created window listing can lack a chain's later links (a page shifts under a live
+// walk), and a link read by uid can name a further one the listing lacked too.
+{
+  const link = (n: number, to: string | null, from: string | null): CalcomListedBooking =>
+    ({
+      id: n,
+      uid: `r${n}`,
+      start: "2026-10-03T15:00:00.000Z",
+      status: to === null ? "accepted" : "cancelled",
+      host: null,
+      submissionId: null,
+      attendeeEmails: [],
+      createdAt: "2026-10-02T15:00:00.000Z",
+      end: null,
+      eventTypeId: 1314152,
+      rescheduledFromUid: from,
+      rescheduledToUid: to,
+      attendeePhone10: null,
+      hostEmail: null,
+    });
+  const store = new Map<string, CalcomListedByUidRead>([
+    ["r2", { ok: true, row: { ...link(2, "r3", "r1") } }],
+    ["r3", { ok: true, row: { ...link(3, null, "r2") } }],
+  ]);
+  const asked: string[] = [];
+  const fetchOne = async (uid: string): Promise<CalcomListedByUidRead> => {
+    asked.push(uid);
+    return store.get(uid) ?? { ok: false, reason: "refused", status: 404 };
+  };
+  const followed = await followRescheduleChains([{ ...link(1, "r2", null) }], fetchOne);
+  assert(followed.ok, "a chain two links past the listing is followed");
+  if (followed.ok) {
+    eq(followed.rows.map((r) => r.uid).sort(), ["r1", "r2", "r3"], "to its last link, including the one only the fetched link named");
+    eq(followed.notFound, [], "nothing was missing");
+  }
+  eq(asked, ["r2", "r3"], "each missing link is asked for once");
+
+  const gone = await followRescheduleChains([{ ...link(1, "r9", null) }], fetchOne);
+  assert(gone.ok && gone.notFound.length === 1 && gone.notFound[0] === "r9", "a link cal.com does not hold is reported missing, and the chain stays unresolved");
+
+  const down = await followRescheduleChains([{ ...link(1, "r2", null) }], async () => ({ ok: false, reason: "unreachable", status: 0 }));
+  eq(down, { ok: false, reason: "unreachable", uid: "r2", status: 0 }, "a link that could not be read refuses by uid, never a shorter chain");
+
+  // A chain that never ends (each link names a new one) stops at the bound, by name.
+  let n = 100;
+  const endless = await followRescheduleChains([{ ...link(1, "r100", null) }], async (uid) => ({ ok: true, row: { ...link(++n, `r${n + 1}`, uid) } }), 5);
+  eq(endless.ok, false, "a chain longer than the bound refuses");
+  if (!endless.ok) eq(endless.reason, "too-many-hops", "and says it was too long");
 }
 {
   eq(phoneKey("(555) 010-0199"), "5550100199", "a ten digit phone is its own key");

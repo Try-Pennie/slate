@@ -477,9 +477,17 @@ export function matchBookings(input: {
   const seen = new Set<string>();
   for (const a of [...input.applications, ...input.contactApplications]) {
     const key = leadKey(a.id);
-    const e = emailKey(a.email);
-    if (seen.has(key) || e === null || a.phone10 === null) continue;
+    if (seen.has(key)) continue;
     seen.add(key);
+    // An application read only by email is matched on its creation time too, so an
+    // unreadable one refuses like any other (L50). One in the cohort list was already
+    // counted above, and `seen` keeps it from being counted twice.
+    if (!Number.isFinite(Date.parse(a.createdAt))) {
+      if (!input.applications.includes(a)) unreadable++;
+      continue;
+    }
+    const e = emailKey(a.email);
+    if (e === null || a.phone10 === null) continue;
     const k = `${e}|${a.phone10}`;
     const list = byContact.get(k) ?? [];
     list.push({ key, createdMs: Date.parse(a.createdAt), lead: a.leadId === null ? `app:${key}` : leadKey(a.leadId) });
