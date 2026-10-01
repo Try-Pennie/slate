@@ -948,15 +948,27 @@ export function judgePilotCompare(input: CompareInput): { exit: number; lines: s
   } else {
     lines.push(`READOUT: applications made through ${window.readout.date}, the date fixed in advance.`);
   }
+  // A readout needs BOTH headline rates readable: the issue asks for booking rate and
+  // show rate, and a run whose show rate prints "not yet readable" is not a readout.
   if (!overall.readableBooking) {
     lines.push(
-      `Not yet readable: each side needs at least ${MIN_LEADS_PER_HALF} applications, ${MIN_OUTCOMES_PER_HALF} bookings and ${MIN_OUTCOMES_PER_HALF} without one before the headline means anything.`,
+      `Not yet readable: the booking rate. Each side needs at least ${MIN_LEADS_PER_HALF} applications, ${MIN_OUTCOMES_PER_HALF} bookings and ${MIN_OUTCOMES_PER_HALF} without one before it means anything.`,
     );
-    if (exit === PILOT_COMPARE_EXIT.compared || exit === PILOT_COMPARE_EXIT.provisional) exit = PILOT_COMPARE_EXIT.tooFewToRead;
+  }
+  if (!overall.readableShow) {
+    lines.push(
+      `Not yet readable: the show rate. Each side needs at least ${MIN_LEADS_PER_HALF} booked applications whose show can be judged, ${MIN_OUTCOMES_PER_HALF} held and ${MIN_OUTCOMES_PER_HALF} not held before it means anything.`,
+    );
   }
   if (disagree !== null) {
     lines.push(`SETTINGS NOW DIFFER from the assumed split: ${disagree}. The comparison above assumed 50% on tiers ${ASSUMED_TIERS.join(";")} throughout, and that is now known to be false at least today.`);
-    exit = PILOT_COMPARE_EXIT.settingsNowDiffer;
   }
+  // One precedence, worst first, so no code is lost under another: a rehearsal is never
+  // a result (13); then settings that contradict the assumption now (14); then a sample
+  // too small on either headline rate (11); then provisional (12); then the readout (0).
+  // Every condition that holds is still printed above, whichever names the run.
+  if (window.rehearsal) exit = PILOT_COMPARE_EXIT.rehearsal;
+  else if (disagree !== null) exit = PILOT_COMPARE_EXIT.settingsNowDiffer;
+  else if (!overall.readableBooking || !overall.readableShow) exit = PILOT_COMPARE_EXIT.tooFewToRead;
   return { exit, lines, proposedReadout };
 }

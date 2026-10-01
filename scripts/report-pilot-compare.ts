@@ -34,11 +34,14 @@
 // | 8 | one side holds no applications |
 // | 9 | too many cal.com bookings tied to no application |
 // | 10 | the Regal call store holds no call over the span |
-// | 11 | a side is under the minimum sample |
+// | 11 | a side is under the minimum sample on the booking rate or the show rate |
 // | 12 | provisional: before the fixed readout date, or none is fixed yet |
 // | 13 | a rehearsal over days outside the window |
 // | 14 | what Salesforce holds now contradicts the assumed split |
 // | 15 | an input could not be read, or a row carried a time that does not parse |
+//
+// Once a comparison is printed, the run exits on the first condition that holds of
+// 13, 14, 11, 12, 0, and prints every one that holds.
 //
 // It is deliberately NOT named `test-*.ts`: that glob is the offline unit suite.
 import { loadEnvFiles } from "./smoke-env.ts";
@@ -194,7 +197,7 @@ const calcom: CalcomListedBooking[] = [];
     const why =
       followed.reason === "too-many-hops"
         ? `a reschedule chain was still going after ${followed.hops} links past the listing (next uid ${followed.uid}), so it loops or the data is wrong`
-        : `cal.com booking ${followed.uid} could not be read: ${followed.reason}`;
+        : `cal.com booking ${followed.uid} could not be read: ${followed.reason} (status ${followed.status})`;
     print(refusal(PILOT_COMPARE_EXIT.calcomUnreadable, `${why}.`).lines, PILOT_COMPARE_EXIT.calcomUnreadable);
   }
   calcom.push(...followed.rows);

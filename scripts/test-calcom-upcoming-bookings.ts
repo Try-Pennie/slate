@@ -491,12 +491,22 @@ async function byUid(page: Page, over: { budgetMs?: number; stepMs?: number } = 
   const gone = await followRescheduleChains([{ ...link(1, "r9", null) }], fetchOne);
   assert(gone.ok && gone.notFound.length === 1 && gone.notFound[0] === "r9", "a link cal.com does not hold is reported missing, and the chain stays unresolved");
 
+  // Only a 404 means cal.com does not hold the link. A 401, 429 or 500 is a read that
+  // failed, and reading it as "not found" would judge the chain at the wrong start.
+  for (const status of [401, 429, 500]) {
+    const r = await followRescheduleChains([{ ...link(1, "r2", null) }], async () => ({ ok: false, reason: "refused", status }));
+    eq(r, { ok: false, reason: "refused", uid: "r2", status }, `a ${status} refuses the run by uid and status, never an unresolved chain`);
+  }
+  // A link read back under a different uid answers for something else.
+  const swapped = await followRescheduleChains([{ ...link(1, "r2", null) }], async () => ({ ok: true, row: { ...link(7, null, "r1") } }));
+  eq(swapped, { ok: false, reason: "uid-mismatch", uid: "r2", status: 200 }, "a link that comes back under another uid is refused, not re-asked until the bound");
+
   const down = await followRescheduleChains([{ ...link(1, "r2", null) }], async () => ({ ok: false, reason: "unreachable", status: 0 }));
   eq(down, { ok: false, reason: "unreachable", uid: "r2", status: 0 }, "a link that could not be read refuses by uid, never a shorter chain");
 
   // A chain that never ends (each link names a new one) stops at the bound, by name.
   let n = 100;
-  const endless = await followRescheduleChains([{ ...link(1, "r100", null) }], async (uid) => ({ ok: true, row: { ...link(++n, `r${n + 1}`, uid) } }), 5);
+  const endless = await followRescheduleChains([{ ...link(1, "r100", null) }], async (uid) => ({ ok: true, row: { ...link(++n, `r${n + 1}`, null), uid } }), 5);
   eq(endless.ok, false, "a chain longer than the bound refuses");
   if (!endless.ok) eq(endless.reason, "too-many-hops", "and says it was too long");
 }

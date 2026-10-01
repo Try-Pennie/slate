@@ -297,17 +297,18 @@ export const CALCOM_RESCHEDULE_MAX_HOPS = 10;
 
 export type FollowedChains =
   | { ok: true; rows: CalcomListedBooking[]; notFound: string[] }
-  | { ok: false; reason: CalcomReadRefusal; uid: string; status: number }
+  | { ok: false; reason: CalcomReadRefusal | "uid-mismatch"; uid: string; status: number }
   | { ok: false; reason: "too-many-hops"; uid: string; hops: number };
 
 /**
  * Follow every reschedule chain to its end (#2946). The created window listing can
  * lack a chain's later links (a page shifts under a live walk), and a link read by
  * uid can name a further one the listing lacked too, so this reads missing links in
- * rounds until none is left, at most `maxHops` rounds. A uid cal.com refuses (a 404)
+ * rounds until none is left, at most `maxHops` rounds. A uid cal.com answers 404 for
  * is reported in `notFound` and its chain stays unresolved, which the comparison
- * counts; any other failure refuses by uid, because a shorter chain would be judged
- * at the wrong start.
+ * counts; any other failure (another status, a throw, a row read back under a
+ * different uid) refuses by uid, because a shorter chain would be judged at the wrong
+ * start.
  */
 export async function followRescheduleChains(
   rows: readonly CalcomListedBooking[],
@@ -324,9 +325,16 @@ export async function followRescheduleChains(
     if (hop >= maxHops) return { ok: false, reason: "too-many-hops", uid: wanted[0], hops: hop };
     for (const uid of wanted) {
       const one = await fetchByUid(uid);
-      if (one.ok) byUid.set(one.row.uid, one.row);
-      else if (one.reason === "refused") notFound.add(uid);
-      else return { ok: false, reason: one.reason, uid, status: one.status };
+      if (one.ok) {
+        // A row read back under another uid answers for something else; keyed under
+        // its own uid it would leave the requested one missing and re-asked every round.
+        if (one.row.uid !== uid) return { ok: false, reason: "uid-mismatch", uid, status: 200 };
+        byUid.set(uid, one.row);
+      } else if (one.reason === "refused" && one.status === 404) {
+        // Only a 404 says cal.com does not hold it (measured 2026-10-01). A 401, 429 or
+        // 500 is a read that failed, and must not shorten the chain.
+        notFound.add(uid);
+      } else return { ok: false, reason: one.reason, uid, status: one.status };
     }
   }
 }

@@ -375,7 +375,7 @@ function run(
 {
   const healthy = cohort(300, { slate: [0.4, 0.6], calcom: [0.3, 0.5] });
   const r = run(healthy);
-  eq(r.exit, PILOT_COMPARE_EXIT.provisional, "with no readout date fixed, a readable run is provisional");
+  eq(r.exit, PILOT_COMPARE_EXIT.tooFewToRead, "a booking rate readable without its show rate is still too few to read");
   assert(hasAssumption(r.lines), "the assumed split is printed on the run");
   assert(r.lines.some((l) => /^Compared: 600 applications \(Slate side 300, cal.com side 300\), 210 booked applications/.test(l)), "and how many it compared");
   assert(r.lines.some((l) => /booking rate  Slate 120\/300 \(40\.0%\), cal\.com 90\/300 \(30\.0%\); \+10\.0 points/.test(l)), "the headline booking rate per side and the difference");
@@ -386,11 +386,24 @@ function run(
   assert(r.lines.some((l) => /^Leakage: 0 booked applications/.test(l)), "no leakage when every application booked on its own side");
   assert(clean(r.lines), "nothing renders undefined or NaN");
 
-  const done = run(healthy, { window: { readout: { date: "2026-10-16", reached: true } } });
-  eq(done.exit, PILOT_COMPARE_EXIT.compared, "on the fixed readout date the same run is the readout");
+  // Large enough that BOTH the booking rate and the show rate are readable.
+  const full = cohort(400, { slate: [0.4, 0.6], calcom: [0.3, 0.5] });
+  const done = run(full, { window: { readout: { date: "2026-10-16", reached: true } } });
+  eq(done.exit, PILOT_COMPARE_EXIT.compared, "on the fixed readout date a run readable on both rates is the readout");
   assert(done.lines.some((l) => l.startsWith("READOUT:")), "and says so");
-  const interim = run(healthy, { window: { readout: { date: "2026-10-30", reached: false } } });
+  // The healthy cohort reads its booking rate and not its show rate (90 judgeable on cal.com).
+  const bookingOnly = run(healthy, { window: { readout: { date: "2026-10-16", reached: true } } });
+  eq(bookingOnly.exit, PILOT_COMPARE_EXIT.tooFewToRead, "a readout whose show rate is not yet readable is not a readout");
+  assert(bookingOnly.lines.some((l) => /^Not yet readable: the show rate/.test(l)), `and says which rate is short (${bookingOnly.lines.slice(-2).join(" | ")})`);
+  const interim = run(full, { window: { readout: { date: "2026-10-30", reached: false } } });
   eq(interim.exit, PILOT_COMPARE_EXIT.provisional, "before the fixed date it is an interim look");
+  eq(run(full).exit, PILOT_COMPARE_EXIT.provisional, "with no readout date fixed, a run readable on both rates is provisional");
+
+  // Precedence (documented in the exit table): rehearsal 13 first, since a rehearsal
+  // is never a result; then a settings disagreement 14; then too few 11; then provisional 12.
+  const rehChanged = run(full, { settings: { ...settingsOk, percent: 70 }, window: { rehearsal: true } });
+  eq(rehChanged.exit, PILOT_COMPARE_EXIT.rehearsal, "a rehearsal stays a rehearsal when the settings now differ");
+  assert(rehChanged.lines.some((l) => /^SETTINGS NOW DIFFER/.test(l)), "and the disagreement is still reported");
 
   const changed = run(healthy, { settings: { ...settingsOk, percent: 70 }, window: { readout: { date: "2026-10-16", reached: true } } });
   eq(changed.exit, PILOT_COMPARE_EXIT.settingsNowDiffer, "settings that contradict the assumption NOW have their own exit");

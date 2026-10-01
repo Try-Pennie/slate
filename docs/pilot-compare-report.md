@@ -90,6 +90,12 @@ is why the store start check exists.
 
 ## Exit codes
 
+Exits 1 to 10 and 15 refuse before any result. Once a comparison is printed, more
+than one condition can hold, and the run exits on the first of these: **13**
+(rehearsal, never a result), then **14** (settings now differ), then **11** (too few
+on either headline rate), then **12** (provisional), then **0** (the readout). Every
+condition that holds is still printed, whichever one names the run.
+
 | exit | what it met |
 |---|---|
 | 0 | the readout: the fixed date is reached and the headline is readable |
@@ -103,7 +109,7 @@ is why the store start check exists.
 | 8 | one side holds no applications |
 | 9 | too many cal.com bookings tied to no application |
 | 10 | the Regal call store holds no call over the span, or began after shows were due |
-| 11 | a side is under the minimum sample (100 applications, 10 bookings, 10 without) |
+| 11 | a side is under the minimum sample on the booking rate OR the show rate (100 units, 10 with and 10 without the outcome) |
 | 12 | provisional: before the fixed readout date, or none is fixed yet |
 | 13 | a rehearsal over days outside the window |
 | 14 | what Salesforce holds now contradicts the assumed split |
