@@ -10,6 +10,13 @@ import {
 } from "@/lib/calcom/overrides";
 import { CAL_SCHEDULES_API_VERSION, pickDefaultSchedule } from "@/lib/calcom/schedule-import";
 import { bookedByTier, readRoutingResponses } from "@/lib/calcom/routing-responses";
+import {
+  readCalcomBookingByUid,
+  readUpcomingCalcomBookings,
+  type CalcomBookingRead,
+  type CalcomGetter,
+  type CalcomUpcomingRead,
+} from "@/lib/calcom/upcoming-bookings";
 
 /**
  * Minimal Cal.com v2 org-API client for the OOO dual-write during the cutover
@@ -461,3 +468,41 @@ export async function calcomRoutedSlots(
 
 /** How long the pilot offer sample waits for cal.com before recording a failure. */
 export const CALCOM_ROUTED_SLOTS_TIMEOUT_MS = 10_000;
+
+/** The pause between listing pages, the same order as the routing response reads. */
+const BOOKINGS_PACE_MS = 300;
+
+/** The cal.com getter both booking reads use; the reader picks each request's timeout. */
+const bookingsGet: CalcomGetter = async (path, apiVersion, timeoutMs) => {
+  const r = await calcomFetch(path, {
+    headers: { "cal-api-version": apiVersion },
+    signal: AbortSignal.timeout(Math.max(1, timeoutMs)),
+  });
+  return { status: r.status, json: { data: r.data } };
+};
+
+/**
+ * Every upcoming cal.com booking in the org (#2933), read only, finished by
+ * `deadlineAtMs` or refused as `deadline`. Null when cal.com is not configured here,
+ * which is the state after cutover. A refused, unreadable, unreachable or timed out
+ * walk comes back as a refusal, never as the rows read before it.
+ */
+export async function calcomUpcomingBookings(afterStartIso: string, deadlineAtMs: number): Promise<CalcomUpcomingRead | null> {
+  if (!calcomConfigured()) return null;
+  return readUpcomingCalcomBookings({
+    get: bookingsGet,
+    org: calcomOrgId(),
+    afterStartIso,
+    paceMs: BOOKINGS_PACE_MS,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    clock: Date.now,
+    deadlineAtMs,
+  });
+}
+
+/** One cal.com booking by uid (#2933), for the all clear. Null when cal.com is not configured. */
+export async function calcomBookingByUid(uid: string, deadlineAtMs: number): Promise<CalcomBookingRead | null> {
+  if (!calcomConfigured()) return null;
+  return readCalcomBookingByUid({ get: bookingsGet, uid, clock: Date.now, deadlineAtMs });
+}
+

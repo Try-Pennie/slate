@@ -95,7 +95,13 @@ import { listBookingStampsBetween } from "@/lib/monitor/volume-learning-bookings
 import { runVolumeRelearn } from "@/lib/monitor/volume-relearn";
 import { LOW_TIER } from "@/lib/monitor/volume-tiers";
 import { REAL_ANCHOR_SOURCE } from "@/lib/monitor/carried-share";
-import { calcomTierBookingCounts } from "@/lib/calcom/client";
+import { calcomBookingByUid, calcomTierBookingCounts, calcomUpcomingBookings } from "@/lib/calcom/client";
+import {
+  runCrossSystemBookingsCheck,
+  CROSS_SYSTEM_BOOKING_KEY,
+  type CrossSystemBookingsResult,
+} from "@/lib/monitor/cross-system-bookings";
+import { loadSlateUpcomingBookings } from "@/lib/monitor/cross-system-bookings-store";
 import { runPilotOfferSampleLive } from "@/lib/monitor/pilot-offers-live";
 import { runTierVolumeChecks } from "@/lib/monitor/tier-volume";
 import { MEASURED_VOLUME_BASELINE } from "@/lib/monitor/volume-baseline";
@@ -167,6 +173,8 @@ import {
   tierStaffingReachedVerdict,
   BELOW_LEAD_TIER_VERDICT_LANE,
   belowLeadTierReachedVerdict,
+  CROSS_SYSTEM_BOOKINGS_VERDICT_LANE,
+  crossSystemBookingsReachedVerdict,
   REGAL_CALLS_VERDICT_LANE,
   regalCallsReachedVerdict,
   ROSTER_COVERAGE_VERDICT_LANE,
@@ -1955,6 +1963,62 @@ export async function GET(req: NextRequest) {
       log.warn("monitor", { msg: "below lead tier skipped", why: gates.belowLeadTier.why });
     }
 
+    // --- A lead booked in BOTH Slate and cal.com (#2933). During the pilot split a
+    // lead can reach both bookers, and on 2026-10-01 one did: two live calls, one
+    // Submission, and Slate's one call per lead check reads only Slate. Every
+    // upcoming real Slate booking is held against every upcoming cal.com booking,
+    // matched on the Salesforce Submission id or the attendee address, and each
+    // Slate booking with a live cal.com twin pages once, naming both booking ids.
+    //
+    // Cost on this lane: nothing at all on eleven ticks in twelve. On the tick in
+    // the first five minutes of each hour, one Slate read and about six paced
+    // cal.com requests (1,252 upcoming bookings measured 2026-10-01, 250 a page),
+    // plus one direct read per outstanding page whose twin the listing no longer
+    // shows. The whole run is held to CROSS_SYSTEM_BUDGET_MS (45s), so a slow
+    // cal.com cannot hold this awaited step. Not gated on the shared setup reads:
+    // it reads its own buckets, so a failed shared read cannot blind it. A failed
+    // or partial read on either side clears nothing and stamps no verdict. ---
+    const crossSystemBookings = await steps.run<CrossSystemBookingsResult | null>("cross_system_bookings", null, () =>
+      runCrossSystemBookingsCheck({
+        nowMs: now,
+        clock: Date.now,
+        calcomRetired: () => loadCalcomRetiredCached(now),
+        loadSlate: () => loadSlateUpcomingBookings(db, new Date(now).toISOString()),
+        readCalcom: (afterIso, deadlineAtMs) => calcomUpcomingBookings(afterIso, deadlineAtMs),
+        readCalcomByUid: (uid, deadlineAtMs) => calcomBookingByUid(uid, deadlineAtMs),
+        listFiring: async () => new Set(await firingFamilyMembers(CROSS_SYSTEM_BOOKING_KEY)),
+        bookingUrl: (id) => `${appUrl()}${bookingDetailHref(id)}`,
+        // alert-key: cross_system_booking:*
+        // alert-text-ok: our own copy from cross-system-bookings.ts, built from booking
+        // ids and times; no error text can reach it.
+        notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+        // alert-key: cross_system_booking:*
+        // all-clear-proof: scripts/test-cross-system-bookings.ts - a refused, unreadable
+        // or partial cal.com read and a failed Slate read each clear NOTHING, and a
+        // booking excluded as a test keeps whatever page it has.
+        resolve: (key, text) => resolveAlert(key, text),
+        cooldownMs: cooldownMs.cross_system_booking,
+      }).then((result) => {
+        if (result.status === "unreadable") {
+          log.warn("monitor", { msg: "cross system bookings unreadable", stage: result.stage, error: result.error });
+        } else if (result.status === "measured") {
+          log.info("monitor", {
+            msg: "cross system bookings",
+            slate_compared: result.slateCompared,
+            calcom_compared: result.calcomCompared,
+            test_source: result.testSource,
+            pairs: result.pairs.length,
+            cleared: result.cleared,
+            still_live: result.stillLive,
+            unconfirmed: result.unconfirmed,
+          });
+        } else if (result.status !== "not-due") {
+          log.info("monitor", { msg: "cross system bookings skipped", why: result.status });
+        }
+        return result;
+      }),
+    );
+
     // --- A real booking from a host page that is not the production site (#2715).
     // Reads the real buckets' active bookings created inside the lookback and pages
     // once per booking whose recorded `prefill.parentOrigin` or framing page
@@ -3235,6 +3299,12 @@ export async function GET(req: NextRequest) {
       recordDetectorVerdict(
         BELOW_LEAD_TIER_VERDICT_LANE,
         belowLeadTierReachedVerdict(belowLeadTier),
+      ),
+      // #2933: stamped only when both reads succeeded in full and at least one real
+      // Slate booking was compared, or when cal.com is marked retired.
+      recordDetectorVerdict(
+        CROSS_SYSTEM_BOOKINGS_VERDICT_LANE,
+        crossSystemBookingsReachedVerdict(crossSystemBookings),
       ),
       // #2090: "nobody calling while not routable" and "no call reached Slate"
       // are the same silence, so only a tick that judged a real call stamps.
