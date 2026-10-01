@@ -12,6 +12,7 @@ import {
   type DueBooking,
 } from "../src/lib/booking/reminder-send.ts";
 import { CARD_PHOTO_DEADLINE_MS } from "../src/lib/booking/advisor-card-photo.ts";
+import { PENNIE_CARD_LOGO } from "../src/lib/booking/pennie-card-logo.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const HOUR = 60 * 60_000;
@@ -558,12 +559,18 @@ function spy(over: Partial<ReminderDeps> = {}) {
 // --- the advisor's photo on the card (#1334, Dan 2026-10-01) -------------------------
 //
 // An optional extra on the card, so every way of not having it sends the reminder and
-// the card exactly as before, just without a PHOTO line. Fetched at most once per
-// advisor per tick, and only for advisors whose reminders carry a card.
+// the card exactly as before, carrying the Pennie logo instead of a face (#2980).
+// Fetched at most once per advisor per tick, and only for advisors whose reminders
+// carry a card.
 const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 7, 7, 7]);
 const STORED_PHOTO = "https://lh3.googleusercontent.com/a/ACg8ocK_example=s96-c";
 const NUMBER_FOR_LEAD = () => new Map([["00QUi000010889Z", "+12197588170"]]);
 const unfoldCard = (content: string) => content.replace(/\r\n /g, "");
+const LOGO_LINE = `PHOTO;ENCODING=b;TYPE=${PENNIE_CARD_LOGO.type}:${PENNIE_CARD_LOGO.base64}`;
+const cardPhotoLines = (msg: import("../src/lib/notify/email-mime.ts").MimeMessage | undefined) =>
+  unfoldCard(msg?.attachments?.[0]?.content ?? "")
+    .split("\r\n")
+    .filter((l) => l.startsWith("PHOTO"));
 
 {
   const msgs: import("../src/lib/notify/email-mime.ts").MimeMessage[] = [];
@@ -609,8 +616,8 @@ const unfoldCard = (content: string) => content.replace(/\r\n /g, "");
   const expected = `PHOTO;ENCODING=b;TYPE=JPEG:${Buffer.from(JPEG_BYTES).toString("base64")}`;
   eq(photoLine(0), [expected], "the first card carries the photo, embedded");
   eq(photoLine(1), [expected], "and so does the second, from the same fetch");
-  eq(photoLine(2), [], "an advisor with no photo on file gets a card with no PHOTO line");
-  eq(msgs[2]?.attachments?.length ?? 0, 1, "but still gets the card");
+  eq(photoLine(2), [LOGO_LINE], "an advisor with no photo on file gets a card carrying the Pennie logo");
+  eq(result.withLogo, 1, "counted as a logo, apart from the photos");
   eq(msgs[3]?.attachments?.length ?? 0, 0, "and a reminder with no card fetches nothing for it");
   eq(s.warnings.length, 0, "no photo on file is not a fault, so nothing is logged as one");
 }
@@ -641,9 +648,10 @@ for (const [label, fetchPhoto] of failingFetches) {
   const result = await runBookingReminders(s.deps);
   eq(result.sent, 1, `${label}: the reminder still goes out`);
   eq(msgs[0]?.attachments?.length ?? 0, 1, `${label}: with its card`);
-  assert(!(msgs[0]?.attachments?.[0]?.content ?? "PHOTO").includes("PHOTO"), `${label}: and no PHOTO line`);
+  eq(cardPhotoLines(msgs[0]), [LOGO_LINE], `${label}: carrying the Pennie logo instead of the photo`);
   eq(result.photoUnread, 1, `${label}: counted as unread`);
   eq(result.withPhoto, 0, `${label}: and not as a photo sent`);
+  eq(result.withLogo, 1, `${label}: but as a logo sent`);
   eq(s.warnings.length, 1, `${label}: logged once with its reason`);
   eq(s.alerts.length, 0, `${label}: and never paged, since no reminder was lost`);
 }
@@ -664,8 +672,9 @@ for (const [label, fetchPhoto] of failingFetches) {
   const result = await runBookingReminders(s.deps);
   eq(result.sent, 1, "a failed photo lookup still sends the reminder");
   eq(msgs[0]?.attachments?.length ?? 0, 1, "with its card");
-  assert(!(msgs[0]?.attachments?.[0]?.content ?? "PHOTO").includes("PHOTO"), "and no photo");
+  eq(cardPhotoLines(msgs[0]), [LOGO_LINE], "carrying the Pennie logo");
   eq(result.photoUnread, 1, "counted as unread");
+  eq(result.withLogo, 1, "and as a logo sent");
   eq(s.warnings.length, 1, "and logged");
 }
 
@@ -695,10 +704,30 @@ for (const [label, fetchPhoto] of failingFetches) {
   const result = await runBookingReminders(s.deps);
   eq(result.sent, 1, "a hung photo fetch still lets the reminder go out");
   eq(msgs[0]?.attachments?.length ?? 0, 1, "with its card");
-  assert(!(msgs[0]?.attachments?.[0]?.content ?? "PHOTO").includes("PHOTO"), "and no photo");
+  eq(cardPhotoLines(msgs[0]), [LOGO_LINE], "carrying the Pennie logo");
   eq(result.photoUnread, 1, "counted as unread");
+  eq(result.withLogo, 1, "and as a logo sent");
   assert(timers.includes(CARD_PHOTO_DEADLINE_MS), "under the photo's own deadline");
   eq(cleared, timers.length, "and every timer is cleared");
+}
+
+// A booking with no assigned advisor id still gets the logo, and a reminder with no
+// card carries no logo and is not counted (#2980).
+{
+  const msgs: import("../src/lib/notify/email-mime.ts").MimeMessage[] = [];
+  const s = spy({
+    loadDue: async () => [due({ agentId: null }), due({ id: "bk-2", leadId: null, gcalEventId: null })],
+    readCallingNumbers: async () => NUMBER_FOR_LEAD(),
+    send: async (msg) => {
+      msgs.push(msg);
+      return "gmail-id";
+    },
+  });
+  const result = await runBookingReminders(s.deps);
+  eq(cardPhotoLines(msgs[0]), [LOGO_LINE], "no advisor id: the card carries the Pennie logo");
+  eq(msgs[1]?.attachments?.length ?? 0, 0, "a reminder with no calling number has no card");
+  eq(result.withLogo, 1, "only the card is counted as a logo");
+  eq(result.withPhoto + result.withLogo, result.withCallingNumber, "every card carries exactly one picture");
 }
 
 finish();
