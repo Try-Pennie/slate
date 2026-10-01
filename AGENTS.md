@@ -804,6 +804,14 @@ reasoning the flags out per command. Most of the family retires at cutover (#65)
 since it only means anything while both systems are live; `verify:twilio-parity`
 does not, because Twilio stays the place managers tag agents afterwards.
 
+Two hand run REPORTS follow the same rules: `report:pilot-split` (GA4, per
+visitor, `docs/pilot-split-report.md`) and `report:pilot-compare` (#2946, Slate
+against cal.com booking and show rate on every tier from each system's own
+records, intention to treat by hash side, `docs/pilot-compare-report.md`). The
+second prints on every run that the 50 split is ASSUMED, not checked (Salesforce
+keeps no history of the SlatePilot fields), and exits 0 only for the readout
+on a date fixed in `scripts/lib/pilot-compare.ts`.
+
 # One availability compute per POOL, not per bucket code (#2245)
 
 Sixty bucket codes resolve to **fifteen** distinct pools, measured against

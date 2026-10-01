@@ -20,6 +20,7 @@ import {
   compareHalves,
   daysNeeded,
   judgePilotSplit,
+  parseTiers,
   planFromEnv,
   crossCheckSlateBookings,
   PILOT_SPLIT_EXIT,
@@ -209,11 +210,27 @@ function idsInBucketRange(n: number, below: boolean, percent: number, prefix: st
   );
   assert(withXbc.ok && withXbc.hasXbc, "an optional xbc column is read");
   if (withXbc.ok) {
-    const s = summarizeLeads(withXbc, { percent: 50 });
-    eq(s.outsidePilot, 1, "a lead whose XBC is not Low is outside the pilot");
+    const s = summarizeLeads(withXbc, { percent: 50, tiers: new Set(["1"]) });
+    eq(s.outsidePilot, 1, "a lead whose XBC is not in a pilot tier is outside the pilot");
     eq(s.hashDisagrees, 1, "a Low cal.com lead under the percentage disagrees with the hash");
     eq(s.calcom.leads, 2, "both Low cal.com leads stay in the control half: a lead is counted by the booker it was given");
+    // #2946: the pilot covers the tiers SlatePilotTiers__c names, not Low alone.
+    const wide = summarizeLeads(withXbc, { percent: 50, tiers: parseTiers("1;2;3;4;5") as Set<string> });
+    eq(wide.outsidePilot, 0, "with every tier in the pilot, a High lead is in it");
+    eq(wide.calcom.leads, 3, "and counted in the half it was given");
+    let threw = false;
+    try {
+      summarizeLeads(withXbc, { percent: 50 });
+    } catch {
+      threw = true;
+    }
+    assert(threw, "an xbc column with no pilot tiers is an error, never a silent default to Low");
   }
+  eq(parseTiers("1;2;3;4;5"), new Set(["1", "2", "3", "4", "5"]), "SlatePilotTiers__c's own format reads");
+  eq(parseTiers(" 1, 3 "), new Set(["1", "3"]), "commas and spaces read too");
+  eq(parseTiers(""), null, "an empty value is no tiers, not every tier");
+  eq(parseTiers(undefined), null, "and so is an absent one");
+  eq(parseTiers("1;x"), null, "a value that is not a tier digit refuses the whole list");
 }
 
 // --- 5. the interval and p value, against a hand worked example ----------------
@@ -476,6 +493,22 @@ function idsInBucketRange(n: number, below: boolean, percent: number, prefix: st
   const mixed = judge([csv(leadsOn(calIds.slice(0, 5), "cal.com", "20261008", 0), noXbcHeader), withXbc], { PILOT_SPLIT_PERCENT: "50" });
   eq(mixed.exit, PILOT_SPLIT_EXIT.missingColumn, "an export without the xbc column beside one with it is refused");
   assert(text(mixed).includes("export-1.csv"), `and names the file missing it (${text(mixed)})`);
+
+  // #2946: an xbc column is filtered on the tiers SlatePilotTiers__c names, never a
+  // hard coded Low, and with no tiers given it refuses rather than guess.
+  const noTiers = judge([withXbc], { PILOT_SPLIT_PERCENT: "50" });
+  eq(noTiers.exit, PILOT_SPLIT_EXIT.tiersUnknown, "an xbc export with no PILOT_SPLIT_TIERS is refused on its own code");
+  assert(/PILOT_SPLIT_TIERS/.test(text(noTiers)) && /SlatePilotTiers__c/.test(text(noTiers)), `and says where the tiers come from (${text(noTiers)})`);
+  const badTiers = judge([withXbc], { PILOT_SPLIT_PERCENT: "50", PILOT_SPLIT_TIERS: "low" });
+  eq(badTiers.exit, PILOT_SPLIT_EXIT.tiersUnknown, "an unreadable PILOT_SPLIT_TIERS is refused, not read as no filter");
+  const highOnly = csv(
+    [...calIds.slice(0, 5).map((id) => ["20261007", id, "cal.com", "311", "booking_assignment", "(not set)", "1"]), ...slateIds.slice(0, 5).map((id) => ["20261007", id, "slate", "311", "booking_assignment", "(not set)", "1"])],
+    xbcHeader,
+  );
+  const lowPilot = judge([highOnly], { PILOT_SPLIT_PERCENT: "50", PILOT_SPLIT_TIERS: "1" });
+  eq(lowPilot.exit, PILOT_SPLIT_EXIT.emptyHalf, "High leads are outside a Low only pilot");
+  const allTiers = judge([highOnly], { PILOT_SPLIT_PERCENT: "50", PILOT_SPLIT_TIERS: "1;2;3;4;5" });
+  assert(allTiers.exit !== PILOT_SPLIT_EXIT.emptyHalf && allTiers.exit !== PILOT_SPLIT_EXIT.tiersUnknown, `and inside an every tier pilot (${text(allTiers)})`);
 
   const broken = judge([weekOne, csv([], HEADER.slice(1))], { PILOT_SPLIT_PERCENT: "50" });
   eq(broken.exit, PILOT_SPLIT_EXIT.missingColumn, "one unreadable export refuses the run");

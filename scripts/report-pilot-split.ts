@@ -74,6 +74,7 @@
 // | 13 | the comparison was made and the Slate cross check could not read Slate |
 // | 14 | an export ends exactly on a GA4 row limit, so it was probably cut off; export fewer days per file |
 // | 15 | two exports cover the same day, so its leads would be read twice |
+// | 16 | the export has an xbc column and no pilot tiers are known (PILOT_SPLIT_TIERS, or SlatePilotTiers__c read from Salesforce) |
 //
 // It is deliberately NOT named `test-*.ts`: that glob is the offline unit suite.
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -136,6 +137,22 @@ if (named.length > 0) {
         PILOT_SPLIT_EXIT.unreadableFile,
       );
     }
+  }
+}
+
+// The pilot tiers (#2946): PILOT_SPLIT_TIERS when set, otherwise SlatePilotTiers__c as
+// Salesforce holds it NOW. Salesforce keeps no history of it, so today's value stands
+// for every day in the export; set PILOT_SPLIT_TIERS for an export from before a change.
+if ((env.PILOT_SPLIT_TIERS ?? "").trim() === "" && ["SF_CLIENT_ID", "SF_CLIENT_SECRET", "SF_INSTANCE_URL"].every((n) => env[n]?.trim())) {
+  try {
+    const { readPilotSettings } = await import("./lib/pilot-settings-read.ts");
+    const settings = await readPilotSettings();
+    if (settings.tiers !== null) {
+      env.PILOT_SPLIT_TIERS = settings.tiers;
+      console.error(`Pilot tiers from SlatePilotTiers__c as it is now: ${settings.tiers}.`);
+    }
+  } catch (err) {
+    console.error(`SlatePilotTiers__c could not be read (${err instanceof Error ? err.message : String(err)}); set PILOT_SPLIT_TIERS.`);
   }
 }
 

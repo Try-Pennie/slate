@@ -75,6 +75,8 @@ export const PILOT_SPLIT_EXIT = {
   possiblyTruncated: 14,
   /** Two exports cover the same day, so its leads would be read twice (#2908). */
   overlappingExports: 15,
+  /** The export has an xbc column and no pilot tiers were given or could be read (#2946). */
+  tiersUnknown: 16,
 } as const;
 
 /**
@@ -168,7 +170,7 @@ export const REQUIRED_COLUMNS = [
  * that did send it still reads, the step taken from it when it is set.
  */
 export const OPTIONAL_STEP_COLUMN = "ga4_event_name";
-/** Read when present: restricts the comparison to Low leads directly. */
+/** Read when present: restricts the comparison to the pilot tiers directly. */
 export const OPTIONAL_XBC_COLUMN = "xbc";
 
 export interface Ga4Row {
@@ -483,8 +485,13 @@ const emptyHalf = (): Half => ({ leads: 0, bookings: 0, opened: 0, leftWithoutOp
 
 export function summarizeLeads(
   parsed: Extract<ParsedExport, { ok: true }>,
-  opts: { percent: number | null },
+  opts: { percent: number | null; tiers?: ReadonlySet<string> | null },
 ): LeadSummary {
+  if (parsed.hasXbc && !opts.tiers) {
+    // Never a default: before #2946 this filter was a hard coded Low, which put every
+    // other tier's lead out of the pilot once the split covered them all.
+    throw new Error("summarizeLeads: the export has an xbc column and no pilot tiers were given");
+  }
   type Acc = { assigned: boolean; providers: Set<Provider>; opened: boolean; booked: boolean; xbc: string | null };
   const byLead = new Map<string, Acc>();
   const unrecognised = new Set<string>();
@@ -550,7 +557,7 @@ export function summarizeLeads(
         s.xbcUnknown++;
         continue;
       }
-      if (!acc.xbc.startsWith("1")) {
+      if (!(opts.tiers as ReadonlySet<string>).has(acc.xbc.trim().charAt(0))) {
         s.outsidePilot++;
         continue;
       }
@@ -559,7 +566,7 @@ export function summarizeLeads(
       const expectSlate = slateBucket(key) < opts.percent;
       if (provider === "slate" && !expectSlate) s.hashDisagrees++;
       if (provider === "cal.com" && expectSlate) {
-        // With XBC known this is a Low lead the hash says should have had Slate
+        // With XBC known this is a pilot tier lead the hash says should have had Slate
         // (the pilot was off that day, or the percentage moved). Without it, the
         // likelier reading is a lead that was never in the pilot.
         if (parsed.hasXbc) s.hashDisagrees++;
@@ -712,6 +719,18 @@ const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
 const points = (x: number) => `${x >= 0 ? "+" : ""}${(x * 100).toFixed(1)} points`;
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
+/**
+ * The pilot tiers in SlatePilotTiers__c's own format (`1;2;3;4;5`), or null when the
+ * value is empty or holds anything that is not a tier digit. Null is "no tiers known",
+ * never "every tier": a filter that read an unreadable value as no filter would put
+ * leads outside the pilot into the control half.
+ */
+export function parseTiers(raw: string | null | undefined): Set<string> | null {
+  const parts = (raw ?? "").split(/[;,\s]+/).filter((t) => t !== "");
+  if (parts.length === 0 || parts.some((t) => !/^[1-5]$/.test(t))) return null;
+  return new Set(parts);
+}
+
 /** Reads PILOT_SPLIT_PERCENT: null when unset, a number from 0 to 100, or a refusal. */
 export function readPercent(raw: string | undefined): { ok: true; percent: number | null } | { ok: false; message: string } {
   if (raw === undefined || raw.trim() === "") return { ok: true, percent: null };
@@ -768,7 +787,18 @@ export function judgePilotSplit(input: {
     return out(PILOT_SPLIT_EXIT.unreadablePercent);
   }
   const percent = pr.percent;
-  const s = summarizeLeads(parsed, { percent });
+  const tiersRaw = input.env.PILOT_SPLIT_TIERS;
+  const tiers = parseTiers(tiersRaw);
+  if (parsed.hasXbc && tiers === null) {
+    lines.push(
+      (tiersRaw ?? "").trim() === ""
+        ? "FAILED (tiers-unknown): the export has an xbc column and no pilot tiers are known. Set PILOT_SPLIT_TIERS to SlatePilotTiers__c " +
+            "for these days (1;2;3;4;5 since 2026-10-01), or run with Salesforce credentials so the command reads it."
+        : `FAILED (tiers-unknown): PILOT_SPLIT_TIERS="${tiersRaw}" is not a list of tier digits in SlatePilotTiers__c's format (1;2;3;4;5).`,
+    );
+    return out(PILOT_SPLIT_EXIT.tiersUnknown);
+  }
+  const s = summarizeLeads(parsed, { percent, tiers });
   const range = s.dates.length > 0 ? `${s.dates[0]} to ${s.dates[s.dates.length - 1]}` : "no dates";
   const extra = { dates: s.dates, slateKeys: s.slateKeys, slateBookedKeys: s.slateBookedKeys };
 

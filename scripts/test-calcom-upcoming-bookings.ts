@@ -23,6 +23,11 @@ import {
   CALCOM_BOOKINGS_PAGE_TIMEOUT_MS,
   readCalcomBookingByUid,
   readUpcomingCalcomBookings,
+  readCalcomBookingsCreated,
+  readCalcomListedBookingByUid,
+  phoneKey,
+  CALCOM_WINDOW_PAGE_TIMEOUT_MS,
+  type CalcomListedRead,
   type CalcomBookingRead,
   type CalcomUpcomingRead,
 } from "../src/lib/calcom/upcoming-bookings.ts";
@@ -313,6 +318,124 @@ async function byUid(page: Page, over: { budgetMs?: number; stepMs?: number } = 
   const { result, calls } = await byUid({ status: 200, json: { data: raw(1) } }, { budgetMs: 0 });
   eq(result, { ok: false, reason: "deadline", status: 0 }, "no direct read starts after the deadline");
   eq(calls.length, 0, "and nothing is asked");
+}
+
+// --- bookings CREATED in a window, every status (#2946) ----------------------------
+// The pilot comparison reads each status by when a booking was MADE, a day at a
+// time. What it needs on top of the upcoming row: when it was made, its event type,
+// both ends of a reschedule, the host's address, and a phone key for matching.
+{
+  const created = (id: number, over: Record<string, unknown> = {}) =>
+    raw(id, {
+      createdAt: "2026-10-02T15:00:00.000Z",
+      end: "2026-10-02T22:30:00.000Z",
+      eventTypeId: 1314152,
+      attendees: [{ name: "Lead Person", email: "lead@example.test", phoneNumber: "+1 (555) 010-0199" }],
+      ...over,
+    });
+  async function readCreated(pages: Page[], over: { retries?: number; budgetMs?: number } = {}) {
+    const clk = clock();
+    const g = getter(pages, clk);
+    const result: CalcomListedRead = await readCalcomBookingsCreated({
+      get: g.get,
+      org: "19474",
+      status: "past",
+      afterCreatedIso: "2026-10-02T04:00:00.000Z",
+      beforeCreatedIso: "2026-10-03T04:00:00.000Z",
+      paceMs: 0,
+      sleep: noSleep,
+      clock: clk.now,
+      deadlineAtMs: 1_000_000 + (over.budgetMs ?? 600_000),
+      retries: over.retries,
+    });
+    return { result, calls: g.calls };
+  }
+  {
+    const { result, calls } = await readCreated([
+      {
+        status: 200,
+        json: { data: [created(1, { rescheduledToUid: "uid9", status: "cancelled", hosts: [{ email: " Adv@Pennie.test " }] })] },
+      },
+    ]);
+    const url = new URL(`https://x.test${calls[0].path}`);
+    eq(url.searchParams.get("status"), "past", "the status asked for is the one sent");
+    eq(url.searchParams.get("afterCreatedAt"), "2026-10-02T04:00:00.000Z", "bounded below on when it was made");
+    eq(url.searchParams.get("beforeCreatedAt"), "2026-10-03T04:00:00.000Z", "and above");
+    eq(url.searchParams.get("afterStart"), null, "never by start: a cohort is judged on when the booking was made");
+    eq(calls[0].timeoutMs, CALCOM_WINDOW_PAGE_TIMEOUT_MS, "a page may take the measured slow first page, not twenty seconds");
+    assert(result.ok, "one short page is a complete read");
+    if (result.ok) {
+      const row = result.rows[0];
+      eq(row.createdAt, "2026-10-02T15:00:00.000Z", "when it was made is kept");
+      eq(row.eventTypeId, 1314152, "the event type is kept");
+      eq(row.rescheduledToUid, "uid9", "the forward reschedule link is kept");
+      eq(row.rescheduledFromUid, null, "a missing back link reads as null");
+      eq(row.attendeePhone10, "5550100199", "the phone is reduced to its last ten digits");
+      eq(row.hostEmail, "adv@pennie.test", "the host address is trimmed and lower cased");
+    }
+  }
+  {
+    // The phone lives on the attendee on most rows and only in the answers on some.
+    const { result } = await readCreated([
+      {
+        status: 200,
+        json: {
+          data: [
+            created(2, { attendees: [{ email: "x@example.test" }], bookingFieldsResponses: { attendeePhoneNumber: "15550100777" } }),
+            created(3, { attendees: [{ email: "y@example.test", phoneNumber: "12345" }] }),
+          ],
+        },
+      },
+    ]);
+    if (result.ok) {
+      eq(result.rows[0].attendeePhone10, "5550100777", "a phone only in the answers is read from there");
+      eq(result.rows[1].attendeePhone10, null, "a phone too short to be one reads as none, never a partial key");
+    } else assert(false, "both rows read");
+  }
+  {
+    const { result } = await readCreated([{ status: 200, json: { data: [created(4, { createdAt: undefined })] } }]);
+    eq(
+      result,
+      { ok: false, reason: "row-unreadable", status: 200, page: 0 },
+      "a row with no creation time refuses the read: it cannot be placed in a cohort",
+    );
+  }
+  {
+    // Measured: the first page of a past listing answered in 6 s once and 117 s once.
+    const { result, calls } = await readCreated([new Error("timed out"), { status: 200, json: { data: [created(5)] } }]);
+    assert(result.ok, "a first page that throws is tried once more and the read completes");
+    eq(calls.length, 2, "the page was asked twice");
+  }
+  {
+    const { result, calls } = await readCreated([new Error("timed out"), new Error("timed out again")]);
+    eq(result, { ok: false, reason: "unreachable", status: 0, page: 0 }, "two throws on one page refuse the read rather than return nothing");
+    eq(calls.length, 2, "one retry, not a loop");
+  }
+  {
+    const { result, calls } = await readCreated([{ status: 503, json: {} }]);
+    eq(result, { ok: false, reason: "refused", status: 503, page: 0 }, "a page cal.com answered with an error is refused");
+    eq(calls.length, 1, "an answer is not retried");
+  }
+  {
+    const { result } = await readCreated([new Error("timed out")], { budgetMs: 500 });
+    eq(result, { ok: false, reason: "deadline", status: 0, page: 0 }, "a throw past the deadline is the deadline, and not retried");
+  }
+}
+{
+  // The upcoming read keeps its own rule: no retry on a throw.
+  const { result, calls } = await read([new Error("socket hang up"), { status: 200, json: { data: [] } }]);
+  eq(result, { ok: false, reason: "unreachable", status: 0, page: 0 }, "the upcoming read does not retry");
+  eq(calls.length, 1, "it asked once");
+}
+{
+  const clk = clock();
+  const g = getter([{ status: 200, json: { data: raw(7, { createdAt: "2026-10-02T15:00:00.000Z", rescheduledFromUid: "uid6" }) } }], clk);
+  const r = await readCalcomListedBookingByUid({ get: g.get, uid: "uid7", clock: clk.now, deadlineAtMs: 2_000_000 });
+  assert(r.ok && r.row.rescheduledFromUid === "uid6", "one booking by uid reads in the listed shape");
+}
+{
+  eq(phoneKey("(555) 010-0199"), "5550100199", "a ten digit phone is its own key");
+  eq(phoneKey(undefined), null, "no phone, no key");
 }
 
 finish();

@@ -17,7 +17,9 @@ stay where they can be found.
 
 A sibling hand run command that reports rather than verifies,
 `pnpm report:pilot-split` (Slate against cal.com booking rate across trypennie's
-per lead split, #2898), has its runbook in `docs/pilot-split-report.md`.
+per lead split, #2898), has its runbook in `docs/pilot-split-report.md`, and
+`pnpm report:pilot-compare` (the same question from Salesforce, Slate, cal.com and
+the Regal call store, with show rate, #2946) has its in `docs/pilot-compare-report.md`.
 
 # A detector the roster cannot exercise (`pnpm verify:availability-truth`)
 
