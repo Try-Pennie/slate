@@ -1,5 +1,6 @@
 import { parseStampMs } from "@/lib/date/stamp";
 import { selectAllPages } from "@/lib/supabase/paginate";
+import { inIdChunks } from "@/lib/db/id-batch";
 import { isRetiredSkip, MAX_RETRIES_PER_TICK } from "@/lib/monitor/calcom-override-sweep";
 import { log } from "@/lib/log";
 
@@ -86,16 +87,19 @@ export async function loadPutBackBacklog(db: Db, nowMs: number): Promise<number 
     if (waiting.length === 0) return 0;
 
     // Active agents only, as the sweep's loader does: an override for somebody who
-    // has left protects nothing, and the sweep never copies it. Bounded by the
-    // roster, since the ids are distinct agents.
+    // has left protects nothing, and the sweep never copies it. Chunked by URL
+    // budget, since PostgREST refuses an in() filter past a few hundred ids.
     const ids = [...new Set(waiting.map((r) => r.userId))];
-    const { data: users, error } = await db
-      .from("users")
-      .select("id")
-      .in("id", ids)
-      .is("deactivated_at", null);
-    if (error) throw new Error(`calcom.putBackBacklog users read failed: ${error.message}`);
-    const active = new Set(((users ?? []) as { id: string }[]).map((u) => u.id));
+    const pages = await inIdChunks("calcom.putBackBacklog users", ids, async (chunk) => {
+      const { data, error } = await db
+        .from("users")
+        .select("id")
+        .in("id", chunk)
+        .is("deactivated_at", null);
+      if (error) throw new Error(`calcom.putBackBacklog users read failed: ${error.message}`);
+      return (data ?? []) as { id: string }[];
+    });
+    const active = new Set(pages.flat().map((u) => u.id));
     return putBackBacklog(waiting, active, nowMs);
   } catch (err) {
     log.error("calcom-put-back", { msg: "backlog unreadable" }, err instanceof Error ? err : undefined);
