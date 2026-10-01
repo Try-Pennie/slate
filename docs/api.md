@@ -324,6 +324,17 @@ not a JSON object answers `400 { "code": "VALIDATION", "error": "body must be a 
 object" }`, and only a STRING counts as a value, so a numeric id reads as absent
 rather than being stringified into something that might match.
 
+**A lead's opt out by text (#2940).** When a lead opts out of their call by replying
+to a Marcia text, Regal cancels the booking through this endpoint with
+`"reason": "text_opt_out"`, a system only code (never offered to a lead or an admin,
+like `double_booking`), so the cancel is recorded as an opt out rather than an
+ordinary one and `booking.cancelled` carries `cancellationReason: "text_opt_out"`. The
+booking id and Lead id are the ones Regal holds on the contact (`calBookingId`,
+`externalId`). A system only code is valid whether or not the reason store has a row
+for it yet, because the resolver adds every coded system only code the store lacks to
+the full list (`resolveReasonOptions`). A second run answers `404`, which changes
+nothing.
+
 > There is no separate reschedule endpoint on this API. To move a booking,
 > re-submit `POST /api/bookings` with the same `externalId` and a new `start`
 > (see `docs/booking-api.md`).

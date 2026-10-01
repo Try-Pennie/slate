@@ -203,3 +203,63 @@ describe("POST /api/bookings/cancel: what only a body can get wrong", () => {
     expect(service.cancelDirectBooking).not.toHaveBeenCalled();
   });
 });
+
+// #2940: a lead who opts out of their call by replying to a Marcia text. Regal's opt
+// out journey sends exactly this body (the checklist on the issue), with the booking
+// id and Lead id it holds on the contact. The reason store is the REAL resolver over
+// a store written before `text_opt_out` existed, which is what production holds, so
+// this proves the code is accepted on the day it ships rather than after somebody
+// saves the reason editor.
+describe("POST /api/bookings/cancel: a lead's opt out by text (#2940)", () => {
+  const REGAL_OPT_OUT_BODY = {
+    bookingId: "5f14aac7-ad33-4b8c-98cd-5fc5f5d7babc",
+    salesforceId: "00QUi0000109rcTMAQ",
+    reason: "text_opt_out",
+  };
+
+  beforeEach(async () => {
+    const real = await vi.importActual<typeof import("@/lib/booking/reason-options")>(
+      "@/lib/booking/reason-options",
+    );
+    reasons.loadReasonOptions.mockResolvedValue(
+      real.resolveReasonOptions([
+        { action: "cancel", code: "no_longer_interested", label: "No longer interested", sort_order: 0, active: true, locked: false, system_only: false },
+        { action: "cancel", code: "other", label: "Other", sort_order: 1, active: true, locked: true, system_only: false },
+        { action: "cancel", code: "double_booking", label: "Double booking", sort_order: 2, active: true, locked: true, system_only: true },
+      ]),
+    );
+  });
+
+  it("cancels the named booking for that Lead, recorded as an opt out by text", async () => {
+    const res = await viaPost(REGAL_OPT_OUT_BODY);
+    expect(res.status).toBe(200);
+    expect(service.cancelDirectBooking).toHaveBeenCalledExactlyOnceWith({
+      bookingId: REGAL_OPT_OUT_BODY.bookingId,
+      identity: { externalId: null, salesforceId: REGAL_OPT_OUT_BODY.salesforceId },
+      reason: { code: "text_opt_out", detail: null },
+    });
+  });
+
+  it("is safe to run twice: the second call cancels nothing and answers 404", async () => {
+    expect((await viaPost(REGAL_OPT_OUT_BODY)).status).toBe(200);
+    // The cancel claim is atomic (#413): the second run finds the booking no longer
+    // active and the service refuses it, so no second webhook or calendar delete.
+    service.cancelDirectBooking.mockRejectedValueOnce(new service.BookingNotFoundError("Booking not found"));
+    const second = await viaPost(REGAL_OPT_OUT_BODY);
+    expect(second.status).toBe(404);
+    expect((await second.json()).code).toBe("NOT_FOUND");
+  });
+
+  it("refuses a body with no booking id rather than guessing which call to cancel", async () => {
+    const res = await viaPost({ salesforceId: REGAL_OPT_OUT_BODY.salesforceId, reason: "text_opt_out", bookingId: "" });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "bookingId is required", code: "VALIDATION" });
+    expect(service.cancelDirectBooking).not.toHaveBeenCalled();
+  });
+
+  it("refuses a misspelt reason with 400 and cancels nothing, rather than an ordinary cancel", async () => {
+    const res = await viaPost({ ...REGAL_OPT_OUT_BODY, reason: "text_optout" });
+    expect(res.status).toBe(400);
+    expect(service.cancelDirectBooking).not.toHaveBeenCalled();
+  });
+});
