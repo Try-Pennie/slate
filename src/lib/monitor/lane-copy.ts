@@ -31,6 +31,7 @@ import {
   OFFSITE_ORIGIN_VERDICT_LANE,
   AWAITING_ACTIVATION_VERDICT_LANE,
   REGAL_CALL_FEED_VERDICT_LANE,
+  REGAL_CALL_OUTCOMES_VERDICT_LANE,
   parkedDetector,
 } from "@/lib/monitor/verdict-freshness";
 
@@ -313,6 +314,11 @@ const VERDICT_SUBJECT: Record<string, { what: string; cost: string; look: string
     what: "the pair of checks asking whether calls from Regal are reaching Slate and whether Slate can read them",
     cost: "Regal could stop posting calls, or change what it sends, and the check for people calling while Slate does not route to them would go on judging nobody",
     look: 'the Worker logs for msg="regal calls quiet" and msg="regal calls unreadable" under tag=monitor, and whether the regal_call_reason_counts RPC answers',
+  },
+  [REGAL_CALL_OUTCOMES_VERDICT_LANE]: {
+    what: "the check asking whether a call outcome is being stored for each completed call Regal posts",
+    cost: "regal_call_outcomes could stop filling and the show rate in the Slate vs cal.com split would be computed from whichever calls happened to land",
+    look: 'the Worker logs for msg="regal call outcomes" under tag=monitor, and whether regal_call_outcomes and the regal_call_reason_counts RPC can be read at all',
   },
   [OOO_PROTECTION_VERDICT_LANE]: {
     what: "the check asking whether approved time off is still blocking the hours it covers",

@@ -17,20 +17,30 @@
  * null of an unanswered dialer attempt. A strict comparison against a missing field
  * would silently refuse nobody, which is the trap L506 names.
  *
- * WHAT SURVIVES THE EDGE, decided by Dan on 2026-09-08: the acting agent's email,
- * Regal's event id and the call's instant. Nothing else. The body also carries the
- * lead's phone, email and Salesforce id, and an AI written summary of the call;
- * none of it is read into a row, so this feed adds no lead data to Slate and sits
- * outside the erasure and mirror machinery (docs/pii.md). The agent email is staff
- * data. `userId` on this body is the LEAD's Salesforce id, the opposite of what the
- * same field means on the events Slate sends Regal (#2085), and it is never read.
+ * WHAT SURVIVES THE EDGE INTO THE DETECTOR'S ROW, decided by Dan on 2026-09-08:
+ * the acting agent's email, Regal's event id and the call's instant. Nothing else.
+ * The body also carries the lead's phone, email and Salesforce id, and an AI
+ * written summary of the call. The agent email is staff data. `userId` on this body
+ * is the LEAD's Salesforce id, the opposite of what the same field means on the
+ * events Slate sends Regal (#2085).
  *
- * Pure apart from the two injected store calls, so the node suite drives it
+ * THE CALL OUTCOME ROW (#2944) is a second, separate read of the same body, for the
+ * Slate vs cal.com show rate: the lead's Salesforce Lead id (as its 15 character
+ * key), the call's start, its talk time and its labels (direction, type,
+ * disposition, whether a conversation happened, whether the AI placed it). Dan
+ * decided on 2026-10-01 that the Salesforce id is an external id and safe to
+ * store. The phone, the email, the name and the notes are still never read. It
+ * runs on every `call.completed` independently of the detector's classification,
+ * because an AI call or an unanswered dialer attempt is dropped by the detector and
+ * is still a call the show rate has to see.
+ *
+ * Pure apart from the injected store calls, so the node suite drives it
  * (scripts/test-regal-inbound-call.ts).
  */
 import { normalizeEmail } from "@/lib/auth/email";
 import { isAllowedEmail } from "@/lib/auth/domain";
 import { OUR_DOMAIN } from "@/lib/twilio/roster";
+import { isLeadId, leadIdKey } from "@/lib/salesforce/lead-xbc";
 
 /**
  * Every reason an event can be recorded under. The migration's CHECK constraint
@@ -231,4 +241,186 @@ export async function processRegalCall(body: unknown, store: RegalCallStore): Pr
     agent_email: c.agentEmail,
     occurred_at: new Date(c.occurredAtMs).toISOString(),
   });
+}
+
+// ------------------------------------------------------------ the call outcome
+
+/**
+ * Every reason a `call.completed` body yields no outcome row (#2944). Each one is
+ * logged by name: a refusal that read as a zero talk time, or a silently skipped
+ * row, would move the show rate with nothing saying why (L11).
+ */
+export const REGAL_OUTCOME_REFUSALS = [
+  "body_unreadable",
+  "not_call_completed",
+  "event_id_unreadable",
+  // No userId at all, or not a string.
+  "lead_id_unreadable",
+  // A string that is not a Salesforce LEAD id (a Contact, say). Its own reason,
+  // because "Regal stopped sending the id" and "this call was about somebody who is
+  // not a lead" send a reader to two different places.
+  "not_a_lead",
+  "ai_flag_unreadable",
+  "talk_time_unreadable",
+  "started_at_unreadable",
+] as const;
+
+export type RegalCallOutcomeRefusal = (typeof REGAL_OUTCOME_REFUSALS)[number];
+
+/** One `regal_call_outcomes` row as written. `id` and `received_at` are the table's. */
+export interface RegalCallOutcomeRow {
+  event_id: string;
+  /** The lead's Salesforce Lead id, as its 15 character case sensitive key. */
+  lead_key: string;
+  /** ISO, from Regal's unix SECONDS `started_at`. */
+  started_at: string;
+  talk_time_s: number;
+  conversation_happened: boolean | null;
+  direction: string | null;
+  call_type: string | null;
+  disposition: string | null;
+  is_ai_agent: boolean;
+  agent_email: string | null;
+}
+
+export type CallOutcomeExtraction =
+  | { kind: "row"; row: RegalCallOutcomeRow }
+  | { kind: "refused"; reason: RegalCallOutcomeRefusal; eventId: string | null };
+
+/**
+ * The longest talk time read as a number of seconds. A call longer than a day is
+ * not a call, and refusing it keeps a unit change (milliseconds) from landing as a
+ * plausible looking value or overflowing the integer column.
+ */
+const MAX_TALK_TIME_S = 24 * 60 * 60;
+
+/** The longest label kept. Dispositions are short names; anything past this is not one. */
+const MAX_LABEL_LENGTH = 200;
+
+/** An optional label: a non empty string, or null. Never guessed, never refuses the row. */
+function readLabel(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const s = v.trim();
+  if (s === "") return null;
+  return s.slice(0, MAX_LABEL_LENGTH);
+}
+
+/**
+ * Read one body into an outcome row, or refuse it by name.
+ *
+ * The required fields are the ones the show rate is computed FROM: the lead (whose
+ * booking this call might be for), the start (whether it falls in the booking's
+ * window), the talk time (whether a conversation long enough happened) and the AI
+ * flag (a person or the bot). Each is refused rather than defaulted: a missing
+ * talk time stored as 0 is a no show that never happened, and an absent AI flag
+ * stored as false is a human call that never happened (L506). The labels are
+ * optional and stored as null when unreadable, because nothing is computed from
+ * them yet and losing the row over one would lose its talk time too.
+ *
+ * Deliberately NO show logic: whether 299 or 300 seconds counts is the split's
+ * rule, applied where the rows are read, so it can change without re-receiving.
+ */
+export function extractCallOutcome(body: unknown): CallOutcomeExtraction {
+  if (!isRecord(body)) return { kind: "refused", reason: "body_unreadable", eventId: null };
+  const eventId = readEventId(body.eventId);
+  if (body.name !== "call.completed") return { kind: "refused", reason: "not_call_completed", eventId };
+  const props = body.properties;
+  if (!isRecord(props)) return { kind: "refused", reason: "body_unreadable", eventId };
+  if (eventId === null) return { kind: "refused", reason: "event_id_unreadable", eventId: null };
+
+  if (typeof body.userId !== "string" || body.userId.trim() === "") {
+    return { kind: "refused", reason: "lead_id_unreadable", eventId };
+  }
+  const leadId = body.userId.trim();
+  if (!isLeadId(leadId)) return { kind: "refused", reason: "not_a_lead", eventId };
+
+  if (typeof props.is_ai_agent !== "boolean") return { kind: "refused", reason: "ai_flag_unreadable", eventId };
+
+  const talk = props.talk_time;
+  if (typeof talk !== "number" || !Number.isFinite(talk) || talk < 0 || talk > MAX_TALK_TIME_S) {
+    return { kind: "refused", reason: "talk_time_unreadable", eventId };
+  }
+
+  // No fallback to ended_at or completed_at: a start that is present and
+  // unreadable means the field changed shape, and a neighbour would hide that.
+  const startedMs = unixSecondsToMs(props.started_at);
+  if (startedMs === null) return { kind: "refused", reason: "started_at_unreadable", eventId };
+
+  const email = typeof props.agent_email === "string" ? normalizeEmail(props.agent_email) : "";
+  return {
+    kind: "row",
+    row: {
+      event_id: eventId,
+      lead_key: leadIdKey(leadId),
+      started_at: new Date(startedMs).toISOString(),
+      // The column is an integer; Regal sends whole seconds, and a fraction rounds.
+      talk_time_s: Math.round(talk),
+      conversation_happened: typeof props.conversation_happened === "boolean" ? props.conversation_happened : null,
+      direction: readLabel(props.direction),
+      call_type: readLabel(props.type),
+      disposition: readLabel(props.disposition),
+      is_ai_agent: props.is_ai_agent,
+      agent_email: email === "" ? null : email,
+    },
+  };
+}
+
+export interface RegalCallOutcomeStore {
+  /** Insert, relying on the UNIQUE event_id to make a redelivery harmless. THROWS
+   *  on any error other than that conflict. */
+  insertOutcome: (row: RegalCallOutcomeRow) => Promise<"inserted" | "duplicate">;
+}
+
+export type RegalCallOutcomeResult =
+  | { status: "stored"; eventId: string }
+  | { status: "duplicate"; eventId: string }
+  | { status: "refused"; reason: RegalCallOutcomeRefusal; eventId: string | null };
+
+/** Extract and store one outcome. Throws when the store does. */
+export async function processRegalCallOutcome(
+  body: unknown,
+  store: RegalCallOutcomeStore,
+): Promise<RegalCallOutcomeResult> {
+  const x = extractCallOutcome(body);
+  if (x.kind === "refused") return { status: "refused", reason: x.reason, eventId: x.eventId };
+  const written = await store.insertOutcome(x.row);
+  return written === "duplicate"
+    ? { status: "duplicate", eventId: x.row.event_id }
+    : { status: "stored", eventId: x.row.event_id };
+}
+
+/** One half of a delivery, settled: its value, or the error it threw. */
+export type Settled<T> = { ok: true; value: T } | { ok: false; error: unknown };
+
+export interface RegalCallDelivery {
+  detector: Settled<RegalCallOutcome>;
+  outcome: Settled<RegalCallOutcomeResult>;
+}
+
+async function settle<T>(work: () => Promise<T>): Promise<Settled<T>> {
+  try {
+    return { ok: true, value: await work() };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
+
+/**
+ * Both rows for one received body, each in its OWN failure boundary (#2944).
+ *
+ * The detector's row and the outcome row answer different questions and must not
+ * be able to take each other out: an outcome insert that fails (a missing table on
+ * a half applied migration, say) must not stop the detector counting the feed, and
+ * a detector failure must not lose a call the show rate needs. Neither ever
+ * throws out of here; each half's error comes back for the caller to log.
+ */
+export async function processRegalCallDelivery(
+  body: unknown,
+  stores: { detector: RegalCallStore; outcome: RegalCallOutcomeStore },
+): Promise<RegalCallDelivery> {
+  const [detector, outcome] = await Promise.all([
+    settle(() => processRegalCall(body, stores.detector)),
+    settle(() => processRegalCallOutcome(body, stores.outcome)),
+  ]);
+  return { detector, outcome };
 }

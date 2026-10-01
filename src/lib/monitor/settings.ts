@@ -60,6 +60,7 @@ export const ALERT_KEYS = [
   "regal_call_unroutable",
   "regal_calls_quiet",
   "regal_calls_unreadable",
+  "regal_call_outcomes_short",
   "handoff_channel_unset",
   "handoff_undelivered",
   "main_not_deployed",
@@ -246,6 +247,12 @@ export const ALERT_FIELDS: {
     urgency: "alert",
     label: "Regal call events Slate cannot read",
     help: "Regal posted call events in the last day that were missing a field Slate needs, so they were invisible to the check above. Usually means Regal changed what it sends. It ends after a whole day of readable events.",
+  },
+  {
+    key: "regal_call_outcomes_short",
+    urgency: "alert",
+    label: "Regal calls missing from the show rate",
+    help: "Fewer than 80% of the completed calls Regal posted in the last two hours were stored with their lead and talk time, on two checks running. The show rate in the Slate vs cal.com split is computed from those calls, so every missing one is a show or no show it cannot see. It ends when a two hour window is back at 80% or more.",
   },
   {
     key: "ooo_calcom_unprotected",
@@ -456,6 +463,10 @@ export const MONITOR_DEFAULTS = {
     // detector for every call until somebody updates the edge, which is worth
     // repeating within a working day, and it clears on a day of readable traffic.
     regal_calls_unreadable: 6 * 60 * 60_000,
+    // Calls missing from the show rate (#2944). Two hours, the window it is judged
+    // over: a repeat inside one window restates the same calls, and every window
+    // that passes unfixed loses calls the split can only get back by a backfill.
+    regal_call_outcomes_short: 2 * 60 * 60_000,
     // Routing dead zone (#327): unchanged from the constant this replaced. A bucket
     // with nobody stays wrong until someone is staffed onto it, so it repeats while
     // it lasts, six-hourly. Tunable since a deliberately dark roster (#1272) turned

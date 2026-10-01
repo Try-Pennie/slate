@@ -24,6 +24,11 @@ import {
   countsFromRows,
   type RegalReasonCounts,
 } from "@/lib/monitor/regal-call-feed";
+import {
+  runRegalCallOutcomesCheck,
+  REGAL_CALL_OUTCOMES_STREAK_KEY,
+  REGAL_CALL_OUTCOMES_STREAK_WINDOW_S,
+} from "@/lib/monitor/regal-call-outcomes";
 import { eligibleAgentIdsCached } from "@/lib/availability/eligible-cache";
 import { getBucketSlots } from "@/lib/availability/service";
 import { loadAllWorkingHours } from "@/lib/availability/working-hours-load";
@@ -189,6 +194,8 @@ import {
   awaitingActivationReachedVerdict,
   REGAL_CALL_FEED_VERDICT_LANE,
   regalCallFeedReachedVerdict,
+  REGAL_CALL_OUTCOMES_VERDICT_LANE,
+  regalCallOutcomesReachedVerdict,
   FAILURE_RATE_VERDICT_LANE,
   LOW_VOLUME_VERDICT_LANE,
   OOO_PROTECTION_VERDICT_LANE,
@@ -319,7 +326,7 @@ import {
   type CoverageGapAgent,
 } from "@/lib/monitor/ooo-coverage-gap";
 import { ACTIONABLE_ITEM_STATUSES } from "@/lib/booking/bulk-reassign";
-import { unwrap } from "@/lib/db/result";
+import { unwrap, unwrapCount } from "@/lib/db/result";
 import { ACTIVE_BOOKING_STATUSES } from "@/lib/booking/bulk-reassign-store";
 import { loadOooCoverageBookings, loadSnapshottedBookingIds } from "@/lib/monitor/ooo-coverage-bookings";
 import { inIdChunks } from "@/lib/db/id-batch";
@@ -2208,6 +2215,52 @@ export async function GET(req: NextRequest) {
       });
     }
 
+    // --- Call outcomes (#2944): is a regal_call_outcomes row being written for each
+    // completed call Regal posts? The show rate in the Slate vs cal.com split is
+    // computed from that table, which fills in silence. Completed calls received
+    // come from the detector's per reason counts (a different writer from the one
+    // judged), outcome rows from a server side count, both over the last two hours.
+    // Under 80% on two consecutive checks pages; only a measured healthy ratio
+    // clears; a window with no calls decides nothing. Same Regal arming switch. ---
+    const regalOutcomes = await steps.run("regal_call_outcomes", null, async () =>
+      !gates.regalCallOutcomes.run
+        ? null
+        : runRegalCallOutcomesCheck({
+            loadReasonCounts: loadRegalCounts,
+            // A head count: no rows come back, so the 1,000 row cap cannot shorten
+            // it, and unwrapCount throws on a failed count rather than scoring it 0.
+            countOutcomes: async (sinceIso) =>
+              unwrapCount(
+                await db
+                  .from("regal_call_outcomes")
+                  .select("id", { count: "exact", head: true })
+                  .gte("received_at", sinceIso),
+                "monitor regal call outcome count",
+              ),
+            streak: () => recordFailureStreak(REGAL_CALL_OUTCOMES_STREAK_KEY, REGAL_CALL_OUTCOMES_STREAK_WINDOW_S),
+            clearStreak: () => clearFailureStreak(REGAL_CALL_OUTCOMES_STREAK_KEY),
+            armed: settings!.regalCallsArmed,
+            // alert-key: regal_call_outcomes_short
+            notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+            // alert-key: regal_call_outcomes_short
+            // all-clear-proof: scripts/test-regal-call-outcomes-monitor.ts pins that a failed
+            // read of either count, a window with no calls, too few calls and a disarmed tick
+            // clear nothing, and that only a measured ratio at or above 80% does.
+            resolve: (key, text) => resolveAlert(key, text),
+            cooldownMs: cooldownMs.regal_call_outcomes_short,
+            nowMs: now,
+          }),
+    );
+    if (regalOutcomes) {
+      log.info("monitor", {
+        msg: "regal call outcomes",
+        status: regalOutcomes.status,
+        ...("received" in regalOutcomes ? { received: regalOutcomes.received, written: regalOutcomes.written } : {}),
+        ...(regalOutcomes.status === "short" ? { paged: regalOutcomes.paged } : {}),
+        ...(regalOutcomes.status === "unmeasured" ? { why: regalOutcomes.why } : {}),
+      });
+    }
+
     // --- Routing-attribute coverage (#226): a bookable agent with no routing
     // attributes matches no bucket criteria, so unless someone added them as a
     // manual member they are never routed a booking. There is no self-heal
@@ -3329,6 +3382,8 @@ export async function GET(req: NextRequest) {
         REGAL_CALL_FEED_VERDICT_LANE,
         regalCallFeedReachedVerdict(regalQuiet, regalUnreadable),
       ),
+      // #2944: stamped only on a JUDGED ratio, never on "no calls" or too few.
+      recordDetectorVerdict(REGAL_CALL_OUTCOMES_VERDICT_LANE, regalCallOutcomesReachedVerdict(regalOutcomes)),
     ]).catch((err) =>
       // recordHeartbeat already swallows its own DB errors, so reaching here means
       // something unexpected. It must not fail the monitor tick, but a stamp that

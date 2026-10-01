@@ -44,6 +44,7 @@ written: see [pii.md](./pii.md) §3.
 | `routing_decisions` | 12 months | delete, `/api/cron/prune-routing` (existing) |
 | `booking_events.reason_detail` | on an erasure request, not on a timer | redact in place via `erase_booking_pii` through the §5 sentinel (shipped, migration 0092) |
 | `regal_call_events` (staff data: an agent email on candidate rows, no lead data) | 3 days after receipt | delete, `/api/cron/prune-regal-calls` (#2090) |
+| `regal_call_outcomes` (the lead's Salesforce Lead id key, an external reference, plus call start, talk time and labels; no contact data) | 120 days after receipt | delete, `/api/cron/prune-regal-calls` (#2944) |
 
 **A window above does not propagate to the Snowflake mirror by itself.** Redacting
 or blanking a row in place sets the flag that freezes it from re-export

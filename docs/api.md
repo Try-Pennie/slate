@@ -756,8 +756,20 @@ Slate user), `not_call_completed`, `ai_agent`, `agent_email_null`, `foreign_doma
 payload (`body_unreadable`, `event_id_unreadable`, `ai_flag_unreadable`,
 `agent_email_unreadable`, `timestamp_unreadable`). Only a candidate row stores the
 agent's email and the call's instant (`properties.completed_at`, else
-`originalTimestamp`, both unix seconds). Nothing about the lead is ever stored. Rows
-older than three days are deleted by `prune-regal-calls`.
+`originalTimestamp`, both unix seconds). Nothing about the lead is stored in that
+table. Rows older than three days are deleted by `prune-regal-calls`.
+
+**And a call outcome (#2944).** Separately, every `call.completed` with a readable
+`eventId` becomes one row in `regal_call_outcomes`, for the show rate in the Slate vs
+cal.com split: the lead's Salesforce Lead id (`userId`, first 15 characters),
+`properties.started_at` (unix seconds), `properties.talk_time` (seconds),
+`conversation_happened`, `direction`, `type`, `disposition`, `is_ai_agent` and the
+agent's address. A body with no Lead id, no numeric talk time, no readable start or
+no boolean AI flag is refused by name (`lead_id_unreadable`, `not_a_lead`,
+`talk_time_unreadable`, `started_at_unreadable`, `ai_flag_unreadable`), never stored
+with a zero, and logged under `tag=regal-call-outcomes`. The two rows are written
+independently, so either can fail without losing the other. Outcome rows are kept
+120 days.
 
 ---
 
@@ -976,7 +988,7 @@ cost matters; see `docs/cloudflare-platform-notes.md`.
 | `GET /api/cron/ooo-digest` | The daily 7am ET time-off digest, and the record of whether it landed. |
 | `GET /api/cron/prune-routing` | Ages out routing decision rows past their retention window. |
 | `GET /api/cron/prune-busy-blocks` | Deletes cached busy blocks whose end is far enough in the past to be unreachable (#1252). |
-| `GET /api/cron/prune-regal-calls` | Deletes inbound Regal call events received more than three days ago (#2090). |
+| `GET /api/cron/prune-regal-calls` | Deletes inbound Regal call events received more than three days ago (#2090), and call outcomes received more than 120 days ago (#2944). |
 | `GET /api/cron/prune-booking-alert-state` | Deletes the `alert_state` rows of alerts keyed by booking once that booking both started and was made more than a week ago (#2726). |
 | `GET /api/cron/prune-bookings-pii` | Redacts consumer contact data on bookings past the 24 month window (#1071). |
 | `GET /api/cron/prune-webhook-payloads` | Blanks `webhook_deliveries.payload`, which carries attendee PII, once a delivery is settled (#1073). |

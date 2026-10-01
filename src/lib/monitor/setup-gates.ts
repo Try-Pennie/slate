@@ -113,6 +113,7 @@ export function monitorSetupGates(readiness: SetupReadiness): {
   awaitingActivation: SetupGate;
   regalCalls: SetupGate;
   regalCallsUnreadable: SetupGate;
+  regalCallOutcomes: SetupGate;
 } {
   return {
     // The scan compares every bucket's cached slot count against a live recompute,
@@ -209,5 +210,8 @@ export function monitorSetupGates(readiness: SetupReadiness): {
     awaitingActivation: gate(readiness, ["settings"]),
     regalCalls: gate(readiness, ["settings"]),
     regalCallsUnreadable: gate(readiness, ["settings"]),
+    // #2944: the call outcome ratio does both of its reads itself, and pages on the
+    // same Regal arming switch as the three checks above.
+    regalCallOutcomes: gate(readiness, ["settings"]),
   };
 }

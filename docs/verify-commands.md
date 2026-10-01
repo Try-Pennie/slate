@@ -120,6 +120,12 @@ dead end or saw every bucket with none, never when every recompute came back nul
 Each bound is six hours, the same maintenance window as roster coverage, because
 each concludes on every tick its read works.
 
+`verdict:regal-call-outcomes` (#2944) watches the call outcome ratio: outcome rows
+written to `regal_call_outcomes` against completed calls received, over two hours.
+It stamps on a judged ratio (healthy or short) and never on a window with no calls
+or too few to judge, so like `verdict:regal-calls` it is traffic fed and its bound
+is four days, the longest legitimate silence being a weekend.
+
 **A new gated check cannot join the monitor lane unwatched** (#1941).
 `GATED_CHECK_VERDICT_COVERAGE` in `verdict-freshness.ts` is keyed on the checks
 `monitorSetupGates` returns, so `tsc` names a new gate with no entry, and

@@ -44,3 +44,26 @@ export async function pruneRegalCalls(
   const deleted = await deps.deleteReceivedBefore(cutoff);
   return { deleted, cutoff };
 }
+
+/**
+ * How long a call OUTCOME is kept (#2944). The show rate in the Slate vs cal.com
+ * split is judged from these rows over the split's window, and 120 days covers
+ * that window with room to re-run the comparison after it closes. The rows hold an
+ * external Salesforce Lead id key and no contact data (docs/pii-retention.md).
+ */
+export const REGAL_OUTCOME_RETENTION_DAYS = 120;
+
+/** Outcome rows received strictly before this instant are deleted. */
+export function regalOutcomeCutoffIso(nowMs: number): string {
+  return new Date(nowMs - REGAL_OUTCOME_RETENTION_DAYS * DAY_MS).toISOString();
+}
+
+/** The same shape as `pruneRegalCalls`, against `regal_call_outcomes`. The delete
+ *  THROWS on a database error, for the same reason (#1165). */
+export async function pruneRegalCallOutcomes(
+  deps: RegalCallPruneDeps,
+): Promise<{ deleted: number; cutoff: string }> {
+  const cutoff = regalOutcomeCutoffIso(deps.nowMs);
+  const deleted = await deps.deleteReceivedBefore(cutoff);
+  return { deleted, cutoff };
+}

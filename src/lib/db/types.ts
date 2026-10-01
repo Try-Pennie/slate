@@ -469,6 +469,25 @@ export interface RegalCallEvent {
   received_at: string;
 }
 
+/** #2944: one completed Regal call's outcome, kept 120 days for the show rate.
+ *  The lead is an external Salesforce Lead id key; no contact data. */
+export interface RegalCallOutcome {
+  id: string;
+  /** Regal's top level eventId; unique and never null. */
+  event_id: string;
+  /** The lead's Salesforce Lead id, first 15 characters. */
+  lead_key: string;
+  started_at: string;
+  talk_time_s: number;
+  conversation_happened: boolean | null;
+  direction: string | null;
+  call_type: string | null;
+  disposition: string | null;
+  is_ai_agent: boolean;
+  agent_email: string | null;
+  received_at: string;
+}
+
 /** #2090: one person whose Regal calls are not reported while Slate does not
  *  route to them. Every entry carries its reason, who added it and when. */
 export interface RegalCallIgnore {

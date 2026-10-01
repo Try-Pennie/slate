@@ -147,6 +147,7 @@ const GATE_NAMES: Record<keyof ReturnType<typeof monitorSetupGates>, string> = {
   awaitingActivation: "the waiting to become bookable page",
   regalCalls: "the unroutable Regal caller alarm",
   regalCallsUnreadable: "the unreadable Regal events alarm",
+  regalCallOutcomes: "the missing Regal call outcomes alarm",
 };
 
 /**

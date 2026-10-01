@@ -9,8 +9,11 @@
 // as "nothing needed cleaning" (#1165).
 import {
   REGAL_CALL_RETENTION_DAYS,
+  REGAL_OUTCOME_RETENTION_DAYS,
   regalCallCutoffIso,
+  regalOutcomeCutoffIso,
   pruneRegalCalls,
+  pruneRegalCallOutcomes,
 } from "@/lib/regal/retention";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -59,5 +62,61 @@ try {
   threw = err instanceof Error ? err.message : String(err);
 }
 eq(threw, "delete refused", "a failed delete throws, so the lane fails loud rather than reporting zero");
+
+// --- the call outcomes (#2944): 120 days, one DELETE on received_at -------------
+//
+// The show rate in the Slate vs cal.com split reads these back over the split's
+// window, so they outlive the detector's three days by design, and a failed delete
+// of them must fail the lane just as loudly.
+
+eq(REGAL_OUTCOME_RETENTION_DAYS, 120, "call outcomes are kept 120 days");
+const outcomeCutoff = regalOutcomeCutoffIso(NOW);
+eq(outcomeCutoff, new Date(NOW - 120 * DAY).toISOString(), "the outcome cutoff is exactly 120 days back");
+{
+  const outcomes = [
+    { id: "past-window", received_at: new Date(NOW - 120 * DAY - 1).toISOString() },
+    { id: "edge", received_at: outcomeCutoff },
+    { id: "a-week-old", received_at: new Date(NOW - 7 * DAY).toISOString() },
+    { id: "ninety-days", received_at: new Date(NOW - 90 * DAY).toISOString() },
+  ];
+  const seen: string[] = [];
+  const r = await pruneRegalCallOutcomes({
+    nowMs: NOW,
+    deleteReceivedBefore: async (iso) => {
+      seen.push(iso);
+      const doomed = outcomes.filter((o) => o.received_at < iso);
+      for (const d of doomed) outcomes.splice(outcomes.indexOf(d), 1);
+      return doomed.length;
+    },
+  });
+  eq(seen, [outcomeCutoff], "one DELETE, against the 120 day cutoff");
+  eq(r, { deleted: 1, cutoff: outcomeCutoff }, "the report says how many outcomes went and against what boundary");
+  eq(outcomes.map((o) => o.id).sort(), ["a-week-old", "edge", "ninety-days"], "a week old outcome survives the detector's three day window");
+}
+{
+  let msg = "";
+  try {
+    await pruneRegalCallOutcomes({
+      nowMs: NOW,
+      deleteReceivedBefore: async () => {
+        throw new Error("outcome delete refused");
+      },
+    });
+  } catch (err) {
+    msg = err instanceof Error ? err.message : String(err);
+  }
+  eq(msg, "outcome delete refused", "a failed outcome delete throws rather than reporting zero");
+}
+
+// The lane runs BOTH sweeps, and wires the outcome one to the right table.
+{
+  const { readFileSync } = await import("node:fs");
+  const lane = readFileSync("src/app/api/cron/prune-regal-calls/route.ts", "utf8");
+  assert(/pruneRegalCallOutcomes\(/.test(lane), "the prune-regal-calls lane runs the outcome sweep");
+  assert(
+    /from\("regal_call_outcomes"\)\.delete\(\{ count: "exact" \}\)\.lt\("received_at", cutoff\)/.test(lane),
+    "the outcome sweep deletes from regal_call_outcomes on received_at",
+  );
+}
 
 finish();
