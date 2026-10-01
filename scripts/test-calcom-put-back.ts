@@ -8,6 +8,7 @@
 // not ended, an agent who is still here, and that exact skip (L16).
 import {
   PUT_BACK_UNKNOWN,
+  loadPutBackBacklog,
   putBackBacklog,
   putBackConfirmSentence,
   putBackQuery,
@@ -102,5 +103,94 @@ const active = new Set(["u-active"]);
     assert(base.test(s) && !/\d+ approved/.test(s), `"${String(raw)}" claims no count: ${s}`);
   }
 }
+
+// --- the loader: both reads, and each way it can fail -----------------------------
+type Res = { data: unknown[] | null; error: { message: string } | null };
+function fakeDb(opts: { requests: Res | "throw"; users?: Res; seen?: { filters: string[]; usersAsked: number } }) {
+  const seen = opts.seen ?? { filters: [] as string[], usersAsked: 0 };
+  const chain = (table: string) => {
+    const self: Record<string, unknown> = {};
+    const record = (name: string) => (...args: unknown[]) => {
+      seen.filters.push(`${table}.${name}(${args.map(String).join(",")})`);
+      return self;
+    };
+    for (const m of ["select", "eq", "gt", "order", "in"]) self[m] = record(m);
+    self.range = (from: number) => {
+      if (opts.requests === "throw") throw new Error("connection reset");
+      // One page, then an empty one: the paginator stops on a short page.
+      return Promise.resolve(from === 0 ? opts.requests : { data: [], error: null });
+    };
+    self.is = () => {
+      seen.usersAsked++;
+      return Promise.resolve(opts.users ?? { data: [], error: null });
+    };
+    return self;
+  };
+  return { from: (t: string) => chain(t) } as unknown as Parameters<typeof loadPutBackBacklog>[0];
+}
+const raw = (id: string, userId: string, effect: string, endMs = NOW + 3 * day) => ({
+  id,
+  user_id: userId,
+  starts_at: at(NOW + day),
+  ends_at: at(endMs),
+  side_effects: { calcom: effect, busy_block: "ok" },
+});
+{
+  const seen = { filters: [] as string[], usersAsked: 0 };
+  const n = await loadPutBackBacklog(
+    fakeDb({
+      seen,
+      requests: {
+        data: [
+          raw("a", "u1", OUTCOME_CALCOM_RETIRED),
+          raw("b", "u2", OUTCOME_CALCOM_RETIRED),
+          raw("c", "u1", "ok"),
+          raw("d", "u3", OUTCOME_CALCOM_RETIRED),
+        ],
+        error: null,
+      },
+      users: { data: [{ id: "u1" }, { id: "u3" }], error: null },
+    }),
+    NOW,
+  );
+  eq(n, 2, "loader: counts the retired skips of agents still here");
+  assert(seen.filters.includes("ooo_requests.eq(status,approved)"), "loader: only approved requests are read");
+  assert(
+    seen.filters.includes(`ooo_requests.gt(ends_at,${at(NOW)})`),
+    "loader: only requests that have not ended are read",
+  );
+  assert(
+    seen.filters.some((f) => f.startsWith("users.in(id,") && !f.includes("u2,u2")),
+    "loader: the agents are read by id",
+  );
+}
+{
+  const seen = { filters: [] as string[], usersAsked: 0 };
+  const n = await loadPutBackBacklog(
+    fakeDb({ seen, requests: { data: [raw("c", "u1", "ok")], error: null } }),
+    NOW,
+  );
+  eq(n, 0, "loader: nothing retired is a measured zero");
+  eq(seen.usersAsked, 0, "loader: no agent read when nothing is waiting");
+}
+// Failure paths: each answers null, never 0, because a zero tells the admin there is
+// nothing to copy, which a failed read has not measured (L622).
+eq(
+  await loadPutBackBacklog(fakeDb({ requests: { data: null, error: { message: "permission denied" } } }), NOW),
+  null,
+  "loader: a refused request read is unknown, not zero",
+);
+eq(await loadPutBackBacklog(fakeDb({ requests: "throw" }), NOW), null, "loader: a thrown read is unknown, not zero");
+eq(
+  await loadPutBackBacklog(
+    fakeDb({
+      requests: { data: [raw("a", "u1", OUTCOME_CALCOM_RETIRED)], error: null },
+      users: { data: null, error: { message: "timeout" } },
+    }),
+    NOW,
+  ),
+  null,
+  "loader: a refused agent read is unknown, not zero",
+);
 
 finish();
