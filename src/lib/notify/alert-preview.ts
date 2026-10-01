@@ -3887,7 +3887,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   { key: "ooo_calcom", state: "the override failed at approval", channel: "alert",
     text: oooCalcomAlert("req_9f2", "409 conflict") },
   // #2890: a block left in cal.com while it was retired, whose record failed.
-  { key: "ooo_calcom", state: "a block left while cal.com was retired could not be recorded", channel: "alert",
+  { key: "ooo_calcom_stale_unrecorded", state: "a block left while cal.com was retired could not be recorded", channel: "alert",
     text: oooCalcomStaleUnrecordedAlert("req_9f2", "permission denied") },
   // #1280: the ending it never had. It names no request id on purpose: the page is
   // one key covering every failing approval, and by the time this sends there are

@@ -1085,8 +1085,13 @@ async function undoPostApproval(
           reason: outcome,
         });
       } catch (e) {
+        // Its own key, an INCIDENT (#2890 review). Never `ooo_calcom`: the override
+        // sweep ends that page with "all in place" as soon as no override is
+        // failing, which would clear this while the block is still in cal.com. And
+        // there is no healthy state to observe: the window was never recorded, so
+        // nothing in Slate can tell when somebody has taken the block out.
         await deps.alertOps(
-          "ooo_calcom",
+          "ooo_calcom_stale_unrecorded",
           oooCalcomStaleUnrecordedAlert(request.id, shortReason(e)),
         );
       }

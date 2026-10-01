@@ -199,6 +199,7 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   ooo_approvals_digest: "something-was-measured-and-is-only-worth-knowing",
   "ooo-digest-unreachable": "something-was-measured-and-is-only-worth-knowing",
   "ooo-digest-unrouted-unreachable": "something-was-measured-and-is-only-worth-knowing",
+  ooo_calcom_stale_unrecorded: "time-off-cover-or-protection-is-in-doubt",
   ooo_undo: "something-was-measured-and-is-only-worth-knowing",
   // #2228. It used to be `tier_fallback_overflow`, and it used to sit with the
   // booker family on the grounds that the remedy was staffing the requested pool.

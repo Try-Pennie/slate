@@ -1927,8 +1927,15 @@ function latestManagerNotice(w: World): string {
     const res = await cancelOoo(id, agent, w.deps);
     assert(res.ok, "record refused: the cancellation still goes through");
     assert(
-      w.alerts.some((a) => a.key === "ooo_calcom" && /put back/i.test(a.message)),
+      w.alerts.some((a) => a.key === "ooo_calcom_stale_unrecorded" && /put back/i.test(a.message)),
       "record refused: pages, naming what put back will not be able to undo",
+    );
+    // Its own key, never `ooo_calcom`: the override sweep ends that page with "all
+    // in place, no action is needed" as soon as no override is failing, which would
+    // clear this one while the stale block is still in cal.com.
+    assert(
+      !w.alerts.some((a) => a.key === "ooo_calcom"),
+      "record refused: not sent on ooo_calcom, which the sweep's all-clear would end",
     );
   }
 }

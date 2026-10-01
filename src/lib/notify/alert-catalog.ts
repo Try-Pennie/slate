@@ -846,6 +846,15 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "and the monitor lane clears it off a measured read (#1470).",
   },
   {
+    key: "ooo_calcom_stale_unrecorded",
+    kind: "incident",
+    why:
+      "A time off was cancelled or changed while cal.com was retired and the block " +
+      "cal.com still holds for its old dates could not be recorded (#2890). Nothing " +
+      "records that window, so no later state can show the block gone: a person " +
+      "removes it in cal.com by hand if cal.com is put back.",
+  },
+  {
     key: "ooo_undo",
     kind: "incident",
     why: "One undo of a time-off decision failed and needs a human; nothing re-attempts it.",
