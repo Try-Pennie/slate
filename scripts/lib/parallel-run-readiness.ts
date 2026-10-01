@@ -381,8 +381,9 @@ export function judgeReadiness(f: ReadinessFacts): ReadinessJudgement {
   const armingChecks: { kind: ArmingFinding; detail: string }[] = [];
   const armingUnreadable: string[] = [];
   // #2960: the bookings set aside as made by hand with no host page never gate, and
-  // are always said, in the alerts page's own line. An unrecorded status already
-  // carries it in its text; a recorded one carries it as its note.
+  // are said in every state, always as the status's own `note`: an unrecorded status
+  // says it inside the text the finding quotes, an unmeasured one is appended to this
+  // file's own wording, and a recorded one goes on the arming line.
   let setAside: string | null = null;
   if (arming.pageSources === null) armingUnreadable.push("Low page booking sources");
   else {
@@ -397,7 +398,9 @@ export function judgeReadiness(f: ReadinessFacts): ReadinessJudgement {
     if (status.state === "unmeasured") {
       armingChecks.push({
         kind: "page-source-unmeasured",
-        detail: `page sources unmeasured: no real booking in the last ${s.lookbackDays} days, so whether each Low page's links carry ?source= cannot be judged yet; re-run after real bookings from each page`,
+        detail:
+          `page sources unmeasured: no real booking in the last ${s.lookbackDays} days, so whether each Low page's links carry ?source= cannot be judged yet; re-run after real bookings from each page` +
+          (status.note ? `. ${status.note}` : ""),
       });
     } else if (status.state === "unrecorded") {
       // In the alerts page's own sentence, which also names any page with none.

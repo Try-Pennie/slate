@@ -183,16 +183,19 @@ export interface PageSourceMeasure {
   pages: { id: LowPageId; name: string; recorded: boolean }[];
 }
 
+/**
+ * Every state carries `note`: how many hand made bookings with no host page were set
+ * aside from the share (#2960, `hostlessNotCounted`), or null when none were, or when
+ * nothing could be read. A state that has `text` already ends with it, so a surface
+ * showing `text` shows it; a surface writing its own words for a state appends `note`.
+ */
 export type PageSourceStatus =
-  | { state: "unreadable"; text: string }
+  | { state: "unreadable"; text: string; note: null }
   /** No real booking in the lookback: nothing says whether the links carry a source. */
-  | { state: "unmeasured"; text: string }
+  | { state: "unmeasured"; text: string; note: string | null }
   /** Some bookings recorded no page, so the pages cannot all be told apart. */
-  | { state: "unrecorded"; unsourced: number; total: number; text: string }
-  /**
-   * Every real booking in the lookback carried a source. `note` says how many hand
-   * made bookings were set aside (#2960), or is null when there were none.
-   */
+  | { state: "unrecorded"; unsourced: number; total: number; text: string; note: string | null }
+  /** Every real booking in the lookback carried a source. */
   | { state: "recorded"; total: number; note: string | null };
 
 /**
@@ -208,6 +211,7 @@ export function pageSourceStatus(m: PageSourceMeasure | null): PageSourceStatus 
     return {
       state: "unreadable",
       text: "Whether bookings record which page they came from could not be read, so these floors are not shown as coverage.",
+      note: null,
     };
   }
   if (m.realBookings === 0) {
@@ -217,6 +221,7 @@ export function pageSourceStatus(m: PageSourceMeasure | null): PageSourceStatus 
         `No real booking in the last ${m.lookbackDays} days, so whether each page's links carry ?source= is not ` +
           `measured yet, and no page's own floors can be judged.`,
       ),
+      note,
     };
   }
   if (!bookingSourcesRecorded(m)) {
@@ -230,6 +235,7 @@ export function pageSourceStatus(m: PageSourceMeasure | null): PageSourceStatus 
           `bookings could be among them is held rather than paged.` +
           (silent.length ? ` No booking carried the source of: ${silent.join(", ")}.` : ""),
       ),
+      note,
     };
   }
   return { state: "recorded", total: m.realBookings, note };

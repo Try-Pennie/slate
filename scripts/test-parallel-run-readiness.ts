@@ -400,6 +400,25 @@ eq(
       `${label}: and the summary carries the set aside line (got: ${j.summary})`,
     );
   }
+  // In EVERY state, not only recorded: a lookback holding only hand made bookings is
+  // unmeasured, and one with a page booking missing its source is unrecorded, and the
+  // set aside line is said in both, from the status that builds it.
+  const SET_ASIDE = /4 bookings in the last 7 days were made with no host page/;
+  for (const [label, m] of [
+    ["unmeasured", { ...sourcesRecorded(), realBookings: 0, unsourced: 0, hostless: 4 }],
+    ["unrecorded", { ...sourcesRecorded(), unsourced: 1, hostless: 4 }],
+    ["recorded", { ...sourcesRecorded(), hostless: 4 }],
+  ] as const) {
+    eq(pageSourceStatus(m).state, label, `${label}: the fixture is in the state it names`);
+    for (const [mode, arming] of [
+      ["armed", armed({ pageSources: m })],
+      ["disarmed", disarmed({ pageSources: m })],
+    ] as const) {
+      const out = judgeReadiness(healthy({ lowVolumeArming: arming })).summary;
+      const said = out.match(new RegExp(SET_ASIDE.source, "g")) ?? [];
+      eq(said.length, 1, `${label}, ${mode}: the set aside line is said exactly once (got: ${out})`);
+    }
+  }
   // Control (L159): with none set aside, no such line.
   assert(!/no host page/.test(judgeReadiness(healthy({ lowVolumeArming: armed() })).summary), "control: nothing set aside, nothing said");
 

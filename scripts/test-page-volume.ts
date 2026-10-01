@@ -512,11 +512,19 @@ const HEALTHY_ROWS: SourceRow[] = [
     mixed.state === "unrecorded" && mixed.text.startsWith("Source not recorded on 1 of 193 bookings") && /4 bookings in the last 7 days were made with no host page/.test(mixed.text),
     `a page booking without a source still holds, and the set aside count rides along (${mixed.state === "unrecorded" ? mixed.text : ""})`,
   );
+  const SET_ASIDE_LINE = /^[0-9]+ bookings in the last 7 days were made with no host page/;
   const onlyByHand = pageSourceStatus({ lookbackDays: 7, realBookings: 0, unsourced: 0, hostless: 2, pages });
   assert(
     onlyByHand.state === "unmeasured" && /2 bookings in the last 7 days were made with no host page/.test(onlyByHand.text),
     "a lookback holding only hand made bookings is unmeasured, and says what it did hold",
   );
+  // Every state hands the line out as `note`, from this one builder, and a state with
+  // text ends with it, so a surface writing its own words for a state can append it.
+  for (const st of [clean, mixed, onlyByHand]) {
+    assert(st.note !== null && SET_ASIDE_LINE.test(st.note), `${st.state}: note carries the set aside line`);
+    if (st.state !== "recorded") assert(st.text.endsWith(st.note!), `${st.state}: and its text ends with it`);
+  }
+  eq(pageSourceStatus(null).note, null, "an unreadable measurement sets nothing aside");
   eq(hostlessNotCounted(1, "7 days"), "1 booking in the last 7 days was made with no host page and carried no source, so it is not counted toward that share.", "one booking reads in the singular");
 }
 {
