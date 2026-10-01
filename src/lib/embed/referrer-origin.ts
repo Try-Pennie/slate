@@ -22,7 +22,7 @@
  * Pure and relative imports only, because the booker, the create path and the node
  * suites all load it.
  */
-import { httpOrigin } from "./parent-origin.ts";
+import { hostReferrerOrigin, httpOrigin } from "./parent-origin.ts";
 
 /**
  * Longer than any real referrer's origin can usefully be, and the database
@@ -39,9 +39,7 @@ export function referrerOriginForConfirm(input: {
   framed: boolean;
 }): string | null {
   if (!input.framed) return null;
-  const origin = httpOrigin(input.referrer);
-  if (!origin || origin === input.ownOrigin) return null;
-  return origin;
+  return hostReferrerOrigin(input.referrer, input.ownOrigin);
 }
 
 /** What the server stores on `bookings.referrer_origin`: a bare web origin or null. */
