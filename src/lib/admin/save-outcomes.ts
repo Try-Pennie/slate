@@ -95,7 +95,6 @@ export const SAVE_OUTCOME_COPY: Record<Exclude<SaveOutcome, DynamicOutcome>, str
   // #2875: each says which way it went and when it takes hold, because both
   // directions change what Slate writes. What each state MEANS is drawn once, by
   // the switch beneath this notice, so it is not said here a second time (L605).
-  "calcom-live": "Saved: cal.com is back. Its lanes run again from their next scheduled check.",
   "calcom-retired": "Saved: cal.com is retired. Every cal.com lane stops at its next check, within 5 minutes.",
   "bucket-created": "Bucket created.",
   "bucket-routing": "Bucket routing saved.",
@@ -130,18 +129,18 @@ export const SAVE_OUTCOME_COPY: Record<Exclude<SaveOutcome, DynamicOutcome>, str
  * simply has no sentence anywhere fails the build instead of confirming a save
  * in silence, which is the defect this module exists to remove.
  */
-export const DYNAMIC_OUTCOME_REASONS: Record<string, string> = {
-  // EMPTY, deliberately, and kept rather than deleted (#1997).
+export const DYNAMIC_OUTCOME_REASONS = {
+  // #2890: putting cal.com back names how many approved time off requests made
+  // during retirement are waiting to be copied into it. The action measures that
+  // count and carries it on the redirect, so the sentence is built per render by
+  // `putBackSavedSentence` (src/lib/calcom/put-back.ts).
   //
-  // `working-hours` was the one entry: it recited the week the save had written.
-  // Dan had that shortened to "Hours saved." because the week was already on
-  // screen twice more, so nothing is built per render any more.
-  //
-  // The mechanism stays because the guard is what makes it safe: an outcome that
-  // is in NEITHER this map nor the fixed copy above fails the build rather than
-  // confirming a save in silence. Removing it would leave a page free to add a
-  // sentence built at render with nothing checking it has one at all.
-};
+  // (#1997: `working-hours` was once the only entry and left, which is why the map
+  // sat empty for a while. It was kept because the guard is what makes it safe: an
+  // outcome in NEITHER this map nor the fixed copy above fails the build rather
+  // than confirming a save in silence.)
+  "calcom-live": "names the count of time off waiting to be copied into cal.com, measured at the press",
+} as const satisfies Partial<Record<SaveOutcome, string>>;
 
 export type DynamicOutcome = keyof typeof DYNAMIC_OUTCOME_REASONS;
 

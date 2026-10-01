@@ -77,6 +77,7 @@ import { webhookUrlError } from "@/lib/webhooks/url";
 import { acquireLock } from "@/lib/locks";
 import { recordAudit, type AuditAction } from "@/lib/audit";
 import { CALCOM_RETIREMENT_FORM, loadCalcomRetired, __resetCalcomRetiredCache } from "@/lib/calcom/retirement";
+import { loadPutBackBacklog, putBackQuery } from "@/lib/calcom/put-back";
 import { parseIgnoreAdd, personLabel, type IgnoreRosterUser } from "@/lib/admin/regal-call-ignores";
 import { impersonationErrorUrl } from "@/lib/admin/imp-error-url";
 import { replaceAgentLinkToken } from "@/lib/agent-link/store";
@@ -1114,6 +1115,10 @@ export async function setVolumeRampEnd(form: FormData): Promise<void> {
  * Refused before the audit entry and the saved notice (#2379). The audit entry
  * carries the value before and after (L529), and the before value is null when it
  * could not be read rather than a guess.
+ *
+ * Putting it back (#2890) also reports how many approved time off requests made
+ * during retirement the override sweep will now copy into cal.com
+ * (`src/lib/calcom/put-back.ts`).
  */
 export async function setCalcomRetired(form: FormData): Promise<void> {
   const admin = await requireAdmin();
@@ -1143,7 +1148,13 @@ export async function setCalcomRetired(form: FormData): Promise<void> {
   // so a lane sharing it acts on the change now rather than a TTL later.
   __resetCalcomRetiredCache();
   revalidatePath("/admin/alerts");
-  redirect(`/admin/alerts${savedQuery(retired ? "calcom-retired" : "calcom-live")}#calcom-retirement`);
+  if (retired) redirect(`/admin/alerts${savedQuery("calcom-retired")}#calcom-retirement`);
+  // #2890: putting cal.com back says how much time off approved during retirement
+  // the override sweep will now copy into it. Nothing is queued here: the recorded
+  // "skipped: cal.com retired" outcome is what the live sweep retries, so a second
+  // press copies nothing twice. An unreadable count travels as unknown, never as 0.
+  const awaitingCopy = await loadPutBackBacklog(supabaseAdmin(), Date.now());
+  redirect(`/admin/alerts${savedQuery("calcom-live")}${putBackQuery(awaitingCopy)}#calcom-retirement`);
 }
 
 /**

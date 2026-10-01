@@ -37,6 +37,7 @@ import {
 import { VolumeFloors } from "@/components/admin/VolumeFloors";
 import { CalcomRetirementSwitch } from "@/components/admin/CalcomRetirementSwitch";
 import { CALCOM_RETIREMENT_FORM } from "@/lib/calcom/retirement";
+import { loadPutBackBacklog, putBackSavedSentence } from "@/lib/calcom/put-back";
 import { VolumeLearning, type PageCoverageView } from "@/components/admin/VolumeLearning";
 import { EARLIEST_RAMP_END, RAMP_END_FORM, baselineInForce, type BaselineInForce } from "@/lib/monitor/volume-relearn";
 import { LEARNING } from "@/lib/monitor/volume-learning";
@@ -86,6 +87,11 @@ async function pageSourceNoticeNow(): Promise<string | null> {
   return status.state === "recorded" ? null : status.text;
 }
 
+/** #2890: the put back backlog, read at request time outside render. */
+async function loadAwaitingCopy(): Promise<number | null> {
+  return loadPutBackBacklog(supabaseAdmin(), Date.now());
+}
+
 /** The two outcomes the learning section confirms in place rather than at the top. */
 const LEARNING_OUTCOMES = new Set(["volume-ramp-end-set", "volume-ramp-end-cleared"]);
 /** #2875: the two outcomes the cal.com switch confirms beside itself. */
@@ -94,7 +100,7 @@ const CALCOM_OUTCOMES = new Set(["calcom-retired", "calcom-live"]);
 export default async function AlertSettingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ ok?: string; error?: string; form?: string }>;
+  searchParams: Promise<{ ok?: string; error?: string; form?: string; copy?: string }>;
 }) {
   const sp = await searchParams;
   const outcome = savedOutcome(sp.ok);
@@ -108,9 +114,12 @@ export default async function AlertSettingsPage({
   const refusedByCalcom = !!sp.error && sp.form === CALCOM_RETIREMENT_FORM;
   // Its refusals too, which carry the form's name because a refusal has no outcome.
   const refusedHere = !!sp.error && sp.form === RAMP_END_FORM;
+  // #2890: putting cal.com back is built per render, from the count the action
+  // measured and carried on the redirect.
+  const calcomSaved = outcome === "calcom-live" ? putBackSavedSentence(sp.copy) : saved;
   const calcomNotice =
-    savedByCalcom && saved ? (
-      <SettingsSaveNotice ok saved={saved} error={sp.error} />
+    savedByCalcom && calcomSaved ? (
+      <SettingsSaveNotice ok saved={calcomSaved} error={sp.error} />
     ) : refusedByCalcom ? (
       <SettingsSaveNotice ok={false} error={sp.error} saved="" />
     ) : undefined;
@@ -165,6 +174,9 @@ export default async function AlertSettingsPage({
       : typeof config.calcom_retired === "boolean"
         ? config.calcom_retired
         : null;
+  // #2890: how much time off approved during retirement putting cal.com back would
+  // copy into it, for the confirmation. Read only while retired; null when unreadable.
+  const awaitingCopy = calcomRetired === true ? await loadAwaitingCopy() : null;
   // #1956: the measured floors and anything replacing them, through the same
   // resolver the monitor uses, so the page shows what the alarm will judge against.
   const floorPolicy = resolveFloors(config, envFloors());
@@ -737,7 +749,7 @@ export default async function AlertSettingsPage({
           the two sections above it: its own confirmed action. */}
       <section id="calcom-retirement" className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">cal.com</h2>
-        <CalcomRetirementSwitch retired={calcomRetired} notice={calcomNotice} />
+        <CalcomRetirementSwitch retired={calcomRetired} awaitingCopy={awaitingCopy} notice={calcomNotice} />
       </section>
     </>
   );

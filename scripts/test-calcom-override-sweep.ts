@@ -21,6 +21,7 @@ import {
   agentEmailForRetry,
   isFailure,
   isSettled,
+  isRetiredSkip,
   OUTCOME_EMAIL_UNREADABLE,
   OUTCOME_NO_EMAIL,
   runCalcomOverrideSweep,
@@ -496,6 +497,98 @@ for (const retired of [null, "throw", false] as const) {
     state.alerts.some((a) => a.startsWith(CALCOM_UNPROTECTED_KEY)),
     `retired read ${String(retired)}: an absence under way with no block still pages`,
   );
+}
+
+// --- #2890: putting cal.com back recovers what retirement skipped -------------------
+// While cal.com is retired every approval records OUTCOME_CALCOM_RETIRED instead of
+// writing. That skip stops being true the moment cal.com is put back, so it must be
+// retried then, or every time off approved during retirement stays missing from a
+// cal.com that is taking bookings again, with nothing said.
+{
+  const RETIRED = "skipped: cal.com retired";
+  const future = candidate({ id: "approved-while-retired", effect: RETIRED });
+  const underWay = candidate({
+    id: "under-way",
+    effect: RETIRED,
+    startsAt: new Date(NOW - hours(2)).toISOString(),
+  });
+  const farAway = candidate({
+    id: "far-away",
+    effect: RETIRED,
+    startsAt: new Date(NOW + hours(24 * 90)).toISOString(),
+    endsAt: new Date(NOW + hours(24 * 91)).toISOString(),
+  });
+  assert(!isSettled(RETIRED), "a retired skip is not settled, so a live sweep looks at it again");
+  assert(isRetiredSkip(RETIRED), "the retired skip is recognised by its own predicate");
+  assert(!isRetiredSkip("skipped: cal.com not configured"), "an unconfigured cal.com is a different skip");
+  eq(
+    selectCandidates([future, underWay, farAway], NOW).map((r) => r.id).sort(),
+    ["approved-while-retired", "far-away", "under-way"],
+    "live: every retired skip that has not ended is selected, however far ahead it starts",
+  );
+
+  // Put back: the sweep retries them and they clear.
+  {
+    const { state, promise } = runFake({
+      candidates: [future, underWay],
+      retired: false,
+      outcomes: { "approved-while-retired": "ok", "under-way": "ok" },
+    });
+    const res = await promise;
+    eq(state.retried.sort(), ["approved-while-retired", "under-way"], "put back: both are retried");
+    eq(res.cleared, 2, "put back: both clear");
+    eq(state.alerts.length, 0, "put back: nothing pages once they land");
+  }
+
+  // The other direction: still retired, nothing is retried (the #2875 behaviour).
+  {
+    const { state, promise } = runFake({ candidates: [future, underWay], retired: true });
+    await promise;
+    eq(state.retried.length, 0, "retired: a retired skip is not retried while cal.com is retired");
+  }
+
+  // Put back, and the copy fails: an absence under way with no block pages, because
+  // cal.com is live again and can book them.
+  {
+    const { state, promise } = runFake({ candidates: [underWay], retired: false });
+    await promise;
+    assert(
+      state.alerts.some((a) => a.startsWith(CALCOM_UNPROTECTED_KEY)),
+      "put back: a copy that fails for an absence under way pages",
+    );
+  }
+
+  // The lane's cached answer said live, but cal.com was retired again in the
+  // meantime and the retry's FRESH read came back retired. That is a measurement
+  // that cal.com is retired, so the tick ends as retired: no page, no false
+  // "every block is in place", and no further cal.com work this tick.
+  {
+    const second = candidate({ id: "second", effect: RETIRED, startsAt: new Date(NOW - hours(1)).toISOString() });
+    const { state, promise } = runFake({
+      candidates: [underWay, second],
+      retired: false,
+      outcomes: { "under-way": RETIRED, second: RETIRED },
+    });
+    const res = await promise;
+    eq(state.retried, ["under-way"], "retired mid tick: the first retired answer stops the tick");
+    eq(state.alerts.length, 0, "retired mid tick: nothing pages");
+    assert(
+      state.resolvedText.length > 0 &&
+        state.resolvedText.every((t) => /retired/i.test(t) && !/in place/i.test(t)),
+      "retired mid tick: the pages end saying cal.com was retired, never that the blocks are in place",
+    );
+    eq(res.measured, true, "retired mid tick: still a measured tick");
+  }
+
+  // Safe to run twice: a second tick after the copy landed has nothing to do.
+  {
+    const { state, promise } = runFake({
+      candidates: [candidate({ id: "approved-while-retired", effect: "ok" })],
+      retired: false,
+    });
+    await promise;
+    eq(state.retried.length, 0, "a second tick after the copy landed retries nothing");
+  }
 }
 
 finish();

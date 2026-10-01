@@ -4,6 +4,7 @@ import { setCalcomRetired } from "@/app/admin/actions";
 import { ConfirmAction } from "@/components/ui/ConfirmAction";
 import { SaveForm, holdsAView } from "@/components/ui/SaveForm";
 import { btnDangerCls, btnSecondaryCls } from "@/components/ui/styles";
+import { putBackConfirmSentence } from "@/lib/calcom/put-back";
 
 /**
  * Retire cal.com, or put it back (#2875), on /admin/alerts.
@@ -34,9 +35,16 @@ import { btnDangerCls, btnSecondaryCls } from "@/components/ui/styles";
  */
 export function CalcomRetirementSwitch({
   retired,
+  awaitingCopy,
   notice,
 }: {
   retired: boolean | null;
+  /**
+   * #2890: how many approved time off requests made during retirement the override
+   * sweep will copy into cal.com once it is put back, or null when that could not
+   * be counted. Read only while retired, and named in the put back confirmation.
+   */
+  awaitingCopy: number | null;
   /** The outcome of the last press, drawn here rather than at the top of the page. */
   notice?: React.ReactNode;
 }) {
@@ -82,7 +90,7 @@ export function CalcomRetirementSwitch({
                 The daily comparison and the weekly routing replay start again, and page if they go
                 quiet. Every morning the hours import writes each agent&apos;s cal.com week over the one in
                 Slate, unless the agent set it themselves, and approved time off is written to cal.com
-                again.
+                again. {putBackConfirmSentence(awaitingCopy)}
               </>
             }
           />

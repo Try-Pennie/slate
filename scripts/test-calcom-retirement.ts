@@ -146,7 +146,10 @@ eq(
 );
 eq(calcomOverrideWriteSkip(true), OUTCOME_CALCOM_RETIRED, "retired: the dual write records its own skip");
 assert(OUTCOME_CALCOM_RETIRED.startsWith(OUTCOME_SKIPPED_PREFIX), "the retired outcome is a skip");
-assert(isSettled(OUTCOME_CALCOM_RETIRED) && !isFailure(OUTCOME_CALCOM_RETIRED), "the sweep treats it as settled, never retried or paged");
+// #2890 reversed #2875 here: the retired skip used to be settled, which left every
+// time off approved during retirement missing from cal.com once it was put back.
+// It is retried by a LIVE sweep (a retired sweep returns before reading any row).
+assert(!isSettled(OUTCOME_CALCOM_RETIRED) && isFailure(OUTCOME_CALCOM_RETIRED), "a live sweep retries a retired skip, and pages if it stays missing");
 
 // --- the stored default is the OFF value (L72) --------------------------------------
 {

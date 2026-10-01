@@ -1,5 +1,6 @@
 import { parseStampMs } from "@/lib/date/stamp";
 import {
+  OUTCOME_CALCOM_RETIRED,
   OUTCOME_NOT_IN_CALCOM,
   OUTCOME_OK_PREFIX,
   OUTCOME_SKIPPED_PREFIX,
@@ -74,11 +75,30 @@ export function isProvisionalSkip(outcome: string): boolean {
 }
 
 /**
+ * The skip written while cal.com was marked retired (#2875), which stops being true
+ * the moment an admin puts cal.com back (#2890).
+ *
+ * It used to be settled, like an unconfigured cal.com, and that is what made putting
+ * cal.com back lose time off: every absence approved during retirement had recorded
+ * this skip, nothing retried it, and cal.com went back to taking bookings with no
+ * block for any of them. It is a FAILURE as far as a live sweep is concerned, not a
+ * provisional skip: once cal.com is live it can book the agent, so an absence under
+ * way with no block is exactly what `ooo_calcom_unprotected` exists to say, and
+ * waiting for the absence to approach would protect nothing a lead can already book.
+ *
+ * A retired sweep never sees it: `runCalcomOverrideSweep` returns before reading a
+ * single row while cal.com is retired, so this costs nothing during retirement.
+ */
+export function isRetiredSkip(outcome: string): boolean {
+  return outcome.startsWith(OUTCOME_CALCOM_RETIRED);
+}
+
+/**
  * An outcome that needs no further attempts: it worked, or there was nothing to do
  * AND nothing that could change.
  */
 export function isSettled(outcome: string): boolean {
-  if (isProvisionalSkip(outcome)) return false;
+  if (isProvisionalSkip(outcome) || isRetiredSkip(outcome)) return false;
   return outcome.startsWith(OUTCOME_OK_PREFIX) || outcome.startsWith(OUTCOME_SKIPPED_PREFIX);
 }
 
@@ -353,8 +373,21 @@ export async function runCalcomOverrideSweep(deps: {
 
   const stillFailing: OverrideCandidate[] = [];
   let cleared = 0;
+  let retried = 0;
   for (const row of attempt) {
     const outcome = await deps.retry(row.id);
+    retried++;
+    if (isRetiredSkip(outcome)) {
+      // #2890: the setting read above came from a per isolate cache, and the retry
+      // read it FRESH and found cal.com retired. That is a measurement, so the tick
+      // ends the way a retired tick does, rather than paging that cal.com can book
+      // an absent agent, or claiming every block is in place, both of which would
+      // be false. Nothing further is attempted: each would only record the same skip.
+      deps.log?.("cal.com was retired during this tick, so no further override is retried");
+      await deps.resolve(CALCOM_UNPROTECTED_KEY, formatCalcomRetiredSweepEnding());
+      await deps.resolve(CALCOM_ALERT_KEY, formatCalcomRetiredSweepEnding());
+      return { ...empty, retried, cleared, measured: true };
+    }
     if (isSettled(outcome)) cleared++;
     // #1276: a provisional skip is neither. It is not cleared, because the agent
     // may get a cal.com account before the absence starts and the next tick has to
