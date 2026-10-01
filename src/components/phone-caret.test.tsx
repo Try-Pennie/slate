@@ -35,7 +35,7 @@ const baseProps = {
 
 const manageProps = {
   token: "tok_1",
-  rebookHref: "/book?xbc=411",
+  rebookHref: "/booking/manage/tok1/rebook?xbc=411",
   rescheduleTimesFrom: "pool" as const,
   startsAt: slotIso,
   timezone: "America/New_York",

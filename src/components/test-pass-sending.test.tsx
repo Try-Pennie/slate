@@ -189,7 +189,7 @@ describe("the booker sends the test pass (#2666)", () => {
 
 const manageProps = {
   token: "tok1",
-  rebookHref: "/book?xbc=411",
+  rebookHref: "/booking/manage/tok1/rebook?xbc=411",
   bucketCode: PUBLIC_TEST,
   rescheduleTimesFrom: "pool" as const,
   startsAt: "2026-06-20T15:00:00.000Z",
