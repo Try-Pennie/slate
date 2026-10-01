@@ -92,6 +92,7 @@ import {
   planFromEnv,
   PILOT_SPLIT_EXIT,
   type SlateCheckInput,
+  type SalesforceTiers,
   type ExportFile,
 } from "./lib/pilot-split.ts";
 
@@ -140,24 +141,28 @@ if (named.length > 0) {
   }
 }
 
+// Judge once without Slate; only a comparison that stands is worth a Slate read.
+let first = judgePilotSplit({ exports: exportFiles, env });
+
 // The pilot tiers (#2946): PILOT_SPLIT_TIERS when set, otherwise SlatePilotTiers__c as
-// Salesforce holds it NOW. Salesforce keeps no history of it, so today's value stands
-// for every day in the export; set PILOT_SPLIT_TIERS for an export from before a change.
-if ((env.PILOT_SPLIT_TIERS ?? "").trim() === "" && ["SF_CLIENT_ID", "SF_CLIENT_SECRET", "SF_INSTANCE_URL"].every((n) => env[n]?.trim())) {
+// Salesforce holds it NOW, read only when the judgement asks (an export with an xbc
+// column and no PILOT_SPLIT_TIERS). Salesforce keeps no history of it, so today's value
+// stands for every day in the export; set PILOT_SPLIT_TIERS for an export from before a
+// change. The value is handed to the judgement AS Salesforce's, which validates it and
+// names SlatePilotTiers__c in any refusal, never as a setting the person did not set.
+let salesforceTiers: SalesforceTiers | undefined;
+if (first.needsTiers && ["SF_CLIENT_ID", "SF_CLIENT_SECRET", "SF_INSTANCE_URL"].every((n) => env[n]?.trim())) {
   try {
     const { readPilotSettings } = await import("./lib/pilot-settings-read.ts");
-    const settings = await readPilotSettings();
-    if (settings.tiers !== null) {
-      env.PILOT_SPLIT_TIERS = settings.tiers;
-      console.error(`Pilot tiers from SlatePilotTiers__c as it is now: ${settings.tiers}.`);
-    }
+    salesforceTiers = { ok: true, value: (await readPilotSettings()).tiers };
   } catch (err) {
-    console.error(`SlatePilotTiers__c could not be read (${err instanceof Error ? err.message : String(err)}); set PILOT_SPLIT_TIERS.`);
+    salesforceTiers = { ok: false, message: err instanceof Error ? err.message : String(err) };
+  }
+  first = judgePilotSplit({ exports: exportFiles, env, salesforceTiers });
+  if (salesforceTiers.ok && first.exit !== PILOT_SPLIT_EXIT.tiersUnknown) {
+    console.error(`Pilot tiers from SlatePilotTiers__c as it is now: ${salesforceTiers.value}.`);
   }
 }
-
-// Judge once without Slate; only a comparison that stands is worth a Slate read.
-const first = judgePilotSplit({ exports: exportFiles, env });
 if (first.exit !== PILOT_SPLIT_EXIT.compared) print(first.lines, first.exit);
 
 async function readSlate(dates: string[]): Promise<SlateCheckInput> {
@@ -230,6 +235,6 @@ async function readOffers(dates: string[]): Promise<PilotOffersRead> {
 }
 
 const slateCheck = await readSlate(first.dates);
-const final = judgePilotSplit({ exports: exportFiles, env, slateCheck });
+const final = judgePilotSplit({ exports: exportFiles, env, slateCheck, salesforceTiers });
 const offers = await readOffers(first.dates);
 print([...final.lines, "", ...pilotOffersReportLines(offers)], final.exit);

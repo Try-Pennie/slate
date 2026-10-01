@@ -748,7 +748,16 @@ export interface Judgement {
   dates: string[];
   slateKeys: Set<string>;
   slateBookedKeys: Set<string>;
+  /**
+   * True only when the export has an xbc column, PILOT_SPLIT_TIERS is unset and no
+   * Salesforce reading was given: the one case the command should read
+   * SlatePilotTiers__c and judge again. An export with no xbc column needs no tiers.
+   */
+  needsTiers: boolean;
 }
+
+/** SlatePilotTiers__c as read from Salesforce: its value (null when empty), or why it could not be read. */
+export type SalesforceTiers = { ok: true; value: string | null } | { ok: false; message: string };
 
 const BOUNCE_NOTE =
   "Bounce here means a lead who left without opening the booker (no view_booker, navigate_to_booker or complete_booking). " +
@@ -760,6 +769,8 @@ export function judgePilotSplit(input: {
   exports: readonly ExportFile[] | null;
   env: Record<string, string | undefined>;
   slateCheck?: SlateCheckInput;
+  /** SlatePilotTiers__c as the command read it, when PILOT_SPLIT_TIERS is unset and the judgement asked (`needsTiers`). */
+  salesforceTiers?: SalesforceTiers;
 }): Judgement {
   const lines: string[] = [];
   const out = (exit: number, extra: Partial<Judgement> = {}): Judgement => ({
@@ -768,6 +779,7 @@ export function judgePilotSplit(input: {
     dates: [],
     slateKeys: new Set(),
     slateBookedKeys: new Set(),
+    needsTiers: false,
     ...extra,
   });
 
@@ -787,16 +799,35 @@ export function judgePilotSplit(input: {
     return out(PILOT_SPLIT_EXIT.unreadablePercent);
   }
   const percent = pr.percent;
-  const tiersRaw = input.env.PILOT_SPLIT_TIERS;
-  const tiers = parseTiers(tiersRaw);
+  // The tiers, and where they came from, so a refusal names the value that was
+  // actually wrong (L11): PILOT_SPLIT_TIERS when the person set it, otherwise
+  // SlatePilotTiers__c as the command read it from Salesforce.
+  const tiersRaw = (input.env.PILOT_SPLIT_TIERS ?? "").trim();
+  const sf = input.salesforceTiers;
+  let tiers: Set<string> | null = null;
+  let tiersRefusal: string | null = null;
+  if (tiersRaw !== "") {
+    tiers = parseTiers(tiersRaw);
+    if (tiers === null) tiersRefusal = `PILOT_SPLIT_TIERS="${tiersRaw}" is not a list of tier digits in SlatePilotTiers__c's format (1;2;3;4;5).`;
+  } else if (sf === undefined) {
+    tiersRefusal =
+      "the export has an xbc column and no pilot tiers are known. Set PILOT_SPLIT_TIERS to SlatePilotTiers__c " +
+      "for these days (1;2;3;4;5 since 2026-10-01), or run with Salesforce credentials so the command reads it.";
+  } else if (!sf.ok) {
+    tiersRefusal = `SlatePilotTiers__c could not be read: ${sf.message}. Set PILOT_SPLIT_TIERS to the tiers for these days.`;
+  } else if (sf.value === null) {
+    tiersRefusal = "SlatePilotTiers__c is empty in Salesforce, so no pilot tiers are known. Set PILOT_SPLIT_TIERS to the tiers for these days.";
+  } else {
+    tiers = parseTiers(sf.value);
+    if (tiers === null) {
+      tiersRefusal =
+        `SlatePilotTiers__c="${sf.value}" (read from Salesforce now) is not a list of tier digits 1 to 5, so it cannot say which ` +
+        "leads were in the pilot. Set PILOT_SPLIT_TIERS to the tiers for these days.";
+    }
+  }
   if (parsed.hasXbc && tiers === null) {
-    lines.push(
-      (tiersRaw ?? "").trim() === ""
-        ? "FAILED (tiers-unknown): the export has an xbc column and no pilot tiers are known. Set PILOT_SPLIT_TIERS to SlatePilotTiers__c " +
-            "for these days (1;2;3;4;5 since 2026-10-01), or run with Salesforce credentials so the command reads it."
-        : `FAILED (tiers-unknown): PILOT_SPLIT_TIERS="${tiersRaw}" is not a list of tier digits in SlatePilotTiers__c's format (1;2;3;4;5).`,
-    );
-    return out(PILOT_SPLIT_EXIT.tiersUnknown);
+    lines.push(`FAILED (tiers-unknown): ${tiersRefusal as string}`);
+    return out(PILOT_SPLIT_EXIT.tiersUnknown, { needsTiers: tiersRaw === "" && sf === undefined });
   }
   const s = summarizeLeads(parsed, { percent, tiers });
   const range = s.dates.length > 0 ? `${s.dates[0]} to ${s.dates[s.dates.length - 1]}` : "no dates";

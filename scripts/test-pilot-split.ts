@@ -24,6 +24,7 @@ import {
   planFromEnv,
   crossCheckSlateBookings,
   PILOT_SPLIT_EXIT,
+  type SalesforceTiers,
   MIN_LEADS_PER_HALF,
   MIN_OUTCOMES_PER_HALF,
 } from "./lib/pilot-split.ts";
@@ -505,6 +506,27 @@ function idsInBucketRange(n: number, below: boolean, percent: number, prefix: st
     [...calIds.slice(0, 5).map((id) => ["20261007", id, "cal.com", "311", "booking_assignment", "(not set)", "1"]), ...slateIds.slice(0, 5).map((id) => ["20261007", id, "slate", "311", "booking_assignment", "(not set)", "1"])],
     xbcHeader,
   );
+  // The value read from Salesforce is judged as Salesforce's, never relabelled as a
+  // setting the person never set (L11).
+  const sfJudge = (salesforceTiers: SalesforceTiers, env: Record<string, string> = { PILOT_SPLIT_PERCENT: "50" }) =>
+    judgePilotSplit({ exports: [{ name: "export-1.csv", text: highOnly }], env, salesforceTiers });
+  const sfBad = sfJudge({ ok: true, value: "0;1" });
+  eq(sfBad.exit, PILOT_SPLIT_EXIT.tiersUnknown, "a SlatePilotTiers__c value that is not tier digits is refused");
+  assert(/SlatePilotTiers__c="0;1"/.test(sfBad.lines.join(" ")) && !/PILOT_SPLIT_TIERS=/.test(sfBad.lines.join(" ")), `and names Salesforce's field, not PILOT_SPLIT_TIERS (${sfBad.lines.join(" ")})`);
+  const sfEmpty = sfJudge({ ok: true, value: null });
+  assert(sfEmpty.exit === PILOT_SPLIT_EXIT.tiersUnknown && /SlatePilotTiers__c is empty/.test(sfEmpty.lines.join(" ")), `an empty SlatePilotTiers__c says so (${sfEmpty.lines.join(" ")})`);
+  const sfFailed = sfJudge({ ok: false, message: "SF token failed: 401" });
+  assert(
+    sfFailed.exit === PILOT_SPLIT_EXIT.tiersUnknown && /SlatePilotTiers__c could not be read: SF token failed: 401/.test(sfFailed.lines.join(" ")),
+    `a failed Salesforce read names the read, not a missing setting (${sfFailed.lines.join(" ")})`,
+  );
+  assert(sfJudge({ ok: true, value: "1;2;3;4;5" }).exit !== PILOT_SPLIT_EXIT.tiersUnknown, "a readable SlatePilotTiers__c supplies the tiers");
+  eq(sfJudge({ ok: true, value: "0;1" }, { PILOT_SPLIT_PERCENT: "50", PILOT_SPLIT_TIERS: "1;3" }).exit !== PILOT_SPLIT_EXIT.tiersUnknown, true, "PILOT_SPLIT_TIERS, when set, wins over Salesforce");
+  // An export with no xbc column needs no tiers, so the command never reads them for it.
+  const noXbcRun = judge(csv(leadsOn(calIds.slice(0, 5), "cal.com", "20261008", 0)), { PILOT_SPLIT_PERCENT: "50" });
+  eq(noXbcRun.needsTiers, false, "an export with no xbc column asks for no tiers");
+  eq(noTiers.needsTiers, true, "an export with an xbc column and no tiers asks for them");
+
   const lowPilot = judge([highOnly], { PILOT_SPLIT_PERCENT: "50", PILOT_SPLIT_TIERS: "1" });
   eq(lowPilot.exit, PILOT_SPLIT_EXIT.emptyHalf, "High leads are outside a Low only pilot");
   const allTiers = judge([highOnly], { PILOT_SPLIT_PERCENT: "50", PILOT_SPLIT_TIERS: "1;2;3;4;5" });
