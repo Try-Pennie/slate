@@ -44,9 +44,9 @@ export const CALCOM_UNPROTECTED_KEY = "ooo_calcom_unprotected";
  */
 export const CALCOM_ALERT_KEY = "ooo_calcom";
 
-/** Retries per tick. The set is normally 0 to 2 rows; the cap exists so a bad day
- *  cannot turn one monitor tick into hundreds of outbound cal.com calls. */
-export const MAX_RETRIES_PER_TICK = 10;
+// Retries per tick, defined where a client module can import it (#2890).
+import { MAX_RETRIES_PER_TICK } from "./override-sweep-limits.ts";
+export { MAX_RETRIES_PER_TICK };
 
 export interface OverrideCandidate {
   id: string;

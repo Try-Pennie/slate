@@ -347,7 +347,7 @@ export function realDeps(): OooDeps {
       // alert-key: ooo_agent_dm
       // alert-key: ooo_busy_block_fallback
       // alert-key: ooo_calcom
-      // alert-key: ooo_calcom_stale_unrecorded
+      // alert-key: ooo_calcom_stale_unrecorded:*
       // alert-key: ooo_undo
       // alert-key: ooo_coverage_stop
       sendThrottledAlert(key, OOO_ALERT_COOLDOWN_MS, message).catch(() => {}),

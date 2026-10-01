@@ -846,8 +846,10 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "and the monitor lane clears it off a measured read (#1470).",
   },
   {
-    key: "ooo_calcom_stale_unrecorded",
+    key: "ooo_calcom_stale_unrecorded:*",
     kind: "incident",
+    // The suffix is the agent's user id, so the family is bounded by the roster.
+    suffix: "bounded",
     why:
       "A time off was cancelled or changed while cal.com was retired and the block " +
       "cal.com still holds for its old dates could not be recorded (#2890). Nothing " +

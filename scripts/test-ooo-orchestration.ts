@@ -1927,8 +1927,14 @@ function latestManagerNotice(w: World): string {
     const res = await cancelOoo(id, agent, w.deps);
     assert(res.ok, "record refused: the cancellation still goes through");
     assert(
-      w.alerts.some((a) => a.key === "ooo_calcom_stale_unrecorded" && /put back/i.test(a.message)),
-      "record refused: pages, naming what put back will not be able to undo",
+      w.alerts.some((a) => a.key === `ooo_calcom_stale_unrecorded:${agent.id}` && /put back/i.test(a.message)),
+      "record refused: pages on the agent's own key, naming what put back will not be able to undo",
+    );
+    // Keyed per agent, so one agent's page cannot throttle another's: the cooldown
+    // is per key, and a shared key silenced every second one inside the window.
+    assert(
+      !w.alerts.some((a) => a.key === "ooo_calcom_stale_unrecorded"),
+      "record refused: never on one shared key",
     );
     // Its own key, never `ooo_calcom`: the override sweep ends that page with "all
     // in place, no action is needed" as soon as no override is failing, which would

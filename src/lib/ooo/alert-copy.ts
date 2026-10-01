@@ -62,12 +62,13 @@ export function oooCalcomAlert(requestId: string, outcome: string): string {
  * cal.com block was left in place, and the record that lets putting cal.com back
  * take it out could not be written. Says what that leaves and what to do.
  */
-export function oooCalcomStaleUnrecordedAlert(requestId: string, reason: string): string {
+export function oooCalcomStaleUnrecordedAlert(requestId: string, agentEmail: string, reason: string): string {
   return (
-    `Time off request ${requestId} was cancelled or changed while cal.com was retired, and ` +
-    `the block cal.com still holds for its old dates could not be recorded (${reason}). If ` +
-    `cal.com is put back, that block will not be taken out on its own: remove it in cal.com, ` +
-    `or the agent cannot be booked there on those days.`
+    `Time off request ${requestId} for ${agentEmail} was cancelled or changed while cal.com was ` +
+    `retired, and the block cal.com still holds for its old dates could not be recorded (${reason}). ` +
+    `If cal.com is put back, that block will not be taken out on its own: check ${agentEmail}'s ` +
+    `cal.com schedule for every date of time off cancelled or changed while it was retired and ` +
+    `remove any block Slate no longer holds, or they cannot be booked there on those days.`
   );
 }
 

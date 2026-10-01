@@ -18,6 +18,9 @@ import {
 } from "../src/lib/calcom/put-back.ts";
 import { OUTCOME_CALCOM_RETIRED } from "../src/lib/calcom/outcomes.ts";
 import { MAX_RETRIES_PER_TICK, selectCandidates, toCandidates } from "../src/lib/monitor/calcom-override-sweep.ts";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { OUTCOME_PARAMS } from "../src/lib/admin/save-outcomes.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const NOW = Date.parse("2026-10-01T15:00:00Z");
@@ -274,6 +277,36 @@ eq(
   assert(chunkSizes.length > 1, `loader: the agent read is split (${chunkSizes.join(", ")})`);
   assert(chunkSizes.every((c) => c < 400), "loader: no single read carries every id");
   eq(chunkSizes.reduce((a, b) => a + b, 0), 400, "loader: every agent is asked about exactly once");
+}
+
+// --- the redirect's counts are stripped with the rest of the outcome ---------------
+// A reload or a copied link must not replay a count under a Saved banner, so every
+// parameter the put back redirect appends is one the notice strips (OUTCOME_PARAMS).
+{
+  const params = [...new URLSearchParams(putBackQuery({ copy: 1, remove: 2 }).replace(/^&/, "")).keys()];
+  assert(params.length === 2, `the redirect carries its two counts (${params.join(", ")})`);
+  for (const p of params) {
+    assert((OUTCOME_PARAMS as readonly string[]).includes(p), `"${p}" is stripped from the address bar with the outcome`);
+  }
+}
+
+// --- the client component reaches only the pure copy -------------------------------
+// CalcomRetirementSwitch is "use client". Importing the loaders' module would put the
+// Supabase reads, the logger and the sweep into the client bundle for one sentence
+// (L730), so the copy lives in a module that imports nothing server side.
+{
+  const read = (f: string) => readFileSync(join(process.cwd(), f), "utf8");
+  const importsOf = (src: string) => [...src.matchAll(/^import[^;]*?from\s+["']([^"']+)["']/gms)].map((m) => m[1]);
+  const sw = importsOf(read("src/components/admin/CalcomRetirementSwitch.tsx"));
+  assert(!sw.includes("@/lib/calcom/put-back"), "the client switch does not import the loaders' module");
+  assert(sw.includes("@/lib/calcom/put-back-copy"), "the client switch imports the pure copy module");
+  const copyImports = importsOf(read("src/lib/calcom/put-back-copy.ts"));
+  const allowed = ["@/lib/monitor/override-sweep-limits"];
+  assert(
+    copyImports.every((m) => allowed.includes(m)),
+    `the copy module imports nothing server side (${copyImports.join(", ") || "nothing"})`,
+  );
+  eq(importsOf(read("src/lib/monitor/override-sweep-limits.ts")).length, 0, "the limits module imports nothing");
 }
 
 finish();

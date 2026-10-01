@@ -4,7 +4,7 @@ import { setCalcomRetired } from "@/app/admin/actions";
 import { ConfirmAction } from "@/components/ui/ConfirmAction";
 import { SaveForm, holdsAView } from "@/components/ui/SaveForm";
 import { btnDangerCls, btnSecondaryCls } from "@/components/ui/styles";
-import { putBackConfirmSentence, type PutBackCounts } from "@/lib/calcom/put-back";
+import { putBackConfirmSentence, type PutBackCounts } from "@/lib/calcom/put-back-copy";
 
 /**
  * Retire cal.com, or put it back (#2875), on /admin/alerts.

@@ -1090,9 +1090,16 @@ async function undoPostApproval(
         // failing, which would clear this while the block is still in cal.com. And
         // there is no healthy state to observe: the window was never recorded, so
         // nothing in Slate can tell when somebody has taken the block out.
+        // Keyed per AGENT (#2890 review): the cooldown is per key, so one shared key
+        // silenced every second unrecorded block inside the window. Per agent rather
+        // than per request because the suffix must be bounded (alert-catalog.ts):
+        // agents are bounded by the roster, requests grow forever with nothing to
+        // prune their rows. Nothing is lost when one agent's second block collapses
+        // into the first page, because that page sends the reader to the agent's
+        // whole cal.com schedule, not to one window.
         await deps.alertOps(
-          "ooo_calcom_stale_unrecorded",
-          oooCalcomStaleUnrecordedAlert(request.id, shortReason(e)),
+          `ooo_calcom_stale_unrecorded:${agent.id}`,
+          oooCalcomStaleUnrecordedAlert(request.id, agent.email, shortReason(e)),
         );
       }
     }

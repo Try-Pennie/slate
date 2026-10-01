@@ -206,7 +206,9 @@ export function refusedQuery(reason: string): string {
  * or a copied link, and the webhooks page's own two were invisible to the
  * stripper that only knew about `ok` and `error`.
  */
-export const OUTCOME_PARAMS = ["ok", "error", "resend", "replay", "form"] as const;
+// `copy` and `remove` are the counts putting cal.com back carries (#2890); left in
+// the address bar they would replay a stale count under a Saved banner.
+export const OUTCOME_PARAMS = ["ok", "error", "resend", "replay", "form", "copy", "remove"] as const;
 
 /**
  * The `form` a refusal names when its page draws that form's refusal beside the
