@@ -44,3 +44,20 @@ export const OUTCOME_SKIPPED_PREFIX = "skipped";
  * record should see that somebody retired cal.com, not that a key went missing.
  */
 export const OUTCOME_CALCOM_RETIRED = "skipped: cal.com retired";
+
+/**
+ * Whether an outcome is the retired skip (#2890), judged in ONE place: the override
+ * sweep retries it once cal.com is live, and a cancellation or change records the
+ * block it left behind, so both must agree on what it looks like.
+ */
+export function isRetiredSkip(outcome: string): boolean {
+  return outcome.startsWith(OUTCOME_CALCOM_RETIRED);
+}
+
+/**
+ * A removal that found no override on the dates to remove (#2417). The client has
+ * still rewritten the dates to what Slate says they should offer, so cal.com is
+ * right; the outcome reports that the block was not there to undo. Prefix only:
+ * the client appends the dates.
+ */
+export const OUTCOME_NOTHING_TO_REMOVE_PREFIX = "failed: no cal.com override was on";

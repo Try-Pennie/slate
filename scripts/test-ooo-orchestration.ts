@@ -23,7 +23,7 @@ import {
 } from "../src/lib/ooo/coverage-notice-copy.ts";
 import type { OooRequest, User } from "../src/lib/db/types.ts";
 import { GoogleHttpError } from "../src/lib/google/http-error.ts";
-import { assert, finish } from "./lib/harness.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
 
 /**
  * The audit entry for one action, or null. Every ooo.* audit row records the
@@ -148,6 +148,10 @@ interface World {
   calcomRemoveOutcome: string;
   /** Every removal asked for, so the request it names can be asserted (#2417). */
   calcomRemovals: { requestId: string; agentUserId: string; agentEmail: string }[];
+  /** #2890: blocks left in cal.com by a removal skipped while it was retired. */
+  staleRemovals: { requestId: string; agentUserId: string; startIso: string; endIso: string; reason: string }[];
+  /** #2890: make recording a stale block throw, so the failure path is reachable. */
+  staleRecordFails: boolean;
   /** Coverage sweeps enqueued, with the exact bounds each was given (#1237). */
   sweeps: { requestId: string; startIso: string; endIso: string; queued: number }[];
   /** How the sweep answers: a count, or a throw, so the failure path is reachable. */
@@ -193,6 +197,8 @@ function makeWorld(): World {
     calcomOutcome: "skipped",
     calcomRemoveOutcome: "skipped",
     calcomRemovals: [],
+    staleRemovals: [],
+    staleRecordFails: false,
     sweeps: [],
     sweepResult: 0,
     sweepMoves: [],
@@ -341,6 +347,10 @@ function makeWorld(): World {
     calcomRemoveOverrides: async ({ requestId, agentUserId, agentEmail }) => {
       world.calcomRemovals.push({ requestId, agentUserId, agentEmail });
       return world.calcomRemoveOutcome;
+    },
+    recordCalcomRemovalPending: async (args) => {
+      if (world.staleRecordFails) throw new Error("calcom_override_removals insert refused");
+      world.staleRemovals.push(args);
     },
     dmUserByEmail: async (email, text) => {
       world.dms.push({ email, text });
@@ -1843,6 +1853,84 @@ function latestManagerNotice(w: World): string {
     !/still waiting to move/.test(cSuperseded) && !/had already moved/.test(cSuperseded),
     `CONTROL: a never-approved request's edit says nothing about appointments (got: ${cSuperseded})`,
   );
+}
+
+// --- #2890: a removal skipped while cal.com was retired is recorded --------------
+//
+// While cal.com is retired the removal writes nothing, and the request row then
+// forgets the window (a cancel clears calcom_synced, a change replaces the dates).
+// So the window cal.com still blocks is recorded, for the override sweep to take
+// out once cal.com is put back. Both directions are driven: the cancel and the
+// change (whose recorded window must be the OLD one), and a live removal that
+// records nothing.
+{
+  const RETIRED = "skipped: cal.com retired";
+  // Cancel while retired.
+  {
+    const w = makeWorld();
+    w.calcomOutcome = "ok";
+    const sub = await submitOoo(agent, input, w.deps);
+    const id = sub.ok ? sub.request.id : "";
+    await approveOoo(id, manager, w.deps);
+    w.calcomRemoveOutcome = RETIRED;
+    const before = w.alerts.filter((a) => a.key === "ooo_calcom").length;
+    const res = await cancelOoo(id, agent, w.deps);
+    assert(res.ok, "retired cancel: the cancellation still goes through");
+    eq(
+      w.staleRemovals,
+      [{ requestId: id, agentUserId: agent.id, startIso: input.startIso, endIso: input.endIso, reason: RETIRED }],
+      "retired cancel: the window cal.com still blocks is recorded for put back",
+    );
+    eq(w.alerts.filter((a) => a.key === "ooo_calcom").length, before, "retired cancel: nothing pages");
+  }
+  // Change while retired: the OLD window is what cal.com holds.
+  {
+    const w = makeWorld();
+    w.calcomOutcome = "ok";
+    const sub = await submitOoo(agent, input, w.deps);
+    const id = sub.ok ? sub.request.id : "";
+    await approveOoo(id, manager, w.deps);
+    w.calcomRemoveOutcome = RETIRED;
+    await modifyOoo(
+      id,
+      agent,
+      { ...input, startIso: "2026-07-01T17:00:00Z", endIso: "2026-07-01T21:00:00Z" },
+      w.deps,
+    );
+    eq(w.staleRemovals.length, 1, "retired change: one stale window is recorded");
+    eq(
+      [w.staleRemovals[0]?.startIso, w.staleRemovals[0]?.endIso],
+      [input.startIso, input.endIso],
+      "retired change: the recorded window is the OLD one, not the new",
+    );
+  }
+  // Live removal: nothing to record.
+  {
+    const w = makeWorld();
+    w.calcomOutcome = "ok";
+    w.calcomRemoveOutcome = "ok";
+    const sub = await submitOoo(agent, input, w.deps);
+    const id = sub.ok ? sub.request.id : "";
+    await approveOoo(id, manager, w.deps);
+    await cancelOoo(id, agent, w.deps);
+    eq(w.staleRemovals.length, 0, "live cancel: a removal that landed records nothing");
+  }
+  // Recording it fails: said out loud, and the cancellation still completes.
+  {
+    const w = makeWorld();
+    w.calcomOutcome = "ok";
+    const sub = await submitOoo(agent, input, w.deps);
+    const id = sub.ok ? sub.request.id : "";
+    await approveOoo(id, manager, w.deps);
+    w.calcomRemoveOutcome = RETIRED;
+    w.staleRecordFails = true;
+    const res = await cancelOoo(id, agent, w.deps);
+    assert(res.ok, "record refused: the cancellation still goes through");
+    assert(
+      w.alerts.some((a) => a.key === "ooo_calcom" && /put back/i.test(a.message)),
+      "record refused: pages, naming what put back will not be able to undo",
+    );
+  }
 }
 
 finish();

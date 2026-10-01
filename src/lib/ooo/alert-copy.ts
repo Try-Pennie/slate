@@ -57,6 +57,20 @@ export function oooCalcomAlert(requestId: string, outcome: string): string {
   return `The Cal.com availability override for request ${requestId} failed (${outcome}).`;
 }
 
+/**
+ * #2890: a time off was cancelled or changed while cal.com was retired, so its
+ * cal.com block was left in place, and the record that lets putting cal.com back
+ * take it out could not be written. Says what that leaves and what to do.
+ */
+export function oooCalcomStaleUnrecordedAlert(requestId: string, reason: string): string {
+  return (
+    `Time off request ${requestId} was cancelled or changed while cal.com was retired, and ` +
+    `the block cal.com still holds for its old dates could not be recorded (${reason}). If ` +
+    `cal.com is put back, that block will not be taken out on its own: remove it in cal.com, ` +
+    `or the agent cannot be booked there on those days.`
+  );
+}
+
 /** Time-off orchestration incident: oooAgentDmAlert. */
 export function oooAgentDmAlert(email: string, requestId: string): string {
   return `The approval DM to ${email} for request ${requestId} could not be delivered.`;

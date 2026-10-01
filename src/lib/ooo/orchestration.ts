@@ -7,6 +7,7 @@ import {
   oooAgentCalendarAlert,
   oooBusyBlockFallbackAlert,
   oooCalcomAlert,
+  oooCalcomStaleUnrecordedAlert,
   oooAgentDmAlert,
   oooUndoManagerAlert,
   oooUndoAgentAlert,
@@ -47,6 +48,7 @@ import {
 // Relative value import, per this file's header: a "@/" VALUE import is not
 // erased and breaks the node --experimental-strip-types suites.
 import { roleLabel } from "../auth/roles.ts";
+import { isRetiredSkip } from "../calcom/outcomes.ts";
 import { reachabilityFromError } from "../google/reachability-classify.ts";
 import { deterministicEventId } from "../booking/core.ts";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
@@ -288,6 +290,20 @@ export interface OooDeps {
    */
   calcomAddOverrides(args: CalcomOverrideTarget): Promise<string>;
   calcomRemoveOverrides(args: CalcomOverrideTarget): Promise<string>;
+
+  /**
+   * #2890: record a window cal.com still blocks because its removal was skipped
+   * while cal.com was retired, so the override sweep can take it out once cal.com
+   * is put back. Idempotent on (request, window). THROWS when it could not record:
+   * the caller says so, because nothing else would remember the window.
+   */
+  recordCalcomRemovalPending(args: {
+    requestId: string;
+    agentUserId: string;
+    startIso: string;
+    endIso: string;
+    reason: string;
+  }): Promise<void>;
 
   /**
    * Slack DM by email; the message ref when delivered, null when undeliverable.
@@ -1056,6 +1072,24 @@ async function undoPostApproval(
     });
     if (outcome.startsWith("failed")) {
       await deps.alertOps("ooo_calcom", oooCalcomAlert(request.id, outcome));
+    } else if (isRetiredSkip(outcome)) {
+      // #2890: cal.com is retired, so the block stays in cal.com, and this request
+      // is about to forget the window (calcom_synced goes false below, and a change
+      // replaces the dates). Recorded, so putting cal.com back can take it out.
+      try {
+        await deps.recordCalcomRemovalPending({
+          requestId: request.id,
+          agentUserId: agent.id,
+          startIso: request.starts_at,
+          endIso: request.ends_at,
+          reason: outcome,
+        });
+      } catch (e) {
+        await deps.alertOps(
+          "ooo_calcom",
+          oooCalcomStaleUnrecordedAlert(request.id, shortReason(e)),
+        );
+      }
     }
   }
   return {

@@ -9,6 +9,7 @@
 import {
   PUT_BACK_UNKNOWN,
   loadPutBackBacklog,
+  loadStaleBlockCount,
   putBackBacklog,
   putBackConfirmSentence,
   putBackQuery,
@@ -73,35 +74,83 @@ const active = new Set(["u-active"]);
 
 // --- the confirmation, before the press ----------------------------------------
 {
-  const none = putBackConfirmSentence(0);
-  const one = putBackConfirmSentence(1);
-  const many = putBackConfirmSentence(12);
-  const unknown = putBackConfirmSentence(null);
-  assert(/no time off/i.test(none), `zero says nothing is waiting: ${none}`);
-  assert(/\b1 approved time off request\b/.test(one) && !/requests/.test(one), `one is singular: ${one}`);
-  assert(/\b12 approved time off requests\b/.test(many), `many names the count: ${many}`);
-  assert(many.includes(String(MAX_RETRIES_PER_TICK)), `many says how many go per run: ${many}`);
-  assert(/could not/i.test(unknown) && !/\d/.test(unknown.replace(/5 minutes/, "")), `unknown invents no number: ${unknown}`);
+  const none = putBackConfirmSentence({ copy: 0, remove: 0 });
+  const copyOne = putBackConfirmSentence({ copy: 1, remove: 0 });
+  const both = putBackConfirmSentence({ copy: 12, remove: 3 });
+  const removeOnly = putBackConfirmSentence({ copy: 0, remove: 1 });
+  const unknown = putBackConfirmSentence({ copy: null, remove: null });
+  const halfUnknown = putBackConfirmSentence({ copy: 2, remove: null });
+  assert(/^nothing/i.test(none) && !/\d/.test(none), `zero says nothing needs doing: ${none}`);
+  assert(/\b1 approved time off request\b/.test(copyOne) && !/requests/.test(copyOne), `one is singular: ${copyOne}`);
+  assert(!/block/.test(copyOne), `a zero half is not mentioned: ${copyOne}`);
+  assert(/\b12 approved time off requests\b/.test(both) && /\b3 blocks\b/.test(both), `both halves are named: ${both}`);
+  assert(both.includes(String(MAX_RETRIES_PER_TICK)), `the pace is said: ${both}`);
+  assert(/\b1 block\b/.test(removeOnly) && /taken out/.test(removeOnly), `a removal alone is named: ${removeOnly}`);
+  assert(
+    /could not be counted/.test(unknown) && !/\d+ (approved|block)/.test(unknown),
+    `unknown invents no number: ${unknown}`,
+  );
+  assert(
+    /\b2 approved time off requests\b/.test(halfUnknown) && /could not be counted/.test(halfUnknown),
+    `one half unreadable keeps the other: ${halfUnknown}`,
+  );
 }
 
 // --- the saved notice, after the press -----------------------------------------
 {
-  eq(putBackQuery(3), "&copy=3", "a count travels on the redirect");
-  eq(putBackQuery(null), `&copy=${PUT_BACK_UNKNOWN}`, "an unreadable count travels as unknown, never as zero");
-  eq(putBackQuery(0), "&copy=0", "a measured zero travels as zero");
+  eq(putBackQuery({ copy: 3, remove: 1 }), "&copy=3&remove=1", "both counts travel on the redirect");
+  eq(
+    putBackQuery({ copy: null, remove: 0 }),
+    `&copy=${PUT_BACK_UNKNOWN}&remove=0`,
+    "an unreadable count travels as unknown, never as zero",
+  );
 
   const base = /cal\.com is back/i;
-  const three = putBackSavedSentence("3");
-  assert(base.test(three) && /\b3 approved time off requests\b/.test(three), `names the count: ${three}`);
-  const zero = putBackSavedSentence("0");
-  assert(base.test(zero) && /no time off/i.test(zero), `zero says nothing needed copying: ${zero}`);
-  const unknown = putBackSavedSentence(PUT_BACK_UNKNOWN);
-  assert(base.test(unknown) && /could not count/i.test(unknown), `unknown says so: ${unknown}`);
+  const three = putBackSavedSentence("3", "1");
+  assert(
+    base.test(three) && /\b3 approved time off requests\b/.test(three) && /\b1 block\b/.test(three),
+    `names both counts: ${three}`,
+  );
+  const zero = putBackSavedSentence("0", "0");
+  assert(base.test(zero) && /nothing/i.test(zero), `zero says nothing needed doing: ${zero}`);
+  const unknown = putBackSavedSentence(PUT_BACK_UNKNOWN, "2");
+  assert(base.test(unknown) && /could not be counted/.test(unknown) && /\b2 blocks\b/.test(unknown), `unknown says so: ${unknown}`);
   // A value that is not a count (a hand edited or truncated link) claims no number.
-  for (const raw of [undefined, "", "abc", "-1", "1.5"]) {
-    const s = putBackSavedSentence(raw);
-    assert(base.test(s) && !/\d+ approved/.test(s), `"${String(raw)}" claims no count: ${s}`);
+  for (const [c, r] of [[undefined, undefined], ["", "0"], ["abc", "1"], ["-1", "1"], ["1.5", "2"], ["1", undefined]] as const) {
+    const s = putBackSavedSentence(c, r);
+    assert(base.test(s) && !/\d+ (approved|block)/.test(s), `"${String(c)}"/"${String(r)}" claims no count: ${s}`);
   }
+}
+
+// --- the stale block count: unresolved windows that have not ended ----------------
+{
+  const asked: string[] = [];
+  const fake = (res: { data: unknown[] | null; error: { message: string } | null }) =>
+    ({
+      from: (table: string) => {
+        const self: Record<string, unknown> = {};
+        for (const m of ["select", "is", "gt", "order"]) {
+          self[m] = (...a: unknown[]) => {
+            asked.push(`${table}.${m}(${a.map(String).join(",")})`);
+            return self;
+          };
+        }
+        self.range = (from: number) => Promise.resolve(from === 0 ? res : { data: [], error: null });
+        return self;
+      },
+    }) as unknown as Parameters<typeof loadStaleBlockCount>[0];
+  eq(
+    await loadStaleBlockCount(fake({ data: [{ id: "a" }, { id: "b" }], error: null }), NOW),
+    2,
+    "stale count: each unresolved window counts",
+  );
+  assert(asked.includes("calcom_override_removals.is(resolved_at,null)"), "stale count: resolved windows are excluded");
+  assert(asked.includes(`calcom_override_removals.gt(ends_at,${at(NOW)})`), "stale count: ended windows are excluded");
+  eq(
+    await loadStaleBlockCount(fake({ data: null, error: { message: "relation does not exist" } }), NOW),
+    null,
+    "stale count: a refused read (a deploy ahead of migration 0153) is unknown, not zero",
+  );
 }
 
 // --- the loader: both reads, and each way it can fail -----------------------------

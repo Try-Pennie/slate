@@ -50,10 +50,12 @@ vi.mock("@/lib/calcom/retirement", async (orig) => ({
   __resetCalcomRetiredCache: retirement.reset,
 }));
 // #2890: how many approved time off requests the sweep will now copy into cal.com.
-const putBack = vi.hoisted(() => ({ load: vi.fn(async (): Promise<number | null> => 0) }));
+const putBack = vi.hoisted(() => ({
+  load: vi.fn(async (): Promise<{ copy: number | null; remove: number | null }> => ({ copy: 0, remove: 0 })),
+}));
 vi.mock("@/lib/calcom/put-back", async (orig) => ({
   ...(await orig<typeof import("@/lib/calcom/put-back")>()),
-  loadPutBackBacklog: putBack.load,
+  loadPutBackCounts: putBack.load,
 }));
 vi.mock("@/lib/availability/precompute", () => ({ markAllBucketSlotsStale: vi.fn() }));
 vi.mock("@/lib/webhooks/emit", () => ({ resendDelivery: vi.fn(), replayDeadLetteredDeliveries: vi.fn() }));
@@ -84,7 +86,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   auth.requireAdmin.mockResolvedValue({ id: "admin1", role: "admin", org_id: "o1" });
   retirement.load.mockResolvedValue(false);
-  putBack.load.mockResolvedValue(0);
+  putBack.load.mockResolvedValue({ copy: 0, remove: 0 });
 });
 
 describe("setCalcomRetired", () => {
@@ -157,23 +159,25 @@ describe("setCalcomRetired", () => {
 
   // #2890: putting cal.com back has to say how much time off approved during
   // retirement the sweep will now copy into it, on the page the admin was on.
-  it("puts cal.com back and names how many time off requests will be copied", async () => {
+  it("puts cal.com back and names what will be copied in and taken out", async () => {
     retirement.load.mockResolvedValue(true);
-    putBack.load.mockResolvedValue(7);
+    putBack.load.mockResolvedValue({ copy: 7, remove: 2 });
     const url = await landing(setCalcomRetired(form({ retired: "false" })));
     expect(url).toContain("ok=calcom-live");
     expect(url).toContain("copy=7");
+    expect(url).toContain("remove=2");
     expect(url).toContain("#calcom-retirement");
     expect(putBack.load).toHaveBeenCalledTimes(1);
   });
 
   it("says the count is unknown rather than zero when it cannot be read", async () => {
     retirement.load.mockResolvedValue(true);
-    putBack.load.mockResolvedValue(null);
+    putBack.load.mockResolvedValue({ copy: null, remove: 1 });
     const url = await landing(setCalcomRetired(form({ retired: "false" })));
     expect(url).toContain("ok=calcom-live");
     expect(url).toContain("copy=unknown");
     expect(url).not.toContain("copy=0");
+    expect(url).toContain("remove=1");
   });
 
   it("does not count anything when retiring", async () => {
@@ -194,10 +198,10 @@ describe("setCalcomRetired", () => {
   // queues nothing of its own, because the recorded skip IS the queue.
   it("pressing put back twice writes the same value and queues nothing twice", async () => {
     retirement.load.mockResolvedValue(true);
-    putBack.load.mockResolvedValue(3);
+    putBack.load.mockResolvedValue({ copy: 3, remove: 1 });
     await landing(setCalcomRetired(form({ retired: "false" })));
     retirement.load.mockResolvedValue(false);
-    putBack.load.mockResolvedValue(0);
+    putBack.load.mockResolvedValue({ copy: 0, remove: 0 });
     const second = await landing(setCalcomRetired(form({ retired: "false" })));
     expect(upsert).toHaveBeenCalledTimes(2);
     expect((upsert.mock.calls[1] as unknown as [Record<string, unknown>])[0].calcom_retired).toBe(false);

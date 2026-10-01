@@ -18,6 +18,11 @@ import { log } from "@/lib/log";
  * anything twice, and the sweep writes the new outcome back as each one lands, which
  * is what takes it out of the count.
  *
+ * The other direction is a block cal.com still holds for time off cancelled or
+ * changed while it was retired. The cancellation records that window in
+ * `calcom_override_removals` (migration 0153), and the same sweep takes it out once
+ * cal.com is live, so the admin is told that count too (`loadStaleBlockCount`).
+ *
  * What lives here is the COUNT the admin is shown, before pressing and after, and
  * it has to be the sweep's own selection rather than a second definition of it
  * (L16): approved (the loader's filter), not ended, an agent who is still here, and
@@ -107,42 +112,125 @@ export async function loadPutBackBacklog(db: Db, nowMs: number): Promise<number 
   }
 }
 
+/**
+ * How many blocks cal.com still holds for time off cancelled or changed while it
+ * was retired: unresolved rows of `calcom_override_removals` whose window has not
+ * ended, which is exactly what the sweep's removal loader hands over. Null when the
+ * read failed, never 0.
+ */
+export async function loadStaleBlockCount(db: Db, nowMs: number): Promise<number | null> {
+  try {
+    const rows = await selectAllPages<{ id: string }>("calcom.staleBlockCount", (from, to) =>
+      db
+        .from("calcom_override_removals")
+        .select("id")
+        .is("resolved_at", null)
+        .gt("ends_at", new Date(nowMs).toISOString())
+        .order("id")
+        .range(from, to),
+    );
+    return rows.length;
+  } catch (err) {
+    log.error("calcom-put-back", { msg: "stale block count unreadable" }, err instanceof Error ? err : undefined);
+    return null;
+  }
+}
+
+/** What putting cal.com back has to bring into line, each half null when unreadable. */
+export interface PutBackCounts {
+  /** Approved time off made while retired, to be copied into cal.com. */
+  copy: number | null;
+  /** Blocks for time off cancelled or changed while retired, to be taken out. */
+  remove: number | null;
+}
+
+/** Both reads, side by side; one failing does not hide the other. */
+export async function loadPutBackCounts(db: Db, nowMs: number): Promise<PutBackCounts> {
+  const [copy, remove] = await Promise.all([loadPutBackBacklog(db, nowMs), loadStaleBlockCount(db, nowMs)]);
+  return { copy, remove };
+}
+
 function requests(n: number): string {
   return n === 1 ? "1 approved time off request" : `${n} approved time off requests`;
 }
 
-/** How the sweep paces the copy, said once so the two sentences cannot disagree. */
-const PACE = `the retry that runs every 5 minutes copies them, ${MAX_RETRIES_PER_TICK} at a time`;
-
-/** The sentence on the put back confirmation, before the press. */
-export function putBackConfirmSentence(n: number | null): string {
-  if (n === null) {
-    return "Time off approved while it was retired is copied into cal.com by the retry that runs every 5 minutes. How much is waiting could not be counted just now.";
-  }
-  if (n === 0) return "No time off approved while it was retired is waiting to be copied into cal.com.";
-  return `${requests(n)} made while it was retired ${n === 1 ? "has" : "have"} not ended and ${n === 1 ? "is" : "are"} copied into cal.com: ${PACE}.`;
+function blocks(n: number): string {
+  return n === 1 ? "1 block" : `${n} blocks`;
 }
 
-/** The value a put back redirect carries when the count could not be read. */
+/** How the sweep paces the work, said once so the sentences cannot disagree. */
+const PACE = `the check that runs every 5 minutes does this ${MAX_RETRIES_PER_TICK} at a time`;
+
+/**
+ * The two halves in words, or null when there is nothing to say about either. An
+ * unreadable half says so; it is never folded into the other or into a zero.
+ */
+function halves(c: PutBackCounts, tense: "will" | "waiting"): string[] {
+  const out: string[] = [];
+  if (c.copy === null) out.push("how much time off approved while it was retired is to be copied into it could not be counted");
+  else if (c.copy > 0) {
+    out.push(
+      tense === "will"
+        ? `${requests(c.copy)} made while it was retired ${c.copy === 1 ? "is" : "are"} copied into it`
+        : `${requests(c.copy)} made while it was retired ${c.copy === 1 ? "is" : "are"} waiting to be copied into it`,
+    );
+  }
+  if (c.remove === null) out.push("how many blocks for time off cancelled or changed while it was retired are to be taken out could not be counted");
+  else if (c.remove > 0) {
+    out.push(
+      tense === "will"
+        ? `${blocks(c.remove)} for time off cancelled or changed while it was retired ${c.remove === 1 ? "is" : "are"} taken out of it`
+        : `${blocks(c.remove)} for time off cancelled or changed while it was retired ${c.remove === 1 ? "is" : "are"} waiting to be taken out of it`,
+    );
+  }
+  return out;
+}
+
+function capitalise(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function describe(c: PutBackCounts, tense: "will" | "waiting"): string {
+  const parts = halves(c, tense);
+  if (parts.length === 0) {
+    return "Nothing changed in time off while it was retired needs copying into cal.com or taking out of it.";
+  }
+  const anyWork = (c.copy ?? 0) > 0 || (c.remove ?? 0) > 0;
+  const unknown = c.copy === null || c.remove === null;
+  const pace = anyWork || unknown ? ` ${capitalise(PACE)}.` : "";
+  return `${capitalise(parts.join(", and "))}.${pace}`;
+}
+
+/** The sentence on the put back confirmation, before the press. */
+export function putBackConfirmSentence(c: PutBackCounts): string {
+  return describe(c, "will");
+}
+
+/** The value a put back redirect carries for a count that could not be read. */
 export const PUT_BACK_UNKNOWN = "unknown";
 
 /** The query fragment the put back redirect appends after `savedQuery`. */
-export function putBackQuery(n: number | null): string {
-  return `&copy=${n === null ? PUT_BACK_UNKNOWN : String(n)}`;
+export function putBackQuery(c: PutBackCounts): string {
+  const v = (n: number | null) => (n === null ? PUT_BACK_UNKNOWN : String(n));
+  return `&copy=${v(c.copy)}&remove=${v(c.remove)}`;
+}
+
+/** A redirect value back into a count: a number, unknown (null), or absent. */
+function parseCount(raw: string | undefined | null): number | null | undefined {
+  if (raw === PUT_BACK_UNKNOWN) return null;
+  if (!raw || !/^\d+$/.test(raw)) return undefined;
+  return Number(raw);
 }
 
 /**
- * The saved notice after putting cal.com back, built from the `copy` value the
- * redirect carried. A value that is not a count (an old or hand edited link) claims
- * no number at all rather than a guessed one.
+ * The saved notice after putting cal.com back, built from the counts the redirect
+ * carried. A value that is not a count (an old or hand edited link) claims nothing
+ * about that half rather than a guessed number.
  */
-export function putBackSavedSentence(raw: string | undefined | null): string {
+export function putBackSavedSentence(copyRaw: string | undefined | null, removeRaw: string | undefined | null): string {
   const base = "Saved: cal.com is back. Its lanes run again from their next scheduled check.";
-  if (raw === PUT_BACK_UNKNOWN) {
-    return `${base} Could not count the time off approved while it was retired; the retry that runs every 5 minutes copies it into cal.com regardless.`;
-  }
-  if (!raw || !/^\d+$/.test(raw)) return base;
-  const n = Number(raw);
-  if (n === 0) return `${base} No time off approved while it was retired needed copying into it.`;
-  return `${base} ${requests(n)} made while it was retired ${n === 1 ? "is" : "are"} waiting to be copied into it: ${PACE}.`;
+  const copy = parseCount(copyRaw);
+  const remove = parseCount(removeRaw);
+  if (copy === undefined || remove === undefined) return base;
+  return `${base} ${describe({ copy, remove }, "waiting")}`;
 }

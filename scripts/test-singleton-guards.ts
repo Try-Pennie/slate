@@ -70,6 +70,7 @@ const SINGLETON_INVARIANTS: {
   { table: "owner_alert_events", cols: "booking_id", issue: "#2371/0126", why: "one LIVE advisor alert per booking [partial: removed_at is null]; removed rows stay as the history of who held the call" },
   { table: "regal_call_events", cols: "event_id", issue: "#2090/0137", why: "one row per Regal eventId, so a redelivered event is never recorded or counted twice" },
   { table: "regal_call_outcomes", cols: "event_id", issue: "#2944/0152", why: "one outcome per Regal eventId, so a redelivered call is never stored twice and the show rate never counts it twice" },
+  { table: "calcom_override_removals", cols: "request_id,starts_at,ends_at", issue: "#2890/0153", why: "one stale cal.com block per (request, window), so recording it twice is one row and putting cal.com back takes it out once" },
   { table: "regal_call_ignores", cols: "user_id", issue: "#2090/0138", why: "one ignore list entry per person (the primary key), so a second add is refused rather than replacing the reason somebody wrote" },
 ];
 
