@@ -74,8 +74,11 @@ function tierLinesNow(input: { rampEndOn: string | null; learning: unknown }) {
  * every real booking in the alarm's lookback carried its source. Through the same
  * measurement the readiness gate reads; a failed read is its own sentence, never a
  * lookback with nothing unsourced, which is the answer that would show the floors.
+ *
+ * #2960: and, beside the floors, how many hand made bookings with no host page were
+ * set aside, or null when none were. An unrecorded status already carries it.
  */
-async function pageSourceNoticeNow(): Promise<string | null> {
+async function pageSourceNoticeNow(): Promise<{ notice: string | null; setAside: string | null }> {
   let measured: PageSourceMeasure | null = null;
   try {
     measured = await measurePageSources(supabaseAdmin(), Date.now());
@@ -83,7 +86,7 @@ async function pageSourceNoticeNow(): Promise<string | null> {
     log.error("admin-alerts", { msg: "page sources unreadable" }, err instanceof Error ? err : undefined);
   }
   const status = pageSourceStatus(measured);
-  return status.state === "recorded" ? null : status.text;
+  return status.state === "recorded" ? { notice: null, setAside: status.note } : { notice: status.text, setAside: null };
 }
 
 /** The two outcomes the learning section confirms in place rather than at the top. */
@@ -224,7 +227,7 @@ export default async function AlertSettingsPage({
       })
     : null;
   // #2765: said in place of that coverage until every booking carries its page.
-  const sourceNotice = await pageSourceNoticeNow();
+  const { notice: sourceNotice, setAside: sourceSetAside } = await pageSourceNoticeNow();
 
   const storedByKey = new Map(rows.map((r) => [r.key, r.cooldown_min]));
   // #1289: every alarm currently quieter than its coded default. Read through the
@@ -689,6 +692,7 @@ export default async function AlertSettingsPage({
           tiers={tierLines}
           coverage={coverage}
           sourceNotice={sourceNotice}
+          sourceSetAside={sourceSetAside}
           heldOff={pagesNotOnSlateLines()}
           notice={learningNotice}
           action={setVolumeRampEnd}

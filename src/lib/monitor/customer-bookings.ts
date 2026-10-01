@@ -3,12 +3,15 @@ import { log } from "@/lib/log";
 import { parseStampMs } from "@/lib/date/stamp";
 import type { BookingSource } from "@/lib/booking/booking-source";
 import {
+  isHostlessUnsourced,
+  isUnsourced,
   LOW_PAGES_ON_SLATE,
   PAGE_SEEN_LOOKBACK_DAYS,
   pageTrafficFilter,
   UNSOURCED_VALUES,
   type PageSourceMeasure,
 } from "@/lib/monitor/page-volume";
+import { isHostlessBooking } from "@/lib/monitor/offsite-origin";
 import { LOW_TIER, VOLUME_TIERS, recordOfTiers, tierCodePattern, type VolumeTier } from "@/lib/monitor/volume-tiers";
 
 /**
@@ -17,6 +20,26 @@ import { LOW_TIER, VOLUME_TIERS, recordOfTiers, tierCodePattern, type VolumeTier
  * (#2874). One string, so the reads cannot select different columns of it.
  */
 const BUCKET_EMBED = "buckets!inner(is_test, code)";
+
+/**
+ * The two recorded host page facts (#2728), selected without the rest of `prefill`,
+ * which carries the lead's contact: only `parentOrigin` is read out of it (#2960).
+ */
+const ORIGIN_COLUMNS = "referrer_origin, parent_origin:prefill->>parentOrigin";
+
+/** The origin columns as a row carries them. */
+interface OriginRow {
+  referrer_origin: string | null;
+  parent_origin: string | null;
+}
+
+/** Whether a row recorded no host page, through the one predicate (#2960). */
+function rowIsHostless(r: OriginRow): boolean {
+  return isHostlessBooking({
+    prefill: r.parent_origin == null ? null : { parentOrigin: r.parent_origin },
+    referrer_origin: r.referrer_origin,
+  });
+}
 
 /**
  * Customer bookings created since `sinceIso`, for the low-volume alarm (#370).
@@ -94,10 +117,10 @@ export async function listCustomerBookingSourcesSince(
   db: ReturnType<typeof supabaseAdmin>,
   sinceIso: string,
   tier: VolumeTier,
-): Promise<{ createdMs: number; source: string | null }[]> {
+): Promise<{ createdMs: number; source: string | null; hostless: boolean }[]> {
   const { data, error } = await db
     .from("bookings")
-    .select(`created_at, source, ${BUCKET_EMBED}`)
+    .select(`created_at, source, ${ORIGIN_COLUMNS}, ${BUCKET_EMBED}`)
     .eq("buckets.is_test", false)
     // #2073: routed bookings only, as the count above.
     .eq("kind", "routed")
@@ -108,14 +131,14 @@ export async function listCustomerBookingSourcesSince(
     log.error("monitor", { msg: "page volume read failed", since: sinceIso }, error);
     throw new Error("page volume: could not read the bookings list");
   }
-  const rows = (data ?? []) as { created_at: string; source: string | null }[];
+  const rows = (data ?? []) as ({ created_at: string; source: string | null } & OriginRow)[];
   if (rows.length >= SOURCE_READ_LIMIT) {
     throw new Error(`page volume: the bookings list came back truncated at ${SOURCE_READ_LIMIT} rows`);
   }
   return rows.map((r) => {
     const createdMs = parseStampMs(r.created_at);
     if (createdMs === null) throw new Error("page volume: a booking's created_at is unreadable");
-    return { createdMs, source: r.source };
+    return { createdMs, source: r.source, hostless: rowIsHostless(r) };
   });
 }
 
@@ -213,23 +236,41 @@ export async function measurePageSources(
   // #2876: page traffic only, the same count the tier alarm reads, so a lookback
   // holding only booking API calls reads as no page traffic rather than as every
   // booking having carried a source.
-  const realBookings = await countCustomerBookingsSince(db, sinceIso, LOW_TIER);
-  if (realBookings === null) throw new Error("page sources: the real booking count could not be read");
-  // cap-safe: head-only exact count, no rows. A null source is a booking from before #2072.
-  const { count: unsourced, error } = await db
+  const pageTraffic = await countCustomerBookingsSince(db, sinceIso, LOW_TIER);
+  if (pageTraffic === null) throw new Error("page sources: the real booking count could not be read");
+  // The bookings that recorded no page, as ROWS rather than a count (#2960): whether
+  // each one had a host page decides whether it counts, and that is judged in code by
+  // the same predicates the per page step uses, never by a second filter here (L16).
+  // A null source is a booking from before #2072.
+  const { data, error } = await db
     .from("bookings")
-    .select(`id, ${BUCKET_EMBED}`, { count: "exact", head: true })
+    .select(`source, ${ORIGIN_COLUMNS}, ${BUCKET_EMBED}`)
     .eq("buckets.is_test", false)
     // #2073: routed bookings only. An agent's own link carries no page source, so
     // counting its bookings would read as landing pages dropping theirs.
     .eq("kind", "routed")
     .like("buckets.code", tierCodePattern(LOW_TIER))
     .or(["source.is.null", ...UNSOURCED_VALUES.map((v) => `source.eq.${v}`)].join(","))
-    .gte("created_at", sinceIso);
-  if (error || unsourced === null) {
-    log.error("monitor", { msg: "unsourced booking count failed", since: sinceIso }, error ?? undefined);
-    throw new Error("page sources: the unsourced count could not be read");
+    .gte("created_at", sinceIso)
+    .limit(SOURCE_READ_LIMIT);
+  if (error) {
+    log.error("monitor", { msg: "unsourced booking read failed", since: sinceIso }, error);
+    throw new Error("page sources: the unsourced bookings could not be read");
   }
+  const noPage = ((data ?? []) as ({ source: string | null } & OriginRow)[]).map((r) => ({
+    source: r.source,
+    hostless: rowIsHostless(r),
+  }));
+  // A short list would undercount the unsourced, which is the answer that shows the
+  // floors as coverage, so a full page refuses rather than answers.
+  if (noPage.length >= SOURCE_READ_LIMIT) {
+    throw new Error(`page sources: the unsourced bookings came back truncated at ${SOURCE_READ_LIMIT} rows`);
+  }
+  const unsourced = noPage.filter(isUnsourced).length;
+  const hostless = noPage.filter(isHostlessUnsourced).length;
+  // The count the share is quoted against leaves the set aside bookings out, as the
+  // per page step's total does: they could not have been any page's.
+  const realBookings = pageTraffic - hostless;
   const pages: PageSourceMeasure["pages"] = [];
   for (const page of LOW_PAGES_ON_SLATE) {
     pages.push({
@@ -238,5 +279,5 @@ export async function measurePageSources(
       recorded: await customerBookingFromSourcesSince(db, page.sources, sinceIso, LOW_TIER),
     });
   }
-  return { lookbackDays: PAGE_SEEN_LOOKBACK_DAYS, realBookings, unsourced, pages };
+  return { lookbackDays: PAGE_SEEN_LOOKBACK_DAYS, realBookings, unsourced, hostless, pages };
 }

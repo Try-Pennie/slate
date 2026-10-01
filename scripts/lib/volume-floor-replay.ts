@@ -128,7 +128,7 @@ export async function replayPageVolume(opts: {
             const at = s.startMs + i * per;
             if (at >= tick) break;
             if (at < since) continue;
-            for (let k = 0; k < s.counts[i]!; k++) rows.push({ createdMs: at, source: page.sources[0]! });
+            for (let k = 0; k < s.counts[i]!; k++) rows.push({ createdMs: at, source: page.sources[0]!, hostless: false });
           }
         }
         return rows;

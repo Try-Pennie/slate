@@ -30,6 +30,7 @@ function renderIt(over: Partial<Parameters<typeof VolumeLearning>[0]> = {}) {
       tiers={TIERS}
       coverage={coverage}
       sourceNotice={null}
+      sourceSetAside={null}
       heldOff={HELD_OFF}
       action={action}
       earliest="2026-09-25"

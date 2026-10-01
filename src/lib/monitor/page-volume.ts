@@ -173,6 +173,12 @@ export interface PageSourceMeasure {
   realBookings: number;
   /** Of those, how many recorded no page (`isUnsourced`). */
   unsourced: number;
+  /**
+   * Routed Low bookings in the lookback that recorded no source AND no host page
+   * (`isHostlessUnsourced`, #2960): made by hand on the standalone booker, so in
+   * neither `realBookings` nor `unsourced`, and said on their own line instead.
+   */
+  hostless: number;
   /** Whether each Low page Slate carries (#2878) recorded at least one booking carrying one of its sources. */
   pages: { id: LowPageId; name: string; recorded: boolean }[];
 }
@@ -183,8 +189,11 @@ export type PageSourceStatus =
   | { state: "unmeasured"; text: string }
   /** Some bookings recorded no page, so the pages cannot all be told apart. */
   | { state: "unrecorded"; unsourced: number; total: number; text: string }
-  /** Every real booking in the lookback carried a source. */
-  | { state: "recorded"; total: number };
+  /**
+   * Every real booking in the lookback carried a source. `note` says how many hand
+   * made bookings were set aside (#2960), or is null when there were none.
+   */
+  | { state: "recorded"; total: number; note: string | null };
 
 /**
  * What a surface that shows the per page floors says in their place until the
@@ -193,6 +202,8 @@ export type PageSourceStatus =
  * cannot attribute is not one, and a lookback holding no bookings measured nothing.
  */
 export function pageSourceStatus(m: PageSourceMeasure | null): PageSourceStatus {
+  const note = m === null ? null : hostlessNotCounted(m.hostless, `${m.lookbackDays} days`);
+  const withNote = (text: string) => (note ? `${text} ${note}` : text);
   if (m === null) {
     return {
       state: "unreadable",
@@ -202,9 +213,10 @@ export function pageSourceStatus(m: PageSourceMeasure | null): PageSourceStatus 
   if (m.realBookings === 0) {
     return {
       state: "unmeasured",
-      text:
+      text: withNote(
         `No real booking in the last ${m.lookbackDays} days, so whether each page's links carry ?source= is not ` +
-        `measured yet, and no page's own floors can be judged.`,
+          `measured yet, and no page's own floors can be judged.`,
+      ),
     };
   }
   if (!bookingSourcesRecorded(m)) {
@@ -213,19 +225,34 @@ export function pageSourceStatus(m: PageSourceMeasure | null): PageSourceStatus 
       state: "unrecorded",
       unsourced: m.unsourced,
       total: m.realBookings,
-      text:
+      text: withNote(
         `${sourceNotRecorded(m.unsourced, m.realBookings, `${m.lookbackDays} days`)}, so a page whose missing ` +
-        `bookings could be among them is held rather than paged.` +
-        (silent.length ? ` No booking carried the source of: ${silent.join(", ")}.` : ""),
+          `bookings could be among them is held rather than paged.` +
+          (silent.length ? ` No booking carried the source of: ${silent.join(", ")}.` : ""),
+      ),
     };
   }
-  return { state: "recorded", total: m.realBookings };
+  return { state: "recorded", total: m.realBookings, note };
 }
 
 /** A booking as the per page check needs it: when, and from where. */
 export interface SourceRow {
   createdMs: number;
   source: string | null;
+  /**
+   * Whether the booking recorded NO host page at all (#2960), judged by
+   * `isHostlessBooking` (offsite-origin.ts) off its recorded origins. Required, so
+   * every reader that builds a row has to decide it.
+   */
+  hostless: boolean;
+}
+
+/** The two facts the source share is judged on, as every reader carries them. */
+export type SourceFacts = Pick<SourceRow, "source" | "hostless">;
+
+/** Whether the source column itself records no page: `not-given`, or null before #2072. */
+function recordsNoPage(source: string | null): boolean {
+  return source === null || source === SOURCE_NOT_GIVEN;
 }
 
 /**
@@ -238,8 +265,33 @@ export interface SourceRow {
  * One predicate, used by the per page alarm on every tick and by the readiness
  * measurement (`measurePageSources`), so the two never count differently (L16).
  */
-export function isUnsourced(source: string | null): boolean {
-  return source === null || source === SOURCE_NOT_GIVEN;
+export function isUnsourced(b: SourceFacts): boolean {
+  return recordsNoPage(b.source) && !b.hostless;
+}
+
+/**
+ * A booking with no source made with NO host page recorded (#2960, decided by Dan
+ * 2026-10-01): typed by hand on the standalone booker, an admin booking, never a
+ * landing page's. It does not count toward the unsourced share that holds a page,
+ * nor toward the total that share is quoted against, because it could not have been
+ * any page's missing booking. It is still counted, on its own line
+ * (`hostlessNotCounted`), so a page that dropped its embed AND its source shows.
+ * A hostless booking that DID name a page is that page's, and stays so.
+ */
+export function isHostlessUnsourced(b: SourceFacts): boolean {
+  return recordsNoPage(b.source) && b.hostless;
+}
+
+/**
+ * "4 bookings in the last 7 days were made with no host page ...": the one line
+ * every surface uses for the bookings `isHostlessUnsourced` sets aside, or null
+ * when there were none.
+ */
+export function hostlessNotCounted(n: number, span: string): string | null {
+  if (n === 0) return null;
+  return n === 1
+    ? `1 booking in the last ${span} was made with no host page and carried no source, so it is not counted toward that share.`
+    : `${n} bookings in the last ${span} were made with no host page and carried no source, so they are not counted toward that share.`;
 }
 
 /**
@@ -338,8 +390,11 @@ export type PageVolumeResult =
       status: "checked";
       armed: boolean;
       pages: PageVerdict[];
-      /** Of the bookings read for the long window, how many recorded no page (#2765). */
-      sources: { unsourced: number; total: number };
+      /**
+   * Of the bookings read for the long window, how many recorded no page (#2765),
+   * and how many were set aside as made with no host page (#2960).
+   */
+      sources: { unsourced: number; total: number; hostless: number };
     };
 
 /**
@@ -392,12 +447,14 @@ export async function runPageVolumeCheck(deps: {
     : [];
 
   const inWindow = (r: SourceRow, ms: number) => r.createdMs >= deps.nowMs - ms && r.createdMs < deps.nowMs;
-  const unsourcedIn = (ms: number) => rows.filter((r) => isUnsourced(r.source) && inWindow(r, ms)).length;
+  const unsourcedIn = (ms: number) => rows.filter((r) => isUnsourced(r) && inWindow(r, ms)).length;
   // #2876: the share is quoted against what the pages could have sent, so a booking
-  // API call (which names its caller, never a page) is not in the total.
+  // API call (which names its caller, never a page) is not in the total, and #2960:
+  // nor is a booking made by hand with no host page and no source.
   const sources = {
     unsourced: unsourcedIn(longMs),
-    total: rows.filter((r) => isPageTraffic(r.source) && inWindow(r, longMs)).length,
+    total: rows.filter((r) => isPageTraffic(r.source) && !isHostlessUnsourced(r) && inWindow(r, longMs)).length,
+    hostless: rows.filter((r) => isHostlessUnsourced(r) && inWindow(r, longMs)).length,
   };
 
   // The untagged bookings left to excuse short pages with, spent as pages are excused.
@@ -440,7 +497,8 @@ export async function runPageVolumeCheck(deps: {
         verdict: "source-unrecorded",
         windows,
         breaches,
-        ...sources,
+        unsourced: sources.unsourced,
+        total: sources.total,
         text: formatPageSourceUnrecorded(page, sources.unsourced, sources.total),
       });
       continue;
@@ -470,6 +528,7 @@ export async function runPageVolumeCheck(deps: {
     armed: deps.armed,
     tier_low: deps.tierLow,
     unsourced: sources.unsourced,
+    hostless: sources.hostless,
     read: sources.total,
     pages: pages
       .map((p) =>
