@@ -103,7 +103,6 @@ const PREVIEW_CROSS_SYSTEM_CAL: CalcomUpcomingBooking = {
 };
 const PREVIEW_CROSS_SYSTEM_URL = `https://slate.trypennie.app/admin/bookings/${PREVIEW_CROSS_SYSTEM_SLATE.id}`;
 
-/** The one pair the real judge finds in these inputs; throws if it finds anything else. */
 /** A convergence result with only the named counts set, for the #2459 preview. */
 function previewConvergence(over: Partial<SessionConvergenceResult>): SessionConvergenceResult {
   return {
@@ -112,6 +111,7 @@ function previewConvergence(over: Partial<SessionConvergenceResult>): SessionCon
   };
 }
 
+/** The one pair the real judge finds in these inputs; throws if it finds anything else. */
 function previewCrossSystemPair(slate: SlateUpcomingBooking, cal: CalcomUpcomingBooking): CrossSystemPair {
   const pairs = findCrossSystemBookings([slate], [cal], PREVIEW_CROSS_SYSTEM_NOW);
   if (pairs.length !== 1) throw new Error(`cross system preview: the judge found ${pairs.length} pairs, not 1`);
