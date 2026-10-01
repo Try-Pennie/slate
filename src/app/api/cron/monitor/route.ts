@@ -2217,9 +2217,9 @@ export async function GET(req: NextRequest) {
     }
 
     // --- Call outcomes (#2944): is a regal_call_outcomes row being written for each
-    // completed call Regal posts? The show rate in the Slate vs cal.com split is
-    // computed from that table, which fills in silence. Completed calls received
-    // come from the detector's per reason counts (a different writer from the one
+    // completed advisor call Regal posts? The show rate in the Slate vs cal.com split
+    // is computed from that table, which fills in silence. Advisor calls received
+    // (human reasons only, #2950) come from the detector's per reason counts (a different writer from the one
     // judged), outcome rows from a server side count, both over the last two hours.
     // Under 80% on two consecutive checks pages; only a measured healthy ratio
     // clears; a window with no calls decides nothing. Same Regal arming switch. ---

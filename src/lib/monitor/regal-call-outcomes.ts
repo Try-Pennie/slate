@@ -10,7 +10,7 @@
  * that quietly stopped filling would report a show rate about whichever calls
  * happened to land, which is worse than reporting nothing.
  *
- * So this compares OUTCOME ROWS WRITTEN against COMPLETED CALLS RECEIVED over the
+ * So this compares HUMAN OUTCOME ROWS WRITTEN against COMPLETED ADVISOR CALLS RECEIVED over the
  * last two hours. The received count comes from the detector's per reason counts
  * (the same RPC the feed checks read), which is a DIFFERENT writer from the one
  * being judged, so a broken outcome write cannot also silence its own measurement
@@ -57,11 +57,11 @@ export const REGAL_OUTCOME_WINDOW_MS = 2 * 60 * 60_000;
  */
 export const REGAL_OUTCOME_EMPTY_WINDOW_MS = 15 * 60_000;
 
-/** At or above this share of completed calls with an outcome row is healthy. */
+/** At or above this share of completed advisor calls with an outcome row is healthy. */
 export const REGAL_OUTCOME_MIN_RATIO = 0.8;
 
 /**
- * Fewer completed calls than this in the window is too few to judge a rate on.
+ * Fewer completed advisor calls than this in the window is too few to judge a rate on.
  * A working day brings several hundred an hour (about 6,000 a weekday), so this
  * only ever bites at the edges of the day, where one refused call among a few
  * would otherwise page about nothing.
