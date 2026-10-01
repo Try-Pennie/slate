@@ -1,0 +1,312 @@
+// Putting cal.com back (#2890). Run:
+//   node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-calcom-put-back.ts
+//
+// While cal.com is retired every approved absence records "skipped: cal.com
+// retired" instead of being written. Pressing "Put cal.com back" has to say how
+// many of those the sweep will now copy, on the confirmation and on the saved
+// notice, and the count has to be the SAME selection the sweep retries: approved,
+// not ended, an agent who is still here, and that exact skip (L16).
+import {
+  PUT_BACK_UNKNOWN,
+  loadPutBackBacklog,
+  loadStaleBlockCount,
+  putBackBacklog,
+  putBackConfirmSentence,
+  putBackQuery,
+  putBackSavedSentence,
+  type PutBackRow,
+} from "../src/lib/calcom/put-back.ts";
+import { OUTCOME_CALCOM_RETIRED } from "../src/lib/calcom/outcomes.ts";
+import { MAX_RETRIES_PER_TICK, selectCandidates, toCandidates } from "../src/lib/monitor/calcom-override-sweep.ts";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { OUTCOME_PARAMS } from "../src/lib/admin/save-outcomes.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
+
+const NOW = Date.parse("2026-10-01T15:00:00Z");
+const day = 86_400_000;
+const at = (ms: number) => new Date(ms).toISOString();
+
+const row = (over: Partial<PutBackRow> = {}): PutBackRow => ({
+  id: "r",
+  userId: "u-active",
+  startsAt: at(NOW + 2 * day),
+  endsAt: at(NOW + 3 * day),
+  effect: OUTCOME_CALCOM_RETIRED,
+  ...over,
+});
+const active = new Set(["u-active"]);
+
+// --- which rows count --------------------------------------------------------
+{
+  const rows: PutBackRow[] = [
+    row({ id: "future" }),
+    row({ id: "under-way", startsAt: at(NOW - day), endsAt: at(NOW + day) }),
+    row({ id: "ended", startsAt: at(NOW - 3 * day), endsAt: at(NOW - day) }),
+    row({ id: "departed", userId: "u-gone" }),
+    row({ id: "written", effect: "ok" }),
+    row({ id: "failed", effect: "failed: schedule patch returned 500" }),
+    row({ id: "no-account", effect: "skipped: not in cal.com (a@b.com)" }),
+  ];
+  eq(
+    putBackBacklog(rows, active, NOW),
+    2,
+    "counts only retired skips that have not ended, for agents still here",
+  );
+  eq(putBackBacklog([], active, NOW), 0, "nothing waiting is a measured zero");
+  // An unreadable end is counted rather than dropped: the sweep's own loader judges
+  // "not ended" in SQL and would hand the row over, so the count must not be lower.
+  eq(
+    putBackBacklog([row({ endsAt: "not a date" })], active, NOW),
+    1,
+    "an unreadable end is counted, the fail-safe side",
+  );
+
+  // The count is the sweep's selection, not a second definition of it (L16): the
+  // rows it counts are exactly the retired skips the sweep would retry.
+  const counted = rows.filter((r) => r.effect === OUTCOME_CALCOM_RETIRED);
+  const swept = selectCandidates(
+    toCandidates(
+      rows.filter((r) => Date.parse(r.endsAt) > NOW),
+      new Map([["u-active", "a@trypennie.com"]]),
+    ),
+    NOW,
+  ).filter((c) => c.effect === OUTCOME_CALCOM_RETIRED);
+  eq(swept.length, putBackBacklog(counted, active, NOW), "the count equals what the sweep retries");
+}
+
+// --- the confirmation, before the press ----------------------------------------
+{
+  const none = putBackConfirmSentence({ copy: 0, remove: 0 });
+  const copyOne = putBackConfirmSentence({ copy: 1, remove: 0 });
+  const both = putBackConfirmSentence({ copy: 12, remove: 3 });
+  const removeOnly = putBackConfirmSentence({ copy: 0, remove: 1 });
+  const unknown = putBackConfirmSentence({ copy: null, remove: null });
+  const halfUnknown = putBackConfirmSentence({ copy: 2, remove: null });
+  assert(/^nothing/i.test(none) && !/\d/.test(none), `zero says nothing needs doing: ${none}`);
+  assert(/\b1 approved time off request\b/.test(copyOne) && !/requests/.test(copyOne), `one is singular: ${copyOne}`);
+  assert(!/block/.test(copyOne), `a zero half is not mentioned: ${copyOne}`);
+  assert(/\b12 approved time off requests\b/.test(both) && /\b3 blocks\b/.test(both), `both halves are named: ${both}`);
+  assert(both.includes(String(MAX_RETRIES_PER_TICK)), `the pace is said: ${both}`);
+  assert(/\b1 block\b/.test(removeOnly) && /taken out/.test(removeOnly), `a removal alone is named: ${removeOnly}`);
+  assert(
+    /could not be counted/.test(unknown) && !/\d+ (approved|block)/.test(unknown),
+    `unknown invents no number: ${unknown}`,
+  );
+  assert(
+    /\b2 approved time off requests\b/.test(halfUnknown) && /could not be counted/.test(halfUnknown),
+    `one half unreadable keeps the other: ${halfUnknown}`,
+  );
+}
+
+// --- the saved notice, after the press -----------------------------------------
+{
+  eq(putBackQuery({ copy: 3, remove: 1 }), "&copy=3&remove=1", "both counts travel on the redirect");
+  eq(
+    putBackQuery({ copy: null, remove: 0 }),
+    `&copy=${PUT_BACK_UNKNOWN}&remove=0`,
+    "an unreadable count travels as unknown, never as zero",
+  );
+
+  const base = /cal\.com is back/i;
+  const three = putBackSavedSentence("3", "1");
+  assert(
+    base.test(three) && /\b3 approved time off requests\b/.test(three) && /\b1 block\b/.test(three),
+    `names both counts: ${three}`,
+  );
+  const zero = putBackSavedSentence("0", "0");
+  assert(base.test(zero) && /nothing/i.test(zero), `zero says nothing needed doing: ${zero}`);
+  const unknown = putBackSavedSentence(PUT_BACK_UNKNOWN, "2");
+  assert(base.test(unknown) && /could not be counted/.test(unknown) && /\b2 blocks\b/.test(unknown), `unknown says so: ${unknown}`);
+  // A value that is not a count (a hand edited or truncated link) claims no number.
+  for (const [c, r] of [[undefined, undefined], ["", "0"], ["abc", "1"], ["-1", "1"], ["1.5", "2"], ["1", undefined]] as const) {
+    const s = putBackSavedSentence(c, r);
+    assert(base.test(s) && !/\d+ (approved|block)/.test(s), `"${String(c)}"/"${String(r)}" claims no count: ${s}`);
+  }
+}
+
+// --- the stale block count: unresolved windows that have not ended ----------------
+{
+  const asked: string[] = [];
+  const fake = (res: { data: unknown[] | null; error: { message: string } | null }) =>
+    ({
+      from: (table: string) => {
+        const self: Record<string, unknown> = {};
+        for (const m of ["select", "is", "gt", "order"]) {
+          self[m] = (...a: unknown[]) => {
+            asked.push(`${table}.${m}(${a.map(String).join(",")})`);
+            return self;
+          };
+        }
+        self.range = (from: number) => Promise.resolve(from === 0 ? res : { data: [], error: null });
+        return self;
+      },
+    }) as unknown as Parameters<typeof loadStaleBlockCount>[0];
+  eq(
+    await loadStaleBlockCount(fake({ data: [{ id: "a" }, { id: "b" }], error: null }), NOW),
+    2,
+    "stale count: each unresolved window counts",
+  );
+  assert(asked.includes("calcom_override_removals.is(resolved_at,null)"), "stale count: resolved windows are excluded");
+  assert(asked.includes(`calcom_override_removals.gt(ends_at,${at(NOW)})`), "stale count: ended windows are excluded");
+  eq(
+    await loadStaleBlockCount(fake({ data: null, error: { message: "relation does not exist" } }), NOW),
+    null,
+    "stale count: a refused read (a deploy ahead of migration 0153) is unknown, not zero",
+  );
+}
+
+// --- the loader: both reads, and each way it can fail -----------------------------
+type Res = { data: unknown[] | null; error: { message: string } | null };
+function fakeDb(opts: { requests: Res | "throw"; users?: Res; seen?: { filters: string[]; usersAsked: number } }) {
+  const seen = opts.seen ?? { filters: [] as string[], usersAsked: 0 };
+  const chain = (table: string) => {
+    const self: Record<string, unknown> = {};
+    const record = (name: string) => (...args: unknown[]) => {
+      seen.filters.push(`${table}.${name}(${args.map(String).join(",")})`);
+      return self;
+    };
+    for (const m of ["select", "eq", "gt", "order", "in"]) self[m] = record(m);
+    self.range = (from: number) => {
+      if (opts.requests === "throw") throw new Error("connection reset");
+      // One page, then an empty one: the paginator stops on a short page.
+      return Promise.resolve(from === 0 ? opts.requests : { data: [], error: null });
+    };
+    self.is = () => {
+      seen.usersAsked++;
+      return Promise.resolve(opts.users ?? { data: [], error: null });
+    };
+    return self;
+  };
+  return { from: (t: string) => chain(t) } as unknown as Parameters<typeof loadPutBackBacklog>[0];
+}
+const raw = (id: string, userId: string, effect: string, endMs = NOW + 3 * day) => ({
+  id,
+  user_id: userId,
+  starts_at: at(NOW + day),
+  ends_at: at(endMs),
+  side_effects: { calcom: effect, busy_block: "ok" },
+});
+{
+  const seen = { filters: [] as string[], usersAsked: 0 };
+  const n = await loadPutBackBacklog(
+    fakeDb({
+      seen,
+      requests: {
+        data: [
+          raw("a", "u1", OUTCOME_CALCOM_RETIRED),
+          raw("b", "u2", OUTCOME_CALCOM_RETIRED),
+          raw("c", "u1", "ok"),
+          raw("d", "u3", OUTCOME_CALCOM_RETIRED),
+        ],
+        error: null,
+      },
+      users: { data: [{ id: "u1" }, { id: "u3" }], error: null },
+    }),
+    NOW,
+  );
+  eq(n, 2, "loader: counts the retired skips of agents still here");
+  assert(seen.filters.includes("ooo_requests.eq(status,approved)"), "loader: only approved requests are read");
+  assert(
+    seen.filters.includes(`ooo_requests.gt(ends_at,${at(NOW)})`),
+    "loader: only requests that have not ended are read",
+  );
+  assert(
+    seen.filters.some((f) => f.startsWith("users.in(id,") && !f.includes("u2,u2")),
+    "loader: the agents are read by id",
+  );
+}
+{
+  const seen = { filters: [] as string[], usersAsked: 0 };
+  const n = await loadPutBackBacklog(
+    fakeDb({ seen, requests: { data: [raw("c", "u1", "ok")], error: null } }),
+    NOW,
+  );
+  eq(n, 0, "loader: nothing retired is a measured zero");
+  eq(seen.usersAsked, 0, "loader: no agent read when nothing is waiting");
+}
+// Failure paths: each answers null, never 0, because a zero tells the admin there is
+// nothing to copy, which a failed read has not measured (L622).
+eq(
+  await loadPutBackBacklog(fakeDb({ requests: { data: null, error: { message: "permission denied" } } }), NOW),
+  null,
+  "loader: a refused request read is unknown, not zero",
+);
+eq(await loadPutBackBacklog(fakeDb({ requests: "throw" }), NOW), null, "loader: a thrown read is unknown, not zero");
+eq(
+  await loadPutBackBacklog(
+    fakeDb({
+      requests: { data: [raw("a", "u1", OUTCOME_CALCOM_RETIRED)], error: null },
+      users: { data: null, error: { message: "timeout" } },
+    }),
+    NOW,
+  ),
+  null,
+  "loader: a refused agent read is unknown, not zero",
+);
+
+// The agent read is chunked by URL budget: PostgREST refuses an in() filter of a few
+// hundred uuids, so 400 waiting agents must arrive as several reads, every one of
+// them counted.
+{
+  const ids = Array.from({ length: 400 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`);
+  const chunkSizes: number[] = [];
+  const db = {
+    from: (table: string) => {
+      let asked: string[] = [];
+      const self: Record<string, unknown> = {};
+      for (const m of ["select", "eq", "gt", "order"]) self[m] = () => self;
+      self.range = (from: number) =>
+        Promise.resolve(
+          from === 0
+            ? { data: ids.map((u, i) => raw(`r${i}`, u, OUTCOME_CALCOM_RETIRED)), error: null }
+            : { data: [], error: null },
+        );
+      self.in = (_col: string, chunk: string[]) => {
+        asked = chunk;
+        chunkSizes.push(chunk.length);
+        return self;
+      };
+      self.is = () => Promise.resolve({ data: asked.map((id) => ({ id })), error: null });
+      void table;
+      return self;
+    },
+  } as unknown as Parameters<typeof loadPutBackBacklog>[0];
+  const n = await loadPutBackBacklog(db, NOW);
+  eq(n, 400, "loader: 400 waiting agents are all counted");
+  assert(chunkSizes.length > 1, `loader: the agent read is split (${chunkSizes.join(", ")})`);
+  assert(chunkSizes.every((c) => c < 400), "loader: no single read carries every id");
+  eq(chunkSizes.reduce((a, b) => a + b, 0), 400, "loader: every agent is asked about exactly once");
+}
+
+// --- the redirect's counts are stripped with the rest of the outcome ---------------
+// A reload or a copied link must not replay a count under a Saved banner, so every
+// parameter the put back redirect appends is one the notice strips (OUTCOME_PARAMS).
+{
+  const params = [...new URLSearchParams(putBackQuery({ copy: 1, remove: 2 }).replace(/^&/, "")).keys()];
+  assert(params.length === 2, `the redirect carries its two counts (${params.join(", ")})`);
+  for (const p of params) {
+    assert((OUTCOME_PARAMS as readonly string[]).includes(p), `"${p}" is stripped from the address bar with the outcome`);
+  }
+}
+
+// --- the client component reaches only the pure copy -------------------------------
+// CalcomRetirementSwitch is "use client". Importing the loaders' module would put the
+// Supabase reads, the logger and the sweep into the client bundle for one sentence
+// (L730), so the copy lives in a module that imports nothing server side.
+{
+  const read = (f: string) => readFileSync(join(process.cwd(), f), "utf8");
+  const importsOf = (src: string) => [...src.matchAll(/^import[^;]*?from\s+["']([^"']+)["']/gms)].map((m) => m[1]);
+  const sw = importsOf(read("src/components/admin/CalcomRetirementSwitch.tsx"));
+  assert(!sw.includes("@/lib/calcom/put-back"), "the client switch does not import the loaders' module");
+  assert(sw.includes("@/lib/calcom/put-back-copy"), "the client switch imports the pure copy module");
+  const copyImports = importsOf(read("src/lib/calcom/put-back-copy.ts"));
+  const allowed = ["@/lib/monitor/override-sweep-limits"];
+  assert(
+    copyImports.every((m) => allowed.includes(m)),
+    `the copy module imports nothing server side (${copyImports.join(", ") || "nothing"})`,
+  );
+  eq(importsOf(read("src/lib/monitor/override-sweep-limits.ts")).length, 0, "the limits module imports nothing");
+}
+
+finish();

@@ -287,6 +287,8 @@ import { runThinTierStaffingCheck } from "@/lib/monitor/thin-tier";
 import {
   agentEmailForRetry,
   runCalcomOverrideSweep,
+  isRemovalResolved,
+  type RemovalCandidate,
   toCandidates,
   type OverrideCandidate,
 } from "@/lib/monitor/calcom-override-sweep";
@@ -641,6 +643,91 @@ async function retryOverrideForRequest(
     // The override may well have landed; what failed is recording it. Say so,
     // rather than reporting the cal.com outcome as if it were persisted.
     log.error("calcom-sweep", { msg: "outcome write failed", request_id: requestId }, writeErr);
+    return "failed: outcome not recorded";
+  }
+  return outcome;
+}
+
+/**
+ * Ceiling on stale cal.com blocks the sweep reads per tick (#2890). A row limit
+ * like `OVERRIDE_CANDIDATE_ROWS`; the per tick cap on writes is what bounds the cost.
+ */
+const STALE_REMOVAL_ROWS = 200;
+
+/**
+ * The blocks left in cal.com when time off was cancelled or changed while cal.com
+ * was retired (#2890), unresolved and not ended, or null when the read failed (which
+ * the sweep reports as unmeasured rather than as none). Oldest window first, so the
+ * nearest days are freed first.
+ */
+async function loadStaleCalcomRemovals(
+  db: ReturnType<typeof supabaseAdmin>,
+  nowMs: number,
+): Promise<RemovalCandidate[] | null> {
+  const { data, error } = await db
+    .from("calcom_override_removals")
+    .select("id, starts_at, ends_at")
+    .is("resolved_at", null)
+    .gt("ends_at", new Date(nowMs).toISOString())
+    .order("starts_at")
+    .limit(STALE_REMOVAL_ROWS);
+  if (error) {
+    log.error("calcom-sweep", { msg: "stale block read failed" }, error);
+    return null;
+  }
+  return ((data ?? []) as { id: string; starts_at: string; ends_at: string }[]).map((r) => ({
+    id: r.id,
+    startsAt: r.starts_at,
+    endsAt: r.ends_at,
+  }));
+}
+
+/**
+ * Take one stale block out of cal.com and record what happened (#2890), returning
+ * the outcome. The dates are rewritten from the agent's CURRENT approved time off,
+ * through the same derivation every writer uses (#2417), so a window narrowed while
+ * cal.com was retired keeps the days the new window still covers.
+ */
+async function removeStaleCalcomBlock(
+  db: ReturnType<typeof supabaseAdmin>,
+  removalId: string,
+  nowMs: number,
+): Promise<string> {
+  const { data, error } = await db
+    .from("calcom_override_removals")
+    .select("id, user_id, starts_at, ends_at")
+    .eq("id", removalId)
+    .maybeSingle();
+  if (error || !data) return "failed: could not re-read the stale cal.com block";
+  const row = data as { user_id: string; starts_at: string; ends_at: string };
+  const userRes = await db.from("users").select("email").eq("id", row.user_id).maybeSingle();
+  const resolved = agentEmailForRetry(
+    userRes as { data: { email?: string } | null; error: { message: string } | null },
+  );
+  const outcome =
+    "outcome" in resolved
+      ? resolved.outcome
+      : await syncCalcomOverrides({
+          mode: "remove",
+          // The removal's own id, which names no request, so the read of the
+          // agent's other approved time off excludes nothing: every absence that is
+          // approved NOW is kept, including this request's new window if it was
+          // changed and approved again.
+          requestId: removalId,
+          agentUserId: row.user_id,
+          agentEmail: resolved.email,
+          startIso: row.starts_at,
+          endIso: row.ends_at,
+        });
+  const { error: writeErr } = await db
+    .from("calcom_override_removals")
+    .update({
+      last_outcome: outcome,
+      resolved_at: isRemovalResolved(outcome) ? new Date(nowMs).toISOString() : null,
+    })
+    .eq("id", removalId);
+  if (writeErr) {
+    log.error("calcom-sweep", { msg: "stale block outcome write failed", removal_id: removalId }, writeErr);
     return "failed: outcome not recorded";
   }
   return outcome;
@@ -3298,6 +3385,10 @@ export async function GET(req: NextRequest) {
         nowMs: now,
         loadCandidates: () => loadFailedOverrideCandidates(db),
         retry: (requestId) => retryOverrideForRequest(db, requestId),
+        // #2890: blocks left in cal.com by time off cancelled or changed while it
+        // was retired, taken out once it is live, out of the same per tick cap.
+        loadRemovals: () => loadStaleCalcomRemovals(db, now),
+        removeStale: (removalId) => removeStaleCalcomBlock(db, removalId, now),
         // #2875: retired, nothing is retried and both pages end saying so. The
         // retry itself also refuses on a FRESH read inside `syncCalcomOverrides`.
         calcomRetired: () => loadCalcomRetiredCached(now),

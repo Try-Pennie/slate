@@ -1,6 +1,6 @@
 import { calcomApiKey, calcomBaseUrl, calcomOrgId } from "@/lib/env";
 import { isLoadtest, loadtestRefusal, refuseUnderLoadtest } from "@/lib/loadtest-guard";
-import { OUTCOME_NOT_CONFIGURED, notInCalcomOutcome } from "./outcomes.ts";
+import { OUTCOME_NOT_CONFIGURED, OUTCOME_NOTHING_TO_REMOVE_PREFIX, notInCalcomOutcome } from "./outcomes.ts";
 import {
   datesCoveredBy,
   recomputeOverrides,
@@ -279,7 +279,7 @@ async function attemptOoo(
     // this cancellation was supposed to undo was not there to undo.
     if (expected?.ok && expected.overrides.length > 0 && next.replaced === 0) {
       return done(
-        `failed: no cal.com override was on ${dates.join(", ")} to remove; ` +
+        `${OUTCOME_NOTHING_TO_REMOVE_PREFIX} ${dates.join(", ")} to remove; ` +
           `the schedule has been rewritten to match Slate`,
       );
     }

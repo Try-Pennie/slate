@@ -1,5 +1,7 @@
 import { parseStampMs } from "@/lib/date/stamp";
 import {
+  isRetiredSkip,
+  OUTCOME_NOTHING_TO_REMOVE_PREFIX,
   OUTCOME_NOT_IN_CALCOM,
   OUTCOME_OK_PREFIX,
   OUTCOME_SKIPPED_PREFIX,
@@ -42,9 +44,9 @@ export const CALCOM_UNPROTECTED_KEY = "ooo_calcom_unprotected";
  */
 export const CALCOM_ALERT_KEY = "ooo_calcom";
 
-/** Retries per tick. The set is normally 0 to 2 rows; the cap exists so a bad day
- *  cannot turn one monitor tick into hundreds of outbound cal.com calls. */
-export const MAX_RETRIES_PER_TICK = 10;
+// Retries per tick, defined where a client module can import it (#2890).
+import { MAX_RETRIES_PER_TICK } from "./override-sweep-limits.ts";
+export { MAX_RETRIES_PER_TICK };
 
 export interface OverrideCandidate {
   id: string;
@@ -74,11 +76,30 @@ export function isProvisionalSkip(outcome: string): boolean {
 }
 
 /**
+ * The skip written while cal.com was marked retired (#2875), which stops being true
+ * the moment an admin puts cal.com back (#2890).
+ *
+ * It used to be settled, like an unconfigured cal.com, and that is what made putting
+ * cal.com back lose time off: every absence approved during retirement had recorded
+ * this skip, nothing retried it, and cal.com went back to taking bookings with no
+ * block for any of them. It is a FAILURE as far as a live sweep is concerned, not a
+ * provisional skip: once cal.com is live it can book the agent, so an absence under
+ * way with no block is exactly what `ooo_calcom_unprotected` exists to say, and
+ * waiting for the absence to approach would protect nothing a lead can already book.
+ *
+ * A retired sweep never sees it: `runCalcomOverrideSweep` returns before reading a
+ * single row while cal.com is retired, so this costs nothing during retirement.
+ *
+ * Defined beside the other outcomes in `@/lib/calcom/outcomes` and re-exported here.
+ */
+export { isRetiredSkip };
+
+/**
  * An outcome that needs no further attempts: it worked, or there was nothing to do
  * AND nothing that could change.
  */
 export function isSettled(outcome: string): boolean {
-  if (isProvisionalSkip(outcome)) return false;
+  if (isProvisionalSkip(outcome) || isRetiredSkip(outcome)) return false;
   return outcome.startsWith(OUTCOME_OK_PREFIX) || outcome.startsWith(OUTCOME_SKIPPED_PREFIX);
 }
 
@@ -284,6 +305,29 @@ export function formatOverrideRecovery(): string {
   );
 }
 
+/**
+ * A block left in cal.com when time off was cancelled or changed while cal.com was
+ * retired (#2890, `calcom_override_removals`). Only unresolved windows that have
+ * not ended are handed over.
+ */
+export interface RemovalCandidate {
+  id: string;
+  startsAt: string;
+  endsAt: string;
+}
+
+/**
+ * Whether a stale block's removal is done: it was taken out, it was already gone
+ * (the client rewrote the dates to match Slate either way), or there was never
+ * anything in cal.com to take out. A removal skipped because cal.com is retired is
+ * NOT done: the block is still there.
+ */
+export function isRemovalResolved(outcome: string): boolean {
+  if (isRetiredSkip(outcome)) return false;
+  if (outcome.startsWith(OUTCOME_NOTHING_TO_REMOVE_PREFIX)) return true;
+  return outcome.startsWith(OUTCOME_OK_PREFIX) || outcome.startsWith(OUTCOME_SKIPPED_PREFIX);
+}
+
 export interface SweepResult {
   retried: number;
   cleared: number;
@@ -291,6 +335,14 @@ export interface SweepResult {
   deferred: number;
   /** False when the candidate read failed, which is NOT health. */
   measured: boolean;
+  /** #2890: stale cal.com blocks taken out this tick. */
+  removed: number;
+  /** #2890: stale blocks whose removal was attempted and did not land. */
+  removalsFailing: number;
+  /** #2890: stale blocks past the per tick cap, left for the next tick. */
+  removalsDeferred: number;
+  /** #2890: false when the stale block list could not be read (or was not asked). */
+  removalsMeasured: boolean;
 }
 
 /**
@@ -313,6 +365,13 @@ export async function runCalcomOverrideSweep(deps: {
    * cal.com book somebody who is away. Omitted, it reads as live.
    */
   calcomRetired?: () => Promise<boolean | null>;
+  /**
+   * #2890: the blocks left in cal.com while it was retired, or null when that read
+   * failed. Omitted, none are asked for. Read only once cal.com is live.
+   */
+  loadRemovals?: () => Promise<RemovalCandidate[] | null>;
+  /** #2890: take one stale block out and record the outcome, returning it. */
+  removeStale?: (removalId: string) => Promise<string>;
 }): Promise<SweepResult> {
   const empty: SweepResult = {
     retried: 0,
@@ -320,6 +379,15 @@ export async function runCalcomOverrideSweep(deps: {
     unprotected: 0,
     deferred: 0,
     measured: false,
+    removed: 0,
+    removalsFailing: 0,
+    removalsDeferred: 0,
+    removalsMeasured: false,
+  };
+  const endAsRetired = async (partial: Partial<SweepResult>): Promise<SweepResult> => {
+    await deps.resolve(CALCOM_UNPROTECTED_KEY, formatCalcomRetiredSweepEnding());
+    await deps.resolve(CALCOM_ALERT_KEY, formatCalcomRetiredSweepEnding());
+    return { ...empty, ...partial, measured: true };
   };
   let retired: boolean | null = false;
   if (deps.calcomRetired) {
@@ -333,9 +401,7 @@ export async function runCalcomOverrideSweep(deps: {
     // Hung off a MEASURED answer: the setting was read and says retired, which is
     // the only evidence that ends these two pages without a block in place.
     deps.log?.("cal.com is retired, so no override is retried");
-    await deps.resolve(CALCOM_UNPROTECTED_KEY, formatCalcomRetiredSweepEnding());
-    await deps.resolve(CALCOM_ALERT_KEY, formatCalcomRetiredSweepEnding());
-    return { ...empty, measured: true };
+    return endAsRetired({});
   }
 
   const loaded = await deps.loadCandidates();
@@ -353,8 +419,19 @@ export async function runCalcomOverrideSweep(deps: {
 
   const stillFailing: OverrideCandidate[] = [];
   let cleared = 0;
+  let retried = 0;
   for (const row of attempt) {
     const outcome = await deps.retry(row.id);
+    retried++;
+    if (isRetiredSkip(outcome)) {
+      // #2890: the setting read above came from a per isolate cache, and the retry
+      // read it FRESH and found cal.com retired. That is a measurement, so the tick
+      // ends the way a retired tick does, rather than paging that cal.com can book
+      // an absent agent, or claiming every block is in place, both of which would
+      // be false. Nothing further is attempted: each would only record the same skip.
+      deps.log?.("cal.com was retired during this tick, so no further override is retried");
+      return endAsRetired({ retried, cleared });
+    }
     if (isSettled(outcome)) cleared++;
     // #1276: a provisional skip is neither. It is not cleared, because the agent
     // may get a cal.com account before the absence starts and the next tick has to
@@ -385,11 +462,48 @@ export async function runCalcomOverrideSweep(deps: {
     await deps.resolve(CALCOM_ALERT_KEY, formatOverrideRecovery());
   }
 
+  // #2890: the blocks left in cal.com while it was retired, out of whatever the per
+  // tick cap has left after the override retries, which go first because a missing
+  // block lets cal.com book somebody who is away while a stale one only withholds a
+  // day the agent works. They never page: the stale direction is the safe one, and
+  // a removal that keeps failing is retried every tick and logged. Done after the
+  // pages are settled, so an unreadable list cannot hold either page open.
+  const removals = {
+    removed: 0,
+    removalsFailing: 0,
+    removalsDeferred: 0,
+    removalsMeasured: false,
+  };
+  if (deps.loadRemovals && deps.removeStale) {
+    const stale = await deps.loadRemovals();
+    if (stale === null) {
+      deps.log?.("the cal.com blocks left while it was retired could not be read");
+    } else {
+      removals.removalsMeasured = true;
+      const room = Math.max(0, max - attempt.length);
+      const take = stale.slice(0, room);
+      removals.removalsDeferred = stale.length - take.length;
+      for (const row of take) {
+        const outcome = await deps.removeStale(row.id);
+        if (isRetiredSkip(outcome)) {
+          deps.log?.("cal.com was retired during this tick, so no further block is taken out");
+          return endAsRetired({ retried: attempt.length, cleared, ...removals });
+        }
+        if (isRemovalResolved(outcome)) removals.removed++;
+        else removals.removalsFailing++;
+      }
+      if (removals.removalsFailing > 0) {
+        deps.log?.(`${removals.removalsFailing} cal.com blocks left while it was retired could not be taken out`);
+      }
+    }
+  }
+
   return {
     retried: attempt.length,
     cleared,
     unprotected: unprotected.length,
     deferred,
     measured: true,
+    ...removals,
   };
 }

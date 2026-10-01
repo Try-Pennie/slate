@@ -4,6 +4,7 @@
  * are optional). Replace with `supabase gen types typescript` once linked.
  */
 import type {
+  CalcomOverrideRemoval,
   AgentCalendar,
   AgentLink,
   AlertState,
@@ -126,6 +127,7 @@ export interface Database {
       >;
       booking_events: Table<BookingEvent>;
       ooo_requests: Table<OooRequest>;
+      calcom_override_removals: Table<CalcomOverrideRemoval>;
       webhook_endpoints: Table<WebhookEndpoint>;
       webhook_deliveries: Table<WebhookDelivery>;
       alert_state: Table<AlertState>;

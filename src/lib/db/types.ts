@@ -157,6 +157,25 @@ export interface OooRequest {
   updated_at: string;
 }
 
+/**
+ * #2890 (migration 0153): a window cal.com still blocks because its removal was
+ * skipped while cal.com was retired. The override sweep takes it out once cal.com
+ * is live and stamps `resolved_at`.
+ */
+export interface CalcomOverrideRemoval {
+  id: string;
+  request_id: string;
+  user_id: string;
+  starts_at: string;
+  ends_at: string;
+  /** The removal outcome that left the block behind. */
+  reason: string;
+  /** The latest attempt to take it out, null until one runs. */
+  last_outcome: string | null;
+  created_at: string;
+  resolved_at: string | null;
+}
+
 export interface EventType {
   id: string;
   org_id: string;

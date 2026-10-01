@@ -37,10 +37,27 @@ export const OUTCOME_OK_PREFIX = "ok";
 export const OUTCOME_SKIPPED_PREFIX = "skipped";
 
 /**
- * cal.com has been marked retired on /admin/alerts (#2875). Terminal, like
- * `OUTCOME_NOT_CONFIGURED`: once cal.com takes no bookings there is nothing an
- * override could protect, so the sweep settles it rather than retrying or paging.
- * Its own words rather than "not configured", because a reader of the time off
+ * cal.com has been marked retired on /admin/alerts (#2875). NOT terminal (#2890):
+ * while cal.com is retired the sweep reads no rows at all, and once it is put back
+ * the sweep retries this skip like a failure, so every absence approved during
+ * retirement is copied into a cal.com that takes bookings again. Its own words rather than "not configured", because a reader of the time off
  * record should see that somebody retired cal.com, not that a key went missing.
  */
 export const OUTCOME_CALCOM_RETIRED = "skipped: cal.com retired";
+
+/**
+ * Whether an outcome is the retired skip (#2890), judged in ONE place: the override
+ * sweep retries it once cal.com is live, and a cancellation or change records the
+ * block it left behind, so both must agree on what it looks like.
+ */
+export function isRetiredSkip(outcome: string): boolean {
+  return outcome.startsWith(OUTCOME_CALCOM_RETIRED);
+}
+
+/**
+ * A removal that found no override on the dates to remove (#2417). The client has
+ * still rewritten the dates to what Slate says they should offer, so cal.com is
+ * right; the outcome reports that the block was not there to undo. Prefix only:
+ * the client appends the dates.
+ */
+export const OUTCOME_NOTHING_TO_REMOVE_PREFIX = "failed: no cal.com override was on";

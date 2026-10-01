@@ -301,6 +301,27 @@ export function realDeps(): OooDeps {
         ? syncCalcomOverrides({ mode: "remove", ...target })
         : "skipped",
 
+    // #2890: a block left in cal.com while it was retired, for the override sweep
+    // to take out once cal.com is put back. Upserted on (request, window) and
+    // reopened if it was resolved before, so recording it twice is one row.
+    recordCalcomRemovalPending: async ({ requestId, agentUserId, startIso, endIso, reason }) => {
+      const { error } = await supabaseAdmin()
+        .from("calcom_override_removals")
+        .upsert(
+          {
+            request_id: requestId,
+            user_id: agentUserId,
+            starts_at: startIso,
+            ends_at: endIso,
+            reason,
+            last_outcome: null,
+            resolved_at: null,
+          },
+          { onConflict: "request_id,starts_at,ends_at" },
+        );
+      if (error) throw new Error(`calcom_override_removals write refused: ${error.message}`);
+    },
+
     dmUserByEmail: (email, text, oooRequestId) =>
       dmSlackUserByEmail(
         email,
@@ -326,6 +347,7 @@ export function realDeps(): OooDeps {
       // alert-key: ooo_agent_dm
       // alert-key: ooo_busy_block_fallback
       // alert-key: ooo_calcom
+      // alert-key: ooo_calcom_stale_unrecorded:*
       // alert-key: ooo_undo
       // alert-key: ooo_coverage_stop
       sendThrottledAlert(key, OOO_ALERT_COOLDOWN_MS, message).catch(() => {}),

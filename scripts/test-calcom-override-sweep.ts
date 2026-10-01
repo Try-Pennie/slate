@@ -21,13 +21,16 @@ import {
   agentEmailForRetry,
   isFailure,
   isSettled,
+  isRetiredSkip,
   OUTCOME_EMAIL_UNREADABLE,
   OUTCOME_NO_EMAIL,
   runCalcomOverrideSweep,
   selectCandidates,
   PROVISIONAL_RETRY_WINDOW_DAYS,
   toCandidates,
+  isRemovalResolved,
   type OverrideCandidate,
+  type RemovalCandidate,
 } from "../src/lib/monitor/calcom-override-sweep.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -185,6 +188,9 @@ interface FakeOpts {
   max?: number;
   /** #2875: the "cal.com retired" read. Omitted, the sweep runs as it always has. */
   retired?: boolean | null | "throw";
+  /** #2890: blocks left in cal.com while it was retired. Omitted, none are asked for. */
+  removals?: RemovalCandidate[] | null;
+  removalOutcomes?: Record<string, string>;
 }
 
 function runFake(opts: FakeOpts) {
@@ -194,6 +200,8 @@ function runFake(opts: FakeOpts) {
     resolved: [] as string[],
     resolvedText: [] as string[],
     loaded: 0,
+    removed: [] as string[],
+    removalsLoaded: 0,
   };
   const promise = runCalcomOverrideSweep({
     nowMs: NOW,
@@ -214,6 +222,18 @@ function runFake(opts: FakeOpts) {
       state.retried.push(id);
       return opts.outcomes?.[id] ?? "failed: schedule patch returned 500";
     },
+    ...(opts.removals === undefined
+      ? {}
+      : {
+          loadRemovals: async () => {
+            state.removalsLoaded++;
+            return opts.removals ?? null;
+          },
+          removeStale: async (id: string) => {
+            state.removed.push(id);
+            return opts.removalOutcomes?.[id] ?? "ok";
+          },
+        }),
     alert: async (key, text) => {
       state.alerts.push(`${key}|${text}`);
     },
@@ -498,4 +518,184 @@ for (const retired of [null, "throw", false] as const) {
   );
 }
 
+// --- #2890: putting cal.com back recovers what retirement skipped -------------------
+// While cal.com is retired every approval records OUTCOME_CALCOM_RETIRED instead of
+// writing. That skip stops being true the moment cal.com is put back, so it must be
+// retried then, or every time off approved during retirement stays missing from a
+// cal.com that is taking bookings again, with nothing said.
+{
+  const RETIRED = "skipped: cal.com retired";
+  const future = candidate({ id: "approved-while-retired", effect: RETIRED });
+  const underWay = candidate({
+    id: "under-way",
+    effect: RETIRED,
+    startsAt: new Date(NOW - hours(2)).toISOString(),
+  });
+  const farAway = candidate({
+    id: "far-away",
+    effect: RETIRED,
+    startsAt: new Date(NOW + hours(24 * 90)).toISOString(),
+    endsAt: new Date(NOW + hours(24 * 91)).toISOString(),
+  });
+  assert(!isSettled(RETIRED), "a retired skip is not settled, so a live sweep looks at it again");
+  assert(isRetiredSkip(RETIRED), "the retired skip is recognised by its own predicate");
+  assert(!isRetiredSkip("skipped: cal.com not configured"), "an unconfigured cal.com is a different skip");
+  eq(
+    selectCandidates([future, underWay, farAway], NOW).map((r) => r.id).sort(),
+    ["approved-while-retired", "far-away", "under-way"],
+    "live: every retired skip that has not ended is selected, however far ahead it starts",
+  );
+
+  // Put back: the sweep retries them and they clear.
+  {
+    const { state, promise } = runFake({
+      candidates: [future, underWay],
+      retired: false,
+      outcomes: { "approved-while-retired": "ok", "under-way": "ok" },
+    });
+    const res = await promise;
+    eq(state.retried.sort(), ["approved-while-retired", "under-way"], "put back: both are retried");
+    eq(res.cleared, 2, "put back: both clear");
+    eq(state.alerts.length, 0, "put back: nothing pages once they land");
+  }
+
+  // The other direction: still retired, nothing is retried (the #2875 behaviour).
+  {
+    const { state, promise } = runFake({ candidates: [future, underWay], retired: true });
+    await promise;
+    eq(state.retried.length, 0, "retired: a retired skip is not retried while cal.com is retired");
+  }
+
+  // Put back, and the copy fails: an absence under way with no block pages, because
+  // cal.com is live again and can book them.
+  {
+    const { state, promise } = runFake({ candidates: [underWay], retired: false });
+    await promise;
+    assert(
+      state.alerts.some((a) => a.startsWith(CALCOM_UNPROTECTED_KEY)),
+      "put back: a copy that fails for an absence under way pages",
+    );
+  }
+
+  // The lane's cached answer said live, but cal.com was retired again in the
+  // meantime and the retry's FRESH read came back retired. That is a measurement
+  // that cal.com is retired, so the tick ends as retired: no page, no false
+  // "every block is in place", and no further cal.com work this tick.
+  {
+    const second = candidate({ id: "second", effect: RETIRED, startsAt: new Date(NOW - hours(1)).toISOString() });
+    const { state, promise } = runFake({
+      candidates: [underWay, second],
+      retired: false,
+      outcomes: { "under-way": RETIRED, second: RETIRED },
+    });
+    const res = await promise;
+    eq(state.retried, ["under-way"], "retired mid tick: the first retired answer stops the tick");
+    eq(state.alerts.length, 0, "retired mid tick: nothing pages");
+    assert(
+      state.resolvedText.length > 0 &&
+        state.resolvedText.every((t) => /retired/i.test(t) && !/in place/i.test(t)),
+      "retired mid tick: the pages end saying cal.com was retired, never that the blocks are in place",
+    );
+    eq(res.measured, true, "retired mid tick: still a measured tick");
+  }
+
+  // Safe to run twice: a second tick after the copy landed has nothing to do.
+  {
+    const { state, promise } = runFake({
+      candidates: [candidate({ id: "approved-while-retired", effect: "ok" })],
+      retired: false,
+    });
+    await promise;
+    eq(state.retried.length, 0, "a second tick after the copy landed retries nothing");
+  }
+}
+
+// --- #2890: blocks left in cal.com while it was retired are taken out --------------
+// A time off cancelled or changed while cal.com was retired left its block there.
+// Once cal.com is live the sweep takes each recorded window out; while it is
+// retired it does not touch them.
+{
+  const RETIRED = "skipped: cal.com retired";
+  const stale: RemovalCandidate[] = [
+    { id: "rm-1", startsAt: new Date(NOW + hours(24)).toISOString(), endsAt: new Date(NOW + hours(48)).toISOString() },
+    { id: "rm-2", startsAt: new Date(NOW - hours(2)).toISOString(), endsAt: new Date(NOW + hours(6)).toISOString() },
+  ];
+  assert(isRemovalResolved("ok"), "a removal that landed is resolved");
+  assert(
+    isRemovalResolved("failed: no cal.com override was on 2026-10-02 to remove; the schedule has been rewritten to match Slate"),
+    "a removal that found the block already gone is resolved: cal.com matches Slate",
+  );
+  assert(isRemovalResolved("skipped: not in cal.com (a@b.com)"), "an agent with no cal.com account has no block to remove");
+  assert(!isRemovalResolved(RETIRED), "a removal skipped because cal.com is retired is not resolved");
+  assert(!isRemovalResolved("failed: schedule patch returned 500"), "a failed removal is not resolved");
+
+  // Live: every recorded block is taken out.
+  {
+    const { state, promise } = runFake({ candidates: [], retired: false, removals: stale });
+    const res = await promise;
+    eq(state.removed, ["rm-1", "rm-2"], "live: each block left while retired is taken out");
+    eq(res.removed, 2, "live: both resolve");
+    eq(state.alerts.length, 0, "live: nothing pages");
+  }
+  // Retired: none are touched, nor even read.
+  {
+    const { state, promise } = runFake({ candidates: [], retired: true, removals: stale });
+    await promise;
+    eq(state.removed.length, 0, "retired: no block is taken out while cal.com is retired");
+    eq(state.removalsLoaded, 0, "retired: the removals are not even read");
+  }
+  // One per tick budget is shared: retries first, then removals with what is left.
+  {
+    const { state, promise } = runFake({
+      candidates: [candidate({ id: "a" }), candidate({ id: "b" })],
+      outcomes: { a: "ok", b: "ok" },
+      retired: false,
+      removals: stale,
+      max: 3,
+    });
+    const res = await promise;
+    eq(state.retried, ["a", "b"], "budget: the override retries go first");
+    eq(state.removed, ["rm-1"], "budget: removals take only what is left of the cap");
+    eq(res.removalsDeferred, 1, "budget: the rest is deferred, not dropped");
+  }
+  // A removal that fails stays for the next tick and is counted, never resolved.
+  {
+    const { state, promise } = runFake({
+      candidates: [],
+      retired: false,
+      removals: stale,
+      removalOutcomes: { "rm-1": "failed: schedule patch returned 500" },
+    });
+    const res = await promise;
+    eq(state.removed, ["rm-1", "rm-2"], "failure: both are attempted");
+    eq(res.removed, 1, "failure: only the one that landed is resolved");
+    eq(res.removalsFailing, 1, "failure: the failing one is counted");
+  }
+  // An unreadable removal list is unmeasured, and does not stop the rest of the tick.
+  {
+    const { state, promise } = runFake({
+      candidates: [candidate({ id: "a" })],
+      outcomes: { a: "ok" },
+      retired: false,
+      removals: null,
+    });
+    const res = await promise;
+    eq(state.retried, ["a"], "unreadable removals: the override retries still run");
+    eq(res.removalsMeasured, false, "unreadable removals: reported as unmeasured, not as none");
+  }
+  // cal.com retired again mid tick: the removal's fresh read says so, the tick ends.
+  {
+    const { state, promise } = runFake({
+      candidates: [],
+      retired: false,
+      removals: stale,
+      removalOutcomes: { "rm-1": RETIRED },
+    });
+    await promise;
+    eq(state.removed, ["rm-1"], "retired mid tick: the first retired answer stops the removals");
+    eq(state.alerts.length, 0, "retired mid tick: nothing pages");
+  }
+}
+
 finish();
+
