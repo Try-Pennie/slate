@@ -131,9 +131,11 @@ describe("BookingOutcomesPage caller sightings", () => {
       "regal",
       "trypennie",
       "canary",
+      "marcia",
       "probe:regal",
       "probe:trypennie",
       "probe:canary",
+      "probe:marcia",
     ]);
   });
 
