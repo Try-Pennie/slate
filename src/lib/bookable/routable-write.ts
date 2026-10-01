@@ -205,9 +205,11 @@ async function recordTrait(e: TraitEmission, deps: RoutableWriteDeps): Promise<v
  * single row departure: somebody deactivated between the reap's candidate read
  * and this write keeps the stamp that records when they actually left.
  *
- * It deliberately does NOT revoke sessions or enqueue a coverage sweep. Those are
- * #2459 and #1678, which route the reap through the full lifecycle path; this is
- * only the write, and the Regal trait every write here carries (#2085).
+ * It deliberately does NOT revoke sessions or enqueue a coverage sweep. Sessions
+ * are converged after the reap by `offboarding/session-convergence.ts` (#2459),
+ * from the end state, so a failed ban is retried rather than lost with the row
+ * that no longer matches the reap; the coverage sweep is #1678. This is only the
+ * write, and the Regal trait every write here carries (#2085).
  */
 export async function deactivateUsersByIds(
   userIds: string[],

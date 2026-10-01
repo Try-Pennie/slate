@@ -35,6 +35,10 @@ import {
   twilioOrphanedMarkRecovery,
 } from "@/lib/monitor/cron-alert-copy";
 import { hasUserIdConflicts } from "@/lib/salesforce/user-id-link";
+import {
+  convergeDepartedSessions,
+  type SessionConvergenceResult,
+} from "@/lib/offboarding/session-convergence";
 import { defaultTwilioSyncDeps, syncTwilioRedistribute, type TwilioSyncResult } from "@/lib/twilio/sync";
 import { recordDetectorVerdict } from "@/lib/monitor/verdict-store";
 import {
@@ -104,6 +108,11 @@ export type RosterSyncOutcome =
        */
       twilio: { ok: true; result: TwilioSyncResult } | { ok: false; reason: string };
       hoursApplied: number;
+      /**
+       * #2459: what the departed session convergence did, or WHY it could not
+       * read. A discriminated pair for the same reason `twilio` is one.
+       */
+      sessions: { ok: true; result: SessionConvergenceResult } | { ok: false; reason: string };
     };
 
 /**
@@ -124,6 +133,27 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
     // here because this is the only place that knows a run is one run.
     const allowance = activationAllowance();
     const sync = await syncSalesforceAgents({ allowance });
+
+    // #2459: the reap above departs people with a batch write that never came
+    // through the offboarding path, so it never banned them in Supabase Auth.
+    // This converges every departed person's session access from the end state,
+    // which repairs this hour's leavers, anybody an earlier failure stranded, and
+    // the ones the reap departed before this shipped (see session-convergence.ts
+    // for why a call beside the write would lose a failure for ever).
+    //
+    // Contained, for the reason the Twilio half below is: the roster writes have
+    // committed, and a throw here would make the run read as a failed Salesforce
+    // sync. A refused READ is reported as a reason, never as a zero (L214), and a
+    // refused ban is counted and retried by the next run.
+    let sessions: { ok: true; result: SessionConvergenceResult } | { ok: false; reason: string };
+    try {
+      sessions = { ok: true, result: await convergeDepartedSessions() };
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      sessions = { ok: false, reason };
+      log.error("agents", { msg: "departed session convergence could not run" }, err);
+    }
+
     const org = await ensureDefaultOrg();
 
     // The Twilio half, after Salesforce and BEFORE the bucket coverage check
@@ -328,6 +358,7 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
       sync,
       twilio,
       hoursApplied,
+      sessions,
     };
   } finally {
     await releaseLock(AGENTS_LOCK_KEY, lock);

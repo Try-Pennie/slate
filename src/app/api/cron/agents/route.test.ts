@@ -76,6 +76,19 @@ vi.mock("@/lib/notify/dispatch", () => dispatch);
 vi.mock("@/lib/notify/streak", () => streak);
 vi.mock("@/lib/twilio/sync", () => twilio);
 vi.mock("@/lib/monitor/verdict-store", () => verdict);
+// #2459: the departed session convergence calls Supabase Auth; never for real here.
+vi.mock("@/lib/offboarding/session-convergence", () => ({
+  convergeDepartedSessions: vi.fn(async () => ({
+    departed: 0,
+    alreadyRevoked: 0,
+    revoked: 0,
+    failed: 0,
+    deferred: 0,
+    unlisted: 0,
+    restoredAfterRace: 0,
+    listingComplete: true,
+  })),
+}));
 
 import { GET } from "./route";
 
