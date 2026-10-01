@@ -20,6 +20,8 @@ import {
   isPageTraffic,
   pageTrafficFilter,
   isUnsourced,
+  isHostlessUnsourced,
+  hostlessNotCounted,
   PAGE_SEEN_LOOKBACK_DAYS,
   pageCoverage,
   pagePlaces,
@@ -181,14 +183,14 @@ const REPLAY_HOURS = offlineHoursFor(fixture);
 // is not coverage (L11).
 {
   const pages = LOW_PAGES.map((p) => ({ id: p.id, name: p.name, recorded: true }));
-  const some = pageSourceStatus({ lookbackDays: 7, realBookings: 40, unsourced: 3, pages });
+  const some = pageSourceStatus({ lookbackDays: 7, realBookings: 40, unsourced: 3, hostless: 0, pages });
   eq(some.state, "unrecorded", "any booking with no source in the lookback holds the floors back");
   assert(some.state === "unrecorded" && some.text.startsWith("Source not recorded on 3 of 40 bookings in the last 7 days"), `in those words (${some.state === "unrecorded" ? some.text : ""})`);
-  const all = pageSourceStatus({ lookbackDays: 7, realBookings: 40, unsourced: 40, pages: pages.map((p) => ({ ...p, recorded: false })) });
+  const all = pageSourceStatus({ lookbackDays: 7, realBookings: 40, unsourced: 40, hostless: 0, pages: pages.map((p) => ({ ...p, recorded: false })) });
   assert(all.state === "unrecorded" && all.text.startsWith("Source not recorded on 40 of 40 bookings"), "the pre #2072 state, every booking unsourced, says so");
-  const none = pageSourceStatus({ lookbackDays: 7, realBookings: 0, unsourced: 0, pages: pages.map((p) => ({ ...p, recorded: false })) });
+  const none = pageSourceStatus({ lookbackDays: 7, realBookings: 0, unsourced: 0, hostless: 0, pages: pages.map((p) => ({ ...p, recorded: false })) });
   assert(none.state === "unmeasured" && /no real booking in the last 7 days/i.test(none.text), "no bookings at all is unmeasured, never recorded (L98)");
-  eq(pageSourceStatus({ lookbackDays: 7, realBookings: 40, unsourced: 0, pages }).state, "recorded", "only a lookback where every booking carried one shows floors");
+  eq(pageSourceStatus({ lookbackDays: 7, realBookings: 40, unsourced: 0, hostless: 0, pages }).state, "recorded", "only a lookback where every booking carried one shows floors");
   eq(pageSourceStatus(null).state, "unreadable", "a measurement that could not be taken is its own state");
   eq(sourceNotRecorded(1, 1, "7 days"), "Source not recorded on 1 of 1 booking in the last 7 days", "one booking reads in the singular");
 }
@@ -249,7 +251,9 @@ function harness(opts: {
   return { calls, run };
 }
 
-const ago = (min: number, source: string | null): SourceRow => ({ createdMs: TUESDAY_2PM - min * MIN, source });
+const ago = (min: number, source: string | null): SourceRow => ({ createdMs: TUESDAY_2PM - min * MIN, source, hostless: false });
+/** #2960: a booking made with no host page recorded (the standalone /book page, typed by hand). */
+const agoHostless = (min: number, source: string | null): SourceRow => ({ ...ago(min, source), hostless: true });
 const verdictOf = (pages: PageVerdict[], id: LowPageId) => pages.find((p) => p.id === id)!;
 const HEALTHY_ROWS: SourceRow[] = [
   ...[30, 75].map((m) => ago(m, m === 30 ? "offerhub" : "booking-portal")),
@@ -424,7 +428,7 @@ const HEALTHY_ROWS: SourceRow[] = [
   // stream of Regal or trypennie API bookings would otherwise hide a dark page), and
   // it is left out of the count the unsourced share is quoted against.
   for (const s of API_SOURCES) {
-    assert(!isUnsourced(s), `${s} is not an unsourced booking`);
+    assert(!isUnsourced({ source: s, hostless: false }), `${s} is not an unsourced booking`);
     assert(!isPageTraffic(s), `${s} is not page traffic`);
   }
   for (const s of [...PAGE_SOURCES, "not-given", "unrecognised", null]) {
@@ -457,8 +461,75 @@ const HEALTHY_ROWS: SourceRow[] = [
   eq(noCaller.calls.sent.length, 0, "control: three bookings naming nothing hold the page, so the API ones were the difference");
 }
 {
+  // #2960 (Dan, 2026-10-01): a booking made with NO host page recorded, and no
+  // source, was made by hand on the standalone booker, never by a landing page. It
+  // does not count toward the unsourced share that holds a page, and it is not in
+  // the total that share is quoted against. It is still counted, on its own.
+  for (const source of ["not-given", null]) {
+    assert(!isUnsourced({ source, hostless: true }), `a hostless ${source ?? "null"} booking is not unsourced`);
+    assert(isHostlessUnsourced({ source, hostless: true }), `it is a hostless unsourced booking`);
+    assert(isUnsourced({ source, hostless: false }), `the same booking framed by a page is unsourced`);
+    assert(!isHostlessUnsourced({ source, hostless: false }), `and not hostless`);
+  }
+  // A hostless booking that DID name a page is that page's: only the missing source
+  // makes it unattributable, so only then is it set aside.
+  assert(!isHostlessUnsourced({ source: "booking", hostless: true }), "a hostless booking naming a page is not set aside");
+  assert(!isHostlessUnsourced({ source: "api-regal", hostless: true }), "nor is an API booking, which is not page traffic at all");
+
+  const quietRows = HEALTHY_ROWS.filter((r) => r.source !== "booking-agent-eligible");
+  const byHand = harness({ rows: [...quietRows, agoHostless(10, "not-given"), agoHostless(20, null), agoHostless(40, "not-given")] });
+  const byHandOut = await byHand.run();
+  eq(byHand.calls.sent.map((s) => s.key), [pageVolumeAlertKey("application-review-follow-up")], "hand made bookings with no host page do not hold a quiet page: it pages");
+  assert(
+    byHandOut.status === "checked" &&
+      byHandOut.sources.unsourced === 0 &&
+      byHandOut.sources.hostless === 3 &&
+      byHandOut.sources.total === quietRows.length,
+    `and they are counted on their own line, out of both the unsourced count and the total (${JSON.stringify(byHandOut.status === "checked" ? byHandOut.sources : null)})`,
+  );
+  // The case the decision must not break: a PAGE booking (framed by a host) that lost
+  // its source still holds the page, because it may be that page's missing booking.
+  const framed = harness({ rows: [...quietRows, ago(10, "not-given"), ago(20, null), ago(40, "not-given")] });
+  const framedOut = await framed.run();
+  eq(framed.calls.sent.length, 0, "control: the same three bookings framed by a page still hold it");
+  assert(
+    framedOut.status === "checked" && verdictOf(framedOut.pages, "application-review-follow-up").verdict === "source-unrecorded" && framedOut.sources.hostless === 0,
+    "and read as source unrecorded, with nothing set aside",
+  );
+
+  // The status surfaces: set aside bookings are said on their own line in every state.
+  const pages = LOW_PAGES.map((p) => ({ id: p.id, name: p.name, recorded: true }));
+  const clean = pageSourceStatus({ lookbackDays: 7, realBookings: 193, unsourced: 0, hostless: 4, pages });
+  assert(clean.state === "recorded", "hand made bookings alone leave the sources recorded, so the floors stand");
+  assert(
+    clean.state === "recorded" && clean.note !== null && /^4 bookings in the last 7 days were made with no host page/.test(clean.note),
+    `and the status still says how many were set aside (${clean.state === "recorded" ? clean.note : ""})`,
+  );
+  const plain = pageSourceStatus({ lookbackDays: 7, realBookings: 193, unsourced: 0, hostless: 0, pages });
+  assert(plain.state === "recorded" && plain.note === null, "no note when nothing was set aside");
+  const mixed = pageSourceStatus({ lookbackDays: 7, realBookings: 193, unsourced: 1, hostless: 4, pages });
+  assert(
+    mixed.state === "unrecorded" && mixed.text.startsWith("Source not recorded on 1 of 193 bookings") && /4 bookings in the last 7 days were made with no host page/.test(mixed.text),
+    `a page booking without a source still holds, and the set aside count rides along (${mixed.state === "unrecorded" ? mixed.text : ""})`,
+  );
+  const SET_ASIDE_LINE = /^[0-9]+ bookings in the last 7 days were made with no host page/;
+  const onlyByHand = pageSourceStatus({ lookbackDays: 7, realBookings: 0, unsourced: 0, hostless: 2, pages });
+  assert(
+    onlyByHand.state === "unmeasured" && /2 bookings in the last 7 days were made with no host page/.test(onlyByHand.text),
+    "a lookback holding only hand made bookings is unmeasured, and says what it did hold",
+  );
+  // Every state hands the line out as `note`, from this one builder, and a state with
+  // text ends with it, so a surface writing its own words for a state can append it.
+  for (const st of [clean, mixed, onlyByHand]) {
+    assert(st.note !== null && SET_ASIDE_LINE.test(st.note), `${st.state}: note carries the set aside line`);
+    if (st.state !== "recorded") assert(st.text.endsWith(st.note!), `${st.state}: and its text ends with it`);
+  }
+  eq(pageSourceStatus(null).note, null, "an unreadable measurement sets nothing aside");
+  eq(hostlessNotCounted(1, "7 days"), "1 booking in the last 7 days was made with no host page and carried no source, so it is not counted toward that share.", "one booking reads in the singular");
+}
+{
   // Rows at or after now, or before the long window, are outside every window.
-  const h = harness({ rows: [...HEALTHY_ROWS.filter((r) => r.source !== "booking-agent-eligible"), { createdMs: TUESDAY_2PM, source: "booking-agent-eligible" }, ago(121, "booking-agent-eligible")] });
+  const h = harness({ rows: [...HEALTHY_ROWS.filter((r) => r.source !== "booking-agent-eligible"), { createdMs: TUESDAY_2PM, source: "booking-agent-eligible", hostless: false }, ago(121, "booking-agent-eligible")] });
   const out = await h.run();
   assert(out.status === "checked" && verdictOf(out.pages, "application-review-follow-up").verdict === "low", "a booking at the tick or before the window counts for nothing");
 }

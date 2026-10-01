@@ -460,8 +460,10 @@ describe("AlertSettings per page floors wait on recorded sources (#2765)", () =>
 
   it("says how many bookings recorded no source, instead of the pages' floors", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
-    // The fake answers every bookings read alike: 40 real, 40 unsourced, a row found.
-    db.results.bookings = { data: [{ id: "b1" }], error: null, count: 40 } as { data: unknown; error: unknown };
+    // The fake answers every bookings read alike: 40 real, 40 unsourced rows framed
+    // by the production site, a row found.
+    const framed = { id: "b1", source: "not-given", parent_origin: "https://trypennie.com", referrer_origin: null };
+    db.results.bookings = { data: Array.from({ length: 40 }, () => framed), error: null, count: 40 } as { data: unknown; error: unknown };
     render(await AlertSettingsPage(props));
     const said = learningCard().querySelector("[data-page-sources]")!.textContent!;
     expect(said).toMatch(/^Source not recorded on 40 of 40 bookings in the last 7 days/);
@@ -475,6 +477,25 @@ describe("AlertSettings per page floors wait on recorded sources (#2765)", () =>
     render(await AlertSettingsPage(props));
     expect(learningCard().querySelector("[data-page-sources]")!.textContent).toContain("could not be read");
     expect(coverageRows()).toHaveLength(0);
+  });
+
+  // #2960: unsourced bookings made by hand with no host page are set aside: the floors
+  // show, and the card says how many were set aside on their own line.
+  it("sets aside hand made bookings with no host page, and says how many", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    const byHand = { id: "b1", source: "not-given", parent_origin: null, referrer_origin: null };
+    db.results.bookings = { data: Array.from({ length: 4 }, () => byHand), error: null, count: 44 } as {
+      data: unknown;
+      error: unknown;
+    };
+    db.results.business_hours = { data: [], error: null };
+    db.results.business_hours_exceptions = { data: [], error: null };
+    render(await AlertSettingsPage(props));
+    expect(learningCard().querySelector("[data-page-sources]")).toBeNull();
+    expect(coverageRows().length).toBeGreaterThan(0);
+    expect(learningCard().querySelector("[data-page-sources-set-aside]")!.textContent).toMatch(
+      /^4 bookings in the last 7 days were made with no host page/,
+    );
   });
 
   it("control: every real booking sourced shows the pages' floors", async () => {

@@ -380,6 +380,11 @@ export function judgeReadiness(f: ReadinessFacts): ReadinessJudgement {
   const arming = f.lowVolumeArming;
   const armingChecks: { kind: ArmingFinding; detail: string }[] = [];
   const armingUnreadable: string[] = [];
+  // #2960: the bookings set aside as made by hand with no host page never gate, and
+  // are said in every state, always as the status's own `note`: an unrecorded status
+  // says it inside the text the finding quotes, an unmeasured one is appended to this
+  // file's own wording, and a recorded one goes on the arming line.
+  let setAside: string | null = null;
   if (arming.pageSources === null) armingUnreadable.push("Low page booking sources");
   else {
     const s = arming.pageSources;
@@ -389,10 +394,13 @@ export function judgeReadiness(f: ReadinessFacts): ReadinessJudgement {
     // bookings differently. Every page having recorded one booking of its own is
     // NOT that rule: one untagged booking can still hold a page that stopped.
     const status = pageSourceStatus(s);
+    if (status.state === "recorded") setAside = status.note;
     if (status.state === "unmeasured") {
       armingChecks.push({
         kind: "page-source-unmeasured",
-        detail: `page sources unmeasured: no real booking in the last ${s.lookbackDays} days, so whether each Low page's links carry ?source= cannot be judged yet; re-run after real bookings from each page`,
+        detail:
+          `page sources unmeasured: no real booking in the last ${s.lookbackDays} days, so whether each Low page's links carry ?source= cannot be judged yet; re-run after real bookings from each page` +
+          (status.note ? `. ${status.note}` : ""),
       });
     } else if (status.state === "unrecorded") {
       // In the alerts page's own sentence, which also names any page with none.
@@ -439,14 +447,15 @@ export function judgeReadiness(f: ReadinessFacts): ReadinessJudgement {
           ? "the low volume switch could not be read, so they are judged as if armed"
           : "the low volume alarms are disarmed, so none of this changes the exit";
   const armingLine =
-    advisories.length === 0 && !armingGates
+    (advisories.length === 0 && !armingGates
       ? `\nBefore arming the low volume alarms (#1956, #2738): every real booking in the last ${arming.pageSources?.lookbackDays} days carried its source and every Low page Slate carries recorded one, every federal holiday in the next ${arming.holidays?.windowDays} days is decided (${arming.holidays?.checked} date(s))`
       : advisories.length
         ? `\nBefore arming the low volume alarms (#1956, #2738); ${armingState}:\n` +
           advisories.map((a) => `  ${a.kind}: ${a.detail}`).join("\n")
         : armingChecks.length || armingUnreadable.length
           ? `\nArming preconditions gate this run: ${armingState}`
-          : `\nArming preconditions met while gating (${armingState}): every real booking carried its source and every Low page Slate carries recorded one, every federal holiday in the next ${arming.holidays?.windowDays} days is decided`;
+          : `\nArming preconditions met while gating (${armingState}): every real booking carried its source and every Low page Slate carries recorded one, every federal holiday in the next ${arming.holidays?.windowDays} days is decided`) +
+    (setAside ? `\n${setAside}` : "");
 
   if (unreadable.length) {
     findings.unshift({

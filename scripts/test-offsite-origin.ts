@@ -22,6 +22,7 @@ import {
   PRODUCTION_ORIGINS,
   classifyOrigin,
   isTestSourceBooking,
+  isHostlessBooking,
   judgeBookingOrigin,
   offsiteOriginKey,
   runOffsiteOriginCheck,
@@ -108,6 +109,18 @@ eq(isTestSourceBooking(declared({ parentOrigin: "https://www.trypennie.com/get-s
 eq(isTestSourceBooking(declared({ name: "Pat" })), false, "no origin recorded is not evidence of a test");
 eq(isTestSourceBooking(declared(null)), false, "a null prefill is not evidence of a test");
 eq(isTestSourceBooking(declared({ parentOrigin: "" })), false, "a blank origin is not evidence of a test");
+
+// --- #2960: a booking with NO host page recorded either way -----------------------
+// The per page alarm sets aside an unsourced booking with no host page, so the
+// predicate must say hostless only when NEITHER origin was recorded: a production
+// host, an off site host, or an unreadable one is a host.
+eq(isHostlessBooking(declared({ xbc: "112" })), true, "the standalone /book page records no host");
+eq(isHostlessBooking(declared(null)), true, "nor does a null prefill");
+eq(isHostlessBooking(declared({ parentOrigin: "  " })), true, "a blank origin is no host");
+eq(isHostlessBooking(declared({ parentOrigin: "https://trypennie.com" })), false, "a declared production host is a host");
+eq(isHostlessBooking(declared({ parentOrigin: "http://localhost:3000" })), false, "an off site host is a host");
+eq(isHostlessBooking(declared({ parentOrigin: "not a url" })), false, "an unreadable host is still a host");
+eq(isHostlessBooking({ prefill: null, referrer_origin: "https://www.trypennie.com" }), false, "a framing page alone is a host");
 
 // --- the framing page's origin (#2728), both directions ----------------------------
 // The browser's own statement of who framed the booker, stored beside the declared

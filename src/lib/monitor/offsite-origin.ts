@@ -201,6 +201,18 @@ export function bookingHostClass(b: BookingOriginFacts): HostClass {
   return kind;
 }
 
+/**
+ * Whether a booking recorded NO host page either way (#2960): neither a declared
+ * `parentOrigin` nor a framing page. The standalone /book page typed by hand, an
+ * admin booking, a host whose referrer policy strips the referrer AND that never
+ * loaded widget.js. The per page volume alarm sets such a booking aside when it also
+ * carries no source (`isHostlessUnsourced`, page-volume.ts). The one predicate for
+ * it, read through `bookingHostClass` so it cannot disagree with the off site page.
+ */
+export function isHostlessBooking(b: BookingOriginFacts): boolean {
+  return bookingHostClass(b) === "none";
+}
+
 /** Both recorded origins judged together. */
 export type OriginVerdict =
   | { kind: "none" }

@@ -203,7 +203,21 @@ describe("countCustomerBookingsSince", () => {
 // both must THROW on a failed read rather than answer, because their empty answers
 // ("no bookings from any page", "this page has never recorded a booking") are the
 // answers that page.
-type SourceFakeRow = { created_at: string; is_test: boolean; source: string | null; code?: string; kind?: string };
+type SourceFakeRow = {
+  created_at: string;
+  is_test: boolean;
+  source: string | null;
+  code?: string;
+  kind?: string;
+  /** #2960: the recorded host page. Defaults to the production site, a framed page booking. */
+  parentOrigin?: string | null;
+  referrer_origin?: string | null;
+};
+/** The origin columns as the reads alias them, a framed production booking unless the row says otherwise. */
+const originCols = (r: SourceFakeRow) => ({
+  parent_origin: r.parentOrigin === undefined ? "https://trypennie.com" : r.parentOrigin,
+  referrer_origin: r.referrer_origin ?? null,
+});
 
 function sourceDb(rows: SourceFakeRow[], opts: { error?: string } = {}) {
   const make = () => {
@@ -240,7 +254,7 @@ function sourceDb(rows: SourceFakeRow[], opts: { error?: string } = {}) {
         kept.sort((a, b) => a.created_at.localeCompare(b.created_at));
         const page = kept.slice(0, limit);
         return Promise.resolve(
-          res({ data: page.map(({ created_at, source }) => ({ created_at, source })), count: kept.length, error: null }),
+          res({ data: page.map((r) => ({ created_at: r.created_at, source: r.source, ...originCols(r) })), count: kept.length, error: null }),
         );
       },
     };
@@ -258,9 +272,19 @@ describe("listCustomerBookingSourcesSince", () => {
       { created_at: "2026-08-05T08:00:00.000Z", is_test: false, source: "booking" },
     ]);
     expect(await listCustomerBookingSourcesSince(db, SINCE, "1")).toEqual([
-      { createdMs: Date.parse("2026-08-05T10:05:00.000Z"), source: "offerhub" },
-      { createdMs: Date.parse("2026-08-05T10:06:00.000Z"), source: null },
+      { createdMs: Date.parse("2026-08-05T10:05:00.000Z"), source: "offerhub", hostless: false },
+      { createdMs: Date.parse("2026-08-05T10:06:00.000Z"), source: null, hostless: false },
     ]);
+  });
+
+  it("marks a booking that recorded no host page as hostless (#2960), and only that one", async () => {
+    const { db } = sourceDb([
+      { created_at: "2026-08-05T10:05:00.000Z", is_test: false, source: "not-given", parentOrigin: null },
+      { created_at: "2026-08-05T10:06:00.000Z", is_test: false, source: "not-given", parentOrigin: null, referrer_origin: "https://trypennie.com" },
+      { created_at: "2026-08-05T10:07:00.000Z", is_test: false, source: "not-given", parentOrigin: "http://localhost:3000" },
+      { created_at: "2026-08-05T10:08:00.000Z", is_test: false, source: "not-given" },
+    ]);
+    expect((await listCustomerBookingSourcesSince(db, SINCE, "1")).map((r) => r.hostless)).toEqual([true, false, false, false]);
   });
 
   it("throws on a read error, never answering with an empty list", async () => {
@@ -396,6 +420,40 @@ describe("measurePageSources", () => {
     const m = await measurePageSources(db, NOW);
     expect(m.pages.map((p) => p.id)).toEqual(["income-verification", "application-review-follow-up", "application-review"]);
     expect(m.pages.every((p) => p.recorded)).toBe(true);
+  });
+
+  // #2960 (Dan, 2026-10-01): an unsourced booking made with no host page was made by
+  // hand, never by a landing page, so it is set aside rather than holding the alarm.
+  it("sets aside unsourced bookings with no host page, counting them on their own", async () => {
+    const { db } = sourceDb([
+      row("offerhub"),
+      row("booking"),
+      { ...row("not-given"), parentOrigin: null },
+      { ...row(null), parentOrigin: null },
+    ]);
+    const m = await measurePageSources(db, NOW);
+    expect(m.unsourced).toBe(0);
+    expect(m.hostless).toBe(2);
+    expect(m.realBookings).toBe(2);
+  });
+
+  it("still counts a page booking that lost its source as unsourced, so it holds the alarm", async () => {
+    const { db } = sourceDb([
+      row("offerhub"),
+      row("not-given"),
+      { ...row("not-given"), parentOrigin: null, referrer_origin: "https://www.trypennie.com" },
+      { ...row("not-given"), parentOrigin: "http://localhost:3000" },
+    ]);
+    const m = await measurePageSources(db, NOW);
+    expect(m.unsourced).toBe(3);
+    expect(m.hostless).toBe(0);
+    expect(m.realBookings).toBe(4);
+  });
+
+  it("refuses rather than undercounting when the unsourced read comes back full", async () => {
+    const rows = Array.from({ length: SOURCE_READ_LIMIT }, () => row("not-given"));
+    const { db } = sourceDb(rows);
+    await expect(measurePageSources(db, NOW)).rejects.toThrow(/truncated/);
   });
 
   it("throws on a failed read rather than answering zero", async () => {

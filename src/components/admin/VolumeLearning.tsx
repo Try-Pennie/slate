@@ -55,6 +55,7 @@ export function VolumeLearning({
   tiers,
   coverage,
   sourceNotice,
+  sourceSetAside,
   heldOff,
   notice,
   action,
@@ -75,6 +76,12 @@ export function VolumeLearning({
    * the lookback carried one. Required, so the page has to decide it.
    */
   sourceNotice: string | null;
+  /**
+   * From `pageSourceStatus()`'s note (#2960): how many hand made bookings with no host
+   * page were set aside from the source share, said beside the floors, or null when
+   * none were. Required, so the page has to decide it.
+   */
+  sourceSetAside: string | null;
   /**
    * From `pagesNotOnSlateLines()` (#2878): one sentence per Low page Slate does not
    * carry yet, said whatever else the section says, so a page missing from the table
@@ -203,6 +210,11 @@ export function VolumeLearning({
           {line}
         </p>
       ))}
+      {sourceSetAside !== null && (
+        <p className="mt-1 text-xs text-fg" data-page-sources-set-aside>
+          {sourceSetAside}
+        </p>
+      )}
       {sourceNotice !== null ? (
         <p className="mt-1 text-xs text-fg" role="status" data-page-sources>
           {sourceNotice}

@@ -60,6 +60,7 @@ function sourcesRecorded(): NonNullable<LowVolumeArmingFacts["pageSources"]> {
     lookbackDays: 7,
     realBookings: 40,
     unsourced: 0,
+    hostless: 0,
     pages: [
       { id: "income-verification", name: "Income Verification Phone Call", recorded: true },
       { id: "application-review-follow-up", name: "Completed Application Review Follow Up", recorded: true },
@@ -382,6 +383,45 @@ eq(
   eq(offUntagged.advisories.map((a) => a.kind), ["page-source-missing"], "and is listed as an arming advisory");
   assert(!SOURCES_MET.test(offUntagged.summary), `and the summary never reads as met (got: ${offUntagged.summary})`);
 
+  // #2960: bookings made by hand with no host page are set aside, so they never gate,
+  // but the readiness output still says how many there were, in the alerts page's
+  // own line, armed or not, so a page that lost its embed and its source shows.
+  const byHand: PageSourceMeasure = { ...sourcesRecorded(), hostless: 4 };
+  const byHandNote = pageSourceStatus(byHand);
+  assert(byHandNote.state === "recorded" && byHandNote.note !== null, "four hand made bookings leave the sources recorded, with a note");
+  for (const [label, arming] of [
+    ["armed", armed({ pageSources: byHand })],
+    ["disarmed", disarmed({ pageSources: byHand })],
+  ] as const) {
+    const j = judgeReadiness(healthy({ lowVolumeArming: arming }));
+    eq(j.exit, READINESS_EXIT.ready, `${label}: hand made bookings alone do not gate`);
+    assert(
+      byHandNote.state === "recorded" && byHandNote.note !== null && j.summary.includes(byHandNote.note),
+      `${label}: and the summary carries the set aside line (got: ${j.summary})`,
+    );
+  }
+  // In EVERY state, not only recorded: a lookback holding only hand made bookings is
+  // unmeasured, and one with a page booking missing its source is unrecorded, and the
+  // set aside line is said in both, from the status that builds it.
+  const SET_ASIDE = /4 bookings in the last 7 days were made with no host page/;
+  for (const [label, m] of [
+    ["unmeasured", { ...sourcesRecorded(), realBookings: 0, unsourced: 0, hostless: 4 }],
+    ["unrecorded", { ...sourcesRecorded(), unsourced: 1, hostless: 4 }],
+    ["recorded", { ...sourcesRecorded(), hostless: 4 }],
+  ] as const) {
+    eq(pageSourceStatus(m).state, label, `${label}: the fixture is in the state it names`);
+    for (const [mode, arming] of [
+      ["armed", armed({ pageSources: m })],
+      ["disarmed", disarmed({ pageSources: m })],
+    ] as const) {
+      const out = judgeReadiness(healthy({ lowVolumeArming: arming })).summary;
+      const said = out.match(new RegExp(SET_ASIDE.source, "g")) ?? [];
+      eq(said.length, 1, `${label}, ${mode}: the set aside line is said exactly once (got: ${out})`);
+    }
+  }
+  // Control (L159): with none set aside, no such line.
+  assert(!/no host page/.test(judgeReadiness(healthy({ lowVolumeArming: armed() })).summary), "control: nothing set aside, nothing said");
+
   // Agreement over every shape of the measurement, derived from the shared rule
   // rather than restated here: the gate reports a source finding exactly when the
   // rule says sources are not recorded, or (with them recorded) a page recorded none.
@@ -394,7 +434,7 @@ eq(
   for (const realBookings of [0, 1, 40]) {
     for (const unsourced of [0, 1, 3, 40].filter((u) => u <= realBookings)) {
       for (const pages of pageSets) {
-        const m: PageSourceMeasure = { lookbackDays: 7, realBookings, unsourced, pages };
+        const m: PageSourceMeasure = { lookbackDays: 7, realBookings, unsourced, hostless: 0, pages };
         const status = pageSourceStatus(m);
         const j = judgeReadiness(healthy({ lowVolumeArming: armed({ pageSources: m }) }));
         const sourceFinding = j.findings.find((f) => f.kind === "page-source-missing" || f.kind === "page-source-unmeasured");
