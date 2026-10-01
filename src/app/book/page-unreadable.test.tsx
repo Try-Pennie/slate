@@ -43,8 +43,6 @@ vi.mock("@/lib/booking/reason-options", () => ({
 vi.mock("@/lib/booking/service", () => ({
   existingCallForLanding: vi.fn(async () => null),
   landingAttendee: vi.fn(async (_identity: unknown, link: unknown) => link),
-  // #2982: no rebook token on these links, so nothing is resolved.
-  rebookRowForToken: vi.fn(async () => null),
 }));
 
 import BookEntry from "./page";

@@ -448,7 +448,7 @@ export {
   BookingNotChangeableError,
 } from "@/lib/booking/orchestration";
 import { log } from "@/lib/log";
-import { REBOOK_COLUMNS, loadRebookRow, type RebookRow } from "@/lib/booking/book-link";
+import { REBOOK_COLUMNS, loadRebookRow, type RebookLookup } from "@/lib/booking/book-link";
 import { pageRaceBoundHitAfterResponse } from "@/lib/booking/race-bound-page";
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { resolveAdvisorName, type AdvisorNameReader } from "@/lib/booking/advisor-name";
@@ -2358,13 +2358,13 @@ export async function landingAttendee(
 }
 
 /**
- * The booking a "Book a new time" link names by its manage token (#2982), for
- * `/book` to prefill from. ONE row by token, and only the columns a rebook needs.
- * Null on a token naming nothing usable and on a failed read, which is logged
- * with neither the token nor anything about the lead: the page then draws the
- * bare bucket booker, never an error.
+ * The booking a "Book a new time" link names by its manage token (#2982), for the
+ * rebook page under the manage path. ONE row by token, only the columns a rebook
+ * needs, under a deadline. Every failure is `failed` (the page then draws the
+ * bucket's booker without prefill) and is logged with neither the token nor
+ * anything about the lead; a token naming nothing usable is `absent`.
  */
-export function rebookRowForToken(token: string | null): Promise<RebookRow | null> {
+export function rebookRowForToken(token: string): Promise<RebookLookup> {
   return loadRebookRow(token, {
     readByToken: async (t) => {
       const { data, error } = await supabaseAdmin()
@@ -2372,13 +2372,15 @@ export function rebookRowForToken(token: string | null): Promise<RebookRow | nul
         .select(REBOOK_COLUMNS)
         .eq("manage_token", t)
         .maybeSingle();
-      return { data: (data as RebookRow | null) ?? null, error };
+      // Checked at runtime by `parseRebookRow`, never cast.
+      return { data, error };
     },
+    deadline: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
     // The error's CODE only, never its message or the Error itself: a PostgREST or
     // fetch failure can quote the request, whose filter is the token.
     warn: (msg, err) => {
       const code = err && typeof err === "object" && "code" in err ? String((err as { code: unknown }).code) : null;
-      const kind = err instanceof Error ? err.name : typeof err;
+      const kind = err instanceof Error ? err.name : err === null ? null : typeof err;
       log.warn("rebook", { msg, code, kind });
     },
   });

@@ -5,7 +5,7 @@ import { loadLandingBucketIsTest } from "@/lib/booking/landing-bucket";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { resolveLandingCode } from "@/lib/routing/landing-code";
-import { existingCallForLanding, landingAttendee, rebookRowForToken } from "@/lib/booking/service";
+import { existingCallForLanding, landingAttendee } from "@/lib/booking/service";
 import { DEFAULT_BRAND_COLOR } from "@/lib/brand-label";
 import { headers } from "next/headers";
 import { TestAccessRefused } from "@/components/TestAccessRefused";
@@ -14,7 +14,7 @@ import { judgeTestOrigin, testOriginRefusalSentence } from "@/lib/embed/test-pas
 import { currentTestPassFor } from "@/lib/embed/test-pass-gate";
 import { embedTestOrigins, embedTestPassSecret } from "@/lib/env";
 import { log } from "@/lib/log";
-import { readBookEntryQuery, withRebookIdentity } from "@/lib/booking/book-link";
+import { readBookEntryQuery } from "@/lib/booking/book-link";
 
 export const dynamic = "force-dynamic";
 // Lead-facing: the brand is Pennie; Slate stays internal.
@@ -39,13 +39,11 @@ export default async function BookEntry({
   searchParams: Promise<SP>;
 }) {
   const sp = await searchParams;
-  // #2982: the query is read through the one reader the rebook link is tested
-  // against. A "Book a new time" link names the cancelled booking by its manage
-  // token and carries no contact data; its Lead id, details and source page are
-  // read here, server side, in one row read. A token naming nothing usable (or a
-  // failed read) leaves the page exactly as the bare bucket link draws it.
-  const query = readBookEntryQuery(sp);
-  const entry = withRebookIdentity(query, await rebookRowForToken(query.rebookToken));
+  // #2982: the query is read through the one shared reader of this page's URL
+  // contract (`book-link.ts`), beside the link Slate builds for a lead booking
+  // again, which deliberately does NOT come here: it carries a manage token,
+  // and this public page is framed by host pages and their scripts.
+  const entry = readBookEntryQuery(sp);
 
   // A blank or unreadable code is ROUTED, not refused (#1908). cal.com catches
   // every one with its own catch-all to the Low pool, and that rule carries about

@@ -118,9 +118,9 @@ describe("manage page advisor wiring (#1338)", () => {
     expect(props?.attendeeEmail).toBe("dana@example.com");
   });
 
-  // #2982: "Book a new time" names this booking by its manage token, and /book
-  // resolves the Lead id, details and source server side. No contact data may
-  // ride on the URL (request logs, history, Referer to third party scripts).
+  // #2982: "Book a new time" opens the rebook booker under THIS page's own path,
+  // which resolves the Lead id, details and source server side. No contact data
+  // may ride on the URL, and the token must not reach the public /book page.
   it("hands the page a rebook link naming the booking by token and carrying no contact data", async () => {
     service.getBookingByToken.mockResolvedValue({
       ...found,
@@ -135,10 +135,9 @@ describe("manage page advisor wiring (#1338)", () => {
     const props = await renderPage();
     const href = String(props?.rebookHref);
     const url = new URL(href, "https://slate.example");
-    expect(url.pathname).toBe("/book");
-    expect([...url.searchParams.keys()].sort()).toEqual(["rebook", "xbc"]);
+    expect(url.pathname).toBe("/booking/manage/tok1/rebook");
+    expect([...url.searchParams.keys()]).toEqual(["xbc"]);
     expect(url.searchParams.get("xbc")).toBe("411");
-    expect(url.searchParams.get("rebook")).toBe("tok1");
     for (const secret of ["00QUi00000ABCdeMAH", "Dana", "dana", "5550100"]) {
       expect(href).not.toContain(secret);
     }

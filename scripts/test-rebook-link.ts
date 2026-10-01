@@ -1,93 +1,75 @@
-// "Book a new time" carries the lead's identity back into /book (#2982).
+// "Book a new time" carries the lead's identity into the rebooked call (#2982).
 //
 // The manage page's rebook link used to be a bare `/book?xbc=<bucket>`, so a lead
 // who cancelled and booked again arrived as a stranger: no Lead id (no Salesforce
 // link, no Regal journey, no dedupe against their record), no source, and every
-// detail retyped. The link now names the booking by its manage token, and `/book`
-// resolves that SERVER SIDE into the booking's identity. No contact data ever
-// rides on the URL, where request logs, browser history and Referer headers to
-// third party scripts would carry it.
-//
-// The link is parsed back with the SAME reader `/book` uses (`readBookEntryQuery`),
-// so a parameter name the page does not read cannot pass here (L58).
+// detail retyped. The rebook booker now lives under the manage path the lead is
+// already on and resolves the booking by its token SERVER SIDE, so no contact
+// data rides on a URL and the token never reaches the public `/book` page, which
+// host pages and their third party scripts frame.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs \
 //        scripts/test-rebook-link.ts
 import { readFileSync } from "node:fs";
 import { assert, eq, finish } from "./lib/harness.ts";
 import {
-  REBOOK_PARAM,
   loadRebookRow,
+  parseRebookRow,
   readBookEntryQuery,
+  rebookEntry,
   rebookHref,
-  withRebookIdentity,
-  type RebookRow,
+  type RebookDeps,
 } from "../src/lib/booking/book-link.ts";
 import { readBookingSource } from "../src/lib/booking/booking-source.ts";
 
-/** What Next hands `/book` as `searchParams`, from an href. */
-function searchParamsOf(href: string): Record<string, string | string[] | undefined> {
-  const url = new URL(href, "https://slate.example");
-  eq(url.pathname, "/book", `the link opens /book: ${href}`);
-  const sp: Record<string, string | string[] | undefined> = {};
-  for (const [k, v] of url.searchParams) sp[k] = v;
-  return sp;
-}
-
 const TOKEN = "tok_rebook_fixture_0001";
-const ROW: RebookRow = {
+const DATA = {
   status: "cancelled",
   salesforce_id: "00QUi00000ABCdeMAH",
   attendee_name: "Dana O'Neil",
   attendee_email: "dana+test@example.com",
   attendee_phone: "+12155550100",
   source: "my-offers-result",
+  bucket: { code: "100" },
 };
 
 async function main() {
-  // --- the link carries the bucket and the token, and NO contact data --------
+  // --- the link: under the manage path, the bucket and nothing about the lead -
   {
     const href = rebookHref({ bucketCode: "100", manageToken: TOKEN });
-    const sp = searchParamsOf(href);
-    eq(Object.keys(sp).sort().join(","), `${REBOOK_PARAM},xbc`, "only xbc and the token ride on the link");
-    const read = readBookEntryQuery(sp);
-    eq(read.requestedCode, "100", "the bucket rides as xbc");
-    eq(read.rebookToken, TOKEN, "the token reads back through /book's reader");
-    eq(read.externalId, null, "no Lead id on the URL");
-    eq(JSON.stringify(read.link), JSON.stringify({ name: "", email: "", phone: "" }), "no details on the URL");
-    assert(!(REBOOK_PARAM in read.prefill), "the token is kept out of prefill, which reaches webhooks");
+    const url = new URL(href, "https://slate.example");
+    eq(url.pathname, `/booking/manage/${TOKEN}/rebook`, "served under the manage path the lead is on");
+    eq([...url.searchParams.keys()].join(","), "xbc", "only the bucket rides on the query");
+    eq(url.searchParams.get("xbc"), "100", "the bucket, for a lookup that fails");
+    assert(!href.startsWith("/book?") && !href.startsWith("/book/"), "the token never reaches the public /book page");
   }
 
-  // --- a malformed token is refused before any read ---------------------------
-  for (const bad of ["", "short", "has space in it here ok", "x".repeat(65), "drop'table--aaaaaaaaaaa"]) {
-    eq(readBookEntryQuery({ [REBOOK_PARAM]: bad }).rebookToken, null, `malformed token ${JSON.stringify(bad)} is ignored`);
+  // --- the runtime shape check, never a cast ---------------------------------
+  {
+    const row = parseRebookRow(DATA);
+    eq(row?.bucketCode, "100", "the embedded bucket code is read");
+    eq(parseRebookRow({ ...DATA, bucket: [{ code: "100" }] })?.bucketCode, "100", "an array embed is read too");
+    eq(parseRebookRow({ ...DATA, bucket: null }), null, "no bucket: unreadable");
+    eq(parseRebookRow({ ...DATA, status: 3 }), null, "a non string status: unreadable");
+    eq(parseRebookRow({ ...DATA, attendee_email: 42 }), null, "a non string contact field: unreadable");
+    eq(parseRebookRow(null), null, "nothing: unreadable");
   }
 
   // --- the identity fills the form, the Lead id and the source ---------------
   {
-    const entry = withRebookIdentity(readBookEntryQuery(searchParamsOf(rebookHref({ bucketCode: "100", manageToken: TOKEN }))), ROW);
+    const entry = rebookEntry(parseRebookRow(DATA)!);
+    eq(entry.requestedCode, "100", "the booking's own bucket");
     eq(entry.externalId, "00QUi00000ABCdeMAH", "the Lead id /book routes and recognises on");
     eq(entry.link.name, "Dana O'Neil", "name");
     eq(entry.link.email, "dana+test@example.com", "email");
     eq(entry.link.phone, "+12155550100", "phone");
     eq(readBookingSource(entry.prefill).source, "my-offers-result", "the original page's source is recorded again");
-  }
-
-  // --- a host page's own values win over the stored ones ----------------------
-  {
-    const entry = withRebookIdentity(
-      readBookEntryQuery({ xbc: "100", external_id: "00QHOST", email: "host@example.com", source: "booking", [REBOOK_PARAM]: TOKEN }),
-      ROW,
-    );
-    eq(entry.externalId, "00QHOST", "the link's Lead id wins");
-    eq(entry.link.email, "host@example.com", "the link's email wins");
-    eq(entry.link.name, "Dana O'Neil", "a field the link left blank is filled");
-    eq(entry.prefill.source, "booking", "the link's source wins");
+    eq(Object.keys(entry.prefill).join(","), "source", "prefill holds the source and nothing else");
   }
 
   // --- no Lead id: the details still fill, nothing is invented ----------------
   {
-    const entry = withRebookIdentity(readBookEntryQuery({ xbc: "100" }), { ...ROW, salesforce_id: null, attendee_phone: null });
+    const entry = rebookEntry(parseRebookRow({ ...DATA, salesforce_id: null, attendee_phone: null })!);
     eq(entry.externalId, null, "no Lead id: none invented");
     eq(entry.link.email, "dana+test@example.com", "the email still fills");
     eq(entry.link.phone, "", "no phone: none invented");
@@ -95,53 +77,63 @@ async function main() {
 
   // --- only a PAGE source is carried ------------------------------------------
   for (const source of ["not-given", "unrecognised", "api-regal", "api-canary", null]) {
-    const entry = withRebookIdentity(readBookEntryQuery({ xbc: "100" }), { ...ROW, source });
+    const entry = rebookEntry(parseRebookRow({ ...DATA, source })!);
     assert(!("source" in entry.prefill), `a stored ${source} is not recorded as the page`);
   }
 
-  // --- no row leaves the query untouched --------------------------------------
-  {
-    const entry = readBookEntryQuery({ xbc: "100", [REBOOK_PARAM]: TOKEN });
-    eq(withRebookIdentity(entry, null), entry, "a token that resolved to nothing changes nothing");
-  }
-
-  // --- the lookup: one read, and every way it can fail is a quiet null --------
+  // --- the lookup: one read by token, and every outcome named ----------------
   {
     const asked: string[] = [];
     const warned: string[] = [];
-    const deps = (answer: () => Promise<{ data: RebookRow | null; error: unknown }>) => ({
-      readByToken: (t: string) => {
+    let release: () => void = () => {};
+    const deps = (answer: () => Promise<{ data: unknown; error: unknown }>, deadline?: () => Promise<void>): RebookDeps => ({
+      readByToken: (t) => {
         asked.push(t);
         return answer();
       },
-      warn: (msg: string, err: unknown) => warned.push(`${msg} ${String(err)}`),
+      // Never fires unless a test hands it a deadline of its own.
+      deadline: deadline ?? (() => new Promise<void>((r) => { release = r; })),
+      warn: (msg, err) => warned.push(`${msg} ${String(err)}`),
     });
 
-    eq(await loadRebookRow(null, deps(async () => ({ data: ROW, error: null }))), null, "no token: null");
-    eq(asked.length, 0, "no token: no read at all");
-
-    eq(await loadRebookRow(TOKEN, deps(async () => ({ data: ROW, error: null }))), ROW, "a cancelled booking resolves");
+    const found = await loadRebookRow(TOKEN, deps(async () => ({ data: DATA, error: null })));
+    eq(found.kind, "found", "a cancelled booking resolves");
     eq(asked.at(-1), TOKEN, "read by exactly the token");
-    eq((await loadRebookRow(TOKEN, deps(async () => ({ data: { ...ROW, status: "completed" }, error: null }))))?.status, "completed", "a completed call resolves too (its page offers the rebook)");
+    eq((await loadRebookRow(TOKEN, deps(async () => ({ data: { ...DATA, status: "completed" }, error: null })))).kind, "found", "a completed call resolves too (its page offers the rebook)");
 
-    eq(await loadRebookRow(TOKEN, deps(async () => ({ data: null, error: null }))), null, "unknown token: null");
+    eq((await loadRebookRow(TOKEN, deps(async () => ({ data: null, error: null })))).kind, "absent", "unknown token: absent (the not found state)");
     for (const status of ["confirmed", "rescheduled", "no_show"]) {
-      eq(await loadRebookRow(TOKEN, deps(async () => ({ data: { ...ROW, status }, error: null }))), null, `a ${status} booking is not a rebook`);
+      eq((await loadRebookRow(TOKEN, deps(async () => ({ data: { ...DATA, status }, error: null })))).kind, "absent", `a ${status} booking is not a rebook`);
     }
     eq(warned.length, 0, "an unknown or other state token is silent");
 
-    eq(await loadRebookRow(TOKEN, deps(async () => ({ data: null, error: new Error("boom") }))), null, "a failed read: null");
-    eq(await loadRebookRow(TOKEN, deps(async () => { throw new Error("network"); })), null, "a thrown read: null");
-    eq(warned.length, 2, "both failures are logged");
-    assert(warned.every((w) => !w.includes(TOKEN)), "the token is never logged");
-    assert(warned.every((w) => !w.includes("dana")), "nothing about the lead is logged");
+    eq((await loadRebookRow(TOKEN, deps(async () => ({ data: null, error: { code: "57014", message: `manage_token=eq.${TOKEN}` } })))).kind, "failed", "a failed read: failed");
+    eq((await loadRebookRow(TOKEN, deps(async () => { throw new Error("network"); }))).kind, "failed", "a thrown read: failed");
+    eq((await loadRebookRow(TOKEN, deps(async () => ({ data: { ...DATA, bucket: null }, error: null })))).kind, "failed", "an unreadable row: failed, never a half filled identity");
+    // A read that never answers is bounded by the deadline.
+    const hung = loadRebookRow(TOKEN, deps(() => new Promise(() => {}), async () => {}));
+    eq((await hung).kind, "failed", "a read that never answers: failed at the deadline");
+    eq(warned.length, 4, "every failure is logged");
+    release();
   }
 
-  // --- /book and the manage page really use these ------------------------------
+  // --- what the real wiring logs: the code only, never the token or the lead --
+  {
+    const service = readFileSync("src/lib/booking/service.ts", "utf8");
+    const at = service.indexOf("export function rebookRowForToken");
+    assert(at > 0, "service.ts wires the lookup");
+    const body = service.slice(at, at + 1600);
+    assert(body.includes("log.warn(\"rebook\", { msg, code, kind })"), "the log line carries the message, the error code and its kind");
+    assert(!/log\.warn\([^)]*,\s*err\)/.test(body), "the error itself (which can quote the token) is never handed to the log");
+    assert(body.includes("REBOOK_COLUMNS"), "the read selects only the rebook columns");
+    assert(body.includes(".maybeSingle()"), "the read is one row");
+  }
+
+  // --- /book never takes a rebook token, and the manage page builds the link --
   {
     const book = readFileSync("src/app/book/page.tsx", "utf8");
     assert(book.includes("readBookEntryQuery("), "/book reads its query through readBookEntryQuery");
-    assert(book.includes("withRebookIdentity("), "/book applies the rebook identity");
+    assert(!book.includes("rebook"), "/book has no rebook path at all");
     const manage = readFileSync("src/app/booking/manage/[token]/page.tsx", "utf8");
     assert(manage.includes("rebookHref("), "the manage page builds its link through rebookHref");
   }

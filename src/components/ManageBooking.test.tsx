@@ -28,7 +28,7 @@ const baseProps = {
   bucketCode: "411",
   // #2982: built server side from the booking by `rebookHref`; the component
   // renders it as given.
-  rebookHref: "/book?xbc=411&rebook=tok1",
+  rebookHref: "/booking/manage/tok1/rebook?xbc=411",
   // #2827: a routed booking, whose move times are its bucket's pool.
   rescheduleTimesFrom: "pool" as const,
   startsAt: "2026-06-20T15:00:00.000Z",

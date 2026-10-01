@@ -1,12 +1,12 @@
 /**
- * The `/book` URL contract in one place: what the page READS off its query, and
- * the one link Slate BUILDS into it for a lead booking again (#2982).
+ * The `/book` query contract, and the rebook link Slate builds for a lead booking
+ * again after a call is over (#2982).
  *
- * The rebook link carries NO contact data. A name, email, phone or Lead id on a
- * query string lands in request logs, browser history and the Referer sent to
- * every third party script on the page. It carries the booking's own manage
- * token instead (a bearer credential already shown in the manage URL), and `/book`
- * resolves it SERVER SIDE into the same identity a host page's link would carry.
+ * The rebook booker is served UNDER the manage path the lead is already on,
+ * `/booking/manage/<token>/rebook`, and resolves the booking server side by the
+ * same token the manage page does. So no contact data rides on any URL, and the
+ * manage token never appears on a page it was not already on: the public booker
+ * at `/book`, which host pages and their scripts frame, never sees it.
  *
  * Pure, no `@/` imports, so the node test suite loads it directly; the database
  * read is injected (`service.ts` wires the real one).
@@ -21,15 +21,6 @@ function first(sp: SP, key: string): string {
   return (Array.isArray(v) ? v[0] : v) ?? "";
 }
 
-/** The query key carrying the cancelled booking's manage token. */
-export const REBOOK_PARAM = "rebook";
-
-/**
- * A manage token's shape: `nanoid(24)` mints them, so the URL safe alphabet. A
- * value outside it is refused before any read, so a malformed one costs nothing.
- */
-const MANAGE_TOKEN_SHAPE = /^[A-Za-z0-9_-]{16,64}$/;
-
 export interface BookEntryQuery {
   /** The bucket code the link asked for (`xbc`), possibly blank. */
   requestedCode: string;
@@ -37,21 +28,16 @@ export interface BookEntryQuery {
   externalId: string | null;
   /** The lead's details as the link carried them, "" for anything it did not. */
   link: { name: string; email: string; phone: string };
-  /** Every query value but the rebook token, first value per key: the booking
-   *  records it as `prefill`, which reaches webhooks, so a credential stays out. */
+  /** Every query value, first value per key: the booking records it as `prefill`. */
   prefill: Record<string, string>;
-  /** A well formed rebook token, or null (absent or malformed). */
-  rebookToken: string | null;
 }
 
 /** Read `/book`'s query the way the page does. */
 export function readBookEntryQuery(sp: SP): BookEntryQuery {
   const prefill: Record<string, string> = {};
   for (const [k, v] of Object.entries(sp)) {
-    if (k === REBOOK_PARAM) continue;
     prefill[k] = Array.isArray(v) ? (v[0] ?? "") : (v ?? "");
   }
-  const rebook = first(sp, REBOOK_PARAM);
   return {
     requestedCode: first(sp, "xbc"),
     externalId: first(sp, "external_id") || null,
@@ -62,93 +48,144 @@ export function readBookEntryQuery(sp: SP): BookEntryQuery {
       phone: first(sp, "phone") || first(sp, "attendeePhoneNumber") || first(sp, "smsReminderNumber"),
     },
     prefill,
-    rebookToken: MANAGE_TOKEN_SHAPE.test(rebook) ? rebook : null,
   };
 }
 
 /**
- * "Book a new time" for a call that is over (#2982): back into the same bucket,
- * naming the booking by its manage token and nothing else.
+ * "Book a new time" for a call that is over (#2982): the rebook booker under this
+ * booking's own manage path. The bucket rides as `xbc` only so a lookup that
+ * FAILS can still draw that bucket's booker without prefill; a bucket code is not
+ * contact data, and a lookup that succeeds uses the booking's own bucket instead.
  */
 export function rebookHref(b: { bucketCode: string; manageToken: string }): string {
   const q = new URLSearchParams();
   q.set("xbc", b.bucketCode);
-  q.set(REBOOK_PARAM, b.manageToken);
-  return `/book?${q.toString()}`;
+  return `/booking/manage/${encodeURIComponent(b.manageToken)}/rebook?${q.toString()}`;
 }
 
-/** The booking columns a rebook reads, and nothing more. */
-export const REBOOK_COLUMNS = "status, salesforce_id, attendee_name, attendee_email, attendee_phone, source";
+/** The booking columns a rebook reads, and nothing more: one row by token. */
+export const REBOOK_COLUMNS =
+  "status, salesforce_id, attendee_name, attendee_email, attendee_phone, source, bucket:buckets(code)";
 
 export interface RebookRow {
   status: string;
-  salesforce_id: string | null;
-  attendee_name: string | null;
-  attendee_email: string | null;
-  attendee_phone: string | null;
+  bucketCode: string;
+  salesforceId: string | null;
+  attendeeName: string | null;
+  attendeeEmail: string | null;
+  attendeePhone: string | null;
   source: string | null;
+}
+
+function nullableString(v: unknown): v is string | null {
+  return v === null || typeof v === "string";
+}
+
+/**
+ * The row as the read answered it, checked at RUNTIME rather than cast: a select
+ * or schema change that alters the shape is a failed read, never a half filled
+ * identity. Null when the shape is wrong.
+ */
+export function parseRebookRow(data: unknown): RebookRow | null {
+  if (!data || typeof data !== "object") return null;
+  const d = data as Record<string, unknown>;
+  const bucket = Array.isArray(d.bucket) ? d.bucket[0] : d.bucket;
+  const code = bucket && typeof bucket === "object" ? (bucket as Record<string, unknown>).code : undefined;
+  if (typeof d.status !== "string" || typeof code !== "string" || !code) return null;
+  const fields = [d.salesforce_id, d.attendee_name, d.attendee_email, d.attendee_phone, d.source];
+  if (!fields.every(nullableString)) return null;
+  return {
+    status: d.status,
+    bucketCode: code,
+    salesforceId: d.salesforce_id as string | null,
+    attendeeName: d.attendee_name as string | null,
+    attendeeEmail: d.attendee_email as string | null,
+    attendeePhone: d.attendee_phone as string | null,
+    source: d.source as string | null,
+  };
 }
 
 /** The statuses whose manage page offers "Book a new time" (`ManageBooking`). */
 const REBOOKABLE_STATUSES: ReadonlySet<string> = new Set(["cancelled", "completed"]);
 
+/** How long the page waits on the lookup before drawing the booker without prefill. */
+export const REBOOK_LOOKUP_TIMEOUT_MS = 3_000;
+
+export type RebookLookup =
+  | { kind: "found"; row: RebookRow }
+  /** No such booking, or one whose page offers no rebook: the not found state. */
+  | { kind: "absent" }
+  /** The read failed, timed out or answered an unreadable shape: no prefill. */
+  | { kind: "failed" };
+
 export interface RebookDeps {
   /** ONE row by manage token (`.maybeSingle()`), as supabase answers it. */
-  readByToken: (token: string) => Promise<{ data: RebookRow | null; error: unknown }>;
-  /** Told only that the read failed: never the token, never anything about the lead. */
+  readByToken: (token: string) => Promise<{ data: unknown; error: unknown }>;
+  /** Resolves after `ms`; injected so tests never wait on a real clock (L524). */
+  deadline: (ms: number) => Promise<void>;
+  /** Told only WHY the read failed: never the token, never anything about the lead. */
   warn: (msg: string, err: unknown) => void;
+  timeoutMs?: number;
 }
 
+const TIMED_OUT: unique symbol = Symbol("timed-out");
+
 /**
- * The identity a rebook token stands for, or null when it stands for nothing
- * usable: no token, no such booking, a booking whose page offers no rebook, or a
- * read that failed. Every null renders the page exactly as the bare bucket link
- * would, so a bad token is never an error page and never another booking's data.
+ * The booking a rebook token names. Every way the read can fail is `failed`,
+ * which the page answers with the bare bucket booker rather than an error, since
+ * the lead can still book; a token naming nothing usable is `absent`, which the
+ * page answers with the manage page's own not found state, never another booking.
  */
-export async function loadRebookRow(token: string | null, deps: RebookDeps): Promise<RebookRow | null> {
-  if (!token) return null;
-  let res: { data: RebookRow | null; error: unknown };
+export async function loadRebookRow(token: string, deps: RebookDeps): Promise<RebookLookup> {
+  let res: { data: unknown; error: unknown } | typeof TIMED_OUT;
   try {
-    res = await deps.readByToken(token);
+    res = await Promise.race([
+      deps.readByToken(token),
+      deps.deadline(deps.timeoutMs ?? REBOOK_LOOKUP_TIMEOUT_MS).then((): typeof TIMED_OUT => TIMED_OUT),
+    ]);
   } catch (err) {
     deps.warn("rebook lookup threw, booking without prefill", err);
-    return null;
+    return { kind: "failed" };
+  }
+  if (res === TIMED_OUT) {
+    deps.warn("rebook lookup timed out, booking without prefill", null);
+    return { kind: "failed" };
   }
   if (res.error) {
     deps.warn("rebook lookup failed, booking without prefill", res.error);
-    return null;
+    return { kind: "failed" };
   }
-  const row = res.data;
-  if (!row || !REBOOKABLE_STATUSES.has(row.status)) return null;
-  return row;
+  if (res.data === null || res.data === undefined) return { kind: "absent" };
+  const row = parseRebookRow(res.data);
+  if (!row) {
+    deps.warn("rebook lookup answered an unreadable row, booking without prefill", null);
+    return { kind: "failed" };
+  }
+  if (!REBOOKABLE_STATUSES.has(row.status)) return { kind: "absent" };
+  return { kind: "found", row };
 }
 
 const PAGE_SET: ReadonlySet<string> = new Set(PAGE_SOURCES);
 
 /**
- * The query with a rebooked booking's identity filled in: its Lead id, the lead's
- * details and the page it was booked from, each only where the link itself said
- * nothing, so a host page's own values always win.
+ * What the rebook booker starts with: the booking's Lead id, the lead's details
+ * and the page it was booked from.
  *
  * The source is carried so the rebooked call counts toward the page it came from
  * rather than as unsourced in the per page volume alarm. Only a page is carried:
  * an outcome (`not-given`, `unrecognised`) or an API caller is not a page, and
  * `readBookingSource` would record it as `unrecognised`.
  */
-export function withRebookIdentity(entry: BookEntryQuery, row: RebookRow | null): BookEntryQuery {
-  if (!row) return entry;
-  const fill = (linkValue: string, stored: string | null) => linkValue || stored?.trim() || "";
-  const prefill = { ...entry.prefill };
-  if (!prefill[BOOKING_SOURCE_PARAM] && row.source && PAGE_SET.has(row.source)) {
-    prefill[BOOKING_SOURCE_PARAM] = row.source;
-  }
+export function rebookEntry(row: RebookRow): BookEntryQuery {
+  const prefill: Record<string, string> = {};
+  if (row.source && PAGE_SET.has(row.source)) prefill[BOOKING_SOURCE_PARAM] = row.source;
   return {
-    ...entry,
-    externalId: entry.externalId ?? (row.salesforce_id?.trim() || null),
+    requestedCode: row.bucketCode,
+    externalId: row.salesforceId?.trim() || null,
     link: {
-      name: fill(entry.link.name, row.attendee_name),
-      email: fill(entry.link.email, row.attendee_email),
-      phone: fill(entry.link.phone, row.attendee_phone),
+      name: row.attendeeName?.trim() ?? "",
+      email: row.attendeeEmail?.trim() ?? "",
+      phone: row.attendeePhone?.trim() ?? "",
     },
     prefill,
   };
