@@ -2269,6 +2269,7 @@ export async function GET(req: NextRequest) {
         ...("received" in regalOutcomes ? { received: regalOutcomes.received, written: regalOutcomes.written } : {}),
         ...(regalOutcomes.status === "short" ? { paged: regalOutcomes.paged, ...(regalOutcomes.pageError ? { page_error: regalOutcomes.pageError } : {}) } : {}),
         ...(regalOutcomes.status === "unmeasured" ? { why: regalOutcomes.why } : {}),
+        ...(regalOutcomes.status === "healthy" && regalOutcomes.resolveError ? { resolve_error: regalOutcomes.resolveError } : {}),
       });
     }
 

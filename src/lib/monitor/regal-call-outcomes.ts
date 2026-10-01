@@ -139,7 +139,7 @@ export type RegalCallOutcomesResult =
   | { status: "no-calls" }
   | { status: "too-few"; received: number; written: number }
   | { status: "short"; received: number; written: number; paged: boolean; pageError?: string }
-  | { status: "healthy"; received: number; written: number };
+  | { status: "healthy"; received: number; written: number; resolveError?: string };
 
 export interface RegalCallOutcomesDeps {
   /** The detector's per reason counts received at or after `sinceIso`. THROWS on a read error. */
@@ -210,7 +210,12 @@ export async function runRegalCallOutcomesCheck(deps: RegalCallOutcomesDeps): Pr
   if (deps.armed) {
     await deps.clearStreak();
     const text = formatRegalCallOutcomesRecovery({ received, written, windowMinutes });
-    await deps.resolve(REGAL_CALL_OUTCOMES_KEY, text).catch(() => {});
+    try {
+      await deps.resolve(REGAL_CALL_OUTCOMES_KEY, text);
+    } catch (err) {
+      // Carried for the tick log, so a stuck alert is never read as cleared (L12).
+      return { status: "healthy", received, written, resolveError: err instanceof Error ? err.message : String(err) };
+    }
   }
   return { status: "healthy", received, written };
 }
