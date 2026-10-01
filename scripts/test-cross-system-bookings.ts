@@ -12,25 +12,30 @@
 //  - both directions: distinct leads, a cancelled cal.com twin, and a Slate booking
 //    made from a test host page are all silent;
 //  - a failed read on EITHER side measures nothing: no page, no all clear, no verdict,
-//    and a partial cal.com read is a failed read (L98, #1134, #1152);
-//  - the all clear hangs off a MEASURED fact about the paged booking;
+//    and a partial or timed out cal.com read is a failed read (L98, #1134, #1152);
+//  - the cal.com side all clear rests on a DIRECT read of that booking by uid, never
+//    on its absence from the listing, which pages by skip and can drop a row;
+//  - the whole run is held to one deadline, driven by an injected clock;
 //  - cal.com not configured, or marked retired, skips the read; retired ends the pages;
 //  - it reads cal.com once an hour, never on every five minute tick;
 //  - the page names the lead, BOTH booking ids and both start times, and no address.
 import {
   CROSS_SYSTEM_BOOKING_KEY,
+  CROSS_SYSTEM_BUDGET_MS,
   crossSystemBookingKey,
+  crossSystemBookingMember,
   crossSystemBookingsDue,
   findCrossSystemBookings,
   formatCrossSystemBookingAlert,
   formatCrossSystemBookingRecovery,
   formatCrossSystemBookingRetired,
+  parseCrossSystemBookingMember,
   runCrossSystemBookingsCheck,
   type CrossSystemBookingsDeps,
   type SlateUpcomingBooking,
 } from "@/lib/monitor/cross-system-bookings";
 import { crossSystemBookingsReachedVerdict } from "@/lib/monitor/verdict-freshness";
-import type { CalcomUpcomingBooking, CalcomUpcomingRead } from "@/lib/calcom/upcoming-bookings";
+import type { CalcomBookingRead, CalcomUpcomingBooking, CalcomUpcomingRead } from "@/lib/calcom/upcoming-bookings";
 import { PARTNER_KEYS } from "@/lib/booking/partner-keys";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -39,6 +44,8 @@ const NOW = Date.UTC(2026, 9, 1, 1, 0, 30);
 const LEAD = "00QUi00000t840LMAQ";
 const SUB = "a04Ui00000NDRunIAH";
 const SLATE_ID = "aa70212d-aafa-46ad-88d1-c47cdca0d17c";
+const UID = "hSzsCyr9HbBcg92HpJXg3r";
+const MEMBER = crossSystemBookingMember(SLATE_ID, UID);
 
 function slate(over: Partial<SlateUpcomingBooking> = {}): SlateUpcomingBooking {
   return {
@@ -58,7 +65,7 @@ function slate(over: Partial<SlateUpcomingBooking> = {}): SlateUpcomingBooking {
 function cal(over: Partial<CalcomUpcomingBooking> = {}): CalcomUpcomingBooking {
   return {
     id: 26177051,
-    uid: "hSzsCyr9HbBcg92HpJXg3r",
+    uid: UID,
     start: "2026-10-01T22:00:00.000Z",
     status: "accepted",
     host: "kevin-host",
@@ -68,7 +75,7 @@ function cal(over: Partial<CalcomUpcomingBooking> = {}): CalcomUpcomingBooking {
   };
 }
 
-// --- the cadence ------------------------------------------------------------------
+// --- the cadence and the key ------------------------------------------------------
 {
   assert(crossSystemBookingsDue(Date.UTC(2026, 9, 1, 1, 0, 0)), "the tick on the hour is due");
   assert(crossSystemBookingsDue(Date.UTC(2026, 9, 1, 1, 4, 59)), "a late tick inside the first five minutes is still due");
@@ -77,6 +84,11 @@ function cal(over: Partial<CalcomUpcomingBooking> = {}): CalcomUpcomingBooking {
   let due = 0;
   for (let m = 0; m < 60; m += 5) if (crossSystemBookingsDue(Date.UTC(2026, 9, 1, 3, m, 10))) due++;
   eq(due, 1, "exactly one five minute tick an hour reads cal.com");
+
+  eq(crossSystemBookingKey(SLATE_ID, UID), `${CROSS_SYSTEM_BOOKING_KEY}:${SLATE_ID}:${UID}`, "one key per pair, carrying the cal.com uid the all clear must read");
+  eq(parseCrossSystemBookingMember(MEMBER), { slateId: SLATE_ID, uid: UID }, "a firing member reads back to its pair");
+  eq(parseCrossSystemBookingMember(SLATE_ID), null, "a member with no uid is not one this version wrote");
+  eq(parseCrossSystemBookingMember(`${SLATE_ID}:`), null, "nor is one with an empty uid");
 }
 
 // --- the judge ----------------------------------------------------------------------
@@ -85,10 +97,9 @@ function cal(over: Partial<CalcomUpcomingBooking> = {}): CalcomUpcomingBooking {
   eq(pairs.length, 1, "the 2026-10-01 duplicate is found");
   eq(pairs[0].matchedOn, "both", "it shares the Submission id and the address");
   eq(pairs[0].leadId, LEAD, "the lead id comes from the Slate booking, since cal.com holds none");
-  eq(pairs[0].calcom.map((c) => c.id), [26177051], "with the cal.com twin");
+  eq(pairs[0].calcom.id, 26177051, "with the cal.com twin");
 }
 {
-  // The same booking with the address differing: the Submission id alone is enough.
   const pairs = findCrossSystemBookings([slate()], [cal({ attendeeEmails: ["other.spelling@example.test"] })], NOW);
   eq(pairs.map((p) => p.matchedOn), ["submission"], "matched on the Submission id alone");
 }
@@ -106,17 +117,13 @@ function cal(over: Partial<CalcomUpcomingBooking> = {}): CalcomUpcomingBooking {
   eq(pairs, [], "a different lead in cal.com is not a duplicate");
 }
 {
-  const pairs = findCrossSystemBookings([slate({ prefill: {}, attendee_email: null })], [cal()], NOW);
-  eq(pairs, [], "a Slate booking with neither key cannot be matched, and is not guessed at");
-}
-{
-  const pairs = findCrossSystemBookings([slate()], [cal({ submissionId: null, attendeeEmails: [] })], NOW);
-  eq(pairs, [], "a cal.com booking with neither key matches nothing");
-}
-{
-  // A blank address on both sides must not join two strangers.
-  const pairs = findCrossSystemBookings([slate({ prefill: {}, attendee_email: "  " })], [cal({ submissionId: null, attendeeEmails: [""] })], NOW);
-  eq(pairs, [], "a blank address is no key");
+  eq(findCrossSystemBookings([slate({ prefill: {}, attendee_email: null })], [cal()], NOW), [], "a Slate booking with neither key cannot be matched, and is not guessed at");
+  eq(findCrossSystemBookings([slate()], [cal({ submissionId: null, attendeeEmails: [] })], NOW), [], "a cal.com booking with neither key matches nothing");
+  eq(
+    findCrossSystemBookings([slate({ prefill: {}, attendee_email: "  " })], [cal({ submissionId: null, attendeeEmails: [""] })], NOW),
+    [],
+    "a blank address is no key",
+  );
 }
 for (const status of ["cancelled", "rejected"]) {
   eq(findCrossSystemBookings([slate()], [cal({ status })], NOW), [], `a ${status} cal.com booking is not live`);
@@ -125,20 +132,19 @@ for (const status of ["cancelled", "rejected"]) {
   eq(findCrossSystemBookings([slate()], [cal({ start: "2026-10-01T00:30:00.000Z" })], NOW), [], "a cal.com booking that has started is not upcoming");
 }
 {
-  const pairs = findCrossSystemBookings([slate()], [cal(), cal({ id: 26177999, uid: "second", start: "2026-10-03T15:00:00.000Z" })], NOW);
-  eq(pairs.length, 1, "one finding per Slate booking");
-  eq(pairs[0].calcom.map((c) => c.id), [26177051, 26177999], "carrying every live cal.com twin, soonest first");
+  const pairs = findCrossSystemBookings([slate()], [cal({ id: 26177999, uid: "second", start: "2026-10-03T15:00:00.000Z" }), cal()], NOW);
+  eq(pairs.map((p) => p.calcom.id), [26177051, 26177999], "a lead with two cal.com calls is two pairs, soonest first");
 }
 
 // --- the copy -------------------------------------------------------------------------
 {
   const [pair] = findCrossSystemBookings([slate()], [cal()], NOW);
   const text = formatCrossSystemBookingAlert(pair, `https://slate.test/admin/bookings/${SLATE_ID}`);
-  for (const want of [LEAD, SLATE_ID, "26177051", "hSzsCyr9HbBcg92HpJXg3r", "Fri, Oct 2", "Thu, Oct 1", "4:00pm ET", "6:00pm ET", "Jordan Advisor", "kevin-host", "Submission"]) {
+  for (const want of [LEAD, SLATE_ID, "26177051", UID, "Fri, Oct 2", "Thu, Oct 1", "4:00pm ET", "6:00pm ET", "Jordan Advisor", "kevin-host", "Submission"]) {
     assert(text.includes(want), `the page names ${want}`);
   }
   assert(text.includes("https://slate.test/admin/bookings/"), "the page links the Slate booking");
-  assert(text.includes("https://app.cal.com/booking/hSzsCyr9HbBcg92HpJXg3r"), "and the cal.com one");
+  assert(text.includes(`https://app.cal.com/booking/${UID}`), "and the cal.com one");
   assert(!text.includes("example.test"), "no lead address is ever in the page");
   assert(!/[\u2014\u2013]/.test(text), "no dash as punctuation");
 }
@@ -149,14 +155,15 @@ for (const status of ["cancelled", "rejected"]) {
   assert(!text.includes("null"), "no null leaks");
 }
 {
-  const [pair] = findCrossSystemBookings([slate({ attendee_email: "lead.person@example.test" })], [cal({ submissionId: null })], NOW);
+  const [pair] = findCrossSystemBookings([slate()], [cal({ submissionId: null })], NOW);
   assert(formatCrossSystemBookingAlert(pair, "u").includes("same email address"), "an address match says that is what matched");
 }
 {
-  const gone = formatCrossSystemBookingRecovery(SLATE_ID, "slate-gone", "u");
-  const calGone = formatCrossSystemBookingRecovery(SLATE_ID, "calcom-gone", "u");
+  const gone = formatCrossSystemBookingRecovery(SLATE_ID, UID, "slate-gone", "u");
+  const calGone = formatCrossSystemBookingRecovery(SLATE_ID, UID, "calcom-gone", "u");
   assert(gone !== calGone, "the two endings say different things");
-  assert(gone.includes(SLATE_ID) && calGone.includes(SLATE_ID), "each names the booking");
+  assert(gone.includes(SLATE_ID) && calGone.includes(SLATE_ID), "each names the Slate booking");
+  assert(calGone.includes(UID), "the cal.com ending names the cal.com booking it read");
   assert(formatCrossSystemBookingRetired(SLATE_ID).includes("retired"), "the retirement ending says why");
 }
 
@@ -164,22 +171,30 @@ for (const status of ["cancelled", "rejected"]) {
 interface Spy {
   notified: Array<{ key: string; ms: number; text: string }>;
   resolved: Array<{ key: string; text: string }>;
-  calcomReads: string[];
+  calcomReads: Array<{ afterIso: string; deadlineAtMs: number }>;
+  directReads: Array<{ uid: string; deadlineAtMs: number }>;
   slateReads: number;
 }
 
+const CLOCK_START = 5_000_000;
+
 function deps(over: Partial<CrossSystemBookingsDeps> = {}, firing: string[] = []): { d: CrossSystemBookingsDeps; spy: Spy } {
-  const spy: Spy = { notified: [], resolved: [], calcomReads: [], slateReads: 0 };
+  const spy: Spy = { notified: [], resolved: [], calcomReads: [], directReads: [], slateReads: 0 };
   const d: CrossSystemBookingsDeps = {
     nowMs: NOW,
+    clock: () => CLOCK_START,
     calcomRetired: async () => false,
     loadSlate: async () => {
       spy.slateReads++;
       return [slate()];
     },
-    readCalcom: async (afterIso): Promise<CalcomUpcomingRead | null> => {
-      spy.calcomReads.push(afterIso);
+    readCalcom: async (afterIso, deadlineAtMs): Promise<CalcomUpcomingRead | null> => {
+      spy.calcomReads.push({ afterIso, deadlineAtMs });
       return { ok: true, rows: [cal()], pages: 1 };
+    },
+    readCalcomByUid: async (uid, deadlineAtMs): Promise<CalcomBookingRead | null> => {
+      spy.directReads.push({ uid, deadlineAtMs });
+      return { ok: true, row: cal({ uid }) };
     },
     listFiring: async () => new Set(firing),
     bookingUrl: (id) => `https://slate.test/admin/bookings/${id}`,
@@ -205,14 +220,15 @@ function deps(over: Partial<CrossSystemBookingsDeps> = {}, firing: string[] = []
     eq(r.slateCompared, 1, "one Slate booking compared");
     eq(r.calcomCompared, 1, "against one cal.com booking");
   }
-  eq(spy.notified.map((n) => n.key), [crossSystemBookingKey(SLATE_ID)], "it pages once, keyed on the Slate booking");
-  eq(crossSystemBookingKey(SLATE_ID), `${CROSS_SYSTEM_BOOKING_KEY}:${SLATE_ID}`, "the family key");
+  eq(spy.notified.map((n) => n.key), [crossSystemBookingKey(SLATE_ID, UID)], "it pages once, keyed on the pair");
   eq(spy.notified[0].ms, 6 * 3_600_000, "at the configured cooldown");
-  eq(spy.calcomReads, [new Date(NOW).toISOString()], "cal.com is asked for bookings starting from now");
-  eq(spy.resolved, [], "nothing to clear");
+  eq(spy.calcomReads, [{ afterIso: new Date(NOW).toISOString(), deadlineAtMs: CLOCK_START + CROSS_SYSTEM_BUDGET_MS }], "cal.com is asked from now, held to the run's deadline");
+  eq(spy.directReads, [], "a pair found in the listing needs no direct read");
+  eq(spy.resolved.length, 0, "nothing to clear");
   assert(crossSystemBookingsReachedVerdict(r), "a measured comparison is a verdict");
 }
 {
+  eq(CROSS_SYSTEM_BUDGET_MS, 45_000, "the whole run is held to forty five seconds");
   const { d, spy } = deps({ nowMs: Date.UTC(2026, 9, 1, 1, 10, 0) });
   const r = await runCrossSystemBookingsCheck(d);
   eq(r.status, "not-due", "off the hour nothing is read");
@@ -227,16 +243,15 @@ function deps(over: Partial<CrossSystemBookingsDeps> = {}, firing: string[] = []
   assert(!crossSystemBookingsReachedVerdict(r), "not configured is not a verdict");
 }
 {
-  const { d, spy } = deps({ calcomRetired: async () => true }, [SLATE_ID]);
+  const { d, spy } = deps({ calcomRetired: async () => true }, [MEMBER]);
   const r = await runCrossSystemBookingsCheck(d);
   eq(r.status, "retired", "a retired cal.com is not read");
-  eq(spy.calcomReads.length, 0, "no cal.com read");
-  eq(spy.resolved.map((x) => x.key), [crossSystemBookingKey(SLATE_ID)], "and every outstanding page ends saying why");
-  assert(spy.resolved[0].text.includes("retired"), "with the retirement wording");
+  eq(spy.calcomReads.length + spy.directReads.length, 0, "no cal.com read of either kind");
+  eq(spy.resolved.map((x) => x.key), [crossSystemBookingKey(SLATE_ID, UID)], "and every outstanding page ends");
+  assert(spy.resolved[0].text.includes("retired") && spy.resolved[0].text.includes(SLATE_ID), "with the retirement wording, naming the booking");
   assert(crossSystemBookingsReachedVerdict(r), "retired is a settled answer, so its silence is not blindness");
 }
 {
-  // An unreadable retirement setting keeps today's behaviour, the comparison runs.
   const { d } = deps({ calcomRetired: async () => null });
   eq((await runCrossSystemBookingsCheck(d)).status, "measured", "an unreadable retirement flag still compares");
 }
@@ -251,52 +266,104 @@ for (const [what, over] of [
   ["a refused cal.com page", { readCalcom: async () => ({ ok: false, reason: "refused", status: 429, page: 2 }) }],
   ["an unreadable cal.com payload", { readCalcom: async () => ({ ok: false, reason: "unreadable", status: 200, page: 0 }) }],
   ["a partial cal.com read past its budget", { readCalcom: async () => ({ ok: false, reason: "too-many-pages", status: 200, page: 40 }) }],
-  ["a cal.com read that throws", { readCalcom: async () => { throw new Error("The operation was aborted due to timeout"); } }],
+  ["a cal.com walk that ran out of its deadline", { readCalcom: async () => ({ ok: false, reason: "deadline", status: 0, page: 3 }) }],
+  ["an unreachable cal.com", { readCalcom: async () => ({ ok: false, reason: "unreachable", status: 0, page: 0 }) }],
+  ["a cal.com read that throws", { readCalcom: async () => { throw new Error("boom"); } }],
   ["a Slate read that throws", { loadSlate: async () => { throw new Error("monitor cross system bookings: 500"); } }],
 ] as const) {
-  const { d, spy } = deps(over as Partial<CrossSystemBookingsDeps>, [SLATE_ID, "11111111-2222-3333-4444-555555555555"]);
+  const { d, spy } = deps(over as Partial<CrossSystemBookingsDeps>, [MEMBER, "11111111-2222-3333-4444-555555555555:otherUid"]);
   const r = await runCrossSystemBookingsCheck(d);
   eq(r.status, "unreadable", `${what} is unreadable`);
-  eq(spy.notified, [], `${what} pages nothing`);
+  eq(spy.notified.length, 0, `${what} pages nothing`);
   eq(spy.resolved.length, 0, `${what} clears nothing, however many pages are open`);
+  eq(spy.directReads.length, 0, `${what} spends no direct read`);
   assert(!crossSystemBookingsReachedVerdict(r), `${what} is no verdict`);
 }
 {
-  const { d } = deps({ readCalcom: async () => ({ ok: false, reason: "refused", status: 401, page: 0 }) });
+  const { d } = deps({ readCalcom: async () => ({ ok: false, reason: "deadline", status: 0, page: 3 }) });
   const r = await runCrossSystemBookingsCheck(d);
   if (r.status === "unreadable") {
     eq(r.stage, "calcom", "the refusal names its side");
-    assert(r.error.includes("401") && r.error.includes("refused"), `and its cause: ${r.error}`);
+    assert(r.error.includes("deadline"), `and its cause by name: ${r.error}`);
   }
+}
+{
+  // The deadline is computed from the injected clock at the start of the run, so a run
+  // that starts late is held to the same forty five seconds from when it started.
+  const { d, spy } = deps({ clock: () => 9_000_000 }, [MEMBER]);
+  await runCrossSystemBookingsCheck({ ...d, readCalcom: async (a, dl) => { spy.calcomReads.push({ afterIso: a, deadlineAtMs: dl }); return { ok: true, rows: [], pages: 1 }; } });
+  eq(spy.calcomReads[0].deadlineAtMs, 9_045_000, "the listing gets the run's deadline");
+  eq(spy.directReads[0]?.deadlineAtMs, 9_045_000, "and so does the direct read: one budget for the whole run");
 }
 
 // The all clear, off measured facts only.
 {
-  const { d, spy } = deps({ readCalcom: async () => ({ ok: true, rows: [cal({ status: "cancelled" })], pages: 1 }) }, [SLATE_ID]);
-  await runCrossSystemBookingsCheck(d);
-  eq(spy.resolved.map((x) => x.key), [crossSystemBookingKey(SLATE_ID)], "the cal.com twin cancelled ends the page");
-  eq(spy.resolved[0].text, formatCrossSystemBookingRecovery(SLATE_ID, "calcom-gone", d.bookingUrl(SLATE_ID)), "saying the cal.com booking went");
+  // The twin is missing from the listing, which pages by skip and can drop a row, so
+  // the booking itself is read: it is still upcoming, so the page stays open.
+  const { d, spy } = deps({ readCalcom: async () => ({ ok: true, rows: [], pages: 1 }) }, [MEMBER]);
+  const r = await runCrossSystemBookingsCheck(d);
+  eq(spy.directReads.map((x) => x.uid), [UID], "a paged twin missing from the list is read directly by uid");
+  eq(spy.resolved.length, 0, "a twin the direct read says is still upcoming keeps its page");
+  if (r.status === "measured") eq(r.stillLive, 1, "and is counted as still live");
+}
+for (const [what, direct] of [
+  ["refused", { ok: false, reason: "refused", status: 404 }],
+  ["unreadable", { ok: false, reason: "unreadable", status: 200 }],
+  ["out of time", { ok: false, reason: "deadline", status: 0 }],
+  ["unreachable", { ok: false, reason: "unreachable", status: 0 }],
+] as const) {
+  const { d, spy } = deps({ readCalcom: async () => ({ ok: true, rows: [], pages: 1 }), readCalcomByUid: async () => direct }, [MEMBER]);
+  const r = await runCrossSystemBookingsCheck(d);
+  eq(spy.resolved.length, 0, `a direct read that is ${what} clears nothing`);
+  if (r.status === "measured") eq(r.unconfirmed, 1, `and the page is counted unconfirmed (${what})`);
 }
 {
-  const { d, spy } = deps({ loadSlate: async () => [slate({ id: "other-booking", prefill: {}, attendee_email: "x@example.test" })] }, [SLATE_ID]);
+  const { d, spy } = deps({ readCalcom: async () => ({ ok: true, rows: [], pages: 1 }), readCalcomByUid: async () => { throw new Error("boom"); } }, [MEMBER]);
   await runCrossSystemBookingsCheck(d);
-  eq(spy.resolved[0]?.text, formatCrossSystemBookingRecovery(SLATE_ID, "slate-gone", d.bookingUrl(SLATE_ID)), "the Slate booking no longer upcoming ends the page, saying so");
+  eq(spy.resolved.length, 0, "a direct read that throws clears nothing");
+}
+for (const [what, row] of [
+  ["cancelled", cal({ status: "cancelled" })],
+  ["rejected", cal({ status: "rejected" })],
+  ["started", cal({ start: "2026-10-01T00:30:00.000Z" })],
+] as const) {
+  const { d, spy } = deps({ readCalcom: async () => ({ ok: true, rows: [], pages: 1 }), readCalcomByUid: async () => ({ ok: true, row }) }, [MEMBER]);
+  await runCrossSystemBookingsCheck(d);
+  eq(spy.resolved.map((x) => x.key), [crossSystemBookingKey(SLATE_ID, UID)], `a direct read saying the twin ${what} ends the page`);
+  eq(spy.resolved[0]?.text, formatCrossSystemBookingRecovery(SLATE_ID, UID, "calcom-gone", d.bookingUrl(SLATE_ID)), "saying the cal.com booking went");
+}
+{
+  // The listing still shows the twin but marked cancelled: the direct read decides.
+  const { d, spy } = deps({ readCalcom: async () => ({ ok: true, rows: [cal({ status: "cancelled" })], pages: 1 }) }, [MEMBER]);
+  await runCrossSystemBookingsCheck(d);
+  eq(spy.directReads.map((x) => x.uid), [UID], "even a cancelled row in the listing is confirmed by a direct read");
+  eq(spy.resolved.length, 0, "and a direct read saying it is live keeps the page");
+}
+{
+  const { d, spy } = deps({ loadSlate: async () => [slate({ id: "other-booking", prefill: {}, attendee_email: "x@example.test" })] }, [MEMBER]);
+  await runCrossSystemBookingsCheck(d);
+  eq(spy.resolved[0]?.text, formatCrossSystemBookingRecovery(SLATE_ID, UID, "slate-gone", d.bookingUrl(SLATE_ID)), "the Slate booking no longer upcoming ends the page, saying so");
+  eq(spy.directReads.length, 0, "with no cal.com read needed");
+}
+{
+  const { d, spy } = deps({}, [MEMBER]);
+  await runCrossSystemBookingsCheck(d);
+  eq(spy.resolved.length, 0, "a pair still live keeps its page");
+  eq(spy.notified.length, 1, "and is paged again, subject to the cooldown");
 }
 {
   const { d, spy } = deps({}, [SLATE_ID]);
   await runCrossSystemBookingsCheck(d);
-  eq(spy.resolved, [], "a pair still live keeps its page");
-  eq(spy.notified.length, 1, "and is paged again, subject to the cooldown");
+  eq(spy.resolved.length, 0, "a member this version did not write is never cleared");
 }
 {
-  // Excluded as a test, so not measured this run: it keeps whatever it has.
   const { d, spy } = deps(
     { loadSlate: async () => [slate({ prefill: { [PARTNER_KEYS.submissionId]: SUB, parentOrigin: "http://localhost:3000" }, referrer_origin: "http://localhost:3000" })] },
-    [SLATE_ID],
+    [MEMBER],
   );
   const r = await runCrossSystemBookingsCheck(d);
-  eq(spy.notified, [], "a booking made from a test host page is never paged");
-  eq(spy.resolved, [], "nor cleared as gone");
+  eq(spy.notified.length, 0, "a booking made from a test host page is never paged");
+  eq(spy.resolved.length, 0, "nor cleared as gone");
   if (r.status === "measured") eq(r.testSource, 1, "it is counted as a test");
   assert(!crossSystemBookingsReachedVerdict(r), "test bookings alone are no verdict");
 }
@@ -304,13 +371,13 @@ for (const [what, over] of [
   const { d, spy } = deps({ listFiring: async () => { throw new Error("alert_state unreadable"); } });
   const r = await runCrossSystemBookingsCheck(d);
   eq(r.status, "measured", "an unreadable firing list does not undo the measurement");
-  eq(spy.resolved, [], "but clears nothing");
+  eq(spy.resolved.length, 0, "but clears nothing");
 }
 {
-  const { d, spy } = deps({ loadSlate: async () => [] }, [SLATE_ID]);
+  const { d, spy } = deps({ loadSlate: async () => [] }, [MEMBER]);
   const r = await runCrossSystemBookingsCheck(d);
   eq(spy.calcomReads.length, 0, "with no upcoming Slate booking cal.com is not asked at all");
-  eq(spy.resolved.map((x) => x.key), [crossSystemBookingKey(SLATE_ID)], "and a paged booking that is no longer upcoming is measured gone");
+  eq(spy.resolved.map((x) => x.key), [crossSystemBookingKey(SLATE_ID, UID)], "and a paged booking that is no longer upcoming is measured gone");
   assert(!crossSystemBookingsReachedVerdict(r), "comparing zero Slate bookings is never a verdict");
 }
 {

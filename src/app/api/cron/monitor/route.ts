@@ -95,7 +95,7 @@ import { listBookingStampsBetween } from "@/lib/monitor/volume-learning-bookings
 import { runVolumeRelearn } from "@/lib/monitor/volume-relearn";
 import { LOW_TIER } from "@/lib/monitor/volume-tiers";
 import { REAL_ANCHOR_SOURCE } from "@/lib/monitor/carried-share";
-import { calcomTierBookingCounts, calcomUpcomingBookings } from "@/lib/calcom/client";
+import { calcomBookingByUid, calcomTierBookingCounts, calcomUpcomingBookings } from "@/lib/calcom/client";
 import {
   runCrossSystemBookingsCheck,
   CROSS_SYSTEM_BOOKING_KEY,
@@ -1973,15 +1973,19 @@ export async function GET(req: NextRequest) {
     // Cost on this lane: nothing at all on eleven ticks in twelve. On the tick in
     // the first five minutes of each hour, one Slate read and about six paced
     // cal.com requests (1,252 upcoming bookings measured 2026-10-01, 250 a page),
-    // each page bounded by its own timeout. Not gated on the shared setup reads:
+    // plus one direct read per outstanding page whose twin the listing no longer
+    // shows. The whole run is held to CROSS_SYSTEM_BUDGET_MS (45s), so a slow
+    // cal.com cannot hold this awaited step. Not gated on the shared setup reads:
     // it reads its own buckets, so a failed shared read cannot blind it. A failed
     // or partial read on either side clears nothing and stamps no verdict. ---
     const crossSystemBookings = await steps.run<CrossSystemBookingsResult | null>("cross_system_bookings", null, () =>
       runCrossSystemBookingsCheck({
         nowMs: now,
+        clock: Date.now,
         calcomRetired: () => loadCalcomRetiredCached(now),
         loadSlate: () => loadSlateUpcomingBookings(db, new Date(now).toISOString()),
-        readCalcom: (afterIso) => calcomUpcomingBookings(afterIso),
+        readCalcom: (afterIso, deadlineAtMs) => calcomUpcomingBookings(afterIso, deadlineAtMs),
+        readCalcomByUid: (uid, deadlineAtMs) => calcomBookingByUid(uid, deadlineAtMs),
         listFiring: async () => new Set(await firingFamilyMembers(CROSS_SYSTEM_BOOKING_KEY)),
         bookingUrl: (id) => `${appUrl()}${bookingDetailHref(id)}`,
         // alert-key: cross_system_booking:*
@@ -2005,6 +2009,8 @@ export async function GET(req: NextRequest) {
             test_source: result.testSource,
             pairs: result.pairs.length,
             cleared: result.cleared,
+            still_live: result.stillLive,
+            unconfirmed: result.unconfirmed,
           });
         } else if (result.status !== "not-due") {
           log.info("monitor", { msg: "cross system bookings skipped", why: result.status });

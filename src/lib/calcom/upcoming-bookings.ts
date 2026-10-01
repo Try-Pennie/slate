@@ -65,35 +65,74 @@ export interface CalcomUpcomingBooking {
   attendeeEmails: string[];
 }
 
+/**
+ * The most one request may wait. Measured on 2026-10-01 a 250 row page answers in
+ * about a second; the same listing WITHOUT the upcoming filter hung for 125 seconds,
+ * so a request that has not answered in twenty has met that failure.
+ */
+export const CALCOM_BOOKINGS_PAGE_TIMEOUT_MS = 20_000;
+
+/**
+ * Why a read measured nothing. `deadline` is its own reason, never folded into
+ * `unreachable`: a walk that ran out of time and a cal.com that is down send a
+ * reader to two different places (L11).
+ */
+export type CalcomReadRefusal = "refused" | "unreadable" | "unreachable" | "deadline";
+
 export type CalcomUpcomingRead =
   | { ok: true; rows: CalcomUpcomingBooking[]; pages: number }
   | {
       ok: false;
-      reason: "refused" | "unreadable" | "row-unreadable" | "too-many-pages";
-      /** The HTTP status of the page that failed. */
+      reason: CalcomReadRefusal | "row-unreadable" | "too-many-pages";
+      /** The HTTP status of the page that failed, 0 when no response arrived. */
       status: number;
       /** The zero based page it failed on. */
       page: number;
     };
 
-/** One GET against cal.com, sent with the `cal-api-version` header the reader names. */
-export type CalcomGetter = (path: string, apiVersion: string) => Promise<{ status: number; json: unknown }>;
+/**
+ * One GET against cal.com, sent with the `cal-api-version` header the reader names,
+ * and abandoned after `timeoutMs`. The reader computes the timeout, so no request
+ * can wait past the walk's own deadline.
+ */
+export type CalcomGetter = (path: string, apiVersion: string, timeoutMs: number) => Promise<{ status: number; json: unknown }>;
 
-export async function readUpcomingCalcomBookings(opts: {
-  get: CalcomGetter;
-  org: string;
-  afterStartIso: string;
-  paceMs: number;
-  sleep: (ms: number) => Promise<void>;
-  pageSize?: number;
-  maxPages?: number;
-}): Promise<CalcomUpcomingRead> {
+/** The deadline every read is held to: an injected clock and the instant it must end by (L524). */
+interface Deadline {
+  clock: () => number;
+  deadlineAtMs: number;
+}
+
+/** What one request may wait: the page timeout, or what is left of the deadline if less. */
+function requestTimeout(d: Deadline): number {
+  return Math.min(CALCOM_BOOKINGS_PAGE_TIMEOUT_MS, d.deadlineAtMs - d.clock());
+}
+
+/** A request that threw: the deadline if it is spent, otherwise cal.com was unreachable. */
+function thrownReason(d: Deadline): "deadline" | "unreachable" {
+  return d.clock() >= d.deadlineAtMs ? "deadline" : "unreachable";
+}
+
+export async function readUpcomingCalcomBookings(
+  opts: {
+    get: CalcomGetter;
+    org: string;
+    afterStartIso: string;
+    paceMs: number;
+    sleep: (ms: number) => Promise<void>;
+    pageSize?: number;
+    maxPages?: number;
+  } & Deadline,
+): Promise<CalcomUpcomingRead> {
   const take = opts.pageSize ?? CALCOM_BOOKINGS_PAGE_SIZE;
   const maxPages = opts.maxPages ?? CALCOM_BOOKINGS_MAX_PAGES;
   const byId = new Map<number, CalcomUpcomingBooking>();
   for (let page = 0; ; page++) {
     if (page >= maxPages) return { ok: false, reason: "too-many-pages", status: 200, page };
     if (page > 0 && opts.paceMs > 0) await opts.sleep(opts.paceMs);
+    // The whole walk is bounded, not only each page: forty pages at the page timeout
+    // would otherwise hold the monitor tick for over thirteen minutes.
+    if (opts.clock() >= opts.deadlineAtMs) return { ok: false, reason: "deadline", status: 0, page };
     const q = new URLSearchParams({
       status: "upcoming",
       afterStart: opts.afterStartIso,
@@ -101,7 +140,12 @@ export async function readUpcomingCalcomBookings(opts: {
       take: String(take),
       skip: String(page * take),
     });
-    const res = await opts.get(`/organizations/${opts.org}/bookings?${q}`, CALCOM_BOOKINGS_API_VERSION);
+    let res: { status: number; json: unknown };
+    try {
+      res = await opts.get(`/organizations/${opts.org}/bookings?${q}`, CALCOM_BOOKINGS_API_VERSION, requestTimeout(opts));
+    } catch {
+      return { ok: false, reason: thrownReason(opts), status: 0, page };
+    }
     if (res.status !== 200) return { ok: false, reason: "refused", status: res.status, page };
     const data = (res.json as { data?: unknown } | null)?.data;
     if (!Array.isArray(data)) return { ok: false, reason: "unreadable", status: res.status, page };
@@ -114,6 +158,37 @@ export async function readUpcomingCalcomBookings(opts: {
     }
     if (data.length < take) return { ok: true, rows: [...byId.values()], pages: page + 1 };
   }
+}
+
+export type CalcomBookingRead =
+  | { ok: true; row: CalcomUpcomingBooking }
+  | { ok: false; reason: CalcomReadRefusal; status: number };
+
+/**
+ * ONE booking, read directly by uid (#2933 review): `GET /bookings/{uid}`, measured
+ * live on 2026-10-01 (200 with the booking under `data` at the listing's API
+ * version; 404 for a uid cal.com does not hold).
+ *
+ * This is what the cal.com side all clear rests on, never the listing. The listing
+ * pages by `skip`, so a booking cancelled or moved while it is being walked shifts
+ * every later row one place earlier and one can fall between two pages. A row
+ * missing from the list is therefore not evidence the booking is gone; reading it
+ * by uid is. A 404 is a refusal rather than a cancellation, because nothing was
+ * measured about the booking.
+ */
+export async function readCalcomBookingByUid(opts: { get: CalcomGetter; uid: string } & Deadline): Promise<CalcomBookingRead> {
+  if (opts.clock() >= opts.deadlineAtMs) return { ok: false, reason: "deadline", status: 0 };
+  let res: { status: number; json: unknown };
+  try {
+    res = await opts.get(`/bookings/${encodeURIComponent(opts.uid)}`, CALCOM_BOOKINGS_API_VERSION, requestTimeout(opts));
+  } catch {
+    return { ok: false, reason: thrownReason(opts), status: 0 };
+  }
+  if (res.status !== 200) return { ok: false, reason: "refused", status: res.status };
+  const data = (res.json as { data?: unknown } | null)?.data;
+  const row = Array.isArray(data) ? null : reduceRow(data);
+  if (row === null) return { ok: false, reason: "unreadable", status: res.status };
+  return { ok: true, row };
 }
 
 function reduceRow(item: unknown): CalcomUpcomingBooking | null {

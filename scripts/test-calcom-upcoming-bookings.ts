@@ -20,7 +20,10 @@
 import {
   CALCOM_BOOKINGS_API_VERSION,
   CALCOM_BOOKINGS_PAGE_SIZE,
+  CALCOM_BOOKINGS_PAGE_TIMEOUT_MS,
+  readCalcomBookingByUid,
   readUpcomingCalcomBookings,
+  type CalcomBookingRead,
   type CalcomUpcomingRead,
 } from "../src/lib/calcom/upcoming-bookings.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -44,15 +47,26 @@ function raw(id: number, over: Record<string, unknown> = {}): Record<string, unk
 interface Call {
   path: string;
   version: string;
+  timeoutMs: number;
 }
 
-function getter(pages: Array<{ status: number; json: unknown }>) {
+/** An injected clock: every request advances it by `stepMs`, and nothing waits for real (L524). */
+function clock(startMs = 1_000_000, stepMs = 1_000) {
+  let t = startMs;
+  return { now: () => t, advance: (ms = stepMs) => (t += ms) };
+}
+
+type Page = { status: number; json: unknown } | Error;
+
+function getter(pages: Page[], clk = clock()) {
   const calls: Call[] = [];
   let i = 0;
-  const get = async (path: string, version: string) => {
-    calls.push({ path, version });
+  const get = async (path: string, version: string, timeoutMs: number) => {
+    calls.push({ path, version, timeoutMs });
+    clk.advance();
     const page = pages[i++];
     if (!page) throw new Error(`no page ${i} scripted`);
+    if (page instanceof Error) throw page;
     return page;
   };
   return { get, calls };
@@ -60,8 +74,12 @@ function getter(pages: Array<{ status: number; json: unknown }>) {
 
 const noSleep = async () => {};
 
-async function read(pages: Array<{ status: number; json: unknown }>, over: { pageSize?: number; maxPages?: number } = {}) {
-  const g = getter(pages);
+async function read(
+  pages: Page[],
+  over: { pageSize?: number; maxPages?: number; budgetMs?: number; stepMs?: number } = {},
+) {
+  const clk = clock(1_000_000, over.stepMs ?? 1_000);
+  const g = getter(pages, clk);
   const sleeps: number[] = [];
   const result: CalcomUpcomingRead = await readUpcomingCalcomBookings({
     get: g.get,
@@ -72,7 +90,10 @@ async function read(pages: Array<{ status: number; json: unknown }>, over: { pag
       sleeps.push(ms);
       await noSleep();
     },
-    ...over,
+    clock: clk.now,
+    deadlineAtMs: 1_000_000 + (over.budgetMs ?? 45_000),
+    pageSize: over.pageSize,
+    maxPages: over.maxPages,
   });
   return { result, calls: g.calls, sleeps };
 }
@@ -211,6 +232,87 @@ for (const [what, row] of [
   );
   eq(result, { ok: false, reason: "too-many-pages", status: 200, page: 2 }, "a read past its page budget is refused, never cut short");
   eq(calls.length, 2, "and it stops asking");
+}
+
+// --- the deadline: the whole walk is bounded, not just each page (injected clock) ---
+{
+  eq(CALCOM_BOOKINGS_PAGE_TIMEOUT_MS, 20_000, "a page on its own gets at most twenty seconds");
+  const full = (from: number) => [raw(from), raw(from + 1)];
+  // Each request costs 25 simulated seconds against a 45 second budget: two pages
+  // start, and the third may not.
+  const { result, calls } = await read(
+    [{ status: 200, json: { data: full(60) } }, { status: 200, json: { data: full(62) } }, { status: 200, json: { data: full(64) } }],
+    { pageSize: 2, budgetMs: 45_000, stepMs: 25_000 },
+  );
+  eq(result, { ok: false, reason: "deadline", status: 0, page: 2 }, "a walk that runs out of time is refused by name, never returned short");
+  eq(calls.length, 2, "and no page starts after the deadline");
+  eq(calls.map((c) => c.timeoutMs), [20_000, 20_000], "each page waits at most the page timeout while there is room");
+}
+{
+  // 30 seconds into a 45 second budget, the next page may wait only the 15 left.
+  const { calls } = await read([{ status: 200, json: { data: [raw(70), raw(71)] } }, { status: 200, json: { data: [] } }], {
+    pageSize: 2,
+    budgetMs: 45_000,
+    stepMs: 30_000,
+  });
+  eq(calls.map((c) => c.timeoutMs), [20_000, 15_000], "a page never waits past the walk's own deadline");
+}
+{
+  const { result } = await read([{ status: 200, json: { data: [raw(80)] } }], { budgetMs: 0 });
+  eq(result, { ok: false, reason: "deadline", status: 0, page: 0 }, "a budget already spent reads nothing");
+}
+{
+  const timeout = Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
+  const { result } = await read([timeout], { budgetMs: 45_000, stepMs: 50_000 });
+  eq(result, { ok: false, reason: "deadline", status: 0, page: 0 }, "a page aborted at the deadline is the deadline, by name");
+}
+{
+  const { result } = await read([new Error("getaddrinfo ENOTFOUND api.cal.com")]);
+  eq(result, { ok: false, reason: "unreachable", status: 0, page: 0 }, "a request that throws inside the budget is unreachable, never a short list");
+}
+
+// --- one booking by uid, for the all clear (#2933 review) ----------------------------
+async function byUid(page: Page, over: { budgetMs?: number; stepMs?: number } = {}) {
+  const clk = clock(1_000_000, over.stepMs ?? 1_000);
+  const g = getter([page], clk);
+  const result: CalcomBookingRead = await readCalcomBookingByUid({
+    get: g.get,
+    uid: "hSzs/Cyr9",
+    clock: clk.now,
+    deadlineAtMs: 1_000_000 + (over.budgetMs ?? 45_000),
+  });
+  return { result, calls: g.calls };
+}
+{
+  // Measured live 2026-10-01: GET /bookings/hSzsCyr9HbBcg92HpJXg3r answered 200 with
+  // the booking under `data`, at the same API version as the listing.
+  const { result, calls } = await byUid({ status: 200, json: { data: raw(26177051, { uid: "hSzs/Cyr9", status: "cancelled" }) } });
+  eq(calls[0].path, "/bookings/hSzs%2FCyr9", "the uid is read directly, escaped");
+  eq(calls[0].version, CALCOM_BOOKINGS_API_VERSION, "at the listing's API version");
+  assert(result.ok && result.row.status === "cancelled" && result.row.id === 26177051, "the booking reduces to the same row shape");
+}
+{
+  // Measured live 2026-10-01: an unknown uid answers 404. That is not "cancelled":
+  // nothing was measured about the booking, so it is a refusal.
+  const { result } = await byUid({ status: 404, json: { status: "error" } });
+  eq(result, { ok: false, reason: "refused", status: 404 }, "a 404 is a refusal, not a cancellation");
+}
+{
+  const { result } = await byUid({ status: 200, json: { data: [raw(1)] } });
+  eq(result, { ok: false, reason: "unreadable", status: 200 }, "a list where one booking belongs is unreadable");
+}
+{
+  const { result } = await byUid({ status: 200, json: { data: raw(1, { start: "soon" }) } });
+  eq(result, { ok: false, reason: "unreadable", status: 200 }, "a booking whose start cannot be read is unreadable");
+}
+{
+  const { result } = await byUid(new Error("socket hang up"));
+  eq(result, { ok: false, reason: "unreachable", status: 0 }, "a thrown request is unreachable");
+}
+{
+  const { result, calls } = await byUid({ status: 200, json: { data: raw(1) } }, { budgetMs: 0 });
+  eq(result, { ok: false, reason: "deadline", status: 0 }, "no direct read starts after the deadline");
+  eq(calls.length, 0, "and nothing is asked");
 }
 
 finish();

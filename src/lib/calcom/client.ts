@@ -10,7 +10,13 @@ import {
 } from "@/lib/calcom/overrides";
 import { CAL_SCHEDULES_API_VERSION, pickDefaultSchedule } from "@/lib/calcom/schedule-import";
 import { bookedByTier, readRoutingResponses } from "@/lib/calcom/routing-responses";
-import { readUpcomingCalcomBookings, type CalcomUpcomingRead } from "@/lib/calcom/upcoming-bookings";
+import {
+  readCalcomBookingByUid,
+  readUpcomingCalcomBookings,
+  type CalcomBookingRead,
+  type CalcomGetter,
+  type CalcomUpcomingRead,
+} from "@/lib/calcom/upcoming-bookings";
 
 /**
  * Minimal Cal.com v2 org-API client for the OOO dual-write during the cutover
@@ -463,36 +469,40 @@ export async function calcomRoutedSlots(
 /** How long the pilot offer sample waits for cal.com before recording a failure. */
 export const CALCOM_ROUTED_SLOTS_TIMEOUT_MS = 10_000;
 
-/**
- * How long one page of the upcoming bookings listing may take (#2933). Measured on
- * 2026-10-01 a 250 row page answers in about a second; the same listing WITHOUT the
- * upcoming filter hung for 125 seconds, so a page that has not answered in twenty
- * has met that failure and must give up rather than hold the monitor tick.
- */
-export const CALCOM_BOOKINGS_PAGE_TIMEOUT_MS = 20_000;
-
 /** The pause between listing pages, the same order as the routing response reads. */
 const BOOKINGS_PACE_MS = 300;
 
+/** The cal.com getter both booking reads use; the reader picks each request's timeout. */
+const bookingsGet: CalcomGetter = async (path, apiVersion, timeoutMs) => {
+  const r = await calcomFetch(path, {
+    headers: { "cal-api-version": apiVersion },
+    signal: AbortSignal.timeout(Math.max(1, timeoutMs)),
+  });
+  return { status: r.status, json: { data: r.data } };
+};
+
 /**
- * Every upcoming cal.com booking in the org (#2933), read only. Null when cal.com is
- * not configured here, which is the state after cutover. A refused or unreadable page
- * comes back as a refusal, never as the rows read before it, and a page that times
- * out THROWS, which the caller reports as an unreadable read.
+ * Every upcoming cal.com booking in the org (#2933), read only, finished by
+ * `deadlineAtMs` or refused as `deadline`. Null when cal.com is not configured here,
+ * which is the state after cutover. A refused, unreadable, unreachable or timed out
+ * walk comes back as a refusal, never as the rows read before it.
  */
-export async function calcomUpcomingBookings(afterStartIso: string): Promise<CalcomUpcomingRead | null> {
+export async function calcomUpcomingBookings(afterStartIso: string, deadlineAtMs: number): Promise<CalcomUpcomingRead | null> {
   if (!calcomConfigured()) return null;
   return readUpcomingCalcomBookings({
-    get: async (path, apiVersion) => {
-      const r = await calcomFetch(path, {
-        headers: { "cal-api-version": apiVersion },
-        signal: AbortSignal.timeout(CALCOM_BOOKINGS_PAGE_TIMEOUT_MS),
-      });
-      return { status: r.status, json: { data: r.data } };
-    },
+    get: bookingsGet,
     org: calcomOrgId(),
     afterStartIso,
     paceMs: BOOKINGS_PACE_MS,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    clock: Date.now,
+    deadlineAtMs,
   });
 }
+
+/** One cal.com booking by uid (#2933), for the all clear. Null when cal.com is not configured. */
+export async function calcomBookingByUid(uid: string, deadlineAtMs: number): Promise<CalcomBookingRead | null> {
+  if (!calcomConfigured()) return null;
+  return readCalcomBookingByUid({ get: bookingsGet, uid, clock: Date.now, deadlineAtMs });
+}
+
