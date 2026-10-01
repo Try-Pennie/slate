@@ -360,11 +360,11 @@ function spy(over: Partial<ReminderDeps> = {}) {
   const tels = card.content.split("\r\n").filter((l) => l.startsWith("TEL"));
   eq(tels, ["TEL;TYPE=WORK,VOICE:+12197588170"], "carrying the calling number and no other phone");
   assert(card.content.includes("jordan@trypennie.com"), "and the advisor's address, which is the sender");
-  // Named Pennie although the booking names its advisor (Dan, 2026-10-01): a
-  // redistributed lead keeps the calling number and gets a different advisor.
-  assert(card.content.split("\r\n").includes("FN:Pennie"), "the contact is named Pennie, not the advisor");
-  assert(!card.content.includes("Jordan Lee"), "and the advisor's name is nowhere on the card");
-  eq(card.filename, "Pennie.vcf", "nor in its file name");
+  // Named after the advisor again (Dan reversed the earlier call, 2026-10-01).
+  assert(card.content.split("\r\n").includes("FN:Jordan Lee (Pennie)"), "the contact is named after the advisor, with Pennie beside it");
+  assert(card.content.split("\r\n").includes("ORG:Pennie"), "and the organisation is still Pennie");
+  eq(card.filename, "Jordan Lee Pennie.vcf", "and so is its file");
+  assert(withNumber.body.includes("My contact card is attached"), "and the email calls it the advisor's own card");
 
   const noLead = msgs[1]!;
   eq(noLead.attachments?.length ?? 0, 0, "a booking with no lead id gets no card");

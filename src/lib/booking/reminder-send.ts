@@ -329,6 +329,7 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
               attachments: [
                 advisorContactCard({
                   agentEmail: row.agentEmail,
+                  agentName: row.agentName,
                   callingNumber,
                   photo: advisorPhoto ?? PENNIE_CARD_LOGO,
                 }),

@@ -5,11 +5,10 @@
  * `.vcf` attachment opens "Add to Contacts" on an iPhone and in Gmail on Android,
  * and a call from a saved, named contact is let through.
  *
- * The card is named "Pennie" for every lead and never names the advisor (Dan,
- * 2026-10-01). A lead can be redistributed to another advisor while the calling
- * number stays the same, so a contact saved under one advisor's name would go on
- * labelling calls from somebody else. The booked advisor's PHOTO is still on it,
- * because Dan chose a face over the Pennie logo.
+ * The card is named after the booked advisor, "<name> (Pennie)", with ORG Pennie,
+ * and its file after them too (Dan, 2026-10-01, reversing a Pennie only card after
+ * showing the team). With no real name on record it is plain "Pennie". The
+ * advisor's PHOTO is on it, or the Pennie logo when there is none.
  *
  * The phone on the card is the CALLING number and nothing else. The Sendblue
  * texting line is deliberately absent: texting lines change often (Dan,
@@ -24,8 +23,8 @@ import type { MailAttachment } from "../notify/email-mime.ts";
 /**
  * The advisor's name as something a lead can be shown, or null when there is none.
  * Blank and anything shaped like an address count as none: an address is never
- * presented as a person's name, in an email's greeting or signature. Used by the
- * reminder copy; the card itself never carries the advisor's name.
+ * presented as a person's name, in an email's greeting, signature, sender or on
+ * the contact card.
  */
 export function realAdvisorName(raw: string | null | undefined): string | null {
   const name = (raw ?? "").trim();
@@ -44,6 +43,11 @@ export interface CardPhoto {
 export interface AdvisorCardInput {
   /** The mailbox the reminder is sent from, so a reply and the card agree. */
   agentEmail: string;
+  /**
+   * The advisor's name as stored, judged here by `realAdvisorName`. REQUIRED rather
+   * than optional, so `tsc` names every caller that has to decide (L168).
+   */
+  agentName: string | null;
   /** E.164, already validated (`callingNumberOf`). */
   callingNumber: string;
   /** The booked advisor's photo, or null for a card with no PHOTO line. */
@@ -87,18 +91,32 @@ function fold(line: string): string {
   return out.map((l, i) => (i === 0 ? l : ` ${l}`)).join("\r\n");
 }
 
-/**
- * Pennie's name on the card and its file, for every lead. Plain ASCII, since the
- * file name rides in a quoted MIME header.
- */
+/** The card's name and file name when the advisor has no real name on record. */
 const CARD_NAME = "Pennie";
 
+/**
+ * The file name, in plain ASCII because it rides in a quoted MIME header: accents
+ * folded to their base letter, anything but letters, digits, spaces and hyphens
+ * dropped (a quote would end the header value, a slash is a path), spaces
+ * collapsed. Pennie.vcf when nothing of the name survives.
+ */
+function cardFilename(name: string | null): string {
+  const safe = (name ?? "")
+    .normalize("NFKD")
+    .replace(/[^A-Za-z0-9 -]/g, "")
+    .replace(/ {2,}/g, " ")
+    .trim();
+  return safe ? `${safe} ${CARD_NAME}.vcf` : `${CARD_NAME}.vcf`;
+}
+
 export function advisorContactCard(input: AdvisorCardInput): MailAttachment {
+  const name = realAdvisorName(input.agentName);
+  const display = escapeValue(name ? `${name} (${CARD_NAME})` : CARD_NAME);
   const lines = [
     "BEGIN:VCARD",
     "VERSION:3.0",
-    `N:;${CARD_NAME};;;`,
-    `FN:${CARD_NAME}`,
+    `N:;${display};;;`,
+    `FN:${display}`,
     "ORG:Pennie",
     `TEL;TYPE=WORK,VOICE:${input.callingNumber}`,
     `EMAIL;TYPE=INTERNET,WORK:${escapeValue(input.agentEmail)}`,
@@ -107,7 +125,7 @@ export function advisorContactCard(input: AdvisorCardInput): MailAttachment {
     "END:VCARD",
   ];
   return {
-    filename: `${CARD_NAME}.vcf`,
+    filename: cardFilename(name),
     content: `${lines.map(fold).join("\r\n")}\r\n`,
     mimeType: "text/vcard",
   };
