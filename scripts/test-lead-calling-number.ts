@@ -13,6 +13,7 @@
 //    on an injected sleep rather than a real one (L524).
 import {
   callingNumberWithinDeadline,
+  readWithinDeadline,
   type ScheduleTimer,
   callingNumberOf,
   readLeadCallingNumbers,
@@ -121,6 +122,23 @@ function timers() {
   };
   return { state, fireAtOnce, never };
 }
+// Reported exactly ONCE per read, whichever way it ends: a read that times out and
+// rejects later must not report a second time into the logs.
+{
+  let reject: (e: Error) => void = () => {};
+  const late = new Promise<string | null>((_res, rej) => {
+    reject = rej;
+  });
+  const errs: string[] = [];
+  const t = timers();
+  const got = await readWithinDeadline(() => late, 2_500, (e) => errs.push(String(e)), t.fireAtOnce);
+  eq(got, null, "a timed out read answers null");
+  reject(new Error("SF query failed: 503"));
+  await new Promise((r) => setTimeout(r, 0));
+  eq(errs.length, 1, "and reports once, not again when it rejects late");
+  assert(/no answer within/.test(errs[0] ?? ""), "the report being the timeout");
+}
+
 // The one helper both readers use: null on a failure OR a timeout, and each is
 // reported, so "nobody had a number" and "Salesforce was slow or down" stay apart.
 {

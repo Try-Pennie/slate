@@ -56,6 +56,22 @@ import { assert, eq, finish } from "./lib/harness.ts";
   assert(unfolded.includes(`FN:${long} (Pennie)`), "and unfolding restores the full value");
 }
 
+// No real name: the card is named plainly "Pennie", and an address is NEVER shown as
+// a name, in the card or in its file name (a lead would save a contact called
+// "jordan@trypennie.com (Pennie)" otherwise).
+for (const agentName of [null, "", "   ", "jordan@trypennie.com"]) {
+  const card = advisorContactCard({ agentName, agentEmail: "jordan@trypennie.com", callingNumber: "+12197588170" });
+  const lines = card.content.split("\r\n");
+  const label = JSON.stringify(agentName);
+  assert(lines.includes("FN:Pennie"), `${label}: the contact is named Pennie`);
+  assert(lines.includes("N:;Pennie;;;"), `${label}: in the structured name too`);
+  eq(card.filename, "Pennie.vcf", `${label}: and the file is Pennie.vcf`);
+  assert(
+    lines.filter((l) => l.includes("@")).every((l) => l.startsWith("EMAIL")),
+    `${label}: the address appears only as the email`,
+  );
+}
+
 // A name that is nothing but punctuation still gets a usable file name.
 {
   const card = advisorContactCard({ agentName: "!!!", agentEmail: "x@trypennie.com", callingNumber: "+12197588170" });

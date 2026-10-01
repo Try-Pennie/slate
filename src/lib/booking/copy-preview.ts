@@ -826,6 +826,12 @@ export function reminderCopyScreens(): CopyScreen[] {
           state: "the body, when the number we call from is known (a contact card is attached)",
           text: reminderBody(withCallingNumber),
         },
+        // #1334 review: no advisor name on the booking. The copy speaks for Pennie
+        // rather than showing the advisor's address as a name.
+        {
+          state: "the body, when the booking holds no advisor name",
+          text: reminderBody({ ...withCallingNumber, agentName: null }),
+        },
       ],
     },
     {

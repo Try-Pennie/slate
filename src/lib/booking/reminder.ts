@@ -1,6 +1,7 @@
 import { DateTime } from "luxon";
 import { formatClockTime } from "@/lib/date/parse";
 import { callComesFrom } from "./manage-copy.ts";
+import { realAdvisorName } from "./advisor-contact-card.ts";
 
 /**
  * The 24 hour reminder email (#2359): the decision and the copy, kept pure so both
@@ -143,8 +144,12 @@ export function reminderHeld(b: ReminderHoldSubject, nowMs: number): boolean {
 }
 
 export interface ReminderCopyInput {
-  /** The advisor the lead will speak to, and whose mailbox this is sent from. */
-  agentName: string;
+  /**
+   * The advisor the lead will speak to, and whose mailbox this is sent from. Null
+   * (or blank, or an address) when the booking holds no real name: the copy then
+   * speaks for Pennie rather than showing an address as a name.
+   */
+  agentName: string | null;
   startsAtIso: string;
   /** The LEAD's timezone, which is the only one they can act on. */
   timezone: string;
@@ -222,12 +227,17 @@ export function reminderBody(input: ReminderCopyInput): string {
   // the call, saving it, so "nothing you need to set up" stops being true. The
   // sentence is the manage page's own (`callComesFrom`), and the card it points at
   // is attached by the lane (`advisorContactCard`) only when this branch is taken.
+  // An advisor with no real name is never stood in for by their address (#1334
+  // review): the call is "with Pennie", the card is Pennie's, and the email is
+  // signed as the lead's Pennie advisor, which is still who will read a reply.
+  const name = realAdvisorName(input.agentName);
   const from = callComesFrom(input.callingNumber);
+  const card = name ? "My contact card is attached" : "Our contact card is attached";
   const numberLines = from
-    ? [`We will call you on the number you gave us. ${from} My contact card is attached, so one tap adds it.`]
+    ? [`We will call you on the number you gave us. ${from} ${card}, so one tap adds it.`]
     : ["We will call you on the number you gave us, so there is nothing you need to set up."];
   return [
-    `Hi, this is a reminder that your call with ${input.agentName} at Pennie is ${when}.`,
+    `Hi, this is a reminder that your call with ${name ? `${name} at Pennie` : "Pennie"} is ${when}.`,
     "",
     ...numberLines,
     "",
@@ -235,7 +245,6 @@ export function reminderBody(input: ReminderCopyInput): string {
     "",
     "If it is easier, just reply to this email and it will reach me directly.",
     "",
-    input.agentName,
-    "Pennie",
+    ...(name ? [name, "Pennie"] : ["Your Pennie advisor"]),
   ].join("\n");
 }

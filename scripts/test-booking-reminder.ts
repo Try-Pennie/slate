@@ -276,6 +276,21 @@ const booking = (over: Partial<Parameters<typeof reminderDue>[0]> = {}) => ({
     assert(!/\(\d{3}\) \d{3}/.test(without) && !/\+1\d{10}/.test(without), "with no calling number, no number is printed");
     assert(!/contact card|come from/i.test(without), "and nothing promises a card or a calling number");
   }
+
+  // --- an advisor with no real name (#1334 review) -------------------------------
+  // The lane used to fall back to the advisor's ADDRESS, which then greeted the lead
+  // with "your call with jordan@trypennie.com" and signed the email with it. An
+  // address is never shown as a name: the copy speaks for Pennie instead.
+  for (const agentName of [null, "", "jordan@trypennie.com"]) {
+    const label = JSON.stringify(agentName);
+    for (const callingNumber of [null, "+12197588170"]) {
+      const body = reminderBody({ ...args, agentName, callingNumber });
+      assert(!body.includes("@"), `${label}: no address appears in the body`);
+      assert(!/null|undefined/.test(body), `${label}: no missing value leaks into it`);
+      assert(/your call with Pennie is/i.test(body), `${label}: the call is with Pennie`);
+      assert(/Your Pennie advisor$/.test(body), `${label}: and it is signed as the lead's Pennie advisor`);
+    }
+  }
 }
 
 finish();

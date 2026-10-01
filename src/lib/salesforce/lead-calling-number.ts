@@ -118,8 +118,17 @@ export async function readWithinDeadline<T>(
   timer: ScheduleTimer = realTimer,
 ): Promise<T | null> {
   const TIMED_OUT = Symbol("timed out");
-  const attempt = read().catch((err: unknown) => {
+  // Reported exactly ONCE per read, whichever way it ends first: a read that timed
+  // out and rejects later has already been reported, and saying so twice would read
+  // in the logs as two failures (L467).
+  let reported = false;
+  const report = (err: unknown) => {
+    if (reported) return;
+    reported = true;
     onUnread(err);
+  };
+  const attempt = read().catch((err: unknown) => {
+    report(err);
     return null;
   });
   let cancel = () => {};
@@ -129,7 +138,7 @@ export async function readWithinDeadline<T>(
   try {
     const got = await Promise.race([attempt, expired]);
     if (got === TIMED_OUT) {
-      onUnread(new Error(`no answer within ${ms}ms`));
+      report(new Error(`no answer within ${ms}ms`));
       return null;
     }
     return got;

@@ -345,6 +345,23 @@ describe("GET /api/cron/booking-reminders", () => {
     await expect(res.json()).resolves.toMatchObject({ sent: 1, withCallingNumber: 1, callingNumberUnread: false });
   });
 
+  // #1334 review: a booking with no advisor name used to fall back to the address,
+  // which then greeted the lead and named the contact card. It never reaches a lead
+  // as a name now.
+  it("never shows the advisor's address as their name when the name is missing", async () => {
+    callingNumber.readLeadCallingNumbersLive.mockResolvedValueOnce(
+      new Map([["00QUi000010889Z", "+12197588170"]]),
+    );
+    state.pages = [[due(1, { agent_name: null, salesforce_id: "00QUi000010889ZMAQ", gcal_event_id: "evt-1" })]];
+    await GET(req());
+    const msg = state.sent[0];
+    expect(msg?.body).not.toContain("jordan@trypennie.com");
+    expect(msg?.body).toContain("your call with Pennie is");
+    const card = msg?.attachments?.[0] as { content: string; filename?: string } | undefined;
+    expect(card?.content).toContain("FN:Pennie\r\n");
+    expect(card?.filename).toBe("Pennie.vcf");
+  });
+
   it("still sends, without a number, when Salesforce cannot be read", async () => {
     callingNumber.readLeadCallingNumbersLive.mockRejectedValueOnce(new Error("SF query failed: 503"));
     state.pages = [[due(1, { salesforce_id: "00QUi000010889ZMAQ", gcal_event_id: "evt-1" })]];

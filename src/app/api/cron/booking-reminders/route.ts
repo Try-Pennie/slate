@@ -140,10 +140,10 @@ export async function GET(req: NextRequest) {
             status: r.status,
             attendeeEmail: r.attendee_email,
             agentEmail: r.agent_email,
-            // The advisor's name signs the email, so a missing one would sign it
-            // "undefined". Their address is the honest fallback: it is who the
-            // lead is speaking to either way.
-            agentName: r.agent_name ?? r.agent_email,
+            // The advisor's name signs the email and names the contact card. A
+            // missing one stays null, and the copy then speaks for Pennie: an
+            // address is never shown to a lead as a name (#1334 review).
+            agentName: r.agent_name,
             timezone: r.timezone,
             manageUrl: `${appUrl()}/booking/manage/${r.manage_token}`,
             // #1334: who to ask Salesforce about, and the invite to write the

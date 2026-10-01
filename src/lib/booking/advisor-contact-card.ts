@@ -17,8 +17,21 @@
  */
 import type { MailAttachment } from "../notify/email-mime.ts";
 
+/**
+ * The advisor's name as something a lead can be shown, or null when there is none.
+ * Blank and anything shaped like an address count as none: an address is never
+ * presented as a person's name, in a card, a file name or an email's greeting.
+ * Shared by the card and the reminder copy, so both treat a missing name alike.
+ */
+export function realAdvisorName(raw: string | null | undefined): string | null {
+  const name = (raw ?? "").trim();
+  if (!name || name.includes("@")) return null;
+  return name;
+}
+
 export interface AdvisorCardInput {
-  agentName: string;
+  /** The advisor's name; null, blank or an address names the card "Pennie" alone. */
+  agentName: string | null;
   /** The mailbox the reminder is sent from, so a reply and the card agree. */
   agentEmail: string;
   /** E.164, already validated (`callingNumberOf`). */
@@ -63,15 +76,18 @@ function fold(line: string): string {
 }
 
 /** A file name that is safe inside a quoted MIME header: ASCII letters, digits, spaces. */
-function cardFilename(agentName: string): string {
+function cardFilename(agentName: string | null): string {
+  if (agentName === null) return "Pennie.vcf";
   const safe = agentName.replace(/[^A-Za-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
   return safe ? `${safe} Pennie.vcf` : "Pennie advisor.vcf";
 }
 
 export function advisorContactCard(input: AdvisorCardInput): MailAttachment {
   // The name carries Pennie, so the caller ID reads as who is calling and from where
-  // rather than as a stranger's name.
-  const display = escapeValue(`${input.agentName} (Pennie)`);
+  // rather than as a stranger's name. With no real name the contact is simply
+  // "Pennie", which is still what the lead needs the caller ID to say.
+  const name = realAdvisorName(input.agentName);
+  const display = escapeValue(name === null ? "Pennie" : `${name} (Pennie)`);
   const lines = [
     "BEGIN:VCARD",
     "VERSION:3.0",
@@ -83,7 +99,7 @@ export function advisorContactCard(input: AdvisorCardInput): MailAttachment {
     "END:VCARD",
   ];
   return {
-    filename: cardFilename(input.agentName),
+    filename: cardFilename(name),
     content: `${lines.map(fold).join("\r\n")}\r\n`,
     mimeType: "text/vcard",
   };

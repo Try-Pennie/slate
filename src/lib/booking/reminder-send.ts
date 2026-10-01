@@ -51,7 +51,8 @@ export interface DueBooking {
   attendeeEmail: string | null;
   /** The advisor's mailbox, which is also the sender. */
   agentEmail: string;
-  agentName: string;
+  /** The advisor's name, or null when the booking holds none (never their address). */
+  agentName: string | null;
   /** The LEAD's timezone, so the time reads as they chose it. */
   timezone: string;
   manageUrl: string;
