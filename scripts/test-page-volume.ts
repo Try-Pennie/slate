@@ -145,7 +145,7 @@ const REPLAY_HOURS = offlineHoursFor(fixture);
     assert(b.scope.includes(page.name), `${page.id}'s baseline names the page it was fitted to`);
   }
   // #2878: the Low floors are fitted to the pages Slate carries, so those pages'
-  // bookings add up to the floors' bookings, and the page held off is not in them.
+  // bookings add up to the floors' bookings (every Low page since #2870).
   const total = LOW_PAGES_ON_SLATE.reduce((s, p) => s + MEASURED_PAGE_BASELINES[p.id].bookings, 0);
   eq(total, MEASURED_VOLUME_BASELINE.bookings, "the carried pages' bookings add up to the Low floors' bookings");
 }
