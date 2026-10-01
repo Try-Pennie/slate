@@ -557,6 +557,14 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // what its park is for. A day is a maintenance window over a Salesforce outage,
   // not a measure of the cadence.
   "verdict:below-lead-tier": 24 * 60 * MIN,
+  // The cross system double booking check (#2933). It runs once an hour, on the
+  // monitor tick in the first five minutes of it, and concludes whenever both reads
+  // succeed and Slate holds at least one upcoming real booking, which during the
+  // split is every hour (calls are booked days ahead). So a lapse here is six hourly
+  // runs in a row that could not read cal.com or Slate, or six dropped ticks, and
+  // either means a double booking made in that time went unseen. Retired cal.com
+  // stamps it too, so cutover does not turn it into a standing page.
+  "verdict:cross-system-bookings": 6 * 60 * MIN,
   // The roster coverage alarm (#1941). It runs on every 5 minute monitor tick
   // with no time window of its own (not business hours, not traffic), and it
   // concludes whenever the week and the roster are readable, including a week

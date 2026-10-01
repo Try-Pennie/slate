@@ -10,6 +10,7 @@ import {
 } from "@/lib/calcom/overrides";
 import { CAL_SCHEDULES_API_VERSION, pickDefaultSchedule } from "@/lib/calcom/schedule-import";
 import { bookedByTier, readRoutingResponses } from "@/lib/calcom/routing-responses";
+import { readUpcomingCalcomBookings, type CalcomUpcomingRead } from "@/lib/calcom/upcoming-bookings";
 
 /**
  * Minimal Cal.com v2 org-API client for the OOO dual-write during the cutover
@@ -461,3 +462,37 @@ export async function calcomRoutedSlots(
 
 /** How long the pilot offer sample waits for cal.com before recording a failure. */
 export const CALCOM_ROUTED_SLOTS_TIMEOUT_MS = 10_000;
+
+/**
+ * How long one page of the upcoming bookings listing may take (#2933). Measured on
+ * 2026-10-01 a 250 row page answers in about a second; the same listing WITHOUT the
+ * upcoming filter hung for 125 seconds, so a page that has not answered in twenty
+ * has met that failure and must give up rather than hold the monitor tick.
+ */
+export const CALCOM_BOOKINGS_PAGE_TIMEOUT_MS = 20_000;
+
+/** The pause between listing pages, the same order as the routing response reads. */
+const BOOKINGS_PACE_MS = 300;
+
+/**
+ * Every upcoming cal.com booking in the org (#2933), read only. Null when cal.com is
+ * not configured here, which is the state after cutover. A refused or unreadable page
+ * comes back as a refusal, never as the rows read before it, and a page that times
+ * out THROWS, which the caller reports as an unreadable read.
+ */
+export async function calcomUpcomingBookings(afterStartIso: string): Promise<CalcomUpcomingRead | null> {
+  if (!calcomConfigured()) return null;
+  return readUpcomingCalcomBookings({
+    get: async (path, apiVersion) => {
+      const r = await calcomFetch(path, {
+        headers: { "cal-api-version": apiVersion },
+        signal: AbortSignal.timeout(CALCOM_BOOKINGS_PAGE_TIMEOUT_MS),
+      });
+      return { status: r.status, json: { data: r.data } };
+    },
+    org: calcomOrgId(),
+    afterStartIso,
+    paceMs: BOOKINGS_PACE_MS,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  });
+}

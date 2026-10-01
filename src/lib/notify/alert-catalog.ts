@@ -533,6 +533,15 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "re-measures every booking every tick (#2593).",
   },
   {
+    key: "cross_system_booking:*",
+    kind: "condition",
+    suffix: "booking",
+    why:
+      "One lead holds an upcoming call in Slate and another in cal.com; it ends when " +
+      "either call is cancelled or its time comes, re-measured hourly against both " +
+      "systems, and is closed when cal.com is marked retired (#2933).",
+  },
+  {
     key: "empty_tier:*",
     kind: "condition",
     suffix: "bounded",

@@ -30,6 +30,7 @@ import type { FailureRateResult } from "@/lib/monitor/booking-failure-rate";
 import type { LowVolumeResult } from "@/lib/monitor/booking-volume";
 import type { OooProtectionResult } from "@/lib/monitor/ooo-protection";
 import type { BelowLeadTierResult } from "@/lib/monitor/below-lead-tier";
+import type { CrossSystemBookingsResult } from "@/lib/monitor/cross-system-bookings";
 import type { RegalCallResult } from "@/lib/monitor/regal-calls";
 import type { RosterCoverageVerdict } from "@/lib/monitor/roster-coverage";
 import type { AvailabilityScanResult } from "@/lib/monitor/availability-scan";
@@ -117,6 +118,16 @@ export const KILL_SWITCH_VERDICT_LANE = "verdict:kill-switch";
 export const BELOW_LEAD_TIER_VERDICT_LANE = "verdict:below-lead-tier";
 
 /**
+ * The cross system double booking check (#2933): a lead holding a live booking in
+ * both Slate and cal.com.
+ *
+ * Silent on a healthy hour AND on a broken one. Two leads in about twelve hundred
+ * was the measured rate on 2026-10-01, so almost every run finds nothing, and a
+ * cal.com listing that had started refusing would find nothing too.
+ */
+export const CROSS_SYSTEM_BOOKINGS_VERDICT_LANE = "verdict:cross-system-bookings";
+
+/**
  * The Regal call detector (#2090): somebody placing calls in Regal while Slate
  * will not route to them.
  *
@@ -185,6 +196,7 @@ export type DetectorVerdictLane =
   | typeof BURST_COUNTER_VERDICT_LANE
   | typeof KILL_SWITCH_VERDICT_LANE
   | typeof BELOW_LEAD_TIER_VERDICT_LANE
+  | typeof CROSS_SYSTEM_BOOKINGS_VERDICT_LANE
   | typeof REGAL_CALLS_VERDICT_LANE
   | typeof ROSTER_COVERAGE_VERDICT_LANE
   | typeof AVAILABILITY_SCAN_VERDICT_LANE
@@ -273,6 +285,24 @@ export function tierStaffingReachedVerdict(
  */
 export function belowLeadTierReachedVerdict(result: BelowLeadTierResult | null): boolean {
   return result?.status === "measured" && result.compared > 0;
+}
+
+/**
+ * Did the cross system double booking check compare real bookings this run? (#2933)
+ *
+ * `measured` with at least one real Slate booking compared, which means both reads
+ * succeeded in full. Comparing zero is never a verdict (L98), and neither is a run
+ * that was not due, could not read a side, or has no cal.com key.
+ *
+ * `retired` IS one, and it is the single exception, stated rather than implied: a
+ * stored "cal.com is retired" is a settled answer that there is nothing left to
+ * compare, set by a person on the alerts page and audited there (#2875). Without it,
+ * cutover would turn this lane into a permanent page about a comparison that was
+ * switched off on purpose. An UNREADABLE switch is not retired, and compares as today.
+ */
+export function crossSystemBookingsReachedVerdict(result: CrossSystemBookingsResult | null): boolean {
+  if (result?.status === "retired") return true;
+  return result?.status === "measured" && result.slateCompared > 0;
 }
 
 /**

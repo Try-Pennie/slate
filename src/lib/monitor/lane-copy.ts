@@ -24,6 +24,7 @@ import {
   KILL_SWITCH_VERDICT_LANE,
   AVAILABILITY_LATENCY_VERDICT_LANE,
   BELOW_LEAD_TIER_VERDICT_LANE,
+  CROSS_SYSTEM_BOOKINGS_VERDICT_LANE,
   ROSTER_COVERAGE_VERDICT_LANE,
   AVAILABILITY_SCAN_VERDICT_LANE,
   CALENDAR_WINDOW_VERDICT_LANE,
@@ -274,6 +275,11 @@ const VERDICT_SUBJECT: Record<string, { what: string; cost: string; look: string
     what: "the check holding each upcoming booking's team against the tier Salesforce gives the lead",
     cost: "an Ultra High lead booked with the Low team would keep that call with nobody told, which is the case the cal.com Slack workflow covered before cutover",
     look: 'the Worker logs for msg="below lead tier" under tag=monitor, and whether the Salesforce read is failing or there are simply no upcoming bookings with a lead id',
+  },
+  [CROSS_SYSTEM_BOOKINGS_VERDICT_LANE]: {
+    what: "the hourly check asking whether any lead holds an upcoming call in both Slate and cal.com",
+    cost: "a lead could be booked with two advisors at once and nobody would know to cancel one of the calls",
+    look: 'the Worker logs for msg="cross system bookings" under tag=monitor, and whether the cal.com bookings listing is being refused or timing out',
   },
   [ROSTER_COVERAGE_VERDICT_LANE]: {
     what: "the check asking whether every hour the org advertises has a bookable agent rostered to cover it",

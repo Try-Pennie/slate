@@ -56,6 +56,7 @@ export const ALERT_KEYS = [
   "agents_on_unset_hours",
   "agents_awaiting_activation",
   "booking_below_lead_tier",
+  "cross_system_booking",
   "regal_call_unroutable",
   "regal_calls_quiet",
   "regal_calls_unreadable",
@@ -221,6 +222,12 @@ export const ALERT_FIELDS: {
     urgency: "alert",
     label: "A lead booked with a team below their tier",
     help: "An upcoming call is with a team below the tier Salesforce gives the lead today, for example an Ultra High lead booked with the Low team. It is checked every 5 minutes against the lead's current score, so a lead scored higher after booking is caught too. Each call pages on its own, and ends when the call moves to the right team, the score comes down, or the call is cancelled.",
+  },
+  {
+    key: "cross_system_booking",
+    urgency: "alert",
+    label: "A lead booked in both Slate and cal.com",
+    help: "A lead holds an upcoming call in Slate and another in cal.com, so two advisors expect them. It is checked once an hour while cal.com is live, matching on the Salesforce Submission or the lead's email address. Each Slate booking pages on its own, naming both bookings, and ends when either call is cancelled or its time comes. It stops once cal.com is marked retired, lower down these settings.",
   },
   {
     key: "regal_call_unroutable",
@@ -430,6 +437,11 @@ export const MONITOR_DEFAULTS = {
     // tick would not be. Each booking has its own key, so a second booking pages at
     // once however recently the first did.
     booking_below_lead_tier: 6 * 60 * 60_000,
+    // A lead booked in both Slate and cal.com (#2933), per Slate booking. Six hours,
+    // like the below tier page beside it: the repair is a person cancelling one call,
+    // usually booked a day ahead, so a reminder inside the working day earns its
+    // noise. The check runs hourly, so nothing shorter than an hour could repeat.
+    cross_system_booking: 6 * 60 * 60_000,
     // Calling in Regal while not bookable (#2090): one page per agent per day,
     // decided by Dan on 2026-09-08. The repair is a person deciding about a
     // person, which does not happen inside an hour, and a day is also the rhythm

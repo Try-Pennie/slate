@@ -62,6 +62,41 @@ import {
 } from "@/lib/monitor/below-lead-tier";
 import { formatOffsiteOriginAlert, type OffsiteFinding } from "@/lib/monitor/offsite-origin";
 import {
+  formatCrossSystemBookingAlert,
+  formatCrossSystemBookingRecovery,
+  formatCrossSystemBookingRetired,
+  type CrossSystemPair,
+} from "@/lib/monitor/cross-system-bookings";
+
+/** #2933: the 2026-10-01 duplicate's shape, with an invented advisor and host. */
+const PREVIEW_CROSS_SYSTEM: CrossSystemPair = {
+  slate: {
+    id: "aa70212d-aafa-46ad-88d1-c47cdca0d17c",
+    starts_at: "2026-10-02T20:00:00.000Z",
+    salesforce_id: "00QUi00000t840LMAQ",
+    external_id: null,
+    agent_name: "Dana Whitfield",
+    agent_email: "dana.whitfield@trypennie.com",
+    attendee_email: null,
+    prefill: {},
+    referrer_origin: "https://www.trypennie.com",
+  },
+  calcom: [
+    {
+      id: 26177051,
+      uid: "hSzsCyr9HbBcg92HpJXg3r",
+      start: "2026-10-01T22:00:00.000Z",
+      status: "accepted",
+      host: "sam-host",
+      submissionId: "a04Ui00000NDRunIAH",
+      attendeeEmails: [],
+    },
+  ],
+  matchedOn: "both",
+  leadId: "00QUi00000t840LMAQ",
+};
+const PREVIEW_CROSS_SYSTEM_URL = "https://slate.trypennie.app/admin/bookings/aa70212d-aafa-46ad-88d1-c47cdca0d17c";
+import {
   formatAwaitingActivationAlert,
   formatAwaitingActivationRecovery,
 } from "@/lib/monitor/awaiting-activation";
@@ -1161,6 +1196,75 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the call was cancelled or its time passed",
     channel: "recovery",
     text: formatBelowLeadTierRecovery("5b0c7a8e-2f41-4d7e-9a61-0c3f1e2d4b5a", "gone", PREVIEW_BELOW_TIER_URL),
+  },
+  // #2933: one state per way the two bookings can match, since each sends the reader
+  // to check a different thing, plus a lead with two cal.com twins and one with no id.
+  {
+    key: "cross_system_booking:*",
+    state: "the same Submission and address in both systems",
+    channel: "alert",
+    text: formatCrossSystemBookingAlert(PREVIEW_CROSS_SYSTEM, PREVIEW_CROSS_SYSTEM_URL),
+  },
+  {
+    key: "cross_system_booking:*",
+    state: "the same Submission only",
+    channel: "alert",
+    text: formatCrossSystemBookingAlert({ ...PREVIEW_CROSS_SYSTEM, matchedOn: "submission" }, PREVIEW_CROSS_SYSTEM_URL),
+  },
+  {
+    key: "cross_system_booking:*",
+    state: "a cal.com booking with no Submission, matched by address",
+    channel: "alert",
+    text: formatCrossSystemBookingAlert(
+      {
+        ...PREVIEW_CROSS_SYSTEM,
+        matchedOn: "email",
+        calcom: [{ ...PREVIEW_CROSS_SYSTEM.calcom[0], submissionId: null }],
+      },
+      PREVIEW_CROSS_SYSTEM_URL,
+    ),
+  },
+  {
+    key: "cross_system_booking:*",
+    state: "two live cal.com calls beside the Slate one",
+    channel: "alert",
+    text: formatCrossSystemBookingAlert(
+      {
+        ...PREVIEW_CROSS_SYSTEM,
+        calcom: [
+          ...PREVIEW_CROSS_SYSTEM.calcom,
+          { ...PREVIEW_CROSS_SYSTEM.calcom[0], id: 26177999, uid: "Qx7pLm2Rt9WvYz3Ka1Bc5D", start: "2026-10-03T15:00:00.000Z", host: null },
+        ],
+      },
+      PREVIEW_CROSS_SYSTEM_URL,
+    ),
+  },
+  {
+    key: "cross_system_booking:*",
+    state: "the Slate booking carries no lead id",
+    channel: "alert",
+    text: formatCrossSystemBookingAlert(
+      { ...PREVIEW_CROSS_SYSTEM, leadId: null, slate: { ...PREVIEW_CROSS_SYSTEM.slate, salesforce_id: null } },
+      PREVIEW_CROSS_SYSTEM_URL,
+    ),
+  },
+  {
+    key: "cross_system_booking:*",
+    state: "the Slate booking was cancelled or passed",
+    channel: "recovery",
+    text: formatCrossSystemBookingRecovery(PREVIEW_CROSS_SYSTEM.slate.id, "slate-gone", PREVIEW_CROSS_SYSTEM_URL),
+  },
+  {
+    key: "cross_system_booking:*",
+    state: "the cal.com booking was cancelled or came",
+    channel: "recovery",
+    text: formatCrossSystemBookingRecovery(PREVIEW_CROSS_SYSTEM.slate.id, "calcom-gone", PREVIEW_CROSS_SYSTEM_URL),
+  },
+  {
+    key: "cross_system_booking:*",
+    state: "cal.com was marked retired",
+    channel: "recovery",
+    text: formatCrossSystemBookingRetired(PREVIEW_CROSS_SYSTEM.slate.id),
   },
   // #2715: one state per thing the origin can be, since the second cannot name it.
   {
