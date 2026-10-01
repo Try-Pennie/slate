@@ -49,9 +49,14 @@ vi.mock("@/lib/booking/reason-options", () => ({
     cancel: { active: [] },
   })),
 }));
+// #2982: the rebook token's one row read. Null unless a test says otherwise.
+const rebook = vi.hoisted(() => ({
+  rebookRowForToken: vi.fn(async (_token: string | null): Promise<Record<string, unknown> | null> => null),
+}));
 vi.mock("@/lib/booking/service", () => ({
   existingCallForLanding: vi.fn(async () => null),
   landingAttendee: vi.fn(async (_identity: unknown, link: unknown) => link),
+  rebookRowForToken: rebook.rebookRowForToken,
 }));
 
 import BookEntry from "./page";
@@ -61,6 +66,7 @@ import { TestAccessRefused } from "@/components/TestAccessRefused";
 import { TEST_ACCESS_COPY } from "@/lib/booking/booker-copy";
 import { verifyTestPass } from "@/lib/embed/test-pass";
 import { log } from "@/lib/log";
+import { existingCallForLanding } from "@/lib/booking/service";
 
 const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
 const SECRET = "p".repeat(64);
@@ -314,5 +320,59 @@ describe("/book with no code on the link and a Lead id (#2638)", () => {
     await BookEntry({ searchParams: Promise.resolve({ xbc: "111", external_id: LEAD }) });
 
     expect(leadXbc.readLeadXbcLive).not.toHaveBeenCalled();
+  });
+});
+
+// #2982: "Book a new time" names the cancelled booking by its manage token, and
+// the page resolves it server side, so no contact data rides on the URL.
+describe("/book with a rebook token (#2982)", () => {
+  const TOKEN = "tok_rebook_fixture_0001";
+  const ROW = {
+    status: "cancelled",
+    salesforce_id: "00QUi00000ABCdeMAH",
+    attendee_name: "Dana Lead",
+    attendee_email: "dana@example.com",
+    attendee_phone: "+12155550100",
+    source: "my-offers-result",
+  };
+
+  it("prefills the Lead id, details and source from the booking the token names", async () => {
+    admin.supabaseAdmin.mockReturnValue(dbByCode({ "111": { org_id: "o1", is_test: false } }, []));
+    rebook.rebookRowForToken.mockResolvedValueOnce(ROW);
+
+    const el = await BookEntry({ searchParams: Promise.resolve({ xbc: "111", rebook: TOKEN }) });
+
+    expect(rebook.rebookRowForToken).toHaveBeenCalledWith(TOKEN);
+    const props = bookerElement(el);
+    expect(props.salesforceId).toBe("00QUi00000ABCdeMAH");
+    expect(props.attendee).toEqual({ name: "Dana Lead", email: "dana@example.com", phone: "+12155550100" });
+    const prefill = props.prefill as Record<string, string>;
+    expect(prefill.source).toBe("my-offers-result");
+    // The token is a credential, and prefill is stored and sent to webhooks.
+    expect("rebook" in prefill).toBe(false);
+    // The lead is recognised by the same Lead id the confirm will send.
+    expect(vi.mocked(existingCallForLanding).mock.calls.at(-1)?.[0]).toEqual({ salesforceId: "00QUi00000ABCdeMAH" });
+  });
+
+  it("CONTROL: a token naming nothing renders the bare bucket booker", async () => {
+    admin.supabaseAdmin.mockReturnValue(dbByCode({ "111": { org_id: "o1", is_test: false } }, []));
+
+    const el = await BookEntry({ searchParams: Promise.resolve({ xbc: "111", rebook: TOKEN }) });
+
+    const props = bookerElement(el);
+    expect(props.salesforceId).toBeNull();
+    expect(props.attendee).toEqual({ name: "", email: "", phone: "" });
+    const prefill = props.prefill as Record<string, string>;
+    expect(prefill.source).toBeUndefined();
+    expect("rebook" in prefill).toBe(false);
+  });
+
+  it("never reads anything for a malformed token", async () => {
+    admin.supabaseAdmin.mockReturnValue(dbByCode({ "111": { org_id: "o1", is_test: false } }, []));
+
+    const el = await BookEntry({ searchParams: Promise.resolve({ xbc: "111", rebook: "not a token" }) });
+
+    expect(rebook.rebookRowForToken).toHaveBeenCalledWith(null);
+    expect(bookerElement(el).salesforceId).toBeNull();
   });
 });

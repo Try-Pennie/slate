@@ -73,9 +73,10 @@ interface ManageBookingProps {
   rescheduleTimesFrom: RescheduleTimesFrom;
   /**
    * "Book a new time" on a call that is over (#2982), built server side by
-   * `rebookHref` from the booking's own Lead id, the lead's details and the page
-   * it was booked from, so the rebooked call is tied to their Lead and they retype
-   * nothing. Required, so no surface can fall back to a bare bucket link.
+   * `rebookHref`: the bucket and this booking's manage token, which /book resolves
+   * server side into the Lead id, the lead's details and the source page, so the
+   * rebooked call is tied to their Lead and they retype nothing. Required, so no
+   * surface can fall back to a bare bucket link.
    */
   rebookHref: string;
   startsAt: string;

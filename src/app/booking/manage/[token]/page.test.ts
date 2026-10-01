@@ -118,10 +118,10 @@ describe("manage page advisor wiring (#1338)", () => {
     expect(props?.attendeeEmail).toBe("dana@example.com");
   });
 
-  // #2982: "Book a new time" carries the lead's identity back into /book, built
-  // from THIS booking's stored values (the Lead id, the lead's own details and the
-  // page it was booked from). The lead's details are their own on their own page.
-  it("hands the page a rebook link carrying the booking's Lead id, details and source", async () => {
+  // #2982: "Book a new time" names this booking by its manage token, and /book
+  // resolves the Lead id, details and source server side. No contact data may
+  // ride on the URL (request logs, history, Referer to third party scripts).
+  it("hands the page a rebook link naming the booking by token and carrying no contact data", async () => {
     service.getBookingByToken.mockResolvedValue({
       ...found,
       booking: {
@@ -134,22 +134,14 @@ describe("manage page advisor wiring (#1338)", () => {
     });
     const props = await renderPage();
     const href = String(props?.rebookHref);
-    const q = new URL(href, "https://slate.example").searchParams;
-    expect(href.startsWith("/book?")).toBe(true);
-    expect(q.get("xbc")).toBe("411");
-    expect(q.get("external_id")).toBe("00QUi00000ABCdeMAH");
-    expect(q.get("name")).toBe("Dana Lead");
-    expect(q.get("email")).toBe("dana@example.com");
-    expect(q.get("phone")).toBe("+12155550100");
-    expect(q.get("source")).toBe("my-offers-result");
-  });
-
-  it("a booking with no Lead id still rebooks with the details it holds", async () => {
-    const props = await renderPage();
-    const q = new URL(String(props?.rebookHref), "https://slate.example").searchParams;
-    expect(q.get("xbc")).toBe("411");
-    expect(q.has("external_id")).toBe(false);
-    expect(q.get("email")).toBe("dana@example.com");
+    const url = new URL(href, "https://slate.example");
+    expect(url.pathname).toBe("/book");
+    expect([...url.searchParams.keys()].sort()).toEqual(["rebook", "xbc"]);
+    expect(url.searchParams.get("xbc")).toBe("411");
+    expect(url.searchParams.get("rebook")).toBe("tok1");
+    for (const secret of ["00QUi00000ABCdeMAH", "Dana", "dana", "5550100"]) {
+      expect(href).not.toContain(secret);
+    }
   });
 
   // #2165: the add to calendar links come from the one builder the confirm and the
