@@ -11,6 +11,7 @@ import {
   type ReminderDeps,
   type DueBooking,
 } from "../src/lib/booking/reminder-send.ts";
+import { CARD_PHOTO_DEADLINE_MS } from "../src/lib/booking/advisor-card-photo.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const HOUR = 60 * 60_000;
@@ -35,6 +36,7 @@ const due = (over: Partial<DueBooking> = {}): DueBooking => ({
   manageUrl: "https://slate.trypennie.app/manage/abc",
   leadId: LEAD,
   gcalEventId: "evt-1",
+  agentId: "user-jordan",
   ...over,
 });
 
@@ -68,6 +70,12 @@ function spy(over: Partial<ReminderDeps> = {}) {
     readInviteDescription: async () => STANDARD_DESCRIPTION,
     refreshInvite: async () => {
       order.push("refresh");
+    },
+    // No photo on file by default, so nothing is fetched; the photo has its own
+    // section at the end.
+    readAdvisorPhotoUrls: async () => new Map(),
+    fetchPhoto: async () => {
+      throw new Error("no photo fetch expected in this case");
     },
     warn: (msg) => {
       warnings.push(msg);
@@ -351,6 +359,11 @@ function spy(over: Partial<ReminderDeps> = {}) {
   const tels = card.content.split("\r\n").filter((l) => l.startsWith("TEL"));
   eq(tels, ["TEL;TYPE=WORK,VOICE:+12197588170"], "carrying the calling number and no other phone");
   assert(card.content.includes("jordan@trypennie.com"), "and the advisor's address, which is the sender");
+  // Named Pennie although the booking names its advisor (Dan, 2026-10-01): a
+  // redistributed lead keeps the calling number and gets a different advisor.
+  assert(card.content.split("\r\n").includes("FN:Pennie"), "the contact is named Pennie, not the advisor");
+  assert(!card.content.includes("Jordan Lee"), "and the advisor's name is nowhere on the card");
+  eq(card.filename, "Pennie.vcf", "nor in its file name");
 
   const noLead = msgs[1]!;
   eq(noLead.attachments?.length ?? 0, 0, "a booking with no lead id gets no card");
@@ -540,6 +553,152 @@ function spy(over: Partial<ReminderDeps> = {}) {
   const result = await runBookingReminders(s.deps);
   eq(result.sent, 1, "sent with the number");
   eq(s.order.includes("refresh"), false, "and no invite write without an event to write to");
+}
+
+// --- the advisor's photo on the card (#1334, Dan 2026-10-01) -------------------------
+//
+// An optional extra on the card, so every way of not having it sends the reminder and
+// the card exactly as before, just without a PHOTO line. Fetched at most once per
+// advisor per tick, and only for advisors whose reminders carry a card.
+const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 7, 7, 7]);
+const STORED_PHOTO = "https://lh3.googleusercontent.com/a/ACg8ocK_example=s96-c";
+const NUMBER_FOR_LEAD = () => new Map([["00QUi000010889Z", "+12197588170"]]);
+const unfoldCard = (content: string) => content.replace(/\r\n /g, "");
+
+{
+  const msgs: import("../src/lib/notify/email-mime.ts").MimeMessage[] = [];
+  const askedIds: string[][] = [];
+  const fetched: string[] = [];
+  const s = spy({
+    // Two reminders for one advisor, one for another, and one with no card at all.
+    loadDue: async () => [
+      due(),
+      due({ id: "bk-2", gcalEventId: "evt-2" }),
+      due({ id: "bk-3", agentId: "user-taylor", agentEmail: "trios@trypennie.com", gcalEventId: "evt-3" }),
+      due({ id: "bk-4", agentId: "user-casey", leadId: null, gcalEventId: null }),
+    ],
+    readCallingNumbers: async () => NUMBER_FOR_LEAD(),
+    readAdvisorPhotoUrls: async (ids) => {
+      askedIds.push([...ids].sort());
+      return new Map<string, string | null>([
+        ["user-jordan", STORED_PHOTO],
+        ["user-taylor", null],
+      ]);
+    },
+    fetchPhoto: async (url) => {
+      fetched.push(url);
+      return new Response(JPEG_BYTES, { headers: { "content-type": "image/jpeg" } });
+    },
+    send: async (msg) => {
+      msgs.push(msg);
+      return "gmail-id";
+    },
+  });
+  const result = await runBookingReminders(s.deps);
+  eq(result.sent, 4, "every reminder goes out");
+  eq(askedIds, [["user-jordan", "user-taylor"]], "one photo lookup for the tick, only for advisors whose reminders carry a card");
+  eq(fetched.length, 1, "one fetch for the advisor with two reminders, none for the advisor with no photo");
+  assert(fetched[0]?.endsWith("=s256-c-rj") ?? false, "at the modest square size");
+  eq(result.withPhoto, 2, "both of that advisor's cards carry the photo, and the run says so");
+  eq(result.photoUnread, 0, "and nothing was unreadable");
+
+  const photoLine = (i: number) =>
+    unfoldCard(msgs[i]?.attachments?.[0]?.content ?? "")
+      .split("\r\n")
+      .filter((l) => l.startsWith("PHOTO"));
+  const expected = `PHOTO;ENCODING=b;TYPE=JPEG:${Buffer.from(JPEG_BYTES).toString("base64")}`;
+  eq(photoLine(0), [expected], "the first card carries the photo, embedded");
+  eq(photoLine(1), [expected], "and so does the second, from the same fetch");
+  eq(photoLine(2), [], "an advisor with no photo on file gets a card with no PHOTO line");
+  eq(msgs[2]?.attachments?.length ?? 0, 1, "but still gets the card");
+  eq(msgs[3]?.attachments?.length ?? 0, 0, "and a reminder with no card fetches nothing for it");
+  eq(s.warnings.length, 0, "no photo on file is not a fault, so nothing is logged as one");
+}
+
+// A photo that cannot be fetched, or is not an image, costs the card its photo and
+// nothing else: the reminder and the card still go, logged and counted.
+const failingFetches: [string, ReminderDeps["fetchPhoto"]][] = [
+  ["a refused fetch", async () => new Response("no", { status: 500, headers: { "content-type": "text/plain" } })],
+  ["a non-image answer", async () => new Response("<html></html>", { headers: { "content-type": "text/html" } })],
+  [
+    "a fetch that throws",
+    async () => {
+      throw new TypeError("fetch failed");
+    },
+  ],
+];
+for (const [label, fetchPhoto] of failingFetches) {
+  const msgs: import("../src/lib/notify/email-mime.ts").MimeMessage[] = [];
+  const s = spy({
+    readCallingNumbers: async () => NUMBER_FOR_LEAD(),
+    readAdvisorPhotoUrls: async () => new Map([["user-jordan", STORED_PHOTO]]),
+    fetchPhoto,
+    send: async (msg) => {
+      msgs.push(msg);
+      return "gmail-id";
+    },
+  });
+  const result = await runBookingReminders(s.deps);
+  eq(result.sent, 1, `${label}: the reminder still goes out`);
+  eq(msgs[0]?.attachments?.length ?? 0, 1, `${label}: with its card`);
+  assert(!(msgs[0]?.attachments?.[0]?.content ?? "PHOTO").includes("PHOTO"), `${label}: and no PHOTO line`);
+  eq(result.photoUnread, 1, `${label}: counted as unread`);
+  eq(result.withPhoto, 0, `${label}: and not as a photo sent`);
+  eq(s.warnings.length, 1, `${label}: logged once with its reason`);
+  eq(s.alerts.length, 0, `${label}: and never paged, since no reminder was lost`);
+}
+
+// The photo lookup itself failing sends every card without a photo, counted per advisor.
+{
+  const msgs: import("../src/lib/notify/email-mime.ts").MimeMessage[] = [];
+  const s = spy({
+    readCallingNumbers: async () => NUMBER_FOR_LEAD(),
+    readAdvisorPhotoUrls: async () => {
+      throw new Error("users read failed");
+    },
+    send: async (msg) => {
+      msgs.push(msg);
+      return "gmail-id";
+    },
+  });
+  const result = await runBookingReminders(s.deps);
+  eq(result.sent, 1, "a failed photo lookup still sends the reminder");
+  eq(msgs[0]?.attachments?.length ?? 0, 1, "with its card");
+  assert(!(msgs[0]?.attachments?.[0]?.content ?? "PHOTO").includes("PHOTO"), "and no photo");
+  eq(result.photoUnread, 1, "counted as unread");
+  eq(s.warnings.length, 1, "and logged");
+}
+
+// A photo fetch that never answers must not stall the lane: it runs under its own
+// deadline, on the same timer as the calling number read, and the reminder goes.
+{
+  const msgs: import("../src/lib/notify/email-mime.ts").MimeMessage[] = [];
+  const timers: number[] = [];
+  let cleared = 0;
+  const s = spy({
+    readCallingNumbers: async () => NUMBER_FOR_LEAD(),
+    readAdvisorPhotoUrls: async () => new Map([["user-jordan", STORED_PHOTO]]),
+    fetchPhoto: () => new Promise(() => {}),
+    deadlineTimer: (ms, fire) => {
+      timers.push(ms);
+      // Only the photo fetch is made to time out; the reads before it answer at once.
+      if (ms === CARD_PHOTO_DEADLINE_MS) queueMicrotask(fire);
+      return () => {
+        cleared += 1;
+      };
+    },
+    send: async (msg) => {
+      msgs.push(msg);
+      return "gmail-id";
+    },
+  });
+  const result = await runBookingReminders(s.deps);
+  eq(result.sent, 1, "a hung photo fetch still lets the reminder go out");
+  eq(msgs[0]?.attachments?.length ?? 0, 1, "with its card");
+  assert(!(msgs[0]?.attachments?.[0]?.content ?? "PHOTO").includes("PHOTO"), "and no photo");
+  eq(result.photoUnread, 1, "counted as unread");
+  assert(timers.includes(CARD_PHOTO_DEADLINE_MS), "under the photo's own deadline");
+  eq(cleared, timers.length, "and every timer is cleared");
 }
 
 finish();

@@ -1,11 +1,15 @@
 /**
- * The advisor's contact card, attached to the 24 hour reminder (#1334).
+ * The contact card attached to the 24 hour reminder (#1334).
  *
  * Call screening silences a call from a number the lead has never seen. Tapping a
  * `.vcf` attachment opens "Add to Contacts" on an iPhone and in Gmail on Android,
- * and a call from a saved, named contact is let through. The reminder already
- * waits for the owner hand-back (#2633), so the card names the advisor who will
- * actually call.
+ * and a call from a saved, named contact is let through.
+ *
+ * The card is named "Pennie" for every lead and never names the advisor (Dan,
+ * 2026-10-01). A lead can be redistributed to another advisor while the calling
+ * number stays the same, so a contact saved under one advisor's name would go on
+ * labelling calls from somebody else. The booked advisor's PHOTO is still on it,
+ * because Dan chose a face over the Pennie logo.
  *
  * The phone on the card is the CALLING number and nothing else. The Sendblue
  * texting line is deliberately absent: texting lines change often (Dan,
@@ -20,8 +24,8 @@ import type { MailAttachment } from "../notify/email-mime.ts";
 /**
  * The advisor's name as something a lead can be shown, or null when there is none.
  * Blank and anything shaped like an address count as none: an address is never
- * presented as a person's name, in a card, a file name or an email's greeting.
- * Shared by the card and the reminder copy, so both treat a missing name alike.
+ * presented as a person's name, in an email's greeting or signature. Used by the
+ * reminder copy; the card itself never carries the advisor's name.
  */
 export function realAdvisorName(raw: string | null | undefined): string | null {
   const name = (raw ?? "").trim();
@@ -29,13 +33,21 @@ export function realAdvisorName(raw: string | null | undefined): string | null {
   return name;
 }
 
+/** An image to embed in the card, already fetched and checked (`advisor-card-photo.ts`). */
+export interface CardPhoto {
+  /** The image's REAL type, judged from its bytes as well as its label. */
+  type: "JPEG" | "PNG";
+  /** The image bytes, base64, unfolded. */
+  base64: string;
+}
+
 export interface AdvisorCardInput {
-  /** The advisor's name; null, blank or an address names the card "Pennie" alone. */
-  agentName: string | null;
   /** The mailbox the reminder is sent from, so a reply and the card agree. */
   agentEmail: string;
   /** E.164, already validated (`callingNumberOf`). */
   callingNumber: string;
+  /** The booked advisor's photo, or null for a card with no PHOTO line. */
+  photo: CardPhoto | null;
 }
 
 /** Escape a vCard text value: backslash, comma, semicolon and newline. */
@@ -75,31 +87,27 @@ function fold(line: string): string {
   return out.map((l, i) => (i === 0 ? l : ` ${l}`)).join("\r\n");
 }
 
-/** A file name that is safe inside a quoted MIME header: ASCII letters, digits, spaces. */
-function cardFilename(agentName: string | null): string {
-  if (agentName === null) return "Pennie.vcf";
-  const safe = agentName.replace(/[^A-Za-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
-  return safe ? `${safe} Pennie.vcf` : "Pennie advisor.vcf";
-}
+/**
+ * Pennie's name on the card and its file, for every lead. Plain ASCII, since the
+ * file name rides in a quoted MIME header.
+ */
+const CARD_NAME = "Pennie";
 
 export function advisorContactCard(input: AdvisorCardInput): MailAttachment {
-  // The name carries Pennie, so the caller ID reads as who is calling and from where
-  // rather than as a stranger's name. With no real name the contact is simply
-  // "Pennie", which is still what the lead needs the caller ID to say.
-  const name = realAdvisorName(input.agentName);
-  const display = escapeValue(name === null ? "Pennie" : `${name} (Pennie)`);
   const lines = [
     "BEGIN:VCARD",
     "VERSION:3.0",
-    `N:;${display};;;`,
-    `FN:${display}`,
+    `N:;${CARD_NAME};;;`,
+    `FN:${CARD_NAME}`,
     "ORG:Pennie",
     `TEL;TYPE=WORK,VOICE:${input.callingNumber}`,
     `EMAIL;TYPE=INTERNET,WORK:${escapeValue(input.agentEmail)}`,
+    // Folded like every other line. Absent, never empty, when there is no photo.
+    ...(input.photo ? [`PHOTO;ENCODING=b;TYPE=${input.photo.type}:${input.photo.base64}`] : []),
     "END:VCARD",
   ];
   return {
-    filename: cardFilename(name),
+    filename: `${CARD_NAME}.vcf`,
     content: `${lines.map(fold).join("\r\n")}\r\n`,
     mimeType: "text/vcard",
   };
