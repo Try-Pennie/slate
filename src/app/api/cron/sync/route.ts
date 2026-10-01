@@ -14,11 +14,8 @@ import {
   SYNC_CONCURRENCY,
   MAX_AGENTS_PER_SYNC_TICK,
   MAX_TOUCHED_AGENTS,
-  MAX_TOUCHED_BUCKETS,
 } from "@/lib/google/sync-pace";
-import { touchedBucketCodes } from "@/lib/availability/precompute";
-import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
-import { loadBookingHorizonDays } from "@/lib/booking/settings";
+import { refreshPoolsForAgents } from "@/lib/availability/slot-cache";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { CRON_LOCK_TTL_MS, SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
 import { sendThrottledAlert, resolveAlert, isAlertFiring } from "@/lib/notify/dispatch";
@@ -191,29 +188,24 @@ export async function GET(req: NextRequest) {
     await alertSyncFailures(results.filter((r) => r.error), ordered.length);
 
     // A missed Google push means the change only surfaced now, via this
-    // backstop. Refresh the affected buckets inline (#296) so it shows in ~1 min
-    // instead of waiting for the recompute lane's freshness window. Deduped
-    // across agents and bounded (MAX_TOUCHED_*) so a burst can't blow the
-    // subrequest ceiling; any overflow is caught by the recompute lane. Usually
-    // a no-op — most ticks have no changes (push handles the common case).
+    // backstop. Refresh the affected pools inline (#296) so it shows in ~1 min
+    // instead of waiting for the recompute lane's freshness window. Usually a
+    // no-op: most ticks have no changes (push handles the common case).
+    //
+    // ONE compute per POOL, at most MAX_TOUCHED_POOLS_PER_SWEEP of them (#2357).
+    // This used to recompute up to twenty CODES one after another, each a whole
+    // pool compute, with no time bound, and on the load test Worker that tail
+    // took a minute tick to 119 s of CPU against the 120 s kill. Every touched
+    // code is passed (no code cap before pooling, which would leave whole pools to
+    // chance), and pools past the count are left to the recompute lane, which is
+    // what caught the overflow past the old code cap too.
+    //
+    // One batched bucket lookup for every changed agent (#762), then the pooled
+    // refresh. Never throws and logs its own outcome, failures included (one line
+    // per sweep, `tag=slot-cache msg="touched pools recomputed"`), so the tick
+    // carries on whatever it reports; the recompute lane is the backstop.
     const changed = agentsWithChanges(results, MAX_TOUCHED_AGENTS);
-    if (changed.length > 0) {
-      // One batched lookup for every changed agent (#762). A failed read logs and
-      // yields nothing rather than failing the tick; the recompute lane's freshness
-      // sweep is the backstop.
-      const touched = await touchedBucketCodes(changed, MAX_TOUCHED_BUCKETS, "touched-bucket");
-      // #216: one horizon read for the batch, not per bucket.
-      const horizonDays = await loadBookingHorizonDays();
-      for (const code of touched) {
-        await recomputeBucketSlotsForToday(code, true, undefined, horizonDays).catch((err) =>
-          // Best-effort: the recompute lane reconverges. Logged so a bucket that
-          // never recomputes after a sync is findable.
-          // #1188: the Error goes through so its stack survives, at warn rather
-          // than error because the every-minute recompute lane is the backstop.
-          log.warn("sync", { msg: "post-sync recompute failed", bucket: code }, err),
-        );
-      }
-    }
+    if (changed.length > 0) await refreshPoolsForAgents(changed, "touched-bucket");
 
     // The self-heal sweeps (#401 deletion drain, #428 cancelled-reconcile,
     // #431 missing-reconcile) moved to the dedicated /api/cron/selfheal lane

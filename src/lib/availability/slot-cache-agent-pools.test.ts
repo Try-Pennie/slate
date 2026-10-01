@@ -21,6 +21,7 @@ const precompute = vi.hoisted(() => ({
   writeBucketSlotsRow: vi.fn(async (_code: string, _val: unknown, _atMs: number) => {}),
   recomputeBucketSlots: vi.fn(async () => {}),
   readBucketSlotsRow: vi.fn(),
+  touchedBucketCodes: vi.fn(async (_ids: string[], _max: number, _label: string): Promise<string[]> => []),
 }));
 vi.mock("./precompute", () => precompute);
 vi.mock("./service", () => ({ getBucketSlots: vi.fn() }));
@@ -28,7 +29,12 @@ vi.mock("@/lib/booking/settings", () => ({ loadBookingHorizonDays: vi.fn(async (
 const log = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }));
 vi.mock("@/lib/log", () => ({ log }));
 
-import { recomputeBucketsForAgent } from "./slot-cache";
+import {
+  recomputeBucketsForAgent,
+  recomputePoolsForCodes,
+  refreshPoolsForAgents,
+  MAX_TOUCHED_POOLS_PER_SWEEP,
+} from "./slot-cache";
 
 function pooled(code: string, debtTeam: string) {
   return {
@@ -102,5 +108,89 @@ describe("recomputeBucketsForAgent refreshes by pool (#2922)", () => {
     expect(out).toBeNull();
     expect(precompute.computeBucketSlotsForWindow).not.toHaveBeenCalled();
     expect(log.error).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #2357: the every minute callers (the sync lane's post sync refresh and both self
+// heal reconcile sweeps) used to loop recomputeBucketSlotsForToday over up to twenty
+// or twenty five CODES, one whole pool compute each, with no budget at all. On the
+// load test Worker that tail ran to minutes and took a minute tick to 119 s of CPU
+// against a 120 s kill. These pin that they now get one compute per pool, at most
+// `maxPools` of them, and an honest null when the pools cannot be listed.
+describe("recomputePoolsForCodes bounds a cron sweep's refresh (#2357)", () => {
+  it("computes once per pool and never starts more pools than the count allows", async () => {
+    const out = await recomputePoolsForCodes(["100", "110", "200", "300"], {
+      label: "touched-bucket",
+      maxPools: 2,
+    });
+
+    expect(precompute.computeBucketSlotsForWindow).toHaveBeenCalledTimes(2);
+    expect(out).toEqual({ refreshed: 2, deferred: 1, failed: 0, debounced: 0 });
+    const lines = log.info.mock.calls.filter(
+      ([tag, fields]) => tag === "slot-cache" && fields.msg === "touched pools recomputed",
+    );
+    expect(lines).toHaveLength(1);
+    expect(lines[0][1]).toMatchObject({ label: "touched-bucket", codes: 4, refreshed: 2, deferred: 1 });
+  });
+
+  it("does no read at all when nothing was touched, the common tick", async () => {
+    const out = await recomputePoolsForCodes([], { label: "reconcile", maxPools: 5 });
+
+    expect(out).toEqual({ refreshed: 0, deferred: 0, failed: 0, debounced: 0 });
+    expect(precompute.listPoolBuckets).not.toHaveBeenCalled();
+    expect(log.info).not.toHaveBeenCalled();
+  });
+
+  it("reports null and logs the cause when the pools cannot be listed", async () => {
+    precompute.listPoolBuckets.mockRejectedValueOnce(new Error("pool listing refused"));
+
+    const out = await recomputePoolsForCodes(["100"], { label: "reconcile-missing", maxPools: 5 });
+
+    expect(out).toBeNull();
+    expect(precompute.computeBucketSlotsForWindow).not.toHaveBeenCalled();
+    expect(log.error).toHaveBeenCalledTimes(1);
+    expect(log.error.mock.calls[0][1]).toMatchObject({ label: "reconcile-missing" });
+  });
+
+  it("counts a pool whose compute failed and carries on to the next", async () => {
+    precompute.computeBucketSlotsForWindow.mockRejectedValueOnce(new Error("compute failed"));
+
+    const out = await recomputePoolsForCodes(["100", "200"], { label: "touched-bucket", maxPools: 5 });
+
+    expect(out).toEqual({ refreshed: 1, deferred: 0, failed: 1, debounced: 0 });
+  });
+});
+
+// The one call the sync lane and both reconcile sweeps make (#2357), so the bound
+// is applied by construction rather than remembered at three sites.
+describe("refreshPoolsForAgents is the sweeps' whole refresh (#2357)", () => {
+  it("looks up every code the agents touch, uncapped, and refreshes at most the sweep's pool count", async () => {
+    // Seven single code pools, more than the sweep may start.
+    const seven = ["a", "b", "c", "d", "e", "f", "g"].map((t, i) => pooled(`9${i}0`, t));
+    precompute.listPoolBuckets.mockResolvedValue(seven);
+    precompute.touchedBucketCodes.mockResolvedValueOnce(seven.map((b) => b.code));
+
+    const out = await refreshPoolsForAgents(["u1", "u2"], "reconcile");
+
+    expect(precompute.touchedBucketCodes).toHaveBeenCalledWith(
+      ["u1", "u2"],
+      Number.POSITIVE_INFINITY,
+      "reconcile",
+    );
+    expect(precompute.computeBucketSlotsForWindow).toHaveBeenCalledTimes(MAX_TOUCHED_POOLS_PER_SWEEP);
+    expect(out).toEqual({
+      refreshed: MAX_TOUCHED_POOLS_PER_SWEEP,
+      deferred: 7 - MAX_TOUCHED_POOLS_PER_SWEEP,
+      failed: 0,
+      debounced: 0,
+    });
+  });
+
+  it("reads nothing for a sweep that changed no agent", async () => {
+    const out = await refreshPoolsForAgents([], "reconcile-missing");
+
+    expect(out).toEqual({ refreshed: 0, deferred: 0, failed: 0, debounced: 0 });
+    expect(precompute.touchedBucketCodes).not.toHaveBeenCalled();
+    expect(precompute.listPoolBuckets).not.toHaveBeenCalled();
   });
 });

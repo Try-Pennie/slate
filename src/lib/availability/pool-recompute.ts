@@ -177,9 +177,9 @@ export function poolsDueForRecompute(
   });
 }
 
-/** The seams `recomputeAgentPools` runs through, injected so the budget and the
+/** The seams `recomputeTouchedPools` runs through, injected so the budget and the
  *  debounce are driven by a fixture clock rather than the real one. */
-export interface AgentPoolsDeps {
+export interface TouchedPoolsDeps {
   nowMs(): number;
   /** No pool is STARTED at or past this instant; the rest are deferred. */
   deadlineMs: number;
@@ -190,11 +190,20 @@ export interface AgentPoolsDeps {
   lastRunAt: Map<string, number>;
   /** A pool started less than this long ago is skipped. */
   skipMs: number;
+  /**
+   * The most pools this call may START (#2357), the ceiling that holds when the
+   * deadline cannot. A Worker's clock returns the time of the last I/O and does not
+   * advance during execution, so a fan-out whose cost is CPU can read the deadline
+   * as unreached for its whole length. Required, so every caller states its own
+   * ceiling; anything not finite and positive starts nothing rather than everything.
+   */
+  maxPools: number;
 }
 
-export interface AgentPoolsOutcome {
+export interface TouchedPoolsOutcome {
   refreshed: number;
-  /** Not started because the budget ran out; the every minute lane owns them. */
+  /** Not started because the budget or the count ran out; the every minute lane
+   *  owns them. */
   deferred: number;
   failed: number;
   /** Skipped because this isolate started the same pool moments ago. */
@@ -202,8 +211,13 @@ export interface AgentPoolsOutcome {
 }
 
 /**
- * Refresh the pools an agent's calendar or time off can move (#2922), for the
- * push and OOO paths that run after the response.
+ * Refresh the pools a set of bucket codes falls in, one compute per POOL, inside a
+ * budget and a count (#2922, #2357).
+ *
+ * Two kinds of caller. The push and OOO paths pass the codes one agent's calendar
+ * or time off can move, after the response. The sync lane and the self heal
+ * reconcile sweeps pass the codes a whole tick's changed agents touch, on the
+ * every minute cron.
  *
  * Those paths used to recompute every CODE the agent is in, one after another,
  * with the whole multi agent compute each time (about four seconds). An agent in
@@ -220,26 +234,33 @@ export interface AgentPoolsOutcome {
  * boundary (L73), and the debounce stands in for the per code one this replaces,
  * so a burst of pushes for one agent computes a pool once.
  */
-export async function recomputeAgentPools(
+export async function recomputeTouchedPools(
   agentCodes: string[],
   allBuckets: PooledBucket[],
-  deps: AgentPoolsDeps,
-): Promise<AgentPoolsOutcome> {
-  const outcome: AgentPoolsOutcome = { refreshed: 0, deferred: 0, failed: 0, debounced: 0 };
+  deps: TouchedPoolsDeps,
+): Promise<TouchedPoolsOutcome> {
+  const outcome: TouchedPoolsOutcome = { refreshed: 0, deferred: 0, failed: 0, debounced: 0 };
+  // NaN, zero and negatives all mean "start nothing", stated once here so no
+  // comparison below can read NaN as no ceiling at all (L50).
+  const maxPools = Number.isNaN(deps.maxPools) || deps.maxPools <= 0 ? 0 : deps.maxPools;
+  let started = 0;
   const wanted = new Set(agentCodes);
   const pools = [...groupByPool(allBuckets)].filter(([, members]) =>
     members.some((m) => wanted.has(m.code)),
   );
   for (const [key, pool] of pools) {
     const now = deps.nowMs();
-    if (now >= deps.deadlineMs) {
+    if (now >= deps.deadlineMs || started >= maxPools) {
       outcome.deferred++;
       continue;
     }
+    // Debounced BEFORE the count is spent: a skipped pool cost no compute, which is
+    // the thing the count bounds, so it leaves its place to the next pool.
     if (now - (deps.lastRunAt.get(key) ?? -Infinity) < deps.skipMs) {
       outcome.debounced++;
       continue;
     }
+    started++;
     // Stamped before the compute so a burst of pushes in this isolate computes the
     // pool once, and cleared again on a failure: the debounce stands for "this pool
     // was just refreshed", which a failure is not, so the next push must try again.

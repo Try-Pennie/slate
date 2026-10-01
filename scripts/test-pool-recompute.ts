@@ -11,14 +11,15 @@
 // Run: node --experimental-strip-types scripts/test-pool-recompute.ts
 import {
   recomputePool,
-  recomputeAgentPools,
-  type AgentPoolsDeps,
+  recomputeTouchedPools,
+  type TouchedPoolsDeps,
   type PooledBucket,
   type PoolRecomputeDeps,
 } from "../src/lib/availability/pool-recompute.ts";
 import type { Bucket } from "../src/lib/db/types.ts";
 import type { BucketSlots } from "../src/lib/availability/service.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { groupByPool } from "../src/lib/availability/pool-key.ts";
 
 const ORG = "org-1";
 const EVENT = "event-1";
@@ -272,10 +273,10 @@ const MID_POOL = ["200", "201", "210"].map((c) => pooledIn(c, "mid"));
 const HIGH_POOL = ["300", "310"].map((c) => pooledIn(c, "high"));
 const ALL = [...LOW_POOL, ...MID_POOL, ...HIGH_POOL];
 
-function agentHarness(over: Partial<AgentPoolsDeps> = {}) {
+function agentHarness(over: Partial<TouchedPoolsDeps> = {}) {
   let clock = 1_000_000;
   const computed: string[][] = [];
-  const deps: AgentPoolsDeps = {
+  const deps: TouchedPoolsDeps = {
     nowMs: () => clock,
     deadlineMs: clock + 20_000,
     recomputePool: async (pool) => {
@@ -285,14 +286,53 @@ function agentHarness(over: Partial<AgentPoolsDeps> = {}) {
     },
     lastRunAt: new Map(),
     skipMs: 2_000,
+    maxPools: Number.POSITIVE_INFINITY,
     ...over,
   };
   return { deps, computed, advance: (ms: number) => (clock += ms) };
 }
 
 {
+  // #2357: the COUNT ceiling, and the reason it exists beside the deadline. A
+  // Worker's clock returns the time of the last I/O and does not advance during
+  // execution, so on a tick where the compute is CPU (the load test's stubbed
+  // Google answers instantly) the deadline can read as unreached for the whole
+  // fan-out. The clock here never moves, which is that case exactly: only the
+  // count can stop the third pool.
+  const { deps, computed } = agentHarness({ maxPools: 2 });
+  deps.recomputePool = async (pool) => {
+    computed.push(pool.map((b) => b.code));
+    return pool.length;
+  };
+  const out = await recomputeTouchedPools(["100", "200", "300"], ALL, deps);
+  eq(computed.length, 2, "no more pools are STARTED than the count allows, even with a frozen clock");
+  eq(out, { refreshed: 2, deferred: 1, failed: 0, debounced: 0 }, "and the one held back is counted as deferred for the lane");
+}
+
+{
+  // A debounced or failed pool spent no compute the ceiling is about, so it does
+  // not use up a place: the count bounds computes STARTED, which is the cost.
+  const { deps, computed } = agentHarness({ maxPools: 1 });
+  deps.lastRunAt.set([...groupByPool(ALL).keys()][0]!, deps.nowMs());
+  const out = await recomputeTouchedPools(["100", "200"], ALL, deps);
+  eq(computed, [["200", "201", "210"]], "a pool skipped by the debounce leaves its place to the next one");
+  eq(out, { refreshed: 1, deferred: 0, failed: 0, debounced: 1 }, "and both are reported");
+}
+
+{
+  // A non finite or non positive count must not read as "no ceiling" by accident:
+  // NaN compares false against everything (L50), which would start every pool.
+  for (const bad of [Number.NaN, 0, -3]) {
+    const { deps, computed } = agentHarness({ maxPools: bad });
+    const out = await recomputeTouchedPools(["100", "200"], ALL, deps);
+    eq(computed.length, 0, `a count of ${bad} starts nothing`);
+    eq(out.deferred, 2, `and defers every pool (count ${bad})`);
+  }
+}
+
+{
   const { deps, computed } = agentHarness();
-  const out = await recomputeAgentPools(["100", "110", "112", "200"], ALL, deps);
+  const out = await recomputeTouchedPools(["100", "110", "112", "200"], ALL, deps);
   eq(computed.length, 2, "an agent in four codes across two pools computes twice, not four times");
   eq(computed[0], ["100", "101", "102", "110", "111", "112"], "and a pool refreshes every code in it, siblings included");
   eq(computed[1], ["200", "201", "210"], "the second pool is refreshed whole as well");
@@ -304,7 +344,7 @@ function agentHarness(over: Partial<AgentPoolsDeps> = {}) {
   // COUNTED, rather than being started and cancelled mid write.
   const { deps, computed } = agentHarness();
   deps.deadlineMs = deps.nowMs() + 5_000;
-  const out = await recomputeAgentPools(["100", "200", "300"], ALL, deps);
+  const out = await recomputeTouchedPools(["100", "200", "300"], ALL, deps);
   eq(computed.length, 2, "a pool is started only while inside the budget");
   eq(out, { refreshed: 2, deferred: 1, failed: 0, debounced: 0 }, "and the one it did not start is reported as deferred");
 }
@@ -312,7 +352,7 @@ function agentHarness(over: Partial<AgentPoolsDeps> = {}) {
 {
   const { deps } = agentHarness();
   deps.deadlineMs = deps.nowMs() - 1;
-  const out = await recomputeAgentPools(["100", "200"], ALL, deps);
+  const out = await recomputeTouchedPools(["100", "200"], ALL, deps);
   eq(out, { refreshed: 0, deferred: 2, failed: 0, debounced: 0 }, "already past the budget, nothing starts and every pool is deferred");
 }
 
@@ -324,7 +364,7 @@ function agentHarness(over: Partial<AgentPoolsDeps> = {}) {
     if (pool[0].code === "100") throw new Error("compute failed");
     return real(pool);
   };
-  const out = await recomputeAgentPools(["100", "200"], ALL, deps);
+  const out = await recomputeTouchedPools(["100", "200"], ALL, deps);
   eq(computed, [["200", "201", "210"]], "a failed pool does not stop the next one");
   eq(out, { refreshed: 1, deferred: 0, failed: 1, debounced: 0 }, "and the failure is counted, not swallowed");
 }
@@ -338,21 +378,21 @@ function agentHarness(over: Partial<AgentPoolsDeps> = {}) {
     computed.push(pool.map((b) => b.code));
     return pool.length;
   };
-  await recomputeAgentPools(["100"], ALL, deps);
-  const second = await recomputeAgentPools(["110"], ALL, deps);
+  await recomputeTouchedPools(["100"], ALL, deps);
+  const second = await recomputeTouchedPools(["110"], ALL, deps);
   eq(computed.length, 1, "a pool refreshed moments ago is not computed again");
   eq(second, { refreshed: 0, deferred: 0, failed: 0, debounced: 1 }, "and the skip is reported as debounced");
   advance(2_000);
-  await recomputeAgentPools(["110"], ALL, deps);
+  await recomputeTouchedPools(["110"], ALL, deps);
   eq(computed.length, 2, "once the debounce has passed it computes again");
 }
 
 {
   const { deps, computed } = agentHarness();
-  const out = await recomputeAgentPools([], ALL, deps);
+  const out = await recomputeTouchedPools([], ALL, deps);
   eq(computed.length, 0, "an agent in no bucket computes nothing");
   eq(out, { refreshed: 0, deferred: 0, failed: 0, debounced: 0 }, "and reports nothing");
-  const unknown = await recomputeAgentPools(["999"], ALL, deps);
+  const unknown = await recomputeTouchedPools(["999"], ALL, deps);
   eq(unknown.refreshed + unknown.deferred, 0, "a code no bucket carries any more puts no work anywhere");
 }
 
@@ -365,7 +405,7 @@ function agentHarness(over: Partial<AgentPoolsDeps> = {}) {
     computed.push(pool.map((b) => b.code));
     return pool[0]!.code === "100" ? 0 : pool.length;
   };
-  const out = await recomputeAgentPools(["100", "200"], ALL, deps);
+  const out = await recomputeTouchedPools(["100", "200"], ALL, deps);
   eq(out, { refreshed: 1, deferred: 0, failed: 1, debounced: 0 }, "a pool that wrote no rows is a failure, not a refresh");
 }
 
@@ -378,12 +418,12 @@ function agentHarness(over: Partial<AgentPoolsDeps> = {}) {
       computed.push(pool.map((b) => b.code));
       return fail();
     };
-    await recomputeAgentPools(["100"], ALL, deps);
+    await recomputeTouchedPools(["100"], ALL, deps);
     deps.recomputePool = async (pool) => {
       computed.push(pool.map((b) => b.code));
       return pool.length;
     };
-    const retry = await recomputeAgentPools(["100"], ALL, deps);
+    const retry = await recomputeTouchedPools(["100"], ALL, deps);
     eq(retry, { refreshed: 1, deferred: 0, failed: 0, debounced: 0 }, "a push right after a failed refresh computes the pool again");
     eq(computed.length, 2, "rather than being debounced behind the failure");
   }

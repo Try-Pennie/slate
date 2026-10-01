@@ -8,10 +8,12 @@
 // sites regresses back to a bare `void recomputeBucketsForAgent(...)` float.
 //
 // It deliberately targets ONLY `recomputeBucketsForAgent`. The every-booking
-// `invalidateSlots` → `recomputeBucketSlotsForToday(...)` float (a DIFFERENT
-// function) is deliberately left floating: it is also reused by the outbox
-// cron drain, where after() would be a shared-lane budget regression, and it is
-// cron-backstopped. So this guard must not flag that one.
+// `invalidateSlots` → `recomputeBucketSlotsForToday(...)` (a DIFFERENT function)
+// floats only on the outbox cron drain, where after() would be a shared-lane
+// budget regression and the recompute lane is the backstop. On the user-facing
+// paths it goes through afterResponse since #2345, pinned by
+// src/lib/booking/confirm-slot-refresh.test.ts. So this guard must not flag the
+// cron float.
 
 export interface FireAndForgetHit {
   line: number;

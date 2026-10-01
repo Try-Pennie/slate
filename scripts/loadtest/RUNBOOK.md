@@ -883,6 +883,32 @@ the issue named. The reader measures all three spans now and the judge reports t
 apart, because a single number covering both sides of the handler is what produced
 the wrong diagnosis.
 
+**Correction, from the first run that carried the per job line (34991614423, #2345).**
+The post response span is **not the webhook send on this Worker**: every one of its
+597 confirms logged `tag=webhook-emit msg="no subscriber for event"`, because the load
+test Worker has no webhook endpoint, so no send was ever deferred. The only named job
+was `booking-api-tally` (x596, p95 412ms), against a post response span of p95
+1,493ms. The rest was work the per job line could not see: the booked bucket's slot
+refresh (`invalidateSlots`), a whole pool compute started as a FLOATING promise in the
+middle of the confirm, sharing the isolate's one thread with what the lead waits for
+and running on past the response. On the user facing paths it now goes through
+`afterResponse("post-confirm-recompute", ...)`, so the next run's per job line names
+it and the confirm no longer competes with it for CPU. The cron drains keep the #503
+float. What only the next run can show is how much of the 1,493ms that was. Moving
+the webhook send onto the outbox drain would change nothing this run can measure and
+would make Regal learn of a booking up to a minute later, so it was not done.
+
+### The cron half of the CPU bar holds a margin (#2357)
+
+Run 34991614423 PASSED a minute tick at **119,137ms of CPU against the 120,000ms
+kill**, in the same words it would have used for 4,000. The cron half now fails past
+`CRON_CPU_MARGIN_SHARE` (half) of `limits.cpu_ms`, and the report prints the worst
+tick's share of the limit on every run. The cause of that tick was the sync lane's
+post sync refresh and both self heal reconciles each looping a whole pool compute per
+bucket CODE (20 and 25 of them, no time bound); they now share one pooled, counted
+refresh (`refreshPoolsForAgents`, at most five pools a sweep). See
+`docs/cloudflare-platform-notes.md`, watch item #762.
+
 The platform's own percentile cannot separate them: it is one number per
 invocation with nothing in it saying whether that invocation also paid for the
 isolate. So the split is read from the run's OWN archived log

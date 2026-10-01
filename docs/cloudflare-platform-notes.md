@@ -244,10 +244,30 @@ minutes** behind. The three hour figure recorded elsewhere in this document belo
 to the Workers **Logs** query pipeline (#1533), which is a different system; do not
 carry that number over to this one.
 
-**Watch item (#762):** the two selfheal reconcile sweeps loop `bucketsForAgent`
-(about 3 subrequests plus CPU) per freed or missing agent with no per tick cap, up
-to about 1,200 subrequests across both during a backlog. Not a subrequest threat at
-a 10,000 ceiling, but it is a real CPU contributor worth capping.
+**Watch item (#762), and what it turned into (#2357):** the two selfheal reconcile
+sweeps and the sync lane's post sync refresh each looped
+`recomputeBucketSlotsForToday` over up to 25 (reconcile) or 20 (sync) bucket CODES,
+one after another with no time bound. Each call is a whole POOL compute, and sixty
+codes resolve to fifteen pools (#2245), so the loop computed the same pools several
+times. On the load test Worker, whose stubbed Google answers instantly and turns
+every second of that into CPU, it took a minute tick to **119,137ms of CPU against
+the 120,000ms kill** (run 34991614423: sync 175s and selfheal 180s of wall in one
+tick), and five more ticks to 52 to 61s.
+
+All three now make ONE call, `refreshPoolsForAgents`
+(`src/lib/availability/slot-cache.ts`): one compute per pool, at most
+`MAX_TOUCHED_POOLS_PER_SWEEP` (5) started, none started after
+`TOUCHED_POOLS_BUDGET_MS`. **The count is the ceiling that matters**, because a
+Worker's clock does not advance during execution: CPU spent computing reads as no
+time at all, so a deadline alone cannot cap a fan-out whose cost is compute. Pools
+past the count are left to the recompute lane, as the overflow past the old code
+cap always was. `scripts/test-per-code-recompute.ts` refuses a new per code call
+site that is not on its named list.
+
+The load run's cron CPU bar now fails past **half** the kill limit
+(`CRON_CPU_MARGIN_SHARE`) rather than at it, and its report prints the worst tick's
+share of the limit on every run, so a pass at 99 percent no longer reads like a pass
+at 3.
 
 ## Reading the logs: the key trap that fakes a total outage
 
