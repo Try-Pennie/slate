@@ -21,8 +21,11 @@ import {
   dayCapacity,
   freshnessOf,
   supplyDays,
+  sameSupplyReading,
+  supplyPoolGroups,
   supplyTotals,
   xbcOrder,
+  type BucketSupplyRow,
   type CachedSlotRow,
   type SupplyEventType,
 } from "../src/lib/admin/bucket-supply.ts";
@@ -138,8 +141,8 @@ const BUCKETS = [
 ];
 
 const DEPTHS = new Map([
-  ["120", { depth: 4, effectiveDepth: 3 }],
-  ["110", { depth: 9, effectiveDepth: 9 }],
+  ["120", { depth: 4, effectiveDepth: 3, poolKey: "pool-low-beyond", poolLabel: "Low with Beyond" }],
+  ["110", { depth: 9, effectiveDepth: 9, poolKey: "pool-low", poolLabel: "Low" }],
 ]);
 
 /** Slots on 2026-08-04 at ten minute steps from 13:20 ET, `n` of them. */
@@ -487,7 +490,7 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
   if (!report.measurable) {
     fail("the totals case produces a report");
   } else {
-    const totals = supplyTotals(report.rows, 0);
+    const totals = supplyTotals(report.rows, 0, report.nowMs);
     eq(totals.measured, 2, "both buckets were measured today");
     // #1937: the headline counts inverted with the metric. "Offering the whole
     // of today" counted every bucket whose share ran over 100%, so it is gone.
@@ -510,7 +513,7 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
   if (!report.measurable) {
     fail("the unmeasured totals case produces a report");
   } else {
-    const totals = supplyTotals(report.rows, 0);
+    const totals = supplyTotals(report.rows, 0, report.nowMs);
     eq(totals.measured, 1, "only the readable bucket is counted as measured");
     eq(totals.unmeasured, 1, "and the unreadable one is reported as unmeasured");
     // The unreadable bucket contributes to `unmeasured` and to NOTHING else, so
@@ -649,6 +652,155 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
     un.kind === "unknown",
     `an unreadable booking count is unknown, never zero booked (got ${un.kind})`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Counting by POOL (2026-10-02). Booked times used to be attributed to the code
+// a lead came in on, while the offered times belong to the whole pool, so a time
+// taken through 112 vanished from 111's ceiling and every code understated its
+// pool. Measured that day: the Low pool held 50 routed bookings under 111 and
+// 171 under 112. The fixture puts bookings on ONE code only, which is the case
+// the old arithmetic got wrong.
+// ---------------------------------------------------------------------------
+{
+  const POOLED = new Map([
+    ["110", { depth: 9, effectiveDepth: 9, poolKey: "pool-low", poolLabel: "Low" }],
+    ["111", { depth: 9, effectiveDepth: 9, poolKey: "pool-low", poolLabel: "Low" }],
+    ["120", { depth: 4, effectiveDepth: 3, poolKey: "pool-low-beyond", poolLabel: "Low with Beyond" }],
+  ]);
+  // The pool is offering the last 18 of 21 times; the first three were booked,
+  // all of them through 110.
+  const all = slotsFrom1320(21);
+  const offered = all.slice(3);
+  const taken = all.slice(0, 3);
+  const report = bucketSupplyReport({
+    hours: WEEK,
+    horizonDays: 4,
+    nowMs: AUG_4_1119_ET,
+    buckets: [
+      { code: "110", name: "Low | Both | No Legal Param" },
+      { code: "111", name: "Low | Both | Legal" },
+      { code: "120", name: "Low | Beyond | No Legal Param" },
+    ],
+    depthByCode: POOLED,
+    cacheRows: [
+      cachedRow("110", offered, FRESH_STAMP),
+      cachedRow("111", offered, FRESH_STAMP),
+      cachedRow("120", slotsFrom1320(9), FRESH_STAMP),
+    ],
+    bookedByCodeAndDate: new Map([["110", new Map([["2026-08-04", taken]])]]),
+  });
+  if (!report.measurable) {
+    fail("the pooled case produces a report");
+  } else {
+    const byCode = new Map(report.rows.map((r) => [r.code, r]));
+    const a = byCode.get("110")!;
+    const b = byCode.get("111")!;
+    eq(a.cells[0], { kind: "counted", booked: 3, capacity: 21, share: 3 / 21 }, "110 reports the pool's three bookings");
+    eq(b.cells[0], a.cells[0], "111 reports the SAME pool reading although nothing was booked through it");
+    eq(b.cells, a.cells, "every day of the two codes of one pool agrees");
+    eq(a.poolKey, "pool-low", "the row carries staffing depth's pool key");
+    eq(a.poolLabel, "Low", "and staffing depth's pool label");
+    const other = byCode.get("120")!;
+    eq(other.cells[0], { kind: "counted", booked: 0, capacity: 9, share: 0 }, "another pool's bookings never leak in");
+
+    // Two calls at ONE start count once: the cell counts start times, not calls.
+    const twice = bucketSupplyReport({
+      hours: WEEK,
+      horizonDays: 4,
+      nowMs: AUG_4_1119_ET,
+      buckets: [
+        { code: "110", name: "Low | Both | No Legal Param" },
+        { code: "111", name: "Low | Both | Legal" },
+      ],
+      depthByCode: POOLED,
+      cacheRows: [cachedRow("110", offered, FRESH_STAMP), cachedRow("111", offered, FRESH_STAMP)],
+      bookedByCodeAndDate: new Map([
+        ["110", new Map([["2026-08-04", [all[0]]]])],
+        // The same instant as Postgres spells it, through the sibling code.
+        ["111", new Map([["2026-08-04", [all[0].replace(".000Z", "+00:00")]]])],
+      ]),
+    });
+    if (twice.measurable) {
+      eq(twice.rows[0].cells[0], { kind: "counted", booked: 1, capacity: 19, share: 1 / 19 }, "two calls at one start time are one booked start time");
+    } else fail("the two calls case produces a report");
+
+    // Totals count each POOL once, so the two Low codes are one measurement.
+    const totals = supplyTotals(report.rows, 0, report.nowMs);
+    eq(totals.measured, 2, "three codes in two pools are two measurements, not three");
+    eq(totals.partBooked, 1, "the Low pool is part booked once");
+    eq(totals.nothingBooked, 1, "and the Beyond pool has nothing booked");
+    const groups = supplyPoolGroups(report.rows, report.nowMs);
+    eq(groups.length, 2, "the two Low codes share one group");
+    eq(groups.find((g) => g.key === "pool-low")?.codes, ["110", "111"], "the group lists both codes");
+  }
+
+  // With the roster unreadable there is no pool key, so each code stands alone
+  // and only its own bookings count. That is the old arithmetic, and the page
+  // says so rather than guessing at a pool.
+  const alone = bucketSupplyReport({
+    hours: WEEK,
+    horizonDays: 4,
+    nowMs: AUG_4_1119_ET,
+    buckets: [
+      { code: "110", name: "Low | Both | No Legal Param" },
+      { code: "111", name: "Low | Both | Legal" },
+    ],
+    depthByCode: null,
+    cacheRows: [cachedRow("110", offered, FRESH_STAMP), cachedRow("111", offered, FRESH_STAMP)],
+    bookedByCodeAndDate: new Map([["110", new Map([["2026-08-04", taken]])]]),
+  });
+  if (alone.measurable) {
+    const byCode = new Map(alone.rows.map((r) => [r.code, r]));
+    eq(byCode.get("111")!.cells[0], { kind: "counted", booked: 0, capacity: 18, share: 0 }, "without a pool key a code counts only its own bookings");
+    assert(byCode.get("110")!.poolKey !== byCode.get("111")!.poolKey, "and two codes never share an invented pool");
+    eq(byCode.get("110")!.poolLabel, null, "nor an invented label");
+  } else fail("the roster unreadable case produces a report");
+}
+
+// The sameness predicate: every field the table renders, and it must be able to
+// say no, because a split pool is how a disagreement stays visible.
+{
+  const base: BucketSupplyRow = {
+    code: "110",
+    name: "Low | Both | No Legal Param",
+    poolKey: "pool-low",
+    poolLabel: "Low",
+    depth: 9,
+    effectiveDepth: 8,
+    cacheState: "measured",
+    computedAtMs: AUG_4_1119_ET - 30_000,
+    freshness: "fresh",
+    cells: [{ kind: "counted", booked: 3, capacity: 21, share: 3 / 21 }, { kind: "closed" }],
+  };
+  const sibling = { ...base, code: "111", name: "Low | Both | Legal" };
+  assert(sameSupplyReading(base, sibling, AUG_4_1119_ET), "two codes with one reading are the same, whatever their code and name");
+  assert(
+    sameSupplyReading(base, { ...sibling, computedAtMs: AUG_4_1119_ET - 40_000 }, AUG_4_1119_ET),
+    "two stamps that RENDER alike are the same reading",
+  );
+  const differs: [string, BucketSupplyRow][] = [
+    ["depth", { ...sibling, depth: 8 }],
+    ["effective depth", { ...sibling, effectiveDepth: 9 }],
+    ["cache state", { ...sibling, cacheState: "unreadable" }],
+    ["freshness", { ...sibling, freshness: "aging" }],
+    ["rendered age", { ...sibling, computedAtMs: AUG_4_1119_ET - 5 * 60_000 }],
+    ["a cell's count", { ...sibling, cells: [{ kind: "counted", booked: 4, capacity: 21, share: 4 / 21 }, { kind: "closed" }] }],
+    ["a cell's kind", { ...sibling, cells: [{ kind: "unknown" }, { kind: "closed" }] }],
+    ["the number of cells", { ...sibling, cells: [base.cells[0]] }],
+    ["the pool label", { ...sibling, poolLabel: "Low with Beyond" }],
+  ];
+  for (const [what, other] of differs) {
+    assert(!sameSupplyReading(base, other, AUG_4_1119_ET), `rows differing in ${what} are not the same reading`);
+  }
+
+  // A pool whose rows disagree is split, one group per row, and its totals count
+  // each disagreeing row rather than picking a winner.
+  const split = supplyPoolGroups([base, { ...sibling, depth: 3 }], AUG_4_1119_ET);
+  eq(split.length, 2, "a pool whose codes disagree stays split");
+  assert(split.every((g) => !g.uniform), "and each half says it was split");
+  eq(supplyTotals([base, { ...sibling, depth: 3 }], 0, AUG_4_1119_ET).measured, 2, "a split pool counts each reading");
+  eq(supplyTotals([base, sibling], 0, AUG_4_1119_ET).measured, 1, "a uniform pool counts once");
 }
 
 finish();

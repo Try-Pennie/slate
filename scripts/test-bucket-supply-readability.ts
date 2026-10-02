@@ -36,6 +36,7 @@ import {
   SUPPLY_SUMMARY_STATES,
   agentCountLabel,
   computedAtLabel,
+  poolRowName,
   freshnessLabel,
   relativeAge,
   supplyLegendEntry,
@@ -87,7 +88,9 @@ function codesOf(
     horizonDays: 4,
     nowMs: NOW,
     buckets,
-    depthByCode: new Map(buckets.map((b) => [b.code, { depth: 4, effectiveDepth: 3 }])),
+    depthByCode: new Map(
+      buckets.map((b) => [b.code, { depth: 4, effectiveDepth: 3, poolKey: `pool-${b.code}`, poolLabel: null }]),
+    ),
     cacheRows,
     bookedByCodeAndDate: new Map(),
   });
@@ -106,6 +109,8 @@ function codesOf(
     return {
       code: "120",
       name: "n",
+      poolKey: `pool-${over.code ?? "120"}`,
+      poolLabel: null,
       depth: 4,
       effectiveDepth: 3,
       cacheState: "measured",
@@ -293,7 +298,7 @@ function codesOf(
   // Every state the summary counts is one the key explains, which is the whole
   // content of "one vocabulary": a chip naming a state with no entry would be a
   // word above the table that nothing below it defines.
-  const totals = supplyTotals([], 0);
+  const totals = supplyTotals([], 0, NOW);
   for (const { totalsKey, legendId } of SUPPLY_SUMMARY_STATES) {
     const entry = supplyLegendEntry(legendId);
     assert(entry.label.trim().length > 0, `${legendId} has a label the summary can use`);
@@ -336,6 +341,8 @@ function codesOf(
     return {
       code: "120",
       name: "n",
+      poolKey: `pool-${over.code ?? "120"}`,
+      poolLabel: null,
       depth: 4,
       effectiveDepth: 3,
       cacheState: "measured",
@@ -353,7 +360,7 @@ function codesOf(
   // Judged from the CELLS, never from the counts being zero: an empty report
   // satisfies every count too, and means something else entirely.
   assert(!dayIsClosed([], 0), "no rows at all is not a closed day");
-  const totals = supplyTotals([closedRow()], 0);
+  const totals = supplyTotals([closedRow()], 0, NOW);
   eq(
     totals.measured + totals.unmeasured + totals.nobodyAvailable,
     0,
@@ -380,7 +387,7 @@ function codesOf(
     horizonDays: 4,
     nowMs: NOW,
     buckets: [{ code: "120", name: "Low" }],
-    depthByCode: new Map([["120", { depth: 4, effectiveDepth: 3 }]]),
+    depthByCode: new Map([["120", { depth: 4, effectiveDepth: 3, poolKey: "pool-120", poolLabel: "Low" }]]),
     cacheRows: [cachedRow("120", slotsFrom1320(9), STALE_STAMP)],
     bookedByCodeAndDate: new Map(),
   });
@@ -402,6 +409,21 @@ function codesOf(
       );
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// What a manager's row is called (2026-10-02): the pool in words, else the
+// bucket's own name, and never the code by any route.
+// ---------------------------------------------------------------------------
+{
+  eq(poolRowName({ code: "120", name: "Low | Beyond | Legal", poolLabel: "Low with Beyond" }), "Low with Beyond", "a pool in the matrix is named in words");
+  eq(poolRowName({ code: "777", name: "Spanish speakers", poolLabel: null }), "Spanish speakers", "a hand made pool falls back to the bucket's name");
+  // The loader names a cache-only row by its code when the bucket list is
+  // unreadable, so a name equal to the code is not a name.
+  const unnamed = poolRowName({ code: "777", name: "777", poolLabel: null });
+  assert(!/777/.test(unnamed), `a name that is only the code is never shown (got ${unnamed})`);
+  assert(unnamed.trim().length > 0, "and the row still says something");
+  assert(!/777/.test(poolRowName({ code: "777", name: "  ", poolLabel: null })), "nor is a blank name replaced by the code");
 }
 
 finish();

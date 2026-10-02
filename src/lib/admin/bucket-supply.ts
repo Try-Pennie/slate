@@ -50,6 +50,8 @@ import {
   RECOMPUTE_FRESH_MS,
   STALE_ALARM_MS,
 } from "../availability/precompute-cron.ts";
+import { groupRowsByPool, type PoolGroup } from "./pool-rows.ts";
+import { computedAtLabel } from "./bucket-supply-copy.ts";
 
 /**
  * The event-type numbers the slot grid is laid out from. The same fields the
@@ -154,6 +156,18 @@ export interface BucketSupplyRow {
   code: string;
   name: string;
   /**
+   * The routing POOL this code belongs to, carried from staffing depth
+   * (`TierDepth.poolKey`) rather than derived a second way, so this page and the
+   * tiers page can never disagree about which codes are one pool. When the
+   * roster could not be read there is no key to carry, and the row gets one of
+   * its own (`bucket:<code>`), which can never match a real key or a sibling's:
+   * the code then stands alone rather than joining a guessed pool.
+   */
+  poolKey: string;
+  /** The pool in words ("Low with Beyond"), or null when its criteria are not
+   *  the routing matrix or the roster could not be read. */
+  poolLabel: string | null;
+  /**
    * Eligible agents by the same criteria match ROUTING uses, not
    * `bucket_members` (which holds three rows in production and is not the
    * eligibility source). `null` means the roster could not be read, which is not
@@ -227,6 +241,9 @@ export interface SupplyBucket {
 export interface SupplyDepth {
   depth: number;
   effectiveDepth: number;
+  /** Staffing depth's own pool key and label for this code (#2237). */
+  poolKey: string;
+  poolLabel: string | null;
 }
 
 export interface BucketSupplyInput {
@@ -422,8 +439,32 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
       ? input.buckets.map((b) => ({ code: b.code, name: b.name }))
       : [...rowByCode.keys()].map((code) => ({ code, name: code }));
 
+  // A pool's booked times, combined across EVERY code of the pool (2026-10-02).
+  //
+  // The offered times belong to the pool: the recompute lane computes a pool
+  // once and writes the same answer under each of its codes. A booking, though,
+  // is stored against the code the lead came in on. Counting each code's own
+  // bookings therefore dropped every time taken through a sibling code out of
+  // the ceiling entirely (it is no longer offered, and it was not "this code's"
+  // booking either), so each code understated its pool. Measured that day, the
+  // Low pool held 50 routed bookings under 111 and 171 under 112.
+  //
+  // Only codes whose pool is KNOWN are combined. With the roster unreadable the
+  // key is the code's own, so a code counts only its own bookings, which is the
+  // most this page can honestly say without knowing the pools.
+  const poolKeyOf = (code: string): string =>
+    input.depthByCode?.get(code)?.poolKey ?? `bucket:${code}`;
+  const bookedByPoolAndDate = new Map<string, Map<string, string[]>>();
+  for (const [code, byDate] of input.bookedByCodeAndDate ?? []) {
+    const key = poolKeyOf(code);
+    const pooled = bookedByPoolAndDate.get(key) ?? new Map<string, string[]>();
+    for (const [iso, starts] of byDate) pooled.set(iso, [...(pooled.get(iso) ?? []), ...starts]);
+    bookedByPoolAndDate.set(key, pooled);
+  }
+
   const rows: BucketSupplyRow[] = drivers.map((d) => {
     const row = rowByCode.get(d.code);
+    const poolKey = poolKeyOf(d.code);
     const eventType = row ? eventTypeOf(row) : null;
     const slots = row?.payload?.slots;
     const cacheState: BucketCacheState =
@@ -436,7 +477,7 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
 
     // The times already taken, by date. An unreadable read makes every cell
     // unknown below rather than reporting a zero nobody measured.
-    const bookedByDate = input.bookedByCodeAndDate?.get(d.code) ?? new Map<string, string[]>();
+    const bookedByDate = bookedByPoolAndDate.get(poolKey) ?? new Map<string, string[]>();
     const bookingsReadable = input.bookedByCodeAndDate !== null;
 
     let cells: SupplyCell[];
@@ -483,6 +524,11 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
         if (dayRoom.max === 0) return { kind: "no-capacity" };
 
         const offered = openByDate.get(day.iso) ?? new Set<number>();
+        // DISTINCT START TIMES, not calls: two calls booked at one start (two
+        // agents, or two codes of the pool) are one taken time, because the
+        // ceiling is counted in start times too and a share of calls over a
+        // ceiling of times could run past 1.
+        //
         // Read to the same epoch key as the offered times, and an unreadable
         // stamp is DROPPED rather than becoming a NaN that joins nothing and
         // inflates the ceiling by one (L50).
@@ -521,6 +567,8 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
     return {
       code: d.code,
       name: d.name,
+      poolKey,
+      poolLabel: depth?.poolLabel ?? null,
       depth: depth?.depth ?? null,
       effectiveDepth: depth?.effectiveDepth ?? null,
       cacheState,
@@ -669,7 +717,65 @@ export interface SupplyTotals {
   stale: number;
 }
 
-export function supplyTotals(rows: BucketSupplyRow[], dayIndex: number): SupplyTotals {
+/**
+ * Whether two rows carry the same READING: every field the table renders except
+ * the bucket's identity (its code and name), which is exactly what pooling
+ * folds. Rows of one pool agree by construction now that a pool's bookings are
+ * combined, which is why this has to be able to say no: the day they do not (a
+ * code recomputed on its own and not yet caught up), the screen must show the
+ * disagreement rather than pick a winner (L131).
+ *
+ * The age is compared as it RENDERS ("2 min ago"), because two codes written a
+ * few seconds apart read identically and splitting them would show a manager
+ * two rows with the same words and the same numbers. Fields are listed rather
+ * than walked, so a field added to the row joins only when somebody decides.
+ */
+export function sameSupplyReading(a: BucketSupplyRow, b: BucketSupplyRow, nowMs: number): boolean {
+  return (
+    a.poolLabel === b.poolLabel &&
+    a.depth === b.depth &&
+    a.effectiveDepth === b.effectiveDepth &&
+    a.cacheState === b.cacheState &&
+    a.freshness === b.freshness &&
+    computedAtLabel(a.freshness, a.computedAtMs, nowMs).label ===
+      computedAtLabel(b.freshness, b.computedAtMs, nowMs).label &&
+    a.cells.length === b.cells.length &&
+    a.cells.every((cell, i) => sameCell(cell, b.cells[i]!))
+  );
+}
+
+function sameCell(a: SupplyCell, b: SupplyCell): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "counted" && b.kind === "counted") {
+    return a.booked === b.booked && a.capacity === b.capacity;
+  }
+  return true;
+}
+
+/**
+ * The rows as POOLS: one group per pool whose codes agree, and one per row where
+ * they do not. The manager view renders these, and the totals count them, so the
+ * "across N pools" line and the counts under it are about the same things.
+ */
+export function supplyPoolGroups(rows: BucketSupplyRow[], nowMs: number): PoolGroup<BucketSupplyRow>[] {
+  return groupRowsByPool(rows, (a, b) => sameSupplyReading(a, b, nowMs));
+}
+
+/**
+ * The headline counts, one per POOL reading rather than one per code.
+ *
+ * Since a pool's bookings are combined, its six codes carry one measurement six
+ * times, and counting rows would report one booked out pool as six. So each
+ * group from `supplyPoolGroups` counts once, through its first row; a pool whose
+ * codes disagree is split there, and each disagreeing reading counts, because
+ * picking one would drop a measurement the page exists to report.
+ */
+export function supplyTotals(
+  allRows: BucketSupplyRow[],
+  dayIndex: number,
+  nowMs: number,
+): SupplyTotals {
+  const rows = supplyPoolGroups(allRows, nowMs).map((g) => g.rows[0]!);
   let measured = 0;
   let unmeasured = 0;
   let saturated = 0;

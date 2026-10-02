@@ -349,3 +349,18 @@ export const BACKEND_GROUP_LABEL: Record<string, string> = {
   "2": "Beyond",
   "3": "Achieve",
 };
+
+/**
+ * What a manager's row is called: the pool in words, else the bucket's stored
+ * name, and never the code (2026-10-02). A code is how admins configure buckets
+ * and means nothing to a sales manager.
+ *
+ * When the bucket list could not be read the loader names a row by its code, so
+ * a name that IS the code is not a name, and the row says its name is unknown
+ * rather than showing the code by the back door.
+ */
+export function poolRowName(row: { code: string; name: string; poolLabel: string | null }): string {
+  if (row.poolLabel) return row.poolLabel;
+  const name = row.name.trim();
+  return name && name !== row.code ? name : "Name could not be read";
+}

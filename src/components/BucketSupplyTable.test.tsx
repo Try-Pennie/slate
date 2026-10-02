@@ -30,6 +30,10 @@ function row(over: Partial<BucketSupplyRow> = {}): BucketSupplyRow {
   return {
     code: "120",
     name: "Low | Beyond | No Legal Param",
+    // One pool per code unless a case says otherwise, so the cases written before
+    // pooling keep meaning what they meant.
+    poolKey: `pool-${over.code ?? "120"}`,
+    poolLabel: "Low with Beyond",
     depth: 4,
     effectiveDepth: 3,
     cacheState: "measured",
@@ -50,12 +54,18 @@ const NOW_MS = Date.parse("2026-08-04T15:20:30.000Z");
 
 function renderTable(
   rows: BucketSupplyRow[],
-  over: { depthReadable?: boolean; bucketListReadable?: boolean; nowMs?: number } = {},
+  over: {
+    depthReadable?: boolean;
+    bucketListReadable?: boolean;
+    nowMs?: number;
+    showCodes?: boolean;
+  } = {},
 ) {
   render(
     <BucketSupplyTable
       days={DAYS}
       rows={rows}
+      showCodes={over.showCodes ?? true}
       zone="America/New_York"
       nowMs={over.nowMs ?? NOW_MS}
       depthReadable={over.depthReadable ?? true}
@@ -307,5 +317,89 @@ describe("BucketSupplyTable (#1254)", () => {
     }
     // The scope is stated once, above the chips, rather than on the end of each.
     expect(screen.getByText(/^Today, .*, across 1 pool$/)).toBeTruthy();
+  });
+});
+
+// 2026-10-02: managers read the page by POOL, in words, and never see a bucket
+// code. Admins keep one row per code, with the code, because they are the ones
+// who configure buckets by it.
+describe("BucketSupplyTable for managers", () => {
+  const lowCells: SupplyCell[] = [
+    { kind: "counted", booked: 3, capacity: 21, share: 3 / 21 },
+    { kind: "closed" },
+  ];
+  const pooled = [
+    row({ code: "110", name: "Low | Both | No Legal Param", poolKey: "pool-low", poolLabel: "Low", cells: lowCells }),
+    row({ code: "111", name: "Low | Both | Legal", poolKey: "pool-low", poolLabel: "Low", cells: lowCells }),
+    row({ code: "120", name: "Low | Beyond | No Legal Param", poolKey: "pool-low-beyond", poolLabel: "Low with Beyond" }),
+  ];
+
+  /** Every piece of text a manager can reach: what is drawn, and every title. */
+  function everythingReadable(): string {
+    const titles = [...document.querySelectorAll("[title]")].map((n) => n.getAttribute("title") ?? "");
+    return [document.body.textContent ?? "", ...titles].join("\n");
+  }
+
+  it("shows one row per pool, named in words", () => {
+    renderTable(pooled, { showCodes: false });
+    const heads = [...document.querySelectorAll("tbody th[scope='row']")].map((n) => n.textContent ?? "");
+    expect(heads).toEqual(["Low", "Low with Beyond"]);
+    // The cell sentence names the pool, not a code.
+    expect(screen.getByText(supplyCellTitle(lowCells[0], "Low", "Tuesday, August 4"))).toBeTruthy();
+  });
+
+  it("puts no bucket code anywhere on the page, titles included", () => {
+    renderTable(pooled, { showCodes: false });
+    const text = everythingReadable();
+    for (const code of ["110", "111", "120"]) {
+      expect(text).not.toMatch(new RegExp(`\\b${code}\\b`));
+    }
+  });
+
+  it("counts the pools it shows", () => {
+    renderTable(pooled, { showCodes: false });
+    expect(screen.getByText(/^Today, .*, across 2 pools$/)).toBeTruthy();
+  });
+
+  it("keeps a pool whose codes disagree as separate rows", () => {
+    renderTable(
+      [pooled[0], { ...pooled[1], depth: 1 }, pooled[2]],
+      { showCodes: false },
+    );
+    const heads = [...document.querySelectorAll("tbody th[scope='row']")].map((n) => n.textContent ?? "");
+    expect(heads).toEqual(["Low", "Low", "Low with Beyond"]);
+  });
+
+  it("names a pool outside the routing matrix by the bucket's name, never its code", () => {
+    renderTable(
+      [row({ code: "777", name: "Spanish speakers", poolKey: "pool-hand-made", poolLabel: null })],
+      { showCodes: false },
+    );
+    const heads = [...document.querySelectorAll("tbody th[scope='row']")].map((n) => n.textContent ?? "");
+    expect(heads).toEqual(["Spanish speakers"]);
+    expect(everythingReadable()).not.toMatch(/\b777\b/);
+  });
+
+  it("does not fall back to a code when the bucket name itself was not readable", () => {
+    // With the bucket list unreadable the loader names a row by its code.
+    renderTable(
+      [row({ code: "777", name: "777", poolKey: "bucket:777", poolLabel: null })],
+      { showCodes: false, bucketListReadable: false },
+    );
+    expect(everythingReadable()).not.toMatch(/\b777\b/);
+  });
+
+  it("leaves the admin view one row per code, with the code", () => {
+    renderTable(pooled, { showCodes: true });
+    const heads = [...document.querySelectorAll("tbody th[scope='row']")].map((n) => n.textContent ?? "");
+    expect(heads).toEqual([
+      "110Low | Both | No Legal Param",
+      "111Low | Both | Legal",
+      "120Low | Beyond | No Legal Param",
+    ]);
+    // The summary counts pools, so the Low pool's two codes are one: both pools
+    // are part booked today, which is two, never the three rows drawn.
+    expect(screen.getByText(/^Today, .*, across 2 pools$/)).toBeTruthy();
+    expect(summaryText()).toMatch(new RegExp(`${supplyLegendEntry("some").label}\\s*2(?!\\d)`));
   });
 });
