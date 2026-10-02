@@ -255,6 +255,23 @@ export function carriesRedistributeTag(attributes: Attributes | null | undefined
 }
 
 /**
+ * True when the hourly sync would take this person straight back out of the pool if
+ * they were made bookable now (#3028).
+ *
+ * The planner turns off every bookable row whose worker carries the tag, marked or
+ * not, so this asks about the TAG, never the mark: the mark misses everybody who was
+ * already out of the pool when the tag appeared. A row whose worker has gone is not
+ * held, because the planner flips only a row it has a worker for, and saying the sync
+ * will undo the change would then be a claim nothing measured (L11).
+ *
+ * The one predicate behind both the console's refusal and the server action's, so
+ * the control and the write cannot disagree about who is held.
+ */
+export function twilioUndoesBookable(attributes: Attributes | null | undefined): boolean {
+  return carriesRedistributeTag(attributes) && !twilioWorkerMissing(attributes);
+}
+
+/**
  * The key recording that the last sync found no Twilio worker for this person
  * (#2735), holding the moment it FIRST found none. One spelling, read and written
  * only through the functions beside it (L370).

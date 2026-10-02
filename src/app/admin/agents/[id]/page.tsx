@@ -56,7 +56,7 @@ import { Pill } from "@/components/ui/Pill";
 import { ViewAsButton } from "@/components/admin/ViewAsButton";
 import type { Organization, User } from "@/lib/db/types";
 import { BookablePill } from "@/components/ui/BookablePill";
-import { isMarkedRedistribute } from "@/lib/twilio/roster-plan";
+import { twilioUndoesBookable } from "@/lib/twilio/roster-plan";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 import { SelectField } from "@/components/ui/SelectField";
 
@@ -81,6 +81,8 @@ async function upcomingBookingCount(agentId: string): Promise<number | null> {
   }
 }
 
+/** Links the refused Make bookable to the sentence saying why (#3028). */
+const REDISTRIBUTE_HOLD_ID = "bookable-redistribute-hold";
 
 /**
  * One stored routing attribute as a reader sees it (#1874).
@@ -169,6 +171,9 @@ export default async function AgentProfilePage({
   // those controls on the SAME predicate. Admin-only controls (role, OOO calendar)
   // keep their own isAdmin gates, which are already correct.
   const canManageThisAgent = canManageUser(me.role, agent.role, isSelf);
+  // #3028: a flip into the pool the hourly Twilio sync would undo. Only asked of
+  // somebody out of the pool: taking an advisor out is never held back.
+  const heldByTwilio = !agent.bookable && twilioUndoesBookable(agent.attributes);
 
   // #2120: the agent's debt coverage, read once, from the two functions the
   // roster's ladder also composes from. `teamsOf` reads whichever shape the sync
@@ -402,26 +407,30 @@ export default async function AgentProfilePage({
                     upcomingBookings={heldUpcoming}
                   />
                 ) : (
-                  <SubmitButton className={btnSecondaryCls} pendingLabel="Making bookable">
+                  <SubmitButton
+                    className={btnSecondaryCls}
+                    pendingLabel="Making bookable"
+                    refused={heldByTwilio}
+                    describedBy={heldByTwilio ? REDISTRIBUTE_HOLD_ID : undefined}
+                  >
                     Make bookable
                   </SubmitButton>
                 )}
               </SaveForm>
             )}
-            {/* #2097: WHY they are out of the pool. The hourly sync takes an agent
-                out for the Twilio Redistribute tag, so without this an admin meets a
-                bare "No" beside a control that will be silently undone within the
-                hour, which is a thing people flip twice and then stop trusting
-                (L109). The remedy names the place they will act (Twilio) rather than
-                the mechanism that enforced it (L399).
-
-                The toggle stays usable: an override for the rest of the hour is a
-                legitimate thing to want, and it says here that it will not last. */}
-            {isMarkedRedistribute(agent.attributes) && (
-              <p className={`basis-full text-xs text-fg-muted ${proseCls}`}>
-                Not bookable because Twilio marks them redistribute. Remove that tag
-                in Twilio and the next roster sync puts them back in the pool; making
-                them bookable here is undone by the following sync.
+            {/* #3028, reversing #2097's choice to leave the toggle usable. The
+                hourly Twilio sync turns off every bookable advisor whose worker
+                carries Redistribute, so a flip in here was undone within the hour,
+                and admins pressed it twice for one person before anybody worked out
+                why. So the flip is refused (the action refuses it too, through the
+                same predicate) and this says why, naming the place the fix is made
+                rather than the mechanism that enforces it (L399). Shown to every
+                reader, since it is also the reason they are out of the pool, and
+                read as the disabled button's description. */}
+            {heldByTwilio && (
+              <p id={REDISTRIBUTE_HOLD_ID} className={`basis-full text-xs text-fg-muted ${proseCls}`}>
+                Twilio has this advisor on Redistribute, so the hourly sync turns them
+                off again; remove the tag in Twilio to make them bookable.
               </p>
             )}
             {/* Read only on purpose (#1474). Salesforce owns this link: the hourly
@@ -859,6 +868,8 @@ function BookableOutcome({ code }: { code?: string }) {
                   ? "Not made bookable: reading their calendar took longer than one activation is allowed, so it was stopped part way and nothing was measured. This is usually Google being slow rather than a problem with the account. Try again, or leave it: the hourly roster sync retries on its own."
                   : code === "blocked-contended"
                     ? "Not made bookable yet: Slate was refreshing their calendar in another job at the same moment, so this attempt stood down. Nothing is wrong with the account. Try again in a minute, or leave it: the hourly roster sync retries on its own."
+                  : code === "blocked-redistribute"
+                    ? "Not made bookable, because Twilio has this advisor on Redistribute."
                   : code === "missing"
                     ? "That agent could not be found, so nothing was changed."
                     : null;

@@ -44,6 +44,8 @@ export function SubmitButton({
   name,
   value,
   onPress,
+  refused = false,
+  describedBy,
 }: {
   children: React.ReactNode;
   pendingLabel: string;
@@ -91,6 +93,15 @@ export function SubmitButton({
    * words.
    */
   onPress?: () => void;
+  /**
+   * The action would refuse this press, so the button cannot be pressed (#3028).
+   *
+   * Only ever paired with `describedBy`: a control that cannot be pressed and does
+   * not say why is a dead control with no reason (L109).
+   */
+  refused?: boolean;
+  /** The id of the sentence saying why, read as this button's description. */
+  describedBy?: string;
 }) {
   const { pending } = useFormStatus();
   // The clock is read only inside the interval callback, never in the effect body
@@ -116,8 +127,10 @@ export function SubmitButton({
       type="submit"
       role={role}
       formAction={formAction}
-      disabled={pending}
+      disabled={pending || refused}
       aria-busy={pending}
+      aria-describedby={describedBy}
+      data-refused={refused || undefined}
       aria-label={ariaLabel}
       name={name}
       value={value}

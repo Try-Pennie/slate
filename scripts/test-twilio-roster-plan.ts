@@ -26,6 +26,7 @@ import {
   isMarkedRedistribute,
   carriesRedistributeTag,
   twilioWorkerMissing,
+  twilioUndoesBookable,
   TWILIO_WORKER_MISSING_KEY,
   type TwilioRosterRow,
 } from "@/lib/twilio/roster-plan";
@@ -646,6 +647,47 @@ const OLD_STAMP = "2026-09-01T00:00:00.000Z";
     NOW,
   );
   eq(plan.attributeWrites[0]?.attributes.debt_team, ["low"], "control: a present worker's answer replaces a junk value");
+}
+
+// --- #3028: would the hourly sync undo a hand flip into the pool -------------
+//
+// The console refuses "Make bookable" for an advisor this answers yes for, and says
+// why. So the answer has to agree with what the PLANNER would do to that advisor
+// once they were bookable, and each case below is judged against the planner rather
+// than against a restatement of the rule (L721).
+{
+  // The row as the sync leaves it: tagged, already out of the pool, never marked.
+  const stored = planTwilioRoster([row({ bookable: false })], twilio(side(["Redistribute"])), NOW).attributeWrites[0]
+    ?.attributes;
+  assert(twilioUndoesBookable(stored), "an advisor the sync left tagged and out of the pool would be taken back out");
+  const replan = planTwilioRoster([row({ bookable: true, attributes: stored ?? {} })], twilio(side(["Redistribute"])), NOW);
+  eq(replan.flips[0]?.action, "turn-off", "and the planner agrees: made bookable, the next run turns them off");
+}
+{
+  // The other direction: no tag, so nothing undoes the flip.
+  const stored = planTwilioRoster([row({ bookable: false })], twilio(side(["Low Debt: 20k - 30k"])), NOW).attributeWrites[0]
+    ?.attributes;
+  assert(!twilioUndoesBookable(stored), "an untagged advisor is not held");
+  const replan = planTwilioRoster([row({ bookable: true, attributes: stored ?? {} })], twilio(side(["Low Debt: 20k - 30k"])), NOW);
+  eq(replan.flips.length, 0, "and the planner agrees: nothing turns them off");
+}
+{
+  assert(!twilioUndoesBookable(null), "no attributes is not held");
+  assert(!twilioUndoesBookable({ redistribute: MARK }), "the mark alone is not the tag, and the planner flips on the tag");
+}
+{
+  // Tagged when last seen, and the worker has since gone. The planner flips only a
+  // row it has a worker for, so nothing would turn them off, and a sentence saying
+  // the sync will would be a claim nobody measured (L11).
+  const attrs = { redistribute_tagged: MARK, [TWILIO_WORKER_MISSING_KEY]: NOW };
+  assert(carriesRedistributeTag(attrs), "control: the stored tag is still there");
+  assert(!twilioUndoesBookable(attrs), "a tag whose worker has gone is not a hold");
+  const replan = planTwilioRoster(
+    [row({ bookable: true, attributes: attrs })],
+    twilio(side(["Low Debt: 20k - 30k"], "somebody.else@trypennie.com")),
+    NOW,
+  );
+  eq(replan.flips.length, 0, "and the planner agrees: with no worker it turns nobody off");
 }
 
 finish();

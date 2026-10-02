@@ -1185,6 +1185,36 @@ describe("setBookable Google guard (#912)", () => {
     );
   });
 
+  // #3028: the hourly Twilio sync turns off every bookable advisor whose worker
+  // carries Redistribute, so a hand flip into the pool is undone within the hour.
+  // The page disables the control, and the action refuses the same case, because a
+  // refusal that lives only in the UI is one stale tab away from not existing.
+  it("refuses to make an advisor Twilio holds on Redistribute bookable, and writes nothing", async () => {
+    dbState.single = { role: "agent", attributes: { redistribute_tagged: "Y" } };
+    await expect(setBookable(form({ user_id: "u2", bookable: "true" }))).rejects.toThrow(
+      /NEXT_REDIRECT:\/admin\/agents\/u2\?bookable=blocked-redistribute/,
+    );
+    expect(bookable.applyBookableByUserId).not.toHaveBeenCalled();
+  });
+
+  it("still takes an advisor on Redistribute OUT of the pool", async () => {
+    dbState.single = { role: "agent", attributes: { redistribute_tagged: "Y" } };
+    bookable.applyBookableByUserId.mockResolvedValueOnce({ status: "applied", userId: "u2", bookable: false });
+    await expect(setBookable(form({ user_id: "u2", bookable: "false" }))).rejects.toThrow(
+      /NEXT_REDIRECT:\/admin\/agents\/u2\?bookable=off/,
+    );
+    expect(bookable.applyBookableByUserId).toHaveBeenCalledWith("u2", false);
+  });
+
+  it("makes an untagged advisor bookable as before", async () => {
+    dbState.single = { role: "agent", attributes: { debt_team: ["low"] } };
+    bookable.applyBookableByUserId.mockResolvedValueOnce({ status: "applied", userId: "u2", bookable: true });
+    await expect(setBookable(form({ user_id: "u2", bookable: "true" }))).rejects.toThrow(
+      /NEXT_REDIRECT:\/admin\/agents\/u2\?bookable=on/,
+    );
+    expect(bookable.applyBookableByUserId).toHaveBeenCalledWith("u2", true);
+  });
+
   it("passes bookable=false straight through (deactivation is never gated)", async () => {
     bookable.applyBookableByUserId.mockResolvedValueOnce({ status: "applied", userId: "u2", bookable: false });
     await expect(setBookable(form({ user_id: "u2", bookable: "false" }))).rejects.toThrow(

@@ -929,26 +929,6 @@ describe("AgentProfilePage routing attributes are read only (#1874)", () => {
     expect(panel.textContent).not.toMatch(/What this agent can be routed for/i);
   });
 
-  // #2097. The hourly sync takes an agent out of the pool for a Twilio tag, so an
-  // admin arrives at a bare "Bookable: No" beside a toggle that Twilio will silently
-  // undo within the hour. An unexplained state next to a control that reverts is the
-  // shape people flip twice and then stop trusting (L109), so the page says who
-  // decided it and where the fix is.
-  it("says WHY an agent Twilio withholds is not bookable, and where the fix is", async () => {
-    await withAttrs({ redistribute: "Y" });
-    const body = document.body.textContent ?? "";
-    expect(body).toMatch(/redistribute/i);
-    // The remedy has to name the place they will act, not the constraint (L399):
-    // the tag is removed in Twilio, and the next sync is what puts them back.
-    expect(body).toMatch(/Twilio/);
-    expect(body).toMatch(/roster sync/i);
-  });
-
-  it("says nothing about redistribute for an agent Twilio does not withhold", async () => {
-    await withAttrs({ debt_team: ["low"] });
-    expect(document.body.textContent ?? "").not.toMatch(/redistribute/i);
-  });
-
   // #2218 RETIRED LEGAL ELIGIBLE. Six cases stood here about the third field in
   // this row: that it offered no control, that it sat in line with the other two,
   // that every reader saw it, and how its three stored states read as words. The
@@ -1009,5 +989,71 @@ describe("the booking link card (#2073)", () => {
     render(await AgentProfilePage(props));
     expect(screen.queryByText("Booking link")).toBeNull();
     expect(agentLinkStore.loadAgentLinkToken).not.toHaveBeenCalled();
+  });
+});
+
+// #3028, which reverses #2097's choice to leave the control usable. The hourly
+// Twilio sync turns off every bookable advisor whose worker carries Redistribute,
+// so "Make bookable" for one of them was undone within the hour, and admins pressed
+// it twice for the same person before anybody worked out why. #2097's two tests
+// here asserted the old sentence on the MARK, and are deleted rather than adjusted
+// (L252): the question is now the tag, and the control refuses.
+describe("AgentProfilePage refuses a flip the Twilio sync would undo (#3028)", () => {
+  const renderAgent = async (bookable: boolean, attributes: Record<string, unknown>) => {
+    auth.currentUser.mockResolvedValueOnce({ id: "ad1", role: "admin", org_id: "o1" });
+    dbState.agent = { ...agentOf("agent"), bookable, attributes };
+    render(await AgentProfilePage(props));
+  };
+
+  it("disables Make bookable for an advisor on Redistribute, and says why beside it", async () => {
+    await renderAgent(false, { redistribute_tagged: "Y" });
+    const button = screen.getByRole("button", { name: /make bookable/i }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    // And it LOOKS refused, not merely inert: a busy button keeps full ink.
+    expect(button.hasAttribute("data-refused")).toBe(true);
+    // The reason has to reach somebody who cannot see the sentence beside a
+    // control they cannot press, so it is the button's description.
+    const describedBy = button.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    const reason = document.getElementById(describedBy as string);
+    expect(reason?.textContent).toMatch(/Twilio has this advisor on Redistribute/);
+    // The remedy names the place they will act (L399).
+    expect(reason?.textContent).toMatch(/remove the tag in Twilio/i);
+  });
+
+  it("leaves Make bookable alone for an advisor Twilio does not hold", async () => {
+    await renderAgent(false, { debt_team: ["low"] });
+    const button = screen.getByRole("button", { name: /make bookable/i }) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute("aria-describedby")).toBeNull();
+    expect(button.hasAttribute("data-refused")).toBe(false);
+    expect(document.body.textContent ?? "").not.toMatch(/redistribute/i);
+  });
+
+  it("still lets an admin take an advisor on Redistribute out of the pool", async () => {
+    await renderAgent(true, { redistribute_tagged: "Y" });
+    const button = screen.getByRole("button", { name: /make not bookable/i }) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+  });
+
+  it("does not refuse on the mark alone, which the sync never flips on", async () => {
+    await renderAgent(false, { redistribute: "Y" });
+    const button = screen.getByRole("button", { name: /make bookable/i }) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+  });
+
+  // The action refuses the same case, for a tab opened before the tag landed. Its
+  // outcome has to land somewhere, or the refusal is a page that reloads unchanged.
+  it("says so when the action refused the flip", async () => {
+    auth.currentUser.mockResolvedValueOnce({ id: "ad1", role: "admin", org_id: "o1" });
+    dbState.agent = { ...agentOf("agent"), attributes: { redistribute_tagged: "Y" } };
+    render(
+      await AgentProfilePage({
+        params: Promise.resolve({ id: "x1" }),
+        searchParams: Promise.resolve({ bookable: "blocked-redistribute" }),
+      }),
+    );
+    const said = screen.getAllByRole("status").map((el) => el.textContent ?? "");
+    expect(said.some((t) => /not made bookable/i.test(t) && /Redistribute/.test(t))).toBe(true);
   });
 });

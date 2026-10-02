@@ -72,6 +72,7 @@ import { applyBookableByUserId, type BlockedReason } from "@/lib/bookable/servic
 import { applyLifecycleByUserId } from "@/lib/offboarding/service";
 import { runRosterSync } from "@/lib/salesforce/run-roster-sync";
 import type { TwilioSyncResult } from "@/lib/twilio/sync";
+import { twilioUndoesBookable } from "@/lib/twilio/roster-plan";
 import { replayDeadLetteredDeliveries, resendDelivery } from "@/lib/webhooks/emit";
 import { webhookUrlError } from "@/lib/webhooks/url";
 import { acquireLock } from "@/lib/locks";
@@ -118,7 +119,7 @@ import {
   type ScheduleReplacementPlan,
   type ScheduleRule,
 } from "@/lib/schedule-replacement";
-import type { Criteria, Role, User } from "@/lib/db/types";
+import type { Attributes, Criteria, Role, User } from "@/lib/db/types";
 import { seederOwnsCode } from "@/lib/xbc";
 import { ME_TABS } from "@/lib/me/nav";
 import {
@@ -1704,6 +1705,22 @@ export async function setBookable(form: FormData): Promise<void> {
   if (!userId) return;
   await requireManageAgent(userId, "agent.bookable");
   const wantBookable = form.get("bookable") === "true";
+  const back = `/admin/agents/${userId}`;
+  // #3028: an advisor Twilio holds on Redistribute is taken straight back out of the
+  // pool by the next hourly sync, so a flip in is refused here as well as on the
+  // page, through the same predicate the page disables the control with. Asked only
+  // for the flip IN: taking somebody out is never held back. The read is unwrapped
+  // because an unreadable row must refuse rather than read as untagged.
+  if (wantBookable) {
+    const target = unwrap(
+      await supabaseAdmin().from("users").select("attributes").eq("id", userId).maybeSingle(),
+      "bookable target attributes",
+    ) as { attributes: Attributes | null } | null;
+    if (target && twilioUndoesBookable(target.attributes)) {
+      redirect(`${back}?bookable=blocked-redistribute`);
+      return;
+    }
+  }
   // Same guarded path as the bookable-toggle API (#281/#912): making an agent
   // bookable when Slate can't reach their Google calendar is refused here too,
   // so the UI can't put a calendar-less agent into the pool. Deactivation
@@ -1727,7 +1744,6 @@ export async function setBookable(form: FormData): Promise<void> {
    * the page this lands on, and a name or an email in a query string is a person's
    * identity in browser history for no gain.
    */
-  const back = `/admin/agents/${userId}`;
   revalidatePath(back);
   if (result.status === "blocked") {
     // Nothing was written: the gate refused before the update.
