@@ -3,9 +3,8 @@ import { unwrap } from "@/lib/db/result";
 import { bucketsForAgent } from "@/lib/availability/precompute";
 import {
   chooseAgentLinkPoolCode,
-  isWellFormedAgentLinkToken,
   judgeAgentLink,
-  newAgentLinkToken,
+  readAgentLinkKey,
   type AgentLinkAgent,
   type AgentLinkBucketChoice,
   type AgentLinkJudgement,
@@ -13,30 +12,50 @@ import {
 } from "@/lib/agent-link/link";
 
 /**
- * The reads and the one write behind the agent booking link (#2073). Every read
- * goes through `unwrap`, so a failed query THROWS rather than arriving as "no
- * such link", which would tell a lead with a perfectly good link that their
- * advisor is not taking bookings.
+ * The reads behind the agent booking link (#2073, #3026). Every read goes through
+ * `unwrap`, so a failed query THROWS rather than arriving as "no such link", which
+ * would tell a lead with a perfectly good link that their advisor is not taking
+ * bookings.
+ *
+ * A link is a readable NAME (agent_link_names, migration 0155) or, for a link
+ * sent before #3026, a 64 hex TOKEN (agent_links, migration 0144). `linkUserId`
+ * is the one place that reads either, so the page, the booking API and the
+ * availability lookup cannot disagree about who a link books.
  */
 
 /**
- * Who a token books, judged by `judgeAgentLink`. A malformed token is refused
- * before any read, so a garbage path costs nothing.
+ * Who a link names, or null when it names nobody: a value that can be neither a
+ * name nor a token (refused before any read), one no row holds, or a name whose
+ * user was deleted (the row keeps the name with no user, so it is never reused).
  */
-export async function resolveAgentLink(token: string): Promise<AgentLinkJudgement> {
-  if (!isWellFormedAgentLinkToken(token)) return { ok: false, why: "unknown" };
+async function linkUserId(link: string): Promise<string | null> {
+  const key = readAgentLinkKey(link);
+  if (!key) return null;
   const db = supabaseAdmin();
-  const link = unwrap(
-    await db.from("agent_links").select("user_id").eq("token", token).maybeSingle(),
-    "agent link by token",
-  ) as { user_id: string } | null;
-  if (!link) return judgeAgentLink(null, []);
+  const row = (
+    key.kind === "token"
+      ? unwrap(
+          await db.from("agent_links").select("user_id").eq("token", key.token).maybeSingle(),
+          "agent link by token",
+        )
+      : unwrap(
+          await db.from("agent_link_names").select("user_id").eq("name", key.name).maybeSingle(),
+          "agent link by name",
+        )
+  ) as { user_id: string | null } | null;
+  return row?.user_id ?? null;
+}
+
+/** Who a link books, judged by `judgeAgentLink`. Every unknown link is one refusal. */
+export async function resolveAgentLink(link: string): Promise<AgentLinkJudgement> {
+  const userId = await linkUserId(link);
+  if (!userId) return judgeAgentLink(null, []);
 
   const agent = unwrap(
-    await db
+    await supabaseAdmin()
       .from("users")
       .select("id, name, email, bookable, deactivated_at")
-      .eq("id", link.user_id)
+      .eq("id", userId)
       .maybeSingle(),
     "agent link user",
   ) as AgentLinkAgent | null;
@@ -61,51 +80,32 @@ async function agentBucketChoices(userId: string): Promise<AgentLinkBucketChoice
 /**
  * The pool a REFUSED link offers instead (#2831), or null for the catch all.
  *
- * Only a link whose token still names somebody who has left or is not bookable
- * has a pool of its own to offer. Every other refusal answers null WITHOUT a
- * read: an unknown or replaced token names nobody, and an agent in no bucket has
- * no pool. So a token that never existed costs nothing here, as it costs nothing
- * in `resolveAgentLink`.
+ * Only a link that still names somebody who has left or is not bookable has a
+ * pool of its own to offer. Every other refusal answers null WITHOUT a read: an
+ * unknown link names nobody, and an agent in no bucket has no pool. So a link
+ * that never existed costs nothing here, as it costs nothing in
+ * `resolveAgentLink`.
  *
  * THROWS on a failed read, like every read in this file: silently answering the
  * catch all would send a lead whose pool is known to the Low pool on a database
  * blip, which is a misroute that looks like an ordinary booking.
  */
-export async function agentLinkPoolCode(token: string, why: AgentLinkRefusal): Promise<string | null> {
+export async function agentLinkPoolCode(link: string, why: AgentLinkRefusal): Promise<string | null> {
   if (why !== "departed" && why !== "not_bookable") return null;
-  if (!isWellFormedAgentLinkToken(token)) return null;
-  const link = unwrap(
-    await supabaseAdmin().from("agent_links").select("user_id").eq("token", token).maybeSingle(),
-    "agent link pool by token",
-  ) as { user_id: string } | null;
-  if (!link) return null;
-  return chooseAgentLinkPoolCode(await agentBucketChoices(link.user_id));
-}
-
-/** The agent's current token, or null when they have none (a row predating 0144's backfill cannot exist, but a read is not a promise). */
-export async function loadAgentLinkToken(userId: string): Promise<string | null> {
-  const row = unwrap(
-    await supabaseAdmin().from("agent_links").select("token").eq("user_id", userId).maybeSingle(),
-    "agent link token",
-  ) as { token: string } | null;
-  return row?.token ?? null;
+  const userId = await linkUserId(link);
+  if (!userId) return null;
+  return chooseAgentLinkPoolCode(await agentBucketChoices(userId));
 }
 
 /**
- * Replace an agent's token, which stops the old link working at once: the old
- * token matches no row afterwards, so it reads exactly like a token that never
- * existed. An upsert keyed on the user, so pressing it twice is two replacements
- * and never two rows, and an agent somehow missing a row gets one. THROWS on a
- * refused write; the caller must not report a replacement that did not happen.
+ * The agent's readable link name, or null when they have none (0155 names every
+ * user, but a read is not a promise). This is what the copy link shows; the old
+ * token is never shown again, and still resolves for links already sent.
  */
-export async function replaceAgentLinkToken(userId: string, actorId: string): Promise<string> {
-  const token = newAgentLinkToken();
-  const { error } = await supabaseAdmin()
-    .from("agent_links")
-    .upsert(
-      { user_id: userId, token, rotated_at: new Date().toISOString(), rotated_by: actorId },
-      { onConflict: "user_id" },
-    );
-  if (error) throw new Error(`agent link: the new link could not be saved: ${error.message}`);
-  return token;
+export async function loadAgentLinkName(userId: string): Promise<string | null> {
+  const row = unwrap(
+    await supabaseAdmin().from("agent_link_names").select("name").eq("user_id", userId).maybeSingle(),
+    "agent link name",
+  ) as { name: string } | null;
+  return row?.name ?? null;
 }

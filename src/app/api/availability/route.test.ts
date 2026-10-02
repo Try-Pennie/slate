@@ -564,6 +564,17 @@ describe("GET /api/availability?advisor= (#2073)", () => {
     expect(cache.getBucketSlotsWithFallback).not.toHaveBeenCalled();
   });
 
+  it("hands a readable name to the same resolver an old token goes to (#3026)", async () => {
+    agentLink.agentLinkAvailabilityLive.mockResolvedValue({
+      status: 200,
+      body: { bucket: { code: "" }, orgName: "Pennie", eventType: { name: "Call", description: null, durationMin: 30 }, slots: [], emptyBecause: null },
+    });
+    const res = await GET(new NextRequest("http://localhost/api/availability?advisor=rdaboub"));
+    expect(res.status).toBe(200);
+    expect(agentLink.agentLinkAvailabilityLive).toHaveBeenCalledWith("rdaboub", { from: null, to: null }, expect.any(Number));
+    expect(cache.getBucketSlotsWithFallback).not.toHaveBeenCalled();
+  });
+
   it("answers the refusal with its own status and body", async () => {
     agentLink.agentLinkAvailabilityLive.mockResolvedValue({
       status: 404,

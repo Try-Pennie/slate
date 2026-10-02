@@ -248,6 +248,12 @@ const EXPECTED_PINNED = [
   // #2073: mints a new user's booking link token. Security INVOKER, pinned, and
   // it reaches only pg_catalog built ins (sha256, gen_random_uuid).
   "agent_link_for_new_user",
+  // #3026: the readable advisor link name. Derives the base from an email, reserves
+  // a name for a new user, and refuses releasing, renaming or moving one. All four
+  // are Security INVOKER, pinned, and reach only pg_catalog built ins.
+  "agent_link_name_base",
+  "agent_link_name_for_new_user",
+  "agent_link_names_keep_reserved",
   "applied_migration_version",
   "applied_migration_versions",
   "booking_api_outcome_mix",
@@ -280,6 +286,7 @@ const EXPECTED_PINNED = [
   // #2002: replaces an agent's timezone AND their week in one transaction, so a
   // failed rules write cannot leave the new zone sitting over the old hours.
   "replace_user_schedule",
+  "reserve_agent_link_name",
   // #2369: the digit rule two stored phone numbers are compared by. Deliberately not
   // libphonenumber, which no SQL expression reproduces; see migration 0124.
   "slate_phone_match_key",

@@ -8,48 +8,48 @@
  */
 
 /**
- * 64 lowercase hex characters, 256 bits. The same shape the database mints the
- * first token in (sha256 as hex, migration 0144) and holds every token to with a
- * CHECK, so the app's mint and the database's cannot drift into two formats.
+ * The #2073 token: 64 lowercase hex characters, 256 bits, minted by the database
+ * (sha256 as hex, migration 0144) and held to this shape by a CHECK. Links sent
+ * before #3026 carry one, and they keep working.
  */
 export const AGENT_LINK_TOKEN_PATTERN = /^[0-9a-f]{64}$/;
 
-const TOKEN_BYTES = 32;
+/**
+ * The #3026 readable name: the email username, minted ONCE by the database when
+ * the user is created (migration 0155) and never given to anybody else. Lowercase
+ * letters, digits, dot, underscore and hyphen, beginning and ending with a letter
+ * or digit, so a name can never be "." or ".." in a URL path. The migration's
+ * CHECK is this pattern and this cap, and refuses any name shaped like a token, so
+ * a value in the address is always exactly one of the two
+ * (`scripts/test-agent-link.ts` holds the two sides together).
+ */
+export const AGENT_LINK_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/;
+export const AGENT_LINK_NAME_MAX_CHARS = 72;
+
+/** What a value from the address is, judged before any read. */
+export type AgentLinkKey = { kind: "token"; token: string } | { kind: "name"; name: string };
 
 /**
- * A fresh token. Keyed on randomness and never on the agent's email: an email is
- * guessable and a link keyed on it would leak the roster, and a random token can
- * be replaced when it leaks (the admin's replace control).
- *
- * The source is injectable so the byte to hex step is testable; it must hand back
- * at least 32 bytes, and a short buffer is refused rather than padded, because a
- * padded token is a guessable one that still passes the pattern.
+ * The ONE place that decides whether a value from the URL is an old token, a
+ * name, or nothing worth a read. A token shaped value is always a token, which is
+ * safe because no name can have that shape.
  */
-export function newAgentLinkToken(
-  randomBytes: (n: number) => Uint8Array = (n) => crypto.getRandomValues(new Uint8Array(n)),
-): string {
-  const bytes = randomBytes(TOKEN_BYTES);
-  if (bytes.length < TOKEN_BYTES) {
-    throw new Error(`agent link token: the random source returned ${bytes.length} bytes, need ${TOKEN_BYTES}`);
+export function readAgentLinkKey(value: string): AgentLinkKey | null {
+  if (AGENT_LINK_TOKEN_PATTERN.test(value)) return { kind: "token", token: value };
+  if (value.length <= AGENT_LINK_NAME_MAX_CHARS && AGENT_LINK_NAME_PATTERN.test(value)) {
+    return { kind: "name", name: value };
   }
-  let out = "";
-  for (let i = 0; i < TOKEN_BYTES; i++) out += bytes[i].toString(16).padStart(2, "0");
-  return out;
-}
-
-/** Whether a value from a URL could be a token at all, judged before any read. */
-export function isWellFormedAgentLinkToken(value: string): boolean {
-  return AGENT_LINK_TOKEN_PATTERN.test(value);
+  return null;
 }
 
 /** The path a lead opens. Kept in one place so the page and every link agree. */
-export function agentLinkPath(token: string): string {
-  return `/book/advisor/${token}`;
+export function agentLinkPath(link: string): string {
+  return `/book/advisor/${link}`;
 }
 
-/** The address an agent copies and sends. */
-export function agentLinkUrl(baseUrl: string, token: string): string {
-  return `${baseUrl.replace(/\/+$/, "")}${agentLinkPath(token)}`;
+/** The address an agent copies and sends: their name, since #3026. */
+export function agentLinkUrl(baseUrl: string, link: string): string {
+  return `${baseUrl.replace(/\/+$/, "")}${agentLinkPath(link)}`;
 }
 
 /** The bucket fields the choice below reads. */
@@ -137,7 +137,7 @@ export interface AgentLinkAgent {
 
 /**
  * Why a link books nobody. For the LOG only: every one of these reaches the lead
- * as the same sentence, so a page cannot be used to learn whether a token ever
+ * as the same sentence, so a page cannot be used to learn whether a link ever
  * existed or whether somebody is still on the roster.
  */
 export type AgentLinkRefusal = "unknown" | "departed" | "not_bookable" | "no_bucket";

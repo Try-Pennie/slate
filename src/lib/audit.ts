@@ -29,9 +29,6 @@ export const AUDIT_ACTIONS = [
   "agent.attributes",
   "agent.manager",
   "agent.ooo_calendar",
-  // #2073: an agent's own booking link was replaced, which stops the old one
-  // working. The trail records who and when, never the token.
-  "agent.booking_link_replaced",
   "ooo.submit",
   "ooo.approve",
   "ooo.reject",

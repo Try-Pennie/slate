@@ -17,7 +17,7 @@ import type { EventType } from "@/lib/db/types";
  * calendar and the daily cap are the same three gates and the same predicate.
  *
  * Every refusal is one body (`AGENT_LINK_UNAVAILABLE`) whatever the cause, so the
- * response cannot be used to learn whether a token was ever real.
+ * response cannot be used to learn whether a link was ever real.
  *
  * The compute after the link is judged is `namedAgentTimes`, which is ALSO what an
  * advisor link booking's move times are served from (#2827,
@@ -52,7 +52,8 @@ export interface NamedAgentTimesDeps {
 }
 
 export interface AgentLinkAvailabilityDeps extends NamedAgentTimesDeps {
-  resolve(token: string): Promise<AgentLinkJudgement>;
+  /** The advisor link's name or old token, judged by the one resolver. */
+  resolve(link: string): Promise<AgentLinkJudgement>;
   /** The refusal cause, for the log only. */
   logRefusal(why: string): void;
 }
@@ -153,7 +154,7 @@ export async function namedAgentTimes(
 }
 
 export async function agentLinkAvailability(
-  token: string,
+  link: string,
   query: { from: string | null; to: string | null },
   nowMs: number,
   deps: AgentLinkAvailabilityDeps,
@@ -161,14 +162,14 @@ export async function agentLinkAvailability(
   const window = readTimesWindow(query);
   if (window === "unreadable") return { status: 400, body: UNREADABLE_WINDOW_BODY };
 
-  const link = await deps.resolve(token);
-  if (!link.ok) {
-    deps.logRefusal(link.why);
+  const judged = await deps.resolve(link);
+  if (!judged.ok) {
+    deps.logRefusal(judged.why);
     return unavailableReply();
   }
 
   const times = await namedAgentTimes(
-    { bucketCode: link.bucketCode, agentUserId: link.agent.id },
+    { bucketCode: judged.bucketCode, agentUserId: judged.agent.id },
     window,
     nowMs,
     deps,

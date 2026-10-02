@@ -14,7 +14,7 @@ import { BookablePill } from "@/components/ui/BookablePill";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 import { ME_TABS } from "@/lib/me/nav";
 import { CopyLinkField } from "@/components/ui/CopyLinkField";
-import { loadAgentLinkToken } from "@/lib/agent-link/store";
+import { loadAgentLinkName } from "@/lib/agent-link/store";
 import { agentLinkUrl } from "@/lib/agent-link/link";
 import { appUrl } from "@/lib/env";
 import { log } from "@/lib/log";
@@ -104,12 +104,12 @@ export default async function MePage({
   // can be named from the record is the cal.com import.
   const originNote = rules.length > 0 ? hoursOriginNote(sched?.hours_source ?? null) : null;
 
-  // #2073: the agent's own booking link. A failed read is its own state, never
-  // "no link yet", which would send them to ask an admin for something they have.
+  // #2073: the agent's own booking link, by its readable name since #3026. A failed
+  // read is its own state, never "no link yet".
   let bookingLink: { kind: "link"; url: string } | { kind: "none" } | { kind: "unreadable" };
   try {
-    const token = await loadAgentLinkToken(me.id);
-    bookingLink = token ? { kind: "link", url: agentLinkUrl(appUrl(), token) } : { kind: "none" };
+    const name = await loadAgentLinkName(me.id);
+    bookingLink = name ? { kind: "link", url: agentLinkUrl(appUrl(), name) } : { kind: "none" };
   } catch (err) {
     log.error("agent-link", { msg: "could not read an agent's own booking link" }, err);
     bookingLink = { kind: "unreadable" };
@@ -240,8 +240,7 @@ export default async function MePage({
           </UnreadableNotice>
         ) : bookingLink.kind === "none" ? (
           <p className={`text-sm text-fg-muted ${proseCls}`}>
-            You do not have a booking link yet. An admin can create one from your
-            page in the console.
+            You do not have a booking link yet.
           </p>
         ) : (
           <>

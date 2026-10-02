@@ -18,7 +18,8 @@ import { CANCEL_REASONS, RESCHEDULE_REASONS } from "@/lib/booking/core";
 
 vi.mock("@/components/ConfirmationMarkPlayer", () => ({ ConfirmationMarkPlayer: () => null }));
 
-const TOKEN = "ab".repeat(32);
+// #3026: the address carries the advisor's readable name.
+const LINK = "rdaboub";
 const slotIso = bookerSlotIso(3);
 const availability = {
   bucket: { code: "" },
@@ -28,7 +29,7 @@ const availability = {
 };
 const props = {
   bucketCode: "",
-  agentLinkToken: TOKEN,
+  agentLink: LINK,
   salesforceId: null,
   attendee: { name: "", email: "", phone: "" },
   prefill: {},
@@ -49,7 +50,7 @@ describe("Booker on an agent's own link (#2073)", () => {
     render(<Booker {...props} />);
     await screen.findByRole("button", { name: /^(TODAY|MON|TUE|WED|THU|FRI|SAT|SUN)/ });
     const read = urls.find((u) => u.includes("/api/availability"));
-    expect(read).toContain(`advisor=${TOKEN}`);
+    expect(read).toContain(`advisor=${LINK}`);
     expect(read).not.toContain("bucket=");
   });
 
@@ -70,7 +71,8 @@ describe("Booker on an agent's own link (#2073)", () => {
     await userEvent.click(screen.getByRole("button", { name: /confirm booking/i }));
     expect(await screen.findByText("You're all set")).toBeTruthy();
     expect(posted).not.toBeNull();
-    expect(posted!.agentLinkToken).toBe(TOKEN);
+    expect(posted!.agentLink).toBe(LINK);
+    expect(posted).not.toHaveProperty("agentLinkToken");
     expect(posted).not.toHaveProperty("bucketCode");
     expect(posted).not.toHaveProperty("requestedCode");
   });

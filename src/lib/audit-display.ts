@@ -30,7 +30,6 @@ const ACTION_LABEL: Record<string, string> = {
   "agent.reactivate": "reactivated agent",
   "agent.manager": "set manager",
   "agent.ooo_calendar": "set time off calendar",
-  "agent.booking_link_replaced": "replaced booking link",
   "ooo.submit": "requested time off",
   "ooo.approve": "approved time off",
   "ooo.reject": "declined time off",

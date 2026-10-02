@@ -43,8 +43,8 @@ function findByType(node: unknown, type: unknown): Record<string, unknown> | nul
   return findByType(el.props?.children, type);
 }
 
-function render(sp: Record<string, string> = {}, token = TOKEN) {
-  return AgentLinkPage({ params: Promise.resolve({ token }), searchParams: Promise.resolve(sp) });
+function render(sp: Record<string, string> = {}, link = TOKEN) {
+  return AgentLinkPage({ params: Promise.resolve({ link }), searchParams: Promise.resolve(sp) });
 }
 
 const bookable = {
@@ -56,17 +56,36 @@ const bookable = {
 
 beforeEach(() => vi.clearAllMocks());
 
-describe("/book/advisor/[token] (#2073)", () => {
+describe("/book/advisor/[link] (#2073, #3026)", () => {
   it("draws the booker for the named agent, naming the link and never the bucket", async () => {
     store.resolveAgentLink.mockResolvedValue(bookable);
     const tree = await render({ name: "Dana", email: "dana@example.com" });
     const booker = findByType(tree, Booker);
     expect(booker).not.toBeNull();
-    expect(booker!.agentLinkToken).toBe(TOKEN);
+    expect(booker!.agentLink).toBe(TOKEN);
     expect(booker!.bucketCode).toBe("");
     expect(booker!.isTest).toBe(false);
     expect(booker!.landingCall).toBeNull();
     expect(findByType(tree, AgentLinkUnavailable)).toBeNull();
+  });
+
+  it("books through a readable name exactly as through an old token (#3026)", async () => {
+    store.resolveAgentLink.mockResolvedValue(bookable);
+    const booker = findByType(await render({}, "rdaboub"), Booker);
+    expect(store.resolveAgentLink).toHaveBeenCalledWith("rdaboub");
+    expect(booker!.agentLink).toBe("rdaboub");
+    expect(booker!.bucketCode).toBe("");
+  });
+
+  it("draws the same panel for a refused name, and never logs the name (#3026)", async () => {
+    store.resolveAgentLink.mockResolvedValue({ ok: false, why: "unknown" });
+    store.agentLinkPoolCode.mockResolvedValue(null);
+    const tree = await render({}, "rdaboub");
+    expect(findByType(tree, Booker)).toBeNull();
+    expect(findByType(tree, AgentLinkUnavailable)!.href).toBe("/book");
+    const logged = JSON.stringify((log.info as ReturnType<typeof vi.fn>).mock.calls);
+    expect(logged).toContain("unknown");
+    expect(logged).not.toContain("rdaboub");
   });
 
   it("records the page as an advisor's direct link unless the link names its own source", async () => {

@@ -51,10 +51,10 @@ for (const path of entries) {
 
   // #2073: a page drawing the Booker for an agent's OWN link routes nothing, so it
   // has no landing code to resolve and none to record as a rescue. Exempt by that
-  // property (the Booker is handed the link's token), never by file name, so the
+  // property (the Booker is handed the link), never by file name, so the
   // next such page is covered by the same reason (L362). The opposite is asserted
   // instead: a named link page that resolved a code would be routing through it.
-  if (src.includes("agentLinkToken={")) {
+  if (src.includes("agentLink={")) {
     assert(
       !src.includes("resolveLandingCode") && !src.includes("requestedCode={"),
       `${path} is a named link entry (#2073), so it resolves no landing code and passes none on`,

@@ -62,9 +62,13 @@ const schema = z.object({
   // Optional since #2073: a confirm through an agent's own link names the link
   // instead, and exactly one of the two must be present (the refine below).
   bucketCode: bucketCodeSchema.optional(),
-  // #2073: the token of an agent's own booking link. Bounded so a long value
-  // cannot reach the token read; its SHAPE is judged by resolveAgentLink.
-  agentLinkToken: z.string().max(128).optional(),
+  // #2073, #3026: an agent's own booking link, their readable name or an old 64
+  // hex token. Bounded so a long value cannot reach the read; its SHAPE is judged
+  // by resolveAgentLink, the one place that tells a name from a token.
+  agentLink: z.string().min(1).max(128).optional(),
+  // The same, under the field a booker loaded before #3026 still sends. Accepted
+  // so a lead with that page open can still confirm; never sent by the booker now.
+  agentLinkToken: z.string().min(1).max(128).optional(),
   // The `xbc` exactly as it arrived. Optional, because an older embed still in a
   // cached page will not send it, and a missing one must not refuse the booking.
   // It is used ONLY to record whether the catch-all was applied (#1908), never to
@@ -95,9 +99,11 @@ const schema = z.object({
   // DROPPED here rather than refusing the booking, because a lead must never lose a
   // call over a field only a monitor reads.
   referrerOrigin: z.string().max(REFERRER_ORIGIN_MAX_CHARS).optional().catch(undefined),
-}).refine((d) => (d.bucketCode === undefined) !== (d.agentLinkToken === undefined), {
-  message: "Name a bucket or an agent link, not both",
-});
+}).refine(
+  (d) =>
+    [d.bucketCode, d.agentLink, d.agentLinkToken].filter((v) => v !== undefined).length === 1,
+  { message: "Name a bucket or an agent link, exactly once" },
+);
 
 /**
  * The bucket code off the RAW body, for the one refusal that happens because the
@@ -242,8 +248,8 @@ async function handlePost(req: NextRequest) {
   // stays out of the outcome tally every routed rate is judged from (the failure
   // share, the per bucket error mix). Its failures still reach the log and, for a
   // fault, the internal error alert.
-  const agentLinkToken = parsed.data.agentLinkToken;
-  const recordRoutedOutcome: typeof recordApiOutcome = agentLinkToken !== undefined ? () => {} : recordApiOutcome;
+  const agentLinkKey = parsed.data.agentLink ?? parsed.data.agentLinkToken;
+  const recordRoutedOutcome: typeof recordApiOutcome = agentLinkKey !== undefined ? () => {} : recordApiOutcome;
   const code = parsed.data.bucketCode ?? "";
 
   // #2666: the public test bucket is booked only with the pass `/book` handed a page
@@ -313,14 +319,14 @@ async function handlePost(req: NextRequest) {
   // test bucket. So a posted test code with such a link is not a test booking,
   // and the link has to name the test code too.
   // #2073: an agent's own link is resolved HERE, after every rate limit and the
-  // contact caps, so probing for tokens pays the same budget a booking does. One
-  // refusal for every cause, so the answer cannot say whether a token was ever
-  // real; the cause goes to the log, never the token.
+  // contact caps, so probing for links pays the same budget a booking does. One
+  // refusal for every cause, so the answer cannot say whether a link was ever
+  // real; the cause goes to the log, never the name or token.
   let agentLink: { userId: string; bucketCode: string; isTest: boolean } | null = null;
-  if (agentLinkToken !== undefined) {
+  if (agentLinkKey !== undefined) {
     let judged: Awaited<ReturnType<typeof resolveAgentLink>>;
     try {
-      judged = await resolveAgentLink(agentLinkToken);
+      judged = await resolveAgentLink(agentLinkKey);
     } catch (err) {
       // refusal: agent_link_unreadable
       return internalErrorResponse(err, "booking");
