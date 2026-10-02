@@ -345,6 +345,8 @@ describe("TiersPage reads an empty pool's cover from one rule", () => {
       expect(screen.getByText("Fallback only")).toBeTruthy();
       expect(container.textContent).toMatch(/0\s*sending leads to another pool/);
       expect(container.textContent).toMatch(/0\s*with no coverage/);
+      // Counted in the strip too, not dropped from every count.
+      expect(container.textContent).toMatch(/1\s*on a fallback agent only/);
     } finally {
       if (saved === undefined) delete process.env.AGENT_SCHEDULING_LIVE;
       else process.env.AGENT_SCHEDULING_LIVE = saved;

@@ -145,6 +145,8 @@ export default async function TiersPage() {
   const noneCount = groups && groups.filter((g) => emptyPoolCover(g.rows[0]!) === "none").length;
   const overflowCount =
     groups && groups.filter((g) => emptyPoolCover(g.rows[0]!) === "overflow").length;
+  const fallbackCount =
+    groups && groups.filter((g) => emptyPoolCover(g.rows[0]!) === "fallback").length;
   const thinCount = groups && groups.filter((g) => g.rows[0]!.effectiveFlag === "thin").length;
   // Agent-slots out is a count over CODES on purpose: it is the one number here
   // that is about people rather than about pools, and a pool's six codes share
@@ -180,6 +182,9 @@ export default async function TiersPage() {
             </span>
             <span className="text-fg-muted">
               <span className="font-semibold tabular-nums text-fg">{overflowCount}</span> sending leads to another pool
+            </span>
+            <span className="text-fg-muted">
+              <span className="font-semibold tabular-nums text-fg">{fallbackCount}</span> on a fallback agent only
             </span>
             <span className={(spofCount ?? 0) > 0 ? "text-error" : "text-fg-muted"}>
               <span className="font-semibold tabular-nums">{spofCount}</span> on a single agent today
