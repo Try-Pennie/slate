@@ -201,6 +201,9 @@ export function buildRegalEvent(
   if (p.booking_kind === "agent_link") return buildClientSyncEvent(event, p);
   const tz = p.timezone;
   const start = DateTime.fromISO(p.starts_at, { zone: tz });
+  const startMs = Date.parse(p.starts_at);
+  // parse-ok: an unreadable start is refused, never sent as a date Regal and Salesforce would store
+  if (!Number.isFinite(startMs)) throw new Error("A booking's start could not be read, so no Regal event was built");
   // This also runs on an admin resend and the dead-letter replay, which rebuild the
   // event from the STORED payload, and payloads written before the routing summary
   // existed have no `routing` key. Degrade to "nothing unusual happened" rather than
@@ -223,7 +226,11 @@ export function buildRegalEvent(
       bookingTitle: `${p.event_type} between ${agentName} and ${p.attendee.name ?? "guest"}`,
       eventTitle: p.event_type,
       description: p.event_description,
-      startTime: p.starts_at,
+      // Written the way cal.com writes it, "2026-10-02T18:30:00.000Z", rather than
+      // the "+00:00" Postgres hands back: Regal copies it into calBookingTimestampString
+      // and on into Salesforce's Cal Booking Start Time, which should hold one
+      // spelling whichever system booked the call (Dan, 2026-10-02).
+      startTime: new Date(startMs).toISOString(),
       ownerEmail: p.agent.email,
       agentName,
       agentFirstName: agentName.split(" ")[0],
