@@ -3070,6 +3070,9 @@ export async function createBooking(
         requested_tier: tierKeyOf(input.bucketCode),
         booked_tier: tierKeyOf(bookedBucket.code),
         rungs_dropped: tier.rungsDropped,
+        // 2026-10-02: the tier on show at confirm, saved so a drop is countable by
+        // cause on /admin/routing rather than only in a 7 day log line.
+        displayed_tier: displayedTier,
         // #2638: where the routed code came from, and when the catch-all applied,
         // why Salesforce could not supply one. Absent when the caller did not say
         // what the link carried (the direct booking API, an older embed).

@@ -302,3 +302,41 @@ describe("tier divergence measure (#827)", () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+// 2026-10-02: the tier the booker had on show is SAVED on the booking, not only
+// logged, so /admin/routing can tell "the lead's tier had times on show and lost
+// the last one at confirm" from "the lead's tier had no times at all". The log
+// above is kept 7 days and was the only record before this.
+describe("displayed tier on the routing trace", () => {
+  it("records the tier on show at confirm beside the tier booked", async () => {
+    const deps = makeDeps();
+    deps.displayedTier = async () => tierKeyOf("511");
+
+    const res = await createBooking(bookInput, deps);
+
+    expect(res.booking.routing_trace?.displayed_tier).toBe(tierKeyOf("511"));
+    expect(res.booking.routing_trace?.booked_tier).toBe(tierKeyOf("411"));
+    expect(res.booking.routing_trace?.tier_fallback).toBe(true);
+  });
+
+  it("records null, never a guess, when the display read found nothing", async () => {
+    const deps = makeDeps();
+    deps.displayedTier = async () => null;
+
+    const res = await createBooking(bookInput, deps);
+
+    expect(res.booking.routing_trace?.displayed_tier).toBeNull();
+  });
+
+  it("records null and still books when the display read throws", async () => {
+    const deps = makeDeps();
+    deps.displayedTier = async () => {
+      throw new Error("availability cache unreadable");
+    };
+
+    const res = await createBooking(bookInput, deps);
+
+    expect(res.booking.id).toBe("bk-new");
+    expect(res.booking.routing_trace?.displayed_tier).toBeNull();
+  });
+});
