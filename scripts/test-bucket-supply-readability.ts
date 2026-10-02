@@ -44,9 +44,12 @@ import {
   freshnessLabel,
   relativeAge,
   supplyLegendEntry,
+  offeredWindowPhrase,
   type SupplyLegendId,
 } from "../src/lib/admin/bucket-supply-copy.ts";
 import type { BusinessHoursRules } from "../src/lib/availability/compute.ts";
+import { OFFERED_OPEN_DAYS } from "../src/lib/availability/bookable-days.ts";
+import { readFileSync } from "node:fs";
 import { assert, eq, fail, finish } from "./lib/harness.ts";
 
 const WEEK: BusinessHoursRules = {
@@ -474,15 +477,36 @@ function codesOf(
 }
 
 // Review of #3021: the page names the booker's window from the same constant
-// the booker uses, so the wording cannot keep saying three if the window changes.
+// the booker uses, so the wording cannot keep naming a length the booker no
+// longer offers. The legends and tooltips are checked against the phrase for
+// the real constant, the phrase itself is pinned for explicit counts, and a
+// guard refuses a window length written into the copy as a literal.
 {
-  const { readFileSync } = await import("node:fs");
-  const copySrc = readFileSync(new URL("../src/lib/admin/bucket-supply-copy.ts", import.meta.url), "utf8");
-  assert(!/\b(three|3) open days\b/.test(copySrc), "the copy spells no window length of its own");
-  assert(/OFFERED_OPEN_DAYS/.test(copySrc), "the copy reads the booker's window constant");
+  const phrase = offeredWindowPhrase(OFFERED_OPEN_DAYS);
+  assert(supplyLegendEntry("overflows").meaning.includes(phrase), "the overflow legend names the booker's window");
+  assert(supplyLegendEntry("other-days").meaning.includes(phrase), "the other days legend names the booker's window");
   assert(
-    /next three open days/.test(supplyLegendEntry("overflows").meaning),
-    "and today it still reads the next three open days",
+    supplyCellTitle({ kind: "overflows", toPool: "Low with Achieve" }, "Low with Beyond", "Fri").includes(phrase),
+    "the overflow cell tooltip names the booker's window",
+  );
+  assert(supplyCellTitle({ kind: "other-days" }, "Low", "Fri").includes(phrase), "the other days tooltip names it too");
+  for (const bad of [0, -1, 2.5, Number.NaN]) {
+    let threw = false;
+    try {
+      offeredWindowPhrase(bad);
+    } catch (err) {
+      threw = /whole number of days/.test(String(err));
+    }
+    assert(threw, `a window of ${bad} days is refused by name`);
+  }
+  eq(offeredWindowPhrase(1), "the next open day", "one day reads as one, not as one open days");
+  eq(offeredWindowPhrase(2), "the next two open days", "two days in words");
+  eq(offeredWindowPhrase(3), "the next three open days", "three days, today's window, in words");
+  eq(offeredWindowPhrase(12), "the next 12 open days", "past the words, a numeral");
+  const copySrc = readFileSync(new URL("../src/lib/admin/bucket-supply-copy.ts", import.meta.url), "utf8");
+  assert(
+    !/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten) open days?\b/i.test(copySrc),
+    "the copy writes no window length as a literal",
   );
 }
 

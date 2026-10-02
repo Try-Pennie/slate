@@ -18,10 +18,26 @@ import type { SupplyCell, SupplyFreshness, SupplyTotals } from "./bucket-supply.
 import { bucketSpecForXbc } from "../xbc.ts";
 import { OFFERED_OPEN_DAYS } from "../availability/bookable-days.ts";
 
-/** The booker's offered window in words, from the constant the booker uses, so
- *  the page cannot keep naming a length the booker no longer offers. */
+/**
+ * The booker's offered window in words, built from a day count so the page
+ * cannot keep naming a length the booker no longer offers. One day reads "the
+ * next open day"; small counts are spelled out; anything larger is a numeral.
+ */
 const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven"];
-const WINDOW = `the next ${NUMBER_WORDS[OFFERED_OPEN_DAYS] ?? String(OFFERED_OPEN_DAYS)} open days`;
+export function offeredWindowPhrase(days: number): string {
+  // A window is a whole number of days, at least one. Anything else is a broken
+  // constant, and a fractional or negative count in the words would hide it (L168).
+  if (!Number.isInteger(days) || days < 1) {
+    throw new Error(`offered window must be a whole number of days, at least one: got ${days}`);
+  }
+  if (days === 1) return "the next open day";
+  return `the next ${NUMBER_WORDS[days] ?? String(days)} open days`;
+}
+// Built at module load on purpose: a broken OFFERED_OPEN_DAYS fails every
+// importer, the suites included, before it can ship, rather than one cell.
+// A one day window never produces "other-days" (a pool with a time in a one day
+// window has it on that day), so the plural wording below cannot misread.
+const WINDOW = offeredWindowPhrase(OFFERED_OPEN_DAYS);
 
 /**
  * Every state this page has a name for.
