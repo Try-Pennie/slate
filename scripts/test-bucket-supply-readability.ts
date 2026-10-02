@@ -504,7 +504,10 @@ function codesOf(
   eq(offeredWindowPhrase(3), "the next three open days", "three days, today's window, in words");
   eq(offeredWindowPhrase(12), "the next 12 open days", "past the words, a numeral");
   const copySrc = readFileSync(new URL("../src/lib/admin/bucket-supply-copy.ts", import.meta.url), "utf8");
-  assert(!/\b(three|3) open days\b/.test(copySrc), "the copy writes no window length as a literal");
+  assert(
+    !/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten) open days?\b/i.test(copySrc),
+    "the copy writes no window length as a literal",
+  );
 }
 
 finish();
