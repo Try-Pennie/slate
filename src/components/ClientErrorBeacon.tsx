@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { scrubContactData, FIELD_LIMITS } from "@/lib/api/client-error-scrub";
+import { scrubContactData, withoutUrlQuery, FIELD_LIMITS } from "@/lib/api/client-error-scrub";
 
 /**
  * Reports uncaught browser errors from Slate's own booking page (#1368).
@@ -31,8 +31,9 @@ export const MAX_REPORTS_PER_PAGE = 5;
 /**
  * Send one report to the beacon endpoint. The one place a page posts a report, so
  * the Booker's origin mismatch (#2641) and the error listeners below cannot drift
- * into two ways of sending (L41). Contact data is scrubbed from the message here
- * too, whoever calls it.
+ * into two ways of sending (L41). Contact data is scrubbed from the message, the
+ * stack and the source here, and the query string cut from every address (#3046),
+ * whoever calls it.
  */
 export function postClientReport(body: Record<string, unknown> & { message: string }): void {
   void fetch("/api/client-errors", {
@@ -43,6 +44,12 @@ export function postClientReport(body: Record<string, unknown> & { message: stri
     keepalive: true,
     body: JSON.stringify({
       ...body,
+      // #3046: an address carries the lead's details in its query string, percent
+      // encoded so no contact shape matches, so the query and fragment never leave
+      // the page. The server cuts them again for a stale bundle or a forged report.
+      page: typeof body.page === "string" ? withoutUrlQuery(body.page) : body.page,
+      source: typeof body.source === "string" ? scrubContactData(withoutUrlQuery(body.source)) : body.source,
+      stack: typeof body.stack === "string" ? scrubContactData(body.stack) : body.stack,
       // An origin mismatch is two bare origins the page built itself, never free
       // text, and the scrub would rewrite a preview host's digit run so the server
       // could no longer read the pair (#2641). Every other kind is scrubbed.
@@ -88,7 +95,7 @@ export function ClientErrorBeacon({ page, bucketCode }: Props): null {
         source: e.filename ?? null,
         line: Number.isInteger(e.lineno) ? e.lineno : null,
         col: Number.isInteger(e.colno) ? e.colno : null,
-        stack: e.error instanceof Error ? scrubContactData(e.error.stack ?? "") : null,
+        stack: e.error instanceof Error ? (e.error.stack ?? "") : null,
       });
     };
 
@@ -97,7 +104,7 @@ export function ClientErrorBeacon({ page, bucketCode }: Props): null {
       report({
         kind: "unhandledrejection",
         message: reason instanceof Error ? reason.message : String(reason),
-        stack: reason instanceof Error ? scrubContactData(reason.stack ?? "") : null,
+        stack: reason instanceof Error ? (reason.stack ?? "") : null,
       });
     };
 

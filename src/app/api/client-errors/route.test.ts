@@ -61,6 +61,9 @@ const resolveTestTraffic = vi.hoisted(() => vi.fn(async (): Promise<boolean> => 
 vi.mock("@/lib/monitor/test-traffic", () => ({ resolveTestTraffic }));
 
 import { POST } from "./route";
+import { log } from "@/lib/log";
+import { shortErrorReason, DIAGNOSTIC_REASON_CHARS } from "@/lib/notify/error-text";
+import { unexpectedFaultAlert } from "@/lib/notify/misc-alert-copy";
 import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
 
 const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
@@ -412,3 +415,88 @@ describe("POST /api/client-errors origin mismatch (#2641)", () => {
     expect(sendThrottledInfo).not.toHaveBeenCalled();
   });
 });
+
+// #3046: a browser on an old bundle, or anybody with curl, can still post the
+// page's address with its query string, which on /book carries the lead's name,
+// email and phone, percent encoded so no contact shape matches. The server strips
+// it from every field before anything is logged, stored or alerted.
+describe("a report carrying the lead's details in a page address (#3046)", () => {
+  const PAGE_URL =
+    "https://slate.trypennie.app/book?name=Dana%20Lee&email=dana%40example.com&phone=%28215%29%20555-0100";
+  const LEAKS = ["?", "name=", "Dana", "Lee", "dana", "%40", "example.com", "%28", "555", "0100"];
+
+  /** The alert exactly as it would be rendered, from the real copy builders. */
+  function renderedAlert(): string {
+    const [err, context] = reportInternalError.mock.calls[0] as [Error, string];
+    return unexpectedFaultAlert(context, shortErrorReason(err, { maxChars: DIAGNOSTIC_REASON_CHARS }));
+  }
+
+  /** Everything the chokepoint receives: what it logs, and what it alerts. */
+  function everythingReported(): string {
+    const [err] = reportInternalError.mock.calls[0] as [Error, string];
+    return `${err.message}\n${err.stack ?? ""}\n${renderedAlert()}`;
+  }
+
+  it("strips the query string from the source before it reaches the alert", async () => {
+    await post({ kind: "error", message: "boom", page: "/book", source: PAGE_URL, line: 12, col: 3 });
+    const text = everythingReported();
+    for (const leak of LEAKS) expect(text).not.toContain(leak);
+    // CONTROL: the path and position survive, so it can still be diagnosed.
+    expect(renderedAlert()).toContain("https://slate.trypennie.app/book:12:3");
+  });
+
+  it("strips it from a stack frame inside the message and the stack", async () => {
+    await post({
+      kind: "error",
+      message: `failed at ${PAGE_URL}:12:3`,
+      stack: `Error: failed\n    at submit (${PAGE_URL}:12:3)`,
+      page: "/book",
+    });
+    const text = everythingReported();
+    for (const leak of LEAKS) expect(text).not.toContain(leak);
+    expect(text).toContain("failed at https://slate.trypennie.app/book:12:3");
+    expect(text).toContain("(https://slate.trypennie.app/book:12:3)");
+  });
+
+  it("strips it from the page field too, and still keys on the surface", async () => {
+    await post({ kind: "error", message: "boom", page: "/book?name=Dana%20Lee&email=dana%40example.com" });
+    const text = everythingReported();
+    for (const leak of LEAKS) expect(text).not.toContain(leak);
+    expect(reportInternalError.mock.calls[0]![1]).toBe("client_error:book");
+  });
+});
+
+// #3046: the browser raises a ResizeObserver loop warning when the embed's resize
+// watcher defers one size update to the next frame. Nothing failed for the lead,
+// so it is logged and never pages.
+describe("the harmless ResizeObserver loop warnings (#3046)", () => {
+  for (const message of [
+    "ResizeObserver loop completed with undelivered notifications",
+    "ResizeObserver loop completed with undelivered notifications.",
+    "ResizeObserver loop limit exceeded",
+  ]) {
+    it(`logs and does not page: ${message}`, async () => {
+      const info = vi.spyOn(log, "info").mockImplementation(() => {});
+      const res = await post({ kind: "error", message, page: "/book", source: PAGE_URL_FOR_RO });
+      expect(res.status).toBe(204);
+      expect(info).toHaveBeenCalledWith("client-errors", expect.objectContaining({ page: "/book" }));
+      expect(JSON.stringify(info.mock.calls)).not.toContain("dana");
+      expect(reportInternalError).not.toHaveBeenCalled();
+      expect(sendThrottledAlert).not.toHaveBeenCalled();
+      expect(sendThrottledInfo).not.toHaveBeenCalled();
+      info.mockRestore();
+    });
+  }
+
+  it("CONTROL: an ordinary error still pages", async () => {
+    await post({ kind: "error", message: "Cannot read properties of undefined", page: "/book" });
+    expect(reportInternalError).toHaveBeenCalledOnce();
+  });
+
+  it("matches the message exactly, so an error that merely mentions it still pages", async () => {
+    await post({ kind: "error", message: "ResizeObserver loop limit exceeded while saving the booking", page: "/book" });
+    expect(reportInternalError).toHaveBeenCalledOnce();
+  });
+});
+
+const PAGE_URL_FOR_RO = "https://slate.trypennie.app/book?email=dana%40example.com";

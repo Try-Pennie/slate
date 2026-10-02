@@ -64,15 +64,60 @@ const PHONE =
 const LONG_DIGITS = /\d{7,}/g;
 
 /**
+ * A URL or path followed by its query string or fragment (#3046).
+ *
+ * The page's own address is the commonest carrier of a lead's details: on /book
+ * the query string holds their name, email and phone, PERCENT ENCODED, so `%40`
+ * and `%28` defeat the email and phone shapes above, and a name has no shape at
+ * all. The browser puts that address into `ErrorEvent.filename` for some errors
+ * (a ResizeObserver loop warning, for one) and into every stack frame.
+ *
+ * So the query is not scrubbed for shapes, it is removed whole. Only a `?` or `#`
+ * attached to something URL shaped is touched (a scheme with `//`, or a token
+ * starting with `/`), so a message like "Unexpected token '#'" keeps its text.
+ * The query runs to the next space, bracket or quote, which is where a stack
+ * frame or a sentence ends it.
+ */
+const URL_QUERY = /([a-z][a-z0-9+.-]*:\/\/[^\s?#()"'<>]*|\/[^\s?#()"'<>]*)([?#][^\s()"'<>]*)/gi;
+
+/** A stack frame's `:line:col` (or `:line`) on the end of what was cut, kept so a
+ *  frame still says where it failed. Digits only, so it can carry no name. */
+const POSITION_SUFFIX = /:\d+(?::\d+)?$/;
+
+function keepPosition(cut: string): string {
+  return POSITION_SUFFIX.exec(cut)?.[0] ?? "";
+}
+
+/**
+ * Drop the query string and fragment from every URL inside free text (#3046),
+ * keeping the path and a stack frame's line and column.
+ */
+export function stripUrlQueries(text: string): string {
+  return text.replace(URL_QUERY, (_match, path: string, query: string) => path + keepPosition(query));
+}
+
+/**
+ * Drop the query string and fragment from a field that IS one address (#3046):
+ * a report's `source` or `page`. Cut at the first `?` or `#` whatever follows it,
+ * because a decoded value can hold spaces, which would end the match
+ * `stripUrlQueries` uses for free text and leave the rest of a name behind.
+ */
+export function withoutUrlQuery(value: string): string {
+  const at = value.search(/[?#]/);
+  return at === -1 ? value : value.slice(0, at) + keepPosition(value.slice(at));
+}
+
+/**
  * Remove contact data from a browser error string.
  *
- * Order matters: emails first (an address can contain digits that PHONE would
- * otherwise chew into), then phone shapes, then any long digit run left over.
- * Each leaves a marker, so a reader can tell that something was removed rather
- * than wondering whether the message was always that terse.
+ * Order matters: query strings first (#3046), since they carry contact data in an
+ * encoding no shape below can see; then emails (an address can contain digits
+ * that PHONE would otherwise chew into), then phone shapes, then any long digit
+ * run left over. Each shape leaves a marker, so a reader can tell that something
+ * was removed rather than wondering whether the message was always that terse.
  */
 export function scrubContactData(text: string): string {
-  return text
+  return stripUrlQueries(text)
     .replace(EMAIL, "[email]")
     .replace(PHONE, "[phone]")
     .replace(LONG_DIGITS, "[number]");
@@ -115,6 +160,14 @@ function field(raw: unknown, limit: number): string | null {
   return scrubContactData(trimmed).slice(0, limit);
 }
 
+/** Trim, cut the query string and fragment, scrub, and cap a field that IS one
+ *  address (#3046). The cut comes first: a decoded query can hold a space, which
+ *  would end the free text match and leave half a name behind. */
+function urlField(raw: unknown, limit: number): string | null {
+  if (typeof raw !== "string") return null;
+  return field(withoutUrlQuery(raw.trim()), limit);
+}
+
 /** Trim and cap one string field WITHOUT scrubbing it, for a value built by the page
  *  whose route rebuilds it from a strict parse. Null for nothing usable. */
 function rawField(raw: unknown, limit: number): string | null {
@@ -152,7 +205,7 @@ export function normalizeClientError(body: unknown): ClientErrorReport | null {
     kind === "origin_mismatch" ? rawField(b.message, FIELD_LIMITS.message) : field(b.message, FIELD_LIMITS.message);
   if (!message) return null;
 
-  const page = field(b.page, FIELD_LIMITS.page);
+  const page = urlField(b.page, FIELD_LIMITS.page);
   if (!page) return null;
 
   return {
@@ -160,11 +213,36 @@ export function normalizeClientError(body: unknown): ClientErrorReport | null {
     message,
     page,
     stack: field(b.stack, FIELD_LIMITS.stack),
-    source: field(b.source, FIELD_LIMITS.source),
+    source: urlField(b.source, FIELD_LIMITS.source),
     bucketCode: field(b.bucketCode, FIELD_LIMITS.bucketCode),
     line: position(b.line),
     col: position(b.col),
   };
+}
+
+/**
+ * Browser messages that are known to be harmless, matched EXACTLY (#3046).
+ *
+ * The ResizeObserver loop warnings: the browser raises one when an observer's
+ * callback changes a size that cannot be delivered in the same frame, so the
+ * notification waits for the next one. The Booker's frame height watcher
+ * (`src/components/Booker.tsx`) does exactly that by design, and nothing fails for
+ * the lead. Paging on it trains the reader to skip the channel (L36), so the route
+ * logs these at info and sends nothing.
+ *
+ * Exact strings rather than a pattern, so an error that merely MENTIONS one of
+ * these still pages. Chrome and Firefox end the first with a full stop, older
+ * engines did not; the second is the older Chrome wording.
+ */
+export const HARMLESS_BROWSER_MESSAGES: readonly string[] = [
+  "ResizeObserver loop completed with undelivered notifications.",
+  "ResizeObserver loop completed with undelivered notifications",
+  "ResizeObserver loop limit exceeded",
+];
+
+/** Whether a report is a known harmless browser warning (#3046). */
+export function isHarmlessBrowserMessage(message: string): boolean {
+  return HARMLESS_BROWSER_MESSAGES.includes(message.trim());
 }
 
 /**

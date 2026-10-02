@@ -109,13 +109,22 @@ describe("redactReportUri", () => {
   it("redacts it inside a longer URL with a query string", () => {
     expect(
       redactReportUri("https://slate.trypennie.app/booking/manage/tok_secret?from=email"),
-    ).toBe("https://slate.trypennie.app/booking/manage/[redacted]?from=email");
+    ).toBe("https://slate.trypennie.app/booking/manage/[redacted]");
   });
 
-  it("leaves an ordinary URL alone", () => {
-    expect(redactReportUri("https://slate.trypennie.app/book?xbc=411")).toBe(
-      "https://slate.trypennie.app/book?xbc=411",
+  // #3046: a browser keeps the query string in `document-uri` and `referrer`, and
+  // on /book that query carries the lead's name, email and phone, percent encoded
+  // so no contact shape matches. The query and fragment are dropped whole.
+  it("drops the query string and fragment that carry a lead's details", () => {
+    const out = redactReportUri(
+      "https://slate.trypennie.app/book?name=Dana%20Lee&email=dana%40example.com&phone=%28215%29%20555-0100#confirm",
     );
+    expect(out).toBe("https://slate.trypennie.app/book");
+  });
+
+  it("CONTROL: leaves a URL with no query string alone", () => {
+    expect(redactReportUri("https://slate.trypennie.app/book")).toBe("https://slate.trypennie.app/book");
+    expect(redactReportUri("inline")).toBe("inline");
   });
 
   it("returns a fixed marker for something that is not a string", () => {
