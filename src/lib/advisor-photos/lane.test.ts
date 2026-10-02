@@ -130,6 +130,22 @@ describe("the advisor photo lane", () => {
     expect(h.resolved).toEqual(["advisor_photos_unread"]);
   });
 
+  it("names a never read person whose read failed in the held alert", async () => {
+    h.outcome = {
+      status: "measured",
+      plan: plan({
+        counts: { ...plan().counts, failed: 1 },
+        failedNeverRead: [{ email: "newhire@trypennie.com", reason: "answered 503" }],
+      }),
+      applied: true,
+      verdict: true,
+    };
+    await runAdvisorPhotoLane("cron");
+    expect(h.sent.map((s) => s.key)).toEqual(["advisor_photos_held"]);
+    expect(h.sent[0]!.text).toContain("newhire@trypennie.com");
+    expect(h.sent[0]!.text).toContain("answered 503");
+  });
+
   it("the scheduled retry stands down once today has a verdict, and the manual trigger never does", async () => {
     h.outcome = { status: "measured", plan: plan(), applied: true, verdict: true };
     h.lastVerdictMs = startOfUtcDay(Date.now()) + 1;

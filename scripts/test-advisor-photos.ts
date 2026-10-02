@@ -244,7 +244,11 @@ const row = (id: string, state: "photo" | "none", sha: string | null, failing: s
   eq(fresh.full.length, 0, "a failure writes no image");
   eq(fresh.failed[0]!.failing_since, new Date(NOW).toISOString(), "the first failure starts the streak now");
   eq(fresh.failedNeverRead.map((f) => f.email).join(","), "n@x.test", "a never read person's failure is reported, with no row to mark");
-  eq(fresh.streaks.length, 0, "one failure pages nobody");
+  eq(fresh.streaks.length, 0, "one failure of somebody with a row pages nobody");
+  // Somebody never read has no row to carry a streak, so their failure is the only
+  // chance to say so: it needs a person, by name, on the run it happens.
+  assert(needsAttention(fresh), "a never read person whose read failed needs a person");
+  assert(!needsAttention({ ...fresh, failedNeverRead: [] }), "and that is the only thing making this run need one");
 
   const since = new Date(NOW - FAILING_PAGE_AFTER_MS).toISOString();
   const third = planRefresh({

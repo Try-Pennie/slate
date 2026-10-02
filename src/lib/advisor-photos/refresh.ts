@@ -227,6 +227,9 @@ export function needsAttention(plan: RefreshPlan): boolean {
     plan.flipGuardTripped ||
     plan.repeated.length > 0 ||
     plan.streaks.length > 0 ||
+    // Somebody never read has no row to carry a streak, so the run their read
+    // fails on is the only one that can name them.
+    plan.failedNeverRead.length > 0 ||
     plan.notInDirectory.length > 0
   );
 }

@@ -63,6 +63,11 @@ export function photosHeldAlert(plan: RefreshPlan): string {
       `${plural(plan.streaks.length, "advisor")} could not be read for three days in a row and still show the last photo Slate had: ${names(plan.streaks.map((s) => `${s.email} (${s.reason})`))}.`,
     );
   }
+  if (plan.failedNeverRead.length) {
+    parts.push(
+      `${plural(plan.failedNeverRead.length, "person", "people")} Slate has never had a photo for could not be read from Google, so they show only their sign in photo or initials: ${names(plan.failedNeverRead.map((f) => `${f.email} (${f.reason})`))}.`,
+    );
+  }
   if (plan.notInDirectory.length) {
     parts.push(
       `${plural(plan.notInDirectory.length, "active Slate person", "active Slate people")} could not be found in the Google directory: ${names(plan.notInDirectory)}. Their Google account may have been renamed or removed while Slate still treats them as active.`,

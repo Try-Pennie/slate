@@ -203,7 +203,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "advisor_photos_held",
     kind: "condition",
-    why: "A measured photo refresh held something back for a person (a wave of lost photos, a repeated image, somebody failing three days running, somebody missing from the directory); it ends when a measured run has none of those, which is the recovery (#3027).",
+    why: "A measured photo refresh held something back for a person (a wave of lost photos, a repeated image, somebody failing three days running, somebody never read whose read failed, somebody missing from the directory); it ends when a measured run has none of those, which is the recovery (#3027).",
   },
   {
     key: "twilio_sync_failures",
