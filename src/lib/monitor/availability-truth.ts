@@ -27,6 +27,7 @@
  */
 
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
+import { bufferedWindow } from "../booking/buffered-window.ts";
 
 /** alert_state key PREFIX. The code appends the bucket, so a second drifting
  *  bucket is not silenced by the first one's cooldown. */
@@ -422,10 +423,13 @@ export async function runAvailabilityTruthCheck(deps: {
   /** The next bucket on the rotation, or null when there is none. */
   nextBucket: () => Promise<{ code: string } | null>;
   /** What the bucket is currently OFFERING (slot starts) and how long a booking
-   *  runs, or null when unreadable. Both come from one read: the window a slot
-   *  occupies is what gets checked against Google, so a start with no duration
-   *  cannot be verified at all. */
-  cachedSlots: (code: string) => Promise<{ starts: string[]; durationMin: number } | null>;
+   *  runs, plus the gap kept either side of it, or null when unreadable. All come
+   *  from one read: the window a slot occupies, gap included (#2991), is what
+   *  gets checked against Google, so a start with no duration cannot be verified
+   *  at all. */
+  cachedSlots: (
+    code: string,
+  ) => Promise<{ starts: string[]; durationMin: number; bufferBeforeMin: number; bufferAfterMin: number } | null>;
   /** Emails of the bucket's eligible agents, or null when unreadable. */
   eligibleEmails: (code: string) => Promise<string[] | null>;
   /**
@@ -490,14 +494,21 @@ export async function runAvailabilityTruthCheck(deps: {
   if (emails.length === 0) return skip("bucket has no eligible agent");
 
   const durationMs = offered.durationMin * 60_000;
-  const windows = sample.map((startIso) => ({
-    startIso,
+  const windows = sample.map((startIso) => {
     // parse-ok: slotsToCheck has already dropped every start Date.parse could
     // not read, so this cannot be NaN. If one ever did get through, NaN would
     // make toISOString throw RangeError, which the catch below turns into a
     // total failure (the safe side) rather than a slot checked and found fine.
-    endIso: new Date(Date.parse(startIso) + durationMs).toISOString(),
-  }));
+    const endIso = new Date(Date.parse(startIso) + durationMs).toISOString();
+    // #2991: the gap either side of the call is part of what was offered, so a
+    // meeting sitting in it is drift, exactly as the booker would judge it.
+    const [fromIso, toIso] = bufferedWindow(
+      { buffer_before_min: offered.bufferBeforeMin, buffer_after_min: offered.bufferAfterMin },
+      startIso,
+      endIso,
+    );
+    return { startIso: fromIso, endIso: toIso };
+  });
 
   const verdicts = await deps.verifyWindows(emails, windows).catch(() => null);
   // A read that failed outright, or came back the wrong length, has compared

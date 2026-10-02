@@ -274,11 +274,16 @@ export async function offeredSlots(
   code: string,
   fromIso: string,
   toIso: string,
-): Promise<{ starts: string[]; durationMin: number } | null> {
+): Promise<{ starts: string[]; durationMin: number; bufferBeforeMin: number; bufferAfterMin: number } | null> {
   try {
     const res = await getBucketSlots(code, fromIso, toIso);
     if (!res) return null;
-    return { starts: res.slots, durationMin: res.eventType.duration_min };
+    return {
+      starts: res.slots,
+      durationMin: res.eventType.duration_min,
+      bufferBeforeMin: res.eventType.buffer_before_min,
+      bufferAfterMin: res.eventType.buffer_after_min,
+    };
   } catch (err) {
     log.warn("availability-truth", { msg: "offered slots unreadable", bucket: code }, err);
     return null;

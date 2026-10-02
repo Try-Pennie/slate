@@ -336,7 +336,7 @@ interface Harness {
 function harness(overrides: {
   bucket?: { code: string } | null;
   bucketThrows?: boolean;
-  slots?: { starts: string[]; durationMin: number } | null;
+  slots?: { starts: string[]; durationMin: number; bufferBeforeMin: number; bufferAfterMin: number } | null;
   emails?: string[] | null;
   verdicts?: SlotVerdict[];
   verifyThrows?: boolean;
@@ -387,7 +387,7 @@ function harness(overrides: {
         },
         cachedSlots: async () =>
           overrides.slots === undefined
-            ? { starts: [iso(20), iso(40), iso(60), iso(80), iso(100)], durationMin: 30 }
+            ? { starts: [iso(20), iso(40), iso(60), iso(80), iso(100)], durationMin: 30, bufferBeforeMin: 0, bufferAfterMin: 0 }
             : overrides.slots,
         eligibleEmails: async () =>
           overrides.emails === undefined ? ["a@x", "b@x"] : overrides.emails,
@@ -429,7 +429,7 @@ function harness(overrides: {
   eq(h.resolved.length, 0, "an unreadable slot payload does NOT all-clear");
 }
 {
-  const h = harness({ slots: { starts: [], durationMin: 30 } });
+  const h = harness({ slots: { starts: [], durationMin: 30, bufferBeforeMin: 0, bufferAfterMin: 0 } });
   const out = await h.run();
   eq(out.status, "skipped", "a bucket offering no times has nothing to verify, which is not health");
   eq(h.resolved.length, 0, "a bucket with no times sends no all-clear (the empty-bucket check owns that)");
@@ -595,6 +595,30 @@ const DRIFTED: SlotVerdict[] = ["drift", "drift", "drift", "drift", "drift"];
   const h = harness({ bucket: null, seenDrifting: ["411"] });
   await h.run();
   eq(h.marked.length, 0, "a skipped tick touches no marker either");
+}
+
+// #2991: an offered time must be clear for the gap kept either side of the call,
+// so the window asked about is the call plus its buffers, the same span the
+// booker and the confirm check judge. A meeting sitting in the gap is drift.
+{
+  const h = harness({
+    slots: { starts: [iso(20)], durationMin: 30, bufferBeforeMin: 10, bufferAfterMin: 10 },
+    verdicts: ["free"],
+  });
+  await h.run();
+  eq(h.windows[0]?.startIso, iso(10), "the window opens at the start of the gap before the call");
+  eq(h.windows[0]?.endIso, iso(60), "the window closes at the end of the gap after the call");
+}
+{
+  // Control: with no gap the window is the call alone, so the case above is the
+  // buffers at work and not a window that always runs long.
+  const h = harness({
+    slots: { starts: [iso(20)], durationMin: 30, bufferBeforeMin: 0, bufferAfterMin: 0 },
+    verdicts: ["free"],
+  });
+  await h.run();
+  eq(h.windows[0]?.startIso, iso(20), "no gap: the window opens at the call's start");
+  eq(h.windows[0]?.endIso, iso(50), "no gap: the window closes at the call's end");
 }
 
 finish();
