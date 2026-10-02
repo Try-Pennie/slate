@@ -57,6 +57,7 @@ vi.mock("@/app/admin/actions", () => ({
   createBucket: vi.fn(),
   createEventType: vi.fn(),
   setEventTypeGap: vi.fn(),
+  setEventTypeNotice: vi.fn(),
   grantStaffAccess: vi.fn(),
   replayFailedWebhooks: vi.fn(),
   resendWebhookDelivery: vi.fn(),

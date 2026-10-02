@@ -6,6 +6,7 @@ import { consoleHiddenFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { createEventType } from "@/app/admin/actions";
 import { EventTypeGapForm } from "@/app/admin/event-types/EventTypeGapForm";
+import { EventTypeNoticeForm } from "@/app/admin/event-types/EventTypeNoticeForm";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
 import { savedOutcome, savedSentence } from "@/lib/admin/save-outcomes";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
@@ -70,11 +71,14 @@ export default async function EventTypesPage({
             {eventTypes.map((e) => (
               <li key={e.id} className="space-y-2">
                 <p className="text-fg tabular-nums">
-                  {e.name} · {e.duration_min}m · {e.min_notice_min}m notice ·{" "}
+                  {e.name} · {e.duration_min}m ·{" "}
                   {e.slot_interval_min}m grid
                   {e.daily_cap ? ` · cap ${e.daily_cap}/day` : ""}
                 </p>
-                <EventTypeGapForm eventType={e} />
+                <div className="flex flex-wrap items-end gap-x-6 gap-y-3">
+                  <EventTypeNoticeForm eventType={e} />
+                  <EventTypeGapForm eventType={e} />
+                </div>
               </li>
             ))}
             {eventTypes.length === 0 && (

@@ -54,6 +54,9 @@ export const AUDIT_ACTIONS = [
   // The gap kept between two calls on one advisor caps how many calls an hour
   // each advisor can take, so changing it moves capacity across every bucket.
   "event_type.gap",
+  // #3003: the notice decides how soon a lead can book, so shortening or
+  // lengthening it changes what every bucket offers in the next hours.
+  "event_type.notice",
   // #1951: an admin making the server POST at an address they typed. The trail
   // is where a privileged outbound fetch belongs, and it is the only record of
   // one, since a test send deliberately writes no webhook_deliveries row.
