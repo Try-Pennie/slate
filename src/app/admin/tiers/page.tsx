@@ -9,7 +9,6 @@ import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import {
   emptyPoolCover,
   sameTierReading,
-  type StaffingFlag,
   type TierDepth,
 } from "@/lib/routing/staffing-depth";
 import { groupRowsByPool } from "@/lib/admin/pool-rows";
