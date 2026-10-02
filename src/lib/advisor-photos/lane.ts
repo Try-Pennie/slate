@@ -16,6 +16,7 @@ import { getDirectoryPhoto, listDirectoryAccounts } from "@/lib/advisor-photos/g
 import { listPhotoSubjects, listStoredPhotoStates, photoWrites } from "@/lib/advisor-photos/store";
 import { needsAttention, runPhotoRefresh, type RefreshDeps, type RefreshOutcome } from "@/lib/advisor-photos/refresh";
 import {
+  photosDeadlineAlert,
   photosHeldAlert,
   photosHeldRecovery,
   photosUnreadAlert,
@@ -23,8 +24,21 @@ import {
 } from "@/lib/advisor-photos/copy";
 
 export const ADVISOR_PHOTOS_LOCK = "cron_advisor_photos";
-/** A full run is about 130 reads; this is several times what it takes. */
-const LOCK_TTL_MS = 10 * 60_000;
+/**
+ * How long one run may keep STARTING reads. A full run is about 130 reads and
+ * takes well under a minute on a good day; a slow Google (every read timing out
+ * and retrying) could otherwise run for far longer than the lock, letting a second
+ * run start beside it. At the deadline the run writes what it finished, reports
+ * how many it never reached, and stamps no verdict.
+ */
+export const ADVISOR_PHOTOS_RUN_DEADLINE_MS = 10 * 60_000;
+/**
+ * Longer than the deadline by more than one read's worst case (three attempts at
+ * a 15 second timeout plus backoff, about a minute), so a read still in flight at
+ * the deadline finishes under the lock.
+ */
+export const ADVISOR_PHOTOS_LOCK_TTL_MS = 15 * 60_000;
+const LOCK_TTL_MS = ADVISOR_PHOTOS_LOCK_TTL_MS;
 
 /** The real collaborators. `apply: false` is the verify command's dry run. */
 export function liveRefreshDeps(apply: boolean): RefreshDeps {
@@ -37,6 +51,7 @@ export function liveRefreshDeps(apply: boolean): RefreshDeps {
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     nowMs: () => Date.now(),
     writes: apply ? photoWrites() : null,
+    deadlineMs: Date.now() + ADVISOR_PHOTOS_RUN_DEADLINE_MS,
   };
 }
 
@@ -136,7 +151,11 @@ async function report(outcome: RefreshOutcome): Promise<void> {
   //
   // Both all clears hang off the MEASURED run (#1134, #1152): a refusal returned
   // above and a failed write never reach this line.
-  if (outcome.verdict) {
+  if (outcome.deadlineReached) {
+    // A run cut short measured some people and not others: still the page, never
+    // its all clear, and never a verdict.
+    await page("advisor_photos_unread", photosDeadlineAlert(c.attempted, outcome.notReached));
+  } else if (outcome.verdict) {
     await resolveAlert("advisor_photos_unread", photosUnreadRecovery()).catch(() => false);
   }
   if (needsAttention(outcome.plan)) {

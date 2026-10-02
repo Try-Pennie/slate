@@ -37,6 +37,11 @@ export function photosUnreadAlert(why: Exclude<RefusedWhy, "unknown-user"> | "wr
   return `${head} ${REFUSED[why]}`;
 }
 
+/** The page when a run stopped at its own deadline before reaching everybody. */
+export function photosDeadlineAlert(read: number, notReached: number): string {
+  return `Advisor photos were only partly refreshed from Google today: the run reached its time limit after ${plural(read, "person", "people")}, and ${plural(notReached, "person", "people")} keep yesterday's photo. Google answering slowly is the usual cause and clears on its own; the run retries later today.`;
+}
+
 export function photosUnreadRecovery(): string {
   return "Advisor photos are being refreshed from Google again, so the earlier page is cleared. No action is needed.";
 }

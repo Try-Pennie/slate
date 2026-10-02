@@ -474,6 +474,7 @@ import { HANDOFF_UNDELIVERED_AFTER_MS } from "@/lib/handoffs/check";
 import { formatOwnerReassignNotice } from "@/lib/booking/owner-notice-copy";
 import { reminderFailedAlert } from "@/lib/booking/reminder-send";
 import {
+  photosDeadlineAlert,
   photosHeldAlert,
   photosHeldRecovery,
   photosUnreadAlert,
@@ -3797,6 +3798,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: photosUnreadAlert("slate-unreadable", "read failed [advisor photo states]: relation does not exist") },
   { key: "advisor_photos_unread", state: "Google was read and the save failed", channel: "alert",
     text: photosUnreadAlert("write-failed", "read failed [advisor photo write]: canceling statement due to statement timeout") },
+  { key: "advisor_photos_unread", state: "the run stopped at its time limit", channel: "alert",
+    text: photosDeadlineAlert(89, 40) },
   { key: "advisor_photos_unread", state: "refreshing again", channel: "recovery",
     text: photosUnreadRecovery() },
   { key: "advisor_photos_held", state: "a wave of lost photos refused", channel: "alert",

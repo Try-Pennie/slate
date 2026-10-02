@@ -17,6 +17,7 @@ export const VERIFY_EXIT = {
   repeatedImage: 11,
   notInDirectory: 12,
   failures: 13,
+  deadline: 14,
 } as const;
 
 export function verifyExitCode(outcome: RefreshOutcome): number {
@@ -36,6 +37,7 @@ export function verifyExitCode(outcome: RefreshOutcome): number {
     }
   }
   const plan = outcome.plan;
+  if (outcome.deadlineReached) return VERIFY_EXIT.deadline;
   if (plan.flipGuardTripped) return VERIFY_EXIT.flipGuard;
   if (plan.repeated.length) return VERIFY_EXIT.repeatedImage;
   if (plan.notInDirectory.length) return VERIFY_EXIT.notInDirectory;
@@ -52,6 +54,7 @@ export function verifyReport(outcome: RefreshOutcome): string[] {
     `read ${c.attempted} active people: ${c.photo} photo, ${c.none} none (${c.placeholder} of them Google's known placeholder), ${c.notInDirectory} not in the directory, ${c.failed} failed`,
     `a real run would: gain ${c.gained}, change ${c.changed}, lose ${c.lost}, leave ${c.unchanged} unchanged, delete ${c.deleted} departed rows`,
   ];
+  if (outcome.deadlineReached) lines.push(`DEADLINE: the run stopped starting reads at its time limit; ${outcome.notReached} people were never reached`);
   if (p.flipGuardTripped) lines.push(`FLIP GUARD: would refuse every none write; losses held: ${p.heldNone.join(", ")}`);
   for (const r of p.repeated) lines.push(`REPEATED IMAGE ${r.sha256.slice(0, 12)}: held by ${r.holders.join(", ")}; not written for ${r.held.join(", ") || "anybody new"}`);
   if (p.notInDirectory.length) lines.push(`NOT IN DIRECTORY: ${p.notInDirectory.join(", ")}`);

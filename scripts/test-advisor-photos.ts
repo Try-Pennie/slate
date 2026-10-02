@@ -425,6 +425,32 @@ function deps(over: Partial<RefreshDeps> & { photos?: Record<string, { status: n
 }
 
 {
+  // The run's own deadline: it stops asking Google, writes what it finished, says
+  // how many it never reached, and is not a verdict.
+  let now = NOW;
+  const jpeg = fakeImage("jpeg", 21);
+  const { writes, rec } = recorder();
+  const d = deps({
+    writes,
+    nowMs: () => now,
+    deadlineMs: NOW + 1000,
+    getPhoto: async (_s, email) => {
+      d.asked.push(email);
+      now += 1500; // each read takes longer than the time left
+      return email === "a@x.test" ? { status: 200, body: photoBody(jpeg) } : { status: 404, body: NO_PHOTO_404 };
+    },
+  });
+  const out = await runPhotoRefresh(d);
+  eq(d.asked.join(","), "a@x.test", "no read starts once the deadline has passed");
+  eq(out.status === "measured" && out.deadlineReached, true, "the run says it stopped at its deadline");
+  eq(out.status === "measured" && out.notReached, 1, "and how many people it never reached");
+  eq(out.status === "measured" && out.verdict, false, "and is not a verdict");
+  eq(rec.full.join(","), "a", "what it finished is written");
+  const healthy = await runPhotoRefresh(deps({ deadlineMs: NOW + 10 * 60_000 }));
+  eq(healthy.status === "measured" && healthy.deadlineReached, false, "a run inside its deadline does not claim one");
+}
+
+{
   // One person's refresh.
   const jpeg = fakeImage("jpeg", 12);
   const d = deps({ photos: { "a@x.test": { status: 200, body: photoBody(jpeg) } } });

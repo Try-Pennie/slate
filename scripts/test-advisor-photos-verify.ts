@@ -21,7 +21,7 @@ const plan = (over: Partial<RefreshPlan>): RefreshPlan => ({
   counts: { attempted: 2, photo: 1, none: 1, placeholder: 0, notInDirectory: 0, failed: 0, gained: 0, lost: 0, changed: 0, unchanged: 2, deleted: 0 },
   ...over,
 });
-const measured = (over: Partial<RefreshPlan>): RefreshOutcome => ({ status: "measured", plan: plan(over), applied: false, verdict: true });
+const measured = (over: Partial<RefreshPlan>, deadline = false): RefreshOutcome => ({ status: "measured", plan: plan(over), applied: false, verdict: !deadline, deadlineReached: deadline, notReached: deadline ? 4 : 0 });
 const refused = (why: Extract<RefreshOutcome, { status: "refused" }>["why"]): RefreshOutcome => ({ status: "refused", why, detail: "x" });
 
 const cases: [string, RefreshOutcome, number][] = [
@@ -34,6 +34,7 @@ const cases: [string, RefreshOutcome, number][] = [
   ["flip guard", measured({ flipGuardTripped: true, heldNone: ["a@x"] }), VERIFY_EXIT.flipGuard],
   ["repeated image", measured({ repeated: [{ sha256: "a".repeat(64), holders: ["a", "b", "c"], held: ["c"] }] }), VERIFY_EXIT.repeatedImage],
   ["not in directory", measured({ notInDirectory: ["a@x"] }), VERIFY_EXIT.notInDirectory],
+  ["stopped at the deadline", measured({}, true), VERIFY_EXIT.deadline],
   ["failures", measured({ counts: { ...plan({}).counts, failed: 1 }, failedNeverRead: [{ email: "a@x", reason: "answered 503" }] }), VERIFY_EXIT.failures],
 ];
 const produced = new Set<number>();

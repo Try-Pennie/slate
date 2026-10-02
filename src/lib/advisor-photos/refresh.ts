@@ -62,6 +62,11 @@ export interface RefreshDeps {
   nowMs(): number;
   /** Null on a dry run: everything is decided and nothing is written. */
   writes: PhotoWrites | null;
+  /**
+   * The epoch ms after which no new read starts. The run then writes what it
+   * finished and reports how many it never reached. Absent means no deadline.
+   */
+  deadlineMs?: number;
 }
 
 export interface RefreshOptions {
@@ -93,8 +98,12 @@ export type RefreshOutcome =
       plan: RefreshPlan;
       /** False on a dry run. */
       applied: boolean;
-      /** A full run that read something and did not trip the flip guard. */
+      /** A full run that read everybody, read something, and did not trip the flip guard. */
       verdict: boolean;
+      /** The run stopped starting reads at its deadline. */
+      deadlineReached: boolean;
+      /** People it never asked about because the deadline came first. */
+      notReached: number;
     };
 
 function normEmail(e: string): string {
@@ -183,7 +192,14 @@ export async function runPhotoRefresh(deps: RefreshDeps, opts: RefreshOptions = 
   }
 
   const reads = new Map<string, PhotoRead>();
+  let notReached = 0;
   for (const u of targets) {
+    // Checked before each read, so a read in flight finishes and is kept, and the
+    // run ends cleanly well inside the lock that guards it.
+    if (deps.deadlineMs !== undefined && deps.nowMs() >= deps.deadlineMs) {
+      notReached += 1;
+      continue;
+    }
     if (inDirectory && !inDirectory.has(normEmail(u.email))) {
       reads.set(u.id, { kind: "not-in-directory" });
       continue;
@@ -217,7 +233,9 @@ export async function runPhotoRefresh(deps: RefreshDeps, opts: RefreshOptions = 
     status: "measured",
     plan,
     applied: deps.writes !== null,
-    verdict: full && learned.length > 0 && !plan.flipGuardTripped,
+    verdict: full && notReached === 0 && learned.length > 0 && !plan.flipGuardTripped,
+    deadlineReached: notReached > 0,
+    notReached,
   };
 }
 

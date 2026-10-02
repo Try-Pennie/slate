@@ -1430,7 +1430,8 @@ person, passes; finding nothing is never a pass (L98). Exits: 0 pass, 1 no subje
 Slate's tables unreadable (before the migration is applied, this one), 3 Google
 refused the subject, 4 the directory listing did not answer, 5 every photo read
 failed, 10 the flip guard would refuse, 11 a repeated image would be held, 12 a Slate
-person is not in the directory, 13 some reads failed. Decision logic is pinned
+person is not in the directory, 13 some reads failed, 14 the run reached its ten minute
+time limit before reading everybody. Decision logic is pinned
 offline by `scripts/test-advisor-photos-verify.ts`.
 
 ## How the photos work, and what was measured

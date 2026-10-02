@@ -54,7 +54,7 @@ vi.mock("@/lib/advisor-photos/refresh", async (importOriginal) => ({
   },
 }));
 
-import { runAdvisorPhotoLane, startOfUtcDay } from "@/lib/advisor-photos/lane";
+import { ADVISOR_PHOTOS_LOCK_TTL_MS, ADVISOR_PHOTOS_RUN_DEADLINE_MS, runAdvisorPhotoLane, startOfUtcDay } from "@/lib/advisor-photos/lane";
 
 const plan = (over: Partial<RefreshPlan> = {}): RefreshPlan => ({
   full: [],
@@ -85,7 +85,7 @@ beforeEach(() => {
 
 describe("the advisor photo lane", () => {
   it("clears both alerts and stamps the verdict on a measured, healthy run", async () => {
-    h.outcome = { status: "measured", plan: plan(), applied: true, verdict: true };
+    h.outcome = { status: "measured", plan: plan(), applied: true, verdict: true, deadlineReached: false, notReached: 0 };
     await runAdvisorPhotoLane("cron");
     expect(h.resolved.sort()).toEqual(["advisor_photos_held", "advisor_photos_unread"]);
     expect(h.sent).toEqual([]);
@@ -146,8 +146,21 @@ describe("the advisor photo lane", () => {
     expect(h.sent[0]!.text).toContain("answered 503");
   });
 
+  it("reports a run that stopped at its deadline, keeps the page open and stamps no verdict", async () => {
+    h.outcome = { status: "measured", plan: plan(), applied: true, verdict: false, deadlineReached: true, notReached: 40 };
+    await runAdvisorPhotoLane("cron");
+    expect(h.sent.map((s) => s.key)).toEqual(["advisor_photos_unread"]);
+    expect(h.sent[0]!.text).toMatch(/40 people/);
+    expect(resolveAlert).not.toHaveBeenCalled();
+    expect(h.verdicts).toEqual([{ lane: "verdict:advisor-photos", reached: false }]);
+  });
+
+  it("keeps the lock longer than the run's own deadline", () => {
+    expect(ADVISOR_PHOTOS_LOCK_TTL_MS).toBeGreaterThan(ADVISOR_PHOTOS_RUN_DEADLINE_MS + 2 * 60_000);
+  });
+
   it("the scheduled retry stands down once today has a verdict, and the manual trigger never does", async () => {
-    h.outcome = { status: "measured", plan: plan(), applied: true, verdict: true };
+    h.outcome = { status: "measured", plan: plan(), applied: true, verdict: true, deadlineReached: false, notReached: 0 };
     h.lastVerdictMs = startOfUtcDay(Date.now()) + 1;
     expect((await runAdvisorPhotoLane("cron")).status).toBe("skipped");
     expect(h.runs).toBe(0);
