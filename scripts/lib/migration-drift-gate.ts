@@ -133,7 +133,10 @@ export function changedFilesFromMergeCommit(git: (args: string[]) => string): st
     const parents = git(["rev-list", "--parents", "-n", "1", "HEAD"]).trim().split(/\s+/).filter(Boolean);
     // The commit itself plus exactly two parents.
     if (parents.length !== 3) return null;
-    const out = git(["diff", "--name-only", "HEAD^1", "HEAD"]);
+    // --no-renames: with rename detection on, a migration MOVED out of
+    // supabase/migrations/ lists only its new path and would read as untouched.
+    // Without it a rename lists both the deleted old path and the added new one.
+    const out = git(["diff", "--name-only", "--no-renames", "HEAD^1", "HEAD"]);
     return out.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
   } catch {
     return null;

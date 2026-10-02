@@ -115,7 +115,32 @@ function fakeGit(parents: string, diff: string, calls: string[][] = []): (args: 
   const calls: string[][] = [];
   const files = changedFilesFromMergeCommit(fakeGit("m p1 p2\n", "package.json\npnpm-lock.yaml\n", calls));
   eq(files, ["package.json", "pnpm-lock.yaml"], "a two parent merge yields the diff against its first parent");
-  eq(calls[1], ["diff", "--name-only", "HEAD^1", "HEAD"], "the diff is taken against the merge's first parent (the base)");
+  eq(calls[1], ["diff", "--name-only", "--no-renames", "HEAD^1", "HEAD"], "the diff is taken against the merge's first parent (the base), renames off");
+}
+// A rename, modelled the way git reports it: with rename detection on only the
+// NEW path is listed; with --no-renames both the deleted and the added path are.
+function renamingGit(from: string, to: string): (args: string[]) => string {
+  return (args) => {
+    if (args[0] === "rev-list") return "m p1 p2\n";
+    if (args[0] === "diff") return args.includes("--no-renames") ? `${from}\n${to}\n` : `${to}\n`;
+    throw new Error(`unexpected git ${args.join(" ")}`);
+  };
+}
+{
+  const out = changedFilesFromMergeCommit(renamingGit("supabase/migrations/0200_x.sql", "archive/0200_x.sql"));
+  eq(
+    decideMigrationDriftGate({ ...DEPENDABOT, changedFiles: out }).action,
+    "refuse",
+    "a Dependabot PR that MOVES a migration out of supabase/migrations/ refuses (the old path is listed)",
+  );
+}
+{
+  const out = changedFilesFromMergeCommit(renamingGit("archive/0200_x.sql", "supabase/migrations/0200_x.sql"));
+  eq(
+    decideMigrationDriftGate({ ...DEPENDABOT, changedFiles: out }).action,
+    "refuse",
+    "a Dependabot PR that moves a file INTO supabase/migrations/ refuses",
+  );
 }
 eq(changedFilesFromMergeCommit(fakeGit("m p1\n", "package.json\n")), null, "a single parent HEAD (not the PR merge commit) is unknown, not a diff");
 eq(changedFilesFromMergeCommit(fakeGit("m\n", "")), null, "a shallow clone with no parent is unknown");
