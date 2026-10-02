@@ -117,4 +117,58 @@ describe("BookablePill", () => {
     // And the two states really are different, or the assertion above is empty.
     expect(variantOf(true, "short")).not.toBe(variantOf(false, "short"));
   });
+
+  // #3030, Dan 2026-10-02: an advisor the Twilio sync holds back on Redistribute
+  // read the same "No" as one who genuinely is not bookable, and the two mean
+  // different things to a manager. Settled in a design round: the WORD differs
+  // and the ring is DASHED, on the same outline, so colour is never the signal.
+  describe("an advisor Twilio holds back on Redistribute", () => {
+    it("reads Redistribute in place of the negative word, in every wording", () => {
+      const said = (wording: "short" | "full" | "self") => {
+        const r = render(<BookablePill bookable={false} heldByTwilio wording={wording} />);
+        const text = r.container.textContent;
+        r.unmount();
+        return text;
+      };
+      expect(said("short")).toBe("Redistribute");
+      expect(said("full")).toBe("Redistribute");
+      // The reader IS the advisor there, so it says where they are rather than
+      // naming a tag at them.
+      expect(said("self")).toBe("On Redistribute");
+    });
+
+    it("draws a DASHED ring, a third shape, in the same muted tone and weight", () => {
+      const held = render(<BookablePill bookable={false} heldByTwilio wording="short" />);
+      const m = mark(held.container as unknown as HTMLElement);
+      expect(m.getAttribute("data-bookable-mark")).toBe("dashed");
+      expect(m.className).toContain("border-dashed");
+      expect(m.className).toContain("border-[1.5px]");
+      expect(m.className).toContain("border-[var(--fg-muted)]");
+      expect(m.getAttribute("aria-hidden")).toBe("true");
+      held.unmount();
+
+      // The plain negative keeps its SOLID ring, or the shape says nothing.
+      const no = render(<BookablePill bookable={false} wording="short" />);
+      expect(mark(no.container as unknown as HTMLElement).className).not.toContain("border-dashed");
+    });
+
+    it("keeps the neutral outline treatment of No, never an error", () => {
+      const variantOf = (heldByTwilio: boolean) => {
+        const r = render(<BookablePill bookable={false} heldByTwilio={heldByTwilio} wording="short" />);
+        const cls = pill(r.container as unknown as HTMLElement).className;
+        r.unmount();
+        return cls;
+      };
+      expect(variantOf(true)).toBe(variantOf(false));
+      expect(variantOf(true)).not.toMatch(/error|rose/);
+    });
+
+    it("never shows on a bookable advisor, whatever the flag says", () => {
+      // Taking somebody OUT of the pool is never held back, so a bookable row
+      // carrying the tag is just bookable until the sync acts.
+      const { container } = render(<BookablePill bookable heldByTwilio wording="short" />);
+      expect(container.textContent).toBe("Yes");
+      expect(mark(container as unknown as HTMLElement).getAttribute("data-bookable-mark")).toBe("filled");
+    });
+  });
 });

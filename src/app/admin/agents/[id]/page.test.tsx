@@ -240,6 +240,26 @@ describe("the reads behind this page refuse rather than draw a blank (#1649)", (
     expect(screen.getByRole("button", { name: /deactivate account/i })).toBeTruthy();
   });
 
+  // #3030: the header pill reads Redistribute for an advisor the Twilio sync
+  // holds back, from the same `heldByTwilio` the refused toggle below uses, so the
+  // pill and the control cannot disagree about who is held.
+  it("names an advisor Twilio holds back as Redistribute, and nobody else", async () => {
+    const renderWith = async (agent: Record<string, unknown>) => {
+      asManager();
+      dbState.agent = agent;
+      dbState.sched = { id: "s1", timezone: "America/New_York" };
+      dbState.rules = [{ weekday: 1, start_minute: 540, end_minute: 1020 }];
+      const r = render(await AgentProfilePage(props));
+      const value = r.container.querySelector("[data-bookable-mark]")!.closest("span.rounded-pill")!.textContent;
+      r.unmount();
+      return value;
+    };
+    const tagged = { redistribute_tagged: "Y" };
+    expect(await renderWith({ ...agentOf("agent"), attributes: tagged })).toBe("Redistribute");
+    expect(await renderWith({ ...agentOf("agent"), bookable: true, attributes: tagged })).toBe("Bookable");
+    expect(await renderWith({ ...agentOf("agent"), attributes: { redistribute: "Y" } })).toBe("Not bookable");
+  });
+
   // The link says All agents, so it opens the roster. It used to open /admin,
   // which is the admin Overview, and a manager is redirected from there
   // (2026-10-02), so the link only reached the roster by bouncing.

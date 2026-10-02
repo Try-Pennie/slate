@@ -4,6 +4,12 @@ import { teamsOf } from "@/lib/admin/agent-display";
 import { isNeverSignedIn } from "@/lib/admin/unclaimed";
 import { storedPhotoUrl } from "@/lib/stored-photo";
 import type { User } from "@/lib/db/types";
+import {
+  BOOKABLE_STATES,
+  bookableStateOf,
+  heldByTwilio,
+  type BookableState,
+} from "@/lib/bookable/bookable-state";
 
 /**
  * The agent roster's filter, sort and paging, as pure functions (#1752).
@@ -112,8 +118,8 @@ export interface RosterFilters {
   role: string;
   team: string;
   manager: string;
-  /** "" any · "yes" · "no" */
-  bookable: string;
+  /** "" any, or one `BookableState`: "yes", "no" or "redistribute" (#3030) */
+  bookable: "" | BookableState;
   /** "" any · "never" (no linked Google sign in) · "yes" (#1802) */
   signin: "" | RosterSignin;
   /** "" any, or one `RosterHours` (#1802) */
@@ -173,8 +179,9 @@ export function filterRoster<T extends RosterRow>(rows: T[], f: RosterFilters): 
   return rows.filter((u) => {
     if (!onRoster(u)) return false;
     if (f.role && u.role !== f.role) return false;
-    if (f.bookable === "yes" && !u.bookable) return false;
-    if (f.bookable === "no" && u.bookable) return false;
+    // #3030: by the state the Bookable column SHOWS, so "Not bookable" never
+    // returns a row the column calls Redistribute.
+    if (f.bookable && bookableStateOf(u.bookable, heldByTwilio(u)) !== f.bookable) return false;
     if (f.team && !teamsOf(u).includes(f.team)) return false;
     if (f.manager && u.manager_id !== f.manager) return false;
     // The linked sign in, never the photo (#1802, #2600).
@@ -309,7 +316,7 @@ export function rosterFiltersFromParams(params: URLSearchParams): RosterFilters 
     role: params.get("role") ?? "",
     team: params.get("team") ?? "",
     manager: params.get("manager") ?? "",
-    bookable: params.get("bookable") ?? "",
+    bookable: oneOf(BOOKABLE_STATES, params.get("bookable")),
     // Only a value the picker offers. A hand edited URL would otherwise be a
     // filter matching nobody for a reason no control on the page shows.
     signin: oneOf(ROSTER_SIGNIN, params.get("signin")),

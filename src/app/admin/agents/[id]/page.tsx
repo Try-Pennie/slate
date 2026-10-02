@@ -54,7 +54,7 @@ import { Pill } from "@/components/ui/Pill";
 import { ViewAsButton } from "@/components/admin/ViewAsButton";
 import type { Organization, User } from "@/lib/db/types";
 import { BookablePill } from "@/components/ui/BookablePill";
-import { twilioUndoesBookable } from "@/lib/twilio/roster-plan";
+import { heldByTwilio as isHeldByTwilio } from "@/lib/bookable/bookable-state";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 import { SelectField } from "@/components/ui/SelectField";
 
@@ -171,7 +171,7 @@ export default async function AgentProfilePage({
   const canManageThisAgent = canManageUser(me.role, agent.role, isSelf);
   // #3028: a flip into the pool the hourly Twilio sync would undo. Only asked of
   // somebody out of the pool: taking an advisor out is never held back.
-  const heldByTwilio = !agent.bookable && twilioUndoesBookable(agent.attributes);
+  const heldByTwilio = isHeldByTwilio(agent);
 
   // #2120: the agent's debt coverage, read once, from the two functions the
   // roster's ladder also composes from. `teamsOf` reads whichever shape the sync
@@ -313,8 +313,10 @@ export default async function AgentProfilePage({
               {/* #1823: the same component the roster uses, so the variant and
                   the mark are one decision and the two screens cannot drift.
                   Nothing else on this page names the fact, so it carries the
-                  noun rather than Yes or No. */}
-              <BookablePill bookable={agent.bookable} wording="full" />
+                  noun rather than Yes or No. #3030: it reads Redistribute
+                  from the same `heldByTwilio` the refused toggle below uses, so
+                  the pill and the control cannot disagree about who is held. */}
+              <BookablePill bookable={agent.bookable} heldByTwilio={heldByTwilio} wording="full" />
             </>
           }
           action={

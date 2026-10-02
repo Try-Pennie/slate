@@ -470,6 +470,42 @@ for (const [name, surface] of [
   atLeast(rDark("--fg-muted"), surface, 3, `bookable No: the hollow ring on ${name} (dark)`);
 }
 
+// --- #3030: the DASHED ring, for an advisor Twilio holds back --------------
+//
+// Measured from the token the pill's source actually draws the ring with, not
+// from a name typed here, so a later change to the ring's colour is measured
+// rather than passed over (L63). The dashed ring and the solid one share that
+// token by construction (one RING class, dashed for Redistribute), and both are
+// asserted here: the word carries the meaning, and the mark has to be visible
+// wherever the pill sits, which for the agent's own page is the beige page too.
+{
+  const pillSrc = readFileSync(join("src", "components", "ui", "BookablePill.tsx"), "utf8");
+  const ringLine = pillSrc.match(/const RING = "([^"]+)"/);
+  assert(ringLine != null, "BookablePill declares one RING class for both rings");
+  const ringToken = ringLine?.[1].match(/border-\[var\((--[\w-]+)\)\]/)?.[1];
+  assert(ringToken != null, `the ring's colour token is readable from BookablePill (${ringToken})`);
+  assert(
+    /redistribute:\s*\{\s*name:\s*"dashed",\s*className:\s*`\$\{RING\} border-dashed`/.test(pillSrc),
+    "the Redistribute mark is the same RING, dashed",
+  );
+  if (ringToken) {
+    for (const [name, surface] of [
+      ["a white card", r("--surface")],
+      ["the beige page", r("--bg")],
+      ["a hovered row", r("--bg-alt")],
+    ] as [string, RGB][]) {
+      atLeast(r(ringToken), surface, 3, `bookable Redistribute: the dashed ring on ${name} (light)`);
+    }
+    for (const [name, surface] of [
+      ["a dark card", rDark("--surface")],
+      ["the dark page", rDark("--bg")],
+      ["a hovered dark row", rDark("--bg-alt")],
+    ] as [string, RGB][]) {
+      atLeast(rDark(ringToken), surface, 3, `bookable Redistribute: the dashed ring on ${name} (dark)`);
+    }
+  }
+}
+
 // --- D17: forbidden-as-text tripwires — must STAY failing -------------------
 // (an accidental palette shift that "fixes" one of these is a regression signal)
 below(graphite, skyDeep, 4.5, "graphite-on-sky-deep - must NOT be a CTA text bg (4.32 fail)");

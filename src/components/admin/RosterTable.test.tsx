@@ -256,6 +256,47 @@ describe("RosterTable", () => {
     });
   });
 
+  // #3030: an advisor the Twilio sync holds back reads Redistribute, through the
+  // SAME predicate the console's refusal uses (twilioUndoesBookable), so the two
+  // cannot disagree about who is held.
+  describe("an advisor on Redistribute", () => {
+    const TAGGED = { redistribute_tagged: "Y" };
+    const HELD_ROWS: RosterRow[] = [
+      row("h", "Held Back", { bookable: false, attributes: TAGGED }),
+      // Bookable with the tag: the sync has not acted yet, so they ARE bookable.
+      row("t", "Tagged Bookable", { bookable: true, attributes: TAGGED }),
+      // Only Slate's own mark, no tag: not held, so a plain No (#3028).
+      row("m", "Mark Only", { bookable: false, attributes: { redistribute: "Y" } }),
+      row("n", "Not Set Up", { bookable: false }),
+    ];
+    const valueOf = (name: string) => {
+      const idx = screen.getAllByRole("columnheader").findIndex((th) => th.textContent === "Bookable");
+      const r = bodyRows().find((x) => x.textContent!.includes(name))!;
+      return within(r).getAllByRole("cell")[idx]!;
+    };
+
+    it("says Redistribute only for the one the sync holds back", () => {
+      render(<RosterTable {...base} roleOptions={[...base.roleOptions]} rows={HELD_ROWS} />);
+      expect(valueOf("Held Back").textContent).toBe("Redistribute");
+      expect(valueOf("Tagged Bookable").textContent).toBe("Yes");
+      expect(valueOf("Mark Only").textContent).toBe("No");
+      expect(valueOf("Not Set Up").textContent).toBe("No");
+      expect(
+        valueOf("Held Back").querySelector("[data-bookable-mark]")!.getAttribute("data-bookable-mark"),
+      ).toBe("dashed");
+    });
+
+    it("offers the same three words as a filter, and each finds its own rows", async () => {
+      render(<RosterTable {...base} roleOptions={[...base.roleOptions]} rows={HELD_ROWS} />);
+      await pickFilter(/Filter by bookable/i, "Redistribute");
+      expect(bodyRows()).toHaveLength(1);
+      expect(bodyRows()[0]!.textContent).toMatch(/Held Back/);
+      await pickFilter(/Filter by bookable/i, "Not bookable");
+      expect(bodyRows()).toHaveLength(2);
+      expect(bodyRows().map((r) => r.textContent).join("|")).not.toMatch(/Held Back/);
+    });
+  });
+
   // #1812: the drawn glyph is replaced by ledger letters, and the sentence that
   // sat beside it is gone from the column.
   describe("the Team column", () => {
