@@ -13,8 +13,9 @@
 //
 // It sends FROM the advisor's mailbox (the email lands in their Sent folder) and only
 // TO a @trypennie.com inbox. It writes nothing: no booking, no calendar, no alert.
-// Needs the Supabase secret key, Google delegation and Salesforce credentials from
-// `.env.local`. Deliberately not named `test-*.ts`: that glob is the offline suite.
+// Reads the Supabase secret key, Google delegation and Salesforce credentials from
+// `.env.local` / `.dev.vars` itself, so it needs nothing sourced into the shell (a
+// shell `source` cannot read the multi-line Google private key). Deliberately not named `test-*.ts`: that glob is the offline suite.
 // The decisions are pinned by `scripts/test-reminder-example.ts`.
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
@@ -31,6 +32,9 @@ import {
   judgeExampleRun,
   readExampleConfig,
 } from "./lib/reminder-example.ts";
+import { loadEnvFiles } from "./smoke-env.ts";
+
+loadEnvFiles([".env.local", ".dev.vars"]);
 
 const parsed = readExampleConfig(process.env);
 if (!parsed.ok) {
