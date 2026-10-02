@@ -303,6 +303,7 @@ describe("the detail page's back link, by who is reading", () => {
     dbState.booking = bookingRow();
     render(await BookingDetailPage(props));
     expect(back()).toBe("/admin/agents");
+    expect(screen.getByRole("link", { name: /back to roster/i })).toBeTruthy();
   });
 
   it("takes an admin to the console home", async () => {
@@ -310,5 +311,6 @@ describe("the detail page's back link, by who is reading", () => {
     dbState.booking = bookingRow();
     render(await BookingDetailPage(props));
     expect(back()).toBe("/admin");
+    expect(screen.getByRole("link", { name: /back to admin/i })).toBeTruthy();
   });
 });

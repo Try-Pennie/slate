@@ -4,11 +4,10 @@
 //
 // The pending access panel (#160) already asked "has this row ever been claimed
 // by a Google sign in?" of privileged rows, keyed on `auth_user_id` being null,
-// with a wait in days. #1802 asks the same question of everybody. Two surfaces
-// answering one question with two copies of the arithmetic or the wording is the
-// shape where they quietly stop agreeing (L370), so both go through
-// `src/lib/admin/unclaimed.ts`, and this suite pins that the pending panel's
-// figure IS that helper's figure rather than a lookalike.
+// with a wait in days. #1802 asks the same question of everybody, and both
+// surfaces read `isNeverSignedIn` from `src/lib/admin/unclaimed.ts`. Only the
+// pending panel phrases a wait, through `unclaimedWaitText`, and this suite pins
+// that its figure IS that helper's figure rather than a lookalike.
 //
 // The avatar is deliberately not an input anywhere. Since #2600 photos come from
 // the Workspace directory, so a face says nothing about whether somebody logged

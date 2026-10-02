@@ -129,7 +129,7 @@ export default async function BookingDetailPage({
           href={consoleHomeFor(me.role)}
           className="inline-flex items-center gap-1 text-sm text-fg-muted hover:text-fg"
         >
-          &larr; Back to admin
+          &larr; {consoleHomeFor(me.role) === "/admin" ? "Back to admin" : "Back to roster"}
         </a>
 
         <section className={cardCls}>
