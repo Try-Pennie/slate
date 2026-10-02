@@ -349,12 +349,13 @@ describe("never signed in", () => {
 
   it("does not count somebody who signed in and has no photo", () => {
     expect(neverSignedInCount([row({ id: "s1", auth_user_id: "auth-1", avatar_url: null })])).toBe(0);
-    expect(rosterSigninText(row({ id: "s1", auth_user_id: "auth-1", avatar_url: null }), NOW)).toBe("Yes");
+    expect(rosterSigninText(row({ id: "s1", auth_user_id: "auth-1", avatar_url: null }))).toBe("Yes");
   });
 
-  it("says how long a never signed in row has been on the roster, through the shared wait", () => {
-    expect(rosterSigninText(SIGNIN[1]!, NOW)).toBe("Never, waiting 12 days");
-    expect(rosterSigninText(SIGNIN[2]!, NOW)).toBe("Never, added today");
+  // Dan, 2026-10-02: the roster says Never, with no day count.
+  it("says Never for a row nobody has signed in to, however long it has waited", () => {
+    expect(rosterSigninText(SIGNIN[1]!)).toBe("Never");
+    expect(rosterSigninText(SIGNIN[2]!)).toBe("Never");
   });
 
   it("carries the new filters through the URL and counts them as filters", () => {

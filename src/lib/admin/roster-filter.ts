@@ -1,7 +1,7 @@
 import { isActive } from "@/lib/active-user";
 import { matchesSearchQuery, normalizeSearchQuery } from "@/lib/search-query";
 import { teamsOf } from "@/lib/admin/agent-display";
-import { isNeverSignedIn, unclaimedDays, unclaimedWaitText } from "@/lib/admin/unclaimed";
+import { isNeverSignedIn } from "@/lib/admin/unclaimed";
 import { storedPhotoUrl } from "@/lib/stored-photo";
 import type { User } from "@/lib/db/types";
 
@@ -264,12 +264,11 @@ export function neverSignedInCount(rows: RosterRow[]): number {
 }
 
 /**
- * The Signed in cell. "Yes", or "Never" with how long the row has been on the
- * roster unclaimed, in the wording the pending access panel uses (`unclaimed.ts`).
+ * The Signed in cell: "Yes" or "Never". No day count (Dan, 2026-10-02): how long
+ * a row has waited is the pending access panel's question, not the roster's.
  */
-export function rosterSigninText(u: Pick<RosterRow, "auth_user_id" | "created_at">, nowMs: number): string {
-  if (!isNeverSignedIn(u)) return "Yes";
-  return `Never, ${unclaimedWaitText(unclaimedDays(u.created_at, nowMs))}`;
+export function rosterSigninText(u: Pick<RosterRow, "auth_user_id">): string {
+  return isNeverSignedIn(u) ? "Never" : "Yes";
 }
 
 /**

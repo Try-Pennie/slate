@@ -93,7 +93,9 @@ for (const file of ["../src/components/TeamAccessPanel.tsx", "../src/components/
 const panel = readFileSync(new URL("../src/components/TeamAccessPanel.tsx", import.meta.url), "utf8");
 assert(/unclaimedWaitText\(/.test(panel), "the pending access panel phrases its wait through unclaimedWaitText");
 const rosterFilter = readFileSync(new URL("../src/lib/admin/roster-filter.ts", import.meta.url), "utf8");
-assert(/unclaimedWaitText\(/.test(rosterFilter) && /unclaimedDays\(/.test(rosterFilter), "the roster phrases its wait through the same two helpers");
+// Dan, 2026-10-02: the roster says Never with no day count, so it phrases no
+// wait at all; the pending access panel above is the one place a wait is shown.
+assert(!/unclaimedWaitText\(/.test(rosterFilter) && !/unclaimedDays\(/.test(rosterFilter), "the roster shows no wait, only Never or Yes");
 assert(!/avatar_url/.test(rosterFilter.split("export function rosterSigninText")[1]?.split("\nexport ")[0] ?? "avatar_url"), "the roster's sign in wording never reads the avatar");
 
 finish();
