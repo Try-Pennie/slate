@@ -115,6 +115,16 @@ running cancels it and says so. `scripts/test-prepush-overlap.ts` pins all of
 that, including the `wait` on the build: an `&` with no `wait` would make the gate
 pass while checking nothing.
 
+# Every merge carries a changelog label (from 2026-10-03)
+
+Slate is in the sales managers' dev update (`/pennie-dev-update`), so from
+2026-10-03 a merge is refused unless the pull request carries exactly one of
+`changelog/visible`, `changelog/technical` or `changelog/none`
+(`~/.claude/hooks/require-changelog-tag.sh`). `changelog/visible` means a manager
+or a lead would notice it, and its body needs a `## Changelog` heading with the
+sentence a manager reads, in plain words. Add both when you open the pull request,
+not when the merge is refused. A deliberate exception is `ALLOW_UNTAGGED_MERGE=1`.
+
 # `pnpm cf:build` refuses a bundle carrying your `.env` files (#2335)
 
 The Cloudflare adapter reads every `.env*` file in the build tree and writes their
