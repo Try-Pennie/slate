@@ -79,6 +79,29 @@ async function run() {
     "live freeness is checked over the booking's exact original 30-minute window",
   );
 
+  // With a buffer between calls, the live check covers the buffer too, so a
+  // moved booking cannot land back to back with the new advisor's next meeting.
+  {
+    const buffered = { ...eventType, buffer_before_min: 10, buffer_after_min: 10 } as unknown as EventType;
+    const bv = verifier(new Set(["b@x.com"]));
+    const bcap = capDeps();
+    await selectCoverageReassignTarget(
+      { booking, bucket, eventType: buffered },
+      {
+        orderedEligibleIds: async () => ["a", "b"],
+        loadEmails,
+        verifyFree: bv.fn,
+        agentWorkingHours: bcap.agentWorkingHours,
+        agentActiveBookingStartsMs: bcap.agentActiveBookingStartsMs,
+        userIdsOnApprovedTimeOff: noneOnTimeOff,
+      },
+    );
+    assert(
+      bv.calls()[0]?.startIso === "2026-06-08T12:50:00.000Z" && bv.calls()[0]?.endIso === "2026-06-08T13:40:00.000Z",
+      `live freeness covers the buffer either side of the call (got ${JSON.stringify(bv.calls()[0])})`,
+    );
+  }
+
   // An uncapped event type does NO cap reads (working-hours / day-count untouched).
   assert(
     cap.whCalls().length === 0 && cap.countCalls().length === 0,

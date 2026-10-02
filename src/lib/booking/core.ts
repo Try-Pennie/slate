@@ -2,6 +2,7 @@ import type {
   BookingEventAction,
   BookingEventInitiator,
   BusySource,
+  EventType,
 } from "@/lib/db/types";
 import { TEST_MODE_COPY } from "@/lib/booking/booker-copy";
 import { CALL_COMES_FROM_PREFIX, callComesFrom } from "@/lib/booking/manage-copy";
@@ -238,6 +239,27 @@ export function bookingWindow(
   // thrown a RangeError there before this line ever ran.
   const end = new Date(Date.parse(start) + durationMin * 60_000).toISOString();
   return { startIso: start, endIso: end };
+}
+
+/**
+ * The span a live free check must find clear: the call plus the event type's
+ * buffer before and after. It is the same window `bookableSlotReason` judges the
+ * cached busy time over, so a meeting that reached the calendar after the cache
+ * was read cannot land a call back to back with it at the last check either.
+ * Every live check that places a booking on an advisor goes through this.
+ */
+export function bufferedWindow(
+  eventType: Pick<EventType, "buffer_before_min" | "buffer_after_min">,
+  startIso: string,
+  endIso: string,
+): [string, string] {
+  const MIN = 60_000;
+  return [
+    // parse-ok: both bounds come from bookingWindow's toISOString, so they parse.
+    new Date(Date.parse(startIso) - eventType.buffer_before_min * MIN).toISOString(),
+    // parse-ok: as above.
+    new Date(Date.parse(endIso) + eventType.buffer_after_min * MIN).toISOString(),
+  ];
 }
 
 /**

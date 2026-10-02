@@ -115,6 +115,8 @@ export interface FakeOpts {
    *  which must never page as a misconfigured bucket. */
   memberCount?: number;
   freeEmails?: Set<string>;
+  /** Override the bucket's event type, e.g. to give it a buffer between calls. */
+  eventType?: EventType;
   /** #1295: override the org's opening hours (defaults to open all week). */
   businessHours?: BusinessHoursRules;
   /** #1295: model an unreadable stored week, which must THROW rather than serve. */
@@ -578,7 +580,7 @@ export function makeDeps(opts: FakeOpts) {
               ...(opts.testBucket ? ({ ...bucket, is_test: true } as Bucket) : bucket),
               ...(opts.candidatesByCode ? { code } : {}),
             } as Bucket,
-            eventType,
+            eventType: opts.eventType ?? eventType,
           },
     roundRobinCandidates: async (b, _e, _ms, preview, onlyUserId) => {
       calls.roundRobinPreview.push(preview);
