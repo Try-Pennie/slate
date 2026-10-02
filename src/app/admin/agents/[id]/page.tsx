@@ -39,7 +39,7 @@ import { SubmitButton } from "@/components/ui/SubmitButton";
 import { AdvisorAvatar } from "@/components/ui/AdvisorAvatar";
 import { loadPhotoRecords } from "@/lib/advisor-photos/store";
 import { photoSrc, resolveAdvisorPhoto, type PhotoRecord } from "@/lib/advisor-photos/resolve";
-import { agentPhotoStateText } from "@/lib/advisor-photos/copy";
+import { agentPhotoStateText, photoOutcomeFromParams, photoOutcomeText } from "@/lib/advisor-photos/copy";
 import { orgDefaultWeek, workingHoursDays } from "@/lib/schedule-week";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
 import { savedOutcome, savedSentence } from "@/lib/admin/save-outcomes";
@@ -128,9 +128,9 @@ export default async function AgentProfilePage({
     ok?: string;
     /** A refusal the person can act on, from the same actions (#1994). */
     error?: string;
-    /** What "Refresh photo from Google" came back saying (#3027). */
+    /** What "Refresh photo from Google" came back with (#3027): a code. */
     photo?: string;
-    photo_error?: string;
+    pn?: string;
   }>;
 }) {
   const { id } = await params;
@@ -273,6 +273,9 @@ export default async function AgentProfilePage({
   }
   const photo = resolveAdvisorPhoto(agent, photoRecords);
   const photoLine = agentPhotoStateText(photo.kind);
+  // #3027: a code looked up in copy.ts, never words from the address.
+  const photoRun = photoOutcomeFromParams(query ?? {}, "photo");
+  const photoNoticeFromRun = photoRun ? photoOutcomeText(photoRun) : null;
 
   return (
     <>
@@ -362,14 +365,16 @@ export default async function AgentProfilePage({
             </SaveForm>
           )}
         </AdminPageHeader>
-        {query?.photo && (
-          <div className="rounded-md bg-[var(--pennie-green-wash)] px-5 py-4 text-sm text-pennie-graphite">
-            {query.photo}
-          </div>
-        )}
-        {query?.photo_error && (
-          <div role="alert" className="rounded-md border border-[var(--error)] px-5 py-4 text-sm text-error">
-            {query.photo_error}
+        {photoNoticeFromRun && (
+          <div
+            role={photoNoticeFromRun.ok ? undefined : "alert"}
+            className={
+              photoNoticeFromRun.ok
+                ? "rounded-md bg-[var(--pennie-green-wash)] px-5 py-4 text-sm text-pennie-graphite"
+                : "rounded-md border border-[var(--error)] px-5 py-4 text-sm text-error"
+            }
+          >
+            {photoNoticeFromRun.text}
           </div>
         )}
 

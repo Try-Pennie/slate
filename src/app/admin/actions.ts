@@ -11,7 +11,7 @@ import {
 } from "@/lib/notify/slack-channel-check";
 import { cookies } from "next/headers";
 import { refreshOnePhoto, runAdvisorPhotoLane } from "@/lib/advisor-photos/lane";
-import { refreshOutcomeText } from "@/lib/advisor-photos/copy";
+import { photoOutcome, photoOutcomeQuery } from "@/lib/advisor-photos/copy";
 import { nanoid } from "nanoid";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
@@ -3016,50 +3016,39 @@ export async function refreshAdvisorPhotosNow(): Promise<void> {
   const back = "/admin/agents";
   // The run and the redirects are kept apart: a redirect is thrown, so one inside
   // the try would be caught below and reported as a failure.
-  let result: Awaited<ReturnType<typeof runAdvisorPhotoLane>>;
+  let query: string;
   try {
-    result = await runAdvisorPhotoLane("manual");
+    query = photoOutcomeQuery(photoOutcome(await runAdvisorPhotoLane("manual"), "all"), "photos");
   } catch (err) {
-    revalidatePath(back);
-    redirect(`${back}?photos_error=${encodeURIComponent((err instanceof Error ? err.message : String(err)).slice(0, 200))}`);
-    return;
+    log.error("advisor-photos", { msg: "manual refresh failed" }, err);
+    query = photoOutcomeQuery({ code: "run-failed" }, "photos");
   }
   revalidatePath(back);
-  if (result.status === "skipped") {
-    redirect(`${back}?photos_error=${encodeURIComponent("A photo refresh is already running. Try again in a minute.")}`);
-    return;
-  }
-  const { ok, text } = refreshOutcomeText(result, "all");
-  redirect(`${back}?${ok ? "photos" : "photos_error"}=${encodeURIComponent(text)}`);
+  redirect(`${back}?${query}`);
 }
 
 /**
  * "Refresh from Google" on one agent's page (#3027), so a photo fixed in Google
  * Admin shows the same minute. Admins only, server side. It never touches the
  * daily alerts or the verdict: one person's answer says nothing about the roster.
+ * The outcome goes back as a code, never as words (see `photoOutcomeQuery`).
  */
 export async function refreshAdvisorPhotoFor(form: FormData): Promise<void> {
   await requireAdmin();
   const userId = String(form.get("user_id") ?? "").trim();
   if (!userId) {
-    redirect(`/admin/agents?photos_error=${encodeURIComponent("No agent was named to refresh.")}`);
+    redirect(`/admin/agents?${photoOutcomeQuery({ code: "unknown-user" }, "photos")}`);
     return;
   }
   const back = `/admin/agents/${encodeURIComponent(userId)}`;
-  let result: Awaited<ReturnType<typeof refreshOnePhoto>>;
+  let query: string;
   try {
-    result = await refreshOnePhoto(userId);
+    query = photoOutcomeQuery(photoOutcome(await refreshOnePhoto(userId), "one"), "photo");
   } catch (err) {
-    revalidatePath(back);
-    redirect(`${back}?photo_error=${encodeURIComponent((err instanceof Error ? err.message : String(err)).slice(0, 200))}`);
-    return;
+    log.error("advisor-photos", { msg: "one photo refresh failed" }, err);
+    query = photoOutcomeQuery({ code: "run-failed" }, "photo");
   }
   revalidatePath(back);
   revalidatePath("/admin/agents");
-  if (result.status === "skipped") {
-    redirect(`${back}?photo_error=${encodeURIComponent("A photo refresh is already running. Try again in a minute.")}`);
-    return;
-  }
-  const { ok, text } = refreshOutcomeText(result, "one");
-  redirect(`${back}?${ok ? "photo" : "photo_error"}=${encodeURIComponent(text)}`);
+  redirect(`${back}?${query}`);
 }

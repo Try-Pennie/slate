@@ -81,39 +81,153 @@ export function photosHeldRecovery(): string {
 }
 
 /**
- * The sentence an admin sees after pressing a refresh button. `scope` decides how
- * much it may say: a whole roster run names nobody (the result travels in the
- * page address, which is browser history), while one person's run is about the
- * person whose page it is.
+ * What a refresh button reports back to the page it was pressed on (#3027).
+ *
+ * It travels in the page address, so it is a CODE plus counts as numbers, never a
+ * sentence: a crafted link can then only ever produce one of the sentences below,
+ * never words of its own choosing. The page looks the copy up from this file.
+ * Nothing in it names a person either, since an address is browser history.
  */
-export function refreshOutcomeText(
-  outcome: RefreshOutcome | { status: "failed"; detail: string },
+export const PHOTO_OUTCOME_CODES = [
+  // A whole roster run that measured.
+  "done",
+  // One person's run that measured.
+  "updated",
+  "now-none",
+  "none",
+  "unchanged",
+  "not-in-directory",
+  "repeated",
+  "read-failed",
+  // Either run.
+  "no-subject",
+  "subject-refused",
+  "directory-unreadable",
+  "nothing-read",
+  "slate-unreadable",
+  "unknown-user",
+  "save-failed",
+  "run-failed",
+  "busy",
+] as const;
+export type PhotoOutcomeCode = (typeof PHOTO_OUTCOME_CODES)[number];
+
+/** The counts a roster run reports, by their one letter query names. */
+const COUNT_PARAMS = {
+  attempted: "pa",
+  gained: "pg",
+  changed: "pc",
+  lost: "pl",
+  unchanged: "pu",
+  failed: "pf",
+  notInDirectory: "pm",
+  deleted: "pd",
+} as const;
+type CountName = keyof typeof COUNT_PARAMS;
+
+export interface PhotoOutcome {
+  code: PhotoOutcomeCode;
+  counts?: Record<CountName, number>;
+  /** A roster run that left something for a person; the alert names who. */
+  held?: boolean;
+  /** For "repeated": how many people hold the image. */
+  holders?: number;
+}
+
+/** Decide the outcome of a run, as a code and numbers. */
+export function photoOutcome(
+  outcome: RefreshOutcome | { status: "failed"; detail: string } | { status: "skipped"; why: string },
   scope: "all" | "one",
-): { ok: boolean; text: string } {
-  if (outcome.status === "failed") {
-    return { ok: false, text: `Google was read, and saving to Slate failed: ${outcome.detail}` };
-  }
-  if (outcome.status === "refused") {
-    if (outcome.why === "unknown-user") return { ok: false, text: "That person is not an active Slate user, so there is no photo to refresh." };
-    return { ok: false, text: REFUSED[outcome.why] };
-  }
+): PhotoOutcome {
+  if (outcome.status === "skipped") return { code: "busy" };
+  if (outcome.status === "failed") return { code: "save-failed" };
+  if (outcome.status === "refused") return { code: outcome.why };
   const plan = outcome.plan;
   const c = plan.counts;
   if (scope === "one") {
-    if (plan.notInDirectory.length) return { ok: false, text: "Google's directory does not hold this address, so no photo was read." };
-    if (plan.repeated.length) {
-      const r = plan.repeated[0]!;
-      return {
-        ok: false,
-        text: `Google's photo for this person is the same image ${r.holders.length} people hold, so it may be a placeholder and was not stored.`,
-      };
-    }
-    if (c.failed) return { ok: false, text: `Google could not be read for this person: ${plan.failed[0]?.last_error ?? plan.failedNeverRead[0]?.reason ?? "no reason given"}.` };
-    if (c.gained || c.changed) return { ok: true, text: "Photo updated from Google." };
-    if (c.lost) return { ok: true, text: "Google holds no photo for this person any more, so Slate now shows their initials." };
-    if (c.none) return { ok: true, text: "Google holds no photo for this person, so Slate shows their initials." };
-    return { ok: true, text: "The photo already matches Google." };
+    if (plan.notInDirectory.length) return { code: "not-in-directory" };
+    if (plan.repeated.length) return { code: "repeated", holders: plan.repeated[0]!.holders.length };
+    if (c.failed) return { code: "read-failed" };
+    if (c.gained || c.changed) return { code: "updated" };
+    if (c.lost) return { code: "now-none" };
+    if (c.none && c.unchanged === 0) return { code: "none" };
+    return { code: "unchanged" };
   }
+  const counts = Object.fromEntries(
+    (Object.keys(COUNT_PARAMS) as CountName[]).map((k) => [k, c[k]]),
+  ) as Record<CountName, number>;
+  return { code: "done", counts, held: needsAttention(plan) };
+}
+
+/** The query string for an outcome, on the parameter `param` ("photos" or "photo"). */
+export function photoOutcomeQuery(o: PhotoOutcome, param: "photos" | "photo"): string {
+  const q = new URLSearchParams({ [param]: o.code });
+  if (o.counts) for (const k of Object.keys(COUNT_PARAMS) as CountName[]) q.set(COUNT_PARAMS[k], String(o.counts[k]));
+  if (o.held) q.set("ph", "1");
+  if (o.holders !== undefined) q.set("pn", String(o.holders));
+  return q.toString();
+}
+
+const count = (raw: string | undefined): number | null => (raw !== undefined && /^\d{1,6}$/.test(raw) ? Number(raw) : null);
+
+/**
+ * Read an outcome back from a page's search params. Null for anything that is not
+ * exactly an outcome this file writes, so a crafted link draws no banner at all.
+ */
+export function photoOutcomeFromParams(
+  sp: Record<string, string | string[] | undefined>,
+  param: "photos" | "photo",
+): PhotoOutcome | null {
+  const one = (k: string) => (typeof sp[k] === "string" ? (sp[k] as string) : undefined);
+  const code = one(param);
+  if (!code || !(PHOTO_OUTCOME_CODES as readonly string[]).includes(code)) return null;
+  const out: PhotoOutcome = { code: code as PhotoOutcomeCode };
+  if (code === "done") {
+    const counts = {} as Record<CountName, number>;
+    for (const k of Object.keys(COUNT_PARAMS) as CountName[]) {
+      const n = count(one(COUNT_PARAMS[k]));
+      if (n === null) return null;
+      counts[k] = n;
+    }
+    out.counts = counts;
+    out.held = one("ph") === "1";
+  }
+  if (code === "repeated") {
+    const n = count(one("pn"));
+    if (n === null) return null;
+    out.holders = n;
+  }
+  return out;
+}
+
+const ONE_TEXT: Record<Exclude<PhotoOutcomeCode, "done" | "repeated">, { ok: boolean; text: string }> = {
+  updated: { ok: true, text: "Photo updated from Google." },
+  "now-none": { ok: true, text: "Google holds no photo for this person any more, so Slate now shows their initials." },
+  none: { ok: true, text: "Google holds no photo for this person, so Slate shows their initials." },
+  unchanged: { ok: true, text: "The photo already matches Google." },
+  "not-in-directory": { ok: false, text: "Google's directory does not hold this address, so no photo was read." },
+  "read-failed": { ok: false, text: "Google could not be read for this person just now. Try again in a few minutes." },
+  "no-subject": { ok: false, text: REFUSED["no-subject"] },
+  "subject-refused": { ok: false, text: REFUSED["subject-refused"] },
+  "directory-unreadable": { ok: false, text: REFUSED["directory-unreadable"] },
+  "nothing-read": { ok: false, text: REFUSED["nothing-read"] },
+  "slate-unreadable": { ok: false, text: REFUSED["slate-unreadable"] },
+  "unknown-user": { ok: false, text: "That person is not an active Slate user, so there is no photo to refresh." },
+  "save-failed": { ok: false, text: "Google was read, and saving the photos to Slate failed. The logs under tag=advisor-photos have the reason." },
+  "run-failed": { ok: false, text: "The photo refresh failed before it finished. The logs under tag=advisor-photos have the reason." },
+  busy: { ok: false, text: "A photo refresh is already running. Try again in a minute." },
+};
+
+/** The sentence for an outcome, and whether it is good news. */
+export function photoOutcomeText(o: PhotoOutcome): { ok: boolean; text: string } {
+  if (o.code === "repeated") {
+    return {
+      ok: false,
+      text: `Google's photo for this person is the same image ${o.holders ?? 0} people hold, so it may be a placeholder and was not stored.`,
+    };
+  }
+  if (o.code !== "done") return ONE_TEXT[o.code];
+  const c = o.counts!;
   const parts = [
     `Read ${plural(c.attempted, "person", "people")} from Google`,
     c.gained ? `${c.gained} gained a photo` : null,
@@ -124,10 +238,9 @@ export function refreshOutcomeText(
     c.notInDirectory ? `${c.notInDirectory} not in the directory` : null,
     c.deleted ? `${plural(c.deleted, "departed person's photo", "departed people's photos")} removed` : null,
   ].filter(Boolean);
-  const held = needsAttention(plan);
   return {
-    ok: c.failed === 0 && !held,
-    text: `${parts.join(", ")}.` + (held ? " Some photos were held back for a person to check, and the alerts channel names them." : ""),
+    ok: c.failed === 0 && !o.held,
+    text: `${parts.join(", ")}.` + (o.held ? " Some people need a person to look at them, and the alerts channel names them." : ""),
   };
 }
 

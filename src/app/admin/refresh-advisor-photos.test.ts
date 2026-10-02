@@ -49,6 +49,7 @@ const lane = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/advisor-photos/lane", () => lane);
 import { refreshAdvisorPhotoFor, refreshAdvisorPhotosNow } from "./actions";
+import { PHOTO_OUTCOME_CODES, photoOutcomeFromParams, photoOutcomeQuery, photoOutcomeText } from "@/lib/advisor-photos/copy";
 
 const plan = (over: Record<string, unknown> = {}) => ({
   full: [], touch: [], failed: [], failedNeverRead: [], deleteIds: [], flipGuardTripped: false,
@@ -63,6 +64,12 @@ beforeEach(() => {
   auth.requireAdmin.mockResolvedValue({ id: "admin1", role: "admin", org_id: "o1" });
 });
 
+// The outcome travels as a code and numbers; the page looks the words up.
+const outcomeOf = (param: "photos" | "photo") => {
+  const url = new URL(`https://x.test${redirectedTo()}`);
+  return { path: url.pathname, outcome: photoOutcomeFromParams(Object.fromEntries(url.searchParams), param), raw: url.search };
+};
+
 describe("refreshAdvisorPhotosNow", () => {
   it("refuses a caller who is not an admin before running anything", async () => {
     auth.requireAdmin.mockRejectedValueOnce(new Error("Not authorized"));
@@ -74,10 +81,12 @@ describe("refreshAdvisorPhotosNow", () => {
     lane.runAdvisorPhotoLane.mockResolvedValue({ status: "measured", plan: plan(), applied: true, verdict: true });
     await expect(refreshAdvisorPhotosNow()).rejects.toThrow(/NEXT_REDIRECT:/);
     expect(lane.runAdvisorPhotoLane).toHaveBeenCalledWith("manual");
-    expect(redirectedTo()).toMatch(/^\/admin\/agents\?photos=Read 3 people from Google, 1 gained a photo/);
+    const { path, outcome } = outcomeOf("photos");
+    expect(path).toBe("/admin/agents");
+    expect(photoOutcomeText(outcome!).text).toMatch(/^Read 3 people from Google, 1 gained a photo/);
   });
 
-  it("never names anybody in the address, even when people were held", async () => {
+  it("carries only a code and numbers, never names or words", async () => {
     lane.runAdvisorPhotoLane.mockResolvedValue({
       status: "measured",
       plan: plan({ repeated: [{ sha256: "a".repeat(64), holders: ["ada@trypennie.com", "b@x", "c@x"], held: ["c@x"] }] }),
@@ -85,20 +94,30 @@ describe("refreshAdvisorPhotosNow", () => {
       verdict: true,
     });
     await expect(refreshAdvisorPhotosNow()).rejects.toThrow(/NEXT_REDIRECT:/);
-    expect(redirectedTo()).toMatch(/photos_error=/);
-    expect(redirectedTo()).not.toMatch(/@/);
+    const { outcome, raw } = outcomeOf("photos");
+    expect(raw).not.toMatch(/@/);
+    expect(raw).toMatch(/^\?photos=done(&p[a-z]=\d+)+$/);
+    expect(photoOutcomeText(outcome!).ok).toBe(false);
   });
 
   it("says why when the run was refused", async () => {
     lane.runAdvisorPhotoLane.mockResolvedValue({ status: "refused", why: "no-subject", detail: "x" });
     await expect(refreshAdvisorPhotosNow()).rejects.toThrow(/NEXT_REDIRECT:/);
-    expect(redirectedTo()).toMatch(/photos_error=DIRECTORY_ADMIN_SUBJECT is not set/);
+    expect(photoOutcomeText(outcomeOf("photos").outcome!).text).toMatch(/DIRECTORY_ADMIN_SUBJECT is not set/);
   });
 
   it("says a run is already going rather than pretending it finished", async () => {
     lane.runAdvisorPhotoLane.mockResolvedValue({ status: "skipped", why: "overlapping-run" });
     await expect(refreshAdvisorPhotosNow()).rejects.toThrow(/NEXT_REDIRECT:/);
-    expect(redirectedTo()).toMatch(/photos_error=A photo refresh is already running/);
+    expect(photoOutcomeText(outcomeOf("photos").outcome!).text).toMatch(/already running/);
+  });
+
+  it("reports a run that threw as failed, with the reason left in the logs", async () => {
+    lane.runAdvisorPhotoLane.mockRejectedValue(new Error("secret detail"));
+    await expect(refreshAdvisorPhotosNow()).rejects.toThrow(/NEXT_REDIRECT:/);
+    const { outcome, raw } = outcomeOf("photos");
+    expect(raw).not.toMatch(/secret/);
+    expect(outcome!.code).toBe("run-failed");
   });
 });
 
@@ -124,12 +143,33 @@ describe("refreshAdvisorPhotoFor", () => {
     });
     await expect(refreshAdvisorPhotoFor(form("u1"))).rejects.toThrow(/NEXT_REDIRECT:/);
     expect(lane.refreshOnePhoto).toHaveBeenCalledWith("u1");
-    expect(redirectedTo()).toBe("/admin/agents/u1?photo=Photo updated from Google.");
+    expect(redirectedTo()).toBe("/admin/agents/u1?photo=updated");
+    expect(photoOutcomeText(outcomeOf("photo").outcome!).text).toBe("Photo updated from Google.");
   });
 
   it("says when Google's directory does not hold the address", async () => {
     lane.refreshOnePhoto.mockResolvedValue({ status: "measured", plan: plan({ notInDirectory: ["a@x"] }), applied: true, verdict: false });
     await expect(refreshAdvisorPhotoFor(form("u1"))).rejects.toThrow(/NEXT_REDIRECT:/);
-    expect(redirectedTo()).toMatch(/photo_error=Google's directory does not hold this address/);
+    expect(redirectedTo()).toBe("/admin/agents/u1?photo=not-in-directory");
+  });
+});
+
+describe("reading an outcome back from the address", () => {
+  it("draws nothing for a crafted link", () => {
+    expect(photoOutcomeFromParams({ photos: "Your account is locked, call 555" }, "photos")).toBeNull();
+    expect(photoOutcomeFromParams({ photos: "done", pa: "3" }, "photos")).toBeNull();
+    expect(photoOutcomeFromParams({ photos: "done", pa: "x", pg: "1", pc: "0", pl: "0", pu: "0", pf: "0", pm: "0", pd: "0" }, "photos")).toBeNull();
+    expect(photoOutcomeFromParams({ photo: "repeated", pn: "lots" }, "photo")).toBeNull();
+  });
+
+  it("round trips every code it can write", () => {
+    for (const code of PHOTO_OUTCOME_CODES) {
+      const o = code === "done"
+        ? { code, counts: { attempted: 1, gained: 1, changed: 0, lost: 0, unchanged: 0, failed: 0, notInDirectory: 0, deleted: 0 }, held: false }
+        : code === "repeated" ? { code, holders: 3 } : { code };
+      const back = photoOutcomeFromParams(Object.fromEntries(new URLSearchParams(photoOutcomeQuery(o, "photo"))), "photo");
+      expect(back).toEqual(o);
+      expect(photoOutcomeText(back!).text.length).toBeGreaterThan(10);
+    }
   });
 });

@@ -6,6 +6,7 @@ import { consoleHiddenFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { rosterFiltersFromParams, rosterPhotoNotice, type RosterHours } from "@/lib/admin/roster-filter";
 import { loadPhotoRecords } from "@/lib/advisor-photos/store";
+import { photoOutcomeFromParams, photoOutcomeText } from "@/lib/advisor-photos/copy";
 import { resolveAdvisorPhoto, type PhotoRecord } from "@/lib/advisor-photos/resolve";
 import { loadRosterHours } from "@/lib/admin/roster-hours";
 import { log } from "@/lib/log";
@@ -36,9 +37,17 @@ export default async function AgentRosterPage({
     sync_error?: string;
     /** The Twilio half refused while Salesforce succeeded (#2097). */
     twilio_error?: string;
-    /** The outcome of "Refresh photos from Google" (#3027). */
+    /** The outcome of "Refresh photos from Google" (#3027): a code and counts. */
     photos?: string;
-    photos_error?: string;
+    pa?: string;
+    pg?: string;
+    pc?: string;
+    pl?: string;
+    pu?: string;
+    pf?: string;
+    pm?: string;
+    pd?: string;
+    ph?: string;
   }>;
 }) {
   const sp = await searchParams;
@@ -91,6 +100,10 @@ export default async function AgentRosterPage({
   }));
   const photoNotice = rosterUnreadable ? null : rosterPhotoNotice(rows);
   const isAdmin = atLeast(me.role, "admin");
+  // #3027: the button's outcome arrives as a code and numbers and is looked up
+  // here, so a crafted link can only ever draw one of the sentences copy.ts holds.
+  const photoRun = photoOutcomeFromParams(sp, "photos");
+  const photoNoticeFromRun = photoRun ? photoOutcomeText(photoRun) : null;
 
   // The push-health pill and the sync-health panel moved to the Health page
   // (#1748), which is where anything time sensitive lives; this page is the
@@ -155,14 +168,16 @@ export default async function AgentRosterPage({
         </UnreadableNotice>
       )}
       {/* #3027: the manual photo refresh reports back to this page (L608). */}
-      {sp.photos && (
-        <div className="rounded-md bg-[var(--pennie-green-wash)] px-5 py-4 text-sm text-pennie-graphite">
-          {sp.photos}
-        </div>
-      )}
-      {sp.photos_error && (
-        <div role="alert" className="rounded-md border border-[var(--error)] px-5 py-4 text-sm text-error">
-          {sp.photos_error}
+      {photoNoticeFromRun && (
+        <div
+          role={photoNoticeFromRun.ok ? undefined : "alert"}
+          className={
+            photoNoticeFromRun.ok
+              ? "rounded-md bg-[var(--pennie-green-wash)] px-5 py-4 text-sm text-pennie-graphite"
+              : "rounded-md border border-[var(--error)] px-5 py-4 text-sm text-error"
+          }
+        >
+          {photoNoticeFromRun.text}
         </div>
       )}
       <section id="agents" className={cardCls}>
