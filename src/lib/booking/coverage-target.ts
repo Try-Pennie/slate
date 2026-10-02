@@ -1,7 +1,7 @@
 import { DateTime } from "luxon";
 
 import { isUnderDailyCap, type WorkingRule } from "@/lib/availability/compute";
-import { bookingWindow, selectReassignTarget, type SelectionOutcome, type VerifyResult } from "@/lib/booking/core";
+import { bookingWindow, bufferedWindow, selectReassignTarget, type SelectionOutcome, type VerifyResult } from "@/lib/booking/core";
 import type { Booking, Bucket, EventType } from "@/lib/db/types";
 
 /**
@@ -118,7 +118,10 @@ export async function selectCoverageReassignTarget(
     candidates,
     booking.assigned_user_id,
     (ids) => deps.loadEmails(ids),
-    (emails) => deps.verifyFree(emails, startIso, endIso),
+    (emails) => {
+      const [fromIso, toIso] = bufferedWindow(eventType, startIso, endIso);
+      return deps.verifyFree(emails, fromIso, toIso);
+    },
     isUnderCap,
     COVERAGE_VERIFY_WAVE_SIZE,
   );

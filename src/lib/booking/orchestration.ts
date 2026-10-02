@@ -16,6 +16,7 @@ import {
 } from "../availability/compute.ts";
 import {
   bookingWindow,
+  bufferedWindow,
   busyBlockFor,
   bookingEventFrom,
   deterministicEventId,
@@ -1731,20 +1732,6 @@ async function nextAdvisorAfterLostRace(
     );
     return null;
   }
-}
-
-/**
- * The span the live check must find free: the call plus the event type's buffer
- * before and after. It is the same window `bookableSlotReason` judges the cached
- * busy time over, so a meeting that reached the calendar after the cache was read
- * cannot land a call back to back with it at the last check either.
- */
-function bufferedWindow(eventType: EventType, startIso: string, endIso: string): [string, string] {
-  const MIN = 60_000;
-  return [
-    new Date(Date.parse(startIso) - eventType.buffer_before_min * MIN).toISOString(),
-    new Date(Date.parse(endIso) + eventType.buffer_after_min * MIN).toISOString(),
-  ];
 }
 
 /**
