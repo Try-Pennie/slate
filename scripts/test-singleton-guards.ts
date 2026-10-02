@@ -72,6 +72,7 @@ const SINGLETON_INVARIANTS: {
   { table: "regal_call_outcomes", cols: "event_id", issue: "#2944/0152", why: "one outcome per Regal eventId, so a redelivered call is never stored twice and the show rate never counts it twice" },
   { table: "calcom_override_removals", cols: "request_id,starts_at,ends_at", issue: "#2890/0153", why: "one stale cal.com block per (request, window), so recording it twice is one row and putting cal.com back takes it out once" },
   { table: "agent_link_names", cols: "user_id", issue: "#3026/0155", why: "one readable booking link name per user, so the copy link and the resolver can never disagree about which name is theirs" },
+  { table: "advisor_photos", cols: "user_id", issue: "#3027/0156", why: "one photo row per user (the primary key), so the daily refresh upserts onto it and a person can never hold two pictures" },
   { table: "regal_call_ignores", cols: "user_id", issue: "#2090/0138", why: "one ignore list entry per person (the primary key), so a second add is refused rather than replacing the reason somebody wrote" },
 ];
 

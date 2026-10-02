@@ -20,6 +20,7 @@ import type {
   OwnerAlertEvent,
   RegalCallEvent,
   RegalCallOutcome,
+  AdvisorPhotoRow,
   RegalCallIgnore,
   BookingOutbox,
   BookingReservation,
@@ -143,6 +144,19 @@ export interface Database {
       owner_alert_events: Table<OwnerAlertEvent>;
       regal_call_events: Table<RegalCallEvent>;
       regal_call_outcomes: Table<RegalCallOutcome>;
+      advisor_photos: Table<
+        AdvisorPhotoRow,
+        [
+          {
+            // #3027: the photo route serves a hash only while an ACTIVE user holds it.
+            foreignKeyName: "advisor_photos_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: true;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ]
+      >;
       regal_call_ignores: Table<RegalCallIgnore>;
       bucket_slots: Table<BucketSlotsRow>;
       pending_event_deletions: Table<PendingEventDeletion>;

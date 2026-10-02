@@ -998,6 +998,7 @@ cost matters; see `docs/cloudflare-platform-notes.md`.
 | `GET /api/cron/booking-reminders` | Emails each lead a reminder 24 hours before their call, from their advisor's own mailbox (#2359). |
 | `GET /api/cron/ooo-approvals` | Moves approved and declined time-off requests through their side effects. |
 | `GET /api/cron/ooo-digest` | The daily 7am ET time-off digest, and the record of whether it landed. |
+| `GET /api/cron/advisor-photos` | Reads each active person's photo from the Google directory and keeps the bytes for Slate to serve (#3027). Daily at 04:17 UTC, retried at 10:17 only when the first run reached no verdict. |
 | `GET /api/cron/prune-routing` | Ages out routing decision rows past their retention window. |
 | `GET /api/cron/prune-busy-blocks` | Deletes cached busy blocks whose end is far enough in the past to be unreachable (#1252). |
 | `GET /api/cron/prune-regal-calls` | Deletes inbound Regal call events received more than three days ago (#2090), and call outcomes received more than 120 days ago (#2944). |
@@ -1048,3 +1049,14 @@ canary key is not configured.
 
 See `docs/booking-api.md` for the integrator-facing walkthrough of the booking
 flow, and the project `README.md` for the URL contract and embed setup.
+
+## `GET /advisor-photo/{sha256}`
+
+One advisor photo by the SHA-256 of its bytes (#3027). Public: lead pages and the
+staff screens draw from it, and it is on Slate's own origin so the content security
+policy allows it. It serves only a hash an active advisor's row holds, typed by the
+bytes' own signature, `cache-control: public, max-age=31536000, immutable` (the
+address is the content), and `x-content-type-options: nosniff`. A malformed hash
+answers 404 before any read; an unknown or departed one answers 404; a failed read
+answers 503, uncached.
+

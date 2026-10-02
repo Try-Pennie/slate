@@ -42,8 +42,8 @@
     "verify:ooo-protection": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-ooo-protection-live.ts",
     "verify:pool-entry": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-pool-entry-live.ts",
     "verify:router-replay": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-router-replay-live.ts",
-    "loadtest:export-shape": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/export-roster-shape.ts",
-    "backfill:advisor-photos": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/backfill-advisor-photos.ts"
+    "verify:advisor-photos": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-advisor-photos-live.ts",
+    "loadtest:export-shape": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/export-roster-shape.ts"
   },
   "dependencies": {
     "@lottiefiles/dotlottie-react": "^0.19.16",

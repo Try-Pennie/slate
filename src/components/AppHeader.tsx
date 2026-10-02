@@ -47,7 +47,7 @@ export async function AppHeader({
   userId,
   orgId,
   bookable,
-  avatarUrl,
+  photoSrc,
 }: {
   email: string;
   role?: string;
@@ -61,7 +61,8 @@ export async function AppHeader({
   userId?: string;
   orgId?: string;
   bookable?: boolean;
-  avatarUrl?: string | null;
+  /** The resolved picture (`staffPhotoSrc`), or null for initials (#3027). */
+  photoSrc?: string | null;
 }) {
   // The approval queue is a manager surface; agents manage their own time off
   // from /me/time-off, so they don't get the tab.
@@ -299,7 +300,7 @@ export async function AppHeader({
           <AccountMenu
             email={email}
             role={role}
-            avatarUrl={avatarUrl}
+            photoSrc={photoSrc}
             themePreference={ownTheme}
             impersonating={impersonation.status === "active"}
             calendar={calendar.menu}

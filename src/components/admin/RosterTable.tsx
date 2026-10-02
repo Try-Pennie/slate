@@ -8,7 +8,8 @@ import { InPlaceLink } from "@/components/ui/InPlaceLink";
 import { ViewAsButton } from "@/components/admin/ViewAsButton";
 import { teamsOf } from "@/lib/admin/agent-display";
 import { isNeverSignedIn } from "@/lib/admin/unclaimed";
-import { storedPhotoUrl } from "@/lib/stored-photo";
+import { AdvisorAvatar } from "@/components/ui/AdvisorAvatar";
+import { photoSrc } from "@/lib/advisor-photos/resolve";
 import { DebtTeamLedger, LEDGER_LEGEND } from "@/components/admin/DebtTeamLedger";
 import { RowActionsMenu } from "@/components/ui/RowActionsMenu";
 import { SelectField } from "@/components/ui/SelectField";
@@ -203,6 +204,7 @@ export function RosterTable({
             { value: "", label: "Any photo" },
             { value: "needed", label: "Needs a photo" },
             { value: "has", label: "Has a photo" },
+            { value: "unread", label: "Not read from Google yet" },
           ]}
           className="w-44"
         />
@@ -355,22 +357,15 @@ export function RosterTable({
               <tr key={u.id} className="transition-colors hover:bg-[var(--bg-alt)]">
                 <td className={tdCls("edge")}>
                   <div className="flex items-center gap-3">
-                    {/* One judge of "has a photo" for the picture and the
-                        marker below it, so a blank stored value draws initials
-                        AND is marked, never a broken image (#2837). */}
-                    {storedPhotoUrl(u.avatar_url) ? (
-                      // eslint-disable-next-line @next/next/no-img-element -- external Google avatar; OpenNext/CF has no image loader
-                      <img
-                        src={storedPhotoUrl(u.avatar_url)!}
-                        alt=""
-                        referrerPolicy="no-referrer"
-                        className="h-8 w-8 shrink-0 rounded-full object-cover"
-                      />
-                    ) : (
-                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-pennie-navy text-[11px] font-semibold text-pennie-beige">
-                        {(u.name ?? u.email).slice(0, 2).toUpperCase()}
-                      </span>
-                    )}
+                    {/* #3027: the picture the server resolved, drawn by the one avatar
+                        component, which falls back to initials when the image
+                        will not load (#2612). */}
+                    <AdvisorAvatar
+                      src={photoSrc(u.photo)}
+                      initials={(u.name ?? u.email).slice(0, 2).toUpperCase()}
+                      imgClassName="h-8 w-8 shrink-0 rounded-full object-cover"
+                      fallbackClassName="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-pennie-navy text-[11px] font-semibold text-pennie-beige"
+                    />
                     <div className="min-w-0">
                       <InPlaceLink
                         href={`/admin/agents/${u.id}`}

@@ -1405,3 +1405,63 @@ failed check is exit 1.
 **Re-run it after any change to migration 0155's functions or to `agent_link_names`.**
 It does not touch production. That the app and the database agree on the name's shape is
 pinned offline by `scripts/test-agent-link.ts`, which reads the migration's CHECKs.
+
+# Proving the advisor photo refresh (`pnpm verify:advisor-photos`)
+
+The daily `advisor-photos` lane (#3027) reads every active person's photo from the
+Google Workspace directory and keeps the bytes in `advisor_photos`. Its offline
+suites drive every outcome through fixtures, which agree with whatever they are told
+about Google (L52), so the command runs the SAME refresh function against the live
+directory and database with every write taken out. It therefore applies every guard
+the lane applies, the known placeholder hash, the repeated image floor and the flip
+guard, and prints what a real run would gain, change, lose and refuse.
+
+```
+pnpm verify:advisor-photos
+```
+
+It needs the Supabase secret key and the Google service account from `.env.local` /
+`.dev.vars`. The subject is `DIRECTORY_ADMIN_SUBJECT` from the environment when set,
+otherwise the value `wrangler.jsonc` deploys, so it checks the account production
+uses. It writes nothing.
+
+Only a run that read the directory and at least one photo, with nothing held for a
+person, passes; finding nothing is never a pass (L98). Exits: 0 pass, 1 no subject, 2
+Slate's tables unreadable (before the migration is applied, this one), 3 Google
+refused the subject, 4 the directory listing did not answer, 5 every photo read
+failed, 10 the flip guard would refuse, 11 a repeated image would be held, 12 a Slate
+person is not in the directory, 13 some reads failed. Decision logic is pinned
+offline by `scripts/test-advisor-photos-verify.ts`.
+
+## How the photos work, and what was measured
+Every face Slate draws (the lead's manage page, the roster, an agent's page, the
+account menu, the reminder's contact card) comes from ONE resolver,
+`resolveAdvisorPhoto` in `src/lib/advisor-photos/resolve.ts`, through ONE component,
+`AdvisorAvatar` (initials when there is no photo or it will not load, #2612). The
+daily `advisor-photos` lane (04:17 UTC, retried at 10:17 only when the first run
+reached no verdict) reads `photos.get` from the Workspace directory as
+`DIRECTORY_ADMIN_SUBJECT`, a wrangler var that must be an ADMIN (as an agent the call
+answers 403), and keeps the bytes in `advisor_photos`, served at
+`/advisor-photo/{sha256}` from Slate's own origin. Three things that were measured
+and are easy to get wrong:
+
+- **A 200 is not proof of a photo.** Google serves its grey silhouette placeholder as
+  an ordinary image to some accounts. It is held by hash in `KNOWN_PLACEHOLDER_SHA256`
+  (`core.ts`), and any image three or more people hold is not written for newcomers
+  and is reported, so a NEW placeholder is caught too.
+- **`thumbnailPhotoUrl`'s host says nothing.** #2600 treated `lh3.google.com` as a
+  placeholder; 27 accounts there hold real uploads. That rule is deleted.
+- **`users.avatar_url` is a fallback, never a picture to draw.** It is the sign in
+  photo, used only while the directory has not been read. A measured "no photo" hides
+  it. `scripts/test-advisor-photo-reads.ts` fails a surface that reads it raw, and a
+  read of `advisor_photos` outside `store.ts` or of its bytes outside the two serving
+  readers.
+
+`advisor_photos` is NOT mirrored to Snowflake: a photo is presentational and the
+warehouse has no question it answers. Rows of deactivated users are deleted by the
+lane. Prove the live half with `pnpm verify:advisor-photos` (it writes nothing).
+
+**Run it after applying migration 0156 and before trusting the first morning run,
+and again after the subject changes** (Dan moves it to a non human admin mailbox at
+rollout).
+

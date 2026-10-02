@@ -16,8 +16,6 @@ import { getDirectoryPhoto, listDirectoryAccounts } from "@/lib/advisor-photos/g
 import { listPhotoSubjects, listStoredPhotoStates, photoWrites } from "@/lib/advisor-photos/store";
 import { needsAttention, runPhotoRefresh, type RefreshDeps, type RefreshOutcome } from "@/lib/advisor-photos/refresh";
 import {
-  PHOTOS_HELD_KEY,
-  PHOTOS_UNREAD_KEY,
   photosHeldAlert,
   photosHeldRecovery,
   photosUnreadAlert,
@@ -87,7 +85,7 @@ export async function runAdvisorPhotoLane(trigger: "cron" | "manual"): Promise<L
       // Only a write can throw out of the refresh: every read failure is an outcome.
       const detail = err instanceof Error ? err.message : String(err);
       log.error("advisor-photos", { msg: "saving the refresh failed" }, err);
-      await page(PHOTOS_UNREAD_KEY, photosUnreadAlert("write-failed", detail));
+      await page("advisor_photos_unread", photosUnreadAlert("write-failed", detail));
       return { status: "failed", detail };
     }
     await report(outcome);
@@ -97,22 +95,24 @@ export async function runAdvisorPhotoLane(trigger: "cron" | "manual"): Promise<L
   }
 }
 
-async function page(key: typeof PHOTOS_UNREAD_KEY | typeof PHOTOS_HELD_KEY, text: string): Promise<void> {
+async function page(key: "advisor_photos_unread" | "advisor_photos_held", text: string): Promise<void> {
   const cooldowns = await loadMonitorCooldowns("advisor-photos");
-  // alert-key: advisor_photos_unread
-  // alert-key: advisor_photos_held
+  const failed = (err: unknown) => log.error("advisor-photos", { msg: "alert send failed", key }, err);
   // alert-text-ok: every message is built in copy.ts from sentences this code wrote;
   // a write failure's detail is the store's own short "read failed [context]" line.
-  await sendThrottledAlert(key, cooldowns[key], text).catch((err) =>
-    log.error("advisor-photos", { msg: "alert send failed", key }, err),
-  );
+  if (key === "advisor_photos_unread") {
+    await sendThrottledAlert("advisor_photos_unread", cooldowns.advisor_photos_unread, text).catch(failed);
+  } else {
+    // alert-text-ok: as above, built in copy.ts.
+    await sendThrottledAlert("advisor_photos_held", cooldowns.advisor_photos_held, text).catch(failed);
+  }
 }
 
 /** Alerts and the verdict stamp for one full run. */
 async function report(outcome: RefreshOutcome): Promise<void> {
   if (outcome.status === "refused") {
     log.warn("advisor-photos", { msg: "refresh refused", why: outcome.why });
-    if (outcome.why !== "unknown-user") await page(PHOTOS_UNREAD_KEY, photosUnreadAlert(outcome.why, outcome.detail));
+    if (outcome.why !== "unknown-user") await page("advisor_photos_unread", photosUnreadAlert(outcome.why, outcome.detail));
     return;
   }
   const c = outcome.plan.counts;
@@ -131,18 +131,18 @@ async function report(outcome: RefreshOutcome): Promise<void> {
     flip_guard: outcome.plan.flipGuardTripped,
     repeated: outcome.plan.repeated.length,
   });
-  // all-clear-proof: scripts/test-advisor-photo-lane.ts drives the refused,
+  // all-clear-proof: src/lib/advisor-photos/lane.test.ts drives the refused,
   // write failed and guard tripped runs and asserts neither all clear is sent.
   //
   // Both all clears hang off the MEASURED run (#1134, #1152): a refusal returned
   // above and a failed write never reach this line.
   if (outcome.verdict) {
-    await resolveAlert(PHOTOS_UNREAD_KEY, photosUnreadRecovery()).catch(() => false);
+    await resolveAlert("advisor_photos_unread", photosUnreadRecovery()).catch(() => false);
   }
   if (needsAttention(outcome.plan)) {
-    await page(PHOTOS_HELD_KEY, photosHeldAlert(outcome.plan));
+    await page("advisor_photos_held", photosHeldAlert(outcome.plan));
   } else if (outcome.verdict) {
-    await resolveAlert(PHOTOS_HELD_KEY, photosHeldRecovery()).catch(() => false);
+    await resolveAlert("advisor_photos_held", photosHeldRecovery()).catch(() => false);
   }
   await recordDetectorVerdict(ADVISOR_PHOTOS_VERDICT_LANE, outcome.verdict);
 }

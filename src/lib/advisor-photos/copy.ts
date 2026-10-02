@@ -4,10 +4,7 @@
  * `pnpm preview:alerts` renders the real wording rather than a copy of it.
  */
 import { FLIP_TO_NONE_LIMIT, type RefreshPlan } from "@/lib/advisor-photos/core";
-import type { RefreshOutcome, RefusedWhy } from "@/lib/advisor-photos/refresh";
-
-export const PHOTOS_UNREAD_KEY = "advisor_photos_unread";
-export const PHOTOS_HELD_KEY = "advisor_photos_held";
+import { needsAttention, type RefreshOutcome, type RefusedWhy } from "@/lib/advisor-photos/refresh";
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
@@ -78,16 +75,40 @@ export function photosHeldRecovery(): string {
   return "The advisor photo refresh ran with nothing left for a person to look at, so the earlier page is cleared. No action is needed.";
 }
 
-/** The sentence an admin sees after pressing a refresh button. */
-export function refreshOutcomeText(outcome: RefreshOutcome | { status: "failed"; detail: string }): { ok: boolean; text: string } {
+/**
+ * The sentence an admin sees after pressing a refresh button. `scope` decides how
+ * much it may say: a whole roster run names nobody (the result travels in the
+ * page address, which is browser history), while one person's run is about the
+ * person whose page it is.
+ */
+export function refreshOutcomeText(
+  outcome: RefreshOutcome | { status: "failed"; detail: string },
+  scope: "all" | "one",
+): { ok: boolean; text: string } {
   if (outcome.status === "failed") {
-    return { ok: false, text: `Google was read, and saving the photos to Slate failed: ${outcome.detail}` };
+    return { ok: false, text: `Google was read, and saving to Slate failed: ${outcome.detail}` };
   }
   if (outcome.status === "refused") {
     if (outcome.why === "unknown-user") return { ok: false, text: "That person is not an active Slate user, so there is no photo to refresh." };
     return { ok: false, text: REFUSED[outcome.why] };
   }
-  const c = outcome.plan.counts;
+  const plan = outcome.plan;
+  const c = plan.counts;
+  if (scope === "one") {
+    if (plan.notInDirectory.length) return { ok: false, text: "Google's directory does not hold this address, so no photo was read." };
+    if (plan.repeated.length) {
+      const r = plan.repeated[0]!;
+      return {
+        ok: false,
+        text: `Google's photo for this person is the same image ${r.holders.length} people hold, so it may be a placeholder and was not stored.`,
+      };
+    }
+    if (c.failed) return { ok: false, text: `Google could not be read for this person: ${plan.failed[0]?.last_error ?? plan.failedNeverRead[0]?.reason ?? "no reason given"}.` };
+    if (c.gained || c.changed) return { ok: true, text: "Photo updated from Google." };
+    if (c.lost) return { ok: true, text: "Google holds no photo for this person any more, so Slate now shows their initials." };
+    if (c.none) return { ok: true, text: "Google holds no photo for this person, so Slate shows their initials." };
+    return { ok: true, text: "The photo already matches Google." };
+  }
   const parts = [
     `Read ${plural(c.attempted, "person", "people")} from Google`,
     c.gained ? `${c.gained} gained a photo` : null,
@@ -98,9 +119,27 @@ export function refreshOutcomeText(outcome: RefreshOutcome | { status: "failed";
     c.notInDirectory ? `${c.notInDirectory} not in the directory` : null,
     c.deleted ? `${plural(c.deleted, "departed person's photo", "departed people's photos")} removed` : null,
   ].filter(Boolean);
-  const held = outcome.plan.flipGuardTripped || outcome.plan.repeated.length > 0;
+  const held = needsAttention(plan);
   return {
-    ok: c.failed === 0 && c.notInDirectory === 0 && !held,
-    text: `${parts.join(", ")}.` + (held ? ` ${photosHeldAlert(outcome.plan).replace(/^[^.]*\. /, "")}` : ""),
+    ok: c.failed === 0 && !held,
+    text: `${parts.join(", ")}.` + (held ? " Some photos were held back for a person to check, and the alerts channel names them." : ""),
   };
+}
+
+/**
+ * The line under a person's name on their agent page (#3027), or null when the
+ * face already says it. Domain words: where the photo comes from and how a
+ * missing one gets fixed.
+ */
+export function agentPhotoStateText(kind: "photo" | "none" | "never-read" | "unreadable"): string | null {
+  switch (kind) {
+    case "photo":
+      return null;
+    case "none":
+      return "Google holds no photo for them. One added in Google shows here after the next morning's refresh.";
+    case "never-read":
+      return "Their photo has not been read from Google yet.";
+    case "unreadable":
+      return "Photos could not be read just now, so this is the photo from their own sign in, if any.";
+  }
 }

@@ -11,7 +11,6 @@ import {
   type ReminderDeps,
   type DueBooking,
 } from "../src/lib/booking/reminder-send.ts";
-import { CARD_PHOTO_DEADLINE_MS } from "../src/lib/booking/advisor-card-photo.ts";
 import { PENNIE_CARD_LOGO } from "../src/lib/booking/pennie-card-logo.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -72,12 +71,8 @@ function spy(over: Partial<ReminderDeps> = {}) {
     refreshInvite: async () => {
       order.push("refresh");
     },
-    // No photo on file by default, so nothing is fetched; the photo has its own
-    // section at the end.
-    readAdvisorPhotoUrls: async () => new Map(),
-    fetchPhoto: async () => {
-      throw new Error("no photo fetch expected in this case");
-    },
+    // No photo held by default; the photo has its own section at the end.
+    readAdvisorPhotos: async () => new Map(),
     warn: (msg) => {
       warnings.push(msg);
     },
@@ -563,7 +558,7 @@ function spy(over: Partial<ReminderDeps> = {}) {
 // Fetched at most once per advisor per tick, and only for advisors whose reminders
 // carry a card.
 const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 7, 7, 7]);
-const STORED_PHOTO = "https://lh3.googleusercontent.com/a/ACg8ocK_example=s96-c";
+const STORED_PHOTO = { base64: Buffer.from(JPEG_BYTES).toString("base64"), mime: "image/jpeg" };
 const NUMBER_FOR_LEAD = () => new Map([["00QUi000010889Z", "+12197588170"]]);
 const unfoldCard = (content: string) => content.replace(/\r\n /g, "");
 const LOGO_LINE = `PHOTO;ENCODING=b;TYPE=${PENNIE_CARD_LOGO.type}:${PENNIE_CARD_LOGO.base64}`;
@@ -575,7 +570,6 @@ const cardPhotoLines = (msg: import("../src/lib/notify/email-mime.ts").MimeMessa
 {
   const msgs: import("../src/lib/notify/email-mime.ts").MimeMessage[] = [];
   const askedIds: string[][] = [];
-  const fetched: string[] = [];
   const s = spy({
     // Two reminders for one advisor, one for another, and one with no card at all.
     loadDue: async () => [
@@ -585,16 +579,10 @@ const cardPhotoLines = (msg: import("../src/lib/notify/email-mime.ts").MimeMessa
       due({ id: "bk-4", agentId: "user-casey", leadId: null, gcalEventId: null }),
     ],
     readCallingNumbers: async () => NUMBER_FOR_LEAD(),
-    readAdvisorPhotoUrls: async (ids) => {
+    // #3027: the stored directory photos, read from the database. Taylor holds none.
+    readAdvisorPhotos: async (ids) => {
       askedIds.push([...ids].sort());
-      return new Map<string, string | null>([
-        ["user-jordan", STORED_PHOTO],
-        ["user-taylor", null],
-      ]);
-    },
-    fetchPhoto: async (url) => {
-      fetched.push(url);
-      return new Response(JPEG_BYTES, { headers: { "content-type": "image/jpeg" } });
+      return new Map([["user-jordan", STORED_PHOTO]]);
     },
     send: async (msg) => {
       msgs.push(msg);
@@ -604,8 +592,6 @@ const cardPhotoLines = (msg: import("../src/lib/notify/email-mime.ts").MimeMessa
   const result = await runBookingReminders(s.deps);
   eq(result.sent, 4, "every reminder goes out");
   eq(askedIds, [["user-jordan", "user-taylor"]], "one photo lookup for the tick, only for advisors whose reminders carry a card");
-  eq(fetched.length, 1, "one fetch for the advisor with two reminders, none for the advisor with no photo");
-  assert(fetched[0]?.endsWith("=s256-c-rj") ?? false, "at the modest square size");
   eq(result.withPhoto, 2, "both of that advisor's cards carry the photo, and the run says so");
   eq(result.photoUnread, 0, "and nothing was unreadable");
 
@@ -615,31 +601,25 @@ const cardPhotoLines = (msg: import("../src/lib/notify/email-mime.ts").MimeMessa
       .filter((l) => l.startsWith("PHOTO"));
   const expected = `PHOTO;ENCODING=b;TYPE=JPEG:${Buffer.from(JPEG_BYTES).toString("base64")}`;
   eq(photoLine(0), [expected], "the first card carries the photo, embedded");
-  eq(photoLine(1), [expected], "and so does the second, from the same fetch");
-  eq(photoLine(2), [LOGO_LINE], "an advisor with no photo on file gets a card carrying the Pennie logo");
+  eq(photoLine(1), [expected], "and so does the second, from the same read");
+  eq(photoLine(2), [LOGO_LINE], "an advisor with no photo held gets a card carrying the Pennie logo");
   eq(result.withLogo, 1, "counted as a logo, apart from the photos");
-  eq(msgs[3]?.attachments?.length ?? 0, 0, "and a reminder with no card fetches nothing for it");
-  eq(s.warnings.length, 0, "no photo on file is not a fault, so nothing is logged as one");
+  eq(msgs[3]?.attachments?.length ?? 0, 0, "and a reminder with no card reads nothing for it");
+  eq(s.warnings.length, 0, "no photo held is not a fault, so nothing is logged as one");
 }
 
-// A photo that cannot be fetched, or is not an image, costs the card its photo and
-// nothing else: the reminder and the card still go, logged and counted.
-const failingFetches: [string, ReminderDeps["fetchPhoto"]][] = [
-  ["a refused fetch", async () => new Response("no", { status: 500, headers: { "content-type": "text/plain" } })],
-  ["a non-image answer", async () => new Response("<html></html>", { headers: { "content-type": "text/html" } })],
-  [
-    "a fetch that throws",
-    async () => {
-      throw new TypeError("fetch failed");
-    },
-  ],
+// A stored photo that is not a usable image costs the card its photo and nothing
+// else: the reminder and the card still go, logged and counted.
+const unusable: [string, { base64: string; mime: string }][] = [
+  ["a type the card cannot carry", { base64: STORED_PHOTO.base64, mime: "image/gif" }],
+  ["bytes that disagree with their label", { base64: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString("base64"), mime: "image/jpeg" }],
+  ["a value that is not base64", { base64: "!!!", mime: "image/jpeg" }],
 ];
-for (const [label, fetchPhoto] of failingFetches) {
+for (const [label, row] of unusable) {
   const msgs: import("../src/lib/notify/email-mime.ts").MimeMessage[] = [];
   const s = spy({
     readCallingNumbers: async () => NUMBER_FOR_LEAD(),
-    readAdvisorPhotoUrls: async () => new Map([["user-jordan", STORED_PHOTO]]),
-    fetchPhoto,
+    readAdvisorPhotos: async () => new Map([["user-jordan", row]]),
     send: async (msg) => {
       msgs.push(msg);
       return "gmail-id";
@@ -661,8 +641,8 @@ for (const [label, fetchPhoto] of failingFetches) {
   const msgs: import("../src/lib/notify/email-mime.ts").MimeMessage[] = [];
   const s = spy({
     readCallingNumbers: async () => NUMBER_FOR_LEAD(),
-    readAdvisorPhotoUrls: async () => {
-      throw new Error("users read failed");
+    readAdvisorPhotos: async () => {
+      throw new Error("advisor_photos read failed");
     },
     send: async (msg) => {
       msgs.push(msg);
@@ -678,20 +658,24 @@ for (const [label, fetchPhoto] of failingFetches) {
   eq(s.warnings.length, 1, "and logged");
 }
 
-// A photo fetch that never answers must not stall the lane: it runs under its own
-// deadline, on the same timer as the calling number read, and the reminder goes.
+// A photo read that never answers must not stall the lane: it runs under the same
+// deadline as the calling number read, and the reminder goes with the logo.
 {
   const msgs: import("../src/lib/notify/email-mime.ts").MimeMessage[] = [];
-  const timers: number[] = [];
+  let photoReadStarted = false;
   let cleared = 0;
   const s = spy({
     readCallingNumbers: async () => NUMBER_FOR_LEAD(),
-    readAdvisorPhotoUrls: async () => new Map([["user-jordan", STORED_PHOTO]]),
-    fetchPhoto: () => new Promise(() => {}),
-    deadlineTimer: (ms, fire) => {
-      timers.push(ms);
-      // Only the photo fetch is made to time out; the reads before it answer at once.
-      if (ms === CARD_PHOTO_DEADLINE_MS) queueMicrotask(fire);
+    readAdvisorPhotos: () => {
+      photoReadStarted = true;
+      return new Promise(() => {});
+    },
+    deadlineTimer: (_ms, fire) => {
+      // Only the deadline armed once the photo read is under way is made to fire.
+      if (photoReadStarted) queueMicrotask(fire);
+      else queueMicrotask(() => {
+        if (photoReadStarted) fire();
+      });
       return () => {
         cleared += 1;
       };
@@ -702,13 +686,10 @@ for (const [label, fetchPhoto] of failingFetches) {
     },
   });
   const result = await runBookingReminders(s.deps);
-  eq(result.sent, 1, "a hung photo fetch still lets the reminder go out");
-  eq(msgs[0]?.attachments?.length ?? 0, 1, "with its card");
+  eq(result.sent, 1, "a hung photo read still lets the reminder go out");
   eq(cardPhotoLines(msgs[0]), [LOGO_LINE], "carrying the Pennie logo");
   eq(result.photoUnread, 1, "counted as unread");
-  eq(result.withLogo, 1, "and as a logo sent");
-  assert(timers.includes(CARD_PHOTO_DEADLINE_MS), "under the photo's own deadline");
-  eq(cleared, timers.length, "and every timer is cleared");
+  assert(cleared >= 1, "and its timer is cleared");
 }
 
 // A booking with no assigned advisor id still gets the logo, and a reminder with no

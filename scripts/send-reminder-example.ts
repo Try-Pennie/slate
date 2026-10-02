@@ -17,6 +17,7 @@
 // `.env.local` / `.dev.vars` itself, so it needs nothing sourced into the shell (a
 // shell `source` cannot read the multi-line Google private key). Deliberately not named `test-*.ts`: that glob is the offline suite.
 // The decisions are pinned by `scripts/test-reminder-example.ts`.
+import { loadCardPhotoRows } from "@/lib/advisor-photos/store";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { sendGmailEmail } from "@/lib/notify/email";
@@ -82,14 +83,8 @@ const run = await runBookingReminders(
     booking: exampleBooking(cfg, advisor, leadId, nowMs),
     nowMs,
     readCallingNumbers: (ids) => readLeadCallingNumbersLive(ids),
-    readAdvisorPhotoUrls: async (ids) => {
-      const rows = unwrap(
-        await db.from("users").select("id, avatar_url").in("id", ids),
-        "advisor photo for the reminder example",
-      ) as { id: string; avatar_url: string | null }[];
-      return new Map(rows.map((r) => [r.id, r.avatar_url]));
-    },
-    fetchPhoto: (url, init) => fetch(url, { signal: init.signal }),
+    // #3027: the stored directory photos, the same read the reminder lane makes.
+    readAdvisorPhotos: (ids) => loadCardPhotoRows(ids),
     sendEmail: (msg) => sendGmailEmail(msg),
     preview: (msg) => {
       console.log(`From:    ${msg.fromName ? `${msg.fromName} <${msg.from}>` : msg.from}`);

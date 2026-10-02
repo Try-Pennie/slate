@@ -4,8 +4,7 @@ import type { MimeMessage } from "@/lib/notify/email-mime";
 import { parseStampMs } from "@/lib/date/stamp";
 import { isLeadId, leadIdKey } from "@/lib/salesforce/lead-xbc";
 import { advisorContactCard, realAdvisorName, type CardPhoto } from "./advisor-contact-card.ts";
-import { cardPhotoUrl, fetchCardPhoto, type PhotoFetcher } from "./advisor-card-photo.ts";
-import { storedPhotoUrl } from "@/lib/stored-photo";
+import { cardPhotoFromStored } from "./advisor-card-photo.ts";
 import { PENNIE_CARD_LOGO } from "./pennie-card-logo.ts";
 import { withCallingNumberLine } from "./core.ts";
 import { readWithinDeadline, type ScheduleTimer } from "@/lib/read-within-deadline";
@@ -105,13 +104,12 @@ export interface ReminderDeps {
    */
   readInviteDescription(agentEmail: string, eventId: string): Promise<string | null>;
   /**
-   * The stored photo URL per advisor id (`users.avatar_url`, null for none), read
-   * ONCE per tick for the advisors whose reminders carry a card. Throws on a refused
-   * read, which the lane answers by sending every card with the Pennie logo.
+   * The stored directory photo per advisor id (`advisor_photos`, #3027), read ONCE
+   * per tick for the advisors whose reminders carry a card. Absent means no photo
+   * held. Throws on a refused read, which the lane answers by sending every card
+   * with the Pennie logo.
    */
-  readAdvisorPhotoUrls(userIds: string[]): Promise<Map<string, string | null>>;
-  /** Fetches a photo for the card; the real `fetch` in the route. */
-  fetchPhoto: PhotoFetcher;
+  readAdvisorPhotos(userIds: string[]): Promise<Map<string, { base64: string; mime: string }>>;
   /** The timer the calling number and photo deadlines run on; absent means the real clock. */
   deadlineTimer?: ScheduleTimer;
   /** A degraded step that is not a lost reminder: logged with its reason, never paged. */
@@ -404,8 +402,8 @@ async function loadCardPhotos(
   if (ids.length === 0) return photos;
 
   // The same bound as the calling number read: a database read nobody is watching.
-  const urls = await readWithinDeadline(
-    () => deps.readAdvisorPhotoUrls(ids),
+  const stored = await readWithinDeadline(
+    () => deps.readAdvisorPhotos(ids),
     REMINDER_CALLING_NUMBER_DEADLINE_MS,
     (err) => {
       run.photoUnread += ids.length;
@@ -413,26 +411,18 @@ async function loadCardPhotos(
     },
     deps.deadlineTimer,
   );
-  if (!urls) return photos;
+  if (!stored) return photos;
 
-  await Promise.all(
-    ids.map(async (id) => {
-      // The manage page's own judge of whether a row holds a photo, so the card and
-      // the page never disagree about it.
-      const stored = storedPhotoUrl(urls.get(id));
-      const url = stored ? cardPhotoUrl(stored) : null;
-      if (!url) return;
-      const photo = await fetchCardPhoto(
-        url,
-        deps.fetchPhoto,
-        (err) => {
-          run.photoUnread += 1;
-          deps.warn("advisor photo unread, card sent with the Pennie logo", null, err);
-        },
-        deps.deadlineTimer,
-      );
-      if (photo) photos.set(id, photo);
-    }),
-  );
+  for (const id of ids) {
+    const row = stored.get(id);
+    if (!row) continue;
+    const checked = cardPhotoFromStored(row);
+    if (checked.ok) {
+      photos.set(id, checked.photo);
+    } else {
+      run.photoUnread += 1;
+      deps.warn("advisor photo unusable, card sent with the Pennie logo", null, new Error(checked.reason));
+    }
+  }
   return photos;
 }

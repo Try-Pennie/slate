@@ -1,3 +1,4 @@
+import { staffPhotoSrc } from "@/lib/advisor-photos/own";
 import { currentUser } from "@/lib/auth";
 import { AppHeader } from "@/components/AppHeader";
 import { PageShell } from "@/components/ui/PageShell";
@@ -42,7 +43,7 @@ export default async function MeLayout({
         userId={me.id}
         orgId={me.org_id}
         bookable={me.bookable}
-        avatarUrl={me.avatar_url}
+        photoSrc={await staffPhotoSrc(me)}
       />
       <PageShell width="narrow">{children}</PageShell>
     </>

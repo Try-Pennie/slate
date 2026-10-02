@@ -53,7 +53,14 @@ vi.mock("@/components/AppHeader", () => ({ AppHeader: () => null }));
 // Every server action the page (and the panels it mounts) points a <form> at.
 // Named individually rather than through a Proxy so a NEW action added to the
 // page fails here loudly instead of silently resolving to a no-op.
+// #3027: the roster reads advisor photos through its own store; every row holds a
+// directory photo here, so these suites judge only what they are about.
+vi.mock("@/lib/advisor-photos/store", () => ({
+  loadPhotoRecords: async (ids: string[]) =>
+    new Map(ids.map((id) => [id, { state: "photo" as const, sha256: "a".repeat(64) }])),
+}));
 vi.mock("@/app/admin/actions", () => ({
+  refreshAdvisorPhotosNow: vi.fn(),
   createBucket: vi.fn(),
   createEventType: vi.fn(),
   setEventTypeGap: vi.fn(),

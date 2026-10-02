@@ -138,10 +138,7 @@ function harness(over: { numbers?: Map<string, string | null> | Error; sendFails
       if (over.numbers instanceof Error) throw over.numbers;
       return over.numbers ?? new Map([[LEAD.slice(0, 15), "+15555550123"]]);
     },
-    readAdvisorPhotoUrls: async () => new Map([["user-miles", null]]),
-    fetchPhoto: async () => {
-      throw new Error("no photo fetch expected");
-    },
+    readAdvisorPhotos: async () => new Map(),
     sendEmail: async (msg) => {
       if (over.sendFails) throw new Error("400 invalid_grant");
       sent.push(msg);

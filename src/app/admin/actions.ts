@@ -10,6 +10,8 @@ import {
   refusesSave,
 } from "@/lib/notify/slack-channel-check";
 import { cookies } from "next/headers";
+import { refreshOnePhoto, runAdvisorPhotoLane } from "@/lib/advisor-photos/lane";
+import { refreshOutcomeText } from "@/lib/advisor-photos/copy";
 import { nanoid } from "nanoid";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
@@ -2998,4 +3000,66 @@ export async function setPublicBookingPaused(form: FormData): Promise<void> {
   revalidatePath("/admin/business-hours");
   revalidatePath("/admin");
   redirect(`/admin/business-hours${savedQuery(paused ? "booking-paused" : "booking-resumed")}`);
+}
+
+/**
+ * Refresh every advisor photo from the Google directory now (#3027): the same run
+ * the daily lane makes, with its guards, alerts and verdict, for rollout and for
+ * whenever an admin wants the roster current without waiting for the morning.
+ *
+ * WHO: admins only, checked here on the server. WHOSE DATA: the org's own staff
+ * photos, read from the org's own directory. The outcome comes back to the roster
+ * (L608), as counts and never names, since it travels in the address.
+ */
+export async function refreshAdvisorPhotosNow(): Promise<void> {
+  await requireAdmin();
+  const back = "/admin/agents";
+  // The run and the redirects are kept apart: a redirect is thrown, so one inside
+  // the try would be caught below and reported as a failure.
+  let result: Awaited<ReturnType<typeof runAdvisorPhotoLane>>;
+  try {
+    result = await runAdvisorPhotoLane("manual");
+  } catch (err) {
+    revalidatePath(back);
+    redirect(`${back}?photos_error=${encodeURIComponent((err instanceof Error ? err.message : String(err)).slice(0, 200))}`);
+    return;
+  }
+  revalidatePath(back);
+  if (result.status === "skipped") {
+    redirect(`${back}?photos_error=${encodeURIComponent("A photo refresh is already running. Try again in a minute.")}`);
+    return;
+  }
+  const { ok, text } = refreshOutcomeText(result, "all");
+  redirect(`${back}?${ok ? "photos" : "photos_error"}=${encodeURIComponent(text)}`);
+}
+
+/**
+ * "Refresh from Google" on one agent's page (#3027), so a photo fixed in Google
+ * Admin shows the same minute. Admins only, server side. It never touches the
+ * daily alerts or the verdict: one person's answer says nothing about the roster.
+ */
+export async function refreshAdvisorPhotoFor(form: FormData): Promise<void> {
+  await requireAdmin();
+  const userId = String(form.get("user_id") ?? "").trim();
+  if (!userId) {
+    redirect(`/admin/agents?photos_error=${encodeURIComponent("No agent was named to refresh.")}`);
+    return;
+  }
+  const back = `/admin/agents/${encodeURIComponent(userId)}`;
+  let result: Awaited<ReturnType<typeof refreshOnePhoto>>;
+  try {
+    result = await refreshOnePhoto(userId);
+  } catch (err) {
+    revalidatePath(back);
+    redirect(`${back}?photo_error=${encodeURIComponent((err instanceof Error ? err.message : String(err)).slice(0, 200))}`);
+    return;
+  }
+  revalidatePath(back);
+  revalidatePath("/admin/agents");
+  if (result.status === "skipped") {
+    redirect(`${back}?photo_error=${encodeURIComponent("A photo refresh is already running. Try again in a minute.")}`);
+    return;
+  }
+  const { ok, text } = refreshOutcomeText(result, "one");
+  redirect(`${back}?${ok ? "photo" : "photo_error"}=${encodeURIComponent(text)}`);
 }

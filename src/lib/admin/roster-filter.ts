@@ -2,7 +2,7 @@ import { isActive } from "@/lib/active-user";
 import { matchesSearchQuery, normalizeSearchQuery } from "@/lib/search-query";
 import { teamsOf } from "@/lib/admin/agent-display";
 import { isNeverSignedIn } from "@/lib/admin/unclaimed";
-import { storedPhotoUrl } from "@/lib/stored-photo";
+import { needsPhoto as needsDirectoryPhoto, type AdvisorPhoto } from "@/lib/advisor-photos/resolve";
 import type { User } from "@/lib/db/types";
 import {
   BOOKABLE_STATES,
@@ -38,7 +38,6 @@ export type RosterRow = Pick<
   | "manager_id"
   | "deactivated_at"
   | "attributes"
-  | "avatar_url"
   | "auth_user_id"
   | "created_at"
   | "is_test"
@@ -49,6 +48,11 @@ export type RosterRow = Pick<
    * column and no hours filter rather than a guess.
    */
   hours?: RosterHours | null;
+  /**
+   * The person's picture as `resolveAdvisorPhoto` judged it (#3027): the server
+   * resolves it once, so the roster never reads `avatar_url` itself.
+   */
+  photo: AdvisorPhoto;
 };
 
 /**
@@ -82,20 +86,45 @@ export const ROSTER_SIGNIN = ["never", "yes"] as const;
 export type RosterSignin = (typeof ROSTER_SIGNIN)[number];
 
 /**
- * The photo filter's values, "" meaning any (#2837). "needed" is somebody with no
- * photo on file, which since the directory backfill (#2600) means no photo in
- * Google either.
+ * The photo filter's values, "" meaning any (#2837, #3027). Three, so the views
+ * between them cover every row (L45):
+ *
+ *   needed  the Google directory was read and holds no photo for them
+ *   has     Slate holds their directory photo
+ *   unread  the daily refresh has not reached them, or the photos could not be
+ *           read at all; neither is evidence about the person
  */
-export const ROSTER_PHOTO = ["needed", "has"] as const;
+export const ROSTER_PHOTO = ["needed", "has", "unread"] as const;
 export type RosterPhoto = (typeof ROSTER_PHOTO)[number];
 
 /**
- * Whether this person has no photo on file (#2837). A fact of its own, never
- * folded into sign in: people sign in with no Google photo, and the directory
- * gives photos to people who have never signed in.
+ * Whether this person needs a photo added in Google (#2837). A fact of its own,
+ * never folded into sign in, and keyed on the directory's MEASURED answer only.
  */
-export function needsPhoto(u: Pick<RosterRow, "avatar_url">): boolean {
-  return storedPhotoUrl(u.avatar_url) === null;
+export function needsPhoto(u: Pick<RosterRow, "photo">): boolean {
+  return needsDirectoryPhoto(u.photo);
+}
+
+/** Which photo filter value a row answers to. Exactly one, for every row. */
+export function rosterPhotoState(u: Pick<RosterRow, "photo">): RosterPhoto {
+  if (u.photo.kind === "none") return "needed";
+  if (u.photo.kind === "photo") return "has";
+  return "unread";
+}
+
+/**
+ * The roster's one sentence about photos it cannot vouch for (#3027), said once
+ * above the table rather than on every row: before the first daily refresh that
+ * is every row, and a marker repeated 136 times is a wall nobody reads (L579).
+ * Null when there is nothing to say.
+ */
+export function rosterPhotoNotice(rows: Pick<RosterRow, "photo">[]): string | null {
+  if (rows.some((r) => r.photo.kind === "unreadable")) {
+    return "Photos could not be read, so each person shows the photo from their own sign in, if any. Reload in a moment.";
+  }
+  const unread = rows.filter((r) => r.photo.kind === "never-read").length;
+  if (unread === 0) return null;
+  return `${unread === 1 ? "1 person has" : `${unread} people have`} not had their photo read from Google yet, so they show the photo from their own sign in, if any.`;
 }
 
 /**
@@ -189,8 +218,7 @@ export function filterRoster<T extends RosterRow>(rows: T[], f: RosterFilters): 
     if (f.signin === "yes" && isNeverSignedIn(u)) return false;
     if (f.hours && u.hours !== f.hours) return false;
     // Its own fact, independent of sign in (#2837).
-    if (f.photo === "needed" && !needsPhoto(u)) return false;
-    if (f.photo === "has" && needsPhoto(u)) return false;
+    if (f.photo && rosterPhotoState(u) !== f.photo) return false;
     // Name and email as SEPARATE fields, never joined (#1791). The old join
     // inserted a space no record holds, which a query with a space could match
     // across.

@@ -1,68 +1,86 @@
 /**
- * Resolving the advisor's photo for the manage page (#2600).
+ * The one photo resolver (#3027), and the manage page's use of it (#2600).
  *
- * Every path here ends on the initials circle, and that is the point: this runs
- * inside a lead-facing server render, so anything that escapes is a page that
- * does not draw. None of these states is one a lead should be able to tell from
- * another, so none of them is reported differently.
+ * The resolver decides which picture every surface draws. The manage page path
+ * must never throw, because it runs inside a lead-facing render, and must keep
+ * the four resolver states apart rather than collapsing a failed read into
+ * "no photo".
  *
- * Run: node --experimental-strip-types scripts/test-advisor-photo.ts
+ * Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-advisor-photo.ts
  */
-import { resolveAdvisorPhoto, type AdvisorPhotoReader } from "../src/lib/booking/advisor-photo.ts";
+import { resolveBookingAdvisorPhoto, type AdvisorPhotoReads } from "../src/lib/booking/advisor-photo.ts";
+import {
+  advisorPhotoPath,
+  needsPhoto,
+  photoSrc,
+  resolveAdvisorPhoto,
+  type PhotoRecord,
+} from "../src/lib/advisor-photos/resolve.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
-const PHOTO = "https://lh3.googleusercontent.com/a/ACg8ocK_example=s96-c";
+const SIGN_IN = "https://lh3.googleusercontent.com/a/ACg8ocK_example=s96-c";
+const SHA = "b".repeat(64);
+const person = (avatar_url: string | null) => ({ id: "u1", avatar_url });
+const recs = (r?: PhotoRecord) => new Map<string, PhotoRecord>(r ? [["u1", r]] : []);
 
-function reader(result: {
-  data?: { avatar_url: string | null } | null;
-  error?: unknown;
-  throws?: boolean;
-}): AdvisorPhotoReader {
-  return {
-    from: () => ({
-      select: () => ({
-        eq: () => ({
-          maybeSingle: async () => {
-            if (result.throws) throw new Error("connection lost");
-            return { data: result.data ?? null, error: result.error ?? null };
-          },
-        }),
-      }),
-    }),
-  } as AdvisorPhotoReader;
+// --- the resolver: every branch -------------------------------------------------
+{
+  const photo = resolveAdvisorPhoto(person(SIGN_IN), recs({ state: "photo", sha256: SHA }));
+  eq(photo.kind, "photo", "a stored directory photo is a photo");
+  eq(photoSrc(photo), `/advisor-photo/${SHA}`, "served from Slate's own origin, by its hash");
+  eq(advisorPhotoPath(SHA), photoSrc(photo), "through the one route builder");
+
+  const none = resolveAdvisorPhoto(person(SIGN_IN), recs({ state: "none", sha256: null }));
+  eq(none.kind, "none", "a measured none is none");
+  eq(photoSrc(none), null, "and HIDES the sign in photo (the directory wins, Dan 2026-10-02)");
+  assert(needsPhoto(none), "and is the only state that needs a photo");
+
+  const never = resolveAdvisorPhoto(person(SIGN_IN), recs());
+  eq(never.kind, "never-read", "no row is never read");
+  eq(photoSrc(never), SIGN_IN, "which keeps the sign in photo meanwhile");
+  assert(!needsPhoto(never), "and is not evidence anybody needs a photo");
+
+  const blank = resolveAdvisorPhoto(person("   "), recs());
+  eq(photoSrc(blank), null, "a blank sign in photo is no photo, never an empty src");
+
+  const unreadable = resolveAdvisorPhoto(person(SIGN_IN), null);
+  eq(unreadable.kind, "unreadable", "a failed table read is its own state");
+  eq(photoSrc(unreadable), SIGN_IN, "keeping the sign in photo");
+  assert(!needsPhoto(unreadable), "and never reads as needing a photo");
 }
 
+// --- the manage page path -------------------------------------------------------
+function reads(over: Partial<{ user: { id: string; avatar_url: string | null } | null; userThrows: boolean; records: Map<string, PhotoRecord>; recordsThrow: boolean }>): AdvisorPhotoReads {
+  return {
+    readUser: async () => {
+      if (over.userThrows) throw new Error("connection lost");
+      return over.user === undefined ? person(SIGN_IN) : over.user;
+    },
+    readRecords: async () => {
+      if (over.recordsThrow) throw new Error("relation advisor_photos does not exist");
+      return over.records ?? recs();
+    },
+  };
+}
+
+eq(await resolveBookingAdvisorPhoto(reads({}), null), null, "no assignee means no photo");
+eq(await resolveBookingAdvisorPhoto(reads({ user: null }), "u1"), null, "no such user means no photo");
+eq(await resolveBookingAdvisorPhoto(reads({ userThrows: true }), "u1"), null, "a failed user read is caught and draws initials");
 eq(
-  await resolveAdvisorPhoto(reader({ data: { avatar_url: PHOTO } }), "u1"),
-  PHOTO,
-  "the advisor's photo comes back",
-);
-eq(await resolveAdvisorPhoto(reader({}), null), null, "no assignee means no photo");
-eq(
-  await resolveAdvisorPhoto(reader({ data: null }), "u2"),
-  null,
-  "no row means no photo",
-);
-eq(
-  await resolveAdvisorPhoto(reader({ data: { avatar_url: null } }), "u3"),
-  null,
-  "an agent who has never had one drops to the initials",
-);
-eq(
-  await resolveAdvisorPhoto(reader({ data: { avatar_url: "   " } }), "u4"),
-  null,
-  "a blank string is no photo, or the page renders an img with an empty src",
-);
-eq(
-  await resolveAdvisorPhoto(reader({ error: { message: "nope" } }), "u5"),
-  null,
-  "a failed read drops to the initials rather than throwing",
+  await resolveBookingAdvisorPhoto(reads({ records: recs({ state: "photo", sha256: SHA }) }), "u1"),
+  `/advisor-photo/${SHA}`,
+  "the stored directory photo is what the lead sees",
 );
 eq(
-  await resolveAdvisorPhoto(reader({ throws: true }), "u6"),
+  await resolveBookingAdvisorPhoto(reads({ records: recs({ state: "none", sha256: null }) }), "u1"),
   null,
-  "a thrown read is caught, because this runs inside a page render",
+  "a measured none draws initials",
+);
+eq(await resolveBookingAdvisorPhoto(reads({}), "u1"), SIGN_IN, "never read keeps the sign in photo");
+eq(
+  await resolveBookingAdvisorPhoto(reads({ recordsThrow: true }), "u1"),
+  SIGN_IN,
+  "the photo table failing (before the migration is applied, say) keeps the sign in photo rather than throwing",
 );
 
-assert(true, "nothing thrown out of any path above");
 finish();

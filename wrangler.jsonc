@@ -298,6 +298,8 @@
 				"SNOWFLAKE_SCHEMA": "PUBLIC",
 				"SNOWFLAKE_WAREHOUSE": "SLATE_WH",
 				"SNOWFLAKE_ROLE": "SLATE_ROLE",
+				// Follows production (#3027); the advisor-photos lane is held back below.
+				"DIRECTORY_ADMIN_SUBJECT": "dwright@trypennie.com",
 				// The flag every load test stub and refusal keys on. It exists HERE and
 				// nowhere else, which is the whole safety story: the Google stub, the
 				// webhook short circuit, the seen-address echo and the two refusals in

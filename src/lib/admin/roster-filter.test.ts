@@ -13,6 +13,8 @@ import {
   rosterHoursText,
   needsPhoto,
   ROSTER_NEEDS_PHOTO_TEXT,
+  ROSTER_PHOTO,
+  rosterPhotoNotice,
   EMPTY_ROSTER_FILTERS,
   type RosterFilters,
   type RosterRow,
@@ -30,7 +32,7 @@ import {
 
 const row = (o: Partial<RosterRow> & { id: string }): RosterRow => ({
   name: null,
-  avatar_url: null,
+  photo: { kind: "never-read", src: null },
   email: `${o.id}@x.com`,
   role: "agent",
   bookable: true,
@@ -343,11 +345,11 @@ describe("never signed in", () => {
   const ago = (d: number) => new Date(NOW - d * 86_400_000).toISOString();
   const SIGNIN: RosterRow[] = [
     // Signed in, no photo: the case the avatar heuristic got wrong.
-    row({ id: "s1", auth_user_id: "auth-1", avatar_url: null }),
+    row({ id: "s1", auth_user_id: "auth-1", photo: { kind: "none" } }),
     // Never signed in, photo from the directory backfill (#2600).
-    row({ id: "n1", auth_user_id: null, avatar_url: "https://photo", created_at: ago(12) }),
+    row({ id: "n1", auth_user_id: null, photo: { kind: "photo", src: "/advisor-photo/x" }, created_at: ago(12) }),
     row({ id: "n2", auth_user_id: null, created_at: ago(0) }),
-    row({ id: "s2", auth_user_id: "auth-2", avatar_url: "https://photo" }),
+    row({ id: "s2", auth_user_id: "auth-2", photo: { kind: "photo", src: "/advisor-photo/x" } }),
     // Offboarded and test rows are not on the roster, so they are not counted.
     row({ id: "gone", auth_user_id: null, deactivated_at: ago(3) }),
     row({ id: "smoke", auth_user_id: null, is_test: true }),
@@ -365,8 +367,8 @@ describe("never signed in", () => {
   });
 
   it("does not count somebody who signed in and has no photo", () => {
-    expect(neverSignedInCount([row({ id: "s1", auth_user_id: "auth-1", avatar_url: null })])).toBe(0);
-    expect(rosterSigninText(row({ id: "s1", auth_user_id: "auth-1", avatar_url: null }))).toBe("Yes");
+    expect(neverSignedInCount([row({ id: "s1", auth_user_id: "auth-1", photo: { kind: "none" } })])).toBe(0);
+    expect(rosterSigninText(row({ id: "s1", auth_user_id: "auth-1", photo: { kind: "none" } }))).toBe("Yes");
   });
 
   // Dan, 2026-10-02: the roster says Never, with no day count.
@@ -428,47 +430,55 @@ describe("working hours state", () => {
   });
 });
 
-// #2837: a missing Google photo is its OWN fact, never folded into sign in. Since
-// the directory backfill (#2600) the people with no photo are the ones with none
-// in Google either, so the remedy is the person adding one there.
+// #2837, #3027: a missing Google photo is its OWN fact, never folded into sign in,
+// and it is the directory's MEASURED "none" only: a person the daily refresh has not
+// reached, or a table Slate could not read, is not evidence anybody needs a photo.
 describe("needs a photo", () => {
   const P: RosterRow[] = [
-    // Signed in, no photo: needs a photo, and is still signed in.
-    row({ id: "signed-nophoto", auth_user_id: "auth-1", avatar_url: null }),
+    // Signed in, no photo in the directory: needs a photo, and is still signed in.
+    row({ id: "signed-nophoto", auth_user_id: "auth-1", photo: { kind: "none" } }),
     // Never signed in, photo from the directory: does NOT need one.
-    row({ id: "never-photo", auth_user_id: null, avatar_url: "https://photo" }),
+    row({ id: "never-photo", auth_user_id: null, photo: { kind: "photo", src: "/advisor-photo/a" } }),
     // Never signed in, no photo: both facts, independently.
-    row({ id: "never-nophoto", auth_user_id: null, avatar_url: null }),
-    // A blank stored value is no photo, the same as null.
-    row({ id: "blank", avatar_url: "   " }),
-    row({ id: "has", avatar_url: "https://photo" }),
+    row({ id: "never-nophoto", auth_user_id: null, photo: { kind: "none" } }),
+    // Not read yet, whatever their sign in photo: neither needs nor has.
+    row({ id: "unread", photo: { kind: "never-read", src: "https://lh3.googleusercontent.com/a/x" } }),
+    row({ id: "unreadable", photo: { kind: "unreadable", src: null } }),
+    row({ id: "has", photo: { kind: "photo", src: "/advisor-photo/b" } }),
     // Offboarded and test rows are not on the roster, whatever their photo.
-    row({ id: "gone", avatar_url: null, deactivated_at: "2026-01-01T00:00:00Z" }),
-    row({ id: "smoke", avatar_url: null, is_test: true }),
+    row({ id: "gone", photo: { kind: "none" }, deactivated_at: "2026-01-01T00:00:00Z" }),
+    row({ id: "smoke", photo: { kind: "none" }, is_test: true }),
   ];
 
-  it("reads the stored photo, treating an empty or blank value as none", () => {
-    expect(needsPhoto({ avatar_url: null })).toBe(true);
-    expect(needsPhoto({ avatar_url: "" })).toBe(true);
-    expect(needsPhoto({ avatar_url: "  " })).toBe(true);
-    expect(needsPhoto({ avatar_url: "https://photo" })).toBe(false);
+  it("is the measured none, and only that", () => {
+    expect(needsPhoto({ photo: { kind: "none" } })).toBe(true);
+    expect(needsPhoto({ photo: { kind: "photo", src: "/advisor-photo/a" } })).toBe(false);
+    expect(needsPhoto({ photo: { kind: "never-read", src: null } })).toBe(false);
+    expect(needsPhoto({ photo: { kind: "unreadable", src: null } })).toBe(false);
+  });
+
+  it("puts every row in exactly one photo filter (L45)", () => {
+    const on = P.filter((u) => u.deactivated_at === null && !u.is_test).map((u) => u.id);
+    const views = (["needed", "has", "unread"] as const).map((photo) => filterRoster(P, { ...NONE, photo }).map((u) => u.id));
+    expect(views.flat().sort()).toEqual([...on].sort());
+    expect(new Set(views.flat()).size).toBe(views.flat().length);
+    expect(ROSTER_PHOTO).toEqual(["needed", "has", "unread"]);
   });
 
   it("filters on the photo independently of sign in", () => {
-    expect(filterRoster(P, { ...NONE, photo: "needed" }).map((u) => u.id)).toEqual([
-      "signed-nophoto",
-      "never-nophoto",
-      "blank",
-    ]);
+    expect(filterRoster(P, { ...NONE, photo: "needed" }).map((u) => u.id)).toEqual(["signed-nophoto", "never-nophoto"]);
     expect(filterRoster(P, { ...NONE, photo: "has" }).map((u) => u.id)).toEqual(["never-photo", "has"]);
+    expect(filterRoster(P, { ...NONE, photo: "unread" }).map((u) => u.id)).toEqual(["unread", "unreadable"]);
     // The two filters compose, so neither is secretly the other.
-    expect(filterRoster(P, { ...NONE, photo: "needed", signin: "yes" }).map((u) => u.id)).toEqual([
-      "signed-nophoto",
-      "blank",
-    ]);
-    expect(filterRoster(P, { ...NONE, photo: "needed", signin: "never" }).map((u) => u.id)).toEqual([
-      "never-nophoto",
-    ]);
+    expect(filterRoster(P, { ...NONE, photo: "needed", signin: "yes" }).map((u) => u.id)).toEqual(["signed-nophoto"]);
+    expect(filterRoster(P, { ...NONE, photo: "needed", signin: "never" }).map((u) => u.id)).toEqual(["never-nophoto"]);
+  });
+
+  it("says once, above the table, what it cannot vouch for", () => {
+    expect(rosterPhotoNotice([row({ id: "a", photo: { kind: "photo", src: "/advisor-photo/a" } })])).toBeNull();
+    expect(rosterPhotoNotice([row({ id: "a" }), row({ id: "b" })])).toMatch(/^2 people have not had their photo read from Google yet/);
+    expect(rosterPhotoNotice([row({ id: "a" })])).toMatch(/^1 person has not/);
+    expect(rosterPhotoNotice([row({ id: "a", photo: { kind: "unreadable", src: null } })])).toMatch(/could not be read/);
   });
 
   it("carries the photo filter through the URL and counts it as a filter", () => {

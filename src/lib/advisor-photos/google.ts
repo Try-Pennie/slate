@@ -62,6 +62,8 @@ export async function listDirectoryAccounts(subject: string): Promise<DirectoryA
       signal: AbortSignal.timeout(DIRECTORY_REQUEST_TIMEOUT_MS),
     });
     if (!res.ok) {
+      // swallow-ok: this only releases a body after a refusal that is already
+      // being thrown with its status; a cancel that fails changes nothing about it.
       await res.body?.cancel().catch(() => {});
       throw new DirectoryReadError(`the directory listing answered ${res.status}`, res.status, res.status === 401 || res.status === 403);
     }

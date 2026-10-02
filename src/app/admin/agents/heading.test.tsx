@@ -42,6 +42,13 @@ vi.mock("@/lib/supabase/admin", () => admin);
 vi.mock("@/app/admin/actions", () => ({
   startImpersonation: vi.fn(),
   syncSalesforceNow: vi.fn(),
+  refreshAdvisorPhotosNow: vi.fn(),
+}));
+// #3027: the roster reads advisor photos through its own store; every row holds a
+// directory photo here, so these suites judge only what they are about.
+vi.mock("@/lib/advisor-photos/store", () => ({
+  loadPhotoRecords: async (ids: string[]) =>
+    new Map(ids.map((id) => [id, { state: "photo" as const, sha256: "a".repeat(64) }])),
 }));
 
 import AgentRosterPage from "./page";

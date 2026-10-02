@@ -60,7 +60,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ sha: str
     return new Response("unavailable", { status: 503, headers: NOT_FOUND_HEADERS });
   }
 
-  const res = new Response(bytes, {
+  // `fromBase64` allocates a fresh array, so its buffer is exactly these bytes.
+  const res = new Response(bytes.buffer as ArrayBuffer, {
     status: 200,
     headers: {
       "content-type": mime,

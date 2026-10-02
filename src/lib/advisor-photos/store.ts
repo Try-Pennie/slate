@@ -65,6 +65,18 @@ export async function loadPhotoRecords(userIds: string[]): Promise<Map<string, P
   return out;
 }
 
+/**
+ * One person's id and the photo Google gave them at sign in, the resolver's
+ * fallback while the directory has not been read. Null when there is no such
+ * user; throws on a failed read.
+ */
+export async function loadUserSignInPhoto(userId: string): Promise<{ id: string; avatar_url: string | null } | null> {
+  return unwrap(
+    await supabaseAdmin().from("users").select("id, avatar_url").eq("id", userId).maybeSingle(),
+    "advisor sign in photo",
+  ) as { id: string; avatar_url: string | null } | null;
+}
+
 /** The writes a real run makes. Each throws on a failed statement (fail loud). */
 export function photoWrites(): PhotoWrites {
   const db = supabaseAdmin();
@@ -75,7 +87,10 @@ export function photoWrites(): PhotoWrites {
     async writeFull(rows: FullPhotoRow[]) {
       for (const part of chunks(rows, 25)) {
         unwrap(
-          await db.from("advisor_photos").upsert(part, { onConflict: "user_id" }).select("user_id"),
+          await db
+            .from("advisor_photos")
+            .upsert(part as unknown as Record<string, unknown>[], { onConflict: "user_id" })
+            .select("user_id"),
           "advisor photo write",
         );
       }

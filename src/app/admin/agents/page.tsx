@@ -1,19 +1,22 @@
 import { redirect } from "next/navigation";
 import { SaveForm } from "@/components/ui/SaveForm";
 import { currentUser } from "@/lib/auth";
-import { canManageAgents, ROLES } from "@/lib/auth/roles";
+import { atLeast, canManageAgents, ROLES } from "@/lib/auth/roles";
 import { consoleHiddenFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { rosterFiltersFromParams, type RosterHours } from "@/lib/admin/roster-filter";
+import { rosterFiltersFromParams, rosterPhotoNotice, type RosterHours } from "@/lib/admin/roster-filter";
+import { loadPhotoRecords } from "@/lib/advisor-photos/store";
+import { resolveAdvisorPhoto, type PhotoRecord } from "@/lib/advisor-photos/resolve";
 import { loadRosterHours } from "@/lib/admin/roster-hours";
 import { log } from "@/lib/log";
-import { syncSalesforceNow } from "@/app/admin/actions";
+import { refreshAdvisorPhotosNow, syncSalesforceNow } from "@/app/admin/actions";
 import { SyncButton } from "@/components/SyncButton";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
 import { RosterTable } from "@/components/admin/RosterTable";
 import { teamsOf } from "@/lib/admin/agent-display";
-import { cardCls } from "@/components/ui/styles";
+import { btnSecondaryCls, cardCls } from "@/components/ui/styles";
+import { SubmitButton } from "@/components/ui/SubmitButton";
 import type { User } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
@@ -33,6 +36,9 @@ export default async function AgentRosterPage({
     sync_error?: string;
     /** The Twilio half refused while Salesforce succeeded (#2097). */
     twilio_error?: string;
+    /** The outcome of "Refresh photos from Google" (#3027). */
+    photos?: string;
+    photos_error?: string;
   }>;
 }) {
   const sp = await searchParams;
@@ -66,7 +72,25 @@ export default async function AgentRosterPage({
       log.error("admin-roster", { msg: "working hours unreadable" }, err);
     }
   }
-  const rows = users.map((u) => ({ ...u, hours: hoursByUser?.get(u.id) ?? null }));
+  // #3027: each person's picture, resolved once here so the roster never reads
+  // `avatar_url` itself. Its own boundary like the hours: a failed read becomes the
+  // explicit unreadable state and one sentence above the table, never a roster of
+  // people who all appear to need a photo.
+  let photoRecords: Map<string, PhotoRecord> | null = null;
+  if (!rosterUnreadable) {
+    try {
+      photoRecords = await loadPhotoRecords(users.map((u) => u.id));
+    } catch (err) {
+      log.error("admin-roster", { msg: "advisor photos unreadable" }, err);
+    }
+  }
+  const rows = users.map((u) => ({
+    ...u,
+    hours: hoursByUser?.get(u.id) ?? null,
+    photo: resolveAdvisorPhoto(u, photoRecords),
+  }));
+  const photoNotice = rosterUnreadable ? null : rosterPhotoNotice(rows);
+  const isAdmin = atLeast(me.role, "admin");
 
   // The push-health pill and the sync-health panel moved to the Health page
   // (#1748), which is where anything time sensitive lives; this page is the
@@ -130,6 +154,17 @@ export default async function AgentRosterPage({
           {sp.twilio_error}
         </UnreadableNotice>
       )}
+      {/* #3027: the manual photo refresh reports back to this page (L608). */}
+      {sp.photos && (
+        <div className="rounded-md bg-[var(--pennie-green-wash)] px-5 py-4 text-sm text-pennie-graphite">
+          {sp.photos}
+        </div>
+      )}
+      {sp.photos_error && (
+        <div role="alert" className="rounded-md border border-[var(--error)] px-5 py-4 text-sm text-error">
+          {sp.photos_error}
+        </div>
+      )}
       <section id="agents" className={cardCls}>
         {rosterUnreadable && (
           <UnreadableNotice className="mb-4">
@@ -152,9 +187,19 @@ export default async function AgentRosterPage({
           {/* #2071: for every manager, not only admins. The person who has just
               added a hire in Salesforce and cannot see them here is a manager, and
               the page already admits nobody below that role. */}
-          <SaveForm action={syncSalesforceNow} name="salesforce-sync" unsaved="nothing typed here">
-            <SyncButton />
-          </SaveForm>
+          <div className="flex flex-wrap items-center gap-2">
+            {/* #3027: admins only, matching the server side check in the action. */}
+            {isAdmin && (
+              <SaveForm action={refreshAdvisorPhotosNow} name="advisor-photos-refresh" unsaved="nothing typed here">
+                <SubmitButton className={`${btnSecondaryCls} min-h-11 disabled:opacity-80`} pendingLabel="Reading photos from Google">
+                  Refresh photos from Google
+                </SubmitButton>
+              </SaveForm>
+            )}
+            <SaveForm action={syncSalesforceNow} name="salesforce-sync" unsaved="nothing typed here">
+              <SyncButton />
+            </SaveForm>
+          </div>
         </div>
         {/* #1795: a failed "view as" redirects here, so the message is rendered
             here. It used to be rendered inside a panel that the redirect never
@@ -169,6 +214,9 @@ export default async function AgentRosterPage({
             Working hours could not be read, so the roster is shown without them.
             Reload in a moment.
           </UnreadableNotice>
+        )}
+        {photoNotice && (
+          <UnreadableNotice className="mb-4">{photoNotice}</UnreadableNotice>
         )}
         <RosterTable
           rows={rows}

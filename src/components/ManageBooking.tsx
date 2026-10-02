@@ -1,5 +1,6 @@
 "use client";
 
+import { AdvisorAvatar } from "@/components/ui/AdvisorAvatar";
 import { TestModeBand } from "@/components/TestModeBand";
 import { useMemo, useState } from "react";
 import { DateTime } from "luxon";
@@ -265,9 +266,6 @@ export default function ManageBooking({
    * reason anybody chose.
    */
   const [selectedIso, setSelectedIso] = useState<string | null>(null);
-  /** The photo was served and the browser could not draw it. Server side this is
-   *  unknowable, so it is the client's own fallback to the initials. */
-  const [photoBroken, setPhotoBroken] = useState(false);
   /** What `validateReason` refused on the last attempt at each action. */
   const [reschedReasonError, setReschedReasonError] = useState<string | null>(null);
   const [cancelReasonError, setCancelReasonError] = useState<string | null>(null);
@@ -471,27 +469,15 @@ export default function ManageBooking({
                   so no face is better than the wrong one. */}
               {advisorName && (
                 <div className="relative mx-auto mb-4 inline-flex">
-                  {advisorPhotoUrl && !photoBroken ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={advisorPhotoUrl}
-                      alt=""
-                      aria-hidden="true"
-                      width={72}
-                      height={72}
-                      onError={() => setPhotoBroken(true)}
-                      className="h-18 w-18 rounded-full object-cover"
-                      style={{ width: 72, height: 72 }}
-                    />
-                  ) : (
-                    <span
-                      className="flex items-center justify-center rounded-full bg-[var(--bg-alt)] text-xl font-semibold text-fg"
-                      style={{ width: 72, height: 72 }}
-                      aria-hidden="true"
-                    >
-                      {initialsOf(advisorName)}
-                    </span>
-                  )}
+                  {/* The one avatar component (#3027): the initials take over
+                      when there is no photo or the browser cannot draw it. */}
+                  <AdvisorAvatar
+                    src={advisorPhotoUrl ?? null}
+                    initials={initialsOf(advisorName)}
+                    imgClassName="h-18 w-18 rounded-full object-cover"
+                    fallbackClassName="flex items-center justify-center rounded-full bg-[var(--bg-alt)] text-xl font-semibold text-fg"
+                    style={{ width: 72, height: 72 }}
+                  />
                   {/* The booked mark, and ONLY while it is booked: a tick over a
                       cancelled call would contradict the heading under it. Green
                       rather than sky, because sky is the action colour and this

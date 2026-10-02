@@ -1,5 +1,6 @@
 "use client";
 
+import { AdvisorAvatar } from "@/components/ui/AdvisorAvatar";
 import { useEffect, useRef, useState } from "react";
 import { SaveForm } from "@/components/ui/SaveForm";
 import { AnchoredPanel } from "@/components/ui/AnchoredPanel";
@@ -21,7 +22,7 @@ export function AccountMenu({
   role,
   themePreference,
   calendar,
-  avatarUrl,
+  photoSrc,
   impersonating = false,
 }: {
   email: string;
@@ -29,12 +30,12 @@ export function AccountMenu({
   /** The SIGNED IN person's own preference, never the one being viewed as. */
   themePreference: ThemePreference;
   calendar: CalendarMenuStatus;
-  avatarUrl?: string | null;
+  /** The resolved picture, or null for initials (#3027). */
+  photoSrc?: string | null;
   /** True while this session is viewing as somebody else (#2100). */
   impersonating?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const [imgOk, setImgOk] = useState(true);
   const ref = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
@@ -65,20 +66,13 @@ export function AccountMenu({
         className="flex min-h-11 items-center gap-1.5 rounded-md px-1.5 text-fg-muted transition-colors hover:bg-[var(--bg-alt)] hover:text-fg"
       >
         <span className="relative">
-          {avatarUrl && imgOk ? (
-            // eslint-disable-next-line @next/next/no-img-element -- external Google avatar; OpenNext/CF has no image loader
-            <img
-              src={avatarUrl}
-              alt=""
-              referrerPolicy="no-referrer"
-              onError={() => setImgOk(false)}
-              className="h-7 w-7 rounded-full object-cover"
-            />
-          ) : (
-            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-pennie-navy text-xs font-semibold text-pennie-beige">
-              {initials}
-            </span>
-          )}
+          {/* The one avatar component (#3027, #2612). */}
+          <AdvisorAvatar
+            src={photoSrc ?? null}
+            initials={initials}
+            imgClassName="h-7 w-7 rounded-full object-cover"
+            fallbackClassName="flex h-7 w-7 items-center justify-center rounded-full bg-pennie-navy text-xs font-semibold text-pennie-beige"
+          />
           {/* Alert badge so a calendar disconnect is visible without opening. */}
           {calendar === "disconnected" && (
             <span

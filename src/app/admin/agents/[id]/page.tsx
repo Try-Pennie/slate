@@ -20,6 +20,7 @@ import {
   setWorkingHours,
   useDefaultHours,
   setUserLifecycle,
+  refreshAdvisorPhotoFor,
 } from "@/app/admin/actions";
 import { CopyLinkField } from "@/components/ui/CopyLinkField";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
@@ -35,6 +36,10 @@ import { unwrap } from "@/lib/db/result";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { WorkingHoursForm } from "@/components/ui/WorkingHoursForm";
 import { SubmitButton } from "@/components/ui/SubmitButton";
+import { AdvisorAvatar } from "@/components/ui/AdvisorAvatar";
+import { loadPhotoRecords } from "@/lib/advisor-photos/store";
+import { photoSrc, resolveAdvisorPhoto, type PhotoRecord } from "@/lib/advisor-photos/resolve";
+import { agentPhotoStateText } from "@/lib/advisor-photos/copy";
 import { orgDefaultWeek, workingHoursDays } from "@/lib/schedule-week";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
 import { savedOutcome, savedSentence } from "@/lib/admin/save-outcomes";
@@ -123,6 +128,9 @@ export default async function AgentProfilePage({
     ok?: string;
     /** A refusal the person can act on, from the same actions (#1994). */
     error?: string;
+    /** What "Refresh photo from Google" came back saying (#3027). */
+    photo?: string;
+    photo_error?: string;
   }>;
 }) {
   const { id } = await params;
@@ -255,6 +263,16 @@ export default async function AgentProfilePage({
   const org = unwrap(orgRes, "agent detail org") as Organization;
 
   const initials = (agent.name ?? agent.email).slice(0, 2).toUpperCase();
+  // #3027: through the one resolver. A failed read is its own state, said in a
+  // line under the name, never drawn as "Google holds no photo".
+  let photoRecords: Map<string, PhotoRecord> | null = null;
+  try {
+    photoRecords = await loadPhotoRecords([agent.id]);
+  } catch (err) {
+    log.error("agent-detail", { msg: "advisor photo unreadable" }, err);
+  }
+  const photo = resolveAdvisorPhoto(agent, photoRecords);
+  const photoLine = agentPhotoStateText(photo.kind);
 
   return (
     <>
@@ -282,19 +300,12 @@ export default async function AgentProfilePage({
         <AdminPageHeader
           title={agent.name ?? agent.email}
           leading={
-            agent.avatar_url ? (
-              // eslint-disable-next-line @next/next/no-img-element -- external Google avatar; OpenNext/CF has no image loader
-              <img
-                src={agent.avatar_url}
-                alt=""
-                referrerPolicy="no-referrer"
-                className="h-12 w-12 rounded-full object-cover"
-              />
-            ) : (
-              <span className="flex h-12 w-12 items-center justify-center rounded-full bg-pennie-sky text-sm font-semibold text-pennie-graphite">
-                {initials}
-              </span>
-            )
+            <AdvisorAvatar
+              src={photoSrc(photo)}
+              initials={initials}
+              imgClassName="h-12 w-12 rounded-full object-cover"
+              fallbackClassName="flex h-12 w-12 items-center justify-center rounded-full bg-pennie-sky text-sm font-semibold text-pennie-graphite"
+            />
           }
           aside={
             <>
@@ -339,7 +350,28 @@ export default async function AgentProfilePage({
           }
         >
           <p className="truncate text-sm">{agent.email}</p>
+          {photoLine && <p className="mt-1 text-xs text-fg-muted">{photoLine}</p>}
+          {/* #3027: so a photo fixed in Google shows the same minute. Admins only,
+              matching the server side check in the action. */}
+          {isAdmin && active && (
+            <SaveForm action={refreshAdvisorPhotoFor} name="advisor-photo-refresh" unsaved="nothing typed here" className="mt-2">
+              <input type="hidden" name="user_id" value={agent.id} />
+              <SubmitButton className={`${btnSecondaryCls} min-h-11 disabled:opacity-80`} pendingLabel="Reading their photo from Google">
+                Refresh photo from Google
+              </SubmitButton>
+            </SaveForm>
+          )}
         </AdminPageHeader>
+        {query?.photo && (
+          <div className="rounded-md bg-[var(--pennie-green-wash)] px-5 py-4 text-sm text-pennie-graphite">
+            {query.photo}
+          </div>
+        )}
+        {query?.photo_error && (
+          <div role="alert" className="rounded-md border border-[var(--error)] px-5 py-4 text-sm text-error">
+            {query.photo_error}
+          </div>
+        )}
 
         {/* Access: role + bookable + manager */}
         <section className={cardCls}>
