@@ -59,6 +59,10 @@ vi.mock("@/lib/env", async (importOriginal) => ({
 }));
 vi.mock("next/navigation", () => ({ redirect }));
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
+// The tier drop panel's reads are pinned in tier-drops-load.test.ts; here the
+// page is driven through the loader's two outcomes, a report and a throw.
+const tierDrops = vi.hoisted(() => ({ loadTierDropReport: vi.fn() }));
+vi.mock("@/lib/admin/tier-drops-load", () => tierDrops);
 
 import RecentRoutingPage from "./page";
 
@@ -79,6 +83,17 @@ const realBooking = () => ({
   },
 });
 
+const tally = (lost = 0, none = 0, unrecorded = 0) => ({
+  "lost-at-confirm": lost,
+  "nothing-on-show": none,
+  "not-recorded": unrecorded,
+  total: lost + none + unrecorded,
+});
+const quietReport = () => ({
+  counts: { week: tally(), month: tally(), recent: [], unreadableStamps: 0 },
+  booked: { week: 120, month: 635 },
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   env.consoleHiddenFor.mockReturnValue(false);
@@ -86,6 +101,7 @@ beforeEach(() => {
   dbState.bookings = [];
   dbState.bookingsSelects = [];
   dbState.bookingsFilters = [];
+  tierDrops.loadTierDropReport.mockResolvedValue(quietReport());
   auth.currentUser.mockResolvedValue({
     id: "m1",
     role: "manager",
@@ -132,6 +148,60 @@ describe("the recent routing read keeps test bookings out (#2660)", () => {
 
   it("says so when the read returns nothing, rather than drawing a blank", async () => {
     render(await RecentRoutingPage());
+    expect(screen.getByText(/No bookings yet/)).toBeTruthy();
+  });
+});
+
+// 2026-10-02: a tier drop no longer pages, so this panel is where it is seen.
+describe("the tier drop panel", () => {
+  it("counts each cause against the routed bookings, and links each drop", async () => {
+    tierDrops.loadTierDropReport.mockResolvedValue({
+      counts: {
+        week: tally(1, 1),
+        month: tally(5, 3, 1),
+        recent: [
+          {
+            id: "d6d216f6",
+            createdAt: "2026-10-01T21:07:26Z",
+            cause: "lost-at-confirm",
+            requestedLabel: "High",
+            bookedLabel: "Medium",
+            bucketCode: "211",
+          },
+        ],
+        unreadableStamps: 0,
+      },
+      booked: { week: 120, month: 635 },
+    });
+    render(await RecentRoutingPage());
+
+    expect(screen.getByText("Tier drops")).toBeTruthy();
+    const lost = screen.getByText(/last opening was taken before they confirmed/).closest("tr")!;
+    expect(lost.textContent).toContain("1");
+    expect(lost.textContent).toContain("5");
+    const total = screen.getByText("Dropped a tier").closest("tr")!;
+    expect(total.textContent).toContain("2 of 120");
+    expect(total.textContent).toContain("9 of 635");
+    // Not recorded is drawn because the month holds one.
+    expect(screen.getByText("Not recorded").closest("tr")).toBeTruthy();
+    expect(screen.getByText("High to Medium")).toBeTruthy();
+    const open = screen.getAllByRole("link").find((a) => a.getAttribute("href")?.includes("d6d216f6"));
+    expect(open).toBeTruthy();
+    expect(tierDrops.loadTierDropReport).toHaveBeenCalledWith(expect.anything(), "o1", expect.any(Number));
+  });
+
+  it("says a quiet month in words, against the bookings it looked at", async () => {
+    render(await RecentRoutingPage());
+    expect(screen.getByText(/No lead has dropped a tier in the last 30 days, out of 635 routed bookings/)).toBeTruthy();
+    expect(screen.queryByText("Dropped a tier")).toBeNull();
+  });
+
+  it("draws an unreadable notice, never a quiet month, when the read fails", async () => {
+    tierDrops.loadTierDropReport.mockRejectedValue(new Error("read failed"));
+    render(await RecentRoutingPage());
+    expect(screen.getByText(/tier drops could not be read/)).toBeTruthy();
+    expect(screen.queryByText(/No lead has dropped a tier/)).toBeNull();
+    // and the rest of the page still draws
     expect(screen.getByText(/No bookings yet/)).toBeTruthy();
   });
 });

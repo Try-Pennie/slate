@@ -157,7 +157,7 @@ function booking(over: Partial<UpcomingBooking> = {}): UpcomingBooking {
     new Map([[leadIdKey(LEAD_A), "512"]]),
   );
   if (finding.kind !== "below") throw new Error("fixture must be a finding");
-  const withCatchall = formatBelowLeadTierAlert(finding, { catchall: true, requestedCode: "" }, "https://slate.example/admin/bookings/bk-1");
+  const withCatchall = formatBelowLeadTierAlert(finding, { catchall: true, requestedCode: "", tierFallback: false, rungsDropped: 0 }, "https://slate.example/admin/bookings/bk-1");
   assert(withCatchall.startsWith("An Ultra High lead"), "the page names the lead's tier, with the right article");
   assert(withCatchall.includes("Low"), "the page names the pool's tier");
   assert(withCatchall.includes("512"), "the page names the XBC Salesforce holds");
@@ -165,7 +165,7 @@ function booking(over: Partial<UpcomingBooking> = {}): UpcomingBooking {
   assert(withCatchall.includes("https://slate.example/admin/bookings/bk-1"), "the page links the booking");
   assert(/catch-all chose/i.test(withCatchall), "a catch-all booking says the catch-all chose the pool");
   assert(
-    !/catch-all chose/i.test(formatBelowLeadTierAlert(finding, { catchall: false, requestedCode: null }, "u")),
+    !/catch-all chose/i.test(formatBelowLeadTierAlert(finding, { catchall: false, requestedCode: null, tierFallback: false, rungsDropped: 0 }, "u")),
     "a routed booking does not blame the catch-all",
   );
   assert(/not recorded/i.test(formatBelowLeadTierAlert(finding, null, "u")), "an unknown routing record says so rather than guessing");
@@ -191,7 +191,7 @@ function booking(over: Partial<UpcomingBooking> = {}): UpcomingBooking {
     new Map([[leadIdKey(LEAD_A), "512"]]),
   );
   if (finding.kind !== "below") throw new Error("fixture must be a finding");
-  const rescored = formatBelowLeadTierAlert(finding, { catchall: false, requestedCode: "422" }, "u");
+  const rescored = formatBelowLeadTierAlert(finding, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, "u");
   assert(/re-scored/i.test(rescored), "a lead who arrived on a lower code than today's is named as re-scored");
   assert(/XBC 422 \(Very High\)/.test(rescored), "the page names the OLD code and the tier it decodes to");
   assert(/XBC 512/.test(rescored) && rescored.startsWith("An Ultra High lead"), "and the NEW code and tier");
@@ -208,7 +208,7 @@ function booking(over: Partial<UpcomingBooking> = {}): UpcomingBooking {
     new Map([[leadIdKey(LEAD_A), "512"]]),
   );
   if (lowFinding.kind !== "below") throw new Error("fixture must be a finding");
-  const sameCode = formatBelowLeadTierAlert(lowFinding, { catchall: false, requestedCode: "512" }, "u");
+  const sameCode = formatBelowLeadTierAlert(lowFinding, { catchall: false, requestedCode: "512", tierFallback: false, rungsDropped: 0 }, "u");
   assert(!/re-scored/i.test(sameCode), "a lead who arrived on today's code is not called re-scored");
   assert(/XBC 512 \(Ultra High\)/.test(sameCode), "it names the code the lead arrived with");
   assert(/below the code it was given/i.test(sameCode), "and says the routing placed the call below that code");
@@ -217,13 +217,13 @@ function booking(over: Partial<UpcomingBooking> = {}): UpcomingBooking {
   // code. Calling it only a re-score would hide a routing fault, and "was routed on
   // it" would be false, so the page must name both causes.
   if (lowFinding.pool.rank >= 4) throw new Error("fixture must sit below the Very High pool");
-  const both = formatBelowLeadTierAlert(lowFinding, { catchall: false, requestedCode: "422" }, "u");
+  const both = formatBelowLeadTierAlert(lowFinding, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, "u");
   assert(/re-scored/i.test(both), "a lead re-scored above an arrival code still reads as re-scored");
   assert(/below the code it was given/i.test(both), "and a pool below the arrival code is still named as a routing fault");
   assert(!/was routed on it/i.test(both), "and never claims the call was routed on the arrival code");
 
   // An arrival code in the same tier as today's score is not a re-score either.
-  const sameTier = formatBelowLeadTierAlert(lowFinding, { catchall: false, requestedCode: "501" }, "u");
+  const sameTier = formatBelowLeadTierAlert(lowFinding, { catchall: false, requestedCode: "501", tierFallback: false, rungsDropped: 0 }, "u");
   assert(!/re-scored/i.test(sameTier), "an arrival code in today's tier is never called re-scored");
 
   // No readable arrival code: fall back to the two possible causes, naming neither as fact.
@@ -236,7 +236,7 @@ function booking(over: Partial<UpcomingBooking> = {}): UpcomingBooking {
 
   // The catch-all line wins over any arrival code: its code was blank or unreadable.
   assert(
-    /catch-all chose/i.test(formatBelowLeadTierAlert(finding, { catchall: true, requestedCode: "422" }, "u")),
+    /catch-all chose/i.test(formatBelowLeadTierAlert(finding, { catchall: true, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, "u")),
     "a catch-all booking says so whatever code it carried",
   );
 }
@@ -254,7 +254,7 @@ function deps(over: Partial<BelowLeadTierDeps> = {}, calls: Calls = { notified: 
       for (const id of ids) m.set(leadIdKey(id), id === LEAD_A ? "512" : "111");
       return m;
     },
-    loadRoutingContext: async () => new Map([["bk-1", { catchall: true, requestedCode: "" }]]),
+    loadRoutingContext: async () => new Map([["bk-1", { catchall: true, requestedCode: "", tierFallback: false, rungsDropped: 0 }]]),
     listFiring: async () => new Set<string>(),
     bookingUrl: (id) => `https://slate.example/admin/bookings/${id}`,
     armed: true,
@@ -505,7 +505,7 @@ async function main(): Promise<void> {
           loadBookings: async () => [booking({ id: "bk-rescored", bucket_id: VERY_HIGH.id, salesforce_id: LEAD_A })],
           loadRoutingContext: async (ids) => {
             asked.push(ids);
-            return new Map([["bk-rescored", { catchall: false, requestedCode: "422" }]]);
+            return new Map([["bk-rescored", { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }]]);
           },
         },
         calls,
@@ -585,6 +585,80 @@ async function main(): Promise<void> {
       return [];
     });
     assert(!calledForNothing, "no ids, no query");
+  }
+
+
+  // --- a recorded tier drop at confirm explains the finding, so it is counted, not paged ---
+  //
+  // Sales ops decided on 2026-10-02 that a lead who loses their tier's last opening
+  // keeps the time they picked and drops a tier (booking d6d216f6: a cal.com
+  // booking took the last High 10:30 three minutes before confirm). That is the
+  // ladder working, so it must not page. Everything that is NOT that still pages,
+  // and each control below is the same fixture with one fact changed (L159).
+  {
+    const MED_LEAD = "00QUi000010H0fpMAC";
+    const fixture = (rec: Record<string, unknown> | "throw", xbc = "311") => {
+      const calls: Calls = { notified: [], resolved: [], sfQueries: 0 };
+      const d = deps(
+        {
+          loadBookings: async () => [booking({ id: "bk-drop", bucket_id: MEDIUM.id, salesforce_id: MED_LEAD })],
+          readLeadXbcs: async (ids) => new Map(ids.map((id) => [leadIdKey(id), xbc])),
+          loadRoutingContext: async () => {
+            if (rec === "throw") throw new Error("routing_decisions read failed");
+            return new Map([["bk-drop", rec as never]]);
+          },
+        },
+        calls,
+      );
+      return { calls, run: () => runBelowLeadTierCheck(d) };
+    };
+    const dropped = { catchall: false, requestedCode: "311", tierFallback: true, rungsDropped: 1 };
+
+    {
+      const { calls, run } = fixture(dropped);
+      const r = await run();
+      eq(calls.notified.length, 0, "a High lead dropped one tier at confirm is not paged");
+      if (r.status === "measured") {
+        eq(r.below.length, 0, "and is not a finding that pages");
+        eq(r.explainedByTierDrop.map((f) => f.booking.id), ["bk-drop"], "it is counted as explained by the drop");
+        eq(r.paged, false, "and the run says it paged nothing");
+        eq(r.compared, 1, "while still counting as compared");
+      }
+      assert(belowLeadTierReachedVerdict(r), "an explained finding is still a measured verdict");
+    }
+
+    const stillPages: [string, Record<string, unknown> | "throw", string?][] = [
+      ["no drop recorded", { ...dropped, tierFallback: false, rungsDropped: 0 }],
+      ["the catch-all chose the pool", { ...dropped, catchall: true }],
+      ["the lead was re-scored above the code they arrived with", dropped, "411"],
+      ["the recorded drop lands somewhere other than the call's team", { ...dropped, rungsDropped: 2 }],
+      ["the arrival code is unreadable", { ...dropped, requestedCode: "" }],
+      ["the routing record could not be read", "throw"],
+    ];
+    for (const [why, rec, xbc] of stillPages) {
+      const { calls, run } = fixture(rec, xbc);
+      const r = await run();
+      eq(calls.notified.length, 1, `still pages when ${why}`);
+      if (r.status === "measured") eq(r.explainedByTierDrop.length, 0, `and is not counted as explained when ${why}`);
+    }
+
+    // A booking already firing that is now explained keeps its page state: the
+    // all clear says the call moved or the score came down, which is not what
+    // happened, so it waits for the call to pass (L11).
+    {
+      const { calls } = fixture(dropped);
+      const d = deps(
+        {
+          loadBookings: async () => [booking({ id: "bk-drop", bucket_id: MEDIUM.id, salesforce_id: MED_LEAD })],
+          readLeadXbcs: async (ids) => new Map(ids.map((id) => [leadIdKey(id), "311"])),
+          loadRoutingContext: async () => new Map([["bk-drop", dropped as never]]),
+          listFiring: async () => new Set(["bk-drop"]),
+        },
+        calls,
+      );
+      await runBelowLeadTierCheck(d);
+      eq(calls.notified.length + calls.resolved.length, 0, "an explained booking already firing is neither re-paged nor cleared");
+    }
   }
 
   finish();

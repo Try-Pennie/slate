@@ -64,7 +64,7 @@ import type {
 // import time), so deleting it here — before main() is invoked — guarantees
 // slackConfigured() returns false for the entire harness run. This prevents:
 //   (a) a real Slack message being posted to the production alerts channel, and
-//   (b) an alert_state cooldown row (key "tier_fallback:500") being written to
+//   (b) an alert_state cooldown row (key "tier_fallback_deep:500") being written to
 //       the live DB, which the org-scoped cleanup would not remove.
 // ---------------------------------------------------------------------------
 delete process.env.SLACK_BOT_TOKEN;

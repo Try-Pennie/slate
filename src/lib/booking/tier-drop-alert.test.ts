@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// Asserts that a tier-drop booking dispatches a throttled Slack alert via
-// sendThrottledAlert (key "tier_fallback:<requestedCode>"). sendThrottledAlert
+// Asserts which tier-drop bookings dispatch a throttled Slack alert via
+// sendThrottledAlert: only a drop of two or more debt tiers does
+// (key "tier_fallback_deep:<requestedCode>"); a single tier drop sends nothing. sendThrottledAlert
 // is a direct import in orchestration.ts, so vi.mock intercepts it.
 // Supabase is mocked to prevent real DB calls; supabaseAdmin() throwing is
 // caught by the best-effort wrappers (resolveBucketPool, recordRoutingDecision).
@@ -259,26 +260,42 @@ function makeTierDropDeps(requested = "511", lower = "411"): BookingDeps {
 beforeEach(() => vi.clearAllMocks());
 
 describe("tier-drop alert dispatch", () => {
-  it("dispatches sendThrottledAlert with key 'tier_fallback:<requestedCode>' on a cascade booking", async () => {
-    const deps = makeTierDropDeps("311", "211");
+  it("dispatches 'tier_fallback_deep:<requestedCode>' when a High lead drops two debt tiers", async () => {
+    // 211 has no bucket row in this fixture, so the cascade skips it and lands on 111.
+    const deps = makeTierDropDeps("311", "111");
 
     await createBooking({ ...tierDropInput, bucketCode: "311" }, deps);
 
-    // Exactly one sendThrottledAlert call from the tier-drop path.
-    const calls = dispatch.sendThrottledAlert.mock.calls;
-    const tierDropCall = calls.find(([key]) =>
-      typeof key === "string" && key.startsWith("tier_fallback:"),
+    const deep = dispatch.sendThrottledAlert.mock.calls.filter(([key]) =>
+      typeof key === "string" && key.startsWith("tier_fallback"),
     );
-    expect(tierDropCall).toBeDefined();
-    const [key, cooldownMs, text] = tierDropCall!;
-    expect(key).toBe("tier_fallback:311");
+    expect(deep).toHaveLength(1);
+    const [key, cooldownMs, text] = deep[0];
+    expect(key).toBe("tier_fallback_deep:311");
     expect(typeof cooldownMs).toBe("number");
-    expect(typeof text).toBe("string");
+    expect(text).toMatch(/dropped 2 debt tiers/);
+  });
+
+  // 2026-10-02: a single tier drop is the ladder working as designed (sales ops:
+  // keep the lead's time, drop a tier) and is counted on /admin/routing. The test
+  // above is the positive control in the same fixture shape (L159): this path
+  // DOES dispatch, just not for one tier.
+  it("does NOT dispatch anything when a High lead drops one debt tier", async () => {
+    const deps = makeTierDropDeps("311", "211");
+
+    const res = await createBooking({ ...tierDropInput, bucketCode: "311" }, deps);
+
+    expect(res.booking.routing_trace?.tier_fallback).toBe(true);
+    expect(res.booking.routing_trace?.bucket_code).toBe("211");
+    const tierDropCalls = dispatch.sendThrottledAlert.mock.calls.filter(([key]) =>
+      typeof key === "string" && key.startsWith("tier_fallback"),
+    );
+    expect(tierDropCalls).toHaveLength(0);
   });
 
   // #2843: the same cascade one tier up is the routing rule working, counted once a
-  // day on the info channel. Both directions in one fixture shape (L159): the test
-  // above proves this path DOES dispatch for a High lead.
+  // day on the info channel. The deep drop test above is the positive control in
+  // the same fixture shape (L159).
   it("does NOT dispatch a tier_fallback alert when an Ultra High lead cascades", async () => {
     const deps = makeTierDropDeps();
 

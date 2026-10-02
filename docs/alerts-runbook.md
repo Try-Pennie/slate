@@ -71,7 +71,7 @@ starve its neighbours (`docs/cloudflare-platform-notes.md`).
 
 Keys: `empty_tier:*`, `bucket_slots_stale`, `availability_booked_solid`,
 `availability_data_anomaly`, `availability_drift:*`, `fallback_covered_availability`,
-`thin_tier_staffing`, `tier_fallback:*`, `tier_fallback_deep:*`, `no_eligible_agents:*`,
+`thin_tier_staffing`, `tier_fallback_deep:*`, `no_eligible_agents:*`,
 `low_booking_volume`, `booking_failure_rate`, `calendar_window_uncovered`,
 `booker_unstaffed:*`, `public_booking_stopped`, `booking_race_contention`,
 `booking_race_bound_hit`.

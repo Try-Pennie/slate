@@ -1,4 +1,4 @@
-import { bookingDetailHref } from "@/lib/booking/detail";
+import { OpenBookingLink } from "@/components/OpenBookingLink";
 import ViewerTime from "@/components/ViewerTime";
 import type { Booking, RoutingTrace } from "@/lib/db/types";
 
@@ -112,21 +112,7 @@ export function RecentRoutingTable({
                   )}
                 </td>
                 <td className="py-1.5 align-top">
-                  {/* #1914: a new tab. This is a scan and dig surface, and
-                      losing your place in a list of 25 to look at one booking is
-                      the complaint. The sr-only half is not optional: a link that
-                      takes over a new window without saying so is a surprise to
-                      a screen reader user, who has no visual cue that anything
-                      moved. */}
-                  <a
-                    href={bookingDetailHref(b.id)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex min-h-9 items-center rounded-md border border-border bg-surface px-2 py-1 text-fg hover:border-fg/45"
-                  >
-                    Open
-                    <span className="sr-only"> (opens in a new tab)</span>
-                  </a>
+                  <OpenBookingLink bookingId={b.id} />
                 </td>
               </tr>
             );

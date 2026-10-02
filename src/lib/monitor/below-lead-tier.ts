@@ -52,6 +52,7 @@ import { bookingLeadId } from "@/lib/booking/lookup-identity";
 import type { Criteria } from "@/lib/db/types";
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 import { isTestSourceBooking, type BookingOriginFacts } from "./offsite-origin";
+import { tierLadder } from "@/lib/routing/tiers";
 
 /** The alert family: one condition per booking, `booking_below_lead_tier:<id>`. */
 export const BELOW_LEAD_TIER_KEY = "booking_below_lead_tier";
@@ -214,11 +215,40 @@ export function compareBookingsToLeadTier(
 
 // --------------------------------------------------------------- the copy
 
-/** One booking's routing record: whether the catch-all chose the pool, and the
- *  `xbc` the lead's link arrived with (`routing_decisions.requested_code`). */
+/** One booking's routing record: whether the catch-all chose the pool, the
+ *  `xbc` the lead's link arrived with (`routing_decisions.requested_code`), and
+ *  whether confirm walked down the tier ladder, and how far. */
 export interface RoutingRecord {
   catchall: boolean;
   requestedCode: string | null;
+  tierFallback: boolean;
+  rungsDropped: number;
+}
+
+/**
+ * Whether a recorded tier drop at confirm fully explains why the call sits below
+ * the lead's tier, which makes it the ladder working as designed rather than a
+ * fault.
+ *
+ * Sales ops decided on 2026-10-02 (Slack, Sam: "For an edge case I'll always
+ * choose less friction") that a lead who loses their tier's last opening keeps
+ * the time they picked and drops a tier. Booking d6d216f6 was exactly that: a
+ * cal.com booking took the last High 10:30 three minutes before the lead
+ * confirmed, and this check paged it as "the routing placed the call below the
+ * code it was given".
+ *
+ * Every fact has to line up, or it is not this case and it pages as before:
+ *  - the catch-all did not choose the pool, and confirm recorded a drop;
+ *  - the lead's tier today is the tier of the code they arrived with, so a lead
+ *    re-scored upward since is still paged (#2594);
+ *  - the call's team is EXACTLY the rung that many drops below the arrival code,
+ *    asked of `tierLadder` so the two cannot disagree about what a rung is (L107).
+ */
+export function explainedByTierDrop(f: BelowFinding, r: RoutingRecord): boolean {
+  if (r.catchall || !r.tierFallback || r.rungsDropped < 1) return false;
+  const arrived = leadTierOf(r.requestedCode);
+  if (arrived.kind !== "tier" || arrived.rank !== f.lead.rank) return false;
+  return tierLadder(arrived.code)[r.rungsDropped] === f.bucket.code;
 }
 
 /** What the routing record says for one booking: the record, none at all, or a
@@ -333,7 +363,10 @@ export type BelowLeadTierResult =
       compared: number;
       /** Made from a known test source, so neither compared nor unmeasured (#2737). */
       testSource: number;
+      /** Findings that page: below the lead's tier and not explained by a drop. */
       below: BelowFinding[];
+      /** Below the lead's tier because confirm dropped a tier as designed: counted, not paged. */
+      explainedByTierDrop: BelowFinding[];
       unmeasured: Record<UnmeasuredReason, number>;
       paged: boolean;
       cleared: number;
@@ -398,26 +431,41 @@ export async function runBelowLeadTierCheck(deps: BelowLeadTierDeps): Promise<Be
   }
 
   const comparisons = compareBookingsToLeadTier(bookings, deps.buckets, leads);
-  const below: BelowFinding[] = [];
+  const findings: BelowFinding[] = [];
   const unmeasured = Object.fromEntries(UNMEASURED_REASONS.map((r) => [r, 0])) as Record<UnmeasuredReason, number>;
   let compared = 0;
   for (const c of comparisons) {
     if (c.kind === "unmeasured") unmeasured[c.reason]++;
     else compared++;
-    if (c.kind === "below") below.push(c);
+    if (c.kind === "below") findings.push(c);
+  }
+
+  // Read whether or not the check is armed, so a disarmed run counts the same
+  // explained findings an armed one would leave unpaged. An unreadable record
+  // explains nothing, so every finding still pages (fail toward the page).
+  let routing: Map<string, RoutingRecord> | null = null;
+  if (findings.length > 0) {
+    try {
+      routing = await deps.loadRoutingContext(findings.map((f) => f.booking.id));
+    } catch {
+      routing = null;
+    }
+  }
+  const contextOf = (f: BelowFinding): RoutingContext =>
+    routing === null ? "unreadable" : routing.get(f.booking.id) ?? null;
+  const below: BelowFinding[] = [];
+  const explained: BelowFinding[] = [];
+  for (const f of findings) {
+    const c = contextOf(f);
+    if (c !== null && c !== "unreadable" && explainedByTierDrop(f, c)) explained.push(f);
+    else below.push(f);
   }
 
   let cleared = 0;
   if (deps.armed) {
     if (below.length > 0) {
-      let routing: Map<string, RoutingRecord> | null = null;
-      try {
-        routing = await deps.loadRoutingContext(below.map((f) => f.booking.id));
-      } catch {
-        routing = null;
-      }
       for (const f of below) {
-        const context: RoutingContext = routing === null ? "unreadable" : routing.get(f.booking.id) ?? null;
+        const context = contextOf(f);
         await deps
           .notify(
             belowLeadTierKey(f.booking.id),
@@ -452,6 +500,7 @@ export async function runBelowLeadTierCheck(deps: BelowLeadTierDeps): Promise<Be
     compared,
     testSource: testSourceIds.size,
     below,
+    explainedByTierDrop: explained,
     unmeasured,
     paged: deps.armed && below.length > 0,
     cleared,

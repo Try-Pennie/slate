@@ -1184,7 +1184,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "booking_below_lead_tier:*",
     state: "the catch-all chose the Low pool for an Ultra High lead",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: true, requestedCode: "" }, PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: true, requestedCode: "", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
   },
   // #2594: the arrival code tells a re-score after booking apart from a routing
   // fault, so each gets its own state, plus the one where the code cannot say.
@@ -1192,19 +1192,19 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "booking_below_lead_tier:*",
     state: "arrived on a lower code, and Salesforce re-scored the lead after booking",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_RESCORED, { catchall: false, requestedCode: "422" }, PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_RESCORED, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
   },
   {
     key: "booking_below_lead_tier:*",
     state: "arrived on today's code, and the routing placed it lower",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: false, requestedCode: "512" }, PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: false, requestedCode: "512", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
   },
   {
     key: "booking_below_lead_tier:*",
     state: "routed on its own code, and the arrival code is not recorded",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: false, requestedCode: null }, PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: false, requestedCode: null, tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
   },
   {
     key: "booking_below_lead_tier:*",
@@ -3562,19 +3562,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: raceBoundHitPageText({ bucketCode: "311", startIso: "2026-07-28T18:00:00.000Z", lostRaces: 4 }),
   },
   // A High lead and below: an Ultra High or Very High cascade is counted daily
-  // above instead (#2843), so these fixtures are the tiers that still page.
-  {
-    key: "tier_fallback:*",
-    state: "a booking fell back one debt tier",
-    channel: "alert",
-    text: tierFallbackAlert({ requestedCode: "311", effectiveCode: "211" })?.text ?? "",
-  },
-  {
-    key: "tier_fallback:*",
-    state: "the same, where the backend service changed as well",
-    channel: "alert",
-    text: tierFallbackAlert({ requestedCode: "322", effectiveCode: "232" })?.text ?? "",
-  },
+  // above instead (#2843), and a single tier drop is counted on /admin/routing
+  // (2026-10-02), so a drop of two or more tiers is the only one that pages.
   {
     key: "tier_fallback_deep:*",
     state: "a booking fell back several debt tiers",

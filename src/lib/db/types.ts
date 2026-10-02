@@ -692,6 +692,12 @@ export interface RoutingTrace {
   requested_tier?: string | null;
   booked_tier?: string | null;
   rungs_dropped?: number;
+  /** The tier the booker had on show for the requested code when the lead
+   *  confirmed (`deps.displayedTier`), so a drop can be told apart as "the
+   *  lead's tier had times on show and lost the last one at confirm" or "the
+   *  lead's tier had no times at all" (2026-10-02). Null when the read found
+   *  nothing or failed; absent on bookings made before it was recorded. */
+  displayed_tier?: string | null;
   /** Where the routed code came from (#2638): the link, the lead's Salesforce
    *  XBC, or the catch-all with the reason Salesforce could not supply one.
    *  Written only by the booker's confirm; absent means nobody said. */

@@ -51,7 +51,9 @@ export async function loadUpcomingBookingsInBuckets(
 
 /**
  * What the routing record says about each booking: whether the catch-all chose
- * the pool, and the code the lead's link ARRIVED with (`requested_code`, #1908).
+ * the pool, the code the lead's link ARRIVED with (`requested_code`, #1908), and
+ * whether confirm dropped down the tier ladder and how far (`tier_fallback`,
+ * `rungs_dropped`), which is what tells a designed drop from a fault (2026-10-02).
  *
  * The arrival code is what answers #2594: a lead who arrived on 422 and whom
  * Salesforce scores 512 today was re-scored AFTER the link was made, while one
@@ -81,11 +83,13 @@ export async function loadRoutingContextByBooking(
       booking_id: string;
       catchall_applied: boolean;
       requested_code: string | null;
+      tier_fallback: boolean;
+      rungs_dropped: number;
       created_at: string;
     }>("monitor below lead tier routing", (from, to) =>
       db
         .from("routing_decisions")
-        .select("id, booking_id, catchall_applied, requested_code, created_at")
+        .select("id, booking_id, catchall_applied, requested_code, tier_fallback, rungs_dropped, created_at")
         .in("booking_id", batch)
         .order("created_at", { ascending: true })
         .order("id", { ascending: true })
@@ -105,7 +109,12 @@ export async function loadRoutingContextByBooking(
         (r.created_at === prev.createdAt && r.id > prev.id);
       if (!isNewer) continue;
       newest.set(r.booking_id, { createdAt: r.created_at, id: r.id });
-      out.set(r.booking_id, { catchall: r.catchall_applied, requestedCode: r.requested_code });
+      out.set(r.booking_id, {
+        catchall: r.catchall_applied,
+        requestedCode: r.requested_code,
+        tierFallback: r.tier_fallback,
+        rungsDropped: r.rungs_dropped,
+      });
     }
   }
   return out;

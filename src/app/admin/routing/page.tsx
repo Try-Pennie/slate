@@ -9,8 +9,14 @@ import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
 import { cardCls, labelCls, proseCls } from "@/components/ui/styles";
 import type { User } from "@/lib/db/types";
+import { loadTierDropReport, type TierDropReport } from "@/lib/admin/tier-drops-load";
+import { TierDropPanel } from "@/components/admin/TierDropPanel";
 
 export const dynamic = "force-dynamic";
+
+function nowMs(): number {
+  return Date.now();
+}
 
 export default async function RecentRoutingPage() {
   const me = await currentUser();
@@ -20,6 +26,11 @@ export default async function RecentRoutingPage() {
   const isAdmin = canEditOrgSettings(me.role);
 
   const db = supabaseAdmin();
+  // 2026-10-02: a tier drop no longer pages, so this panel is where it is seen. A
+  // failed read draws an unreadable notice, never "no drops" (#1629).
+  const tierDrops: Promise<TierDropReport | null> = loadTierDropReport(db, me.org_id, nowMs()).catch(
+    () => null,
+  );
   const [usersRes, recentRes] = await Promise.all([
     // #1914: test agents INCLUDED. This roster is a display only name map, and
     // the bookings beside it are not filtered, so excluding the test agents from
@@ -57,6 +68,7 @@ export default async function RecentRoutingPage() {
   const users = unwrap(usersRes, "recent routing roster") as User[];
   const recent = (recentRes.data ?? []) as RecentRoutingRow[];
   const recentUnreadable = recentRes.error != null;
+  const tierDropReport = await tierDrops;
 
   return (
     <>
@@ -68,8 +80,8 @@ export default async function RecentRoutingPage() {
           header it would claim "the last 0 bookings routed" off a read that
           never ran (#1629). */}
       <AdminPageHeader title="Recent routing">
-        Why each recent booking went to the advisor it did, and the API for forcing
-        one onto a specific advisor.
+        Why each recent booking went to the advisor it did, how often a lead dropped
+        a debt tier, and the API for forcing one onto a specific advisor.
       </AdminPageHeader>
       <section className={cardCls}>
         {/* #1915: no heading of its own. The page header above names this,
@@ -93,6 +105,17 @@ export default async function RecentRoutingPage() {
             </p>
             <RecentRoutingTable rows={recent} users={users} />
           </>
+        )}
+      </section>
+      <section className={cardCls}>
+        <h2 className="mb-1 text-sm font-semibold">Tier drops</h2>
+        {tierDropReport === null ? (
+          <UnreadableNotice>
+            The tier drops could not be read, so none are counted. This is not a
+            report that no lead dropped a tier.
+          </UnreadableNotice>
+        ) : (
+          <TierDropPanel report={tierDropReport} />
         )}
       </section>
       {isAdmin && (
