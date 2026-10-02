@@ -155,6 +155,14 @@ describe("the advisor photo lane", () => {
     expect(h.verdicts).toEqual([{ lane: "verdict:advisor-photos", reached: false }]);
   });
 
+  it("says a run whose reads all failed was also cut short", async () => {
+    h.outcome = { status: "refused", why: "nothing-read", detail: "2 photo reads failed", deadlineReached: true, notReached: 40 };
+    await runAdvisorPhotoLane("cron");
+    expect(h.sent.map((s) => s.key)).toEqual(["advisor_photos_unread"]);
+    expect(h.sent[0]!.text).toMatch(/time limit/);
+    expect(h.sent[0]!.text).toMatch(/40 people/);
+  });
+
   it("keeps the lock longer than the run's own deadline", () => {
     expect(ADVISOR_PHOTOS_LOCK_TTL_MS).toBeGreaterThan(ADVISOR_PHOTOS_RUN_DEADLINE_MS + 2 * 60_000);
   });

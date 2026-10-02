@@ -127,7 +127,9 @@ async function page(key: "advisor_photos_unread" | "advisor_photos_held", text: 
 async function report(outcome: RefreshOutcome): Promise<void> {
   if (outcome.status === "refused") {
     log.warn("advisor-photos", { msg: "refresh refused", why: outcome.why });
-    if (outcome.why !== "unknown-user") await page("advisor_photos_unread", photosUnreadAlert(outcome.why, outcome.detail));
+    if (outcome.why !== "unknown-user") {
+      await page("advisor_photos_unread", photosUnreadAlert(outcome.why, outcome.detail, outcome.notReached ?? 0));
+    }
     return;
   }
   const c = outcome.plan.counts;

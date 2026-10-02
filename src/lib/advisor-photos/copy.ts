@@ -29,12 +29,21 @@ const REFUSED: Record<Exclude<RefusedWhy, "unknown-user">, string> = {
 };
 
 /** The page when a daily run measured nothing. */
-export function photosUnreadAlert(why: Exclude<RefusedWhy, "unknown-user"> | "write-failed", detail: string): string {
+export function photosUnreadAlert(
+  why: Exclude<RefusedWhy, "unknown-user"> | "write-failed",
+  detail: string,
+  notReached = 0,
+): string {
   const head = "Advisor photos were not refreshed from Google today, so leads and the roster keep yesterday's photos.";
   if (why === "write-failed") {
     return `${head} Google was read, and saving the result to Slate failed: ${detail}. Nothing was half written to a row, and the next run retries.`;
   }
-  return `${head} ${REFUSED[why]}`;
+  // A run whose reads all failed AND that hit its time limit: both facts, because
+  // a slow Google is the likelier cause of the pair than a broken one.
+  const cut = notReached > 0
+    ? ` The run also reached its time limit, so ${plural(notReached, "person was", "people were")} never asked at all.`
+    : "";
+  return `${head} ${REFUSED[why]}${cut}`;
 }
 
 /** The page when a run stopped at its own deadline before reaching everybody. */
@@ -96,6 +105,8 @@ export function photosHeldRecovery(): string {
 export const PHOTO_OUTCOME_CODES = [
   // A whole roster run that measured.
   "done",
+  // A whole roster run that measured some people and stopped at its deadline.
+  "cut-short",
   // One person's run that measured.
   "updated",
   "now-none",
@@ -130,6 +141,10 @@ const COUNT_PARAMS = {
 } as const;
 type CountName = keyof typeof COUNT_PARAMS;
 
+function emptyCounts(): Record<CountName, number> {
+  return Object.fromEntries((Object.keys(COUNT_PARAMS) as CountName[]).map((k) => [k, 0])) as Record<CountName, number>;
+}
+
 export interface PhotoOutcome {
   code: PhotoOutcomeCode;
   counts?: Record<CountName, number>;
@@ -137,6 +152,8 @@ export interface PhotoOutcome {
   held?: boolean;
   /** For "repeated": how many people hold the image. */
   holders?: number;
+  /** For "cut-short": how many people the run never reached. */
+  notReached?: number;
 }
 
 /** Decide the outcome of a run, as a code and numbers. */
@@ -146,7 +163,14 @@ export function photoOutcome(
 ): PhotoOutcome {
   if (outcome.status === "skipped") return { code: "busy" };
   if (outcome.status === "failed") return { code: "save-failed" };
-  if (outcome.status === "refused") return { code: outcome.why };
+  if (outcome.status === "refused") {
+    // A refusal that was also cut short reads as cut short: the remedy is to run it
+    // again, and the alert carries the refusal itself.
+    if (scope === "all" && outcome.deadlineReached) {
+      return { code: "cut-short", counts: emptyCounts(), held: false, notReached: outcome.notReached ?? 0 };
+    }
+    return { code: outcome.why };
+  }
   const plan = outcome.plan;
   const c = plan.counts;
   if (scope === "one") {
@@ -161,6 +185,9 @@ export function photoOutcome(
   const counts = Object.fromEntries(
     (Object.keys(COUNT_PARAMS) as CountName[]).map((k) => [k, c[k]]),
   ) as Record<CountName, number>;
+  if (outcome.deadlineReached) {
+    return { code: "cut-short", counts, held: needsAttention(plan), notReached: outcome.notReached };
+  }
   return { code: "done", counts, held: needsAttention(plan) };
 }
 
@@ -170,6 +197,7 @@ export function photoOutcomeQuery(o: PhotoOutcome, param: "photos" | "photo"): s
   if (o.counts) for (const k of Object.keys(COUNT_PARAMS) as CountName[]) q.set(COUNT_PARAMS[k], String(o.counts[k]));
   if (o.held) q.set("ph", "1");
   if (o.holders !== undefined) q.set("pn", String(o.holders));
+  if (o.notReached !== undefined) q.set("pr", String(o.notReached));
   return q.toString();
 }
 
@@ -187,7 +215,7 @@ export function photoOutcomeFromParams(
   const code = one(param);
   if (!code || !(PHOTO_OUTCOME_CODES as readonly string[]).includes(code)) return null;
   const out: PhotoOutcome = { code: code as PhotoOutcomeCode };
-  if (code === "done") {
+  if (code === "done" || code === "cut-short") {
     const counts = {} as Record<CountName, number>;
     for (const k of Object.keys(COUNT_PARAMS) as CountName[]) {
       const n = count(one(COUNT_PARAMS[k]));
@@ -197,6 +225,11 @@ export function photoOutcomeFromParams(
     out.counts = counts;
     out.held = one("ph") === "1";
   }
+  if (code === "cut-short") {
+    const n = count(one("pr"));
+    if (n === null) return null;
+    out.notReached = n;
+  }
   if (code === "repeated") {
     const n = count(one("pn"));
     if (n === null) return null;
@@ -205,7 +238,7 @@ export function photoOutcomeFromParams(
   return out;
 }
 
-const ONE_TEXT: Record<Exclude<PhotoOutcomeCode, "done" | "repeated">, { ok: boolean; text: string }> = {
+const ONE_TEXT: Record<Exclude<PhotoOutcomeCode, "done" | "cut-short" | "repeated">, { ok: boolean; text: string }> = {
   updated: { ok: true, text: "Photo updated from Google." },
   "now-none": { ok: true, text: "Google holds no photo for this person any more, so Slate now shows their initials." },
   none: { ok: true, text: "Google holds no photo for this person, so Slate shows their initials." },
@@ -231,7 +264,7 @@ export function photoOutcomeText(o: PhotoOutcome): { ok: boolean; text: string }
       text: `Google's photo for this person is the same image ${o.holders ?? 0} people hold, so it may be a placeholder and was not stored.`,
     };
   }
-  if (o.code !== "done") return ONE_TEXT[o.code];
+  if (o.code !== "done" && o.code !== "cut-short") return ONE_TEXT[o.code];
   const c = o.counts!;
   const parts = [
     `Read ${plural(c.attempted, "person", "people")} from Google`,
@@ -243,9 +276,16 @@ export function photoOutcomeText(o: PhotoOutcome): { ok: boolean; text: string }
     c.notInDirectory ? `${c.notInDirectory} not in the directory` : null,
     c.deleted ? `${plural(c.deleted, "departed person's photo", "departed people's photos")} removed` : null,
   ].filter(Boolean);
+  const cut =
+    o.code === "cut-short"
+      ? ` The run reached its time limit, so ${plural(o.notReached ?? 0, "person was", "people were")} not reached; press it again to finish them.`
+      : "";
   return {
-    ok: c.failed === 0 && !o.held,
-    text: `${parts.join(", ")}.` + (o.held ? " Some people need a person to look at them, and the alerts channel names them." : ""),
+    ok: o.code === "done" && c.failed === 0 && !o.held,
+    text:
+      `${parts.join(", ")}.` +
+      cut +
+      (o.held ? " Some people need a person to look at them, and the alerts channel names them." : ""),
   };
 }
 

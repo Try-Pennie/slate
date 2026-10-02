@@ -3798,6 +3798,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: photosUnreadAlert("slate-unreadable", "read failed [advisor photo states]: relation does not exist") },
   { key: "advisor_photos_unread", state: "Google was read and the save failed", channel: "alert",
     text: photosUnreadAlert("write-failed", "read failed [advisor photo write]: canceling statement due to statement timeout") },
+  { key: "advisor_photos_unread", state: "every read failed and the run hit its time limit", channel: "alert",
+    text: photosUnreadAlert("nothing-read", "38 photo reads failed, the first with: no answer: timeout", 91) },
   { key: "advisor_photos_unread", state: "the run stopped at its time limit", channel: "alert",
     text: photosDeadlineAlert(89, 40) },
   { key: "advisor_photos_unread", state: "refreshing again", channel: "recovery",

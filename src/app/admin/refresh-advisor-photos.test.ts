@@ -100,6 +100,24 @@ describe("refreshAdvisorPhotosNow", () => {
     expect(photoOutcomeText(outcome!).ok).toBe(false);
   });
 
+  it("says a run cut short at its deadline was cut short, with how many it never reached", async () => {
+    lane.runAdvisorPhotoLane.mockResolvedValue({
+      status: "measured",
+      plan: plan(),
+      applied: true,
+      verdict: false,
+      deadlineReached: true,
+      notReached: 40,
+    });
+    await expect(refreshAdvisorPhotosNow()).rejects.toThrow(/NEXT_REDIRECT:/);
+    const { outcome, raw } = outcomeOf("photos");
+    expect(outcome!.code).toBe("cut-short");
+    expect(raw).toMatch(/pr=40/);
+    const { ok, text } = photoOutcomeText(outcome!);
+    expect(ok).toBe(false);
+    expect(text).toMatch(/40 people were not reached/);
+  });
+
   it("says why when the run was refused", async () => {
     lane.runAdvisorPhotoLane.mockResolvedValue({ status: "refused", why: "no-subject", detail: "x" });
     await expect(refreshAdvisorPhotosNow()).rejects.toThrow(/NEXT_REDIRECT:/);
@@ -166,7 +184,9 @@ describe("reading an outcome back from the address", () => {
     for (const code of PHOTO_OUTCOME_CODES) {
       const o = code === "done"
         ? { code, counts: { attempted: 1, gained: 1, changed: 0, lost: 0, unchanged: 0, failed: 0, notInDirectory: 0, deleted: 0 }, held: false }
-        : code === "repeated" ? { code, holders: 3 } : { code };
+        : code === "cut-short"
+          ? { code, counts: { attempted: 1, gained: 1, changed: 0, lost: 0, unchanged: 0, failed: 0, notInDirectory: 0, deleted: 0 }, held: false, notReached: 4 }
+          : code === "repeated" ? { code, holders: 3 } : { code };
       const back = photoOutcomeFromParams(Object.fromEntries(new URLSearchParams(photoOutcomeQuery(o, "photo"))), "photo");
       expect(back).toEqual(o);
       expect(photoOutcomeText(back!).text.length).toBeGreaterThan(10);

@@ -92,7 +92,17 @@ export type RefusedWhy =
   | "unknown-user";
 
 export type RefreshOutcome =
-  | { status: "refused"; why: RefusedWhy; detail: string }
+  | {
+      status: "refused";
+      why: RefusedWhy;
+      detail: string;
+      /**
+       * Set when the run also stopped at its deadline before asking everybody, so
+       * a refusal that was cut short says so rather than reading as a plain outage.
+       */
+      deadlineReached?: boolean;
+      notReached?: number;
+    }
   | {
       status: "measured";
       plan: RefreshPlan;
@@ -216,6 +226,7 @@ export async function runPhotoRefresh(deps: RefreshDeps, opts: RefreshOptions = 
       status: "refused",
       why: allRefused ? "subject-refused" : "nothing-read",
       detail: `${asked.length} photo ${asked.length === 1 ? "read" : "reads"} failed, the first with: ${first.reason}`,
+      ...(notReached > 0 ? { deadlineReached: true, notReached } : {}),
     };
   }
 

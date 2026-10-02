@@ -446,6 +446,21 @@ function deps(over: Partial<RefreshDeps> & { photos?: Record<string, { status: n
   eq(out.status === "measured" && out.notReached, 1, "and how many people it never reached");
   eq(out.status === "measured" && out.verdict, false, "and is not a verdict");
   eq(rec.full.join(","), "a", "what it finished is written");
+  // Every read started before the deadline failed: still a refusal, and it keeps the
+  // deadline fact rather than reading as an ordinary outage.
+  let later = NOW;
+  const cut = deps({
+    nowMs: () => later,
+    deadlineMs: NOW + 1000,
+    getPhoto: async () => {
+      later += 1500;
+      return { status: 503, body: "{}" };
+    },
+  });
+  const cutOut = await runPhotoRefresh(cut);
+  eq(cutOut.status === "refused" && cutOut.why, "nothing-read", "a cut short run whose reads all failed is nothing read");
+  eq(cutOut.status === "refused" && cutOut.deadlineReached, true, "and still says it hit its deadline");
+  eq(cutOut.status === "refused" && cutOut.notReached, 1, "and how many it never reached");
   const healthy = await runPhotoRefresh(deps({ deadlineMs: NOW + 10 * 60_000 }));
   eq(healthy.status === "measured" && healthy.deadlineReached, false, "a run inside its deadline does not claim one");
 }

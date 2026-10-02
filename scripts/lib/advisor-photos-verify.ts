@@ -47,7 +47,11 @@ export function verifyExitCode(outcome: RefreshOutcome): number {
 
 /** The lines the command prints: counts, then every name a person has to look at. */
 export function verifyReport(outcome: RefreshOutcome): string[] {
-  if (outcome.status === "refused") return [`REFUSED (${outcome.why}): ${outcome.detail}`];
+  if (outcome.status === "refused") {
+    const lines = [`REFUSED (${outcome.why}): ${outcome.detail}`];
+    if (outcome.deadlineReached) lines.push(`DEADLINE: the run also reached its time limit; ${outcome.notReached ?? 0} people were never reached`);
+    return lines;
+  }
   const c = outcome.plan.counts;
   const p = outcome.plan;
   const lines = [

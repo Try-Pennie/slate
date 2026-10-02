@@ -46,6 +46,11 @@ for (const [label, outcome, code] of cases) {
 const declared = new Set(Object.values(VERIFY_EXIT));
 eq(declared.size, Object.keys(VERIFY_EXIT).length, "no two outcomes share an exit code");
 for (const code of declared) assert(produced.has(code), `exit ${code} is produced by a case`);
+{
+  const cut: RefreshOutcome = { status: "refused", why: "nothing-read", detail: "x", deadlineReached: true, notReached: 7 };
+  eq(verifyExitCode(cut), VERIFY_EXIT.nothingRead, "a cut short refusal still exits on its refusal");
+  assert(verifyReport(cut).some((l) => l.includes("DEADLINE") && l.includes("7")), "and says it was cut short");
+}
 assert(verifyReport(measured({ failedNeverRead: [{ email: "z@x", reason: "r" }] })).some((l) => l.includes("z@x")), "a failed person is named");
 
 finish();
