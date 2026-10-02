@@ -44,9 +44,12 @@ import {
   freshnessLabel,
   relativeAge,
   supplyLegendEntry,
+  offeredWindowPhrase,
   type SupplyLegendId,
 } from "../src/lib/admin/bucket-supply-copy.ts";
 import type { BusinessHoursRules } from "../src/lib/availability/compute.ts";
+import { OFFERED_OPEN_DAYS } from "../src/lib/availability/bookable-days.ts";
+import { readFileSync } from "node:fs";
 import { assert, eq, fail, finish } from "./lib/harness.ts";
 
 const WEEK: BusinessHoursRules = {
@@ -475,14 +478,13 @@ function codesOf(
 
 // Review of #3021: the page names the booker's window from the same constant
 // the booker uses, so the wording cannot keep naming a length the booker no
-// longer offers. Judged on rendered output, not on the file's text.
+// longer offers. The legends and tooltips are checked against the phrase for
+// the real constant, the phrase itself is pinned for explicit counts, and a
+// guard refuses a window length written into the copy as a literal.
 {
-  const { OFFERED_OPEN_DAYS } = await import("../src/lib/availability/bookable-days.ts");
-  const { offeredWindowPhrase } = await import("../src/lib/admin/bucket-supply-copy.ts");
   const phrase = offeredWindowPhrase(OFFERED_OPEN_DAYS);
   assert(supplyLegendEntry("overflows").meaning.includes(phrase), "the overflow legend names the booker's window");
   assert(supplyLegendEntry("other-days").meaning.includes(phrase), "the other days legend names the booker's window");
-  const { supplyCellTitle } = await import("../src/lib/admin/bucket-supply-copy.ts");
   assert(
     supplyCellTitle({ kind: "overflows", toPool: "Low with Achieve" }, "Low with Beyond", "Fri").includes(phrase),
     "the overflow cell tooltip names the booker's window",
@@ -499,10 +501,10 @@ function codesOf(
   }
   eq(offeredWindowPhrase(1), "the next open day", "one day reads as one, not as one open days");
   eq(offeredWindowPhrase(2), "the next two open days", "two days in words");
+  eq(offeredWindowPhrase(3), "the next three open days", "three days, today's window, in words");
   eq(offeredWindowPhrase(12), "the next 12 open days", "past the words, a numeral");
-  const { readFileSync } = await import("node:fs");
   const copySrc = readFileSync(new URL("../src/lib/admin/bucket-supply-copy.ts", import.meta.url), "utf8");
-  assert(!/\b(three|3) open days\b/.test(copySrc), "the copy spells no window length of its own");
+  assert(!/\b(three|3) open days\b/.test(copySrc), "the copy writes no window length as a literal");
 }
 
 finish();

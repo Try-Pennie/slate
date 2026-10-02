@@ -33,6 +33,10 @@ export function offeredWindowPhrase(days: number): string {
   if (days === 1) return "the next open day";
   return `the next ${NUMBER_WORDS[days] ?? String(days)} open days`;
 }
+// Built at module load on purpose: a broken OFFERED_OPEN_DAYS fails every
+// importer, the suites included, before it can ship, rather than one cell.
+// A one day window never produces "other-days" (a pool with a time in a one day
+// window has it on that day), so the plural wording below cannot misread.
 const WINDOW = offeredWindowPhrase(OFFERED_OPEN_DAYS);
 
 /**
