@@ -15,6 +15,10 @@ import {
 } from "./lib/reminder-example.ts";
 import { runBookingReminders, type ReminderDeps } from "../src/lib/booking/reminder-send.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 const NOW = Date.UTC(2026, 9, 2, 14, 7, 0);
 const LEAD = "00QUi000010889ZMAQ";
@@ -206,6 +210,63 @@ function harness(over: { numbers?: Map<string, string | null> | Error; sendFails
 {
   const codes = Object.values(EXAMPLE_EXIT);
   eq(new Set(codes).size, codes.length, "no two outcomes share an exit code");
+}
+
+// --- the command reads .env.local itself -----------------------------------
+//
+// It is run by typing one line, and a shell `source` of .env.local cannot read the
+// multi-line Google private key, so the first real send failed for want of it. The
+// command therefore loads the file itself. Proven through the REAL entry point in a
+// scratch directory, with nothing in the environment: the file puts a multi-line
+// quoted key FIRST and the example settings after it, so the settings are only seen
+// if the file was read, and read past that key. The outside recipient makes the
+// command refuse at the config step, before it touches the network.
+
+function runCommand(envFile: string | null): { status: number | null; stderr: string } {
+  const dir = mkdtempSync(join(tmpdir(), "reminder-example-"));
+  try {
+    if (envFile !== null) writeFileSync(join(dir, ".env.local"), envFile);
+    const r = spawnSync(
+      process.execPath,
+      [
+        "--experimental-strip-types",
+        "--no-warnings",
+        "--import",
+        resolve("scripts/register-paths.mjs"),
+        resolve("scripts/send-reminder-example.ts"),
+      ],
+      { cwd: dir, env: { PATH: process.env.PATH ?? "" }, encoding: "utf8", timeout: 30_000 },
+    );
+    return { status: r.status, stderr: r.stderr };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+{
+  const fromFile = runCommand(
+    [
+      // Shaped like the Google key (a quoted value over several lines) without its
+      // header, which the secret scanner rightly refuses to see committed.
+      'EXAMPLE_MULTILINE_VALUE="first line',
+      "second line",
+      'third line"',
+      "REMINDER_EXAMPLE_ADVISOR=marnold@trypennie.com",
+      "REMINDER_EXAMPLE_TO=someone@gmail.com",
+      "",
+    ].join("\n"),
+  );
+  eq(fromFile.status, EXAMPLE_EXIT.config, "the command refuses at the config step");
+  assert(
+    /must be one @trypennie\.com address/.test(fromFile.stderr),
+    "it read both settings from .env.local, past a multi-line key, and judged the recipient",
+  );
+
+  // The control: no file, so the settings are missing rather than refused, which
+  // proves the assertion above was answered by the file and not by the environment.
+  const noFile = runCommand(null);
+  eq(noFile.status, EXAMPLE_EXIT.config, "with no .env.local it also stops at the config step");
+  assert(/Set REMINDER_EXAMPLE_ADVISOR/.test(noFile.stderr), "and says the advisor is missing");
 }
 
 finish();
