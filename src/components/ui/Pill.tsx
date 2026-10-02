@@ -29,10 +29,13 @@ import type { ReactNode } from "react";
  * pill's geometry, not the table's, so the cancellation lives here rather than as
  * a negative margin every table call site has to remember (L550).
  *
- * A pill LED BY A MARK sits 21px from its label rather than 9, and the
- * cancellation accounts for it (#2082). The mark then hangs left of the column's
- * text edge, which is the point: the WORD is what lines up with the header, in
- * every column, whether or not that column's pill carries a mark.
+ * A pill LED BY A MARK cancels the same 9px (#3031). What lines up with the
+ * header is the pill's CONTENT, whatever leads it: the word in the Role column,
+ * the dot in the Bookable one. #2082 cancelled the mark and the gap as well, so
+ * the word lined up, but the bubble then hung 21px left, nine of them outside its
+ * own column, and Dan read the header as not lined up with its pill at all. One
+ * cancellation for every pill also means every bubble in a table overhangs its
+ * column edge by the same amount.
  */
 
 /**
@@ -61,39 +64,6 @@ export const PILL_TEXT_INSET_PX = BORDER_PX + PAD_X_PX;
  * `PILL_TEXT_INSET_PX`, which is what keeps the literal honest.
  */
 const ALIGN_TO_COLUMN_CLS = "-ml-[9px]";
-
-/**
- * The mark's box, in px. The PILL owns it, not the caller (#2082).
- *
- * `alignToColumn` cancels the distance from the pill's edge to its LABEL, and
- * cancelling the text inset alone aligns whatever comes FIRST inside the pill.
- * Wherever a mark leads, that is the mark: in the roster's Bookable column the
- * header lined up with the dot and the word sat 12px right of it, while the Role
- * column beside it lined up correctly, which is the drift `alignToColumn` exists to
- * remove.
- *
- * So the mark goes in a box of a size the pill knows, and the cancellation is
- * derived from it. Sizing it here rather than reading it off whatever the caller
- * drew is what makes the arithmetic possible at all: the pill cannot measure an
- * arbitrary node, and asking every call site to declare a width is the "every call
- * site has to remember" this component exists to end (L550, L621).
- */
-const MARK_PX = 8;
-
-/** The pill's own `gap-1`, in px, between the mark and the label. */
-const GAP_PX = 4;
-
-/**
- * How far a pill LED BY A MARK sits from its label, and so what
- * `alignToColumn` has to cancel there.
- *
- * Same literal-plus-test arrangement as the one above, for the same Tailwind
- * reason: `Pill.test.tsx` holds the class equal to this sum.
- */
-export const PILL_MARK_TEXT_INSET_PX = PILL_TEXT_INSET_PX + MARK_PX + GAP_PX;
-
-/** 9 + 8 + 4. The test is what keeps this literal honest. */
-const ALIGN_TO_COLUMN_WITH_MARK_CLS = "-ml-[21px]";
 
 /**
  * How far the LABEL sits below where `items-center` puts it, so the word is
@@ -207,8 +177,9 @@ export function Pill({
    */
   mark?: ReactNode;
   /**
-   * Set on a pill that starts a TABLE CELL, so its label lines up with the
-   * column header's rather than 9px right of it (#1821).
+   * Set on a pill that starts a TABLE CELL, so its content (the label, or the
+   * mark when one leads) lines up with the column header's rather than 9px right
+   * of it (#1821, #3031).
    *
    * Only the pill at the START of a cell. A second pill beside it is not at the
    * column's edge, and pulling it would eat the gap between the two. A pill
@@ -222,12 +193,12 @@ export function Pill({
     <span
       title={title}
       className={`inline-flex h-6 items-center gap-1 rounded-pill border border-transparent px-2 text-[13px] leading-none ${
-        alignToColumn ? `${mark ? ALIGN_TO_COLUMN_WITH_MARK_CLS : ALIGN_TO_COLUMN_CLS} ` : ""
+        alignToColumn ? `${ALIGN_TO_COLUMN_CLS} ` : ""
       }${variantCls}${className ? ` ${className}` : ""}`}
     >
       {mark && (
-        // A box of a size the pill knows, so the cancellation above can be derived
-        // rather than guessed at whatever the caller happened to draw (#2082).
+        // A box of a size the pill knows, so the mark's footprint does not depend
+        // on whatever the caller happened to draw inside it (#2082).
         <span aria-hidden="true" data-pill-mark="" className="inline-flex h-2 w-2 shrink-0 items-center justify-center">
           {mark}
         </span>
