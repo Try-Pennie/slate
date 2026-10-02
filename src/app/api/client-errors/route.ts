@@ -47,6 +47,7 @@ import {
   normalizeClientError,
   clientErrorSignature,
   clientErrorSurface,
+  isHarmlessBrowserMessage,
 } from "@/lib/api/client-error-scrub";
 
 export const dynamic = "force-dynamic";
@@ -125,6 +126,21 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       embedOriginMismatchAlert(pair.declared, pair.framedBy),
     ).catch((alertErr: unknown) => {
       log.error("client-errors", { msg: "origin mismatch info failed" }, alertErr);
+    });
+    return done();
+  }
+
+  // #3046: a known harmless browser warning (the ResizeObserver loop ones) is
+  // logged at info and never pages. Nothing failed for the lead, and a page about
+  // it teaches the reader to skip the channel (L36). Matched exactly, so an error
+  // that merely mentions one still takes the path below.
+  if (isHarmlessBrowserMessage(report.message)) {
+    log.info("client-errors", {
+      msg: "harmless browser warning",
+      kind: report.kind,
+      page: report.page,
+      warning: report.message,
+      source: report.source,
     });
     return done();
   }

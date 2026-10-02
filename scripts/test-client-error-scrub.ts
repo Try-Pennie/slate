@@ -14,6 +14,9 @@
 // means and why the field caps matter as a second line.
 import {
   scrubContactData,
+  stripUrlQueries,
+  withoutUrlQuery,
+  isHarmlessBrowserMessage,
   normalizeClientError,
   clientErrorSignature,
   clientErrorSurface,
@@ -79,12 +82,67 @@ import { assert, eq, finish } from "./lib/harness.ts";
   // A date is not contact data and must survive intact.
   for (const [text, why] of [
     ["Booking failed for 2026-08-11T14:30:00.000Z in America/New_York", "an ISO timestamp in a message"],
-    ["GET /api/availability?bucket=411&from=2026-08-11T14:00:00.000Z 500", "an ISO timestamp in a URL"],
+    ["GET /api/availability/2026-08-11T14:00:00.000Z 500", "an ISO timestamp in a URL path"],
     ["no slot at 2026-08-11 14:30", "a plain date and time"],
     ["window 2026-08-11 to 2026-08-15 empty", "a date range"],
   ] as const) {
     eq(scrubContactData(text), text, `${why} survives untouched`);
   }
+}
+// --- #3046: a query string is removed whole, path kept ------------------------
+{
+  // On /book the page's query string carries the lead's name, email and phone,
+  // PERCENT ENCODED, so neither the email nor the phone shape can match it, and a
+  // name never could. The browser puts that address into `ErrorEvent.filename` and
+  // every stack frame. Until #3046 a query string survived this function, and one
+  // reached Slack. A query in a URL is now dropped whole (this reverses the old
+  // "an ISO timestamp in a URL survives" case, which kept a query intact).
+  const url =
+    "https://slate.trypennie.app/book?name=Dana%20Lee&email=dana%40example.com&phone=%28215%29%20555-0100";
+  eq(stripUrlQueries(url), "https://slate.trypennie.app/book", "an encoded query string is dropped, the path kept");
+  eq(
+    scrubContactData(`    at submit (${url}:12:3)`),
+    "    at submit (https://slate.trypennie.app/book:12:3)",
+    "a stack frame keeps its line and column when its query is dropped",
+  );
+  eq(
+    scrubContactData(`failed at ${url}#confirm and again at /book/411?email=dana%40example.com`),
+    "failed at https://slate.trypennie.app/book and again at /book/411",
+    "every URL in the text loses its query and fragment, absolute or a path",
+  );
+  eq(
+    scrubContactData("GET /api/availability?bucket=411&from=2026-08-11T14:00:00.000Z 500"),
+    "GET /api/availability 500",
+    "a query string is dropped even when it holds nothing identifying",
+  );
+  // CONTROLS: a `?` or `#` that is not part of a URL is ordinary text.
+  eq(scrubContactData("Unexpected token '#'"), "Unexpected token '#'", "a bare # in a message survives");
+  eq(scrubContactData("is this valid? no"), "is this valid? no", "a question mark in a sentence survives");
+  // A field that IS one address is cut at the first `?` or `#`, so a DECODED
+  // query holding a space cannot leave half a name behind.
+  eq(withoutUrlQuery("/book?name=Dana Lee"), "/book", "a decoded query with a space is cut whole");
+  eq(withoutUrlQuery("/book"), "/book", "an address with no query is unchanged");
+  const report = normalizeClientError({
+    kind: "error",
+    message: "boom",
+    page: "/book?name=Dana Lee&email=dana%40example.com",
+    source: `${url}#confirm`,
+  });
+  eq(report?.page, "/book", "the server cuts the query from the page");
+  eq(report?.source, "https://slate.trypennie.app/book", "the server cuts the query from the source");
+}
+// --- #3046: the harmless browser warnings are matched exactly -----------------
+{
+  assert(
+    isHarmlessBrowserMessage("ResizeObserver loop completed with undelivered notifications."),
+    "the ResizeObserver loop warning is known harmless",
+  );
+  assert(isHarmlessBrowserMessage("ResizeObserver loop limit exceeded"), "the older wording is known harmless");
+  assert(
+    !isHarmlessBrowserMessage("ResizeObserver loop limit exceeded while saving"),
+    "a message that merely mentions it is not",
+  );
+  assert(!isHarmlessBrowserMessage("Cannot read properties of undefined"), "an ordinary error is not");
 }
 {
   // A minified stack is the other half of the diagnosis. It is dense with

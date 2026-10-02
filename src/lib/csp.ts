@@ -32,6 +32,7 @@
  */
 
 import { THEME_PREFERENCES, themeBootScript } from "@/lib/theme/boot";
+import { withoutUrlQuery } from "@/lib/api/client-error-scrub";
 
 /** Where a violating browser posts its report. */
 export const CSP_REPORT_PATH = "/api/csp-report";
@@ -130,7 +131,10 @@ const MAX_URI = 300;
 export function redactReportUri(value: string | undefined | null): string {
   if (value === undefined || value === null) return "(none)";
   if (typeof value !== "string") return "(unreadable)";
-  const redacted = value.replace(/(\/booking\/manage\/)[^/?#\s]+/g, "$1[redacted]");
+  // #3046: the query string and fragment go whole, by the same cut the client
+  // error beacon uses. On /book the query carries the lead's name, email and
+  // phone, percent encoded so no contact shape could match it.
+  const redacted = withoutUrlQuery(value).replace(/(\/booking\/manage\/)[^/?#\s]+/g, "$1[redacted]");
   return redacted.length > MAX_URI ? `${redacted.slice(0, MAX_URI - 3)}...` : redacted;
 }
 

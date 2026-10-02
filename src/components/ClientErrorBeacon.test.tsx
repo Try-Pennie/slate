@@ -137,3 +137,46 @@ describe("postClientReport and the origin mismatch report", () => {
     expect(JSON.parse(String(sent.mock.calls[0][1]?.body)).message).not.toContain("2155550100");
   });
 });
+
+// #3046: for a ResizeObserver loop warning the browser sets `ErrorEvent.filename`
+// to the PAGE's own address, and on /book the query string carries the lead's
+// name, email and phone, percent encoded so no contact shape matches it. The
+// query string and fragment must not leave the page, in any field.
+describe("a page address carrying the lead's details (#3046)", () => {
+  const PAGE_URL =
+    "https://slate.trypennie.app/book?name=Dana%20Lee&email=dana%40example.com&phone=%28215%29%20555-0100";
+  const LEAKS = ["?", "#confirm", "name=", "Dana", "Lee", "dana", "%40", "example.com", "%28", "555", "0100"];
+
+  function sentBody(): string {
+    return String(fetchMock.mock.calls[0][1].body);
+  }
+
+  it("drops the query string and fragment from the source the browser names", async () => {
+    render(<ClientErrorBeacon page="/book" />);
+    window.dispatchEvent(
+      new ErrorEvent("error", { message: "boom", filename: `${PAGE_URL}#confirm`, lineno: 12, colno: 3 }),
+    );
+    const body = sentBody();
+    for (const leak of LEAKS) expect(body).not.toContain(leak);
+    // CONTROL: the path survives, so the report can still be diagnosed.
+    expect(JSON.parse(body).source).toBe("https://slate.trypennie.app/book");
+  });
+
+  it("drops it from a stack frame inside the message and the stack, keeping line and column", async () => {
+    render(<ClientErrorBeacon page="/book" />);
+    const error = new Error(`failed at ${PAGE_URL}:12:3`);
+    error.stack = `Error: failed\n    at submit (${PAGE_URL}:12:3)`;
+    window.dispatchEvent(new ErrorEvent("error", { message: error.message, error }));
+    const body = sentBody();
+    for (const leak of LEAKS) expect(body).not.toContain(leak);
+    const parsed = JSON.parse(body);
+    expect(parsed.message).toBe("failed at https://slate.trypennie.app/book:12:3");
+    expect(parsed.stack).toContain("(https://slate.trypennie.app/book:12:3)");
+  });
+
+  it("drops it from the page a caller names, whoever calls", async () => {
+    const { postClientReport } = await import("./ClientErrorBeacon");
+    postClientReport({ kind: "error", message: "boom", page: "/book?email=dana%40example.com" });
+    expect(JSON.parse(sentBody()).page).toBe("/book");
+  });
+});

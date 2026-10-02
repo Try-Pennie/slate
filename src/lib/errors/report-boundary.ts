@@ -1,4 +1,4 @@
-import { scrubContactData } from "@/lib/api/client-error-scrub";
+import { scrubContactData, withoutUrlQuery } from "@/lib/api/client-error-scrub";
 
 /**
  * Tell the server a page's error boundary caught something (#1974).
@@ -57,7 +57,8 @@ export function reportBoundaryCatch(input: {
       body: JSON.stringify({
         kind: "boundary",
         message,
-        page: input.page,
+        // #3046: cut any query string here as well, whatever a caller passes.
+        page: withoutUrlQuery(input.page),
         source: input.digest ? `digest ${input.digest}` : null,
         line: null,
         col: null,
