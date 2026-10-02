@@ -390,7 +390,7 @@ describe("BucketSupplyTable for managers", () => {
   });
 
   it("says where an empty pool's leads go, and keeps it out of nobody available", () => {
-    const overflow: SupplyCell = { kind: "overflows", cover: "overflow", toPool: "Low with Achieve" };
+    const overflow: SupplyCell = { kind: "overflows", toPool: "Low with Achieve" };
     renderTable(
       [
         row({
@@ -418,13 +418,14 @@ describe("BucketSupplyTable for managers", () => {
     expect(chip?.className).not.toContain("text-error");
   });
 
-  it("names a fallback agent as the cover for an admin too", () => {
+  it("says where the leads go for an admin too", () => {
     renderTable(
-      [row({ cells: [{ kind: "overflows", cover: "fallback", toPool: null }, { kind: "closed" }] })],
+      [row({ cells: [{ kind: "overflows", toPool: "Low with Achieve" }, { kind: "closed" }] })],
       { showCodes: true },
     );
     const head = document.querySelector("tbody th[scope='row']")?.textContent ?? "";
-    expect(head).toContain("Leads go to the fallback agent");
+    expect(head).toContain("Leads go to Low with Achieve");
+    expect(summaryText()).toMatch(new RegExp(`${supplyLegendEntry("overflows").label}\\s*1(?!\\d)`));
   });
 
   it("names a pool outside the routing matrix by the bucket's name, never its code", () => {

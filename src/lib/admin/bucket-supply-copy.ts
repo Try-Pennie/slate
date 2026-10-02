@@ -125,7 +125,7 @@ export const SUPPLY_LEGEND: SupplyLegendEntry[] = [
     id: "overflows",
     label: "Overflows",
     meaning:
-      "Nobody in this pool is free that day, and its leads go to the fallback agent or the pool named on the row, so nobody is turned away.",
+      "This pool has no times that day, and its leads are shown the times of the pool named on the row, so nobody is turned away.",
     mark: "O",
     cell: "bg-[var(--bg-alt)] text-fg-muted",
     swatchExtra: "border border-border",
@@ -260,9 +260,7 @@ export function supplyCellTitle(cell: SupplyCell, bucketLabel: string, dayLabel:
     case "nobody-available":
       return `${when}: nobody available. The day had room for appointments and this pool has none offered and none booked.`;
     case "overflows":
-      return cell.cover === "fallback"
-        ? `${when}: nobody in this pool is free, and its leads go to the fallback agent.`
-        : `${when}: nobody in this pool is free, and its leads go to ${cell.toPool ?? "another pool"}.`;
+      return `${when}: this pool has no times, and its leads are shown ${cell.toPool ?? "another pool"}'s times instead.`;
     case "no-capacity":
       return `${when}: nothing left today. The office is open but no whole appointment fits before closing.`;
     case "beyond-horizon":
@@ -401,16 +399,27 @@ export function poolRowDetail(row: { code: string; name: string }): string | nul
 
 /**
  * Where a row's leads go on the days it overflows, named once on the row, or
- * null when no day overflows. Today and later days can differ (today reads who is
- * out today, later days the roster), so every distinct target is named.
+ * null when no day overflows. Each day finds its own rung, so different days can
+ * go to different pools; the row then names the COMMONEST (the earliest day's on
+ * a tie) and says "on most days", which keeps it to one short line while the
+ * cell sentences still name each day's own pool.
  */
 export function overflowNote(cells: SupplyCell[]): string | null {
-  const targets: string[] = [];
+  const counts = new Map<string, number>();
   for (const cell of cells) {
     if (cell.kind !== "overflows") continue;
-    const target =
-      cell.cover === "fallback" ? "the fallback agent" : (cell.toPool ?? "another pool");
-    if (!targets.includes(target)) targets.push(target);
+    const target = cell.toPool ?? "another pool";
+    counts.set(target, (counts.get(target) ?? 0) + 1);
   }
-  return targets.length === 0 ? null : `Leads go to ${targets.join(" or ")}`;
+  if (counts.size === 0) return null;
+  let best = "";
+  let bestCount = 0;
+  // Map keeps insertion order, so a strict comparison keeps the earliest on a tie.
+  for (const [target, n] of counts) {
+    if (n > bestCount) {
+      best = target;
+      bestCount = n;
+    }
+  }
+  return counts.size === 1 ? `Leads go to ${best}` : `Leads go to ${best} on most days`;
 }

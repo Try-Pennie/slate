@@ -311,8 +311,17 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
 // "nothing taken yet", which is the healthy state every other bucket is in
 // today. Nobody being available is the opposite, so it is a kind of its own.
 {
+  // 110 is a rung on 120's ladder, so its times are put on ANOTHER day: a rung
+  // with time today would make today an overflow rather than nobody available.
   const report = reportWith({
-    cacheRows: [cachedRow("120", [], FRESH_STAMP), cachedRow("110", slotsFrom1320(21), FRESH_STAMP)],
+    cacheRows: [
+      cachedRow("120", [], FRESH_STAMP),
+      cachedRow(
+        "110",
+        slotsFrom1320(21).map((iso) => new Date(Date.parse(iso) + 24 * 60 * 60_000).toISOString()),
+        FRESH_STAMP,
+      ),
+    ],
   });
   if (!report.measurable) {
     fail("an empty bucket does not take the report down");
@@ -804,85 +813,115 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
 }
 
 // ---------------------------------------------------------------------------
-// An empty pool whose leads overflow is not "nobody available" (2026-10-02).
-// TODAY's cell reads today's cover (who is out today, `emptyPoolCover`); every
-// LATER day reads the roster's (`emptyPoolCoverOnRoster`), because staffing
-// depth knows nobody's time off on a future day.
+// An empty DAY whose leads the ladder carries is "Overflows", not "Nobody
+// available" (2026-10-02). Each day is judged on its own: the first rung on the
+// router's ladder (`tierLadder`) whose pool offers at least one time THAT day
+// catches it, and on a top tier lead's lower rungs only times without a Low
+// carrier count, as the booker serves them (`rungExcludesLow`).
 // ---------------------------------------------------------------------------
 {
-  const covered = (
-    coverToday: { cover: "fallback" | "overflow"; toPool: string | null } | null,
-    coverOnRoster: { cover: "fallback" | "overflow"; toPool: string | null } | null,
-  ) =>
-    bucketSupplyReport({
+  /** Slots on one date at ten minute steps from 13:20 ET. */
+  const slotsOn = (iso: string, n: number) => {
+    const first = Date.parse(`${iso}T17:20:00.000Z`);
+    return Array.from({ length: n }, (_, i) => new Date(first + i * 10 * 60_000).toISOString());
+  };
+  const LABELS: Record<string, string> = {
+    "522": "Ultra High with Beyond",
+    "532": "Ultra High with Achieve",
+    "512": "Ultra High",
+    "422": "Very High with Beyond",
+    "432": "Very High with Achieve",
+    "412": "Very High",
+    "322": "High with Beyond",
+    "332": "High with Achieve",
+    "312": "High",
+  };
+  const ladderReport = (cacheRows: CachedSlotRow[]) => {
+    const codes = cacheRows.map((r) => r.bucket_code);
+    return bucketSupplyReport({
       hours: WEEK,
       horizonDays: 4,
       nowMs: AUG_4_1119_ET,
-      buckets: [{ code: "120", name: "Low | Beyond | No Legal Param" }],
-      depthByCode: new Map([
-        [
-          "120",
-          { depth: 2, effectiveDepth: 0, poolKey: "pool-low-beyond", poolLabel: "Low with Beyond", coverToday, coverOnRoster },
-        ],
-      ]),
-      // Offering nothing on any day.
-      cacheRows: [cachedRow("120", [], FRESH_STAMP)],
+      buckets: codes.map((code) => ({ code, name: `Bucket ${code}` })),
+      depthByCode: new Map(
+        codes.map((code) => [code, { depth: 1, effectiveDepth: 1, poolKey: `pool-${code}`, poolLabel: LABELS[code] ?? null }]),
+      ),
+      cacheRows,
       bookedByCodeAndDate: new Map(),
     });
+  };
+  const cellsOf = (report: ReturnType<typeof ladderReport>, code: string) =>
+    report.measurable ? (report.rows.find((r) => r.code === code)?.cells ?? []) : [];
 
-  const achieve = { cover: "overflow" as const, toPool: "Low with Achieve" };
-  // Everyone in the pool is out today, so today's leads overflow, while on the
-  // roster the pool is staffed and a later empty day is still nobody available.
-  const allOut = covered(achieve, null);
-  if (allOut.measurable) {
-    eq(allOut.rows[0].cells[0], { kind: "overflows", cover: "overflow", toPool: "Low with Achieve" }, "today overflows");
-    eq(allOut.rows[0].cells[1], { kind: "nobody-available" }, "a later day with nothing caught stays nobody available");
-    const totals = supplyTotals(supplyPoolGroups(allOut.rows, allOut.nowMs), 0);
-    eq(totals.nobodyAvailable, 0, "an overflowing pool is kept out of the nobody available count");
-    eq(totals.overflows, 1, "and counted as overflowing");
-    eq(totals.measured + totals.unmeasured, 0, "it is neither a measured share nor an unmeasured one");
-  } else fail("the overflow case produces a report");
+  // A one advisor Beyond pool: nothing on Tuesday or Wednesday, three times on
+  // Thursday. Its Achieve rung has times on Tuesday only.
+  const oneAdvisor = ladderReport([
+    cachedRow("522", slotsOn("2026-08-06", 3), FRESH_STAMP),
+    cachedRow("532", slotsOn("2026-08-04", 5), FRESH_STAMP),
+  ]);
+  const cells = cellsOf(oneAdvisor, "522");
+  eq(cells[0], { kind: "overflows", toPool: "Ultra High with Achieve" }, "a day the next rung has times overflows to that rung's pool");
+  eq(cells[1], { kind: "nobody-available" }, "a day no rung has times stays nobody available");
+  eq(cells[2], { kind: "counted", booked: 0, capacity: 3, share: 0 }, "a day the pool has its own times is its own measurement");
+  if (oneAdvisor.measurable) {
+    const totals = supplyTotals(supplyPoolGroups(oneAdvisor.rows, oneAdvisor.nowMs), 0);
+    eq(totals.overflows, 1, "today's overflow is counted on its own chip");
+    eq(totals.nobodyAvailable, 0, "and kept out of nobody available");
+    const tomorrow = supplyTotals(supplyPoolGroups(oneAdvisor.rows, oneAdvisor.nowMs), 1);
+    // Both pools are empty on Wednesday and nothing below catches either.
+    eq(tomorrow.nobodyAvailable, 2, "the day nothing catches them, both are counted as nobody available");
+    eq(tomorrow.overflows, 0, "and not as an overflow");
+  } else fail("the one advisor case produces a report");
 
-  // An empty roster: every day reads the roster's cover, and today's too.
-  const empty = covered(achieve, achieve);
-  if (empty.measurable) {
-    assert(
-      empty.rows[0].cells.every((c) => c.kind === "overflows" || c.kind === "closed"),
-      "an empty pool the ladder carries overflows on every open day",
-    );
-  } else fail("the empty roster case produces a report");
+  // A top tier lead's lower rung offers only what an advisor WITHOUT Low is
+  // free for. 322 is the first lower tier rung for 422; its only Tuesday times
+  // come from Low carriers, so it is skipped and 332 catches the day instead.
+  const lowRow = (code: string, slots: string[], withoutLow: string[]): CachedSlotRow => ({
+    bucket_code: code,
+    payload: { slots, slotsWithoutLow: withoutLow, eventType: { ...EVENT } },
+    computed_at: FRESH_STAMP,
+  });
+  const topTier = ladderReport([
+    cachedRow("422", [], FRESH_STAMP),
+    lowRow("322", slotsOn("2026-08-04", 4), []),
+    lowRow("332", slotsOn("2026-08-04", 2), slotsOn("2026-08-04", 2)),
+  ]);
+  eq(cellsOf(topTier, "422")[0], { kind: "overflows", toPool: "High with Achieve" }, "a lower rung's Low carrier times are skipped for a top tier code");
+  // The same rung is NOT filtered for a code in its own tier: 322's own day is
+  // its own measurement, and a High lead is not a top tier lead.
+  eq(cellsOf(topTier, "322")[0].kind, "counted", "a rung's own row still counts every time it offers");
 
-  const fallback = covered({ cover: "fallback", toPool: null }, { cover: "fallback", toPool: null });
-  if (fallback.measurable) {
-    eq(fallback.rows[0].cells[0], { kind: "overflows", cover: "fallback", toPool: null }, "a fallback agent catches the leads");
-  } else fail("the fallback case produces a report");
+  const onlyLow = ladderReport([
+    cachedRow("422", [], FRESH_STAMP),
+    lowRow("322", slotsOn("2026-08-04", 4), []),
+  ]);
+  eq(cellsOf(onlyLow, "422")[0], { kind: "nobody-available" }, "when only Low carriers are free lower down, a top tier day is nobody available");
 
-  const stranded = covered(null, null);
-  if (stranded.measurable) {
-    eq(stranded.rows[0].cells[0], { kind: "nobody-available" }, "nothing catches it, so it stays the one to act on");
-  } else fail("the stranded case produces a report");
+  // An unknown second list offers nothing, as the booker treats it.
+  const unknownLow = ladderReport([
+    cachedRow("422", [], FRESH_STAMP),
+    cachedRow("322", slotsOn("2026-08-04", 4), FRESH_STAMP),
+  ]);
+  eq(cellsOf(unknownLow, "422")[0], { kind: "nobody-available" }, "a rung with no list without Low offers a top tier lead nothing");
 
-  // Two codes of one pool whose covers differ do not share a row.
+  // Two codes of one pool whose overflow targets differ do not share a row.
   const base: BucketSupplyRow = {
     code: "120",
     name: "Low | Beyond | No Legal Param",
     poolKey: "pool-low-beyond",
     poolLabel: "Low with Beyond",
-    depth: 0,
-    effectiveDepth: 0,
+    depth: 1,
+    effectiveDepth: 1,
     cacheState: "measured",
     computedAtMs: AUG_4_1119_ET - 30_000,
     freshness: "fresh",
-    cells: [{ kind: "overflows", cover: "overflow", toPool: "Low with Achieve" }],
+    cells: [{ kind: "overflows", toPool: "Low with Achieve" }],
   };
   assert(
-    !sameSupplyReading(base, { ...base, code: "121", cells: [{ kind: "overflows", cover: "overflow", toPool: "Low" }] }, AUG_4_1119_ET),
+    !sameSupplyReading(base, { ...base, code: "121", cells: [{ kind: "overflows", toPool: "Low" }] }, AUG_4_1119_ET),
     "overflowing to a different pool is a different reading",
   );
-  assert(
-    !sameSupplyReading(base, { ...base, code: "121", cells: [{ kind: "overflows", cover: "fallback", toPool: null }] }, AUG_4_1119_ET),
-    "and so is a fallback agent instead of an overflow",
-  );
+  assert(sameSupplyReading(base, { ...base, code: "121" }, AUG_4_1119_ET), "the same target is the same reading");
 }
 
 finish();

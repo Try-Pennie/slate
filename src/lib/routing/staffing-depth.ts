@@ -150,19 +150,6 @@ export function emptyPoolCover(row: TierDepth): EmptyPoolCover | null {
   return row.overflowToday ? "overflow" : "none";
 }
 
-/**
- * The same rule over the ROSTER rather than today, for a screen judging a day
- * ahead (the bucket availability page). Nobody's time off on a future day is
- * known here, so a pool with anybody on its roster is staffed as far as this can
- * say, and an empty one is caught by its fallback agent, then by the ladder's
- * first rung with anybody on its roster (`overflowOnRoster`).
- */
-export function emptyPoolCoverOnRoster(row: TierDepth): EmptyPoolCover | null {
-  if (row.depth > 0) return null;
-  if (row.hasWorkingFallback) return "fallback";
-  return row.overflowOnRoster ? "overflow" : "none";
-}
-
 /** Only bookable, non-deactivated agents can be routed to (matches
  *  resolveBucketPool's users filter: .eq("bookable", true).is("deactivated_at", null)). */
 export function isRoutable(agent: Pick<StaffingAgent, "bookable" | "deactivated_at">): boolean {

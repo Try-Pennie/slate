@@ -154,29 +154,31 @@ function codesOf(
   const buckets = [
     { code: "220", name: "Medium, healthy" },
     { code: "110", name: "Low, healthy" },
-    { code: "120", name: "Low, nobody available" },
+    // 111 rather than a Beyond code: an unconstrained code's ladder holds only
+    // itself, so no healthy row below can catch its empty day as an overflow.
+    { code: "111", name: "Low, nobody available" },
   ];
 
   // The troubled pool is deliberately the one the CODE order puts SECOND (110
-  // sorts before 120 on the backend digit), so the two orderings disagree and
+  // sorts before 111 on the legal digit), so the two orderings disagree and
   // the assertion can tell them apart. Picking the pool that already sorts first
   // would be satisfied by the ranking doing nothing at all (L159).
   const calm = codesOf(buckets, [
     cachedRow("220", slotsFrom1320(9), FRESH_STAMP),
     cachedRow("110", slotsFrom1320(9), FRESH_STAMP),
-    cachedRow("120", slotsFrom1320(9), FRESH_STAMP),
+    cachedRow("111", slotsFrom1320(9), FRESH_STAMP),
   ]);
-  eq(calm.join(","), "220,110,120", "with nothing in trouble the code order stands");
+  eq(calm.join(","), "220,110,111", "with nothing in trouble the code order stands");
 
   const codes = codesOf(buckets, [
     cachedRow("220", slotsFrom1320(9), FRESH_STAMP),
     cachedRow("110", slotsFrom1320(9), FRESH_STAMP),
     // No slots at all on an open day, and nothing booked: nobody available.
-    cachedRow("120", [], FRESH_STAMP),
+    cachedRow("111", [], FRESH_STAMP),
   ]);
   eq(
     codes.join(","),
-    "220,120,110",
+    "220,111,110",
     "the tier stays the outer key and the troubled pool leads its own tier",
   );
 
@@ -432,9 +434,9 @@ function codesOf(
 }
 
 // ---------------------------------------------------------------------------
-// An empty pool whose leads are carried elsewhere is NOT "nobody available"
-// (2026-10-02). It is its own state, unalarming, in the same vocabulary, and the
-// row says where the leads go.
+// An empty day the ladder carries is NOT "nobody available" (2026-10-02). It is
+// its own state, unalarming, in the same vocabulary, and the row says where the
+// leads go.
 // ---------------------------------------------------------------------------
 {
   const entry = supplyLegendEntry("overflows");
@@ -444,25 +446,20 @@ function codesOf(
     SUPPLY_SUMMARY_STATES.some((s) => s.legendId === "overflows" && s.totalsKey === "overflows"),
     "the summary counts it on its own chip, never under nobody available",
   );
-  const overflow = { kind: "overflows" as const, cover: "overflow" as const, toPool: "Low with Achieve" };
-  const fallback = { kind: "overflows" as const, cover: "fallback" as const, toPool: null };
-  const title = supplyCellTitle(overflow, "Low with Beyond", "Tuesday, August 4");
+  const achieve = { kind: "overflows" as const, toPool: "Low with Achieve" };
+  const low = { kind: "overflows" as const, toPool: "Low" };
+  const title = supplyCellTitle(achieve, "Low with Beyond", "Tuesday, August 4");
   assert(title.includes("Low with Achieve"), `the cell sentence names where the leads go (got ${title})`);
   assert(!/act on/i.test(title), "and does not ask anybody to act");
-  assert(/fallback agent/.test(supplyCellTitle(fallback, "Low", "Tuesday, August 4")), "a fallback cover names the fallback agent");
 
-  eq(overflowNote([{ kind: "closed" }, overflow, overflow]), "Leads go to Low with Achieve", "the row names the target once");
-  eq(overflowNote([fallback]), "Leads go to the fallback agent", "or the fallback agent");
+  eq(overflowNote([{ kind: "closed" }, achieve, achieve]), "Leads go to Low with Achieve", "one target is named once");
   eq(
-    overflowNote([overflow, fallback]),
-    "Leads go to Low with Achieve or the fallback agent",
-    "two different covers on different days are both named",
+    overflowNote([achieve, low, achieve]),
+    "Leads go to Low with Achieve on most days",
+    "different days to different pools name the commonest, and say so",
   );
-  eq(
-    overflowNote([{ kind: "overflows", cover: "overflow", toPool: null }]),
-    "Leads go to another pool",
-    "a target outside the routing matrix is never named by a code",
-  );
+  eq(overflowNote([low, achieve]), "Leads go to Low on most days", "a tie goes to the earliest day's pool");
+  eq(overflowNote([{ kind: "overflows", toPool: null }]), "Leads go to another pool", "a target outside the routing matrix is never named by a code");
   eq(overflowNote([{ kind: "nobody-available" }, { kind: "closed" }]), null, "a row nothing catches has no note");
 }
 

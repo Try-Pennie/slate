@@ -32,12 +32,6 @@ import { unwrap } from "@/lib/db/result";
 import { loadBusinessHours } from "@/lib/booking/business-hours-load";
 import { readBookingHorizonDays } from "@/lib/booking/settings";
 import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
-import {
-  emptyPoolCover,
-  emptyPoolCoverOnRoster,
-  type EmptyPoolCover,
-  type PoolOverflow,
-} from "@/lib/routing/staffing-depth";
 import { log } from "@/lib/log";
 import { DateTime } from "luxon";
 import { selectAllPages } from "@/lib/supabase/paginate";
@@ -47,7 +41,6 @@ import {
   type BucketSupplyReport,
   type CachedSlotRow,
   type SupplyBucket,
-  type SupplyCover,
   type SupplyDepth,
 } from "@/lib/admin/bucket-supply";
 
@@ -121,10 +114,6 @@ export async function loadBucketSupply(
           effectiveDepth: d.effectiveDepth,
           poolKey: d.poolKey,
           poolLabel: d.poolLabel,
-          // What catches an empty pool, by staffing depth's own rules: today's
-          // for today, the roster's for later days (see `bucketSupplyReport`).
-          coverToday: supplyCover(emptyPoolCover(d), d.overflowToday),
-          coverOnRoster: supplyCover(emptyPoolCoverOnRoster(d), d.overflowOnRoster),
         },
       ]),
     );
@@ -170,22 +159,6 @@ export async function loadBucketSupply(
     cacheRows,
     bookedByCodeAndDate,
   });
-}
-
-/**
- * A cover as the supply page carries it. "none" (nothing catches the pool) and
- * null (the pool has people, so no rule catches it) both become null, and an
- * empty day then stays "nobody available". For "none" that is the point. For a
- * staffed pool it means its people had no free time that day, and since no rule
- * names anybody else for its leads, it is still the one to act on.
- */
-function supplyCover(
-  cover: EmptyPoolCover | null,
-  overflow: PoolOverflow | null,
-): SupplyCover | null {
-  if (cover === "fallback") return { cover: "fallback", toPool: null };
-  if (cover === "overflow") return { cover: "overflow", toPool: overflow?.label ?? null };
-  return null;
 }
 
 /**
