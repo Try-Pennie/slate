@@ -106,12 +106,12 @@ export function bucketShownAs(
  *
  * For a surface whose neighbouring column already names the tier, the tier drop
  * list (Dan, 2026-10-02), where the full pool name would say the tier twice in
- * one row (L605). Read off the same digit `bucketSpecForXbc` reads, so a code it
- * refuses has no backend here either.
+ * one row (L605). Taken from the spec `bucketSpecForXbc` decodes, so there is one
+ * decoder of the code and a code it refuses has no backend here either (L370).
  */
 export function backendLabelForCode(code: string | null | undefined): string | null {
-  if (!code || !bucketSpecForXbc(code)) return null;
-  return BACKEND[code[1]!]?.label ?? null;
+  if (!code) return null;
+  return bucketSpecForXbc(code)?.backendLabel ?? null;
 }
 
 /** `bucketShownAs` for that surface: the code for an admin, the backend for a
@@ -128,6 +128,11 @@ export function backendShownAs(
 /** The heading over that value: a code is a bucket, a name in words is a pool. */
 export function bucketHeading(showCodes: boolean): "Bucket" | "Pool" {
   return showCodes ? "Bucket" : "Pool";
+}
+
+/** The heading over `backendShownAs`: a code is a bucket, the words a backend. */
+export function backendHeading(showCodes: boolean): "Bucket" | "Backend" {
+  return showCodes ? "Bucket" : "Backend";
 }
 
 export interface LabelledPool {

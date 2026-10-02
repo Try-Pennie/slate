@@ -19,9 +19,9 @@ import {
   bucketHeading,
   backendLabelForCode,
   backendShownAs,
+  backendHeading,
 } from "../src/lib/availability/pool-label.ts";
-import { BACKEND } from "../src/lib/xbc.ts";
-import { allXbcCodes, bucketSpecForXbc } from "../src/lib/xbc.ts";
+import { BACKEND, allXbcCodes, bucketSpecForXbc } from "../src/lib/xbc.ts";
 import { groupByPool } from "../src/lib/availability/pool-key.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -193,5 +193,7 @@ eq(backendLabelForCode("SMOKE"), null, "outside the matrix there is no backend t
 eq(backendShownAs("221", { showCodes: false }), "Beyond", "a manager reads the backend");
 eq(backendShownAs("221", { showCodes: true }), "221", "an admin keeps the code");
 eq(backendShownAs("SMOKE", { showCodes: false }), "SMOKE", "and the code outside the matrix, never nothing");
+eq(backendHeading(true), "Bucket", "the admin heading over the backend column is unchanged");
+eq(backendHeading(false), "Backend", "the manager heading names what the value is");
 
 finish();

@@ -7,9 +7,10 @@ vi.mock("@/lib/booking/timezones", () => ({ deviceTimeZone: () => "America/New_Y
 import { TierDropPanel } from "@/components/admin/TierDropPanel";
 import type { TierDropReport } from "@/lib/admin/tier-drops-load";
 
-// 2026-10-02 (Dan): a manager never reads a raw bucket code. The drop list names
-// the pool the lead came in on, the way staffing depth names it; an admin keeps
-// the code exactly as before.
+// 2026-10-02 (Dan): a manager never reads a raw bucket code. In the drop list a
+// manager reads the backend of the code the lead came in on, since the Tier
+// column beside it already names the tier; an admin keeps the code exactly as
+// before.
 
 const tally = (lost: number) => ({
   "lost-at-confirm": lost,

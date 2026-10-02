@@ -52,6 +52,9 @@ export interface BucketSpec {
   code: string;
   name: string;
   criteria: Criteria;
+  /** The backend digit's label ("Beyond", "Achieve", "Both", "None"), decoded
+   *  here so no surface re-parses the code to name it. */
+  backendLabel: string;
 }
 
 /** The spec for one XBC code, or null when the code is not a valid XBC. */
@@ -78,7 +81,7 @@ export function bucketSpecForXbc(code: string): BucketSpec | null {
   // a label table now.
   const criteria: Criteria = { debt_team: tier.key };
   if (backend.key) criteria.backend_service = backend.key;
-  return { code, name, criteria };
+  return { code, name, criteria, backendLabel: backend.label };
 }
 
 /** Every valid XBC code (5 tiers x 4 backends x 3 legal = 60). */

@@ -1,7 +1,7 @@
 import { OpenBookingLink } from "@/components/OpenBookingLink";
 import ViewerTime from "@/components/ViewerTime";
 import { proseCls } from "@/components/ui/styles";
-import { backendShownAs } from "@/lib/availability/pool-label";
+import { backendHeading, backendShownAs } from "@/lib/availability/pool-label";
 import type { TierDropCause, TierDropTally } from "@/lib/routing/tier-drop-counts";
 import type { TierDropReport } from "@/lib/admin/tier-drops-load";
 
@@ -111,7 +111,7 @@ export function TierDropPanel({ report, showCodes }: { report: TierDropReport; s
             <tr>
               <th className="py-1 pr-3 font-semibold">Booked</th>
               <th className="py-1 pr-3 font-semibold">Tier</th>
-              <th className="py-1 pr-3 font-semibold">{showCodes ? "Bucket" : "Backend"}</th>
+              <th className="py-1 pr-3 font-semibold">{backendHeading(showCodes)}</th>
               <th className="py-1 pr-3 font-semibold">Cause</th>
               <th className="py-1 font-semibold">
                 <span className="sr-only">Open booking</span>

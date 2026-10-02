@@ -206,9 +206,10 @@ describe("the tier drop panel", () => {
   });
 });
 
-// 2026-10-02 (Dan): a manager never reads a raw bucket code on this page. Both
-// tables name the pool in words; an admin keeps the codes as before. The rank
-// rule is canEditOrgSettings, so a team lead reads words like a manager.
+// 2026-10-02 (Dan): a manager never reads a raw bucket code on this page. The
+// routing table names the pool in words and the tier drop list names the backend
+// (its Tier column already says the tier); an admin keeps the codes as before.
+// The rank rule is canEditOrgSettings, so a team lead reads words like a manager.
 describe("bucket codes by who is reading", () => {
   const withOneDrop = () =>
     tierDrops.loadTierDropReport.mockResolvedValue({
