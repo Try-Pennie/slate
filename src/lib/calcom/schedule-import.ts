@@ -210,6 +210,39 @@ export function hoursOverwriteRefusal(hoursSource: string | null): string | null
 }
 
 /**
+ * What the daily import does with one agent, decided from who last wrote their week
+ * and whether it differs from cal.com.
+ *
+ * - `write`: the week differs and cal.com may replace it (`hoursOverwriteRefusal`).
+ * - `left-alone`: the week differs and cal.com may not replace it.
+ * - `stamp`: the week already matches and carries NO source. Those are weeks written
+ *   before migration 0117 (#1753) recorded who sets hours; matching weeks were never
+ *   written, so their source stayed null for ever and the console's Team hours
+ *   "Set by" column was blank for 52 of 98 bookable advisors (2026-10-02). The stamp
+ *   records `calcom-import` without touching the rules or the zone.
+ * - `match`: the week already matches and its source is already recorded. A
+ *   matching `seed` week stays `seed` on purpose: whether somebody really keeps the
+ *   seeded hours, or both systems inherited one default, is a separate question, and
+ *   restamping it would answer that question by accident.
+ *
+ * Only a null source is ever stamped, so a second run reads the same agent as a
+ * plain match and does nothing.
+ */
+export type ImportAction =
+  | { kind: "write" }
+  | { kind: "left-alone"; why: string }
+  | { kind: "stamp" }
+  | { kind: "match" };
+
+export function importAction(hoursSource: string | null, changed: boolean): ImportAction {
+  if (!changed) return hoursSource === null ? { kind: "stamp" } : { kind: "match" };
+  // Asked AFTER the diff, never before it: an agent who owns their week and happens
+  // to match cal.com is not a finding (L36).
+  const refusal = hoursOverwriteRefusal(hoursSource);
+  return refusal === null ? { kind: "write" } : { kind: "left-alone", why: refusal };
+}
+
+/**
  * How long to wait before retrying a cal.com read, or null to stop trying.
  *
  * The first real import run met this at agent 15: cal.com answered 429 for 89 of
