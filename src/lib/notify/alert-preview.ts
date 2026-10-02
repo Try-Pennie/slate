@@ -3562,19 +3562,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: raceBoundHitPageText({ bucketCode: "311", startIso: "2026-07-28T18:00:00.000Z", lostRaces: 4 }),
   },
   // A High lead and below: an Ultra High or Very High cascade is counted daily
-  // above instead (#2843), so these fixtures are the tiers that still page.
-  {
-    key: "tier_fallback:*",
-    state: "a booking fell back one debt tier",
-    channel: "alert",
-    text: tierFallbackAlert({ requestedCode: "311", effectiveCode: "211" })?.text ?? "",
-  },
-  {
-    key: "tier_fallback:*",
-    state: "the same, where the backend service changed as well",
-    channel: "alert",
-    text: tierFallbackAlert({ requestedCode: "322", effectiveCode: "232" })?.text ?? "",
-  },
+  // above instead (#2843), and a single tier drop is counted on /admin/routing
+  // (2026-10-02), so a drop of two or more tiers is the only one that pages.
   {
     key: "tier_fallback_deep:*",
     state: "a booking fell back several debt tiers",

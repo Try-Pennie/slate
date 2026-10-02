@@ -54,7 +54,7 @@ assert(markdown.length > 2000, `read ${DOC} (${markdown.length} chars)`);
     "webhook_dead:abc-123",
     "internal_error:admin/bookings/[id]/cancel",
     "bookable_blocked:agent@trypennie.com",
-    "tier_fallback:411",
+    "tier_fallback_deep:411",
     "retention_skipped:bookings",
   ];
   for (const key of samples) {

@@ -90,7 +90,6 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   availability_drift: "the-booker-is-offering-nothing-or-too-little",
   fallback_covered_availability: "the-booker-is-offering-nothing-or-too-little",
   thin_tier_staffing: "the-booker-is-offering-nothing-or-too-little",
-  tier_fallback: "the-booker-is-offering-nothing-or-too-little",
   tier_fallback_deep: "the-booker-is-offering-nothing-or-too-little",
   // #2158: this one IS the booker offering nothing, and to a real person, so it
   // sits with the family whose first check is the availability health endpoint.

@@ -3376,20 +3376,19 @@ async function completeReservation(
     } catch {
       // best-effort
     }
-    // Best-effort routing fallback alert. Throttled via alert_state; a single tier
-    // drop is a quiet notice, two or more tiers escalates. The rung COUNT is
-    // deliberately not passed: since #1909 a rung is not a tier, so the alert
-    // derives both facts from the two codes itself.
+    // Best-effort routing fallback alert. Throttled via alert_state, and sent only
+    // for a drop of two or more debt tiers. The rung COUNT is deliberately not
+    // passed: since #1909 a rung is not a tier, so the alert derives it from the
+    // two codes itself.
     //
-    // A SIDEWAYS OVERFLOW SENDS NOTHING HERE (#2228). It returns null, because on a
-    // two person Beyond pool it is the expected path rather than an incident, and
-    // the monitor lane's `beyond_overflow_rate` step counts it once a day instead.
+    // Everything smaller SENDS NOTHING HERE: a sideways overflow (#2228), a top
+    // tier cascade (#2843), and a single tier drop (2026-10-02), each the ladder
+    // working as designed and counted elsewhere. The reasons are in tier-alert.ts.
     const tierAlert = tierFallbackAlert({
       requestedCode: bucketCode,
       effectiveCode: booking.routing_trace?.bucket_code ?? bucketCode,
     });
     if (tierAlert) {
-      // alert-key: tier_fallback:*
       // alert-key: tier_fallback_deep:*
       await sendThrottledAlert(tierAlert.key, tierAlert.cooldownMs, tierAlert.text).catch(() => {});
     }

@@ -54,23 +54,26 @@ for (const code of ["511", "522", "531", "412", "421", "430"]) {
   }
 }
 
-// --- one debt tier down ---
-const one = tierFallbackAlert({ requestedCode: "311", effectiveCode: "211" })!;
-assert(one.key === "tier_fallback:311", "single-tier key");
-assert(one.cooldownMs === 60 * 60 * 1000, "a single tier drop is a 60-min throttled notice");
-assert(/^Routing notice:/.test(one.text), "single-tier text is a notice, not an alert");
-
-// The case the old threshold got wrong: an overflow AND one tier drop is two
-// rungs and one tier, and must stay a notice.
-const overflowThenDrop = tierFallbackAlert({ requestedCode: "322", effectiveCode: "232" })!;
+// --- one debt tier down: counted on the admin page, never sent ---
+//
+// Sales ops decided on 2026-10-02 (Slack, Sam: "For an edge case I'll always
+// choose less friction because the variance of enrollment rate is not crazy
+// different across debt tiers unless you get to low") that a lead who loses
+// their tier's last opening keeps the time they picked and drops one tier. That
+// is the ladder working as designed, so a Slack line per booking reporting it is
+// the alert nobody reads (L36). It is counted on /admin/routing instead. The
+// notice's old wording was also false for the commonest case: it said the tier
+// "had no availability across the booking window" when the tier had times on
+// show and lost the last one at confirm.
 assert(
-  overflowThenDrop.key === "tier_fallback:322",
-  `an overflow plus one tier drop is still one tier (got ${overflowThenDrop.key})`,
+  tierFallbackAlert({ requestedCode: "311", effectiveCode: "211" }) === null,
+  "a single tier drop sends nothing",
 );
-assert(overflowThenDrop.cooldownMs === 60 * 60 * 1000, "and still a throttled notice");
+// The case the old threshold got wrong: an overflow AND one tier drop is two
+// rungs and still one tier, so it is quiet too rather than escalating.
 assert(
-  /Achieve/.test(overflowThenDrop.text),
-  `it still says the backend changed too (got ${overflowThenDrop.text})`,
+  tierFallbackAlert({ requestedCode: "322", effectiveCode: "232" }) === null,
+  "an overflow plus one tier drop is still one tier, and sends nothing",
 );
 
 // --- two or more debt tiers down: the capacity problem ---
@@ -105,34 +108,29 @@ for (const bad of [
   );
 }
 
-// And every pair the ladder CAN produce that MOVED A DEBT TIER does alert, so the
-// guard above cannot quietly silence the real cases (L1), and #2228's silencing of
-// the overflow cannot creep outward into the tier drops it was never about.
+// Every pair the ladder CAN produce is classified by how many debt tiers it
+// moved: zero (the overflow rung) and one are quiet, two or more alert. Driven
+// off the real ladder so neither silencing can creep into the deep drops (L1).
 {
   let alerted = 0;
   let silenced = 0;
   for (const code of ["322", "311", "312", "300", "222", "231"]) {
     for (const rung of tierLadder(code).slice(1)) {
-      const sameTier = rung[0] === code[0];
-      if (sameTier) {
-        assert(
-          tierFallbackAlert({ requestedCode: code, effectiveCode: rung }) === null,
-          `${code} to ${rung} is the overflow rung and is counted, not sent`,
-        );
+      const tiers = Number(code[0]) - Number(rung[0]);
+      const out = tierFallbackAlert({ requestedCode: code, effectiveCode: rung });
+      if (tiers < 2) {
+        assert(out === null, `${code} to ${rung} moved ${tiers} tier(s) and is counted, not sent`);
         silenced += 1;
         continue;
       }
-      assert(
-        tierFallbackAlert({ requestedCode: code, effectiveCode: rung }) !== null,
-        `${code} to ${rung} dropped a debt tier and still alerts`,
-      );
+      assert(out !== null && out.key === `tier_fallback_deep:${code}`, `${code} to ${rung} dropped ${tiers} tiers and still alerts`);
       alerted += 1;
     }
   }
   // Anti-vacuity: a loop that classified everything one way would pass both
   // branches above by never entering the other (L98).
-  assert(alerted > 10, `the tier drops are really being asserted (${alerted})`);
-  assert(silenced > 0, `and so are the overflow rungs (${silenced})`);
+  assert(alerted > 3, `the deep drops are really being asserted (${alerted})`);
+  assert(silenced > 3, `and so are the quiet rungs (${silenced})`);
 }
 
 // --- a code it cannot read says nothing rather than a wrong number ---
@@ -145,38 +143,5 @@ for (const bad of [
 
 // A movement UPWARD is not a fallback and cannot be described as one.
 assert(tierFallbackAlert({ requestedCode: "111", effectiveCode: "511" }) === null, "an upward move alerts nothing");
-
-// --- the backend a lead LANDED on is named by what it means (#2486) ---
-//
-// `531 -> 411` became reachable when the ladder gained the whole tier rung, and
-// `BACKEND["1"].label` is "Both", so the notice read "went to Both". Digit 1 does
-// not mean the agent serves both backend services; it means the pool carries no
-// backend restriction at all, so the sentence stated an attribute of the person
-// that nothing had measured (L192). Digit 0 is "None" and reads worse still.
-for (const [requested, effective] of [
-  ["331", "211"],
-  ["321", "211"],
-  ["332", "212"],
-]) {
-  const out = tierFallbackAlert({ requestedCode: requested, effectiveCode: effective });
-  assert(out !== null, `${requested} to ${effective} is a tier drop and alerts`);
-  assert(
-    !/went to (Both|None)/.test(out!.text),
-    `${requested} to ${effective} does not name a backend digit as if it were a service (got: ${out!.text})`,
-  );
-  assert(
-    out!.text.includes("the tier's whole pool"),
-    `${requested} to ${effective} says what the pool actually is (got: ${out!.text})`,
-  );
-}
-
-// And the control the other way: a real backend service is still NAMED, so the
-// fix above cannot have been achieved by dropping the clause for everyone (L1).
-const toAchieve = tierFallbackAlert({ requestedCode: "321", effectiveCode: "231" });
-assert(toAchieve !== null, "a Beyond code dropping a tier onto Achieve alerts");
-assert(
-  toAchieve!.text.includes("went to Achieve"),
-  `a real backend service is still named (got: ${toAchieve!.text})`,
-);
 
 finish();

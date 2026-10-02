@@ -127,7 +127,7 @@ describe("readBeyondOverflowWindow", () => {
 
   it("ignores a lead who never asked for Beyond", async () => {
     // An Achieve lead dropping a tier (511 to 411) is the ordinary fallback and is
-    // reported per booking by tier_fallback:*. Counting it here would inflate a
+    // counted on /admin/routing. Counting it here would inflate a
     // number whose whole sentence is about Beyond.
     install([row("511", "411"), row("510", "310"), row("", "100")]);
     const w = await readBeyondOverflowWindow(NOW);

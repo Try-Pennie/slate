@@ -764,12 +764,6 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "One booking attempt found no agent. It is kept apart from the ongoing empty_tier:* deliberately: that one asks whether a whole DEBT TIER can serve a lead, and this one is a single bucket refusing a single attempt, which happens while the tier around it is healthy.",
   },
   {
-    key: "tier_fallback:*",
-    kind: "incident",
-    suffix: "bounded",
-    why: "One booking fell back a tier; it is a routing breadcrumb about a booking already made.",
-  },
-  {
     key: "tier_fallback_deep:*",
     kind: "incident",
     suffix: "bounded",
