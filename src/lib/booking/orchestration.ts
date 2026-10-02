@@ -1701,6 +1701,7 @@ async function nextAdvisorAfterLostRace(
     lostSoFar: number;
     startIso: string;
     endIso: string;
+    eventType: EventType;
   },
 ): Promise<AssignResult | null> {
   if (!(lost.err instanceof SlotUnavailableError)) return null;
@@ -1715,7 +1716,10 @@ async function nextAdvisorAfterLostRace(
     const { assignment } = await selectAgent(
       remaining,
       (userIds) => deps.loadEmails(userIds),
-      (emails) => deps.verifyFree(emails, lost.startIso, lost.endIso),
+      (emails) => {
+        const [fromIso, toIso] = bufferedWindow(lost.eventType, lost.startIso, lost.endIso);
+        return deps.verifyFree(emails, fromIso, toIso);
+      },
       VERIFY_WAVE_SIZE,
     );
     return assignment;
@@ -1727,6 +1731,20 @@ async function nextAdvisorAfterLostRace(
     );
     return null;
   }
+}
+
+/**
+ * The span the live check must find free: the call plus the event type's buffer
+ * before and after. It is the same window `bookableSlotReason` judges the cached
+ * busy time over, so a meeting that reached the calendar after the cache was read
+ * cannot land a call back to back with it at the last check either.
+ */
+function bufferedWindow(eventType: EventType, startIso: string, endIso: string): [string, string] {
+  const MIN = 60_000;
+  return [
+    new Date(Date.parse(startIso) - eventType.buffer_before_min * MIN).toISOString(),
+    new Date(Date.parse(endIso) + eventType.buffer_after_min * MIN).toISOString(),
+  ];
 }
 
 /**
@@ -1758,7 +1776,10 @@ async function assignAgent(
   const { assignment, anyUnverified } = await selectAgent(
     candidates,
     (userIds) => deps.loadEmails(userIds),
-    (emails) => deps.verifyFree(emails, startIso, endIso),
+    (emails) => {
+      const [fromIso, toIso] = bufferedWindow(eventType, startIso, endIso);
+      return deps.verifyFree(emails, fromIso, toIso);
+    },
     VERIFY_WAVE_SIZE,
   );
   if (!assignment) {
@@ -3117,6 +3138,7 @@ export async function createBooking(
         lostSoFar: raceLost.length,
         startIso,
         endIso,
+        eventType: bookedEventType,
       });
       if (!next) {
         if (!(err instanceof SlotUnavailableError)) throw err;
