@@ -234,7 +234,11 @@ export interface RedistributePlan {
   withoutWorker: string[];
 }
 
-/** True when SLATE turned this person out of the pool because of the tag. */
+/**
+ * True when SLATE holds this person out of the pool because of the tag: it turned
+ * them off, or (#3028) it refused to turn them on. Either way the Twilio sync puts
+ * them back once the tag comes off.
+ */
 export function isMarkedRedistribute(attributes: Attributes | null | undefined): boolean {
   return String(attributes?.redistribute ?? "") === REDISTRIBUTE_MARK;
 }
@@ -299,7 +303,13 @@ export function twilioWorkerMissingSinceMs(attributes: Attributes | null | undef
   return Number.isFinite(ms) ? ms : null;
 }
 
-function withMark(attributes: Attributes | null, markedAtIso: string): Attributes {
+/**
+ * The attributes with Slate's Redistribute mark on, stamped `markedAtIso`. The one
+ * spelling of the mark (L370), exported for the Salesforce half (#3028), which hands
+ * an activation Twilio holds to this half by marking the row: the turn-back-on below
+ * is what puts a marked person in the pool the hour the tag comes off.
+ */
+export function withMark(attributes: Attributes | null, markedAtIso: string): Attributes {
   return { ...(attributes ?? {}), redistribute: REDISTRIBUTE_MARK, redistribute_at: markedAtIso };
 }
 

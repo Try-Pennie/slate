@@ -1054,6 +1054,24 @@ describe("AgentProfilePage refuses a flip the Twilio sync would undo (#3028)", (
       }),
     );
     const said = screen.getAllByRole("status").map((el) => el.textContent ?? "");
-    expect(said.some((t) => /not made bookable/i.test(t) && /Redistribute/.test(t))).toBe(true);
+    const banner = said.find((t) => /not made bookable/i.test(t) && /Redistribute/.test(t));
+    expect(banner).toBeTruthy();
+    // The remedy, named where it is made (L399), and honest that the stored copy of
+    // the tag only moves at the next hourly sync (L111).
+    expect(banner).toMatch(/remove the tag in Twilio/i);
+    expect(banner).toMatch(/next hourly sync/i);
+  });
+
+  it("says nothing was changed when the agent's record could not be read", async () => {
+    auth.currentUser.mockResolvedValueOnce({ id: "ad1", role: "admin", org_id: "o1" });
+    dbState.agent = { ...agentOf("agent"), attributes: {} };
+    render(
+      await AgentProfilePage({
+        params: Promise.resolve({ id: "x1" }),
+        searchParams: Promise.resolve({ bookable: "unreadable" }),
+      }),
+    );
+    const said = screen.getAllByRole("status").map((el) => el.textContent ?? "");
+    expect(said.some((t) => /nothing was changed/i.test(t) && /could not read/i.test(t))).toBe(true);
   });
 });

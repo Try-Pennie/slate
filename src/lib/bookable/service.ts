@@ -1,5 +1,4 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { unwrap } from "@/lib/db/result";
 import { planBookableChange } from "@/lib/bookable/plan";
 import { classifyCalendarReachability } from "@/lib/google/reachability";
 import type { Reachability } from "@/lib/google/reachability-classify";
@@ -25,6 +24,8 @@ import {
 } from "@/lib/notify/misc-alert-copy";
 import { isDefinitiveFailure } from "@/lib/google/sync-health";
 import type { ThrottledNotify } from "@/lib/monitor/alert-deps";
+import { twilioUndoesBookable } from "@/lib/twilio/roster-plan";
+import type { Attributes } from "@/lib/db/types";
 
 /**
  * Keyed per agent (`bookable_blocked:<userId>`) so a single agent stuck with a
@@ -73,7 +74,39 @@ export type BlockedReason =
    * because what it says is different: nothing was slow and nothing is broken, the
    * gate simply lost a race with a pass that is loading the same calendar.
    */
-  | "calendar_contended";
+  | "calendar_contended"
+  /**
+   * #3028: Twilio carries the Redistribute tag for them, so the hourly Twilio sync
+   * would take them straight back out of the pool. Refused HERE rather than in one
+   * caller, because the admin toggle, the machine API and the Salesforce activation
+   * all arrive through this service, and a refusal only one of them made would be
+   * one other route away from not existing. No Google call is made for it and no
+   * alert is sent: nothing is broken, the tag is a decision somebody made in Twilio.
+   */
+  | "twilio_redistribute";
+
+/**
+ * The row could not be READ, so nothing was decided and nothing was written
+ * (#3028). Its own type so a caller with a person waiting can say exactly that,
+ * rather than every throw from the service reading as the same failure. Fail
+ * closed: an unreadable row is never treated as untagged, absent or admissible.
+ */
+export class BookableLookupError extends Error {
+  constructor(message: string) {
+    super(`bookable lookup failed: ${message}`);
+    this.name = "BookableLookupError";
+  }
+}
+
+/** How a caller that knows more than the stored row qualifies the flip. */
+export interface BookableOptions {
+  /**
+   * The caller read Twilio moments ago and this person's worker carries NO
+   * Redistribute tag, so the stored copy of the tag (written after the flip) may
+   * lag that read. Only the Twilio sync's own reactivation can say this.
+   */
+  liveTwilioUntagged?: boolean;
+}
 
 export type BookableResult =
   | { status: "not_found" }
@@ -243,24 +276,29 @@ type BookableRow = {
   bookable: boolean;
   email: string;
   bookable_pending_since: string | null;
+  /** Read for the Twilio Redistribute tag (#3028). */
+  attributes: Attributes | null;
 };
+
+/** The one read of the row both entry points make, failing closed (#3028). */
+async function lookupRow(column: "id" | "email", value: string): Promise<BookableRow | null> {
+  const { data, error } = await supabaseAdmin()
+    .from("users")
+    .select("id, bookable, email, bookable_pending_since, attributes")
+    .eq(column, value)
+    .maybeSingle();
+  if (error) throw new BookableLookupError(error.message);
+  return (data ?? null) as BookableRow | null;
+}
 
 export async function applyBookableByEmail(
   email: string,
   bookable: boolean,
   deps: BookableDeps = defaultBookableDeps,
 ): Promise<BookableResult> {
-  const db = supabaseAdmin();
   // Exact match, consistent with the offboarding lookup (NOT ilike: `_`/`%` in
   // the address would act as wildcards and could resolve the WRONG user).
-  const user = unwrap(
-    await db
-      .from("users")
-      .select("id, bookable, email, bookable_pending_since")
-      .eq("email", email.trim())
-      .maybeSingle(),
-    "bookable.lookup",
-  ) as BookableRow | null;
+  const user = await lookupRow("email", email.trim());
   return applyBookableToRow(user, bookable, deps);
 }
 
@@ -274,16 +312,10 @@ export async function applyBookableByUserId(
   userId: string,
   bookable: boolean,
   deps: BookableDeps = defaultBookableDeps,
+  opts: BookableOptions = {},
 ): Promise<BookableResult> {
-  const user = unwrap(
-    await supabaseAdmin()
-      .from("users")
-      .select("id, bookable, email, bookable_pending_since")
-      .eq("id", userId)
-      .maybeSingle(),
-    "bookable.lookup",
-  ) as BookableRow | null;
-  return applyBookableToRow(user, bookable, deps);
+  const user = await lookupRow("id", userId);
+  return applyBookableToRow(user, bookable, deps, opts);
 }
 
 /**
@@ -314,10 +346,21 @@ async function applyBookableToRow(
   user: BookableRow | null,
   bookable: boolean,
   deps: BookableDeps,
+  opts: BookableOptions = {},
 ): Promise<BookableResult> {
   const plan = planBookableChange(user, bookable);
   if (plan.status === "not_found") return { status: "not_found" };
   if (plan.status === "noop") return { status: "noop", userId: user!.id, bookable };
+
+  // #3028: somebody Twilio holds on Redistribute is turned straight back off by the
+  // next hourly sync, so the flip in is refused before anything is spent on it: no
+  // Google call, no pending mark (nothing here is owed a retry), no alert. Only the
+  // flip IN: taking somebody out of the pool is never held back. Asked through the
+  // same predicate the console disables its control with.
+  if (plan.bookable === true && !opts.liveTwilioUntagged && twilioUndoesBookable(user!.attributes)) {
+    log.info("bookable-api", { msg: "activation refused, Twilio holds them on Redistribute", user_id: user!.id });
+    return { status: "blocked", userId: user!.id, reason: "twilio_redistribute" };
+  }
 
   if (plan.bookable === true) {
     // The gate's deadline (#2317), taken BEFORE the first Google call, because the

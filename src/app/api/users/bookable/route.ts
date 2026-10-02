@@ -15,7 +15,9 @@ export const dynamic = "force-dynamic";
  *   POST { email, bookable: boolean }
  *     -> 200 { status: "applied" | "noop", userId, bookable }
  *     -> 404 unknown user
- *     -> 409 { status: "blocked", reason: "google_unreachable" } (activation guard)
+ *     -> 409 { status: "blocked", reason } (activation guard; `reason` is a
+ *        BlockedReason, e.g. "google_unreachable", or "twilio_redistribute" for
+ *        somebody Twilio holds on Redistribute, #3028)
  *     -> 400 | 401 | 503
  *
  * The activation guard blocks making an agent bookable when their Google

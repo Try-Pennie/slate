@@ -869,7 +869,9 @@ function BookableOutcome({ code }: { code?: string }) {
                   : code === "blocked-contended"
                     ? "Not made bookable yet: Slate was refreshing their calendar in another job at the same moment, so this attempt stood down. Nothing is wrong with the account. Try again in a minute, or leave it: the hourly roster sync retries on its own."
                   : code === "blocked-redistribute"
-                    ? "Not made bookable, because Twilio has this advisor on Redistribute."
+                    ? "Not made bookable: Twilio has this advisor on Redistribute, so the hourly sync would turn them off again. Remove the tag in Twilio, and once the next hourly sync has run they can be made bookable."
+                  : code === "unreadable"
+                    ? "Nothing was changed: Slate could not read this agent's record just now, so the change could not be checked. Try again shortly."
                   : code === "missing"
                     ? "That agent could not be found, so nothing was changed."
                     : null;

@@ -50,6 +50,7 @@ const bookable = vi.hoisted(() => ({
   ),
   applyBookableByEmail: vi.fn(),
   writeBookable: vi.fn(async () => {}),
+  BookableLookupError: class BookableLookupError extends Error {},
 }));
 const salesforce = vi.hoisted(() => ({
   syncSalesforceAgents: vi.fn(),
@@ -1187,32 +1188,29 @@ describe("setBookable Google guard (#912)", () => {
 
   // #3028: the hourly Twilio sync turns off every bookable advisor whose worker
   // carries Redistribute, so a hand flip into the pool is undone within the hour.
-  // The page disables the control, and the action refuses the same case, because a
-  // refusal that lives only in the UI is one stale tab away from not existing.
-  it("refuses to make an advisor Twilio holds on Redistribute bookable, and writes nothing", async () => {
-    dbState.single = { role: "agent", attributes: { redistribute_tagged: "Y" } };
+  // The SERVICE refuses it, so the machine API and the Salesforce activation are
+  // held by the same rule; this action's job is to say so on the page.
+  it("says Twilio holds them when the service refuses for Redistribute", async () => {
+    bookable.applyBookableByUserId.mockResolvedValueOnce({ status: "blocked", userId: "u2", reason: "twilio_redistribute" });
     await expect(setBookable(form({ user_id: "u2", bookable: "true" }))).rejects.toThrow(
       /NEXT_REDIRECT:\/admin\/agents\/u2\?bookable=blocked-redistribute/,
     );
-    expect(bookable.applyBookableByUserId).not.toHaveBeenCalled();
-  });
-
-  it("still takes an advisor on Redistribute OUT of the pool", async () => {
-    dbState.single = { role: "agent", attributes: { redistribute_tagged: "Y" } };
-    bookable.applyBookableByUserId.mockResolvedValueOnce({ status: "applied", userId: "u2", bookable: false });
-    await expect(setBookable(form({ user_id: "u2", bookable: "false" }))).rejects.toThrow(
-      /NEXT_REDIRECT:\/admin\/agents\/u2\?bookable=off/,
-    );
-    expect(bookable.applyBookableByUserId).toHaveBeenCalledWith("u2", false);
-  });
-
-  it("makes an untagged advisor bookable as before", async () => {
-    dbState.single = { role: "agent", attributes: { debt_team: ["low"] } };
-    bookable.applyBookableByUserId.mockResolvedValueOnce({ status: "applied", userId: "u2", bookable: true });
-    await expect(setBookable(form({ user_id: "u2", bookable: "true" }))).rejects.toThrow(
-      /NEXT_REDIRECT:\/admin\/agents\/u2\?bookable=on/,
-    );
     expect(bookable.applyBookableByUserId).toHaveBeenCalledWith("u2", true);
+  });
+
+  // A row the service could not read used to throw, and on this route a throw is
+  // Next's generic error page with the message scrubbed. It is refused (nothing is
+  // written on an unread row) and it lands as an outcome the page can say.
+  it("lands an unreadable row as its own outcome rather than an error page", async () => {
+    bookable.applyBookableByUserId.mockRejectedValueOnce(new bookable.BookableLookupError("connection reset"));
+    await expect(setBookable(form({ user_id: "u2", bookable: "true" }))).rejects.toThrow(
+      /NEXT_REDIRECT:\/admin\/agents\/u2\?bookable=unreadable/,
+    );
+  });
+
+  it("still throws on a failure that is not the lookup, rather than claiming nothing changed", async () => {
+    bookable.applyBookableByUserId.mockRejectedValueOnce(new Error("bookable write for u2 failed"));
+    await expect(setBookable(form({ user_id: "u2", bookable: "true" }))).rejects.toThrow(/bookable write for u2 failed/);
   });
 
   it("passes bookable=false straight through (deactivation is never gated)", async () => {
