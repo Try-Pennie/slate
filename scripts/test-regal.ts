@@ -601,5 +601,30 @@ for (const [zone, label] of [
   );
 }
 
+// startTime is written the way cal.com writes it (Dan, 2026-10-02): ISO UTC with
+// milliseconds and a Z, "2026-10-02T18:30:00.000Z". Postgres hands back the same
+// instant as "+00:00", which is what Slate used to pass straight through, so Regal and
+// Salesforce's Cal Booking Start Time held two spellings of one moment depending on
+// which system booked the call.
+{
+  for (const event of ["booking.created", "booking.rescheduled", "booking.cancelled", "booking.reassigned"] as const) {
+    const e = buildRegalEvent(event, { ...payload, starts_at: "2026-10-02T18:30:00+00:00" });
+    assert(
+      e.properties.startTime === "2026-10-02T18:30:00.000Z",
+      `${event} sends startTime in cal.com's format (got ${String(e.properties.startTime)})`,
+    );
+  }
+  // An offset other than UTC is converted, not relabelled.
+  const offset = buildRegalEvent("booking.created", { ...payload, starts_at: "2026-10-02T14:30:00-04:00" });
+  assert(offset.properties.startTime === "2026-10-02T18:30:00.000Z", "an offset start is converted to the same UTC instant");
+  // An unreadable start is refused by name rather than sent as a date nobody can read.
+  let refused = "";
+  try {
+    buildRegalEvent("booking.created", { ...payload, starts_at: "not a date" });
+  } catch (err) {
+    refused = err instanceof Error ? err.message : String(err);
+  }
+  assert(refused.includes("start could not be read"), `an unreadable start is refused by name (got "${refused}")`);
+}
 
 finish();
