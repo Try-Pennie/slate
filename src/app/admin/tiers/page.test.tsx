@@ -251,3 +251,133 @@ describe("TiersPage on an unreadable roster (#1629)", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });
+
+// Dan, 2026-10-02: a manager reads pools in words, never bucket codes, and an
+// empty pool whose leads the routing ladder carries elsewhere does not say
+// bookings will fail.
+describe("TiersPage for a manager, and an empty pool that overflows", () => {
+  const person = (role: string) => ({
+    id: "p1",
+    role,
+    org_id: "o1",
+    email: "p@x.com",
+    theme_preference: null,
+    bookable: false,
+    avatar_url: null,
+  });
+  const emptyBeyond = (overflow: { code: string; poolKey: string; label: string | null } | null) => ({
+    code: "120",
+    name: "Low | Beyond | No Legal Param",
+    depth: 0,
+    effectiveDepth: 0,
+    outCount: 0,
+    soleAgentName: null,
+    hasWorkingFallback: false,
+    flag: "none",
+    effectiveFlag: "none",
+    agents: [],
+    poolKey: "low-beyond",
+    poolLabel: "Low with Beyond",
+    overflowToday: overflow,
+    overflowOnRoster: overflow,
+  });
+  const toAchieve = { code: "130", poolKey: "low-achieve", label: "Low with Achieve" };
+
+  async function renderAs(role: string, rows: unknown[]) {
+    const saved = process.env.AGENT_SCHEDULING_LIVE;
+    process.env.AGENT_SCHEDULING_LIVE = "true";
+    try {
+      auth.currentUser.mockResolvedValueOnce(person(role));
+      load.loadTierDepths.mockResolvedValueOnce(rows);
+      return render(await TiersPage());
+    } finally {
+      if (saved === undefined) delete process.env.AGENT_SCHEDULING_LIVE;
+      else process.env.AGENT_SCHEDULING_LIVE = saved;
+    }
+  }
+
+  it("shows a manager no bucket codes at all", async () => {
+    const { container } = await renderAs("manager", [emptyBeyond(toAchieve)]);
+    expect(screen.queryByText("Bucket codes")).toBeNull();
+    expect(container.textContent).not.toMatch(/\b1[0-3][0-2]\b/);
+    expect(screen.getByText("Low with Beyond")).toBeTruthy();
+  });
+
+  it("still shows an admin the codes", async () => {
+    await renderAs("admin", [emptyBeyond(toAchieve)]);
+    expect(screen.getByText("Bucket codes")).toBeTruthy();
+    expect(screen.getByText("120")).toBeTruthy();
+  });
+
+  it("names where an empty pool's leads go instead of saying bookings fail", async () => {
+    const { container } = await renderAs("manager", [emptyBeyond(toAchieve)]);
+    expect(container.textContent).toMatch(/Leads go to Low with Achieve instead/);
+    expect(container.textContent).not.toMatch(/bookings will fail/i);
+    expect(screen.queryByText("No coverage")).toBeNull();
+  });
+
+  it("says bookings fail only when nothing on the ladder can take them", async () => {
+    const { container } = await renderAs("manager", [emptyBeyond(null)]);
+    expect(container.textContent).toMatch(/bookings will fail/i);
+    expect(screen.getByText("No coverage")).toBeTruthy();
+  });
+});
+
+// Review of #3018: the pill, the counts and the sentence read one rule, with the
+// bucket's own fallback agent first, as routing does.
+describe("TiersPage reads an empty pool's cover from one rule", () => {
+  it("a pool with a working fallback and a staffed rung is covered by the fallback everywhere", async () => {
+    const saved = process.env.AGENT_SCHEDULING_LIVE;
+    process.env.AGENT_SCHEDULING_LIVE = "true";
+    try {
+      auth.currentUser.mockResolvedValueOnce({ id: "p1", role: "manager", org_id: "o1", email: "p@x.com", theme_preference: null, bookable: false, avatar_url: null });
+      load.loadTierDepths.mockResolvedValueOnce([
+        {
+          code: "120", name: "Low | Beyond | No Legal Param", depth: 0, effectiveDepth: 0, outCount: 0,
+          soleAgentName: null, hasWorkingFallback: true, flag: "none", effectiveFlag: "none", agents: [],
+          poolKey: "low-beyond", poolLabel: "Low with Beyond",
+          overflowToday: { code: "130", poolKey: "low-achieve", label: "Low with Achieve" },
+          overflowOnRoster: { code: "130", poolKey: "low-achieve", label: "Low with Achieve" },
+        },
+      ]);
+      const { container } = render(await TiersPage());
+      expect(screen.queryByText("No coverage")).toBeNull();
+      expect(screen.getByText("Fallback only")).toBeTruthy();
+      expect(container.textContent).toMatch(/0\s*sending leads to another pool/);
+      expect(container.textContent).toMatch(/0\s*with no coverage/);
+      // Counted in the strip too, not dropped from every count.
+      expect(container.textContent).toMatch(/1\s*on a fallback agent only/);
+    } finally {
+      if (saved === undefined) delete process.env.AGENT_SCHEDULING_LIVE;
+      else process.env.AGENT_SCHEDULING_LIVE = saved;
+    }
+  });
+});
+
+// Review of #3018: a pool whose fallback agent catches its leads never also says
+// they go to another pool, even on a day its people are out.
+describe("TiersPage with people out and a working fallback", () => {
+  it("does not name an overflow pool when the fallback catches the leads", async () => {
+    const saved = process.env.AGENT_SCHEDULING_LIVE;
+    process.env.AGENT_SCHEDULING_LIVE = "true";
+    try {
+      auth.currentUser.mockResolvedValueOnce({ id: "p1", role: "manager", org_id: "o1", email: "p@x.com", theme_preference: null, bookable: false, avatar_url: null });
+      load.loadTierDepths.mockResolvedValueOnce([
+        {
+          code: "120", name: "Low | Beyond | No Legal Param", depth: 2, effectiveDepth: 0, outCount: 2,
+          soleAgentName: null, hasWorkingFallback: true, flag: "thin", effectiveFlag: "none",
+          agents: [{ id: "a", name: "A", out: true }, { id: "b", name: "B", out: true }],
+          poolKey: "low-beyond", poolLabel: "Low with Beyond",
+          overflowToday: { code: "130", poolKey: "low-achieve", label: "Low with Achieve" },
+          overflowOnRoster: null,
+        },
+      ]);
+      const { container } = render(await TiersPage());
+      expect(container.textContent).not.toMatch(/Leads go to/);
+      expect(screen.getByText("Fallback only")).toBeTruthy();
+    } finally {
+      if (saved === undefined) delete process.env.AGENT_SCHEDULING_LIVE;
+      else process.env.AGENT_SCHEDULING_LIVE = saved;
+    }
+  });
+});

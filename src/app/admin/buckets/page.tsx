@@ -7,7 +7,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import { log } from "@/lib/log";
 import { deriveAttributeCatalog } from "@/lib/availability/catalog";
-import { bucketDepthByCode } from "@/app/admin/bucket-depth";
+import { bucketCoverageByCode } from "@/app/admin/bucket-depth";
 import { setDefaultBucket } from "@/app/admin/actions";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
@@ -48,7 +48,7 @@ export default async function BucketsPage({
     db.from("users").select("*").eq("org_id", me.org_id).eq("is_test", false),
     db.from("event_types").select("*").eq("org_id", me.org_id),
     // #1929: `is_test = false`, matching the default bucket picker below
-    // (`page.tsx` further down) and, crucially, `bucketDepthByCode`, which
+    // (`page.tsx` further down) and, crucially, `bucketCoverageByCode`, which
     // excludes test buckets. The two reads disagreed about what counts, so the
     // SMOKE buckets arrived here with no depth entry and the `?? 0` at the call
     // site rendered them as "0 eligible agents (no fallback set, bookings will
@@ -137,10 +137,14 @@ export default async function BucketsPage({
   }));
   // `null` (not a zeroed map) when either input could not be read: the eligible
   // count beside each bucket then says nothing instead of saying zero.
-  const depthByBucketCode =
+  // One staffing depth pass for both the count and where an empty bucket's
+  // leads go, rather than two passes over the same inputs.
+  const coverage =
     rosterUnreadable || bucketsUnreadable || membersUnreadable
       ? null
-      : bucketDepthByCode(buckets, users, members);
+      : bucketCoverageByCode(buckets, users, members);
+  const depthByBucketCode = coverage?.depthByCode ?? null;
+  const overflowByBucketCode = coverage?.overflowByCode ?? null;
 
   // Direct-booking default bucket (#1016): which pool a booking with no bucket
   // code lands in. It picks from the same list this page edits, so it lives here.
@@ -270,6 +274,7 @@ export default async function BucketsPage({
                   // belongs to, and a count could not tell two pools apart. The
                   // count the table shows is derived from the same list.
                   members.filter((m) => m.bucket_id === b.id).map((m) => m.user_id),
+                  overflowByBucketCode?.get(b.code) ?? null,
                 ),
               )}
               forms={Object.fromEntries(
@@ -287,6 +292,7 @@ export default async function BucketsPage({
                     }
                     catalog={attrCatalog}
                     eligibleCount={depthByBucketCode?.get(b.code)}
+                    overflowTo={overflowByBucketCode?.get(b.code) ?? null}
                   />,
                 ]),
               )}

@@ -336,9 +336,13 @@ describe("BucketMembersPicker in fallback mode (#1784)", () => {
     expect(screen.getByRole("listbox").getAttribute("aria-multiselectable")).toBeNull();
   });
 
-  it("says a missing fallback is a problem, in its own words", () => {
+  // Dan, 2026-10-02: no fallback does not mean bookings fail, because the
+  // routing ladder carries a lead nobody matches to the next staffed pool.
+  it("says what happens with no fallback: the ladder, and failure only at its end", () => {
     renderFallback();
-    expect(screen.getByText(/bookings will fail/i)).toBeTruthy();
+    const line = screen.getByText(/No fallback set/);
+    expect(line.textContent).toMatch(/routing ladder/);
+    expect(line.textContent).toMatch(/outside the ladder, or one whose ladder reaches nobody, fails them/);
   });
 
   it("tells an unreadable roster apart from an empty one", async () => {
