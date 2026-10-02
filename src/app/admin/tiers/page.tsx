@@ -66,9 +66,12 @@ const DEPTH_LEGEND =
 function rowDetail(row: TierDepth): string {
   // Where an empty pool's leads go today. The ladder is the router's own, so
   // this names the pool a booking would really land in (Dan, 2026-10-02).
-  const goes = row.overflowToday
-    ? ` Leads go to ${row.overflowToday.label ?? "another pool"} instead.`
-    : "";
+  // Only when the ladder is what catches them: a working fallback agent comes
+  // first, as in routing, and the pill says so through the same rule.
+  const goes =
+    emptyPoolCover(row) === "overflow" && row.overflowToday
+      ? ` Leads go to ${row.overflowToday.label ?? "another pool"} instead.`
+      : "";
   // #738/#744: agents who are out today (approved time off, or an all-day block
   // on their own calendar) thin the tier, or empty it.
   if (row.outCount > 0) {

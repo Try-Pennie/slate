@@ -351,3 +351,31 @@ describe("TiersPage reads an empty pool's cover from one rule", () => {
     }
   });
 });
+
+// Review of #3018: a pool whose fallback agent catches its leads never also says
+// they go to another pool, even on a day its people are out.
+describe("TiersPage with people out and a working fallback", () => {
+  it("does not name an overflow pool when the fallback catches the leads", async () => {
+    const saved = process.env.AGENT_SCHEDULING_LIVE;
+    process.env.AGENT_SCHEDULING_LIVE = "true";
+    try {
+      auth.currentUser.mockResolvedValueOnce({ id: "p1", role: "manager", org_id: "o1", email: "p@x.com", theme_preference: null, bookable: false, avatar_url: null });
+      load.loadTierDepths.mockResolvedValueOnce([
+        {
+          code: "120", name: "Low | Beyond | No Legal Param", depth: 2, effectiveDepth: 0, outCount: 2,
+          soleAgentName: null, hasWorkingFallback: true, flag: "thin", effectiveFlag: "none",
+          agents: [{ id: "a", name: "A", out: true }, { id: "b", name: "B", out: true }],
+          poolKey: "low-beyond", poolLabel: "Low with Beyond",
+          overflowToday: { code: "130", poolKey: "low-achieve", label: "Low with Achieve" },
+          overflowOnRoster: null,
+        },
+      ]);
+      const { container } = render(await TiersPage());
+      expect(container.textContent).not.toMatch(/Leads go to/);
+      expect(screen.getByText("Fallback only")).toBeTruthy();
+    } finally {
+      if (saved === undefined) delete process.env.AGENT_SCHEDULING_LIVE;
+      else process.env.AGENT_SCHEDULING_LIVE = saved;
+    }
+  });
+});

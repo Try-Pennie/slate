@@ -28,31 +28,43 @@ function depthRows(
   return bucketStaffingDepths(buckets, agents, activeMembers);
 }
 
+/**
+ * Depth and overflow for every bucket in ONE staffing depth pass, which is what
+ * the buckets page reads (Dan, 2026-10-02). The editor counts the ROSTER, so the
+ * overflow is the roster overflow, not today's: a bucket nobody matches whose
+ * ladder reaches a staffed pool is not failing its leads. It is named by the
+ * pool's words, or the rung's code where the criteria are not the routing matrix,
+ * since this page is admin only and codes are its vocabulary. Null overflow when
+ * the bucket is staffed or the ladder reaches nobody.
+ */
+export function bucketCoverageByCode(
+  buckets: Bucket[],
+  users: Pick<User, "id" | "name" | "email" | "attributes" | "bookable" | "deactivated_at">[],
+  members: Pick<BucketMember, "bucket_id" | "user_id" | "active">[],
+): Map<string, { depth: number; overflowTo: string | null }> {
+  return new Map(
+    depthRows(buckets, users, members).map((d) => [
+      d.code,
+      {
+        depth: d.depth,
+        overflowTo: d.overflowOnRoster ? (d.overflowOnRoster.label ?? d.overflowOnRoster.code) : null,
+      },
+    ]),
+  );
+}
+
 export function bucketDepthByCode(
   buckets: Bucket[],
   users: Pick<User, "id" | "name" | "email" | "attributes" | "bookable" | "deactivated_at">[],
   members: Pick<BucketMember, "bucket_id" | "user_id" | "active">[],
 ): Map<string, number> {
-  return new Map(depthRows(buckets, users, members).map((d) => [d.code, d.depth]));
+  return new Map([...bucketCoverageByCode(buckets, users, members)].map(([c, v]) => [c, v.depth]));
 }
 
-/**
- * Where each empty bucket's leads go, in words, from the same depth rows
- * (Dan, 2026-10-02). The editor counts the ROSTER, so this is the roster
- * overflow, not today's. A bucket nobody matches whose ladder reaches a staffed
- * pool is not failing its leads. The pool's name, or its code where the criteria
- * are not the routing matrix, since this page is admin only and codes are its
- * vocabulary. Null when the bucket is staffed or the ladder reaches nobody.
- */
 export function bucketOverflowByCode(
   buckets: Bucket[],
   users: Pick<User, "id" | "name" | "email" | "attributes" | "bookable" | "deactivated_at">[],
   members: Pick<BucketMember, "bucket_id" | "user_id" | "active">[],
 ): Map<string, string | null> {
-  return new Map(
-    depthRows(buckets, users, members).map((d) => [
-      d.code,
-      d.overflowOnRoster ? (d.overflowOnRoster.label ?? d.overflowOnRoster.code) : null,
-    ]),
-  );
+  return new Map([...bucketCoverageByCode(buckets, users, members)].map(([c, v]) => [c, v.overflowTo]));
 }

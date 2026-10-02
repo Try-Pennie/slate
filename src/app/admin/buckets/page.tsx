@@ -7,7 +7,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import { log } from "@/lib/log";
 import { deriveAttributeCatalog } from "@/lib/availability/catalog";
-import { bucketDepthByCode, bucketOverflowByCode } from "@/app/admin/bucket-depth";
+import { bucketCoverageByCode } from "@/app/admin/bucket-depth";
 import { setDefaultBucket } from "@/app/admin/actions";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
@@ -137,12 +137,16 @@ export default async function BucketsPage({
   }));
   // `null` (not a zeroed map) when either input could not be read: the eligible
   // count beside each bucket then says nothing instead of saying zero.
-  const depthByBucketCode =
+  // One staffing depth pass for both the count and where an empty bucket's
+  // leads go, rather than two passes over the same inputs.
+  const coverage =
     rosterUnreadable || bucketsUnreadable || membersUnreadable
       ? null
-      : bucketDepthByCode(buckets, users, members);
+      : bucketCoverageByCode(buckets, users, members);
+  const depthByBucketCode =
+    coverage === null ? null : new Map([...coverage].map(([c, v]) => [c, v.depth]));
   const overflowByBucketCode =
-    depthByBucketCode === null ? null : bucketOverflowByCode(buckets, users, members);
+    coverage === null ? null : new Map([...coverage].map(([c, v]) => [c, v.overflowTo]));
 
   // Direct-booking default bucket (#1016): which pool a booking with no bucket
   // code lands in. It picks from the same list this page edits, so it lives here.
