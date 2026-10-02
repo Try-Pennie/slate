@@ -15,6 +15,13 @@
  * than a second copy of it (L41).
  */
 import type { SupplyCell, SupplyFreshness, SupplyTotals } from "./bucket-supply.ts";
+import { bucketSpecForXbc } from "../xbc.ts";
+import { OFFERED_OPEN_DAYS } from "../availability/bookable-days.ts";
+
+/** The booker's offered window in words, from the constant the booker uses, so
+ *  the page cannot keep naming a length the booker no longer offers. */
+const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven"];
+const WINDOW = `the next ${NUMBER_WORDS[OFFERED_OPEN_DAYS] ?? String(OFFERED_OPEN_DAYS)} open days`;
 
 /**
  * Every state this page has a name for.
@@ -31,7 +38,9 @@ export type SupplyLegendId =
   | "no-capacity"
   | "beyond-horizon"
   | "closed"
-  | "unknown";
+  | "unknown"
+  | "overflows"
+  | "other-days";
 
 export interface SupplyLegendEntry {
   /** Its own id: two entries share the `counted` kind, because "every time the
@@ -92,6 +101,12 @@ export function cellStyle(cell: SupplyCell): { cell: string; mark: string } {
       // The one state on this page somebody has to act on, so it keeps the error
       // treatment the old "nothing open" cell had, and a letter of its own.
       return { cell: "bg-error/25 text-fg", mark: "N" };
+    case "overflows":
+      // Deliberately quiet: the leads are caught, so nothing here is wrong.
+      return { cell: "bg-[var(--bg-alt)] text-fg-muted", mark: "O" };
+    case "other-days":
+      // Quiet for the same reason: the pool's own other days take its leads.
+      return { cell: "bg-[var(--bg-alt)] text-fg-muted", mark: "D" };
     case "no-capacity":
       return { cell: "bg-[var(--bg-alt)] text-fg-muted", mark: "T" };
     case "beyond-horizon":
@@ -115,6 +130,24 @@ export const SUPPLY_LEGEND: SupplyLegendEntry[] = [
       "The day had room for appointments and this pool has none: none offered, and none booked. This is the one to act on.",
     mark: "N",
     cell: "bg-error/25 text-fg",
+  },
+  {
+    id: "overflows",
+    label: "Overflows",
+    meaning:
+      `This pool has no times in ${WINDOW}, so its leads are shown the times of the pool named on the row. Nobody is turned away.`,
+    mark: "O",
+    cell: "bg-[var(--bg-alt)] text-fg-muted",
+    swatchExtra: "border border-border",
+  },
+  {
+    id: "other-days",
+    label: "Other days here",
+    meaning:
+      `This pool has no times that day, and its leads are offered its other days in ${WINDOW}. Nobody is turned away.`,
+    mark: "D",
+    cell: "bg-[var(--bg-alt)] text-fg-muted",
+    swatchExtra: "border border-border",
   },
   {
     id: "saturated",
@@ -195,7 +228,7 @@ export function supplyLegendEntry(id: SupplyLegendId): SupplyLegendEntry {
  * Each chip here names the legend entry it counts and takes its WORDS from that
  * entry, so there is one label per state and both ends of the page read it.
  *
- * Five of the eight states, and the three missing ones are properties of the
+ * Seven of the ten states, and the three missing ones are properties of the
  * DAY rather than of a bucket (closed, nothing left today, past the horizon), so
  * a count of them across buckets would be sixty times one fact.
  */
@@ -205,6 +238,10 @@ export const SUPPLY_SUMMARY_STATES: { totalsKey: keyof SupplyTotals; legendId: S
   { totalsKey: "saturated", legendId: "saturated" },
   { totalsKey: "partBooked", legendId: "some" },
   { totalsKey: "nothingBooked", legendId: "none" },
+  // Its own chip, and NOT an alarming one: an empty pool whose leads are caught
+  // turns nobody away (2026-10-02).
+  { totalsKey: "overflows", legendId: "overflows" },
+  { totalsKey: "otherDays", legendId: "other-days" },
   { totalsKey: "unmeasured", legendId: "unknown" },
 ];
 
@@ -242,6 +279,10 @@ export function supplyCellTitle(cell: SupplyCell, bucketLabel: string, dayLabel:
       return `${when}: ${cell.booked} of ${cell.capacity} possible times booked, ${sharePercent(cell.share)} percent.`;
     case "nobody-available":
       return `${when}: nobody available. The day had room for appointments and this pool has none offered and none booked.`;
+    case "overflows":
+      return `${when}: this pool has no times in ${WINDOW}, so its leads are shown ${cell.toPool ?? "another pool"}'s times instead.`;
+    case "other-days":
+      return `${when}: nothing that day, and its leads are offered this pool's other days in ${WINDOW}.`;
     case "no-capacity":
       return `${when}: nothing left today. The office is open but no whole appointment fits before closing.`;
     case "beyond-horizon":
@@ -349,3 +390,45 @@ export const BACKEND_GROUP_LABEL: Record<string, string> = {
   "2": "Beyond",
   "3": "Achieve",
 };
+
+/**
+ * What a manager's row is called: the pool in words, else the bucket's stored
+ * name, and never the code (2026-10-02). A code is how admins configure buckets
+ * and means nothing to a sales manager.
+ *
+ * When the bucket list could not be read the loader names a row by its code, so
+ * a name that IS the code is not a name, and the row says its name is unknown
+ * rather than showing the code by the back door.
+ */
+export function poolRowName(row: { code: string; name: string; poolLabel: string | null }): string {
+  return row.poolLabel ?? poolRowDetail(row) ?? "Name could not be read";
+}
+
+/**
+ * What tells one manager row apart from another of the same pool, without a
+ * code: the bucket's stored name, or, when that name is only the code (the
+ * bucket list was unreadable), the same words spelled out from the code's
+ * digits ("Low | Both | Legal"). Null when neither exists, rather than the code.
+ *
+ * A pool's codes share a row only when they agree, so a split pool draws several
+ * rows under one pool name, and this is the line that says which is which.
+ */
+export function poolRowDetail(row: { code: string; name: string }): string | null {
+  const name = row.name.trim();
+  if (name && name !== row.code) return name;
+  return bucketSpecForXbc(row.code)?.name ?? null;
+}
+
+/**
+ * Where a row's leads go, said once on the row, or null when it needs saying
+ * nowhere. An overflowing row names its one rung (the booker serves one rung for
+ * the whole window); a red row whose leads the booker's last resort would offer
+ * later days says that, while staying red, because it is the alerting case.
+ */
+export function leadsNote(row: { cells: SupplyCell[]; offeredLater: boolean }): string | null {
+  const overflow = row.cells.find((c) => c.kind === "overflows");
+  if (overflow && overflow.kind === "overflows") {
+    return `Leads go to ${overflow.toPool ?? "another pool"}`;
+  }
+  return row.offeredLater ? "Leads are offered later days" : null;
+}

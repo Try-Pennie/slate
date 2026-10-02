@@ -25,6 +25,7 @@ import {
   dayIsClosed,
   tierOrder,
   troubleRank,
+  supplyPoolGroups,
   supplyTotals,
   type BucketSupplyRow,
   type CachedSlotRow,
@@ -36,6 +37,10 @@ import {
   SUPPLY_SUMMARY_STATES,
   agentCountLabel,
   computedAtLabel,
+  leadsNote,
+  poolRowDetail,
+  poolRowName,
+  supplyCellTitle,
   freshnessLabel,
   relativeAge,
   supplyLegendEntry,
@@ -87,7 +92,9 @@ function codesOf(
     horizonDays: 4,
     nowMs: NOW,
     buckets,
-    depthByCode: new Map(buckets.map((b) => [b.code, { depth: 4, effectiveDepth: 3 }])),
+    depthByCode: new Map(
+      buckets.map((b) => [b.code, { depth: 4, effectiveDepth: 3, poolKey: `pool-${b.code}`, poolLabel: null }]),
+    ),
     cacheRows,
     bookedByCodeAndDate: new Map(),
   });
@@ -106,11 +113,14 @@ function codesOf(
     return {
       code: "120",
       name: "n",
+      poolKey: `pool-${over.code ?? "120"}`,
+      poolLabel: null,
       depth: 4,
       effectiveDepth: 3,
       cacheState: "measured",
       computedAtMs: NOW - 30_000,
       freshness: "fresh",
+      offeredLater: false,
       cells: [{ kind: "counted", booked: 0, capacity: 21, share: 0 }],
       ...over,
     };
@@ -145,29 +155,31 @@ function codesOf(
   const buckets = [
     { code: "220", name: "Medium, healthy" },
     { code: "110", name: "Low, healthy" },
-    { code: "120", name: "Low, nobody available" },
+    // 111 rather than a Beyond code: an unconstrained code's ladder holds only
+    // itself, so no healthy row below can catch its empty day as an overflow.
+    { code: "111", name: "Low, nobody available" },
   ];
 
   // The troubled pool is deliberately the one the CODE order puts SECOND (110
-  // sorts before 120 on the backend digit), so the two orderings disagree and
+  // sorts before 111 on the legal digit), so the two orderings disagree and
   // the assertion can tell them apart. Picking the pool that already sorts first
   // would be satisfied by the ranking doing nothing at all (L159).
   const calm = codesOf(buckets, [
     cachedRow("220", slotsFrom1320(9), FRESH_STAMP),
     cachedRow("110", slotsFrom1320(9), FRESH_STAMP),
-    cachedRow("120", slotsFrom1320(9), FRESH_STAMP),
+    cachedRow("111", slotsFrom1320(9), FRESH_STAMP),
   ]);
-  eq(calm.join(","), "220,110,120", "with nothing in trouble the code order stands");
+  eq(calm.join(","), "220,110,111", "with nothing in trouble the code order stands");
 
   const codes = codesOf(buckets, [
     cachedRow("220", slotsFrom1320(9), FRESH_STAMP),
     cachedRow("110", slotsFrom1320(9), FRESH_STAMP),
     // No slots at all on an open day, and nothing booked: nobody available.
-    cachedRow("120", [], FRESH_STAMP),
+    cachedRow("111", [], FRESH_STAMP),
   ]);
   eq(
     codes.join(","),
-    "220,120,110",
+    "220,111,110",
     "the tier stays the outer key and the troubled pool leads its own tier",
   );
 
@@ -283,6 +295,8 @@ function codesOf(
     "beyond-horizon",
     "closed",
     "unknown",
+    "overflows",
+    "other-days",
   ];
   for (const id of ALL_IDS) {
     const matches = SUPPLY_LEGEND.filter((e) => e.id === id);
@@ -293,7 +307,7 @@ function codesOf(
   // Every state the summary counts is one the key explains, which is the whole
   // content of "one vocabulary": a chip naming a state with no entry would be a
   // word above the table that nothing below it defines.
-  const totals = supplyTotals([], 0);
+  const totals = supplyTotals(supplyPoolGroups([], NOW), 0);
   for (const { totalsKey, legendId } of SUPPLY_SUMMARY_STATES) {
     const entry = supplyLegendEntry(legendId);
     assert(entry.label.trim().length > 0, `${legendId} has a label the summary can use`);
@@ -336,11 +350,14 @@ function codesOf(
     return {
       code: "120",
       name: "n",
+      poolKey: `pool-${over.code ?? "120"}`,
+      poolLabel: null,
       depth: 4,
       effectiveDepth: 3,
       cacheState: "measured",
       computedAtMs: NOW,
       freshness: "fresh",
+      offeredLater: false,
       cells: [{ kind: "closed" }],
       ...over,
     };
@@ -353,7 +370,7 @@ function codesOf(
   // Judged from the CELLS, never from the counts being zero: an empty report
   // satisfies every count too, and means something else entirely.
   assert(!dayIsClosed([], 0), "no rows at all is not a closed day");
-  const totals = supplyTotals([closedRow()], 0);
+  const totals = supplyTotals(supplyPoolGroups([closedRow()], NOW), 0);
   eq(
     totals.measured + totals.unmeasured + totals.nobodyAvailable,
     0,
@@ -380,7 +397,7 @@ function codesOf(
     horizonDays: 4,
     nowMs: NOW,
     buckets: [{ code: "120", name: "Low" }],
-    depthByCode: new Map([["120", { depth: 4, effectiveDepth: 3 }]]),
+    depthByCode: new Map([["120", { depth: 4, effectiveDepth: 3, poolKey: "pool-120", poolLabel: "Low" }]]),
     cacheRows: [cachedRow("120", slotsFrom1320(9), STALE_STAMP)],
     bookedByCodeAndDate: new Map(),
   });
@@ -402,6 +419,71 @@ function codesOf(
       );
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// What a manager's row is called (2026-10-02): the pool in words, else the
+// bucket's own name, and never the code by any route.
+// ---------------------------------------------------------------------------
+{
+  eq(poolRowName({ code: "120", name: "Low | Beyond | Legal", poolLabel: "Low with Beyond" }), "Low with Beyond", "a pool in the matrix is named in words");
+  eq(poolRowName({ code: "777", name: "Spanish speakers", poolLabel: null }), "Spanish speakers", "a hand made pool falls back to the bucket's name");
+  // The loader names a cache-only row by its code when the bucket list is
+  // unreadable, so a name equal to the code is not a name.
+  const unnamed = poolRowName({ code: "777", name: "777", poolLabel: null });
+  assert(!/777/.test(unnamed), `a name that is only the code is never shown (got ${unnamed})`);
+  assert(unnamed.trim().length > 0, "and the row still says something");
+  assert(!/777/.test(poolRowName({ code: "777", name: "  ", poolLabel: null })), "nor is a blank name replaced by the code");
+}
+
+// ---------------------------------------------------------------------------
+// The two quiet states an empty day can take (2026-10-02), each in the same
+// vocabulary as the rest of the page, and neither one alarming.
+// ---------------------------------------------------------------------------
+{
+  for (const id of ["overflows", "other-days"] as const) {
+    assert(!SUPPLY_ALARMING_STATES.includes(id), `${id} is not one of the alarming states`);
+    assert(
+      SUPPLY_SUMMARY_STATES.some((s) => s.legendId === id),
+      `${id} is counted on its own chip, never under nobody available`,
+    );
+  }
+  eq(supplyLegendEntry("overflows").label, "Overflows", "the overflow state has its own name");
+  eq(supplyLegendEntry("other-days").label, "Other days here", "and so does a pool offering its other days");
+
+  const achieve = { kind: "overflows" as const, toPool: "Low with Achieve" };
+  const title = supplyCellTitle(achieve, "Low with Beyond", "Tuesday, August 4");
+  assert(title.includes("Low with Achieve"), `the cell sentence names where the leads go (got ${title})`);
+  assert(!/act on/i.test(title), "and does not ask anybody to act");
+  const other = supplyCellTitle({ kind: "other-days" }, "Low with Beyond", "Tuesday, August 4");
+  assert(/other days/i.test(other) && !/act on/i.test(other), `an other days cell says so, calmly (got ${other})`);
+
+  eq(leadsNote({ cells: [{ kind: "closed" }, achieve, achieve], offeredLater: false }), "Leads go to Low with Achieve", "the row names the rung once");
+  eq(leadsNote({ cells: [{ kind: "overflows", toPool: null }], offeredLater: false }), "Leads go to another pool", "never by a code");
+  eq(leadsNote({ cells: [{ kind: "nobody-available" }], offeredLater: true }), "Leads are offered later days", "the last resort is named on a red row");
+  eq(leadsNote({ cells: [{ kind: "nobody-available" }, { kind: "closed" }], offeredLater: false }), null, "a row nothing catches has no note");
+  eq(leadsNote({ cells: [{ kind: "other-days" }], offeredLater: false }), null, "a pool serving itself needs no note");
+}
+
+// What tells two manager rows of one pool apart without a code.
+{
+  eq(poolRowDetail({ code: "111", name: "Low | Both | Legal" }), "Low | Both | Legal", "the stored name, when it is a name");
+  eq(poolRowDetail({ code: "111", name: "111" }), "Low | Both | Legal", "a name that is only the code is spelled out from the code's digits");
+  eq(poolRowDetail({ code: "777", name: "777" }), null, "and a code the matrix cannot spell has nothing to show rather than the code");
+  eq(poolRowName({ code: "111", name: "111", poolLabel: null }), "Low | Both | Legal", "a manager's row name spells an XBC code out before giving up");
+}
+
+// Review of #3021: the page names the booker's window from the same constant
+// the booker uses, so the wording cannot keep saying three if the window changes.
+{
+  const { readFileSync } = await import("node:fs");
+  const copySrc = readFileSync(new URL("../src/lib/admin/bucket-supply-copy.ts", import.meta.url), "utf8");
+  assert(!/\b(three|3) open days\b/.test(copySrc), "the copy spells no window length of its own");
+  assert(/OFFERED_OPEN_DAYS/.test(copySrc), "the copy reads the booker's window constant");
+  assert(
+    /next three open days/.test(supplyLegendEntry("overflows").meaning),
+    "and today it still reads the next three open days",
+  );
 }
 
 finish();

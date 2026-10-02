@@ -39,8 +39,8 @@ const settings = vi.hoisted(() => ({
 
 const depth = vi.hoisted(() => ({
   loadTierDepths: vi.fn(async () => [
-    { code: "120", name: "Low | Beyond | No Legal Param", depth: 4, effectiveDepth: 3 },
-    { code: "110", name: "Low | Both | No Legal Param", depth: 9, effectiveDepth: 9 },
+    { code: "120", name: "Low | Beyond | No Legal Param", depth: 4, effectiveDepth: 3, poolKey: "pool-low-beyond", poolLabel: "Low with Beyond" },
+    { code: "110", name: "Low | Both | No Legal Param", depth: 9, effectiveDepth: 9, poolKey: "pool-low", poolLabel: "Low" },
   ]),
 }));
 
@@ -156,8 +156,8 @@ beforeEach(() => {
   });
   settings.readBookingHorizonDays.mockResolvedValue(4);
   depth.loadTierDepths.mockResolvedValue([
-    { code: "120", name: "Low | Beyond | No Legal Param", depth: 4, effectiveDepth: 3 },
-    { code: "110", name: "Low | Both | No Legal Param", depth: 9, effectiveDepth: 9 },
+    { code: "120", name: "Low | Beyond | No Legal Param", depth: 4, effectiveDepth: 3, poolKey: "pool-low-beyond", poolLabel: "Low with Beyond" },
+    { code: "110", name: "Low | Both | No Legal Param", depth: 9, effectiveDepth: 9, poolKey: "pool-low", poolLabel: "Low" },
   ]);
   db.slotRows = [
     {
@@ -315,6 +315,78 @@ describe("loadBucketSupply (#1254)", () => {
     // The seven booked times are no longer being offered, so the ceiling is the
     // 21 the cache still holds plus nothing new: they are the same instants.
     expect(cell).toEqual({ kind: "counted", booked: 7, capacity: 21, share: 7 / 21 });
+  });
+
+  // 2026-10-02: a pool's bookings count for every code of the pool, through the
+  // pool key staffing depth computed, so a code nobody booked through still
+  // reports how busy its pool is.
+  it("combines a pool's bookings across its codes, by staffing depth's pool key", async () => {
+    depth.loadTierDepths.mockResolvedValue([
+      { code: "110", name: "Low | Both | No Legal Param", depth: 9, effectiveDepth: 9, poolKey: "pool-low", poolLabel: "Low" },
+      { code: "111", name: "Low | Both | Legal", depth: 9, effectiveDepth: 9, poolKey: "pool-low", poolLabel: "Low" },
+    ]);
+    db.bucketRows = [
+      { code: "110", name: "Low | Both | No Legal Param", is_test: false },
+      { code: "111", name: "Low | Both | Legal", is_test: false },
+    ];
+    const stamp = new Date(NOW.getTime() - 30_000).toISOString();
+    db.slotRows = ["110", "111"].map((bucket_code) => ({
+      bucket_code,
+      payload: { slots: FULL_DAY.slice(7), eventType: EVENT_TYPE },
+      computed_at: stamp,
+    }));
+    db.bookingRows = FULL_DAY.slice(0, 7).map((starts_at) => ({ starts_at, buckets: { code: "110" } }));
+    const report = await loadBucketSupply("org-1", NOW);
+    expect(report.measurable).toBe(true);
+    if (!report.measurable) return;
+    const a = report.rows.find((r) => r.code === "110");
+    const b = report.rows.find((r) => r.code === "111");
+    expect(a?.cells[0]).toEqual({ kind: "counted", booked: 7, capacity: 21, share: 7 / 21 });
+    expect(b?.cells).toEqual(a?.cells);
+    expect(b?.poolKey).toBe("pool-low");
+    expect(b?.poolLabel).toBe("Low");
+  });
+
+  // 2026-10-02: an empty pool is judged as the booker serves it, over the slot
+  // rows this loader already reads. 110 is the Low whole tier rung on 120's ladder.
+  it("marks an empty pool overflowing when a rung on the ladder has a time in the offered window", async () => {
+    db.slotRows = [
+      {
+        bucket_code: "120",
+        payload: { slots: [], eventType: EVENT_TYPE },
+        computed_at: new Date(NOW.getTime() - 30_000).toISOString(),
+      },
+      {
+        bucket_code: "110",
+        payload: { slots: FULL_DAY, eventType: EVENT_TYPE },
+        computed_at: new Date(NOW.getTime() - 30_000).toISOString(),
+      },
+    ];
+    const report = await loadBucketSupply("org-1", NOW);
+    expect(report.measurable).toBe(true);
+    if (!report.measurable) return;
+    expect(report.rows.find((r) => r.code === "120")?.cells[0]).toEqual({
+      kind: "overflows",
+      toPool: "Low",
+    });
+  });
+
+  it("keeps an empty pool nothing on the ladder can take as nobody available", async () => {
+    db.slotRows = [
+      {
+        bucket_code: "120",
+        payload: { slots: [], eventType: EVENT_TYPE },
+        computed_at: new Date(NOW.getTime() - 30_000).toISOString(),
+      },
+      {
+        bucket_code: "110",
+        payload: { slots: [], eventType: EVENT_TYPE },
+        computed_at: new Date(NOW.getTime() - 30_000).toISOString(),
+      },
+    ];
+    const report = await loadBucketSupply("org-1", NOW);
+    if (!report.measurable) throw new Error("expected a report");
+    expect(report.rows.find((r) => r.code === "120")?.cells[0]).toEqual({ kind: "nobody-available" });
   });
 
   // A read that could not measure must never be scored as zero booked, which is

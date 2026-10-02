@@ -104,7 +104,18 @@ export async function loadBucketSupply(
   try {
     const depths = await loadTierDepths(db, orgId, now);
     depthByCode = new Map(
-      depths.map((d) => [d.code, { depth: d.depth, effectiveDepth: d.effectiveDepth }]),
+      // The pool key and label are carried as staffing depth computed them, so
+      // the codes this page combines into one pool are exactly the codes the
+      // tiers page groups and the recompute lane computes once.
+      depths.map((d) => [
+        d.code,
+        {
+          depth: d.depth,
+          effectiveDepth: d.effectiveDepth,
+          poolKey: d.poolKey,
+          poolLabel: d.poolLabel,
+        },
+      ]),
     );
   } catch (err) {
     log.error("bucket-supply", { msg: "staffing depth unreadable" }, err);

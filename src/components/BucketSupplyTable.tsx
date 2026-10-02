@@ -3,6 +3,7 @@ import { formatLongDate } from "@/lib/date/parse";
 import {
   dayIsClosed,
   debtTierDigitOf,
+  supplyPoolGroups,
   supplyTotals,
   type BucketSupplyRow,
   type SupplyDay,
@@ -19,6 +20,9 @@ import {
   cellStyle,
   computedAtLabel,
   freshnessLabel,
+  leadsNote,
+  poolRowDetail,
+  poolRowName,
   sharePercent,
   supplyCellTitle,
   supplyLegendEntry,
@@ -52,10 +56,18 @@ import {
  * The backend stays the SECONDARY sort, so those fifteen still land together
  * inside each tier. It is no longer a group heading, and it needs no separate
  * label because each row's own name already carries it (`Low | Beyond | Legal`).
+ *
+ * TWO VIEWS (2026-10-02). Admins see one row per bucket code, with the code,
+ * because codes are how they configure buckets. Managers see one row per routing
+ * POOL, named in words ("Low with Beyond"), and no code anywhere: not in the row
+ * header and not in a cell's sentence. The pools come from `supplyPoolGroups`,
+ * which collapses a pool's codes only where every one of them reads alike, so a
+ * disagreement stays on screen as separate rows rather than being decided here.
  */
 export function BucketSupplyTable({
   days,
   rows,
+  showCodes,
   zone,
   nowMs,
   depthReadable,
@@ -63,6 +75,9 @@ export function BucketSupplyTable({
 }: {
   days: SupplyDay[];
   rows: BucketSupplyRow[];
+  /** True for admins: one row per code, with the code. False for managers: one
+   *  row per pool, in words. Decided by the page from the viewer's role. */
+  showCodes: boolean;
   zone: string;
   /** The instant the loader judged every freshness state against, so the age a
    *  row shows and the grade it was given come from ONE clock read (#1938). */
@@ -70,8 +85,29 @@ export function BucketSupplyTable({
   depthReadable: boolean;
   bucketListReadable: boolean;
 }) {
-  const totals = supplyTotals(rows, 0);
+  // Grouped ONCE, and the same groups feed both the counts and the manager rows,
+  // so the two cannot disagree about what a pool is.
+  const poolGroups = supplyPoolGroups(rows, nowMs);
+  const totals = supplyTotals(poolGroups, 0);
   const closedToday = dayIsClosed(rows, 0);
+  // What each drawn row is. For a manager it is a pool (its first code stands in
+  // for the readings, which agree by construction of the group); for an admin it
+  // is a code. The summary counts POOLS either way, because `supplyTotals` does,
+  // so "across N pools" and the counts under it describe the same things, and
+  // for a manager N is exactly the number of rows on screen.
+  //
+  // A SPLIT pool (codes that disagree) draws several rows under one pool name,
+  // so each of those carries a muted line saying which bucket it is, in words
+  // (`poolRowDetail`), never by code. A uniform pool needs none.
+  const drawn: { key: string; row: BucketSupplyRow; name: string; detail: string | null }[] =
+    showCodes
+      ? rows.map((r) => ({ key: r.code, row: r, name: r.name, detail: null }))
+      : poolGroups.map((g) => {
+          const first = g.rows[0]!;
+          const name = poolRowName(first);
+          const detail = g.uniform ? null : poolRowDetail(first);
+          return { key: g.codes.join(","), row: first, name, detail: detail === name ? null : detail };
+        });
   const todayLabel = days[0]
     ? (formatLongDate(DateTime.fromISO(days[0].iso, { zone })) ?? "today")
     : "today";
@@ -82,13 +118,21 @@ export function BucketSupplyTable({
   // associate every cell with) and the group label is a real heading for the
   // rows under it rather than a styled row that happens to look like one. Only
   // what it groups BY has changed.
-  const groups: { label: string; rows: BucketSupplyRow[] }[] = [];
-  for (const row of rows) {
-    const digit = debtTierDigitOf(row.code);
-    const label = digit === null ? "Other codes" : `${DEBT_TIER[digit]?.label ?? digit} debt`;
+  //
+  // The tier is read off a row's code, which is never drawn for a manager: it
+  // only decides which heading a pool sits under.
+  const groups: { label: string; rows: typeof drawn }[] = [];
+  for (const item of drawn) {
+    const digit = debtTierDigitOf(item.row.code);
+    const label =
+      digit === null
+        ? showCodes
+          ? "Other codes"
+          : "Other pools"
+        : `${DEBT_TIER[digit]?.label ?? digit} debt`;
     const last = groups[groups.length - 1];
-    if (last && last.label === label) last.rows.push(row);
-    else groups.push({ label, rows: [row] });
+    if (last && last.label === label) last.rows.push(item);
+    else groups.push({ label, rows: [item] });
   }
 
   return (
@@ -100,7 +144,8 @@ export function BucketSupplyTable({
           "today" on the end of each of them (L287). */}
       <div className="mb-4 text-sm">
         <p className="mb-1.5 text-xs uppercase tracking-wide text-fg-muted">
-          Today, {todayLabel}, across {rows.length} {rows.length === 1 ? "pool" : "pools"}
+          Today, {todayLabel}, across {poolGroups.length}{" "}
+          {poolGroups.length === 1 ? "pool" : "pools"}
         </p>
         {/* A shut day is a real answer about the org and it is not six zeros
             (L10). Every count below refuses to count what it could not measure,
@@ -160,8 +205,9 @@ export function BucketSupplyTable({
       {!depthReadable && (
         <p className="mb-4 rounded-md border border-border bg-[var(--bg-alt)] px-4 py-3 text-sm text-fg-muted">
           The roster could not be read, so both agent columns say unknown throughout.
-          That is not a report that no agent can take these bookings. The booked shares beside
-          it were still measured.
+          That is not a report that no agent can take these bookings. Without the roster the
+          buckets cannot be matched to their pools, so each booked share beside it counts only
+          the bookings made through that bucket.
         </p>
       )}
       {!bucketListReadable && (
@@ -189,7 +235,7 @@ export function BucketSupplyTable({
           <thead>
             <tr className="border-b border-border bg-[var(--bg-alt)] text-xs text-fg-muted">
               <th scope="col" rowSpan={2} className="px-3 py-2.5 text-left align-bottom font-semibold">
-                Bucket
+                {showCodes ? "Bucket" : "Pool"}
               </th>
               <th
                 scope="colgroup"
@@ -241,14 +287,31 @@ export function BucketSupplyTable({
                   {group.label}
                 </th>
               </tr>
-              {group.rows.map((row) => {
+              {group.rows.map(({ key, row, name, detail }) => {
                 const fresh = computedAtLabel(row.freshness, row.computedAtMs, nowMs);
-                const bucketLabel = `${row.code} ${row.name}`;
+                const bucketLabel = showCodes
+                  ? `${row.code} ${name}`
+                  : detail
+                    ? `${name}, ${detail}`
+                    : name;
+                // Where an empty pool's leads go, said once on the row rather
+                // than in every cell, because the cells only say THAT they go.
+                const overflow = leadsNote(row);
                 return (
-                  <tr key={row.code} className="border-b border-border align-middle last:border-0">
+                  <tr key={key} className="border-b border-border align-middle last:border-0">
                     <th scope="row" className="px-3 py-2 text-left font-normal">
-                      <span className="block font-semibold tabular-nums text-fg">{row.code}</span>
-                      <span className="block text-xs text-fg-muted">{row.name}</span>
+                      {showCodes ? (
+                        <>
+                          <span className="block font-semibold tabular-nums text-fg">{row.code}</span>
+                          <span className="block text-xs text-fg-muted">{name}</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="block font-semibold text-fg">{name}</span>
+                          {detail && <span className="block text-xs text-fg-muted">{detail}</span>}
+                        </>
+                      )}
+                      {overflow && <span className="block text-xs text-fg-muted">{overflow}</span>}
                     </th>
                     <td className="border-l border-border px-3 py-2 tabular-nums">
                       <span className={row.depth === null ? "text-fg-muted" : "text-fg"}>

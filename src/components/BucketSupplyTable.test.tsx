@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { BucketSupplyTable } from "./BucketSupplyTable";
 import {
   SUPPLY_SUMMARY_STATES,
@@ -30,11 +30,16 @@ function row(over: Partial<BucketSupplyRow> = {}): BucketSupplyRow {
   return {
     code: "120",
     name: "Low | Beyond | No Legal Param",
+    // One pool per code unless a case says otherwise, so the cases written before
+    // pooling keep meaning what they meant.
+    poolKey: `pool-${over.code ?? "120"}`,
+    poolLabel: "Low with Beyond",
     depth: 4,
     effectiveDepth: 3,
     cacheState: "measured",
     computedAtMs: Date.parse("2026-08-04T15:18:30.000Z"),
     freshness: "fresh",
+    offeredLater: false,
     cells: [
       { kind: "counted", booked: 9, capacity: 21, share: 9 / 21 },
       { kind: "counted", booked: 21, capacity: 21, share: 1 },
@@ -50,12 +55,18 @@ const NOW_MS = Date.parse("2026-08-04T15:20:30.000Z");
 
 function renderTable(
   rows: BucketSupplyRow[],
-  over: { depthReadable?: boolean; bucketListReadable?: boolean; nowMs?: number } = {},
+  over: {
+    depthReadable?: boolean;
+    bucketListReadable?: boolean;
+    nowMs?: number;
+    showCodes?: boolean;
+  } = {},
 ) {
   render(
     <BucketSupplyTable
       days={DAYS}
       rows={rows}
+      showCodes={over.showCodes ?? true}
       zone="America/New_York"
       nowMs={over.nowMs ?? NOW_MS}
       depthReadable={over.depthReadable ?? true}
@@ -307,5 +318,172 @@ describe("BucketSupplyTable (#1254)", () => {
     }
     // The scope is stated once, above the chips, rather than on the end of each.
     expect(screen.getByText(/^Today, .*, across 1 pool$/)).toBeTruthy();
+  });
+});
+
+// 2026-10-02: managers read the page by POOL, in words, and never see a bucket
+// code. Admins keep one row per code, with the code, because they are the ones
+// who configure buckets by it.
+describe("BucketSupplyTable for managers", () => {
+  const lowCells: SupplyCell[] = [
+    { kind: "counted", booked: 3, capacity: 21, share: 3 / 21 },
+    { kind: "closed" },
+  ];
+  const pooled = [
+    row({ code: "110", name: "Low | Both | No Legal Param", poolKey: "pool-low", poolLabel: "Low", cells: lowCells }),
+    row({ code: "111", name: "Low | Both | Legal", poolKey: "pool-low", poolLabel: "Low", cells: lowCells }),
+    row({ code: "120", name: "Low | Beyond | No Legal Param", poolKey: "pool-low-beyond", poolLabel: "Low with Beyond" }),
+  ];
+
+  /** Every piece of text a manager can reach: what is drawn, and every title. */
+  function everythingReadable(): string {
+    const titles = [...document.querySelectorAll("[title]")].map((n) => n.getAttribute("title") ?? "");
+    return [document.body.textContent ?? "", ...titles].join("\n");
+  }
+
+  it("shows one row per pool, named in words", () => {
+    renderTable(pooled, { showCodes: false });
+    const heads = [...document.querySelectorAll("tbody th[scope='row']")].map((n) => n.textContent ?? "");
+    expect(heads).toEqual(["Low", "Low with Beyond"]);
+    // The cell sentence names the pool, not a code.
+    expect(screen.getByText(supplyCellTitle(lowCells[0], "Low", "Tuesday, August 4"))).toBeTruthy();
+  });
+
+  it("puts no bucket code anywhere on the page, titles included", () => {
+    renderTable(pooled, { showCodes: false });
+    const text = everythingReadable();
+    for (const code of ["110", "111", "120"]) {
+      expect(text).not.toMatch(new RegExp(`\\b${code}\\b`));
+    }
+  });
+
+  it("counts the pools it shows", () => {
+    renderTable(pooled, { showCodes: false });
+    expect(screen.getByText(/^Today, .*, across 2 pools$/)).toBeTruthy();
+  });
+
+  it("keeps a pool whose codes disagree as separate rows, and says which is which", () => {
+    renderTable(
+      [pooled[0], { ...pooled[1], depth: 1 }, pooled[2]],
+      { showCodes: false },
+    );
+    const heads = [...document.querySelectorAll("tbody th[scope='row']")].map((n) => n.textContent ?? "");
+    // Two rows under one pool name would be indistinguishable, so each split row
+    // carries the bucket's own name under it. A uniform pool carries none.
+    expect(heads).toEqual([
+      "LowLow | Both | No Legal Param",
+      "LowLow | Both | Legal",
+      "Low with Beyond",
+    ]);
+  });
+
+  it("tells cache only rows apart without a code when the bucket list is unreadable", () => {
+    renderTable(
+      [
+        row({ code: "110", name: "110", poolKey: "bucket:110", poolLabel: null }),
+        row({ code: "111", name: "111", poolKey: "bucket:111", poolLabel: null }),
+      ],
+      { showCodes: false, bucketListReadable: false },
+    );
+    const heads = [...document.querySelectorAll("tbody th[scope='row']")].map((n) => n.textContent ?? "");
+    expect(heads).toEqual(["Low | Both | No Legal Param", "Low | Both | Legal"]);
+    expect(everythingReadable()).not.toMatch(/\b11[01]\b/);
+  });
+
+  it("says where an empty pool's leads go, and keeps it out of nobody available", () => {
+    const overflow: SupplyCell = { kind: "overflows", toPool: "Low with Achieve" };
+    renderTable(
+      [
+        row({
+          code: "120",
+          poolKey: "pool-low-beyond",
+          poolLabel: "Low with Beyond",
+          depth: 0,
+          effectiveDepth: 0,
+          cells: [overflow, { kind: "closed" }],
+        }),
+      ],
+      { showCodes: false },
+    );
+    const head = document.querySelector("tbody th[scope='row']")?.textContent ?? "";
+    expect(head).toContain("Low with Beyond");
+    expect(head).toContain("Leads go to Low with Achieve");
+    expect(screen.getByText(supplyCellTitle(overflow, "Low with Beyond", "Tuesday, August 4"))).toBeTruthy();
+    const summary = summaryText();
+    expect(summary).toMatch(new RegExp(`${supplyLegendEntry("nobody-available").label}\\s*0(?!\\d)`));
+    expect(summary).toMatch(new RegExp(`${supplyLegendEntry("overflows").label}\\s*1(?!\\d)`));
+    // Not painted as the alarm.
+    const chip = [...document.querySelectorAll("span[title]")].find((n) =>
+      (n.textContent ?? "").startsWith(supplyLegendEntry("overflows").label),
+    );
+    expect(chip?.className).not.toContain("text-error");
+  });
+
+  it("says a pool's leads are offered its other days, calmly, for managers and admins", () => {
+    const cells: SupplyCell[] = [{ kind: "other-days" }, { kind: "counted", booked: 0, capacity: 3, share: 0 }];
+    for (const showCodes of [false, true]) {
+      cleanup();
+      renderTable([row({ cells })], { showCodes });
+      const name = showCodes ? "120 Low | Beyond | No Legal Param" : "Low with Beyond";
+      expect(screen.getByText(supplyCellTitle(cells[0], name, "Tuesday, August 4"))).toBeTruthy();
+      const summary = summaryText();
+      expect(summary).toMatch(new RegExp(`${supplyLegendEntry("other-days").label}\\s*1(?!\\d)`));
+      expect(summary).toMatch(new RegExp(`${supplyLegendEntry("nobody-available").label}\\s*0(?!\\d)`));
+      // A pool serving itself needs no note on the row.
+      expect(document.querySelector("tbody th[scope='row']")?.textContent ?? "").not.toMatch(/Leads/);
+    }
+  });
+
+  it("keeps a pool nothing can serve in the window red, and says later days are offered", () => {
+    renderTable([row({ offeredLater: true, cells: [{ kind: "nobody-available" }, { kind: "closed" }] })], {
+      showCodes: false,
+    });
+    expect(document.querySelector("tbody th[scope='row']")?.textContent ?? "").toContain(
+      "Leads are offered later days",
+    );
+    expect(summaryText()).toMatch(new RegExp(`${supplyLegendEntry("nobody-available").label}\\s*1(?!\\d)`));
+  });
+
+  it("says where the leads go for an admin too", () => {
+    renderTable(
+      [row({ cells: [{ kind: "overflows", toPool: "Low with Achieve" }, { kind: "closed" }] })],
+      { showCodes: true },
+    );
+    const head = document.querySelector("tbody th[scope='row']")?.textContent ?? "";
+    expect(head).toContain("Leads go to Low with Achieve");
+    expect(summaryText()).toMatch(new RegExp(`${supplyLegendEntry("overflows").label}\\s*1(?!\\d)`));
+  });
+
+  it("names a pool outside the routing matrix by the bucket's name, never its code", () => {
+    renderTable(
+      [row({ code: "777", name: "Spanish speakers", poolKey: "pool-hand-made", poolLabel: null })],
+      { showCodes: false },
+    );
+    const heads = [...document.querySelectorAll("tbody th[scope='row']")].map((n) => n.textContent ?? "");
+    expect(heads).toEqual(["Spanish speakers"]);
+    expect(everythingReadable()).not.toMatch(/\b777\b/);
+  });
+
+  it("does not fall back to a code when the bucket name itself was not readable", () => {
+    // With the bucket list unreadable the loader names a row by its code.
+    renderTable(
+      [row({ code: "777", name: "777", poolKey: "bucket:777", poolLabel: null })],
+      { showCodes: false, bucketListReadable: false },
+    );
+    expect(everythingReadable()).not.toMatch(/\b777\b/);
+  });
+
+  it("leaves the admin view one row per code, with the code", () => {
+    renderTable(pooled, { showCodes: true });
+    const heads = [...document.querySelectorAll("tbody th[scope='row']")].map((n) => n.textContent ?? "");
+    expect(heads).toEqual([
+      "110Low | Both | No Legal Param",
+      "111Low | Both | Legal",
+      "120Low | Beyond | No Legal Param",
+    ]);
+    // The summary counts pools, so the Low pool's two codes are one: both pools
+    // are part booked today, which is two, never the three rows drawn.
+    expect(screen.getByText(/^Today, .*, across 2 pools$/)).toBeTruthy();
+    expect(summaryText()).toMatch(new RegExp(`${supplyLegendEntry("some").label}\\s*2(?!\\d)`));
   });
 });

@@ -50,6 +50,10 @@ import {
   RECOMPUTE_FRESH_MS,
   STALE_ALARM_MS,
 } from "../availability/precompute-cron.ts";
+import { groupRowsByPool, type PoolGroup } from "./pool-rows.ts";
+import { rungExcludesLow, tierLadder } from "../routing/tiers.ts";
+import { offeredWindowEndFor, servedSlotsForRung } from "../availability/offered-window.ts";
+import { computedAtLabel } from "./bucket-supply-copy.ts";
 
 /**
  * The event-type numbers the slot grid is laid out from. The same fields the
@@ -70,6 +74,9 @@ export interface CachedSlotRow {
   bucket_code: string;
   payload: {
     slots?: string[];
+    /** #2842: the times an advisor WITHOUT Low is free, which is what a rung
+     *  below a top tier lead's own tier offers that lead. Absent offers nothing. */
+    slotsWithoutLow?: string[];
     eventType?: Partial<SupplyEventType> | null;
   } | null;
   computed_at: string;
@@ -120,6 +127,23 @@ export type SupplyCell =
    */
   | { kind: "nobody-available" }
   /**
+   * A day inside the booker's offered window on which this pool has nothing,
+   * while it HAS times on another window day (2026-10-02). The booker serves the
+   * pool itself, so its leads are offered those other days: nobody is turned
+   * away, and it is not the one to act on.
+   */
+  | { kind: "other-days" }
+  /**
+   * A day inside the offered window, for a pool with nothing in the whole
+   * window, where a lower rung of the router's ladder has a window time
+   * (2026-10-02). The booker serves that one rung for the whole window, so every
+   * empty window day names it. Not "nobody available": nobody is turned away.
+   *
+   * `toPool` is that rung's pool in words, or null for a rung outside the
+   * routing matrix. Never a code.
+   */
+  | { kind: "overflows"; toPool: string | null }
+  /**
    * A real measurement (#1937): how many of the times this bucket could have
    * taken an appointment at were actually booked.
    *
@@ -154,6 +178,18 @@ export interface BucketSupplyRow {
   code: string;
   name: string;
   /**
+   * The routing POOL this code belongs to, carried from staffing depth
+   * (`TierDepth.poolKey`) rather than derived a second way, so this page and the
+   * tiers page can never disagree about which codes are one pool. When the
+   * roster could not be read there is no key to carry, and the row gets one of
+   * its own (`bucket:<code>`), which can never match a real key or a sibling's:
+   * the code then stands alone rather than joining a guessed pool.
+   */
+  poolKey: string;
+  /** The pool in words ("Low with Beyond"), or null when its criteria are not
+   *  the routing matrix or the roster could not be read. */
+  poolLabel: string | null;
+  /**
    * Eligible agents by the same criteria match ROUTING uses, not
    * `bucket_members` (which holds three rows in production and is not the
    * eligibility source). `null` means the roster could not be read, which is not
@@ -167,6 +203,12 @@ export interface BucketSupplyRow {
    *  could not be read. */
   computedAtMs: number | null;
   freshness: SupplyFreshness;
+  /**
+   * True when nothing on the ladder has a time inside the offered window but the
+   * booker's last resort would offer this pool's leads a later day. Its window
+   * days stay red, because that is the alerting case, and the row says so.
+   */
+  offeredLater: boolean;
   /** One cell per entry of `days`, in the same order. */
   cells: SupplyCell[];
 }
@@ -227,6 +269,9 @@ export interface SupplyBucket {
 export interface SupplyDepth {
   depth: number;
   effectiveDepth: number;
+  /** Staffing depth's own pool key and label for this code (#2237). */
+  poolKey: string;
+  poolLabel: string | null;
 }
 
 export interface BucketSupplyInput {
@@ -422,8 +467,100 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
       ? input.buckets.map((b) => ({ code: b.code, name: b.name }))
       : [...rowByCode.keys()].map((code) => ({ code, name: code }));
 
+  // A pool's booked times, combined across EVERY code of the pool (2026-10-02).
+  //
+  // The offered times belong to the pool: the recompute lane computes a pool
+  // once and writes the same answer under each of its codes. A booking, though,
+  // is stored against the code the lead came in on. Counting each code's own
+  // bookings therefore dropped every time taken through a sibling code out of
+  // the ceiling entirely (it is no longer offered, and it was not "this code's"
+  // booking either), so each code understated its pool. Measured that day, the
+  // Low pool held 50 routed bookings under 111 and 171 under 112.
+  //
+  // Only codes whose pool is KNOWN are combined. With the roster unreadable the
+  // key is the code's own, so a code counts only its own bookings, which is the
+  // most this page can honestly say without knowing the pools.
+  const poolKeyOf = (code: string): string =>
+    input.depthByCode?.get(code)?.poolKey ?? `bucket:${code}`;
+  const bookedByPoolAndDate = new Map<string, Map<string, string[]>>();
+  for (const [code, byDate] of input.bookedByCodeAndDate ?? []) {
+    const key = poolKeyOf(code);
+    const pooled = bookedByPoolAndDate.get(key) ?? new Map<string, string[]>();
+    for (const [iso, starts] of byDate) pooled.set(iso, [...(pooled.get(iso) ?? []), ...starts]);
+    bookedByPoolAndDate.set(key, pooled);
+  }
+
+  // Each code's times as the BOOKER would serve them on a rung (#1296 hours
+  // filter, then `servedSlotsForRung`, the booker's own Low exclusion for a rung
+  // below a top tier lead's tier), as epoch milliseconds. Read from the cache
+  // rows already loaded, so judging the ladder costs no read. Memoised, because
+  // sixty codes share a dozen rungs. Null for a row the booker could not serve
+  // from (no row, or no readable event type), which is no rescue either way.
+  const driverCodes = new Set(drivers.map((d) => d.code));
+  const servedMemo = new Map<string, number[] | null>();
+  const servedMs = (requestedCode: string, rungCode: string): number[] | null => {
+    const memoKey = `${rungCode}|${rungExcludesLow(requestedCode, rungCode)}`;
+    if (servedMemo.has(memoKey)) return servedMemo.get(memoKey)!;
+    const row = rowByCode.get(rungCode);
+    const eventType = row ? eventTypeOf(row) : null;
+    const slots = row?.payload?.slots;
+    let out: number[] | null = null;
+    if (row && eventType !== null && Array.isArray(slots)) {
+      const list = servedSlotsForRung(requestedCode, rungCode, {
+        slots,
+        ...(row.payload?.slotsWithoutLow ? { slotsWithoutLow: row.payload.slotsWithoutLow } : {}),
+      });
+      out = [];
+      for (const iso of slotsWithinBusinessHours(list, eventType.duration_min, hours)) {
+        const ms = parseStampMs(iso);
+        if (ms !== null) out.push(ms);
+      }
+    }
+    servedMemo.set(memoKey, out);
+    return out;
+  };
+
+  /**
+   * What the booker serves a lead on `code` (Dan, 2026-10-02: the page matches
+   * today's booker). `getBucketSlotsWithFallback` offers the next
+   * `OFFERED_OPEN_DAYS` open days (`offeredWindowEndFor`, the same function),
+   * walks the router's ladder (`tierLadder`) and serves the FIRST rung with any
+   * time inside that window, and only that rung. When no rung has one, its last
+   * resort offers times past the window, own tier first.
+   *
+   * So: `self` when the pool has a window time of its own, the first lower rung
+   * with one otherwise, or null when none does, with `offeredLater` saying
+   * whether the last resort would find anything. Lower rungs that are not a real
+   * bucket on this page (a test bucket, or one the list does not hold) are
+   * skipped, as the booker skips test buckets.
+   *
+   * The bucket's fallback agent is not a separate cover: when its criteria match
+   * nobody, the fallback agent IS the pool, so its times are already in the
+   * pool's own list.
+   */
+  const servedBy = (
+    code: string,
+    windowEndMs: number | null,
+  ): { winner: "self" | { toPool: string | null } | null; offeredLater: boolean } => {
+    const ladder = tierLadder(code).filter((rung, i) => i === 0 || driverCodes.has(rung));
+    const inWindow = (ms: number) => windowEndMs === null || ms < windowEndMs;
+    for (const [i, rung] of ladder.entries()) {
+      if ((servedMs(code, rung) ?? []).some(inWindow)) {
+        return {
+          winner: i === 0 ? "self" : { toPool: input.depthByCode?.get(rung)?.poolLabel ?? null },
+          offeredLater: false,
+        };
+      }
+    }
+    // No window at all means the booker had no last resort to reach for.
+    const offeredLater =
+      windowEndMs !== null && ladder.some((rung) => (servedMs(code, rung) ?? []).length > 0);
+    return { winner: null, offeredLater };
+  };
+
   const rows: BucketSupplyRow[] = drivers.map((d) => {
     const row = rowByCode.get(d.code);
+    const poolKey = poolKeyOf(d.code);
     const eventType = row ? eventTypeOf(row) : null;
     const slots = row?.payload?.slots;
     const cacheState: BucketCacheState =
@@ -436,10 +573,11 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
 
     // The times already taken, by date. An unreadable read makes every cell
     // unknown below rather than reporting a zero nobody measured.
-    const bookedByDate = input.bookedByCodeAndDate?.get(d.code) ?? new Map<string, string[]>();
+    const bookedByDate = bookedByPoolAndDate.get(poolKey) ?? new Map<string, string[]>();
     const bookingsReadable = input.bookedByCodeAndDate !== null;
 
     let cells: SupplyCell[];
+    let offeredLater = false;
     if (cacheState !== "measured" || eventType === null || !Array.isArray(slots) || !bookingsReadable) {
       // A day the org is shut is known whatever the cache says; everything else
       // about this bucket is not.
@@ -474,6 +612,18 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
       const lastOfferedDate = daysWithSlots[daysWithSlots.length - 1] ?? null;
       const allowanceSpent = daysWithSlots.length >= input.horizonDays;
 
+      // The window is the requested bucket's own, as the booker computes it from
+      // the requested event type's notice.
+      const windowEndMs = offeredWindowEndFor(hours, nowMs, eventType.min_notice_min);
+      const plan = servedBy(d.code, windowEndMs);
+      offeredLater = plan.offeredLater;
+      // A day is in the window when it starts before the window closes. A day
+      // past it keeps its own state: what the booker offers there is only its
+      // last resort, so the cover judgement must not reach it.
+      const inWindowDay = (iso: string) =>
+        windowEndMs === null ||
+        DateTime.fromISO(iso, { zone: hours.zone }).startOf("day").toMillis() < windowEndMs;
+
       cells = days.map((day) => {
         const dayRoom = capacityFor(eventType, day);
         if (dayRoom.state === "closed") return { kind: "closed" };
@@ -483,6 +633,11 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
         if (dayRoom.max === 0) return { kind: "no-capacity" };
 
         const offered = openByDate.get(day.iso) ?? new Set<number>();
+        // DISTINCT START TIMES, not calls: two calls booked at one start (two
+        // agents, or two codes of the pool) are one taken time, because the
+        // ceiling is counted in start times too and a share of calls over a
+        // ceiling of times could run past 1.
+        //
         // Read to the same epoch key as the offered times, and an unreadable
         // stamp is DROPPED rather than becoming a NaN that joins nothing and
         // inflates the ceiling by one (L50).
@@ -506,7 +661,12 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
         // over 1 by a different route.
         const possible = new Set(offered);
         for (const t of taken) possible.add(t);
-        if (possible.size === 0) return { kind: "nobody-available" };
+        if (possible.size === 0) {
+          if (!inWindowDay(day.iso) || plan.winner === null) return { kind: "nobody-available" };
+          return plan.winner === "self"
+            ? { kind: "other-days" }
+            : { kind: "overflows", toPool: plan.winner.toPool };
+        }
 
         return {
           kind: "counted",
@@ -521,11 +681,14 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
     return {
       code: d.code,
       name: d.name,
+      poolKey,
+      poolLabel: depth?.poolLabel ?? null,
       depth: depth?.depth ?? null,
       effectiveDepth: depth?.effectiveDepth ?? null,
       cacheState,
       computedAtMs,
       freshness: freshnessOf(computedAtMs, nowMs),
+      offeredLater,
       cells,
     };
   });
@@ -666,16 +829,82 @@ export interface SupplyTotals {
   partBooked: number;
   nothingBooked: number;
   nobodyAvailable: number;
+  /** Empty that day with its leads caught elsewhere. Never in `nobodyAvailable`,
+   *  and never in `measured` either, since it has no share. */
+  overflows: number;
+  /** Empty that day with its leads offered this pool's other window days. Kept
+   *  apart from both of the above for the same reasons. */
+  otherDays: number;
   stale: number;
 }
 
-export function supplyTotals(rows: BucketSupplyRow[], dayIndex: number): SupplyTotals {
+/**
+ * Whether two rows carry the same READING: every field the table renders except
+ * the bucket's identity (its code and name), which is exactly what pooling
+ * folds. Rows of one pool agree by construction now that a pool's bookings are
+ * combined, which is why this has to be able to say no: the day they do not (a
+ * code recomputed on its own and not yet caught up), the screen must show the
+ * disagreement rather than pick a winner (L131).
+ *
+ * The age is compared as it RENDERS ("2 min ago"), because two codes written a
+ * few seconds apart read identically and splitting them would show a manager
+ * two rows with the same words and the same numbers. Fields are listed rather
+ * than walked, so a field added to the row joins only when somebody decides.
+ */
+export function sameSupplyReading(a: BucketSupplyRow, b: BucketSupplyRow, nowMs: number): boolean {
+  return (
+    a.poolLabel === b.poolLabel &&
+    a.depth === b.depth &&
+    a.effectiveDepth === b.effectiveDepth &&
+    a.cacheState === b.cacheState &&
+    a.freshness === b.freshness &&
+    a.offeredLater === b.offeredLater &&
+    computedAtLabel(a.freshness, a.computedAtMs, nowMs).label ===
+      computedAtLabel(b.freshness, b.computedAtMs, nowMs).label &&
+    a.cells.length === b.cells.length &&
+    a.cells.every((cell, i) => sameCell(cell, b.cells[i]!))
+  );
+}
+
+function sameCell(a: SupplyCell, b: SupplyCell): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "counted" && b.kind === "counted") {
+    return a.booked === b.booked && a.capacity === b.capacity;
+  }
+  if (a.kind === "overflows" && b.kind === "overflows") return a.toPool === b.toPool;
+  return true;
+}
+
+/**
+ * The rows as POOLS: one group per pool whose codes agree, and one per row where
+ * they do not. The manager view renders these, and the totals count them, so the
+ * "across N pools" line and the counts under it are about the same things.
+ */
+export function supplyPoolGroups(rows: BucketSupplyRow[], nowMs: number): PoolGroup<BucketSupplyRow>[] {
+  return groupRowsByPool(rows, (a, b) => sameSupplyReading(a, b, nowMs));
+}
+
+/**
+ * The headline counts, one per POOL reading rather than one per code.
+ *
+ * Since a pool's bookings are combined, its six codes carry one measurement six
+ * times, and counting rows would report one booked out pool as six. So each
+ * group from `supplyPoolGroups` counts once, through its first row; a pool whose
+ * codes disagree is split there, and each disagreeing reading counts, because
+ * picking one would drop a measurement the page exists to report.
+ */
+export function supplyTotals(groups: PoolGroup<BucketSupplyRow>[], dayIndex: number): SupplyTotals {
+  // Takes the GROUPS rather than the rows, so the table groups once and the
+  // counts are about exactly the pools it draws.
+  const rows = groups.map((g) => g.rows[0]!);
   let measured = 0;
   let unmeasured = 0;
   let saturated = 0;
   let partBooked = 0;
   let nothingBooked = 0;
   let nobodyAvailable = 0;
+  let overflows = 0;
+  let otherDays = 0;
   let stale = 0;
   for (const row of rows) {
     if (row.freshness === "stale" || row.freshness === "unknown") stale++;
@@ -688,11 +917,19 @@ export function supplyTotals(rows: BucketSupplyRow[], dayIndex: number): SupplyT
       nobodyAvailable++;
       continue;
     }
+    if (cell.kind === "overflows") {
+      overflows++;
+      continue;
+    }
+    if (cell.kind === "other-days") {
+      otherDays++;
+      continue;
+    }
     if (cell.kind !== "counted") continue;
     measured++;
     if (cell.booked === 0) nothingBooked++;
     else if (cell.booked >= cell.capacity) saturated++;
     else partBooked++;
   }
-  return { measured, unmeasured, saturated, partBooked, nothingBooked, nobodyAvailable, stale };
+  return { measured, unmeasured, saturated, partBooked, nothingBooked, nobodyAvailable, overflows, otherDays, stale };
 }

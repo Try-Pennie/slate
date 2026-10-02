@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { DateTime } from "luxon";
 import { currentUser } from "@/lib/auth";
-import { canManageAgents } from "@/lib/auth/roles";
+import { canEditOrgSettings, canManageAgents } from "@/lib/auth/roles";
 import { consoleHiddenFor } from "@/lib/env";
 import { cardCls, proseCls } from "@/components/ui/styles";
 import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
@@ -74,6 +74,9 @@ export default async function BucketAvailabilityPage() {
             <BucketSupplyTable
               days={report.days}
               rows={report.rows}
+              // Admins configure buckets by code and keep one row per code;
+              // managers and team leads read the page by pool, in words.
+              showCodes={canEditOrgSettings(me.role)}
               zone={report.zone}
               nowMs={report.nowMs}
               depthReadable={report.depthReadable}

@@ -25,11 +25,12 @@ import { appUrl } from "@/lib/env";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadBusinessHoursCached } from "@/lib/booking/business-hours-load";
 import { selectWithTierFallback } from "@/lib/routing/tier-fallback";
-import { rungExcludesLow, tierKeyOf } from "@/lib/routing/tiers";
+import { tierKeyOf } from "@/lib/routing/tiers";
 import { log } from "@/lib/log";
 import { parseStampMs } from "@/lib/date/stamp";
-import { openDaysWindowEndMs } from "@/lib/booking/business-hours";
-import { OFFERED_OPEN_DAYS } from "./bookable-days";
+// The window and the served slot rule are shared with the bucket availability
+// page, which has to say what this function produces (2026-10-02).
+import { offeredWindowEndFor, servedSlotsForRung } from "./offered-window";
 
 // Short L1 TTL: the precompute row is the source of truth, so the Cache API is
 // just a per-colo accelerator. 5s keeps a far-colo read self-healing well inside
@@ -355,22 +356,6 @@ export interface AvailabilityRoutingMeta {
 }
 
 /**
- * The times rung `rungCode` may offer a lead who asked for `requestedCode`
- * (#2842): its whole list, or, on a rung below a top tier lead's own tier, only
- * the times an advisor without Low is free. An unknown second list offers nothing
- * (`BucketSlots.slotsWithoutLow`), so the rung is skipped rather than showing the
- * lead advisors the rule keeps away.
- */
-function servedSlotsForRung(
-  requestedCode: string,
-  rungCode: string,
-  row: ResolvedBucketSlots,
-): string[] {
-  if (!rungExcludesLow(requestedCode, rungCode)) return row.slots;
-  return row.slotsWithoutLow ?? [];
-}
-
-/**
  * Cached slots for `code`; if the whole horizon window is empty, cascade down
  * the tier ladder (lower debt-tier, same backend+legal digits) and return the
  * first tier that has slots, with a routing descriptor.
@@ -478,7 +463,7 @@ export async function getBucketSlotsWithFallback(
 async function offeredWindowEndMs(nowMs: number, minNoticeMin: number): Promise<number | null> {
   try {
     const hours = await loadBusinessHoursCached();
-    return openDaysWindowEndMs(hours, nowMs + minNoticeMin * 60_000, OFFERED_OPEN_DAYS);
+    return offeredWindowEndFor(hours, nowMs, minNoticeMin);
   } catch (err) {
     log.warn("availability", { msg: "offered window unmeasured, serving the stored horizon" }, err);
     return null;
