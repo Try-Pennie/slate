@@ -130,9 +130,11 @@ export function photoWrites(): PhotoWrites {
 
 /**
  * The image for one content address, if a live advisor holds it. Null when no
- * active person's row carries that hash, so a deactivated advisor's photo stops
- * being served the day they leave even before the nightly run deletes the row.
- * Throws on a failed read.
+ * active person's row carries that hash, so this read stops answering for a
+ * deactivated advisor the moment they are deactivated, before the nightly run
+ * deletes the row. The public route's edge copy can still serve it for up to an
+ * hour after that, and a browser that already fetched it keeps its own copy (see
+ * the route's header). Throws on a failed read.
  */
 export async function loadServedPhoto(sha256: string): Promise<{ base64: string; mime: PhotoMime } | null> {
   const rows = unwrap(
