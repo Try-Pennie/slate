@@ -23,6 +23,7 @@ import {
   paceMs,
   hoursOverwriteRefusal,
   AGENT_OWNS_HOURS,
+  importAction,
 } from "@/lib/calcom/schedule-import";
 import { planScheduleReplacement } from "@/lib/schedule-replacement";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -345,6 +346,37 @@ const current = {
   if (refusal !== null) {
     assert(refusal.includes("manager"), `the refusal names the source it did not recognise (${refusal})`);
   }
+}
+
+// --- what the import does with each agent (the "Set by" stamp) ----------------
+// A week written before migration 0117 (#1753) carries no source, and one that
+// already matched cal.com went on the "already matching" list and was never
+// written, so its source stayed null for ever and the console's Team hours "Set by"
+// column was blank for 52 of 98 bookable advisors (2026-10-02). A matching week
+// with NO source is now stamped, without touching its rules or its zone.
+{
+  eq(importAction(null, false), { kind: "stamp" }, "null source plus a matching week is stamped calcom-import");
+  eq(importAction("agent", false), { kind: "match" }, "an agent's own matching week is left untouched");
+  eq(importAction("admin", false), { kind: "match" }, "an admin's matching week is not restamped");
+  eq(importAction("calcom-import", false), { kind: "match" },
+    "an already stamped week is a match, so a second run stamps nothing");
+  // A seeded week that happens to match cal.com is a separate question (does
+  // somebody really keep the seeded hours, or did both systems inherit one
+  // default?) and is deliberately left as it is.
+  eq(importAction("seed", false), { kind: "match" }, "a matching seeded week is left as seed");
+  eq(importAction("manager", false), { kind: "match" },
+    "a matching week from a writer this rule does not know is never restamped");
+  eq(importAction(null, true), { kind: "write" }, "null source plus a differing week gets the normal write");
+  eq(importAction("seed", true), { kind: "write" }, "a differing seeded week is written, as before");
+  eq(importAction("agent", true), { kind: "left-alone", why: AGENT_OWNS_HOURS },
+    "an agent's own differing week is still left alone");
+}
+{
+  // Idempotent across runs: the first run stamps, and the source it leaves behind
+  // makes the next run read the same agent as a plain match.
+  const first = importAction(null, false);
+  eq(first.kind, "stamp", "the first run stamps");
+  eq(importAction("calcom-import", false), { kind: "match" }, "the second run finds the source set and does nothing");
 }
 
 finish();

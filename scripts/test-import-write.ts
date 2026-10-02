@@ -7,7 +7,7 @@
 // between them, so what is pinned here is that it is ONE call carrying both, stamped
 // `calcom-import`, and that nothing short of the exact count it asked for reads as
 // a save (L12): a refusal, a short count and an unreadable count all throw.
-import { writeImportedWeek } from "@/lib/calcom/import-write";
+import { writeImportedWeek, stampImportedSource } from "@/lib/calcom/import-write";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 type Reply = { data: unknown; error: { message: string } | null };
@@ -107,6 +107,112 @@ async function throws(p: Promise<unknown>): Promise<string | null> {
   const { db, calls } = fakeDb({ data: 5, error: null }, false);
   eq(await throws(writeImportedWeek(db, "u1", WEEK)), null, "live: the week is written, as today");
   eq(calls.length, 1, "live: one RPC");
+}
+
+// --- stampImportedSource: the "Set by" stamp on a week that already matches --------
+// Sets ONLY hours_source and hours_set_at, ONLY where the source is still null, and
+// never touches the rules or the zone. A stateful fake, so running it twice shows
+// the second run finding the source set and writing nothing.
+type Row = { id: string; timezone: string; hours_source: string | null; hours_set_at: string | null };
+function stampDb(
+  row: Row,
+  opts: { retired?: boolean | "unreadable"; fail?: string; unreadableRows?: boolean } = {},
+) {
+  const updates: { table: string; patch: Record<string, unknown>; filters: string[] }[] = [];
+  const rpcCalls: string[] = [];
+  const db = {
+    from: (table: string) => ({
+      select: (_cols: string) => ({
+        eq: (_col: string, _val: unknown) => ({
+          maybeSingle: async () =>
+            opts.retired === "unreadable"
+              ? { data: null, error: { message: "column calcom_retired does not exist" } }
+              : { data: { calcom_retired: opts.retired ?? false }, error: null },
+        }),
+      }),
+      update: (patch: Record<string, unknown>) => {
+        const filters: string[] = [];
+        const rec = { table, patch, filters };
+        updates.push(rec);
+        const chain = {
+          eq: (col: string, val: unknown) => {
+            filters.push(`${col}=${String(val)}`);
+            return chain;
+          },
+          is: (col: string, val: unknown) => {
+            filters.push(`${col} is ${String(val)}`);
+            return chain;
+          },
+          select: async (_cols: string) => {
+            if (opts.fail) return { data: null, error: { message: opts.fail } };
+            if (opts.unreadableRows) return { data: null, error: null };
+            const matches =
+              filters.includes(`id=${row.id}`) && filters.includes("hours_source is null") && row.hours_source === null;
+            if (!matches) return { data: [], error: null };
+            Object.assign(row, patch);
+            return { data: [{ id: row.id }], error: null };
+          },
+        };
+        return chain;
+      },
+    }),
+    rpc: async (fn: string) => {
+      rpcCalls.push(fn);
+      return { data: null, error: null };
+    },
+  };
+  return { db: db as never, updates, rpcCalls };
+}
+
+{
+  const row: Row = { id: "s1", timezone: "America/Phoenix", hours_source: null, hours_set_at: null };
+  const { db, updates, rpcCalls } = stampDb(row);
+  const first = await stampImportedSource(db, "s1");
+  eq(first, "stamped", "a null source is stamped");
+  eq(row.hours_source, "calcom-import", "the source becomes calcom-import");
+  assert(typeof row.hours_set_at === "string" && Number.isFinite(Date.parse(row.hours_set_at)),
+    `hours_set_at is a real timestamp (got ${row.hours_set_at})`);
+  eq(row.timezone, "America/Phoenix", "the zone is untouched");
+  eq(updates.length, 1, "one update");
+  eq(updates[0].table, "availability_schedules", "on the schedule row");
+  eq(Object.keys(updates[0].patch).sort(), ["hours_set_at", "hours_source"],
+    "it sets ONLY the two stamp columns, never the rules or the zone");
+  assert(updates[0].filters.includes("hours_source is null"),
+    "the write itself is conditional on a null source, so a concurrent writer's stamp is never overwritten");
+  eq(rpcCalls.length, 0, "no rules RPC: the week's rules are not rewritten");
+
+  const second = await stampImportedSource(db, "s1");
+  eq(second, "already-set", "a second run finds the source set and stamps nothing");
+  eq(row.hours_source, "calcom-import", "and the stamp is unchanged");
+}
+{
+  const row: Row = { id: "s1", timezone: "UTC", hours_source: "agent", hours_set_at: "2026-09-20T00:00:00Z" };
+  const { db } = stampDb(row);
+  eq(await stampImportedSource(db, "s1"), "already-set", "a row an agent stamped is never restamped");
+  eq(row.hours_source, "agent", "the agent's stamp stands");
+  eq(row.hours_set_at, "2026-09-20T00:00:00Z", "and so does its time");
+}
+{
+  const row: Row = { id: "s1", timezone: "UTC", hours_source: null, hours_set_at: null };
+  const { db } = stampDb(row, { fail: "permission denied for table availability_schedules" });
+  const err = await throws(stampImportedSource(db, "s1"));
+  assert(err !== null && err.includes("permission denied"),
+    `a refused stamp throws with the database's reason, so it counts as a failure, never a match (got ${err})`);
+}
+{
+  const row: Row = { id: "s1", timezone: "UTC", hours_source: null, hours_set_at: null };
+  const { db } = stampDb(row, { unreadableRows: true });
+  const err = await throws(stampImportedSource(db, "s1"));
+  assert(err !== null && err.includes("unreadable"),
+    `a stamp whose result cannot be read back throws rather than claiming a save (got ${err})`);
+}
+{
+  const row: Row = { id: "s1", timezone: "UTC", hours_source: null, hours_set_at: null };
+  const { db, updates } = stampDb(row, { retired: true });
+  const err = await throws(stampImportedSource(db, "s1"));
+  assert(err !== null && /retired/i.test(err), `retired: the stamp is refused too (got ${err})`);
+  eq(updates.length, 0, "retired: nothing is written");
+  eq(row.hours_source, null, "retired: the source stays null");
 }
 
 finish();

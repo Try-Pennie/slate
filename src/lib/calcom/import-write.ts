@@ -54,3 +54,44 @@ export async function writeImportedWeek(
     );
   }
 }
+
+/**
+ * Record `calcom-import` as the source of a week that ALREADY matches cal.com and
+ * carries no source, without rewriting it.
+ *
+ * Weeks written before migration 0117 (#1753) carry a null `hours_source`, and a
+ * matching week was never written by the import, so the source stayed null for
+ * ever (`importAction` in `schedule-import.ts` decides when this runs).
+ *
+ * ONE narrow write that sets only `hours_source` and `hours_set_at`. The rules and
+ * the zone are not touched, because they already equal what an import would write;
+ * sending them back through `replace_user_schedule` would delete and reinsert the
+ * rules for no change. The update is filtered on `hours_source is null`, so it can
+ * never overwrite a stamp another writer (an agent saving their own week a second
+ * earlier) put there, and a second run finds nothing to update. Direct table writes
+ * by the secret key client are the established path for this stamp
+ * (`fillMissingSchedules` in `src/lib/schedule.ts` stamps `seed` the same way).
+ *
+ * Refuses once cal.com is retired, on the same fresh read `writeImportedWeek` uses
+ * (#2875): a week stamped `calcom-import` after cutover would claim cal.com set it.
+ *
+ * Returns `stamped` when it wrote the row, `already-set` when the source was no
+ * longer null (nothing written). THROWS on a refused write and on a result it cannot
+ * read back, so a failed stamp is a failure and never a match (L12).
+ */
+export async function stampImportedSource(
+  db: Db,
+  scheduleId: string,
+): Promise<"stamped" | "already-set"> {
+  const refusal = calcomHoursWriteRefusal(await loadCalcomRetired(db as unknown as RetiredReadDb));
+  if (refusal) throw new Error(`source not stamped: ${refusal}`);
+  const { data, error } = await db
+    .from("availability_schedules")
+    .update({ hours_source: "calcom-import", hours_set_at: new Date().toISOString() })
+    .eq("id", scheduleId)
+    .is("hours_source", null)
+    .select("id");
+  if (error) throw new Error(`source stamp refused: ${error.message}`);
+  if (!Array.isArray(data)) throw new Error("source stamp: the database returned an unreadable result");
+  return data.length > 0 ? "stamped" : "already-set";
+}

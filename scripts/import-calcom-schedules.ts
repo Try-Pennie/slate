@@ -36,9 +36,16 @@
 // now refuses only windows that OVERLAP each other, so the shifts come across as
 // cal.com holds them and the break stops being bookable.
 //
-// IT IS IDEMPOTENT and safe to re-run. An agent already matching cal.com is left
-// alone, so a run interrupted part way is repaired by running it again. That is
-// what lets the daily lane run it unattended every morning (#2092).
+// IT IS IDEMPOTENT and safe to re-run. An agent already matching cal.com keeps
+// their week as it is, so a run interrupted part way is repaired by running it
+// again. That is what lets the daily lane run it unattended every morning (#2092).
+//
+// ONE EXCEPTION, AND IT WRITES NO HOURS. A matching week whose `hours_source` is
+// null (written before migration 0117 recorded who sets hours, #1753) is stamped
+// `calcom-import` in an APPLY run, rules and zone untouched, so the console's
+// "Set by" column stops being blank for it. Only a null source is stamped, never
+// `agent`, `admin`, `seed` or an existing `calcom-import`, so a second run stamps
+// nothing. A dry run reports how many it would stamp on a line of its own.
 //
 // env-ok: CALCOM_ORG_ID (optional; defaults to 19474, the live org, and a scheduled
 // run has no reason to point elsewhere)
@@ -57,9 +64,9 @@ const { unwrap } = await import("@/lib/db/result");
 // The mapping and the write this shares with the activation gate (#2627), which
 // imports ONE agent's week the moment they become bookable. One reading of a cal.com
 // week, so the daily sweep and the gate cannot disagree about what somebody works.
-const { planImportedWeek, pickDefaultSchedule, diffSchedule, skipKindForStatus, paceMs, hoursOverwriteRefusal } =
+const { planImportedWeek, pickDefaultSchedule, diffSchedule, skipKindForStatus, paceMs, importAction } =
   await import("@/lib/calcom/schedule-import");
-const { writeImportedWeek } = await import("@/lib/calcom/import-write");
+const { writeImportedWeek, stampImportedSource } = await import("@/lib/calcom/import-write");
 const { loadCalcomRetired, calcomHoursWriteRefusal } = await import("@/lib/calcom/retirement");
 // The reads this shares with `pnpm verify:calcom-parity`. One definition of "who
 // is a bookable agent", because two would drift and the command would then report
@@ -186,6 +193,11 @@ const skipped: { email: string; why: string; kind: "transient" | "permanent" }[]
  *  nobody has to go and repair anything: the sweep reports them as a standing
  *  difference, and this run simply leaves them where they are. */
 const leftAlone: { email: string; why: string; reasons: string[] }[] = [];
+/** Agents whose week already matches cal.com and carries no source, because it
+ *  was written before migration 0117 recorded one (#1753). An APPLY run stamps
+ *  them `calcom-import` without rewriting the week; kept apart from `unchanged`
+ *  and from `changes` so the report never counts a stamp as either. */
+const toStamp: { email: string; scheduleId: string }[] = [];
 
 const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
 const render = (rs: { weekday: number; start_minute: number; end_minute: number }[]) => {
@@ -243,18 +255,24 @@ for (const agent of agents) {
     { timezone: agent.timezone, rules: currentRules },
     { timezone: plan.timezone, rules: plan.rules },
   );
-  if (!diff.changed) {
+  // `importAction` asks who owns the week AFTER the diff, never before it. An agent
+  // who owns their week and happens to match cal.com is not a finding, and
+  // reporting them every morning would put five permanent lines under a heading
+  // that means "go and do something", which is how a report stops being read (L36).
+  // It costs one cal.com read for an agent this will not write, which is the right
+  // trade.
+  const action = importAction(agent.hoursSource, diff.changed);
+  if (action.kind === "match") {
     unchanged.push(agent.email);
     continue;
   }
-  // Asked AFTER the diff, never before it. An agent who owns their week and
-  // happens to match cal.com is not a finding, and reporting them every morning
-  // would put five permanent lines under a heading that means "go and do
-  // something", which is how a report stops being read (L36). It costs one cal.com
-  // read for an agent this will not write, which is the right trade.
-  const refusal = hoursOverwriteRefusal(agent.hoursSource);
-  if (refusal !== null) {
-    leftAlone.push({ email: agent.email, why: refusal, reasons: diff.reasons });
+  if (action.kind === "stamp") {
+    // Matches cal.com and carries no source: record who set it, rules untouched.
+    toStamp.push({ email: agent.email, scheduleId: agent.scheduleId });
+    continue;
+  }
+  if (action.kind === "left-alone") {
+    leftAlone.push({ email: agent.email, why: action.why, reasons: diff.reasons });
     continue;
   }
   changes.push({
@@ -273,6 +291,10 @@ for (const agent of agents) {
 console.log(`\n--- summary ---`);
 console.log(`would change: ${changes.length}`);
 console.log(`already matching: ${unchanged.length}`);
+// Its own count, never folded into either line above: a stamp writes no hours, so it
+// is not a change, and until it lands the source is unrecorded, so it is not yet a
+// plain match either.
+console.log(`already matching, who set them not recorded (would stamp calcom-import): ${toStamp.length}`);
 if (leftAlone.length > 0) {
   console.log(`left alone, the agent owns these hours: ${leftAlone.length}`);
   for (const a of leftAlone) console.log(`   ${a.email}: ${a.reasons.join("; ")}`);
@@ -290,7 +312,7 @@ if (transient.length > 0) {
   for (const [why, n] of kinds) console.log(`   ${n}x ${why}`);
 }
 
-if (changes.length === 0) {
+if (changes.length === 0 && toStamp.length === 0) {
   if (transient.length > 0) {
     stop(EXIT.rateLimited, `nothing changed, and ${transient.length} agent(s) were never read. Run it again.`);
   }
@@ -310,7 +332,10 @@ if (changes.length === 0) {
 }
 
 if (!apply) {
-  console.log(`\nDRY RUN: nothing was written. Re-run with APPLY=1 to write these ${changes.length} change(s).`);
+  console.log(
+    `\nDRY RUN: nothing was written. Re-run with APPLY=1 to write these ${changes.length} change(s)` +
+      ` and stamp ${toStamp.length} matching week(s) with who set them.`,
+  );
   process.exit(EXIT.ok);
 }
 
@@ -335,13 +360,44 @@ for (const c of changes) {
   }
 }
 
+// --- stamp ----------------------------------------------------------------------
+// Weeks that already match and carry no source: record `calcom-import` and the
+// time, rules and zone untouched (`stampImportedSource`). The write is conditional
+// on the source still being null, so a second run, or an agent who saved their own
+// week a moment ago, leaves nothing for it to do.
+let stamped = 0;
+let stampAlreadySet = 0;
+const stampFailures: { email: string; why: string }[] = [];
+for (const s of toStamp) {
+  try {
+    const result = await stampImportedSource(db, s.scheduleId);
+    if (result === "stamped") {
+      stamped++;
+      console.log(`stamped ${s.email}`);
+    } else {
+      stampAlreadySet++;
+      console.log(`not stamped ${s.email}: another writer recorded who set these hours first`);
+    }
+  } catch (err) {
+    stampFailures.push({ email: s.email, why: String(err).slice(0, 160) });
+    console.error(`FAILED stamping ${s.email}: ${String(err).slice(0, 160)}`);
+  }
+}
+
 console.log(`\nwritten: ${wrote} of ${changes.length}`);
+console.log(`stamped: ${stamped} of ${toStamp.length}`);
+if (stampAlreadySet > 0) console.log(`   ${stampAlreadySet} already recorded by another writer, left as they were`);
 // Only the agents actually WRITTEN, judged by the read-back above rather than by
 // the absence of an error, so the alert's "corrected" count is a claim about rows
-// this run verified rather than about ones it attempted.
+// this run verified rather than about ones it attempted. Stamps are deliberately
+// not in it: they correct who set a week, never the hours a lead is offered.
 writeApplySummary(wrote, writtenEmails);
-if (writeFailures.length > 0) {
-  stop(EXIT.writeFailed, `${writeFailures.length} agent(s) could not be written; re-running repairs a partial write`);
+if (writeFailures.length > 0 || stampFailures.length > 0) {
+  const parts = [
+    writeFailures.length > 0 ? `${writeFailures.length} agent(s) could not be written` : null,
+    stampFailures.length > 0 ? `${stampFailures.length} matching week(s) could not be stamped` : null,
+  ].filter((p): p is string => p !== null);
+  stop(EXIT.writeFailed, `${parts.join(" and ")}; re-running repairs a partial write`);
 }
 if (transient.length > 0) {
   stop(EXIT.rateLimited, `${wrote} written, but ${transient.length} agent(s) were never read. Run it again to reach them.`);
