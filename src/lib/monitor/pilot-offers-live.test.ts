@@ -66,12 +66,21 @@ describe("runPilotOfferSampleLive", () => {
     expect(calcom.calcomRoutedSlots).toHaveBeenCalledWith(
       PILOT_OFFER_CALCOM_FORM,
       { xbc: 112, adv: 1, bes: 1, leg: 2 },
-      new Date(NOW).toISOString(),
-      new Date(NOW + 24 * 3_600_000).toISOString(),
+      {
+        start: new Date(NOW).toISOString(),
+        end: new Date(NOW + 24 * 3_600_000).toISOString(),
+        timeZone: "America/New_York",
+      },
     );
     expect(slots.getBucketSlotsWithFallback).toHaveBeenCalledWith("112", new Date(NOW).toISOString(), false, NOW);
     expect(inserted).toEqual([
-      expect.objectContaining({ system: "calcom", ok: true, earliest_offered_at: iso(60), offered_24h: 1 }),
+      expect.objectContaining({
+        system: "calcom",
+        ok: true,
+        earliest_offered_at: iso(60),
+        offered_24h: 1,
+        calcom_time_zone: "America/New_York",
+      }),
       expect.objectContaining({ system: "slate", ok: true, earliest_offered_at: iso(200), offered_24h: 2 }),
     ]);
   });

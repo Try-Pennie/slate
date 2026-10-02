@@ -7,6 +7,7 @@ import { filterSlotsFromNow } from "@/lib/availability/compute";
 import {
   PILOT_OFFER_BUCKET,
   PILOT_OFFER_CALCOM_FORM,
+  PILOT_OFFER_TIME_ZONE,
   pilotOfferRoutingFields,
   runPilotOfferSample,
   type PilotOfferOutcome,
@@ -24,6 +25,7 @@ export function runPilotOfferSampleLive(db: ReturnType<typeof supabaseAdmin>, no
   return runPilotOfferSample({
     nowMs,
     bucketCode: PILOT_OFFER_BUCKET,
+    calcomTimeZone: PILOT_OFFER_TIME_ZONE,
     lastSampledAtMs: async () => {
       const row = unwrap(
         await db
@@ -41,8 +43,11 @@ export function runPilotOfferSampleLive(db: ReturnType<typeof supabaseAdmin>, no
       calcomRoutedSlots(
         PILOT_OFFER_CALCOM_FORM,
         pilotOfferRoutingFields(PILOT_OFFER_BUCKET),
-        new Date(nowMs).toISOString(),
-        new Date(nowMs + 24 * 3_600_000).toISOString(),
+        {
+          start: new Date(nowMs).toISOString(),
+          end: new Date(nowMs + 24 * 3_600_000).toISOString(),
+          timeZone: PILOT_OFFER_TIME_ZONE,
+        },
       ),
     readSlate: async () => {
       const served = await getBucketSlotsWithFallback(PILOT_OFFER_BUCKET, new Date(nowMs).toISOString(), false, nowMs);

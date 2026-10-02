@@ -49,6 +49,14 @@ export const PILOT_OFFER_BUCKET = "112";
  */
 export const PILOT_OFFER_CALCOM_FORM = "b839aed8-4afd-4bde-8796-68645685adb9";
 
+/**
+ * The zone cal.com is asked in (#3002). Without one it answers a truncated list.
+ * Pennie's business zone, and the one the 2026-10-02 control matched the live
+ * booker in. The offered instants are absolute, so the zone changes only where
+ * cal.com's days begin and end, not which times count.
+ */
+export const PILOT_OFFER_TIME_ZONE = "America/New_York";
+
 export function pilotOfferRoutingFields(xbc: string): Record<string, number> {
   return { xbc: Number(xbc), adv: Number(xbc[0]), bes: Number(xbc[1]), leg: Number(xbc[2]) };
 }
@@ -66,6 +74,12 @@ export type PilotOfferRow = {
   earliest_offered_at: string | null;
   offered_24h: number | null;
   error: string | null;
+  /**
+   * The zone cal.com was asked in, on cal.com rows (#3002). Null on a cal.com row
+   * means it was taken before the read passed one, so its answer was cut short and
+   * the report leaves that quarter hour out. Always null on Slate rows.
+   */
+  calcom_time_zone: string | null;
 };
 
 export function pilotOfferSampleDue(lastSampledAtMs: number | null, nowMs: number): boolean {
@@ -118,6 +132,8 @@ export function readCalcomRoutedSlots(
 export interface PilotOfferDeps {
   nowMs: number;
   bucketCode: string;
+  /** The zone the cal.com read asks in, recorded on its row. */
+  calcomTimeZone: string;
   /** When the newest stored sample was taken, or null when there is none. */
   lastSampledAtMs: () => Promise<number | null>;
   /** cal.com's raw answer for a Low lead's routing fields. */
@@ -143,9 +159,17 @@ export async function runPilotOfferSample(deps: PilotOfferDeps): Promise<PilotOf
   const sampledAt = new Date(deps.nowMs).toISOString();
   // In the table's column order.
   const base = (system: PilotOfferSystem) => ({ sampled_at: sampledAt, system, bucket_code: deps.bucketCode });
+  const zone = (system: PilotOfferSystem) => ({ calcom_time_zone: system === "calcom" ? deps.calcomTimeZone : null });
   const measured = (system: PilotOfferSystem, times: string[]): PilotOfferRow => {
     const s = offerSummary(times, deps.nowMs);
-    return { ...base(system), ok: true, earliest_offered_at: s.earliestOfferedAt, offered_24h: s.offered24h, error: null };
+    return {
+      ...base(system),
+      ok: true,
+      earliest_offered_at: s.earliestOfferedAt,
+      offered_24h: s.offered24h,
+      error: null,
+      ...zone(system),
+    };
   };
   const failed = (system: PilotOfferSystem, error: string): PilotOfferRow => ({
     ...base(system),
@@ -153,6 +177,7 @@ export async function runPilotOfferSample(deps: PilotOfferDeps): Promise<PilotOf
     earliest_offered_at: null,
     offered_24h: null,
     error,
+    ...zone(system),
   });
 
   let calcom: PilotOfferRow;
@@ -190,6 +215,12 @@ export interface PilotOffersSummary {
   paired: number;
   /** Of those, how many had Slate's earliest time strictly before cal.com's. */
   slateEarlier: number;
+  /**
+   * Quarter hours left out because their cal.com row was read with no time zone
+   * (#3002), so cal.com's count there was cut short. Both systems' rows from those
+   * instants are dropped, so the two halves are summarised over the same samples.
+   */
+  leftOutTruncated: number;
 }
 
 function median(values: number[]): number | null {
@@ -222,7 +253,11 @@ function summariseSystem(rows: PilotOfferRow[]): SystemOffers {
  */
 const firstMs = (r: PilotOfferRow): number => parseStampMs(r.earliest_offered_at) ?? Number.POSITIVE_INFINITY;
 
-export function summarisePilotOffers(rows: readonly PilotOfferRow[]): PilotOffersSummary {
+export function summarisePilotOffers(allRows: readonly PilotOfferRow[]): PilotOffersSummary {
+  const truncated = new Set(
+    allRows.filter((r) => r.system === "calcom" && r.calcom_time_zone === null).map((r) => r.sampled_at),
+  );
+  const rows = allRows.filter((r) => !truncated.has(r.sampled_at));
   const slateRows = rows.filter((r) => r.system === "slate");
   const calcomRows = rows.filter((r) => r.system === "calcom");
   const calcomAt = new Map(calcomRows.filter((r) => r.ok).map((r) => [r.sampled_at, r]));
@@ -234,7 +269,13 @@ export function summarisePilotOffers(rows: readonly PilotOfferRow[]): PilotOffer
     paired++;
     if (firstMs(s) < firstMs(c)) slateEarlier++;
   }
-  return { slate: summariseSystem(slateRows), calcom: summariseSystem(calcomRows), paired, slateEarlier };
+  return {
+    slate: summariseSystem(slateRows),
+    calcom: summariseSystem(calcomRows),
+    paired,
+    slateEarlier,
+    leftOutTruncated: truncated.size,
+  };
 }
 
 export type PilotOffersRead =
@@ -268,12 +309,24 @@ export function pilotOffersReportLines(read: PilotOffersRead): string[] {
     return [head, `  skipped: ${read.missing.join(" and ")} ${read.missing.length === 1 ? "is" : "are"} not set here.`];
   }
   if (read.ok === false) return [head, `  the samples could not be read: ${read.message}`];
-  const { slate, calcom, paired, slateEarlier } = read.summary;
+  const { slate, calcom, paired, slateEarlier, leftOutTruncated } = read.summary;
+  const leftOut =
+    leftOutTruncated > 0
+      ? [
+          `  ${leftOutTruncated} quarter hour${leftOutTruncated === 1 ? "" : "s"} sampled before cal.com was asked in a ` +
+            "time zone are left out, because cal.com's answer then was cut short (#3002).",
+        ]
+      : [];
   if (slate.samples === 0 && calcom.samples === 0) {
-    return [head, "  no availability samples for these dates, so the halves cannot be compared on what they offered."];
+    return [
+      head,
+      ...leftOut,
+      "  no availability samples for these dates, so the halves cannot be compared on what they offered.",
+    ];
   }
   return [
     head,
+    ...leftOut,
     systemLine("Slate", slate),
     systemLine("cal.com", calcom),
     paired === 0

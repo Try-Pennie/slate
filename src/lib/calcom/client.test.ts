@@ -371,9 +371,30 @@ describe("a date's overrides are derived from every approved absence on it (#241
 // #2927 follow up: the pilot offer sample runs on the monitor lane, so a cal.com
 // call that never answers would stall every check after it with nothing recorded.
 describe("calcomRoutedSlots", () => {
+  const WINDOW = {
+    start: "2026-10-01T00:00:00.000Z",
+    end: "2026-10-02T00:00:00.000Z",
+    timeZone: "America/New_York",
+  };
+
+  // #3002: without a timeZone cal.com answers a truncated list (measured
+  // 2026-10-02: Friday stopped at 3:30pm ET while the live booker ran to 7:40pm).
+  it("asks in the time zone it was given", async () => {
+    replies = [{ status: 200, data: { eventTypeId: 1, slots: {} } }];
+    await calcomRoutedSlots("form-1", { xbc: 112 }, WINDOW);
+    const q = new URL(urls[0]!).searchParams;
+    expect(q.get("timeZone")).toBe("America/New_York");
+    expect([q.get("start"), q.get("end")]).toEqual([WINDOW.start, WINDOW.end]);
+  });
+
+  it("refuses an empty time zone rather than asking without one", async () => {
+    await expect(calcomRoutedSlots("form-1", { xbc: 112 }, { ...WINDOW, timeZone: " " })).rejects.toThrow("time zone");
+    expect(urls).toEqual([]);
+  });
+
   it("asks the routing form's calculate-slots with the lead's fields", async () => {
     replies = [{ status: 200, data: { eventTypeId: 1, slots: {} } }];
-    const out = await calcomRoutedSlots("form-1", { xbc: 112 }, "2026-10-01T00:00:00.000Z", "2026-10-02T00:00:00.000Z");
+    const out = await calcomRoutedSlots("form-1", { xbc: 112 }, WINDOW);
     expect(out.status).toBe(200);
     expect(urls[0]).toContain("/routing-forms/form-1/calculate-slots?");
     expect(bodies[0]).toEqual({ xbc: 112 });
@@ -390,14 +411,14 @@ describe("calcomRoutedSlots", () => {
       ),
     );
     await expect(
-      calcomRoutedSlots("form-1", { xbc: 112 }, "2026-10-01T00:00:00.000Z", "2026-10-02T00:00:00.000Z", 20),
+      calcomRoutedSlots("form-1", { xbc: 112 }, WINDOW, 20),
     ).rejects.toThrow();
   });
 
   it("refuses when cal.com is not configured here", async () => {
     env.apiKey = "";
     await expect(
-      calcomRoutedSlots("form-1", { xbc: 112 }, "2026-10-01T00:00:00.000Z", "2026-10-02T00:00:00.000Z"),
+      calcomRoutedSlots("form-1", { xbc: 112 }, WINDOW),
     ).rejects.toThrow("not configured");
   });
 });
