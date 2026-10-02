@@ -52,6 +52,6 @@ export const EVENT_TYPE_DEFAULTS = {
 export const EVENT_TYPE_FIELD_NOTES: Record<string, string> = {
   slot_interval_min: "How far apart the offered start times sit.",
   min_notice_min: "How far ahead of now the earliest offered time can be.",
-  buffer_after_min: "Kept free after the call, so the next cannot start on top of it.",
+  gap_min: "Kept free before and after every call, so two calls never sit closer than this.",
   daily_cap: "Most calls one agent takes in a day. Blank means no cap.",
 };

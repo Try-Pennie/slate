@@ -5,6 +5,7 @@ import { canEditOrgSettings } from "@/lib/auth/roles";
 import { consoleHiddenFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { createEventType } from "@/app/admin/actions";
+import { EventTypeGapForm } from "@/app/admin/event-types/EventTypeGapForm";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
 import { savedOutcome, savedSentence } from "@/lib/admin/save-outcomes";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
@@ -65,12 +66,15 @@ export default async function EventTypesPage({
             from this screen until it loads, or you may create a duplicate.
           </UnreadableNotice>
         ) : (
-          <ul className="mb-4 space-y-1 text-sm">
+          <ul className="mb-4 space-y-4 text-sm">
             {eventTypes.map((e) => (
-              <li key={e.id} className="text-fg tabular-nums">
-                {e.name} · {e.duration_min}m · {e.min_notice_min}m notice ·{" "}
-                {e.slot_interval_min}m grid
-                {e.daily_cap ? ` · cap ${e.daily_cap}/day` : ""}
+              <li key={e.id} className="space-y-2">
+                <p className="text-fg tabular-nums">
+                  {e.name} · {e.duration_min}m · {e.min_notice_min}m notice ·{" "}
+                  {e.slot_interval_min}m grid
+                  {e.daily_cap ? ` · cap ${e.daily_cap}/day` : ""}
+                </p>
+                <EventTypeGapForm eventType={e} />
               </li>
             ))}
             {eventTypes.length === 0 && (
@@ -146,10 +150,10 @@ export default async function EventTypesPage({
               small
             />
             <Field
-              name="buffer_after_min"
-              label="Buffer after (m)"
+              name="gap_min"
+              label="Gap between calls (m)"
               placeholder={String(EVENT_TYPE_DEFAULTS.buffer_after_min)}
-              hint={EVENT_TYPE_FIELD_NOTES.buffer_after_min}
+              hint={EVENT_TYPE_FIELD_NOTES.gap_min}
               small
             />
             <Field

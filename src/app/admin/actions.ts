@@ -621,8 +621,10 @@ export async function createEventType(form: FormData): Promise<void> {
       regal_type:
         String(form.get("regal_type") ?? "").trim() || EVENT_TYPE_DEFAULTS.regal_type,
       duration_min: num(form, "duration_min", EVENT_TYPE_DEFAULTS.duration_min),
-      buffer_before_min: num(form, "buffer_before_min", EVENT_TYPE_DEFAULTS.buffer_before_min),
-      buffer_after_min: num(form, "buffer_after_min", EVENT_TYPE_DEFAULTS.buffer_after_min),
+      // One gap sets both buffers: Slate pads only the call being offered, so a
+      // buffer on one side alone still lets two calls touch (see setEventTypeGap).
+      buffer_before_min: num(form, "gap_min", EVENT_TYPE_DEFAULTS.buffer_before_min),
+      buffer_after_min: num(form, "gap_min", EVENT_TYPE_DEFAULTS.buffer_after_min),
       min_notice_min: num(form, "min_notice_min", EVENT_TYPE_DEFAULTS.min_notice_min),
       daily_cap: form.get("daily_cap") ? num(form, "daily_cap", 0) : null,
       slot_interval_min: num(
@@ -1269,6 +1271,78 @@ export async function setBookingHorizon(form: FormData): Promise<void> {
   });
   revalidatePath("/admin/business-hours");
   redirect(`/admin/business-hours${savedQuery("booking-horizon")}`);
+}
+
+/** The longest gap an admin may keep between calls, in minutes. Two hours is
+ *  already more than the call itself several times over; anything larger is a
+ *  typo that would close the booker for the day. */
+const MAX_GAP_MIN = 120;
+
+/**
+ * Set the gap kept between two calls on one advisor.
+ *
+ * BC, 2026-10-02: cal.com kept 10 minutes between calls as a cap on capacity, and
+ * the move to Slate dropped it. One number sets BOTH buffers, because Slate pads
+ * only the call being offered: with a buffer after alone, a new call could still
+ * start the minute an earlier one ends. Before and after together guarantee the
+ * gap on both sides of every call.
+ *
+ * A plain UPDATE of two columns, so it is idempotent under a retry or a double
+ * submit. It goes through `updateEventType`, which refreshes the cached slots the
+ * booker serves, since the buffer rides inside that payload.
+ */
+export async function setEventTypeGap(form: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const page = "/admin/event-types";
+
+  const eventTypeId = String(form.get("event_type_id") ?? "").trim();
+  if (!eventTypeId) {
+    redirect(`${page}${refusedQuery("No event type was named.")}`);
+  }
+  const raw = String(form.get("gap_min") ?? "").trim();
+  const gap = /^\d+$/.test(raw) ? Number(raw) : NaN;
+  if (!Number.isInteger(gap) || gap > MAX_GAP_MIN) {
+    redirect(
+      `${page}${refusedQuery(`The gap between calls has to be a whole number of minutes from 0 to ${MAX_GAP_MIN}.`)}`,
+    );
+  }
+
+  // The current value, so the trail records what it was as well as what it became.
+  const before = unwrap(
+    await supabaseAdmin()
+      .from("event_types")
+      .select("buffer_before_min, buffer_after_min")
+      .eq("id", eventTypeId)
+      .eq("org_id", admin.org_id)
+      .maybeSingle(),
+    "setEventTypeGap current gap",
+  ) as { buffer_before_min: number; buffer_after_min: number } | null;
+  if (!before) {
+    redirect(`${page}${refusedQuery("That event type was not found.")}`);
+  }
+
+  const patch = { buffer_before_min: gap, buffer_after_min: gap };
+  const saved = await updateEventType({ eventTypeId, orgId: admin.org_id, patch });
+  if (saved.error) {
+    log.error("admin", { msg: "event type gap save failed", event_type_id: eventTypeId }, saved.error);
+    redirect(`${page}${refusedQuery("Could not save the gap between calls. Please try again.")}`);
+  }
+  if (saved.count === 0) {
+    redirect(`${page}${refusedQuery("That event type was not found.")}`);
+  }
+
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "event_type.gap",
+    details: {
+      event_type_id: eventTypeId,
+      from: { buffer_before_min: before.buffer_before_min, buffer_after_min: before.buffer_after_min },
+      to: patch,
+    },
+  });
+  revalidatePath(page);
+  redirect(`${page}${savedQuery("event-type-gap")}`);
 }
 
 /**

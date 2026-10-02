@@ -45,6 +45,7 @@ const ACTION_LABEL: Record<string, string> = {
   "bucket.created": "created a routing bucket",
   "bucket.updated": "changed a routing bucket",
   "event_type.created": "added an event type",
+  "event_type.gap": "changed the gap between calls",
   "webhook.test_sent": "sent a test webhook to a URL they entered",
   "monitor.settings": "changed alert settings",
   "monitor.volume_ramp_end": "changed when the booking ramp ended",
