@@ -244,11 +244,6 @@ import {
 } from "@/lib/monitor/availability-truth";
 import { tierFallbackAlert } from "@/lib/routing/tier-alert";
 import {
-  beyondOverflowVerdict,
-  beyondOverflowNoticeText,
-  BEYOND_OVERFLOW_WINDOW_HOURS,
-} from "@/lib/monitor/beyond-overflow";
-import {
   topTierCascadeNoticeText,
   topTierCascadeVerdict,
   TOP_TIER_CASCADE_WINDOW_HOURS,
@@ -616,30 +611,9 @@ const REGAL_PREVIEW_DAY = {
 };
 
 /**
- * One rendered Beyond overflow report (#2228).
- *
- * It goes through the real `beyondOverflowVerdict` rather than calling the copy
- * builder straight, so a preview can only ever show a message the lane could
- * really send: a pair of counts the verdict would have refused to report on
- * throws here instead of rendering a sentence nobody will see.
- */
-function beyondOverflowReportPreview(overflowed: number, beyondBooked: number): string {
-  const verdict = beyondOverflowVerdict({
-    overflowed,
-    beyondBooked,
-    windowHours: BEYOND_OVERFLOW_WINDOW_HOURS,
-  });
-  if (verdict.kind !== "report") {
-    throw new Error(
-      `beyond overflow preview fixture ${overflowed}/${beyondBooked} is not a reportable window (${verdict.kind})`,
-    );
-  }
-  return beyondOverflowNoticeText(verdict, BEYOND_OVERFLOW_WINDOW_HOURS);
-}
-
-/**
- * One rendered top tier cascade report (#2843), through the real verdict for the
- * same reason as the Beyond one above: a window the lane would refuse to report on
+ * One rendered top tier cascade report (#2843). It goes through the real verdict
+ * rather than calling the copy builder straight, so a preview can only ever show a
+ * message the lane could really send: a window the lane would refuse to report on
  * throws here rather than rendering a sentence nobody will see.
  */
 function topTierCascadeReportPreview(w: Omit<TopTierCascadeWindow, "windowHours">): string {
@@ -3489,29 +3463,6 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the lock claim hit a DB error",
     channel: "alert",
     text: rescheduleLockOutageAlert(),
-  },
-  // #2228. Three states, because the number is the message and it reads
-  // differently at each: the realistic steady rate (most of a small day's Beyond
-  // leads), the day it is only one, and the mixed case where the noun and the verb
-  // take different numbers. The old per booking page previewed one example, which
-  // is exactly how a rate nobody had read at its real frequency shipped.
-  {
-    key: "beyond_overflow_rate",
-    state: "the realistic day: most Beyond leads overflow",
-    channel: "info",
-    text: beyondOverflowReportPreview(9, 11),
-  },
-  {
-    key: "beyond_overflow_rate",
-    state: "one Beyond lead, and it overflowed",
-    channel: "info",
-    text: beyondOverflowReportPreview(1, 1),
-  },
-  {
-    key: "beyond_overflow_rate",
-    state: "one of several overflowed",
-    channel: "info",
-    text: beyondOverflowReportPreview(1, 7),
   },
   {
     key: "top_tier_cascade_rate",

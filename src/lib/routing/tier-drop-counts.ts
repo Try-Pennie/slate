@@ -48,8 +48,8 @@ export function tierLabel(key: string | null | undefined): string | null {
 
 /**
  * The cause of one booking's drop, or null when the booking did not drop a debt
- * tier: no drop recorded, a sideways overflow inside one tier (counted daily by
- * `beyond_overflow_rate`), an upward move, or a tier this cannot read.
+ * tier: no drop recorded, a sideways overflow inside one tier, an upward move, or
+ * a tier this cannot read.
  */
 export function tierDropCause(t: TierDropTrace | null): TierDropCause | null {
   if (!t?.tier_fallback) return null;

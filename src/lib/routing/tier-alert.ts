@@ -21,8 +21,7 @@ const XBC = /^[1-5][0-3][0-2]$/;
  *
  * Every smaller movement deliberately sends NOTHING, each for a recorded reason
  * on its branch below: the sideways overflow (#2228), a top tier lead's cascade
- * (#2843), and a single tier drop (2026-10-02). Each is counted somewhere that
- * can see a rate rather than one placement.
+ * (#2843), and a single tier drop (2026-10-02).
  *
  * Returns null for those, when nothing moved, when either code cannot be
  * read, and when the pair is one the LADDER cannot produce. That last guard is not defensive: the
@@ -76,8 +75,9 @@ export function tierFallbackAlert(input: {
   // 2026-09-10 and 2026-09-13: 88 bookable agents are Achieve only, 1 is Beyond
   // only, 1 is both, so once traffic starts an overflow is what happens to a Beyond
   // lead whenever neither of those two is free. Dan, 2026-09-13: "we're moving off
-  // beyond entirely". It is counted once a day on the info channel instead:
-  // `beyond_overflow_rate` in `src/lib/monitor/beyond-overflow.ts`.
+  // beyond entirely". It was then a once a day count on the info channel
+  // (`beyond_overflow_rate`), and Dan removed that too on 2026-10-02, so a sideways
+  // overflow is reported nowhere. The decision log row still records each one.
   //
   // A SINGLE TIER DROP. It used to return `tier_fallback:<code>`, a Routing notice
   // throttled an hour per code. Sales ops decided on 2026-10-02 (Slack, Sam:

@@ -21,7 +21,7 @@ assert(TOP_TIER_CODES.ultra_high.every((c) => c[0] === "5"), "Ultra codes start 
 assert(TOP_TIER_CODES.very_high.every((c) => c[0] === "4"), "Very High codes start with 4");
 // Every rung the ladder can land a top tier lead on BELOW their tier is on the
 // booked side, and no rung in their own tier is, so a sideways Beyond overflow is
-// never counted as a cascade (it has its own daily count, #2228).
+// never counted as a cascade (#2228).
 for (const tier of ["ultra_high", "very_high"] as const) {
   const below = new Set(CASCADE_CODES_BELOW[tier]);
   for (const code of TOP_TIER_CODES[tier]) {

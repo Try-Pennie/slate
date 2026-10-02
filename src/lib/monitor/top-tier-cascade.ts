@@ -20,10 +20,11 @@
  * What is genuinely wrong for these leads, every allowed tier full, is a different
  * event with its own signal (#2841), so this never pages and never double counts it.
  *
- * NO VERDICT STAMP and NO ALL CLEAR, for the reasons `beyond-overflow.ts` gives: it
- * is `info` in the alert catalog, there is no condition to end, and before cutover it
- * reads `unmeasured` every tick because no lead reaches Slate, which is the correct
- * answer rather than a blindness to page about (L129).
+ * NO VERDICT STAMP and NO ALL CLEAR. It is `info` in the alert catalog and there is
+ * no condition to end: ask what the all-clear would SAY and the answer is that the
+ * expected thing did not happen for a day, which is not news. Before cutover it reads
+ * `unmeasured` every tick because no lead reaches Slate, which is the correct answer
+ * rather than a blindness to page about (L129).
  *
  * Imports only relative modules, so `scripts/test-top-tier-cascade.ts` drives every
  * branch node-natively; the counting and the sending are injected by the caller.
