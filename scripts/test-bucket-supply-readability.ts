@@ -473,4 +473,17 @@ function codesOf(
   eq(poolRowName({ code: "111", name: "111", poolLabel: null }), "Low | Both | Legal", "a manager's row name spells an XBC code out before giving up");
 }
 
+// Review of #3021: the page names the booker's window from the same constant
+// the booker uses, so the wording cannot keep saying three if the window changes.
+{
+  const { readFileSync } = await import("node:fs");
+  const copySrc = readFileSync(new URL("../src/lib/admin/bucket-supply-copy.ts", import.meta.url), "utf8");
+  assert(!/\b(three|3) open days\b/.test(copySrc), "the copy spells no window length of its own");
+  assert(/OFFERED_OPEN_DAYS/.test(copySrc), "the copy reads the booker's window constant");
+  assert(
+    /next three open days/.test(supplyLegendEntry("overflows").meaning),
+    "and today it still reads the next three open days",
+  );
+}
+
 finish();

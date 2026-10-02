@@ -16,6 +16,12 @@
  */
 import type { SupplyCell, SupplyFreshness, SupplyTotals } from "./bucket-supply.ts";
 import { bucketSpecForXbc } from "../xbc.ts";
+import { OFFERED_OPEN_DAYS } from "../availability/bookable-days.ts";
+
+/** The booker's offered window in words, from the constant the booker uses, so
+ *  the page cannot keep naming a length the booker no longer offers. */
+const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven"];
+const WINDOW = `the next ${NUMBER_WORDS[OFFERED_OPEN_DAYS] ?? String(OFFERED_OPEN_DAYS)} open days`;
 
 /**
  * Every state this page has a name for.
@@ -129,7 +135,7 @@ export const SUPPLY_LEGEND: SupplyLegendEntry[] = [
     id: "overflows",
     label: "Overflows",
     meaning:
-      "This pool has no times in the next three open days, so its leads are shown the times of the pool named on the row. Nobody is turned away.",
+      `This pool has no times in ${WINDOW}, so its leads are shown the times of the pool named on the row. Nobody is turned away.`,
     mark: "O",
     cell: "bg-[var(--bg-alt)] text-fg-muted",
     swatchExtra: "border border-border",
@@ -138,7 +144,7 @@ export const SUPPLY_LEGEND: SupplyLegendEntry[] = [
     id: "other-days",
     label: "Other days here",
     meaning:
-      "This pool has no times that day, and its leads are offered its other days in the next three open days. Nobody is turned away.",
+      `This pool has no times that day, and its leads are offered its other days in ${WINDOW}. Nobody is turned away.`,
     mark: "D",
     cell: "bg-[var(--bg-alt)] text-fg-muted",
     swatchExtra: "border border-border",
@@ -274,9 +280,9 @@ export function supplyCellTitle(cell: SupplyCell, bucketLabel: string, dayLabel:
     case "nobody-available":
       return `${when}: nobody available. The day had room for appointments and this pool has none offered and none booked.`;
     case "overflows":
-      return `${when}: this pool has no times in the next three open days, so its leads are shown ${cell.toPool ?? "another pool"}'s times instead.`;
+      return `${when}: this pool has no times in ${WINDOW}, so its leads are shown ${cell.toPool ?? "another pool"}'s times instead.`;
     case "other-days":
-      return `${when}: nothing that day, and its leads are offered this pool's other days in the next three open days.`;
+      return `${when}: nothing that day, and its leads are offered this pool's other days in ${WINDOW}.`;
     case "no-capacity":
       return `${when}: nothing left today. The office is open but no whole appointment fits before closing.`;
     case "beyond-horizon":
