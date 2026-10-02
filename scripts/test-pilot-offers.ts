@@ -211,7 +211,7 @@ const row = (system: "slate" | "calcom", minutes: number | null, count: number |
   const t = at(0);
   const s = summarisePilotOffers([
     { ...row("slate", 60, 10, t) },
-    { sampled_at: t, system: "calcom", bucket_code: "112", ok: true, earliest_offered_at: null, offered_24h: 0, error: null },
+    { sampled_at: t, system: "calcom", bucket_code: "112", ok: true, earliest_offered_at: null, offered_24h: 0, error: null, calcom_time_zone: "America/New_York" },
   ]);
   eq(s.calcom.medianOffered24h, 0, "an empty answer counts as zero times");
   eq(s.calcom.medianMinutesToFirst, null, "and has no wait to take a median of");
@@ -283,6 +283,8 @@ const row = (system: "slate" | "calcom", minutes: number | null, count: number |
   // test above passes on a summary that never looks at the column.
   const s = summarisePilotOffers([row("slate", 90, 23, at(0)), { ...row("calcom", 10, 42, at(0)), calcom_time_zone: null }]);
   eq([s.leftOutTruncated, s.calcom.samples], [1, 0], "a cal.com row with no zone is left out");
+  const blank = summarisePilotOffers([row("slate", 90, 23, at(0)), { ...row("calcom", 10, 42, at(0)), calcom_time_zone: "" }]);
+  eq(blank.leftOutTruncated, 1, "and so is one whose zone is empty, since it says nothing about what was asked");
 }
 
 // --- the report's read -------------------------------------------------------------

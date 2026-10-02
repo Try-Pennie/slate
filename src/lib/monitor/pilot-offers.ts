@@ -255,7 +255,7 @@ const firstMs = (r: PilotOfferRow): number => parseStampMs(r.earliest_offered_at
 
 export function summarisePilotOffers(allRows: readonly PilotOfferRow[]): PilotOffersSummary {
   const truncated = new Set(
-    allRows.filter((r) => r.system === "calcom" && r.calcom_time_zone === null).map((r) => r.sampled_at),
+    allRows.filter((r) => r.system === "calcom" && !r.calcom_time_zone).map((r) => r.sampled_at),
   );
   const rows = allRows.filter((r) => !truncated.has(r.sampled_at));
   const slateRows = rows.filter((r) => r.system === "slate");
