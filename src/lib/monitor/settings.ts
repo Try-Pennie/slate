@@ -69,6 +69,8 @@ export const ALERT_KEYS = [
   "ci_runs_refused",
   "public_booking_stopped",
   "retired_booking_key",
+  "advisor_photos_unread",
+  "advisor_photos_held",
 ] as const;
 
 export type MonitorAlertKey = (typeof ALERT_KEYS)[number];
@@ -371,6 +373,18 @@ export const ALERT_FIELDS: {
     help: "The kill switch that stops Slate taking public bookings has been on for longer than the incident lever is meant to be held for. Nothing is broken: somebody turned it off deliberately and it asks whether that is still intended. It ends by itself when booking is started again.",
   },
   {
+    key: "advisor_photos_unread",
+    urgency: "alert",
+    label: "Advisor photos not refreshed",
+    help: "The daily read of advisor photos from the Google directory measured nothing, so leads and the roster keep the photos from the last good day. Says which of the causes it was.",
+  },
+  {
+    key: "advisor_photos_held",
+    urgency: "notice",
+    label: "Advisor photos held for a person",
+    help: "The daily photo read worked and held something back: a wave of removed photos, one image too many people share, somebody unreadable for three days, or somebody Google's directory does not hold.",
+  },
+  {
     key: "retired_booking_key",
     urgency: "page",
     label: "A retired booking key still in use",
@@ -580,6 +594,11 @@ export const MONITOR_DEFAULTS = {
     // broken page right now. Hourly per retired key and kind of host, like the other pages whose
     // remedy is a person doing something, and it stops once they hold a live key.
     retired_booking_key: 60 * 60_000,
+    // The daily advisor photo refresh (#3027). It runs at most twice a day, so a
+    // cooldown under a day would never repeat anyway; 23 hours lets the next
+    // morning's run ask again if the state still holds, and never twice in a day.
+    advisor_photos_unread: 23 * 60 * 60_000,
+    advisor_photos_held: 23 * 60 * 60_000,
   },
   // No coded low volume floors any more (#1956). They were 5 and 20, one pair for
   // every hour of the week, and nothing had measured either: replayed over two

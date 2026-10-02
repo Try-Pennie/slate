@@ -611,6 +611,13 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // completed calls, so it is traffic fed like the Regal call detector and its
   // longest legitimate silence is the same weekend: four days, the same bound.
   "verdict:regal-call-outcomes": 4 * 24 * 60 * MIN,
+  // The daily advisor photo refresh (#3027). Derived from its two crons
+  // (worker/cron-routes.ts): it runs at 04:17 UTC and, only when that run reached
+  // no verdict, again at 10:17. Its longest LEGITIMATE gap is therefore a day
+  // whose verdict came at 04:17 followed by one whose verdict came at the 10:17
+  // retry, 30 hours, and two hours of cron lateness on top makes 32. A whole day
+  // with no verdict at either slot passes the bound and pages, which is the point.
+  "verdict:advisor-photos": 32 * 60 * MIN,
 };
 
 /**

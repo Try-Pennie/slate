@@ -474,6 +474,13 @@ import { HANDOFF_UNDELIVERED_AFTER_MS } from "@/lib/handoffs/check";
 import { formatOwnerReassignNotice } from "@/lib/booking/owner-notice-copy";
 import { reminderFailedAlert } from "@/lib/booking/reminder-send";
 import {
+  photosHeldAlert,
+  photosHeldRecovery,
+  photosUnreadAlert,
+  photosUnreadRecovery,
+} from "@/lib/advisor-photos/copy";
+import type { RefreshPlan } from "@/lib/advisor-photos/core";
+import {
   formatReminderFailureRateAlert,
   formatReminderFailureRateAllClear,
 } from "@/lib/booking/reminder-rate";
@@ -686,6 +693,27 @@ function coverageGap(
 function rosterSentAt(localIso: string): { nowMs: number; zone: string } {
   const zone = "America/New_York";
   return { nowMs: DateTime.fromISO(localIso, { zone }).toMillis(), zone };
+}
+
+/** A measured photo refresh for the preview, nothing held unless an override says so (#3027). */
+function previewPhotoPlan(over: Partial<RefreshPlan>): RefreshPlan {
+  return {
+    full: [],
+    touch: [],
+    failed: [],
+    failedNeverRead: [],
+    deleteIds: [],
+    flipGuardTripped: false,
+    heldNone: [],
+    repeated: [],
+    notInDirectory: [],
+    streaks: [],
+    counts: {
+      attempted: 129, photo: 124, none: 5, placeholder: 0, notInDirectory: 0, failed: 0,
+      gained: 0, lost: 0, changed: 0, unchanged: 129, deleted: 0,
+    },
+    ...over,
+  };
 }
 
 export const ALERT_PREVIEWS: AlertPreview[] = [
@@ -3756,6 +3784,39 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: twilioSyncFailureAlert("Twilio refused the credentials (401). The API key has to be TaskRouter scoped.") },
   { key: "twilio_sync_failures", state: "reading Twilio again", channel: "recovery",
     text: twilioSyncRecovery() },
+  // #3027. Each refusal names its own cause and remedy, so every one is shown.
+  { key: "advisor_photos_unread", state: "no directory subject set", channel: "alert",
+    text: photosUnreadAlert("no-subject", "DIRECTORY_ADMIN_SUBJECT is not set") },
+  { key: "advisor_photos_unread", state: "Google refused the subject", channel: "alert",
+    text: photosUnreadAlert("subject-refused", "the directory listing answered 403") },
+  { key: "advisor_photos_unread", state: "the directory listing did not answer", channel: "alert",
+    text: photosUnreadAlert("directory-unreadable", "the directory listing answered 503") },
+  { key: "advisor_photos_unread", state: "every photo read failed", channel: "alert",
+    text: photosUnreadAlert("nothing-read", "129 photo reads failed, the first with: answered 429") },
+  { key: "advisor_photos_unread", state: "Slate could not read its own tables", channel: "alert",
+    text: photosUnreadAlert("slate-unreadable", "read failed [advisor photo states]: relation does not exist") },
+  { key: "advisor_photos_unread", state: "Google was read and the save failed", channel: "alert",
+    text: photosUnreadAlert("write-failed", "read failed [advisor photo write]: canceling statement due to statement timeout") },
+  { key: "advisor_photos_unread", state: "refreshing again", channel: "recovery",
+    text: photosUnreadRecovery() },
+  { key: "advisor_photos_held", state: "a wave of lost photos refused", channel: "alert",
+    text: photosHeldAlert(previewPhotoPlan({ flipGuardTripped: true, heldNone: ["ada@trypennie.com", "ben@trypennie.com", "cy@trypennie.com", "dee@trypennie.com"] })) },
+  { key: "advisor_photos_held", state: "one image held by three people", channel: "alert",
+    text: photosHeldAlert(previewPhotoPlan({ repeated: [{ sha256: "a".repeat(64), holders: ["ada@trypennie.com", "ben@trypennie.com", "cy@trypennie.com"], held: ["cy@trypennie.com"] }] })) },
+  { key: "advisor_photos_held", state: "one person unreadable for three days", channel: "alert",
+    text: photosHeldAlert(previewPhotoPlan({ streaks: [{ email: "ada@trypennie.com", failingSince: "2026-10-01T04:20:00.000Z", reason: "answered 503" }] })) },
+  { key: "advisor_photos_held", state: "people missing from the directory", channel: "alert",
+    text: photosHeldAlert(previewPhotoPlan({ notInDirectory: ["ada@trypennie.com", "ben@trypennie.com"] })) },
+  { key: "advisor_photos_held", state: "everything at once", channel: "alert",
+    text: photosHeldAlert(previewPhotoPlan({
+      flipGuardTripped: true,
+      heldNone: ["ada@trypennie.com", "ben@trypennie.com", "cy@trypennie.com", "dee@trypennie.com"],
+      repeated: [{ sha256: "a".repeat(64), holders: ["eve@trypennie.com", "fay@trypennie.com", "gus@trypennie.com"], held: ["gus@trypennie.com"] }],
+      streaks: [{ email: "hal@trypennie.com", failingSince: "2026-10-01T04:20:00.000Z", reason: "answered 503" }],
+      notInDirectory: ["ivy@trypennie.com"],
+    })) },
+  { key: "advisor_photos_held", state: "nothing left to look at", channel: "recovery",
+    text: photosHeldRecovery() },
   // #2114: the half AFTER the read. Each count is previewed on its own as well as
   // together, because each one sends a reader somewhere different and the combined
   // message is the only place their ordering can be read.
