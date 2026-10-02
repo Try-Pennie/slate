@@ -76,7 +76,9 @@
 		// adding a var. DEPLOY.md's "Feature flags and the kill switch" section
 		// carries the decision and what would change it.
 		"OOO_CALCOM_DUAL_WRITE": "true",
-		"AGENT_SCHEDULING_LIVE": "false",
+		// Committed on 2026-10-02 (Dan, the Slate launch day), so managers and admins
+		// reach the console during the pilot. scripts/test-console-open.ts pins it.
+		"AGENT_SCHEDULING_LIVE": "true",
 		"CALCOM_BASE_URL": "https://api.cal.com/v2",
 		"CALCOM_ORG_ID": "19474",
 		// Daily 7am ET OOO-approvals email (port of the Pipedream flow). Empty TO
@@ -272,7 +274,9 @@
 				"GOOGLE_HOSTED_DOMAIN": "trypennie.com",
 				"NEXT_PUBLIC_GOOGLE_HOSTED_DOMAIN": "trypennie.com",
 				"OOO_CALCOM_DUAL_WRITE": "true",
-				"AGENT_SCHEDULING_LIVE": "false",
+				// Follows production on purpose: test-wrangler-loadtest-env.ts requires
+				// the load run to exercise production's configuration.
+				"AGENT_SCHEDULING_LIVE": "true",
 				"CALCOM_BASE_URL": "https://api.cal.com/v2",
 				"CALCOM_ORG_ID": "19474",
 				"OOO_APPROVALS_TO": "salesmanagers@trypennie.com",
