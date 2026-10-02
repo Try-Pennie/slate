@@ -87,6 +87,23 @@ describe("filterRoster", () => {
     expect(filterRoster(ROSTER, { ...NONE, manager: "a" }).map((u) => u.id)).toEqual(["b"]);
   });
 
+  it("keeps an advisor Twilio holds back out of No and under Redistribute (#3030)", () => {
+    const rows = [
+      ...ROSTER,
+      row({ id: "h", name: "Held Back", bookable: false, attributes: { redistribute_tagged: "Y" } }),
+      row({ id: "m", name: "Mark Only", bookable: false, attributes: { redistribute: "Y" } }),
+      row({ id: "t", name: "Tagged Bookable", bookable: true, attributes: { redistribute_tagged: "Y" } }),
+    ];
+    expect(filterRoster(rows, { ...NONE, bookable: "redistribute" }).map((u) => u.id)).toEqual(["h"]);
+    expect(filterRoster(rows, { ...NONE, bookable: "no" }).map((u) => u.id).sort()).toEqual(["b", "m"]);
+    expect(filterRoster(rows, { ...NONE, bookable: "yes" }).map((u) => u.id).sort()).toEqual(["a", "c", "t"]);
+  });
+
+  it("drops a bookable value no picker offers, rather than matching nobody", () => {
+    expect(rosterFiltersFromParams(new URLSearchParams("bookable=maybe")).bookable).toBe("");
+    expect(rosterFiltersFromParams(new URLSearchParams("bookable=redistribute")).bookable).toBe("redistribute");
+  });
+
   it("filters by bookable, in both directions", () => {
     expect(filterRoster(ROSTER, { ...NONE, bookable: "yes" }).map((u) => u.id)).toEqual(["a", "c"]);
     expect(filterRoster(ROSTER, { ...NONE, bookable: "no" }).map((u) => u.id)).toEqual(["b"]);

@@ -13,6 +13,7 @@ import { DebtTeamLedger, LEDGER_LEGEND } from "@/components/admin/DebtTeamLedger
 import { RowActionsMenu } from "@/components/ui/RowActionsMenu";
 import { SelectField } from "@/components/ui/SelectField";
 import { BookablePill } from "@/components/ui/BookablePill";
+import { BOOKABLE_STATES, BOOKABLE_STATE_TEXT, heldByTwilio } from "@/lib/bookable/bookable-state";
 import { inputCls, btnSecondaryCls } from "@/components/ui/styles";
 import {
   ROSTER_PAGE_SIZE,
@@ -243,10 +244,16 @@ export function RosterTable({
   <SelectField
             name="bookable"
             value={filters.bookable}
-            onChange={(v) => set("bookable", v)}
+            onChange={(v) => set("bookable", v as RosterFilters["bookable"])}
             ariaLabel="Filter by bookable"
             placeholder="Any status"
-            options={[{ value: "", label: "Any status" }, { value: "yes", label: "Bookable" }, { value: "no", label: "Not bookable" }]}
+            // #3030: the states the column shows, from the same list and in the
+            // same words, so "Not bookable" here never returns a row the column
+            // calls Redistribute.
+            options={[
+              { value: "", label: "Any status" },
+              ...BOOKABLE_STATES.map((s) => ({ value: s, label: BOOKABLE_STATE_TEXT.full[s] })),
+            ]}
             className="w-44"
           />
 
@@ -404,8 +411,14 @@ export function RosterTable({
                   {/* #1823: a pill for BOTH states, each with a mark. The header
                       already asks the question, so the value is Yes or No rather
                       than the header's own word repeated. #3031: the mark leads,
-                      so it is the mark that starts under the header. */}
-                  <BookablePill bookable={u.bookable} wording="short" alignToColumn />
+                      so it is the mark that starts under the header. #3030: an
+                      advisor the Twilio sync holds back reads Redistribute. */}
+                  <BookablePill
+                    bookable={u.bookable}
+                    heldByTwilio={heldByTwilio(u)}
+                    wording="short"
+                    alignToColumn
+                  />
                 </td>
                 {/* The commonest value is the quietest (L609): a signed in row
                     reads muted, a never signed in one reads "Never" at full

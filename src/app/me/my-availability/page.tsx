@@ -11,6 +11,7 @@ import { workingHoursDays } from "@/lib/schedule-week";
 import { savedOutcome, savedSentence } from "@/lib/admin/save-outcomes";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
 import { BookablePill } from "@/components/ui/BookablePill";
+import { heldByTwilio } from "@/lib/bookable/bookable-state";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 import { ME_TABS } from "@/lib/me/nav";
 import { CopyLinkField } from "@/components/ui/CopyLinkField";
@@ -131,7 +132,9 @@ export default async function MePage({
           The pill is on this page at all because of what it tells the reader
           (Dan, 2026-09-08): an agent who thinks they should be getting calls
           and is not can see why without asking anybody. `wording="self"` says
-          "Not bookable yet", because the reader is the agent. */}
+          "Not bookable yet", because the reader is the agent, and "On
+          Redistribute" for one the Twilio sync holds back (#3030), which says
+          where they are rather than naming a tag at them. */}
       <AdminPageHeader title={firstName ? `Hi, ${firstName}.` : "Hi there."}>
         {/* The steer matters more than the description. The failure it exists
             to prevent is an agent editing their weekly hours to take next
@@ -150,7 +153,7 @@ export default async function MePage({
           instead.
         </p>
         <p className="mt-3">
-          <BookablePill bookable={me.bookable} wording="self" />
+          <BookablePill bookable={me.bookable} heldByTwilio={heldByTwilio(me)} wording="self" />
         </p>
       </AdminPageHeader>
 

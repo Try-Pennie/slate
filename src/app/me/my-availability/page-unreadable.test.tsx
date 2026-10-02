@@ -151,6 +151,14 @@ describe("MePage with every read healthy (the control)", () => {
     expect(screen.getByText("Not bookable yet")).toBeTruthy();
   });
 
+  it("tells an advisor Twilio holds back that they are on Redistribute (#3030)", async () => {
+    mockDb();
+    auth.currentUser.mockResolvedValue({ ...ME, bookable: false, attributes: { redistribute_tagged: "Y" } });
+    render(await MePage(props()));
+    expect(screen.getByText("On Redistribute")).toBeTruthy();
+    expect(screen.queryByText("Not bookable yet")).toBeNull();
+  });
+
   it("offers no company default hours control and no manager reminder", async () => {
     // #2103. Both were removed on Dan's read of the rendered page: an agent does
     // not need to know the company default exists, and the manager line was a
