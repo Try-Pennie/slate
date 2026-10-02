@@ -387,10 +387,10 @@ export function RosterTable({
                   <BookablePill bookable={u.bookable} wording="short" alignToColumn />
                 </td>
                 {/* The commonest value is the quietest (L609): a signed in row
-                    reads muted, a never signed in one reads at full weight with
-                    how long it has waited. */}
+                    reads muted, a never signed in one reads "Never" at full
+                    weight. */}
                 <td
-                  className={`min-w-[9rem] px-3 py-3 tabular-nums ${
+                  className={`px-3 py-3 ${
                     isNeverSignedIn(u) ? "font-semibold text-fg" : "text-fg-muted"
                   }`}
                 >

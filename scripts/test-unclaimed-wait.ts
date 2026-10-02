@@ -1,5 +1,6 @@
-// "Never signed in" on the whole roster (#1802), and the one wait helper both
-// surfaces phrase it through.
+// "Never signed in" on the whole roster (#1802), and the one wait helper the
+// pending access panel phrases its wait through. The roster shows only Never or
+// Yes since 2026-10-02 (Dan), so it phrases no wait at all.
 //
 // The pending access panel (#160) already asked "has this row ever been claimed
 // by a Google sign in?" of privileged rows, keyed on `auth_user_id` being null,
