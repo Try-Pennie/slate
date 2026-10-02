@@ -120,7 +120,7 @@ Change one by editing `wrangler.jsonc` and redeploying.
   `NEXT_PUBLIC_GOOGLE_HOSTED_DOMAIN` twin is set in 2a.
 - `AGENT_SCHEDULING_LIVE`: launch flag over the CONSOLE. `"false"` = only super
   admins reach `/admin`; `"true"` opens it to the managers and admins whose roles
-  already allow it. Production has carried `"true"` since 2026-10-02, pinned by
+  already allow it. The committed production value is `"true"` (changed 2026-10-02), pinned by
   `scripts/test-console-open.ts`. It does NOT gate an agent's own hours: `/me` (My Availability)
   and `/me/time-off` are unconditional, since 2026-09-08. It used to hide both,
   which left the working hours form built and unreachable for 112 agents.
