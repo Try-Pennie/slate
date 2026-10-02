@@ -53,7 +53,7 @@ import {
   type ActivationAllowance,
 } from "@/lib/bookable/activation-allowance";
 import { recordAudit } from "@/lib/audit";
-import { isMarkedRedistribute } from "@/lib/twilio/roster-plan";
+import { isMarkedRedistribute, withMark } from "@/lib/twilio/roster-plan";
 import { unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
 import type { Attributes, Role, User } from "@/lib/db/types";
@@ -276,6 +276,14 @@ export interface SyncResult {
   /** Emails whose flip was planned and refused by the activation gate (no Google
    *  calendar yet). They stay marked pending and are retried every run. */
   bookablePending: string[];
+  /**
+   * Planned for activation and refused because Twilio holds them on Redistribute
+   * (#3028). NOT left pending: that refusal would come back every hour for as long
+   * as the tag stands. The pending mark is cleared and Slate's Redistribute mark put
+   * on in one write, which hands the intent to the Twilio half, whose turn-back-on
+   * makes them bookable the hour the tag comes off.
+   */
+  bookableHeldByTwilio: string[];
   /**
    * Planned for activation and NOT attempted this run, because the allowance was
    * spent (#2302). Nobody here was admitted unread; each keeps the pending mark and
@@ -757,6 +765,7 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
   // inside `writeBookable`, as does any later human decision either way.
   const bookableFlipped: string[] = [];
   const bookablePending: string[] = [];
+  const bookableHeldByTwilio: string[] = [];
   /** Planned, not attempted this run, because the allowance was spent. */
   const bookableDeferredToNextRun: string[] = [];
   for (const flip of flips) {
@@ -796,6 +805,18 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
           profile: flip.attributes.role ?? null,
         },
       });
+    } else if (result.status === "blocked" && result.reason === "twilio_redistribute") {
+      // #3028: handed to the Twilio half rather than retried here. ONE write, so no
+      // crash can leave the row with neither mark (nobody would ever flip them) or
+      // with both (the retry would come back every hour). Built over the row's
+      // attributes as this run wrote them, so the routing facts ride along.
+      const { error } = await db
+        .from("users")
+        .update({ attributes: withMark(flip.attributes, nowIso), bookable_pending_since: null })
+        .eq("id", userId);
+      if (error) throw new Error(`SF redistribute hold failed: ${error.message}`);
+      bookableHeldByTwilio.push(flip.email);
+      log.info("agents", { msg: "activation held by the Twilio Redistribute tag, handed to the Twilio sync", user_id: userId });
     } else if (result.status === "blocked") {
       bookablePending.push(flip.email);
     } else if (result.status === "noop") {
@@ -1171,6 +1192,7 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
     salesNotBookableUnexplained,
     bookableFlipped,
     bookablePending,
+    bookableHeldByTwilio,
     bookableDeferredToNextRun,
     managersCreated: plan.managersToCreate.length,
     managersLinked,

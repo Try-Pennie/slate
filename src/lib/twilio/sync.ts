@@ -591,7 +591,13 @@ export async function defaultTwilioSyncDeps(orgId?: string): Promise<TwilioSyncD
         attributes: r.attributes,
       }));
     },
-    applyBookable: (userId, bookable) => applyBookableByUserId(userId, bookable),
+    // #3028: this sync flips somebody in only when it has just read their worker
+    // LIVE and found no Redistribute tag, and it rewrites the stored copy of the tag
+    // only AFTER the flip settles. The service refuses on the stored copy, so it is
+    // told the live read overrules it; otherwise every reactivation would be refused
+    // for an hour and reported as refused.
+    applyBookable: (userId, bookable) =>
+      applyBookableByUserId(userId, bookable, undefined, { liveTwilioUntagged: true }),
     allowance: activationAllowance(),
     writeAttributes: async ({ userId, attributes, bookablePendingSince }) => {
       const { error } = await supabaseAdmin()

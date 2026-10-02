@@ -68,7 +68,12 @@ import {
 } from "@/lib/webhooks/test-send";
 import { shortErrorReason } from "@/lib/notify/error-text";
 import type { WebhookFormat } from "@/lib/db/types";
-import { applyBookableByUserId, type BlockedReason } from "@/lib/bookable/service";
+import {
+  applyBookableByUserId,
+  BookableLookupError,
+  type BlockedReason,
+  type BookableResult,
+} from "@/lib/bookable/service";
 import { applyLifecycleByUserId } from "@/lib/offboarding/service";
 import { runRosterSync } from "@/lib/salesforce/run-roster-sync";
 import type { TwilioSyncResult } from "@/lib/twilio/sync";
@@ -421,6 +426,12 @@ export async function syncSalesforceNow(): Promise<void> {
         : null,
       r.bookablePending.length
         ? `${plural(r.bookablePending.length, "agent")} waiting to become bookable until a Google calendar exists for them`
+        : null,
+      // #3028: refused because Twilio holds them on Redistribute, and handed to the
+      // Twilio sync, which makes them bookable once the tag comes off. Its own line,
+      // because the remedy is in Twilio and not in Google.
+      r.bookableHeldByTwilio.length
+        ? `${plural(r.bookableHeldByTwilio.length, "agent")} held out of the pool by the Twilio Redistribute tag, and made bookable once it comes off`
         : null,
       // #2302: planned for activation and not attempted this run, because reading a
       // calendar per agent is bounded per run. Said because the presser can
@@ -1704,11 +1715,27 @@ export async function setBookable(form: FormData): Promise<void> {
   if (!userId) return;
   await requireManageAgent(userId, "agent.bookable");
   const wantBookable = form.get("bookable") === "true";
+  const back = `/admin/agents/${userId}`;
   // Same guarded path as the bookable-toggle API (#281/#912): making an agent
   // bookable when Slate can't reach their Google calendar is refused here too,
   // so the UI can't put a calendar-less agent into the pool. Deactivation
-  // (bookable=false) is never gated.
-  const result = await applyBookableByUserId(userId, wantBookable);
+  // (bookable=false) is never gated. A flip in for an advisor Twilio holds on
+  // Redistribute is refused the same way (#3028), inside the service, so the
+  // machine API and the Salesforce activation are held by the same rule.
+  //
+  // A row the service could not READ is refused too (nothing is written on an
+  // unread row), and it lands as an outcome rather than a throw: on this route a
+  // throw is Next's generic error page with the message scrubbed. Only that one
+  // failure, because it is the only one where "nothing was changed" is known to
+  // be true; anything else still throws.
+  let result: BookableResult;
+  try {
+    result = await applyBookableByUserId(userId, wantBookable);
+  } catch (err) {
+    if (!(err instanceof BookableLookupError)) throw err;
+    log.error("admin", { msg: "bookable target could not be read", user_id: userId }, err);
+    redirect(`${back}?bookable=unreadable`);
+  }
 
   /**
    * The page this form is on, and it comes back saying what happened (#1769).
@@ -1727,7 +1754,6 @@ export async function setBookable(form: FormData): Promise<void> {
    * the page this lands on, and a name or an email in a query string is a person's
    * identity in browser history for no gain.
    */
-  const back = `/admin/agents/${userId}`;
   revalidatePath(back);
   if (result.status === "blocked") {
     // Nothing was written: the gate refused before the update.
@@ -1745,6 +1771,7 @@ export async function setBookable(form: FormData): Promise<void> {
       calendar_unhydrated: "blocked-unread",
       activation_timed_out: "blocked-timeout",
       calendar_contended: "blocked-contended",
+      twilio_redistribute: "blocked-redistribute",
     };
     redirect(`${back}?bookable=${outcome[result.reason]}`);
     return;

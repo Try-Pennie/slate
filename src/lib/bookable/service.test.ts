@@ -21,13 +21,25 @@ let currentUser: {
   bookable: boolean;
   email: string;
   bookable_pending_since?: string | null;
+  attributes?: Record<string, unknown> | null;
 } | null = null;
+/** Set to make the next lookup of the row refuse (#3028). */
+let nextLookupError: { message: string } | null = null;
 
 vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: () => ({
     from: () => ({
       select: () => ({
-        eq: () => ({ maybeSingle: async () => ({ data: currentUser, error: null }) }),
+        eq: () => ({
+          maybeSingle: async () => {
+            if (nextLookupError) {
+              const error = nextLookupError;
+              nextLookupError = null;
+              return { data: null, error };
+            }
+            return { data: currentUser, error: null };
+          },
+        }),
       }),
       update: (patch: { bookable: boolean } & Record<string, unknown>) => ({
         eq: async (_col: string, id: string) => {
@@ -66,7 +78,7 @@ vi.mock("@/lib/bookable/routable-write", () => ({
   },
 }));
 
-import { applyBookableByEmail, applyBookableByUserId } from "./service";
+import { applyBookableByEmail, applyBookableByUserId, BookableLookupError } from "./service";
 import {
   ACTIVATION_BUDGET_MS,
   MAX_ACTIVATIONS_PER_RUN,
@@ -653,5 +665,91 @@ describe("the activation gate's deadline (#2317)", () => {
     // it, so they get half of that window between them. Asserted as arithmetic so
     // changing either constant has to be a decision about both.
     expect(ACTIVATION_BUDGET_MS).toBe(ROSTER_RUN_LOCK_TTL_MS / 2 / MAX_ACTIVATIONS_PER_RUN);
+  });
+});
+
+// #3028: the hourly Twilio sync turns off every bookable advisor whose worker
+// carries Redistribute, so a flip into the pool for one of them is undone within the
+// hour. The refusal lives HERE rather than in one caller, because the admin action,
+// the machine API and the Salesforce activation all arrive through this service,
+// and a refusal held by only one of them is one other route away from not existing.
+describe("an advisor Twilio holds on Redistribute (#3028)", () => {
+  beforeEach(() => {
+    updates.length = 0;
+    patches.length = 0;
+    currentUser = null;
+    nextLookupError = null;
+  });
+
+  it("refuses the flip in by user id, before any Google call, and writes nothing", async () => {
+    currentUser = { id: "u1", bookable: false, email: "held@trypennie.com", attributes: { redistribute_tagged: "Y" } };
+    const d = deps("reachable");
+    const res = await applyBookableByUserId("u1", true, d);
+    expect(res).toEqual({ status: "blocked", userId: "u1", reason: "twilio_redistribute" });
+    expect(updates).toEqual([]);
+    // Not even the pending mark: nothing here is owed a retry by the calendar gate.
+    expect(patches).toEqual([]);
+    expect(d.checkReachable).not.toHaveBeenCalled();
+    expect(d.onboardIntoPool).not.toHaveBeenCalled();
+    // A refusal by design, not a fault, so nobody is paged about it.
+    expect(d.notify).not.toHaveBeenCalled();
+  });
+
+  it("refuses the same flip by email, which is the machine API's route", async () => {
+    currentUser = { id: "u1", bookable: false, email: "held@trypennie.com", attributes: { redistribute_tagged: "Y" } };
+    const d = deps("reachable");
+    const res = await applyBookableByEmail("held@trypennie.com", true, d);
+    expect(res).toEqual({ status: "blocked", userId: "u1", reason: "twilio_redistribute" });
+    expect(updates).toEqual([]);
+  });
+
+  it("never refuses taking them OUT of the pool", async () => {
+    currentUser = { id: "u1", bookable: true, email: "held@trypennie.com", attributes: { redistribute_tagged: "Y" } };
+    const d = deps("reachable");
+    const res = await applyBookableByUserId("u1", false, d);
+    expect(res).toMatchObject({ status: "applied", bookable: false });
+    expect(updates).toEqual([{ id: "u1", bookable: false }]);
+  });
+
+  it("admits an untagged advisor exactly as before", async () => {
+    currentUser = { id: "u1", bookable: false, email: "free@trypennie.com", attributes: { debt_team: ["low"] } };
+    const d = deps("reachable");
+    const res = await applyBookableByUserId("u1", true, d);
+    expect(res).toMatchObject({ status: "applied", bookable: true });
+  });
+
+  it("does not refuse a tagged row whose Twilio worker has gone, which the sync never turns off", async () => {
+    currentUser = {
+      id: "u1",
+      bookable: false,
+      email: "gone@trypennie.com",
+      attributes: { redistribute_tagged: "Y", twilio_worker_missing_since: "2026-09-30T10:00:00.000Z" },
+    };
+    const d = deps("reachable");
+    const res = await applyBookableByUserId("u1", true, d);
+    expect(res).toMatchObject({ status: "applied", bookable: true });
+  });
+
+  // The Twilio sync's own reactivation reads the tag LIVE and flips before it
+  // rewrites the stored mirror, so the row it flips still says tagged. Refusing it
+  // on that stale copy would hold every reactivation back an hour and report it as
+  // refused.
+  it("lets the Twilio sync's live read overrule the stored copy of the tag", async () => {
+    currentUser = { id: "u1", bookable: false, email: "back@trypennie.com", attributes: { redistribute_tagged: "Y", redistribute: "Y" } };
+    const d = deps("reachable");
+    const res = await applyBookableByUserId("u1", true, d, { liveTwilioUntagged: true });
+    expect(res).toMatchObject({ status: "applied", bookable: true });
+    expect(updates).toEqual([{ id: "u1", bookable: true }]);
+  });
+
+  // Fail closed: an unreadable row is never read as untagged. Its own error type,
+  // so the admin action can say the check could not be made rather than showing a
+  // scrubbed error page.
+  it("throws its own error when the row cannot be read, and writes nothing", async () => {
+    nextLookupError = { message: "connection reset" };
+    const d = deps("reachable");
+    await expect(applyBookableByUserId("u1", true, d)).rejects.toBeInstanceOf(BookableLookupError);
+    expect(updates).toEqual([]);
+    expect(d.checkReachable).not.toHaveBeenCalled();
   });
 });

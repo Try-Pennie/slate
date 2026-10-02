@@ -50,6 +50,7 @@ const bookable = vi.hoisted(() => ({
   ),
   applyBookableByEmail: vi.fn(),
   writeBookable: vi.fn(async () => {}),
+  BookableLookupError: class BookableLookupError extends Error {},
 }));
 const salesforce = vi.hoisted(() => ({
   syncSalesforceAgents: vi.fn(),
@@ -107,6 +108,7 @@ const syncOutcome = (over: Record<string, unknown> = {}, twilio: unknown = twili
     salesNotBookableUnexplained: 0,
     bookableFlipped: [],
     bookablePending: [],
+    bookableHeldByTwilio: [],
     bookableDeferredToNextRun: [],
     managersCreated: 0,
     managersLinked: 0,
@@ -1185,6 +1187,33 @@ describe("setBookable Google guard (#912)", () => {
     );
   });
 
+  // #3028: the hourly Twilio sync turns off every bookable advisor whose worker
+  // carries Redistribute, so a hand flip into the pool is undone within the hour.
+  // The SERVICE refuses it, so the machine API and the Salesforce activation are
+  // held by the same rule; this action's job is to say so on the page.
+  it("says Twilio holds them when the service refuses for Redistribute", async () => {
+    bookable.applyBookableByUserId.mockResolvedValueOnce({ status: "blocked", userId: "u2", reason: "twilio_redistribute" });
+    await expect(setBookable(form({ user_id: "u2", bookable: "true" }))).rejects.toThrow(
+      /NEXT_REDIRECT:\/admin\/agents\/u2\?bookable=blocked-redistribute/,
+    );
+    expect(bookable.applyBookableByUserId).toHaveBeenCalledWith("u2", true);
+  });
+
+  // A row the service could not read used to throw, and on this route a throw is
+  // Next's generic error page with the message scrubbed. It is refused (nothing is
+  // written on an unread row) and it lands as an outcome the page can say.
+  it("lands an unreadable row as its own outcome rather than an error page", async () => {
+    bookable.applyBookableByUserId.mockRejectedValueOnce(new bookable.BookableLookupError("connection reset"));
+    await expect(setBookable(form({ user_id: "u2", bookable: "true" }))).rejects.toThrow(
+      /NEXT_REDIRECT:\/admin\/agents\/u2\?bookable=unreadable/,
+    );
+  });
+
+  it("still throws on a failure that is not the lookup, rather than claiming nothing changed", async () => {
+    bookable.applyBookableByUserId.mockRejectedValueOnce(new Error("bookable write for u2 failed"));
+    await expect(setBookable(form({ user_id: "u2", bookable: "true" }))).rejects.toThrow(/bookable write for u2 failed/);
+  });
+
   it("passes bookable=false straight through (deactivation is never gated)", async () => {
     bookable.applyBookableByUserId.mockResolvedValueOnce({ status: "applied", userId: "u2", bookable: false });
     await expect(setBookable(form({ user_id: "u2", bookable: "false" }))).rejects.toThrow(
@@ -1265,6 +1294,22 @@ describe("syncSalesforceNow (#491, #2071)", () => {
     // Counts, never addresses: an email in a URL is an identity in browser history.
     expect(redirected).not.toContain("@x");
     expect(redirected).not.toContain("undefined");
+  });
+
+  // #3028: an activation refused because Twilio holds them on Redistribute is its
+  // own fact, and not a calendar wait, so it gets its own line rather than being
+  // folded into one that would send the presser to Google.
+  it("says who Twilio is holding back from becoming bookable (#3028)", async () => {
+    rosterSync.runRosterSync.mockResolvedValueOnce(syncOutcome({ bookableHeldByTwilio: ["e@x", "f@x"] }));
+    let redirected = "";
+    try {
+      await syncSalesforceNow();
+    } catch (e) {
+      redirected = decodeURIComponent(String((e as Error).message));
+    }
+    expect(redirected).toContain("2 agents held out of the pool by the Twilio Redistribute tag");
+    expect(redirected).not.toContain("Google calendar");
+    expect(redirected).not.toContain("@x");
   });
 
   it("says when an activation was left for the next run (#2302)", async () => {

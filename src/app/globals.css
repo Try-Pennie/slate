@@ -422,6 +422,18 @@ h1.pn-display {
 }
 .pn-btn--additional:hover { background: rgba(52,52,52,0.04); }
 
+/* A control the action would refuse (#3028), which is not the same as one that is
+   busy: a pending press keeps full ink and shows its spinner, so this keys on the
+   attribute only a refusal sets rather than on :disabled. The label drops to the
+   muted text token, which still clears AA as text, and nothing about it answers a
+   pointer, so it never reads as pressable while the sentence beside it says why. */
+.pn-btn[data-refused] {
+  color: var(--fg-muted);
+  cursor: not-allowed;
+}
+.pn-btn[data-refused]:hover { background: transparent; }
+.pn-btn[data-refused]:active { transform: none; }
+
 /* A destructive control (#1875). An OUTLINE rather than a rose fill, and that is
    measured rather than a preference: a filled rose needs white text on light
    (5.14:1) and graphite on the LIGHTENED dark rose (5.22:1), so the foreground

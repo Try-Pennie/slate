@@ -234,7 +234,11 @@ export interface RedistributePlan {
   withoutWorker: string[];
 }
 
-/** True when SLATE turned this person out of the pool because of the tag. */
+/**
+ * True when SLATE holds this person out of the pool because of the tag: it turned
+ * them off, or (#3028) it refused to turn them on. Either way the Twilio sync puts
+ * them back once the tag comes off.
+ */
 export function isMarkedRedistribute(attributes: Attributes | null | undefined): boolean {
   return String(attributes?.redistribute ?? "") === REDISTRIBUTE_MARK;
 }
@@ -252,6 +256,23 @@ export const REDISTRIBUTE_TAGGED_KEY = "redistribute_tagged";
  */
 export function carriesRedistributeTag(attributes: Attributes | null | undefined): boolean {
   return String(attributes?.[REDISTRIBUTE_TAGGED_KEY] ?? "") === REDISTRIBUTE_MARK;
+}
+
+/**
+ * True when the hourly sync would take this person straight back out of the pool if
+ * they were made bookable now (#3028).
+ *
+ * The planner turns off every bookable row whose worker carries the tag, marked or
+ * not, so this asks about the TAG, never the mark: the mark misses everybody who was
+ * already out of the pool when the tag appeared. A row whose worker has gone is not
+ * held, because the planner flips only a row it has a worker for, and saying the sync
+ * will undo the change would then be a claim nothing measured (L11).
+ *
+ * The one predicate behind both the console's refusal and the server action's, so
+ * the control and the write cannot disagree about who is held.
+ */
+export function twilioUndoesBookable(attributes: Attributes | null | undefined): boolean {
+  return carriesRedistributeTag(attributes) && !twilioWorkerMissing(attributes);
 }
 
 /**
@@ -282,7 +303,13 @@ export function twilioWorkerMissingSinceMs(attributes: Attributes | null | undef
   return Number.isFinite(ms) ? ms : null;
 }
 
-function withMark(attributes: Attributes | null, markedAtIso: string): Attributes {
+/**
+ * The attributes with Slate's Redistribute mark on, stamped `markedAtIso`. The one
+ * spelling of the mark (L370), exported for the Salesforce half (#3028), which hands
+ * an activation Twilio holds to this half by marking the row: the turn-back-on below
+ * is what puts a marked person in the pool the hour the tag comes off.
+ */
+export function withMark(attributes: Attributes | null, markedAtIso: string): Attributes {
   return { ...(attributes ?? {}), redistribute: REDISTRIBUTE_MARK, redistribute_at: markedAtIso };
 }
 

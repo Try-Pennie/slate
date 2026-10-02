@@ -1056,6 +1056,36 @@ expect(bookable.applyBookableByUserId).toHaveBeenCalledWith("u1", true);
     expect(typeof (upsert?.payload as Record<string, unknown>[])[0].bookable_pending_since).toBe("string");
   });
 
+  // #3028: the service refuses a flip in for somebody Twilio holds on Redistribute.
+  // Left pending, that refusal would come back every hour for as long as the tag
+  // stands, spending an activation slot each time and reading as somebody waiting
+  // behind a refused activation. So the intent is handed to the Twilio half: the
+  // pending mark goes and the Redistribute mark goes on, which is what the Twilio
+  // sync reads to put them in the pool the hour the tag comes off.
+  it("hands a flip Twilio holds to the Twilio half, rather than retrying it every hour", async () => {
+    store.config.existing = [
+      { id: "u1", email: "held@x.com", attributes: { role: "Sales", debt_team: ["low"], redistribute_tagged: "Y" }, bookable: false, deactivated_at: null, bookable_pending_since: "2026-09-30T10:00:00Z" },
+    ];
+    store.config.afterInsert = [{ id: "u1", email: "held@x.com", manager_id: null, role: "agent" }];
+    sfRoster([{ Email: "held@x.com", Name: "Held", Profile: { Name: "Sales" }, LowDebt__c: true }]);
+    bookable.applyBookableByUserId.mockResolvedValueOnce({ status: "blocked", userId: "u1", reason: "twilio_redistribute" });
+
+    const result = await syncSalesforceAgents();
+
+    expect(result.bookableHeldByTwilio).toEqual(["held@x.com"]);
+    expect(result.bookablePending).toEqual([]);
+    expect(result.bookableFlipped).toEqual([]);
+    expect(audit.recordAudit).not.toHaveBeenCalled();
+    const hold = store.calls.find(
+      (c) => c.op === "update" && "bookable_pending_since" in (c.payload as Record<string, unknown>),
+    );
+    const payload = hold?.payload as { bookable_pending_since: unknown; attributes: Record<string, unknown> };
+    expect(payload.bookable_pending_since).toBeNull();
+    // The routing facts the row holds are carried, not replaced by the mark.
+    expect(payload.attributes).toMatchObject({ debt_team: ["low"], redistribute_tagged: "Y", redistribute: "Y" });
+    expect(typeof payload.attributes.redistribute_at).toBe("string");
+  });
+
   it("retries a pending flip even when nothing about the attributes changed", async () => {
     store.config.existing = [
       { id: "u1", email: "hire@x.com", attributes: { role: "Sales", debt_team: ["low"] }, bookable: false, deactivated_at: null, bookable_pending_since: "2026-09-08T10:00:00Z" },
