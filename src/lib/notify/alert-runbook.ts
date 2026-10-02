@@ -200,12 +200,6 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   "ooo-digest-unrouted-unreachable": "something-was-measured-and-is-only-worth-knowing",
   ooo_calcom_stale_unrecorded: "time-off-cover-or-protection-is-in-doubt",
   ooo_undo: "something-was-measured-and-is-only-worth-knowing",
-  // #2228. It used to be `tier_fallback_overflow`, and it used to sit with the
-  // booker family on the grounds that the remedy was staffing the requested pool.
-  // Dan retired Beyond as a backend service on 2026-09-13, so there is no staffing
-  // remedy to send anybody to and the count exists to put the number on the record.
-  // The procedure is now "read it and carry on", which is this family's whole text.
-  beyond_overflow_rate: "something-was-measured-and-is-only-worth-knowing",
   // #2843: sales ops made the Ultra High and Very High cascade ordinary routing on
   // 2026-09-28, so the number is put on the record and nobody is sent to act on it.
   top_tier_cascade_rate: "something-was-measured-and-is-only-worth-knowing",

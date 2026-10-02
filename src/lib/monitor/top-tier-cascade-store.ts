@@ -2,9 +2,9 @@
  * The IO half of the top tier cascade count (#2843), kept out of
  * `top-tier-cascade.ts` so that module stays node-testable with no `@/` imports.
  *
- * EVERY READ THROWS ON ERROR (`unwrapCount`), for the reason
- * `beyond-overflow-store.ts` gives: `count ?? 0` would turn a failed count into a
- * healthy looking zero, and the caller reports the tick as unmeasured instead.
+ * EVERY READ THROWS ON ERROR (`unwrapCount`): `count ?? 0` would turn a failed
+ * count into a healthy looking zero, and the caller reports the tick as unmeasured
+ * instead, because an unreadable count is not a day with no cascades.
  *
  * `routing_decisions.requested_code` is the code the lead's link carried and
  * `bucket_code` is where the booking landed, so a cascade is "requested in a top

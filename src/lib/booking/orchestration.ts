@@ -3386,7 +3386,7 @@ async function completeReservation(
     //
     // Everything smaller SENDS NOTHING HERE: a sideways overflow (#2228), a top
     // tier cascade (#2843), and a single tier drop (2026-10-02), each the ladder
-    // working as designed and counted elsewhere. The reasons are in tier-alert.ts.
+    // working as designed. The reasons are in tier-alert.ts.
     const tierAlert = tierFallbackAlert({
       requestedCode: bucketCode,
       effectiveCode: booking.routing_trace?.bucket_code ?? bucketCode,

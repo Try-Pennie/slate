@@ -14,7 +14,7 @@ import { assert, finish } from "./lib/harness.ts";
 
 assert(tierFallbackAlert({ requestedCode: "511", effectiveCode: "511" }) === null, "no movement => no alert");
 
-// --- a sideways overflow, same debt tier: counted, never paged (#2228) ---
+// --- a sideways overflow, same debt tier: never paged (#2228) ---
 //
 // This used to return `tier_fallback_overflow:<code>` per booking. Measured on
 // 2026-09-10 and again on 2026-09-13, a Beyond bucket's pool is at most two
@@ -23,8 +23,8 @@ assert(tierFallbackAlert({ requestedCode: "511", effectiveCode: "511" }) === nul
 // beyond entirely. So we really shouldn't be getting many beyond bookngs". The
 // overflow is therefore expected behaviour rather than an incident, and a page
 // per booking reporting the system working as designed is the alert nobody reads
-// by the second week (L36). It is now a once a day count on the info channel,
-// `beyond_overflow_rate`, built in src/lib/monitor/beyond-overflow.ts.
+// by the second week (L36). It became a once a day info count
+// (`beyond_overflow_rate`), which Dan removed on 2026-10-02.
 for (const pair of [
   { requestedCode: "522", effectiveCode: "532", why: "Ultra High Beyond overflows to Achieve" },
   { requestedCode: "120", effectiveCode: "130", why: "the Low plus Beyond hole at the bottom" },

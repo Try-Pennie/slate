@@ -111,8 +111,8 @@ export function wholeTierPoolCode(tier: string): string {
  * The whole tier rung does not enlarge that caveat TODAY, and only because the
  * set it adds is empty (every agent is Achieve already). It is not a general
  * argument: the moment the pools diverge, this rung is another way a lead
- * reaches somebody who cannot place them, and `beyond-overflow.ts` is what has
- * to keep counting it.
+ * reaches somebody who cannot place them. Nothing counts that any more: the
+ * daily Beyond overflow notice was removed on Dan's request on 2026-10-02.
  *
  * ## The floor (#2842)
  *

@@ -126,14 +126,6 @@ import {
 } from "@/lib/monitor/catchall-rate";
 import { readCatchallWindow, CATCHALL_WINDOW_HOURS } from "@/lib/monitor/catchall-rate-store";
 import {
-  beyondOverflowVerdict,
-  beyondOverflowNoticeText,
-  BEYOND_OVERFLOW_NOTICE_KEY,
-  BEYOND_OVERFLOW_COOLDOWN_MS,
-  BEYOND_OVERFLOW_WINDOW_HOURS,
-} from "@/lib/monitor/beyond-overflow";
-import { readBeyondOverflowWindow } from "@/lib/monitor/beyond-overflow-store";
-import {
   topTierCascadeVerdict,
   topTierCascadeNoticeText,
   TOP_TIER_CASCADE_NOTICE_KEY,
@@ -1509,45 +1501,6 @@ export async function GET(req: NextRequest) {
       // run": a tick that skipped or could not read has cleared nothing.
       // alert-key: catchall_rate
       await resolveAlert(CATCHALL_RATE_ALERT_KEY, catchallClearText(verdict.share, CATCHALL_WINDOW_HOURS));
-    });
-
-    // --- How many Beyond leads went to an Achieve agent yesterday (#2228)? ---
-    //
-    // #1909's overflow rung sent a page per placement. On a two person Beyond pool
-    // against 88 Achieve agents that is a stream of pages reporting the ladder
-    // working as designed, which is the alert nobody reads by the second week
-    // (L36). Dan retired Beyond as a backend service on 2026-09-13, so staffing is
-    // not the fix and there is nothing to page about: this publishes the number
-    // once a day on the info channel instead, and says in its own words that no
-    // action is being asked for.
-    //
-    // It NEVER resolves, and the catalog classifies it `info` for that reason: ask
-    // what the all-clear would say and the answer is that the expected thing did
-    // not happen for a day, which is not news. A day with no overflow is silent.
-    //
-    // Its own failure boundary (L73), like its neighbours. A tick that cannot COUNT
-    // sends nothing: an unreadable count is not a day with no overflows, which is
-    // why the verdict has an `unmeasured` state and the store throws rather than
-    // letting a failed count arrive as zero.
-    await steps.run("beyond_overflow_rate", null, async () => {
-      const window = await readBeyondOverflowWindow(now);
-      const verdict = beyondOverflowVerdict(window);
-      log.info("monitor", {
-        msg: "beyond overflow rate",
-        overflowed: window.overflowed,
-        beyond_booked: window.beyondBooked,
-        window_h: BEYOND_OVERFLOW_WINDOW_HOURS,
-        verdict: verdict.kind,
-      });
-      if (verdict.kind !== "report") return;
-      // alert-key: beyond_overflow_rate
-      // alert-text-ok: our own copy from beyond-overflow.ts, built from two
-      // measured counts; no error text can reach it.
-      await sendThrottledInfo(
-        BEYOND_OVERFLOW_NOTICE_KEY,
-        BEYOND_OVERFLOW_COOLDOWN_MS,
-        beyondOverflowNoticeText(verdict, BEYOND_OVERFLOW_WINDOW_HOURS),
-      );
     });
 
     // --- How often a top tier lead is cascaded (#2843) ---
