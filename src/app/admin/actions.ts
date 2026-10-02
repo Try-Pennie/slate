@@ -1364,6 +1364,84 @@ export async function setEventTypeGap(form: FormData): Promise<void> {
   redirect(`${page}${savedQuery("event-type-gap")}`);
 }
 
+/** The longest notice an admin may ask of a lead, in minutes: one day. Anything
+ *  longer is a typo that would empty the booker for a whole day. */
+const MAX_NOTICE_MIN = 1440;
+
+/** Null for anything that is not a whole number of minutes inside the bound;
+ *  never NaN, which compares false and would slip past a range check (L50). */
+function parseNoticeMin(raw: string): number | null {
+  if (!/^\d+$/.test(raw)) return null;
+  const n = Number(raw);
+  return n <= MAX_NOTICE_MIN ? n : null;
+}
+
+const NOTICE_REFUSAL = `The notice has to be a whole number of minutes from 0 to ${MAX_NOTICE_MIN}.`;
+
+/**
+ * Set how far ahead of now the earliest offered time can be (#3003).
+ *
+ * It could only be chosen when an event type was created, so the live call type
+ * kept a 2 hour notice nobody could change from the screen while cal.com let a
+ * lead book a few minutes out. Dan, 2026-10-02: a lead at 11am should be able to
+ * book anything from 11:05.
+ *
+ * A plain UPDATE of one column, so it is idempotent under a retry or a double
+ * submit. It goes through `updateEventType`, which refreshes the cached slots,
+ * because those were computed under the old notice: a shorter one offers nothing
+ * new near now until they rebuild.
+ */
+export async function setEventTypeNotice(form: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const page = "/admin/event-types";
+
+  const eventTypeId = String(form.get("event_type_id") ?? "").trim();
+  if (!eventTypeId) {
+    redirect(`${page}${refusedQuery("No event type was named.")}`);
+  }
+  const notice = parseNoticeMin(String(form.get("min_notice_min") ?? "").trim());
+  if (notice === null) {
+    redirect(`${page}${refusedQuery(NOTICE_REFUSAL)}`);
+  }
+
+  // The current value, so the trail records what it was as well as what it became.
+  const before = unwrap(
+    await supabaseAdmin()
+      .from("event_types")
+      .select("min_notice_min")
+      .eq("id", eventTypeId)
+      .eq("org_id", admin.org_id)
+      .maybeSingle(),
+    "setEventTypeNotice current notice",
+  ) as { min_notice_min: number } | null;
+  if (!before) {
+    redirect(`${page}${refusedQuery("That event type was not found.")}`);
+  }
+
+  const patch = { min_notice_min: notice };
+  const saved = await updateEventType({ eventTypeId, orgId: admin.org_id, patch });
+  if (saved.error) {
+    log.error("admin", { msg: "event type notice save failed", event_type_id: eventTypeId }, saved.error);
+    redirect(`${page}${refusedQuery("Could not save the notice. Please try again.")}`);
+  }
+  if (saved.count === 0) {
+    redirect(`${page}${refusedQuery("That event type was not found.")}`);
+  }
+
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "event_type.notice",
+    details: {
+      event_type_id: eventTypeId,
+      from: { min_notice_min: before.min_notice_min },
+      to: patch,
+    },
+  });
+  revalidatePath(page);
+  redirect(`${page}${savedQuery("event-type-notice")}`);
+}
+
 /**
  * Save the description a lead reads before booking (#1335).
  *
