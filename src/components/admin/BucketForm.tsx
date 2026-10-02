@@ -29,6 +29,7 @@ export function BucketForm({
   memberIds,
   catalog,
   eligibleCount,
+  overflowTo = null,
 }: {
   bucket?: Bucket;
   eventTypes: EventType[];
@@ -49,6 +50,9 @@ export function BucketForm({
    * out was reported as broken. Two of them were, on every view, for months.
    */
   eligibleCount?: number;
+  /** Where the routing ladder sends this bucket's leads when nobody matches, in
+   *  words, or null when it reaches nobody (Dan, 2026-10-02). */
+  overflowTo?: string | null;
 }) {
   const editing = !!bucket;
   // #2006: what is read only is what the SEEDER writes, not "this bucket
@@ -79,7 +83,7 @@ export function BucketForm({
               fail, so it says what it is and keeps the muted treatment. */}
           <p
             className={`text-xs ${
-              eligibleCount === 0 && !bucket.fallback_user_id
+              eligibleCount === 0 && !bucket.fallback_user_id && !overflowTo
                 ? "text-[var(--error)]"
                 : "text-fg-muted"
             }`}
@@ -90,7 +94,9 @@ export function BucketForm({
                   eligibleCount === 0
                     ? bucket.fallback_user_id
                       ? " (using fallback agent)"
-                      : " (no fallback set, bookings will fail)"
+                      : overflowTo
+                        ? ` (leads go to ${overflowTo})`
+                        : " (no fallback set, bookings will fail)"
                     : ""
                 }`}
           </p>

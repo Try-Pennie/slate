@@ -181,7 +181,8 @@ const MODES = {
     hint: (total: number) =>
       `Who takes a booking when nothing matches the criteria above. Any of the ${total} people on the roster can be chosen.`,
     groupLabel: () => "Fallback agent",
-    nobody: "No fallback set, so bookings will fail when nothing matches.",
+    nobody:
+      "No fallback set. When nothing matches, leads move down the routing ladder to the next pool with somebody in it, and fail only if there is none.",
     openLabel: "Choose a fallback agent",
     closeLabel: "Done choosing a fallback",
     removeLabel: (name: string) => `Clear ${name} as the fallback agent`,

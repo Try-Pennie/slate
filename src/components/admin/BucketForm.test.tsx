@@ -486,6 +486,29 @@ describe("the eligible count has three states, and only one is a failure (#1929)
     expect(line.className).toMatch(/error/);
   });
 
+  // Dan, 2026-10-02: a pool nobody matches is not failing when the routing
+  // ladder carries its leads to a staffed pool.
+  it("names where leads go when nobody matches and the ladder reaches a staffed pool", () => {
+    const people = roster(3);
+    render(
+      <RosterProvider roster={people}>
+        <BucketForm
+          bucket={bucket(1)}
+          eventTypes={EVENT_TYPES}
+          roster={people}
+          memberIds={new Set()}
+          catalog={CATALOG}
+          eligibleCount={0}
+          overflowTo="Low with Achieve"
+        />
+      </RosterProvider>,
+    );
+    const line = screen.getByText(/0 eligible agents/);
+    expect(line.textContent).toMatch(/leads go to Low with Achieve/);
+    expect(line.textContent).not.toMatch(/bookings will fail/i);
+    expect(line.className).not.toMatch(/error/);
+  });
+
   it("treats a measured zero with a fallback as working, not as a failure", () => {
     draw(0, "u9");
     const line = screen.getByText(/using fallback agent/);

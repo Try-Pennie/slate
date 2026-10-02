@@ -49,6 +49,12 @@ export interface BucketRow {
    *  was not measured. Never 0 for unmeasured. */
   eligible: number | null;
   hasFallback: boolean;
+  /**
+   * The staffed pool this bucket's leads go to when nobody here matches, in
+   * words, or null when the routing ladder reaches nobody (Dan, 2026-10-02).
+   * Only meaningful when `eligible` is 0.
+   */
+  overflowTo: string | null;
   /** How many people are named on this bucket by hand. */
   manualMembers: number;
   /**
@@ -78,6 +84,8 @@ export function bucketRow(
    * tell them apart.
    */
   manualMemberIds: string[],
+  /** Where the routing ladder sends this bucket's leads when nobody here matches. */
+  overflowTo: string | null = null,
 ): BucketRow {
   const [adv, bes, leg] = bucket.code.split("");
   const tier = adv ? DEBT_TIER[adv] : undefined;
@@ -96,6 +104,7 @@ export function bucketRow(
         : null,
     eligible: eligible === undefined ? null : eligible,
     hasFallback: bucket.fallback_user_id !== null,
+    overflowTo,
     manualMembers: manualMemberIds.length,
     // The same key the recompute lane and the staffing depth group on, so no two
     // surfaces can disagree about which codes are one pool.
@@ -153,6 +162,8 @@ export type BucketHealth =
   | "blocked"
   /** Nobody matches, but a fallback agent does catch it. */
   | "fallback-only"
+  /** Nobody matches, and the routing ladder carries its leads to a staffed pool. */
+  | "overflows"
   /** Somebody matches. */
   | "staffed"
   /** The depth was not measured, so this row says nothing either way. */
@@ -161,7 +172,8 @@ export type BucketHealth =
 export function bucketHealth(row: BucketRow): BucketHealth {
   if (row.eligible === null) return "unmeasured";
   if (row.eligible > 0) return "staffed";
-  return row.hasFallback ? "fallback-only" : "blocked";
+  if (row.hasFallback) return "fallback-only";
+  return row.overflowTo ? "overflows" : "blocked";
 }
 
 /**
@@ -237,6 +249,8 @@ export function bucketHealthLabel(row: BucketRow): string {
       return "Nobody, and no fallback";
     case "fallback-only":
       return "Fallback only";
+    case "overflows":
+      return `Nobody; goes to ${row.overflowTo}`;
     case "staffed":
       return `${row.eligible} agent${row.eligible === 1 ? "" : "s"}`;
   }

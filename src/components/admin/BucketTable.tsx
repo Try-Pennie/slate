@@ -47,6 +47,7 @@ import {
 const HEALTH_PILL: Record<BucketHealth, PillVariant> = {
   blocked: "status-error",
   "fallback-only": "status-pending",
+  overflows: "status-pending",
   staffed: "status-ok",
   unmeasured: "outline",
 };

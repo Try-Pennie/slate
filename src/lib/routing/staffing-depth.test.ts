@@ -282,3 +282,55 @@ describe("bucketStaffingDepths", () => {
     expect(rows.map((r) => r.code)).toEqual(["SPOF", "THIN", "OK"]);
   });
 });
+
+// Where an empty pool's leads go (Dan, 2026-10-02). A pool with nobody in it does
+// not fail its leads when the routing ladder carries them to a staffed pool, so a
+// screen saying "bookings will fail" there is wrong. The ladder is the router's
+// own (`tierLadder`), and a top tier lead's lower rungs skip anyone carrying Low,
+// exactly as booking does.
+describe("bucketStaffingDepths overflow", () => {
+  const lowBeyond = { debt_team: "low", backend_service: "beyond" };
+  const lowAchieve = { debt_team: "low", backend_service: "achieve" };
+  const lowAll = { debt_team: "low" };
+
+  it("names the staffed pool an empty pool's leads go to", () => {
+    const buckets = [
+      mkBucket({ code: "120", name: "Low | Beyond | No Legal Param", criteria: lowBeyond }),
+      mkBucket({ code: "130", name: "Low | Achieve | No Legal Param", criteria: lowAchieve }),
+      mkBucket({ code: "110", name: "Low | Both | No Legal Param", criteria: lowAll }),
+    ];
+    const agents = [mkAgent({ id: "a", attributes: { debt_team: ["low"], backend_service: ["achieve"] } })];
+    const rows = bucketStaffingDepths(buckets, agents, []);
+    const empty = rows.find((r) => r.code === "120")!;
+    expect(empty.depth).toBe(0);
+    expect(empty.overflowToday?.code).toBe("130");
+    expect(empty.overflowToday?.label).toBe("Low with Achieve");
+    expect(empty.overflowOnRoster?.code).toBe("130");
+    // A staffed pool goes nowhere.
+    expect(rows.find((r) => r.code === "130")!.overflowToday).toBeNull();
+    expect(rows.find((r) => r.code === "130")!.overflowOnRoster).toBeNull();
+  });
+
+  it("does not send today's leads to a pool whose people are all out today", () => {
+    const buckets = [
+      mkBucket({ code: "120", name: "Low | Beyond | No Legal Param", criteria: lowBeyond }),
+      mkBucket({ code: "130", name: "Low | Achieve | No Legal Param", criteria: lowAchieve }),
+    ];
+    const agents = [mkAgent({ id: "a", attributes: { debt_team: ["low"], backend_service: ["achieve"] } })];
+    const empty = bucketStaffingDepths(buckets, agents, [], new Set(["a"])).find((r) => r.code === "120")!;
+    expect(empty.overflowToday).toBeNull();
+    expect(empty.overflowOnRoster?.code).toBe("130");
+  });
+
+  it("skips advisors who carry Low on a top tier lead's lower rungs", () => {
+    const buckets = [
+      mkBucket({ code: "520", name: "Ultra High | Beyond | No Legal Param", criteria: { debt_team: "ultra_high", backend_service: "beyond" } }),
+      mkBucket({ code: "210", name: "Medium | Both | No Legal Param", criteria: { debt_team: "medium" } }),
+    ];
+    const both = [mkAgent({ id: "m", attributes: { debt_team: ["medium", "low"] } })];
+    expect(bucketStaffingDepths(buckets, both, []).find((r) => r.code === "520")!.overflowToday).toBeNull();
+
+    const mediumOnly = [...both, mkAgent({ id: "n", attributes: { debt_team: ["medium"] } })];
+    expect(bucketStaffingDepths(buckets, mediumOnly, []).find((r) => r.code === "520")!.overflowToday?.code).toBe("210");
+  });
+});

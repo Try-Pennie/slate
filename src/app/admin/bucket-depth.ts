@@ -10,11 +10,11 @@ import type { Bucket, BucketMember, User } from "@/lib/db/types";
  * admin-page transformation the page used to inline: User -> StaffingAgent and
  * the active-membership filter.
  */
-export function bucketDepthByCode(
+function depthRows(
   buckets: Bucket[],
   users: Pick<User, "id" | "name" | "email" | "attributes" | "bookable" | "deactivated_at">[],
   members: Pick<BucketMember, "bucket_id" | "user_id" | "active">[],
-): Map<string, number> {
+) {
   const agents: StaffingAgent[] = users.map((u) => ({
     id: u.id,
     name: u.name ?? u.email,
@@ -25,7 +25,34 @@ export function bucketDepthByCode(
   const activeMembers = members
     .filter((m) => m.active)
     .map((m) => ({ bucket_id: m.bucket_id, user_id: m.user_id }));
+  return bucketStaffingDepths(buckets, agents, activeMembers);
+}
+
+export function bucketDepthByCode(
+  buckets: Bucket[],
+  users: Pick<User, "id" | "name" | "email" | "attributes" | "bookable" | "deactivated_at">[],
+  members: Pick<BucketMember, "bucket_id" | "user_id" | "active">[],
+): Map<string, number> {
+  return new Map(depthRows(buckets, users, members).map((d) => [d.code, d.depth]));
+}
+
+/**
+ * Where each empty bucket's leads go, in words, from the same depth rows
+ * (Dan, 2026-10-02). The editor counts the ROSTER, so this is the roster
+ * overflow, not today's. A bucket nobody matches whose ladder reaches a staffed
+ * pool is not failing its leads. The pool's name, or its code where the criteria
+ * are not the routing matrix, since this page is admin only and codes are its
+ * vocabulary. Null when the bucket is staffed or the ladder reaches nobody.
+ */
+export function bucketOverflowByCode(
+  buckets: Bucket[],
+  users: Pick<User, "id" | "name" | "email" | "attributes" | "bookable" | "deactivated_at">[],
+  members: Pick<BucketMember, "bucket_id" | "user_id" | "active">[],
+): Map<string, string | null> {
   return new Map(
-    bucketStaffingDepths(buckets, agents, activeMembers).map((d) => [d.code, d.depth]),
+    depthRows(buckets, users, members).map((d) => [
+      d.code,
+      d.overflowOnRoster ? (d.overflowOnRoster.label ?? d.overflowOnRoster.code) : null,
+    ]),
   );
 }

@@ -325,4 +325,25 @@ const bucket = (over: Partial<Bucket> = {}): Bucket => ({
   );
 }
 
+// Dan, 2026-10-02: an empty pool whose leads the routing ladder carries to a
+// staffed pool fails nobody, so it is not "blocked" and is not counted as a pool
+// that can take no booking.
+{
+  const overflowing = bucketRow(bucket({ code: "120" }), 0, [], "Low with Achieve");
+  eq(bucketHealth(overflowing), "overflows", "an empty pool the ladder carries elsewhere overflows");
+  eq(bucketHealthLabel(overflowing), "Nobody; goes to Low with Achieve", "and says where its leads go");
+  const stuck = bucketRow(bucket({ code: "121" }), 0, [], null);
+  eq(bucketHealth(stuck), "blocked", "with nowhere to go it is still blocked");
+  assert(
+    !/take no booking/.test(bucketTableSummary([overflowing])),
+    "an overflowing pool is not counted as one that can take no booking",
+  );
+  assert(/1 can take no booking/.test(bucketTableSummary([stuck])), "a blocked one still is");
+  eq(
+    filterBucketRows([overflowing, stuck], { query: "", blockedOnly: true }).map((r) => r.code),
+    ["121"],
+    "the blocked only filter keeps only the pool with nowhere to go",
+  );
+}
+
 finish();

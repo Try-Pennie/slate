@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { currentUser } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { canManageAgents } from "@/lib/auth/roles";
+import { canEditOrgSettings, canManageAgents } from "@/lib/auth/roles";
 import { consoleHiddenFor } from "@/lib/env";
 import { cardCls } from "@/components/ui/styles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
@@ -16,10 +16,22 @@ export const dynamic = "force-dynamic";
 
 /** Flag -> pill treatment + short label. Color is never the sole signal: the
  *  label states the meaning, so a colorblind reader still gets it. */
-function flagPill(flag: StaffingFlag): { variant: PillVariant; className?: string; label: string } {
+function flagPill(
+  flag: StaffingFlag,
+  overflows: boolean,
+): { variant: PillVariant; className?: string; label: string } {
   switch (flag) {
     case "none":
-      return { variant: "status-error", label: "No coverage" };
+      // An empty pool whose leads the routing ladder carries to a staffed one is
+      // not failing anybody, so it is a warning, not the rose error (Dan,
+      // 2026-10-02).
+      return overflows
+        ? {
+            variant: "outline",
+            className: "border-pennie-yellow text-fg dark:border-pennie-yellow",
+            label: "Overflows",
+          }
+        : { variant: "status-error", label: "No coverage" };
     case "spof":
       return { variant: "status-error", label: "Single point of failure" };
     case "thin":
@@ -51,6 +63,11 @@ const DEPTH_LEGEND =
  *  fallback situation. The status column reflects the EFFECTIVE flag, so this
  *  detail explains it (roster vs available today when agents are out). */
 function rowDetail(row: TierDepth): string {
+  // Where an empty pool's leads go today. The ladder is the router's own, so
+  // this names the pool a booking would really land in (Dan, 2026-10-02).
+  const goes = row.overflowToday
+    ? ` Leads go to ${row.overflowToday.label ?? "another pool"} instead.`
+    : "";
   // #738/#744: agents who are out today (approved time off, or an all-day block
   // on their own calendar) thin the tier, or empty it.
   if (row.outCount > 0) {
@@ -60,7 +77,7 @@ function rowDetail(row: TierDepth): string {
         : row.effectiveDepth === 1
           ? "only 1 is available today"
           : `only ${row.effectiveDepth} are available today`;
-    return `${row.depth} on the roster, but ${avail} (${row.outCount} out today).`;
+    return `${row.depth} on the roster, but ${avail} (${row.outCount} out today).${goes}`;
   }
   if (row.flag === "spof") {
     return row.soleAgentName
@@ -68,9 +85,9 @@ function rowDetail(row: TierDepth): string {
       : "Rests on a single agent.";
   }
   if (row.flag === "none") {
-    return row.hasWorkingFallback
-      ? "No eligible agent; a fallback agent is set, so bookings still route."
-      : "No eligible agent and no fallback set, so bookings will fail.";
+    if (row.hasWorkingFallback) return "No eligible agent; a fallback agent is set, so bookings still route.";
+    if (row.overflowToday) return `Nobody in this pool.${goes}`;
+    return "Nobody in this pool or any pool its leads can move to, so bookings will fail.";
   }
   if (row.flag === "thin") {
     return "Two agents deep. One time-off or offboarding away from a single point of failure.";
@@ -93,6 +110,9 @@ export default async function TiersPage() {
       </main>
     );
   }
+  // Managers read pools by name; bucket codes are an admin's vocabulary (Dan,
+  // 2026-10-02).
+  const showCodes = canEditOrgSettings(me.role);
 
   // #1629: `loadTierDepths` THROWS on an unreadable read rather than answering
   // with an empty list. Caught here and turned into its own screen, because
@@ -116,7 +136,13 @@ export default async function TiersPage() {
   // used to mean three CODES, which is half a tier.
   const groups = rows && groupRowsByPool(rows, sameTierReading);
   const spofCount = groups && groups.filter((g) => g.rows[0]!.effectiveFlag === "spof").length;
-  const noneCount = groups && groups.filter((g) => g.rows[0]!.effectiveFlag === "none").length;
+  // "No coverage" is a pool whose leads have nowhere to go. One the ladder
+  // carries to a staffed pool is counted separately, because it fails nobody.
+  const uncovered = (r: TierDepth) =>
+    r.effectiveFlag === "none" && !r.hasWorkingFallback && !r.overflowToday;
+  const noneCount = groups && groups.filter((g) => uncovered(g.rows[0]!)).length;
+  const overflowCount =
+    groups && groups.filter((g) => g.rows[0]!.effectiveFlag === "none" && !!g.rows[0]!.overflowToday).length;
   const thinCount = groups && groups.filter((g) => g.rows[0]!.effectiveFlag === "thin").length;
   // Agent-slots out is a count over CODES on purpose: it is the one number here
   // that is about people rather than about pools, and a pool's six codes share
@@ -150,6 +176,9 @@ export default async function TiersPage() {
             <span className={(noneCount ?? 0) > 0 ? "text-error" : "text-fg-muted"}>
               <span className="font-semibold tabular-nums">{noneCount}</span> with no coverage
             </span>
+            <span className="text-fg-muted">
+              <span className="font-semibold tabular-nums text-fg">{overflowCount}</span> sending leads to another pool
+            </span>
             <span className={(spofCount ?? 0) > 0 ? "text-error" : "text-fg-muted"}>
               <span className="font-semibold tabular-nums">{spofCount}</span> on a single agent today
             </span>
@@ -166,7 +195,7 @@ export default async function TiersPage() {
               <thead>
                 <tr className="border-b border-border bg-[var(--bg-alt)] text-left text-xs text-fg-muted">
                   <th scope="col" className="px-4 py-2.5 font-semibold">Pool</th>
-                  <th scope="col" className="px-3 py-2.5 font-semibold">Bucket codes</th>
+                  {showCodes && <th scope="col" className="px-3 py-2.5 font-semibold">Bucket codes</th>}
                   {/* #1901: the definition is reachable rather than in the way.
                       It read "Bookable agents (available today)", a gloss every
                       reader passed through on every view to serve the one who
@@ -183,7 +212,10 @@ export default async function TiersPage() {
               <tbody className="divide-y divide-border">
                 {groups.map((group) => {
                   const row = group.rows[0]!;
-                  const pill = flagPill(row.effectiveFlag);
+                  const pill = flagPill(
+                    row.effectiveFlag,
+                    !row.hasWorkingFallback && !!row.overflowToday,
+                  );
                   const detail = rowDetail(row);
                   return (
                     <tr
@@ -199,9 +231,11 @@ export default async function TiersPage() {
                       {/* Every code the pool serves, because those are what the
                           landing pages send and what somebody checks a booking
                           link against. */}
-                      <td className="px-3 py-3 text-fg-muted tabular-nums">
-                        {group.codes.join(", ")}
-                      </td>
+                      {showCodes && (
+                        <td className="px-3 py-3 text-fg-muted tabular-nums">
+                          {group.codes.join(", ")}
+                        </td>
+                      )}
                       <td className="px-3 py-3">
                         {/* #740: click to expand the covering agents. Native
                             details/summary: keyboard-accessible, needs no client JS. */}
@@ -255,7 +289,7 @@ export default async function TiersPage() {
                 })}
                 {groups.length === 0 && (
                   <tr>
-                    <td colSpan={4} className="px-4 py-10 text-center text-sm text-fg-muted">
+                    <td colSpan={showCodes ? 4 : 3} className="px-4 py-10 text-center text-sm text-fg-muted">
                       No routing pools yet. Create a bucket on the admin page to route bookings.
                     </td>
                   </tr>

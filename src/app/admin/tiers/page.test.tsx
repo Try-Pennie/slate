@@ -251,3 +251,74 @@ describe("TiersPage on an unreadable roster (#1629)", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });
+
+// Dan, 2026-10-02: a manager reads pools in words, never bucket codes, and an
+// empty pool whose leads the routing ladder carries elsewhere does not say
+// bookings will fail.
+describe("TiersPage for a manager, and an empty pool that overflows", () => {
+  const person = (role: string) => ({
+    id: "p1",
+    role,
+    org_id: "o1",
+    email: "p@x.com",
+    theme_preference: null,
+    bookable: false,
+    avatar_url: null,
+  });
+  const emptyBeyond = (overflow: { code: string; poolKey: string; label: string | null } | null) => ({
+    code: "120",
+    name: "Low | Beyond | No Legal Param",
+    depth: 0,
+    effectiveDepth: 0,
+    outCount: 0,
+    soleAgentName: null,
+    hasWorkingFallback: false,
+    flag: "none",
+    effectiveFlag: "none",
+    agents: [],
+    poolKey: "low-beyond",
+    poolLabel: "Low with Beyond",
+    overflowToday: overflow,
+    overflowOnRoster: overflow,
+  });
+  const toAchieve = { code: "130", poolKey: "low-achieve", label: "Low with Achieve" };
+
+  async function renderAs(role: string, rows: unknown[]) {
+    const saved = process.env.AGENT_SCHEDULING_LIVE;
+    process.env.AGENT_SCHEDULING_LIVE = "true";
+    try {
+      auth.currentUser.mockResolvedValueOnce(person(role));
+      load.loadTierDepths.mockResolvedValueOnce(rows);
+      return render(await TiersPage());
+    } finally {
+      if (saved === undefined) delete process.env.AGENT_SCHEDULING_LIVE;
+      else process.env.AGENT_SCHEDULING_LIVE = saved;
+    }
+  }
+
+  it("shows a manager no bucket codes at all", async () => {
+    const { container } = await renderAs("manager", [emptyBeyond(toAchieve)]);
+    expect(screen.queryByText("Bucket codes")).toBeNull();
+    expect(container.textContent).not.toMatch(/\b1[0-3][0-2]\b/);
+    expect(screen.getByText("Low with Beyond")).toBeTruthy();
+  });
+
+  it("still shows an admin the codes", async () => {
+    await renderAs("admin", [emptyBeyond(toAchieve)]);
+    expect(screen.getByText("Bucket codes")).toBeTruthy();
+    expect(screen.getByText("120")).toBeTruthy();
+  });
+
+  it("names where an empty pool's leads go instead of saying bookings fail", async () => {
+    const { container } = await renderAs("manager", [emptyBeyond(toAchieve)]);
+    expect(container.textContent).toMatch(/Leads go to Low with Achieve instead/);
+    expect(container.textContent).not.toMatch(/bookings will fail/i);
+    expect(screen.queryByText("No coverage")).toBeNull();
+  });
+
+  it("says bookings fail only when nothing on the ladder can take them", async () => {
+    const { container } = await renderAs("manager", [emptyBeyond(null)]);
+    expect(container.textContent).toMatch(/bookings will fail/i);
+    expect(screen.getByText("No coverage")).toBeTruthy();
+  });
+});

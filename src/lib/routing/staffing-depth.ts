@@ -3,6 +3,8 @@ import { agentIdsFromPool } from "@/lib/availability/pool";
 import { poolKeyFor } from "@/lib/availability/pool-key";
 import { poolLabel } from "@/lib/availability/pool-label";
 import { DEBT_TIER } from "@/lib/xbc";
+import { carriesLow } from "@/lib/availability/low-exclusion";
+import { rungExcludesLow, tierLadder } from "@/lib/routing/tiers";
 
 /**
  * Proactive per-tier staffing depth (#584/#569): how many currently-bookable
@@ -68,6 +70,33 @@ export interface TierDepth {
   poolKey: string;
   /** The pool in words, or null when its criteria are not the routing matrix. */
   poolLabel: string | null;
+  /**
+   * Where this pool's leads go when nobody in it can take them (Dan, 2026-10-02).
+   *
+   * An empty pool does not fail its leads when the routing ladder carries them to
+   * a staffed one: a Low Beyond lead with no Beyond advisor is booked with an
+   * Achieve advisor. "No eligible agent, so bookings will fail" was the screen
+   * reading only the bucket's own fallback agent and none of the ladder.
+   *
+   * Walked over the router's own ladder (`tierLadder`), skipping on a top tier
+   * lead's lower rungs anyone who carries Low, exactly as booking does (#2842).
+   * `overflowToday` counts only advisors who are not out today, which is what the
+   * staffing page's status reads; `overflowOnRoster` counts the roster, which is
+   * what the bucket editor's count reads. Null when the pool is staffed itself
+   * (nothing overflows) or when no rung on the ladder has anybody.
+   */
+  overflowToday: PoolOverflow | null;
+  overflowOnRoster: PoolOverflow | null;
+}
+
+/** The staffed pool an empty pool's leads go to. */
+export interface PoolOverflow {
+  /** The first ladder rung that has somebody. */
+  code: string;
+  /** That rung's pool, so two codes of one pool compare equal. */
+  poolKey: string;
+  /** That rung's pool in words, or null outside the routing matrix. */
+  label: string | null;
 }
 
 /**
@@ -97,6 +126,8 @@ export function sameTierReading(a: TierDepth, b: TierDepth): boolean {
     a.effectiveFlag === b.effectiveFlag &&
     a.soleAgentName === b.soleAgentName &&
     a.hasWorkingFallback === b.hasWorkingFallback &&
+    a.overflowToday?.poolKey === b.overflowToday?.poolKey &&
+    a.overflowOnRoster?.poolKey === b.overflowOnRoster?.poolKey &&
     a.agents.length === b.agents.length &&
     a.agents.every((agent, i) => {
       const other = b.agents[i]!;
@@ -140,7 +171,9 @@ export function bucketStaffingDepths(
     membersByBucket.set(m.bucket_id, set);
   }
 
-  return buckets
+  const attributesById = new Map(agents.map((a) => [a.id, a.attributes]));
+
+  const rows = buckets
     .filter((b) => !b.is_test)
     .map((b) => {
       const manualMemberIds = membersByBucket.get(b.id) ?? new Set<string>();
@@ -179,14 +212,39 @@ export function bucketStaffingDepths(
           memberIds: [...manualMemberIds],
         }),
         poolLabel: poolLabel(b.criteria ?? null),
+        overflowToday: null as PoolOverflow | null,
+        overflowOnRoster: null as PoolOverflow | null,
       };
-    })
-    // Sort by the short-term risk first (effective), then roster depth, then code,
-    // so the tiers most at risk today surface at the top.
-    .sort(
-      (a, b) =>
-        a.effectiveDepth - b.effectiveDepth || a.depth - b.depth || a.code.localeCompare(b.code),
-    );
+    });
+
+  // Second pass, once every row exists, because a rung is another bucket's row.
+  const byCode = new Map(rows.map((r) => [r.code, r]));
+  const overflowFor = (code: string, todayOnly: boolean): PoolOverflow | null => {
+    for (const rung of tierLadder(code).slice(1)) {
+      const target = byCode.get(rung);
+      if (!target) continue;
+      const people = target.agents.filter(
+        (a) =>
+          (!todayOnly || !a.out) &&
+          !(rungExcludesLow(code, rung) && carriesLow(attributesById.get(a.id))),
+      );
+      if (people.length > 0) {
+        return { code: rung, poolKey: target.poolKey, label: target.poolLabel };
+      }
+    }
+    return null;
+  };
+  for (const r of rows) {
+    if (r.effectiveDepth === 0) r.overflowToday = overflowFor(r.code, true);
+    if (r.depth === 0) r.overflowOnRoster = overflowFor(r.code, false);
+  }
+
+  // Sort by the short-term risk first (effective), then roster depth, then code,
+  // so the tiers most at risk today surface at the top.
+  return rows.sort(
+    (a, b) =>
+      a.effectiveDepth - b.effectiveDepth || a.depth - b.depth || a.code.localeCompare(b.code),
+  );
 }
 
 /**

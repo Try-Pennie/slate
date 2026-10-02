@@ -39,6 +39,8 @@ function pool(
     agents,
     poolKey: over.poolKey ?? `pool-${over.code}`,
     poolLabel: over.poolLabel ?? null,
+    overflowToday: over.overflowToday ?? null,
+    overflowOnRoster: over.overflowOnRoster ?? null,
   };
 }
 

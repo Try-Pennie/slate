@@ -7,7 +7,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import { log } from "@/lib/log";
 import { deriveAttributeCatalog } from "@/lib/availability/catalog";
-import { bucketDepthByCode } from "@/app/admin/bucket-depth";
+import { bucketDepthByCode, bucketOverflowByCode } from "@/app/admin/bucket-depth";
 import { setDefaultBucket } from "@/app/admin/actions";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
@@ -141,6 +141,8 @@ export default async function BucketsPage({
     rosterUnreadable || bucketsUnreadable || membersUnreadable
       ? null
       : bucketDepthByCode(buckets, users, members);
+  const overflowByBucketCode =
+    depthByBucketCode === null ? null : bucketOverflowByCode(buckets, users, members);
 
   // Direct-booking default bucket (#1016): which pool a booking with no bucket
   // code lands in. It picks from the same list this page edits, so it lives here.
@@ -270,6 +272,7 @@ export default async function BucketsPage({
                   // belongs to, and a count could not tell two pools apart. The
                   // count the table shows is derived from the same list.
                   members.filter((m) => m.bucket_id === b.id).map((m) => m.user_id),
+                  overflowByBucketCode?.get(b.code) ?? null,
                 ),
               )}
               forms={Object.fromEntries(
@@ -287,6 +290,7 @@ export default async function BucketsPage({
                     }
                     catalog={attrCatalog}
                     eligibleCount={depthByBucketCode?.get(b.code)}
+                    overflowTo={overflowByBucketCode?.get(b.code) ?? null}
                   />,
                 ]),
               )}
