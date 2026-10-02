@@ -97,42 +97,123 @@ export const BOOKING_SOURCES: readonly BookingSource[] = [
 export const LEGACY_EVENT_TYPES = ["review", "connect", "call", "income", "terms", "apply", "meet"] as const;
 export type LegacyEventType = (typeof LEGACY_EVENT_TYPES)[number];
 
+/**
+ * The landing pages' production host (#3033): trypennie's own robots.txt names
+ * its sitemap there, and its structured data falls back to it
+ * (Halo-lab-Trypennie/trypennie `src/app/robots/route.ts`,
+ * `src/components/StructuredData/OrganizationSchema.tsx`).
+ */
+export const LANDING_HOST = "https://trypennie.com";
+
+/**
+ * What stands in a page link for the id a lead brings to it. Every booking page on
+ * trypennie is addressed by one, a Salesforce Submission or Prospect id, so no
+ * bare address shows a booker. Capitals with no space, so Slack links the whole
+ * address and a reader sees at once which part is theirs to fill in.
+ */
+export const SUBMISSION_ID = "SUBMISSION_ID";
+export const PROSPECT_ID = "PROSPECT_ID";
+
+/** One address a page is opened at, for a reader checking it (#3033). */
+export interface PageLink {
+  /** The full address on `LANDING_HOST`, with `SUBMISSION_ID` or `PROSPECT_ID` where the lead's id goes. */
+  url: string;
+  /** Which id the address takes. */
+  id: "submission" | "prospect";
+  /** Which lead shows this page's booker, where two pages share the address. */
+  only?: string;
+}
+
 export interface SourceDetail {
   /** The page as an admin would recognise it. */
   page: string;
   /** The cal.com event type this page booked into, or null for an outcome. */
   legacyEventType: LegacyEventType | null;
+  /**
+   * Where the page can be opened, one entry per address that sends this source
+   * (#3033). Empty for an outcome, an API caller, and a page whose address nobody
+   * has established yet; a Low page may not be empty (`scripts/test-page-volume.ts`).
+   */
+  links: readonly PageLink[];
 }
+
+const bySubmission = (path: string, only?: string): PageLink => ({
+  url: `${LANDING_HOST}${path}`,
+  id: "submission",
+  ...(only === undefined ? {} : { only }),
+});
+const byProspect = (path: string): PageLink => ({ url: `${LANDING_HOST}${path}`, id: "prospect" });
 
 /**
  * Each source's page and legacy cal.com event type, from the live routing forms
- * (org 19474) as recorded on #2072.
+ * (org 19474) as recorded on #2072, and where it is opened, from the trypennie
+ * route that sends it (Halo-lab-Trypennie/trypennie `SLATE_PAGE_SOURCES` in
+ * `src/utils/booking.ts`, and the `src/app` route each use sits under, read
+ * 2026-10-02).
  */
 export const SOURCE_DETAILS: Record<BookingSource, SourceDetail> = {
-  "my-offers-result": { page: "/my-offers/result", legacyEventType: "review" },
-  booking: { page: "/booking", legacyEventType: "review" },
-  "booking-agent-eligible": { page: "/booking, eligible for the AI agent", legacyEventType: "connect" },
-  "booking-portal": { page: "/booking/portal", legacyEventType: "call" },
+  // src/app/my-offers/result/page.tsx reads `submission_id` from the query.
+  "my-offers-result": {
+    page: "/my-offers/result",
+    legacyEventType: "review",
+    links: [bySubmission(`/my-offers/result?submission_id=${SUBMISSION_ID}`)],
+  },
+  // src/app/booking/[SO_ID]: SubmissionPage/InnerContent sends one of these two by
+  // the lead's AI_Agent_Eligible__c, so the one address serves both.
+  booking: {
+    page: "/booking",
+    legacyEventType: "review",
+    links: [bySubmission(`/booking/${SUBMISSION_ID}`, "a lead not marked eligible for the AI agent")],
+  },
+  "booking-agent-eligible": {
+    page: "/booking, eligible for the AI agent",
+    legacyEventType: "connect",
+    links: [bySubmission(`/booking/${SUBMISSION_ID}`, "a lead marked eligible for the AI agent")],
+  },
+  "booking-portal": {
+    page: "/booking/portal",
+    legacyEventType: "call",
+    links: [bySubmission(`/booking/portal/${SUBMISSION_ID}`)],
+  },
   // #2873: the Income Verification pop ups on /offerportal and /offerportal-2 set
   // this, not the /offerhub page, which has no booker of its own and hands off to
   // /booking/portal. The pop ups rewrite the page's source to it, so it is also
-  // what every /offerportal booking records.
-  offerhub: { page: "/offerportal", legacyEventType: "call" },
-  "rml-portal": { page: "/rml/portal", legacyEventType: "income" },
-  "email-booking": { page: "Email booking link", legacyEventType: "terms" },
-  "guided-app": { page: "Guided application completion", legacyEventType: "apply" },
-  "agent-direct": { page: "An advisor's direct link", legacyEventType: "meet" },
-  pennie: { page: "/pennie", legacyEventType: "review" },
-  "review-terms": { page: "/review-terms", legacyEventType: "terms" },
-  "my-offers-result-2": { page: "/my-offers/result-2", legacyEventType: "review" },
-  "income-landing": { page: "the /portal-2 or /portal-3 calendar", legacyEventType: "call" },
-  "not-given": { page: "No source on the link", legacyEventType: null },
-  unrecognised: { page: "A source Slate does not know", legacyEventType: null },
+  // what every /offerportal booking records. Both routes render the same
+  // PortalModals, under src/app/offerportal and src/app/offerportal-2.
+  offerhub: {
+    page: "/offerportal",
+    legacyEventType: "call",
+    links: [byProspect(`/offerportal/${PROSPECT_ID}`), byProspect(`/offerportal-2/${PROSPECT_ID}`)],
+  },
+  "rml-portal": { page: "/rml/portal", legacyEventType: "income", links: [] },
+  "email-booking": { page: "Email booking link", legacyEventType: "terms", links: [] },
+  "guided-app": { page: "Guided application completion", legacyEventType: "apply", links: [] },
+  "agent-direct": { page: "An advisor's direct link", legacyEventType: "meet", links: [] },
+  pennie: { page: "/pennie", legacyEventType: "review", links: [bySubmission(`/pennie/${SUBMISSION_ID}`)] },
+  "review-terms": {
+    page: "/review-terms",
+    legacyEventType: "terms",
+    links: [bySubmission(`/review-terms/${SUBMISSION_ID}`)],
+  },
+  // src/app/my-offers/result-2/page.tsx reads `submission_id` from the query.
+  "my-offers-result-2": {
+    page: "/my-offers/result-2",
+    legacyEventType: "review",
+    links: [bySubmission(`/my-offers/result-2?submission_id=${SUBMISSION_ID}`)],
+  },
+  // src/app/portal-2 and src/app/portal-3 both render PortalAlternateContent.
+  "income-landing": {
+    page: "the /portal-2 or /portal-3 calendar",
+    legacyEventType: "call",
+    links: [byProspect(`/portal-2/${PROSPECT_ID}`), byProspect(`/portal-3/${PROSPECT_ID}`)],
+  },
+  "not-given": { page: "No source on the link", legacyEventType: null, links: [] },
+  unrecognised: { page: "A source Slate does not know", legacyEventType: null, links: [] },
   // #2876: not pages, so no cal.com event type. `Record<BookingSource, ...>` makes
   // tsc refuse a caller added to BOOKING_API_CALLERS without a line here.
-  "api-regal": { page: "The booking API, called by Regal", legacyEventType: null },
-  "api-trypennie": { page: "The booking API, called by trypennie", legacyEventType: null },
-  "api-canary": { page: "The booking API, called by the smoke canary", legacyEventType: null },
+  "api-regal": { page: "The booking API, called by Regal", legacyEventType: null, links: [] },
+  "api-trypennie": { page: "The booking API, called by trypennie", legacyEventType: null, links: [] },
+  "api-canary": { page: "The booking API, called by the smoke canary", legacyEventType: null, links: [] },
 };
 
 /** How much of an unrecognised value is handed back for the log. */
