@@ -342,7 +342,7 @@ describe("BucketMembersPicker in fallback mode (#1784)", () => {
     renderFallback();
     const line = screen.getByText(/No fallback set/);
     expect(line.textContent).toMatch(/routing ladder/);
-    expect(line.textContent).toMatch(/fail only if there is none/);
+    expect(line.textContent).toMatch(/outside the ladder, or one whose ladder reaches nobody, fails them/);
   });
 
   it("tells an unreadable roster apart from an empty one", async () => {

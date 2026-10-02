@@ -48,7 +48,7 @@ export default async function BucketsPage({
     db.from("users").select("*").eq("org_id", me.org_id).eq("is_test", false),
     db.from("event_types").select("*").eq("org_id", me.org_id),
     // #1929: `is_test = false`, matching the default bucket picker below
-    // (`page.tsx` further down) and, crucially, `bucketDepthByCode`, which
+    // (`page.tsx` further down) and, crucially, `bucketCoverageByCode`, which
     // excludes test buckets. The two reads disagreed about what counts, so the
     // SMOKE buckets arrived here with no depth entry and the `?? 0` at the call
     // site rendered them as "0 eligible agents (no fallback set, bookings will
@@ -143,10 +143,8 @@ export default async function BucketsPage({
     rosterUnreadable || bucketsUnreadable || membersUnreadable
       ? null
       : bucketCoverageByCode(buckets, users, members);
-  const depthByBucketCode =
-    coverage === null ? null : new Map([...coverage].map(([c, v]) => [c, v.depth]));
-  const overflowByBucketCode =
-    coverage === null ? null : new Map([...coverage].map(([c, v]) => [c, v.overflowTo]));
+  const depthByBucketCode = coverage?.depthByCode ?? null;
+  const overflowByBucketCode = coverage?.overflowByCode ?? null;
 
   // Direct-booking default bucket (#1016): which pool a booking with no bucket
   // code lands in. It picks from the same list this page edits, so it lives here.

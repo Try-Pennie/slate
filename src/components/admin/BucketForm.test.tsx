@@ -440,7 +440,7 @@ describe("the event type picker always carries a real value (#1849)", () => {
 // bookings will fail)" in the error colour on every view of /admin/buckets,
 // measured live on 2026-09-04: five red rows, three of them real.
 //
-// The cause was two reads disagreeing about what counts. `bucketDepthByCode`
+// The cause was two reads disagreeing about what counts. `bucketCoverageByCode`
 // excludes test buckets and the page's bucket read did not, so the SMOKE buckets
 // arrived with no depth entry, and `?? 0` at the call site turned "excluded from
 // the measurement" into "measured zero", which is the one state this panel paints

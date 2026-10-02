@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { bucketDepthByCode, bucketOverflowByCode } from "./bucket-depth";
+import { bucketCoverageByCode } from "./bucket-depth";
+
+const bucketDepthByCode = (...args: Parameters<typeof bucketCoverageByCode>) =>
+  bucketCoverageByCode(...args).depthByCode;
+const bucketOverflowByCode = (...args: Parameters<typeof bucketCoverageByCode>) =>
+  bucketCoverageByCode(...args).overflowByCode;
 import type { Bucket, BucketMember, User } from "@/lib/db/types";
 
 // #584 consolidation: the admin buckets editor's "N eligible agents" count now

@@ -182,7 +182,7 @@ const MODES = {
       `Who takes a booking when nothing matches the criteria above. Any of the ${total} people on the roster can be chosen.`,
     groupLabel: () => "Fallback agent",
     nobody:
-      "No fallback set. When nothing matches, leads move down the routing ladder to the next pool with somebody in it, and fail only if there is none.",
+      "No fallback set. When nothing matches, an XBC bucket's leads move down the routing ladder to the next pool with somebody in it; a bucket outside the ladder, or one whose ladder reaches nobody, fails them.",
     openLabel: "Choose a fallback agent",
     closeLabel: "Done choosing a fallback",
     removeLabel: (name: string) => `Clear ${name} as the fallback agent`,

@@ -388,7 +388,7 @@ describe("the routing page's roster covers the bookings it shows (#1914)", () =>
 });
 
 // #1929. Two working buckets rendered a red "bookings will fail" on every view,
-// because the bucket read did not exclude test buckets while `bucketDepthByCode`
+// because the bucket read did not exclude test buckets while `bucketCoverageByCode`
 // does, so the SMOKE buckets arrived with no depth entry and `?? 0` turned
 // "excluded from the measurement" into "measured zero".
 //
