@@ -58,6 +58,14 @@ const NOW = Date.parse("2026-10-03T04:20:00Z");
   assert(/[-_]/.test(urlSafe), "the fixture really exercises the URL safe alphabet");
   eq([...(decodeBase64Url(urlSafe) ?? [])], [...bytes], "URL safe base64 decodes to the same bytes");
   eq([...(decodeBase64Url(urlSafe + "=") ?? [])], [...bytes], "with or without padding");
+  // Google's own description of photoData: `=` written as `*`, and padding that may
+  // also be `.`. Both shapes must decode to the same bytes.
+  const padded = Buffer.from(bytes).toString("base64").replace(/\+/g, "-").replace(/\//g, "_");
+  assert(padded.endsWith("="), "the fixture really carries padding");
+  eq([...(decodeBase64Url(padded.replace(/=/g, "*")) ?? [])], [...bytes], "padding written as * decodes");
+  eq([...(decodeBase64Url(padded.replace(/=/g, ".")) ?? [])], [...bytes], "padding written as . decodes");
+  eq([...(decodeBase64Url(urlSafe + "..")) ?? []], [...bytes], "extra trailing dots are padding, not data");
+  eq(decodeBase64Url("ab*c"), null, "a * inside the data is refused, not read as padding");
   eq(decodeBase64Url("ab+c"), null, "the standard alphabet's + is refused, not guessed at");
   eq(decodeBase64Url("a"), null, "a length no base64 can have is refused");
   eq(decodeBase64Url(""), null, "empty is refused");

@@ -95,12 +95,15 @@ export function sniffPhotoMime(bytes: Uint8Array): PhotoMime | null {
 
 /**
  * Decode Google's `photoData`, which is base64 in the URL safe alphabet (`-` and
- * `_` where standard base64 has `+` and `/`), with or without padding. Null for
- * anything that is not exactly that, rather than a best effort decode that turns
- * a damaged string into a damaged image.
+ * `_` where standard base64 has `+` and `/`). Google's own description of the
+ * field also writes padding as `*` instead of `=`, and allows `.` as padding, so
+ * any trailing run of `=`, `*` or `.` is padding and is stripped. Null for
+ * anything else that is not exactly that alphabet (a `*` inside the data
+ * included), rather than a best effort decode that turns a damaged string into a
+ * damaged image.
  */
 export function decodeBase64Url(text: string): Uint8Array | null {
-  const trimmed = text.replace(/=+$/, "");
+  const trimmed = text.replace(/[=*.]+$/, "");
   if (trimmed.length === 0 || !/^[A-Za-z0-9_-]+$/.test(trimmed)) return null;
   if (trimmed.length % 4 === 1) return null;
   const standard = trimmed.replace(/-/g, "+").replace(/_/g, "/");
