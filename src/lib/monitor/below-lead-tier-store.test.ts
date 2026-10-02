@@ -119,24 +119,38 @@ describe("loadRoutingContextByBooking", () => {
   it("answers per booking, and a booking with no routing decision is simply absent", async () => {
     const db = fakeDb({
       routing_decisions: [
-        { booking_id: "bk-1", catchall_applied: true, requested_code: "", created_at: EARLIER },
-        { booking_id: "bk-2", catchall_applied: false, requested_code: "422", created_at: EARLIER },
-        { booking_id: "other", catchall_applied: true, requested_code: null, created_at: EARLIER },
+        { booking_id: "bk-1", catchall_applied: true, requested_code: "", tier_fallback: false, rungs_dropped: 0, created_at: EARLIER },
+        { booking_id: "bk-2", catchall_applied: false, requested_code: "422", tier_fallback: false, rungs_dropped: 0, created_at: EARLIER },
+        { booking_id: "other", catchall_applied: true, requested_code: null, tier_fallback: false, rungs_dropped: 0, created_at: EARLIER },
       ],
     });
     const m = await loadRoutingContextByBooking(db, ["bk-1", "bk-2", "bk-3"]);
-    expect(m.get("bk-1")).toEqual({ catchall: true, requestedCode: "" });
+    expect(m.get("bk-1")).toEqual({ catchall: true, requestedCode: "", tierFallback: false, rungsDropped: 0 });
     // #2594: the code the lead ARRIVED with, which is what tells a re-score after
     // booking apart from a lead routed below its own code.
-    expect(m.get("bk-2")).toEqual({ catchall: false, requestedCode: "422" });
+    expect(m.get("bk-2")).toEqual({ catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 });
     expect(m.has("bk-3")).toBe(false);
     expect(m.has("other")).toBe(false);
   });
 
+  // 2026-10-02: whether confirm walked down the tier ladder, and how far, is what
+  // tells a designed drop from a routing fault, so it is read with the rest and
+  // from the same NEWEST decision.
+  it("carries the tier drop from the NEWEST decision, whatever order the rows arrive in", async () => {
+    const rows = [
+      { booking_id: "bk-1", catchall_applied: false, requested_code: "311", tier_fallback: false, rungs_dropped: 0, created_at: EARLIER },
+      { booking_id: "bk-1", catchall_applied: false, requested_code: "311", tier_fallback: true, rungs_dropped: 1, created_at: LATER },
+    ];
+    for (const ordered of [rows, [...rows].reverse()]) {
+      const m = await loadRoutingContextByBooking(fakeDb({ routing_decisions: ordered }), ["bk-1"]);
+      expect(m.get("bk-1")).toEqual({ catchall: false, requestedCode: "311", tierFallback: true, rungsDropped: 1 });
+    }
+  });
+
   it("takes the arrival code from the NEWEST decision, whatever order the rows arrive in", async () => {
     const rows = [
-      { booking_id: "bk-1", catchall_applied: false, requested_code: "211", created_at: EARLIER },
-      { booking_id: "bk-1", catchall_applied: false, requested_code: "422", created_at: LATER },
+      { booking_id: "bk-1", catchall_applied: false, requested_code: "211", tier_fallback: false, rungs_dropped: 0, created_at: EARLIER },
+      { booking_id: "bk-1", catchall_applied: false, requested_code: "422", tier_fallback: false, rungs_dropped: 0, created_at: LATER },
     ];
     for (const ordered of [rows, [...rows].reverse()]) {
       const m = await loadRoutingContextByBooking(fakeDb({ routing_decisions: ordered }), ["bk-1"]);
@@ -149,34 +163,34 @@ describe("loadRoutingContextByBooking", () => {
     // properly. The call sits where the later one put it, so the page must not
     // say the catch-all chose the pool.
     const rows = [
-      { booking_id: "bk-1", catchall_applied: true, requested_code: "", created_at: EARLIER },
-      { booking_id: "bk-1", catchall_applied: false, requested_code: "422", created_at: LATER },
+      { booking_id: "bk-1", catchall_applied: true, requested_code: "", tier_fallback: false, rungs_dropped: 0, created_at: EARLIER },
+      { booking_id: "bk-1", catchall_applied: false, requested_code: "422", tier_fallback: false, rungs_dropped: 0, created_at: LATER },
     ];
     for (const ordered of [rows, [...rows].reverse()]) {
       const m = await loadRoutingContextByBooking(fakeDb({ routing_decisions: ordered }), ["bk-1"]);
-      expect(m.get("bk-1")).toEqual({ catchall: false, requestedCode: "422" });
+      expect(m.get("bk-1")).toEqual({ catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 });
     }
   });
 
   it("says catch-all when the NEWEST decision was the catch-all, whatever order the rows arrive in", async () => {
     const rows = [
-      { booking_id: "bk-1", catchall_applied: false, requested_code: "422", created_at: EARLIER },
-      { booking_id: "bk-1", catchall_applied: true, requested_code: "", created_at: LATER },
+      { booking_id: "bk-1", catchall_applied: false, requested_code: "422", tier_fallback: false, rungs_dropped: 0, created_at: EARLIER },
+      { booking_id: "bk-1", catchall_applied: true, requested_code: "", tier_fallback: false, rungs_dropped: 0, created_at: LATER },
     ];
     for (const ordered of [rows, [...rows].reverse()]) {
       const m = await loadRoutingContextByBooking(fakeDb({ routing_decisions: ordered }), ["bk-1"]);
-      expect(m.get("bk-1")).toEqual({ catchall: true, requestedCode: "" });
+      expect(m.get("bk-1")).toEqual({ catchall: true, requestedCode: "", tierFallback: false, rungsDropped: 0 });
     }
   });
 
   it("breaks a tie on created_at by the higher id, whatever order the rows arrive in", async () => {
     const rows = [
-      { id: "a1", booking_id: "bk-1", catchall_applied: true, requested_code: "", created_at: LATER },
-      { id: "b2", booking_id: "bk-1", catchall_applied: false, requested_code: "422", created_at: LATER },
+      { id: "a1", booking_id: "bk-1", catchall_applied: true, requested_code: "", tier_fallback: false, rungs_dropped: 0, created_at: LATER },
+      { id: "b2", booking_id: "bk-1", catchall_applied: false, requested_code: "422", tier_fallback: false, rungs_dropped: 0, created_at: LATER },
     ];
     for (const ordered of [rows, [...rows].reverse()]) {
       const m = await loadRoutingContextByBooking(fakeDb({ routing_decisions: ordered }), ["bk-1"]);
-      expect(m.get("bk-1")).toEqual({ catchall: false, requestedCode: "422" });
+      expect(m.get("bk-1")).toEqual({ catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 });
     }
   });
 

@@ -1184,7 +1184,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "booking_below_lead_tier:*",
     state: "the catch-all chose the Low pool for an Ultra High lead",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: true, requestedCode: "" }, PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: true, requestedCode: "", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
   },
   // #2594: the arrival code tells a re-score after booking apart from a routing
   // fault, so each gets its own state, plus the one where the code cannot say.
@@ -1192,19 +1192,19 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "booking_below_lead_tier:*",
     state: "arrived on a lower code, and Salesforce re-scored the lead after booking",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_RESCORED, { catchall: false, requestedCode: "422" }, PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_RESCORED, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
   },
   {
     key: "booking_below_lead_tier:*",
     state: "arrived on today's code, and the routing placed it lower",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: false, requestedCode: "512" }, PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: false, requestedCode: "512", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
   },
   {
     key: "booking_below_lead_tier:*",
     state: "routed on its own code, and the arrival code is not recorded",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: false, requestedCode: null }, PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: false, requestedCode: null, tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
   },
   {
     key: "booking_below_lead_tier:*",

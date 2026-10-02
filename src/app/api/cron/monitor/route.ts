@@ -2108,6 +2108,7 @@ export async function GET(req: NextRequest) {
             compared: result.compared,
             test_source: result.testSource,
             below: result.below.length,
+            explained_by_tier_drop: result.explainedByTierDrop.length,
             paged: result.paged,
             cleared: result.cleared,
             ...Object.fromEntries(
