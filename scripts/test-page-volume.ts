@@ -24,8 +24,11 @@ import {
   hostlessNotCounted,
   PAGE_SEEN_LOOKBACK_DAYS,
   pageCoverage,
-  pagePlaces,
+  pageLinkLines,
   pageVolumeAlertKey,
+  formatPageVolumeAlert,
+  formatPageUnseenAlert,
+  formatPageSourceUnrecorded,
   pageSourceStatus,
   sourceNotRecorded,
   runPageVolumeCheck,
@@ -37,7 +40,17 @@ import { MEASURED_PAGE_BASELINES } from "../src/lib/monitor/page-volume-baseline
 import { MEASURED_VOLUME_BASELINE } from "../src/lib/monitor/volume-baseline.ts";
 import type { BusinessHoursConfig } from "../src/lib/monitor/booking-volume.ts";
 import { fitFloorCells, type BookingSeries, type FloorCell, type VolumeBaseline } from "../src/lib/monitor/volume-floors.ts";
-import { API_SOURCES, BOOKING_SOURCES, PAGE_SOURCES } from "../src/lib/booking/booking-source.ts";
+import {
+  API_SOURCES,
+  BOOKING_SOURCES,
+  LANDING_HOST,
+  PAGE_SOURCES,
+  PROSPECT_ID,
+  SOURCE_DETAILS,
+  SUBMISSION_ID,
+  type PageSource,
+  type SourceDetail,
+} from "../src/lib/booking/booking-source.ts";
 import {
   FLOOR_SCOPE,
   OFFLINE_OPEN_WEEK,
@@ -68,7 +81,6 @@ const REPLAY_HOURS = offlineHoursFor(fixture);
   eq(new Set(all).size, all.length, "no source belongs to two pages, so a booking counts for one page only");
   assert(all.every((s) => (PAGE_SOURCES as readonly string[]).includes(s)), "every source is in the #2072 vocabulary");
   eq(new Set(LOW_PAGES.map((p) => p.id)).size, LOW_PAGES.length, "page ids are distinct, so each has its own alert key");
-  eq(pagePlaces(LOW_PAGES[0]!), "/booking/portal, /offerportal and the /portal-2 or /portal-3 calendar", "a page's places come from the source vocabulary's own names");
 
   // #2765: the values trypennie actually sends, typed out from its merged change
   // (Halo-lab-Trypennie/trypennie PR #516, merged 2026-09-29) rather than read off
@@ -84,6 +96,71 @@ const REPLAY_HOURS = offlineHoursFor(fixture);
     const owners = LOW_PAGES.filter((p) => (p.sources as readonly string[]).includes(source)).map((p) => p.id);
     eq(owners, [id], `trypennie's source=${source} counts for the ${id} page, and only that page`);
   }
+}
+
+// --- 1. every page an alert names carries a link a reader can open (#3033) ---
+{
+  // The guard, written once so its positive control runs the same predicate. It is
+  // derived from LOW_PAGES, so a page or source added later is covered by
+  // construction rather than by remembering to list it here (L96).
+  const missingLinks = (details: Readonly<Record<string, Pick<SourceDetail, "links">>>): string[] =>
+    LOW_PAGES.flatMap((p) => p.sources.filter((s) => (details[s]?.links.length ?? 0) === 0));
+  eq(missingLinks(SOURCE_DETAILS), [], "every source a Low page carries has at least one link");
+  // Positive control (L1): take one source's links away and the guard must name it.
+  const victim: PageSource = LOW_PAGES[1]!.sources[0]!;
+  const stripped = { ...SOURCE_DETAILS, [victim]: { ...SOURCE_DETAILS[victim], links: [] } };
+  eq(missingLinks(stripped), [victim], "a source with no link fails the coverage check, by name");
+
+  for (const page of LOW_PAGES) {
+    for (const s of page.sources) {
+      for (const link of SOURCE_DETAILS[s].links) {
+        eq(new URL(link.url).origin, LANDING_HOST, `${s}: ${link.url} is on the production host`);
+        assert(!/\s/.test(link.url), `${s}: ${link.url} holds no space, so Slack links all of it`);
+        const holder = link.id === "submission" ? SUBMISSION_ID : PROSPECT_ID;
+        assert(link.url.includes(holder), `${s}: ${link.url} marks where the ${link.id} id goes`);
+      }
+    }
+  }
+  // The AI agent eligible variant shares its address with the ordinary one, so the
+  // link must say which lead shows it, and the two must not say the same thing.
+  const eligible = SOURCE_DETAILS["booking-agent-eligible"].links;
+  const ordinary = SOURCE_DETAILS.booking.links;
+  eq(eligible.map((l) => l.url), ordinary.map((l) => l.url), "both /booking variants live at one address");
+  assert(eligible.every((l) => /^a lead marked eligible for the AI agent$/.test(l.only ?? "")), "the eligible variant says which lead shows it");
+  assert(ordinary.every((l) => /^a lead not marked eligible for the AI agent$/.test(l.only ?? "")), "and the ordinary one says the opposite");
+
+  // Every page's link lines, which all three alerts carry.
+  const income = pageLinkLines(LOW_PAGES[0]!);
+  for (const u of [
+    `${LANDING_HOST}/booking/portal/${SUBMISSION_ID}`,
+    `${LANDING_HOST}/offerportal/${PROSPECT_ID}`,
+    `${LANDING_HOST}/offerportal-2/${PROSPECT_ID}`,
+    `${LANDING_HOST}/portal-2/${PROSPECT_ID}`,
+    `${LANDING_HOST}/portal-3/${PROSPECT_ID}`,
+  ]) {
+    assert(income.split("\n").includes(u), `Income Verification lists ${u} on its own line`);
+  }
+  assert(/never a customer's/.test(income), "a page opened with a prospect id warns that opening it can create a lead");
+  const review = pageLinkLines(LOW_PAGES[2]!);
+  assert(!/prospect/i.test(review), "a page with no prospect link says nothing about prospects");
+  assert(review.includes(`${LANDING_HOST}/my-offers/result?submission_id=${SUBMISSION_ID}`), "the result page takes its id as a query parameter");
+  for (const page of LOW_PAGES) {
+    const lines = pageLinkLines(page);
+    const breach = [{ label: "120 min", count: 0, floor: 1 }];
+    for (const [name, text] of [
+      ["the volume alert", formatPageVolumeAlert(page, breach, true)],
+      ["the unseen alert", formatPageUnseenAlert(page, breach)],
+      ["the source unrecorded text", formatPageSourceUnrecorded(page, 2, 11)],
+    ] as const) {
+      assert(text.endsWith(lines), `${page.id}: ${name} ends with the page's links`);
+      assert(text.includes("shows Slate's booker only"), `${page.id}: ${name} says what has to be true to see the booker`);
+    }
+  }
+  const followUp = formatPageVolumeAlert(LOW_PAGES[1]!, [{ label: "120 min", count: 0, floor: 1 }], true);
+  assert(
+    followUp.includes(`\n${LANDING_HOST}/booking/${SUBMISSION_ID} (a lead marked eligible for the AI agent)\n`),
+    `the Follow Up alert names the eligible variant on its link: ${followUp}`,
+  );
 }
 
 // --- 1. which Low pages send their leads to Slate (#2878) ---
@@ -319,7 +396,11 @@ const HEALTHY_ROWS: SourceRow[] = [
   assert(fu.verdict === "low" && fu.windows[1]!.count === 0, "other pages' bookings do not count for the Follow Up page");
   eq(h.calls.sent.map((s) => s.key), [pageVolumeAlertKey("application-review-follow-up")], "only the quiet page pages, on its own key");
   const text = h.calls.sent[0]!.text;
-  assert(text.includes("Completed Application Review Follow Up page (/booking, eligible for the AI agent)"), "the page names the page and its URLs");
+  assert(
+    text.startsWith("Bookings from the Completed Application Review Follow Up page are low") &&
+      text.includes(`/booking/${SUBMISSION_ID} (a lead marked eligible for the AI agent)`),
+    "the page names the page and its address",
+  );
   assert(text.includes("0 in the last 120 min (expected at least 2, measured for Tuesdays 2pm to 3pm)"), "and quotes the measured count against its floor and where the floor came from");
   assert(text.includes("Low bookings overall are above their floor"), "and says the tier is fine, because the tier alarm measured that");
   assert(!h.calls.resolved.some((r) => r.key === pageVolumeAlertKey("application-review-follow-up")), "a low page is not cleared");

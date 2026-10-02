@@ -28,7 +28,16 @@
  *
  * No `@/` imports, so node scripts can run it directly.
  */
-import { API_SOURCES, SOURCE_DETAILS, SOURCE_NOT_GIVEN, isApiSource, type PageSource } from "../booking/booking-source.ts";
+import {
+  API_SOURCES,
+  PROSPECT_ID,
+  SOURCE_DETAILS,
+  SOURCE_NOT_GIVEN,
+  SUBMISSION_ID,
+  isApiSource,
+  type PageLink,
+  type PageSource,
+} from "../booking/booking-source.ts";
 import {
   describeBreaches,
   describeCounts,
@@ -152,10 +161,33 @@ export function pageVolumeAlertKey(id: LowPageId): string {
  */
 export const PAGE_SEEN_LOOKBACK_DAYS = 7;
 
-/** "/booking/portal, /offerportal and the /portal-2 or /portal-3 calendar": where a page lives, from the source vocabulary's own names (L41). */
-export function pagePlaces(page: LowPage): string {
-  const places = page.sources.map((s) => SOURCE_DETAILS[s].page);
-  return places.length === 1 ? places[0]! : `${places.slice(0, -1).join(", ")} and ${places[places.length - 1]}`;
+/**
+ * Where to open a page to check it, which every page level message ends with
+ * (#3033), read from the source vocabulary's own links so the alerts and the admin
+ * pages name the same addresses (L41). One address per line, bare, because that is
+ * how Slack links one a reader can tap on a phone, and the only text beside an
+ * address is the lead it needs, after a space so it never joins the link.
+ *
+ * No address shows a booker on its own: every page is opened with a lead's id, and
+ * shows Slate's booker only for a lead the pilot sends to Slate (`shouldUseSlate`
+ * in trypennie's `src/utils/booking.ts`). Opening a prospect page is not read only
+ * either, since it can create a lead from that prospect, so a page with one says so.
+ */
+export function pageLinkLines(page: LowPage): string {
+  const links = page.sources.flatMap((s) => SOURCE_DETAILS[s].links);
+  const lines = links.map((l) => (l.only === undefined ? l.url : `${l.url} (${l.only})`));
+  const takes = (id: PageLink["id"]) => links.some((l) => l.id === id);
+  const fill = [
+    takes("submission") ? `a lead's submission id in place of ${SUBMISSION_ID}` : null,
+    takes("prospect") ? `a prospect id in place of ${PROSPECT_ID}` : null,
+  ].filter((f): f is string => f !== null);
+  const prospectWarning = takes("prospect")
+    ? " Opening a prospect page can create a lead from that prospect in Salesforce, so use a test prospect, never a customer's."
+    : "";
+  return (
+    `Open the page at:\n${lines.join("\n")}\n` +
+    `Put ${fill.join(" and ")}. ${links.length === 1 ? "It" : "Each"} shows Slate's booker only when the pilot sends that lead to Slate.${prospectWarning}`
+  );
 }
 
 /**
@@ -586,22 +618,25 @@ export function formatPageSourceUnrecorded(page: LowPage, unsourced: number, tot
   return (
     `${sourceNotRecorded(unsourced, total, `${LOW_VOLUME_WINDOW_MINUTES.long} min`)}, enough to be the ` +
     `${page.name} page's missing bookings, so whether that page stopped booking cannot be told. ` +
-    `Its links need ${page.sources.map((s) => `source=${s}`).join(" or ")}.`
+    `Its links need ${page.sources.map((s) => `source=${s}`).join(" or ")}.\n` +
+    pageLinkLines(page)
   );
 }
 
 /**
- * The page for one landing page gone quiet. It names the page and its URLs, because
- * the repair is on that page's link or embed, not in the booker every page shares.
- * It says the tier is still above its floor only when the tier alarm measured that.
+ * The page for one landing page gone quiet. It names the page and ends with its
+ * addresses, because the repair is on that page's link or embed, not in the booker
+ * every page shares. It says the tier is still above its floor only when the tier
+ * alarm measured that.
  */
 export function formatPageVolumeAlert(page: LowPage, breaches: VolumeWindow[], tierHealthy: boolean): string {
   const scope = tierHealthy
     ? " Low bookings overall are above their floor, so this looks like that page's link or embed rather than the booker."
     : "";
   return (
-    `Bookings from the ${page.name} page (${pagePlaces(page)}) are low: ${describeBreaches(breaches)}` +
-    `${scope} Check that page's booking link and embed.`
+    `Bookings from the ${page.name} page are low: ${describeBreaches(breaches)}` +
+    `${scope} Check that page's booking link and embed.\n` +
+    pageLinkLines(page)
   );
 }
 
@@ -614,9 +649,10 @@ export function formatPageUnseenAlert(page: LowPage, breaches: VolumeWindow[]): 
   const sources = page.sources.map((s) => `source=${s}`).join(" or ");
   return (
     `No booking in the last ${PAGE_SEEN_LOOKBACK_DAYS} days is recorded as coming from the ${page.name} ` +
-    `page (${pagePlaces(page)}), and it is below its floor now: ${describeBreaches(breaches)} ` +
+    `page, and it is below its floor now: ${describeBreaches(breaches)} ` +
     `Either that page is not sending leads to Slate, or its booking link does not carry ${sources}, ` +
-    `which is how Slate tells the pages apart. Open the page and check where its booking link goes.`
+    `which is how Slate tells the pages apart. Open the page and check where its booking link goes.\n` +
+    pageLinkLines(page)
   );
 }
 
