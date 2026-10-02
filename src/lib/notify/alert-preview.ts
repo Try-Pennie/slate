@@ -31,6 +31,7 @@ import {
   tierNoSlotsMessage,
   tierRecoveredMessage,
 } from "@/lib/monitor/tier-staffing";
+import type { DayTally, TierCauseReading } from "@/lib/monitor/tier-cause";
 import { RECOMPUTE_BEHIND_CYCLES, RECOMPUTE_REARM_CYCLES } from "@/lib/availability/recompute-alert";
 import {
   formatWatchLapseAlert,
@@ -536,6 +537,21 @@ const AGENT_MANY: FailingAgent[] = [
 // parse-ok: a hard-coded valid ISO literal in a fixture, not a stored stamp; if it
 // ever failed to parse the preview output would be visibly broken, not silently healthy.
 const NOW_MS = Date.parse("2026-07-29T12:00:00.000Z");
+
+/** #3037: the Ultra High tier's first offered time on 2026-10-02, Monday 11:30am ET. */
+const PREVIEW_TIER_FIRST_SLOT = Date.parse("2026-10-05T15:30:00.000Z"); // parse-ok: a literal
+
+/** A measured tier cause for the preview, from its day tallies. */
+function previewTierCause(
+  syncStopped: number,
+  days: Omit<DayTally, "isoDate">[],
+): TierCauseReading {
+  const total = syncStopped + (days[0] ? days[0].off + days[0].slate + days[0].outside + days[0].open : 0);
+  return {
+    measured: true,
+    cause: { total, syncStopped, days: days.map((d, i) => ({ ...d, isoDate: `2026-10-0${i + 2}` })) },
+  };
+}
 
 /** #2593: one booking below its lead's tier, the 2026-09-21 incident's shape. */
 const PREVIEW_BELOW_TIER: BelowFinding = {
@@ -1354,17 +1370,92 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "alert",
     text: tierUnstaffedMessage({ tier: "5", label: "Ultra High" }),
   },
+  // #3037: the no-slots page names the cause per open day, from a diagnosis the
+  // lane makes only on a tick about to page. One state per cause, the mixed
+  // 2026-10-02 shape, and the fallback when the diagnosis could not be read.
   {
     key: "empty_tier:*",
-    state: "the tier has agents and none of them has an opening",
+    state: "booked or off today, and Saturday's one agent is full (the 2026-10-02 page)",
     channel: "alert",
-    text: tierNoSlotsMessage({ tier: "4", label: "Very High", agents: 19 }),
+    text: tierNoSlotsMessage(
+      { tier: "5", label: "Ultra High", agents: 10, firstSlotMs: PREVIEW_TIER_FIRST_SLOT },
+      previewTierCause(0, [
+        { label: "the rest of today", off: 3, slate: 6, outside: 1, open: 0 },
+        { label: "Saturday", off: 9, slate: 1, outside: 0, open: 0 },
+      ]),
+    ),
   },
   {
     key: "empty_tier:*",
-    state: "the tier rests on one agent and they are full",
+    state: "nobody on the tier works in the window",
     channel: "alert",
-    text: tierNoSlotsMessage({ tier: "5", label: "Ultra High", agents: 1 }),
+    text: tierNoSlotsMessage(
+      { tier: "4", label: "Very High", agents: 19, firstSlotMs: PREVIEW_TIER_FIRST_SLOT },
+      previewTierCause(0, [{ label: "Saturday", off: 19, slate: 0, outside: 0, open: 0 }]),
+    ),
+  },
+  {
+    key: "empty_tier:*",
+    state: "everybody works and every one is held by outside meetings or time off",
+    channel: "alert",
+    text: tierNoSlotsMessage(
+      { tier: "4", label: "Very High", agents: 19, firstSlotMs: PREVIEW_TIER_FIRST_SLOT },
+      previewTierCause(0, [{ label: "Tuesday", off: 0, slate: 0, outside: 19, open: 0 }]),
+    ),
+  },
+  {
+    key: "empty_tier:*",
+    state: "the tier rests on one agent and they are fully booked",
+    channel: "alert",
+    text: tierNoSlotsMessage(
+      { tier: "5", label: "Ultra High", agents: 1, firstSlotMs: PREVIEW_TIER_FIRST_SLOT },
+      previewTierCause(0, [{ label: "Tuesday", off: 0, slate: 1, outside: 0, open: 0 }]),
+    ),
+  },
+  {
+    key: "empty_tier:*",
+    state: "the calendar sync has stopped for some agents and the rest are booked",
+    channel: "alert",
+    text: tierNoSlotsMessage(
+      { tier: "3", label: "High", agents: 5, firstSlotMs: PREVIEW_TIER_FIRST_SLOT },
+      previewTierCause(2, [{ label: "Tuesday", off: 1, slate: 2, outside: 0, open: 0 }]),
+    ),
+  },
+  {
+    key: "empty_tier:*",
+    state: "the calendar sync has stopped for every agent on the tier",
+    channel: "alert",
+    text: tierNoSlotsMessage(
+      { tier: "5", label: "Ultra High", agents: 3, firstSlotMs: null },
+      previewTierCause(3, [{ label: "Tuesday", off: 0, slate: 0, outside: 0, open: 0 }]),
+    ),
+  },
+  {
+    key: "empty_tier:*",
+    state: "an agent shows an opening the cached times do not have yet",
+    channel: "alert",
+    text: tierNoSlotsMessage(
+      { tier: "4", label: "Very High", agents: 4, firstSlotMs: PREVIEW_TIER_FIRST_SLOT },
+      previewTierCause(0, [{ label: "Tuesday", off: 1, slate: 2, outside: 0, open: 1 }]),
+    ),
+  },
+  {
+    key: "empty_tier:*",
+    state: "the cause could not be read, so the three possibilities stay",
+    channel: "alert",
+    text: tierNoSlotsMessage(
+      { tier: "4", label: "Very High", agents: 19, firstSlotMs: PREVIEW_TIER_FIRST_SLOT },
+      { measured: false },
+    ),
+  },
+  {
+    key: "empty_tier:*",
+    state: "one agent, the cause could not be read, and nothing is offered at all",
+    channel: "alert",
+    text: tierNoSlotsMessage(
+      { tier: "5", label: "Ultra High", agents: 1, firstSlotMs: null },
+      { measured: false },
+    ),
   },
   {
     key: "empty_tier:*",

@@ -167,8 +167,8 @@ assert(!/^[1-5][0-3][0-2]$/.test("5"), "a tier digit is not a bucket code");
 // the word Slate.
 const messages = [
   tierUnstaffedMessage({ tier: "5", label: "Ultra High" }),
-  tierNoSlotsMessage({ tier: "5", label: "Ultra High", agents: 5 }),
-  tierNoSlotsMessage({ tier: "1", label: "Low", agents: 1 }),
+  tierNoSlotsMessage({ tier: "5", label: "Ultra High", agents: 5, firstSlotMs: null }, { measured: false }),
+  tierNoSlotsMessage({ tier: "1", label: "Low", agents: 1, firstSlotMs: null }, { measured: false }),
   tierRecoveredMessage({ tier: "5", label: "Ultra High" }),
 ];
 for (const m of messages) {
@@ -181,17 +181,17 @@ for (const m of messages) {
 // The two findings must not read alike, or the distinction above is cosmetic.
 assert(
   tierUnstaffedMessage({ tier: "5", label: "Ultra High" }) !==
-    tierNoSlotsMessage({ tier: "5", label: "Ultra High", agents: 5 }),
+    tierNoSlotsMessage({ tier: "5", label: "Ultra High", agents: 5, firstSlotMs: null }, { measured: false }),
   "the two findings have different copy",
 );
 // The agent count agrees with its verb, which is the 2026-07-28 page this rule
 // comes from ("1 of 97 bookable agent").
 assert(
-  /\b1 agent\b/.test(tierNoSlotsMessage({ tier: "1", label: "Low", agents: 1 })),
+  /\b1 agent\b/.test(tierNoSlotsMessage({ tier: "1", label: "Low", agents: 1, firstSlotMs: null }, { measured: false })),
   "one agent reads as one agent",
 );
 assert(
-  /\b5 agents\b/.test(tierNoSlotsMessage({ tier: "5", label: "Ultra High", agents: 5 })),
+  /\b5 agents\b/.test(tierNoSlotsMessage({ tier: "5", label: "Ultra High", agents: 5, firstSlotMs: null }, { measured: false })),
   "five agents read as five agents",
 );
 // The recovery must not claim somebody was hired when the tier simply has times
