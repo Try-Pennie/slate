@@ -1,6 +1,7 @@
 import { OpenBookingLink } from "@/components/OpenBookingLink";
 import ViewerTime from "@/components/ViewerTime";
 import { proseCls } from "@/components/ui/styles";
+import { backendHeading, backendShownAs } from "@/lib/availability/pool-label";
 import type { TierDropCause, TierDropTally } from "@/lib/routing/tier-drop-counts";
 import type { TierDropReport } from "@/lib/admin/tier-drops-load";
 
@@ -39,8 +40,11 @@ function Count({ tally, of, cause }: { tally: TierDropTally; of: number; cause?:
  * How often a lead drops a debt tier at confirm, by cause (2026-10-02). A drop
  * no longer pages: sales ops chose that a lead keeps the time they picked and
  * takes the next tier down rather than starting over, so this is where it is seen.
+ *
+ * `showCodes`: admins read the bucket code. Managers read only the backend
+ * (`backendShownAs`), because the Tier column beside it already names the tier.
  */
-export function TierDropPanel({ report }: { report: TierDropReport }) {
+export function TierDropPanel({ report, showCodes }: { report: TierDropReport; showCodes: boolean }) {
   const { counts, booked } = report;
   // The commonest case, a quiet month, is said in words rather than as a table
   // of zeros (L610).
@@ -107,7 +111,7 @@ export function TierDropPanel({ report }: { report: TierDropReport }) {
             <tr>
               <th className="py-1 pr-3 font-semibold">Booked</th>
               <th className="py-1 pr-3 font-semibold">Tier</th>
-              <th className="py-1 pr-3 font-semibold">Bucket</th>
+              <th className="py-1 pr-3 font-semibold">{backendHeading(showCodes)}</th>
               <th className="py-1 pr-3 font-semibold">Cause</th>
               <th className="py-1 font-semibold">
                 <span className="sr-only">Open booking</span>
@@ -123,7 +127,9 @@ export function TierDropPanel({ report }: { report: TierDropReport }) {
                 <td className="whitespace-nowrap py-1.5 pr-3">
                   {d.requestedLabel} to {d.bookedLabel}
                 </td>
-                <td className="py-1.5 pr-3 text-fg-muted tabular-nums">{d.bucketCode}</td>
+                <td className="py-1.5 pr-3 text-fg-muted tabular-nums">
+                  {backendShownAs(d.bucketCode, { showCodes })}
+                </td>
                 <td className="py-1.5 pr-3 text-fg-muted">{CAUSE_SHORT[d.cause]}</td>
                 <td className="py-1.5">
                   <OpenBookingLink bookingId={d.id} />

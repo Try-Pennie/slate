@@ -39,7 +39,7 @@ describe("the When column (#1916)", () => {
   it("renders the time in the viewer's zone, with the zone on screen", () => {
     // 18:00 UTC on Jul 3 2026 is 11:00 in Phoenix. It used to be 2:00 PM with no
     // label, in Eastern, on the premise that the whole roster was Eastern.
-    render(<RecentRoutingTable rows={[row]} users={users} />);
+    render(<RecentRoutingTable rows={[row]} users={users} showCodes />);
     expect(screen.getByText("Fri, Jul 3, 11:00am MST")).toBeTruthy();
     expect(document.body.textContent).not.toMatch(/2:00/);
   });
@@ -47,13 +47,13 @@ describe("the When column (#1916)", () => {
 
 describe("RecentRoutingTable", () => {
   it("shows an empty state when there are no bookings", () => {
-    render(<RecentRoutingTable rows={[]} users={users} />);
+    render(<RecentRoutingTable rows={[]} users={users} showCodes />);
     expect(screen.getByText(/no bookings yet/i)).toBeTruthy();
     expect(screen.queryByRole("table")).toBeNull();
   });
 
   it("renders a row with resolved names, trace, and an Open link to the detail page", () => {
-    render(<RecentRoutingTable rows={[row]} users={users} />);
+    render(<RecentRoutingTable rows={[row]} users={users} showCodes />);
     expect(screen.getByText("Jane Doe")).toBeTruthy();
     expect(screen.getByText("DBT-01")).toBeTruthy();
     expect(screen.getByText("Jamie Smith")).toBeTruthy();
@@ -72,7 +72,7 @@ describe("RecentRoutingTable", () => {
       ...row,
       routing_trace: { ...row.routing_trace!, considered: ["u1"], fallback_applied: false },
     };
-    render(<RecentRoutingTable rows={[one]} users={users} />);
+    render(<RecentRoutingTable rows={[one]} users={users} showCodes />);
     expect(screen.getByText("1 agent considered")).toBeTruthy();
     // And the fallback line is absent rather than saying it did not fire.
     expect(screen.queryByText("Fallback used")).toBeNull();
@@ -84,13 +84,13 @@ describe("RecentRoutingTable", () => {
   // "reassigned c0000000 to c0000000", a no operation.
   it("says an agent could not be named rather than rendering their id", () => {
     const unassigned: RecentRoutingRow = { ...row, assigned_user_id: null, routing_trace: null };
-    render(<RecentRoutingTable rows={[unassigned]} users={users} />);
+    render(<RecentRoutingTable rows={[unassigned]} users={users} showCodes />);
     expect(screen.getByText("unassigned")).toBeTruthy();
     expect(screen.getByText("no trace")).toBeTruthy();
     cleanup();
 
     const ghost: RecentRoutingRow = { ...row, assigned_user_id: "abcdef1234567890", routing_trace: null };
-    render(<RecentRoutingTable rows={[ghost]} users={users} />);
+    render(<RecentRoutingTable rows={[ghost]} users={users} showCodes />);
     expect(screen.getByText("not in the roster")).toBeTruthy();
     // No fragment of the id anywhere: an unresolved agent is a detection that
     // the roster is missing somebody, not a name (L67).
@@ -107,7 +107,7 @@ describe("RecentRoutingTable", () => {
         ],
       },
     };
-    render(<RecentRoutingTable rows={[both]} users={users} />);
+    render(<RecentRoutingTable rows={[both]} users={users} showCodes />);
     // Two different agents, and the line says it could not name either rather
     // than printing one string twice and reading as a no operation.
     expect(screen.getByText(/Reassigned from not in the roster to not in the roster/)).toBeTruthy();
@@ -115,7 +115,7 @@ describe("RecentRoutingTable", () => {
   });
 
   it("gives the reassignment line no link treatment, since it is not a link", () => {
-    render(<RecentRoutingTable rows={[row]} users={users} />);
+    render(<RecentRoutingTable rows={[row]} users={users} showCodes />);
     const line = screen.getByText(/Reassigned from/);
     // Blue text in a table reads as a link and invites a click that does nothing,
     // and it was colour as the only signal. The word carries the meaning.
@@ -126,7 +126,7 @@ describe("RecentRoutingTable", () => {
   // Dan's call: this is a scan and dig surface, and losing your place in a list
   // of 25 to look at one booking is the complaint.
   it("opens a booking in a new tab, and says so to a screen reader", () => {
-    render(<RecentRoutingTable rows={[row]} users={users} />);
+    render(<RecentRoutingTable rows={[row]} users={users} showCodes />);
     const open = screen.getByRole("link", { name: /open/i }) as HTMLAnchorElement;
     expect(open.getAttribute("target")).toBe("_blank");
     // Without noopener the new document can reach back through window.opener.
@@ -137,8 +137,46 @@ describe("RecentRoutingTable", () => {
   });
 
   it("names the routing column for what it holds", () => {
-    render(<RecentRoutingTable rows={[row]} users={users} />);
+    render(<RecentRoutingTable rows={[row]} users={users} showCodes />);
     expect(screen.getByRole("columnheader", { name: "How it routed" })).toBeTruthy();
     expect(screen.queryByRole("columnheader", { name: "Trace" })).toBeNull();
+  });
+});
+
+// 2026-10-02 (Dan): a manager never reads a raw bucket code. They read the pool,
+// the way staffing depth names it; an admin keeps the code exactly as before.
+describe("the bucket column, by who is reading", () => {
+  const routed = (code: string, name?: string): RecentRoutingRow => ({
+    ...row,
+    routing_trace: { ...row.routing_trace!, bucket_code: code },
+    ...(name ? { buckets: { name } } : {}),
+  });
+
+  it("shows a manager the pool in words and no code", () => {
+    render(<RecentRoutingTable rows={[routed("112")]} users={users} showCodes={false} />);
+    expect(screen.getByRole("columnheader", { name: "Pool" })).toBeTruthy();
+    expect(screen.queryByRole("columnheader", { name: "Bucket" })).toBeNull();
+    expect(screen.getByRole("cell", { name: "Low" })).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/112/);
+  });
+
+  it("names a backend with its tier for a manager", () => {
+    render(<RecentRoutingTable rows={[routed("532")]} users={users} showCodes={false} />);
+    expect(screen.getByRole("cell", { name: "Ultra High with Achieve" })).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/532/);
+  });
+
+  it("shows a manager the bucket's own name outside the matrix", () => {
+    render(
+      <RecentRoutingTable rows={[routed("HANDMADE", "Hand made pool")]} users={users} showCodes={false} />,
+    );
+    expect(screen.getByRole("cell", { name: "Hand made pool" })).toBeTruthy();
+  });
+
+  it("shows an admin the code, as today", () => {
+    render(<RecentRoutingTable rows={[routed("112")]} users={users} showCodes />);
+    expect(screen.getByRole("columnheader", { name: "Bucket" })).toBeTruthy();
+    expect(screen.getByRole("cell", { name: "112" })).toBeTruthy();
+    expect(screen.queryByText("Low")).toBeNull();
   });
 });

@@ -11,8 +11,17 @@
 // while every test about a single label still passed.
 //
 // Run: node --experimental-strip-types scripts/test-pool-label.ts
-import { poolLabel, collidingPoolLabels } from "../src/lib/availability/pool-label.ts";
-import { allXbcCodes, bucketSpecForXbc } from "../src/lib/xbc.ts";
+import {
+  poolLabel,
+  collidingPoolLabels,
+  poolLabelForCode,
+  bucketShownAs,
+  bucketHeading,
+  backendLabelForCode,
+  backendShownAs,
+  backendHeading,
+} from "../src/lib/availability/pool-label.ts";
+import { BACKEND, allXbcCodes, bucketSpecForXbc } from "../src/lib/xbc.ts";
 import { groupByPool } from "../src/lib/availability/pool-key.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -133,5 +142,58 @@ eq(
   0,
   "two pools that could not be named have not collided: neither has a name to share",
 );
+
+// --- A pool named from a CODE, for surfaces that only carry one (2026-10-02) ---
+//
+// Managers read pools, never codes. A routing trace, a tier drop and a booking
+// carry only the code, so the words are derived from it through the same spec the
+// seeder writes. It must agree with poolLabel over the stored criteria for every
+// code in the matrix, or a manager would read one name on staffing depth and
+// another on the booking that pool took.
+
+const matrix = allXbcCodes();
+eq(matrix.length, 60, "the whole matrix is checked, not a sample");
+for (const code of matrix) {
+  eq(
+    poolLabelForCode(code),
+    poolLabel(bucketSpecForXbc(code)!.criteria),
+    `code ${code} is named exactly as its pool is`,
+  );
+}
+eq(poolLabelForCode("112"), "Low", "112 reads as its pool, not as a number");
+eq(poolLabelForCode("532"), "Ultra High with Achieve", "a backend is named with its tier");
+eq(poolLabelForCode("SMOKE"), null, "a code outside the matrix has no pool name");
+eq(poolLabelForCode(null), null, "no code, no name");
+
+// What a surface draws, by who is reading.
+eq(bucketShownAs("112", { showCodes: true }), "112", "an admin keeps the code");
+eq(bucketShownAs("112", { showCodes: false }), "Low", "a manager reads the pool");
+eq(
+  bucketShownAs("SMOKE", { showCodes: false, storedName: "Smoke test" }),
+  "Smoke test",
+  "outside the matrix a manager reads the bucket's own name",
+);
+eq(
+  bucketShownAs("SMOKE", { showCodes: false }),
+  "SMOKE",
+  "and the code when there is no name, rather than nothing",
+);
+eq(bucketShownAs(null, { showCodes: false }), null, "nothing to show stays nothing");
+eq(bucketHeading(true), "Bucket", "the admin heading is unchanged");
+eq(bucketHeading(false), "Pool", "the manager heading names what the value is");
+
+// The backend alone, for the tier drop list, whose Tier column already names the
+// tier (Dan, 2026-10-02). Spelled from BACKEND so it never gains a second spelling.
+for (const code of matrix) {
+  eq(backendLabelForCode(code), BACKEND[code[1]!]!.label, `code ${code} names its backend digit`);
+}
+eq(backendLabelForCode("221"), "Beyond", "a Beyond code reads Beyond");
+eq(backendLabelForCode("511"), "Both", "the digits that set no backend keep the vocabulary's words");
+eq(backendLabelForCode("SMOKE"), null, "outside the matrix there is no backend to name");
+eq(backendShownAs("221", { showCodes: false }), "Beyond", "a manager reads the backend");
+eq(backendShownAs("221", { showCodes: true }), "221", "an admin keeps the code");
+eq(backendShownAs("SMOKE", { showCodes: false }), "SMOKE", "and the code outside the matrix, never nothing");
+eq(backendHeading(true), "Bucket", "the admin heading over the backend column is unchanged");
+eq(backendHeading(false), "Backend", "the manager heading names what the value is");
 
 finish();
