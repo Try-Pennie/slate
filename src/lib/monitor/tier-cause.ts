@@ -306,7 +306,17 @@ export async function tierNoSlotsPageText(
     onCauseError: (err: unknown) => void;
   },
 ): Promise<string | null> {
-  if (!(await deps.isDue())) return null;
+  // An unreadable cooldown must not lose the page or fail the step: it goes out in
+  // the fallback wording with no diagnostic read, and the dispatcher still applies
+  // its own cooldown when it sends.
+  let due: boolean;
+  try {
+    due = await deps.isDue();
+  } catch (err) {
+    deps.onCauseError(err);
+    return tierNoSlotsMessage(page, { measured: false });
+  }
+  if (!due) return null;
   let cause: TierCauseReading;
   try {
     cause = { measured: true, cause: diagnoseTierCause(await deps.loadCauseInput()) };

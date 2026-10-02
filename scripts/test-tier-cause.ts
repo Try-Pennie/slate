@@ -331,6 +331,25 @@ eq(
   eq(failed, tierNoSlotsMessage(page, { measured: false }), "a failed read keeps the page, in the fallback wording");
   eq(errors.length, 1, "and reports the error once");
   assert(failed !== null && !failed.includes("fully booked"), "and never guesses a cause");
+
+  // The cooldown read itself throws: the page is not lost and the step does not
+  // fail. It goes out in the fallback wording with no diagnostic read spent (the
+  // dispatcher still applies its own cooldown), and the error is reported once.
+  const dueErrors: unknown[] = [];
+  let dueLoads = 0;
+  const dueFailed = await tierNoSlotsPageText(page, {
+    isDue: async () => {
+      throw new Error("alert_state read failed");
+    },
+    loadCauseInput: async () => {
+      dueLoads++;
+      return input(issueRoster);
+    },
+    onCauseError: (err) => dueErrors.push(err),
+  });
+  eq(dueFailed, tierNoSlotsMessage(page, { measured: false }), "an unreadable cooldown keeps the page, in the fallback wording");
+  eq(dueLoads, 0, "and spends no diagnostic read");
+  eq(dueErrors.length, 1, "and reports the error once");
 }
 
 // --- copy rules over every composed state --------------------------------------
