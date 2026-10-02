@@ -2,8 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
 import { currentUser } from "@/lib/auth";
-import { canManageAgents } from "@/lib/auth/roles";
-import { canOpenAdminRoute } from "@/lib/admin/nav";
+import { canEditOrgSettings, canManageAgents } from "@/lib/auth/roles";
 import { consoleHiddenFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { isActive } from "@/lib/active-user";
@@ -204,6 +203,10 @@ export default async function AdminHealthPage() {
   if (!me) redirect("/login");
   if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
   if (!canManageAgents(me.role)) return <AdminDenied need="a manager or admin" />;
+  // The Overview is an admin's page (Dan, 2026-10-02). A manager or team lead who
+  // lands here from an old link or a back link goes to the roster, the first
+  // entry of their sidebar, rather than to a refusal.
+  if (!canEditOrgSettings(me.role)) redirect("/admin/agents");
 
   const db = supabaseAdmin();
   const [usersRes, calsRes, outboxRes, reservationRes] = await Promise.all([
@@ -341,24 +344,17 @@ export default async function AdminHealthPage() {
   // deliberately does NOT lift itself, so this statement is the whole remedy.
   const publicBookingPaused = await readPublicBookingPaused();
 
-  // #2699: the switch lives on Hours, which a manager cannot open. Pointing them
-  // there sends them to a refusal, so they are told who can act instead. Decided
-  // by the same gate the Hours route enforces, never a role list of its own.
-  const canOpenHours = canOpenAdminRoute(
-    me.role,
-    "/admin/business-hours",
-    consoleHiddenFor(me.role),
-  );
-
+  // #2699 pointed a manager at an admin here, because the switch lives on Hours
+  // and a manager cannot open it. Since 2026-10-02 only an admin reaches this
+  // page (the guard above sends a manager to the roster), and Hours is an admin
+  // page, so everybody reading this row can open it.
   const rows: StatusRow[] = [
     {
       key: "public-booking",
       label: "Online booking",
-      note: canOpenHours
-        ? "Whether a lead can book a call at all. It is stopped by hand, on the Hours " +
-          "screen, and nothing starts it again on its own."
-        : "Whether a lead can book a call at all. An admin stops it by hand, and " +
-          "nothing starts it again on its own.",
+      note:
+        "Whether a lead can book a call at all. It is stopped by hand, on the Hours " +
+        "screen, and nothing starts it again on its own.",
       verdict:
         publicBookingPaused === null ? "unmeasured" : publicBookingPaused ? "attention" : "ok",
       detail:
@@ -367,11 +363,7 @@ export default async function AdminHealthPage() {
         ) : publicBookingPaused ? (
           <>
             Stopped by hand. Leads cannot book a call.{" "}
-            {canOpenHours ? (
-              <Link href="/admin/business-hours">Start it again on Hours</Link>
-            ) : (
-              "Ask an admin to start it again."
-            )}
+            <Link href="/admin/business-hours">Start it again on Hours</Link>
           </>
         ) : (
           "Running. Leads can book a call."

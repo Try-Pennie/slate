@@ -238,6 +238,19 @@ describe("the reads behind this page refuse rather than draw a blank (#1649)", (
     render(await AgentProfilePage(props));
     expect(screen.getByRole("button", { name: /deactivate account/i })).toBeTruthy();
   });
+
+  // The link says All agents, so it opens the roster. It used to open /admin,
+  // which is the admin Overview, and a manager is redirected from there
+  // (2026-10-02), so the link only reached the roster by bouncing.
+  it("sends All agents back to the roster", async () => {
+    asManager();
+    dbState.agent = agentOf("agent");
+    dbState.sched = { id: "s1", timezone: "America/New_York" };
+    dbState.rules = [{ weekday: 1, start_minute: 540, end_minute: 1020 }];
+    dbState.usersList = [{ id: "x1", name: "Aria", email: "aria@trypennie.com", role: "agent", deactivated_at: null }];
+    render(await AgentProfilePage(props));
+    expect(screen.getByRole("link", { name: /all agents/i }).getAttribute("href")).toBe("/admin/agents");
+  });
 });
 
 // #1215. The count in the confirm and the work the coverage sweep would enqueue

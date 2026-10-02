@@ -21,6 +21,14 @@ import { LinkPending } from "@/components/ui/LinkPending";
  */
 export interface HeaderTab {
   href: string;
+  /**
+   * The path this tab OWNS, when that is wider than where its link goes.
+   *
+   * A manager's Admin tab opens the roster (`/admin/agents`) because the
+   * Overview at `/admin` is an admin's page, but the tab still stands for the
+   * whole console: on Staffing depth it must stay lit. Defaults to `href`.
+   */
+  section?: string;
   label: string;
   /**
    * What sits after the label, when anything does: today a count pill.
@@ -38,12 +46,19 @@ export interface HeaderTab {
 
 /** The tab the current path belongs to: longest match, so a prefix cannot win. */
 export function activeTab(pathname: string, tabs: HeaderTab[]): string | null {
-  let best: string | null = null;
+  // Longest SECTION wins, and the answer is the tab's href, which is what the
+  // renderer compares against.
+  let best: HeaderTab | null = null;
+  let bestLen = -1;
   for (const t of tabs) {
-    const hit = pathname === t.href || pathname.startsWith(t.href + "/");
-    if (hit && (best === null || t.href.length > best.length)) best = t.href;
+    const owns = t.section ?? t.href;
+    const hit = pathname === owns || pathname.startsWith(owns + "/");
+    if (hit && owns.length > bestLen) {
+      best = t;
+      bestLen = owns.length;
+    }
   }
-  return best;
+  return best?.href ?? null;
 }
 
 export function HeaderNav({ tabs }: { tabs: HeaderTab[] }) {

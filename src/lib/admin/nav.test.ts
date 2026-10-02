@@ -75,6 +75,20 @@ describe("visibleAdminNav", () => {
     ).toContain("super_admin");
   });
 
+  // Dan, 2026-10-02: the Overview is the platform health page, which is an admin's
+  // job. A manager or team lead lands on the roster instead, so the entry is not
+  // in their map at all.
+  it("lists the Overview for an admin and a super admin, never a manager or team lead", () => {
+    const hrefs = (role: Role) => visibleAdminNav(role).flatMap((g) => g.items.map((i) => i.href));
+    expect(hrefs("manager")).not.toContain("/admin");
+    expect(hrefs("team_lead")).not.toContain("/admin");
+    expect(hrefs("admin")).toContain("/admin");
+    expect(hrefs("super_admin")).toContain("/admin");
+    // The roster is still theirs, so the map did not simply empty out.
+    expect(hrefs("manager")).toContain("/admin/agents");
+    expect(hrefs("team_lead")).toContain("/admin/agents");
+  });
+
   it("drops a group that has nothing left in it", () => {
     // An empty heading is a promise of a section that is not there.
     for (const role of ROLES) {

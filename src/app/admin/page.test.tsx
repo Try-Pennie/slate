@@ -138,6 +138,28 @@ describe("AdminPage guard", () => {
     render(await AdminPage());
     expect(screen.getByText(/manager or admin account to open this page/i)).toBeTruthy();
   });
+
+  // Dan, 2026-10-02: the Overview is an admin's page. A manager or team lead who
+  // reaches /admin (an old bookmark, a back link) lands on the roster, which is
+  // where their sidebar starts, rather than on a refusal.
+  it.each(["manager", "team_lead"])("sends a %s to the roster instead of the Overview", async (role) => {
+    auth.currentUser.mockResolvedValueOnce({ ...SUPER_ADMIN, id: "m1", role });
+    await expect(AdminPage()).rejects.toThrow(/NEXT_REDIRECT:\/admin\/agents$/);
+  });
+
+  it.each(["admin", "super_admin"])("still shows the Overview to a %s", async (role) => {
+    auth.currentUser.mockResolvedValueOnce({ ...SUPER_ADMIN, id: "ad1", role });
+    redirect.mockClear();
+    render(await AdminPage());
+    expect(screen.getByText("Online booking")).toBeTruthy();
+    expect(redirect).not.toHaveBeenCalled();
+  });
+
+  it("still sends somebody the console is hidden for to time off, before anything else", async () => {
+    env.consoleHiddenFor.mockReturnValueOnce(true);
+    auth.currentUser.mockResolvedValueOnce({ ...SUPER_ADMIN, id: "m1", role: "manager" });
+    await expect(AdminPage()).rejects.toThrow(/NEXT_REDIRECT:\/admin\/ooo$/);
+  });
 });
 
 // #1767: the page's own freshness claim. The roster, the calendar rows and the
@@ -286,20 +308,10 @@ describe("the health page's status rows (#1767)", () => {
       expect(link.getAttribute("href")).toBe("/admin/business-hours");
     });
 
-    // #2699: a manager cannot open Hours, so a pointer to it sends them to a
-    // refusal. They are told who can act instead, and the Hours pointer stays for
-    // the viewers who can open it.
-    it("tells a manager to ask an admin rather than pointing at Hours", async () => {
-      auth.currentUser.mockResolvedValue({ ...SUPER_ADMIN, id: "m1", role: "manager" });
-      mockDb({ booking_settings: { data: { public_booking_paused: true }, error: null } });
-      render(await AdminPage());
-      expect(pageText()).toMatch(/stopped by hand\. leads cannot book a call/i);
-      expect(pageText()).toMatch(/ask an admin to start it again/i);
-      expect(screen.queryByRole("link", { name: /start it again on hours/i })).toBeNull();
-      expect(pageText()).not.toMatch(/hours screen/i);
-      expect(pageText()).toMatch(/an admin stops it by hand/i);
-    });
-
+    // #2699 told a manager here to ask an admin, because a manager cannot open
+    // Hours. Since 2026-10-02 a manager never reaches this page (they are sent to
+    // the roster, pinned in the guard tests above), so everybody who can read
+    // this row can open Hours, and the pointer is unconditional.
     it("keeps the Hours pointer for an admin, who can open it", async () => {
       auth.currentUser.mockResolvedValue({ ...SUPER_ADMIN, id: "ad1", role: "admin" });
       mockDb({ booking_settings: { data: { public_booking_paused: true }, error: null } });

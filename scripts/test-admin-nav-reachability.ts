@@ -204,8 +204,12 @@ assert(
   eq(isDynamic("src/app/admin/agents/[id]"), true, "a dynamic segment is recognised");
 
   // 4. the gate check really reads the page, rather than passing on any file. A
-  //    real admin-only page must fail the manager predicate.
-  const adminOnly = ADMIN_NAV.flatMap((g) => g.items).find((i) => i.gate === "admin")!;
+  //    real admin-only page must fail the manager predicate. Not the Overview:
+  //    it is admin only but still calls the manager predicate, to deny somebody
+  //    below manager before it redirects a manager to the roster.
+  const adminOnly = ADMIN_NAV.flatMap((g) => g.items).find(
+    (i) => i.gate === "admin" && i.href !== "/admin",
+  )!;
   const text = stripComments(readFileSync(fileFor(adminOnly.href), "utf8"));
   eq(
     GATE_CALL.manager!.test(text),

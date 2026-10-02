@@ -142,6 +142,28 @@ describe("AppHeader impersonation banners (#652)", () => {
   });
 });
 
+// Dan, 2026-10-02: the Overview at /admin is an admin's page, and a manager or
+// team lead is redirected from it to the roster. Their Admin tab points at the
+// roster directly so nobody bounces through a redirect on every click.
+describe("the Admin tab's destination", () => {
+  const adminTab = () => screen.getByRole("link", { name: "Admin" });
+
+  it.each(["manager", "team_lead"])("takes a %s straight to the roster", async (role) => {
+    render(await AppHeader({ ...props, role }));
+    expect(adminTab().getAttribute("href")).toBe("/admin/agents");
+  });
+
+  it.each(["admin", "super_admin"])("takes a %s to the Overview", async (role) => {
+    render(await AppHeader({ ...props, role }));
+    expect(adminTab().getAttribute("href")).toBe("/admin");
+  });
+
+  it("shows an agent no Admin tab at all", async () => {
+    render(await AppHeader({ ...props, role: "agent" }));
+    expect(screen.queryByRole("link", { name: "Admin" })).toBeNull();
+  });
+});
+
 // #1165's badge cases live in PendingApprovalsBadge.test.tsx since #1847, with
 // the code that does the read. What they pin is unchanged: a count that FAILED
 // used to score as zero pending requests, so the badge vanished exactly as it

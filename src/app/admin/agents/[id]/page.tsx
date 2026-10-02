@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect, notFound } from "next/navigation";
 import { SaveForm } from "@/components/ui/SaveForm";
 import { currentUser } from "@/lib/auth";
@@ -256,12 +257,12 @@ export default async function AgentProfilePage({
   return (
     <>
       <>
-        <a
-          href="/admin"
+        <Link
+          href="/admin/agents"
           className="inline-flex items-center gap-1 text-sm text-fg-muted hover:text-fg"
         >
           &larr; All agents
-        </a>
+        </Link>
 
         <BookableOutcome code={bookableOutcome} />
 
