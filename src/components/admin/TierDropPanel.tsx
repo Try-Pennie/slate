@@ -1,4 +1,4 @@
-import { bookingDetailHref } from "@/lib/booking/detail";
+import { OpenBookingLink } from "@/components/OpenBookingLink";
 import ViewerTime from "@/components/ViewerTime";
 import { proseCls } from "@/components/ui/styles";
 import type { TierDropCause, TierDropTally } from "@/lib/routing/tier-drop-counts";
@@ -126,15 +126,7 @@ export function TierDropPanel({ report }: { report: TierDropReport }) {
                 <td className="py-1.5 pr-3 text-fg-muted tabular-nums">{d.bucketCode}</td>
                 <td className="py-1.5 pr-3 text-fg-muted">{CAUSE_SHORT[d.cause]}</td>
                 <td className="py-1.5">
-                  <a
-                    href={bookingDetailHref(d.id)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex min-h-9 items-center rounded-md border border-border bg-surface px-2 py-1 text-fg hover:border-fg/45"
-                  >
-                    Open
-                    <span className="sr-only"> (opens in a new tab)</span>
-                  </a>
+                  <OpenBookingLink bookingId={d.id} />
                 </td>
               </tr>
             ))}
