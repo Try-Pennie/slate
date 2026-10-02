@@ -31,6 +31,22 @@ describe("activeTab", () => {
     expect(activeTab("/admin/ooo/history", TABS)).toBe("/admin/ooo");
   });
 
+  // A manager's Admin tab opens the roster, not /admin, but it still owns the
+  // whole console: Staffing depth or Team hours must keep it lit, and Team
+  // Requests must still win on its own page.
+  it("lights a tab across the whole section it declares, not only under its link", () => {
+    const managerTabs: HeaderTab[] = [
+      { href: "/admin/agents", section: "/admin", label: "Admin" },
+      { href: "/me", label: "My Availability" },
+      { href: "/admin/ooo", label: "Team Requests" },
+    ];
+    expect(activeTab("/admin/tiers", managerTabs)).toBe("/admin/agents");
+    expect(activeTab("/admin/agents", managerTabs)).toBe("/admin/agents");
+    expect(activeTab("/admin/agents/abc", managerTabs)).toBe("/admin/agents");
+    expect(activeTab("/admin/ooo", managerTabs)).toBe("/admin/ooo");
+    expect(activeTab("/me", managerTabs)).toBe("/me");
+  });
+
   it("lights nothing on a path no tab covers", () => {
     expect(activeTab("/login", TABS)).toBeNull();
   });

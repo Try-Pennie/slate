@@ -69,7 +69,12 @@ export const ADMIN_NAV: AdminNavGroup[] = [
     // the page you land on, stops it asking to be grouped. The PAGE keeps its own
     // title, since it really is the health dashboard, and a terse nav label over
     // a fuller page title is already the pattern on six other entries here.
-    items: [{ href: "/admin", label: "Overview", gate: "manager" }],
+    //
+    // Admin only since 2026-10-02 (Dan): the page is the platform's health, which
+    // is an admin's job. A manager or team lead reaching /admin is sent to the
+    // roster, which is the first entry of their map, and the header's Admin tab
+    // takes them there directly (`consoleHomeFor` below).
+    items: [{ href: "/admin", label: "Overview", gate: "admin" }],
   },
   {
     title: "Agents",
@@ -143,6 +148,18 @@ export const ADMIN_NAV: AdminNavGroup[] = [
   },
 ];
 
+/**
+ * Where the console starts for `role`: the Overview for an admin or above, the
+ * roster for a manager or team lead (Dan, 2026-10-02).
+ *
+ * The header's Admin tab links here so a manager never bounces through the
+ * `/admin` redirect, and that redirect asks the same predicate, so the two
+ * cannot disagree about who the Overview is for.
+ */
+export function consoleHomeFor(role: Role): string {
+  return canEditOrgSettings(role) ? "/admin" : "/admin/agents";
+}
+
 /** Every route the nav names, in nav order. */
 export function adminNavHrefs(): string[] {
   return ADMIN_NAV.flatMap((g) => g.items.map((i) => i.href));
@@ -194,22 +211,6 @@ export function visibleAdminNav(role: Role): AdminNavGroup[] {
  */
 export function adminNavFor(role: Role, oooOnly: boolean): AdminNavGroup[] {
   return oooOnly ? [] : visibleAdminNav(role);
-}
-
-/**
- * Whether `role` can open the console route `href` (#2699).
- *
- * For copy that points somebody at another screen: a pointer to a page that
- * refuses them sends them to a dead end. It reads the nav entry's gate, which
- * `scripts/test-admin-nav-reachability.ts` holds to the route's own guard, and the
- * console flag the routes check first, so it is the decision the route itself
- * makes rather than a second list of roles. A route the nav does not name throws,
- * because an answer invented for it would be a guess.
- */
-export function canOpenAdminRoute(role: Role, href: string, consoleHidden: boolean): boolean {
-  const item = ADMIN_NAV.flatMap((g) => g.items).find((i) => i.href === href);
-  if (!item) throw new Error(`canOpenAdminRoute: the admin nav names no route ${href}`);
-  return !consoleHidden && passesGate(role, item.gate);
 }
 
 /**

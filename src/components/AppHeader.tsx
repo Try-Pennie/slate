@@ -6,6 +6,7 @@ import { HeaderNav, type HeaderTab } from "@/components/HeaderNav";
 import { PAGE_WIDTHS } from "@/components/ui/PageShell";
 import { consoleHiddenFor } from "@/lib/env";
 import { ME_TABS } from "@/lib/me/nav";
+import { consoleHomeFor } from "@/lib/admin/nav";
 import {
   atLeast,
   canManageAgents,
@@ -148,7 +149,12 @@ export async function AppHeader({
   // #1748 the admin console renders this header once from its layout, which wraps
   // /admin and /admin/ooo alike, so there is no page left in a position to say.
   const tabs: HeaderTab[] = [
-    ...(showAdmin ? [{ href: "/admin", label: "Admin" }] : []),
+    // The tab owns the whole console, but where it LANDS depends on who is
+    // looking: the Overview is an admin's page, so a manager or team lead goes
+    // straight to the roster rather than through the /admin redirect.
+    ...(showAdmin && isRole(r)
+      ? [{ href: consoleHomeFor(r), section: "/admin", label: "Admin" }]
+      : []),
     // Read from the list rather than written out here, so a tab and its page
     // cannot drift apart (L41). `scripts/test-me-nav.ts` resolves every one of
     // them to a real page file.
