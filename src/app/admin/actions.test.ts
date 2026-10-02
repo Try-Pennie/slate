@@ -268,10 +268,7 @@ vi.mock("next/navigation", () => ({ redirect }));
 vi.mock("next/cache", () => ({ revalidatePath }));
 vi.mock("next/headers", () => ({ cookies: async () => cookieStore }));
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from, rpc }) }));
-// The schedule write is seamed rather than driven, so "the read refused" is
-// asserted on whether the WRITE was reached, not on how far the write got.
 const schedule = vi.hoisted(() => ({
-  upsertUserSchedule: vi.fn(async () => "sched-1"),
   ensureDefaultSchedules: vi.fn(async () => 0),
 }));
 vi.mock("@/lib/schedule", () => schedule);
@@ -1874,7 +1871,7 @@ describe("the reads that decide authorization or a write must refuse, not guess 
       await expect(useDefaultHours(form({ user_id: "u2" }))).rejects.toThrow(
         /agent schedule timezone/,
       );
-      expect(schedule.upsertUserSchedule).not.toHaveBeenCalled();
+      expect(upsert).not.toHaveBeenCalled();
       expect(rpc).not.toHaveBeenCalled();
     });
 
@@ -1885,7 +1882,7 @@ describe("the reads that decide authorization or a write must refuse, not guess 
       await expect(useDefaultHours(form({ user_id: "u2" }))).rejects.toThrow(
         /org default schedule/,
       );
-      expect(schedule.upsertUserSchedule).not.toHaveBeenCalled();
+      expect(upsert).not.toHaveBeenCalled();
       // #1988: and no confirmation. A refusal that still carried a save outcome
       // would put "Hours saved." over a week nobody wrote, which is worse than
       // the silence this replaced.

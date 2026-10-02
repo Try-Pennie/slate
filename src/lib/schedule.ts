@@ -4,30 +4,6 @@ import { defaultRuleRows, type OrgDefaults } from "@/lib/schedule-core";
 import { selectAllPages } from "@/lib/supabase/paginate";
 
 /**
- * Get-or-create the single schedule row for a user and return its id, setting
- * its timezone. One row per user is enforced by the availability_schedules
- * (user_id) unique index (#532), so this upserts on that conflict target rather
- * than the check-then-insert the admin hours actions used to duplicate: two
- * concurrent edits now settle on the index (the loser updates the winner's row)
- * instead of racing to a second, silently-divergent schedule.
- */
-export async function upsertUserSchedule(
-  userId: string,
-  timezone: string,
-): Promise<string> {
-  const db = supabaseAdmin();
-  const { data, error } = await db
-    .from("availability_schedules")
-    .upsert({ user_id: userId, timezone }, { onConflict: "user_id" })
-    .select("id")
-    .single();
-  if (error || !data) {
-    throw new Error(`schedule upsert failed: ${error?.message}`);
-  }
-  return (data as { id: string }).id;
-}
-
-/**
  * Gives every agent without working hours the org default (newly-synced agents
  * arrive schedule-less and would show zero availability once bookable).
  * Idempotent: an agent whose schedule already holds rules is never touched, so
