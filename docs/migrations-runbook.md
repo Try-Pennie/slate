@@ -16,7 +16,12 @@ rather than reasoning it out per PR.
    job, so inside the `ci` gate) runs `supabase migration list` and fails the PR
    while any committed migration is unapplied on the remote DB. It
    fail-closes if its secrets are missing (#766), so it cannot pass while checking
-   nothing.
+   nothing. The one exception is a Dependabot pull request (a `dependabot/*`
+   branch AND the `dependabot[bot]` actor) whose diff touches nothing under
+   `supabase/migrations/`: Dependabot runs never receive the secrets, so the check
+   reports that it skipped and why, as a notice and a step summary (#3051). A
+   Dependabot change that touches a migration, or whose diff cannot be read,
+   still fails. The rule lives in `scripts/lib/migration-drift-gate.ts`.
 2. **Deploy gate.** The `deploy` job `needs: [ci, static-checks]` (#482), so a
    push to main will not deploy code while a migration is unapplied.
 3. **Prod monitor.** The monitor cron pages (`migration_version_lag`) if the

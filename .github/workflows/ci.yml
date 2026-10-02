@@ -59,17 +59,26 @@ jobs:
   # SUPABASE_DB_PASSWORD repo secrets: without them it fails loudly rather than
   # passing green while checking nothing (#766).
   #
-  # Its steps (and ONLY its steps) are skipped on dependabot/* PR branches.
-  # Dependabot runs never receive the repo secrets, so the check could only
-  # false-fail there, and Dependabot only edits package.json, lockfiles and Actions
-  # pins, never supabase/migrations. head_ref is set only on pull_request events and
-  # is empty on a push to main, so main still runs the real check. The skip sits on
-  # the steps rather than the job so the typecheck and lint still run on those PRs.
+  # Whether the drift steps run is decided by ONE step, "Decide whether the
+  # migration drift check runs" (scripts/migration-drift-gate.ts, logic in
+  # scripts/lib/migration-drift-gate.ts with its own suite, #3051). Dependabot runs
+  # never receive the repo secrets, so the check could only false-fail there. The
+  # gate skips ONLY a pull request whose head branch is dependabot/* AND whose actor
+  # is dependabot[bot] AND whose diff (read from the PR merge commit, hence
+  # fetch-depth 2) names no file under supabase/migrations/, and it says so as a
+  # notice and a step summary rather than passing silently. A Dependabot PR that
+  # touches a migration, or whose diff cannot be read, refuses like #766; every
+  # other branch is unchanged. The decision sits on the steps rather than the job
+  # so the typecheck and lint still run on those PRs.
   static-checks:
     timeout-minutes: 10  # sum of the three former jobs' measured maxes (43s, 47s, 19s)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          # The PR merge commit plus its first parent, so the drift gate can read
+          # what the pull request changes (#3051). Without the parent it fails closed.
+          fetch-depth: 2
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
@@ -112,6 +121,19 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: pnpm lint
 
+      # #3051: run, skip (with a notice and a step summary saying why) or refuse.
+      # Imports nothing from node_modules, so it runs even when the install failed.
+      - name: Decide whether the migration drift check runs
+        id: drift-gate
+        if: ${{ !cancelled() }}
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+          ACTOR: ${{ github.actor }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: node --experimental-strip-types scripts/migration-drift-gate.ts
+
       # #1437: the CLI DOWNLOAD is its own upstream, and it hung up its socket
       # three times in a row on 2026-08-12, failing the job (and so skipping the
       # deploy) before any of our code ran. Actions has no native step retry, so
@@ -121,7 +143,7 @@ jobs:
       - uses: supabase/setup-cli@ab058987d8d6c725971f6cf9d0b5c98467e30bd1 # v1
         id: setup-supabase-cli
         continue-on-error: true
-        if: ${{ !cancelled() && ! startsWith(github.head_ref, 'dependabot/') }}
+        if: ${{ !cancelled() && steps.drift-gate.outputs.decision == 'run' }}
         with:
           # Pinned (not `latest`) so the step is deterministic: `latest`
           # resolves over the network and intermittently 502s, red-flagging CI.
@@ -129,7 +151,7 @@ jobs:
           version: 2.84.2
       - name: Retry the Supabase CLI install (the download hung up, #1437)
         id: retry-supabase-cli
-        if: ${{ !cancelled() && steps.setup-supabase-cli.outcome == 'failure' && ! startsWith(github.head_ref, 'dependabot/') }}
+        if: ${{ !cancelled() && steps.setup-supabase-cli.outcome == 'failure' && steps.drift-gate.outputs.decision == 'run' }}
         uses: supabase/setup-cli@ab058987d8d6c725971f6cf9d0b5c98467e30bd1 # v1
         with:
           version: 2.84.2
@@ -140,7 +162,7 @@ jobs:
       # report that `supabase` is missing, after its retry ladder had spent minutes
       # on it. The step stays red either way, because the failed retry already is.
       - name: Check for unapplied migrations
-        if: ${{ !cancelled() && ! startsWith(github.head_ref, 'dependabot/') && (steps.setup-supabase-cli.outcome == 'success' || steps.retry-supabase-cli.outcome == 'success') }}
+        if: ${{ !cancelled() && steps.drift-gate.outputs.decision == 'run' && (steps.setup-supabase-cli.outcome == 'success' || steps.retry-supabase-cli.outcome == 'success') }}
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}

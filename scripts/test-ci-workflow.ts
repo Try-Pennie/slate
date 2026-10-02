@@ -100,39 +100,75 @@ assert(
   "#602: cancellation is explicitly disabled on main, so a merge's deploy is never interrupted",
 );
 
-// --- migration-drift skips Dependabot PRs, but stays fail-loud elsewhere -----
-// Dependabot PRs never touch supabase/migrations and never receive the repo
-// secrets migration-drift needs, so the job can only false-fail there. It is
-// skipped on dependabot/* PR branches so routine bumps go green and merge
-// without the manual recreate-on-a-normal-branch dance. This must be scoped to
-// dependabot ONLY: a blanket skip (or reintroducing the #766 `exit 0` on missing
-// secrets) would let real drift merge unchecked on normal branches.
+// --- the drift gate decides run, skip or refuse, in one tested place (#3051) --
+// Dependabot runs never receive the repo secrets migration-drift needs, so the
+// check can only false-fail there. #1106 skipped the drift steps on any
+// dependabot/* head branch straight from the workflow `if:`: silently, on the
+// branch NAME alone, and even when the branch touched a migration. #3051 moved the
+// decision into scripts/lib/migration-drift-gate.ts (suite:
+// scripts/test-migration-drift-gate.ts), called by ONE gate step, and every drift
+// step runs only on that step's `run` verdict. So what is pinned HERE is the
+// wiring: the gate exists, runs on any outcome but cancellation, is handed every
+// input the decision reads, can read the PR diff (fetch-depth 2), and is the only
+// thing the drift steps consult. A hand-rolled branch test beside it would be a
+// second, untested copy of the rule (L41).
 //
-// The skip sits on the drift STEPS, never on the job, because that job also runs
-// the typecheck and lint, which Dependabot PRs need as much as any other. A
+// The decision sits on the drift STEPS, never on the job, because that job also
+// runs the typecheck and lint, which Dependabot PRs need as much as any other. A
 // job-level skip would also make the job read as `skipped` to the fan-in, which
 // fails every Dependabot PR outright.
 const migBlock = jobBlock(driftJob);
 assert(migBlock.trim().length > 0, "the job that runs the migration drift check exists in ci.yml");
-const DEPENDABOT_SKIP = /if:.*!\s*startsWith\(github\.head_ref,\s*'dependabot\//;
 assert(
-  !/dependabot/.test(jobHeader(migBlock)),
-  "the dependabot skip is not on the job itself (it would skip the typecheck and lint too, and fail the fan-in on every Dependabot PR)",
+  !/dependabot|drift-gate/.test(jobHeader(migBlock)),
+  "the drift gate is not on the job itself (it would skip the typecheck and lint too, and fail the fan-in on every Dependabot PR)",
 );
+const gateSteps = jobSteps(migBlock).filter((s) => /scripts\/migration-drift-gate\.ts/.test(s));
+assert(gateSteps.length === 1, `exactly one step runs the drift gate (found ${gateSteps.length})`);
+const gateStep = gateSteps[0] ?? "";
+assert(/\n\s+id: drift-gate\n/.test(gateStep), "#3051: the gate step carries id drift-gate, which the drift steps read");
+assert(/if: \$\{\{ !cancelled\(\) \}\}/.test(gateStep), "#3051: the gate runs whatever an earlier step did, short of cancellation");
+assert(!/continue-on-error/.test(gateStep), "#3051: a refusal from the gate fails the job (never continue-on-error)");
+for (const input of [
+  /EVENT_NAME: \$\{\{ github\.event_name \}\}/,
+  /HEAD_REF: \$\{\{ github\.head_ref \}\}/,
+  /ACTOR: \$\{\{ github\.actor \}\}/,
+  /SUPABASE_ACCESS_TOKEN: \$\{\{ secrets\.SUPABASE_ACCESS_TOKEN \}\}/,
+  /SUPABASE_DB_PASSWORD: \$\{\{ secrets\.SUPABASE_DB_PASSWORD \}\}/,
+]) {
+  assert(input.test(gateStep), `#3051: the gate is handed ${input.source.split(":")[0]}, an input its decision reads`);
+}
+{
+  const checkout = jobSteps(migBlock).find((s) => /uses: actions\/checkout@/.test(s)) ?? "";
+  assert(
+    /fetch-depth: [2-9]|fetch-depth: 0/.test(checkout),
+    "#3051: the checkout keeps the merge commit's first parent, so the gate can read the PR diff (it fails closed without it)",
+  );
+}
 const driftSteps = jobSteps(migBlock).filter((s) =>
   /supabase\/setup-cli@|check-migration-drift\.ts/.test(s),
 );
 assert(driftSteps.length === 3, `the two CLI install attempts and the check are found as steps (found ${driftSteps.length})`);
 for (const step of driftSteps) {
   assert(
-    DEPENDABOT_SKIP.test(step),
-    `every migration drift step is skipped on dependabot/* PR branches, and only there (head_ref is empty on push-to-main, so main still runs the real check): ${step.split("\n")[0].trim()}`,
+    /if:.*steps\.drift-gate\.outputs\.decision == 'run'/.test(step),
+    `every migration drift step runs only on the gate's run verdict: ${step.split("\n")[0].trim()}`,
+  );
+  assert(
+    !/dependabot|head_ref|github\.actor/.test(step),
+    `no drift step carries its own copy of the skip rule: ${step.split("\n")[0].trim()}`,
   );
 }
-const otherSteps = jobSteps(migBlock).filter((s) => !driftSteps.includes(s));
+{
+  const allSteps = jobSteps(migBlock);
+  const gateAt = allSteps.indexOf(gateStep);
+  const firstDrift = Math.min(...driftSteps.map((s) => allSteps.indexOf(s)));
+  assert(gateAt >= 0 && gateAt < firstDrift, "#3051: the gate step comes before every drift step it governs");
+}
+const otherSteps = jobSteps(migBlock).filter((s) => !driftSteps.includes(s) && s !== gateStep);
 for (const step of otherSteps) {
   assert(
-    !/dependabot/.test(step),
+    !/dependabot|drift-gate/.test(step),
     `a step that is not part of the drift check still runs on Dependabot PRs: ${step.split("\n")[0].trim()}`,
   );
 }
