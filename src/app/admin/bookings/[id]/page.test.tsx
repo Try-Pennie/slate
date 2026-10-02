@@ -290,3 +290,27 @@ describe("the detail page's bucket fact, by who is reading", () => {
     });
   }
 });
+
+// The back link goes to the reader's own console home, so a manager is not
+// bounced through the admin only Overview to reach the roster.
+describe("the detail page's back link, by who is reading", () => {
+  const as = (role: string) =>
+    auth.currentUser.mockResolvedValueOnce({ id: "x1", role, org_id: "o1", email: "x@trypennie.com" });
+  const back = () => screen.getByRole("link", { name: /back to/i }).getAttribute("href");
+
+  it("takes a manager to the roster", async () => {
+    as("manager");
+    dbState.booking = bookingRow();
+    render(await BookingDetailPage(props));
+    expect(back()).toBe("/admin/agents");
+    expect(screen.getByRole("link", { name: /back to roster/i })).toBeTruthy();
+  });
+
+  it("takes an admin to the console home", async () => {
+    as("admin");
+    dbState.booking = bookingRow();
+    render(await BookingDetailPage(props));
+    expect(back()).toBe("/admin");
+    expect(screen.getByRole("link", { name: /back to admin/i })).toBeTruthy();
+  });
+});

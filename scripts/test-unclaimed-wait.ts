@@ -1,13 +1,13 @@
-// "Never signed in" on the whole roster (#1802), and the one wait helper both
-// surfaces phrase it through.
+// "Never signed in" on the whole roster (#1802), and the one wait helper the
+// pending access panel phrases its wait through. The roster shows only Never or
+// Yes since 2026-10-02 (Dan), so it phrases no wait at all.
 //
 // The pending access panel (#160) already asked "has this row ever been claimed
 // by a Google sign in?" of privileged rows, keyed on `auth_user_id` being null,
-// with a wait in days. #1802 asks the same question of everybody. Two surfaces
-// answering one question with two copies of the arithmetic or the wording is the
-// shape where they quietly stop agreeing (L370), so both go through
-// `src/lib/admin/unclaimed.ts`, and this suite pins that the pending panel's
-// figure IS that helper's figure rather than a lookalike.
+// with a wait in days. #1802 asks the same question of everybody, and both
+// surfaces read `isNeverSignedIn` from `src/lib/admin/unclaimed.ts`. Only the
+// pending panel phrases a wait, through `unclaimedWaitText`, and this suite pins
+// that its figure IS that helper's figure rather than a lookalike.
 //
 // The avatar is deliberately not an input anywhere. Since #2600 photos come from
 // the Workspace directory, so a face says nothing about whether somebody logged
@@ -93,7 +93,9 @@ for (const file of ["../src/components/TeamAccessPanel.tsx", "../src/components/
 const panel = readFileSync(new URL("../src/components/TeamAccessPanel.tsx", import.meta.url), "utf8");
 assert(/unclaimedWaitText\(/.test(panel), "the pending access panel phrases its wait through unclaimedWaitText");
 const rosterFilter = readFileSync(new URL("../src/lib/admin/roster-filter.ts", import.meta.url), "utf8");
-assert(/unclaimedWaitText\(/.test(rosterFilter) && /unclaimedDays\(/.test(rosterFilter), "the roster phrases its wait through the same two helpers");
+// Dan, 2026-10-02: the roster says Never with no day count, so it phrases no
+// wait at all; the pending access panel above is the one place a wait is shown.
+assert(!/unclaimedWaitText\(/.test(rosterFilter) && !/unclaimedDays\(/.test(rosterFilter), "the roster shows no wait, only Never or Yes");
 assert(!/avatar_url/.test(rosterFilter.split("export function rosterSigninText")[1]?.split("\nexport ")[0] ?? "avatar_url"), "the roster's sign in wording never reads the avatar");
 
 finish();

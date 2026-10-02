@@ -18,12 +18,6 @@ import type { User } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
 
-// Module scope so the clock read does not trip react-hooks/purity in render. One
-// instant for every row's "waiting N days" (#1802).
-function renderedAtMs(): number {
-  return Date.now();
-}
-
 export default async function AgentRosterPage({
   searchParams,
 }: {
@@ -178,7 +172,6 @@ export default async function AgentRosterPage({
         )}
         <RosterTable
           rows={rows}
-          nowMs={renderedAtMs()}
           hoursReadable={hoursByUser !== null}
           initialFilters={filters}
           actorRole={me.role}

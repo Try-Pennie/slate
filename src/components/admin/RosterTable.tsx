@@ -74,7 +74,6 @@ export function RosterTable({
   roleOptions,
   teamOptions,
   managerOptions,
-  nowMs,
   hoursReadable,
 }: {
   /** The whole active roster. Filtering never goes back to the server. */
@@ -85,11 +84,6 @@ export function RosterTable({
   roleOptions: Role[];
   teamOptions: string[];
   managerOptions: [string, string][];
-  /**
-   * The server's clock, so the "waiting N days" figure is the one the server
-   * rendered and the browser cannot disagree with it across midnight.
-   */
-  nowMs: number;
   /**
    * Whether every row's `hours` was read (#1802). When it was not, the page says
    * so once and this renders no Hours column and no hours filter, rather than a
@@ -393,14 +387,14 @@ export function RosterTable({
                   <BookablePill bookable={u.bookable} wording="short" alignToColumn />
                 </td>
                 {/* The commonest value is the quietest (L609): a signed in row
-                    reads muted, a never signed in one reads at full weight with
-                    how long it has waited. */}
+                    reads muted, a never signed in one reads "Never" at full
+                    weight. */}
                 <td
-                  className={`min-w-[9rem] px-3 py-3 tabular-nums ${
+                  className={`px-3 py-3 ${
                     isNeverSignedIn(u) ? "font-semibold text-fg" : "text-fg-muted"
                   }`}
                 >
-                  {rosterSigninText(u, nowMs)}
+                  {rosterSigninText(u)}
                 </td>
                 {hoursReadable && (
                   <td

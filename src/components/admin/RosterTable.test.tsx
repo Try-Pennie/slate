@@ -49,7 +49,6 @@ const base = {
   roleOptions: ["agent", "manager", "admin"] as const,
   teamOptions: [] as string[],
   managerOptions: [] as [string, string][],
-  nowMs: Date.UTC(2026, 8, 28, 12),
   hoursReadable: false,
 };
 
@@ -512,7 +511,7 @@ describe("RosterTable never signed in", () => {
     row("n", "Never Photo", { auth_user_id: null, avatar_url: "https://photo", created_at: new Date(NOW - 3 * 86_400_000).toISOString() }),
     row("m", "Never Today", { auth_user_id: null, created_at: new Date(NOW).toISOString() }),
   ];
-  const props = { ...base, roleOptions: [...base.roleOptions], rows, nowMs: NOW };
+  const props = { ...base, roleOptions: [...base.roleOptions], rows };
   const count = () => document.querySelector('[aria-live="polite"]')!.textContent;
   const cellFor = (name: string) => {
     const tr = bodyRows().find((r) => (r.textContent ?? "").includes(name))!;
@@ -525,10 +524,10 @@ describe("RosterTable never signed in", () => {
     expect(count()).toBe("3 agents, 2 never signed in");
   });
 
-  it("says Never with how long, and Yes for a signed in row with no photo", () => {
+  it("says Never with no day count, and Yes for a signed in row with no photo", () => {
     render(<RosterTable {...props} />);
-    expect(cellFor("Never Photo")).toBe("Never, waiting 3 days");
-    expect(cellFor("Never Today")).toBe("Never, added today");
+    expect(cellFor("Never Photo")).toBe("Never");
+    expect(cellFor("Never Today")).toBe("Never");
     expect(cellFor("Signed Nophoto")).toBe("Yes");
   });
 

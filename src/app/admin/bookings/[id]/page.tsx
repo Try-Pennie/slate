@@ -4,6 +4,7 @@ import { currentUser } from "@/lib/auth";
 import { canEditOrgSettings, canManageAgents } from "@/lib/auth/roles";
 import { bucketHeading, bucketShownAs } from "@/lib/availability/pool-label";
 import { consoleHiddenFor } from "@/lib/env";
+import { consoleHomeFor } from "@/lib/admin/nav";
 import { currentTestPassFor } from "@/lib/embed/test-pass-gate";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
@@ -125,10 +126,10 @@ export default async function BookingDetailPage({
     <>
       <>
         <a
-          href="/admin"
+          href={consoleHomeFor(me.role)}
           className="inline-flex items-center gap-1 text-sm text-fg-muted hover:text-fg"
         >
-          &larr; Back to admin
+          &larr; {consoleHomeFor(me.role) === "/admin" ? "Back to admin" : "Back to roster"}
         </a>
 
         <section className={cardCls}>
