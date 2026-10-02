@@ -26,7 +26,6 @@ const rpc = vi.hoisted(() =>
 // The rules table must never be touched directly by the action any more: a bare
 // delete here is the defect. Any call is recorded so a test can assert its absence.
 const fromTable = vi.hoisted(() => vi.fn());
-const upsertUserSchedule = vi.hoisted(() => vi.fn(async () => "sched1"));
 // #1988: the confirmation IS the redirect, so it is a named mock rather than an
 // anonymous one.
 //
@@ -86,7 +85,7 @@ vi.mock("@/lib/supabase/admin", () => ({
     rpc,
   }),
 }));
-vi.mock("@/lib/schedule", () => ({ upsertUserSchedule, ensureDefaultSchedules: vi.fn() }));
+vi.mock("@/lib/schedule", () => ({ ensureDefaultSchedules: vi.fn() }));
 vi.mock("@/lib/audit", () => ({ recordAudit }));
 vi.mock("@/lib/availability/precompute", () => ({ markAllBucketSlotsStale: vi.fn() }));
 vi.mock("@/lib/webhooks/emit", () => ({ resendDelivery: vi.fn(), replayDeadLetteredDeliveries: vi.fn() }));
@@ -160,7 +159,6 @@ describe("setWorkingHours", () => {
     // The refusal has to come BEFORE the write, or the schedule is already cleared
     // and the agent is unbookable whatever the message says.
     expect(rpc).not.toHaveBeenCalled();
-    expect(upsertUserSchedule).not.toHaveBeenCalled();
   });
 
   it("refuses an end time that is not after the start, and writes nothing", async () => {
@@ -418,7 +416,6 @@ describe("the timezone on a working-hours save (#1671)", () => {
     fd.set("timezone", "Eastern");
     await expect(setWorkingHours(fd)).rejects.toThrow(/time ?zone/i);
     expect(rpc).not.toHaveBeenCalled();
-    expect(upsertUserSchedule).not.toHaveBeenCalled();
   });
 
   it("refuses a blank zone and writes nothing", async () => {
@@ -609,7 +606,6 @@ describe("a failed hours write leaves the timezone exactly as it was (#2002)", (
     const fd = hoursForm();
     fd.set("timezone", "America/Los_Angeles");
     await expect(setWorkingHours(fd)).rejects.toThrow(/could not be saved/i);
-    expect(upsertUserSchedule).not.toHaveBeenCalled();
   });
 
   it("writes no timezone when the database records a different number of days", async () => {
@@ -617,7 +613,6 @@ describe("a failed hours write leaves the timezone exactly as it was (#2002)", (
     const fd = hoursForm();
     fd.set("timezone", "America/Los_Angeles");
     await expect(setWorkingHours(fd)).rejects.toThrow(/expected 5 days/i);
-    expect(upsertUserSchedule).not.toHaveBeenCalled();
   });
 
   it("CONTROL: a saved week carries its timezone on the same one call", async () => {

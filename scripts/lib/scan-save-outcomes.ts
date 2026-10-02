@@ -41,7 +41,6 @@ const WRITE_SHAPES = [
   /\.upsert\s*\(/,
   /\.rpc\s*\(/,
   /\breplaceUserSchedule\s*\(/,
-  /\bupsertUserSchedule\s*\(/,
   /\bapplyOrgDefaultToUser\s*\(/,
   /\bapplyBookableBy/,
   /\bapplyLifecycleBy/,
