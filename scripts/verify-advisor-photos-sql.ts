@@ -11,7 +11,7 @@
 // migration reads, applies the migration file verbatim, and removes the container.
 // NOT named test-*.ts: it needs Docker, which the offline suite does not have. With
 // no Docker it exits 2 and says UNMEASURED, never a pass (L98, L411).
-import { execFileSync } from "node:child_process";
+import { startThrowawayPostgres } from "./lib/throwaway-postgres.ts";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -21,45 +21,10 @@ const MIGRATION = readFileSync(fileURLToPath(new URL("../supabase/migrations/015
 const IMAGE = process.env.ADVISOR_PHOTOS_PG_IMAGE ?? "postgres:17-alpine";
 const NAME = `slate-advisor-photos-${process.pid}`;
 
-function docker(args: string[], input?: string): string {
-  return execFileSync("docker", args, { input, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
-}
-function sql(text: string, role = "postgres"): string {
-  return docker(["exec", "-i", NAME, "psql", "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-qtAX", "-c", `set role ${role};`, "-f", "-"], text).trim();
-}
-function sqlError(text: string, role = "postgres"): string | null {
-  try {
-    sql(text, role);
-    return null;
-  } catch (err) {
-    return String((err as { stderr?: string }).stderr ?? err);
-  }
-}
+const pg = startThrowawayPostgres(NAME, IMAGE);
+const { sql, sqlError } = pg;
 
 try {
-  docker(["version", "--format", "{{.Server.Version}}"]);
-} catch {
-  console.error("UNMEASURED: Docker is not available here, so nothing was proved.");
-  process.exit(2);
-}
-try {
-  docker(["run", "-d", "--rm", "--name", NAME, "-e", "POSTGRES_PASSWORD=x", IMAGE]);
-} catch (err) {
-  console.error(`UNMEASURED: the ${IMAGE} container could not start (${err instanceof Error ? err.message.split("\n")[0] : err}).`);
-  process.exit(2);
-}
-
-try {
-  let ready = false;
-  for (let i = 0; i < 60 && !ready; i++) {
-    try {
-      sql("select 1;");
-      ready = true;
-    } catch {
-      execFileSync("sleep", ["1"]);
-    }
-  }
-  if (!ready) throw new Error("the throwaway Postgres never accepted a connection");
 
   // The slice 0156 reads, plus the API roles and the default privileges 0121 sets,
   // so the REVOKE is measured against the grant it exists to take back.
@@ -104,11 +69,7 @@ try {
   sql(`delete from users where email = 'a@x.test';`);
   eq(sql(`select count(*) from advisor_photos;`), "1", "a deleted user's photo row goes with them");
 } finally {
-  try {
-    docker(["rm", "-f", NAME]);
-  } catch {
-    console.error(`could not remove container ${NAME}; remove it with: docker rm -f ${NAME}`);
-  }
+  pg.stop();
 }
 
 finish();

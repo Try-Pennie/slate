@@ -14,7 +14,8 @@
 // needs Docker. No Docker is exit 2, never a pass (L98).
 //
 // Run: pnpm verify:agent-link-names
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
+import { startThrowawayPostgres } from "./lib/throwaway-postgres.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -23,28 +24,6 @@ const ROOT = join(import.meta.dirname, "..");
 const MIGRATION = readFileSync(join(ROOT, "supabase", "migrations", "0155_agent_link_names.sql"), "utf8");
 const IMAGE = process.env.AGENT_LINK_NAMES_PG_IMAGE ?? "postgres:17-alpine";
 const NAME = `slate-agent-link-names-${process.pid}`;
-
-function docker(args: string[], input?: string): string {
-  return execFileSync("docker", args, { input, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
-}
-
-/** One statement batch through psql, ON_ERROR_STOP, tuples only. Throws on an error. */
-function sql(text: string): string {
-  return docker(
-    ["exec", "-i", NAME, "psql", "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-qtAX", "-f", "-"],
-    text,
-  ).trim();
-}
-
-/** Run a statement expected to FAIL, returning the error text (or null if it succeeded). */
-function sqlError(text: string): string | null {
-  try {
-    sql(text);
-    return null;
-  } catch (err) {
-    return String((err as { stderr?: string }).stderr ?? err);
-  }
-}
 
 /** A SQL string literal. */
 const lit = (s: string) => `'${s.replace(/'/g, "''")}'`;
@@ -60,35 +39,10 @@ function insertUser(email: string): void {
   `);
 }
 
-try {
-  docker(["version", "--format", "{{.Server.Version}}"]);
-} catch {
-  console.error("UNMEASURED: Docker is not available here, so nothing was proved.");
-  process.exit(2);
-}
-
-// A container that cannot start (the image cannot be pulled, the name is taken)
-// proved nothing about the migration, so it is the same UNMEASURED exit as no
-// Docker at all, never the failed check exit.
-try {
-  docker(["run", "-d", "--rm", "--name", NAME, "-e", "POSTGRES_PASSWORD=x", IMAGE]);
-} catch (err) {
-  const why = err instanceof Error ? err.message.split("\n")[0] : String(err);
-  console.error(`UNMEASURED: the ${IMAGE} container could not start (${why}), so nothing was proved.`);
-  process.exit(2);
-}
+const pg = startThrowawayPostgres(NAME, IMAGE);
+const { sql, sqlError } = pg;
 
 try {
-  let ready = false;
-  for (let i = 0; i < 60 && !ready; i++) {
-    try {
-      sql("select 1;");
-      ready = true;
-    } catch {
-      execFileSync("sleep", ["1"]);
-    }
-  }
-  if (!ready) throw new Error("the throwaway Postgres never accepted a connection");
 
   // The slice of the schema 0155 reads, shaped as 0001 declares it, plus the two
   // API roles its REVOKEs name.
@@ -204,11 +158,7 @@ try {
   // --- RLS ------------------------------------------------------------------------
   eq(sql("select relrowsecurity from pg_class where relname = 'agent_link_names';"), "t", "RLS is on");
 } finally {
-  try {
-    docker(["rm", "-f", NAME]);
-  } catch {
-    // Already gone.
-  }
+  pg.stop();
 }
 
 finish();
