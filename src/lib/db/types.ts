@@ -219,6 +219,17 @@ export interface AgentLink {
   rotated_by: string | null;
 }
 
+/**
+ * #3026: an advisor link's readable name (migration 0155). Reserved for good:
+ * `user_id` is null once that user is deleted, and the name is never given to
+ * anybody else.
+ */
+export interface AgentLinkName {
+  name: string;
+  user_id: string | null;
+  created_at: string;
+}
+
 export interface BucketMember {
   id: string;
   bucket_id: string;

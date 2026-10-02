@@ -1384,3 +1384,24 @@ read failed, 4 a table nothing declared and nothing records, 5 a table the migra
 declare and production does not have, 6 a record covering a table that is gone. It exits on
 its worst finding and reports every one, so a departed table cannot hide an undeclared one.
 Decision logic is pinned offline by `scripts/test-table-drift.ts`.
+
+# Proving the advisor link names in a real database (`pnpm verify:agent-link-names`)
+
+#3026 gave every advisor link a readable name, `/book/advisor/rdaboub`, and every
+promise about that name lives in SQL (migration 0155): it is derived from the email
+username, a clash gets the lowest free numbered variant (`rdaboub2`), two concurrent
+inserts of one username never collide, a deleted user leaves the name reserved, a name is
+never renamed or handed to someone else, and no name can be shaped like the 64 hex token
+older links carry. The offline suite has no database, and a mocked client agrees with
+whatever it is told (L52), so none of that can be shown there.
+
+`pnpm verify:agent-link-names` starts a throwaway Postgres in Docker, lays down the slice
+of the schema the migration reads, applies the migration file verbatim, and drives every
+one of those promises, the concurrent insert included, with a positive control beside each
+CHECK refusal so a broken statement cannot pass as a refusal. It writes nothing outside
+the container and removes it on the way out. No Docker is exit 2, never a pass (L98); any
+failed check is exit 1.
+
+**Re-run it after any change to migration 0155's functions or to `agent_link_names`.**
+It does not touch production. That the app and the database agree on the name's shape is
+pinned offline by `scripts/test-agent-link.ts`, which reads the migration's CHECKs.

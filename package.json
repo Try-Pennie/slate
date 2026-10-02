@@ -28,6 +28,7 @@
     "backfill:bookable-trait": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/backfill-bookable-trait.ts",
     "report:pilot-split": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/report-pilot-split.ts",
     "report:pilot-compare": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/report-pilot-compare.ts",
+    "verify:agent-link-names": "node --experimental-strip-types scripts/verify-agent-link-names-sql.ts",
     "verify:availability-truth": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-availability-truth-live.ts",
     "verify:twilio-parity": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-twilio-parity-live.ts",
     "verify:calcom-parity": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-calcom-parity-live.ts",

@@ -203,12 +203,12 @@ import { MarkedLabel } from "@/components/ui/MarkedLabel";
 interface BookerProps {
   bucketCode: string;
   /**
-   * The token of an agent's own booking link (#2073), when the booker is drawn
-   * for one. The times then come from that one agent (`/api/availability?advisor=`)
+   * An agent's own booking link (#2073), when the booker is drawn for one: the
+   * readable name from the address (#3026), or an old 64 hex token. The times then come from that one agent (`/api/availability?advisor=`)
    * and the confirm names the link instead of a bucket, so `bucketCode` is empty
    * and never sent. Null or absent on every routed page.
    */
-  agentLinkToken?: string | null;
+  agentLink?: string | null;
   /**
    * The `xbc` exactly as it arrived, which is NOT always `bucketCode`: a blank or
    * unreadable one is routed to the Low pool (#1908) and this is the only record
@@ -357,7 +357,7 @@ const PALETTE = {
 
 export default function Booker({
   bucketCode,
-  agentLinkToken = null,
+  agentLink = null,
   requestedCode,
   salesforceId,
   landingCall,
@@ -622,11 +622,11 @@ export default function Booker({
       return `${leadRescheduleTimesUrl("advisor", { bucketCode, manageToken: moveAdvisorToken })}&${range}`;
     }
     // #2073: an agent's own link reads that one agent's times, never a pool's.
-    const subject = agentLinkToken
-      ? `advisor=${encodeURIComponent(agentLinkToken)}`
+    const subject = agentLink
+      ? `advisor=${encodeURIComponent(agentLink)}`
       : `bucket=${encodeURIComponent(bucketCode)}`;
     return `/api/availability?${subject}&${range}`;
-  }, [agentLinkToken, bucketCode, today, horizonDays, moveAdvisorToken]);
+  }, [agentLink, bucketCode, today, horizonDays, moveAdvisorToken]);
 
   // The shared picker (#1336) owns the fetch, the abort + supersession guard
   // (#629), the day grouping in the viewer's zone, the chosen day and the
@@ -824,7 +824,7 @@ export default function Booker({
         {
           // #2073: an agent's own link names the link, and the server decides
           // which bucket the booking is stored in; a routed page names its bucket.
-          ...(agentLinkToken ? { agentLinkToken } : { bucketCode, requestedCode }),
+          ...(agentLink ? { agentLink } : { bucketCode, requestedCode }),
           start: selectedSlot,
           timezone: zone,
           salesforceId,
@@ -1795,7 +1795,7 @@ export default function Booker({
         ? noAdvisorsAvailable()
         : emptyCause === "busy"
           ? // #2073: one named advisor, so it names them rather than "all times".
-            agentLinkToken
+            agentLink
             ? AGENT_LINK_COPY.noTimes
             : allTimesTaken()
           : UNCLASSIFIED_EMPTY_NOTICE;
@@ -1894,7 +1894,7 @@ export default function Booker({
       )}
       {/* #2073: not on an agent's own link. The far ahead search walks a
           bucket's pool, so on a named link it would offer another agent's days. */}
-      {isClosure && !agentLinkToken && nextDaySlots === null && (
+      {isClosure && !agentLink && nextDaySlots === null && (
         <>
           {nextPassRefusal !== null ? (
             <p role="alert" className="text-sm text-[var(--error)]">

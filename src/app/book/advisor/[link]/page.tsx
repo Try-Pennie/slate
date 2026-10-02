@@ -13,8 +13,8 @@ import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
-// Lead-facing: the brand is Pennie; Slate stays internal. The address carries a
-// token that books a named advisor, so it is kept out of search results and out
+// Lead-facing: the brand is Pennie; Slate stays internal. The address names an
+// advisor and books them directly, so it is kept out of search results and out
 // of the Referer the page sends anywhere else.
 export const metadata: Metadata = {
   title: "Book a call with Pennie",
@@ -35,9 +35,12 @@ function first(sp: SP, key: string): string {
  * bucket, no round robin, no tier ladder, no fallback. The times are that one
  * advisor's, and the confirm books them or nobody.
  *
- * A link that books nobody (never real, replaced, an advisor who has left or is
- * not taking calls) draws ONE panel whatever the cause, so the page cannot be
- * used to learn which. A link whose read FAILS throws to the booker's error
+ * The address carries the advisor's readable name (#3026), or for a link sent
+ * before that, their 64 hex token; `resolveAgentLink` is the one judge of which.
+ *
+ * A link that books nobody (never real, an advisor who has left or is not taking
+ * calls) draws ONE panel whatever the cause, so the page cannot be used to learn
+ * which. A link whose read FAILS throws to the booker's error
  * boundary instead, because telling a lead with a good link that their advisor
  * is unavailable is the wrong answer to a database outage.
  *
@@ -48,23 +51,23 @@ export default async function AgentLinkPage({
   params,
   searchParams,
 }: {
-  params: Promise<{ token: string }>;
+  params: Promise<{ link: string }>;
   searchParams: Promise<SP>;
 }) {
-  const { token } = await params;
+  const { link: linkKey } = await params;
   const sp = await searchParams;
   const embedded = first(sp, "embed") === "1";
   const theme = first(sp, "theme") === "dark" ? ("dark" as const) : ("light" as const);
 
-  const link = await resolveAgentLink(token);
+  const link = await resolveAgentLink(linkKey);
   if (!link.ok) {
-    // The cause, never the token: a token in the log is a working link in the log.
+    // The cause, never the name or token: either in the log is a working link in it.
     log.info("agent-link", { msg: "page refused, the link books nobody", why: link.why });
-    // #2831: every refusal offers the ordinary routed booker. A token still naming
+    // #2831: every refusal offers the ordinary routed booker. A link still naming
     // an advisor offers their own pool, anything else the catch all; the button is
     // the same on both, so its presence says nothing about the link. A failed pool
     // read throws to the error boundary rather than quietly offering the catch all.
-    const poolCode = await agentLinkPoolCode(token, link.why);
+    const poolCode = await agentLinkPoolCode(linkKey, link.why);
     return (
       <StandaloneBookerShell embedded={embedded} theme={theme}>
         <AgentLinkUnavailable href={agentLinkPoolHref(poolCode, sp)} />
@@ -98,7 +101,7 @@ export default async function AgentLinkPage({
       <ClientErrorBeacon page="/book/advisor" bucketCode="" />
       <Booker
         bucketCode=""
-        agentLinkToken={token}
+        agentLink={linkKey}
         salesforceId={externalId}
         attendee={attendee}
         prefill={prefill}

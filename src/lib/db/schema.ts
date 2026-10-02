@@ -7,6 +7,7 @@ import type {
   CalcomOverrideRemoval,
   AgentCalendar,
   AgentLink,
+  AgentLinkName,
   AlertState,
   ApiCallerSeen,
   PilotOfferSample,
@@ -96,6 +97,7 @@ export interface Database {
       >;
       bucket_members: Table<BucketMember>;
       agent_links: Table<AgentLink>;
+      agent_link_names: Table<AgentLinkName>;
       availability_schedules: Table<AvailabilitySchedule>;
       availability_rules: Table<
         AvailabilityRule,

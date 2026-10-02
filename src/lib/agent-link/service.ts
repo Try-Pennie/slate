@@ -38,14 +38,14 @@ export function namedAgentTimesLiveDeps(tag: string): NamedAgentTimesDeps {
  * `availability.ts`, which the node suite drives through fakes.
  */
 export function agentLinkAvailabilityLive(
-  token: string,
+  link: string,
   query: { from: string | null; to: string | null },
   nowMs: number,
 ): Promise<AgentLinkAvailabilityReply> {
-  return agentLinkAvailability(token, query, nowMs, {
+  return agentLinkAvailability(link, query, nowMs, {
     ...namedAgentTimesLiveDeps("agent-link"),
     resolve: resolveAgentLink,
-    // The cause, never the token: a token in the log is a working link in the log.
+    // The cause, never the name or token: either in the log is a working link in it.
     logRefusal: (why) => log.info("agent-link", { msg: "link books nobody", why }),
   });
 }

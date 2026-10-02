@@ -211,19 +211,17 @@ describe("MePage when the working hours cannot be read (#1647)", () => {
 
 });
 
-describe("MePage and the agent's own booking link (#2073)", () => {
-  const TOKEN = "ab".repeat(32);
-
-  it("shows the link with a copy control", async () => {
-    mockDb({ agent_links: { data: { token: TOKEN }, error: null } });
+describe("MePage and the agent's own booking link (#2073, #3026)", () => {
+  it("shows the readable link with a copy control", async () => {
+    mockDb({ agent_link_names: { data: { name: "rdaboub" }, error: null } });
     render(await MePage(props()));
     const field = screen.getByLabelText("Booking link") as HTMLInputElement;
-    expect(field.value).toMatch(new RegExp(`/book/advisor/${TOKEN}$`));
+    expect(field.value).toMatch(/\/book\/advisor\/rdaboub$/);
     expect(screen.getByRole("button", { name: "Copy link" })).toBeTruthy();
   });
 
   it("says an unreadable link could not be read, never that there is none, and leaves the hours working", async () => {
-    mockDb({ agent_links: fails("agent_links read exploded") });
+    mockDb({ agent_link_names: fails("agent_link_names read exploded") });
     render(await MePage(props()));
     expect(screen.getByText(/booking link could not be read/i)).toBeTruthy();
     expect(screen.queryByText(/do not have a booking link/i)).toBeNull();
@@ -233,7 +231,7 @@ describe("MePage and the agent's own booking link (#2073)", () => {
   });
 
   it("says there is no link yet when the read found none", async () => {
-    mockDb({ agent_links: { data: null, error: null } });
+    mockDb({ agent_link_names: { data: null, error: null } });
     render(await MePage(props()));
     expect(screen.getByText(/do not have a booking link yet/i)).toBeTruthy();
     expect(screen.queryByText(/booking link could not be read/i)).toBeNull();

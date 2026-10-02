@@ -1128,10 +1128,12 @@ describe("POST /booking carries the booking's own identity (#2750)", () => {
   });
 });
 
-describe("POST /booking through an agent's own link (#2073)", () => {
+describe("POST /booking through an agent's own link (#2073, #3026)", () => {
   const TOKEN = "ab".repeat(32);
+  // #3026: the booker sends the advisor's readable name as `agentLink`.
+  const NAME = "rdaboub";
   const LINK_BODY = {
-    agentLinkToken: TOKEN,
+    agentLink: NAME,
     start: "2026-07-01T15:00:00.000Z",
     timezone: "America/New_York",
     attendee: { name: "Dana Lee", email: "dana@example.com", phone: "2155550100" },
@@ -1159,7 +1161,7 @@ describe("POST /booking through an agent's own link (#2073)", () => {
   it("books the named agent in their own bucket, with no person rule and no routing", async () => {
     const res = await post(LINK_BODY);
     expect(res.status).toBe(200);
-    expect(agentLinkStore.resolveAgentLink).toHaveBeenCalledWith(TOKEN);
+    expect(agentLinkStore.resolveAgentLink).toHaveBeenCalledWith(NAME);
     const input = service.createBooking.mock.calls[0][0];
     expect(input.agentLinkUserId).toBe("u1");
     expect(input.bucketCode).toBe("411");
@@ -1169,6 +1171,34 @@ describe("POST /booking through an agent's own link (#2073)", () => {
     const body = await res.json();
     expect(body.isTest).toBe(false);
     expect(body.advisorName).toBe("Jane Doe");
+  });
+
+  it("still accepts the old agentLinkToken field from a page loaded before #3026", async () => {
+    const { agentLink: _name, ...rest } = LINK_BODY;
+    const res = await post({ ...rest, agentLinkToken: TOKEN });
+    expect(res.status).toBe(200);
+    expect(agentLinkStore.resolveAgentLink).toHaveBeenCalledWith(TOKEN);
+    expect(service.createBooking.mock.calls[0][0].agentLinkUserId).toBe("u1");
+  });
+
+  it("refuses a body naming the link twice, in both fields", async () => {
+    expect((await post({ ...LINK_BODY, agentLinkToken: TOKEN })).status).toBe(400);
+    expect(agentLinkStore.resolveAgentLink).not.toHaveBeenCalled();
+    expect(service.createBooking).not.toHaveBeenCalled();
+  });
+
+  it("never logs the name a refused link carried (#3026)", async () => {
+    agentLinkStore.resolveAgentLink.mockResolvedValue({ ok: false, why: "unknown" });
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect((await post(LINK_BODY)).status).toBe(404);
+    const logged = JSON.stringify([info.mock.calls, logSpy.mock.calls, warn.mock.calls]);
+    expect(logged).toContain("unknown");
+    expect(logged).not.toContain(NAME);
+    info.mockRestore();
+    logSpy.mockRestore();
+    warn.mockRestore();
   });
 
   it("is kept out of the routed booking tally and warns about no other call", async () => {
@@ -1220,7 +1250,7 @@ describe("POST /booking through an agent's own link (#2073)", () => {
 
   it("refuses a body naming both a bucket and a link, or neither", async () => {
     expect((await post({ ...LINK_BODY, bucketCode: "411" })).status).toBe(400);
-    const { agentLinkToken: _dropped, ...neither } = LINK_BODY;
+    const { agentLink: _dropped, ...neither } = LINK_BODY;
     expect((await post(neither)).status).toBe(400);
     expect(service.createBooking).not.toHaveBeenCalled();
   });
