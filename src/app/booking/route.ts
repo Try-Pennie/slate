@@ -65,10 +65,10 @@ const schema = z.object({
   // #2073, #3026: an agent's own booking link, their readable name or an old 64
   // hex token. Bounded so a long value cannot reach the read; its SHAPE is judged
   // by resolveAgentLink, the one place that tells a name from a token.
-  agentLink: z.string().max(128).optional(),
+  agentLink: z.string().min(1).max(128).optional(),
   // The same, under the field a booker loaded before #3026 still sends. Accepted
   // so a lead with that page open can still confirm; never sent by the booker now.
-  agentLinkToken: z.string().max(128).optional(),
+  agentLinkToken: z.string().min(1).max(128).optional(),
   // The `xbc` exactly as it arrived. Optional, because an older embed still in a
   // cached page will not send it, and a missing one must not refuse the booking.
   // It is used ONLY to record whether the catch-all was applied (#1908), never to

@@ -1187,6 +1187,14 @@ describe("POST /booking through an agent's own link (#2073, #3026)", () => {
     expect(service.createBooking).not.toHaveBeenCalled();
   });
 
+  it("refuses an empty link as a bad request, in either field, before any read", async () => {
+    const { agentLink: _name, ...rest } = LINK_BODY;
+    expect((await post({ ...rest, agentLink: "" })).status).toBe(400);
+    expect((await post({ ...rest, agentLinkToken: "" })).status).toBe(400);
+    expect(agentLinkStore.resolveAgentLink).not.toHaveBeenCalled();
+    expect(service.createBooking).not.toHaveBeenCalled();
+  });
+
   it("never logs the name a refused link carried (#3026)", async () => {
     agentLinkStore.resolveAgentLink.mockResolvedValue({ ok: false, why: "unknown" });
     const info = vi.spyOn(console, "info").mockImplementation(() => {});

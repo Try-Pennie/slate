@@ -67,8 +67,18 @@ try {
   process.exit(2);
 }
 
+// A container that cannot start (the image cannot be pulled, the name is taken)
+// proved nothing about the migration, so it is the same UNMEASURED exit as no
+// Docker at all, never the failed check exit.
 try {
   docker(["run", "-d", "--rm", "--name", NAME, "-e", "POSTGRES_PASSWORD=x", IMAGE]);
+} catch (err) {
+  const why = err instanceof Error ? err.message.split("\n")[0] : String(err);
+  console.error(`UNMEASURED: the ${IMAGE} container could not start (${why}), so nothing was proved.`);
+  process.exit(2);
+}
+
+try {
   let ready = false;
   for (let i = 0; i < 60 && !ready; i++) {
     try {
