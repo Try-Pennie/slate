@@ -122,6 +122,17 @@ export type SupplyCell =
    */
   | { kind: "nobody-available" }
   /**
+   * Nobody in this pool is free that day, and its leads are CAUGHT: by the
+   * bucket's fallback agent, or by the routing ladder carrying them to a staffed
+   * pool (2026-10-02). Not "nobody available", because nobody is turned away and
+   * there is nothing for the reader to do; calling it the one to act on was
+   * wrong for every pool the ladder carries.
+   *
+   * `toPool` is the target pool in words for an overflow, and null for a fallback
+   * agent or for a target outside the routing matrix. Never a code.
+   */
+  | SupplyOverflowCell
+  /**
    * A real measurement (#1937): how many of the times this bucket could have
    * taken an appointment at were actually booked.
    *
@@ -134,6 +145,14 @@ export type SupplyCell =
    * for ONE synthetic ideal agent, and the ratio of those two ran to 189%.
    */
   | { kind: "counted"; booked: number; capacity: number; share: number };
+
+/** What catches an empty pool's leads on one day. */
+export interface SupplyCover {
+  cover: "fallback" | "overflow";
+  toPool: string | null;
+}
+
+export type SupplyOverflowCell = { kind: "overflows" } & SupplyCover;
 
 /**
  * How a bucket's cached row read.
@@ -244,6 +263,16 @@ export interface SupplyDepth {
   /** Staffing depth's own pool key and label for this code (#2237). */
   poolKey: string;
   poolLabel: string | null;
+  /**
+   * What catches this pool's leads when it has nobody, from staffing depth's own
+   * rules rather than a second walk of the ladder: `coverToday` from
+   * `emptyPoolCover` (who is out today), `coverOnRoster` from
+   * `emptyPoolCoverOnRoster`. Null when the pool needs no catching, and also
+   * when NOTHING catches it, because both read the same on this page: an empty
+   * day then stays "nobody available".
+   */
+  coverToday: SupplyCover | null;
+  coverOnRoster: SupplyCover | null;
 }
 
 export interface BucketSupplyInput {
@@ -515,7 +544,17 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
       const lastOfferedDate = daysWithSlots[daysWithSlots.length - 1] ?? null;
       const allowanceSpent = daysWithSlots.length >= input.horizonDays;
 
-      cells = days.map((day) => {
+      // Which cover applies to an empty day. TODAY reads today's (it knows who is
+      // out today); every LATER day reads the roster's, because staffing depth
+      // knows nobody's time off on a future day, and borrowing today's absences
+      // for next week would call a pool covered or stranded for a reason that is
+      // not true of that day.
+      const coverFor = (dayIndex: number): SupplyCover | null => {
+        const depth = input.depthByCode?.get(d.code);
+        return (dayIndex === 0 ? depth?.coverToday : depth?.coverOnRoster) ?? null;
+      };
+
+      cells = days.map((day, dayIndex) => {
         const dayRoom = capacityFor(eventType, day);
         if (dayRoom.state === "closed") return { kind: "closed" };
         // The org's own day still decides whether an appointment could EVER have
@@ -552,7 +591,12 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
         // over 1 by a different route.
         const possible = new Set(offered);
         for (const t of taken) possible.add(t);
-        if (possible.size === 0) return { kind: "nobody-available" };
+        if (possible.size === 0) {
+          const cover = coverFor(dayIndex);
+          return cover
+            ? { kind: "overflows", cover: cover.cover, toPool: cover.toPool }
+            : { kind: "nobody-available" };
+        }
 
         return {
           kind: "counted",
@@ -714,6 +758,9 @@ export interface SupplyTotals {
   partBooked: number;
   nothingBooked: number;
   nobodyAvailable: number;
+  /** Empty that day with its leads caught elsewhere. Never in `nobodyAvailable`,
+   *  and never in `measured` either, since it has no share. */
+  overflows: number;
   stale: number;
 }
 
@@ -749,6 +796,9 @@ function sameCell(a: SupplyCell, b: SupplyCell): boolean {
   if (a.kind === "counted" && b.kind === "counted") {
     return a.booked === b.booked && a.capacity === b.capacity;
   }
+  if (a.kind === "overflows" && b.kind === "overflows") {
+    return a.cover === b.cover && a.toPool === b.toPool;
+  }
   return true;
 }
 
@@ -770,18 +820,17 @@ export function supplyPoolGroups(rows: BucketSupplyRow[], nowMs: number): PoolGr
  * codes disagree is split there, and each disagreeing reading counts, because
  * picking one would drop a measurement the page exists to report.
  */
-export function supplyTotals(
-  allRows: BucketSupplyRow[],
-  dayIndex: number,
-  nowMs: number,
-): SupplyTotals {
-  const rows = supplyPoolGroups(allRows, nowMs).map((g) => g.rows[0]!);
+export function supplyTotals(groups: PoolGroup<BucketSupplyRow>[], dayIndex: number): SupplyTotals {
+  // Takes the GROUPS rather than the rows, so the table groups once and the
+  // counts are about exactly the pools it draws.
+  const rows = groups.map((g) => g.rows[0]!);
   let measured = 0;
   let unmeasured = 0;
   let saturated = 0;
   let partBooked = 0;
   let nothingBooked = 0;
   let nobodyAvailable = 0;
+  let overflows = 0;
   let stale = 0;
   for (const row of rows) {
     if (row.freshness === "stale" || row.freshness === "unknown") stale++;
@@ -794,11 +843,15 @@ export function supplyTotals(
       nobodyAvailable++;
       continue;
     }
+    if (cell.kind === "overflows") {
+      overflows++;
+      continue;
+    }
     if (cell.kind !== "counted") continue;
     measured++;
     if (cell.booked === 0) nothingBooked++;
     else if (cell.booked >= cell.capacity) saturated++;
     else partBooked++;
   }
-  return { measured, unmeasured, saturated, partBooked, nothingBooked, nobodyAvailable, stale };
+  return { measured, unmeasured, saturated, partBooked, nothingBooked, nobodyAvailable, overflows, stale };
 }

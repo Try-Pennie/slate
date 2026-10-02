@@ -20,6 +20,8 @@ import {
   cellStyle,
   computedAtLabel,
   freshnessLabel,
+  overflowNote,
+  poolRowDetail,
   poolRowName,
   sharePercent,
   supplyCellTitle,
@@ -83,17 +85,29 @@ export function BucketSupplyTable({
   depthReadable: boolean;
   bucketListReadable: boolean;
 }) {
-  const totals = supplyTotals(rows, 0, nowMs);
+  // Grouped ONCE, and the same groups feed both the counts and the manager rows,
+  // so the two cannot disagree about what a pool is.
+  const poolGroups = supplyPoolGroups(rows, nowMs);
+  const totals = supplyTotals(poolGroups, 0);
   const closedToday = dayIsClosed(rows, 0);
   // What each drawn row is. For a manager it is a pool (its first code stands in
   // for the readings, which agree by construction of the group); for an admin it
   // is a code. The summary counts POOLS either way, because `supplyTotals` does,
   // so "across N pools" and the counts under it describe the same things, and
   // for a manager N is exactly the number of rows on screen.
-  const poolGroups = supplyPoolGroups(rows, nowMs);
-  const drawn: { key: string; row: BucketSupplyRow; name: string }[] = showCodes
-    ? rows.map((r) => ({ key: r.code, row: r, name: r.name }))
-    : poolGroups.map((g) => ({ key: g.codes.join(","), row: g.rows[0]!, name: poolRowName(g.rows[0]!) }));
+  //
+  // A SPLIT pool (codes that disagree) draws several rows under one pool name,
+  // so each of those carries a muted line saying which bucket it is, in words
+  // (`poolRowDetail`), never by code. A uniform pool needs none.
+  const drawn: { key: string; row: BucketSupplyRow; name: string; detail: string | null }[] =
+    showCodes
+      ? rows.map((r) => ({ key: r.code, row: r, name: r.name, detail: null }))
+      : poolGroups.map((g) => {
+          const first = g.rows[0]!;
+          const name = poolRowName(first);
+          const detail = g.uniform ? null : poolRowDetail(first);
+          return { key: g.codes.join(","), row: first, name, detail: detail === name ? null : detail };
+        });
   const todayLabel = days[0]
     ? (formatLongDate(DateTime.fromISO(days[0].iso, { zone })) ?? "today")
     : "today";
@@ -273,9 +287,16 @@ export function BucketSupplyTable({
                   {group.label}
                 </th>
               </tr>
-              {group.rows.map(({ key, row, name }) => {
+              {group.rows.map(({ key, row, name, detail }) => {
                 const fresh = computedAtLabel(row.freshness, row.computedAtMs, nowMs);
-                const bucketLabel = showCodes ? `${row.code} ${name}` : name;
+                const bucketLabel = showCodes
+                  ? `${row.code} ${name}`
+                  : detail
+                    ? `${name}, ${detail}`
+                    : name;
+                // Where an empty pool's leads go, said once on the row rather
+                // than in every cell, because the cells only say THAT they go.
+                const overflow = overflowNote(row.cells);
                 return (
                   <tr key={key} className="border-b border-border align-middle last:border-0">
                     <th scope="row" className="px-3 py-2 text-left font-normal">
@@ -285,8 +306,12 @@ export function BucketSupplyTable({
                           <span className="block text-xs text-fg-muted">{name}</span>
                         </>
                       ) : (
-                        <span className="block font-semibold text-fg">{name}</span>
+                        <>
+                          <span className="block font-semibold text-fg">{name}</span>
+                          {detail && <span className="block text-xs text-fg-muted">{detail}</span>}
+                        </>
                       )}
+                      {overflow && <span className="block text-xs text-fg-muted">{overflow}</span>}
                     </th>
                     <td className="border-l border-border px-3 py-2 tabular-nums">
                       <span className={row.depth === null ? "text-fg-muted" : "text-fg"}>

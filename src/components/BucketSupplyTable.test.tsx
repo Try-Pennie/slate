@@ -361,13 +361,70 @@ describe("BucketSupplyTable for managers", () => {
     expect(screen.getByText(/^Today, .*, across 2 pools$/)).toBeTruthy();
   });
 
-  it("keeps a pool whose codes disagree as separate rows", () => {
+  it("keeps a pool whose codes disagree as separate rows, and says which is which", () => {
     renderTable(
       [pooled[0], { ...pooled[1], depth: 1 }, pooled[2]],
       { showCodes: false },
     );
     const heads = [...document.querySelectorAll("tbody th[scope='row']")].map((n) => n.textContent ?? "");
-    expect(heads).toEqual(["Low", "Low", "Low with Beyond"]);
+    // Two rows under one pool name would be indistinguishable, so each split row
+    // carries the bucket's own name under it. A uniform pool carries none.
+    expect(heads).toEqual([
+      "LowLow | Both | No Legal Param",
+      "LowLow | Both | Legal",
+      "Low with Beyond",
+    ]);
+  });
+
+  it("tells cache only rows apart without a code when the bucket list is unreadable", () => {
+    renderTable(
+      [
+        row({ code: "110", name: "110", poolKey: "bucket:110", poolLabel: null }),
+        row({ code: "111", name: "111", poolKey: "bucket:111", poolLabel: null }),
+      ],
+      { showCodes: false, bucketListReadable: false },
+    );
+    const heads = [...document.querySelectorAll("tbody th[scope='row']")].map((n) => n.textContent ?? "");
+    expect(heads).toEqual(["Low | Both | No Legal Param", "Low | Both | Legal"]);
+    expect(everythingReadable()).not.toMatch(/\b11[01]\b/);
+  });
+
+  it("says where an empty pool's leads go, and keeps it out of nobody available", () => {
+    const overflow: SupplyCell = { kind: "overflows", cover: "overflow", toPool: "Low with Achieve" };
+    renderTable(
+      [
+        row({
+          code: "120",
+          poolKey: "pool-low-beyond",
+          poolLabel: "Low with Beyond",
+          depth: 0,
+          effectiveDepth: 0,
+          cells: [overflow, { kind: "closed" }],
+        }),
+      ],
+      { showCodes: false },
+    );
+    const head = document.querySelector("tbody th[scope='row']")?.textContent ?? "";
+    expect(head).toContain("Low with Beyond");
+    expect(head).toContain("Leads go to Low with Achieve");
+    expect(screen.getByText(supplyCellTitle(overflow, "Low with Beyond", "Tuesday, August 4"))).toBeTruthy();
+    const summary = summaryText();
+    expect(summary).toMatch(new RegExp(`${supplyLegendEntry("nobody-available").label}\\s*0(?!\\d)`));
+    expect(summary).toMatch(new RegExp(`${supplyLegendEntry("overflows").label}\\s*1(?!\\d)`));
+    // Not painted as the alarm.
+    const chip = [...document.querySelectorAll("span[title]")].find((n) =>
+      (n.textContent ?? "").startsWith(supplyLegendEntry("overflows").label),
+    );
+    expect(chip?.className).not.toContain("text-error");
+  });
+
+  it("names a fallback agent as the cover for an admin too", () => {
+    renderTable(
+      [row({ cells: [{ kind: "overflows", cover: "fallback", toPool: null }, { kind: "closed" }] })],
+      { showCodes: true },
+    );
+    const head = document.querySelector("tbody th[scope='row']")?.textContent ?? "";
+    expect(head).toContain("Leads go to the fallback agent");
   });
 
   it("names a pool outside the routing matrix by the bucket's name, never its code", () => {

@@ -25,6 +25,7 @@ import {
   dayIsClosed,
   tierOrder,
   troubleRank,
+  supplyPoolGroups,
   supplyTotals,
   type BucketSupplyRow,
   type CachedSlotRow,
@@ -36,7 +37,10 @@ import {
   SUPPLY_SUMMARY_STATES,
   agentCountLabel,
   computedAtLabel,
+  overflowNote,
+  poolRowDetail,
   poolRowName,
+  supplyCellTitle,
   freshnessLabel,
   relativeAge,
   supplyLegendEntry,
@@ -288,6 +292,7 @@ function codesOf(
     "beyond-horizon",
     "closed",
     "unknown",
+    "overflows",
   ];
   for (const id of ALL_IDS) {
     const matches = SUPPLY_LEGEND.filter((e) => e.id === id);
@@ -298,7 +303,7 @@ function codesOf(
   // Every state the summary counts is one the key explains, which is the whole
   // content of "one vocabulary": a chip naming a state with no entry would be a
   // word above the table that nothing below it defines.
-  const totals = supplyTotals([], 0, NOW);
+  const totals = supplyTotals(supplyPoolGroups([], NOW), 0);
   for (const { totalsKey, legendId } of SUPPLY_SUMMARY_STATES) {
     const entry = supplyLegendEntry(legendId);
     assert(entry.label.trim().length > 0, `${legendId} has a label the summary can use`);
@@ -360,7 +365,7 @@ function codesOf(
   // Judged from the CELLS, never from the counts being zero: an empty report
   // satisfies every count too, and means something else entirely.
   assert(!dayIsClosed([], 0), "no rows at all is not a closed day");
-  const totals = supplyTotals([closedRow()], 0, NOW);
+  const totals = supplyTotals(supplyPoolGroups([closedRow()], NOW), 0);
   eq(
     totals.measured + totals.unmeasured + totals.nobodyAvailable,
     0,
@@ -424,6 +429,49 @@ function codesOf(
   assert(!/777/.test(unnamed), `a name that is only the code is never shown (got ${unnamed})`);
   assert(unnamed.trim().length > 0, "and the row still says something");
   assert(!/777/.test(poolRowName({ code: "777", name: "  ", poolLabel: null })), "nor is a blank name replaced by the code");
+}
+
+// ---------------------------------------------------------------------------
+// An empty pool whose leads are carried elsewhere is NOT "nobody available"
+// (2026-10-02). It is its own state, unalarming, in the same vocabulary, and the
+// row says where the leads go.
+// ---------------------------------------------------------------------------
+{
+  const entry = supplyLegendEntry("overflows");
+  eq(entry.label, "Overflows", "the state has its own name in the key");
+  assert(!SUPPLY_ALARMING_STATES.includes("overflows"), "and it is not one of the alarming states");
+  assert(
+    SUPPLY_SUMMARY_STATES.some((s) => s.legendId === "overflows" && s.totalsKey === "overflows"),
+    "the summary counts it on its own chip, never under nobody available",
+  );
+  const overflow = { kind: "overflows" as const, cover: "overflow" as const, toPool: "Low with Achieve" };
+  const fallback = { kind: "overflows" as const, cover: "fallback" as const, toPool: null };
+  const title = supplyCellTitle(overflow, "Low with Beyond", "Tuesday, August 4");
+  assert(title.includes("Low with Achieve"), `the cell sentence names where the leads go (got ${title})`);
+  assert(!/act on/i.test(title), "and does not ask anybody to act");
+  assert(/fallback agent/.test(supplyCellTitle(fallback, "Low", "Tuesday, August 4")), "a fallback cover names the fallback agent");
+
+  eq(overflowNote([{ kind: "closed" }, overflow, overflow]), "Leads go to Low with Achieve", "the row names the target once");
+  eq(overflowNote([fallback]), "Leads go to the fallback agent", "or the fallback agent");
+  eq(
+    overflowNote([overflow, fallback]),
+    "Leads go to Low with Achieve or the fallback agent",
+    "two different covers on different days are both named",
+  );
+  eq(
+    overflowNote([{ kind: "overflows", cover: "overflow", toPool: null }]),
+    "Leads go to another pool",
+    "a target outside the routing matrix is never named by a code",
+  );
+  eq(overflowNote([{ kind: "nobody-available" }, { kind: "closed" }]), null, "a row nothing catches has no note");
+}
+
+// What tells two manager rows of one pool apart without a code.
+{
+  eq(poolRowDetail({ code: "111", name: "Low | Both | Legal" }), "Low | Both | Legal", "the stored name, when it is a name");
+  eq(poolRowDetail({ code: "111", name: "111" }), "Low | Both | Legal", "a name that is only the code is spelled out from the code's digits");
+  eq(poolRowDetail({ code: "777", name: "777" }), null, "and a code the matrix cannot spell has nothing to show rather than the code");
+  eq(poolRowName({ code: "111", name: "111", poolLabel: null }), "Low | Both | Legal", "a manager's row name spells an XBC code out before giving up");
 }
 
 finish();

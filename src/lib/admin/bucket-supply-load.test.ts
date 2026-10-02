@@ -347,6 +347,69 @@ describe("loadBucketSupply (#1254)", () => {
     expect(b?.poolLabel).toBe("Low");
   });
 
+  // 2026-10-02: an empty pool the ladder carries is not "nobody available". The
+  // cover comes from staffing depth's own rules and the depth rows this loader
+  // already reads; nothing walks the ladder a second time.
+  it("marks an empty pool whose leads overflow, from staffing depth's own cover", async () => {
+    const achieve = { code: "130", poolKey: "pool-low-achieve", label: "Low with Achieve" };
+    depth.loadTierDepths.mockResolvedValue([
+      {
+        code: "120",
+        name: "Low | Beyond | No Legal Param",
+        depth: 0,
+        effectiveDepth: 0,
+        hasWorkingFallback: false,
+        poolKey: "pool-low-beyond",
+        poolLabel: "Low with Beyond",
+        overflowToday: achieve,
+        overflowOnRoster: achieve,
+      },
+    ] as never);
+    db.bucketRows = [{ code: "120", name: "Low | Beyond | No Legal Param", is_test: false }];
+    db.slotRows = [
+      {
+        bucket_code: "120",
+        payload: { slots: [], eventType: EVENT_TYPE },
+        computed_at: new Date(NOW.getTime() - 30_000).toISOString(),
+      },
+    ];
+    const report = await loadBucketSupply("org-1", NOW);
+    expect(report.measurable).toBe(true);
+    if (!report.measurable) return;
+    expect(report.rows[0]?.cells[0]).toEqual({
+      kind: "overflows",
+      cover: "overflow",
+      toPool: "Low with Achieve",
+    });
+  });
+
+  it("keeps an empty pool nothing catches as nobody available", async () => {
+    depth.loadTierDepths.mockResolvedValue([
+      {
+        code: "120",
+        name: "Low | Beyond | No Legal Param",
+        depth: 0,
+        effectiveDepth: 0,
+        hasWorkingFallback: false,
+        poolKey: "pool-low-beyond",
+        poolLabel: "Low with Beyond",
+        overflowToday: null,
+        overflowOnRoster: null,
+      },
+    ] as never);
+    db.bucketRows = [{ code: "120", name: "Low | Beyond | No Legal Param", is_test: false }];
+    db.slotRows = [
+      {
+        bucket_code: "120",
+        payload: { slots: [], eventType: EVENT_TYPE },
+        computed_at: new Date(NOW.getTime() - 30_000).toISOString(),
+      },
+    ];
+    const report = await loadBucketSupply("org-1", NOW);
+    if (!report.measurable) throw new Error("expected a report");
+    expect(report.rows[0]?.cells[0]).toEqual({ kind: "nobody-available" });
+  });
+
   // A read that could not measure must never be scored as zero booked, which is
   // exactly what a healthy quiet day looks like (L11).
   it("says unknown rather than zero booked when the bookings cannot be read", async () => {

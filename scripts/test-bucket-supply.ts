@@ -490,7 +490,7 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
   if (!report.measurable) {
     fail("the totals case produces a report");
   } else {
-    const totals = supplyTotals(report.rows, 0, report.nowMs);
+    const totals = supplyTotals(supplyPoolGroups(report.rows, report.nowMs), 0);
     eq(totals.measured, 2, "both buckets were measured today");
     // #1937: the headline counts inverted with the metric. "Offering the whole
     // of today" counted every bucket whose share ran over 100%, so it is gone.
@@ -513,7 +513,7 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
   if (!report.measurable) {
     fail("the unmeasured totals case produces a report");
   } else {
-    const totals = supplyTotals(report.rows, 0, report.nowMs);
+    const totals = supplyTotals(supplyPoolGroups(report.rows, report.nowMs), 0);
     eq(totals.measured, 1, "only the readable bucket is counted as measured");
     eq(totals.unmeasured, 1, "and the unreadable one is reported as unmeasured");
     // The unreadable bucket contributes to `unmeasured` and to NOTHING else, so
@@ -726,7 +726,7 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
     } else fail("the two calls case produces a report");
 
     // Totals count each POOL once, so the two Low codes are one measurement.
-    const totals = supplyTotals(report.rows, 0, report.nowMs);
+    const totals = supplyTotals(supplyPoolGroups(report.rows, report.nowMs), 0);
     eq(totals.measured, 2, "three codes in two pools are two measurements, not three");
     eq(totals.partBooked, 1, "the Low pool is part booked once");
     eq(totals.nothingBooked, 1, "and the Beyond pool has nothing booked");
@@ -799,8 +799,90 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
   const split = supplyPoolGroups([base, { ...sibling, depth: 3 }], AUG_4_1119_ET);
   eq(split.length, 2, "a pool whose codes disagree stays split");
   assert(split.every((g) => !g.uniform), "and each half says it was split");
-  eq(supplyTotals([base, { ...sibling, depth: 3 }], 0, AUG_4_1119_ET).measured, 2, "a split pool counts each reading");
-  eq(supplyTotals([base, sibling], 0, AUG_4_1119_ET).measured, 1, "a uniform pool counts once");
+  eq(supplyTotals(supplyPoolGroups([base, { ...sibling, depth: 3 }], AUG_4_1119_ET), 0).measured, 2, "a split pool counts each reading");
+  eq(supplyTotals(supplyPoolGroups([base, sibling], AUG_4_1119_ET), 0).measured, 1, "a uniform pool counts once");
+}
+
+// ---------------------------------------------------------------------------
+// An empty pool whose leads overflow is not "nobody available" (2026-10-02).
+// TODAY's cell reads today's cover (who is out today, `emptyPoolCover`); every
+// LATER day reads the roster's (`emptyPoolCoverOnRoster`), because staffing
+// depth knows nobody's time off on a future day.
+// ---------------------------------------------------------------------------
+{
+  const covered = (
+    coverToday: { cover: "fallback" | "overflow"; toPool: string | null } | null,
+    coverOnRoster: { cover: "fallback" | "overflow"; toPool: string | null } | null,
+  ) =>
+    bucketSupplyReport({
+      hours: WEEK,
+      horizonDays: 4,
+      nowMs: AUG_4_1119_ET,
+      buckets: [{ code: "120", name: "Low | Beyond | No Legal Param" }],
+      depthByCode: new Map([
+        [
+          "120",
+          { depth: 2, effectiveDepth: 0, poolKey: "pool-low-beyond", poolLabel: "Low with Beyond", coverToday, coverOnRoster },
+        ],
+      ]),
+      // Offering nothing on any day.
+      cacheRows: [cachedRow("120", [], FRESH_STAMP)],
+      bookedByCodeAndDate: new Map(),
+    });
+
+  const achieve = { cover: "overflow" as const, toPool: "Low with Achieve" };
+  // Everyone in the pool is out today, so today's leads overflow, while on the
+  // roster the pool is staffed and a later empty day is still nobody available.
+  const allOut = covered(achieve, null);
+  if (allOut.measurable) {
+    eq(allOut.rows[0].cells[0], { kind: "overflows", cover: "overflow", toPool: "Low with Achieve" }, "today overflows");
+    eq(allOut.rows[0].cells[1], { kind: "nobody-available" }, "a later day with nothing caught stays nobody available");
+    const totals = supplyTotals(supplyPoolGroups(allOut.rows, allOut.nowMs), 0);
+    eq(totals.nobodyAvailable, 0, "an overflowing pool is kept out of the nobody available count");
+    eq(totals.overflows, 1, "and counted as overflowing");
+    eq(totals.measured + totals.unmeasured, 0, "it is neither a measured share nor an unmeasured one");
+  } else fail("the overflow case produces a report");
+
+  // An empty roster: every day reads the roster's cover, and today's too.
+  const empty = covered(achieve, achieve);
+  if (empty.measurable) {
+    assert(
+      empty.rows[0].cells.every((c) => c.kind === "overflows" || c.kind === "closed"),
+      "an empty pool the ladder carries overflows on every open day",
+    );
+  } else fail("the empty roster case produces a report");
+
+  const fallback = covered({ cover: "fallback", toPool: null }, { cover: "fallback", toPool: null });
+  if (fallback.measurable) {
+    eq(fallback.rows[0].cells[0], { kind: "overflows", cover: "fallback", toPool: null }, "a fallback agent catches the leads");
+  } else fail("the fallback case produces a report");
+
+  const stranded = covered(null, null);
+  if (stranded.measurable) {
+    eq(stranded.rows[0].cells[0], { kind: "nobody-available" }, "nothing catches it, so it stays the one to act on");
+  } else fail("the stranded case produces a report");
+
+  // Two codes of one pool whose covers differ do not share a row.
+  const base: BucketSupplyRow = {
+    code: "120",
+    name: "Low | Beyond | No Legal Param",
+    poolKey: "pool-low-beyond",
+    poolLabel: "Low with Beyond",
+    depth: 0,
+    effectiveDepth: 0,
+    cacheState: "measured",
+    computedAtMs: AUG_4_1119_ET - 30_000,
+    freshness: "fresh",
+    cells: [{ kind: "overflows", cover: "overflow", toPool: "Low with Achieve" }],
+  };
+  assert(
+    !sameSupplyReading(base, { ...base, code: "121", cells: [{ kind: "overflows", cover: "overflow", toPool: "Low" }] }, AUG_4_1119_ET),
+    "overflowing to a different pool is a different reading",
+  );
+  assert(
+    !sameSupplyReading(base, { ...base, code: "121", cells: [{ kind: "overflows", cover: "fallback", toPool: null }] }, AUG_4_1119_ET),
+    "and so is a fallback agent instead of an overflow",
+  );
 }
 
 finish();

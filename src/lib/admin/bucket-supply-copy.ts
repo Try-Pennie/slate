@@ -15,6 +15,7 @@
  * than a second copy of it (L41).
  */
 import type { SupplyCell, SupplyFreshness, SupplyTotals } from "./bucket-supply.ts";
+import { bucketSpecForXbc } from "../xbc.ts";
 
 /**
  * Every state this page has a name for.
@@ -31,7 +32,8 @@ export type SupplyLegendId =
   | "no-capacity"
   | "beyond-horizon"
   | "closed"
-  | "unknown";
+  | "unknown"
+  | "overflows";
 
 export interface SupplyLegendEntry {
   /** Its own id: two entries share the `counted` kind, because "every time the
@@ -92,6 +94,9 @@ export function cellStyle(cell: SupplyCell): { cell: string; mark: string } {
       // The one state on this page somebody has to act on, so it keeps the error
       // treatment the old "nothing open" cell had, and a letter of its own.
       return { cell: "bg-error/25 text-fg", mark: "N" };
+    case "overflows":
+      // Deliberately quiet: the leads are caught, so nothing here is wrong.
+      return { cell: "bg-[var(--bg-alt)] text-fg-muted", mark: "O" };
     case "no-capacity":
       return { cell: "bg-[var(--bg-alt)] text-fg-muted", mark: "T" };
     case "beyond-horizon":
@@ -115,6 +120,15 @@ export const SUPPLY_LEGEND: SupplyLegendEntry[] = [
       "The day had room for appointments and this pool has none: none offered, and none booked. This is the one to act on.",
     mark: "N",
     cell: "bg-error/25 text-fg",
+  },
+  {
+    id: "overflows",
+    label: "Overflows",
+    meaning:
+      "Nobody in this pool is free that day, and its leads go to the fallback agent or the pool named on the row, so nobody is turned away.",
+    mark: "O",
+    cell: "bg-[var(--bg-alt)] text-fg-muted",
+    swatchExtra: "border border-border",
   },
   {
     id: "saturated",
@@ -195,7 +209,7 @@ export function supplyLegendEntry(id: SupplyLegendId): SupplyLegendEntry {
  * Each chip here names the legend entry it counts and takes its WORDS from that
  * entry, so there is one label per state and both ends of the page read it.
  *
- * Five of the eight states, and the three missing ones are properties of the
+ * Six of the nine states, and the three missing ones are properties of the
  * DAY rather than of a bucket (closed, nothing left today, past the horizon), so
  * a count of them across buckets would be sixty times one fact.
  */
@@ -205,6 +219,9 @@ export const SUPPLY_SUMMARY_STATES: { totalsKey: keyof SupplyTotals; legendId: S
   { totalsKey: "saturated", legendId: "saturated" },
   { totalsKey: "partBooked", legendId: "some" },
   { totalsKey: "nothingBooked", legendId: "none" },
+  // Its own chip, and NOT an alarming one: an empty pool whose leads are caught
+  // turns nobody away (2026-10-02).
+  { totalsKey: "overflows", legendId: "overflows" },
   { totalsKey: "unmeasured", legendId: "unknown" },
 ];
 
@@ -242,6 +259,10 @@ export function supplyCellTitle(cell: SupplyCell, bucketLabel: string, dayLabel:
       return `${when}: ${cell.booked} of ${cell.capacity} possible times booked, ${sharePercent(cell.share)} percent.`;
     case "nobody-available":
       return `${when}: nobody available. The day had room for appointments and this pool has none offered and none booked.`;
+    case "overflows":
+      return cell.cover === "fallback"
+        ? `${when}: nobody in this pool is free, and its leads go to the fallback agent.`
+        : `${when}: nobody in this pool is free, and its leads go to ${cell.toPool ?? "another pool"}.`;
     case "no-capacity":
       return `${when}: nothing left today. The office is open but no whole appointment fits before closing.`;
     case "beyond-horizon":
@@ -360,7 +381,36 @@ export const BACKEND_GROUP_LABEL: Record<string, string> = {
  * rather than showing the code by the back door.
  */
 export function poolRowName(row: { code: string; name: string; poolLabel: string | null }): string {
-  if (row.poolLabel) return row.poolLabel;
+  return row.poolLabel ?? poolRowDetail(row) ?? "Name could not be read";
+}
+
+/**
+ * What tells one manager row apart from another of the same pool, without a
+ * code: the bucket's stored name, or, when that name is only the code (the
+ * bucket list was unreadable), the same words spelled out from the code's
+ * digits ("Low | Both | Legal"). Null when neither exists, rather than the code.
+ *
+ * A pool's codes share a row only when they agree, so a split pool draws several
+ * rows under one pool name, and this is the line that says which is which.
+ */
+export function poolRowDetail(row: { code: string; name: string }): string | null {
   const name = row.name.trim();
-  return name && name !== row.code ? name : "Name could not be read";
+  if (name && name !== row.code) return name;
+  return bucketSpecForXbc(row.code)?.name ?? null;
+}
+
+/**
+ * Where a row's leads go on the days it overflows, named once on the row, or
+ * null when no day overflows. Today and later days can differ (today reads who is
+ * out today, later days the roster), so every distinct target is named.
+ */
+export function overflowNote(cells: SupplyCell[]): string | null {
+  const targets: string[] = [];
+  for (const cell of cells) {
+    if (cell.kind !== "overflows") continue;
+    const target =
+      cell.cover === "fallback" ? "the fallback agent" : (cell.toPool ?? "another pool");
+    if (!targets.includes(target)) targets.push(target);
+  }
+  return targets.length === 0 ? null : `Leads go to ${targets.join(" or ")}`;
 }
