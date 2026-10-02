@@ -25,6 +25,11 @@ import { OFFERED_OPEN_DAYS } from "../availability/bookable-days.ts";
  */
 const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven"];
 export function offeredWindowPhrase(days: number): string {
+  // A window is a whole number of days, at least one. Anything else is a broken
+  // constant, and words like "the next 2.5 open days" would hide it (L168).
+  if (!Number.isInteger(days) || days < 1) {
+    throw new Error(`offered window must be a whole number of days, at least one: got ${days}`);
+  }
   if (days === 1) return "the next open day";
   return `the next ${NUMBER_WORDS[days] ?? String(days)} open days`;
 }

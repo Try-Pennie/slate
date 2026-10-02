@@ -482,6 +482,21 @@ function codesOf(
   const phrase = offeredWindowPhrase(OFFERED_OPEN_DAYS);
   assert(supplyLegendEntry("overflows").meaning.includes(phrase), "the overflow legend names the booker's window");
   assert(supplyLegendEntry("other-days").meaning.includes(phrase), "the other days legend names the booker's window");
+  const { supplyCellTitle } = await import("../src/lib/admin/bucket-supply-copy.ts");
+  assert(
+    supplyCellTitle({ kind: "overflows", toPool: "Low with Achieve" }, "Low with Beyond", "Fri").includes(phrase),
+    "the overflow cell tooltip names the booker's window",
+  );
+  assert(supplyCellTitle({ kind: "other-days" }, "Low", "Fri").includes(phrase), "the other days tooltip names it too");
+  for (const bad of [0, -1, 2.5, Number.NaN]) {
+    let threw = false;
+    try {
+      offeredWindowPhrase(bad);
+    } catch (err) {
+      threw = /whole number of days/.test(String(err));
+    }
+    assert(threw, `a window of ${bad} days is refused by name`);
+  }
   eq(offeredWindowPhrase(1), "the next open day", "one day reads as one, not as one open days");
   eq(offeredWindowPhrase(2), "the next two open days", "two days in words");
   eq(offeredWindowPhrase(12), "the next 12 open days", "past the words, a numeral");
