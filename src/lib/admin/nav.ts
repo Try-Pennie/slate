@@ -214,22 +214,6 @@ export function adminNavFor(role: Role, oooOnly: boolean): AdminNavGroup[] {
 }
 
 /**
- * Whether `role` can open the console route `href` (#2699).
- *
- * For copy that points somebody at another screen: a pointer to a page that
- * refuses them sends them to a dead end. It reads the nav entry's gate, which
- * `scripts/test-admin-nav-reachability.ts` holds to the route's own guard, and the
- * console flag the routes check first, so it is the decision the route itself
- * makes rather than a second list of roles. A route the nav does not name throws,
- * because an answer invented for it would be a guess.
- */
-export function canOpenAdminRoute(role: Role, href: string, consoleHidden: boolean): boolean {
-  const item = ADMIN_NAV.flatMap((g) => g.items).find((i) => i.href === href);
-  if (!item) throw new Error(`canOpenAdminRoute: the admin nav names no route ${href}`);
-  return !consoleHidden && passesGate(role, item.gate);
-}
-
-/**
  * Which entry the current path belongs to, or null.
  *
  * Longest match wins, so a record detail page (`/admin/agents/abc`) keeps its
