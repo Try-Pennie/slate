@@ -62,6 +62,26 @@ import {
 const HOURS_LEGEND =
   "Seeded default is the organisation's standard week, given to every new agent, which nobody has changed for them";
 
+/**
+ * Where each column starts, read by its header AND by its cells (#3031).
+ *
+ * A header's alignment and its cells' are one fact (L553). Typed twice, as a
+ * `px-3` on the `th` and another on the `td`, they agree only until somebody
+ * edits one of them, and each still reads as correct on its own. So a column
+ * names its inset once and both halves derive their classes from it.
+ */
+const COLUMN_X = { edge: "px-4", inner: "px-3" } as const;
+type ColumnX = keyof typeof COLUMN_X;
+
+/**
+ * A header never wraps (#3031). #3024 shortened the Signed in cells to "Never"
+ * or "Yes", the column shrank to fit them, and its own header broke onto two
+ * lines. A header is a label for the column, so the column is at least as wide
+ * as its label, on every column rather than only the one that wrapped first.
+ */
+const thCls = (x: ColumnX) => `${COLUMN_X[x]} py-2.5 whitespace-nowrap font-semibold`;
+const tdCls = (x: ColumnX) => `${COLUMN_X[x]} py-3`;
+
 /** One recipe for both items, so the two cannot drift apart visually (L370). */
 const MENU_ITEM_CLS =
   "flex min-h-11 w-full items-center whitespace-nowrap rounded-md px-3 text-left text-sm text-fg-muted transition-colors hover:bg-[var(--bg-alt)] hover:text-fg";
@@ -292,7 +312,7 @@ export function RosterTable({
         <table className="w-full min-w-[720px] text-sm">
           <thead>
             <tr className="border-b border-border bg-[var(--bg-alt)] text-left text-xs text-fg-muted">
-              <th className="px-4 py-2.5 font-semibold">Member</th>
+              <th className={thCls("edge")}>Member</th>
               {/* #1844: Team before Role. The team is what an operator scans a
                   roster FOR; the role is agent on nearly every row. Moved with
                   its cell below and with the filter row above, which orders the
@@ -300,33 +320,33 @@ export function RosterTable({
               {/* The legend lives here ONCE (#1812). V and U are the two letters
                   nobody guesses, and repeating the expansion on 136 rows is the
                   duplication this design exists to remove. */}
-              <th className="px-3 py-2.5 font-semibold" title={LEDGER_LEGEND}>
+              <th className={thCls("inner")} title={LEDGER_LEGEND}>
                 Team
                 <span className="sr-only">{` (${LEDGER_LEGEND})`}</span>
               </th>
-              <th className="px-3 py-2.5 font-semibold">Role</th>
-              <th className="px-3 py-2.5 font-semibold">Manager</th>
-              <th className="px-3 py-2.5 font-semibold">Bookable</th>
+              <th className={thCls("inner")}>Role</th>
+              <th className={thCls("inner")}>Manager</th>
+              <th className={thCls("inner")}>Bookable</th>
               {/* #1802: two facts, two columns. Somebody can sign in and never
                   set hours, and an admin or the cal.com import can set hours for
                   somebody who never logs in, so one badge would lie about one of
                   them. */}
-              <th className="px-3 py-2.5 font-semibold">Signed in</th>
+              <th className={thCls("inner")}>Signed in</th>
               {hoursReadable && (
                 // The one term here nobody can guess, explained once on the
                 // header rather than on every row (L604).
-                <th className="px-3 py-2.5 font-semibold" title={HOURS_LEGEND}>
+                <th className={thCls("inner")} title={HOURS_LEGEND}>
                   Hours
                   <span className="sr-only">{` (${HOURS_LEGEND})`}</span>
                 </th>
               )}
-              <th className="px-4 py-2.5" />
+              <th className={thCls("edge")} />
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
             {items.map((u) => (
               <tr key={u.id} className="transition-colors hover:bg-[var(--bg-alt)]">
-                <td className="px-4 py-3">
+                <td className={tdCls("edge")}>
                   <div className="flex items-center gap-3">
                     {/* One judge of "has a photo" for the picture and the
                         marker below it, so a blank stored value draws initials
@@ -363,34 +383,35 @@ export function RosterTable({
                     </div>
                   </div>
                 </td>
-                <td className="px-3 py-3 text-fg-muted">
+                <td className={`${tdCls("inner")} text-fg-muted`}>
                   {/* #1812: five ledger letters in fixed positions, so the cell
                       is the same size for one tier or five AND the positions
                       align down every row, which is the comparison the drawn
                       version could not do. */}
                   <DebtTeamLedger teams={teamsOf(u)} />
                 </td>
-                <td className="px-3 py-3">
+                <td className={tdCls("inner")}>
                   {/* #1844: agent draws no pill chrome now, so this cell reads
                       like the Manager column beside it on nearly every row, and
                       the elevated roles are what stands out. The decision and
                       the ladder it belongs to live in Pill.tsx. */}
                   <Pill variant={`role-${u.role}`} alignToColumn>{roleLabel(u.role)}</Pill>
                 </td>
-                <td className="px-3 py-3 text-fg-muted">
+                <td className={`${tdCls("inner")} text-fg-muted`}>
                   {u.manager_id ? (nameById.get(u.manager_id) ?? "-") : "-"}
                 </td>
-                <td className="px-3 py-3">
+                <td className={tdCls("inner")}>
                   {/* #1823: a pill for BOTH states, each with a mark. The header
                       already asks the question, so the value is Yes or No rather
-                      than the header's own word repeated. */}
+                      than the header's own word repeated. #3031: the mark leads,
+                      so it is the mark that starts under the header. */}
                   <BookablePill bookable={u.bookable} wording="short" alignToColumn />
                 </td>
                 {/* The commonest value is the quietest (L609): a signed in row
                     reads muted, a never signed in one reads "Never" at full
                     weight. */}
                 <td
-                  className={`px-3 py-3 ${
+                  className={`${tdCls("inner")} ${
                     isNeverSignedIn(u) ? "font-semibold text-fg" : "text-fg-muted"
                   }`}
                 >
@@ -398,14 +419,14 @@ export function RosterTable({
                 </td>
                 {hoursReadable && (
                   <td
-                    className={`px-3 py-3 ${
+                    className={`${tdCls("inner")} ${
                       u.hours === "set" ? "text-fg-muted" : "font-semibold text-fg"
                     }`}
                   >
                     {u.hours ? rosterHoursText(u.hours) : ""}
                   </td>
                 )}
-                <td className="px-4 py-3 text-right">
+                <td className={`${tdCls("edge")} text-right`}>
                   {/* #1794: one menu per row. The label spelled the agent's whole
                       name into a narrow column, so it wrapped and every row was a
                       different height. The menu is rendered on EVERY row, even

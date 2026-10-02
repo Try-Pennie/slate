@@ -18,6 +18,7 @@ vi.mock("@/app/admin/actions", () => ({ startImpersonation: vi.fn() }));
 import { RosterTable } from "@/components/admin/RosterTable";
 import { EMPTY_ROSTER_FILTERS, ROSTER_PAGE_SIZE } from "@/lib/admin/roster-filter";
 import type { RosterRow } from "@/lib/admin/roster-filter";
+import { PILL_TEXT_INSET_PX } from "@/components/ui/Pill";
 
 const row = (id: string, name: string, extra: Partial<RosterRow> = {}): RosterRow => ({
   id,
@@ -639,5 +640,57 @@ describe("RosterTable needs a photo", () => {
       expect.stringContaining("Blank Photo"),
     ]);
     expect(document.querySelector('[aria-live="polite"]')!.textContent).toBe("2 of 3 agents");
+  });
+});
+
+// #3031: a column header and the cells under it are ONE fact about where the
+// column starts, set in two places (L553). Dan, 2026-10-02, at a laptop width:
+// "Signed in" wrapped onto two lines once #3024 shortened its cells, and the
+// Bookable header sat at a different left edge from the pill under it.
+describe("column geometry (#3031)", () => {
+  const props = { ...base, roleOptions: [...base.roleOptions], hoursReadable: true };
+  // The horizontal inset tokens on an element, in a stable order.
+  const insetOf = (el: Element) =>
+    el.className
+      .split(/\s+/)
+      .filter((c) => /^-?(px|pl|pr)-/.test(c))
+      .sort()
+      .join(" ");
+
+  it("gives every header the same horizontal inset as the cells under it", () => {
+    render(<RosterTable {...props} />);
+    const headers = screen.getAllByRole("columnheader");
+    const cells = within(bodyRows()[0]!).getAllByRole("cell");
+    expect(headers.length).toBe(cells.length);
+    headers.forEach((th, i) => {
+      // A positive control on the comparison: an empty inset on both sides would
+      // agree and prove nothing (L98).
+      expect(insetOf(th)).not.toBe("");
+      expect(insetOf(cells[i]!)).toBe(insetOf(th));
+    });
+  });
+
+  it("never wraps a header, however short the values under it are", () => {
+    render(<RosterTable {...props} />);
+    for (const th of screen.getAllByRole("columnheader")) {
+      expect(th.className).toContain("whitespace-nowrap");
+    }
+  });
+
+  it("starts every pill's content on the column edge, mark or no mark", () => {
+    // Role leads with its word, Bookable with a dot. Both pills cancel the SAME
+    // inset, the pill's own border and padding, so whatever leads each one sits
+    // under its header and the two bubbles overhang by the same amount, rather
+    // than the marked one hanging 21px out of its column.
+    render(<RosterTable {...props} />);
+    const grace = screen.getByText("Grace Hopper").closest("tr")!;
+    const pills = Array.from(grace.querySelectorAll("[data-pill-label]")).map(
+      (l) => l.parentElement!,
+    );
+    expect(pills.length).toBe(2);
+    expect(pills[1]!.querySelector("[data-pill-mark]")).toBeTruthy();
+    const pulls = pills.map((p) => p.className.split(/\s+/).filter((c) => c.startsWith("-ml-")));
+    expect(pulls[0]).toEqual([`-ml-[${PILL_TEXT_INSET_PX}px]`]);
+    expect(pulls[1]).toEqual(pulls[0]);
   });
 });

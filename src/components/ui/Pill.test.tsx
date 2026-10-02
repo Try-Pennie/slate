@@ -4,7 +4,6 @@ import { render } from "@testing-library/react";
 import {
   Pill,
   PILL_TEXT_INSET_PX,
-  PILL_MARK_TEXT_INSET_PX,
   PILL_LABEL_OPTICAL_NUDGE_PX,
   ALL_VARIANTS,
   type PillVariant,
@@ -58,28 +57,27 @@ describe("Pill in a table cell", () => {
     expect(cls(container as unknown as HTMLElement)).toContain(`-ml-[${PILL_TEXT_INSET_PX}px]`);
   });
 
-  // #2082: the cancellation aligns whatever comes FIRST inside the pill, and
-  // wherever a mark leads that is the mark. In the roster's Bookable column the
-  // header lined up with the dot and the word sat 12px right, while the Role column
-  // beside it lined up correctly, which is the drift `alignToColumn` exists to
-  // remove.
-  it("cancels the mark and the gap too, so the LABEL is what lines up", () => {
-    expect(PILL_MARK_TEXT_INSET_PX).toBe(21);
+  // #3031 reverses #2082. Cancelling the mark and the gap as well (21px) put the
+  // word under the header but hung the whole bubble 21px left, nine of them
+  // outside its own column, and Dan read the Bookable header as not lined up with
+  // its pill. A pill led by a mark cancels the SAME inset as any other, so its
+  // CONTENT (the mark) starts on the column edge and every pill in a table
+  // overhangs by the same 9px.
+  it("cancels the same inset when a mark leads, so every bubble overhangs alike", () => {
     const { container } = render(
       <Pill variant="status-ok" alignToColumn mark={<span data-mark="" />}>
         Yes
       </Pill>,
     );
-    expect(cls(container as unknown as HTMLElement)).toContain(`-ml-[${PILL_MARK_TEXT_INSET_PX}px]`);
-    // And not the no-mark cancellation, which would leave the word 12px right.
-    expect(cls(container as unknown as HTMLElement)).not.toContain(`-ml-[${PILL_TEXT_INSET_PX}px]`);
+    const pulls = cls(container as unknown as HTMLElement)
+      .split(/\s+/)
+      .filter((c) => c.startsWith("-ml-"));
+    expect(pulls).toEqual([`-ml-[${PILL_TEXT_INSET_PX}px]`]);
   });
 
-  it("gives the mark a box of a size it knows, so that arithmetic is possible at all", () => {
-    // The pill cannot measure an arbitrary node, and asking every call site to
-    // declare a width is the "every call site has to remember" this component
-    // exists to end (L550, L621). 8px box plus the pill's own 4px gap is the 12
-    // the sum above adds to the text inset.
+  it("gives the mark a box of a size it knows", () => {
+    // The pill centres the mark on its own centre and the label on its letters
+    // (#2081), so the mark sits in a fixed 8px box the pill owns.
     const { container } = render(
       <Pill variant="status-ok" mark={<span data-mark="" />}>
         Yes
