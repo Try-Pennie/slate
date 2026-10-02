@@ -427,6 +427,12 @@ export async function syncSalesforceNow(): Promise<void> {
       r.bookablePending.length
         ? `${plural(r.bookablePending.length, "agent")} waiting to become bookable until a Google calendar exists for them`
         : null,
+      // #3028: refused because Twilio holds them on Redistribute, and handed to the
+      // Twilio sync, which makes them bookable once the tag comes off. Its own line,
+      // because the remedy is in Twilio and not in Google.
+      r.bookableHeldByTwilio.length
+        ? `${plural(r.bookableHeldByTwilio.length, "agent")} held out of the pool by the Twilio Redistribute tag, and made bookable once it comes off`
+        : null,
       // #2302: planned for activation and not attempted this run, because reading a
       // calendar per agent is bounded per run. Said because the presser can
       // otherwise not tell it from a run where everybody came through, and saying

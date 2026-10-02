@@ -108,6 +108,7 @@ const syncOutcome = (over: Record<string, unknown> = {}, twilio: unknown = twili
     salesNotBookableUnexplained: 0,
     bookableFlipped: [],
     bookablePending: [],
+    bookableHeldByTwilio: [],
     bookableDeferredToNextRun: [],
     managersCreated: 0,
     managersLinked: 0,
@@ -1293,6 +1294,22 @@ describe("syncSalesforceNow (#491, #2071)", () => {
     // Counts, never addresses: an email in a URL is an identity in browser history.
     expect(redirected).not.toContain("@x");
     expect(redirected).not.toContain("undefined");
+  });
+
+  // #3028: an activation refused because Twilio holds them on Redistribute is its
+  // own fact, and not a calendar wait, so it gets its own line rather than being
+  // folded into one that would send the presser to Google.
+  it("says who Twilio is holding back from becoming bookable (#3028)", async () => {
+    rosterSync.runRosterSync.mockResolvedValueOnce(syncOutcome({ bookableHeldByTwilio: ["e@x", "f@x"] }));
+    let redirected = "";
+    try {
+      await syncSalesforceNow();
+    } catch (e) {
+      redirected = decodeURIComponent(String((e as Error).message));
+    }
+    expect(redirected).toContain("2 agents held out of the pool by the Twilio Redistribute tag");
+    expect(redirected).not.toContain("Google calendar");
+    expect(redirected).not.toContain("@x");
   });
 
   it("says when an activation was left for the next run (#2302)", async () => {
