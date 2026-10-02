@@ -69,10 +69,15 @@ import {
   planTierAlerts,
   tierStaffingKey,
   tierUnstaffedMessage,
-  tierNoSlotsMessage,
   tierRecoveredMessage,
 } from "@/lib/monitor/tier-staffing";
-import { loadTierAgentCounts, tierReadings } from "@/lib/monitor/tier-staffing-load";
+import {
+  loadTierAgentIds,
+  loadTierCauseReads,
+  tierAgentCounts,
+  tierReadings,
+} from "@/lib/monitor/tier-staffing-load";
+import { tierCauseAgents, tierNoSlotsPageText, type TierCauseInput } from "@/lib/monitor/tier-cause";
 import { closedExceptionDates, nextOpenDayEndMs } from "@/lib/booking/business-hours";
 import { loadCoverageAgents } from "@/lib/booking/business-hours-coverage-load";
 import { loadBusinessHours, loadBusinessHoursExceptions, type BusinessHours } from "@/lib/booking/business-hours-load";
@@ -1055,8 +1060,9 @@ export async function GET(req: NextRequest) {
         log.warn("monitor", { msg: "tier staffing skipped", why: "no open business day ahead" });
         return null;
       }
+      const tierAgentIds = await loadTierAgentIds();
       const readings = tierReadings({
-        agentCounts: await loadTierAgentCounts(),
+        agentCounts: tierAgentCounts(tierAgentIds),
         slotByCode: slotByCode!,
       });
       const plan = planTierAlerts(readings, windowEndMs);
@@ -1067,15 +1073,50 @@ export async function GET(req: NextRequest) {
         unmeasured: plan.unmeasured.length,
         window_end: new Date(windowEndMs).toISOString(),
       });
+      // Why a tier has no times (#3037), worked out per agent from three reads.
+      // `tierNoSlotsPageText` asks the cooldown FIRST, so the reads run only on a
+      // tick whose page will actually go out (they spend a budget four cron lanes
+      // share), and turns any failure into the old wording plus a clause saying
+      // the cause could not be read: never silence, never a guessed cause (L215,
+      // L11). The failure itself is logged with its error.
+      const loadCauseInput = async (tier: string): Promise<TierCauseInput> => {
+        if (workingHours === null) throw new Error("the agents' working hours could not be read");
+        if (buckets === null) throw new Error("the bucket list could not be read");
+        const agentIds = tierAgentIds.get(tier) ?? [];
+        const reads = await loadTierCauseReads({ tier, agentIds, buckets, nowMs: now, windowEndMs });
+        const hours = businessHours!;
+        return {
+          agents: tierCauseAgents({ agentIds, shiftFor, calendars: reads.calendars, busy: reads.busy }),
+          slot: {
+            durationMin: reads.eventType.duration_min,
+            bufferBeforeMin: reads.eventType.buffer_before_min,
+            bufferAfterMin: reads.eventType.buffer_after_min,
+            minNoticeMin: reads.eventType.min_notice_min,
+            dailyCap: reads.eventType.daily_cap,
+            businessHours: hours,
+          },
+          slotIntervalMin: reads.eventType.slot_interval_min,
+          businessHours: hours,
+          nowMs: now,
+          windowEndMs,
+        };
+      };
       for (const t of plan.page) {
+        const key = tierStaffingKey(t.tier);
+        const text =
+          t.kind === "unstaffed"
+            ? tierUnstaffedMessage(t)
+            : await tierNoSlotsPageText(t, {
+                isDue: () => isAlertDue(key, cooldownMs.empty_tier, now),
+                loadCauseInput: () => loadCauseInput(t.tier),
+                onCauseError: (err) => log.warn("monitor", { msg: "tier cause unreadable", tier: t.tier }, err),
+              });
+        // Inside its cooldown: the send would drop it, so it was never built.
+        if (text === null) continue;
         // alert-text-ok: our own copy from tier-staffing.ts, built from measured
-        // counts; no error text can reach it.
+        // counts and the diagnosis's own tallies; no error text can reach it.
         // alert-key: empty_tier:*
-        await sendThrottledAlert(
-          tierStaffingKey(t.tier),
-          cooldownMs.empty_tier,
-          t.kind === "unstaffed" ? tierUnstaffedMessage(t) : tierNoSlotsMessage(t),
-        ).catch(() => {});
+        await sendThrottledAlert(key, cooldownMs.empty_tier, text).catch(() => {});
       }
       // Driven by the MEASURED healthy tiers, never by "we did not page this one":
       // a tier whose reads failed is in neither list, so a recovery is never

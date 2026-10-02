@@ -42,6 +42,8 @@
  * Pure, and no `@/` imports, so the node suite drives it directly. The reads (the
  * roster, the cached slot rows, the org's week) belong to the monitor lane.
  */
+import { formatSlotDay, formatSlotTime } from "../booking/slot-label.ts";
+import type { DayTally, TierCauseReading } from "./tier-cause.ts";
 
 /** alert_state row key prefix. ONE constant, so the sender, the catalog and the
  *  preview cannot drift onto different keys. */
@@ -92,7 +94,7 @@ export type TierVerdict =
   /** Nobody is assigned to the tier at all. */
   | { kind: "unstaffed" }
   /** The tier has agents and is offering no time inside the window. */
-  | { kind: "no-slots"; agents: number }
+  | { kind: "no-slots"; agents: number; firstSlotMs: number | null }
   /** A read failed, so this tier is excluded from every conclusion. */
   | { kind: "unmeasured"; why: string };
 
@@ -123,7 +125,7 @@ export function judgeTier(r: TierReading, windowEndMs: number): TierVerdict {
   // somebody is staffed, and it is the reading that would otherwise fall through
   // to the softer of the two findings.
   if (agents.count <= 0) return { kind: "unstaffed" };
-  return { kind: "no-slots", agents: agents.count };
+  return { kind: "no-slots", agents: agents.count, firstSlotMs: slots.firstSlotMs };
 }
 
 /** One tier's page, carrying what it is so the sender picks the right sentence. */
@@ -133,6 +135,9 @@ export interface TierPage {
   kind: "unstaffed" | "no-slots";
   /** Agents on the tier; 0 for an unstaffed one. */
   agents: number;
+  /** The tier's first offered time past the window (#3037), or null when it is
+   *  offering nothing at all. Always null on an unstaffed page. */
+  firstSlotMs: number | null;
 }
 
 export interface TierAlertPlan {
@@ -172,8 +177,9 @@ export function planTierAlerts(readings: TierReading[], windowEndMs: number): Ti
     const v = judgeTier(r, windowEndMs);
     if (v.kind === "unmeasured") unmeasured.push(r.tier);
     else if (v.kind === "serving") recovered.push({ tier: r.tier, label: r.label });
-    else if (v.kind === "unstaffed") page.push({ tier: r.tier, label: r.label, kind: "unstaffed", agents: 0 });
-    else page.push({ tier: r.tier, label: r.label, kind: "no-slots", agents: v.agents });
+    else if (v.kind === "unstaffed")
+      page.push({ tier: r.tier, label: r.label, kind: "unstaffed", agents: 0, firstSlotMs: null });
+    else page.push({ tier: r.tier, label: r.label, kind: "no-slots", agents: v.agents, firstSlotMs: v.firstSlotMs });
   }
   return { page, recovered, unmeasured, measuredAny: page.length + recovered.length > 0 };
 }
@@ -203,27 +209,125 @@ export function tierUnstaffedMessage(t: { tier: string; label: string }): string
   );
 }
 
+/** The zone a page renders a time in, named in the text as ET, as the other
+ *  monitor pages do. */
+const ALERT_ZONE = "America/New_York";
+
+/** "Mon, Oct 5 at 11:30am ET", the house spelling the other pages use. */
+function etWhen(ms: number): string {
+  const iso = new Date(ms).toISOString();
+  return `${formatSlotDay(iso, ALERT_ZONE)} at ${formatSlotTime(iso, ALERT_ZONE)} ET`;
+}
+
+const capitalise = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/** What a day's state is called in a sentence. */
+const STATE_WORDS = {
+  slate: "fully booked with Slate calls",
+  outside: "held by other meetings or time off",
+  open: "showing an opening the offered times do not have yet",
+} as const;
+
+/**
+ * One sentence about one open day: how many of the agents work it, and what
+ * stops each of the working ones taking a call.
+ *
+ * `others` is set when some agents were left out because their sync stopped, so
+ * every count says "of the other N" rather than reading as the whole tier.
+ */
+function daySentence(d: DayTally, others: boolean): string {
+  const pool = d.off + d.slate + d.outside + d.open;
+  const working = pool - d.off;
+  const of = others ? `of the other ${pool}` : `of ${pool}`;
+  const day = capitalise(d.label);
+  if (working === 0) {
+    if (pool === 1) return `${day}, ${others ? "the other agent" : "the one agent"} does not work.`;
+    return `${day}, none of the ${others ? "other " : ""}${pool} works.`;
+  }
+  let who: string;
+  if (working < pool) who = `only ${working} ${of} ${working === 1 ? "works" : "work"}`;
+  else if (pool === 1) who = others ? "the other agent works" : "the one agent works";
+  else if (pool === 2) who = others ? "both of the other 2 work" : "both work";
+  else who = others ? `all the other ${pool} work` : `all ${pool} work`;
+  const parts = (["slate", "outside", "open"] as const).filter((k) => d[k] > 0);
+  if (parts.length === 1) {
+    let subject: string;
+    if (working === 1) subject = "they are";
+    else if (working === 2) subject = "both are";
+    else if (working === pool) subject = "every one is";
+    else subject = `all ${working} are`;
+    return `${day}, ${who}, and ${subject} ${STATE_WORDS[parts[0]]}.`;
+  }
+  const items = parts.map((k) => `${d[k]} ${d[k] === 1 ? "is" : "are"} ${STATE_WORDS[k]}`);
+  const list = `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+  return `${day}, ${who}: ${list}.`;
+}
+
+/** Whose sync has stopped, as a sentence, or null when nobody's has. */
+function syncSentence(stopped: number, total: number): string | null {
+  if (stopped === 0) return null;
+  let whom: string;
+  if (stopped < total) whom = `${stopped} of the ${total} agents`;
+  else whom = total === 1 ? "its only agent" : `all ${total} agents`;
+  return `The calendar sync has stopped for ${whom}, so their busy times are out of date and should be repaired first.`;
+}
+
 /**
  * The tier has agents and none of them is offering a time.
  *
- * A different repair entirely, so a different sentence (L11). It names the count,
- * because one agent with a full calendar and nineteen with full calendars are not
- * the same problem.
+ * A different repair from an unstaffed tier entirely, so a different sentence
+ * (L11). Since #3037 it names the cause that ACTUALLY applies over the window,
+ * per day and with the agents' counts, and the tier's next offered time, rather
+ * than listing three possibilities for the reader to investigate. The cause is
+ * worked out by `diagnoseTierCause` from reads the lane makes only on a tick about
+ * to page.
+ *
+ * When those reads failed, the cause is UNMEASURED and the page keeps the three
+ * possibilities, plus one clause saying which applies could not be read. Never
+ * silence, and never a guessed cause (L215, L11). `cause` is required so `tsc`
+ * names every site that builds this page.
  */
-export function tierNoSlotsMessage(t: { tier: string; label: string; agents: number }): string {
+export function tierNoSlotsMessage(
+  t: { tier: string; label: string; agents: number; firstSlotMs: number | null },
+  cause: TierCauseReading,
+): string {
   // Every clause agrees with the count, including the ones several words away. A
   // shared sentence with "their calendars" in it reads as a plural claim about
   // one person, which is the "1 of 97 bookable agent" defect wearing a different
   // hat (L11, and the 2026-07-28 page this rule comes from).
   const one = t.agents === 1;
   const who = one ? "1 agent" : `${t.agents} agents`;
-  const whose = one ? "their calendar is full, their" : "their calendars are full, their";
-  return (
-    `The ${t.label} debt tier is offering no booking times before the end of the ` +
-    `next working day. It has ${who}, so this is not a staffing gap: ${whose} ` +
-    `working hours do not reach the window, or their calendar sync has stopped. ` +
-    `Leads asking for ${t.label} are being served by a lower tier until it clears.`
-  );
+  const tail = `Leads asking for ${t.label} are being served by a lower tier until it clears.`;
+  if (!cause.measured) {
+    const whose = one ? "their calendar is full, their" : "their calendars are full, their";
+    const next =
+      t.firstSlotMs === null
+        ? "It is offering no times anywhere in the booking window."
+        : `Its next offered time is ${etWhen(t.firstSlotMs)}.`;
+    return (
+      `The ${t.label} debt tier is offering no booking times before the end of the ` +
+      `next working day. It has ${who}, so this is not a staffing gap: ${whose} ` +
+      `working hours do not reach the window, or their calendar sync has stopped. ` +
+      `${next} Which of those applies could not be read on this tick. ${tail}`
+    );
+  }
+  const c = cause.cause;
+  const lead =
+    t.firstSlotMs === null
+      ? `The ${t.label} debt tier has no booking times anywhere in the booking window.`
+      : `The ${t.label} debt tier has no booking times until ${etWhen(t.firstSlotMs)}.`;
+  const sentences = [lead, `It has ${who}.`];
+  const sync = syncSentence(c.syncStopped, c.total);
+  if (sync) sentences.push(sync);
+  const others = c.syncStopped > 0;
+  if (c.total > c.syncStopped) for (const d of c.days) sentences.push(daySentence(d, others));
+  if (c.days.some((d) => d.open > 0)) {
+    sentences.push(
+      "An agent showing an opening means the offered times are behind the calendars, and the next recompute should bring them back.",
+    );
+  }
+  sentences.push(tail);
+  return sentences.join(" ");
 }
 
 /**
