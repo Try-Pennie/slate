@@ -24,7 +24,7 @@ is a report, not a gate.
 | The style gate | An em dash, en dash or emoji in new lines. |
 | The stale-main guard | A branch cut from a stale ref that carries another change's commits. |
 | The workflow-settings check | A workflow referencing a repo variable or secret that does not exist, which GitHub interpolates as the empty string rather than failing. |
-| `migration-drift` (CI) | Code shipping ahead of an unapplied migration. |
+| The migration drift check (CI, in `static-checks`) | Code shipping ahead of an unapplied migration. |
 | `security-scan` (CI) | A secret in the commits a push adds, not merely in the working tree. |
 | `merge-gap` (CI) | A commit pushed to a branch whose PR already merged, which would strand it. |
 | The `main-push-guard` (CI) | A direct push to main, or a merge of a red PR. **Detective**, not preventive: it runs after the push and pages, because native branch protection needs a paid plan. |
@@ -63,7 +63,7 @@ apply, a column that no longer exists) passes every gate here.
 
 What covers it instead, and it is a real set rather than a shrug:
 
-- the **`migration-drift`** job, so code cannot merge expecting schema that is not applied;
+- the **migration drift check** (in the `static-checks` job), so code cannot merge expecting schema that is not applied;
 - the **swallowed-error guards**, which is the class that made a broken query
   indistinguishable from an empty result, the thing that actually hurt (#277, #1629, #1641);
 - the **capped-read guards**, for the other way a query lies quietly;

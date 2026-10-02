@@ -32,13 +32,41 @@ jobs:
   #
   # Each job pays about 25s of fixed setup (checkout, pnpm, node, install), so
   # splitting trades billed minutes for wall time on purpose: roughly two extra
-  # billed minutes per run.
+  # billed minutes per run. The short checks are the exception, folded back into
+  # one job (below), because they finish well inside the longest leg anyway.
   #
   # None of these is named `ci`. Exactly one check carries that name (the fan-in),
   # because main-push-guard.yml resolves whether a merge was green by selecting
   # check runs literally named `ci`. Pinned by scripts/test-ci-workflow.ts.
-  typecheck:
-    timeout-minutes: 10  # measured max 43s projected
+  #
+  # The short checks, in one job (typecheck, lint, the production audit and the
+  # migration drift check). Each took under a minute as its own job, and every job
+  # is billed as at least a whole minute plus about 25s of its own setup, so as
+  # three jobs they cost about 2,400 billed minutes a month more than this does.
+  # Run in sequence they take about 100s, still inside node-tests, so nothing
+  # waits longer. Pinned by scripts/test-ci-workflow.ts.
+  #
+  # A step stops the job at its first failure by default, which would let a type
+  # error hide every lint finding and the drift verdict. So each check after the
+  # first runs `if: !cancelled()`, and one push reports all of them. The typecheck
+  # and lint also need the install to have worked, or they would only report that
+  # node_modules is missing.
+  #
+  # The migration drift check fails while any committed migration is unapplied on
+  # the remote DB, so code cannot merge expecting schema that is not there. Being
+  # in this job puts it inside the `ci` gate, which is what the migrations runbook
+  # has always called it. REQUIRES the SUPABASE_ACCESS_TOKEN and
+  # SUPABASE_DB_PASSWORD repo secrets: without them it fails loudly rather than
+  # passing green while checking nothing (#766).
+  #
+  # Its steps (and ONLY its steps) are skipped on dependabot/* PR branches.
+  # Dependabot runs never receive the repo secrets, so the check could only
+  # false-fail there, and Dependabot only edits package.json, lockfiles and Actions
+  # pins, never supabase/migrations. head_ref is set only on pull_request events and
+  # is empty on a push to main, so main still runs the real check. The skip sits on
+  # the steps rather than the job so the typecheck and lint still run on those PRs.
+  static-checks:
+    timeout-minutes: 10  # sum of the three former jobs' measured maxes (43s, 47s, 19s)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -53,6 +81,7 @@ jobs:
           cache: pnpm
 
       - name: Install
+        id: install
         run: pnpm install --frozen-lockfile
 
       # Fail the build on a NEW high (or critical) advisory in a production
@@ -70,40 +99,76 @@ jobs:
       # a reason and an issue that removes it again, or it becomes a standing
       # false assurance.
       #
-      # It rides with the typecheck rather than getting its own job: it is a 1s
+      # It rides in this job rather than getting its own: it is a 1s
       # step, and a job of its own would pay 25s of setup to run it.
       - name: Audit production dependencies
         run: pnpm audit --prod --audit-level=high
 
       - name: Typecheck
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: pnpm exec tsc --noEmit
 
-  lint:
-    timeout-minutes: 10  # measured max 47s projected
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
-        with:
-          version: 10
-
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
-        with:
-          node-version: 24
-          cache: pnpm
-
-      - name: Install
-        run: pnpm install --frozen-lockfile
-
       - name: Lint
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: pnpm lint
 
-  # The node suites only. `pnpm test` runs this AND vitest, which is what the
-  # pre-push gate wants locally; here vitest is its own sharded leg.
-  #
-  # At about 106s this is the critical path after the split, so it is the next
-  # thing to shard if CI needs to get faster again.
+      # #1437: the CLI DOWNLOAD is its own upstream, and it hung up its socket
+      # three times in a row on 2026-08-12, failing the job (and so skipping the
+      # deploy) before any of our code ran. Actions has no native step retry, so
+      # the first attempt is allowed to fail and a second one runs only if it did.
+      # If the second also fails the job goes red, which is the point: this is a
+      # bounded retry, not a way to proceed without the CLI.
+      - uses: supabase/setup-cli@ab058987d8d6c725971f6cf9d0b5c98467e30bd1 # v1
+        id: setup-supabase-cli
+        continue-on-error: true
+        if: ${{ !cancelled() && ! startsWith(github.head_ref, 'dependabot/') }}
+        with:
+          # Pinned (not `latest`) so the step is deterministic: `latest`
+          # resolves over the network and intermittently 502s, red-flagging CI.
+          # Bump deliberately; this version is known-good for link + migration list.
+          version: 2.84.2
+      - name: Retry the Supabase CLI install (the download hung up, #1437)
+        id: retry-supabase-cli
+        if: ${{ !cancelled() && steps.setup-supabase-cli.outcome == 'failure' && ! startsWith(github.head_ref, 'dependabot/') }}
+        uses: supabase/setup-cli@ab058987d8d6c725971f6cf9d0b5c98467e30bd1 # v1
+        with:
+          version: 2.84.2
+      # #1433: the parse runs as a node script with a test suite rather than inline
+      # awk. It imports local modules and nothing from node_modules, so it does not
+      # need the install above and still runs when that failed.
+      # Only once one install attempt worked: with no CLI the script would just
+      # report that `supabase` is missing, after its retry ladder had spent minutes
+      # on it. The step stays red either way, because the failed retry already is.
+      - name: Check for unapplied migrations
+        if: ${{ !cancelled() && ! startsWith(github.head_ref, 'dependabot/') && (steps.setup-supabase-cli.outcome == 'success' || steps.retry-supabase-cli.outcome == 'success') }}
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: |
+          # #766: this used to `exit 0` here, so a missing secret made the job pass green
+          # in ~9s having verified nothing, while claiming to guard against code merging
+          # ahead of its schema. A check that can pass while doing nothing is worse than
+          # no check. Both secrets are required: linked without the DB password, the CLI
+          # still cannot list migrations.
+          if [ -z "$SUPABASE_ACCESS_TOKEN" ] || [ -z "$SUPABASE_DB_PASSWORD" ]; then
+            echo "::error::migration-drift cannot run: SUPABASE_ACCESS_TOKEN and/or SUPABASE_DB_PASSWORD is not set. Configure both repo secrets. Failing rather than passing green while checking nothing (#766)."
+            exit 1
+          fi
+          set -o pipefail
+          # #1437: the CLI calls moved INTO the script, so the bounded retry that
+          # stops a Supabase 502 red-flagging a good commit lives somewhere a suite
+          # can drive (scripts/lib/migration-drift-cli.ts). It retries only a CLI
+          # that could not ANSWER; a successful read is judged, never retried, so no
+          # retry can turn real drift into a pass.
+          #
+          # The parse is a second module with its own suite
+          # (scripts/lib/migration-drift.ts), not a rule in this block where nothing
+          # can test it (#1433). It reads only real table rows, so the CLI's own
+          # upgrade notice can never be read as an unapplied migration, and it treats
+          # reading NO rows as a failure rather than as an applied database.
+          node --experimental-strip-types scripts/check-migration-drift.ts \
+            --project-ref drukfvgaynzrralbzkzj
+
   node-tests:
     timeout-minutes: 15  # measured max 106s projected
     runs-on: ubuntu-latest
@@ -199,7 +264,7 @@ jobs:
   # shard fails the gate. Anything other than `success` fails: a cancelled or
   # skipped leg is not a pass.
   ci:
-    needs: [typecheck, lint, node-tests, vitest, build]
+    needs: [static-checks, node-tests, vitest, build]
     if: always()
     timeout-minutes: 5  # measured max 4s
     runs-on: ubuntu-latest
@@ -233,20 +298,6 @@ jobs:
   # `gh workflow run coverage.yml --ref <branch>`; the merge logic it exercises
   # still runs in `pnpm test` on every pull request.
 
-  # Fails if a committed migration hasn't been applied to the linked project, so
-  # code can't merge expecting schema that isn't pushed. REQUIRES the
-  # SUPABASE_ACCESS_TOKEN + SUPABASE_DB_PASSWORD repo secrets: without them the job
-  # fails loudly rather than passing green while checking nothing (#766).
-  #
-  # SKIPPED on dependabot/* PR branches. Dependabot runs never receive the repo
-  # secrets (GitHub withholds them from the dependabot context), so this job can
-  # only false-fail there, forcing a manual recreate-on-a-normal-branch dance to
-  # merge a routine bump. Dependabot only edits package.json / lockfiles / Actions
-  # pins, never supabase/migrations, so skipping is safe. head_ref is set only on
-  # pull_request events and is empty on push-to-main, so main still runs the real
-  # check; and the #766 fail-loud path below still guards every non-dependabot
-  # branch. main-push-guard reads only the `ci` check (not this one), so a skip
-  # here never affects the merge-to-main backstop.
   # --- Automated security scanning (#1042) ---------------------------------------
   #
   # The bespoke guard layer (capped reads, swallowed errors, migration invariants,
@@ -336,76 +387,19 @@ jobs:
           semgrep scan --config p/typescript --config p/secrets \
             --error --quiet --metrics=off --disable-version-check
 
-  migration-drift:
-    timeout-minutes: 10  # measured max 19s
-    if: ${{ ! startsWith(github.head_ref, 'dependabot/') }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      # #1437: the CLI DOWNLOAD is its own upstream, and it hung up its socket
-      # three times in a row on 2026-08-12, failing the job (and so skipping the
-      # deploy) before any of our code ran. Actions has no native step retry, so
-      # the first attempt is allowed to fail and a second one runs only if it did.
-      # If the second also fails the job goes red, which is the point: this is a
-      # bounded retry, not a way to proceed without the CLI.
-      - uses: supabase/setup-cli@ab058987d8d6c725971f6cf9d0b5c98467e30bd1 # v1
-        id: setup-supabase-cli
-        continue-on-error: true
-        with:
-          # Pinned (not `latest`) so the step is deterministic: `latest`
-          # resolves over the network and intermittently 502s, red-flagging CI.
-          # Bump deliberately; this version is known-good for link + migration list.
-          version: 2.84.2
-      - name: Retry the Supabase CLI install (the download hung up, #1437)
-        if: steps.setup-supabase-cli.outcome == 'failure'
-        uses: supabase/setup-cli@ab058987d8d6c725971f6cf9d0b5c98467e30bd1 # v1
-        with:
-          version: 2.84.2
-      # #1433: the parse runs as a node script with a test suite rather than inline
-      # awk. Pinned to the same major the rest of CI uses, and no pnpm install is
-      # needed: the script imports local modules and nothing from node_modules.
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
-        with:
-          node-version: 24
-      - name: Check for unapplied migrations
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
-        run: |
-          # #766: this used to `exit 0` here, so a missing secret made the job pass green
-          # in ~9s having verified nothing, while claiming to guard against code merging
-          # ahead of its schema. A check that can pass while doing nothing is worse than
-          # no check. Both secrets are required: linked without the DB password, the CLI
-          # still cannot list migrations.
-          if [ -z "$SUPABASE_ACCESS_TOKEN" ] || [ -z "$SUPABASE_DB_PASSWORD" ]; then
-            echo "::error::migration-drift cannot run: SUPABASE_ACCESS_TOKEN and/or SUPABASE_DB_PASSWORD is not set. Configure both repo secrets. Failing rather than passing green while checking nothing (#766)."
-            exit 1
-          fi
-          set -o pipefail
-          # #1437: the CLI calls moved INTO the script, so the bounded retry that
-          # stops a Supabase 502 red-flagging a good commit lives somewhere a suite
-          # can drive (scripts/lib/migration-drift-cli.ts). It retries only a CLI
-          # that could not ANSWER; a successful read is judged, never retried, so no
-          # retry can turn real drift into a pass.
-          #
-          # The parse is a second module with its own suite
-          # (scripts/lib/migration-drift.ts), not a rule in this block where nothing
-          # can test it (#1433). It reads only real table rows, so the CLI's own
-          # upgrade notice can never be read as an unapplied migration, and it treats
-          # reading NO rows as a failure rather than as an applied database.
-          node --experimental-strip-types scripts/check-migration-drift.ts \
-            --project-ref drukfvgaynzrralbzkzj
-
   # Deploy to the slate Worker on every push to main, after ci passes. Skips
   # (passes) until the CLOUDFLARE_API_TOKEN secret is set; run pnpm cf:deploy
   # locally in the meantime. The NEXT_PUBLIC_* values are public (inlined into
   # the client bundle); set the publishable key as a repo variable.
   #
-  # Also needs migration-drift (#482): deploys do NOT apply migrations (that stays
-  # a human `supabase db push` step, see docs/migrations-runbook.md). If a migration
-  # is still unapplied when a merge reaches main, this dependency fails the deploy
-  # loudly instead of shipping a feature whose schema is missing. Under the runbook
-  # the migration is applied before merge, so migration-drift is already green here.
+  # Also needs static-checks, which runs the migration drift check (#482): deploys
+  # do NOT apply migrations (that stays a human `supabase db push` step, see
+  # docs/migrations-runbook.md). If a migration is still unapplied when a merge
+  # reaches main, this dependency fails the deploy loudly instead of shipping a
+  # feature whose schema is missing. It is named here as well as reached through
+  # `ci`, so taking it out of the fan-in still could not ship code ahead of its
+  # schema. Under the runbook the migration is applied before merge, so the check
+  # is already green here.
   deploy:
     # 20, not the 15 its siblings get: the post-deploy probe POLLS for up to
     # DEFAULT_VERSION_TIMEOUT_MS (240s) waiting for Cloudflare to serve the new
@@ -414,7 +408,7 @@ jobs:
     # would read as a hung deploy rather than as propagation never completing.
     # Pinned against the probe's own constant by scripts/test-workflow-timeouts.ts.
     timeout-minutes: 20  # measured max 103s, of which the probe may poll 240s
-    needs: [ci, migration-drift]
+    needs: [ci, static-checks]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:

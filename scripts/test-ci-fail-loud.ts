@@ -59,8 +59,15 @@ assert(
 // regex stops matching, which is the same pass-while-checking-nothing bug this file
 // exists to prevent. Assert on the job, so a rewrite that drops the guard entirely is
 // still caught.
-const migJob = ci.match(/\n {2}migration-drift:\n([\s\S]*?)(?=\n {2}\w[\w-]*:\n|$)/);
-assert(migJob != null, "migration-drift job still exists in ci.yml (#766)");
+//
+// Found by what it RUNS, not by name: since the drift check shares a job with the
+// typecheck and lint, the job is named for all three, and a name match would stop
+// looking at the drift check the day that job is renamed.
+const migJob = [...ci.matchAll(/\n {2}([\w-]+):\n([\s\S]*?)(?=\n {2}\w[\w-]*:\n|$)/g)]
+  .find((m) => /scripts\/check-migration-drift\.ts/.test(m[2]))
+  ?.slice(1);
+assert(migJob != null, "a job in ci.yml still runs the migration drift check (#766)");
+const migJobName = migJob?.[0] ?? "";
 const migBody = codeOnly(migJob?.[1] ?? "");
 assert(migBody.length > 0, "migration-drift job body was actually parsed (#766)");
 
@@ -91,7 +98,7 @@ const deployJob = ci.match(/\n {2}deploy:\n([\s\S]*?)(?=\n {2}\w[\w-]*:\n|$)/);
 assert(deployJob != null, "deploy job still exists in ci.yml (#482)");
 const deployNeeds = deployJob?.[1].match(/(?:^|\n)\s*needs:\s*(.+)/)?.[1] ?? "";
 assert(
-  /\bmigration-drift\b/.test(deployNeeds),
+  migJobName.length > 0 && new RegExp(`\\b${migJobName}\\b`).test(deployNeeds),
   "deploy depends on migration-drift so main cannot ship code ahead of unapplied schema (#482)",
 );
 assert(/\bci\b/.test(deployNeeds), "deploy still depends on ci (#482)");

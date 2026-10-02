@@ -18,6 +18,44 @@ import { assert, finish } from "./lib/harness.ts";
 const ROOT = join(import.meta.dirname, "..");
 const ci = readFileSync(join(ROOT, ".github", "workflows", "ci.yml"), "utf8");
 
+const jobsBlock = ci.match(/^jobs:\n((?:[ \t]+.*\n|\n)*)/m)?.[1] ?? "";
+assert(jobsBlock.trim().length > 0, "ci.yml has a `jobs:` block");
+
+const jobNames = [...jobsBlock.matchAll(/^ {2}([\w-]+):$/gm)].map((m) => m[1]);
+assert(jobNames.length > 0, "the jobs in ci.yml are readable");
+
+/**
+ * The text of one job, from its key to the next top-level job key (or EOF).
+ * Line-based rather than a regex: every job key sits at the same two-space
+ * indent as the lines inside its neighbours, so an `(?:[ \t]+.*\n)*` block
+ * match runs to the end of the file and hands back every job at once.
+ */
+function jobBlock(name: string): string {
+  const lines = jobsBlock.split("\n");
+  const start = lines.findIndex((l) => l === `  ${name}:`);
+  if (start < 0) return "";
+  const rest = lines.slice(start + 1);
+  const end = rest.findIndex((l) => /^ {2}[\w-]+:$/.test(l));
+  return (end < 0 ? rest : rest.slice(0, end)).join("\n");
+}
+
+/** A job's steps, one string each, split on the six-space `- ` that opens a step. */
+function jobSteps(block: string): string[] {
+  const body = block.split(/^ {4}steps:\n/m)[1] ?? "";
+  return body.split(/^(?= {6}- )/m).filter((s) => /^ {6}- /.test(s));
+}
+
+/** The job-level lines of a job, i.e. everything before its `steps:`. */
+function jobHeader(block: string): string {
+  return block.split(/^ {4}steps:\n/m)[0] ?? "";
+}
+
+// The job that runs the drift check, found by what it RUNS rather than by a name,
+// so a rename cannot take the drift assertions below off the job that matters.
+const driftJobs = jobNames.filter((n) => /scripts\/check-migration-drift\.ts/.test(jobBlock(n)));
+assert(driftJobs.length === 1, `exactly one job runs the migration drift check (found ${JSON.stringify(driftJobs)})`);
+const driftJob = driftJobs[0] ?? "";
+
 // The `on:` block, up to the next top-level key.
 const onBlock = ci.match(/^on:\n((?:[ \t]+.*\n|\n)*)/m)?.[1] ?? "";
 assert(onBlock.trim().length > 0, "ci.yml has an `on:` trigger block");
@@ -69,13 +107,35 @@ assert(
 // without the manual recreate-on-a-normal-branch dance. This must be scoped to
 // dependabot ONLY: a blanket skip (or reintroducing the #766 `exit 0` on missing
 // secrets) would let real drift merge unchecked on normal branches.
-const migBlock =
-  ci.match(/^  migration-drift:\n((?:[ \t]+.*\n|\n)*?)^  deploy:/m)?.[1] ?? "";
-assert(migBlock.trim().length > 0, "the migration-drift job exists in ci.yml");
+//
+// The skip sits on the drift STEPS, never on the job, because that job also runs
+// the typecheck and lint, which Dependabot PRs need as much as any other. A
+// job-level skip would also make the job read as `skipped` to the fan-in, which
+// fails every Dependabot PR outright.
+const migBlock = jobBlock(driftJob);
+assert(migBlock.trim().length > 0, "the job that runs the migration drift check exists in ci.yml");
+const DEPENDABOT_SKIP = /if:.*!\s*startsWith\(github\.head_ref,\s*'dependabot\//;
 assert(
-  /if:.*startsWith\(github\.head_ref,\s*'dependabot\//.test(migBlock),
-  "migration-drift is skipped only on dependabot/* PR branches (head_ref is empty on push-to-main, so main still runs the real check)",
+  !/dependabot/.test(jobHeader(migBlock)),
+  "the dependabot skip is not on the job itself (it would skip the typecheck and lint too, and fail the fan-in on every Dependabot PR)",
 );
+const driftSteps = jobSteps(migBlock).filter((s) =>
+  /supabase\/setup-cli@|check-migration-drift\.ts/.test(s),
+);
+assert(driftSteps.length === 3, `the two CLI install attempts and the check are found as steps (found ${driftSteps.length})`);
+for (const step of driftSteps) {
+  assert(
+    DEPENDABOT_SKIP.test(step),
+    `every migration drift step is skipped on dependabot/* PR branches, and only there (head_ref is empty on push-to-main, so main still runs the real check): ${step.split("\n")[0].trim()}`,
+  );
+}
+const otherSteps = jobSteps(migBlock).filter((s) => !driftSteps.includes(s));
+for (const step of otherSteps) {
+  assert(
+    !/dependabot/.test(step),
+    `a step that is not part of the drift check still runs on Dependabot PRs: ${step.split("\n")[0].trim()}`,
+  );
+}
 // #766 regression guard: the skip must not have weakened the fail-loud path.
 // On any non-dependabot branch with missing secrets, the job must still exit 1
 // rather than pass green having checked nothing.
@@ -100,7 +160,7 @@ assert(
   "#1437: the first setup-cli attempt is allowed to fail so a second can run",
 );
 assert(
-  new RegExp(`if: steps\\.${setupId}\\.outcome == 'failure'`).test(migBlock),
+  new RegExp(`if:.*steps\\.${setupId}\\.outcome == 'failure'`).test(migBlock),
   "#1437: the retry runs ONLY when the first attempt failed (never unconditionally)",
 );
 assert(
@@ -137,27 +197,7 @@ assert(
 //     selecting `.check_runs[] | select(.name == "ci")` on the PR head (twice);
 //   - the deploy job below gates on `needs: [ci, ...]`.
 // So the fan-in job's key must stay `ci`, and it must FAIL when any leg fails.
-const jobsBlock = ci.match(/^jobs:\n((?:[ \t]+.*\n|\n)*)/m)?.[1] ?? "";
-assert(jobsBlock.trim().length > 0, "ci.yml has a `jobs:` block");
-
-const jobNames = [...jobsBlock.matchAll(/^ {2}([\w-]+):$/gm)].map((m) => m[1]);
-assert(jobNames.length > 0, "the jobs in ci.yml are readable");
 assert(jobNames.includes("ci"), "#1592: a job literally named `ci` still exists (main-push-guard selects that check name)");
-
-/**
- * The text of one job, from its key to the next top-level job key (or EOF).
- * Line-based rather than a regex: every job key sits at the same two-space
- * indent as the lines inside its neighbours, so an `(?:[ \t]+.*\n)*` block
- * match runs to the end of the file and hands back every job at once.
- */
-function jobBlock(name: string): string {
-  const lines = jobsBlock.split("\n");
-  const start = lines.findIndex((l) => l === `  ${name}:`);
-  if (start < 0) return "";
-  const rest = lines.slice(start + 1);
-  const end = rest.findIndex((l) => /^ {2}[\w-]+:$/.test(l));
-  return (end < 0 ? rest : rest.slice(0, end)).join("\n");
-}
 
 const fanIn = jobBlock("ci");
 const needsLine = fanIn.match(/^\s*needs:\s*(.+)$/m)?.[1] ?? "";
@@ -173,7 +213,6 @@ assert(fanInNeeds.length > 0, "#1592: the `ci` job is a fan-in with a `needs` li
 const FAN_IN_EXEMPT: Record<string, string> = {
   ci: "the fan-in itself",
   deploy: "runs AFTER the gate (needs: [ci, migration-drift]), it is not one of its legs",
-  "migration-drift": "gates the deploy directly and is skipped on dependabot PRs, so it cannot be a leg of a check that must conclude on every PR",
   "security-scan": "detective by design (#1042): its rule packs are fetched at run time, so a newly published rule must not block a deploy",
 };
 
@@ -235,6 +274,63 @@ assert(
   /needs:\s*\[[^\]]*\bci\b[^\]]*\]/.test(jobBlock("deploy")),
   "#1592: deploy still needs the `ci` fan-in (and so, transitively, every leg)",
 );
+
+// --- the short checks share one job -------------------------------------------
+// The typecheck, lint and migration drift check each took under a minute, and each
+// job is billed as at least a whole minute plus about 25s of its own setup, so as
+// three jobs they cost about 2,400 billed minutes a month more than as one. One job
+// still finishes well inside the node suite, so nothing waits longer for it.
+{
+  const staticJob = jobBlock(driftJob);
+  assert(/pnpm exec tsc --noEmit/.test(staticJob), "the typecheck runs in the same job as the drift check");
+  assert(/run: pnpm lint\b/.test(staticJob), "the lint runs in the same job as the drift check");
+  assert(/pnpm audit --prod --audit-level=high/.test(staticJob), "#1026: the production dependency audit still runs");
+  for (const old of ["typecheck", "lint", "migration-drift"]) {
+    assert(!jobNames.includes(old), `the separate \`${old}\` job is gone (its steps live in \`${driftJob}\`)`);
+  }
+
+  // Now that the drift check is inside the gate, an unapplied migration turns `ci`
+  // red, which is what the migrations runbook has always called the merge gate.
+  assert(fanInNeeds.includes(driftJob), `the job running the drift check (\`${driftJob}\`) is a leg of the \`ci\` fan-in`);
+
+  // Steps stop at the first failure by default, so a type error would hide every
+  // lint finding and the drift verdict. Each check after the first runs unless the
+  // run was cancelled, so one push reports all three.
+  const steps = jobSteps(staticJob);
+  const named = (re: RegExp) => steps.find((s) => re.test(s)) ?? "";
+  for (const [label, re] of [
+    ["typecheck", /pnpm exec tsc --noEmit/],
+    ["lint", /run: pnpm lint\b/],
+    ["first CLI install", /id: setup-supabase-cli/],
+    ["drift check", /check-migration-drift\.ts/],
+  ] as const) {
+    assert(/if:.*!cancelled\(\)/.test(named(re)), `the ${label} step still runs after an earlier check in the job failed`);
+  }
+  // The drift check runs after an earlier failure, but never with no CLI: when
+  // both install attempts failed it would only report that `supabase` is missing,
+  // after its own retry ladder spent minutes asking a binary that is not there.
+  const check = named(/check-migration-drift\.ts/);
+  assert(
+    /steps\.setup-supabase-cli\.outcome == 'success'/.test(check) &&
+      /steps\.retry-supabase-cli\.outcome == 'success'/.test(check),
+    "the drift check runs only once one of the two CLI install attempts succeeded",
+  );
+  assert(/^\s+id: retry-supabase-cli$/m.test(named(/Retry the Supabase CLI install/)), "the retry step carries the id the check reads");
+
+  // ...but not on a failed install, where tsc and eslint would only report that
+  // node_modules is missing.
+  for (const re of [/pnpm exec tsc --noEmit/, /run: pnpm lint\b/]) {
+    assert(/steps\.install\.outcome == 'success'/.test(named(re)), "the typecheck and lint run only once the install succeeded");
+  }
+  assert(/^\s+id: install$/m.test(named(/pnpm install --frozen-lockfile/)), "the install step carries the id the later steps read");
+
+  // #482: deploy waits on the drift check by name as well as through `ci`, so
+  // dropping the job from the fan-in still cannot ship code ahead of its schema.
+  assert(
+    new RegExp(`needs:\\s*\\[[^\\]]*\\b${driftJob}\\b[^\\]]*\\]`).test(jobBlock("deploy")),
+    `#482: deploy needs \`${driftJob}\` directly`,
+  );
+}
 
 // --- the guard's literal check name, read from the guard itself --------------
 // The coupling is across two files, so assert it from the OTHER side rather than

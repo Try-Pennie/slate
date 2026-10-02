@@ -12,11 +12,12 @@ rather than reasoning it out per PR.
 
 ## The safety nets (so a forgotten apply cannot ship silently)
 
-1. **Merge gate.** The CI `migration-drift` job runs `supabase migration list` and
-   fails the PR while any committed migration is unapplied on the remote DB. It
+1. **Merge gate.** The CI migration drift check (a step in the `static-checks`
+   job, so inside the `ci` gate) runs `supabase migration list` and fails the PR
+   while any committed migration is unapplied on the remote DB. It
    fail-closes if its secrets are missing (#766), so it cannot pass while checking
    nothing.
-2. **Deploy gate.** The `deploy` job `needs: [ci, migration-drift]` (#482), so a
+2. **Deploy gate.** The `deploy` job `needs: [ci, static-checks]` (#482), so a
    push to main will not deploy code while a migration is unapplied.
 3. **Prod monitor.** The monitor cron pages (`migration_version_lag`) if the
    deployed code ships a migration the live DB has not applied, including one
@@ -53,7 +54,7 @@ rather than reasoning it out per PR.
    marks the entry `pending`, so the lock says which of the two things it means instead of
    conflating them. Nothing already recorded as a fact is ever demoted.
 
-   Commit the lock with the migration, then push. The `migration-drift` check will fail
+   Commit the lock with the migration, then push. The `static-checks` check (and so `ci`) will fail
    with `Committed migrations are not applied to the remote DB. Run: supabase db push`.
    That is expected: the migration is not on prod yet.
 4. **Apply to prod:**
@@ -96,12 +97,12 @@ rather than reasoning it out per PR.
    already applied migration is done the same way: change the file, re-run this, and the
    lock's diff is what a reviewer sees.
 
-   **Forgetting this step is caught rather than assumed** (#1642). `migration-drift` reads
+   **Forgetting this step is caught rather than assumed** (#1642). The drift check reads
    the remote, so it is the only check that can see a migration applied while the lock
    still calls it an intention, and it refuses the merge with the command to run. That is
    what lets step 3 record an intention safely: the intention cannot survive to main.
 6. **Re-run the merge gate.** `gh run rerun <run-id> --failed`, then confirm the
-   `migration-drift` check is green (`gh pr checks <pr>`).
+   `static-checks` and `ci` checks are green (`gh pr checks <pr>`).
 7. **Merge.** The push to main deploys the code, now that its schema is already in
    place.
 8. **Verify.** On the next monitor tick the `migration-drift` log line should read
@@ -136,7 +137,7 @@ rather than reasoning it out per PR.
   change and run this same procedure.
 - **Credentials.** `supabase db push` needs the linked project (ref
   `drukfvgaynzrralbzkzj`) and the DB password. The same `SUPABASE_ACCESS_TOKEN` +
-  `SUPABASE_DB_PASSWORD` are set as repo secrets for the CI `migration-drift` job.
+  `SUPABASE_DB_PASSWORD` are set as repo secrets for the CI drift check.
 
 ## Writing a function with a pinned search_path (#1126)
 
@@ -386,7 +387,7 @@ no down-migration is ever run.
 **Where the real risk actually lives.** The failure this project has repeatedly
 hit is not a bad rollback; it is **drift**, code deploying ahead of the schema it
 needs (0032 #214, 0037 #276, 0053 #439, 0055 #516). That gap is covered by the
-safety nets listed above (the `migration-drift` merge gate, the `deploy` gate, the
+safety nets listed above (the CI drift check merge gate, the `deploy` gate, the
 prod `migration_version_lag` monitor, and the `SHIPPED_MIGRATION_VERSION` guard),
 not by rollback tests. Effort on migration reliability belongs there, not on a
 down-migration harness.

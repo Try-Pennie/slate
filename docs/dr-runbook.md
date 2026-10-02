@@ -78,7 +78,7 @@ fix can reconstruct it.
    window**.
 3. **Check the migration version.** Restoring to a point before a migration was
    applied puts the database *behind* the deployed Worker, which fails the
-   `migration-drift` job and pages the production monitor. If the restore target
+   migration drift check in CI and pages the production monitor. If the restore target
    predates the newest applied migration, plan to re-apply the migrations
    immediately after the restore (see `docs/migrations-runbook.md`) and do not
    deploy anything in between.
