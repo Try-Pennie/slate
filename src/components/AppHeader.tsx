@@ -66,8 +66,8 @@ export async function AppHeader({
   // from /me/time-off, so they don't get the tab.
   const r = role ?? "";
   const consoleHidden = consoleHiddenFor(role);
-  // Approval queue: managers and up. The console: same, but held back until the
-  // launch flag flips, so today it is super admins only; #2102 decides when it opens.
+  // Approval queue: managers and up. The console: same, behind the launch flag,
+  // which production turned on 2026-10-02 (#2102), so managers see it too.
   const showTimeOff = isRole(r) && atLeast(r, "manager");
   const showAdmin = !consoleHidden && isRole(r) && canManageAgents(r);
   // Persistent banner so an impersonating admin always knows + can get out, plus
