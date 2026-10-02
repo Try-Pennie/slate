@@ -474,16 +474,20 @@ function codesOf(
 }
 
 // Review of #3021: the page names the booker's window from the same constant
-// the booker uses, so the wording cannot keep saying three if the window changes.
+// the booker uses, so the wording cannot keep naming a length the booker no
+// longer offers. Judged on rendered output, not on the file's text.
 {
+  const { OFFERED_OPEN_DAYS } = await import("../src/lib/availability/bookable-days.ts");
+  const { offeredWindowPhrase } = await import("../src/lib/admin/bucket-supply-copy.ts");
+  const phrase = offeredWindowPhrase(OFFERED_OPEN_DAYS);
+  assert(supplyLegendEntry("overflows").meaning.includes(phrase), "the overflow legend names the booker's window");
+  assert(supplyLegendEntry("other-days").meaning.includes(phrase), "the other days legend names the booker's window");
+  eq(offeredWindowPhrase(1), "the next open day", "one day reads as one, not as one open days");
+  eq(offeredWindowPhrase(2), "the next two open days", "two days in words");
+  eq(offeredWindowPhrase(12), "the next 12 open days", "past the words, a numeral");
   const { readFileSync } = await import("node:fs");
   const copySrc = readFileSync(new URL("../src/lib/admin/bucket-supply-copy.ts", import.meta.url), "utf8");
   assert(!/\b(three|3) open days\b/.test(copySrc), "the copy spells no window length of its own");
-  assert(/OFFERED_OPEN_DAYS/.test(copySrc), "the copy reads the booker's window constant");
-  assert(
-    /next three open days/.test(supplyLegendEntry("overflows").meaning),
-    "and today it still reads the next three open days",
-  );
 }
 
 finish();
