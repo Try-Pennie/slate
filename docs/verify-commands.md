@@ -1461,6 +1461,12 @@ and are easy to get wrong:
 warehouse has no question it answers. Rows of deactivated users are deleted by the
 lane. Prove the live half with `pnpm verify:advisor-photos` (it writes nothing).
 
+`pnpm verify:advisor-photos-sql` is its database half: it applies migration 0156 to a
+throwaway Postgres in Docker and proves the base64 round trip (bytes read back hash to
+what was written), every check constraint, row level security and the revoke from the
+browser roles (against a control table the default privileges do reach), and the
+cascade on a deleted user. With no Docker it exits 2, UNMEASURED.
+
 **Run it after applying migration 0156 and before trusting the first morning run,
 and again after the subject changes** (Dan moves it to a non human admin mailbox at
 rollout).

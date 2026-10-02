@@ -11,7 +11,8 @@
 -- WHY BASE64 TEXT, not bytea. supabase-js has no bytea support: a Uint8Array is
 -- serialised as a JSON object on write, and a read comes back as a hex string. The
 -- refresh stores standard base64 and the readers decode it, so bytes in equal
--- bytes out, which scripts/test-advisor-photo-migration.ts pins against this file.
+-- bytes out, which `pnpm verify:advisor-photos-sql` proves against this file in a
+-- real Postgres, along with every constraint and the revoke below.
 --
 -- WHAT A ROW MEANS. A row exists once the directory has been READ for that person.
 -- No row means never read, which every surface treats as its own state rather

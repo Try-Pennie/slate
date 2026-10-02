@@ -806,7 +806,7 @@ one's bound, are in `docs/verify-commands.md`.
 | `verify:parallel-run-readiness` | the preconditions of a trustworthy shadow run, each judged by the code that already owns it, including trypennie's key seen from production (exit 13, #2717) (every caller holds its own key since #2865, so exits 17 and 18 are retired), plus the low volume alarms' arming preconditions, reported without gating while they are disarmed (exits 14 to 16, #2767) |
 | `verify:pool-slot-parity` | the bucket codes sharing one availability pool really offer the same times |
 | `verify:table-drift` | production holds no table that no migration created |
-| `verify:advisor-photos` | the daily advisor photo refresh (#3027) against live Google, writes taken out; also why every face goes through `resolveAdvisorPhoto` |
+| `verify:advisor-photos`, `verify:advisor-photos-sql` | the photo refresh (#3027) against live Google with no writes, and migration 0156 in a real Postgres; why every face goes through `resolveAdvisorPhoto` |
 | `verify:agent-link-names` | migration 0155's advisor link names behave in a real Postgres (Docker): derived from the email username, the lowest free variant on a clash including a concurrent one, never released or reused, never shaped like a token |
 
 **The detail for every one of them, each exit code table, what it writes, which
