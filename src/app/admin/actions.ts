@@ -612,6 +612,14 @@ export async function createEventType(form: FormData): Promise<void> {
     );
   }
 
+  // A blank gap takes the column default; anything typed must read the same way
+  // the editor reads it.
+  const gapRaw = String(form.get("gap_min") ?? "").trim();
+  const gap = gapRaw === "" ? EVENT_TYPE_DEFAULTS.buffer_after_min : parseGapMin(gapRaw);
+  if (gap === null) {
+    redirect(`/admin/event-types${refusedQuery(GAP_REFUSAL)}`);
+  }
+
   const { data: created, error } = await db
     .from("event_types")
     .insert({
@@ -623,8 +631,8 @@ export async function createEventType(form: FormData): Promise<void> {
       duration_min: num(form, "duration_min", EVENT_TYPE_DEFAULTS.duration_min),
       // One gap sets both buffers: Slate pads only the call being offered, so a
       // buffer on one side alone still lets two calls touch (see setEventTypeGap).
-      buffer_before_min: num(form, "gap_min", EVENT_TYPE_DEFAULTS.buffer_before_min),
-      buffer_after_min: num(form, "gap_min", EVENT_TYPE_DEFAULTS.buffer_after_min),
+      buffer_before_min: gap,
+      buffer_after_min: gap,
       min_notice_min: num(form, "min_notice_min", EVENT_TYPE_DEFAULTS.min_notice_min),
       daily_cap: form.get("daily_cap") ? num(form, "daily_cap", 0) : null,
       slot_interval_min: num(
@@ -662,6 +670,8 @@ export async function createEventType(form: FormData): Promise<void> {
         EVENT_TYPE_DEFAULTS.slot_interval_min,
       ),
       min_notice_min: num(form, "min_notice_min", EVENT_TYPE_DEFAULTS.min_notice_min),
+      buffer_before_min: gap,
+      buffer_after_min: gap,
     },
   });
 
@@ -1278,6 +1288,18 @@ export async function setBookingHorizon(form: FormData): Promise<void> {
  *  typo that would close the booker for the day. */
 const MAX_GAP_MIN = 120;
 
+/** The one reading of a gap box, shared by the add form and the editor so the
+ *  same field cannot carry two contracts. Null for anything that is not a whole
+ *  number of minutes inside the bound; never NaN, which compares false and would
+ *  slip past a range check (L50). */
+function parseGapMin(raw: string): number | null {
+  if (!/^\d+$/.test(raw)) return null;
+  const n = Number(raw);
+  return n <= MAX_GAP_MIN ? n : null;
+}
+
+const GAP_REFUSAL = `The gap between calls has to be a whole number of minutes from 0 to ${MAX_GAP_MIN}.`;
+
 /**
  * Set the gap kept between two calls on one advisor.
  *
@@ -1299,12 +1321,9 @@ export async function setEventTypeGap(form: FormData): Promise<void> {
   if (!eventTypeId) {
     redirect(`${page}${refusedQuery("No event type was named.")}`);
   }
-  const raw = String(form.get("gap_min") ?? "").trim();
-  const gap = /^\d+$/.test(raw) ? Number(raw) : NaN;
-  if (!Number.isInteger(gap) || gap > MAX_GAP_MIN) {
-    redirect(
-      `${page}${refusedQuery(`The gap between calls has to be a whole number of minutes from 0 to ${MAX_GAP_MIN}.`)}`,
-    );
+  const gap = parseGapMin(String(form.get("gap_min") ?? "").trim());
+  if (gap === null) {
+    redirect(`${page}${refusedQuery(GAP_REFUSAL)}`);
   }
 
   // The current value, so the trail records what it was as well as what it became.

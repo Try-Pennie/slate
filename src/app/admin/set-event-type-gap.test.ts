@@ -200,6 +200,27 @@ describe("createEventType gap", () => {
     expect(row).toMatchObject({ buffer_before_min: 10, buffer_after_min: 10 });
   });
 
+  it.each(["-5", "7.5", "9999", "abc"])("refuses a gap of %j and creates nothing", async (gap) => {
+    let to = "";
+    try {
+      await createEventType(form({ name: "Consult", gap_min: gap }));
+    } catch (err) {
+      to = String((err as Error).message);
+    }
+    expect(to).toContain("error=");
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it("records the gap it created with in the trail", async () => {
+    await create({ name: "Consult", gap_min: "10" });
+    expect(recordAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "event_type.created",
+        details: expect.objectContaining({ buffer_before_min: 10, buffer_after_min: 10 }),
+      }),
+    );
+  });
+
   it("leaves both at the column default when the gap is left blank", async () => {
     const row = await create({ name: "Consult" });
     expect(row).toMatchObject({ buffer_before_min: 0, buffer_after_min: 0 });
