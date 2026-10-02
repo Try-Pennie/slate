@@ -11,6 +11,7 @@
 import { assert, eq, finish } from "./lib/harness.ts";
 import {
   PILOT_OFFER_INTERVAL_MS,
+  PILOT_OFFER_TIME_ZONE,
   pilotOfferSampleDue,
   offerSummary,
   readCalcomRoutedSlots,
@@ -84,6 +85,7 @@ function deps(over: Partial<Parameters<typeof runPilotOfferSample>[0]> = {}) {
   const d: Parameters<typeof runPilotOfferSample>[0] = {
     nowMs: NOW,
     bucketCode: "112",
+    calcomTimeZone: "America/New_York",
     lastSampledAtMs: async () => null,
     readCalcom: async () => {
       calls.calcom++;
@@ -115,7 +117,9 @@ function deps(over: Partial<Parameters<typeof runPilotOfferSample>[0]> = {}) {
     earliest_offered_at: at(21),
     offered_24h: 1,
     error: null,
-  }, "the cal.com row carries its earliest time and its count");
+    calcom_time_zone: "America/New_York",
+  }, "the cal.com row carries its earliest time, its count, and the zone it was asked in");
+  eq(slate.calcom_time_zone, null, "the Slate row carries no cal.com zone");
   eq(slate.system, "slate", "the Slate row is the second");
   eq([slate.earliest_offered_at, slate.offered_24h], [at(1), 3], "and carries Slate's");
 }
@@ -136,6 +140,7 @@ function deps(over: Partial<Parameters<typeof runPilotOfferSample>[0]> = {}) {
   const calcom = inserted[0]![0]!;
   eq([calcom.ok, calcom.offered_24h, calcom.earliest_offered_at], [false, null, null], "the failure is stored as unknown, never as zero times");
   eq(calcom.error, "fetch failed", "with the reason");
+  eq(calcom.calcom_time_zone, "America/New_York", "a failed cal.com read still records the zone it asked in");
 }
 {
   const { d, inserted } = deps({ readCalcom: async () => ({ status: 500, data: undefined }) });
@@ -176,6 +181,7 @@ const row = (system: "slate" | "calcom", minutes: number | null, count: number |
   earliest_offered_at: minutes === null ? null : new Date(Date.parse(sampleAt) + minutes * 60_000).toISOString(),
   offered_24h: count,
   error: minutes === null && count === null ? "cal.com answered 500" : null,
+  calcom_time_zone: system === "calcom" ? PILOT_OFFER_TIME_ZONE : null,
 });
 {
   const t1 = at(0);
@@ -205,7 +211,7 @@ const row = (system: "slate" | "calcom", minutes: number | null, count: number |
   const t = at(0);
   const s = summarisePilotOffers([
     { ...row("slate", 60, 10, t) },
-    { sampled_at: t, system: "calcom", bucket_code: "112", ok: true, earliest_offered_at: null, offered_24h: 0, error: null },
+    { sampled_at: t, system: "calcom", bucket_code: "112", ok: true, earliest_offered_at: null, offered_24h: 0, error: null, calcom_time_zone: "America/New_York" },
   ]);
   eq(s.calcom.medianOffered24h, 0, "an empty answer counts as zero times");
   eq(s.calcom.medianMinutesToFirst, null, "and has no wait to take a median of");
@@ -245,6 +251,40 @@ const row = (system: "slate" | "calcom", minutes: number | null, count: number |
   ]);
   eq(s.slate.medianMinutesToFirst, null, "an unreadable stored time gives no wait, rather than a NaN one");
   eq([s.paired, s.slateEarlier], [1, 0], "and never credits that system with the earlier time");
+}
+
+// --- #3002: samples taken before cal.com was asked in a time zone -------------------
+// Without a timeZone cal.com answered a truncated list, so those cal.com rows read
+// too low, and the Slate rows beside them would be compared against them. The whole
+// quarter hour is left out, and the report says how many.
+{
+  const old = at(-1);
+  const fixed = at(0);
+  const s = summarisePilotOffers([
+    row("slate", 60, 20, old),
+    { ...row("calcom", 600, 3, old), calcom_time_zone: null },
+    row("slate", 90, 23, fixed),
+    row("calcom", 10, 42, fixed),
+  ]);
+  eq(s.leftOutTruncated, 1, "the quarter hour read without a zone is counted as left out");
+  eq([s.slate.samples, s.calcom.samples], [1, 1], "and neither system's row from it is summarised");
+  eq([s.calcom.medianOffered24h, s.slate.medianOffered24h], [42, 23], "so the medians come only from the fixed read");
+  eq([s.paired, s.slateEarlier], [1, 0], "and it is not paired");
+  const text = pilotOffersReportLines({ ok: true, summary: s }).join("\n");
+  assert(text.includes("1 quarter hour") && text.includes("#3002"), "the report says how many were left out and why");
+}
+{
+  const s = summarisePilotOffers([row("slate", 90, 23, at(0)), row("calcom", 10, 42, at(0))]);
+  eq(s.leftOutTruncated, 0, "nothing is left out when every cal.com row carries a zone");
+  assert(!pilotOffersReportLines({ ok: true, summary: s }).join("\n").includes("#3002"), "and the report says nothing about it");
+}
+{
+  // Positive control: the same rows with the zone stripped must be left out, or the
+  // test above passes on a summary that never looks at the column.
+  const s = summarisePilotOffers([row("slate", 90, 23, at(0)), { ...row("calcom", 10, 42, at(0)), calcom_time_zone: null }]);
+  eq([s.leftOutTruncated, s.calcom.samples], [1, 0], "a cal.com row with no zone is left out");
+  const blank = summarisePilotOffers([row("slate", 90, 23, at(0)), { ...row("calcom", 10, 42, at(0)), calcom_time_zone: "" }]);
+  eq(blank.leftOutTruncated, 1, "and so is one whose zone is empty, since it says nothing about what was asked");
 }
 
 // --- the report's read -------------------------------------------------------------

@@ -223,7 +223,7 @@ async function readOffers(dates: string[]): Promise<PilotOffersRead> {
       return selectAllPages<PilotOfferRow>("pilot offer samples", (lo, hi) =>
         db
           .from("pilot_offer_samples")
-          .select("sampled_at, system, bucket_code, ok, earliest_offered_at, offered_24h, error")
+          .select("sampled_at, system, bucket_code, ok, earliest_offered_at, offered_24h, error, calcom_time_zone")
           .gte("sampled_at", from)
           .lt("sampled_at", to)
           .order("sampled_at")

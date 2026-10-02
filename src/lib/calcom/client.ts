@@ -450,19 +450,26 @@ export async function calcomTierBookingCounts(fromIso: string, toIso: string): P
  * 2026-09-30: the form's newest response was unchanged by the call). Returns the
  * raw status and body for `readCalcomRoutedSlots` to judge; throws when cal.com
  * is not configured here, so the sample records why rather than an empty offer.
+ *
+ * The time zone is REQUIRED (#3002). Asked without one, cal.com answers a
+ * truncated list: measured 2026-10-02 for a 112 lead, Friday stopped at 3:30pm ET
+ * and Saturday at 3:40pm ET, while with `America/New_York` the answer matched the
+ * live booker to the minute (Friday to 7:40pm ET, 42 times in 24 hours). The
+ * truncated rows made Slate look like it offered four times as many times.
  */
 export async function calcomRoutedSlots(
   formId: string,
   fields: Record<string, number | string>,
-  startIso: string,
-  endIso: string,
+  window: { start: string; end: string; timeZone: string },
   // It runs on the monitor lane, awaited ahead of the checks after it, so a cal.com
   // that never answers must give up rather than stall them. Measured 2026-09-30 the
   // call answers in well under a second; ten gives a slow day plenty of room.
   timeoutMs = CALCOM_ROUTED_SLOTS_TIMEOUT_MS,
 ): Promise<{ status: number; data: unknown }> {
   if (!calcomConfigured()) throw new Error("cal.com is not configured here");
-  const q = new URLSearchParams({ start: startIso, end: endIso });
+  const timeZone = window.timeZone.trim();
+  if (!timeZone) throw new Error("no time zone was given, and cal.com answers a truncated list without one");
+  const q = new URLSearchParams({ start: window.start, end: window.end, timeZone });
   return calcomFetch(`/routing-forms/${encodeURIComponent(formId)}/calculate-slots?${q}`, {
     method: "POST",
     headers: { "cal-api-version": "2024-09-04" },
