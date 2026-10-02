@@ -612,6 +612,14 @@ export async function createEventType(form: FormData): Promise<void> {
     );
   }
 
+  // A blank gap takes the column default; anything typed must read the same way
+  // the editor reads it.
+  const gapRaw = String(form.get("gap_min") ?? "").trim();
+  const gap = gapRaw === "" ? EVENT_TYPE_DEFAULTS.buffer_after_min : parseGapMin(gapRaw);
+  if (gap === null) {
+    redirect(`/admin/event-types${refusedQuery(GAP_REFUSAL)}`);
+  }
+
   const { data: created, error } = await db
     .from("event_types")
     .insert({
@@ -621,8 +629,10 @@ export async function createEventType(form: FormData): Promise<void> {
       regal_type:
         String(form.get("regal_type") ?? "").trim() || EVENT_TYPE_DEFAULTS.regal_type,
       duration_min: num(form, "duration_min", EVENT_TYPE_DEFAULTS.duration_min),
-      buffer_before_min: num(form, "buffer_before_min", EVENT_TYPE_DEFAULTS.buffer_before_min),
-      buffer_after_min: num(form, "buffer_after_min", EVENT_TYPE_DEFAULTS.buffer_after_min),
+      // One gap sets both buffers: Slate pads only the call being offered, so a
+      // buffer on one side alone still lets two calls touch (see setEventTypeGap).
+      buffer_before_min: gap,
+      buffer_after_min: gap,
       min_notice_min: num(form, "min_notice_min", EVENT_TYPE_DEFAULTS.min_notice_min),
       daily_cap: form.get("daily_cap") ? num(form, "daily_cap", 0) : null,
       slot_interval_min: num(
@@ -660,6 +670,8 @@ export async function createEventType(form: FormData): Promise<void> {
         EVENT_TYPE_DEFAULTS.slot_interval_min,
       ),
       min_notice_min: num(form, "min_notice_min", EVENT_TYPE_DEFAULTS.min_notice_min),
+      buffer_before_min: gap,
+      buffer_after_min: gap,
     },
   });
 
@@ -1269,6 +1281,87 @@ export async function setBookingHorizon(form: FormData): Promise<void> {
   });
   revalidatePath("/admin/business-hours");
   redirect(`/admin/business-hours${savedQuery("booking-horizon")}`);
+}
+
+/** The longest gap an admin may keep between calls, in minutes. Two hours is
+ *  already more than the call itself several times over; anything larger is a
+ *  typo that would close the booker for the day. */
+const MAX_GAP_MIN = 120;
+
+/** The one reading of a gap box, shared by the add form and the editor so the
+ *  same field cannot carry two contracts. Null for anything that is not a whole
+ *  number of minutes inside the bound; never NaN, which compares false and would
+ *  slip past a range check (L50). */
+function parseGapMin(raw: string): number | null {
+  if (!/^\d+$/.test(raw)) return null;
+  const n = Number(raw);
+  return n <= MAX_GAP_MIN ? n : null;
+}
+
+const GAP_REFUSAL = `The gap between calls has to be a whole number of minutes from 0 to ${MAX_GAP_MIN}.`;
+
+/**
+ * Set the gap kept between two calls on one advisor.
+ *
+ * BC, 2026-10-02: cal.com kept 10 minutes between calls as a cap on capacity, and
+ * the move to Slate dropped it. One number sets BOTH buffers, because Slate pads
+ * only the call being offered: with a buffer after alone, a new call could still
+ * start the minute an earlier one ends. Before and after together guarantee the
+ * gap on both sides of every call.
+ *
+ * A plain UPDATE of two columns, so it is idempotent under a retry or a double
+ * submit. It goes through `updateEventType`, which refreshes the cached slots the
+ * booker serves, since the buffer rides inside that payload.
+ */
+export async function setEventTypeGap(form: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const page = "/admin/event-types";
+
+  const eventTypeId = String(form.get("event_type_id") ?? "").trim();
+  if (!eventTypeId) {
+    redirect(`${page}${refusedQuery("No event type was named.")}`);
+  }
+  const gap = parseGapMin(String(form.get("gap_min") ?? "").trim());
+  if (gap === null) {
+    redirect(`${page}${refusedQuery(GAP_REFUSAL)}`);
+  }
+
+  // The current value, so the trail records what it was as well as what it became.
+  const before = unwrap(
+    await supabaseAdmin()
+      .from("event_types")
+      .select("buffer_before_min, buffer_after_min")
+      .eq("id", eventTypeId)
+      .eq("org_id", admin.org_id)
+      .maybeSingle(),
+    "setEventTypeGap current gap",
+  ) as { buffer_before_min: number; buffer_after_min: number } | null;
+  if (!before) {
+    redirect(`${page}${refusedQuery("That event type was not found.")}`);
+  }
+
+  const patch = { buffer_before_min: gap, buffer_after_min: gap };
+  const saved = await updateEventType({ eventTypeId, orgId: admin.org_id, patch });
+  if (saved.error) {
+    log.error("admin", { msg: "event type gap save failed", event_type_id: eventTypeId }, saved.error);
+    redirect(`${page}${refusedQuery("Could not save the gap between calls. Please try again.")}`);
+  }
+  if (saved.count === 0) {
+    redirect(`${page}${refusedQuery("That event type was not found.")}`);
+  }
+
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "event_type.gap",
+    details: {
+      event_type_id: eventTypeId,
+      from: { buffer_before_min: before.buffer_before_min, buffer_after_min: before.buffer_after_min },
+      to: patch,
+    },
+  });
+  revalidatePath(page);
+  redirect(`${page}${savedQuery("event-type-gap")}`);
 }
 
 /**

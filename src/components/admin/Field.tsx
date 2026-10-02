@@ -24,6 +24,7 @@ import { inputCls, labelCls } from "@/components/ui/styles";
  */
 export function Field({
   name,
+  id: idOverride,
   label,
   defaultValue,
   placeholder,
@@ -32,6 +33,9 @@ export function Field({
   small,
 }: {
   name: string;
+  /** Needed when one name appears more than once on a page, so each label
+   *  still points at its own input. Defaults to one derived from the name. */
+  id?: string;
   label: string;
   defaultValue?: string;
   placeholder?: string;
@@ -39,7 +43,7 @@ export function Field({
   required?: boolean;
   small?: boolean;
 }) {
-  const id = `field-${name}`;
+  const id = idOverride ?? `field-${name}`;
   const hintId = `${id}-hint`;
   return (
     <div>

@@ -68,4 +68,18 @@ describe("Field associates its label with its input (#1950)", () => {
     const input = screen.getByRole("textbox", { name: "Title" }) as HTMLInputElement;
     expect(input.required).toBe(true);
   });
+
+  // One name on a page more than once (a gap editor per event type, beside the
+  // add form's own gap box) needs its own id each, or every label points at the
+  // first input and a screen reader names the wrong field.
+  it("takes an id, so a repeated name still gives each label its own input", () => {
+    render(
+      <>
+        <Field name="gap_min" id="field-gap_min-a" label="First gap" defaultValue="10" />
+        <Field name="gap_min" id="field-gap_min-b" label="Second gap" defaultValue="0" />
+      </>,
+    );
+    expect((screen.getByLabelText("First gap") as HTMLInputElement).value).toBe("10");
+    expect((screen.getByLabelText("Second gap") as HTMLInputElement).value).toBe("0");
+  });
 });

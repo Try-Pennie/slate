@@ -105,7 +105,7 @@ assert(
 
 // The four Dan named. `Title` and `Duration` are deliberately absent: a note
 // beside a self evident field is the noise that teaches people to skip them.
-const MUST_EXPLAIN = ["slot_interval_min", "min_notice_min", "buffer_after_min", "daily_cap"];
+const MUST_EXPLAIN = ["slot_interval_min", "min_notice_min", "gap_min", "daily_cap"];
 const unexplained = MUST_EXPLAIN.filter((n) => !EVENT_TYPE_FIELD_NOTES[n]);
 assert(
   unexplained.length === 0,
