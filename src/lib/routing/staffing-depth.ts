@@ -136,6 +136,20 @@ export function sameTierReading(a: TierDepth, b: TierDepth): boolean {
   );
 }
 
+/**
+ * What catches an empty pool's leads TODAY, in the order routing tries it: the
+ * bucket's own fallback agent first, then the ladder (Dan, 2026-10-02). Null when
+ * the pool has somebody available today, so nothing needs catching. One rule, so
+ * a screen's pill, counts and sentence cannot disagree about the same row.
+ */
+export type EmptyPoolCover = "fallback" | "overflow" | "none";
+
+export function emptyPoolCover(row: TierDepth): EmptyPoolCover | null {
+  if (row.effectiveDepth > 0) return null;
+  if (row.hasWorkingFallback) return "fallback";
+  return row.overflowToday ? "overflow" : "none";
+}
+
 /** Only bookable, non-deactivated agents can be routed to (matches
  *  resolveBucketPool's users filter: .eq("bookable", true).is("deactivated_at", null)). */
 export function isRoutable(agent: Pick<StaffingAgent, "bookable" | "deactivated_at">): boolean {

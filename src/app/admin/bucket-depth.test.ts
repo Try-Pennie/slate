@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { bucketDepthByCode } from "./bucket-depth";
+import { bucketDepthByCode, bucketOverflowByCode } from "./bucket-depth";
 import type { Bucket, BucketMember, User } from "@/lib/db/types";
 
 // #584 consolidation: the admin buckets editor's "N eligible agents" count now
@@ -85,5 +85,29 @@ describe("bucketDepthByCode", () => {
     const depth = bucketDepthByCode(buckets, users, []);
     expect(depth.get("100")).toBe(2);
     expect(depth.get("200")).toBe(1);
+  });
+});
+
+// Dan, 2026-10-02: the buckets editor names where an empty bucket's leads go,
+// from the same roster depth rows its count reads.
+describe("bucketOverflowByCode", () => {
+  const lowBeyond = mkBucket({ code: "120", criteria: { debt_team: "low", backend_service: "beyond" } });
+  const lowAchieve = mkBucket({ code: "130", criteria: { debt_team: "low", backend_service: "achieve" } });
+
+  it("names the staffed pool an empty bucket's leads go to, and nothing for a staffed one", () => {
+    const users = [mkUser({ id: "a", attributes: { debt_team: ["low"], backend_service: ["achieve"] } })];
+    const map = bucketOverflowByCode([lowBeyond, lowAchieve], users, []);
+    expect(map.get("120")).toBe("Low with Achieve");
+    expect(map.get("130")).toBeNull();
+  });
+
+  it("is null when the ladder reaches nobody", () => {
+    expect(bucketOverflowByCode([lowBeyond, lowAchieve], [], []).get("120")).toBeNull();
+  });
+
+  it("falls back to the rung's code when its pool has no name", () => {
+    const handMade = mkBucket({ code: "130", criteria: { debt_team: "low", region: "west" } });
+    const users = [mkUser({ id: "a", attributes: { debt_team: ["low"], region: "west" } })];
+    expect(bucketOverflowByCode([lowBeyond, handMade], users, []).get("120")).toBe("130");
   });
 });

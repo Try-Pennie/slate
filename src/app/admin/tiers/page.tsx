@@ -6,7 +6,12 @@ import { consoleHiddenFor } from "@/lib/env";
 import { cardCls } from "@/components/ui/styles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
-import { sameTierReading, type StaffingFlag, type TierDepth } from "@/lib/routing/staffing-depth";
+import {
+  emptyPoolCover,
+  sameTierReading,
+  type StaffingFlag,
+  type TierDepth,
+} from "@/lib/routing/staffing-depth";
 import { groupRowsByPool } from "@/lib/admin/pool-rows";
 import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
 import { log } from "@/lib/log";
@@ -16,22 +21,19 @@ export const dynamic = "force-dynamic";
 
 /** Flag -> pill treatment + short label. Color is never the sole signal: the
  *  label states the meaning, so a colorblind reader still gets it. */
-function flagPill(
-  flag: StaffingFlag,
-  overflows: boolean,
-): { variant: PillVariant; className?: string; label: string } {
+function flagPill(row: TierDepth): { variant: PillVariant; className?: string; label: string } {
+  const flag = row.effectiveFlag;
   switch (flag) {
-    case "none":
-      // An empty pool whose leads the routing ladder carries to a staffed one is
-      // not failing anybody, so it is a warning, not the rose error (Dan,
-      // 2026-10-02).
-      return overflows
-        ? {
-            variant: "outline",
-            className: "border-pennie-yellow text-fg dark:border-pennie-yellow",
-            label: "Overflows",
-          }
-        : { variant: "status-error", label: "No coverage" };
+    case "none": {
+      // An empty pool something else catches is not failing anybody, so it is a
+      // warning, not the rose error (Dan, 2026-10-02). `emptyPoolCover` is the
+      // one rule the counts and the sentence read too.
+      const cover = emptyPoolCover(row);
+      const warn = { variant: "outline" as const, className: "border-pennie-yellow text-fg dark:border-pennie-yellow" };
+      if (cover === "fallback") return { ...warn, label: "Fallback only" };
+      if (cover === "overflow") return { ...warn, label: "Overflows" };
+      return { variant: "status-error", label: "No coverage" };
+    }
     case "spof":
       return { variant: "status-error", label: "Single point of failure" };
     case "thin":
@@ -138,11 +140,9 @@ export default async function TiersPage() {
   const spofCount = groups && groups.filter((g) => g.rows[0]!.effectiveFlag === "spof").length;
   // "No coverage" is a pool whose leads have nowhere to go. One the ladder
   // carries to a staffed pool is counted separately, because it fails nobody.
-  const uncovered = (r: TierDepth) =>
-    r.effectiveFlag === "none" && !r.hasWorkingFallback && !r.overflowToday;
-  const noneCount = groups && groups.filter((g) => uncovered(g.rows[0]!)).length;
+  const noneCount = groups && groups.filter((g) => emptyPoolCover(g.rows[0]!) === "none").length;
   const overflowCount =
-    groups && groups.filter((g) => g.rows[0]!.effectiveFlag === "none" && !!g.rows[0]!.overflowToday).length;
+    groups && groups.filter((g) => emptyPoolCover(g.rows[0]!) === "overflow").length;
   const thinCount = groups && groups.filter((g) => g.rows[0]!.effectiveFlag === "thin").length;
   // Agent-slots out is a count over CODES on purpose: it is the one number here
   // that is about people rather than about pools, and a pool's six codes share
@@ -212,10 +212,7 @@ export default async function TiersPage() {
               <tbody className="divide-y divide-border">
                 {groups.map((group) => {
                   const row = group.rows[0]!;
-                  const pill = flagPill(
-                    row.effectiveFlag,
-                    !row.hasWorkingFallback && !!row.overflowToday,
-                  );
+                  const pill = flagPill(row);
                   const detail = rowDetail(row);
                   return (
                     <tr

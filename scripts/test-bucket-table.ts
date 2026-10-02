@@ -346,4 +346,13 @@ const bucket = (over: Partial<Bucket> = {}): Bucket => ({
   );
 }
 
+// Review of #3018: the summary never calls a pool staffed when it only overflows.
+{
+  const staffed = bucketRow(bucket({ code: "130" }), 4, []);
+  const overflowing = bucketRow(bucket({ code: "120" }), 0, [], "Low with Achieve");
+  const line = bucketTableSummary([staffed, overflowing]);
+  assert(!/every one of them staffed/.test(line), "a summary with an overflowing pool does not say every pool is staffed");
+  assert(/1 sends its leads to another pool/.test(line), "and it counts the overflowing pool by name of what it does");
+}
+
 finish();

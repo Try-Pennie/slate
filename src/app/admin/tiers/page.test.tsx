@@ -322,3 +322,32 @@ describe("TiersPage for a manager, and an empty pool that overflows", () => {
     expect(screen.getByText("No coverage")).toBeTruthy();
   });
 });
+
+// Review of #3018: the pill, the counts and the sentence read one rule, with the
+// bucket's own fallback agent first, as routing does.
+describe("TiersPage reads an empty pool's cover from one rule", () => {
+  it("a pool with a working fallback and a staffed rung is covered by the fallback everywhere", async () => {
+    const saved = process.env.AGENT_SCHEDULING_LIVE;
+    process.env.AGENT_SCHEDULING_LIVE = "true";
+    try {
+      auth.currentUser.mockResolvedValueOnce({ id: "p1", role: "manager", org_id: "o1", email: "p@x.com", theme_preference: null, bookable: false, avatar_url: null });
+      load.loadTierDepths.mockResolvedValueOnce([
+        {
+          code: "120", name: "Low | Beyond | No Legal Param", depth: 0, effectiveDepth: 0, outCount: 0,
+          soleAgentName: null, hasWorkingFallback: true, flag: "none", effectiveFlag: "none", agents: [],
+          poolKey: "low-beyond", poolLabel: "Low with Beyond",
+          overflowToday: { code: "130", poolKey: "low-achieve", label: "Low with Achieve" },
+          overflowOnRoster: { code: "130", poolKey: "low-achieve", label: "Low with Achieve" },
+        },
+      ]);
+      const { container } = render(await TiersPage());
+      expect(screen.queryByText("No coverage")).toBeNull();
+      expect(screen.getByText("Fallback only")).toBeTruthy();
+      expect(container.textContent).toMatch(/0\s*sending leads to another pool/);
+      expect(container.textContent).toMatch(/0\s*with no coverage/);
+    } finally {
+      if (saved === undefined) delete process.env.AGENT_SCHEDULING_LIVE;
+      else process.env.AGENT_SCHEDULING_LIVE = saved;
+    }
+  });
+});

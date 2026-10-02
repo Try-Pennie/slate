@@ -219,6 +219,7 @@ export function bucketTableSummary(rows: BucketRow[]): string {
   if (rows.length === 0) return "No buckets yet.";
   const blocked = rows.filter((r) => bucketHealth(r) === "blocked").length;
   const unmeasured = rows.filter((r) => bucketHealth(r) === "unmeasured").length;
+  const overflowing = rows.filter((r) => bucketHealth(r) === "overflows").length;
   // Two facts, not one (#2237). This used to print the row count under the word
   // "pools", which on the live matrix said "60 pools" about fifteen of them: the
   // exact confusion this issue was opened about, on the screen somebody reads to
@@ -232,6 +233,11 @@ export function bucketTableSummary(rows: BucketRow[]): string {
   const parts: string[] = [];
   if (blocked > 0) {
     parts.push(`${blocked} can take no booking at all`);
+  }
+  if (overflowing > 0) {
+    parts.push(
+      `${overflowing} ${overflowing === 1 ? "sends its" : "send their"} leads to another pool`,
+    );
   }
   if (unmeasured > 0) {
     parts.push(`${unmeasured} could not be measured`);
