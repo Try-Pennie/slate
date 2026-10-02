@@ -347,9 +347,9 @@ describe("loadBucketSupply (#1254)", () => {
     expect(b?.poolLabel).toBe("Low");
   });
 
-  // 2026-10-02: an empty day is judged by the router's ladder over the slot rows
-  // this loader already reads. 110 is the Low whole tier rung on 120's ladder.
-  it("marks an empty day overflowing when a rung on the ladder has times that day", async () => {
+  // 2026-10-02: an empty pool is judged as the booker serves it, over the slot
+  // rows this loader already reads. 110 is the Low whole tier rung on 120's ladder.
+  it("marks an empty pool overflowing when a rung on the ladder has a time in the offered window", async () => {
     db.slotRows = [
       {
         bucket_code: "120",
@@ -371,7 +371,7 @@ describe("loadBucketSupply (#1254)", () => {
     });
   });
 
-  it("keeps an empty day nothing on the ladder can take as nobody available", async () => {
+  it("keeps an empty pool nothing on the ladder can take as nobody available", async () => {
     db.slotRows = [
       {
         bucket_code: "120",

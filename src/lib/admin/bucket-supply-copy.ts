@@ -33,7 +33,8 @@ export type SupplyLegendId =
   | "beyond-horizon"
   | "closed"
   | "unknown"
-  | "overflows";
+  | "overflows"
+  | "other-days";
 
 export interface SupplyLegendEntry {
   /** Its own id: two entries share the `counted` kind, because "every time the
@@ -97,6 +98,9 @@ export function cellStyle(cell: SupplyCell): { cell: string; mark: string } {
     case "overflows":
       // Deliberately quiet: the leads are caught, so nothing here is wrong.
       return { cell: "bg-[var(--bg-alt)] text-fg-muted", mark: "O" };
+    case "other-days":
+      // Quiet for the same reason: the pool's own other days take its leads.
+      return { cell: "bg-[var(--bg-alt)] text-fg-muted", mark: "D" };
     case "no-capacity":
       return { cell: "bg-[var(--bg-alt)] text-fg-muted", mark: "T" };
     case "beyond-horizon":
@@ -125,8 +129,17 @@ export const SUPPLY_LEGEND: SupplyLegendEntry[] = [
     id: "overflows",
     label: "Overflows",
     meaning:
-      "This pool has no times that day, and its leads are shown the times of the pool named on the row, so nobody is turned away.",
+      "This pool has no times in the next three open days, so its leads are shown the times of the pool named on the row. Nobody is turned away.",
     mark: "O",
+    cell: "bg-[var(--bg-alt)] text-fg-muted",
+    swatchExtra: "border border-border",
+  },
+  {
+    id: "other-days",
+    label: "Other days here",
+    meaning:
+      "This pool has no times that day, and its leads are offered its other days in the next three open days. Nobody is turned away.",
+    mark: "D",
     cell: "bg-[var(--bg-alt)] text-fg-muted",
     swatchExtra: "border border-border",
   },
@@ -209,7 +222,7 @@ export function supplyLegendEntry(id: SupplyLegendId): SupplyLegendEntry {
  * Each chip here names the legend entry it counts and takes its WORDS from that
  * entry, so there is one label per state and both ends of the page read it.
  *
- * Six of the nine states, and the three missing ones are properties of the
+ * Seven of the ten states, and the three missing ones are properties of the
  * DAY rather than of a bucket (closed, nothing left today, past the horizon), so
  * a count of them across buckets would be sixty times one fact.
  */
@@ -222,6 +235,7 @@ export const SUPPLY_SUMMARY_STATES: { totalsKey: keyof SupplyTotals; legendId: S
   // Its own chip, and NOT an alarming one: an empty pool whose leads are caught
   // turns nobody away (2026-10-02).
   { totalsKey: "overflows", legendId: "overflows" },
+  { totalsKey: "otherDays", legendId: "other-days" },
   { totalsKey: "unmeasured", legendId: "unknown" },
 ];
 
@@ -260,7 +274,9 @@ export function supplyCellTitle(cell: SupplyCell, bucketLabel: string, dayLabel:
     case "nobody-available":
       return `${when}: nobody available. The day had room for appointments and this pool has none offered and none booked.`;
     case "overflows":
-      return `${when}: this pool has no times, and its leads are shown ${cell.toPool ?? "another pool"}'s times instead.`;
+      return `${when}: this pool has no times in the next three open days, so its leads are shown ${cell.toPool ?? "another pool"}'s times instead.`;
+    case "other-days":
+      return `${when}: nothing that day, and its leads are offered this pool's other days in the next three open days.`;
     case "no-capacity":
       return `${when}: nothing left today. The office is open but no whole appointment fits before closing.`;
     case "beyond-horizon":
@@ -398,28 +414,15 @@ export function poolRowDetail(row: { code: string; name: string }): string | nul
 }
 
 /**
- * Where a row's leads go on the days it overflows, named once on the row, or
- * null when no day overflows. Each day finds its own rung, so different days can
- * go to different pools; the row then names the COMMONEST (the earliest day's on
- * a tie) and says "on most days", which keeps it to one short line while the
- * cell sentences still name each day's own pool.
+ * Where a row's leads go, said once on the row, or null when it needs saying
+ * nowhere. An overflowing row names its one rung (the booker serves one rung for
+ * the whole window); a red row whose leads the booker's last resort would offer
+ * later days says that, while staying red, because it is the alerting case.
  */
-export function overflowNote(cells: SupplyCell[]): string | null {
-  const counts = new Map<string, number>();
-  for (const cell of cells) {
-    if (cell.kind !== "overflows") continue;
-    const target = cell.toPool ?? "another pool";
-    counts.set(target, (counts.get(target) ?? 0) + 1);
+export function leadsNote(row: { cells: SupplyCell[]; offeredLater: boolean }): string | null {
+  const overflow = row.cells.find((c) => c.kind === "overflows");
+  if (overflow && overflow.kind === "overflows") {
+    return `Leads go to ${overflow.toPool ?? "another pool"}`;
   }
-  if (counts.size === 0) return null;
-  let best = "";
-  let bestCount = 0;
-  // Map keeps insertion order, so a strict comparison keeps the earliest on a tie.
-  for (const [target, n] of counts) {
-    if (n > bestCount) {
-      best = target;
-      bestCount = n;
-    }
-  }
-  return counts.size === 1 ? `Leads go to ${best}` : `Leads go to ${best} on most days`;
+  return row.offeredLater ? "Leads are offered later days" : null;
 }

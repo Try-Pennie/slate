@@ -311,14 +311,14 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
 // "nothing taken yet", which is the healthy state every other bucket is in
 // today. Nobody being available is the opposite, so it is a kind of its own.
 {
-  // 110 is a rung on 120's ladder, so its times are put on ANOTHER day: a rung
-  // with time today would make today an overflow rather than nobody available.
+  // 110 is a rung on 120's ladder, so its times are put PAST the booker's
+  // three day window: a rung with a window time would make today an overflow.
   const report = reportWith({
     cacheRows: [
       cachedRow("120", [], FRESH_STAMP),
       cachedRow(
         "110",
-        slotsFrom1320(21).map((iso) => new Date(Date.parse(iso) + 24 * 60 * 60_000).toISOString()),
+        slotsFrom1320(21).map((iso) => new Date(Date.parse(iso) + 3 * 24 * 60 * 60_000).toISOString()),
         FRESH_STAMP,
       ),
     ],
@@ -813,14 +813,14 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
 }
 
 // ---------------------------------------------------------------------------
-// An empty DAY whose leads the ladder carries is "Overflows", not "Nobody
-// available" (2026-10-02). Each day is judged on its own: the first rung on the
-// router's ladder (`tierLadder`) whose pool offers at least one time THAT day
-// catches it, and on a top tier lead's lower rungs only times without a Low
-// carrier count, as the booker serves them (`rungExcludesLow`).
+// What the BOOKER does with an empty pool (Dan, 2026-10-02: the page matches
+// today's booker). It offers the next three open days, walks the router's ladder
+// and serves the FIRST rung with any time inside that window, and only past the
+// window when no rung has one. The fixture clock is Tuesday 2026-08-04 at 11:19
+// ET with two hours' notice and a Monday to Saturday week, so the window is
+// Tuesday, Wednesday and Thursday, and Friday onward is past it.
 // ---------------------------------------------------------------------------
 {
-  /** Slots on one date at ten minute steps from 13:20 ET. */
   const slotsOn = (iso: string, n: number) => {
     const first = Date.parse(`${iso}T17:20:00.000Z`);
     return Array.from({ length: n }, (_, i) => new Date(first + i * 10 * 60_000).toISOString());
@@ -850,61 +850,84 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
       bookedByCodeAndDate: new Map(),
     });
   };
-  const cellsOf = (report: ReturnType<typeof ladderReport>, code: string) =>
-    report.measurable ? (report.rows.find((r) => r.code === code)?.cells ?? []) : [];
-
-  // A one advisor Beyond pool: nothing on Tuesday or Wednesday, three times on
-  // Thursday. Its Achieve rung has times on Tuesday only.
-  const oneAdvisor = ladderReport([
-    cachedRow("522", slotsOn("2026-08-06", 3), FRESH_STAMP),
-    cachedRow("532", slotsOn("2026-08-04", 5), FRESH_STAMP),
-  ]);
-  const cells = cellsOf(oneAdvisor, "522");
-  eq(cells[0], { kind: "overflows", toPool: "Ultra High with Achieve" }, "a day the next rung has times overflows to that rung's pool");
-  eq(cells[1], { kind: "nobody-available" }, "a day no rung has times stays nobody available");
-  eq(cells[2], { kind: "counted", booked: 0, capacity: 3, share: 0 }, "a day the pool has its own times is its own measurement");
-  if (oneAdvisor.measurable) {
-    const totals = supplyTotals(supplyPoolGroups(oneAdvisor.rows, oneAdvisor.nowMs), 0);
-    eq(totals.overflows, 1, "today's overflow is counted on its own chip");
-    eq(totals.nobodyAvailable, 0, "and kept out of nobody available");
-    const tomorrow = supplyTotals(supplyPoolGroups(oneAdvisor.rows, oneAdvisor.nowMs), 1);
-    // Both pools are empty on Wednesday and nothing below catches either.
-    eq(tomorrow.nobodyAvailable, 2, "the day nothing catches them, both are counted as nobody available");
-    eq(tomorrow.overflows, 0, "and not as an overflow");
-  } else fail("the one advisor case produces a report");
-
-  // A top tier lead's lower rung offers only what an advisor WITHOUT Low is
-  // free for. 322 is the first lower tier rung for 422; its only Tuesday times
-  // come from Low carriers, so it is skipped and 332 catches the day instead.
+  const rowOf = (report: ReturnType<typeof ladderReport>, code: string) =>
+    report.measurable ? report.rows.find((r) => r.code === code) : undefined;
+  const on = (report: ReturnType<typeof ladderReport>, code: string, iso: string) => {
+    if (!report.measurable) return undefined;
+    const i = report.days.findIndex((d) => d.iso === iso);
+    return rowOf(report, code)?.cells[i];
+  };
   const lowRow = (code: string, slots: string[], withoutLow: string[]): CachedSlotRow => ({
     bucket_code: code,
     payload: { slots, slotsWithoutLow: withoutLow, eventType: { ...EVENT } },
     computed_at: FRESH_STAMP,
   });
+
+  // 1. The pool has a time inside the window, so it serves itself: a window day
+  // on which it has nothing is "other days here", never red and never an
+  // overflow, even with a rung below offering that very day.
+  const self = ladderReport([
+    cachedRow("522", slotsOn("2026-08-06", 3), FRESH_STAMP),
+    cachedRow("532", slotsOn("2026-08-04", 5), FRESH_STAMP),
+  ]);
+  eq(on(self, "522", "2026-08-04"), { kind: "other-days" }, "an empty window day of a pool with other window days reads other days here");
+  eq(on(self, "522", "2026-08-05"), { kind: "other-days" }, "on every empty window day");
+  eq(on(self, "522", "2026-08-06")?.kind, "counted", "its own window day is its own measurement");
+  eq(on(self, "522", "2026-08-07"), { kind: "nobody-available" }, "a day past the window keeps its own state");
+  eq(rowOf(self, "522")?.offeredLater, false, "a pool serving itself is not offered later days");
+  if (self.measurable) {
+    const totals = supplyTotals(supplyPoolGroups(self.rows, self.nowMs), 0);
+    eq(totals.otherDays, 1, "today's other days here is counted on its own chip");
+    eq(totals.nobodyAvailable, 0, "and kept out of nobody available");
+    eq(totals.overflows, 0, "and out of overflows");
+  }
+
+  // 2. Nothing in the window: the FIRST rung with a window time serves the whole
+  // window, even on a day that rung itself has nothing, because one rung is what
+  // the booker serves. 512 has a time today, but 532 comes first.
+  const over = ladderReport([
+    cachedRow("522", [], FRESH_STAMP),
+    cachedRow("532", slotsOn("2026-08-05", 2), FRESH_STAMP),
+    cachedRow("512", slotsOn("2026-08-04", 2), FRESH_STAMP),
+  ]);
+  const toAchieve = { kind: "overflows", toPool: "Ultra High with Achieve" };
+  eq(on(over, "522", "2026-08-04"), toAchieve, "a pool with nothing in the window overflows to the first rung with a window time");
+  eq(on(over, "522", "2026-08-05"), toAchieve, "the same rung on every window day");
+  eq(on(over, "522", "2026-08-06"), toAchieve, "including a day that rung has nothing");
+  eq(on(over, "522", "2026-08-07"), { kind: "nobody-available" }, "and the cover never leaks past the window");
+  if (over.measurable) {
+    const totals = supplyTotals(supplyPoolGroups(over.rows, over.nowMs), 0);
+    eq(totals.overflows, 1, "the overflowing pool counts once as an overflow");
+  }
+
+  // 3. A top tier code skips a lower rung whose only window times are Low
+  // carriers', and lands on the next rung that has a time without one.
   const topTier = ladderReport([
     cachedRow("422", [], FRESH_STAMP),
     lowRow("322", slotsOn("2026-08-04", 4), []),
-    lowRow("332", slotsOn("2026-08-04", 2), slotsOn("2026-08-04", 2)),
+    lowRow("332", slotsOn("2026-08-05", 2), slotsOn("2026-08-05", 2)),
   ]);
-  eq(cellsOf(topTier, "422")[0], { kind: "overflows", toPool: "High with Achieve" }, "a lower rung's Low carrier times are skipped for a top tier code");
-  // The same rung is NOT filtered for a code in its own tier: 322's own day is
-  // its own measurement, and a High lead is not a top tier lead.
-  eq(cellsOf(topTier, "322")[0].kind, "counted", "a rung's own row still counts every time it offers");
+  eq(on(topTier, "422", "2026-08-04"), { kind: "overflows", toPool: "High with Achieve" }, "a Low carrier only rung is skipped for a top tier code");
+  const onlyLow = ladderReport([cachedRow("422", [], FRESH_STAMP), lowRow("322", slotsOn("2026-08-04", 4), [])]);
+  eq(on(onlyLow, "422", "2026-08-04"), { kind: "nobody-available" }, "with only Low carriers lower down, a top tier pool stays red");
 
-  const onlyLow = ladderReport([
-    cachedRow("422", [], FRESH_STAMP),
-    lowRow("322", slotsOn("2026-08-04", 4), []),
+  // 4. No rung has a time in the window: red, and the row says whether the last
+  // resort past the window finds anything.
+  const later = ladderReport([
+    cachedRow("522", [], FRESH_STAMP),
+    cachedRow("532", slotsOn("2026-08-07", 2), FRESH_STAMP),
   ]);
-  eq(cellsOf(onlyLow, "422")[0], { kind: "nobody-available" }, "when only Low carriers are free lower down, a top tier day is nobody available");
+  eq(on(later, "522", "2026-08-04"), { kind: "nobody-available" }, "nothing in the window on any rung stays nobody available");
+  eq(rowOf(later, "522")?.offeredLater, true, "and the row knows the booker would offer later days");
+  const nothing = ladderReport([cachedRow("522", [], FRESH_STAMP), cachedRow("532", [], FRESH_STAMP)]);
+  eq(on(nothing, "522", "2026-08-04"), { kind: "nobody-available" }, "nothing anywhere is nobody available");
+  eq(rowOf(nothing, "522")?.offeredLater, false, "with no later days to offer either");
+  if (later.measurable) {
+    const totals = supplyTotals(supplyPoolGroups(later.rows, later.nowMs), 0);
+    eq(totals.nobodyAvailable, 2, "both empty pools count as nobody available today");
+  }
 
-  // An unknown second list offers nothing, as the booker treats it.
-  const unknownLow = ladderReport([
-    cachedRow("422", [], FRESH_STAMP),
-    cachedRow("322", slotsOn("2026-08-04", 4), FRESH_STAMP),
-  ]);
-  eq(cellsOf(unknownLow, "422")[0], { kind: "nobody-available" }, "a rung with no list without Low offers a top tier lead nothing");
-
-  // Two codes of one pool whose overflow targets differ do not share a row.
+  // Two codes of one pool whose readings differ do not share a row.
   const base: BucketSupplyRow = {
     code: "120",
     name: "Low | Beyond | No Legal Param",
@@ -915,13 +938,15 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
     cacheState: "measured",
     computedAtMs: AUG_4_1119_ET - 30_000,
     freshness: "fresh",
+    offeredLater: false,
     cells: [{ kind: "overflows", toPool: "Low with Achieve" }],
   };
   assert(
     !sameSupplyReading(base, { ...base, code: "121", cells: [{ kind: "overflows", toPool: "Low" }] }, AUG_4_1119_ET),
     "overflowing to a different pool is a different reading",
   );
-  assert(sameSupplyReading(base, { ...base, code: "121" }, AUG_4_1119_ET), "the same target is the same reading");
+  assert(!sameSupplyReading(base, { ...base, code: "121", offeredLater: true }, AUG_4_1119_ET), "being offered later days is part of the reading");
+  assert(sameSupplyReading(base, { ...base, code: "121" }, AUG_4_1119_ET), "the same reading is the same");
 }
 
 finish();

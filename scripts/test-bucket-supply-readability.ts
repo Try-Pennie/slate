@@ -37,7 +37,7 @@ import {
   SUPPLY_SUMMARY_STATES,
   agentCountLabel,
   computedAtLabel,
-  overflowNote,
+  leadsNote,
   poolRowDetail,
   poolRowName,
   supplyCellTitle,
@@ -120,6 +120,7 @@ function codesOf(
       cacheState: "measured",
       computedAtMs: NOW - 30_000,
       freshness: "fresh",
+      offeredLater: false,
       cells: [{ kind: "counted", booked: 0, capacity: 21, share: 0 }],
       ...over,
     };
@@ -295,6 +296,7 @@ function codesOf(
     "closed",
     "unknown",
     "overflows",
+    "other-days",
   ];
   for (const id of ALL_IDS) {
     const matches = SUPPLY_LEGEND.filter((e) => e.id === id);
@@ -355,6 +357,7 @@ function codesOf(
       cacheState: "measured",
       computedAtMs: NOW,
       freshness: "fresh",
+      offeredLater: false,
       cells: [{ kind: "closed" }],
       ...over,
     };
@@ -434,33 +437,32 @@ function codesOf(
 }
 
 // ---------------------------------------------------------------------------
-// An empty day the ladder carries is NOT "nobody available" (2026-10-02). It is
-// its own state, unalarming, in the same vocabulary, and the row says where the
-// leads go.
+// The two quiet states an empty day can take (2026-10-02), each in the same
+// vocabulary as the rest of the page, and neither one alarming.
 // ---------------------------------------------------------------------------
 {
-  const entry = supplyLegendEntry("overflows");
-  eq(entry.label, "Overflows", "the state has its own name in the key");
-  assert(!SUPPLY_ALARMING_STATES.includes("overflows"), "and it is not one of the alarming states");
-  assert(
-    SUPPLY_SUMMARY_STATES.some((s) => s.legendId === "overflows" && s.totalsKey === "overflows"),
-    "the summary counts it on its own chip, never under nobody available",
-  );
+  for (const id of ["overflows", "other-days"] as const) {
+    assert(!SUPPLY_ALARMING_STATES.includes(id), `${id} is not one of the alarming states`);
+    assert(
+      SUPPLY_SUMMARY_STATES.some((s) => s.legendId === id),
+      `${id} is counted on its own chip, never under nobody available`,
+    );
+  }
+  eq(supplyLegendEntry("overflows").label, "Overflows", "the overflow state has its own name");
+  eq(supplyLegendEntry("other-days").label, "Other days here", "and so does a pool offering its other days");
+
   const achieve = { kind: "overflows" as const, toPool: "Low with Achieve" };
-  const low = { kind: "overflows" as const, toPool: "Low" };
   const title = supplyCellTitle(achieve, "Low with Beyond", "Tuesday, August 4");
   assert(title.includes("Low with Achieve"), `the cell sentence names where the leads go (got ${title})`);
   assert(!/act on/i.test(title), "and does not ask anybody to act");
+  const other = supplyCellTitle({ kind: "other-days" }, "Low with Beyond", "Tuesday, August 4");
+  assert(/other days/i.test(other) && !/act on/i.test(other), `an other days cell says so, calmly (got ${other})`);
 
-  eq(overflowNote([{ kind: "closed" }, achieve, achieve]), "Leads go to Low with Achieve", "one target is named once");
-  eq(
-    overflowNote([achieve, low, achieve]),
-    "Leads go to Low with Achieve on most days",
-    "different days to different pools name the commonest, and say so",
-  );
-  eq(overflowNote([low, achieve]), "Leads go to Low on most days", "a tie goes to the earliest day's pool");
-  eq(overflowNote([{ kind: "overflows", toPool: null }]), "Leads go to another pool", "a target outside the routing matrix is never named by a code");
-  eq(overflowNote([{ kind: "nobody-available" }, { kind: "closed" }]), null, "a row nothing catches has no note");
+  eq(leadsNote({ cells: [{ kind: "closed" }, achieve, achieve], offeredLater: false }), "Leads go to Low with Achieve", "the row names the rung once");
+  eq(leadsNote({ cells: [{ kind: "overflows", toPool: null }], offeredLater: false }), "Leads go to another pool", "never by a code");
+  eq(leadsNote({ cells: [{ kind: "nobody-available" }], offeredLater: true }), "Leads are offered later days", "the last resort is named on a red row");
+  eq(leadsNote({ cells: [{ kind: "nobody-available" }, { kind: "closed" }], offeredLater: false }), null, "a row nothing catches has no note");
+  eq(leadsNote({ cells: [{ kind: "other-days" }], offeredLater: false }), null, "a pool serving itself needs no note");
 }
 
 // What tells two manager rows of one pool apart without a code.

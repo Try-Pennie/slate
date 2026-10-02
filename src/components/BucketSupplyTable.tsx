@@ -20,7 +20,7 @@ import {
   cellStyle,
   computedAtLabel,
   freshnessLabel,
-  overflowNote,
+  leadsNote,
   poolRowDetail,
   poolRowName,
   sharePercent,
@@ -296,7 +296,7 @@ export function BucketSupplyTable({
                     : name;
                 // Where an empty pool's leads go, said once on the row rather
                 // than in every cell, because the cells only say THAT they go.
-                const overflow = overflowNote(row.cells);
+                const overflow = leadsNote(row);
                 return (
                   <tr key={key} className="border-b border-border align-middle last:border-0">
                     <th scope="row" className="px-3 py-2 text-left font-normal">

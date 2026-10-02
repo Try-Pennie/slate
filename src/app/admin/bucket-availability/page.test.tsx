@@ -40,6 +40,7 @@ function row(code: string, name: string): BucketSupplyRow {
     cacheState: "measured",
     computedAtMs: NOW_MS - 30_000,
     freshness: "fresh",
+    offeredLater: false,
     cells: [{ kind: "counted", booked: 3, capacity: 21, share: 3 / 21 }],
   };
 }

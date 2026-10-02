@@ -52,6 +52,7 @@ import {
 } from "../availability/precompute-cron.ts";
 import { groupRowsByPool, type PoolGroup } from "./pool-rows.ts";
 import { rungExcludesLow, tierLadder } from "../routing/tiers.ts";
+import { offeredWindowEndFor, servedSlotsForRung } from "../availability/offered-window.ts";
 import { computedAtLabel } from "./bucket-supply-copy.ts";
 
 /**
@@ -126,10 +127,17 @@ export type SupplyCell =
    */
   | { kind: "nobody-available" }
   /**
-   * This pool offers nothing that day, and a lower rung of the router's ladder
-   * DOES offer a time that day (2026-10-02). Not "nobody available", because a
-   * pool with one advisor who is booked or off still has its leads shown the
-   * next rung's times, so calling it the one to act on was wrong.
+   * A day inside the booker's offered window on which this pool has nothing,
+   * while it HAS times on another window day (2026-10-02). The booker serves the
+   * pool itself, so its leads are offered those other days: nobody is turned
+   * away, and it is not the one to act on.
+   */
+  | { kind: "other-days" }
+  /**
+   * A day inside the offered window, for a pool with nothing in the whole
+   * window, where a lower rung of the router's ladder has a window time
+   * (2026-10-02). The booker serves that one rung for the whole window, so every
+   * empty window day names it. Not "nobody available": nobody is turned away.
    *
    * `toPool` is that rung's pool in words, or null for a rung outside the
    * routing matrix. Never a code.
@@ -195,6 +203,12 @@ export interface BucketSupplyRow {
    *  could not be read. */
   computedAtMs: number | null;
   freshness: SupplyFreshness;
+  /**
+   * True when nothing on the ladder has a time inside the offered window but the
+   * booker's last resort would offer this pool's leads a later day. Its window
+   * days stay red, because that is the alerting case, and the row says so.
+   */
+  offeredLater: boolean;
   /** One cell per entry of `days`, in the same order. */
   cells: SupplyCell[];
 }
@@ -476,59 +490,72 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
     bookedByPoolAndDate.set(key, pooled);
   }
 
-  // Which dates each code's pool offers at least one time on, as the BOOKER
-  // would serve them: through the org's current hours (#1296), and for a rung
-  // below a top tier lead's own tier, only the times an advisor without Low is
-  // free (#2842, `rungExcludesLow`). Read from the cache rows already loaded, so
-  // judging the ladder costs no read. Memoised, because sixty codes share a
-  // dozen rungs.
+  // Each code's times as the BOOKER would serve them on a rung (#1296 hours
+  // filter, then `servedSlotsForRung`, the booker's own Low exclusion for a rung
+  // below a top tier lead's tier), as epoch milliseconds. Read from the cache
+  // rows already loaded, so judging the ladder costs no read. Memoised, because
+  // sixty codes share a dozen rungs. Null for a row the booker could not serve
+  // from (no row, or no readable event type), which is no rescue either way.
   const driverCodes = new Set(drivers.map((d) => d.code));
-  const offeredDatesMemo = new Map<string, Set<string> | null>();
-  const offeredDates = (code: string, withoutLow: boolean): Set<string> | null => {
-    const memoKey = `${code}|${withoutLow}`;
-    if (offeredDatesMemo.has(memoKey)) return offeredDatesMemo.get(memoKey)!;
-    const row = rowByCode.get(code);
+  const servedMemo = new Map<string, number[] | null>();
+  const servedMs = (requestedCode: string, rungCode: string): number[] | null => {
+    const memoKey = `${rungCode}|${rungExcludesLow(requestedCode, rungCode)}`;
+    if (servedMemo.has(memoKey)) return servedMemo.get(memoKey)!;
+    const row = rowByCode.get(rungCode);
     const eventType = row ? eventTypeOf(row) : null;
-    const list = withoutLow ? row?.payload?.slotsWithoutLow : row?.payload?.slots;
-    let dates: Set<string> | null = null;
-    // An unreadable row, or an absent list without Low, offers nothing, which
-    // is how the booker treats both: a rung it cannot read is no rescue.
-    if (eventType !== null && Array.isArray(list)) {
-      dates = new Set<string>();
+    const slots = row?.payload?.slots;
+    let out: number[] | null = null;
+    if (row && eventType !== null && Array.isArray(slots)) {
+      const list = servedSlotsForRung(requestedCode, rungCode, {
+        slots,
+        ...(row.payload?.slotsWithoutLow ? { slotsWithoutLow: row.payload.slotsWithoutLow } : {}),
+      });
+      out = [];
       for (const iso of slotsWithinBusinessHours(list, eventType.duration_min, hours)) {
-        const date = DateTime.fromISO(iso, { zone: hours.zone }).toISODate();
-        if (date !== null) dates.add(date);
+        const ms = parseStampMs(iso);
+        if (ms !== null) out.push(ms);
       }
     }
-    offeredDatesMemo.set(memoKey, dates);
-    return dates;
+    servedMemo.set(memoKey, out);
+    return out;
   };
 
   /**
-   * Where an empty day's leads go: the first rung below `code` on the router's
-   * own ladder (`tierLadder`, the walk `selectWithTierFallback` makes) whose pool
-   * offers a time THAT day. Null when no rung does, and only then is the day
-   * "nobody available".
+   * What the booker serves a lead on `code` (Dan, 2026-10-02: the page matches
+   * today's booker). `getBucketSlotsWithFallback` offers the next
+   * `OFFERED_OPEN_DAYS` open days (`offeredWindowEndFor`, the same function),
+   * walks the router's ladder (`tierLadder`) and serves the FIRST rung with any
+   * time inside that window, and only that rung. When no rung has one, its last
+   * resort offers times past the window, own tier first.
    *
-   * Judged PER DAY, as the page is. The booker itself drops a rung only when the
-   * pool has nothing in its whole offered window, so a lead on a day like this
-   * is first offered the pool's own later days; either way nobody is turned
-   * away while a rung has time, which is the claim this state makes.
+   * So: `self` when the pool has a window time of its own, the first lower rung
+   * with one otherwise, or null when none does, with `offeredLater` saying
+   * whether the last resort would find anything. Lower rungs that are not a real
+   * bucket on this page (a test bucket, or one the list does not hold) are
+   * skipped, as the booker skips test buckets.
    *
-   * The bucket's fallback agent is not a separate cover here: when its criteria
-   * match nobody, the fallback agent IS the pool, so its times are already in
-   * this pool's own cached list, and an empty day means it had none either.
+   * The bucket's fallback agent is not a separate cover: when its criteria match
+   * nobody, the fallback agent IS the pool, so its times are already in the
+   * pool's own list.
    */
-  const overflowTarget = (code: string, iso: string): { toPool: string | null } | null => {
-    for (const rung of tierLadder(code).slice(1)) {
-      // A rung that is not a real bucket on this page (a test bucket, or one the
-      // list does not hold) is skipped, as the booker skips test buckets.
-      if (!driverCodes.has(rung)) continue;
-      if (offeredDates(rung, rungExcludesLow(code, rung))?.has(iso)) {
-        return { toPool: input.depthByCode?.get(rung)?.poolLabel ?? null };
+  const servedBy = (
+    code: string,
+    windowEndMs: number | null,
+  ): { winner: "self" | { toPool: string | null } | null; offeredLater: boolean } => {
+    const ladder = tierLadder(code).filter((rung, i) => i === 0 || driverCodes.has(rung));
+    const inWindow = (ms: number) => windowEndMs === null || ms < windowEndMs;
+    for (const [i, rung] of ladder.entries()) {
+      if ((servedMs(code, rung) ?? []).some(inWindow)) {
+        return {
+          winner: i === 0 ? "self" : { toPool: input.depthByCode?.get(rung)?.poolLabel ?? null },
+          offeredLater: false,
+        };
       }
     }
-    return null;
+    // No window at all means the booker had no last resort to reach for.
+    const offeredLater =
+      windowEndMs !== null && ladder.some((rung) => (servedMs(code, rung) ?? []).length > 0);
+    return { winner: null, offeredLater };
   };
 
   const rows: BucketSupplyRow[] = drivers.map((d) => {
@@ -550,6 +577,7 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
     const bookingsReadable = input.bookedByCodeAndDate !== null;
 
     let cells: SupplyCell[];
+    let offeredLater = false;
     if (cacheState !== "measured" || eventType === null || !Array.isArray(slots) || !bookingsReadable) {
       // A day the org is shut is known whatever the cache says; everything else
       // about this bucket is not.
@@ -583,6 +611,18 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
       const daysWithSlots = [...openByDate.keys()].sort();
       const lastOfferedDate = daysWithSlots[daysWithSlots.length - 1] ?? null;
       const allowanceSpent = daysWithSlots.length >= input.horizonDays;
+
+      // The window is the requested bucket's own, as the booker computes it from
+      // the requested event type's notice.
+      const windowEndMs = offeredWindowEndFor(hours, nowMs, eventType.min_notice_min);
+      const plan = servedBy(d.code, windowEndMs);
+      offeredLater = plan.offeredLater;
+      // A day is in the window when it starts before the window closes. A day
+      // past it keeps its own state: what the booker offers there is only its
+      // last resort, so the cover judgement must not reach it.
+      const inWindowDay = (iso: string) =>
+        windowEndMs === null ||
+        DateTime.fromISO(iso, { zone: hours.zone }).startOf("day").toMillis() < windowEndMs;
 
       cells = days.map((day) => {
         const dayRoom = capacityFor(eventType, day);
@@ -622,10 +662,10 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
         const possible = new Set(offered);
         for (const t of taken) possible.add(t);
         if (possible.size === 0) {
-          const target = overflowTarget(d.code, day.iso);
-          return target
-            ? { kind: "overflows", toPool: target.toPool }
-            : { kind: "nobody-available" };
+          if (!inWindowDay(day.iso) || plan.winner === null) return { kind: "nobody-available" };
+          return plan.winner === "self"
+            ? { kind: "other-days" }
+            : { kind: "overflows", toPool: plan.winner.toPool };
         }
 
         return {
@@ -648,6 +688,7 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
       cacheState,
       computedAtMs,
       freshness: freshnessOf(computedAtMs, nowMs),
+      offeredLater,
       cells,
     };
   });
@@ -791,6 +832,9 @@ export interface SupplyTotals {
   /** Empty that day with its leads caught elsewhere. Never in `nobodyAvailable`,
    *  and never in `measured` either, since it has no share. */
   overflows: number;
+  /** Empty that day with its leads offered this pool's other window days. Kept
+   *  apart from both of the above for the same reasons. */
+  otherDays: number;
   stale: number;
 }
 
@@ -814,6 +858,7 @@ export function sameSupplyReading(a: BucketSupplyRow, b: BucketSupplyRow, nowMs:
     a.effectiveDepth === b.effectiveDepth &&
     a.cacheState === b.cacheState &&
     a.freshness === b.freshness &&
+    a.offeredLater === b.offeredLater &&
     computedAtLabel(a.freshness, a.computedAtMs, nowMs).label ===
       computedAtLabel(b.freshness, b.computedAtMs, nowMs).label &&
     a.cells.length === b.cells.length &&
@@ -859,6 +904,7 @@ export function supplyTotals(groups: PoolGroup<BucketSupplyRow>[], dayIndex: num
   let nothingBooked = 0;
   let nobodyAvailable = 0;
   let overflows = 0;
+  let otherDays = 0;
   let stale = 0;
   for (const row of rows) {
     if (row.freshness === "stale" || row.freshness === "unknown") stale++;
@@ -875,11 +921,15 @@ export function supplyTotals(groups: PoolGroup<BucketSupplyRow>[], dayIndex: num
       overflows++;
       continue;
     }
+    if (cell.kind === "other-days") {
+      otherDays++;
+      continue;
+    }
     if (cell.kind !== "counted") continue;
     measured++;
     if (cell.booked === 0) nothingBooked++;
     else if (cell.booked >= cell.capacity) saturated++;
     else partBooked++;
   }
-  return { measured, unmeasured, saturated, partBooked, nothingBooked, nobodyAvailable, overflows, stale };
+  return { measured, unmeasured, saturated, partBooked, nothingBooked, nobodyAvailable, overflows, otherDays, stale };
 }

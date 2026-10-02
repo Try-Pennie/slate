@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { BucketSupplyTable } from "./BucketSupplyTable";
 import {
   SUPPLY_SUMMARY_STATES,
@@ -39,6 +39,7 @@ function row(over: Partial<BucketSupplyRow> = {}): BucketSupplyRow {
     cacheState: "measured",
     computedAtMs: Date.parse("2026-08-04T15:18:30.000Z"),
     freshness: "fresh",
+    offeredLater: false,
     cells: [
       { kind: "counted", booked: 9, capacity: 21, share: 9 / 21 },
       { kind: "counted", booked: 21, capacity: 21, share: 1 },
@@ -416,6 +417,31 @@ describe("BucketSupplyTable for managers", () => {
       (n.textContent ?? "").startsWith(supplyLegendEntry("overflows").label),
     );
     expect(chip?.className).not.toContain("text-error");
+  });
+
+  it("says a pool's leads are offered its other days, calmly, for managers and admins", () => {
+    const cells: SupplyCell[] = [{ kind: "other-days" }, { kind: "counted", booked: 0, capacity: 3, share: 0 }];
+    for (const showCodes of [false, true]) {
+      cleanup();
+      renderTable([row({ cells })], { showCodes });
+      const name = showCodes ? "120 Low | Beyond | No Legal Param" : "Low with Beyond";
+      expect(screen.getByText(supplyCellTitle(cells[0], name, "Tuesday, August 4"))).toBeTruthy();
+      const summary = summaryText();
+      expect(summary).toMatch(new RegExp(`${supplyLegendEntry("other-days").label}\\s*1(?!\\d)`));
+      expect(summary).toMatch(new RegExp(`${supplyLegendEntry("nobody-available").label}\\s*0(?!\\d)`));
+      // A pool serving itself needs no note on the row.
+      expect(document.querySelector("tbody th[scope='row']")?.textContent ?? "").not.toMatch(/Leads/);
+    }
+  });
+
+  it("keeps a pool nothing can serve in the window red, and says later days are offered", () => {
+    renderTable([row({ offeredLater: true, cells: [{ kind: "nobody-available" }, { kind: "closed" }] })], {
+      showCodes: false,
+    });
+    expect(document.querySelector("tbody th[scope='row']")?.textContent ?? "").toContain(
+      "Leads are offered later days",
+    );
+    expect(summaryText()).toMatch(new RegExp(`${supplyLegendEntry("nobody-available").label}\\s*1(?!\\d)`));
   });
 
   it("says where the leads go for an admin too", () => {
