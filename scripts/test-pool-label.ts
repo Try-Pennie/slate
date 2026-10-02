@@ -17,7 +17,10 @@ import {
   poolLabelForCode,
   bucketShownAs,
   bucketHeading,
+  backendLabelForCode,
+  backendShownAs,
 } from "../src/lib/availability/pool-label.ts";
+import { BACKEND } from "../src/lib/xbc.ts";
 import { allXbcCodes, bucketSpecForXbc } from "../src/lib/xbc.ts";
 import { groupByPool } from "../src/lib/availability/pool-key.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -178,5 +181,17 @@ eq(
 eq(bucketShownAs(null, { showCodes: false }), null, "nothing to show stays nothing");
 eq(bucketHeading(true), "Bucket", "the admin heading is unchanged");
 eq(bucketHeading(false), "Pool", "the manager heading names what the value is");
+
+// The backend alone, for the tier drop list, whose Tier column already names the
+// tier (Dan, 2026-10-02). Spelled from BACKEND so it never gains a second spelling.
+for (const code of matrix) {
+  eq(backendLabelForCode(code), BACKEND[code[1]!]!.label, `code ${code} names its backend digit`);
+}
+eq(backendLabelForCode("221"), "Beyond", "a Beyond code reads Beyond");
+eq(backendLabelForCode("511"), "Both", "the digits that set no backend keep the vocabulary's words");
+eq(backendLabelForCode("SMOKE"), null, "outside the matrix there is no backend to name");
+eq(backendShownAs("221", { showCodes: false }), "Beyond", "a manager reads the backend");
+eq(backendShownAs("221", { showCodes: true }), "221", "an admin keeps the code");
+eq(backendShownAs("SMOKE", { showCodes: false }), "SMOKE", "and the code outside the matrix, never nothing");
 
 finish();

@@ -237,8 +237,11 @@ describe("bucket codes by who is reading", () => {
       withOneDrop();
       render(await RecentRoutingPage());
       expect(screen.getByRole("cell", { name: "Very High" })).toBeTruthy();
-      expect(screen.getByRole("cell", { name: "High with Beyond" })).toBeTruthy();
-      expect(screen.getAllByRole("columnheader", { name: "Pool" })).toHaveLength(2);
+      // The tier drop list names only the backend: its Tier column says the tier.
+      expect(screen.getByRole("cell", { name: "Beyond" })).toBeTruthy();
+      expect(screen.queryByRole("cell", { name: "High with Beyond" })).toBeNull();
+      expect(screen.getAllByRole("columnheader", { name: "Pool" })).toHaveLength(1);
+      expect(screen.getAllByRole("columnheader", { name: "Backend" })).toHaveLength(1);
       expect(screen.queryByRole("columnheader", { name: "Bucket" })).toBeNull();
       expect(screen.queryByRole("cell", { name: "411" })).toBeNull();
       expect(screen.queryByRole("cell", { name: "321" })).toBeNull();
@@ -254,5 +257,6 @@ describe("bucket codes by who is reading", () => {
     expect(screen.getByRole("cell", { name: "321" })).toBeTruthy();
     expect(screen.getAllByRole("columnheader", { name: "Bucket" })).toHaveLength(2);
     expect(screen.queryByRole("columnheader", { name: "Pool" })).toBeNull();
+    expect(screen.queryByRole("columnheader", { name: "Backend" })).toBeNull();
   });
 });

@@ -100,6 +100,31 @@ export function bucketShownAs(
   return poolLabelForCode(code) ?? (opts.storedName || code);
 }
 
+/**
+ * The BACKEND a bucket code names, in the vocabulary's own words ("Beyond",
+ * "Achieve", "Both", "None"), or `null` outside the matrix.
+ *
+ * For a surface whose neighbouring column already names the tier, the tier drop
+ * list (Dan, 2026-10-02), where the full pool name would say the tier twice in
+ * one row (L605). Read off the same digit `bucketSpecForXbc` reads, so a code it
+ * refuses has no backend here either.
+ */
+export function backendLabelForCode(code: string | null | undefined): string | null {
+  if (!code || !bucketSpecForXbc(code)) return null;
+  return BACKEND[code[1]!]?.label ?? null;
+}
+
+/** `bucketShownAs` for that surface: the code for an admin, the backend for a
+ *  manager, and the code when there is no backend to name. */
+export function backendShownAs(
+  code: string | null | undefined,
+  opts: { showCodes: boolean },
+): string | null {
+  if (!code) return null;
+  if (opts.showCodes) return code;
+  return backendLabelForCode(code) ?? code;
+}
+
 /** The heading over that value: a code is a bucket, a name in words is a pool. */
 export function bucketHeading(showCodes: boolean): "Bucket" | "Pool" {
   return showCodes ? "Bucket" : "Pool";

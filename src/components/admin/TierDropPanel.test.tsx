@@ -38,12 +38,22 @@ const report = (bucketCode: string): TierDropReport => ({
 });
 
 describe("the tier drop list, by who is reading", () => {
-  it("shows a manager the pool in words and no code", () => {
+  // Dan, 2026-10-02: the Tier column already says the tier, so for a manager the
+  // second column names only the backend, and the tier is said once per row.
+  it("shows a manager the backend only, so the tier is said once in the row", () => {
     render(<TierDropPanel report={report("532")} showCodes={false} />);
-    expect(screen.getByRole("columnheader", { name: "Pool" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "Backend" })).toBeTruthy();
     expect(screen.queryByRole("columnheader", { name: "Bucket" })).toBeNull();
-    expect(screen.getByRole("cell", { name: "Ultra High with Achieve" })).toBeTruthy();
+    expect(screen.queryByRole("columnheader", { name: "Pool" })).toBeNull();
+    expect(screen.getByRole("cell", { name: "Achieve" })).toBeTruthy();
     expect(screen.queryByRole("cell", { name: "532" })).toBeNull();
+    const row = screen.getByRole("cell", { name: "Achieve" }).closest("tr")!;
+    expect(row.textContent!.match(/Ultra High/g)).toHaveLength(1);
+  });
+
+  it("names the backend digits that set no backend the way the vocabulary does", () => {
+    render(<TierDropPanel report={report("512")} showCodes={false} />);
+    expect(screen.getByRole("cell", { name: "Both" })).toBeTruthy();
   });
 
   it("falls back to the code outside the matrix rather than drawing nothing", () => {
@@ -55,6 +65,7 @@ describe("the tier drop list, by who is reading", () => {
     render(<TierDropPanel report={report("532")} showCodes />);
     expect(screen.getByRole("columnheader", { name: "Bucket" })).toBeTruthy();
     expect(screen.getByRole("cell", { name: "532" })).toBeTruthy();
-    expect(screen.queryByText("Ultra High with Achieve")).toBeNull();
+    expect(screen.queryByRole("columnheader", { name: "Backend" })).toBeNull();
+    expect(screen.queryByRole("cell", { name: "Achieve" })).toBeNull();
   });
 });
