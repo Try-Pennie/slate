@@ -1,4 +1,4 @@
-import { BACKEND, DEBT_TIER } from "@/lib/xbc";
+import { BACKEND, DEBT_TIER, bucketSpecForXbc } from "@/lib/xbc";
 import type { Criteria } from "@/lib/db/types";
 
 /**
@@ -63,6 +63,46 @@ export function poolLabel(criteria: Criteria | null): string | null {
   const backendLabel = BACKEND_LABEL_BY_KEY.get(backend);
   if (!backendLabel) return null;
   return `${tier} with ${backendLabel}`;
+}
+
+/**
+ * The pool a bucket CODE routes to, in words, or `null` outside the matrix.
+ *
+ * For a surface that carries only a code (a routing trace, a tier drop, a
+ * booking). Built from the spec the seeder writes for that code and named by
+ * `poolLabel`, so it cannot disagree with the name a pool gets from its stored
+ * criteria (L41). A hand made or test bucket (SMOKE, say) is not in the
+ * matrix and has no pool name.
+ */
+export function poolLabelForCode(code: string | null | undefined): string | null {
+  if (!code) return null;
+  const spec = bucketSpecForXbc(code);
+  return spec ? poolLabel(spec.criteria) : null;
+}
+
+/**
+ * What one bucket reads as for this viewer (2026-10-02).
+ *
+ * Admins keep the code, which is what they configure buckets by. A manager never
+ * sees a raw code: they read the pool, the way staffing depth names it. Outside
+ * the matrix there is no pool name, so a manager reads the bucket's stored name
+ * where the surface has one, and otherwise the code, never nothing.
+ *
+ * `showCodes` is decided by the caller from `canEditOrgSettings`, so the rank
+ * rule lives in one place.
+ */
+export function bucketShownAs(
+  code: string | null | undefined,
+  opts: { showCodes: boolean; storedName?: string | null },
+): string | null {
+  if (!code) return null;
+  if (opts.showCodes) return code;
+  return poolLabelForCode(code) ?? (opts.storedName || code);
+}
+
+/** The heading over that value: a code is a bucket, a name in words is a pool. */
+export function bucketHeading(showCodes: boolean): "Bucket" | "Pool" {
+  return showCodes ? "Bucket" : "Pool";
 }
 
 export interface LabelledPool {

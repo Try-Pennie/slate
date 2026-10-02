@@ -129,7 +129,7 @@ describe("the recent routing read keeps test bookings out (#2660)", () => {
     render(await RecentRoutingPage());
 
     expect(dbState.bookingsSelects).toHaveLength(1);
-    expect(dbState.bookingsSelects[0]).toContain("buckets!inner(is_test)");
+    expect(dbState.bookingsSelects[0]).toMatch(/buckets!inner\(is_test\b/);
     expect(dbState.bookingsFilters).toContainEqual(["buckets.is_test", false]);
     expect(dbState.bookingsFilters).toContainEqual(["org_id", "o1"]);
   });
@@ -203,5 +203,56 @@ describe("the tier drop panel", () => {
     expect(screen.queryByText(/No lead has dropped a tier/)).toBeNull();
     // and the rest of the page still draws
     expect(screen.getByText(/No bookings yet/)).toBeTruthy();
+  });
+});
+
+// 2026-10-02 (Dan): a manager never reads a raw bucket code on this page. Both
+// tables name the pool in words; an admin keeps the codes as before. The rank
+// rule is canEditOrgSettings, so a team lead reads words like a manager.
+describe("bucket codes by who is reading", () => {
+  const withOneDrop = () =>
+    tierDrops.loadTierDropReport.mockResolvedValue({
+      counts: {
+        week: tally(1),
+        month: tally(1),
+        recent: [
+          {
+            id: "d1",
+            createdAt: "2026-10-01T21:07:26Z",
+            cause: "lost-at-confirm",
+            requestedLabel: "High",
+            bookedLabel: "Medium",
+            bucketCode: "321",
+          },
+        ],
+        unreadableStamps: 0,
+      },
+      booked: { week: 10, month: 10 },
+    });
+
+  for (const role of ["manager", "team_lead"] as const) {
+    it(`shows a ${role} the pools in words and no codes`, async () => {
+      auth.currentUser.mockResolvedValue({ id: "m1", role, org_id: "o1", email: "m@trypennie.com" });
+      dbState.bookings = [realBooking()];
+      withOneDrop();
+      render(await RecentRoutingPage());
+      expect(screen.getByRole("cell", { name: "Very High" })).toBeTruthy();
+      expect(screen.getByRole("cell", { name: "High with Beyond" })).toBeTruthy();
+      expect(screen.getAllByRole("columnheader", { name: "Pool" })).toHaveLength(2);
+      expect(screen.queryByRole("columnheader", { name: "Bucket" })).toBeNull();
+      expect(screen.queryByRole("cell", { name: "411" })).toBeNull();
+      expect(screen.queryByRole("cell", { name: "321" })).toBeNull();
+    });
+  }
+
+  it("shows an admin the codes, as today", async () => {
+    auth.currentUser.mockResolvedValue({ id: "a1", role: "admin", org_id: "o1", email: "a@trypennie.com" });
+    dbState.bookings = [realBooking()];
+    withOneDrop();
+    render(await RecentRoutingPage());
+    expect(screen.getByRole("cell", { name: "411" })).toBeTruthy();
+    expect(screen.getByRole("cell", { name: "321" })).toBeTruthy();
+    expect(screen.getAllByRole("columnheader", { name: "Bucket" })).toHaveLength(2);
+    expect(screen.queryByRole("columnheader", { name: "Pool" })).toBeNull();
   });
 });

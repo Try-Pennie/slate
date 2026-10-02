@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 import { redirect, notFound } from "next/navigation";
 import { currentUser } from "@/lib/auth";
-import { canManageAgents } from "@/lib/auth/roles";
+import { canEditOrgSettings, canManageAgents } from "@/lib/auth/roles";
+import { bucketHeading, bucketShownAs } from "@/lib/availability/pool-label";
 import { consoleHiddenFor } from "@/lib/env";
 import { currentTestPassFor } from "@/lib/embed/test-pass-gate";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -65,7 +66,7 @@ export default async function BookingDetailPage({
       const data = unwrap(
         await db
           .from("bookings")
-          .select("*, buckets!inner(is_test)")
+          .select("*, buckets!inner(is_test, name)")
           .eq("id", bookingId)
           .eq("org_id", orgId)
           .maybeSingle(),
@@ -95,7 +96,12 @@ export default async function BookingDetailPage({
   if (result.kind === "notfound") notFound();
   const { booking, view } = result;
   // #2660: the joined flag, off the row the read above returned.
-  const isTest = (booking as Booking & { buckets?: { is_test?: boolean } | null }).buckets?.is_test === true;
+  const joined = (booking as Booking & { buckets?: { is_test?: boolean; name?: string | null } | null })
+    .buckets;
+  const isTest = joined?.is_test === true;
+  // The stored name, for a manager reading a bucket outside the routing matrix.
+  const bucketName = joined?.name ?? null;
+  const showCodes = canEditOrgSettings(me.role);
 
   // #1943: the history, read HERE. It was a client fetch behind a toggle, and
   // taking the toggle away honestly meant taking the fetch with it. `null` is
@@ -145,7 +151,13 @@ export default async function BookingDetailPage({
               <Fact label="Originally" value={<ViewerTime iso={view.rescheduledFrom} />} />
             )}
             <Fact label="Agent" value={view.agentName} />
-            <Fact label="Bucket" value={view.bucketCode} />
+            {/* 2026-10-02: a manager reads the pool in words, never the code;
+                an admin keeps the code. The code still reaches the actions
+                below, where it only builds a URL and is never displayed. */}
+            <Fact
+              label={bucketHeading(showCodes)}
+              value={bucketShownAs(view.bucketCode, { showCodes, storedName: bucketName })}
+            />
             <Fact label="Source" value={view.source} />
           </dl>
         </section>

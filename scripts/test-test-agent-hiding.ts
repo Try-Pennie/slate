@@ -56,7 +56,7 @@ for (const page of ["src/app/book/page.tsx", "src/app/booking/[id]/page.tsx"]) {
 for (const page of ["src/app/admin/routing/page.tsx", "src/app/admin/ooo/page.tsx"]) {
   const src = read(page);
   assert(
-    /buckets!inner\(is_test\)/.test(src),
+    /buckets!inner\(is_test\b[^)]*\)/.test(src),
     `${page} joins the bucket on its bookings read`,
   );
   assert(

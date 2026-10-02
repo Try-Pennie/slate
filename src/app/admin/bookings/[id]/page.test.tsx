@@ -239,3 +239,54 @@ describe("the detail page shows where the booking came from (#2072)", () => {
     expect(screen.getByText("Booked before sources were recorded")).toBeTruthy();
   });
 });
+
+// 2026-10-02 (Dan): a manager never reads a raw bucket code. The booking names
+// the pool it routed through, the way staffing depth names it; an admin keeps the
+// code exactly as before.
+describe("the detail page's bucket fact, by who is reading", () => {
+  const routed = (code: string, bucketName = "Ultra High | Achieve | Legal") => ({
+    ...bookingRow(),
+    buckets: { is_test: false, name: bucketName },
+    routing_trace: {
+      bucket_code: code,
+      bucket_id: "bkt",
+      considered: ["u1"],
+      chosen_user_id: "u1",
+      fallback_applied: false,
+    },
+  });
+  const as = (role: string) =>
+    auth.currentUser.mockResolvedValueOnce({ id: "x1", role, org_id: "o1", email: "x@trypennie.com" });
+  const fact = (label: string) => screen.getByText(label, { selector: "dt" }).nextElementSibling;
+
+  for (const role of ["manager", "team_lead"]) {
+    it(`shows a ${role} the pool in words and no code`, async () => {
+      as(role);
+      dbState.booking = routed("531");
+      dbState.roster = [{ id: "u1", name: "Aria Agent", email: "aria@trypennie.com" }];
+      render(await BookingDetailPage(props));
+      expect(fact("Pool")?.textContent).toBe("Ultra High with Achieve");
+      expect(screen.queryByText("Bucket", { selector: "dt" })).toBeNull();
+      expect(screen.queryByText("531")).toBeNull();
+    });
+  }
+
+  it("shows a manager the bucket's stored name outside the matrix", async () => {
+    as("manager");
+    dbState.booking = routed("HANDMADE", "Hand made pool");
+    dbState.roster = [{ id: "u1", name: "Aria Agent", email: "aria@trypennie.com" }];
+    render(await BookingDetailPage(props));
+    expect(fact("Pool")?.textContent).toBe("Hand made pool");
+  });
+
+  for (const role of ["admin", "super_admin"]) {
+    it(`shows an ${role} the code, as today`, async () => {
+      as(role);
+      dbState.booking = routed("531");
+      dbState.roster = [{ id: "u1", name: "Aria Agent", email: "aria@trypennie.com" }];
+      render(await BookingDetailPage(props));
+      expect(fact("Bucket")?.textContent).toBe("531");
+      expect(screen.queryByText("Pool", { selector: "dt" })).toBeNull();
+    });
+  }
+});

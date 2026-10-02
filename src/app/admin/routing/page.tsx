@@ -46,10 +46,13 @@ export default async function RecentRoutingPage() {
     // and before cutover the canary's would otherwise be the whole table. The
     // roster above still includes the test agents (#1914), because the name map
     // and this read must agree about who exists, and that holds either way.
+    // The bucket's name rides along for a manager, who reads a pool in words
+    // rather than a code, and needs the stored name for a bucket outside the
+    // routing matrix, which has no pool name (2026-10-02).
     db
       .from("bookings")
       .select(
-        "id, attendee_name, attendee_email, attendee_phone, starts_at, assigned_user_id, status, routing_trace, buckets!inner(is_test)",
+        "id, attendee_name, attendee_email, attendee_phone, starts_at, assigned_user_id, status, routing_trace, buckets!inner(is_test, name)",
       )
       .eq("org_id", me.org_id)
       .eq("buckets.is_test", false)
@@ -103,7 +106,7 @@ export default async function RecentRoutingPage() {
               How the last {recent.length} bookings routed: agents considered, who
               was chosen, whether the fallback fired, and any manual reassignments.
             </p>
-            <RecentRoutingTable rows={recent} users={users} />
+            <RecentRoutingTable rows={recent} users={users} showCodes={isAdmin} />
           </>
         )}
       </section>
@@ -115,7 +118,7 @@ export default async function RecentRoutingPage() {
             report that no lead dropped a tier.
           </UnreadableNotice>
         ) : (
-          <TierDropPanel report={tierDropReport} />
+          <TierDropPanel report={tierDropReport} showCodes={isAdmin} />
         )}
       </section>
       {isAdmin && (

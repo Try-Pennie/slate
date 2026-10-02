@@ -1,5 +1,6 @@
 import { OpenBookingLink } from "@/components/OpenBookingLink";
 import ViewerTime from "@/components/ViewerTime";
+import { bucketHeading, bucketShownAs } from "@/lib/availability/pool-label";
 import type { Booking, RoutingTrace } from "@/lib/db/types";
 
 /** One recent booking + how it routed (the admin trace viewer's row). */
@@ -12,7 +13,12 @@ export type RecentRoutingRow = Pick<
   | "starts_at"
   | "assigned_user_id"
   | "status"
-> & { routing_trace: RoutingTrace | null };
+> & {
+  routing_trace: RoutingTrace | null;
+  /** The booking's bucket, joined on the read. Its name is what a manager reads
+   *  for a bucket outside the routing matrix, which has no pool name. */
+  buckets?: { name?: string | null } | null;
+};
 
 type RosterUser = { id: string; name: string | null; email: string };
 
@@ -21,13 +27,18 @@ type RosterUser = { id: string; name: string | null; email: string };
  * is unit-testable on its own. Read-only: each row links to the per-booking
  * detail page (#900) where the actions and history live. Behaviour is identical
  * to the markup it replaced, including the id-prefix name fallback.
+ *
+ * `showCodes` (2026-10-02): admins read the bucket code, managers read the pool
+ * in words (`bucketShownAs`). Required, so every caller decides it.
  */
 export function RecentRoutingTable({
   rows,
   users,
+  showCodes,
 }: {
   rows: RecentRoutingRow[];
   users: RosterUser[];
+  showCodes: boolean;
 }) {
   const agentName = new Map(users.map((u) => [u.id, u.name ?? u.email]));
   /**
@@ -60,7 +71,7 @@ export function RecentRoutingTable({
           <tr>
             <th className="py-1 pr-3 font-semibold">When</th>
             <th className="py-1 pr-3 font-semibold">Lead</th>
-            <th className="py-1 pr-3 font-semibold">Bucket</th>
+            <th className="py-1 pr-3 font-semibold">{bucketHeading(showCodes)}</th>
             <th className="py-1 pr-3 font-semibold">Routed to</th>
             {/* #1914: "Trace" said nothing about what the cell holds. The
                 parts stay in one cell because they are one decision, and each is
@@ -84,7 +95,9 @@ export function RecentRoutingTable({
                   <ViewerTime iso={b.starts_at} />
                 </td>
                 <td className="py-1.5 pr-3">{lead}</td>
-                <td className="py-1.5 pr-3 text-fg-muted">{t?.bucket_code ?? "?"}</td>
+                <td className="py-1.5 pr-3 text-fg-muted">
+                  {bucketShownAs(t?.bucket_code, { showCodes, storedName: b.buckets?.name }) ?? "?"}
+                </td>
                 <td className="py-1.5 pr-3 font-semibold">{nameOf(b.assigned_user_id)}</td>
                 <td className="py-1.5 text-fg-muted">
                   {t ? (
