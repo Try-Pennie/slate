@@ -190,6 +190,17 @@ export const WEBHOOK_TEST_SEND_RATE_RULES: RateLimitRule[] = [
 ];
 
 /**
+ * The exact hourly cap on landing identity lookups per address (#3106), behind the per minute
+ * edge window (`LANDING_LIMITER`, below). It counts LOOKUPS rather than distinct ids: that
+ * bounds distinct ids at the same number, needs no new table, and the only cost of counting a
+ * lead's own reloads is that a lead past thirty in an hour types their details in, since over
+ * the cap is a page with no prefill rather than a refusal.
+ */
+export const LANDING_IDENTITY_HOURLY_RATE_RULES: RateLimitRule[] = [
+  { prefix: "landing:h", windowSeconds: 3600, max: 30 },
+];
+
+/**
  * Every DB limiter rule above, in one list, so the prune below covers each one by
  * construction (#3109). scripts/test-rate-limit-prune.ts reads this module's
  * exports and fails when a rule set exists that this list leaves out.
@@ -205,6 +216,7 @@ const DB_RATE_LIMIT_RULE_SETS: readonly RateLimitRule[][] = [
   CSP_REPORT_RATE_RULES,
   ROUTING_HOURLY_RATE_RULES,
   WEBHOOK_TEST_SEND_RATE_RULES,
+  LANDING_IDENTITY_HOURLY_RATE_RULES,
 ];
 
 /**
@@ -719,7 +731,7 @@ export const MANAGE_LIMITER = {
  *
  * It shares `MANAGE_RATE_LIMITER` rather than adding a binding, because a binding is a deploy
  * time change and the two endpoints want the same per minute number; `nativeKeyPrefix` keeps
- * the two counts apart. The exact hourly cap is `LANDING_IDENTITY_HOURLY_RATE_RULES`.
+ * the two counts apart. The exact hourly cap is `LANDING_IDENTITY_HOURLY_RATE_RULES` (above).
  */
 export const LANDING_LIMITER = {
   binding: "MANAGE_RATE_LIMITER",
@@ -734,17 +746,6 @@ export const LANDING_LIMITER = {
   perMinute: 20,
   burstCeilingPerMinute: 200,
 } as const satisfies EdgeLimiterSpec;
-
-/**
- * The exact hourly cap on landing identity lookups per address (#3106), behind the per minute
- * edge window above. It counts LOOKUPS rather than distinct ids: that bounds distinct ids at
- * the same number, needs no new table, and the only cost of counting a lead's own reloads is
- * that a lead past thirty in an hour types their details in, since over the cap is a page
- * with no prefill rather than a refusal.
- */
-export const LANDING_IDENTITY_HOURLY_RATE_RULES: RateLimitRule[] = [
-  { prefix: "landing:h", windowSeconds: 3600, max: 30 },
-];
 
 /**
  * Failed credentials on the key authenticated routes (#3142), keyed per address and counted
