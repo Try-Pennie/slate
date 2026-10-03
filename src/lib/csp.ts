@@ -1,5 +1,6 @@
 /**
- * The script Content Security Policy, shipped in REPORT ONLY mode first (#2565).
+ * The script Content Security Policy. It shipped in REPORT ONLY mode first (#2565)
+ * and has been ENFORCED since #2575, with a violation paging on the alert channel.
  *
  * Slate's only policy was `frame-ancestors 'none'` on the staff paths. There was
  * no `script-src` or `default-src` anywhere, including on the booker, which is the
@@ -22,8 +23,8 @@
  *      noise would bury any real finding. `next/dist/server/app-render/app-render.js`
  *      actually reads
  *      `headers['content-security-policy'] || headers['content-security-policy-report-only']`,
- *      so it does. That is why the middleware sets the report only header on the
- *      REQUEST as well as the response.
+ *      so it does. That is why the middleware sets the policy header on the
+ *      REQUEST as well as the response (the enforcing one now, since #2575).
  *   3. That a nonce needs DYNAMIC rendering, since Next applies it while serving
  *      a request. Every route this covers is already dynamic.
  *

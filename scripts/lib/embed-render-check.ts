@@ -101,8 +101,8 @@ export interface EmbedObservation {
    * one signal that sees it, and folding it in with ordinary console errors would
    * let an unrelated error answer for it and name the wrong repair (L11).
    *
-   * While the policy is REPORT ONLY a violation breaks nothing, which is exactly
-   * why it is worth having: it is the advance warning that enforcing WOULD.
+   * The policy is enforced (#2575), so a violation here is something the browser
+   * actually refused, and on the booker that can be the thing that draws it.
    */
   cspViolations: string[];
 }
@@ -129,9 +129,10 @@ export const FRAME_TEXT_FLOOR = 10;
  *
  * Matched on the browser's own wording rather than on our policy's contents,
  * because the line we need to recognise is written by the browser and names the
- * directive it enforced. Chrome and Firefox both say "Content Security Policy";
- * the report only variants say "would refuse" or name the report only directive,
- * so the match is deliberately loose about the verb and strict about the phrase.
+ * directive it enforced. Chrome and Firefox both say "Content Security Policy".
+ * Enforced refusals are what production produces now (#2575); the report only
+ * variants, which say "would refuse" or name the report only directive, are still
+ * matched, so the match is loose about the verb and strict about the phrase.
  */
 export function isCspRefusal(text: string): boolean {
   return /content security policy/i.test(text);

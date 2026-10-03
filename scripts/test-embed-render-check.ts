@@ -298,7 +298,7 @@ assert(
 );
 assert(
   isCspRefusal("[Report Only] Refused to load the script because it violates the following Content Security Policy directive"),
-  "the report only variant is recognised too, which is the only kind this phase can produce",
+  "the report only variant is still recognised, though enforced refusals are what production produces",
 );
 assert(
   !isCspRefusal("TypeError: Cannot read properties of undefined"),

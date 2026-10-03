@@ -1,7 +1,7 @@
 // Repo invariant (#1047): every alert Slate can send has a procedure somebody can read.
 //
 // An alert with no procedure is one somebody will be paged by at 7am with nothing to
-// read. There are 87 keys, and the reason this is a guard rather than a habit is that
+// read. There are close to ninety keys, and the reason this is a guard rather than a habit is that
 // the keys nobody has ever been paged by are exactly the ones that would be forgotten,
 // and those are the ones where a reader has no prior knowledge to fall back on.
 //

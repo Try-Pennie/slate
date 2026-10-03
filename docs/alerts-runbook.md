@@ -4,7 +4,7 @@ One procedure per FAMILY of alert, because the diagnosis clusters even though th
 do not: a stale lane is one procedure whichever lane it is, and every Google
 reachability alert is one procedure with three branches (#1047).
 
-There are 87 alert keys. Eighty-seven hand-written stanzas would rot, starting with the
+There are close to ninety alert keys, and a hand-written stanza for each would rot, starting with the
 ones nobody has ever been paged by, and a runbook section that is wrong is worse than a
 missing one because somebody follows it at 7am. So the key-to-family map lives in code
 (`src/lib/notify/alert-runbook.ts`) and a guard checks both directions: every alert has

@@ -168,7 +168,7 @@ export function monitorSetupGates(readiness: SetupReadiness): {
     // shorter horizon reads a starving calendar as covered, and a guessed longer
     // one pages about coverage nobody is serving (#216's shape).
     calendarWindow: gate(readiness, ["horizonDays"]),
-    // #1262: the observe-only busy drift sampler compares the cache against live
+    // #1262, #1591: the busy drift sampler (armed report only) compares the cache against live
     // Google over the horizon window. The window IS the comparison's bound, so a
     // guessed horizon has it judging times the cache was never asked to hold and
     // logging the difference as drift (#216's shape, in a log line).
