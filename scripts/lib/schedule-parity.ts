@@ -70,7 +70,6 @@ export type ScheduleVerdict =
   | "no-calcom-user"
   | "no-calcom-schedule"
   | "no-slate-schedule"
-  | "timezone-name-differs"
   | "calcom-unreachable"
   | "calcom-unreadable"
   | "hours-differ"
@@ -93,18 +92,10 @@ export type ScheduleVerdict =
  */
 export const VERDICT_RANK: Record<ScheduleVerdict, number> = {
   agree: 0,
-  // Below every real finding, and above agreement, so a drifted NAME is always
-  // reported and never names the run while something a lead can feel is on the
-  // board. The first live sweep is the argument: ten agents filed under a zone
-  // label, every one of them the same clock, and one of the ten hiding a genuine
-  // Saturday-for-Friday swap underneath it.
-  "timezone-name-differs": 1,
-  // Beside the zone alias, and for the same reason: real, reported, and never the
-  // thing that names a run. It differs from the alias in being a difference a lead
-  // WOULD feel; what it shares is that no automatic run will ever clear it, so
-  // paging on it daily would leave the check permanently red (L36). It sits BELOW
-  // the alias because the alias can still be repaired by the lane and this cannot.
-  "hours-set-by-agent": 1.5,
+  // Real, reported, and never the thing that names a run. It is a difference a
+  // lead WOULD feel, but no automatic run will ever clear it, so paging on it daily
+  // would leave the check permanently red (L36).
+  "hours-set-by-agent": 1,
   "no-calcom-user": 2,
   "no-calcom-schedule": 3,
   "no-slate-schedule": 4,
@@ -121,9 +112,10 @@ export const VERDICT_RANK: Record<ScheduleVerdict, number> = {
  * Slate stores `America/Denver` where cal.com stores `America/Boise` for nine
  * agents, and `America/New_York` where cal.com stores
  * `America/Indiana/Indianapolis` for one. Those pairs keep identical time (0 of
- * 9,600 sampled hours differ), so reporting them the way a genuine Phoenix against
- * Denver difference is reported (5,711 of 9,600) makes the loud finding and the
- * harmless one indistinguishable, and the harmless one is nine times commoner.
+ * 9,600 sampled hours differ), against 5,711 of 9,600 for a genuine Phoenix
+ * against Denver difference. A pair that agrees is AGREEMENT and is not reported
+ * at all (#2030, Dan 2026-09-07: "That should be silent"); only the clock is
+ * compared, never the spelling.
  *
  * A zone no clock can read never agrees with anything: answering true there would
  * quietly downgrade a genuinely broken value to cosmetic. Two IDENTICAL names
@@ -260,17 +252,13 @@ export function compareAgentSchedule(
     if (VERDICT_RANK[v] > VERDICT_RANK[worst]) worst = v;
   };
 
-  if (slate.timezone !== mapped.timezone) {
-    if (zonesAgree(slate.timezone, mapped.timezone, nowMs)) {
-      reasons.push(
-        `timezone name: Slate has ${slate.timezone}, cal.com has ${mapped.timezone}; ` +
-          "these are the same clock all year, so nothing a lead sees changes",
-      );
-      raise("timezone-name-differs");
-    } else {
-      reasons.push(`timezone: Slate has ${slate.timezone}, cal.com has ${mapped.timezone}`);
-      raise("timezone-differs");
-    }
+  // Two names for one clock say nothing at all (#2030). The comparison is of
+  // what a lead would be shown, and that is identical; the control that keeps this
+  // from swallowing a real difference is `zonesAgree` itself, which the test drives
+  // with Denver against Phoenix in both places.
+  if (!zonesAgree(slate.timezone, mapped.timezone, nowMs)) {
+    reasons.push(`timezone: Slate has ${slate.timezone}, cal.com has ${mapped.timezone}`);
+    raise("timezone-differs");
   }
 
   const slateDays = byDay(slate.rules);
@@ -315,7 +303,7 @@ export function compareAgentSchedule(
  * Listed rather than picked out by rank, for the reason the sweep's own
  * `CANNOT_COMPARE` list is: a rank threshold reads as a tidy rule and silently
  * reclassifies the moment a verdict is inserted between two ranks, which is
- * exactly what adding `timezone-name-differs` did.
+ * exactly what adding a zone alias verdict (since removed, #2030) once did.
  */
 const LANE_REPAIRABLE: readonly ScheduleVerdict[] = ["hours-differ", "days-differ", "timezone-differs"];
 

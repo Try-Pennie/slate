@@ -457,7 +457,7 @@ truth: a week both systems hold can be wrong in both. That question belongs to
 `verify:availability-truth`, which asks Google. This one catches CONFIGURATION
 drift, which is invisible from inside Slate alone.
 
-## The slot comparison it replaced could never run
+## The slot comparison it replaced, and the form of it that does work
 
 The first probe narrowed cal.com's answer to one bucket's agents with
 `routedTeamMemberIds[]` on `GET /v2/slots`. That parameter does not exist on that
@@ -467,8 +467,36 @@ now 404. So the probe was merged, documented here with fifteen exit codes, and
 structurally incapable of executing a single comparison. Re-measured live on
 2026-09-07, still 400.
 
+**That does NOT mean cal.com cannot be asked what it would offer one agent.** This
+section used to conclude exactly that, and it was wrong: it was true of the two
+forms above and of nothing else. A third form, measured live on 2026-09-16
+(#2471), answers 200 for one person:
+
+```
+GET /v2/slots?eventTypeSlug=<the agent's personal event type slug>&username=<their cal.com username>&organizationSlug=trypennie
+cal-api-version: 2024-09-04
+```
+
+Three conditions, each measured rather than assumed:
+
+- `organizationSlug` is required. The same call without it answers 404.
+- The agent needs a PERSONAL event type, and not all have one: 2 of 6 sampled
+  answered 404 for that reason. A 404 counted as "no slots" reads exactly like a
+  fully booked calendar, so anything built on this must refuse a non-200 rather
+  than count it (L11, L98).
+- The team event type (1314152) cannot stand in for it. Its slots are the union
+  across every host, so one agent with no free time can never empty a day.
+
+It was used by hand to verify #2417. No command runs it yet: whether to build the
+slot level comparison #1731 originally wanted on top of it is still open in
+#2471. It would see what the schedule comparison cannot (an override, a booking,
+a buffer, a booking window), because it asks what a lead would actually be
+offered rather than comparing the weekly schedule that feeds it.
+
 **The pin was the load-bearing capability and it was the last thing measured**,
-which is the mistake worth not repeating. Both halves now rest on endpoints
+which is the mistake worth not repeating, and the conclusion drawn from it was
+then never re-measured either, which is the same mistake pointing the other way.
+Both halves now rest on endpoints
 measured before anything was built on them, and both were confirmed live first:
 `GET /v2/organizations/{org}/users/{id}/schedules`, which the OOO dual-write
 already exercises daily, and `GET /v2/organizations/{org}/teams/{team}/event-types`,
@@ -494,15 +522,21 @@ hours, and 09:00 against 09:30 opens the same hour.
 `scripts/test-schedule-parity.ts` carries that as a control: patching the
 comparison to bucket by the hour makes it fail.
 
-**A difference that changes nothing a lead sees is ranked below every real
-finding.** Two of them:
+**A difference that changes nothing a lead sees never fails a run.** Two of them:
 
-- A zone NAME that keeps the same clock. The first live sweep reported ten agents
-  as `timezone-differs`, and every one was such a pair: nine `America/Denver`
-  against `America/Boise`, one `America/New_York` against
-  `America/Indiana/Indianapolis`. Sampled hourly over 400 days those differ on 0
-  of 9,600 hours, while Denver against Phoenix differs on 5,711. One of the ten
-  was hiding a genuine Saturday-for-Friday swap under the zone label.
+- A zone NAME that keeps the same clock is AGREEMENT, and says nothing at all
+  (#2030). The first live sweep reported ten agents as `timezone-differs`, and
+  every one was such a pair: nine `America/Denver` against `America/Boise`, one
+  `America/New_York` against `America/Indiana/Indianapolis`. Sampled hourly over
+  400 days those differ on 0 of 9,600 hours, while Denver against Phoenix differs
+  on 5,711. It then shipped as a lesser verdict of its own, which still printed
+  nine lines and still exited 9, until Dan's call on 2026-09-07: "if it has no
+  actual difference, like it's the same clock time but cal.com defines it as a
+  different timezone than slate in words, I don't care about that. That should be
+  silent." Only the clock is compared, by the same judge the hours picker and the
+  hours save path use (`zonesKeepSameClock`, #2128), so a Denver against Phoenix
+  difference is still exit 17. An agent with an alias zone AND a real difference
+  is reported for the real difference alone.
 - The nine admins, managers and team leads who host in cal.com and are correctly
   not bookable in Slate. Those rank LEVEL WITH AGREEMENT and cannot fail a run at
   all, because nothing will ever change them and a permanently red check is one
@@ -542,14 +576,14 @@ the real answer is that nothing was compared.
 
 | exit | what it met |
 |---|---|
-| 0 | the two rosters agree and every agent holds the same week |
+| 0 | the two rosters agree and every agent holds the same week (a zone spelled differently that keeps the same clock counts as the same week) |
 | 1 | no `CALCOM_API_KEY`, or no Twilio credentials, here; nothing was attempted |
 | 2 | no bookable agents in Slate, or the named agent does not exist |
 | 4 | cal.com did not answer (the org listing, or the team's event types) |
 | 5 | cal.com answered with something unreadable |
 | 6 | the event type is not on that team, or named no hosts at all |
 | 7 | **Twilio could not be read**, so who cal.com withholds is unknown |
-| 9 | a zone name differs and keeps the same clock |
+| 9 | retired by #2030 (it was a zone name that keeps the same clock, now agreement); never reused |
 | 10 | an agent bookable in Slate has no cal.com account |
 | 11 | a cal.com account holds no schedule, or one with no windows set |
 | 12 | **a bookable agent has no hours in Slate**, so they are offered nothing |
@@ -638,6 +672,15 @@ real clock. The reads it shares with `pnpm import:calcom-schedules` live in
 a bookable agent" drift, and the drift is silent in the worst direction, since
 the command would then report agreement about a roster the importer never wrote
 to.
+
+The roster's availability rules are read PAGED (#2416). They are one row per
+agent per weekday window, 793 on 2026-10-02 and past PostgREST's 1,000 row page at
+the 200 agent target, and an unpaged read returns the first page with no error:
+every agent whose rules fell past it would come back holding a shorter week, so
+this command would exit 16 about days that are not missing and the importer would
+diff a week it never fully loaded. `scripts/test-calcom-roster.ts` drives the
+loader against a fake that truncates exactly as PostgREST does, at exactly one
+page, one rule past it, and a full week each at the target.
 
 ## The daily lane CORRECTS the drift, it does not only report it (#2092)
 

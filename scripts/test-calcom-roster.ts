@@ -15,6 +15,7 @@
 // behaviour is proved without a test that waits (L524, L290).
 import {
   emailIndex,
+  loadBookableRoster,
   makeCalGet,
   readEventTypeId,
   CAL_SCHEDULES_API_VERSION,
@@ -234,6 +235,112 @@ import { assert, eq, finish } from "./lib/harness.ts";
     CAL_SCHEDULES_API_VERSION !== CAL_BOOKINGS_API_VERSION,
     "the two versions really differ, or the case above proves nothing",
   );
+}
+
+// --- the roster's rules are read whole, past PostgREST's page (#2416) --------
+//
+// `availability_rules` is one row per agent per weekday window: 793 on the live
+// roster on 2026-10-02, and past 1,000 at the 200 agent design target with any
+// weekend cover or split day. PostgREST answers a read with at most 1,000 rows and
+// says nothing about the rest, so an unpaged read hands back a SHORTER week for
+// every agent whose rules fell past the page, and the parity command reports them
+// as days that differ while the importer diffs a week it never fully loaded.
+//
+// The fake caps every response at 1,000 rows exactly as PostgREST does, honours
+// `.range` and `.order`, and fails the named table when told to.
+{
+  const PG_CAP = 1000;
+  type Row = Record<string, unknown>;
+  function fakeDb(tables: Record<string, Row[]>, opts: { failTable?: string } = {}) {
+    const ranges: Record<string, [number, number][]> = {};
+    const from = (table: string) => {
+      let rows = [...(tables[table] ?? [])];
+      let range: [number, number] | null = null;
+      const q = {
+        select: () => q,
+        eq: (col: string, v: unknown) => ((rows = rows.filter((r) => r[col] === v)), q),
+        is: (col: string, v: unknown) => ((rows = rows.filter((r) => (r[col] ?? null) === v)), q),
+        in: (col: string, vs: unknown[]) => ((rows = rows.filter((r) => vs.includes(r[col]))), q),
+        order: (col: string) => (
+          (rows = rows.sort((a, b) => String(a[col]).localeCompare(String(b[col])))), q
+        ),
+        range: (lo: number, hi: number) => {
+          range = [lo, hi];
+          (ranges[table] ??= []).push([lo, hi]);
+          return q;
+        },
+        then: (resolve: (r: { data: Row[] | null; error: { message: string } | null }) => unknown) => {
+          if (opts.failTable === table) return resolve({ data: null, error: { message: "boom" } });
+          const window = range ? rows.slice(range[0], range[1] + 1) : rows;
+          return resolve({ data: window.slice(0, PG_CAP), error: null });
+        },
+      };
+      return q;
+    };
+    return { db: { from } as unknown as Parameters<typeof loadBookableRoster>[0], ranges };
+  }
+  const unwrap = <T,>(res: { data: T | null; error: { message: string } | null }, context: string): T | null => {
+    if (res.error) throw new Error(`${context}: ${res.error.message}`);
+    return res.data;
+  };
+  const pad = (n: number) => String(n).padStart(5, "0");
+  function roster(agents: number, rulesPerAgent: number) {
+    const users: Row[] = [];
+    const scheds: Row[] = [];
+    const rules: Row[] = [];
+    for (let i = 0; i < agents; i++) {
+      users.push({ id: `u${pad(i)}`, email: `a${i}@trypennie.com`, bookable: true, deactivated_at: null, is_test: false });
+      scheds.push({ id: `s${pad(i)}`, user_id: `u${pad(i)}`, timezone: "America/New_York", hours_source: null });
+      for (let d = 0; d < rulesPerAgent; d++) {
+        // Ids interleave agents, so any one agent's rules straddle a page boundary
+        // rather than sitting neatly inside one page.
+        rules.push({ id: `r${pad(d * agents + i)}`, schedule_id: `s${pad(i)}`, weekday: d + 1, start_minute: 480, end_minute: 1020 });
+      }
+    }
+    return { users, availability_schedules: scheds, availability_rules: rules };
+  }
+
+  // The control first: the fake really does truncate an unpaged read, or every
+  // assertion below would pass against a reader that never paged at all.
+  {
+    const { db } = fakeDb(roster(300, 5));
+    const raw = (await (db.from("availability_rules") as unknown as PromiseLike<{ data: Row[] }>)).data;
+    eq(raw.length, 1000, "the fake caps an unpaged read at one PostgREST page, as production does");
+  }
+
+  for (const [agents, perAgent, label] of [
+    [200, 5, "exactly one full page (1,000 rules)"],
+    [143, 7, "one rule past a page (143 agents with a seven day week, 1,001 rules)"],
+    [300, 5, "the design target with a full week each (1,500 rules)"],
+  ] as const) {
+    const { db, ranges } = fakeDb(roster(agents, perAgent));
+    const loaded = await loadBookableRoster(db, unwrap);
+    eq(loaded.length, agents, `${label}: every bookable agent comes back`);
+    const short = loaded.filter((a) => a.rules.length !== perAgent);
+    eq(short.length, 0, `${label}: no agent comes back holding fewer days than Slate stores`);
+    eq(
+      loaded.reduce((n, a) => n + a.rules.length, 0),
+      agents * perAgent,
+      `${label}: every rule is read`,
+    );
+    assert((ranges.availability_rules?.length ?? 0) >= 2, `${label}: the rules read went past its first page`);
+  }
+
+  // A page that fails must refuse the whole run, never stop at the rows it had:
+  // a short list is the exact shape of the defect this exists to prevent.
+  {
+    const { db } = fakeDb(roster(300, 5), { failTable: "availability_rules" });
+    let threw: unknown = null;
+    try {
+      await loadBookableRoster(db, unwrap);
+    } catch (e) {
+      threw = e;
+    }
+    assert(
+      threw instanceof Error && /rules/.test(threw.message) && /boom/.test(threw.message),
+      `a failed rules page refuses the run, naming the read (got ${threw instanceof Error ? threw.message : String(threw)})`,
+    );
+  }
 }
 
 finish();

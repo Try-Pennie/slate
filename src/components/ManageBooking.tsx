@@ -195,7 +195,7 @@ export default function ManageBooking({
   // instant is always UTC so nothing is mis-booked, but what they READ is a US
   // clock. The "more zones" search went with it, since a way out of a fixed list
   // is not a smaller version of fixing the list.
-  const [timeZone, setTimeZone] = useState(resolveZone(detectedZone).id);
+  const [timeZone, setTimeZone] = useState(resolveZone(detectedZone));
   const selectOptions = useMemo(() => timezoneOptions(), []);
   const [start, setStart] = useState(startsAt);
   // #2165: held in state because a move made on this page changes the time the

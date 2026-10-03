@@ -78,8 +78,12 @@ const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
 // Reporting a name that changes nothing as the run's headline is how a check
 // teaches people to skip it (L36), and it did real damage on that first run: the
 // one agent with a genuine Saturday-for-Friday swap was filed under a zone label
-// because the label outranked it. So a difference in NAME that is not a difference
-// in CLOCK gets its own verdict, ranked below every real finding.
+// because the label outranked it. It then shipped as its own lesser verdict, which
+// still printed nine lines and still exited non-zero. Dan, 2026-09-07: "if it has
+// no actual difference, like it's the same clock time but cal.com defines it as a
+// different timezone than slate in words, I don't care about that. That should be
+// silent" (#2030). So a difference in NAME that is not a difference in CLOCK is
+// AGREEMENT: no reason line, no verdict, no exit code.
 {
   const nowMs = Date.parse("2026-09-07T00:00:00Z");
   eq(zonesAgree("America/Denver", "America/Boise", nowMs), true, "Denver and Boise are one clock");
@@ -107,10 +111,23 @@ const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
     { timezone: "America/Denver", rules: seeded.rules },
     calcom("America/Boise", [{ days: weekdays, startTime: "08:00", endTime: "17:00" }]),
   );
-  eq(r.verdict, "timezone-name-differs", "a different name for the same clock is its own, lesser finding");
+  eq(r.verdict, "agree", "a different name for the same clock is agreement (#2030)");
+  eq(r.reasons.length, 0, "and it says nothing at all, so it cannot lengthen the report");
+}
+{
+  // The control for the case above, through the whole comparison rather than only
+  // through `zonesAgree`: a Denver week against a Phoenix one must still be the
+  // loud finding. Without it, a comparison that skipped zones entirely would pass
+  // the silence assertion and swallow every real zone difference (L1).
+  const r = compareAgentSchedule(
+    "agarcia@trypennie.com",
+    { timezone: "America/Denver", rules: seeded.rules },
+    calcom("America/Phoenix", [{ days: weekdays, startTime: "08:00", endTime: "17:00" }]),
+  );
+  eq(r.verdict, "timezone-differs", "Denver against Phoenix is still a real zone finding");
   assert(
-    r.reasons.some((x) => x.includes("America/Boise") && x.includes("same clock")),
-    "and the reason says outright that nothing a lead sees changes",
+    r.reasons.some((x) => x.includes("America/Denver") && x.includes("America/Phoenix")),
+    "and it names both zones",
   );
 }
 {
@@ -125,9 +142,12 @@ const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
     },
     calcom("America/Indiana/Indianapolis", [{ days: weekdays, startTime: "08:00", endTime: "17:00" }]),
   );
-  eq(r.verdict, "days-differ", "the real difference outranks the cosmetic one");
+  eq(r.verdict, "days-differ", "the real day difference is still reported");
   assert(r.reasons.some((x) => x.includes("Friday")), "the day they work and are not offered is named");
-  assert(r.reasons.some((x) => x.includes("same clock")), "and the zone name is still reported, just not as the headline");
+  assert(
+    !r.reasons.some((x) => /timezone|Indianapolis/i.test(x)),
+    "and the zone name goes with the rest: nothing about it is said (#2030)",
+  );
 }
 
 // --- the severe half: same clock numbers, different zone (#1739) ---------------
@@ -355,16 +375,6 @@ const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
     "timezone-differs",
     "the zone difference outranks the others, being the one that moves every window",
   );
-  eq(
-    worstVerdict(["timezone-name-differs", "hours-differ"]),
-    "hours-differ",
-    "a cosmetic zone name never outranks a real difference, which is the whole point of splitting it out",
-  );
-  eq(
-    worstVerdict(["agree", "timezone-name-differs"]),
-    "timezone-name-differs",
-    "but it is still reported, so a drifted name is never silently passed",
-  );
   eq(worstVerdict(["agree", "agree"]), "agree", "all agreeing is agreement");
   eq(worstVerdict([]), null, "nothing compared is not agreement (L98)");
   eq(
@@ -384,7 +394,6 @@ const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
     "no-slate-schedule",
     "no-calcom-schedule",
     "no-calcom-user",
-    "timezone-name-differs",
     "calcom-unreachable",
     "calcom-unreadable",
     // Produced by `reclassifyAgentOwnedHours` rather than by the comparison, and
@@ -474,7 +483,6 @@ const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
     "no-calcom-schedule",
     "calcom-unreachable",
     "calcom-unreadable",
-    "timezone-name-differs",
   ];
   for (const verdict of untouched) {
     const row = { email: "x@trypennie.com", verdict, reasons: ["because"] };
@@ -494,9 +502,9 @@ const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
   }
 }
 {
-  // Ranked below every finding somebody can act on and above agreement, for the
-  // same reason `timezone-name-differs` is: it is real and it must never be the
-  // thing that names a run while a lead facing difference is on the board.
+  // Ranked below every finding somebody can act on and above agreement: it is real
+  // and it must never be the thing that names a run while a lead facing difference
+  // is on the board.
   const actionable: ScheduleVerdict[] = ["hours-differ", "days-differ", "timezone-differs", "no-slate-schedule"];
   for (const v of actionable) {
     assert(

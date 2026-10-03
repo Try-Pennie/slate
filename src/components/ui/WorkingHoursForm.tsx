@@ -106,7 +106,7 @@ export function WorkingHoursForm({
               id="hours_timezone"
               name="timezone"
               ariaLabel={timezoneLabel}
-              defaultValue={resolveZone(timezone).id}
+              defaultValue={resolveZone(timezone)}
               className="w-64"
               options={timezoneOptions().map((z) => ({ value: z.id, label: z.label }))}
             />

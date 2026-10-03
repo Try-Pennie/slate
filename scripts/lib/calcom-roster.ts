@@ -11,6 +11,7 @@
 // real clock.
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { retryDelayMs, CAL_SCHEDULES_API_VERSION } from "@/lib/calcom/schedule-import";
+import { selectAllPages } from "@/lib/supabase/paginate";
 // `pickDefaultSchedule` moved to `src/lib/calcom/schedule-import.ts` (#2627), because
 // the activation path in the Worker now reads a default schedule too and one choice
 // of "which schedule" must serve both.
@@ -205,15 +206,28 @@ export async function loadBookableRoster(
     "schedules",
   ) ?? []) as { id: string; user_id: string; timezone: string; hours_source: string | null }[];
 
+  // PAGED, unlike the two reads above (#2416). Those are one row per agent and
+  // bounded by the roster; this is one row per agent per weekday window, 793 on
+  // 2026-10-02 and past PostgREST's 1,000 row page at the 200 agent target. An
+  // unpaged read returns the first page and says nothing, so every agent whose
+  // rules fell past it would come back holding a shorter week: the parity command
+  // reports days that are not missing and the importer diffs a week it never
+  // fully loaded. Ordered by `id` so the pages are disjoint and cover the whole
+  // set, and `selectAllPages` throws on a failed page rather than returning the
+  // rows it had, since a short list is the very defect being prevented.
+  const scheduleIds = scheds.map((s) => s.id);
   const rules = scheds.length === 0
     ? []
-    : ((unwrap(
-        await db
-          .from("availability_rules")
-          .select("schedule_id, weekday, start_minute, end_minute")
-          .in("schedule_id", scheds.map((s) => s.id)),
+    : await selectAllPages<{ schedule_id: string; weekday: number; start_minute: number; end_minute: number }>(
         "rules",
-      ) ?? []) as { schedule_id: string; weekday: number; start_minute: number; end_minute: number }[]);
+        (from, to) =>
+          db
+            .from("availability_rules")
+            .select("schedule_id, weekday, start_minute, end_minute")
+            .in("schedule_id", scheduleIds)
+            .order("id")
+            .range(from, to),
+      );
 
   const schedByUser = new Map(scheds.map((s) => [s.user_id, s]));
   const rulesBySchedule = new Map<string, RosterAgent["rules"]>();

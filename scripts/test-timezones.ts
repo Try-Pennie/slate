@@ -18,11 +18,15 @@ import {
   humanizeZone,
   timezoneOptions,
   resolveZone,
+  listedZoneFor,
   sameClockListedZone,
   zonesKeepSameClock,
   FALLBACK_ZONE,
   ZONE_SAMPLE_HOURS,
 } from "../src/lib/booking/timezones.ts";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 // --- deviceTimeZone ---------------------------------------------------------
@@ -63,10 +67,9 @@ assert(humanizeZone("UTC") === "UTC", "humanize passes through a bare id");
 
 // --- which option a stored or detected zone selects --------------------------
 {
-  // In the list: kept, and reported as kept.
-  const denver = resolveZone("America/Denver");
-  eq(denver.id, "America/Denver", "a zone in the list is kept");
-  assert(!denver.wasOutsideList, "and is not reported as a fallback");
+  // In the list: kept, and it IS a listed zone.
+  eq(resolveZone("America/Denver"), "America/Denver", "a zone in the list is kept");
+  eq(listedZoneFor("America/Denver"), "America/Denver", "and it is its own listed zone");
 
   // Outside the list: answered EXPLICITLY. Neither blank, which hides that a
   // choice is needed, nor whatever happens to be first, which would move
@@ -77,23 +80,21 @@ assert(humanizeZone("UTC") === "UTC", "humanize passes through a bare id");
   for (const outside of ["Europe/London", "Australia/Sydney", "America/Regina"]) {
     const r = resolveZone(outside);
     assert(
-      CURATED_ZONES.some((z) => z.id === r.id),
-      `${outside} resolves to a zone the list can actually show (${r.id})`,
+      CURATED_ZONES.some((z) => z.id === r),
+      `${outside} resolves to a zone the list can actually show (${r})`,
     );
-    assert(r.id.length > 0, `${outside} never resolves to an empty value`);
-    assert(r.wasOutsideList, `${outside} is REPORTED as having fallen back, so a caller can say so`);
+    eq(r, FALLBACK_ZONE, `${outside} lands on the documented fallback`);
+    // The server's question, answered by the same mapping: there is no listed
+    // zone for it, so a save naming it is refused rather than moved (#2126).
+    eq(listedZoneFor(outside), null, `${outside} has no listed zone`);
   }
 
-  // Not chosen yet is a different thing from chosen and no longer offered, and
-  // the flag has to tell them apart or a caller cannot phrase either honestly.
+  // Not chosen yet resolves to the default. It is never a zone the server would
+  // store: an empty value is refused as unreadable before the mapping is asked.
   for (const empty of [undefined, ""]) {
-    const r = resolveZone(empty);
-    assert(CURATED_ZONES.some((z) => z.id === r.id), "an unset zone still resolves to a real option");
-    assert(
-      !r.wasOutsideList,
-      "an unset zone is a default, not a fallback: nobody's choice was taken away",
-    );
+    eq(resolveZone(empty), FALLBACK_ZONE, "an unset zone resolves to the default");
   }
+  eq(listedZoneFor(""), null, "an empty value is not a listed zone");
 }
 
 // --- the roster's own zones are all representable ----------------------------
@@ -112,9 +113,8 @@ for (const stored of [
   "America/Los_Angeles",
   "America/Chicago",
 ]) {
-  const r = resolveZone(stored);
-  eq(r.id, stored, `a live agent on ${stored} keeps it`);
-  assert(!r.wasOutsideList, `and ${stored} is not treated as a fallback`);
+  eq(resolveZone(stored), stored, `a live agent on ${stored} keeps it`);
+  eq(listedZoneFor(stored), stored, `and ${stored} is its own listed zone`);
 }
 
 // --- a zone that keeps a listed clock under another name selects it (#2687) --
@@ -127,9 +127,8 @@ const PINNED = Date.UTC(2026, 0, 15, 12);
 // Every listed zone is its own clock, and selects itself.
 for (const z of CURATED_ZONES) {
   eq(sameClockListedZone(z.id, PINNED), z.id, `${z.id} keeps its own clock`);
-  const r = resolveZone(z.id, PINNED);
-  eq(r.id, z.id, `${z.id} selects itself`);
-  assert(!r.wasOutsideList, `${z.id} is not a fallback`);
+  eq(resolveZone(z.id, PINNED), z.id, `${z.id} selects itself`);
+  eq(listedZoneFor(z.id, PINNED), z.id, `${z.id} is its own listed zone`);
 }
 
 // The named aliases from the issue, each on the clock it really keeps.
@@ -141,14 +140,13 @@ for (const [alias, listed] of [
   ["America/Juneau", "America/Anchorage"],
   ["America/Indiana/Knox", "America/Chicago"],
 ] as const) {
-  const r = resolveZone(alias, PINNED);
-  eq(r.id, listed, `${alias} selects ${listed}`);
-  assert(!r.wasOutsideList, `${alias} is not a fallback: every time it shows reads the same`);
+  eq(resolveZone(alias, PINNED), listed, `${alias} selects ${listed}`);
+  eq(listedZoneFor(alias, PINNED), listed, `${alias} maps to ${listed}: every time it shows reads the same`);
 }
 
 // Phoenix stays on its own row and is never folded into Denver, which it
 // matches all winter and not in summer.
-eq(resolveZone("America/Phoenix", PINNED).id, "America/Phoenix", "Phoenix stays Phoenix");
+eq(resolveZone("America/Phoenix", PINNED), "America/Phoenix", "Phoenix stays Phoenix");
 assert(!zonesKeepSameClock("America/Phoenix", "America/Denver", PINNED), "Phoenix is not Denver's clock");
 
 // A zone matching a listed clock for only PART of the window must not map.
@@ -156,17 +154,15 @@ assert(!zonesKeepSameClock("America/Phoenix", "America/Denver", PINNED), "Phoeni
 // summer; judged at one winter instant they would look identical.
 for (const partial of ["America/Regina", "America/Mexico_City"]) {
   eq(sameClockListedZone(partial, PINNED), null, `${partial} matches Chicago only part of the year, so it maps nowhere`);
-  const r = resolveZone(partial, PINNED);
-  eq(r.id, FALLBACK_ZONE, `${partial} keeps the documented Eastern fallback`);
-  assert(r.wasOutsideList, `${partial} is reported as a fallback`);
+  eq(resolveZone(partial, PINNED), FALLBACK_ZONE, `${partial} keeps the documented Eastern fallback`);
+  eq(listedZoneFor(partial, PINNED), null, `${partial} has no listed zone`);
 }
 
 // A zone keeping no listed clock at all keeps the fallback, and so does one the
 // runtime cannot read.
 for (const none of ["Europe/London", "Asia/Tokyo", "Mars/Olympus"]) {
-  const r = resolveZone(none, PINNED);
-  eq(r.id, FALLBACK_ZONE, `${none} falls back to Eastern`);
-  assert(r.wasOutsideList, `${none} is reported as a fallback`);
+  eq(resolveZone(none, PINNED), FALLBACK_ZONE, `${none} falls back to Eastern`);
+  eq(listedZoneFor(none, PINNED), null, `${none} has no listed zone`);
 }
 assert(!zonesKeepSameClock("Mars/Olympus", "Mars/Olympus", PINNED), "an unreadable zone is not even its own clock");
 
@@ -178,7 +174,7 @@ assert(
   !zonesKeepSameClock("America/Havana", "America/New_York", PINNED),
   "Havana is not New York's clock, although they differ for only a few hours a year",
 );
-eq(resolveZone("America/Havana", PINNED).id, FALLBACK_ZONE, "so Havana keeps the fallback rather than mapping");
+eq(resolveZone("America/Havana", PINNED), FALLBACK_ZONE, "so Havana keeps the fallback rather than mapping");
 
 // The window really is a year and more: Denver and Phoenix agree for the first
 // hours of a January window and must still be told apart.
@@ -230,14 +226,13 @@ assert(ZONE_SAMPLE_HOURS >= 366 * 24, `the window covers a whole year (${ZONE_SA
   for (const zone of america) {
     const oracleMatches = CURATED_ZONES.filter((c) => oracleSame(zone, c.id)).map((c) => c.id);
     const expected = oracleMatches.length === 1 ? oracleMatches[0] : FALLBACK_ZONE;
-    const r = resolveZone(zone, PINNED);
-    eq(r.id, expected, `${zone} selects ${expected}`);
+    eq(resolveZone(zone, PINNED), expected, `${zone} selects ${expected}`);
     if (oracleMatches.length === 1) {
       mapped++;
       byListed.set(expected, [...(byListed.get(expected) ?? []), zone]);
-      assert(!r.wasOutsideList, `${zone} keeps ${expected}'s clock, so it is not a fallback`);
+      eq(listedZoneFor(zone, PINNED), expected, `${zone} keeps ${expected}'s clock, so it maps there`);
     } else {
-      assert(r.wasOutsideList, `${zone} keeps no listed clock, so it is reported as a fallback`);
+      eq(listedZoneFor(zone, PINNED), null, `${zone} keeps no listed clock, so it maps nowhere`);
     }
   }
   // Positive control: an oracle that matched nothing would make every assertion
@@ -247,6 +242,43 @@ assert(ZONE_SAMPLE_HOURS >= 366 * 24, `the window covers a whole year (${ZONE_SA
   for (const listed of ["America/New_York", "America/Chicago", "America/Denver", "America/Anchorage"]) {
     assert((byListed.get(listed)?.length ?? 0) > 1, `${listed} gathers aliases beyond itself`);
   }
+}
+
+// --- one judge of "the same clock", and no second copy (#2128) ---------------
+//
+// Two implementations of this question shipped within a week of each other, with
+// different windows and different memo keys, and nothing compared them (L370).
+// They are one now (`zonesKeepSameClock`), and this fails on the next hand rolled
+// copy: two zones' offsets compared on one line anywhere in `src/` or `scripts/lib/`
+// outside this module.
+{
+  const SAME_CLOCK_COPY = /\.offset\b[^;\n]*[!=]==?[^;\n]*\.offset\b|offsetMinutes\([^)]*\)\s*[!=]==?\s*offsetMinutes\(/;
+  // Positive control: the line the save path used to carry must be caught, or a
+  // pattern that matched nothing would pass on any tree (L1).
+  assert(
+    SAME_CLOCK_COPY.test("if (at.setZone(timezone).offset !== at.setZone(candidate.id).offset) {"),
+    "the scan recognises the copy #2128 removed",
+  );
+  assert(
+    !SAME_CLOCK_COPY.test("offset: query.offset,"),
+    "and does not fire on an unrelated pagination offset",
+  );
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  const home = join(root, "src/lib/booking/timezones.ts");
+  const files: string[] = [];
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir)) {
+      const p = join(dir, e);
+      if (statSync(p).isDirectory()) walk(p);
+      else if (/\.(ts|tsx)$/.test(e) && !/\.test\.tsx?$/.test(e)) files.push(p);
+    }
+  };
+  walk(join(root, "src"));
+  walk(join(root, "scripts/lib"));
+  assert(files.length > 100, `the scan read the tree (${files.length} files)`);
+  assert(files.includes(home), "and the tree it read contains the one judge itself");
+  const copies = files.filter((f) => f !== home && SAME_CLOCK_COPY.test(readFileSync(f, "utf8")));
+  eq(copies, [], "no file but the one judge compares two zones' offsets");
 }
 
 finish();

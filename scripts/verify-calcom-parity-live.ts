@@ -442,8 +442,8 @@ console.log(
 //
 // The four unusable kinds are LISTED rather than picked out by rank. A rank
 // threshold reads as a tidy rule and silently reclassifies the moment a verdict is
-// inserted between two ranks, which is exactly what adding `timezone-name-differs`
-// did.
+// inserted between two ranks, which is exactly what adding a zone alias verdict
+// (since removed, #2030) once did.
 const CANNOT_COMPARE: ScheduleVerdict[] = [
   "no-calcom-user",
   "no-calcom-schedule",
