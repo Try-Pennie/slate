@@ -86,11 +86,11 @@ function memoryTable(table: string, rows: Row[], opts: { failWith?: string } = {
 {
   const row: Row = { id: "res-1", lease_until: null };
   const { db, tables } = memoryTable("booking_reservations", [row]);
-  const a = await leaseReservationRow(db, "res-1", T0, TTL);
+  const a = await leaseReservationRow(db, "res-1", T0);
   eq(a, new Date(T0 + TTL).toISOString(), "a free reservation is leased, and the token is the stored value");
   eq(tables[0], "booking_reservations", "the claim is on the reservations table");
   eq(
-    await leaseReservationRow(db, "res-1", T0 + 1000, TTL),
+    await leaseReservationRow(db, "res-1", T0 + 1000),
     null,
     "a reservation already leased is not leased again, so two drains cannot both run it",
   );
@@ -102,7 +102,7 @@ function memoryTable(table: string, rows: Row[], opts: { failWith?: string } = {
   });
   let caught: unknown;
   try {
-    await leaseReservationRow(db, "res-1", T0, TTL);
+    await leaseReservationRow(db, "res-1", T0);
   } catch (err) {
     caught = err;
   }
@@ -117,36 +117,83 @@ function memoryTable(table: string, rows: Row[], opts: { failWith?: string } = {
 {
   const row: Row = { id: "res-1", lease_until: null };
   const { db } = memoryTable("booking_reservations", [row]);
-  const a = await leaseReservationRow(db, "res-1", T0, TTL);
+  const a = await leaseReservationRow(db, "res-1", T0);
   assert(a !== null, "holder A takes the lease");
   // A overruns. Past its expiry, the next drain legitimately takes the row.
-  const b = await leaseReservationRow(db, "res-1", T0 + TTL + 1, TTL);
+  const b = await leaseReservationRow(db, "res-1", T0 + TTL + 1);
   assert(b !== null && b !== a, "holder B takes the expired lease with a token of its own");
   // A finishes and releases in its finally. This is the line that used to free B's lease.
   await releaseReservationLeaseRow(db, "res-1", a!);
   eq(row.lease_until, b, "A's late release leaves B's lease standing");
   eq(
-    await leaseReservationRow(db, "res-1", T0 + TTL + 2, TTL),
+    await leaseReservationRow(db, "res-1", T0 + TTL + 2),
     null,
     "so a third drain cannot start while B is mid flight",
   );
   await releaseReservationLeaseRow(db, "res-1", b!);
-  eq(row.lease_until, null, "B's own release does free the row");
+  assert(
+    (await leaseReservationRow(db, "res-1", T0 + TTL + 3)) !== null,
+    "B's own release does free the row",
+  );
 }
 
 // --- interleaving, direction two: the NEWER holder finishes first -------------
 {
   const row: Row = { id: "res-1", lease_until: null };
   const { db } = memoryTable("booking_reservations", [row]);
-  const a = await leaseReservationRow(db, "res-1", T0, TTL);
-  const b = await leaseReservationRow(db, "res-1", T0 + TTL + 1, TTL);
+  const a = await leaseReservationRow(db, "res-1", T0);
+  const b = await leaseReservationRow(db, "res-1", T0 + TTL + 1);
   assert(a !== null && b !== null, "A and then B hold the row in turn");
   await releaseReservationLeaseRow(db, "res-1", b!);
-  eq(row.lease_until, null, "B finishes first and frees the row");
-  const c = await leaseReservationRow(db, "res-1", T0 + TTL + 2, TTL);
-  assert(c !== null && c !== a, "holder C takes the freed row");
+  const c = await leaseReservationRow(db, "res-1", T0 + TTL + 2);
+  assert(c !== null && c !== a, "B finishes first, and holder C takes the freed row");
   await releaseReservationLeaseRow(db, "res-1", a!);
   eq(row.lease_until, c, "A's release, arriving after both, leaves C's lease standing");
+}
+
+// --- every claim's token is new, even inside one millisecond -------------------
+{
+  // The token is a timestamp, so a release and a reclaim in the SAME millisecond
+  // used to hand the new holder the very token the old one had, and a stale write
+  // carrying it would have matched. The release now leaves the claim instant
+  // behind rather than null, and a claim needs the stored value strictly before
+  // its own instant, so a reclaim in the same millisecond is refused and every
+  // token a row ever hands out is later than the one before it.
+  const row: Row = { id: "res-1", lease_until: null };
+  const { db } = memoryTable("booking_reservations", [row]);
+  const a = await leaseReservationRow(db, "res-1", T0);
+  await releaseReservationLeaseRow(db, "res-1", a!);
+  eq(
+    await leaseReservationRow(db, "res-1", T0),
+    null,
+    "a reclaim in the same millisecond as the claim it follows is refused",
+  );
+  const b = await leaseReservationRow(db, "res-1", T0 + 1);
+  assert(b !== null && b !== a, "one millisecond later the row is free, under a token of its own");
+  await releaseReservationLeaseRow(db, "res-1", a!);
+  eq(row.lease_until, b, "so the old holder's token never matches the new holder's lease");
+}
+{
+  // Across a takeover, and across holders whose clocks disagree, tokens only grow:
+  // a claim needs the stored value before its OWN instant, so whatever clock it
+  // runs on, it writes a later value than the one it replaced.
+  const row: Row = { id: "res-1", lease_until: null };
+  const { db } = memoryTable("booking_reservations", [row]);
+  const tokens: string[] = [];
+  let clock = T0;
+  for (let i = 0; i < 6; i++) {
+    const t = await leaseReservationRow(db, "res-1", clock);
+    assert(t !== null, `claim ${i + 1} wins`);
+    tokens.push(t!);
+    if (i % 2 === 0) await releaseReservationLeaseRow(db, "res-1", t!);
+    // The next holder's clock: just past the earliest moment the row is free.
+    clock = i % 2 === 0 ? clock + 1 : clock + TTL + 1;
+  }
+  const ms = tokens.map((t) => Date.parse(t));
+  assert(
+    ms.every((v, i) => i === 0 || v > ms[i - 1]!),
+    "every token the row hands out is strictly later than the one before it",
+  );
 }
 
 // --- one mechanism, not two (L41) ----------------------------------------------

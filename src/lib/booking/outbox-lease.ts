@@ -39,15 +39,20 @@ import { gatedWriteRows } from "./gated-write.ts";
 /** The tables whose rows carry a `lease_until` token this file gates on. */
 export type LeasedTable = "booking_outbox" | "booking_reservations";
 
-/** Each table's log tag and id field, so a warning names the row it is about. */
-const LEASE_LOG: Record<LeasedTable, { tag: string; idField: string }> = {
-  booking_outbox: { tag: "outbox", idField: "outbox_id" },
-  booking_reservations: { tag: "reservations", idField: "reservation_id" },
-};
-
 /** How long a holder owns a row. Long enough for a slow Google call inside a step,
  *  short enough that a crashed holder's row is picked up on a later tick. */
 export const OUTBOX_LEASE_TTL_MS = 2 * 60 * 1000;
+
+/** How long a reservation drain owns a reservation (#429 P4). Crash during create is
+ *  rare, so this only governs how soon an orphaned reservation is retried. */
+export const RESERVATION_LEASE_TTL_MS = 2 * 60 * 1000;
+
+/** Each table's lease length, log tag and id field. The length lives here because
+ *  the release derives the claim instant from the token (see `releaseLeaseRow`). */
+const LEASED: Record<LeasedTable, { ttlMs: number; tag: string; idField: string }> = {
+  booking_outbox: { ttlMs: OUTBOX_LEASE_TTL_MS, tag: "outbox", idField: "outbox_id" },
+  booking_reservations: { ttlMs: RESERVATION_LEASE_TTL_MS, tag: "reservations", idField: "reservation_id" },
+};
 
 /**
  * What a lease-gated write did. Three outcomes, never collapsed into a boolean,
@@ -83,7 +88,7 @@ export async function leaseOutboxRow(
   id: string,
   now: number,
 ): Promise<string | null> {
-  const { data, error } = await claimLeaseRow(db, "booking_outbox", id, now, OUTBOX_LEASE_TTL_MS);
+  const { data, error } = await claimLeaseRow(db, "booking_outbox", id, now);
   if (error) {
     // A claim we cannot confirm is not a claim. Reported rather than swallowed: the
     // row simply waits for the next tick, and a persistent failure is visible.
@@ -105,10 +110,9 @@ export async function leaseReservationRow(
   db: OutboxLeaseDb,
   id: string,
   now: number,
-  ttlMs: number,
 ): Promise<string | null> {
   return leaseToken(
-    gatedWriteRows("reservation_lease", await claimLeaseRow(db, "booking_reservations", id, now, ttlMs)),
+    gatedWriteRows("reservation_lease", await claimLeaseRow(db, "booking_reservations", id, now)),
   );
 }
 
@@ -125,11 +129,19 @@ export async function releaseReservationLeaseRow(
  * The one claim statement both tables use: take the lease only when it is free or
  * expired, so two claimants cannot both win (the loser updates zero rows), and read
  * the token back from the same statement.
+ *
+ * Every token a row hands out is strictly later than the one before it, so no two
+ * holders ever share one. A claim needs the stored value strictly before its OWN
+ * instant: after a takeover that value was the old token, and after a release it is
+ * the old claim instant (`releaseLeaseRow`), so either way the new token, the claim
+ * instant plus the same TTL, is later. It holds whichever holder's clock is ahead,
+ * because the comparison is against what is stored. A row marked delivered is
+ * cleared to null instead, which is safe because nothing claims a delivered row.
  */
-function claimLeaseRow(db: OutboxLeaseDb, table: LeasedTable, id: string, now: number, ttlMs: number) {
+function claimLeaseRow(db: OutboxLeaseDb, table: LeasedTable, id: string, now: number) {
   return db
     .from(table)
-    .update({ lease_until: new Date(now + ttlMs).toISOString() })
+    .update({ lease_until: new Date(now + LEASED[table].ttlMs).toISOString() })
     .eq("id", id)
     .or(`lease_until.is.null,lease_until.lt.${new Date(now).toISOString()}`)
     .select("lease_until");
@@ -184,17 +196,26 @@ export async function releaseOutboxLeaseRow(
   await releaseLeaseRow(db, "booking_outbox", id, lease);
 }
 
-/** The one release statement both tables use: clear the lease only while the row
- *  still holds `lease`, so a holder that overran never frees its successor's. */
+/**
+ * The one release statement both tables use: free the lease only while the row
+ * still holds `lease`, so a holder that overran never frees its successor's.
+ *
+ * Freeing writes the CLAIM INSTANT (the token less the TTL) rather than null. That
+ * instant is already past, so the row is free to the next claim, and a claim in the
+ * same millisecond is refused, so it can never be handed this holder's token again.
+ * A token that will not parse, which nothing here writes, falls back to null.
+ */
 async function releaseLeaseRow(
   db: OutboxLeaseDb,
   table: LeasedTable,
   id: string,
   lease: string,
 ): Promise<void> {
+  const tokenMs = Date.parse(lease);
+  const freedAt = Number.isFinite(tokenMs) ? new Date(tokenMs - LEASED[table].ttlMs).toISOString() : null;
   const { error } = await db
     .from(table)
-    .update({ lease_until: null })
+    .update({ lease_until: freedAt })
     .eq("id", id)
     .eq("lease_until", lease)
     .select("id");
@@ -202,7 +223,7 @@ async function releaseLeaseRow(
     // Nothing to do about it here: the lease expires on its own, so the row is
     // recoverable either way. Said out loud so a database that is refusing writes is
     // not invisible on this path.
-    const { tag, idField } = LEASE_LOG[table];
+    const { tag, idField } = LEASED[table];
     log.warn(tag, { msg: "lease release failed", [idField]: id }, error);
   }
 }

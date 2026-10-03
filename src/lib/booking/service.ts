@@ -191,10 +191,10 @@ const REASSIGN_INTENT_LEASE_MS = 2 * 60 * 1000;
 // Lease held while a drain processes one outbox row; only governs reclaiming a
 // row orphaned by a torn-down Worker, so keep it above the slowest single-row run.
 const OUTBOX_DRAIN_LIMIT = 50;
-// Reservation lease + drain bounds (#429 P4). Crash-during-create is rare, so a
-// small cap with a multi-tick backlog is fine; bounds Worker CPU. Retention
-// deletes abandoned pending reservations older than the TTL.
-const RESERVATION_LEASE_TTL_MS = 2 * 60 * 1000;
+// Reservation drain bounds (#429 P4). Crash-during-create is rare, so a small cap
+// with a multi-tick backlog is fine; bounds Worker CPU. Retention deletes abandoned
+// pending reservations older than the TTL. The lease length lives with the lease
+// (RESERVATION_LEASE_TTL_MS in outbox-lease.ts), which derives the release from it.
 const RESERVATION_DRAIN_LIMIT = 15;
 const RESERVATION_RETENTION_MS = 24 * 60 * 60 * 1000;
 // Throttle the "drain rows are stuck" Slack alert (#445) so a persistently-
@@ -1589,7 +1589,7 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     // (`outbox-lease.ts`), so the release frees only the lease this holder took.
     // #2373 still holds: a refused claim throws rather than reading as busy.
     leaseReservation: (id) =>
-      leaseReservationRow(supabaseAdmin(), id, Date.now(), RESERVATION_LEASE_TTL_MS),
+      leaseReservationRow(supabaseAdmin(), id, Date.now()),
 
     releaseReservationLease: (id, lease) => releaseReservationLeaseRow(supabaseAdmin(), id, lease),
 

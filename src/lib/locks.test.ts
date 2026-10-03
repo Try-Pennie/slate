@@ -171,6 +171,23 @@ describe("makeLockLease (#3120)", () => {
   // L11: a renewal the database refused stops the run just as safely, since
   // nothing shows the claim is still ours, but it must never read as another run
   // having taken over.
+  // A renewal that THROWS (a deadline, a network fault) is a refusal too. It must
+  // answer stop rather than reject, or the run's caller reads the rejection as its
+  // own failure and records a streak about a sync that never failed.
+  it("treats a renewal that throws as refused, and answers stop rather than rejecting", async () => {
+    const clock = { ms: 0 };
+    const renew = vi.fn(async (): Promise<RenewLockResult> => {
+      throw new Error("deadline exceeded");
+    });
+    const lease = makeLockLease("k", "t1", TTL, { now: () => clock.ms, renew });
+    clock.ms = TTL;
+    await expect(lease.stillHeld()).resolves.toBe(false);
+    expect(lease.stopReason()).toBe("refused");
+    renew.mockResolvedValue({ ok: true, token: "t9" });
+    clock.ms += TTL;
+    expect(await lease.stillHeld()).toBe(false);
+  });
+
   it("stops on a refused renewal too, and says it was refused rather than taken", async () => {
     const clock = { ms: 0 };
     const renew = vi.fn(async (): Promise<RenewLockResult> => ({ ok: false, why: "refused" }));

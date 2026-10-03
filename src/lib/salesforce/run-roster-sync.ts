@@ -15,7 +15,7 @@ import { syncSalesforceAgents, AGENTS_SYNC_STREAK_KEY, type SyncResult } from "@
 import { activationAllowance, ROSTER_RUN_LOCK_TTL_MS } from "@/lib/bookable/activation-allowance";
 import { ensureDefaultOrg } from "@/lib/provision";
 import { ensureDefaultSchedules } from "@/lib/schedule";
-import { acquireLock, makeLockLease, releaseLock, type LeaseStopReason, type LockLease } from "@/lib/locks";
+import { acquireLease, releaseLock, type LeaseStopReason, type LockLease } from "@/lib/locks";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 import { logAlertSendFailure, logResolveFailure } from "@/lib/notify/send-failure";
 import { clearFailureStreak, recordConsecutiveStreak } from "@/lib/notify/streak";
@@ -127,6 +127,11 @@ function leaseStopHalf(why: LeaseStopReason) {
   return { ok: false, reason: ROSTER_LEASE_STOP_REASONS[why], leaseStop: why } as const;
 }
 
+/** The reason a caught failure carries, for the outcome and the banner. */
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /** What `stillHeld()` going false means; a lease always records a reason when it does. */
 function stopReasonOf(lease: LockLease): LeaseStopReason {
   return lease.stopReason() ?? "refused";
@@ -170,16 +175,15 @@ export type RosterSyncOutcome =
  * roster in a state only the next scheduled hour could finish.
  */
 export async function runRosterSync(): Promise<RosterSyncOutcome> {
-  const lock = await acquireLock(AGENTS_LOCK_KEY, AGENTS_LOCK_TTL_MS);
-  if (!lock) return { skipped: "overlapping-run" };
   // #3177: the lock is a lease, so once its TTL passes the next hourly run may take
   // the key while this one is still working, and a stale run writing after a newer
   // one re-applies an old picture of who is bookable. So the run is FENCED: before
   // each phase that writes, `stillHeld()` renews the claim (a run making progress
-  // keeps its key) and answers false once another run has taken it, at which point
-  // this run stops and says so. The token moves on each renewal, so the release
-  // below hands back the current one.
-  const lease = makeLockLease(AGENTS_LOCK_KEY, lock, AGENTS_LOCK_TTL_MS);
+  // keeps its key) and answers false once another run has taken it, or once the
+  // renewal could not run, at which point this run stops and says which. The token
+  // moves on each renewal, so the release below hands back the current one.
+  const lease = await acquireLease(AGENTS_LOCK_KEY, AGENTS_LOCK_TTL_MS);
+  if (!lease) return { skipped: "overlapping-run" };
   try {
     // #2302: ONE allowance for the whole run, spent by both halves. Each attempt to
     // make somebody bookable now reads their Google calendar as part of the gate,
@@ -258,12 +262,39 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
     // REFUSAL rather than a skip all the same: its own alert, its own line in the
     // banner, its own log. What it must never be is silent, because a Twilio half
     // that quietly does nothing has every symptom of a healthy run.
+    //
+    // The read is kept apart from its bookkeeping (the read streak, its page or all
+    // clear, the write outcome report and the verdict stamp) so the fence can sit
+    // between them (#3177): a run that lost the key during the read reports what
+    // it read and writes none of that, because the newer run is reading Twilio
+    // itself and owns those records now.
+    let read: { ok: true; result: TwilioSyncResult } | { ok: false; err: unknown };
+    try {
+      read = {
+        ok: true,
+        result: await syncTwilioRedistribute({
+          ...(await defaultTwilioSyncDeps(org.id)),
+          allowance,
+        }),
+      };
+    } catch (err) {
+      read = { ok: false, err };
+    }
+    if (!(await lease.stillHeld())) {
+      if (!read.ok) log.error("agents", { msg: "twilio half of the roster sync failed" }, read.err);
+      return {
+        sync,
+        sessions,
+        twilio: read.ok ? { ok: true, result: read.result } : { ok: false, reason: errorText(read.err) },
+        hoursApplied: null,
+        leaseStop: stopReasonOf(lease),
+      };
+    }
+
     let twilio: { ok: true; result: TwilioSyncResult } | { ok: false; reason: string };
     try {
-      const result = await syncTwilioRedistribute({
-        ...(await defaultTwilioSyncDeps(org.id)),
-        allowance,
-      });
+      if (!read.ok) throw read.err;
+      const result = read.result;
       twilio = { ok: true, result };
       // alert-key: twilio_sync_failures
       // all-clear-proof: src/app/api/cron/agents/route.test.ts - "sends NO Twilio
@@ -280,7 +311,7 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
       if (cleared) log.info("agents", { msg: "twilio sync failure alert cleared" });
       await reportTwilioWriteOutcome(result);
     } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
+      const reason = errorText(err);
       twilio = { ok: false, reason };
       log.error("agents", { msg: "twilio half of the roster sync failed" }, err);
       // #2774: pages on the SECOND consecutive run that cannot read Twilio, not the

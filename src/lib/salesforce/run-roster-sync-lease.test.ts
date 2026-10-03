@@ -54,15 +54,18 @@ const lockStore = vi.hoisted(() => {
 
 vi.mock("@/lib/locks", async () => {
   const actual = await vi.importActual<typeof import("@/lib/locks")>("@/lib/locks");
+  // The real lease, over the fake store and the fake clock.
+  const makeLockLease = (key: string, claim: string, ttlMs: number) =>
+    actual.makeLockLease(key, claim, ttlMs, {
+      now: () => lockStore.clock.now,
+      renew: lockStore.renew,
+    });
   return {
-    acquireLock: vi.fn(lockStore.acquireLock),
+    acquireLease: async (key: string, ttlMs: number) => {
+      const claim = await lockStore.acquireLock(key, ttlMs);
+      return claim === null ? null : makeLockLease(key, claim, ttlMs);
+    },
     releaseLock: vi.fn(lockStore.releaseLock),
-    // The real lease, over the fake store and the fake clock.
-    makeLockLease: (key: string, claim: string, ttlMs: number) =>
-      actual.makeLockLease(key, claim, ttlMs, {
-        now: () => lockStore.clock.now,
-        renew: lockStore.renew,
-      }),
   };
 });
 
@@ -231,6 +234,37 @@ describe("runRosterSync lease fencing (#3177)", () => {
     // It released with the token it renewed to, not the one it started with, or
     // the key would stay held until the TTL ran out.
     expect(lockStore.claims.has(AGENTS_LOCK_KEY)).toBe(false);
+  });
+
+  // The Twilio half's own bookkeeping (its streak, its page or all clear, its
+  // verdict stamp) is a write too. A run that lost the key DURING the Twilio read
+  // must leave all of it to the newer run, which is reading Twilio itself.
+  it.each([
+    ["read Twilio", () => Promise.resolve(cleanTwilio())],
+    ["failed to read Twilio", () => Promise.reject(new Error("Twilio refused the credentials (401)."))],
+  ] as const)("writes none of the Twilio bookkeeping when it lost the key while it %s", async (_label, outcome) => {
+    twilio.syncTwilioRedistribute.mockImplementationOnce(async () => {
+      // Past the TTL, the next hourly run takes the key mid read.
+      lockStore.clock.now = T0 + TTL + 1;
+      lockStore.claims.set(AGENTS_LOCK_KEY, lockStore.clock.now);
+      return outcome();
+    });
+    // The newer run is still at work, and fails the next attempt to take the key.
+    streak.recordConsecutiveStreak.mockResolvedValue(true);
+
+    const out = await runRosterSync();
+    if (out.skipped) throw new Error("the run started");
+    expect(out.leaseStop).toBe("taken");
+    expect(out.hoursApplied).toBeNull();
+    const twilioKeys = (calls: unknown[][]) => calls.map((c) => c[0]).filter((k) => String(k).startsWith("twilio"));
+    expect(twilioKeys(streak.clearFailureStreak.mock.calls)).toEqual([]);
+    expect(twilioKeys(streak.recordConsecutiveStreak.mock.calls)).toEqual([]);
+    expect(twilioKeys(dispatch.sendThrottledAlert.mock.calls)).toEqual([]);
+    expect(twilioKeys(dispatch.resolveAlert.mock.calls)).toEqual([]);
+    expect(verdict.recordDetectorVerdict).not.toHaveBeenCalled();
+    expect(schedule.ensureDefaultSchedules).not.toHaveBeenCalled();
+    // And it left the newer run's claim standing.
+    expect(lockStore.claims.get(AGENTS_LOCK_KEY)).toBe(T0 + TTL + 1);
   });
 
   it("stops just as safely when the renewal is refused, and never calls that a takeover (L11)", async () => {

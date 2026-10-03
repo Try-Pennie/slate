@@ -114,7 +114,19 @@ export function makeLockLease(
   // and report the claim lost while this very run holds it, so they share one.
   const shared = makeSharedInFlight<"renew", boolean>();
   const renewOnce = async (): Promise<boolean> => {
-    const result = await renew(key, token);
+    // A renewal that throws is a refusal like any other: nothing shows the claim is
+    // still ours. Caught here so `stillHeld()` answers stop rather than rejecting,
+    // which its caller would otherwise read as its own work failing.
+    let pending: Promise<RenewLockResult>;
+    try {
+      pending = renew(key, token);
+    } catch (err) {
+      pending = Promise.reject(err);
+    }
+    const result: RenewLockResult = await pending.catch((err: unknown) => {
+      log.warn("locks", { msg: "lock renewal threw", key }, err);
+      return { ok: false, why: "refused" } as const;
+    });
     if (!result.ok) {
       stopped = result.why;
       log.warn("locks", {
