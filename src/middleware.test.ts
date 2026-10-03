@@ -18,7 +18,7 @@ vi.mock("@supabase/ssr", () => ssr);
 // these drive only what the middleware does with them.
 const frameGuard = vi.hoisted(() => ({
   readFrameLock: vi.fn(async () => false),
-  recordFramingObservation: vi.fn(async (_obs: { origin: string; surface: string }) => {}),
+  recordFramingObservation: vi.fn((_obs: { origin: string; surface: string }, _defer: (work: Promise<unknown>) => void) => {}),
 }));
 vi.mock("@/lib/embed/frame-guard", () => frameGuard);
 vi.mock("@/lib/env", () => ({
@@ -267,7 +267,6 @@ describe("framing the booker (#3137)", () => {
     frameGuard.readFrameLock.mockReset();
     frameGuard.readFrameLock.mockResolvedValue(false);
     frameGuard.recordFramingObservation.mockReset();
-    frameGuard.recordFramingObservation.mockResolvedValue(undefined);
   });
 
   const framed = (path: string, referer: string | null, dest = "iframe") =>
@@ -309,11 +308,16 @@ describe("framing the booker (#3137)", () => {
       framed("/booking/manage/tok-abc", "https://partner.example/landing?email=jane%40x.com"),
       { waitUntil } as never,
     );
-    expect(frameGuard.recordFramingObservation).toHaveBeenCalledWith({
-      origin: "https://partner.example",
-      surface: "manage",
-    });
-    expect(waitUntil).toHaveBeenCalledTimes(1);
+    expect(frameGuard.recordFramingObservation).toHaveBeenCalledWith(
+      { origin: "https://partner.example", surface: "manage" },
+      expect.any(Function),
+    );
+    // Whatever write the recorder makes is handed to THIS request's waitUntil, so it
+    // outlives the response.
+    const defer = frameGuard.recordFramingObservation.mock.calls[0][1];
+    const work = Promise.resolve();
+    defer(work);
+    expect(waitUntil).toHaveBeenCalledWith(work);
   });
 
   it("records a framed load whether the lock is on or off", async () => {
@@ -326,14 +330,5 @@ describe("framing the booker (#3137)", () => {
     await middleware(framed("/book", "https://partner.example/", "document"));
     await middleware(framed("/admin", "https://partner.example/"));
     expect(frameGuard.recordFramingObservation).not.toHaveBeenCalled();
-  });
-
-  it("serves the page when the record fails", async () => {
-    frameGuard.recordFramingObservation.mockRejectedValue(new Error("db down"));
-    const waitUntil = vi.fn();
-    const res = await middleware(framed("/book", "https://partner.example/"), { waitUntil } as never);
-    expect(res.status).toBe(200);
-    // The deferred work settles rather than rejecting into the runtime.
-    await expect(waitUntil.mock.calls[0][0]).resolves.toBeUndefined();
   });
 });

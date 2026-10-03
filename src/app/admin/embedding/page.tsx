@@ -14,7 +14,7 @@ import {
 } from "@/lib/embed/frame-policy";
 import { FrameLockSwitch } from "@/components/admin/FrameLockSwitch";
 import ViewerTime from "@/components/ViewerTime";
-import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
+import { FRAME_DAY_ZONE } from "@/lib/embed/frame-observe";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
 import { savedOutcome, savedSentence } from "@/lib/admin/save-outcomes";
@@ -28,10 +28,10 @@ export const dynamic = "force-dynamic";
 const WINDOW_DAYS = 14;
 
 // Module scope so the clock read does not trip react-hooks/purity in render. The window
-// starts on the business zone's day boundary, which is the one `record_frame_origin`
-// keys its rows by (migration 0160).
+// starts on the business zone's day boundary, which is the one `record_frame_origins`
+// keys its rows by (migration 0161).
 function sinceIso(): string {
-  return DateTime.now().setZone(BUSINESS_ZONE).minus({ days: WINDOW_DAYS - 1 }).toISODate() ?? "";
+  return DateTime.now().setZone(FRAME_DAY_ZONE).minus({ days: WINDOW_DAYS - 1 }).toISODate() ?? "";
 }
 
 const SURFACE_LABEL: Record<string, string> = {
@@ -101,6 +101,11 @@ export default async function EmbeddingPage({
 
   const summary = rowsRead.ok ? summarizeFrameOrigins(rowsRead.rows) : null;
   const refusedSites = summary ? summary.filter((s) => s.kind === "refused").length : null;
+  // Days the per day limit on sites outside the allow list was reached, so the
+  // "(other)" row reads as a limit having been hit rather than as one more site.
+  const cappedDays = rowsRead.ok
+    ? new Set(rowsRead.rows.filter((r) => r.origin === "(other)").map((r) => r.day)).size
+    : 0;
 
   return (
     <>
@@ -132,6 +137,14 @@ export default async function EmbeddingPage({
             No framed booker loads recorded in the last {WINDOW_DAYS} days.
           </p>
         ) : (
+          <>
+          {cappedDays > 0 && (
+            <p data-notice="capped" className="mt-2 text-sm text-fg">
+              On {cappedDays} {cappedDays === 1 ? "day" : "days"}, more sites outside the allow list
+              framed the booker than are named one by one. The rest are counted together as other
+              sites. Sites on the allow list are always named.
+            </p>
+          )}
           <div className="mt-3 overflow-x-auto rounded-md border border-border">
             <table className="w-full min-w-[560px] text-sm">
               <thead>
@@ -168,6 +181,7 @@ export default async function EmbeddingPage({
               </tbody>
             </table>
           </div>
+          </>
         )}
       </section>
     </>

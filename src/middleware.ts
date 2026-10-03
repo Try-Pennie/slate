@@ -186,12 +186,10 @@ export async function middleware(request: NextRequest, event?: NextFetchEvent) {
       ownOrigin: request.nextUrl.origin,
       pathname: request.nextUrl.pathname,
     });
-    if (seen) {
-      const work = recordFramingObservation(seen).catch((err) => {
-        log.warn("frame-observe", { msg: "framing record failed", surface: seen.surface }, err);
-      });
-      event?.waitUntil(work);
-    }
+    // Batched per isolate, so a flood of invented origins costs a bounded number of
+    // writes (frame-observe.ts). A write it does make outlives the response through
+    // this request's waitUntil; with none (a unit test) it simply floats, already caught.
+    if (seen) recordFramingObservation(seen, (work) => event?.waitUntil(work));
   }
 
   // Last, for the same reason: whatever response the refresh left is the one

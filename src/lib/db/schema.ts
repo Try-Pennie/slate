@@ -253,10 +253,14 @@ export interface Database {
         };
         Returns: undefined;
       };
-      /** #3137 (migration 0160): count one framed booker page load against today's
-       *  (origin, surface) row. Bounded per day and self pruning; see the migration. */
-      record_frame_origin: {
-        Args: { p_origin: string; p_surface: string };
+      /** #3137 (migration 0161): add one batch of framed booker loads to the day's
+       *  (origin, surface) rows, the day taken in `p_zone`. Bounded per day and self
+       *  pruning; see the migration. */
+      record_frame_origins: {
+        Args: {
+          p_zone: string;
+          p_rows: { origin: string; surface: string; loads: number; capped: boolean }[];
+        };
         Returns: undefined;
       };
       /** #418: the aggregated outcome mix over [p_since, today] as a single jsonb

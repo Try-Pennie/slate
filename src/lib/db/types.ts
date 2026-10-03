@@ -361,7 +361,7 @@ export interface BookingSettings {
    *  shared with the other columns on this row, so editing the horizon would push
    *  the pause clock forward. */
   public_booking_paused_at: string | null;
-  /** #3137, migration 0160: the frame lock. True gives the booker and every page it
+  /** #3137, migration 0161: the frame lock. True gives the booker and every page it
    *  moves to inside its frame a `frame-ancestors` of Slate plus the allow list.
    *  NOT NULL DEFAULT false: a row that predates it frames exactly as before. */
   frame_lock_enabled: boolean;
@@ -369,7 +369,7 @@ export interface BookingSettings {
   updated_by: string | null;
 }
 
-/** #3137, migration 0160: framed booker page loads per day, framing origin and booker
+/** #3137, migration 0161: framed booker page loads per day, framing origin and booker
  *  page. Origins only (or `self` / `unstated` / `(other)`), never a path or an id. A
  *  type alias so it satisfies the typed client's row constraint. */
 export type FrameOriginDaily = {
@@ -377,6 +377,9 @@ export type FrameOriginDaily = {
   origin: string;
   surface: string;
   loads: number;
+  /** Counts against the per day cap on distinct hosts; false for the fixed set of
+   *  exact allow list hosts, `self`, `unstated` and `(other)`. */
+  capped: boolean;
   last_seen: string;
 };
 

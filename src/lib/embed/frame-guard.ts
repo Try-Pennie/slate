@@ -4,6 +4,7 @@ import { log } from "@/lib/log";
 import type { BookingSettings } from "@/lib/db/types";
 import { makeFrameLockReader } from "@/lib/embed/frame-lock";
 import type { FramingObservation } from "@/lib/embed/frame-policy";
+import { FRAME_DAY_ZONE, makeFramingRecorder, type Defer } from "@/lib/embed/frame-observe";
 
 /**
  * The frame lock and the framing record, wired to the real database (#3137). The
@@ -26,7 +27,7 @@ async function readFrameLockColumn(): Promise<boolean> {
 export const readFrameLock = makeFrameLockReader({
   read: readFrameLockColumn,
   now: () => Date.now(),
-  onError: (err) => log.warn("frame-lock", { msg: "frame lock unreadable, keeping the last value read" }, err),
+  onError: (err) => log.warn("frame-lock", { msg: "frame lock unreadable, keeping the last value read, or locked with none" }, err),
 });
 
 /**
@@ -44,14 +45,24 @@ export async function readFrameLockSetting(): Promise<boolean | null> {
 }
 
 /**
- * Count one framed booker load. THROWS on a refused write, so the caller's deferral
- * logs it rather than the count silently going missing (a table that never fills reads
- * exactly like a booker nobody frames, L98).
+ * Count one framed booker load, batched per isolate (`frame-observe.ts`), so the write
+ * volume is never the caller's to choose. A refused write is logged and its counts kept
+ * for the next flush, rather than going silently missing (a table that never fills reads
+ * exactly like a booker nobody frames, L98). The day is keyed in FRAME_DAY_ZONE, the zone
+ * the admin page reads it in.
  */
-export async function recordFramingObservation(obs: FramingObservation): Promise<void> {
-  const { error } = await supabaseAdmin().rpc("record_frame_origin", {
-    p_origin: obs.origin,
-    p_surface: obs.surface,
-  });
-  if (error) throw new Error(`record_frame_origin failed: ${error.message}`);
+const framingRecorder = makeFramingRecorder({
+  write: async (rows) => {
+    const { error } = await supabaseAdmin().rpc("record_frame_origins", {
+      p_zone: FRAME_DAY_ZONE,
+      p_rows: rows,
+    });
+    if (error) throw new Error(`record_frame_origins failed: ${error.message}`);
+  },
+  now: () => Date.now(),
+  onError: (err) => log.warn("frame-observe", { msg: "framing record failed, counts kept for the next flush" }, err),
+});
+
+export function recordFramingObservation(obs: FramingObservation, defer: Defer): void {
+  framingRecorder(obs, defer);
 }

@@ -15,7 +15,7 @@ vi.mock("@supabase/ssr", () => ({
 // about which paths are reached, so the lock reads as off and nothing is recorded.
 vi.mock("@/lib/embed/frame-guard", () => ({
   readFrameLock: async () => false,
-  recordFramingObservation: async () => {},
+  recordFramingObservation: () => {},
 }));
 vi.mock("@/lib/env", () => ({
   publicSupabaseUrl: () => "https://project.supabase.co",

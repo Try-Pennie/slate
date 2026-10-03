@@ -76,6 +76,25 @@ describe("EmbeddingPage", () => {
     expect(container.querySelector("[data-state='unlocked']")).toBeTruthy();
   });
 
+  it("says when the daily limit on named sites was reached, and only then", async () => {
+    range.mockResolvedValueOnce({
+      data: [
+        { day: "2026-10-02", origin: "(other)", surface: "book", loads: 90, last_seen: "2026-10-02T15:00:00Z" },
+        { day: "2026-10-03", origin: "(other)", surface: "manage", loads: 5, last_seen: "2026-10-03T15:00:00Z" },
+      ],
+      error: null,
+    });
+    const { container } = render(await page());
+    expect(container.querySelector("[data-notice='capped']")?.textContent).toMatch(/On 2 days/);
+
+    range.mockResolvedValueOnce({
+      data: [{ day: "2026-10-03", origin: "https://partner.example", surface: "book", loads: 1, last_seen: "2026-10-03T15:00:00Z" }],
+      error: null,
+    });
+    const again = render(await page());
+    expect(again.container.querySelector("[data-notice='capped']")).toBeNull();
+  });
+
   it("says so when the record cannot be read, rather than showing nobody framing the booker", async () => {
     range.mockResolvedValueOnce({ data: null, error: { message: "relation does not exist" } });
     render(await page());

@@ -39,26 +39,39 @@ async function main() {
   {
     let now = 0;
     let fail = true;
+    let stored = true;
     const errors: unknown[] = [];
     const read = makeFrameLockReader({
       read: async () => {
         if (fail) throw new Error("db down");
-        return true;
+        return stored;
       },
       now: () => now,
       onError: (e) => errors.push(e),
     });
-    eq(await read(), false, "never read: unlocked, so a database blip cannot black out every partner page");
+    eq(
+      await read(),
+      true,
+      "never read: LOCKED, so a blip on a cold isolate cannot open a lock an admin turned on; every real host is on the allow list",
+    );
     eq(errors.length, 1, "and the failure is reported, not swallowed");
     now = 1;
-    eq(await read(), false, "a failed read is retried on the next request, not cached for the TTL");
+    eq(await read(), true, "a failed read is retried on the next request, not cached for the TTL");
     eq(errors.length, 2, "which is reported again");
+    stored = false;
     fail = false;
     now = 2;
-    eq(await read(), true, "a good read lands");
+    eq(await read(), false, "a good read of OFF lands");
     fail = true;
     now = 2 + FRAME_LOCK_TTL_MS;
-    eq(await read(), true, "after that, a failed read keeps the last value read rather than dropping the lock");
+    eq(await read(), false, "after that, a failed read keeps the last value read (off) rather than guessing");
+    stored = true;
+    fail = false;
+    now = 3 + 2 * FRAME_LOCK_TTL_MS;
+    eq(await read(), true, "a good read of ON lands");
+    fail = true;
+    now = 3 + 3 * FRAME_LOCK_TTL_MS;
+    eq(await read(), true, "and a failed read after it keeps the lock on");
   }
 
   // Concurrent requests on a cold isolate share one read.
