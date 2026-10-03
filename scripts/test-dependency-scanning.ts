@@ -114,7 +114,9 @@ function dailyFindings(yaml: string): string[] {
   if (!anyStepRuns(yaml, PROD_MODERATE)) missing.push("the moderate report");
   const alert = steps(yaml).find((st) => /^node [^\n]*scripts\/notify-dependency-audit\.ts\s*$/.test(runOf(st).trim())) ?? "";
   if (!alert) missing.push("the alerter");
-  if (!/^\s*if:\s*always\(\)\s*$/m.test(alert)) missing.push("the alerter running always()");
+  // Not always(): a superseded run is cancelled, and would then report an audit it
+  // never finished (L36, L671).
+  if (!/^\s*if:\s*\$\{\{\s*!cancelled\(\)\s*\}\}\s*$/m.test(alert) || /always\(\)/.test(alert)) missing.push("the alerter running on !cancelled(), not always()");
   if (!/PROD_AUDIT:\s*\$\{\{\s*steps\.prod\.outcome\s*\}\}/.test(alert)) missing.push("PROD_AUDIT from steps.prod");
   if (!/FULL_AUDIT:\s*\$\{\{\s*steps\.full\.outcome\s*\}\}/.test(alert)) missing.push("FULL_AUDIT from steps.full");
   if (!/SLACK_BOT_TOKEN:\s*\$\{\{\s*secrets\.SLACK_BOT_TOKEN\s*\}\}/.test(alert)) missing.push("the Slack token");

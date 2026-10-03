@@ -70,10 +70,14 @@ on:
     - cron: "40 5 * * *"
   workflow_dispatch:
 
-# A superseded run is safe to cancel here and only here: this workflow WRITES
-# nothing durable (no deploy, no database row, no heartbeat), it produces one
-# artifact whose only reader is a person (L671). ci.yml's own concurrency is
-# deliberately the opposite on main, because a run there IS the deploy.
+# A superseded run is safe to cancel here: this workflow deploys nothing and writes
+# no database row or heartbeat. It does have one outward effect since #3101, the
+# Slack post on a regressed or unmeasured night, and a cancelled run must not make
+# it, or the superseded run pages that it "could not measure" (L36, L671). So the
+# alert step is gated on `!cancelled()` rather than `always()`: it still speaks
+# after a failure, and stays silent for a run the newer one replaced. ci.yml's own
+# concurrency is deliberately the opposite on main, because a run there IS the
+# deploy.
 concurrency:
   group: coverage
   cancel-in-progress: true
@@ -114,12 +118,13 @@ jobs:
           path: coverage/lcov.info
           if-no-files-found: warn
       # #3101: tell a person on a regressed or unmeasured verdict, whatever the coverage
-      # step exited with. Reads coverage/verdict.json, which coverage.mjs writes; a run
-      # that died before writing it reads as unmeasured. Bare node, no alias hook:
-      # scripts/test-dependency-free-scripts.ts holds it to importing nothing outside
-      # scripts/.
+      # step exited with, unless the run was CANCELLED (superseded): see the
+      # concurrency note above. Reads coverage/verdict.json, which coverage.mjs
+      # writes; a run that died before writing it reads as unmeasured. Bare node, no
+      # alias hook: scripts/test-dependency-free-scripts.ts holds it to importing
+      # nothing outside scripts/.
       - name: Say what the ratchet found
-        if: always()
+        if: ${{ !cancelled() }}
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_ALERTS_CHANNEL: ${{ vars.SLACK_ALERTS_CHANNEL }}

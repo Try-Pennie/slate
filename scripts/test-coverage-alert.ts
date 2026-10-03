@@ -77,7 +77,8 @@ eq(decideCoverageAlert(file("raise", "pass"), URL).alert, null, "a gain asking f
   const wf = readFileSync(join(root, ".github", "workflows", "coverage.yml"), "utf8");
   const step = wf.split(/^ {6}- /m).find((s) => /run: node [^\n]*scripts\/notify-coverage\.ts/.test(s)) ?? "";
   assert(step.length > 0, "coverage.yml runs the coverage alerter");
-  assert(/if:\s*always\(\)/.test(step), "whatever the coverage step exited with");
+  assert(/^\s*if:\s*\$\{\{\s*!cancelled\(\)\s*\}\}\s*$/m.test(step), "whatever the coverage step exited with, but NOT on a cancelled run");
+  assert(!/always\(\)/.test(step), "never always(): cancel-in-progress cancels a superseded run, which would then page that it could not measure (L36, L671)");
   assert(/SLACK_BOT_TOKEN:\s*\$\{\{\s*secrets\.SLACK_BOT_TOKEN\s*\}\}/.test(step), "with the Slack token");
   assert(/RUN_URL:/.test(step), "and the run link");
   const runner = readFileSync(join(root, "scripts", "coverage.mjs"), "utf8");

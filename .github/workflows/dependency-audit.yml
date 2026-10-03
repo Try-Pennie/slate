@@ -20,8 +20,8 @@ name: Dependency audit
 # nothing to the answer and an install is one more way for the run to fail before
 # it has audited anything. The alerter is bare node with no dependencies, like every
 # other alerter here (AGENTS.md, "An alerting workflow carries no dependency
-# install"), and it runs whatever the audits exited with, so a run that died before
-# auditing says so rather than reading as a clean day.
+# install"), and it runs whatever the audits exited with (short of a cancelled run),
+# so a run that died before auditing says so rather than reading as a clean day.
 #
 # COST: one job of well under a minute (no install), which bills one minute a run,
 # so about 31 billed minutes a month on this private repo.
@@ -37,7 +37,10 @@ on:
     - cron: "23 11 * * *"
   workflow_dispatch:
 
-# Writes nothing durable, so a superseded run is safe to cancel (L671).
+# A superseded run is safe to cancel: it writes nothing durable. Its one outward
+# effect is the Slack post, and a cancelled run must not make it, or it reports an
+# audit it never finished (L36, L671). So the alert step runs on `!cancelled()`,
+# never `always()`.
 concurrency:
   group: dependency-audit
   cancel-in-progress: true
@@ -89,10 +92,12 @@ jobs:
             echo "::warning title=Moderate advisories::pnpm audit reports moderate or higher advisories in production dependencies; see the run summary."
           fi
 
-      # Bare node, no alias hook: scripts/test-dependency-free-scripts.ts holds it to
-      # importing nothing outside scripts/.
+      # Whatever the audits exited with, unless the run was cancelled (see the
+      # concurrency note above). Bare node, no alias hook:
+      # scripts/test-dependency-free-scripts.ts holds it to importing nothing outside
+      # scripts/.
       - name: Say what the audit found
-        if: always()
+        if: ${{ !cancelled() }}
         env:
           PROD_AUDIT: ${{ steps.prod.outcome }}
           FULL_AUDIT: ${{ steps.full.outcome }}
