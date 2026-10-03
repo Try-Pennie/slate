@@ -16,6 +16,7 @@ import { appUrl, consoleHiddenFor } from "@/lib/env";
 import {
   setUserRole,
   setBookable,
+  clearPendingBookableFlip,
   setOooCalendarId,
   setWorkingHours,
   useDefaultHours,
@@ -60,6 +61,7 @@ import { ViewAsButton } from "@/components/admin/ViewAsButton";
 import type { Organization, User } from "@/lib/db/types";
 import { BookablePill } from "@/components/ui/BookablePill";
 import { heldByTwilio as isHeldByTwilio } from "@/lib/bookable/bookable-state";
+import { CLEAR_PENDING_FLIP_LABEL, pendingFlipSentence } from "@/lib/bookable/pending-flip-copy";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 import { SelectField } from "@/components/ui/SelectField";
 
@@ -86,6 +88,9 @@ async function upcomingBookingCount(agentId: string): Promise<number | null> {
 
 /** Links the refused Make bookable to the sentence saying why (#3028). */
 const REDISTRIBUTE_HOLD_ID = "bookable-redistribute-hold";
+
+/** Links the stop button to the sentence saying what it stops (#2078). */
+const PENDING_FLIP_ID = "bookable-pending-flip";
 
 /**
  * One stored routing attribute as a reader sees it (#1874).
@@ -180,6 +185,10 @@ export default async function AgentProfilePage({
   // #3028: a flip into the pool the hourly Twilio sync would undo. Only asked of
   // somebody out of the pool: taking an advisor out is never held back.
   const heldByTwilio = isHeldByTwilio(agent);
+  // #2078: the stamp of a flip the sync is still waiting to make, only while they
+  // are out of the pool (any bookable write clears it, so bookable and pending
+  // together is a state nothing should leave behind).
+  const pendingFlip = !agent.bookable && agent.bookable_pending_since ? agent.bookable_pending_since : null;
 
   // #2120: the agent's debt coverage, read once, from the two functions the
   // roster's ladder also composes from. `teamsOf` reads whichever shape the sync
@@ -468,6 +477,36 @@ export default async function AgentProfilePage({
                 Twilio has this advisor on Redistribute, so the hourly sync turns them
                 off again; remove the tag in Twilio to make them bookable.
               </p>
+            )}
+            {/* #2078: a flip the roster sync planned and the activation gate
+                refused. It retries hourly and re-alerts until something settles
+                it, and the toggle above cannot (not bookable on somebody already
+                not bookable is a noop), so the wait is named here with the one
+                control that ends it without making them bookable. Admins only,
+                matching the action's own check. */}
+            {pendingFlip && (
+              <div className="basis-full">
+                <p id={PENDING_FLIP_ID} className={`text-xs text-fg-muted ${proseCls}`}>
+                  {pendingFlipSentence(pendingFlip)}
+                </p>
+                {isAdmin && canManageThisAgent && (
+                  <SaveForm
+                    action={clearPendingBookableFlip}
+                    name="agent-pending-flip"
+                    unsaved="nothing typed here"
+                    className="mt-2"
+                  >
+                    <input type="hidden" name="user_id" value={agent.id} />
+                    <SubmitButton
+                      className={`${btnSecondaryCls} min-h-11`}
+                      pendingLabel="Stopping"
+                      describedBy={PENDING_FLIP_ID}
+                    >
+                      {CLEAR_PENDING_FLIP_LABEL}
+                    </SubmitButton>
+                  </SaveForm>
+                )}
+              </div>
             )}
             {/* Read only on purpose (#1474). Salesforce owns this link: the hourly
                 roster sync converges on Agent_Manager__c, clearing a link
@@ -863,7 +902,7 @@ export default async function AgentProfilePage({
 function BookableOutcome({ code }: { code?: string }) {
   if (!code) return null;
 
-  const ok = code === "on" || code === "off";
+  const ok = code === "on" || code === "off" || code === "pending-cleared" || code === "pending-none";
   const said =
     code === "on"
       ? "This agent is now bookable. New bookings can be routed to them."
@@ -885,6 +924,12 @@ function BookableOutcome({ code }: { code?: string }) {
                     ? "Not made bookable: Twilio has this advisor on Redistribute, so the hourly sync would turn them off again. Remove the tag in Twilio, and once the next hourly sync has run they can be made bookable."
                   : code === "unreadable"
                     ? "Nothing was changed: Slate could not read this agent's record just now, so the change could not be checked. Try again shortly."
+                  : code === "pending-cleared"
+                    ? "Slate has stopped trying to make this agent bookable. They stay not bookable until somebody makes them bookable here."
+                  : code === "pending-none"
+                    ? "Nothing was changed: Slate was no longer waiting to make this agent bookable."
+                  : code === "not-permitted"
+                    ? "Nothing was changed: changing this person's settings needs a role above theirs."
                   : code === "missing"
                     ? "That agent could not be found, so nothing was changed."
                     : null;

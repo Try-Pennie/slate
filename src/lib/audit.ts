@@ -24,6 +24,10 @@ export const AUDIT_ACTIONS = [
   "agent.hours",
   "agent.use_default_hours",
   "agent.bookable",
+  // #2078: a person deciding NOT to flip somebody the sync was waiting to make
+  // bookable. Its own action rather than agent.bookable, because bookable did not
+  // move; the details carry the pending stamp before and after.
+  "agent.pending_flip_cleared",
   "agent.deactivate",
   "agent.reactivate",
   "agent.attributes",

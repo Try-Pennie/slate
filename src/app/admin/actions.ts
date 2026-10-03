@@ -76,6 +76,8 @@ import {
   type BlockedReason,
   type BookableResult,
 } from "@/lib/bookable/service";
+import { planClearPendingFlip } from "@/lib/bookable/plan";
+import { MISSING_TIMEZONE_HOURS, submittedTimezone } from "@/lib/submitted-timezone";
 import { applyLifecycleByUserId } from "@/lib/offboarding/service";
 import { runRosterSync } from "@/lib/salesforce/run-roster-sync";
 import type { TwilioSyncResult } from "@/lib/twilio/sync";
@@ -337,16 +339,16 @@ export async function setMyWorkingHours(form: FormData): Promise<void> {
   // A FAULT still throws. A database that refused the write is not something a
   // person can retype their way out of, and dressing one as advice would send
   // them round the same loop.
-  const plan = planScheduleReplacement(
-    perDayFrom(form),
-    String(form.get("timezone") ?? "America/New_York"),
-  );
   // #2107: the availability page's own address, from the tab list, on all three
   // of these. A redirect carrying an outcome must name the page it is actually
   // on: /me is a redirect now, and a redirect whose target redirects again DROPS
   // the query string (L586), so a saved notice sent to /me would arrive nowhere
   // and the form would look like it had done nothing.
   const availability = ME_TABS[0].href;
+  // #1989: a missing zone is refused, never saved as Eastern.
+  const timezone = submittedTimezone(form);
+  if (!timezone) redirect(`${availability}${refusedQuery(MISSING_TIMEZONE_HOURS)}`);
+  const plan = planScheduleReplacement(perDayFrom(form), timezone);
   if (!plan.ok) redirect(`${availability}${refusedQuery(plan.error)}`);
   await replaceUserSchedule(me.id, "agent", plan);
   revalidatePath(availability);
@@ -929,7 +931,10 @@ export async function updateBucket(form: FormData): Promise<void> {
 export async function setWorkingHours(form: FormData): Promise<void> {
   const userId = String(form.get("user_id") ?? "");
   await requireManageAgent(userId, "agent.hours");
-  const timezone = String(form.get("timezone") ?? "America/New_York");
+  // #1989: a form that sent no zone used to save the week in Eastern and report
+  // success, which is how a stored default came to read as a choice (#1739).
+  const timezone = submittedTimezone(form);
+  if (!timezone) redirect(`/admin/agents/${userId}${refusedQuery(MISSING_TIMEZONE_HOURS)}`);
 
   // One schedule per user (enforced by the availability_schedules(user_id)
   // unique index, #532): replaceUserSchedule upserts it, then replaces its rules.
@@ -1782,6 +1787,80 @@ export async function setBookable(form: FormData): Promise<void> {
     return;
   }
   redirect(`${back}?bookable=${wantBookable ? "on" : "off"}`);
+}
+
+/**
+ * Admin only: stop Slate waiting to make somebody bookable (#2078).
+ *
+ * When the activation gate refuses a flip the roster sync planned, the row keeps
+ * `bookable_pending_since`, so the sync retries every hour and the alert re-fires
+ * on its cooldown. Any explicit bookable write settles that mark, but the toggle
+ * cannot reach it: "not bookable" on somebody already not bookable is a noop in
+ * `planBookableChange`, so the write that clears the mark never runs. This is the
+ * deliberate "do not flip this one": it clears the mark and never touches
+ * `bookable`, which is why it is not routed through the toggle's owning writer.
+ * The sync's planner already reads a row with no mark as settled.
+ *
+ * The write is a compare and swap on the stamp that was read, so a second press,
+ * or a sync run that settled or re-marked the row in between, changes nothing and
+ * records nothing. The trail gets the stamp before and after (L529).
+ */
+export async function clearPendingBookableFlip(form: FormData): Promise<void> {
+  const userId = String(form.get("user_id") ?? "");
+  if (!userId) return;
+  const admin = await requireAdmin();
+  const back = `/admin/agents/${userId}`;
+  const db = supabaseAdmin();
+
+  let row: { role: Role; bookable: boolean; bookable_pending_since: string | null } | null;
+  try {
+    row = unwrap(
+      await db
+        .from("users")
+        .select("role, bookable, bookable_pending_since")
+        .eq("id", userId)
+        .eq("org_id", admin.org_id)
+        .maybeSingle(),
+      "pending flip target",
+    ) as typeof row;
+  } catch (err) {
+    log.error("admin", { msg: "pending flip target could not be read", user_id: userId }, err);
+    redirect(`${back}?bookable=unreadable`);
+  }
+  // The same escalation rule every agent control uses: an admin cannot act on a
+  // super admin, whatever the button on their screen offered. Said on the page
+  // rather than thrown, since a thrown sentence reaches nobody in production.
+  if (row && !canManageUser(admin.role, row.role, admin.id === userId)) {
+    redirect(`${back}?bookable=not-permitted`);
+  }
+
+  const plan = planClearPendingFlip(row);
+  if (plan.status === "not_found") redirect(`${back}?bookable=missing`);
+  if (plan.status === "not_pending") redirect(`${back}?bookable=pending-none`);
+
+  const { data, error } = await db
+    .from("users")
+    .update({ bookable_pending_since: null })
+    .eq("id", userId)
+    .eq("org_id", admin.org_id)
+    .eq("bookable_pending_since", plan.pendingSince)
+    .select("id");
+  if (error) {
+    redirect(`${back}${refusedQuery(writeRefused("Stopping the wait to make them bookable", error))}`);
+  }
+  revalidatePath(back);
+  // Nothing matched the stamp that was read: somebody or something settled it
+  // first, so there is nothing of ours to record.
+  if (!data || data.length === 0) redirect(`${back}?bookable=pending-none`);
+
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "agent.pending_flip_cleared",
+    targetUserId: userId,
+    details: { bookable_pending_since: { from: plan.pendingSince, to: null }, bookable: row!.bookable },
+  });
+  redirect(`${back}?bookable=pending-cleared`);
 }
 
 /**

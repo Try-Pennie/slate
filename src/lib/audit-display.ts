@@ -25,6 +25,7 @@ const ACTION_LABEL: Record<string, string> = {
   "agent.hours": "set hours",
   "agent.use_default_hours": "applied default hours",
   "agent.bookable": "set bookable",
+  "agent.pending_flip_cleared": "stopped Slate waiting to make an agent bookable",
   "agent.attributes": "set attributes",
   "agent.deactivate": "deactivated agent",
   "agent.reactivate": "reactivated agent",
