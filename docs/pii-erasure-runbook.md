@@ -419,3 +419,36 @@ reintroduce the PII, so **any restore must re-run this runbook** for every
 `pii.erasure` audit entry as a post-restore reconciliation step. A defensible
 response states that erasure is complete in production immediately and in backups
 within the backup retention window.
+
+## Answering the requester (#3132)
+
+The reply to the person states what was NOT erased as well as what was, because
+three copies of their details sit outside anything this runbook reaches, and a reply
+that says only "deleted" is a claim the record contradicts. The three are recorded
+in `docs/pii-legal-positions.md`: the backups (above), the agent's Google Calendar
+event (item 2 of "What it deliberately does NOT do", and the legal positions memo's
+second residual), and the copies already sent to Regal and Cadence (position 4, which
+Slate does not tell about a deletion).
+
+Send it only after step 4 returned all zeros. The wording below is engineering's
+draft of those positions and is listed for counsel's sign-off in
+`docs/pii-legal-positions.md` (positions 5 and 6) together with the positions it
+rests on; until that sign-off is recorded, check the reply with whoever owns the
+request.
+
+<!-- runbook-reference: the text of a reply to a data subject, not a command to run. -->
+```
+We have deleted your name, email address, phone number and any other contact
+details from our appointment booking system and from our reporting warehouse.
+
+Three copies are outside that deletion, and we want you to know about them:
+
+1. Our backups still hold the earlier data until they expire on their normal
+   schedule. They are not used for anything unless we have to restore our
+   systems, and if we ever do, we repeat your deletion straight away.
+2. If you had a call booked, the advisor's work calendar still shows that
+   appointment with your details on it, as their record of the meeting.
+3. Your booking details were also sent to two service providers we use to
+   contact customers, Regal and Cadence. Deleting them from our system does not
+   delete their copies.
+```

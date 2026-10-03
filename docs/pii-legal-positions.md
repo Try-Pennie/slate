@@ -12,7 +12,9 @@ Four compliance questions had to be answered before the retention and deletion
 machinery could be called finished. Engineering could not answer them, so Dan
 decided all four on 2026-07-29 and we built to those answers.
 
-**This memo asks you to confirm or revise those four positions.** They are
+**This memo asks you to confirm or revise those four positions**, and two more
+added on 2026-10-03 (#3132): that the agent's calendar copy of a booking stays, and
+what the reply to the person says about every copy that remains. They are
 Pennie's stated positions, not legal advice, and nothing here was reviewed by
 counsel before it shipped. Two of them carry risks we want you to see explicitly
 rather than discover later, and both are called out below.
@@ -174,7 +176,13 @@ delete, and the audit entry records that it was done. The expensive version is
 automatic propagation, which needs those vendors to build an endpoint that accepts
 a deletion signal before Slate has anything to call.
 
-## Two things this memo does not cover
+## Two residuals the positions above do not cover
+
+Both are now told to the person who asked for deletion, in the reply drafted in
+`docs/pii-erasure-runbook.md` ("Answering the requester", #3132), and both are on the
+sign-off table below as positions 5 and 6 so that reply rests on something counsel
+has seen.
+
 
 1. **Backups.** Deletion is immediate in the live database and the warehouse, but
    both keep backups for their own retention windows, and a restore from before a
@@ -195,6 +203,8 @@ a deletion signal before Slate has anything to call.
 | 2. 24 month retention, warehouse included | | | |
 | 3. Redaction is deletion, Salesforce reference stays | | | |
 | 4. No processor obligation for Regal and Cadence | | | |
+| 5. The agent's calendar copy of a booking is not erased (residual 2 above) | | | |
+| 6. The reply to the requester names all three residuals: backups, the agent's calendar, and the Regal and Cadence copies (`docs/pii-erasure-runbook.md`, "Answering the requester") | | | |
 
 Reviewed by: ____________________  Date: ____________
 

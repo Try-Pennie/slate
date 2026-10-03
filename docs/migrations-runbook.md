@@ -36,7 +36,9 @@ rather than reasoning it out per PR.
    sequentially with no gaps. Every table it creates must enable RLS or carry an
    explicit `-- rls-exempt: <table>` marker (`scripts/test-migrations.ts` enforces
    both). If it defines or changes an RPC the server calls, update the hand-written
-   types in `src/lib/db/schema.ts` to match.
+   types in `src/lib/db/schema.ts` to match. It must leave the code already
+   deployed working, because that code runs on it from step 4 to step 7: see
+   "Deployed code must keep working" below before dropping or renaming anything.
 2. **Bump the shipped version** in `src/lib/db/migration-version.ts`
    (`SHIPPED_MIGRATION_VERSION = "NNNN"`) in the **same commit** as the migration.
 3. **Record the migration's content as PENDING, then push the branch and open the PR.**
@@ -143,6 +145,55 @@ rather than reasoning it out per PR.
 - **Credentials.** `supabase db push` needs the linked project (ref
   `drukfvgaynzrralbzkzj`) and the DB password. The same `SUPABASE_ACCESS_TOKEN` +
   `SUPABASE_DB_PASSWORD` are set as repo secrets for the CI drift check.
+
+## Deployed code must keep working (expand then contract, #3096)
+
+The procedure above applies a migration in step 4 and merges the code in step 7.
+Between the two, which is the whole review window and can be days, **the code
+already deployed runs against the new schema.** The drift gate only proves the
+migration was applied; it says nothing about whether the deployed code can still
+run on it. So every migration has to be safe for the code that is live when it is
+applied, not only for the code in its own PR:
+
+1. **Additive changes go first, on their own.** A new table, a new nullable column,
+   a new column with a default, a new function, a new overload: the deployed code
+   never names any of them, so they cost it nothing.
+2. **Drops and renames go LAST, in a later migration**, after the code that stopped
+   using the thing has deployed. Dropping a column in the same PR as the code that
+   stops reading it is the unsafe order: the migration lands at step 4 and the code
+   that still reads the column keeps serving until step 7. A rename is a drop plus an
+   add from the deployed code's point of view, so it is done as add the new name,
+   deploy code that writes both and reads the new one, then drop the old.
+3. **A function whose arguments change keeps its old signature until every caller
+   has deployed.** Create the new signature beside the old one (unchanged, or as a
+   thin wrapper that calls the new one), deploy the code that calls the new one, and
+   drop the old one in a later migration. 0069 and 0070 are the worked example
+   (#759, #789): 0069 added the seven argument `reassign_booking_swap` and left the
+   six argument one in place, and 0070 dropped it once the caller had deployed.
+   0117 is the counter example: it dropped the two argument
+   `replace_availability_rules` in the same change that added the three argument
+   one, so between its apply and its deploy every hours save in the deployed code
+   called a function that no longer existed.
+
+**`scripts/test-migrations.ts` enforces the second and third rules.** It fails any
+migration containing a DROP of a table, column, function, procedure, view, type or
+schema, or any RENAME, unless the statement carries a marker on its own line or in
+the comment block directly above it:
+
+<!-- runbook-reference: an example of the marker's shape inside a migration file, not a command to run. -->
+```sql
+-- contract-ok: nothing has read organizations.booker_layout since #1416 deployed
+alter table public.organizations drop column if exists booker_layout;
+```
+
+The reason must be words, not just punctuation, and it should name the change whose
+deploy made the drop safe. A dropped constraint, index, trigger, policy or default is not
+flagged, because no caller names one. The nine migrations that already dropped
+something when the rule arrived are recorded by name in
+`GRANDFATHERED_DESTRUCTIVE_MIGRATIONS` (`scripts/lib/scan-migration-contract.ts`)
+rather than edited, since an applied migration is frozen by `applied-content.lock`.
+That list is closed: an entry numbered above `GRANDFATHER_CEILING` fails, so a new
+migration cannot use the list instead of the marker.
 
 ## Writing a function with a pinned search_path (#1126)
 
