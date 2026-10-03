@@ -166,6 +166,10 @@ export const BROWSER_GRANT_EXEMPT: readonly { table: string; reason: string }[] 
     table: "audit_log_chain_verify",
     reason: "0160 revokes all from anon and authenticated: it holds where the monitor lane's audit chain verifier has got to, which only the server reads and moves (#3090).",
   },
+  {
+    table: "frame_origin_daily",
+    reason: "0162 revokes all from anon and authenticated: the framing counts are written only by the SECURITY DEFINER record_frame_origins the middleware calls, and read only by the admin page through the server client (#3137).",
+  },
 ];
 
 /**
