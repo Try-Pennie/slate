@@ -688,8 +688,8 @@ Making jsdom opt in cut the vitest suite from about 8.2s to about 4.3s (#608).
 CI green on a pull request means **unit logic, a full production build, and, when
 the change touches anything the app is built from, a browser pass**. `pnpm test`
 and `pnpm test:components` run in the pre-push gate and in CI, `pnpm cf:build`
-proves the Worker builds, and `.github/workflows/browser-checks.yml` drives a real
-browser before merge (#3079, #3100).
+proves the Worker builds, and the `browser` leg of `ci.yml` drives a real browser
+before merge (#3079, #3100).
 
 **The no-browser-layer decision (#611) is reversed** (Dan, 2026-10-03; ADR 0011 has
 the reasoning). #611's premise was that `next dev` never settles; this runs a
@@ -711,14 +711,16 @@ Playwright. Run it from a worktree: **the runner refuses a checkout holding any
 environment built from nothing, `SLATE_LOADTEST=true` (Google stubbed, Slack,
 Salesforce, cal.com and Twilio refused), an egress guard in the server that refuses
 and records any off-machine connection and fails the run on one, and a browser that
-aborts off-machine requests. The job gets no secret; `scripts/test-browser-checks-workflow.ts`
-fails the build if one is added, and checks the path gate against every input the run
-reads (L88). Staff sessions are real sign ins (a PKCE magic link from the local auth
-server); `/dev/preview` stays dev only and the suite proves it is inert.
+aborts off-machine requests. The run also fails if the guard's log is missing or a
+refusal shows in the server's output. The job gets no secret;
+`scripts/test-browser-checks-gate.ts` fails the build if one is added and checks the
+input list against every file the run reads (L88). Staff sessions are real sign ins (a
+PKCE magic link from the local auth server); `/dev/preview` stays dev only.
 
-**Where it sits:** its own workflow, NOT a leg of the `ci` fan-in, so it does not by
-itself stop a merge; making it gating means adding it to the fan-in's `needs`. About 6
-billed minutes a run.
+**It blocks merging** (Dan, 2026-10-03): `browser` is a leg of the `ci` fan-in, pull
+request only like security-scan, so main and the deploy never wait on it. It always
+starts, and its first step (`scripts/browser-checks-gate.ts`) passes in seconds when
+the diff touches no input; an unreadable diff runs it. About 6 billed minutes a build.
 
 **The production canary stays**, because a local stack cannot prove the deployed
 Worker, real calendars or the real embed host: `.github/workflows/smoke-canary.yml`

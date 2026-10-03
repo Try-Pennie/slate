@@ -42,12 +42,14 @@ net.Socket.prototype.connect = function guardedConnect(...args) {
     return original.apply(this, args);
   }
   const line = JSON.stringify({ host: target.host, port: target.port ?? null, at: new Date().toISOString() });
+  // Printed as well as logged: the runner reads the server's output as a second,
+  // independent record (L345), so a log write that fails cannot hide a refusal.
+  process.stderr.write(`E2E_EGRESS_REFUSED ${line}\n`);
   if (logPath) {
     try {
       appendFileSync(logPath, `${line}\n`);
     } catch {
-      // The refusal below still stands; the runner also refuses a run whose log it
-      // cannot read, so an unwritable log cannot pass as an empty one.
+      // The refusal below still stands, and the stderr line above carries it.
     }
   }
   const err = new Error(`e2e egress guard: refused a connection to ${target.host}:${target.port ?? "?"}`);

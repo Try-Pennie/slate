@@ -22,7 +22,7 @@
  *      machine. The runner fails the run on any record, so a leak nobody thought
  *      of is a red run rather than a write somewhere real.
  *
- * Pure, so `scripts/test-e2e-env.ts` can drive every refusal without a stack.
+ * Pure, so `scripts/test-e2e-isolation.ts` can drive every refusal without a stack.
  */
 import { PRODUCTION_SUPABASE_REF } from "../src/lib/loadtest-guard.ts";
 

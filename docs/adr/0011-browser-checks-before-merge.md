@@ -9,7 +9,9 @@ real system. This supersedes [0004](./0004-no-browser-tests-in-ci.md).
 ## Status
 
 Accepted 2026-10-03, on Dan's decision, closing #3079 and #3100. The mechanics live in
-`AGENTS.md` under "What CI covers", `e2e/`, and `.github/workflows/browser-checks.yml`.
+`AGENTS.md` under "What CI covers", `e2e/`, and the `browser` leg of
+`.github/workflows/ci.yml`. The same day Dan made it gating: a failing run blocks the
+merge, and the Actions cost is accepted.
 
 ## Why 0004 no longer holds
 
@@ -35,7 +37,9 @@ process refuses and records any connection off the machine, failing the run on o
 - The production canary stays. A local stack with stubbed Google cannot prove the
   deployed Worker, the real calendars or the real embed host, so the funnel now has a
   check on both sides of the merge.
-- The browser workflow is its own check, not a leg of the `ci` fan-in, so it does not
-  by itself stop a merge. Making it gating is a separate decision.
-- It is billed: about 6 minutes per run on a private repository runner, held down by a
-  path gate derived from the run's real inputs (`scripts/test-browser-checks-workflow.ts`).
+- It is a leg of the `ci` fan-in on pull requests only, so a red run blocks the merge
+  while a push to main, and the deploy behind it, never waits on it.
+- It is billed: about 6 minutes per build on a private repository runner. Its first
+  step skips the build, and passes in seconds, when the pull request touches nothing
+  the run reads; the list of inputs is checked against the tree by
+  `scripts/test-browser-checks-gate.ts`.

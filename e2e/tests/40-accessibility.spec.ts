@@ -117,6 +117,39 @@ const ADMIN_PAGES = [
   `/admin/agents/${seed.users.manager.id}`,
 ];
 
+/**
+ * Scans each page and COLLECTS what is wrong rather than stopping at the first:
+ * a page that redirected away, or that rendered the wrong theme, is a failure for
+ * that page and the sweep goes on to the rest, so one run names every problem.
+ * A redirected page is not scanned, since what loaded is some other page.
+ */
+async function sweep(page: Page, paths: readonly string[], theme: Theme): Promise<string[]> {
+  const failures: string[] = [];
+  for (const path of paths) {
+    try {
+      await page.goto(path);
+      await page.waitForLoadState("load");
+    } catch (err) {
+      // A navigation that is interrupted (a redirect mid load) or fails is this
+      // page's failure, recorded, and the sweep goes on to the rest.
+      failures.push(`${path} (${theme}): the page did not load: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`);
+      continue;
+    }
+    const landed = new URL(page.url()).pathname;
+    if (landed !== path) {
+      failures.push(`${path} (${theme}): redirected to ${landed}, so it was not scanned`);
+      continue;
+    }
+    if ((await page.locator(`[data-theme="${theme}"]`).count()) === 0) {
+      failures.push(`${path} (${theme}): did not render in the ${theme} theme, so the ${theme} pass did not scan it`);
+      continue;
+    }
+    const findings = await seriousFindings(page);
+    if (findings.length) failures.push(describeFindings(`${path} (${theme})`, findings));
+  }
+  return failures;
+}
+
 for (const theme of THEMES) {
   test(`every console page (${theme})`, async ({ page }) => {
     // About two dozen pages in one test, each rendered and scanned: the default
@@ -124,15 +157,7 @@ for (const theme of THEMES) {
     test.setTimeout(240_000);
     await setStaffTheme(seed.users.admin.id, theme);
     await signIn(page, seed.users.admin.email);
-    const failures: string[] = [];
-    for (const path of ADMIN_PAGES) {
-      await page.goto(path);
-      await page.waitForLoadState("load");
-      await expectTheme(page, theme);
-      expect(new URL(page.url()).pathname, `${path} did not redirect the admin away`).toBe(path);
-      const findings = await seriousFindings(page);
-      if (findings.length) failures.push(describeFindings(`${path} (${theme})`, findings));
-    }
+    const failures = await sweep(page, ADMIN_PAGES, theme);
     // Every page is scanned before failing, so one run names every finding.
     expect(failures, failures.join("\n\n")).toEqual([]);
   });
@@ -140,14 +165,11 @@ for (const theme of THEMES) {
   test(`an agent's own pages (${theme})`, async ({ page }) => {
     await setStaffTheme(seed.users.agent.id, theme);
     await signIn(page, seed.users.agent.email);
-    const failures: string[] = [];
-    for (const { href } of ME_TABS) {
-      await page.goto(href);
-      await page.waitForLoadState("load");
-      await expectTheme(page, theme);
-      const findings = await seriousFindings(page);
-      if (findings.length) failures.push(describeFindings(`${href} (${theme})`, findings));
-    }
+    const failures = await sweep(
+      page,
+      ME_TABS.map((t) => t.href),
+      theme,
+    );
     expect(failures, failures.join("\n\n")).toEqual([]);
   });
 }

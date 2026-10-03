@@ -58,15 +58,17 @@ export function SettingsSaveNotice({ ok, error, saved }: SettingsSaveNoticeProps
   // about. The webhooks page carries its action results in `?resend=` and
   // `?replay=`, and a parameter left in the address bar re-shows the notice on a
   // reload or a copied link, which is the stale confirmation this effect exists
-  // to prevent, wearing a different parameter name. Re-run per outcome, so the
-  // second save's parameter is stripped as well as the first's.
+  // to prevent, wearing a different parameter name. Run on EVERY render, not per
+  // outcome: a second save with the same outcome arrives as the same key, and an
+  // effect keyed on it left that save's parameter in the address bar. Stripping is
+  // idempotent and does nothing when no parameter is there.
   useEffect(() => {
     const url = new URL(window.location.href);
     if (OUTCOME_PARAMS.some((p) => url.searchParams.has(p))) {
       for (const p of OUTCOME_PARAMS) url.searchParams.delete(p);
       window.history.replaceState(null, "", url.pathname + url.search + url.hash);
     }
-  }, [incomingKey]);
+  });
 
   if (!notice) return null;
 

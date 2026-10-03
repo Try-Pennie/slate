@@ -16,7 +16,7 @@ Where a11y evidence lives, and which parts of it are automatic.
 ## What does not, and why
 
 Since 2026-10-03 there IS an axe job (ADR 0011, #3079, reversing ADR 0004 and #611 on
-Dan's decision): `.github/workflows/browser-checks.yml` runs `pnpm test:e2e`, which
+Dan's decision): the `browser` leg of `ci.yml` runs `pnpm test:e2e` and blocks the merge, and it
 scans the booker (both steps), the manage page, sign in, every page in the console
 navigation and an agent's own pages, in light and dark, against a production build,
 and fails on any serious or critical finding. Its spec is

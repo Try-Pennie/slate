@@ -29,6 +29,7 @@ import {
   type LocalStack,
 } from "../e2e/env.ts";
 import { PRODUCTION_SUPABASE_REF } from "../src/lib/loadtest-guard.ts";
+import { EGRESS_REFUSED_MARKER, egressVerdict } from "../e2e/egress-verdict.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
@@ -139,6 +140,30 @@ const recorded = existsSync(log) ? readFileSync(log, "utf8") : "";
 assert(recorded.includes("example.com") && recorded.includes("example.org"), "both refusals are recorded for the runner");
 assert(!recorded.includes("127.0.0.1"), "a loopback connection is not recorded as egress");
 assert(existsSync(`${log}.loaded`), "the guard leaves a marker the runner checks, so an unloaded guard cannot pass as a clean run");
+const printedRefusals = run.stderr.split("\n").filter((l) => l.includes(EGRESS_REFUSED_MARKER));
+assert(
+  printedRefusals.some((l) => l.includes("example.com")) && printedRefusals.some((l) => l.includes("example.org")),
+  "every refusal is ALSO printed on the server's stderr, a second record independent of the log (L345)",
+);
 rmSync(dir, { recursive: true, force: true });
+
+// --- the runner's verdict over that evidence ------------------------------------------
+
+{
+  const clean = { loaded: true, log: "", serverOutput: "ready on localhost:3100\n" };
+  assert(egressVerdict(clean) === null, "a loaded guard, an empty log and quiet output pass");
+  const verdicts = [
+    egressVerdict({ ...clean, loaded: false }),
+    egressVerdict({ ...clean, log: null, logProblem: "the file is missing" }),
+    egressVerdict({ ...clean, log: '{"host":"example.com"}\n' }),
+    egressVerdict({ ...clean, serverOutput: `${EGRESS_REFUSED_MARKER} {"host":"example.com"}\n` }),
+  ];
+  assert(verdicts.every((v) => v !== null), "an unloaded guard, a missing log, a logged refusal and a printed refusal each fail");
+  assert(/never loaded/.test(verdicts[0]!), "an unloaded guard says so");
+  assert(/could not be read \(the file is missing\)/.test(verdicts[1]!), "a missing log is its own failure, never read as an empty one");
+  assert(/refused it/.test(verdicts[2]!), "a logged refusal names it");
+  assert(/own output/.test(verdicts[3]!), "a refusal only the server's output carries still fails, saying where it was seen");
+  assert(new Set(verdicts).size === verdicts.length, "the four causes carry four different messages (L11)");
+}
 
 finish();

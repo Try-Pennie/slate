@@ -15,7 +15,7 @@ says what was decided, why, and what breaks if it is reversed.
 | [0008](./0008-twilio-is-the-routing-source-of-truth.md) | Twilio TaskRouter tags, not Salesforce, are the source of truth for the facts that decide an agent's pools | `src/lib/twilio/`, `AGENTS.md` `verify:twilio-parity` |
 | [0009](./0009-the-pilot-switch-lives-in-salesforce.md) | Which leads book through Slate is a Salesforce record trypennie reads, never a Slate setting or a deploy | `scripts/lib/pilot-settings-read.ts`, `docs/pilot-split-report.md` |
 | [0010](./0010-lead-quiet-hours-are-a-gate.md) | No call is offered or booked outside 08:00 to 20:00 on the lead's clock | `src/lib/booking/lead-calling-window.ts` |
-| [0011](./0011-browser-checks-before-merge.md) | Browser checks (axe in both themes, sign in, impersonation, admin saves, booking) run before merge against a production build on a local stack; the canary stays | `AGENTS.md` "What CI covers", `e2e/`, `.github/workflows/browser-checks.yml` |
+| [0011](./0011-browser-checks-before-merge.md) | Browser checks (axe in both themes, sign in, impersonation, admin saves, booking) run before merge against a production build on a local stack; the canary stays | `AGENTS.md` "What CI covers", `e2e/`, the `browser` leg of `.github/workflows/ci.yml` |
 
 Records 0003 to 0006 were backfilled in #1053, 0007 in #1038, and 0008 to 0010 in #3130. Each was a real decision, already
 in force and already reasoned about, that lived only in `AGENTS.md`, `CLAUDE.md` or a

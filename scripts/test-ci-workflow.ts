@@ -368,7 +368,7 @@ assert(
     .filter((l) => l.startsWith("          ") || l.trim() === "")
     .map((l) => l.slice(10))
     .join("\n");
-  assert(/PR_ONLY_LEGS="security-scan"/.test(body) && body.split("\n").length > 15, "#3087: the extraction found the real script");
+  assert(/PR_ONLY_LEGS="security-scan browser"/.test(body) && body.split("\n").length > 15, "#3087: the extraction found the real script");
 
   const dir = mkdtempSync(join(tmpdir(), "ci-fan-in-"));
   const script = join(dir, "fan-in.sh");
@@ -376,7 +376,7 @@ assert(
   const legs = (over: Record<string, string>) =>
     JSON.stringify(
       Object.fromEntries(
-        ["static-checks", "node-tests", "vitest", "build", "security-scan"].map((n) => [
+        ["static-checks", "node-tests", "vitest", "build", "security-scan", "browser"].map((n) => [
           n,
           { result: over[n] ?? "success", outputs: {} },
         ]),
@@ -408,7 +408,54 @@ assert(
   assert(empty.status === 1, "#1592: reading no legs at all fails rather than passing green");
   const garbled = fanInRun("pull_request", "not json");
   assert(garbled.status === 1, "#3087: an unreadable needs payload fails rather than passing green");
+
+  // #3100: the browser leg gates a pull request the same way, in BOTH directions.
+  const prBrowserRed = fanInRun("pull_request", legs({ browser: "failure" }));
+  assert(prBrowserRed.status === 1, "#3100: a red browser leg FAILS the fan-in on a pull request, so it blocks the merge");
+  assert(/browser=failure/.test(prBrowserRed.stdout), "#3100: and names it");
+  const prBrowserSkipped = fanInRun("pull_request", legs({ browser: "skipped" }));
+  assert(
+    prBrowserSkipped.status === 1,
+    "#3100: a SKIPPED browser leg on a pull request is not a pass: the leg reports success itself when nothing it reads changed",
+  );
+  const mainBothSkipped = fanInRun("push", legs({ "security-scan": "skipped", browser: "skipped" }));
+  assert(mainBothSkipped.status === 0, "#3100: on a push to main both pull request only legs are skipped and the deploy goes ahead");
+  const mainBrowserRan = fanInRun("push", legs({ "security-scan": "skipped", browser: "failure" }));
+  assert(mainBrowserRan.status === 1, "#3100: a browser leg that somehow ran and failed on main still fails");
   rmSync(dir, { recursive: true, force: true });
+}
+
+// --- #3100: the browser leg starts on every pull request and decides from the diff
+{
+  const ifOf = (job: string) => jobHeader(jobBlock(job)).match(/^ {4}if:\s*(.+)$/m)?.[1]?.trim() ?? "";
+  assert(fanInNeeds.includes("browser"), "#3100: browser is a leg of the `ci` fan-in, so a red run blocks the merge");
+  assert(
+    /^github\.event_name == 'pull_request'$/.test(ifOf("browser")),
+    `#3100: the browser leg runs on a pull request ONLY, so main never waits on it (got if: ${ifOf("browser") || "none"})`,
+  );
+  const deployNeeds = jobBlock("deploy").match(/^\s*needs:\s*\[([^\]]*)\]/m)?.[1] ?? "";
+  assert(!/browser/.test(deployNeeds), "#3100: deploy does NOT need the browser leg directly");
+  const steps = jobSteps(jobBlock("browser"));
+  const gateAt = steps.findIndex((s) => /id:\s*gate\b/.test(s) && /scripts\/browser-checks-gate\.ts/.test(s));
+  assert(gateAt >= 0, "#3100: the browser leg has a gate step that runs scripts/browser-checks-gate.ts");
+  assert(
+    steps.slice(0, gateAt).every((s) => /actions\/checkout@/.test(s)),
+    "#3100: nothing but the checkout runs before the gate, so a change touching no input passes in seconds",
+  );
+  assert(!/^\s*if:/m.test(steps[gateAt] ?? ""), "#3100: the gate step itself is unconditional, so the leg always reports");
+  assert(/fetch-depth:\s*2/.test(steps[0] ?? ""), "#3100: the checkout keeps the merge commit's first parent for the diff");
+  const heavy = steps.slice(gateAt + 1);
+  assert(heavy.length >= 5, `#3100: the build, browser and suite steps follow the gate (${heavy.length})`);
+  for (const s of heavy) {
+    assert(
+      /if:\s*(failure\(\) && )?steps\.gate\.outputs\.decision == 'run'/.test(s),
+      `#3100: every step after the gate runs only on decision == 'run': ${s.split("\n")[0].trim()}`,
+    );
+  }
+  assert(
+    heavy.some((s) => /run:\s*pnpm test:e2e/.test(s) && !/continue-on-error/.test(s)),
+    "#3100: a decision to run runs the suite, and its failure fails the leg",
+  );
 }
 
 // The deploy still hangs off the fan-in, so a broken leg cannot ship.

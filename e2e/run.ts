@@ -8,7 +8,9 @@
  *      (`e2e/env.ts`) and the egress guard loaded into the server;
  *   5. run Playwright (`e2e/playwright.config.ts`);
  *   6. fail the run if the server tried to reach anything that is not this
- *      machine, or if the guard never loaded, whatever Playwright said.
+ *      machine (read from the guard's log AND the server's own output), if the
+ *      guard never loaded, or if its log is missing or unreadable, whatever
+ *      Playwright said (`e2e/egress-verdict.ts`).
  *
  * Local iteration knobs, none of which CI sets:
  *   E2E_REUSE_STACK=1   keep the stack running between runs (it is reset, not reused dirty)
@@ -30,6 +32,7 @@ import {
   type LocalStack,
 } from "./env.ts";
 import { seedStack } from "./seed.ts";
+import { egressVerdict } from "./egress-verdict.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const WORKDIR = join(tmpdir(), "slate-e2e-supabase");
@@ -140,16 +143,22 @@ function stopServer(server: ChildProcess | null): void {
   }
 }
 
-/** Whatever the guard recorded, and whether it loaded at all. */
-function egressVerdict(): string | null {
-  if (!existsSync(`${EGRESS_LOG}.loaded`)) {
-    return "The egress guard never loaded into the server, so nothing proves the run stayed on this machine.";
+/** Stops the server and waits (bounded) for it to exit, so its output is complete. */
+async function stopServerAndWait(server: ChildProcess | null): Promise<void> {
+  if (!server || server.exitCode !== null) return;
+  const exited = new Promise<void>((resolve) => server.once("exit", () => resolve()));
+  stopServer(server);
+  await Promise.race([exited, new Promise<void>((r) => setTimeout(r, 10_000))]);
+}
+
+/** The guard's log, or null with the reason when it is missing or unreadable. */
+function readEgressLog(): { log: string | null; logProblem?: string } {
+  if (!existsSync(EGRESS_LOG)) return { log: null, logProblem: "the file is missing" };
+  try {
+    return { log: readFileSync(EGRESS_LOG, "utf8") };
+  } catch (err) {
+    return { log: null, logProblem: err instanceof Error ? err.message : String(err) };
   }
-  const lines = existsSync(EGRESS_LOG) ? readFileSync(EGRESS_LOG, "utf8").trim() : "";
-  if (lines) {
-    return `The server tried to reach another machine, and the guard refused it:\n${lines}`;
-  }
-  return null;
 }
 
 async function main(): Promise<number> {
@@ -162,6 +171,9 @@ async function main(): Promise<number> {
 
   const stack = startStack();
   let server: ChildProcess | null = null;
+  // Collected outside the try, and written in the finally, so a server that fails
+  // to start keeps the output that says why.
+  const serverLog: string[] = [];
   try {
     say("seeding the local database");
     const seeded = await seedStack(stack);
@@ -185,7 +197,6 @@ async function main(): Promise<number> {
       },
     );
     server = started;
-    const serverLog: string[] = [];
     started.stdout?.on("data", (d) => serverLog.push(String(d)));
     started.stderr?.on("data", (d) => serverLog.push(String(d)));
     await waitForServer(started);
@@ -204,9 +215,13 @@ async function main(): Promise<number> {
         },
       },
     );
-    writeFileSync(join(ARTIFACTS, "server.log"), serverLog.join(""));
-
-    const egress = egressVerdict();
+    // Stop the server before judging, so every line it printed is in hand.
+    await stopServerAndWait(server);
+    const egress = egressVerdict({
+      loaded: existsSync(`${EGRESS_LOG}.loaded`),
+      ...readEgressLog(),
+      serverOutput: serverLog.join(""),
+    });
     if (egress) {
       console.error(`[e2e] FAIL: ${egress}`);
       return 1;
@@ -214,6 +229,7 @@ async function main(): Promise<number> {
     say("egress guard: loaded, and the server reached nothing beyond this machine");
     return pw.status ?? 1;
   } finally {
+    writeFileSync(join(ARTIFACTS, "server.log"), serverLog.join(""));
     stopServer(server);
     if (!reuseStack) supabase(["stop", "--no-backup"], { allowFail: true });
   }
