@@ -32,6 +32,7 @@ import {
   runCronBudgetCheck,
 } from "../src/lib/monitor/cron-budget.ts";
 import { CRON_ROUTES } from "../worker/cron-routes.ts";
+import { recordCronBudget, TICK_ID_HEADER, type LaneRunDeps } from "../worker/lane-run.ts";
 import { WRANGLER_CRON_CPU_MS } from "./loadtest/platform-reading.ts";
 import { CRON_CPU_MARGIN_SHARE } from "./loadtest/judge-booking-run.ts";
 
@@ -167,11 +168,43 @@ async function run(readStamps: () => Promise<Record<string, number | null>>) {
   }
 }
 
+// --- what the Worker sends, through the dispatcher's own request builder ---------------
+{
+  const tick = { tickId: "abc123", cronSecret: "s3cret" };
+  const sent: Request[] = [];
+  const errors: string[] = [];
+  const deps = (fetch: (r: Request) => Promise<Response>): LaneRunDeps => ({
+    fetch,
+    now: () => 0,
+    log: { error: (_tag, fields) => errors.push(String(fields.msg)) },
+  });
+  const ok = deps(async (r) => {
+    sent.push(r);
+    return new Response("{}", { status: 200 });
+  });
+  await recordCronBudget("* * * * *", 30_000, tick, ok);
+  eq(sent.length, 0, "a healthy minute tick sends nothing");
+  await recordCronBudget("* * * * *", CRON_BUDGET_WARN_MS + 2_400.4, tick, ok);
+  eq(sent.length, 1, "a tick past the line sends one measurement");
+  const url = new URL(sent[0].url);
+  eq(url.pathname, CRON_BUDGET_ROUTE, "to the recording route");
+  eq([url.searchParams.get("cron"), url.searchParams.get("wall_ms")], ["* * * * *", "62400"], "carrying the cron and the rounded wall time");
+  eq(sent[0].headers.get("authorization"), "Bearer s3cret", "with the cron secret");
+  eq(sent[0].headers.get(TICK_ID_HEADER), "abc123", "and the tick id");
+  await recordCronBudget(CRON_BUDGET_VERDICT_CRON, 1_000, tick, ok);
+  eq(sent.length, 2, "the hourly tick sends one whatever it measured");
+  await recordCronBudget("* * * * *", CRON_BUDGET_WARN_MS + 1, tick, deps(async () => { throw new Error("boom"); }));
+  await recordCronBudget("* * * * *", CRON_BUDGET_WARN_MS + 1, tick, deps(async () => new Response("", { status: 500 })));
+  eq(errors, ["recording the tick threw", "recording the tick failed"], "a throw or a refusal is logged, never thrown out of the tick");
+}
+
 // --- the wiring ---------------------------------------------------------------------
 {
   const worker = read("worker/index.ts");
-  assert(/cronBudgetWrites\(controller\.cron, totalMs\)/.test(worker), "the Worker judges each tick's total");
-  assert(worker.includes("CRON_BUDGET_ROUTE"), "and hands it to the recording route");
+  assert(/recordCronBudget\(controller\.cron, totalMs, tick, deps\)/.test(worker), "the Worker records each tick's total");
+  const laneRun = read("worker/lane-run.ts");
+  assert(/cronBudgetWrites\(cron, totalMs\)/.test(laneRun), "judged by the shared decision");
+  assert(/laneRequest\(`\$\{CRON_BUDGET_ROUTE\}/.test(laneRun), "and handed to the recording route like every lane request");
   eq(CRON_BUDGET_ROUTE, "/api/cron/cron-budget", "the route the Worker calls");
   const route = read("src/app/api/cron/cron-budget/route.ts");
   assert(route.includes("isAuthorizedCron(req)"), "the recording route takes the cron secret");

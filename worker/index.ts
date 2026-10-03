@@ -30,12 +30,12 @@ import { log } from "@/lib/log";
 import { laneTimingFields, type LaneRun } from "@/lib/monitor/lane-timing";
 import {
   mintTickId,
+  recordCronBudget,
   reportLaneFailures,
   runLane,
   type LaneRunDeps,
   type LaneTick,
 } from "./lane-run";
-import { CRON_BUDGET_ROUTE, cronBudgetWrites } from "@/lib/monitor/cron-budget";
 
 // The shared per-address burst counter (#1536). A Durable Object is the only
 // primitive that can hold ONE count across isolates, which is what the native
@@ -199,27 +199,8 @@ const worker = {
     });
     const failures = outcomes.flatMap((o) => (o.failure ? [o.failure] : []));
     if (failures.length > 0) await reportLaneFailures(failures, tick, deps);
-    // #3141: the daily headroom check reads what this records. Wall time, because the runtime
-    // gives an invocation no reading of its own CPU (see @/lib/monitor/cron-budget). Most ticks
-    // record nothing and so spend nothing; one past half the ceiling, and the hourly tick that
-    // proves this path still writes, hand the measurement to an in process route, the same way
-    // the lanes themselves are driven. Awaited, and never allowed to throw out of the tick.
-    const writes = cronBudgetWrites(controller.cron, totalMs);
-    if (writes.breach || writes.verdict) {
-      const url = new URL(`https://slate.trypennie.app${CRON_BUDGET_ROUTE}`);
-      url.searchParams.set("cron", controller.cron);
-      url.searchParams.set("wall_ms", String(Math.round(totalMs)));
-      try {
-        const res = await deps.fetch(
-          new Request(url, { headers: { authorization: `Bearer ${tick.cronSecret}` } }),
-        );
-        if (!res.ok) {
-          log.error("cron-budget", { msg: "recording the tick failed", cron: controller.cron, status: res.status });
-        }
-      } catch (err) {
-        log.error("cron-budget", { msg: "recording the tick threw", cron: controller.cron }, err);
-      }
-    }
+    // #3141: the daily cron headroom check reads what this records (worker/lane-run.ts).
+    await recordCronBudget(controller.cron, totalMs, tick, deps);
   },
 };
 
