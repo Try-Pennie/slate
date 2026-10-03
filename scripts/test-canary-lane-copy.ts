@@ -79,6 +79,16 @@ eq(new Set(clears.values()).size, lanes.length, "no two lanes share the same all
     /could not judge|cannot judge|too thin|enough leads/i.test(text),
     "the replay page says a run that judged too little looks the same as one that never ran",
   );
+  // #2466: the monitor lane re fires a dropped replay itself, so by the time this
+  // pages a hand re run has already been tried. Offering it as the remedy would be
+  // an instruction that no longer matches what the system does (L111).
+  assert(!/Run workflow on router-replay/.test(text), `the replay page no longer offers a hand re run as the remedy (${text})`);
+  assert(/re fires/i.test(text), "it says the monitor lane already re fires the replay");
+  // The pilot carries real leads now, so "cal.com is still taking every real lead"
+  // and "Slate has no traffic of its own" are both false.
+  assert(!/every real lead/.test(text), `the replay page does not claim cal.com takes every real lead (${text})`);
+  assert(!/no traffic of its own/.test(text), "nor that Slate has no traffic of its own");
+  assert(/pilot/.test(text), "it names the pilot as what changed");
 }
 
 finish();

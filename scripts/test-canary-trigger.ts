@@ -28,6 +28,8 @@ import {
   CANARY_FULL_DISPATCH_COOLDOWN_MS,
   PARITY_TRIGGER_STALE_MS,
   PARITY_DISPATCH_COOLDOWN_MS,
+  REPLAY_TRIGGER_STALE_MS,
+  REPLAY_DISPATCH_COOLDOWN_MS,
   GAP_FILL_PASSES,
   type CanaryGapFillWiring,
   type CanaryTriggerDeps,
@@ -345,8 +347,8 @@ async function main() {
     eq(r.full?.dispatched, true, "full pass dispatches when stale");
     eq(
       calls.lanesRead.join(","),
-      "smoke-canary,smoke-canary-full,schedule-parity",
-      "reads the three distinct lanes in order",
+      "smoke-canary,smoke-canary-full,schedule-parity,router-replay",
+      "reads the four distinct lanes in order",
     );
     eq(
       JSON.stringify(calls.locks),
@@ -646,6 +648,9 @@ async function main() {
     assert(!lanesRead.includes("schedule-parity"), "retired: the parity heartbeat is not even read");
     assert(!retired.calls.locks.some(([n]) => n === "parity_dispatch"), "retired: the parity lock is not taken");
     eq(retired.calls.modes.join(","), "dry,full", "retired: the booking canary passes still fire");
+    // #2466: the router replay is a cal.com lane too, so it stops on the same switch.
+    eq(r.replay?.reason, "calcom-retired", "retired: the router replay is not re fired either");
+    assert(!lanesRead.includes("router-replay"), "retired: the replay heartbeat is not even read");
 
     for (const [label, answer] of [["live", false], ["unreadable", null]] as const) {
       const { w, calls } = wiring({ calcomRetired: async () => answer });
@@ -665,6 +670,126 @@ async function main() {
     const rt = await runCanaryGapFills(throwing);
     eq(rt.parity?.dispatched, true, "a throwing retirement read keeps today's re fire");
     eq(throwingCalls.modes.join(","), "dry,full,parity", "and nothing else is skipped");
+  }
+
+  // --- the WEEKLY router replay (#2466) -----------------------------------------
+  //
+  // `router-replay.yml` has one scheduled attempt a WEEK, so a run GitHub dropped
+  // cost the whole week, and the only remedy the page offered was a hand re run
+  // (L533). It joins the table as a fourth pass, on its own lane, lock, cooldown and
+  // threshold, every one of them derived from the workflow file below.
+  const REPLAY_WORKFLOW = "router-replay.yml";
+  const replayYml = readFileSync(join(ROOT, ".github", "workflows", REPLAY_WORKFLOW), "utf8");
+  const replayCrons = parseWorkflowSchedules(replayYml);
+  const replayCadenceMs = cronCadenceMs(replayCrons[0] as string);
+  const replayTimeoutMin = Number(replayYml.match(/^ {4}timeout-minutes:\s*(\d+)/m)?.[1] ?? NaN);
+
+  // 25. The threshold is derived from the file, exactly as the parity one is.
+  {
+    eq(replayCrons.length, 1, "the replay workflow declares exactly one cron line");
+    eq(replayCadenceMs, 7 * 24 * 60 * 60_000, "and it is read as a weekly cadence");
+    assert(Number.isFinite(replayTimeoutMin), "the replay job declares a timeout the derivation can use");
+    const OBSERVED_GITHUB_LATENESS_MS = 3 * 60 * 60_000;
+    const earliestHonest = (replayCadenceMs as number) + OBSERVED_GITHUB_LATENESS_MS + replayTimeoutMin * 60_000;
+    assert(
+      REPLAY_TRIGGER_STALE_MS >= earliestHonest,
+      `the replay threshold clears the cadence plus GitHub's lateness plus the job's own timeout ` +
+        `(threshold ${REPLAY_TRIGGER_STALE_MS}ms, earliest honest ${earliestHonest}ms)`,
+    );
+    // Not padded past need either: within an hour of the earliest honest moment, so
+    // a dropped Monday run is re fired that same Monday rather than days later.
+    assert(
+      REPLAY_TRIGGER_STALE_MS - earliestHonest < 60 * 60_000,
+      `the replay threshold is the derivation rounded up, not a guess (${REPLAY_TRIGGER_STALE_MS - earliestHonest}ms over)`,
+    );
+    // The 9 day page stays the BACKSTOP: a dispatch, one cooldown retry and a full
+    // run all fit inside it, or the page arrives while the re fire is still working.
+    const bound = CANARY_STALE_BOUNDS_MS["router-replay"] as number;
+    const worstRecovery = REPLAY_TRIGGER_STALE_MS + REPLAY_DISPATCH_COOLDOWN_MS + replayTimeoutMin * 60_000;
+    assert(
+      worstRecovery < bound,
+      `a replay dispatch, one cooldown retry and a full run fit inside the 9 day bound ` +
+        `(worst ${worstRecovery}ms, bound ${bound}ms)`,
+    );
+    // And the cooldown is long enough that a run which starts and cannot conclude
+    // (it posts to Slack each time) is not re fired more than once a day.
+    assert(REPLAY_DISPATCH_COOLDOWN_MS >= 24 * 60 * 60_000, "a failing replay is re fired at most daily");
+    eq(GAP_FILL_PASSES.replay.lane, "router-replay", "the replay pass judges the router-replay heartbeat");
+    eq(GAP_FILL_PASSES.replay.workflow, REPLAY_WORKFLOW, "and dispatches the router replay workflow");
+    eq(GAP_FILL_PASSES.replay.staleMs, REPLAY_TRIGGER_STALE_MS, "with its own threshold");
+    eq(GAP_FILL_PASSES.replay.cooldownMs, REPLAY_DISPATCH_COOLDOWN_MS, "and its own cooldown");
+  }
+
+  // 26. A six day old replay heartbeat is a healthy weekly one: nothing fires, and
+  //     the lock is never reached for. A threshold borrowed from the daily parity
+  //     sweep would re fire a replay every day of the week.
+  {
+    const { w, calls } = wiring({
+      readHeartbeatMs: async (lane) => (lane === "router-replay" ? NOW - 6 * 24 * 60 * 60_000 : NOW),
+    });
+    const r = await runCanaryGapFills(w);
+    eq(r.replay?.reason, "fresh", "a six day old replay heartbeat is fresh on a weekly cadence");
+    assert(!calls.modes.includes("replay"), "and nothing is dispatched for it");
+    assert(!calls.locks.some(([n]) => n === "replay_dispatch"), "and its lock is not taken");
+  }
+
+  // 27. A dropped Monday: the heartbeat is a week and five hours old. Exactly one
+  //     re fire, on its own lock and ttl, and the next tick does not fire again.
+  {
+    const { w, calls } = wiring(
+      { readHeartbeatMs: async (lane) => (lane === "router-replay" ? NOW - (7 * 24 + 5) * 60 * 60_000 : NOW) },
+      // A NOT-released lock: once taken, a later tick cannot take it again.
+      { lockAllows: (name, taken) => !taken.some(([n]) => n === name) },
+    );
+    const first = await runCanaryGapFills(w);
+    eq(first.replay?.dispatched, true, "a week and five hours old replay heartbeat is re fired");
+    eq(calls.modes.join(","), "replay", "only the replay is dispatched");
+    assert(
+      calls.locks.some(([n, t]) => n === "replay_dispatch" && t === REPLAY_DISPATCH_COOLDOWN_MS),
+      "the replay takes its OWN lock with its OWN cooldown",
+    );
+    const second = await runCanaryGapFills(w);
+    eq(second.replay?.reason, "cooldown", "the next tick holds off while the lock stands");
+    eq(calls.modes.filter((m) => m === "replay").length, 1, "still exactly one replay dispatch");
+  }
+
+  // 28. A refused replay dispatch is never reported as a re fire made.
+  {
+    const { w } = wiring(
+      { readHeartbeatMs: async (lane) => (lane === "router-replay" ? NOW - 8 * 24 * 60 * 60_000 : NOW) },
+      { dispatchResult: (pass) => (pass === "replay" ? { ok: false, status: 422 } : { ok: true, status: 204 }) },
+    );
+    const r = await runCanaryGapFills(w);
+    eq(r.replay?.dispatched, false, "a 422 is not a re fire");
+    eq(r.replay?.reason, "dispatch-failed", "it has its own reason");
+  }
+
+  // 29. The replay targets the REAL replay workflow and sends exactly the inputs it
+  //     declares, which is none: GitHub 422s on any other, invisibly.
+  {
+    const realFetch = globalThis.fetch;
+    let url = "";
+    let body: { ref?: string; inputs?: Record<string, string> } = {};
+    globalThis.fetch = (async (u: string, init: { body: string }) => {
+      url = String(u);
+      body = JSON.parse(init.body);
+      return new Response(null, { status: 204 });
+    }) as unknown as typeof fetch;
+    try {
+      await postWorkflowDispatch("ghp_tok", "replay");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    eq(
+      url,
+      `https://api.github.com/repos/Try-Pennie/slate/actions/workflows/${REPLAY_WORKFLOW}/dispatches`,
+      "the replay pass POSTs the router replay workflow",
+    );
+    const declared = parseWorkflowDispatchInputs(replayYml);
+    assert(declared !== null, "the replay workflow can be dispatched at all");
+    eq((declared ?? []).length, 0, "the replay workflow declares no dispatch inputs");
+    eq(body.ref, "main", "it dispatches against main");
+    eq(Object.keys(body.inputs ?? {}).join(","), "", "and sends no inputs");
   }
 
   finish();

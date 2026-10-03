@@ -82,6 +82,42 @@ export const PARITY_TRIGGER_STALE_MS = (27 * 60 + 30) * 60_000;
  */
 export const PARITY_DISPATCH_COOLDOWN_MS = 60 * 60_000;
 
+/**
+ * The WEEKLY router replay (#2466), the fourth workflow in this family and the one
+ * a dropped run costs most: `router-replay.yml` has one scheduled attempt a week, so
+ * a run GitHub dropped used to cost the whole week, and the only remedy offered was
+ * a hand re run (L533).
+ *
+ * 7 days 4 hours, derived exactly as the parity threshold is:
+ *
+ *   7d     the replay's own cadence, read off the workflow's cron. At or below this
+ *          it would dispatch a second replay against one that had succeeded.
+ *   +3h    the worst GitHub scheduling LATENESS this repo has measured, so a run
+ *          that is merely late is not double fired. Firing early would mostly cost
+ *          cal.com reads, on a key the OOO dual write shares.
+ *   +45m   the job's own `timeout-minutes`, because the heartbeat is stamped at the
+ *          END of the run.
+ *
+ * That is 7d 3h45m, rounded up to the hour. `scripts/test-canary-trigger.ts`
+ * re-derives all three from the workflow file and holds the rounding under an hour.
+ */
+export const REPLAY_TRIGGER_STALE_MS = (7 * 24 + 4) * 60 * 60_000;
+
+/**
+ * A DAY, longer than the parity sweep's hour, because of what a re fire that does
+ * not conclude costs. The replay stamps its heartbeat only when it reaches a
+ * verdict, and a run whose sample was too thin, or that cal.com refused, still
+ * posts to Slack saying so. An hourly retry would repeat that post every hour; a
+ * daily one says it once a day, and gives the accumulating booking cache a day's
+ * more runs to judge from. A refused dispatch is retried a day later too, which a
+ * weekly measurement can afford.
+ *
+ * Bounded from above by the 9 day `router-replay` staleness bound, which stays the
+ * BACKSTOP: the threshold, one retry and one full 45 minute run fit inside it with
+ * hours to spare. The test asserts that relation rather than the number.
+ */
+export const REPLAY_DISPATCH_COOLDOWN_MS = 24 * 60 * 60_000;
+
 export interface CanaryTriggerDeps {
   /** Current time (ms). */
   now: number;
@@ -127,18 +163,18 @@ export interface CanaryTriggerResult {
 const CANARY_REPO = "Try-Pennie/slate";
 
 /** Which scheduled pass a gap-fill re-fires. */
-export type GapFillPass = "dry" | "full" | "parity";
+export type GapFillPass = "dry" | "full" | "parity" | "replay";
 
 /**
  * EVERYTHING that differs between one gap-fill and the next, in ONE table.
  *
- * The three passes are near-identical wiring that is easy to get subtly wrong: a
+ * The passes are near-identical wiring that is easy to get subtly wrong: a
  * swapped lane, lock or threshold silently leaves one pass ungap-filled while
  * every surface still looks correct. Keeping the differences here, rather than as
- * three hand written call blocks, means a FOURTH scheduled workflow (the weekly
- * router replay, #2466) is one entry in this table rather than another copy of the
- * wiring, and `Record<GapFillPass, ...>` makes `tsc` name the omission if somebody
- * widens the union and forgets the entry (L113).
+ * hand written call blocks, is why the fourth scheduled workflow (the weekly
+ * router replay, #2466) was one entry in this table rather than another copy of
+ * the wiring, and `Record<GapFillPass, ...>` makes `tsc` name the omission if
+ * somebody widens the union and forgets the entry (L113).
  *
  * The `inputs` field is load bearing rather than tidiness. GitHub answers **422**
  * to a `workflow_dispatch` carrying an input the workflow does not declare, and
@@ -196,6 +232,20 @@ export const GAP_FILL_PASSES: Record<
     cooldownMs: PARITY_DISPATCH_COOLDOWN_MS,
     staleMs: PARITY_TRIGGER_STALE_MS,
   },
+  // The weekly router replay (#2466). It reads cal.com and Slate and writes
+  // nothing but its own heartbeat and a runner cache, so a re fire repeats no side
+  // effect beyond the Slack post a run makes. Its `concurrency: router-replay`
+  // group with `cancel-in-progress: false` queues a dispatch behind a run already
+  // in flight rather than doubling it. A cal.com lane, so it stops being re fired
+  // once cal.com is marked retired, as the workflow itself already stops running.
+  replay: {
+    workflow: "router-replay.yml",
+    inputs: null,
+    lane: "router-replay",
+    lock: "replay_dispatch",
+    cooldownMs: REPLAY_DISPATCH_COOLDOWN_MS,
+    staleMs: REPLAY_TRIGGER_STALE_MS,
+  },
 };
 
 /**
@@ -251,11 +301,11 @@ export interface CanaryGapFillWiring {
 
 /**
  * Run EVERY gap-fill in `GAP_FILL_PASSES` with its own lane, lock, cooldown and
- * threshold (#982, #2414): the 30 minute dry canary tick, the 6 hourly full
- * booking pass, and the daily cal.com parity sweep.
+ * threshold (#982, #2414, #2466): the 30 minute dry canary tick, the 6 hourly full
+ * booking pass, the daily cal.com parity sweep, and the weekly router replay.
  *
- * It is a loop over the table rather than one block per pass, so adding a fourth
- * scheduled workflow (#2466) is a table entry. Keeping it here (one tested place)
+ * It is a loop over the table rather than one block per pass, so adding a
+ * scheduled workflow is a table entry. Keeping it here (one tested place)
  * rather than inline in the cron lane is what makes the wiring assertable at all.
  *
  * Each pass is isolated: a throw in one (a heartbeat or lock read error) is

@@ -689,6 +689,33 @@ function coverageGap(
   return { wholeDay: false, opensUncovered: false, ...g };
 }
 
+/** The dates the roster coverage check judges between two dates inclusive (#2810),
+ *  for production's week: open Monday to Saturday, Sunday shut, and Saturday never
+ *  judged, so Monday to Friday. Data only, like `coverageGap`. */
+function rosterCheckedDates(fromIso: string, toIso: string): string[] {
+  const out: string[] = [];
+  const last = DateTime.fromISO(toIso, { zone: "UTC" });
+  for (let d = DateTime.fromISO(fromIso, { zone: "UTC" }); d <= last; d = d.plus({ days: 1 })) {
+    if (d.weekday <= 5) out.push(d.toISODate() ?? "");
+  }
+  return out;
+}
+
+/** Production's evening tail: the org advertises until 20:00, the roster ends at 17:00. */
+const EVENING_TAIL = { startMinute: 1020, endMinute: 1200 };
+
+/** The same uncovered stretch on each of the given dates (#2810), one gap per date
+ *  with its weekday read off the date. Data only, like `coverageGap`. */
+function recurringCoverageGaps(
+  dates: string[],
+  shape: { startMinute: number; endMinute: number; opensUncovered?: boolean },
+  range: DatedCoverageGap["range"],
+): DatedCoverageGap[] {
+  return dates.map((dateIso) =>
+    coverageGap({ dateIso, weekday: DateTime.fromISO(dateIso, { zone: "UTC" }).weekday, range, ...shape }),
+  );
+}
+
 /** A fixed send time for the roster coverage page, in the org's zone, so the
  *  preview never reads the clock and renders the same text on every run. */
 function rosterSentAt(localIso: string): { nowMs: number; zone: string } {
@@ -2074,6 +2101,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: formatRosterCoverageLiveAlert(
       [coverageGap({ dateIso: "2026-10-06", weekday: 2, startMinute: 480, endMinute: 540, range: "live", opensUncovered: true })],
       rosterSentAt("2026-10-05T20:10"),
+      rosterCheckedDates("2026-10-05", "2026-10-09"),
     ),
   },
   {
@@ -2085,6 +2113,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: formatRosterCoverageLiveAlert(
       [coverageGap({ dateIso: "2026-10-02", weekday: 5, startMinute: 1020, endMinute: 1200, range: "live" })],
       rosterSentAt("2026-10-02T18:10"),
+      rosterCheckedDates("2026-10-02", "2026-10-08"),
     ),
   },
   {
@@ -2104,6 +2133,54 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
         ),
       ],
       rosterSentAt("2026-10-02T10:00"),
+      rosterCheckedDates("2026-10-02", "2026-10-08"),
+    ),
+  },
+  {
+    // #2810: the shape that used to list eleven dates. Production's roster ends at
+    // 17:00 while the org advertises until 20:00, so the same tail recurs on every
+    // checked day of a long horizon, and it is stated once as a range. Saturdays
+    // fall inside it and are never judged, so the range sets them aside by name.
+    key: "roster_coverage_gap",
+    state: "the same evening tail on every open day of a two week horizon",
+    channel: "alert",
+    text: formatRosterCoverageLiveAlert(
+      recurringCoverageGaps(rosterCheckedDates("2026-09-28", "2026-10-09"), EVENING_TAIL, "live"),
+      rosterSentAt("2026-09-28T07:00"),
+      rosterCheckedDates("2026-09-28", "2026-10-09"),
+    ),
+  },
+  {
+    // #2810: one checked day IS covered for those hours, so the run splits around
+    // it rather than a range claiming it. The two days before it are named, since
+    // a range of two says less than the dates.
+    key: "roster_coverage_gap",
+    state: "a recurring evening tail broken by one covered day",
+    channel: "alert",
+    text: formatRosterCoverageLiveAlert(
+      recurringCoverageGaps(
+        rosterCheckedDates("2026-09-28", "2026-10-09").filter((dateIso) => dateIso !== "2026-09-30"),
+        EVENING_TAIL,
+        "live",
+      ),
+      rosterSentAt("2026-09-28T07:00"),
+      rosterCheckedDates("2026-09-28", "2026-10-09"),
+    ),
+  },
+  {
+    // #2810: every checked day opens with nobody on. The emphasis rides along with
+    // the range rather than being lost in the collapse.
+    key: "roster_coverage_gap",
+    state: "every open day of the horizon opens with nobody on",
+    channel: "alert",
+    text: formatRosterCoverageLiveAlert(
+      recurringCoverageGaps(
+        rosterCheckedDates("2026-09-28", "2026-10-09"),
+        { startMinute: 480, endMinute: 540, opensUncovered: true },
+        "live",
+      ),
+      rosterSentAt("2026-09-28T07:00"),
+      rosterCheckedDates("2026-09-28", "2026-10-09"),
     ),
   },
   {
@@ -2127,9 +2204,12 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "roster_coverage_upcoming_gap",
     state: "next Friday opens with nobody on",
     channel: "alert",
-    text: formatRosterCoverageUpcomingAlert([
-      coverageGap({ dateIso: "2026-10-02", weekday: 5, startMinute: 480, endMinute: 540, range: "upcoming", opensUncovered: true }),
-    ]),
+    text: formatRosterCoverageUpcomingAlert(
+      [
+        coverageGap({ dateIso: "2026-10-02", weekday: 5, startMinute: 480, endMinute: 540, range: "upcoming", opensUncovered: true }),
+      ],
+      rosterCheckedDates("2026-09-28", "2026-10-02"),
+    ),
   },
   {
     key: "roster_coverage_upcoming_gap",
@@ -2139,6 +2219,21 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       ["2026-10-01", "2026-10-02", "2026-10-05"].map((dateIso, i) =>
         coverageGap({ dateIso, weekday: [4, 5, 1][i], startMinute: 720, endMinute: 780, range: "upcoming" }),
       ),
+      // Thursday, Friday and Monday are consecutive CHECKED days (the weekend
+      // between them is not judged), so the three collapse into a range (#2810),
+      // while Tuesday and Wednesday before them are checked and covered.
+      rosterCheckedDates("2026-09-29", "2026-10-05"),
+    ),
+  },
+  {
+    // #2810: the week past the horizon, the same tail on every checked day, stated
+    // as one range. No Saturday falls inside it, so nothing is set aside.
+    key: "roster_coverage_upcoming_gap",
+    state: "the same evening tail on every open day of the week past the horizon",
+    channel: "alert",
+    text: formatRosterCoverageUpcomingAlert(
+      recurringCoverageGaps(rosterCheckedDates("2026-10-12", "2026-10-16"), EVENING_TAIL, "upcoming"),
+      rosterCheckedDates("2026-10-10", "2026-10-16"),
     ),
   },
   {

@@ -3298,14 +3298,16 @@ export async function GET(req: NextRequest) {
     // double-fire. GitHub's own schedule stays on as a backup (the smoke-canary
     // concurrency group dedupes overlap). Quiet no-op until GITHUB_CANARY_TOKEN is
     // set. Never throws.
-    // All THREE gap-fills (#525 dry, #982 full, #2414 parity) in one tested helper:
+    // All FOUR gap-fills (#525 dry, #982 full, #2414 parity, #2466 weekly router
+    // replay) in one tested helper:
     // each fires its workflow pass only when its OWN heartbeat is stale (GitHub
     // dropped that run), throttled by its own NOT-released dispatch lock so it
     // can't double-fire. The full pass creates real bookings on the SMOKE test
     // agents (webhooks are suppressed for is_test), the same side effect as the
     // scheduled 6h run; the parity pass corrects drifted hours from cal.com and
     // sweeps, the same side effect as the scheduled daily run, and its 27h30m
-    // threshold is what keeps a merely late daily run from being re-fired. The
+    // threshold is what keeps a merely late daily run from being re-fired, as the
+    // replay's 7d4h one does for its weekly run. The
     // lane-watchdog backstop still pages if both GitHub AND the gap-fill fail one.
     // Quiet no-op until GITHUB_CANARY_TOKEN is set. Never throws.
     const canaryToken = githubCanaryToken();
