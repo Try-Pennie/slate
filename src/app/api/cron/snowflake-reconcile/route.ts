@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { laneFailure } from "@/lib/monitor/lane-failure-response";
 import { isAuthorizedCron } from "@/lib/cron";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { reconcileSnowflakeMirror } from "@/lib/snowflake/reconcile";
@@ -109,7 +110,7 @@ export async function GET(req: NextRequest) {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error("snowflake-reconcile", { msg: "cron failed", error: message });
-    return NextResponse.json({ error: message }, { status: 500 });
+    return laneFailure("snowflake-reconcile", message);
   } finally {
     await releaseLock("cron_snowflake_reconcile", lock);
   }

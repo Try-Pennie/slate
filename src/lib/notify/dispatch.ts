@@ -7,6 +7,7 @@ import { shouldSendAlert, alertStampMs } from "@/lib/notify/alerts";
 import { parseStampMs } from "@/lib/date/stamp";
 import { defaultInfoChannel } from "@/lib/notify/channels";
 import { log } from "@/lib/log";
+import { noteAlertKey } from "@/lib/notify/alert-recording";
 import { isWorkersRuntime, workersRuntimeMarker } from "@/lib/platform/runtime";
 import { isLoadtest } from "@/lib/loadtest-guard";
 import type { AlertResolve, ThrottledNotify } from "@/lib/monitor/alert-deps";
@@ -105,6 +106,19 @@ export async function isAlertDue(key: string, cooldownMs: number, nowMs: number)
 }
 
 export async function sendThrottledAlert(
+  key: string,
+  cooldownMs: number,
+  text: string,
+  channel?: string,
+): Promise<void> {
+  await sendThrottledAlertUnrecorded(key, cooldownMs, text, channel);
+  // Noted only once the send RETURNED (#3133 follow-up, see alert-recording.ts): a
+  // page sent, held back by its cooldown or dropped by an unconfigured Slack is the
+  // owner's word on the matter; a send that threw is nobody's.
+  noteAlertKey(key);
+}
+
+async function sendThrottledAlertUnrecorded(
   key: string,
   cooldownMs: number,
   text: string,
@@ -467,8 +481,11 @@ export async function sendThrottledInfo(
   text: string,
 ): Promise<void> {
   const channel = await defaultInfoChannel();
-  if (!channel) return;
-  await sendThrottledAlert(key, cooldownMs, text, channel);
+  // Noted on return by the same rule as a page (see alert-recording.ts), including
+  // the return with no info channel set, which drops the message exactly as an
+  // unconfigured Slack does. A throw (the channel read, or the send) notes nothing.
+  if (channel) await sendThrottledAlert(key, cooldownMs, text, channel);
+  noteAlertKey(key);
 }
 
 /**

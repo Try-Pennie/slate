@@ -23,6 +23,15 @@ import { laneFieldName } from "./lane-timing.ts";
 /** The header a lane request carries its tick's correlation id on (#3139). */
 export const TICK_ID_HEADER = "x-slate-tick-id";
 
+/**
+ * The header a lane's non-ok response carries when the lane ALREADY raised its own
+ * alert about this failure (#3133 follow-up). Its value is the keys it raised, and
+ * the dispatcher sends no generic page for a response that carries it, so a failure
+ * produces exactly one message (Dan, 2026-10-03: "I only want one alert"). It is
+ * set only by `laneFailure` / `laneFailedResponse`, from what the code recorded.
+ */
+export const LANE_ALERTED_HEADER = "x-slate-lane-alerted";
+
 /** alert-key: cron_lane_failed:* */
 export const LANE_FAILED_KEY_PREFIX = "cron_lane_failed";
 

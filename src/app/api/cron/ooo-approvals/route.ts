@@ -13,6 +13,8 @@ import { sendGmailEmail } from "@/lib/notify/email";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import { shortErrorReason } from "@/lib/notify/error-text";
+import { laneFailure } from "@/lib/monitor/lane-failure-response";
+import { log } from "@/lib/log";
 import {
   approvalsBody,
   approvalsFileDate,
@@ -167,8 +169,10 @@ export async function GET(req: NextRequest) {
 
   // Silent non-delivery is the worst failure mode for a report people rely on,
   // so alert (throttled) on any send error before surfacing the 500 — a slow or
-  // disabled Gmail, a lapsed gmail.send scope, etc. The error is re-thrown so
-  // the cron still records the failure (and can retry within the time gate).
+  // disabled Gmail, a lapsed gmail.send scope, etc. The lane still answers 500 so
+  // the cron records the failure (and can retry within the time gate). It used to
+  // re-throw, which reached the dispatcher as a bare 500 and paged a second time
+  // about the same failure; laneFailure carries the fact that this alert spoke.
   try {
     await sendGmailEmail({
       from: oooCalendarActorEmail(),
@@ -180,16 +184,18 @@ export async function GET(req: NextRequest) {
       attachments: [{ filename, content: csv, mimeType: "text/csv" }],
     });
   } catch (e) {
-    await sendThrottledAlert(
-      "ooo_approvals_digest",
-      DIGEST_ALERT_COOLDOWN_MS,
-      oooApprovalsDigestAlert(rows.length, recipients.length, shortErrorReason(e)),
-    ).catch(logAlertSendFailure("ooo_approvals_digest"));
-    throw e;
+    log.error("ooo-approvals", { msg: "approvals report send failed" }, e);
+    return laneFailure("ooo-approvals", shortErrorReason(e), async () => {
+      await sendThrottledAlert(
+        "ooo_approvals_digest",
+        DIGEST_ALERT_COOLDOWN_MS,
+        oooApprovalsDigestAlert(rows.length, recipients.length, shortErrorReason(e)),
+      ).catch(logAlertSendFailure("ooo_approvals_digest"));
+    });
   }
 
-  // #2543: the watermark moves only AFTER the send has succeeded. The throw above
-  // skips it deliberately, so a morning whose email failed is reported again
+  // #2543: the watermark moves only AFTER the send has succeeded. The failure
+  // return above skips it deliberately, so a morning whose email failed is reported again
   // tomorrow rather than being recorded as covered by a report nobody received.
   await recordHeartbeat(OOO_APPROVALS_REPORT_LANE);
 

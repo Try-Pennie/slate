@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
 import { runAdvisorPhotoLane } from "@/lib/advisor-photos/lane";
 import { log } from "@/lib/log";
+import { laneFailedResponse, laneFailure } from "@/lib/monitor/lane-failure-response";
 
 export const dynamic = "force-dynamic";
 
@@ -26,9 +27,14 @@ export async function GET(req: NextRequest) {
       // belongs in a cron response body.
       return NextResponse.json({ status: result.status, verdict: result.verdict, counts: result.plan.counts });
     }
-    return NextResponse.json(result, { status: result.status === "failed" ? 500 : 200 });
+    // The lane pages about its own failure from inside the run, and the failed
+    // result names exactly the alerts raised ABOUT that failure (recorded around
+    // that page alone in lib/advisor-photos/lane.ts). Nothing else the run raised
+    // counts, so an unrelated page cannot silence the generic one.
+    if (result.status === "failed") return laneFailedResponse(result, result.alerted);
+    return NextResponse.json(result);
   } catch (err) {
     log.error("advisor-photos", { msg: "cron failed" }, err);
-    return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
+    return laneFailure("advisor-photos", err instanceof Error ? err.message : String(err));
   }
 }

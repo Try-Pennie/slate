@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { laneFailure } from "@/lib/monitor/lane-failure-response";
 import { isAuthorizedCron } from "@/lib/cron";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -97,7 +98,7 @@ export async function GET(req: NextRequest) {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error("prune-webhook-payloads", { msg: "cron failed", error: message });
-    return NextResponse.json({ error: message }, { status: 500 });
+    return laneFailure("prune-webhook-payloads", message);
   } finally {
     await releaseLock("cron_prune_webhook_payloads", lock);
   }

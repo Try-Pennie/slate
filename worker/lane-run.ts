@@ -31,7 +31,11 @@
  * the page says so rather than promising more (L440).
  */
 import { laneFieldName, type LaneRun } from "@/lib/monitor/lane-timing";
-import { TICK_ID_HEADER, type LaneFailureReport } from "@/lib/monitor/lane-failure";
+import {
+  LANE_ALERTED_HEADER,
+  TICK_ID_HEADER,
+  type LaneFailureReport,
+} from "@/lib/monitor/lane-failure";
 import { shortErrorReason } from "@/lib/notify/error-text";
 import type { LogFields } from "@/lib/log";
 
@@ -96,14 +100,20 @@ export async function runLane(
       // The body is read for the LOG only; the page carries the status, never a
       // response body, which is whatever the lane chose to put there.
       const body = await res.text().catch(() => "");
+      // One failure, one message (Dan, 2026-10-03): a lane that already raised its
+      // own alert about this failure says so on the response, and gets no generic
+      // page on top of it. The header is set from what the lane's code actually
+      // raised (src/lib/monitor/lane-failure-response.ts), never from a list.
+      const alerted = (res.headers.get(LANE_ALERTED_HEADER) ?? "").trim();
       deps.log.error("cron", {
         msg: "lane returned a non-ok response",
         path,
         status: res.status,
         body: body.slice(0, 300),
         tick: tick.tickId,
+        ...(alerted ? { alerted } : {}),
       });
-      failure = { lane, status: res.status, reason: `answered ${res.status}` };
+      if (!alerted) failure = { lane, status: res.status, reason: `answered ${res.status}` };
     }
   } catch (err) {
     // The error itself goes to the log as the third argument, so Cloudflare keeps

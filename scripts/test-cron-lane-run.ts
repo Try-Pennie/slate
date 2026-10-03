@@ -25,6 +25,7 @@ import {
   laneFailedKey,
   parseLaneFailure,
   parseTickId,
+  LANE_ALERTED_HEADER,
 } from "../src/lib/monitor/lane-failure.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -94,6 +95,38 @@ const tick: LaneTick = { tickId: "0123456789abcdef", cronSecret: "s3cret" };
   eq(seen.errors[0]!.fields.tick, tick.tickId, "with the tick id on the line");
   eq(seen.errors[0]!.fields.body, "boom detail", "and the body kept for the LOG");
   assert(!out.failure!.reason.includes("boom"), "but the body never reaches the page");
+}
+
+// ------------------------------------------------------------ one failure, one message
+//
+// Dan, 2026-10-03: "I only want one alert. neither should page two." A lane whose
+// response says it already raised its own alert gets no generic page; one whose
+// response does not, still does. Both directions, on the same status.
+
+{
+  const { deps, seen } = harness(
+    async () =>
+      new Response("{}", { status: 500, headers: { [LANE_ALERTED_HEADER]: "agent_sync_failures" } }),
+  );
+  const out = await runLane("/api/cron/agents", tick, deps);
+  eq(out.failure, null, "a lane that already raised its own alert is not reported for a generic page");
+  eq(out.run.ok, false, "but is still timed as failed");
+  eq(seen.errors.length, 1, "and still logged");
+  eq(seen.errors[0]!.fields.alerted, "agent_sync_failures", "naming the alert that spoke for it");
+}
+
+{
+  const { deps } = harness(async () => new Response("{}", { status: 500 }));
+  const out = await runLane("/api/cron/agents", tick, deps);
+  eq(out.failure?.lane, "agents", "the same lane with no own alert on this failure IS reported");
+}
+
+{
+  const { deps } = harness(
+    async () => new Response("{}", { status: 500, headers: { [LANE_ALERTED_HEADER]: "  " } }),
+  );
+  const out = await runLane("/api/cron/agents", tick, deps);
+  eq(out.failure?.lane, "agents", "an empty header names no alert, so the generic page still fires");
 }
 
 // ------------------------------------------------------------ a lane that throws

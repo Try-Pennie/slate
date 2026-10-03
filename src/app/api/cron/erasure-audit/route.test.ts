@@ -35,6 +35,7 @@ vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
 vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
 import { GET } from "./route";
+import { noteAlertKey } from "@/lib/notify/alert-recording";
 
 /**
  * The fields every audit outcome carries, so the fakes below only state what the
@@ -443,5 +444,30 @@ describe("the mirror credential sweep", () => {
 
     expect(alertedKeys()).toContain("snowflake_erasure_residual");
     expect(res.status).toBe(500);
+  });
+
+  // One failure, one message (Dan, 2026-10-03), and never zero. The residual page
+  // is a FINDING about the warehouse, raised by a step that worked; the sweep that
+  // then threw is a different failure that nothing has said anything about. So the
+  // 500 must NOT tell the dispatcher the lane already spoke: the generic page is
+  // that failure's one message. The fake send notes its key exactly as the real one
+  // does, so a recording scope around the run would have caught it here.
+  it("leaves a later failure to the generic page, after a residual page about something else", async () => {
+    notify.sendThrottledAlert.mockImplementationOnce(async (key: string) => {
+      noteAlertKey(key);
+    });
+    credentialSweep.runMirrorCredentialSweep.mockRejectedValue(new Error("warehouse unreachable"));
+    audit.auditSnowflakeErasures.mockResolvedValue({ ...AUDIT_DEFAULTS,
+      ok: false,
+      erasedBookings: 1,
+      residuals: [{ table: "bookings", residual: 1 }],
+      reasons: ["bookings: 1 erased booking row(s) still hold contact PII in Snowflake"],
+    });
+
+    const res = await GET(req());
+
+    expect(alertedKeys()).toEqual(["snowflake_erasure_residual"]);
+    expect(res.status).toBe(500);
+    expect(res.headers.get("x-slate-lane-alerted")).toBeNull();
   });
 });
