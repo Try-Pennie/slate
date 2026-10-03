@@ -4,7 +4,7 @@
 **Prepared by:** Engineering (Slate), 2026-07-29
 **Decided by:** Dan Wright, 2026-07-29, positions 1 to 4
 **Proposed by:** Engineering (Slate), 2026-10-03, positions 5 and 6 (#3132), not yet decided by anyone
-**Tracking:** #1074, milestone "PII retention, erasure & compliance" (#1029)
+**History:** positions 1 to 4 were written up under #1074, since closed, in milestone "PII retention, erasure & compliance" (#1029); positions 5 and 6 under #3132
 
 ## What we need from you
 
