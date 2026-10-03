@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { OUTCOME_PARAMS } from "@/lib/admin/save-outcomes";
 
+type Notice = { kind: "ok" | "error"; message: string };
+
 interface SettingsSaveNoticeProps {
   /** Set when the save action redirected back with ?ok=1. */
   ok: boolean;
@@ -29,31 +31,44 @@ interface SettingsSaveNoticeProps {
  * the param in the URL, so a reload or a copied/bookmarked link re-showed a
  * stale "saved" without anything having been saved.
  *
- * This captures the outcome once into state (so the banner stays visible), then
- * strips the param from the URL on mount via history.replaceState. A reload or
+ * This captures each outcome into state (so the banner stays visible), then
+ * strips the param from the URL via history.replaceState. A reload or
  * copied URL then carries no param and shows no banner.
  */
 export function SettingsSaveNotice({ ok, error, saved }: SettingsSaveNoticeProps) {
-  const [notice] = useState<{ kind: "ok" | "error"; message: string } | null>(
-    error
-      ? { kind: "error", message: error }
-      : ok
-        ? { kind: "ok", message: saved }
-        : null,
-  );
+  const incoming: Notice | null = error
+    ? { kind: "error", message: error }
+    : ok
+      ? { kind: "ok", message: saved }
+      : null;
+  const [notice, setNotice] = useState<Notice | null>(incoming);
+
+  // #3100: a SECOND save on the same page re-renders this in place rather than
+  // mounting it again, so the state captured on mount has to give way to a new
+  // outcome. Found by the first browser run: stopping online booking and then
+  // starting it again left the notice reading "stopped" beside a switch saying
+  // leads can book (L646). An outcome that goes ABSENT keeps the notice, because
+  // that is the server re-rendering after the param below was stripped, not a
+  // new save.
+  const incomingKey = incoming ? `${incoming.kind}:${incoming.message}` : null;
+  const shownKey = notice ? `${notice.kind}:${notice.message}` : null;
+  if (incoming && incomingKey !== shownKey) setNotice(incoming);
 
   // #2384: every outcome parameter, from the one list, not the two this knew
   // about. The webhooks page carries its action results in `?resend=` and
   // `?replay=`, and a parameter left in the address bar re-shows the notice on a
   // reload or a copied link, which is the stale confirmation this effect exists
-  // to prevent, wearing a different parameter name.
+  // to prevent, wearing a different parameter name. Run on EVERY render, not per
+  // outcome: a second save with the same outcome arrives as the same key, and an
+  // effect keyed on it left that save's parameter in the address bar. Stripping is
+  // idempotent and does nothing when no parameter is there.
   useEffect(() => {
     const url = new URL(window.location.href);
     if (OUTCOME_PARAMS.some((p) => url.searchParams.has(p))) {
       for (const p of OUTCOME_PARAMS) url.searchParams.delete(p);
       window.history.replaceState(null, "", url.pathname + url.search + url.hash);
     }
-  }, []);
+  });
 
   if (!notice) return null;
 

@@ -683,59 +683,52 @@ holds one entry (`widget-embed.test.ts`, which drives the real `widget.js` in a
 browser environment). That guard fails the build if the boundary erodes again.
 Making jsdom opt in cut the vitest suite from about 8.2s to about 4.3s (#608).
 
-# What CI covers, and the deliberate no-browser-layer decision
+# What CI covers, including the browser layer (reversed 2026-10-03)
 
-CI green here means **unit logic + a full production build**, not a browser or
-end to end pass. The pyramid is intentionally bottom heavy: the node script
-suites (`pnpm test`, which prints how many it ran) plus the vitest suites
-(`pnpm test:components`, glue and a handful of component tests) all run in the
-pre-push gate and in CI, and
-`pnpm cf:build` proves the Worker actually builds. There is **no Playwright config
-in the repo** and **no automated browser test in CI**, on purpose (#611, audit
-AUD-037). Visual and DOM checks are done with the Playwright MCP against a running
-dev server during development, not wired into CI.
+CI green on a pull request means **unit logic, a full production build, and, when
+the change touches anything the app is built from, a browser pass**. `pnpm test`
+and `pnpm test:components` run in the pre-push gate and in CI, `pnpm cf:build`
+proves the Worker builds, and the `browser` leg of `ci.yml` drives a real browser
+before merge (#3079, #3100).
 
-**Why not CI Playwright (yet):** `next dev` screenshots are unstable to automate
-(the `.pn-*` entrance/pulse keyframes never settle and font loading stalls a
-full page shot, see the screenshotting section below), so a headless browser job
-would be flaky for the payoff. The risky mock seams that a browser layer would
-guard, the Supabase query chains and the Google Calendar shapes, and the embed
-(`widget.js`) contract and full booking funnel, are covered a different way:
+**The no-browser-layer decision (#611) is reversed** (Dan, 2026-10-03; ADR 0011 has
+the reasoning). #611's premise was that `next dev` never settles; this runs a
+PRODUCTION build (`next build`, `next start`) with motion stopped. It covers sign in
+through the real callback, impersonation, the eleven #2379 admin saves (each asserting
+the stored row and the `SAVE_OUTCOME_COPY` sentence), a lead booking and the manage
+page, and axe over the booker, manage page, sign in, every console nav page
+(`adminNavHrefs()`) and `/me`, in light and dark, failing on serious or critical
+findings. Two positive controls keep axe honest. Its first run found three defects.
 
-**There IS one browser check, and it is post deploy rather than pre merge (#1006).**
-The canary's 6-hourly full pass drives the DEPLOYED `widget.js` in headless
-chromium against live prod (`scripts/smoke-embed-render.ts`) and asserts the
-embedded booker actually draws. None of the instability above applies: it never
-touches `next dev`, and it waits on the booker's own heading rather than on a
-settled animation. It deliberately does NOT demand that slots are offered, because
-before cutover the roster is dark (#1272) and a check that demanded times would be
-red every run from the day it shipped; it asserts the booker SAYS SOMETHING, since
-a working embed either offers times or states in its own words why it has none.
-The verdict rules live in `scripts/lib/embed-render-check.ts` and are pinned
-offline by `scripts/test-embed-render-check.ts`, so they are tested where no
-browser exists. Full pass only, because this is a private repo and Actions minutes
-are billed: a browser on every 30 minute tick is about 48 runs a day against 4 for
-a fault that arrives with a deploy rather than drifting in.
+**Run it:** `pnpm test:e2e` (Docker plus the Supabase CLI). `e2e/run.ts` starts a
+throwaway local Supabase from the committed migrations on its own ports, seeds it,
+builds, serves on `localhost:3100` and runs Playwright. Locally,
+`E2E_REUSE_STACK=1` and `E2E_SKIP_BUILD=1` speed iteration; args after `--` go to
+Playwright. Run it from a worktree: **the runner refuses a checkout holding any
+`.env*` file Next would load**, because `.env.local` points at production.
 
-The rest:
+**It cannot touch production (L2)**, by four layers documented in `e2e/env.ts`: an
+environment built from nothing, `SLATE_LOADTEST=true` (Google stubbed, Slack,
+Salesforce, cal.com and Twilio refused), an egress guard in the server that refuses
+and records any off-machine connection and fails the run on one, and a browser that
+aborts off-machine requests. The run also fails if the guard's log is missing or a
+refusal shows in the server's output. The job gets no secret;
+`scripts/test-browser-checks-gate.ts` fails the build if one is added and checks the
+input list against every file the run reads (L88). Staff sessions are real sign ins (a
+PKCE magic link from the local auth server); `/dev/preview` stays dev only.
 
-- **The scheduled production canary** (`.github/workflows/smoke-canary.yml`, the
-  #455 / #483 / #525 cluster) runs the real smoke scripts against **live prod** on
-  the isolated SMOKE test agents and buckets (#396, so they can never touch a real
-  agent): a side effect free dry run health tick every 30 min, and every 6h a full
-  `SMOKE_STRICT` pass plus the reschedule smoke, which is the only automated proof
-  that a booking can be made, rescheduled, and cancelled end to end. Any failure
-  posts a Slack alert.
-- **A dead man's switch**: each pass stamps a heartbeat, and the lane watchdog
-  pages if the schedule silently stops firing (GitHub drops scheduled runs under
-  load), with a separate `smoke-canary-full` heartbeat so a dropped 6h run also
-  goes stale and pages (#982). The Worker monitor lane refires the workflow via
-  the GitHub API when the heartbeat goes stale (`src/lib/monitor/canary-trigger.ts`).
+**It blocks merging** (Dan, 2026-10-03): `browser` is a leg of the `ci` fan-in, pull
+request only like security-scan, so main and the deploy never wait on it. It always
+starts, and its first step (`scripts/browser-checks-gate.ts`) passes in seconds when
+the diff touches no input; an unreadable diff runs it. About 6 billed minutes a build.
 
-So the safety net for the funnel lives **post deploy** (canary + alert), not
-pre merge (browser CI). If you are tempted to add a Playwright CI job, read this
-section and #611 first: the decision is deliberate, and the compensating canary is
-the thing to keep healthy instead.
+**The production canary stays**, because a local stack cannot prove the deployed
+Worker, real calendars or the real embed host: `.github/workflows/smoke-canary.yml`
+runs the smoke scripts against live prod on the isolated SMOKE agents and buckets
+(#396), a dry run every 30 min and every 6h a `SMOKE_STRICT` pass, the reschedule
+smoke and the deployed embed render check (#1006, `scripts/smoke-embed-render.ts`),
+with Slack alerts on failure and a heartbeat the lane watchdog pages on when the
+schedule stops (#982, refired by `src/lib/monitor/canary-trigger.ts`).
 
 # A live test books `PARTNER`, never a real bucket (#2760)
 

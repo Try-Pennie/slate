@@ -57,6 +57,49 @@ describe("SettingsSaveNotice", () => {
     expect(status.textContent).not.toMatch(/alert settings/i);
   });
 
+  // #3100: found by the first browser run. Stopping online booking and then
+  // starting it again on the same page left the notice reading "Online booking is
+  // stopped" beside a switch saying leads can book, because the second save's
+  // redirect re-rendered this component in place rather than mounting it, and the
+  // state it captured on mount was never replaced. A second save on the same
+  // screen has to say what the SECOND save did.
+  it("says what the latest save did when a second save lands on the same page", () => {
+    window.history.replaceState(null, "", "/admin/business-hours?ok=booking-paused");
+    const { rerender } = render(<SettingsSaveNotice ok error={undefined} saved="Online booking is stopped." />);
+    expect(screen.getByRole("status").textContent).toBe("Online booking is stopped.");
+
+    window.history.replaceState(null, "", "/admin/business-hours?ok=booking-resumed");
+    rerender(<SettingsSaveNotice ok error={undefined} saved="Online booking is running again." />);
+    expect(screen.getByRole("status").textContent).toBe("Online booking is running again.");
+    expect(window.location.search, "the second outcome's param is stripped too").not.toContain("ok");
+
+    // A refusal after a success replaces the success rather than sitting under it.
+    rerender(<SettingsSaveNotice ok={false} error="The change was refused." saved="" />);
+    expect(screen.getByRole("alert").textContent).toBe("The change was refused.");
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  // Review of #3162: saving the same thing twice (the horizon to 5, then 5 again)
+  // brings the same outcome back, so an effect keyed on the outcome never ran a
+  // second time and the second `?ok=` stayed in the address bar, where a reload
+  // re-shows a confirmation of nothing.
+  it("strips the param on every arrival, including a second save with the same outcome", () => {
+    window.history.replaceState(null, "", "/admin/business-hours?ok=booking-horizon");
+    const { rerender } = render(<SettingsSaveNotice ok error={undefined} saved="Booking horizon saved." />);
+    expect(window.location.search).not.toContain("ok");
+
+    window.history.replaceState(null, "", "/admin/business-hours?ok=booking-horizon");
+    rerender(<SettingsSaveNotice ok error={undefined} saved="Booking horizon saved." />);
+    expect(window.location.search, "the second save's param is stripped too").not.toContain("ok");
+    expect(screen.getByRole("status").textContent).toBe("Booking horizon saved.");
+  });
+
+  it("keeps the notice once the server re-renders without the stripped param", () => {
+    const { rerender } = render(<SettingsSaveNotice ok error={undefined} saved="Hours saved." />);
+    rerender(<SettingsSaveNotice ok={false} error={undefined} saved="Hours saved." />);
+    expect(screen.getByRole("status").textContent).toBe("Hours saved.");
+  });
+
   it("also strips the error param after mount", () => {
     window.history.replaceState(null, "", "/admin/business-hours?error=Nope");
     render(<SettingsSaveNotice ok={false} error="Nope" saved="Hours saved." />);

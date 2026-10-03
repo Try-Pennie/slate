@@ -6,6 +6,11 @@ post-deploy by a scheduled canary against live production instead.
 
 ## Status
 
+**Superseded on 2026-10-03 by [0011](./0011-browser-checks-before-merge.md)** (Dan's
+decision, #3079, #3100): browser checks now run before merge against a production
+build on a local stack. The premise below was about `next dev`, which that run does
+not use. Kept for the reasoning; nothing below is current.
+
 Accepted (#611, audit AUD-037). Recorded here because the decision reads as an
 omission until you know it was deliberate (#1053); the reasoning lives in
 `AGENTS.md` under "What CI covers".

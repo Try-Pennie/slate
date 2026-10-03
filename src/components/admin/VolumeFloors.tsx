@@ -148,7 +148,15 @@ function FloorGrid({
   name: string;
 }) {
   return (
-    <div className="mt-4 overflow-x-auto rounded-md border border-border">
+    // #3079: the table is wider than its card, so this box scrolls, and a box
+    // that scrolls has to be reachable and named for a keyboard to read past the
+    // edge (axe scrollable-region-focusable).
+    <div
+      className="mt-4 overflow-x-auto rounded-md border border-border"
+      tabIndex={0}
+      role="region"
+      aria-label={caption}
+    >
       <table className="w-full min-w-[640px] text-xs" data-floor-table={name}>
         <caption className="px-3 pt-2.5 pb-1 text-left text-xs text-fg-muted">{caption}</caption>
         <thead>

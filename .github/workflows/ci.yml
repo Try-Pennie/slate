@@ -290,7 +290,7 @@ jobs:
   # shard fails the gate. Anything other than `success` fails: a cancelled or
   # skipped leg is not a pass.
   ci:
-    needs: [static-checks, node-tests, vitest, build, security-scan]
+    needs: [static-checks, node-tests, vitest, build, security-scan, browser]
     if: always()
     timeout-minutes: 5  # measured max 4s
     runs-on: ubuntu-latest
@@ -304,15 +304,18 @@ jobs:
       # own `if:` skips it at once, so nothing here waits for a scan; this step
       # excuses exactly that skip. The push is scanned by security-scan-main, outside
       # this fan-in, whose red result fails the run and pages through
-      # deploy-alert.yml. Pinned, block and all, by scripts/test-ci-workflow.ts,
-      # which runs this exact script.
+      # deploy-alert.yml. The browser leg (#3100) is pull request only for the same
+      # reason, and its skip on a push is excused the same way; on a pull request it
+      # always runs and reports success itself when nothing it reads changed, so a
+      # skipped browser leg on a pull request still fails. Pinned, block and all, by
+      # scripts/test-ci-workflow.ts, which runs this exact script.
       - name: Every CI leg succeeded
         env:
           EVENT_NAME: ${{ github.event_name }}
           NEEDS: ${{ toJSON(needs) }}
         run: |
           set -euo pipefail
-          PR_ONLY_LEGS="security-scan"
+          PR_ONLY_LEGS="security-scan browser"
           if ! results="$(jq -r 'to_entries[] | "\(.key)=\(.value.result)"' <<<"$NEEDS")"; then
             echo "::error::The CI fan-in could not read its legs' results, so it has verified nothing. Failing rather than passing green."
             exit 1
@@ -329,7 +332,7 @@ jobs:
               # own `if:` keeping it off main. A pull-request-only leg that somehow ran
               # and failed here still fails, so a broken `if:` is not waved through.
               if [ "$EVENT_NAME" != "pull_request" ] && [ "$r" = "skipped" ] && [[ " $PR_ONLY_LEGS " == *" $leg "* ]]; then
-                echo "$leg is skipped on $EVENT_NAME by design: it gates pull requests only, and security-scan-main covers this push."
+                echo "$leg is skipped on $EVENT_NAME by design: it gates pull requests only."
                 continue
               fi
               failed="$failed $leg=$r"
@@ -404,6 +407,98 @@ jobs:
         with:
           fetch-depth: 0
       - uses: ./.github/actions/security-scan
+
+  # --- Browser checks before merge (#3079, #3100) ----------------------------------
+  #
+  # Reverses #611 on Dan's decision of 2026-10-03, and GATES a pull request through
+  # this fan-in (his follow-up the same day: block merging when it fails, accepting
+  # the cost). `pnpm test:e2e` (e2e/run.ts) builds the app for PRODUCTION (`next
+  # build`, `next start`, never `next dev`) against a throwaway local Supabase and
+  # drives a browser through sign in, impersonation, the eleven #2379 admin saves
+  # and the booking flow, plus an axe scan in both themes that fails on serious or
+  # critical findings. ADR 0011 has the reasoning.
+  #
+  # PULL REQUEST ONLY, like security-scan: on a push to main its `if:` skips it at
+  # once and the fan-in excuses exactly that skip, so a deploy never waits on it.
+  #
+  # It always STARTS on a pull request and decides from the diff whether to build
+  # (scripts/browser-checks-gate.ts). A change touching nothing the run reads passes
+  # in seconds with a notice saying so; a change touching any input, or a diff that
+  # cannot be read, runs it in full. A workflow `paths:` filter cannot do this for a
+  # leg: a filtered run never reports, which the fan-in would read as skipped.
+  #
+  # STRUCTURALLY UNABLE TO REACH PRODUCTION (L2). This job is handed NO secret, and
+  # scripts/test-browser-checks-gate.ts fails the build if one is added. The server's
+  # environment is built from nothing (e2e/env.ts), runs with SLATE_LOADTEST=true,
+  # and carries an egress guard that refuses and records any connection off the
+  # runner; the run fails on a single record. The browser aborts the same.
+  #
+  # PRICE: about 6 billed minutes when it builds (5m47s measured on its first CI
+  # run, PR #3162), seconds when the gate skips. At about 800 pull request runs a
+  # month that is up to about 4,800 billed minutes if every run touched an input.
+  browser:
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 20  # measured 5m47s on CI (PR #3162); a cold image pull adds a few minutes
+    runs-on: ubuntu-latest
+    steps:
+      # Depth 2: the gate reads the pull request merge commit against its first parent.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+
+      - name: Decide whether the browser checks need to run
+        id: gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: node --experimental-strip-types scripts/browser-checks-gate.ts
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: steps.gate.outputs.decision == 'run'
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: steps.gate.outputs.decision == 'run'
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install
+        if: steps.gate.outputs.decision == 'run'
+        run: pnpm install --frozen-lockfile
+
+      - name: Cache the browser
+        if: steps.gate.outputs.decision == 'run'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/ms-playwright
+          # Keyed on the lockfile, which pins @playwright/test exactly, so a bump
+          # fetches a matching browser instead of silently reusing an old one.
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install the browser
+        if: steps.gate.outputs.decision == 'run'
+        # chromium only, with the system libraries a headless run needs.
+        run: pnpm exec playwright install --with-deps chromium
+
+      # Pinned: `supabase status -o json` is read for the stack's address and its
+      # publishable and secret keys, and that output is what this version prints.
+      - uses: supabase/setup-cli@45a513f8c64c0bc8e0e3dfe572b5c95be85f6359 # v3.0.1
+        if: steps.gate.outputs.decision == 'run'
+        with:
+          version: 2.117.0
+
+      - name: Browser checks (local stack, production build)
+        if: steps.gate.outputs.decision == 'run'
+        env:
+          CI: "1"
+        run: pnpm test:e2e
+
+      - name: Keep the report, traces and server log
+        if: failure() && steps.gate.outputs.decision == 'run'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-checks
+          path: e2e/.artifacts/
+          retention-days: 7
 
   # Deploy to the slate Worker on every push to main, after ci passes. Skips
   # (passes) until the CLOUDFLARE_API_TOKEN secret is set; run pnpm cf:deploy

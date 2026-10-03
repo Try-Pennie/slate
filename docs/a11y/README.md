@@ -15,10 +15,15 @@ Where a11y evidence lives, and which parts of it are automatic.
 
 ## What does not, and why
 
-There is no axe or Lighthouse job in CI, deliberately (ADR 0004, #611): screenshots and
-DOM assertions against `next dev` are unstable to automate, and a flaky gate is worse
-than no gate. So axe is an **agent or manual** step, run against a running app through
-the browser, following `.claude/skills/slate-ui-verification/SKILL.md`.
+Since 2026-10-03 there IS an axe job (ADR 0011, #3079, reversing ADR 0004 and #611 on
+Dan's decision): the `browser` leg of `ci.yml` runs `pnpm test:e2e` and blocks the merge, and it
+scans the booker (both steps), the manage page, sign in, every page in the console
+navigation and an agent's own pages, in light and dark, against a production build,
+and fails on any serious or critical finding. Its spec is
+`e2e/tests/40-accessibility.spec.ts`, with two positive controls. There is still no
+Lighthouse job, and a manual pass following
+`.claude/skills/slate-ui-verification/SKILL.md` still covers what axe cannot judge
+(focus order, reading a page with a screen reader, a dialog's real behaviour).
 
 The consequence is the one #1054 named: the evidence is point in time. The phase 4 and
 5 sweeps of the brand redesign covered the surfaces that existed then

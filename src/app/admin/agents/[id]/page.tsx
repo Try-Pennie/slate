@@ -309,6 +309,12 @@ export default async function AgentProfilePage({
         {query?.error ? (
           <SettingsSaveNotice ok={false} error={query.error} saved="" />
         ) : null}
+        {/* #3100: the time off calendar save redirects here with its own outcome,
+            and nothing drew it, so the save wrote the calendar and said nothing.
+            The working hours outcome keeps its place inside its own card. */}
+        {!query?.error && savedOutcome(query?.ok) === "agent-ooo-calendar" ? (
+          <SettingsSaveNotice ok saved={savedSentence("agent-ooo-calendar") ?? ""} />
+        ) : null}
 
         {/* Identity band */}
         <AdminPageHeader
