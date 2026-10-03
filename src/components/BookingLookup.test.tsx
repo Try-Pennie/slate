@@ -3,7 +3,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import BookingLookup from "@/components/BookingLookup";
-import { SEARCH_LIMIT, type BookingSearchRow } from "@/lib/booking/search";
+import type { BookingSearchRow } from "@/lib/booking/search";
+import { SEARCH_LIMIT } from "@/lib/booking/search-limit";
 import { TEST_MODE_COPY } from "@/lib/booking/booker-copy";
 
 // #901: look up ANY booking (not just the recent 25) and view its history. The

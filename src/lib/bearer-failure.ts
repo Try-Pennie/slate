@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { bearerFailureWithinLimit, clientIp } from "@/lib/rate-limit";
+import { UNIDENTIFIED_IP } from "@/lib/rate-limit-core";
 
 /**
  * The answer for a refused credential on a key authenticated route (#3142): the route's own
@@ -18,6 +19,23 @@ export async function refuseCredential(
     { error: "Too many failed attempts. Try again in a minute." },
     { status: 429, headers: { "retry-after": "60" } },
   );
+}
+
+/**
+ * The answer for a refused cron secret (#3174): the same failed credential throttle, with
+ * one exception. The Worker's own scheduled ticks reach the cron routes as an in process
+ * request (`worker/lane-run.ts`) that never crosses the network, so it carries no client
+ * address, while every outside request through Cloudflare carries `cf-connecting-ip`.
+ * A request with no address is therefore answered with the route's own refusal and counts
+ * against nothing: if the deployment's secret were ever wrong, the lanes' own refusals must
+ * read as the 401 they are rather than as a 429 against one shared counter.
+ */
+export async function refuseCronSecret(
+  headers: Headers,
+  refusal: () => Response,
+): Promise<Response> {
+  if (clientIp(headers) === UNIDENTIFIED_IP) return refusal();
+  return refuseCredential(headers, refusal);
 }
 
 /**

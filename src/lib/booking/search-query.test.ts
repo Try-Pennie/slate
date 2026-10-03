@@ -88,7 +88,8 @@ const from = vi.hoisted(() => {
 
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
 
-import { searchBookings, textSearchPattern, SEARCH_LIMIT } from "./search";
+import { searchBookings, textSearchPattern } from "./search";
+import { SEARCH_LIMIT } from "./search-limit";
 
 function booking(id: string, startsAt: string) {
   return {

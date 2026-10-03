@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
+import { refuseCronSecret } from "@/lib/bearer-failure";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import {
   sendThrottledAlert,
@@ -770,7 +771,7 @@ async function removeStaleCalcomBlock(
  */
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+    return refuseCronSecret(req.headers, () => NextResponse.json({ error: "unauthorized" }, { status: 401 }));
   }
   const now = Date.now();
 

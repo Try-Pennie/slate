@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
+import { refuseCronSecret } from "@/lib/bearer-failure";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { appUrl } from "@/lib/env";
@@ -121,7 +122,7 @@ async function noteDigestDelivery(managerId: string, managerLabel: string, ok: b
  */
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
-    return new NextResponse("unauthorized", { status: 401 });
+    return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
   // #2543: the cron reached the route. Stamped BEFORE the time gate, so it is
   // written by both weekday triggers and says one thing only, that the dispatcher

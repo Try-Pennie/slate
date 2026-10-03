@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
+import { refuseCronSecret } from "@/lib/bearer-failure";
 import { runAdvisorPhotoLane } from "@/lib/advisor-photos/lane";
 import { log } from "@/lib/log";
 import { laneFailedResponse, laneFailure } from "@/lib/monitor/lane-failure-response";
@@ -19,7 +20,9 @@ export const dynamic = "force-dynamic";
  * never fired, and `verdict:advisor-photos` goes stale on both.
  */
 export async function GET(req: NextRequest) {
-  if (!isAuthorizedCron(req)) return new NextResponse("unauthorized", { status: 401 });
+  if (!isAuthorizedCron(req)) {
+    return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
+  }
   try {
     const result = await runAdvisorPhotoLane("cron");
     if (result.status === "measured") {

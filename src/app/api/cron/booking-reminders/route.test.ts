@@ -162,7 +162,7 @@ function alreadyReminded(i: number): Row {
   return due(i, { starts_at: startsAt, reminder_sent_for: startsAt });
 }
 
-const req = () => ({}) as unknown as Parameters<typeof GET>[0];
+const req = () => ({ headers: new Headers() }) as unknown as Parameters<typeof GET>[0];
 
 beforeEach(() => {
   vi.clearAllMocks();

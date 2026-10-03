@@ -4,7 +4,8 @@ import { useState, type FormEvent } from "react";
 
 import { AsyncListStates, useFetchList } from "@/components/AsyncList";
 import { bookingDetailHref } from "@/lib/booking/detail";
-import { SEARCH_LIMIT, type BookingSearchRow } from "@/lib/booking/search";
+import type { BookingSearchRow } from "@/lib/booking/search";
+import { SEARCH_LIMIT } from "@/lib/booking/search-limit";
 import { TestMark } from "@/components/TestModeBand";
 import ViewerTime from "@/components/ViewerTime";
 

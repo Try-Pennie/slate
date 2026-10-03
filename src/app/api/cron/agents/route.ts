@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
+import { refuseCronSecret } from "@/lib/bearer-failure";
 import { AGENTS_SYNC_STREAK_KEY } from "@/lib/salesforce/sync";
 import { runRosterSync } from "@/lib/salesforce/run-roster-sync";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
@@ -36,7 +37,7 @@ const AGENTS_STREAK_WINDOW_S = 3 * 60 * 60;
  */
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
-    return new NextResponse("unauthorized", { status: 401 });
+    return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
 
   try {

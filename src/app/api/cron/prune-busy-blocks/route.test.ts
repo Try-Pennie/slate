@@ -85,7 +85,7 @@ import {
   BUSY_PRUNE_MAX_ROWS_PER_RUN,
 } from "@/lib/busy/prune-core";
 
-const req = () => ({}) as unknown as Parameters<typeof GET>[0];
+const req = () => ({ headers: new Headers() }) as unknown as Parameters<typeof GET>[0];
 
 beforeEach(() => {
   vi.clearAllMocks();

@@ -36,7 +36,7 @@ vi.mock("@/lib/env", () => ({
 import { GET } from "./route";
 import { noteAlertKey } from "@/lib/notify/alert-recording";
 
-const noAuthReq = () => ({}) as unknown as Parameters<typeof GET>[0];
+const noAuthReq = () => ({ headers: new Headers() }) as unknown as Parameters<typeof GET>[0];
 const forcedReq = () =>
   ({
     nextUrl: { searchParams: new URLSearchParams("force=1") },

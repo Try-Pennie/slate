@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { laneFailure } from "@/lib/monitor/lane-failure-response";
 import { isAuthorizedCron } from "@/lib/cron";
+import { refuseCronSecret } from "@/lib/bearer-failure";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { auditSnowflakeErasures } from "@/lib/snowflake/erasure-audit";
 import { sendThrottledAlert, sendThrottledInfo, resolveAlert } from "@/lib/notify/dispatch";
@@ -45,7 +46,9 @@ const ALERT_COOLDOWN_MS = 6 * 60 * 60_000;
  * watchdog see a persistently broken audit.
  */
 export async function GET(req: NextRequest) {
-  if (!isAuthorizedCron(req)) return new NextResponse("unauthorized", { status: 401 });
+  if (!isAuthorizedCron(req)) {
+    return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
+  }
 
   const lock = await acquireLock("cron_erasure_audit", LOCK_TTL_MS);
   if (!lock) return NextResponse.json({ skipped: "overlapping-run" });

@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
+import { refuseCronSecret } from "@/lib/bearer-failure";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import {
@@ -62,7 +63,7 @@ const RECONCILE_MISSING_SCAN_KEY = "reconcile_missing_scan";
  */
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
-    return new NextResponse("unauthorized", { status: 401 });
+    return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
 
   const lock = await acquireLock("cron_selfheal", SELFHEAL_LOCK_TTL_MS);

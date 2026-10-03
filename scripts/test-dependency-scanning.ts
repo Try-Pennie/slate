@@ -38,6 +38,33 @@ assert(
   "dependabot watches the github-actions ecosystem (pinned Actions)",
 );
 
+// #3175: every update entry waits out a cooldown before proposing a release, so a
+// hijacked version is not offered for a merge in its first days. Judged PER ENTRY,
+// with comments stripped, since one entry carrying it says nothing about the other.
+/** The `- package-ecosystem:` entries of a dependabot config, comment lines removed. */
+function dependabotEntries(yaml: string): string[] {
+  const code = yaml
+    .split("\n")
+    .filter((l) => !/^\s*#/.test(l))
+    .join("\n");
+  return code.split(/^(?=\s*- package-ecosystem:)/m).filter((e) => /package-ecosystem:/.test(e));
+}
+const COOLDOWN = /^\s+cooldown:\s*\n\s+default-days:\s*([1-9]\d*)\s*$/m;
+{
+  const entries = dependabotEntries(dependabot);
+  assert(entries.length >= 2, `dependabot's update entries were read (${entries.length})`);
+  for (const e of entries) {
+    const eco = /package-ecosystem:\s*["']?([\w-]+)/.exec(e)?.[1] ?? "?";
+    assert(COOLDOWN.test(e), `the ${eco} entry waits out a cooldown of at least a day before proposing a release`);
+  }
+  const one = "  - package-ecosystem: npm\n    cooldown:\n      default-days: 3\n  - package-ecosystem: github-actions\n";
+  assert(!dependabotEntries(one).every((e) => COOLDOWN.test(e)), "control: an entry without a cooldown is caught beside one with it");
+  assert(
+    !dependabotEntries("  - package-ecosystem: npm\n    # cooldown:\n    #   default-days: 3\n").every((e) => COOLDOWN.test(e)),
+    "control: a commented out cooldown is not one",
+  );
+}
+
 // Every check below reads STEPS with comments stripped, and only what a step RUNS.
 // Both workflows quote the audit commands in their comments, so a check over the
 // raw text passes with the step deleted (L135); the controls further down plant

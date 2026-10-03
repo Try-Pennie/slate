@@ -49,7 +49,7 @@ vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(
 
 import { GET } from "./route";
 
-const noAuthReq = () => ({}) as unknown as Parameters<typeof GET>[0];
+const noAuthReq = () => ({ headers: new Headers() }) as unknown as Parameters<typeof GET>[0];
 const forcedReq = () =>
   ({
     nextUrl: { searchParams: new URLSearchParams("force=1") },

@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
+import { refuseCronSecret } from "@/lib/bearer-failure";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import {
   formatLaneFailureAlert,
@@ -25,7 +26,7 @@ export const dynamic = "force-dynamic";
  */
 export async function POST(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
-    return new NextResponse("unauthorized", { status: 401 });
+    return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
   const report = parseLaneFailure(await req.json().catch(() => null));
   if (!report) {

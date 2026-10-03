@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { laneFailure } from "@/lib/monitor/lane-failure-response";
 import { isAuthorizedCron } from "@/lib/cron";
+import { refuseCronSecret } from "@/lib/bearer-failure";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap, unwrapCount } from "@/lib/db/result";
@@ -38,7 +39,9 @@ const PRUNE_BUDGET_MS = 40_000;
  * changes, so a deleted far-future block is never re-added).
  */
 export async function GET(req: NextRequest) {
-  if (!isAuthorizedCron(req)) return new NextResponse("unauthorized", { status: 401 });
+  if (!isAuthorizedCron(req)) {
+    return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
+  }
   const lock = await acquireLock("cron_prune_busy_blocks", LOCK_TTL_MS);
   if (!lock) return NextResponse.json({ skipped: "overlapping-run" });
   try {

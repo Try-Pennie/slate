@@ -356,6 +356,14 @@ assert(
   assert(/using:\s*["']?composite["']?/.test(action), "#3087: the shared scan is a composite action");
   assert(/gitleaks git /.test(action) && /semgrep scan /.test(action), "#3087: and it runs both scanners");
   assert(/--config p\/react/.test(action) && /--config p\/nextjs/.test(action), "#3087: with the react and nextjs packs");
+  // #3175: read with comment lines removed, because the header above the step names the
+  // pack in prose and a check over the raw text would pass with the flag deleted (L135).
+  const actionCode = action.split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
+  assert(/--config p\/owasp-top-ten\b/.test(actionCode), "#3175: and the OWASP top ten pack, in the command");
+  assert(
+    !/--config p\/owasp-top-ten\b/.test("    # semgrep scan --config p/owasp-top-ten".split("\n").filter((l) => !/^\s*#/.test(l)).join("\n")),
+    "#3175: control: the pack named only in a comment is not the pack running",
+  );
 
   const steps = jobSteps(fanIn);
   const step = steps.find((st) => /name:\s*Every CI leg succeeded/.test(st)) ?? "";

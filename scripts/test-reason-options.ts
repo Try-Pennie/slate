@@ -7,8 +7,8 @@ import {
   CANCEL_REASONS,
   REASSIGN_REASONS,
 } from "../src/lib/booking/core.ts";
+import { slugifyCode, REASON_LABEL_MAX } from "../src/lib/booking/reason-code.ts";
 import {
-  slugifyCode,
   uniqueCode,
   LOCKED_CODES,
   resolveReasonOptions,
@@ -18,7 +18,6 @@ import {
   resolveEditorRows,
   isSystemOnlyCode,
   SYSTEM_ONLY_CODES,
-  REASON_LABEL_MAX,
   type ReasonOptionRow,
   type ReasonOptionsFormInput,
 } from "../src/lib/booking/reason-options.ts";

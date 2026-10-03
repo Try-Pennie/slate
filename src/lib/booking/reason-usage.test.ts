@@ -9,8 +9,8 @@ import {
   loadReasonUsageCounts,
   parseReasonUsage,
   emptyReasonUsage,
-  REASON_USAGE_WINDOW_DAYS,
 } from "./reason-usage";
+import { REASON_USAGE_WINDOW_DAYS } from "./reason-usage-window";
 
 beforeEach(() => {
   vi.clearAllMocks();

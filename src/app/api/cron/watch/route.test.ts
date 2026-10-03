@@ -42,7 +42,7 @@ vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(
 
 import { GET } from "./route";
 
-const req = () => ({}) as unknown as Parameters<typeof GET>[0];
+const req = () => ({ headers: new Headers() }) as unknown as Parameters<typeof GET>[0];
 
 beforeEach(() => {
   vi.clearAllMocks();
