@@ -40,6 +40,12 @@ interface Budget {
   readonly totalMs: number;
   /** The allowance for a failure path, which nested cleanups share. */
   readonly cleanup?: boolean;
+  /**
+   * Shared by every budget opened within one request, nested or not, so the
+   * request's cleanup allowance is opened ONCE and every later cleanup reuses
+   * it, even one opened after the first has returned.
+   */
+  readonly request: { cleanup?: Budget };
 }
 
 /** The two methods of Node's AsyncLocalStorage this module uses. */
@@ -106,7 +112,7 @@ export function withinCallBudget<T>(
   now: () => number = () => Date.now(),
 ): Promise<T> {
   const outer = store().getStore();
-  const own: Budget = { expiresAt: now() + ms, label, totalMs: ms };
+  const own: Budget = { expiresAt: now() + ms, label, totalMs: ms, request: outer?.request ?? {} };
   return store().run(outer && outer.expiresAt <= own.expiresAt ? outer : own, work);
 }
 
@@ -114,10 +120,13 @@ export function withinCallBudget<T>(
  * Run `work` under a budget of its own that IGNORES the enclosing one: the small
  * fixed allowance for a failure path that has to run after the main budget is
  * spent (handing back a lead's rate limit hit, recording the outcome, paging).
- * ONE allowance per request: a cleanup opened inside a cleanup shares it rather
- * than restarting it, so a route's failure path and the service's alert beneath
- * it add 2 seconds between them, not 2 each, and the worst case stays the sum
- * of the two budgets.
+ * ONE allowance per request, opened by the first cleanup and reused by every
+ * later one in that request, whether nested inside it or opened after it has
+ * returned: the service sends its outage page under the allowance and returns,
+ * and the route's failure path that follows must not get a second 2 seconds, or
+ * the worst case would be 12 + 2 + 2 rather than the 14 it is sized for.
+ * Outside any request budget there is nothing to share, and each cleanup gets
+ * its own.
  */
 export function withinCleanupBudget<T>(
   ms: number,
@@ -127,7 +136,12 @@ export function withinCleanupBudget<T>(
 ): Promise<T> {
   const outer = store().getStore();
   if (outer?.cleanup) return store().run(outer, work);
-  return store().run({ expiresAt: now() + ms, label, totalMs: ms, cleanup: true }, work);
+  const opened = outer?.request.cleanup;
+  if (opened) return store().run(opened, work);
+  const request = outer?.request ?? {};
+  const cleanup: Budget = { expiresAt: now() + ms, label, totalMs: ms, cleanup: true, request };
+  request.cleanup = cleanup;
+  return store().run(cleanup, work);
 }
 
 /** Run `work` with no budget at all: the work deferred past a response. */

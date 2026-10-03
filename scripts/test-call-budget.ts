@@ -149,6 +149,29 @@ await withinCallBudget(
 );
 t = 0;
 
+// Two cleanups opened ONE AFTER THE OTHER in one request (the service's page,
+// then the route's failure path) share the allowance too: the second does not
+// get a fresh 2 seconds just because the first has returned.
+await withinCallBudget(
+  1_000,
+  "the booking confirm",
+  async () => {
+    t = 5_000;
+    await withinCleanupBudget(2_000, "the booking cleanup", async () => {}, now);
+    t = 6_500;
+    await withinCleanupBudget(
+      2_000,
+      "the booking cleanup",
+      async () => {
+        eq(deadlineWithinBudget(15_000, "supabase", now).waitMs, 500, "a later cleanup in the same request reuses the first allowance");
+      },
+      now,
+    );
+  },
+  now,
+);
+t = 0;
+
 // The fetch is actually held to what is left. NO_DEADLINE opts out of the per
 // call default only: inside a budget it still waits no longer than the budget
 // has left, and a spent budget refuses it like any other call.
