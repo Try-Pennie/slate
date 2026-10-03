@@ -69,6 +69,7 @@ const service = vi.hoisted(() => {
     NoEligibleAgentsError,
     ExistingCallError,
     ExistingCallCheckUnavailableError,
+    pageBookingFailure: vi.fn(async (_err: unknown) => {}),
   };
 });
 const rateLimit = vi.hoisted(() => ({
@@ -111,6 +112,7 @@ const agentLinkStore = vi.hoisted(() => ({ resolveAgentLink: vi.fn() }));
 vi.mock("@/lib/agent-link/store", () => agentLinkStore);
 
 import { POST } from "./route";
+import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
 import { deadlineWithinBudget } from "@/lib/call-budget";
 import { BOOKING_CONFIRM_BUDGET_MS } from "@/lib/booking/confirm-budget";
 import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
@@ -254,6 +256,35 @@ describe("POST /booking (embed) error mapping", () => {
     expect(labels.length).toBeGreaterThan(0);
     expect(new Set(labels)).toEqual(new Set(["the booking cleanup"]));
     recordApiOutcome.mockReset();
+  });
+
+  // #3102: the paused-booker read happens BEFORE the booking's try, under the
+  // confirm budget, so a deadline there used to escape as an unhandled 500. It is
+  // the same outage the confirm answers with its retryable 503.
+  it("answers a deadline from a read before the try with the retryable 503 (#3102)", async () => {
+    bookingSettings.readPublicBookingPaused.mockRejectedValueOnce(
+      new DeadlineExceededError("supabase", 4000, { label: "the booking confirm", totalMs: 12_000 }),
+    );
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(503);
+    expect(((await res.json()) as { error?: string }).error).toBe("We hit a temporary issue confirming this time. Please try again in a moment.");
+    expect(service.createBooking).not.toHaveBeenCalled();
+    expect(service.pageBookingFailure).toHaveBeenCalledOnce();
+    expect(recordApiOutcome).toHaveBeenCalledWith(
+      "error",
+      "",
+      "verify_unavailable",
+      expect.objectContaining({ by: "unidentifiable" }),
+    );
+    service.pageBookingFailure.mockClear();
+  });
+
+  it("answers a deadline in the advisor link read the same way, not as a 500 (#3102)", async () => {
+    agentLinkStore.resolveAgentLink.mockRejectedValueOnce(new DeadlineExceededError("supabase", 15000));
+    const { bucketCode: _code, ...noBucket } = VALID_BODY;
+    const res = await post({ ...noBucket, agentLink: "rdaboub", prefill: {} });
+    expect(res.status).toBe(503);
+    service.pageBookingFailure.mockClear();
   });
 
   it("answers a retriable 503 when the existing-call check could not be made (#1641)", async () => {

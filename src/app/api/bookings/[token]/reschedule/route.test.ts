@@ -43,6 +43,7 @@ const service = vi.hoisted(() => {
     ContactRefusedError,
     OutsideCallingWindowError,
     rescheduleBooking: vi.fn(),
+    pageBookingFailure: vi.fn(async (_err: unknown) => {}),
     bookingDetailExtras: vi.fn((_booking: unknown) => ({
       contact: { name: "Kris", email: "k@x.com", phone: "+12035615295" },
       calendarLinks: { google: "g", outlook: "o", office365: "m", ics: "i" },
@@ -64,6 +65,18 @@ vi.mock("@/lib/rate-limit", () => rateLimit);
 
 vi.mock("@/lib/booking/service", () => service);
 vi.mock("@/lib/monitor/record-api-outcome", () => ({ recordApiOutcome }));
+// The real reason read by default; one test makes it hang past the budget.
+const reasonOptions = vi.hoisted(() => ({ fail: null as Error | null }));
+vi.mock("@/lib/booking/reason-options", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/lib/booking/reason-options")>();
+  return {
+    ...real,
+    loadReasonOptions: async () => {
+      if (reasonOptions.fail) throw reasonOptions.fail;
+      return real.loadReasonOptions();
+    },
+  };
+});
 
 import { POST } from "./route";
 // Deliberately NOT mocked: the point of #2373 is that the route branches on the real
@@ -87,7 +100,47 @@ const params = { params: Promise.resolve({ token: "tok1" }) };
 
 beforeEach(() => vi.clearAllMocks());
 
+import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
+
 describe("POST /bookings/[token]/reschedule", () => {
+  // #3102: the reason read happens BEFORE the route's try, under the confirm
+  // budget, so a deadline there used to escape as an unhandled 500. It is the same
+  // outage as one inside the move: the retryable 503 the page already shows,
+  // counted and paged the same way.
+  it("answers a deadline from a read before the try with the retryable 503 (#3102)", async () => {
+    reasonOptions.fail = new DeadlineExceededError("supabase", 4000, {
+      label: "the booking confirm",
+      totalMs: 12_000,
+    });
+    try {
+      const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
+      expect(res.status).toBe(503);
+      expect((await res.json()).error).toBe("We hit a temporary issue confirming this time. Please try again in a moment.");
+      expect(service.rescheduleBooking).not.toHaveBeenCalled();
+      expect(service.pageBookingFailure).toHaveBeenCalledOnce();
+      expect(recordApiOutcome).toHaveBeenCalledWith(
+        "error",
+        "",
+        "reschedule_verify_unavailable",
+        expect.objectContaining({ by: "manageToken", token: "tok1" }),
+      );
+    } finally {
+      reasonOptions.fail = null;
+    }
+  });
+
+  it("leaves any other failure before the try exactly as it was", async () => {
+    reasonOptions.fail = new Error("boom");
+    try {
+      await expect(
+        POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params),
+      ).rejects.toThrow("boom");
+      expect(service.pageBookingFailure).not.toHaveBeenCalled();
+    } finally {
+      reasonOptions.fail = null;
+    }
+  });
+
   it("runs the lead's move under the confirm budget (#3102)", async () => {
     let wait: number | null = null;
     service.rescheduleBooking.mockImplementationOnce(async () => {

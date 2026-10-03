@@ -1,8 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { withinBookingCleanupBudget, withinBookingConfirmBudget } from "@/lib/booking/confirm-budget";
+import { withinBookingCleanupBudget, withinBookingRequest } from "@/lib/booking/confirm-budget";
 import { z } from "zod";
 import {
   rescheduleBooking,
+  pageBookingFailure,
   bookingDetailExtras,
   SlotUnavailableError,
   RescheduleConflictError,
@@ -81,8 +82,22 @@ export async function POST(
   req: NextRequest,
   ctx: { params: Promise<{ token: string }> },
 ) {
-  // #3102: one budget for the whole request; see `confirm-budget.ts`.
-  return noStore(await withinBookingConfirmBudget(() => handlePost(req, ctx)));
+  // #3102: one budget for the whole request; see `confirm-budget.ts`. A deadline
+  // from a read before the move's own try (the limiter, the reason options) is the
+  // same outage the move answers with its retryable 503, rather than escaping as
+  // an unhandled 500.
+  return noStore(
+    await withinBookingRequest(
+      () => handlePost(req, ctx),
+      async (timeout) => {
+        const { token } = await ctx.params;
+        await pageBookingFailure(timeout);
+        recordApiOutcome("error", "", "reschedule_verify_unavailable", { by: "manageToken", token });
+        // refusal: reschedule_verify_unavailable
+        return NextResponse.json({ error: timeout.message }, { status: 503 });
+      },
+    ),
+  );
 }
 
 async function handlePost(

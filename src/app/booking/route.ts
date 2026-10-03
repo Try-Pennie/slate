@@ -1,8 +1,10 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { withinBookingCleanupBudget, withinBookingConfirmBudget } from "@/lib/booking/confirm-budget";
+import { withinBookingCleanupBudget, withinBookingRequest } from "@/lib/booking/confirm-budget";
+import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import { z } from "zod";
 import {
   createBooking,
+  pageBookingFailure,
   bookingDetailExtras,
   findDuplicateBookingWarning,
   ExistingCallError,
@@ -145,8 +147,23 @@ function confirmHost(raw: unknown): BookingOriginFacts {
  */
 export async function POST(req: NextRequest) {
   // #3102: the whole request under one budget, so its Supabase and Google calls
-  // share one expiry and cannot add up past the booker's 20 second abort.
-  return noStore(await withinBookingConfirmBudget(() => handlePost(req)));
+  // share one expiry and cannot add up past the booker's 20 second abort. A
+  // deadline from a read made before the booking's own try (the limits, the paused
+  // flag, an advisor link) is the same outage, answered the same way, rather than
+  // escaping as an unhandled 500. Nothing identifying has been read by then, so
+  // the attempt is counted as unidentifiable, and no rate limit hit is handed back
+  // because the caller it belongs to is not known here.
+  return noStore(
+    await withinBookingRequest(
+      () => handlePost(req),
+      async (timeout) => {
+        await pageBookingFailure(timeout);
+        recordApiOutcome("error", "", "verify_unavailable", { by: "unidentifiable", why: "a dependency timed out before the request was read" });
+        // refusal: verify_unavailable
+        return NextResponse.json({ error: timeout.message }, { status: 503 });
+      },
+    ),
+  );
 }
 
 async function handlePost(req: NextRequest) {
@@ -346,6 +363,8 @@ async function handlePost(req: NextRequest) {
       // budget, which a timeout has already spent; its outcome and report would
       // otherwise fail at once and the failure would go unrecorded.
       return withinBookingCleanupBudget(async () => {
+        // #3102: a deadline here is the outage, answered as one by POST.
+        if (isDeadlineExceeded(err)) throw err;
         // refusal: agent_link_unreadable
         return internalErrorResponse(err, "booking");
       });
