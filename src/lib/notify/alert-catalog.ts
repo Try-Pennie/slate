@@ -348,6 +348,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "A database function running with its owner's privileges is executable by a web role, which stays true until somebody revokes the grant, so the reader needs to be told when it is over (#2447).",
   },
   {
+    key: "auth_sign_in_beyond_google",
+    kind: "condition",
+    why: "Supabase Auth in production accepts email sign in or another account creating provider, which stays true until somebody turns it off in the dashboard, so the reader needs to be told when it is over (#3082).",
+  },
+  {
     key: "agents_on_unset_hours",
     kind: "condition",
     why:

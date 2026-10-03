@@ -604,6 +604,11 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // The off site origin check concludes on every tick the bookings read works,
   // including ticks with no recent booking at all, so it needs no traffic.
   "verdict:offsite-origin": 6 * 60 * MIN,
+  // The auth sign in settings check (#3082) reads the hosted /auth/v1/settings on every
+  // 5 minute tick and needs no traffic: Google only and open are both answers. So, like
+  // the checks above, it has no legitimate silence, and six hours is a maintenance
+  // window (about seventy failed reads in a row) rather than a measure of the cadence.
+  "verdict:auth-sign-in": 6 * 60 * MIN,
   // Waiting to become bookable concludes on every tick the roster reads, and an
   // empty queue is its ordinary answer.
   "verdict:awaiting-activation": 6 * 60 * MIN,

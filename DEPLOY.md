@@ -375,6 +375,43 @@ stamped source file is never left behind for the next commit to carry.
   every-30-minute live check **pages** on a regression instead of only warning
   (`scripts/lib/https-redirect.ts`).
 
+## Staff sign in: Google only (#3082, #3085)
+Slate staff sign in with **Google only**, and only with a `trypennie.com` Workspace
+account. Three things hold that, and two of them live in the Supabase dashboard
+rather than in a deploy, so a rebuilt project needs them set by hand:
+
+- **Supabase Auth providers** (dashboard, Authentication, Sign In / Providers):
+  **Google on, Email off, every other provider off.** Signup stays enabled, because
+  a new hire's first Google sign in is what creates their account. Email off closes
+  the password, magic link, signup and recovery routes that are otherwise reachable
+  with the public key. Nothing in Slate signs in by email (checked 2026-10-03: no
+  smoke script, load test, dev preview or test uses a password or magic link; the
+  dev preview sets a cookie and never touches Supabase Auth).
+- **The `before_user_created` hook** (dashboard, Authentication, Hooks): a Postgres
+  hook pointing at `public.before_user_created_domain_gate`, defined by migration
+  0159. Supabase Auth calls it before it creates ANY account, by any provider, and
+  it refuses every email whose domain is not exactly `trypennie.com`, so an outside
+  Google account is turned away **before an account or a session exists**. The app's
+  own check in the OAuth callback (`src/lib/auth/domain.ts`) stays as the second
+  line. The local stack registers the same hook in `supabase/config.toml`;
+  `pnpm verify:auth-domain-hook` proves it against the real auth server in Docker.
+- **`GOOGLE_HOSTED_DOMAIN`** in `wrangler.jsonc` (section 2c), which the hook's
+  domain must match; `scripts/test-auth-domain-hook.ts` fails the build if they
+  differ.
+
+The monitor lane reads the live `/auth/v1/settings` every tick and pages
+`auth_sign_in_beyond_google` while email is on or another provider can create an
+account, with an all clear once it is off.
+
+**There is no enforced second factor for Slate staff accounts (as of 2026-10-03).**
+Slate has no MFA of its own and relies on Google for the second factor, and **Google
+2-Step Verification is NOT enforced for Pennie staff** (Dan, 2026-10-03: "2SV not
+required"). So a Slate staff account is protected by its Google password alone,
+unless that person has turned 2-Step Verification on for themselves. Enforcing it is
+a Google Workspace admin setting (Admin console, Security, Authentication, 2-Step
+Verification, for every organizational unit that holds Slate staff), outside this
+repository; update this paragraph the day it is enforced.
+
 ## Cron
 Cron runs entirely on the **main** Worker: `worker/index.ts` `scheduled()`
 dispatches each Cloudflare trigger through `worker/cron-routes.ts` to the app's

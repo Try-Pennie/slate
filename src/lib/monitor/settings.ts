@@ -51,6 +51,7 @@ export const ALERT_KEYS = [
   "webhook_event_no_subscriber",
   "edge_limiter_unusable",
   "definer_grants_to_web_roles",
+  "auth_sign_in_beyond_google",
   "hydration_all_failing",
   "calendar_window_uncovered",
   "busy_cache_drift",
@@ -352,6 +353,12 @@ export const ALERT_FIELDS: {
     help: "A database function that runs with its owner's privileges can be executed by an unauthenticated caller, so it is reachable from outside without a login. Clears itself once the grant is taken back.",
   },
   {
+    key: "auth_sign_in_beyond_google",
+    urgency: "page",
+    label: "Sign in open beyond Google",
+    help: "The live Supabase Auth settings allow email sign in, or another provider can create an account, so there is a way into Slate that does not go through Google. Clears itself once the provider is turned off in the Supabase dashboard.",
+  },
+  {
     key: "hydration_all_failing",
     urgency: "page",
     label: "Calendar refresh failing on every calendar",
@@ -590,6 +597,10 @@ export const MONITOR_DEFAULTS = {
     // reason as the ceilings above: it leaves something reachable from outside that should
     // not be, so it is not a maintenance item to pick up whenever.
     definer_grants_to_web_roles: 60 * 60_000,
+    // Sign in open beyond Google (#3082) persists until somebody turns the provider off in
+    // the Supabase dashboard, and nothing self-heals it. Hourly, like the function grants
+    // above: it is a way in from outside that should not exist.
+    auth_sign_in_beyond_google: 60 * 60_000,
     // The refresh failing everywhere (#1544) persists until somebody fixes the cause, and
     // nothing self-heals it, so repeat while it lasts. Every 6 hours rather than hourly:
     // cached cover has weeks of margin before it stops reaching the booking horizon, so this

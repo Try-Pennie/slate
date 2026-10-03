@@ -466,6 +466,10 @@ import {
   formatDefinerGrantsClearedAlert,
 } from "@/lib/monitor/definer-grants";
 import {
+  formatAuthSignInOpenAlert,
+  formatAuthSignInClearedAlert,
+} from "@/lib/monitor/auth-sign-in-surface";
+import {
   formatHydrationFailingAlert,
   formatHydrationRecovery,
 } from "@/lib/google/hydration";
@@ -2976,6 +2980,37 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     }),
   },
   {
+    key: "auth_sign_in_beyond_google",
+    state: "email sign in is on, as production stood on 2026-10-03",
+    channel: "alert",
+    text: formatAuthSignInOpenAlert({
+      status: "open",
+      emailOn: true,
+      signupProviders: [],
+      samlSignup: false,
+      providersOn: ["email", "google"],
+    }),
+  },
+  {
+    key: "auth_sign_in_beyond_google",
+    state: "email, two other providers and SAML at once",
+    channel: "alert",
+    // Read this one for the list grammar and for whether four lines still scan on a phone.
+    text: formatAuthSignInOpenAlert({
+      status: "open",
+      emailOn: true,
+      signupProviders: ["anonymous_users", "phone"],
+      samlSignup: true,
+      providersOn: ["anonymous_users", "email", "google", "phone"],
+    }),
+  },
+  {
+    key: "auth_sign_in_beyond_google",
+    state: "cleared",
+    channel: "recovery",
+    text: formatAuthSignInClearedAlert({ status: "healthy", providersOn: ["google"] }),
+  },
+  {
     key: "edge_limiter_unusable",
     state: "one endpoint's ceiling is missing from the deploy",
     channel: "alert",
@@ -3499,6 +3534,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       ["verdict:calendar-window", "the calendar window check has stopped concluding"],
       ["verdict:busy-drift", "the busy drift sampler has stopped concluding"],
       ["verdict:offsite-origin", "the off site origin check has stopped concluding"],
+      ["verdict:auth-sign-in", "the auth sign in settings check has stopped concluding"],
       ["verdict:awaiting-activation", "the waiting to become bookable check has stopped concluding"],
       ["verdict:regal-call-feed", "the Regal feed checks have stopped concluding"],
       ["verdict:regal-call-outcomes", "the Regal call outcome check has stopped concluding"],
