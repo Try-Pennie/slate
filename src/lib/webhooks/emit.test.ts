@@ -173,6 +173,10 @@ function delivery(id: string, attempts = 1): Record<string, unknown> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // #3091: the credentials are Worker secrets, never the endpoint row's columns,
+  // so every test runs with both set as production does. Fixtures, not keys.
+  vi.stubEnv("REGAL_WEBHOOK_KEY", "regal-key");
+  vi.stubEnv("WEBHOOK_SIGNING_SECRET", "s3cr3t");
   state.deliveries = [];
   state.endpoints = [endpoint];
   state.claimWins = true;
@@ -540,6 +544,8 @@ describe("misconfigured Regal endpoint (#600)", () => {
   });
 
   it("never posts an unauthenticated event, and records the delivery as failed", async () => {
+    // #3091: "no key" is the Worker secret being unset, not the column.
+    vi.stubEnv("REGAL_WEBHOOK_KEY", "");
     state.endpoints = [regalNoKey];
     const p = { booking_id: "bk1", bucket_code: "411" } as unknown as BookingEventPayload;
 
@@ -1009,16 +1015,19 @@ describe("outbound credentials come from the Worker first (#3091)", () => {
     expect(JSON.stringify(logged.info.mock.calls)).not.toContain("fixture-worker-key");
   });
 
-  it("falls back to the column while the Worker secret is unset, and warns that it did", async () => {
+  // The contract half (migration 0163): the column is never a fallback. A value
+  // left in it does not become the credential; the delivery is refused, recorded
+  // as failed, and the log says the secret is missing.
+  it("never falls back to the column: an unset Worker key refuses the delivery and warns", async () => {
     vi.stubEnv("REGAL_WEBHOOK_KEY", "");
     state.endpoints = [regalEndpoint];
     state.user = { bookable: false, deactivated_at: null };
     await emitWebhook("o1", "agent.bookable_changed", trait);
 
-    const [, init] = fetchMock.mock.calls[0] as [string, { headers: Record<string, string> }];
-    expect(init.headers.authorization).toBe("fixture-db-key");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(statusWrite().status).toBe("failed");
     const line = logged.warn.mock.calls.find((c) => c[0] === "webhook-credentials");
-    expect(line?.[1]).toMatchObject({ source: "database" });
+    expect(line?.[1]).toMatchObject({ source: "missing" });
     expect(JSON.stringify(logged.warn.mock.calls)).not.toContain("fixture-db-key");
   });
 

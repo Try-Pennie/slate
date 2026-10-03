@@ -797,9 +797,9 @@ describe("setWebhookEndpoint key handling (#600)", () => {
 
     const row = insert.mock.calls[0][0] as Record<string, unknown>;
     expect(row).not.toHaveProperty("auth_header");
-    // Empty, never a generated value: minting one would put a credential back in
-    // the table the move takes them out of.
-    expect(row.secret).toBe("");
+    // Never a generated value: minting one would put a credential back in the
+    // table the move took them out of (the column is nullable since 0163).
+    expect(row).not.toHaveProperty("secret");
   });
 });
 

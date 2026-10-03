@@ -831,10 +831,11 @@ export interface WebhookEndpoint {
   id: string;
   org_id: string;
   url: string;
-  secret: string;
+  /** Null since migration 0163 (#3091): the signing secret is the Worker secret WEBHOOK_SIGNING_SECRET. */
+  secret: string | null;
   events: WebhookEvent[];
   format: WebhookFormat;
-  /** For format='regal': the value sent in the Authorization header. */
+  /** Null since migration 0163 (#3091): the Regal key is the Worker secret REGAL_WEBHOOK_KEY. */
   auth_header: string | null;
   active: boolean;
   created_at: string;
