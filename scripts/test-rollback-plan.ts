@@ -15,6 +15,7 @@ import {
   chooseRollbackTarget,
   expectedCommitFor,
   isCanaryView,
+  rollbackCandidates,
   readDeploymentsList,
   readVersionView,
   runRollback,
@@ -109,6 +110,8 @@ function outcome(fault: ProbeFault): ProbeOutcome {
 interface Fake {
   list?: string | null;
   view?: string | null;
+  /** Per version view, overriding `view` for the ids it names. */
+  views?: Record<string, string | null>;
   rollback?: boolean;
   probe?: ProbeFault;
   requested?: string;
@@ -123,6 +126,7 @@ async function drive(f: Fake) {
     },
     view: async (id) => {
       calls.push(`view:${id}`);
+      if (f.views && id in f.views) return f.views[id];
       return f.view === undefined
         ? JSON.stringify({ id, annotations: { "workers/tag": "abc1234def56", "workers/message": "slate-release-abc1234def56" } })
         : f.view;
@@ -204,6 +208,42 @@ async function drive(f: Fake) {
   eq(missing.join(", "), "", "every ROLLBACK_EXIT code has a row in DEPLOY.md's rollback table");
   eq([...rows].filter((c) => !Object.values(ROLLBACK_EXIT).includes(c as never)).join(", "), "", "and no row names a code it cannot exit with");
 }
+// --- an untagged version in the way (#3094) ------------------------------------------
+//
+// `wrangler secret put` makes a new version at 100% for every secret, with no commit
+// tag. The default target then has to be the newest version that is TAGGED, so the
+// probe can confirm what is serving; the untagged ones are skipped and the result says
+// which. Only when nothing tagged exists (a history from before the gradual deploy)
+// does it fall back to the newest untagged version, rolled back as unconfirmed rather
+// than refused, because an emergency must not wait for a tag.
+{
+  const SECRET = "55555555-5555-4555-8555-555555555555";
+  const withSecret = JSON.stringify([
+    { created_on: "2026-10-02T10:00:00Z", versions: [{ version_id: OLD, percentage: 100 }] },
+    { created_on: "2026-10-02T11:00:00Z", versions: [{ version_id: SECRET, percentage: 100 }] },
+    { created_on: "2026-10-03T10:00:00Z", versions: [{ version_id: CANARY, percentage: 10 }, { version_id: SECRET, percentage: 90 }] },
+    { created_on: "2026-10-03T10:02:00Z", versions: [{ version_id: NEW, percentage: 100 }] },
+  ]);
+  eq(rollbackCandidates(readDeploymentsList(withSecret)).join(","), `${SECRET},${OLD}`, "the candidates are every version that served alone, newest first, the current one excluded");
+  const untagged = JSON.stringify({ id: SECRET, annotations: {} });
+  const r = await drive({ list: withSecret, views: { [SECRET]: untagged } });
+  eq(r.result.exit, ROLLBACK_EXIT.rolledBack, "an untagged version in the way is skipped, and the tagged one behind it is confirmed");
+  assert(r.calls.includes(`rollback:${OLD}`), "the rollback went to the newest TAGGED version");
+  assert(!r.calls.includes(`rollback:${SECRET}`), "not to the untagged one");
+  assert(r.result.message.includes(SECRET) && r.result.message.includes("no commit tag"), "and the result says which version it skipped, and why");
+
+  const allUntagged = await drive({ list: withSecret, views: { [SECRET]: untagged, [OLD]: JSON.stringify({ id: OLD, annotations: {} }) } });
+  eq(allUntagged.result.exit, ROLLBACK_EXIT.unconfirmed, "with nothing tagged it rolls back to the newest untagged version, unconfirmed, rather than refusing");
+  assert(allUntagged.calls.includes(`rollback:${SECRET}`), "the newest untagged version is the fallback");
+
+  const named = await drive({ list: withSecret, requested: SECRET, views: { [SECRET]: untagged }, commit: "abcdef1234567" });
+  eq(named.result.exit, ROLLBACK_EXIT.rolledBack, "a NAMED untagged version is honoured, confirmed by the supplied commit");
+  assert(named.calls.includes(`rollback:${SECRET}`), "and nothing was skipped past it");
+
+  const unreadable = await drive({ list: withSecret, views: { [SECRET]: null } });
+  eq(unreadable.result.exit, ROLLBACK_EXIT.unreadable, "a candidate that cannot be read refuses rather than being skipped: it might be the one that matters");
+}
+
 {
   const codes = Object.values(ROLLBACK_EXIT);
   eq(new Set(codes).size, codes.length, "no two rollback endings share an exit code");

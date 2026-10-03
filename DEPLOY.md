@@ -1144,7 +1144,12 @@ deployment" is the split, and the version beside the old one in it is a canary u
 in cron standby: serving it at 100% would restore the code and switch every cron lane
 off. The default target is therefore the newest version that served 100% ON ITS OWN,
 and a canary is refused even when named (`scripts/lib/rollback-plan.ts`, pinned by
-`scripts/test-rollback-plan.ts`).
+`scripts/test-rollback-plan.ts`). Among those it takes the newest that carries a commit
+tag, so the probe can confirm what serves: `wrangler secret put` makes an untagged version
+at 100% for every secret, and those are skipped and named in the result. With nothing
+tagged at all (history from before the gradual deploy) it falls back to the newest
+untagged version and reports the rollback as unconfirmed (exit 34). A NAMED version is
+honoured as is.
 
 ### The Rollback workflow (#3094)
 Actions > **Rollback** > Run workflow. Leave `version_id` empty for the newest known good
@@ -1220,40 +1225,61 @@ wrangler versions deploy <version-id>@100% -y
 ```
 
 ### Rehearsing on the load test Worker
-The rollback has never been run in anger. The rehearsal is against `env.loadtest` in
-`wrangler.jsonc`, the load test Worker (`slate-loadtest`, no route, workers.dev only),
-never production. It needs that Worker built per `scripts/loadtest/RUNBOOK.md` (its own
-`NEXT_PUBLIC_*` values, its own Supabase branch), a `BOOKING_API_KEY_CANARY` that Worker
-holds, its workers.dev address as `APP_URL`, and `SMOKE_BUCKET` set to a bucket the
-branch actually holds if it has no `SMOKE` (the probe's availability read would otherwise
-answer 404 and every rehearsal would restore). Deploy it once the
-runbook's own way first (`pnpm cf:build` with its `NEXT_PUBLIC_*` values, then `npx
-wrangler deploy --env loadtest`), so there is a version serving 100% to restore to. Then,
-from a clean checkout on two different commits in turn, build the same way and run the
-gradual deploy, so there are two tagged versions:
+The rehearsal is against `env.loadtest` in `wrangler.jsonc`, the load test Worker
+(`slate-loadtest`, no route, workers.dev only), never production. Both commands below
+print the Worker they resolved through wrangler's own config reader before touching
+anything (`target: the slate-loadtest Worker, routes []`), refuse when `WRANGLER_ENV` is
+set and the resolved Worker is not that environment's or holds a route, and under an
+environment every message names that Worker instead of saying "production" (#3165). So a
+rehearsal that loses `WRANGLER_ENV` does not reach production silently: it prints
+`target: production (the slate Worker)` first, and that line is the one to read.
 
-<!-- runbook-unverified: not yet run. It deploys the load test Worker, which this change
-     was not permitted to do; the main session runs it. Mark runbook-verified with the
-     date, hash and result once it has: two gradual deploys landed, the rollback went
-     back to the first, and the probe confirmed its commit. -->
+In order, which matters:
+
+1. **A Supabase branch to point at.** A branch made through the connector hands out only
+   a publishable key. Read the branch's real SECRET key with the Supabase CLI under your
+   own login (`supabase projects api-keys --project-ref <branch ref> --reveal -o json`; no
+   grants are needed), never through a tool that echoes it, and seed the branch per
+   `scripts/loadtest/RUNBOOK.md`.
+2. **Each build stamps the commit first, with the same sha the deploy is told.**
+   `node --experimental-strip-types scripts/stamp-build-info.ts <sha>`, then `pnpm
+   cf:build` from a tree with no `.env*` file, with the load test `NEXT_PUBLIC_*` values
+   (the runbook's "Build" section). Pass that same `<sha>` as `GITHUB_SHA` below, or the
+   probe waits for a commit the build does not report.
+3. **A baseline, the runbook's way:** `npx wrangler deploy --env loadtest`, so there is a
+   version serving 100% to restore to.
+4. **Then the secrets** (`SUPABASE_SECRET_KEY` from step 1, `BOOKING_API_KEY_CANARY`,
+   `CRON_SECRET`, each by `wrangler secret put --env loadtest`, value on stdin). After the
+   baseline, because a put needs the Worker to exist, and BEFORE the gradual deploys,
+   because every put makes a new untagged version at 100%. The rollback skips untagged
+   versions in favour of the newest tagged one and says which it skipped, so puts made
+   between the two gradual deploys move the rollback target nowhere surprising, but
+   they clutter what the rehearsal is meant to show.
+5. **Two gradual deploys**, on two different commits, each built as in step 2.
+   `SMOKE_BUCKET` must name a bucket the seeded branch holds and publishes slots for
+   (`112` worked), or the probe's availability read answers 404 and every run restores:
+
+<!-- runbook-verified: 2026-10-03 (935050a6) run against slate-loadtest (workers.dev only, never production) from a local build of PR #3165 head 505ce1ec; two gradual deploys exited 0 with both probes passing. Cron standby on a canary was NOT observed: no cron tick fell inside the roughly 30 second split. -->
 
 ```bash
-WRANGLER_ENV=loadtest APP_URL=<the load test workers.dev URL> BOOKING_API_KEY_CANARY=<its key> GITHUB_SHA=$(git rev-parse HEAD) pnpm cf:deploy:gradual
+WRANGLER_ENV=loadtest APP_URL=<the load test workers.dev URL> BOOKING_API_KEY_CANARY=<its key> SMOKE_BUCKET=<a seeded bucket> GITHUB_SHA=<the sha stamped into this build> pnpm cf:deploy:gradual
 ```
 
-Then, after the second commit's deploy, roll back to the first and let the probe confirm it:
+6. **Roll back** to the first, and let the probe confirm it:
 
-<!-- runbook-unverified: not yet run, as above; the main session runs it. -->
+<!-- runbook-verified: 2026-10-03 (4da3dd89) run against slate-loadtest from a local build of PR #3165 head 505ce1ec; exit 0, the rollback restored version ed9902a0 (commit 505ce1ec2bb1), its probe passed, and /api/health answered 200 afterwards. -->
 
 ```bash
-WRANGLER_ENV=loadtest APP_URL=<the load test workers.dev URL> BOOKING_API_KEY_CANARY=<its key> ROLLBACK_REASON="rehearsal" pnpm cf:rollback
+WRANGLER_ENV=loadtest APP_URL=<the load test workers.dev URL> BOOKING_API_KEY_CANARY=<its key> SMOKE_BUCKET=<a seeded bucket> ROLLBACK_REASON="rehearsal" pnpm cf:rollback
 ```
 
-While the second deploy holds its split, `npx wrangler tail --env loadtest --format json`
-shows which version each cron tick reached: a tick on the canary logs `canary in cron
-standby`. That is the measurement Cloudflare's documentation does not give, and the
-rehearsal is the place to take it. Exit 0 from both commands, and a `/api/health` 200 from
-the load test address afterwards, is the pass.
+**Watching cron standby.** `npx wrangler tail --env loadtest --format json` shows which
+version each cron tick reached, and a tick on the canary logs `canary in cron standby`.
+Two things make that hard to catch. At 10% for a split of about 30 seconds, a tick reaching
+the canary at all is luck: the first rehearsal saw none. And a tail started before a
+deploy goes silent once the deployment changes, so restart it after every split,
+promotion and rollback. Exit 0 from both commands, and a `/api/health` 200 from the load
+test address afterwards, is the pass.
 
 ## Backup & recovery
 The Postgres database is managed by Supabase (project **`slate`**, ref

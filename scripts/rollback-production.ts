@@ -18,7 +18,13 @@ import { DEFAULT_POLL_INTERVAL_MS, DEFAULT_VERSION_TIMEOUT_MS, runProbe } from "
 import { httpProbeDeps } from "./lib/post-deploy-probe-http.ts";
 import { CONFIRMATIONS } from "./lib/gradual-deploy.ts";
 import { ROLLBACK_EXIT, runRollback, type RollbackOps } from "./lib/rollback-plan.ts";
-import { envArgs, jsonPart, runCapture, runLoud } from "./lib/wrangler-cli.ts";
+import { envArgs, establishTarget, jsonPart, runCapture, runLoud } from "./lib/wrangler-cli.ts";
+import { retarget } from "./lib/wrangler-target.ts";
+
+// Before anything else: which Worker this rolls back, said out loud, and a refusal when
+// it is not the one WRANGLER_ENV names (#3165). A rollback that silently reached
+// production from a rehearsal would re-point real traffic.
+const target = establishTarget(ROLLBACK_EXIT.unreadable);
 
 // env-ok: WRANGLER_ENV (the load test rehearsal only; production is the top level)
 const wranglerEnv = envArgs(process.env.WRANGLER_ENV);
@@ -30,7 +36,8 @@ const bucket = process.env.SMOKE_BUCKET ?? "SMOKE";
 // env-ok: ROLLBACK_REASON (the dispatch input; a hand run may omit it)
 const reason = (process.env.ROLLBACK_REASON ?? "").replace(/[\r\n\t]+/g, " ").trim().slice(0, 200) || "manual rollback";
 
-function finishWith(exit: number, message: string): never {
+function finishWith(exit: number, raw: string): never {
+  const message = retarget(raw, target);
   // env-ok: ROLLBACK_SUMMARY_FILE (an internal handoff between two steps of one job)
   const file = process.env.ROLLBACK_SUMMARY_FILE;
   if (file) writeFileSync(file, JSON.stringify({ exit, message }), "utf8");

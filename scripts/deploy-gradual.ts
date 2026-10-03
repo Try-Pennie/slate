@@ -45,8 +45,13 @@ import {
 } from "./lib/gradual-deploy.ts";
 import { DEFAULT_POLL_INTERVAL_MS, DEFAULT_VERSION_TIMEOUT_MS, runProbe } from "./lib/post-deploy-probe.ts";
 import { httpProbeDeps } from "./lib/post-deploy-probe-http.ts";
-import { envArgs, jsonPart, ROOT, runCapture, runLoud } from "./lib/wrangler-cli.ts";
+import { envArgs, establishTarget, jsonPart, ROOT, runCapture, runLoud } from "./lib/wrangler-cli.ts";
+import { retarget } from "./lib/wrangler-target.ts";
 import { normalizeCommit } from "./stamp-build-info.ts";
+
+// Before anything else, settle included: which Worker this is, said out loud, and a
+// refusal when it is not the one WRANGLER_ENV names (#3165).
+const target = establishTarget(EXIT.unreadable);
 
 // env-ok: WRANGLER_ENV (the load test rehearsal only; production is the top level)
 const wranglerEnv = envArgs(process.env.WRANGLER_ENV);
@@ -84,7 +89,7 @@ function readState(): string | null {
 
 function summary(line: string): void {
   const file = process.env.GITHUB_STEP_SUMMARY;
-  if (file) appendFileSync(file, `${line}\n`, "utf8");
+  if (file) appendFileSync(file, `${retarget(line, target)}\n`, "utf8");
 }
 
 if (process.argv[2] === "--settle") {
@@ -105,11 +110,11 @@ if (process.argv[2] === "--settle") {
     console.error(`::error title=production may be split::${plan.reason}. Run the Rollback workflow.`);
     process.exit(1);
   }
-  const target = plan.specs[0].split("@")[0];
-  const standby = isCronStandby(target);
+  const larger = plan.specs[0].split("@")[0];
+  const standby = isCronStandby(larger);
   if (standby !== false) {
     console.error(
-      `::error title=production may be split::the leftover split's larger share ${target} ${standby === null ? "could not be checked for cron standby" : "is a cron standby canary"}, so it was NOT put back at 100% (that would switch every cron lane off). End the split by hand (DEPLOY.md, Rollback).`,
+      `::error title=production may be split::the leftover split's larger share ${larger} ${standby === null ? "could not be checked for cron standby" : "is a cron standby canary"}, so it was NOT put back at 100% (that would switch every cron lane off). End the split by hand (DEPLOY.md, Rollback).`,
     );
     process.exit(1);
   }

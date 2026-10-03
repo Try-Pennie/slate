@@ -9,6 +9,7 @@
 
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
+import { judgeTarget, retarget, type ResolvedWorker, type TargetJudgement } from "./wrangler-target.ts";
 
 export const ROOT = join(import.meta.dirname, "..", "..");
 
@@ -43,4 +44,38 @@ export function jsonPart(stdout: string | null): string {
   if (stdout === null) return "";
   const first = stdout.search(/[[{]/);
   return first === -1 ? "" : stdout.slice(first).trim();
+}
+
+/**
+ * Resolve, print and judge the Worker this run targets (#3165), and refuse a mismatch
+ * before anything is read or changed. From then on every line this process prints
+ * names that Worker wherever it would have said "production" (`retarget`), so a
+ * rehearsal's output can never read as a production run. Returns the judgement, or
+ * exits with `refuseExit`.
+ */
+export function establishTarget(refuseExit: number): TargetJudgement & { ok: true } {
+  // env-ok: WRANGLER_ENV (the load test rehearsal only; production is the top level)
+  const env = process.env.WRANGLER_ENV;
+  const out = runCapture("node", [join(ROOT, "scripts", "resolve-wrangler-target.mjs")]);
+  let resolved: ResolvedWorker | null = null;
+  try {
+    const parsed = JSON.parse(out ?? "") as { name?: unknown; routes?: unknown };
+    if (typeof parsed.name === "string" && Array.isArray(parsed.routes)) resolved = { name: parsed.name, routes: parsed.routes };
+  } catch {
+    resolved = null;
+  }
+  const target = judgeTarget(env, resolved);
+  if (!target.ok) {
+    console.error(`::error title=wrong target, nothing was touched::${target.reason}.`);
+    process.exit(refuseExit);
+  }
+  console.log(`  target: ${target.label}${resolved ? `, routes ${JSON.stringify(resolved.routes)}` : ""}`);
+  if (!target.production) {
+    for (const method of ["log", "error", "warn"] as const) {
+      const original = console[method].bind(console);
+      console[method] = (...args: unknown[]) =>
+        original(...args.map((a) => (typeof a === "string" ? retarget(a, target) : a)));
+    }
+  }
+  return target;
 }

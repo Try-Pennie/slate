@@ -49,7 +49,9 @@ export function readDeploymentsList(text: string): Deployment[] | null {
 }
 
 export type RollbackTarget =
-  | { kind: "target"; versionId: string; current: string }
+  /** `named`: the operator named it, so it is honoured as is. Otherwise it is the
+   *  newest candidate, and `runRollback` may move past it to a tagged one. */
+  | { kind: "target"; versionId: string; current: string; named: boolean; candidates: string[] }
   /** `unreadable`: the deployments could not be read. `refused`: they were read, and no
    *  target is acceptable. Two endings, two exit codes, decided here, never by
    *  re-reading the reason text (L199). */
@@ -59,8 +61,24 @@ function whole(d: Deployment): string | null {
   return d.versions.length === 1 && d.versions[0].percentage === 100 ? d.versions[0].versionId : null;
 }
 
+/** Every version that served 100% on its own before the current deployment, newest
+ *  first, each once, the version serving now excluded. Null for an unreadable list. */
+export function rollbackCandidates(list: Deployment[] | null): string[] {
+  if (list === null) return [];
+  const currentWhole = whole(list[list.length - 1]);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (let i = list.length - 2; i >= 0; i--) {
+    const id = whole(list[i]);
+    if (id === null || id === currentWhole || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
 /** Which version to go back to: the one named, or the newest that served alone before
- *  the current deployment. */
+ *  the current deployment (which `runRollback` moves past while it is untagged). */
 export function chooseRollbackTarget(list: Deployment[] | null, requested: string): RollbackTarget {
   if (list === null) return { kind: "refuse", why: "unreadable", reason: "could not read the Worker's deployments" };
   const current = list[list.length - 1];
@@ -70,11 +88,11 @@ export function chooseRollbackTarget(list: Deployment[] | null, requested: strin
   if (req) {
     if (!UUID.test(req)) return { kind: "refuse", why: "refused", reason: `"${req}" is not a version id` };
     if (currentWhole === req) return { kind: "refuse", why: "refused", reason: `${req} is already serving 100%` };
-    return { kind: "target", versionId: req, current: currentLabel };
+    return { kind: "target", versionId: req, current: currentLabel, named: true, candidates: [req] };
   }
-  for (let i = list.length - 2; i >= 0; i--) {
-    const id = whole(list[i]);
-    if (id !== null && id !== currentWhole) return { kind: "target", versionId: id, current: currentLabel };
+  const candidates = rollbackCandidates(list);
+  if (candidates.length > 0) {
+    return { kind: "target", versionId: candidates[0], current: currentLabel, named: false, candidates };
   }
   return {
     kind: "refuse",
@@ -161,26 +179,57 @@ export async function runRollback(
   ops: RollbackOps,
   input: { requestedVersionId: string; expectedCommit: string },
 ): Promise<RollbackResult> {
-  const target = chooseRollbackTarget(readDeploymentsList((await ops.list()) ?? ""), input.requestedVersionId);
+  let target = chooseRollbackTarget(readDeploymentsList((await ops.list()) ?? ""), input.requestedVersionId);
   if (target.kind === "refuse") {
     return {
       exit: target.why === "unreadable" ? ROLLBACK_EXIT.unreadable : ROLLBACK_EXIT.refused,
       message: `Not rolled back: ${target.reason}. Nothing changed.`,
     };
   }
-  const view = readVersionView((await ops.view(target.versionId)) ?? "");
-  if (view === null) {
-    return {
-      exit: ROLLBACK_EXIT.unreadable,
-      message: `Not rolled back: could not read version ${target.versionId}, so it could not be checked for being a canary. Nothing changed.`,
-    };
+  // The default target is the newest TAGGED candidate, so the probe can confirm what
+  // serves. `wrangler secret put` makes an untagged version at 100% per secret, and
+  // those are skipped and named. With nothing tagged at all (history from before the
+  // gradual deploy) the newest untagged one is the fallback, rolled back unconfirmed:
+  // an emergency must not wait for a tag. A named target is honoured as is.
+  let chosen: { id: string; view: VersionView } | null = null;
+  let fallback: { id: string; view: VersionView } | null = null;
+  const skipped: string[] = [];
+  for (const id of target.candidates) {
+    const view = readVersionView((await ops.view(id)) ?? "");
+    if (view === null) {
+      return {
+        exit: ROLLBACK_EXIT.unreadable,
+        message: `Not rolled back: could not read version ${id}, so it could not be checked for being a canary. Nothing changed.`,
+      };
+    }
+    if (isCanaryView(view)) {
+      if (target.named) {
+        return {
+          exit: ROLLBACK_EXIT.refused,
+          message: `Not rolled back: ${id} is a gradual deploy canary, uploaded in cron standby, so serving it at 100% would switch every cron lane off. Name the release version instead. Nothing changed.`,
+        };
+      }
+      skipped.push(`${id} (a canary)`);
+      continue;
+    }
+    if (target.named || view.tag !== null) {
+      chosen = { id, view };
+      break;
+    }
+    fallback ??= { id, view };
+    skipped.push(`${id} (no commit tag, most likely made by a secret change)`);
   }
-  if (isCanaryView(view)) {
+  const pick = chosen ?? fallback;
+  if (pick === null) {
     return {
       exit: ROLLBACK_EXIT.refused,
-      message: `Not rolled back: ${target.versionId} is a gradual deploy canary, uploaded in cron standby, so serving it at 100% would switch every cron lane off. Name the release version instead. Nothing changed.`,
+      message: `Not rolled back: every earlier version that served alone is a canary (${skipped.join(", ")}), and a canary runs no cron lane, so serving one at 100% would switch every lane off. Name a version id. Nothing changed.`,
     };
   }
+  const view = pick.view;
+  const skippedNote =
+    chosen !== null && skipped.length > 0 ? ` Skipped, newest first: ${skipped.join(", ")}.` : "";
+  target = { ...target, versionId: pick.id };
   ops.log(`rolling back from ${target.current} to ${target.versionId}${view.tag ? ` (commit ${view.tag})` : ""}`);
   if (!(await ops.rollback(target.versionId))) {
     return {
@@ -210,6 +259,6 @@ export async function runRollback(
   }
   return {
     exit: ROLLBACK_EXIT.rolledBack,
-    message: `Rolled back to ${target.versionId}: it is serving commit ${commit} and passed its probe. ${NOT_REVERTED}`,
+    message: `Rolled back to ${target.versionId}: it is serving commit ${commit} and passed its probe.${skippedNote} ${NOT_REVERTED}`,
   };
 }
