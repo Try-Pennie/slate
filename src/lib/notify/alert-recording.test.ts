@@ -55,13 +55,17 @@ describe("recordingAlerts", () => {
   });
 
   it("keeps two concurrent scopes apart", async () => {
+    // x notes only after y has run, released by y itself rather than by a timer.
+    let release!: () => void;
+    const yDone = new Promise<void>((r) => (release = r));
     const [x, y] = await Promise.all([
       recordingAlerts(async () => {
-        await new Promise((r) => setTimeout(r, 5));
+        await yDone;
         noteAlertKey("x");
       }),
       recordingAlerts(async () => {
         noteAlertKey("y");
+        release();
       }),
     ]);
     expect(x.keys).toEqual(["x"]);
