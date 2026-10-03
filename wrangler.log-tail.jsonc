@@ -1,0 +1,34 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	// The tail worker that ships Slate's logs to Better Stack (#3105, #3138). Slate
+	// names it in `tail_consumers` (wrangler.jsonc). Deployed BY HAND, never by CI:
+	//
+	//   npx wrangler deploy -c wrangler.log-tail.jsonc
+	//
+	// DEPLOY.md ("Log shipping to Better Stack") has the order, which matters.
+	"name": "slate-log-tail",
+	"main": "worker/log-tail/index.ts",
+	"account_id": "3e7f907a9c19e51417873e2cce4fbc5c",
+	"compatibility_date": "2025-08-01",
+	// No address at all: nothing but Cloudflare's tail plumbing ever calls it.
+	"workers_dev": false,
+	"preview_urls": false,
+	// Its OWN failures (a missing token, a refused POST, a log storm past the per
+	// invocation budget) are written here, under tag=log-tail, so the one place that
+	// can say shipping is broken is not the place that is broken.
+	"observability": {
+		"enabled": true
+	},
+	// Deliberately NO `tail_consumers` here: a tail worker tailed by itself would
+	// invoke itself once per invocation, for ever. scripts/test-log-tail-config.ts
+	// refuses one.
+	"vars": {
+		// The Better Stack source's ingesting host, a bare hostname (no https://, no
+		// path), from the source's page (US region, created 2026-10-03). Not a secret:
+		// it says where to send, and only the token authorises sending. The paired
+		// secret is BETTERSTACK_SOURCE_TOKEN (wrangler secret put -c
+		// wrangler.log-tail.jsonc), on this Worker only; until it is put, the worker
+		// drops every record and counts it, and Slate is unaffected.
+		"BETTERSTACK_INGEST_HOST": "s2783448.us-west-2a.betterstackdata.com"
+	}
+}

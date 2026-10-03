@@ -21,7 +21,7 @@ Every claim below names the file that implements it, so it can be rechecked.
 
 ## 1. The flows at a glance
 
-A lead types their name, email and phone into the public booker. Six places end up
+A lead types their name, email and phone into the public booker. Seven places end up
 holding some of it.
 
 | Destination | What reaches it | Retention there | Reached by an erasure? |
@@ -31,6 +31,7 @@ holding some of it.
 | **Regal / Cadence** (webhook subscriber) | name, email, phone, prefill, manage URL, plus asserted `voiceOptIn` / `smsOptIn` / `emailOptIn` | Theirs, unknown to Slate | **No** |
 | **Snowflake** (archival mirror) | name, email, phone, prefill, **and the manage token** | 24 months, stated to match Supabase | **Yes**, but by a separate purge that must be run |
 | **Cloudflare** (Worker logs) | whatever a log line or a serialized error happens to carry, **plus the full request URL**, which for a prefilled booking link holds name, email and phone (#1046), and for a manage page holds **the manage token** in its path, an accepted risk (Dan, 2026-10-03; #3143) | 7 days, then gone | **No**, and it does not need to be |
+| **Better Stack** (shipped Worker logs, #3105) | the same lines as Cloudflare AFTER redaction: every URL's query string and fragment cut whole, the manage token and legacy advisor link token replaced in every path, emails, phone numbers and long digit runs replaced. A **name** in free text has no shape and can survive | the Better Stack plan's: 3 days on the free tier, 30 to 90 days on a paid plan | **No**; see §5 on the 45 day deadline |
 | **Slack** (alerts) | **no lead contact data at all** | Slack's own | n/a |
 
 The two rows worth pausing on are Google Calendar and Regal: both hold direct
@@ -246,6 +247,43 @@ path being retired.
 Seven day retention means this needs no erasure step: any copy here ages out well
 inside the 45 day response deadline.
 
+### Shipped to Better Stack, redacted first (#3105)
+
+Since #3105 a tail worker (`worker/log-tail/index.ts`) forwards every Slate log line,
+uncaught exception and invocation outcome to Better Stack, which keeps them for the
+plan's retention rather than Cloudflare's 7 days. That is the "log retention grows"
+case the two positions above and below name, so the copy that leaves Cloudflare is
+not the copy Cloudflare holds. Before anything is sent
+(`src/lib/log-shipping/redact.ts`, `records.ts`):
+
+- **every URL loses its query string and fragment whole.** The prefill is percent
+  encoded, which defeats any shape a scrub looks for (L741), so it is never scrubbed,
+  it is cut. This is what turns the prefill position above from "in the log" into
+  "not in the shipped log".
+- **every credential in a path is replaced** with `[redacted]`: the manage token on
+  `/booking/manage/…` and `/api/bookings/…/cancel|phone`, and the legacy advisor link
+  token on `/book/advisor/…`. The list of dynamic routes and what happens to each is
+  `DYNAMIC_SEGMENT_POLICY`, and `scripts/test-log-shipping-routes.ts` fails when a new
+  `[param]` route appears that it does not classify.
+- **every message, stack and string field goes through `scrubContactData`**, the same
+  scrub the client error beacon and the fault page use, so emails, phone numbers and
+  long digit runs become markers.
+- **request headers and `cf` are never sent**, so no cookie, authorization header or
+  client address leaves.
+
+The residue is the beacon's: a **name** interpolated into free text has no shape and
+is not caught. What bounds it is that nothing logs a lead's name on purpose.
+
+**The erasure question depends on the plan, and is a decision, not a default.** On
+the free tier (3 days) and on any plan of 45 days or less, a copy ages out inside the
+45 day response deadline and needs no erasure step, exactly like Cloudflare's. A
+plan **longer than 45 days** (the 90 day option) holds a copy past the deadline, so
+choosing it means either accepting that the redacted residue (names in free text
+only) is out of scope for erasure and saying so in
+[pii-retention.md](./pii-retention.md), or adding a Better Stack deletion step to the
+erasure runbook. Better Stack is also a new processor to list wherever processors are
+disclosed.
+
 ### The manage token is in the URL path (#3143)
 
 The manage page is `/booking/manage/[token]`, and the token alone authorizes
@@ -257,8 +295,10 @@ the token out of the path (for example, exchanging it for a cookie on the first
 load and redirecting to a tokenless address) would change the link every lead
 already holds in an email and a calendar invite. What bounds the exposure is the
 same as for the prefill: 7 day retention, no export, and access only through the
-Cloudflare account. Treat the log as holding manage tokens. Reconsider if log
-retention grows (a Logpush job would make the copy indefinite).
+Cloudflare account. Treat the log as holding manage tokens. Log retention did grow
+(#3105), and the shipped copy carries `[redacted]` in place of every manage token, so
+the longer lived copy does not extend this risk; Cloudflare's own 7 day copy is
+unchanged.
 
 ---
 

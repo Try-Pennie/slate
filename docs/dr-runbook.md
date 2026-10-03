@@ -36,7 +36,14 @@ incident.
 whole morning and work the sections in order.
 
 **On the forensic window, which is a third objective nobody usually writes down**
-(#1047). Cloudflare keeps every log line for **7 days** and there is no export, so
+(#1047, widened by #3105). Cloudflare keeps every log line for **7 days**. Since #3105
+a tail worker ships a REDACTED copy of every line, exception and invocation outcome
+to Better Stack (DEPLOY.md, "Log shipping to Better Stack"), so the window is now the
+Better Stack plan's retention: 3 days on the free tier it starts on, 30 to 90 on a
+paid plan. Search there first for anything older than a week; error grouping and a
+per deploy `version_id` live there too. The paragraphs below describe the position
+before #3105 and still hold for the free tier's 3 days and for anything the redaction
+removed (a full URL, a manage token). Before it, there was no export, so
 anything that happened longer ago than a week can only be reconstructed from the
 database: the tables, `booking_events`, `audit_log`, `webhook_deliveries`. That is
 enough to answer what HAPPENED (every state change a booking went through is a durable
@@ -54,7 +61,9 @@ noticed by an alert within minutes, and every alert here fires while the window 
 open.
 
 The operational consequence, worth knowing before you need it: **when an incident starts,
-capture the logs first.** They expire; the database rows do not.
+capture the logs first.** They expire; the database rows do not. If the shipped copy
+looks thin, check `tag=log-tail` in the tail worker's own Cloudflare logs: a missing
+token, a refused POST or a log storm past its per invocation budget is counted there.
 
 ---
 
