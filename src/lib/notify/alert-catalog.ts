@@ -721,6 +721,12 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "A request presented a retired booking key and was already refused (#2879). Nothing Slate observes can say the holder has stopped: a caller given its own key simply stops presenting the old one, and silence is also what a caller that gave up looks like, so there is no healthy state to announce. The suffix is the retired key's configured label plus one of the four host kinds, so a second retired key from the same kind of host is never silenced behind the first; neither part is text from the request.",
   },
   {
+    key: "csp_violation:*",
+    kind: "incident",
+    suffix: "bounded",
+    why: "A browser already refused something on one page load under the enforced content security policy (#2575). Silence afterwards cannot say the cause is gone, since it is also what a page nobody opened looks like, so there is no healthy state to announce. The suffix is the violated directive mapped onto the policy's own directive list plus other, never text from the report.",
+  },
+  {
     key: "misroute:*",
     kind: "incident",
     suffix: "bounded",

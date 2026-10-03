@@ -1,20 +1,18 @@
 /**
  * FRAMING defense for the authenticated staff surfaces (/admin, /me, /login),
- * applied by the middleware, whose matcher is exactly those paths (#592).
+ * applied by the middleware on exactly those paths (#592).
  *
- * `frame-ancestors 'none'` + `X-Frame-Options: DENY` stop a hostile page from
- * embedding a staff page to clickjack a privileged action. This bundle is
- * deliberately NOT applied to `/book` or `widget.js`: the booker MUST stay
- * embeddable on partner pages (see slate-embed-contract), so the framing headers
- * are the ONLY ones scoped to staff paths.
+ * `X-Frame-Options: DENY` stops a legacy browser embedding a staff page to
+ * clickjack a privileged action. This bundle is deliberately NOT applied to
+ * `/book` or `widget.js`: the booker MUST stay embeddable on partner pages (see
+ * slate-embed-contract).
  *
- * The ENFORCING policy here is `frame-ancestors` ONLY, and stays that way. The
- * script policy (`src/lib/csp.ts`, #2565) is served REPORT ONLY, on a separate
- * header, by the same middleware; enforcing it is a later change gated on reading
- * real violations rather than on it looking right. The comment that used to sit
- * here said a content CSP "could silently break the app" and left it at that,
- * which is a deferral with no owner and no date. What it was worried about was
- * measured before any of this was written: see the header of `csp.ts`.
+ * The modern half of the same rule, `frame-ancestors 'none'`, used to live here as
+ * its own `Content-Security-Policy` header. Since #2575 it is a directive of the
+ * one ENFORCED policy (`src/lib/csp.ts`, built with `frameable: false` on staff
+ * paths), because two `Content-Security-Policy` values cannot both be the header
+ * Next reads its nonce from: the framing only one won that read, carried no nonce,
+ * and the staff pages got none.
  *
  * The non-framing hardening (HSTS, nosniff, Referrer-Policy) is intentionally NOT
  * here: none of it restricts framing, so it is served on EVERY response via
@@ -24,5 +22,4 @@
  */
 export const SECURITY_HEADERS: Readonly<Record<string, string>> = {
   "X-Frame-Options": "DENY",
-  "Content-Security-Policy": "frame-ancestors 'none'",
 };

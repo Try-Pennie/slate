@@ -1,4 +1,5 @@
 import { CLIENT_ERROR_KEY_PREFIX } from "@/lib/api/client-error-scrub";
+import type { BlockedResource } from "@/lib/csp";
 
 /**
  * The remaining alert wording, lifted out of its send sites (#1153).
@@ -295,6 +296,57 @@ export function browserErrorAlert(surface: string, detail: string): string {
   }
   const where = surface === "root" ? "the home page (/)" : `a page under /${surface}`;
   return `A browser reported an error on ${where} (${detail}). ${notServer} Full detail is in the Worker logs at level error.`;
+}
+
+/**
+ * A browser refused something on a Slate page under the ENFORCED content security
+ * policy (#2575, Dan 2026-10-02: a throttled page).
+ *
+ * Every input is already reduced to a fixed vocabulary or a parsed origin
+ * (`cspViolationPage`), because the report is posted by whoever likes to a public
+ * endpoint: no URL path, no query string and no manage token can reach this, and
+ * the full redacted report is in the log line beside it.
+ *
+ * It names both explanations rather than guessing between them (L11): the report
+ * cannot say whether the policy is missing something Slate's page needs or the
+ * policy just stopped something it exists to stop.
+ */
+export function cspViolationAlert(v: { directive: string; surface: string; blocked: BlockedResource }): string {
+  const what = describeBlocked(v.blocked);
+  const where =
+    v.surface === "root"
+      ? "the home page (/)"
+      : v.surface === "other"
+        ? "a page Slate does not serve"
+        : `a page under /${v.surface}`;
+  const rule = v.directive === "other" ? "under a rule Slate's policy does not name" : `under its ${v.directive} rule`;
+  return (
+    `A browser refused ${what} on ${where}, because the enforced content security policy does not allow it (${rule}). ` +
+    "Part of that page did not load for whoever had it open. Either the policy is missing something the page needs, " +
+    "or it stopped something that should never have run. Every report is in the Worker logs under tag=csp-report."
+  );
+}
+
+function describeBlocked(b: BlockedResource): string {
+  switch (b.kind) {
+    case "keyword":
+      switch (b.keyword) {
+        case "inline":
+          return "inline code";
+        case "eval":
+          return "code built from a string (eval)";
+        case "wasm-eval":
+          return "WebAssembly compilation";
+        default:
+          return "a Trusted Types assignment";
+      }
+    case "scheme":
+      return `a ${b.scheme}: address`;
+    case "origin":
+      return `something from ${b.origin}`;
+    case "unreadable":
+      return "something at an address it could not read";
+  }
 }
 
 /**
