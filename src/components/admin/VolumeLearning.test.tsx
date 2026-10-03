@@ -154,6 +154,12 @@ describe("VolumeLearning", () => {
     expect(container.querySelectorAll("[data-page-coverage]")).toHaveLength(2);
   });
 
+  it("says the pages' floors are scaled to Slate's share, never that they are cal.com's as they stand", () => {
+    const { container } = renderIt();
+    expect(container.textContent).toContain("scaled to the share of Low bookings Slate carries");
+    expect(container.textContent).not.toContain("keeps the cal.com floors");
+  });
+
   it("says the pages are not judged, in place of their coverage, while the share is unknown", () => {
     const { container } = renderIt({ pageShare: SHARE_UNKNOWN });
     const shown = container.querySelector("[data-page-share]")!;

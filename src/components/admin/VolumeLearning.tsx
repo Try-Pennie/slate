@@ -209,8 +209,9 @@ export function VolumeLearning({
 
       <h3 className="mt-6 text-sm font-semibold text-fg">Each Low page on its own</h3>
       <p className="mt-0.5 text-xs text-fg-muted">
-        Each page&apos;s own alarm keeps the cal.com floors for that page; learning replaces the
-        floors for the Low tier as a whole.
+        Each page&apos;s own alarm judges it against cal.com&apos;s floors for that page, scaled to
+        the share of Low bookings Slate carries; learning replaces the floors for the Low tier as
+        a whole.
       </p>
       {pageShare.judged && (
         <p className="mt-1 text-xs text-fg" data-page-share>
