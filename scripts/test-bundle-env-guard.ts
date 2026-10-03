@@ -19,7 +19,8 @@
 // Run: node --experimental-strip-types scripts/test-bundle-env-guard.ts
 import { readFileSync } from "node:fs";
 import { judgeBundleEnv, judgeClientAssets, secretNamesInAssets } from "./lib/scan-bundle-env.ts";
-import { assert, eq, finish } from "./lib/harness.ts";
+import { deployingScripts, unguardedDeployScripts } from "./lib/scan-deploy-scripts.ts";
+import { assert, eq, fail, finish } from "./lib/harness.ts";
 
 const SECRET = "xoxb-a-value-that-must-never-be-printed";
 
@@ -154,6 +155,53 @@ const EMPTY = file({ production: {}, development: {}, test: {} });
     before.includes("opennextjs-cloudflare build") && after.includes("check-bundle-env"),
     "and it must run AFTER the build, whose output is the file it reads",
   );
+
+  // #3078: being in cf:build guards nothing that DEPLOYS without it. cf:deploy used
+  // to build with the adapter directly, so a hand deploy from a checkout holding
+  // .env.local shipped every value in it. Stated over every script, so a second
+  // deploying script is covered by construction.
+  const deploying = deployingScripts(pkg.scripts);
+  assert(deploying.includes("cf:deploy"), `the scan sees cf:deploy as a deploy (${deploying.join(", ")})`);
+  const unguarded = unguardedDeployScripts(pkg.scripts);
+  if (unguarded.length === 0) {
+    assert(true, "every package.json script that deploys runs the bundle env guard first");
+  } else {
+    for (const u of unguarded) {
+      fail(
+        `package.json script "${u.script}" deploys without running check-bundle-env first ` +
+          `(${u.reason}): ${u.command}. Build through \`pnpm cf:build && ...\` so the guard stands in front of it.`,
+      );
+    }
+  }
+}
+
+{
+  // Positive controls for the deploy scan, both directions (L1, L159).
+  const cfBuild = "opennextjs-cloudflare build && node --experimental-strip-types scripts/check-bundle-env.ts";
+  const shipped = { "cf:build": cfBuild, "cf:deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy" };
+  const u1 = unguardedDeployScripts(shipped);
+  eq(u1.map((u) => u.script).join(","), "cf:deploy", "the cf:deploy that shipped before #3078 is caught");
+  eq(u1[0]?.reason, "no-guard-before-deploy", "on the reason that names what is missing");
+
+  const fixed = { "cf:build": cfBuild, "cf:deploy": "pnpm cf:build && opennextjs-cloudflare deploy" };
+  eq(unguardedDeployScripts(fixed).length, 0, "building through cf:build guards the deploy");
+  eq(
+    unguardedDeployScripts({ "cf:build": cfBuild, d: "pnpm run cf:build && wrangler deploy" }).length,
+    0,
+    "as does `pnpm run cf:build` before a wrangler deploy",
+  );
+
+  const after = { "cf:build": cfBuild, d: "opennextjs-cloudflare deploy && pnpm cf:build" };
+  eq(unguardedDeployScripts(after).length, 1, "a guard that runs AFTER the deploy guards nothing");
+
+  const orChain = { "cf:build": cfBuild, d: "pnpm cf:build; opennextjs-cloudflare deploy" };
+  eq(unguardedDeployScripts(orChain)[0]?.reason, "not-an-and-chain", "a `;` deploys whatever the guard said");
+
+  const unguardedBuild = { "cf:build": "opennextjs-cloudflare build", d: "pnpm cf:build && wrangler deploy" };
+  eq(unguardedDeployScripts(unguardedBuild).length, 1, "calling a cf:build that lost its guard is caught too");
+
+  const loop = { a: "pnpm b && wrangler deploy", b: "pnpm a" };
+  eq(unguardedDeployScripts(loop).length, 1, "and two scripts calling each other neither hang nor pass");
 }
 
 // --- the second question: does the CLIENT bundle NAME any of them? -------------

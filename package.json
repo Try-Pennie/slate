@@ -15,7 +15,7 @@
     "cleanup:smoke-events": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/cleanup-smoke-events.ts",
     "cf:build": "opennextjs-cloudflare build && node --experimental-strip-types scripts/check-bundle-env.ts",
     "cf:preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
-    "cf:deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
+    "cf:deploy": "pnpm cf:build && opennextjs-cloudflare deploy",
     "cf:deploy:verified": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/deploy-verified.ts",
     "prepare": "git config core.hooksPath .githooks || true",
     "build:confirmation-mark": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/build-confirmation-mark-assets.ts",
