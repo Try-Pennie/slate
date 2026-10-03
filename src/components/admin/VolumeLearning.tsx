@@ -56,6 +56,7 @@ export function VolumeLearning({
   coverage,
   sourceNotice,
   sourceSetAside,
+  pageShare,
   heldOff,
   notice,
   action,
@@ -82,6 +83,12 @@ export function VolumeLearning({
    * none were. Required, so the page has to decide it.
    */
   sourceSetAside: string | null;
+  /**
+   * From `pageBaselinesAtShare()` (#3193): the share of Low the pages' floors are
+   * judged at, in words, and whether they are judged at all. When the share is
+   * unknown the pages are not judged, so the sentence stands in place of the table.
+   */
+  pageShare: { judged: boolean; text: string };
   /**
    * From `pagesNotOnSlateLines()` (#2878): one sentence per Low page Slate does not
    * carry yet, said whatever else the section says, so a page missing from the table
@@ -205,6 +212,11 @@ export function VolumeLearning({
         Each page&apos;s own alarm keeps the cal.com floors for that page; learning replaces the
         floors for the Low tier as a whole.
       </p>
+      {pageShare.judged && (
+        <p className="mt-1 text-xs text-fg" data-page-share>
+          {pageShare.text}
+        </p>
+      )}
       {heldOff.map((line) => (
         <p key={line} className="mt-1 text-xs text-fg" data-page-held-off>
           {line}
@@ -215,7 +227,11 @@ export function VolumeLearning({
           {sourceSetAside}
         </p>
       )}
-      {sourceNotice !== null ? (
+      {!pageShare.judged ? (
+        <p className="mt-1 text-xs text-fg" role="status" data-page-share>
+          {pageShare.text}
+        </p>
+      ) : sourceNotice !== null ? (
         <p className="mt-1 text-xs text-fg" role="status" data-page-sources>
           {sourceNotice}
         </p>

@@ -1405,6 +1405,10 @@ export async function GET(req: NextRequest) {
           exceptions: businessHours!.exceptions,
         },
         baselines: MEASURED_PAGE_BASELINES,
+        // #3193: those floors are cal.com's for the whole of each page, so they are
+        // judged at the share of Low Slate carries, from the same stored refit the
+        // tier's anchor is thinned by. Unmeasured or unreadable stands the step down.
+        share: settings!.lowPageShare,
         // #2874: the pages' floors are Low's, so the pages count Low's bookings only.
         readSources: (sinceIso) => listCustomerBookingSourcesSince(db, sinceIso, LOW_TIER),
         pageSeenSince: (sources, sinceIso) => customerBookingFromSourcesSince(db, sources, sinceIso, LOW_TIER),
@@ -1423,6 +1427,9 @@ export async function GET(req: NextRequest) {
         log: (fields) => log.info("monitor", { msg: "page booking volume", ...fields }),
       }),
     );
+    if (pageVolume.status === "share-unknown") {
+      log.warn("monitor", { msg: "page volume not judged", share: pageVolume.share });
+    }
 
     // --- Relearning the low volume floors from Slate's own bookings (#2739), per
     // debt tier (#2874) ---

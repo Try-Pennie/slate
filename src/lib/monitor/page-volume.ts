@@ -26,6 +26,18 @@
  * page is unmeasured on most weekday afternoons and judged in the mornings, which
  * is exactly where a replay shows its outages are and are not caught.
  *
+ * AT THE SHARE SLATE CARRIES (#3193). Each page's floors are cal.com's, fitted to
+ * every lead on that page, and the pilot sends Slate a share of each page's leads.
+ * So the floors are thinned to the share of Low the refit measured
+ * (`volume_learning.carriedShare`, #2893) by the same `thinBaseline` the tier
+ * alarm's anchor goes through, before an hour is judged. Unthinned, a quiet
+ * Saturday afternoon expected Income Verification to book what the whole page books,
+ * and paged at 2:46pm on 2026-10-03 while the page was booking. A share that is held
+ * is the share in force, as it is for the tier. A share that is unmeasured or
+ * unreadable stands the step down and says which (`pageBaselinesAtShare`): never the
+ * unthinned floors, which are the ones that false page, and never a share of 0,
+ * whose floors cannot breach and would read as a quiet week.
+ *
  * No `@/` imports, so node scripts can run it directly.
  */
 import {
@@ -48,6 +60,7 @@ import {
   type VolumeWindow,
 } from "./booking-volume.ts";
 import { floorsFor, judgedFloors, type VolumeBaseline } from "./volume-floors.ts";
+import { thinBaseline, type ShareInForce } from "./carried-share.ts";
 import type { ThrottledNotify } from "./alert-deps";
 import { logAlertSendFailure, logAllClearFailure } from "../notify/send-failure.ts";
 
@@ -423,6 +436,8 @@ export type PageVerdict =
 
 export type PageVolumeResult =
   | { status: "outside-hours" }
+  /** The share of Low Slate carries is not known (#3193), so no page's floors are. Nothing is read, paged or cleared. */
+  | { status: "share-unknown"; share: "unmeasured" | "unreadable"; text: string }
   /** The step itself failed; only the lane's step boundary produces this. */
   | { status: "unverified" }
   | {
@@ -434,6 +449,8 @@ export type PageVolumeResult =
    * and how many were set aside as made with no host page (#2960).
    */
       sources: { unsourced: number; total: number; hostless: number };
+      /** The share of Low the floors were thinned to (#3193), and since when it has been held, if it is. */
+      share: { share: number; heldSince: string | null };
     };
 
 /**
@@ -449,7 +466,12 @@ export type PageVolumeResult =
 export async function runPageVolumeCheck(deps: {
   nowMs: number;
   businessHours: BusinessHoursConfig;
+  /** Each page's cal.com floors for the whole page, thinned here to `share`. */
   baselines: Record<LowPageId, VolumeBaseline>;
+  /** The share of Low Slate carries (#3193), from `shareInForce`. */
+  share: ShareInForce;
+  /** The held off switch, an input so its path is tested while it is empty (#2878). */
+  heldOff?: Readonly<Partial<Record<LowPageId, HeldOffSlate>>>;
   /** Customer bookings created at or after `sinceIso`. Throws when the read fails. */
   readSources: (sinceIso: string) => Promise<SourceRow[]>;
   /**
@@ -470,10 +492,15 @@ export async function runPageVolumeCheck(deps: {
   log?: (fields: Record<string, unknown>) => void;
 }): Promise<PageVolumeResult> {
   if (!isBusinessHours(deps.nowMs, deps.businessHours)) return { status: "outside-hours" };
+  const atShare = pageBaselinesAtShare(deps.baselines, deps.share);
+  if (atShare.state !== "applied") {
+    deps.log?.({ share: atShare.state, why: atShare.text });
+    return { status: "share-unknown", share: atShare.state, text: atShare.text };
+  }
 
-  const judged = LOW_PAGES_ON_SLATE.map((page) => {
+  const judged = pagesOnSlate(deps.heldOff).map((page) => {
     const floors = judgedFloors(
-      floorsFor({ baseline: deps.baselines[page.id], override30: null, override120: null }, deps.nowMs),
+      floorsFor({ baseline: atShare.baselines[page.id], override30: null, override120: null }, deps.nowMs),
     );
     return { page, floors, measurable: floors.floor30 > 0 || floors.floor120 > 0 };
   });
@@ -566,6 +593,8 @@ export async function runPageVolumeCheck(deps: {
   deps.log?.({
     armed: deps.armed,
     tier_low: deps.tierLow,
+    share: atShare.share,
+    share_held_since: atShare.heldSince,
     unsourced: sources.unsourced,
     hostless: sources.hostless,
     read: sources.total,
@@ -587,7 +616,61 @@ export async function runPageVolumeCheck(deps: {
       .resolveRecovered(recovered)
       .catch(logAllClearFailure(recovered.map((r) => r.key)));
   }
-  return { status: "checked", armed: deps.armed, pages, sources };
+  return { status: "checked", armed: deps.armed, pages, sources, share: { share: atShare.share, heldSince: atShare.heldSince } };
+}
+
+/**
+ * Each page's floors at the share of Low Slate carries (#3193), and the sentence that
+ * says so: the ONE place the alarm and the admin page's coverage table take them
+ * from, so the table shows the hours the alarm can judge (L16). Thinned by
+ * `thinBaseline`, the tier anchor's own thinning (#2893), so the rule is not copied
+ * (L370). A page's floors cover the whole page, and Slate's half of a split is a
+ * thinning of every page alike, so each is thinned by the share itself.
+ *
+ * An unmeasured or unreadable share yields no floors, only the words for why.
+ */
+export type PageBaselinesAtShare =
+  | { state: "applied"; baselines: Record<LowPageId, VolumeBaseline>; share: number; heldSince: string | null; text: string }
+  | { state: "unmeasured" | "unreadable"; text: string };
+
+export function pageBaselinesAtShare(
+  baselines: Record<LowPageId, VolumeBaseline>,
+  share: ShareInForce,
+): PageBaselinesAtShare {
+  const why =
+    "each page's floors count every booking on that page, Slate's and cal.com's, so judging them whole would page on a normal hour.";
+  if (share.state === "unmeasured") {
+    return {
+      state: "unmeasured",
+      text:
+        `The Low pages are not judged: the share of Low bookings Slate carries has not been measured yet, and ${why} ` +
+        `The daily refit measures it from the first day both systems take enough Low bookings.`,
+    };
+  }
+  if (share.state === "unreadable") {
+    return {
+      state: "unreadable",
+      text:
+        `The Low pages are not judged: the stored share of Low bookings Slate carries could not be read, and ${why} ` +
+        `The stored refit (monitor_alert_config.volume_learning) needs looking at.`,
+    };
+  }
+  const thinned = Object.fromEntries(
+    LOW_PAGES.map((p) => [p.id, thinBaseline(baselines[p.id], share.share)]),
+  ) as Record<LowPageId, VolumeBaseline>;
+  const pct = Math.round(share.share * 100);
+  const held = share.heldSince
+    ? ` That share has been held since ${share.heldSince.slice(0, 10)}, because Low bookings as a whole fell when it moved, which reads as lost bookings rather than a split.`
+    : "";
+  return {
+    state: "applied",
+    baselines: thinned,
+    share: share.share,
+    heldSince: share.heldSince,
+    text:
+      `Each page's floors are cal.com's for the whole page, thinned to the ${pct}% of Low bookings Slate carried ` +
+      `in the day to ${share.countedTo.slice(0, 10)}.${held}`,
+  };
 }
 
 /** The untagged bookings in the long window: `recent` also in the short one, `older` not. */

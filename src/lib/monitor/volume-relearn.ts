@@ -57,6 +57,7 @@ import {
   isStoredCarriedShare,
   judgeTierShare,
   type AnchorSource,
+  type ShareInForce,
   type StoredCarriedShare,
   type StoredTierShare,
 } from "./carried-share.ts";
@@ -254,6 +255,22 @@ export function readStoredLearning(raw: unknown): StoredLearningRead {
     legacy: v.version === 2,
     value: { ...(raw as Omit<StoredVolumeLearning, "version" | "carriedShare">), version: LEARNING_STATE_VERSION, carriedShare },
   };
+}
+
+/**
+ * One tier's carried share as a check outside the refit reads it (#3193): the per
+ * page alarm, whose floors are cal.com's for the whole of each page and have no
+ * learned floors to fall back on. Read through `readStoredLearning`, the reader
+ * `baselineInForce` uses, so the share the pages are judged at is the share the tier
+ * is (L16), and a record that does not read is said to be unreadable rather than
+ * read as no share at all (L11).
+ */
+export function shareInForce(learning: unknown, tier: VolumeTier): ShareInForce {
+  const read = readStoredLearning(learning);
+  if (read.state === "unreadable") return { state: "unreadable" };
+  const entry = read.state === "ok" ? (read.value.carriedShare?.tiers[tier] ?? null) : null;
+  if (!entry?.applied) return { state: "unmeasured" };
+  return { state: "applied", share: entry.applied.share, heldSince: entry.heldSince, countedTo: entry.applied.to };
 }
 
 /** Why a tier has no learned floors yet. Only Low is judged against its cal.com measurement meanwhile; any other tier is not judged until it has learned (#2888). */

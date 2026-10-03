@@ -212,6 +212,27 @@ export interface StoredTierShare {
   heldSince: string | null;
 }
 
+/**
+ * One tier's share as a check that thins by it reads it (#3193), from
+ * `shareInForce` in volume-relearn.ts. A share that is not known says which way it
+ * is not known, and is never read as 1 (the whole tier's floors, which false page
+ * under partial traffic) or as 0 (floors that can never breach).
+ */
+export type ShareInForce =
+  /** The share in force. */
+  | {
+      state: "applied";
+      share: number;
+      /** Set when the refit is holding the share in force (see AN OUTAGE IS NOT A SHARE). */
+      heldSince: string | null;
+      /** The end of the day the share in force was counted over. */
+      countedTo: string;
+    }
+  /** No refit has measured a readable day for this tier yet. */
+  | { state: "unmeasured" }
+  /** The stored refit does not read. */
+  | { state: "unreadable" };
+
 /** Every tier's share, as the refit stores it (`StoredVolumeLearning.carriedShare`). */
 export interface StoredCarriedShare {
   measuredAt: string;

@@ -118,6 +118,9 @@ export async function replayPageVolume(opts: {
       nowMs: tick,
       businessHours: opts.businessHours,
       baselines: opts.baselines,
+      // The series replayed is cal.com's: every lead on every page, so a share of 1
+      // judges it against the floors as measured (#3193).
+      share: { state: "applied", share: 1, heldSince: null, countedTo: new Date(tick).toISOString() },
       readSources: async (sinceIso) => {
         const since = Date.parse(sinceIso);
         const rows: SourceRow[] = [];
