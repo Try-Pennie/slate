@@ -5,6 +5,7 @@ import { canEditOrgSettings } from "@/lib/auth/roles";
 import { consoleHiddenFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { setEventDescription } from "@/app/admin/actions";
+import { LOADED_VERSION_FIELD, loadedVersionValue } from "@/lib/admin/edit-version";
 import { EVENT_DESCRIPTION_MAX } from "@/lib/booking/settings";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
@@ -31,13 +32,13 @@ export default async function BookerCopyPage({
   // #1335: the event types whose lead-facing description is editable here.
   // Guarded like its old neighbours, so a missing table during a
   // migrate-before-deploy window shows an empty editor rather than 500ing.
-  let eventTypes: { id: string; name: string; description: string | null }[] = [];
+  let eventTypes: { id: string; name: string; description: string | null; updated_at: string }[] = [];
   try {
     // cap-safe: event_types is roster-bounded config (one per offering), a fixed
     // handful of rows that can never fill a page.
     const types = await supabaseAdmin()
       .from("event_types")
-      .select("id, name, description")
+      .select("id, name, description, updated_at")
       .order("created_at");
     if (!types.error && types.data) {
       eventTypes = types.data as typeof eventTypes;
@@ -88,6 +89,8 @@ export default async function BookerCopyPage({
               className="mb-4 flex flex-col items-start gap-3 last:mb-0"
             >
               <input type="hidden" name="event_type_id" value={e.id} />
+              {/* #3122: the version this form was drawn from, so a save over a newer one is refused. */}
+              <input type="hidden" name={LOADED_VERSION_FIELD} value={loadedVersionValue(e.updated_at)} />
               <label className={labelCls} htmlFor={`description-${e.id}`}>
                 {e.name}
               </label>

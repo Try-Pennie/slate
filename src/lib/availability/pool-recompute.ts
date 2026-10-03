@@ -97,7 +97,8 @@ export async function recomputePool(
     // sixth's bucket everywhere the payload is read back.
     const forMember: BucketSlots = { ...computed, bucket: member.bucket };
     try {
-      // `kept-newer` is a success: a fresher row already stands for this code.
+      // `kept-newer` is a success: a fresher row already stands for this code. So is
+      // `invalidated` (#3118): a save landed mid compute and the row stays due.
       const outcome = await deps.writeRow(member.code, forMember, computedAtMs);
       if (outcome === "failed") failed.push(member.code);
       else written.push(member.code);

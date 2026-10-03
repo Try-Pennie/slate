@@ -4,6 +4,7 @@ import { Field } from "@/components/admin/Field";
 import { btnCls } from "@/components/ui/styles";
 import { setEventTypeNotice } from "@/app/admin/actions";
 import type { EventType } from "@/lib/db/types";
+import { LOADED_VERSION_FIELD, loadedVersionValue } from "@/lib/admin/edit-version";
 
 /**
  * Edit how far ahead of now the earliest offered time can be, in place on the
@@ -22,6 +23,8 @@ export function EventTypeNoticeForm({ eventType: e }: { eventType: EventType }) 
       className="flex flex-wrap items-end gap-3"
     >
       <input type="hidden" name="event_type_id" value={e.id} />
+      {/* #3122: the version this form was drawn from, so a save over a newer one is refused. */}
+      <input type="hidden" name={LOADED_VERSION_FIELD} value={loadedVersionValue(e.updated_at)} />
       <Field
         name="min_notice_min"
         id={`field-min_notice_min-${e.id}`}

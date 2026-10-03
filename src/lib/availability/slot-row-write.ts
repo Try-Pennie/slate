@@ -25,8 +25,10 @@ import type { supabaseAdmin } from "@/lib/supabase/admin";
  * `scripts/test-slot-row-write.ts`.
  */
 
-/** What the write did. `kept-newer` is a success: a fresher row already stands. */
-export type SlotRowWriteOutcome = "written" | "kept-newer" | "failed";
+/** What the write did. `kept-newer` is a success: a fresher row already stands.
+ *  `invalidated` is one too: a save marked the row stale after this compute began,
+ *  so its slots describe the old settings and the row stays due (#3118). */
+export type SlotRowWriteOutcome = "written" | "kept-newer" | "invalidated" | "failed";
 
 /**
  * Thrown by a writer that must not report a refused row as stored (#3119). The
@@ -84,10 +86,64 @@ export async function writeSlotRow(
   }
 
   // A row exists. Re-run the gate: if it is older than this compute (a create race we
-  // lost while holding newer data), overwrite it; otherwise it is genuinely fresher
-  // and stands.
+  // lost while holding newer data), overwrite it; otherwise it is genuinely fresher,
+  // or a save invalidated it after this compute began, and it stands.
   const second = await gatedUpdate(db, code, payload, computedAt);
-  return second === "no-row" ? "kept-newer" : second;
+  return second === "no-row" ? whyRefused(db, code, computedAtMs) : second;
+}
+
+/**
+ * Mark every row stale after a settings save (#216, #3118), stamped from `nowMs`.
+ *
+ * Two columns, because back dating `computed_at` alone was not enough. A compute that
+ * STARTED before the save read the old settings, and its stamp is newer than the epoch,
+ * so the `computed_at` gate let it land over the stale mark; the row then looked fresh
+ * for the whole freshness window while offering times under the old settings.
+ * `invalidated_at` is the high water mark the write gate also checks, so a compute
+ * that began at or before the save is refused and the row stays due.
+ *
+ * Every row is re-marked, including one already at the stale stamp: a second save
+ * while the first is still draining makes a compute between the two just as wrong.
+ * The filter matches every row and exists only because PostgREST refuses an UPDATE
+ * with no filter at all. Returns the number of rows marked.
+ */
+export async function markSlotRowsInvalidated(db: SlotRowDb, nowMs: number): Promise<number> {
+  const { data, error } = await db
+    .from("bucket_slots")
+    .update({ computed_at: STALE_STAMP, invalidated_at: new Date(nowMs).toISOString() })
+    .gte("computed_at", STALE_STAMP)
+    .select("bucket_code");
+  if (error) throw new Error(`markSlotRowsInvalidated failed: ${error.message}`);
+  return ((data ?? []) as unknown[]).length;
+}
+
+/** Epoch stamp that forces a row "due" for recompute (older than any freshness
+ *  window). */
+export const STALE_STAMP = "1970-01-01T00:00:00.000Z";
+
+/**
+ * Says WHY a write was refused, by reading the row that stood (#3118). Only reached on
+ * the rare refused path, so the one PK read is cheap. A row this cannot judge is a
+ * failure rather than a guess at either reason.
+ */
+async function whyRefused(
+  db: SlotRowDb,
+  code: string,
+  computedAtMs: number,
+): Promise<SlotRowWriteOutcome> {
+  // cap-safe: bucket_code is the primary key, so this is one row.
+  const { data, error } = await db
+    .from("bucket_slots")
+    .select("computed_at, invalidated_at")
+    .eq("bucket_code", code)
+    .maybeSingle();
+  const row = data as { computed_at: string; invalidated_at: string | null } | null;
+  const invalidatedMs = row?.invalidated_at ? Date.parse(row.invalidated_at) : Number.NaN;
+  if (!error && Number.isFinite(invalidatedMs) && invalidatedMs >= computedAtMs) return "invalidated";
+  const computedMs = row ? Date.parse(row.computed_at) : Number.NaN;
+  if (!error && Number.isFinite(computedMs) && computedMs >= computedAtMs) return "kept-newer";
+  log.warn("precompute", { msg: "slot row refused for a reason that could not be read", bucket: code }, error ?? undefined);
+  return "failed";
 }
 
 /** The gated overwrite. `no-row` means it matched nothing, which the caller resolves;
@@ -104,6 +160,9 @@ async function gatedUpdate(
     .update({ payload, computed_at: computedAt })
     .eq("bucket_code", code)
     .lt("computed_at", computedAt)
+    // #3118: and no save has invalidated the row since this compute began. Strictly
+    // before, so a compute starting at the save instant is refused too.
+    .or(`invalidated_at.is.null,invalidated_at.lt.${computedAt}`)
     .select("bucket_code");
   if (error) {
     log.warn("precompute", { msg: "slot row update failed", bucket: code }, error);

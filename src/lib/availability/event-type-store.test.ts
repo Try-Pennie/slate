@@ -38,12 +38,29 @@ const update = vi.hoisted(() =>
     return chain;
   }),
 );
-const from = vi.hoisted(() => vi.fn(() => ({ update })));
+/** The existence read a refused write makes: .select().eq("id").eq("org_id").maybeSingle(). */
+const existing = vi.hoisted(() => ({
+  data: null as { id: string } | null,
+  error: null as { message: string } | null,
+}));
+const select = vi.hoisted(() =>
+  vi.fn(() => {
+    const b = {
+      eq: () => b,
+      maybeSingle: async () => ({ data: existing.data, error: existing.error }),
+    };
+    return b;
+  }),
+);
+const from = vi.hoisted(() => vi.fn(() => ({ update, select })));
 
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
 vi.mock("@/lib/availability/precompute", () => ({ markAllBucketSlotsStale: invalidate }));
 
 import { updateEventType } from "./event-type-store";
+
+/** The version the editor's page was drawn from (#3122). */
+const STAMP = "2026-10-03T10:00:00.123456+00:00";
 
 describe("updateEventType (#1435)", () => {
   beforeEach(() => {
@@ -52,6 +69,8 @@ describe("updateEventType (#1435)", () => {
     outcome.count = 1;
     eqCalls.length = 0;
     updateArgs.length = 0;
+    existing.data = null;
+    existing.error = null;
     invalidate.mockResolvedValue(7);
   });
 
@@ -60,6 +79,7 @@ describe("updateEventType (#1435)", () => {
       eventTypeId: "et1",
       orgId: "o1",
       patch: { description: "A friendly chat" },
+      loadedUpdatedAt: STAMP,
     });
     expect(from).toHaveBeenCalledWith("event_types");
     expect(updateArgs[0]?.[0]).toEqual({ description: "A friendly chat" });
@@ -67,17 +87,45 @@ describe("updateEventType (#1435)", () => {
     // message and whether the refresh is needed.
     expect(updateArgs[0]?.[1]).toEqual({ count: "exact" });
     // Tenant scoping: the id alone would let one org edit another's event type.
+    // #3122: and only while the row still holds the version the editor loaded.
     expect(eqCalls).toEqual([
       ["id", "et1"],
       ["org_id", "o1"],
+      ["updated_at", STAMP],
     ]);
     expect(invalidate).toHaveBeenCalledTimes(1);
-    expect(res).toEqual({ count: 1, error: null, invalidated: true });
+    expect(res).toEqual({ count: 1, error: null, invalidated: true, changed: false });
+  });
+
+  // #3122: two editors at once. The second save matches nothing because the first
+  // moved the version, and it must be told so rather than told "not found" or "saved".
+  it("reports a row that changed since the editor loaded it, and refreshes nothing", async () => {
+    outcome.count = 0;
+    existing.data = { id: "et1" };
+    const res = await updateEventType({ eventTypeId: "et1", orgId: "o1", patch: { name: "X" }, loadedUpdatedAt: STAMP });
+    expect(res).toEqual({ count: 0, error: null, invalidated: false, changed: true });
+    expect(invalidate).not.toHaveBeenCalled();
+  });
+
+  it("CONTROL: a row that is not there at all is not reported as changed", async () => {
+    outcome.count = 0;
+    existing.data = null;
+    const res = await updateEventType({ eventTypeId: "gone", orgId: "o1", patch: { name: "X" }, loadedUpdatedAt: STAMP });
+    expect(res.changed).toBe(false);
+    expect(res.count).toBe(0);
+  });
+
+  it("surfaces an unreadable existence check as an error, never as not found", async () => {
+    outcome.count = 0;
+    existing.error = { message: "statement timeout" };
+    const res = await updateEventType({ eventTypeId: "et1", orgId: "o1", patch: { name: "X" }, loadedUpdatedAt: STAMP });
+    expect(res.error?.message).toMatch(/statement timeout/);
+    expect(res.changed).toBe(false);
   });
 
   it("does not refresh anything when the id matched no row this org owns", async () => {
     outcome.count = 0;
-    const res = await updateEventType({ eventTypeId: "someone-elses", orgId: "o1", patch: { name: "X" } });
+    const res = await updateEventType({ eventTypeId: "someone-elses", orgId: "o1", patch: { name: "X" }, loadedUpdatedAt: STAMP });
     expect(res.count).toBe(0);
     // Nothing was edited, so nothing is stale, and a mass invalidation costs a full
     // recompute cycle across every bucket.
@@ -86,7 +134,7 @@ describe("updateEventType (#1435)", () => {
 
   it("reports a database error and refreshes nothing", async () => {
     outcome.error = { message: "column does not exist" };
-    const res = await updateEventType({ eventTypeId: "et1", orgId: "o1", patch: { duration_min: 45 } });
+    const res = await updateEventType({ eventTypeId: "et1", orgId: "o1", patch: { duration_min: 45 }, loadedUpdatedAt: STAMP });
     expect(res.error?.message).toBe("column does not exist");
     expect(res.count).toBe(0);
     expect(res.invalidated).toBe(false);
@@ -99,7 +147,7 @@ describe("updateEventType (#1435)", () => {
   // as rows age past the freshness window.
   it("still reports the save when the refresh fails, and says the refresh did not happen", async () => {
     invalidate.mockRejectedValue(new Error("bucket_slots write failed"));
-    const res = await updateEventType({ eventTypeId: "et1", orgId: "o1", patch: { name: "Consult" } });
+    const res = await updateEventType({ eventTypeId: "et1", orgId: "o1", patch: { name: "Consult" }, loadedUpdatedAt: STAMP });
     expect(res.error).toBeNull();
     expect(res.count).toBe(1);
     expect(res.invalidated).toBe(false);
@@ -110,13 +158,13 @@ describe("updateEventType (#1435)", () => {
   // original defect arriving by a different door.
   it("refreshes when the count could not be measured, rather than assuming nothing changed", async () => {
     outcome.count = null;
-    const res = await updateEventType({ eventTypeId: "et1", orgId: "o1", patch: { min_notice_min: 60 } });
+    const res = await updateEventType({ eventTypeId: "et1", orgId: "o1", patch: { min_notice_min: 60 }, loadedUpdatedAt: STAMP });
     expect(invalidate).toHaveBeenCalledTimes(1);
     expect(res.invalidated).toBe(true);
   });
 
   it("refreshes for a duration change too, which the org hours gate reads when judging fit", async () => {
-    await updateEventType({ eventTypeId: "et1", orgId: "o1", patch: { duration_min: 60 } });
+    await updateEventType({ eventTypeId: "et1", orgId: "o1", patch: { duration_min: 60 }, loadedUpdatedAt: STAMP });
     expect(invalidate).toHaveBeenCalledTimes(1);
   });
 });

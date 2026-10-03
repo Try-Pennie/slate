@@ -26,7 +26,7 @@ const from = vi.hoisted(() =>
     insert,
     update: () => ({
       eq: () => ({
-        lt: () => ({ select: async () => ({ data: [], error: null }) }),
+        lt: () => ({ or: () => ({ select: async () => ({ data: [], error: null }) }) }),
       }),
     }),
   })),

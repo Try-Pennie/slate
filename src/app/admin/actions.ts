@@ -3,6 +3,14 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { refusedFromQuery, refusedQuery, savedQuery } from "@/lib/admin/save-outcomes";
+import {
+  CHANGED_SINCE_OPENED,
+  PAGE_OUT_OF_DATE,
+  loadedStampOfExistingRow,
+  loadedVersionFrom,
+  type LoadedVersion,
+} from "@/lib/admin/edit-version";
+import { HOURS_CHANGED_SQLSTATE } from "@/lib/calcom/import-write";
 import { fetchSlackChannel } from "@/lib/notify/slack";
 import {
   channelCheckMessage,
@@ -105,7 +113,7 @@ import {
   parseEventDescriptionForm,
 } from "@/lib/booking/settings";
 import { markAllBucketSlotsStale } from "@/lib/availability/precompute";
-import { updateEventType } from "@/lib/availability/event-type-store";
+import { updateEventType, type EventTypePatch } from "@/lib/availability/event-type-store";
 import { log } from "@/lib/log";
 import { coverageForWeek } from "@/lib/booking/business-hours-coverage";
 import { parseExceptionForm, countBookingsOnDate } from "@/lib/booking/business-hours-form";
@@ -295,7 +303,13 @@ async function replaceUserSchedule(
    * validator: the org-default button used to bypass it entirely (#1670).
    */
   plan: ScheduleReplacementPlan,
-): Promise<void> {
+  /**
+   * The schedule row's `updated_at` as the form loaded it, or null when the form
+   * was drawn with no row (#3122). The write lands only while the row still holds
+   * it, so two people editing one week cannot silently overwrite each other.
+   */
+  loadedUpdatedAt: string | null,
+): Promise<"saved" | "changed"> {
   if (!plan.ok) throw new Error(plan.error);
 
   const db = supabaseAdmin();
@@ -311,7 +325,10 @@ async function replaceUserSchedule(
   // unreadable one makes every weekday comparison in `isWithinWorkingHours` false,
   // so the agent is bookable at no time at all while the form still renders their
   // hours (#1671).
-  const { data, error } = await db.rpc("replace_user_schedule", {
+  //
+  // #3122: through the guarded form, which locks the row and compares its version
+  // against the one the form loaded inside the same transaction as the write.
+  const { data, error } = await db.rpc("replace_user_schedule_if_unchanged", {
     p_user_id: userId,
     p_timezone: plan.timezone,
     p_rules: plan.rules,
@@ -319,7 +336,11 @@ async function replaceUserSchedule(
     // The count is enforced INSIDE the transaction, so a write that landed the
     // wrong number of rules rolls the zone back with it.
     p_expected: plan.rules.length,
+    p_loaded_updated_at: loadedUpdatedAt,
   });
+  // Somebody saved this week after the form was opened. A refusal for the person,
+  // not a fault: nothing was written and their edit is still on their screen.
+  if (error?.code === HOURS_CHANGED_SQLSTATE) return "changed";
   if (error) {
     throw new Error(`Your hours could not be saved: ${error.message}`);
   }
@@ -333,6 +354,18 @@ async function replaceUserSchedule(
       `Your hours could not be saved: expected ${plan.rules.length} days, the database recorded ${Number.isFinite(written) ? written : "an unreadable count"}.`,
     );
   }
+  return "saved";
+}
+
+/**
+ * The schedule version a working hours form loaded (#3122), or a redirect refusing
+ * the save when the form carried none. `null` is a real answer: the form was drawn
+ * with no schedule row.
+ */
+function loadedScheduleVersion(form: FormData, page: string): string | null {
+  const loaded: LoadedVersion = loadedVersionFrom(form);
+  if (loaded.kind === "missing") redirect(`${page}${refusedQuery(PAGE_OUT_OF_DATE)}`);
+  return loaded.stamp;
 }
 
 // #2103: `applyOrgDefaultToUser` was deleted here with its only caller.
@@ -422,7 +455,10 @@ export async function setMyWorkingHours(form: FormData): Promise<void> {
   if (!timezone) redirect(`${availability}${refusedQuery(MISSING_TIMEZONE_HOURS)}`);
   const plan = planScheduleReplacement(perDayFrom(form), timezone);
   if (!plan.ok) redirect(`${availability}${refusedQuery(plan.error)}`);
-  await replaceUserSchedule(me.id, "agent", plan);
+  const loaded = loadedScheduleVersion(form, availability);
+  if ((await replaceUserSchedule(me.id, "agent", plan, loaded)) === "changed") {
+    redirect(`${availability}${refusedQuery(CHANGED_SINCE_OPENED)}`);
+  }
   revalidatePath(availability);
   // #1988: the save said nothing at all, so it looked exactly like a click that
   // did nothing. Post-redirect-get with a NAMED outcome, the same shape every
@@ -1016,8 +1052,11 @@ export async function setWorkingHours(form: FormData): Promise<void> {
   if (!plan.ok) {
     redirect(`/admin/agents/${userId}${refusedQuery(plan.error)}`);
   }
+  const loaded = loadedScheduleVersion(form, `/admin/agents/${userId}`);
   const before = await readScheduleForAudit(userId);
-  await replaceUserSchedule(userId, "admin", plan);
+  if ((await replaceUserSchedule(userId, "admin", plan, loaded)) === "changed") {
+    redirect(`/admin/agents/${userId}${refusedQuery(CHANGED_SINCE_OPENED)}`);
+  }
   await auditScheduleSave(actor, userId, "agent.hours", before, plan);
   // #1769: the form that calls this lives on the agent's own page, so that is the
   // route that has to be refreshed. Revalidating only /admin left the page the
@@ -1392,6 +1431,40 @@ function parseGapMin(raw: string): number | null {
 const GAP_REFUSAL = `The gap between calls has to be a whole number of minutes from 0 to ${MAX_GAP_MIN}.`;
 
 /**
+ * The one save every event type editor makes, and the refusals that can come back
+ * from it, each sent to the page the form is on (#3122).
+ *
+ * Returns only when the write landed. A database error, a row somebody else saved
+ * after the page was opened (the write is guarded on the `updated_at` the form
+ * loaded), and an id that matched nothing this org owns each redirect with their
+ * own sentence, because they send the person to do three different things. Zero
+ * rows is never a success: saying otherwise would be a lie about somebody else's
+ * data as much as about theirs.
+ */
+async function saveEventTypeOrRefuse(opts: {
+  page: string;
+  orgId: string;
+  eventTypeId: string;
+  patch: EventTypePatch;
+  loadedUpdatedAt: string;
+  /** What the person was saving, for the failure sentence and the log. */
+  what: string;
+}): Promise<void> {
+  const saved = await updateEventType({
+    eventTypeId: opts.eventTypeId,
+    orgId: opts.orgId,
+    patch: opts.patch,
+    loadedUpdatedAt: opts.loadedUpdatedAt,
+  });
+  if (saved.error) {
+    log.error("admin", { msg: "event type save failed", what: opts.what, event_type_id: opts.eventTypeId }, saved.error);
+    redirect(`${opts.page}${refusedQuery(`Could not save the ${opts.what}. Please try again.`)}`);
+  }
+  if (saved.changed) redirect(`${opts.page}${refusedQuery(CHANGED_SINCE_OPENED)}`);
+  if (saved.count === 0) redirect(`${opts.page}${refusedQuery("That event type was not found.")}`);
+}
+
+/**
  * Set the gap kept between two calls on one advisor.
  *
  * BC, 2026-10-02: cal.com kept 10 minutes between calls as a cap on capacity, and
@@ -1416,6 +1489,8 @@ export async function setEventTypeGap(form: FormData): Promise<void> {
   if (gap === null) {
     redirect(`${page}${refusedQuery(GAP_REFUSAL)}`);
   }
+  const loaded = loadedStampOfExistingRow(form);
+  if (loaded === null) redirect(`${page}${refusedQuery(PAGE_OUT_OF_DATE)}`);
 
   // The current value, so the trail records what it was as well as what it became.
   const before = unwrap(
@@ -1432,14 +1507,14 @@ export async function setEventTypeGap(form: FormData): Promise<void> {
   }
 
   const patch = { buffer_before_min: gap, buffer_after_min: gap };
-  const saved = await updateEventType({ eventTypeId, orgId: admin.org_id, patch });
-  if (saved.error) {
-    log.error("admin", { msg: "event type gap save failed", event_type_id: eventTypeId }, saved.error);
-    redirect(`${page}${refusedQuery("Could not save the gap between calls. Please try again.")}`);
-  }
-  if (saved.count === 0) {
-    redirect(`${page}${refusedQuery("That event type was not found.")}`);
-  }
+  await saveEventTypeOrRefuse({
+    page,
+    orgId: admin.org_id,
+    eventTypeId,
+    patch,
+    loadedUpdatedAt: loaded,
+    what: "gap between calls",
+  });
 
   await recordAudit({
     orgId: admin.org_id,
@@ -1494,6 +1569,8 @@ export async function setEventTypeNotice(form: FormData): Promise<void> {
   if (notice === null) {
     redirect(`${page}${refusedQuery(NOTICE_REFUSAL)}`);
   }
+  const loaded = loadedStampOfExistingRow(form);
+  if (loaded === null) redirect(`${page}${refusedQuery(PAGE_OUT_OF_DATE)}`);
 
   // The current value, so the trail records what it was as well as what it became.
   const before = unwrap(
@@ -1510,14 +1587,7 @@ export async function setEventTypeNotice(form: FormData): Promise<void> {
   }
 
   const patch = { min_notice_min: notice };
-  const saved = await updateEventType({ eventTypeId, orgId: admin.org_id, patch });
-  if (saved.error) {
-    log.error("admin", { msg: "event type notice save failed", event_type_id: eventTypeId }, saved.error);
-    redirect(`${page}${refusedQuery("Could not save the notice. Please try again.")}`);
-  }
-  if (saved.count === 0) {
-    redirect(`${page}${refusedQuery("That event type was not found.")}`);
-  }
+  await saveEventTypeOrRefuse({ page, orgId: admin.org_id, eventTypeId, patch, loadedUpdatedAt: loaded, what: "notice" });
 
   await recordAudit({
     orgId: admin.org_id,
@@ -1563,35 +1633,22 @@ export async function setEventDescription(form: FormData): Promise<void> {
   if (parsed.errors.length) {
     redirect(`/admin/booker-copy${refusedQuery(parsed.errors.join(" "))}`);
   }
+  const loaded = loadedStampOfExistingRow(form);
+  if (loaded === null) redirect(`/admin/booker-copy${refusedQuery(PAGE_OUT_OF_DATE)}`);
 
   // #1435: one helper owns the write AND the refresh of what the booker serves,
   // because the description rides inside the cached slots payload and editing the
   // row is not the same as serving it. Nothing else in src/ may write this table
   // (scripts/test-event-type-writes.ts), so the next editor added here cannot ship
   // the stale-copy defect by forgetting a step.
-  const saved = await updateEventType({
-    eventTypeId,
+  await saveEventTypeOrRefuse({
+    page: "/admin/booker-copy",
     orgId: admin.org_id,
+    eventTypeId,
     patch: { description: parsed.description },
+    loadedUpdatedAt: loaded,
+    what: "description",
   });
-  if (saved.error) {
-    log.error(
-      "admin",
-      { msg: "event description save failed", event_type_id: eventTypeId },
-      saved.error,
-    );
-    redirect(
-      `/admin/booker-copy${refusedQuery("Could not save the description. Please try again.")}`,
-    );
-  }
-  // Zero rows is not a success either: the id did not match anything this admin's
-  // org owns, so nothing changed and saying otherwise would be a lie about somebody
-  // else's data as much as about theirs.
-  if (saved.count === 0) {
-    redirect(
-      `/admin/booker-copy${refusedQuery("That event type was not found.")}`,
-    );
-  }
 
   await recordAudit({
     orgId: admin.org_id,
@@ -1726,6 +1783,7 @@ export async function useDefaultHours(form: FormData): Promise<void> {
   const userId = String(form.get("user_id") ?? "");
   if (!userId) return;
   const actor = await requireManageAgent(userId);
+  const loaded = loadedScheduleVersion(form, `/admin/agents/${userId}`);
 
   // #1629: same pair as applyOrgDefaultToUser above, same reasoning. Both reads
   // decide what is written to the agent's schedule, so neither may be guessed.
@@ -1770,6 +1828,10 @@ export async function useDefaultHours(form: FormData): Promise<void> {
   // for agents with no availability_schedules ROW, which a row with no rules is
   // not. `planUniformSchedule`, whose own docstring says it is what this button
   // means, had no callers at all.
+  //
+  // #3122: guarded like the save beside it. This button submits the same form, so it
+  // carries the version that form was drawn from, and its confirm named the week it
+  // was about to replace; a week somebody saved since is not that week.
   const plan = planUniformSchedule(
     o.default_weekdays,
     o.default_start_minute,
@@ -1777,7 +1839,9 @@ export async function useDefaultHours(form: FormData): Promise<void> {
     tz,
   );
   const before = await readScheduleForAudit(userId);
-  await replaceUserSchedule(userId, "admin", plan);
+  if ((await replaceUserSchedule(userId, "admin", plan, loaded)) === "changed") {
+    redirect(`/admin/agents/${userId}${refusedQuery(CHANGED_SINCE_OPENED)}`);
+  }
   await auditScheduleSave(actor, userId, "agent.use_default_hours", before, plan);
   // #1769: the form that calls this lives on the agent's own page, so that is the
   // route that has to be refreshed. Revalidating only /admin left the page the
@@ -2459,6 +2523,9 @@ export async function resendWebhookDelivery(form: FormData): Promise<void> {
   const admin = await requireAdmin();
   const deliveryId = String(form.get("delivery_id") ?? "");
   if (!deliveryId) return;
+  // lock-overlap: deliberately held for its TTL as a dedupe window for repeated
+  // presses, never released. The send itself goes through claimAndSend, which compares
+  // and swaps on attempts, so a press after the window cannot double POST.
   const claim = await acquireLock(
     `webhook_resend:${admin.org_id}:${deliveryId}`,
     WEBHOOK_RESEND_DEDUPE_TTL_MS,
@@ -2508,6 +2575,9 @@ export async function replayFailedWebhooks(form: FormData): Promise<void> {
   const hours = Math.min(Math.max(Number(form.get("hours")) || 24, 1), 168);
   // `hours` is in the key so a genuinely different window isn't deduped away,
   // while an identical resubmit (same window) is.
+  // lock-overlap: deliberately held for its TTL as a dedupe window for repeated
+  // presses. Each row's send compares and swaps on attempts in claimAndSend, so a
+  // second replay cannot double POST a row.
   const claim = await acquireLock(
     `webhook_replay:${admin.org_id}:${hours}`,
     WEBHOOK_REPLAY_DEDUPE_TTL_MS,

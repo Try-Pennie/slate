@@ -15,7 +15,7 @@ const from = vi.hoisted(() =>
     insert: async () => ({ error: db.insertError }),
     update: () => ({
       eq: () => ({
-        lt: () => ({ select: async () => ({ data: [], error: null }) }),
+        lt: () => ({ or: () => ({ select: async () => ({ data: [], error: null }) }) }),
       }),
     }),
   })),

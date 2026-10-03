@@ -81,9 +81,16 @@ vi.mock("@/lib/salesforce/sync", () => ({ syncSalesforceAgents: vi.fn(), AGENTS_
 vi.mock("@/lib/notify/streak", () => ({ clearFailureStreak: vi.fn(), recordFailureStreak: vi.fn(), recordConsecutiveStreak: vi.fn() }));
 
 import { createEventType, setEventTypeGap } from "./actions";
+import { refusedQuery } from "@/lib/admin/save-outcomes";
+import { CHANGED_SINCE_OPENED, PAGE_OUT_OF_DATE } from "@/lib/admin/edit-version";
+
+/** The version the editor was drawn from (#3122). */
+const LOADED = "2026-10-03T10:00:00.123456+00:00";
 
 function form(entries: Record<string, string>): FormData {
   const fd = new FormData();
+  // #3122: the version the editor was drawn from; a case removes it to test the refusal.
+  fd.set("loaded_updated_at", LOADED);
   for (const [k, v] of Object.entries(entries)) fd.set(k, v);
   return fd;
 }
@@ -124,6 +131,7 @@ describe("setEventTypeGap", () => {
     expect(eqCalls).toEqual([
       ["id", "et1"],
       ["org_id", "o1"],
+      ["updated_at", LOADED],
     ]);
     // The buffer rides in the cached slots payload, so the booker must rebuild.
     expect(markAllBucketSlotsStale).toHaveBeenCalled();
@@ -180,6 +188,22 @@ describe("setEventTypeGap", () => {
     expect(to).toContain("error=");
     expect(to).not.toContain("ok=");
     expect(recordAudit).not.toHaveBeenCalled();
+  });
+
+  // #3122: the row is there (the read answers it) but held another version, so
+  // another admin saved first. Said as that, and nothing is refreshed or audited.
+  it("tells the admin somebody else saved since they opened the page", async () => {
+    result.count = 0;
+    const to = await run({ event_type_id: "et1", gap_min: "10" });
+    expect(to).toBe(`/admin/event-types${refusedQuery(CHANGED_SINCE_OPENED)}`);
+    expect(markAllBucketSlotsStale).not.toHaveBeenCalled();
+    expect(recordAudit).not.toHaveBeenCalled();
+  });
+
+  it("refuses a form that carried no version, before writing anything", async () => {
+    const to = await run({ event_type_id: "et1", gap_min: "10", loaded_updated_at: "" });
+    expect(to).toBe(`/admin/event-types${refusedQuery(PAGE_OUT_OF_DATE)}`);
+    expect(update).not.toHaveBeenCalled();
   });
 });
 
