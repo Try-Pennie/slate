@@ -68,6 +68,13 @@ const doc = readFileSync(join(import.meta.dirname, "..", "docs", "slo.md"), "utf
     "control: a constant moved in code alone is caught",
   );
 
+  const onSite = doc.replace("where not is_test and host_class <> 'offsite'", "where not is_test");
+  assert(onSite !== doc, "control: the hand query's filter is where the control edits it");
+  assert(
+    sloDocFindings(onSite).some((f) => f.includes("hand query population filter")),
+    "control: a hand query counting off site rows the automated check leaves out is caught",
+  );
+
   const fewer = doc.replace("`cancel_internal`.", "`cancel_write_failed`.");
   assert(
     sloDocFindings(fewer).some((f) => f.includes("server fault codes")),
@@ -75,10 +82,13 @@ const doc = readFileSync(join(import.meta.dirname, "..", "docs", "slo.md"), "utf
   );
 
   for (const { label } of RETIRED_SLO_CLAIMS) {
-    const stale =
-      label === "the pre pilot no traffic caveat"
-        ? `${doc}\nSlate has taken no real customer traffic yet.`
-        : `${doc}\n| x | y | **Disarmed.** z |`;
+    const sample: Record<string, string> = {
+      "the pre pilot no traffic caveat": "Slate has taken no real customer traffic yet.",
+      "the failure rate page as disarmed": "| x | y | **Disarmed.** z |",
+      "that nothing computes the monthly targets": "Nothing computes these automatically.",
+    };
+    assert(label in sample, `control: ${label} has a sample to plant`);
+    const stale = `${doc}\n${sample[label]}`;
     assert(sloDocFindings(stale).some((f) => f.includes(label)), `control: ${label} coming back is caught`);
   }
 }

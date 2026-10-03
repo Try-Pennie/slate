@@ -21,6 +21,7 @@ import {
   CRON_CPU_LIMIT_MS,
 } from "../../src/lib/monitor/cron-budget.ts";
 import { SHIPPED_FAILURE_RATE_THRESHOLDS } from "../../src/lib/monitor/failure-rate-thresholds.ts";
+import { BOOKING_BUDGET_ALERT_KEYS, BUDGET_WARN_SHARE } from "../../src/lib/monitor/slo-budget.ts";
 import { AVAILABILITY_P50_BUDGET_MS, LATENCY_SAMPLES } from "./latency-slo.ts";
 
 export interface SloDocLine {
@@ -96,6 +97,18 @@ export function expectedSloDocLines(): SloDocLine[] {
       line: `  in (${SERVER_FAULT_ERROR_CODES.map((c) => `'${c}'`).join(", ")})`,
     },
     {
+      label: "automated budget check",
+      line:
+        `The monitor lane computes both every tick (\`booking_budget\` step, \`src/lib/monitor/slo-budget.ts\`) ` +
+        `and pages ${Object.values(BOOKING_BUDGET_ALERT_KEYS).map((k) => `\`${k}\``).join(" or ")} once ` +
+        `**${BUDGET_WARN_SHARE * 100}%** of a month's budget is spent, judging the same non-test, on site ` +
+        `population as the hourly failure page.`,
+    },
+    {
+      label: "hand query population filter",
+      line: `where not is_test and host_class <> 'offsite'`,
+    },
+    {
       label: "cron headroom row",
       line:
         `| Cron CPU headroom | No tick past **${s(CRON_BUDGET_WARN_MS)}** of wall time, half the ` +
@@ -108,7 +121,7 @@ export function expectedSloDocLines(): SloDocLine[] {
       line:
         `| Share of booking attempts that end in an error | pages above **${fr.failPct}%** in a rolling ` +
         `**${fr.windowMs / 3_600_000} hour** window, with at least **${fr.minAttempts}** attempts ` +
-        `| **Armed** since 2026-10-01 (#1367, #2513) |`,
+        `| behind the "customers are failing to book" switch under Admin, Alerts |`,
     },
     {
       label: "availability latency row",
@@ -123,6 +136,8 @@ export function expectedSloDocLines(): SloDocLine[] {
 export const RETIRED_SLO_CLAIMS: readonly { label: string; pattern: RegExp }[] = [
   { label: "the pre pilot no traffic caveat", pattern: /no real customer traffic/i },
   { label: "the failure rate page as disarmed", pattern: /\*\*Disarmed\.?\*\*/ },
+  // #3179 computes the monthly budgets on the monitor lane.
+  { label: "that nothing computes the monthly targets", pattern: /Nothing computes these/i },
 ];
 
 /** Every expected line missing from `doc`, and every retired claim still in it. Empty is clean. */

@@ -60,9 +60,12 @@ share changes, the budget in requests changes with it and the share does not.
 
 ### Reading a month
 
-Nothing computes these automatically: they are read by hand, at month end or when a bad
-week makes somebody ask, with this query (read only, in the SQL editor). So these two rows
-are a decision and a query, not a page; the hourly page below is what speaks on its own.
+The monitor lane computes both every tick (`booking_budget` step, `src/lib/monitor/slo-budget.ts`) and pages `booking_budget:success` or `booking_budget:availability` once **50%** of a month's budget is spent, judging the same non-test, on site population as the hourly failure page.
+
+To read a month by hand (at month end, or to check what the page said), this query
+counts the same rows (read only, in the SQL editor). Off site rows (a booking from a host
+that is not the production site, usually a tester, #2752) are left out, as the automated check leaves them
+out.
 
 ```sql
 select
@@ -72,7 +75,7 @@ select
   in ('booking_pause_unreadable', 'lead_code_unavailable', 'existing_call_unavailable', 'verify_unavailable', 'internal', 'VERIFY_UNAVAILABLE', 'INTERNAL', 'API_NOT_CONFIGURED', 'reschedule_verify_unavailable', 'reschedule_lock_unavailable', 'reschedule_internal', 'reschedule_write_failed', 'cancel_write_failed', 'cancel_internal')
   ) as server_faults
 from booking_api_outcome_daily
-where not is_test
+where not is_test and host_class <> 'offsite'
   and outcome in ('created', 'rescheduled', 'cancelled', 'deduped', 'confirm_required', 'error')
   and day >= date '2026-10-01' and day < date '2026-11-01';
 ```
@@ -141,8 +144,12 @@ notes, not a check.
 
 | What | Threshold | Status |
 |---|---|---|
-| Share of booking attempts that end in an error | pages above **20%** in a rolling **3 hour** window, with at least **20** attempts | **Armed** since 2026-10-01 (#1367, #2513) |
-| Booking volume not collapsing | An unusually quiet window pages | Live, behind its own switch (`docs/parallel-run-plan.md`) |
+| Share of booking attempts that end in an error | pages above **20%** in a rolling **3 hour** window, with at least **20** attempts | behind the "customers are failing to book" switch under Admin, Alerts |
+| Booking volume not collapsing | An unusually quiet window pages | behind its own switch (`docs/parallel-run-plan.md`) |
+
+Both switches are database settings (`monitor_alert_config`), so whether either is on is
+read under Admin, Alerts rather than stated here. The failure page's was switched on
+2026-10-01 (#1367, #2513).
 
 The threshold pair is derived from measured traffic at the split's share
 (`src/lib/monitor/failure-rate-thresholds.ts`), not typed by hand. The minimum-attempts
