@@ -575,11 +575,16 @@ export async function runGradualDeploy(ops: GradualOps): Promise<GradualResult> 
   // Anything thrown before the split is attempted changed nothing, and is caught here
   // into its own ending rather than escaping as an unhandled rejection. Throws after
   // the split is attempted are caught where they can restore (below).
-  let attempted = false;
+  // `splitOpen` is whether a split this run made is standing NOW, read from the LAST
+  // event: a heal records `split-attempted` and then `ended`, so a throw after a
+  // finished heal, before this run opens its own split, is a throw before the split.
+  let splitOpen = false;
+  let healed = false;
   const tracked: GradualOps = {
     ...ops,
     record: (event) => {
-      if (event === "split-attempted") attempted = true;
+      if (event === "ended" && splitOpen) healed = true;
+      splitOpen = event === "split-attempted";
       ops.record(event);
     },
   };
@@ -587,7 +592,14 @@ export async function runGradualDeploy(ops: GradualOps): Promise<GradualResult> 
     return await runUntilSplit(tracked);
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
-    if (attempted) throw err; // unreachable: everything after the attempt catches its own
+    if (splitOpen) throw err; // unreachable: everything after the attempt catches its own
+    if (healed) {
+      return {
+        exit: EXIT.threwBeforeSplit,
+        end: "unchanged",
+        message: `Not deployed: an error was thrown before the split opened (${why}). The split an earlier run left was settled first, so the serving version is whole at 100%; nothing else changed.`,
+      };
+    }
     return { exit: EXIT.threwBeforeSplit, end: "unchanged", message: `Not deployed: an error was thrown before the split opened (${why}). Nothing changed.` };
   }
 }

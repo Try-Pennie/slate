@@ -466,6 +466,19 @@ for (const at of ["probe:canary", "promote", "probe:promoted", "triggers"] as co
   assert(r.result.message.includes("planted throw"), "the message carries what was thrown");
   assert(!r.records.includes("split-attempted"), "and nothing recorded a split");
 }
+{
+  // Heal a leftover split, then throw before THIS run opens its own. The heal ended
+  // whole (recorded `ended`), so the throw is a throw before the split, caught into its
+  // own ending: not rethrown as though this run's split were standing.
+  const r = await drive({
+    ...HAPPY,
+    start: [{ versionId: OLD, percentage: 90 }, { versionId: CANARY, percentage: 10 }],
+    throwAt: "upload",
+  });
+  eq(r.result.exit, EXIT.threwBeforeSplit, "a throw after a finished heal and before this run's split is a throw before the split");
+  eq(r.records.join(","), "split-attempted,ended", "the heal's records end with `ended`, so the settle step has nothing to read");
+  eq(JSON.stringify(r.deployment), JSON.stringify([{ versionId: OLD, percentage: 100 }]), "and production is whole on the version the heal restored");
+}
 
 {
   // A restore that itself throws counts as a failed attempt and is retried, rather
