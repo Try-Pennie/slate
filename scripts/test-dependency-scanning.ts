@@ -65,6 +65,25 @@ const COOLDOWN = /^\s+cooldown:\s*\n\s+default-days:\s*([1-9]\d*)\s*$/m;
   );
 }
 
+// Dependabot refuses the WHOLE file when an entry carries a cooldown key its
+// ecosystem does not support, and it says so only in a check run on each commit,
+// so a refused file looks like a quiet week of no update PRs. The github-actions
+// ecosystem has no semver cooldowns (Dependabot's own error on 2026-10-03: "The
+// property '#/updates/1/cooldown/semver-minor-days' is not supported for the
+// package ecosystem 'github-actions'"), so only default-days may sit there.
+const NO_SEMVER_COOLDOWN = new Set(["github-actions"]);
+const SEMVER_COOLDOWN_KEY = /^\s+semver-(major|minor|patch)-days:/m;
+{
+  for (const e of dependabotEntries(dependabot)) {
+    const eco = /package-ecosystem:\s*["']?([\w-]+)/.exec(e)?.[1] ?? "?";
+    if (NO_SEMVER_COOLDOWN.has(eco)) {
+      assert(!SEMVER_COOLDOWN_KEY.test(e), `the ${eco} entry carries no semver cooldown key, which Dependabot refuses for it`);
+    }
+  }
+  const bad = "  - package-ecosystem: github-actions\n    cooldown:\n      default-days: 7\n      semver-patch-days: 3\n";
+  assert(SEMVER_COOLDOWN_KEY.test(dependabotEntries(bad)[0]), "control: a semver cooldown on github-actions is caught");
+}
+
 // Every check below reads STEPS with comments stripped, and only what a step RUNS.
 // Both workflows quote the audit commands in their comments, so a check over the
 // raw text passes with the step deleted (L135); the controls further down plant

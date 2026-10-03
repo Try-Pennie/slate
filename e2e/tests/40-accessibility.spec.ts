@@ -22,6 +22,9 @@ import {
   expectTheme,
   seriousFindings,
   describeFindings,
+  dayButtons,
+  openDayWithTimes,
+  timeButtons,
 } from "../fixtures.ts";
 import { adminNavHrefs } from "@/lib/admin/nav";
 import { ME_TABS } from "@/lib/me/nav";
@@ -66,10 +69,9 @@ test("control: a violation planted in the real booker is caught, so the scan rea
   await page.waitForLoadState("load");
   const before = await seriousFindings(page);
   // A visible control the lead uses: the first day button.
-  await expect(page.getByRole("group", { name: "Available days" }).getByRole("button").first()).toBeVisible();
-  await page.evaluate(() => {
-    const button = document.querySelector('[role="group"][aria-label="Available days"] button, fieldset button');
-    if (!button) throw new Error("the booker rendered no day button to plant on");
+  const firstDay = dayButtons(page).first();
+  await expect(firstDay).toBeVisible();
+  await firstDay.evaluate((button) => {
     button.textContent = "";
     button.removeAttribute("aria-label");
     button.removeAttribute("aria-labelledby");
@@ -88,15 +90,17 @@ for (const theme of THEMES) {
   test(`the booker, day and time step (${theme})`, async ({ page }) => {
     await scan(page, `/book?xbc=${seed.bucketCode}${theme === "dark" ? "&theme=dark" : ""}`, theme, "/book");
     // And once a day is open, which is the state most of the page's controls live in.
-    await page.getByRole("group", { name: "Available days" }).getByRole("button").first().click();
-    await expect(page.getByRole("button", { name: /^\d{1,2}:\d{2}\s?(am|pm)/i }).first()).toBeVisible();
+    // The first day WITH times, not the first chip: late in the day the first chip
+    // can hold only times outside the lead's calling hours (`openDayWithTimes`).
+    await openDayWithTimes(page);
+    await expect(timeButtons(page).first()).toBeVisible();
     await expectAccessible(page, `/book with a day open (${theme})`);
   });
 
   test(`the booker, details step (${theme})`, async ({ page }) => {
     await page.goto(`/book?xbc=${seed.bucketCode}${theme === "dark" ? "&theme=dark" : ""}`);
-    await page.getByRole("group", { name: "Available days" }).getByRole("button").first().click();
-    await page.getByRole("button", { name: /^\d{1,2}:\d{2}\s?(am|pm)/i }).first().click();
+    await openDayWithTimes(page);
+    await timeButtons(page).first().click();
     await expect(page.getByRole("textbox", { name: /email/i })).toBeVisible();
     await expectTheme(page, theme);
     await expectAccessible(page, `/book details (${theme})`);

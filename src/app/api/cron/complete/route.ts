@@ -31,6 +31,9 @@ export async function GET(req: NextRequest) {
   // race to flip it; the conditional transition in completePastBookings stops
   // the duplicate webhook, but the lock also keeps them from doing the work
   // twice (#163). Mirrors the cron_sync lock.
+  // lock-overlap: completion flips a booking only from confirmed or rescheduled (a
+  // status compare and swap), and webhook retries compare and swap on attempts, so an
+  // overlapping run cannot complete or send twice.
   const lock = await acquireLock("cron_complete", CRON_LOCK_TTL_MS);
   if (!lock) {
     return NextResponse.json({ skipped: "overlapping-run" });

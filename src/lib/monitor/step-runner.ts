@@ -48,11 +48,31 @@ export function createStepRunner(deps: {
   now: () => number;
   /** Report a step's failure. Called once per failure, with the step's name. */
   onError: (name: string, err: unknown) => void;
+  /**
+   * The lane lock's fence (#3120), asked before each step. Once it says the lock is
+   * gone, every remaining step is SKIPPED: another run owns the lane, and two runs
+   * would post the same handoff and overwrite each other's learned settings. A skip
+   * is not a failure, so it never feeds a step failure streak.
+   */
+  stillHeld?: () => Promise<boolean>;
 }): StepRunner {
   const outcomes: StepOutcome[] = [];
+  const skipped: string[] = [];
 
   return {
     async run<T>(name: string, fallback: T, fn: () => Promise<T>): Promise<T> {
+      if (deps.stillHeld) {
+        let held = false;
+        try {
+          held = await deps.stillHeld();
+        } catch {
+          // A fence that cannot answer cannot show the lock is held.
+        }
+        if (!held) {
+          skipped.push(name);
+          return fallback;
+        }
+      }
       const startedAt = deps.now();
       try {
         const out = await fn();
@@ -100,6 +120,7 @@ export function createStepRunner(deps: {
       // "sweep and drift failed" tells them which customer-visible checks did not
       // run this tick.
       if (failed.length > 0) out.failed = failed.join(",");
+      if (skipped.length > 0) out.skipped_lease_lost = skipped.join(",");
       const dups = [...seen.entries()].filter(([, n]) => n > 1).map(([n]) => n);
       if (dups.length > 0) out.duplicate_step_names = dups.join(",");
       return out;

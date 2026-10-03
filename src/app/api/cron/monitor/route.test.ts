@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const cron = vi.hoisted(() => ({ isAuthorizedCron: vi.fn(() => false) }));
 const locks = vi.hoisted(() => ({
   acquireLock: vi.fn(async () => "lease"),
+  acquireLease: vi.fn(async () => ({ key: "cron_monitor", token: () => "lease", stillHeld: async () => true, stopReason: () => null })),
   releaseLock: vi.fn(async () => {}),
 }));
 
@@ -21,6 +22,6 @@ describe("GET /api/cron/monitor", () => {
   it("returns 401 and does no work when the cron bearer is missing or wrong", async () => {
     const res = await GET(req());
     expect(res.status).toBe(401);
-    expect(locks.acquireLock).not.toHaveBeenCalled();
+    expect(locks.acquireLease).not.toHaveBeenCalled();
   });
 });

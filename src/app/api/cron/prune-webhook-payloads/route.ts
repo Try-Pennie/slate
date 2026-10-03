@@ -28,6 +28,8 @@ export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
+  // lock-overlap: erasing a payload by id is idempotent, so a second run erases nothing
+  // new.
   const lock = await acquireLock("cron_prune_webhook_payloads", LOCK_TTL_MS);
   if (!lock) return NextResponse.json({ skipped: "overlapping-run" });
   try {

@@ -27,6 +27,7 @@ import {
   rampEndMs,
   readStoredLearning,
   runVolumeRelearn,
+  shareInForce,
   type StoredVolumeLearning,
 } from "../src/lib/monitor/volume-relearn.ts";
 import { learningStatusCopy, tierLearningLines } from "../src/lib/monitor/volume-relearn-copy.ts";
@@ -626,6 +627,17 @@ let fitted: StoredVolumeLearning | null = null;
   const moved = harness({ rows: low, calcom: { "1": 576 }, source: WHOLE, learning: half.saves[0], nowMs: nextDay });
   await moved.run();
   eq(moved.saves[0]!.carriedShare!.tiers["1"]!.applied?.share, 0, "control: when cal.com took them, the leads MOVED and the new share applies");
+
+  // #3193: the share in force as the per page alarm reads it, one state per cause.
+  // The page floors have no measurement of their own to fall back on, so a share
+  // that is not known must say which way it is not known, never stand in as 1 or 0.
+  eq(shareInForce(half.saves[0], "1"), { state: "applied", share: 0.5, heldSince: null, countedTo: half.saves[0]!.carriedShare!.tiers["1"]!.applied!.to }, "an applied share is read as applied");
+  const heldShare = shareInForce(lost.saves[0], "1");
+  assert(heldShare.state === "applied" && heldShare.share === 0.5 && heldShare.heldSince !== null, "a held share is the share in force, marked held since when");
+  eq(shareInForce(null, "1"), { state: "unmeasured" }, "no refit stored is unmeasured");
+  eq(shareInForce(half.saves[0], "2"), { state: "unmeasured" }, "a tier with no share entry is unmeasured");
+  eq(shareInForce({ ...half.saves[0]!, carriedShare: null }, "1"), { state: "unmeasured" }, "a refit that measured no share yet is unmeasured");
+  eq(shareInForce("nonsense", "1"), { state: "unreadable" }, "a record that does not read is unreadable, not unmeasured (L11)");
 
   // A failed or partial cal.com read writes nothing and leaves the floors in force.
   const broken = harness({ rows: low, calcomThrows: true, source: WHOLE });

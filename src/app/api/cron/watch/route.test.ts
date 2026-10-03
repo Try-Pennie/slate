@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // watch/renewal LOGIC is covered by the sync suite; this pins the route glue.
 const cron = vi.hoisted(() => ({ isAuthorizedCron: vi.fn(() => false) }));
 const locks = vi.hoisted(() => ({
-  acquireLock: vi.fn(async () => "lease"),
+  acquireLease: vi.fn(async () => ({ key: "cron_watch", token: () => "lease", stillHeld: async () => true, stopReason: (): "taken" | "refused" | null => null })),
   releaseLock: vi.fn(async () => {}),
 }));
 const sync = vi.hoisted(() => ({
@@ -50,11 +50,44 @@ beforeEach(() => {
   dispatch.isAlertFiring.mockResolvedValue(true);
 });
 
+// #3120: two overlapping ticks renewing one calendar each open a Google channel, so
+// a tick whose lease is gone must not start another agent.
+describe("the watch lane lease (#3120)", () => {
+  const runTasks = async (agents: unknown[], _c: number, task: (a: unknown) => Promise<unknown>) => {
+    const results = [];
+    for (const a of agents) results.push(await task(a));
+    return { results, truncated: false };
+  };
+  const twoAgents = [
+    { userId: "u1", hasCalendars: true },
+    { userId: "u2", hasCalendars: true },
+  ];
+
+  it("starts no agent once the lease is lost", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    pace.watchAgentsForTick.mockReturnValueOnce(twoAgents as never);
+    pace.mapWithConcurrency.mockImplementationOnce(runTasks as never);
+    locks.acquireLease.mockResolvedValueOnce({ key: "cron_watch", token: () => "lease", stillHeld: async () => false, stopReason: () => "taken" as const });
+    await GET(req());
+    expect(sync.ensureWatches).not.toHaveBeenCalled();
+    // A partly abandoned tick does not stamp the dead man's switch.
+    expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
+  });
+
+  it("CONTROL: a held lease renews every agent", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    pace.watchAgentsForTick.mockReturnValueOnce(twoAgents as never);
+    pace.mapWithConcurrency.mockImplementationOnce(runTasks as never);
+    await GET(req());
+    expect(sync.ensureWatches).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("GET /api/cron/watch", () => {
   it("returns 401 and does no work when the cron bearer is missing or wrong", async () => {
     const res = await GET(req());
     expect(res.status).toBe(401);
-    expect(locks.acquireLock).not.toHaveBeenCalled();
+    expect(locks.acquireLease).not.toHaveBeenCalled();
     expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
   });
 

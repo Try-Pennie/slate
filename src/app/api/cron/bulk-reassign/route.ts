@@ -3,8 +3,9 @@ import { drainBulkReassignJobs } from "@/lib/booking/service";
 import { isAuthorizedCron } from "@/lib/cron";
 import { refuseCronSecret } from "@/lib/bearer-failure";
 import { CRON_LOCK_TTL_MS } from "@/lib/google/sync-coalesce";
-import { acquireLock, releaseLock } from "@/lib/locks";
+import { acquireLease, releaseLock } from "@/lib/locks";
 import { log } from "@/lib/log";
+import { leaseHeldThroughout } from "@/lib/monitor/lease-heartbeat";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 
 export const dynamic = "force-dynamic";
@@ -22,19 +23,24 @@ export async function GET(req: NextRequest) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
 
-  const lock = await acquireLock("cron_bulk_reassign", CRON_LOCK_TTL_MS);
-  if (!lock) {
+  // lock-overlap: fenced. The per item claim leaves the item pending and relies on
+  // this lock, so two ticks could move bookings against the same daily cap count.
+  // The lease renews before each item and the drain stops once another tick holds
+  // the key (#3120).
+  const lease = await acquireLease("cron_bulk_reassign", CRON_LOCK_TTL_MS);
+  if (!lease) {
     return NextResponse.json({ skipped: "overlapping-run" });
   }
 
   try {
-    const summary = await drainBulkReassignJobs().catch((err) => {
+    const summary = await drainBulkReassignJobs(lease.stillHeld).catch((err) => {
       log.error("bulk-reassign", { msg: "drain failed" }, err);
       return null;
     });
     // Best-effort heartbeat for observability; stamped even on a failed drain
     // (which logs on its own path), since it only proves the lane executed.
-    await recordHeartbeat("bulk-reassign").catch(() => {});
+    // #3120: withheld when the lease was lost part way, so the gap pages.
+    if (leaseHeldThroughout(lease, "bulk-reassign")) await recordHeartbeat("bulk-reassign").catch(() => {});
     if (summary) {
       log.info("bulk-reassign", {
         msg: "drain tick",
@@ -50,6 +56,6 @@ export async function GET(req: NextRequest) {
     }
     return NextResponse.json(summary ?? { error: "drain-failed" });
   } finally {
-    await releaseLock("cron_bulk_reassign", lock);
+    await releaseLock("cron_bulk_reassign", lease.token());
   }
 }

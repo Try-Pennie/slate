@@ -96,6 +96,8 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // lock-overlap: a repeat run re-nulls the same contact columns, which is idempotent;
+  // the only cost of an overlap is a second audit row.
   const lock = await acquireLock("erasure_warehouse_purge", LOCK_TTL_MS);
   if (!lock) return NextResponse.json({ error: "a purge is already running" }, { status: 409 });
 
