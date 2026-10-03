@@ -12,6 +12,8 @@ import type { User } from "@/lib/db/types";
 import { loadTierDropReport, type TierDropReport } from "@/lib/admin/tier-drops-load";
 import { TierDropPanel } from "@/components/admin/TierDropPanel";
 
+export const metadata = { title: "Recent routing" };
+
 export const dynamic = "force-dynamic";
 
 function nowMs(): number {
@@ -132,7 +134,9 @@ export default async function RecentRoutingPage() {
           </p>
           {/* heading-gloss-ok: the SCHEME the value is sent under, which the
               caller has to match. A format note, not a definition. */}
-          <label className={labelCls}>Authorization key (Bearer)</label>
+          {/* A caption for a value shown, not a form control, so a heading
+              rather than a label (#3080). */}
+          <h3 className={labelCls}>Authorization key (Bearer)</h3>
           <code className="mt-1 block break-all rounded-sm bg-[var(--pennie-wild-sand)] px-3 py-2 text-xs dark:bg-fg/10">
             {reassignApiKey() ||
               "not configured (set REASSIGN_API_KEY on the worker)"}

@@ -30,6 +30,8 @@ import { log } from "@/lib/log";
 const CONSIDERED_SHOWN = 12;
 import type { Booking } from "@/lib/db/types";
 
+export const metadata = { title: "Booking" };
+
 export const dynamic = "force-dynamic";
 
 /**

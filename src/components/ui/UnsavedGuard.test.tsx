@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { useState } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { UnsavedGuard } from "./UnsavedGuard";
 
@@ -16,6 +16,17 @@ import { UnsavedGuard } from "./UnsavedGuard";
 // so nothing about next/navigation needs mocking here, and no OTHER test of a
 // form that mounts it does either. That is the point of the choice.
 const push = vi.hoisted(() => vi.fn());
+
+// jsdom has HTMLDialogElement but implements neither showModal nor close, so
+// both are stood in for here, doing the one thing the component can observe:
+// the `open` attribute.
+const showModal = vi.fn(function (this: HTMLDialogElement) {
+  this.setAttribute("open", "");
+});
+HTMLDialogElement.prototype.showModal = showModal;
+HTMLDialogElement.prototype.close = function (this: HTMLDialogElement) {
+  this.removeAttribute("open");
+};
 
 /** A page with a guarded form and a sidebar link out of it. */
 function Page({ initial = "08:00" }: { initial?: string } = {}) {
@@ -64,6 +75,7 @@ const dialog = () => screen.queryByRole("alertdialog");
 describe("UnsavedGuard (#1966)", () => {
   beforeEach(() => {
     push.mockClear();
+    showModal.mockClear();
     // jsdom refuses a real navigation, so the one call is captured instead.
     Object.defineProperty(window, "location", {
       configurable: true,
@@ -191,6 +203,60 @@ describe("UnsavedGuard (#1966)", () => {
     await user.type(screen.getByLabelText("Monday start"), "9");
     await user.click(screen.getByRole("link", { name: "Somewhere else" }));
     expect(dialog()).toBeNull();
+  });
+
+  // #3081: a div with aria-modal="true" PROMISED a modal and delivered none of
+  // it: Tab walked out into the page behind, the page stayed clickable, and
+  // closing it dropped focus on the body. A native dialog opened with
+  // showModal() is what makes the rest of the page inert and keeps focus inside,
+  // and jsdom implements neither, so what is asserted is that the platform
+  // modal is what gets asked for.
+  describe("as a modal (#3081)", () => {
+    it("opens as a native dialog through showModal, so the page behind is inert", async () => {
+      const user = userEvent.setup();
+      render(<Page />);
+      await user.type(screen.getByLabelText("Monday start"), "9");
+      await user.click(screen.getByRole("link", { name: "Buckets" }));
+      expect(dialog()!.tagName).toBe("DIALOG");
+      expect(showModal).toHaveBeenCalledTimes(1);
+    });
+
+    it("puts focus back on the link it stopped, after Stay", async () => {
+      const user = userEvent.setup();
+      render(<Page />);
+      await user.type(screen.getByLabelText("Monday start"), "9");
+      const link = screen.getByRole("link", { name: "Buckets" });
+      await user.click(link);
+      expect(document.activeElement).not.toBe(link);
+      await user.click(screen.getByRole("button", { name: "Stay on this page" }));
+      expect(document.activeElement).toBe(link);
+    });
+
+    it("puts focus back on the link it stopped, after Escape", async () => {
+      const user = userEvent.setup();
+      render(<Page />);
+      await user.type(screen.getByLabelText("Monday start"), "9");
+      const link = screen.getByRole("link", { name: "Buckets" });
+      await user.click(link);
+      await user.keyboard("{Escape}");
+      expect(dialog()).toBeNull();
+      expect(document.activeElement).toBe(link);
+    });
+
+    // The platform's own Escape route (and a phone's back gesture) arrives as a
+    // `cancel` event rather than a keydown, and must stay just the same.
+    it("treats the dialog's own cancel as Stay", async () => {
+      const user = userEvent.setup();
+      render(<Page />);
+      await user.type(screen.getByLabelText("Monday start"), "9");
+      await user.click(screen.getByRole("link", { name: "Buckets" }));
+      const cancel = new Event("cancel", { cancelable: true });
+      act(() => {
+        dialog()!.dispatchEvent(cancel);
+      });
+      expect(dialog()).toBeNull();
+      expect(push).not.toHaveBeenCalled();
+    });
   });
 
   // A click the person has told the browser to handle differently keeps this

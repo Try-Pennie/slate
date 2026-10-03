@@ -7,7 +7,11 @@ export const metadata: Metadata = {
   // og:image has to be an absolute URL, and with no base Next fills in
   // localhost, so a pasted link would unfurl with no picture at all.
   metadataBase: new URL("https://slate.trypennie.app"),
-  title: "Slate",
+  // Each page names itself and the product follows (#3111): thirty staff tabs
+  // all reading "Slate" could not be told apart in a tab strip, a history list
+  // or a screen reader's first announcement. A lead facing page sets an
+  // absolute title, so it is never rewritten by this.
+  title: { template: "%s | Slate", default: "Slate" },
   description: "Scheduling and booking for Pennie.",
 };
 

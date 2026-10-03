@@ -328,14 +328,20 @@ export default function BulkReassignCoverage({
               options={reassignReasons.map((r) => ({ value: r.code, label: r.label }))}
             />
             {reasonCode === "other" && (
-              <input
-                type="text"
-                className={`${inputCls} mt-2`}
-                placeholder="Tell us a bit more"
-                value={reasonDetail}
-                maxLength={500}
-                onChange={(e) => setReasonDetail(e.target.value)}
-              />
+              <>
+                <label className="sr-only" htmlFor="bulk-reason-detail">
+                  Tell us a bit more
+                </label>
+                <input
+                  id="bulk-reason-detail"
+                  type="text"
+                  className={`${inputCls} mt-2`}
+                  placeholder="Tell us a bit more"
+                  value={reasonDetail}
+                  maxLength={500}
+                  onChange={(e) => setReasonDetail(e.target.value)}
+                />
+              </>
             )}
           </div>
 

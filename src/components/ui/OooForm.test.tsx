@@ -39,7 +39,7 @@ describe("OooForm", () => {
 
     const reason = screen.getByLabelText("Reason") as HTMLInputElement;
     const notes = screen.getByLabelText(
-      "Notes for your manager (optional)",
+      "Anything your manager should know? (optional)",
     ) as HTMLInputElement;
     await userEvent.type(reason, "Vacation");
     await userEvent.type(notes, "Back Monday");

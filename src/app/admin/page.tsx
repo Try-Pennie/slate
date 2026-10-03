@@ -27,6 +27,8 @@ import { StuckDeliveriesPanel } from "@/components/admin/StuckDeliveriesPanel";
 import type { BookingOutbox, BookingReservation } from "@/lib/db/types";
 import type { User } from "@/lib/db/types";
 
+export const metadata = { title: "Health" };
+
 export const dynamic = "force-dynamic";
 
 /**

@@ -20,6 +20,8 @@ import { btnSecondaryCls, cardCls, inputCls, proseCls } from "@/components/ui/st
 import type { AuditEntry, User } from "@/lib/db/types";
 import { SelectField } from "@/components/ui/SelectField";
 
+export const metadata = { title: "Audit log" };
+
 export const dynamic = "force-dynamic";
 
 export default async function AuditLogPage({

@@ -42,6 +42,8 @@ import { DeclineConfirm } from "@/components/ui/DeclineConfirm";
 import type { Booking, OooRequest, OooStatus, User } from "@/lib/db/types";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 
+export const metadata = { title: "Team time off" };
+
 export const dynamic = "force-dynamic";
 
 const STATUS_PILL: Record<OooStatus, PillVariant> = {

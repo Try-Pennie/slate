@@ -6,6 +6,8 @@ import BookingLookup from "@/components/BookingLookup";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
 import { cardCls, proseCls } from "@/components/ui/styles";
 
+export const metadata = { title: "Look up a booking" };
+
 export const dynamic = "force-dynamic";
 
 export default async function BookingLookupPage() {

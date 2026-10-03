@@ -1,6 +1,6 @@
 "use client";
 
-import { type RefObject, useEffect, useId, useRef, useState } from "react";
+import { type RefObject, useCallback, useEffect, useId, useRef, useState } from "react";
 import { AnchoredPanel } from "@/components/ui/AnchoredPanel";
 import { DateTime } from "luxon";
 import {
@@ -97,6 +97,7 @@ export function DateTimeField({
   const apRef = useRef<HTMLInputElement>(null);
   const labelId = useId();
   const dialogId = `${labelId}-dialog`;
+  const toggleRef = useRef<HTMLButtonElement>(null);
 
   const openPopup = () => {
     snapshot.current = { mm, dd, yyyy, hh, mi, ap };
@@ -116,7 +117,30 @@ export function DateTimeField({
       setHh(s.hh); setMi(s.mi); setAp(s.ap);
     }
     setOpen(false);
+    toggleRef.current?.focus();
   };
+  /** Confirm: close keeping the value, and hand focus back to where the popup
+   *  was opened from (#3081). */
+  const confirm = () => {
+    setOpen(false);
+    toggleRef.current?.focus();
+  };
+  /**
+   * Move focus into the popup once it is placed (#3081): onto the chosen day, or
+   * the grid's tabbable day when nothing is chosen yet. Left on the button that
+   * opened it, a keyboard user was standing outside the calendar they had just
+   * opened.
+   *
+   * From `onPlaced` rather than an effect on `open`, for the reason RowActionsMenu
+   * gives: before it is placed the panel is hidden, and nothing hidden takes focus.
+   */
+  const focusDay = useCallback(() => {
+    const panel = document.getElementById(dialogId);
+    const day =
+      panel?.querySelector<HTMLButtonElement>('button[data-key][aria-pressed="true"]') ??
+      panel?.querySelector<HTMLButtonElement>('button[data-key][tabindex="0"]');
+    day?.focus({ preventScroll: true });
+  }, [dialogId]);
   /**
    * Close the popup KEEPING whatever is in the field, which is what Confirm does.
    *
@@ -381,7 +405,7 @@ export function DateTimeField({
         </>
         )}
 
-        <button type="button" onClick={open ? cancel : openPopup}
+        <button ref={toggleRef} type="button" onClick={open ? cancel : openPopup}
           aria-label={open ? "Close calendar" : hideTime ? "Open calendar" : "Open calendar and time"}
           aria-haspopup="dialog" aria-expanded={open} aria-controls={dialogId}
           className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-sm text-fg-muted hover:text-fg">
@@ -395,7 +419,11 @@ export function DateTimeField({
       {/* #1843: portalled and positioned in viewport space, so nothing above this
           field can clip the calendar. */}
       <AnchoredPanel open={open} onDismiss={dismiss} triggerRef={rootRef} align="start"
-        id={dialogId} role="dialog" aria-label={ariaLabel} aria-modal={true}
+        onPlaced={focusDay}
+        // NOT aria-modal (#3081): a click elsewhere or a scroll closes this and
+        // the page behind stays live, so it is a popup, and claiming modal told a
+        // screen reader the rest of the page had gone when it had not.
+        id={dialogId} role="dialog" aria-label={ariaLabel}
         className="w-72 rounded-md border border-border bg-surface-elevated p-3 shadow-pop">
         <>
           <CalendarMonth
@@ -441,7 +469,7 @@ export function DateTimeField({
               className="rounded-sm border border-border bg-surface px-3 py-1.5 text-sm font-semibold text-fg hover:bg-pennie-sky-soft dark:hover:bg-accent/15">
               Cancel
             </button>
-            <button type="button" onClick={() => setOpen(false)}
+            <button type="button" onClick={confirm}
               className="rounded-sm bg-pennie-sky px-3 py-1.5 text-sm font-semibold text-pennie-graphite hover:bg-pennie-sky/90">
               Confirm
             </button>

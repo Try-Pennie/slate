@@ -17,7 +17,7 @@ export const dynamic = "force-dynamic";
 // advisor and books them directly, so it is kept out of search results and out
 // of the Referer the page sends anywhere else.
 export const metadata: Metadata = {
-  title: "Book a call with Pennie",
+  title: { absolute: "Book a call with Pennie" },
   robots: { index: false, follow: false },
   referrer: "same-origin",
 };
