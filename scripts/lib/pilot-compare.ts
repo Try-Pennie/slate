@@ -19,7 +19,8 @@
 // 3. A FIXED SPAN. Applications created in the window are judged on outcomes inside
 //    SPAN_DAYS of being made: a booking made inside the span, and a call held at a
 //    final start inside it. An application whose span has not closed is not in the
-//    cohort yet, so numerator and denominator always cover the same days (L711).
+//    cohort yet, so numerator and denominator always cover the same days (L711),
+//    except in a partial look (rule 9), which is labelled and never a result.
 // 4. MATCHING. A Slate booking carries the application id. A cal.com booking is
 //    matched by the id it carries, else by email AND phone to the LATEST application
 //    created before it; several prior applications on different Leads is ambiguous,

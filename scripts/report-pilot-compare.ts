@@ -25,7 +25,7 @@
 // |---|---|
 // | 0 | the readout: the fixed date is reached and the headline is readable |
 // | 1 | Salesforce, Supabase or cal.com credentials are missing here; nothing was read |
-// | 2 | the window has not opened yet: no application has been made in it |
+// | 2 | nothing to judge yet: the window has not opened, or a rehearsal's span has not closed |
 // | 3 | Salesforce could not be read |
 // | 4 | cal.com could not be read |
 // | 5 | Slate could not be read |

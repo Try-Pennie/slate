@@ -64,8 +64,9 @@ memory, and never printed.
 - **A readout date fixed once.** The first run proposes one (the window start plus
   the longer days estimate). Record it as `READOUT_DATE` in
   `scripts/lib/pilot-compare.ts`, in a commit, so nobody can move it by setting a
-  variable. Every run before it is PROVISIONAL (exit 12), and from it on the cohort
-  stops growing.
+  variable. Before the first span closes a run is a PARTIAL look (exit 16); after
+  that and before the readout date it is PROVISIONAL (exit 12), and from the
+  readout date on the cohort stops growing.
 
 ## What it cannot see
 
@@ -123,7 +124,7 @@ condition that holds is still printed, whichever one names the run.
 |---|---|
 | 0 | the readout: the fixed date is reached and the headline is readable |
 | 1 | Salesforce, Supabase or cal.com credentials are missing here; nothing was read |
-| 2 | the window has not opened yet: no application has been made in it |
+| 2 | nothing to judge yet: the window has not opened, or a rehearsal's span has not closed |
 | 3 | Salesforce could not be read, including a short read |
 | 4 | cal.com could not be read |
 | 5 | Slate could not be read |
