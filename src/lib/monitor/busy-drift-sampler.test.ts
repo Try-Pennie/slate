@@ -21,6 +21,7 @@ import {
   type BusyDriftResult,
   type DriftInterval,
 } from "./busy-drift-sampler";
+import { log } from "@/lib/log";
 
 const at = (h: number, m = 0) =>
   `2026-08-24T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00.000Z`;
@@ -68,6 +69,21 @@ describe("uncachedBusy (#1262)", () => {
       ...WINDOW,
     });
     expect(out.gaps).toEqual([]);
+  });
+
+  it("names a gap by when its meeting started, so a meeting already under way keys the same on every tick", () => {
+    // The window starts at "now", so a meeting in progress is clipped to a start that
+    // moves every tick. Its identity is the meeting's own start, which does not.
+    const meeting = iv(at(9), at(11));
+    const tickOne = uncachedBusy({ cached: [], live: [meeting], windowStartIso: at(10), windowEndIso: at(23) });
+    const tickTwo = uncachedBusy({ cached: [], live: [meeting], windowStartIso: at(10, 5), windowEndIso: at(23) });
+    expect(tickOne.gaps[0]!.startIso).toBe(at(10));
+    expect(tickOne.firstGapSinceIso).toBe(at(9));
+    expect(tickTwo.firstGapSinceIso).toBe(at(9));
+    // A gap that starts after a cached block is already stable: it keeps its own start.
+    const afterCached = uncachedBusy({ cached: [iv(at(9), at(10, 30))], live: [meeting], windowStartIso: at(10), windowEndIso: at(23) });
+    expect(afterCached.firstGapSinceIso).toBe(at(10, 30));
+    expect(uncachedBusy({ cached: [], live: [], ...WINDOW }).firstGapSinceIso).toBeNull();
   });
 
   it("a sliver under the tolerance is boundary jitter, not a gap", () => {
@@ -311,6 +327,20 @@ describe("reportBusyDrift (#1591)", () => {
     expect(out.verdict).toBe("clear");
     expect(calls.hits).toEqual([]);
     expect(calls.resolved).toEqual([]);
+  });
+
+  it("a refused page is logged at error, so it never reads like a gap that was not sustained", async () => {
+    const errorSpy = vi.spyOn(log, "error").mockImplementation(() => {});
+    const { deps } = harness({ hitReturns: (k) => k.includes(":seen:") });
+    await reportBusyDrift({
+      ...deps,
+      result: observed({ gapAgents: [gap] }),
+      notify: async () => {
+        throw new Error("slack 500");
+      },
+    });
+    expect(errorSpy).toHaveBeenCalledWith("busy-drift", expect.objectContaining({ msg: "page failed to send" }), expect.any(Error));
+    errorSpy.mockRestore();
   });
 
   it("a refused post or a failed resolve never fails the tick", async () => {

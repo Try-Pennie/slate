@@ -51,13 +51,13 @@ export function uncachedBusy(input: {
   live: DriftInterval[];
   windowStartIso: string;
   windowEndIso: string;
-}): { gaps: DriftInterval[]; unreadable: number } {
+}): { gaps: DriftInterval[]; unreadable: number; firstGapSinceIso: string | null } {
   const winStart = parseStampMs(input.windowStartIso);
   const winEnd = parseStampMs(input.windowEndIso);
   if (winStart === null || winEnd === null) {
     // A caller bug: the window is constructed, not stored. Everything is
     // unjudgeable, and saying so beats judging against NaN.
-    return { gaps: [], unreadable: input.live.length };
+    return { gaps: [], unreadable: input.live.length, firstGapSinceIso: null };
   }
 
   let unreadable = 0;
@@ -82,6 +82,10 @@ export function uncachedBusy(input: {
   }
 
   const gaps: DriftInterval[] = [];
+  // Each gap's IDENTITY: where it really began. A gap clipped to the window start
+  // began when its meeting did, and the window start is "now", which moves every
+  // tick, so keying on the clipped start would make every sighting a new gap.
+  const since: string[] = [];
   for (const l of input.live) {
     const ls = parseStampMs(l.startIso);
     const le = parseStampMs(l.endIso);
@@ -99,15 +103,17 @@ export function uncachedBusy(input: {
       if (c.s >= e) break;
       if (c.s > s && c.s - s > DRIFT_EPSILON_MS) {
         gaps.push({ startIso: new Date(s).toISOString(), endIso: new Date(c.s).toISOString() });
+        since.push(new Date(s === winStart && ls < winStart ? ls : s).toISOString());
       }
       s = Math.max(s, c.e);
       if (s >= e) break;
     }
     if (e - s > DRIFT_EPSILON_MS) {
       gaps.push({ startIso: new Date(s).toISOString(), endIso: new Date(e).toISOString() });
+      since.push(new Date(s === winStart && ls < winStart ? ls : s).toISOString());
     }
   }
-  return { gaps, unreadable };
+  return { gaps, unreadable, firstGapSinceIso: since[0] ?? null };
 }
 
 /**
@@ -131,8 +137,9 @@ export interface DriftGapAgent {
   userId: string;
   gaps: number;
   gapMinutes: number;
-  /** Where the first uncached stretch starts: with the user id, it is what makes a
-   *  second sighting the SAME gap rather than a new one (#1591). */
+  /** Where the first uncached stretch really began (its meeting's start when the
+   *  window clipped it): with the user id, it is what makes a second sighting the
+   *  SAME gap rather than a new one (#1591). */
   firstGapStartIso: string;
 }
 
@@ -222,7 +229,7 @@ export async function runBusyDriftSample(deps: {
       agentsUnreadable++;
       continue;
     }
-    const { gaps, unreadable } = uncachedBusy({
+    const { gaps, unreadable, firstGapSinceIso } = uncachedBusy({
       cached: cachedByUser.get(agent.userId) ?? [],
       live: liveBusy,
       windowStartIso: deps.fromIso,
@@ -248,7 +255,7 @@ export async function runBusyDriftSample(deps: {
         userId: agent.userId,
         gaps: gaps.length,
         gapMinutes,
-        firstGapStartIso: gaps[0]!.startIso,
+        firstGapStartIso: firstGapSinceIso ?? gaps[0]!.startIso,
       });
       // The per-agent detail lives in the logs, which is where a calibration
       // pass will read it back from; nothing here pages.
@@ -399,7 +406,8 @@ export async function reportBusyDrift(deps: {
     // alert-key: busy_cache_drift
     await deps
       .notify(BUSY_DRIFT_KEY, deps.cooldownMs, formatBusyDriftAlert(sustained))
-      .catch(() => {});
+      // The tick stays alive, and a page that did not send says so in the log.
+      .catch((err: unknown) => log.error("busy-drift", { msg: "page failed to send" }, err));
     return { verdict: "sustained", sustained, resolved: false };
   }
 

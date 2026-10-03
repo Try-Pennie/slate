@@ -821,11 +821,14 @@ export async function GET(req: NextRequest) {
     );
 
     // bucket_slots health in one scan: slot count + freshness per code.
-    const slotRows = await steps.run<SlotHealthRow[] | null>("setup_slot_rows", null, async () =>
+    // One read serves both the slot health checks and the nearly full pool report,
+    // so its row type is both of theirs: a change to either shape fails to compile
+    // here rather than being read as missing fields.
+    const slotRows = await steps.run<(SlotHealthRow & CachedSlotRow)[] | null>("setup_slot_rows", null, async () =>
       unwrap(
         await db.from("bucket_slots").select("bucket_code, payload, computed_at"),
         "monitor bucket_slots",
-      ) as SlotHealthRow[],
+      ) as (SlotHealthRow & CachedSlotRow)[],
     );
     // #1169: fail closed. An unparseable computed_at reads as epoch 0 (stale,
     // canary alerts), never NaN (reads as fresh, canary silent). Extracted in
@@ -1856,9 +1859,7 @@ export async function GET(req: NextRequest) {
                 ? null
                 : buckets.filter((b) => !b.is_test).map((b) => ({ code: b.code, name: b.name })),
             depthByCode: depths === null ? null : supplyDepthMap(depths),
-            // The same SELECT as the supply page's (bucket_code, payload,
-            // computed_at); SlotHealthRow only names fewer payload fields.
-            cacheRows: slotRows as unknown as CachedSlotRow[],
+            cacheRows: slotRows,
             bookedByCodeAndDate: booked,
           });
         },

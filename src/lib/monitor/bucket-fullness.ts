@@ -142,7 +142,9 @@ export async function runPoolFullnessCheck(deps: {
   if (result.status === "measured" && result.nearlyFull.length) {
     await deps
       .notify(POOL_NEARLY_FULL_KEY, deps.cooldownMs, formatPoolNearlyFullNotice(result.nearlyFull))
-      .catch(() => {});
+      // A failed post keeps the tick alive, and is logged so it never reads like a
+      // notice that was not due.
+      .catch((err: unknown) => deps.log?.({ status: "notify-failed", why: err instanceof Error ? err.message : String(err) }));
   }
   deps.log?.(
     result.status === "measured"

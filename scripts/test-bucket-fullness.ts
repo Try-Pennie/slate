@@ -221,6 +221,7 @@ eq(POOL_NEARLY_FULL_OPEN_SHARE, 0.1, "the threshold is 10% of the day's possible
   eq(failed.length, 0, "and it whispers nothing");
 
   // A refused Slack post must not fail the tick.
+  const refusedLog: Record<string, unknown>[] = [];
   const refused = await runPoolFullnessCheck({
     loadReport: async () => report([row("111", "pool:low", "Low", counted(19, 21))]),
     todayIso: TODAY,
@@ -229,8 +230,13 @@ eq(POOL_NEARLY_FULL_OPEN_SHARE, 0.1, "the threshold is 10% of the day's possible
       throw new Error("slack 500");
     },
     cooldownMs: 1,
+    log: (f) => refusedLog.push(f),
   });
   eq(refused.status, "measured", "a refused post still returns the measurement");
+  assert(
+    refusedLog.some((f) => f.status === "notify-failed" && String(f.why).includes("slack 500")),
+    "and the refusal is logged, so a failed post never reads like a notice that was not due",
+  );
 }
 
 // --- copy --------------------------------------------------------------------
