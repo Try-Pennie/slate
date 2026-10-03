@@ -1,11 +1,13 @@
 // Post-deploy probe entry point (#1037).
 //
-// Run by the CI deploy job immediately after `pnpm cf:deploy`. Confirms the live
-// site is serving the commit that was just deployed, then that it is healthy and
-// that the booker's read path answers. Exits non-zero on failure, which fails the
-// deploy job, which posts a Slack alert (.github/workflows/deploy-alert.yml). It
-// does NOT roll back: it turns "broken for up to 30 minutes until the scheduled
-// canary notices" into "broken and someone is told within a couple of minutes".
+// Run by the hand deploy, `pnpm cf:deploy:verified` (scripts/deploy-verified.ts),
+// right after its `pnpm cf:deploy`. The CI deploy job no longer runs this file: since
+// #3095 its gradual deploy (scripts/deploy-gradual.ts) and the Rollback workflow
+// (scripts/rollback-production.ts) run the SAME probe in process, through the shared
+// reads in scripts/lib/post-deploy-probe-http.ts. Confirms the live site is serving
+// the commit that was just deployed, then that it is healthy and that the booker's
+// read path answers. Exits non-zero on failure. It does NOT roll back: it makes a bad
+// hand deploy loud within a couple of minutes.
 //
 // All decision logic lives in scripts/lib/post-deploy-probe.ts so it is unit
 // tested; this file is only I/O and wiring.
