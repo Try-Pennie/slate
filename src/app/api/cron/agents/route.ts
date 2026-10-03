@@ -50,6 +50,8 @@ export async function GET(req: NextRequest) {
       // one that found nobody tagged, and those are opposite facts.
       twilio: outcome.twilio,
       hoursApplied: outcome.hoursApplied,
+      // #3177: why this run stopped part way (its lock taken, or its renewal refused), or null.
+      leaseStop: outcome.leaseStop,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

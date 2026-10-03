@@ -6,6 +6,8 @@ import {
   saveOutboxStepsRow,
   markOutboxDeliveredRow,
   releaseOutboxLeaseRow,
+  leaseReservationRow,
+  releaseReservationLeaseRow,
 } from "@/lib/booking/outbox-lease";
 import { unwrap, isSlotClash, type DbResult } from "@/lib/db/result";
 import { gatedWriteApplied, gatedWriteRows } from "@/lib/booking/gated-write";
@@ -189,10 +191,10 @@ const REASSIGN_INTENT_LEASE_MS = 2 * 60 * 1000;
 // Lease held while a drain processes one outbox row; only governs reclaiming a
 // row orphaned by a torn-down Worker, so keep it above the slowest single-row run.
 const OUTBOX_DRAIN_LIMIT = 50;
-// Reservation lease + drain bounds (#429 P4). Crash-during-create is rare, so a
-// small cap with a multi-tick backlog is fine; bounds Worker CPU. Retention
-// deletes abandoned pending reservations older than the TTL.
-const RESERVATION_LEASE_TTL_MS = 2 * 60 * 1000;
+// Reservation drain bounds (#429 P4). Crash-during-create is rare, so a small cap
+// with a multi-tick backlog is fine; bounds Worker CPU. Retention deletes abandoned
+// pending reservations older than the TTL. The lease length lives with the lease
+// (RESERVATION_LEASE_TTL_MS in outbox-lease.ts), which derives the release from it.
 const RESERVATION_DRAIN_LIMIT = 15;
 const RESERVATION_RETENTION_MS = 24 * 60 * 60 * 1000;
 // Throttle the "drain rows are stuck" Slack alert (#445) so a persistently-
@@ -1583,29 +1585,13 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
       return (data ?? []) as BookingReservation[];
     },
 
-    leaseReservation: async (id) => {
-      const now = Date.now();
-      // #2373: false means another holder has the lease, which is the drain
-      // coalescing correctly. A refused statement is not that, and pretending it
-      // is leaves the reservation looking busy rather than unreachable.
-      return gatedWriteApplied(
-        "reservation_lease",
-        await supabaseAdmin()
-          .from("booking_reservations")
-          .update({ lease_until: new Date(now + RESERVATION_LEASE_TTL_MS).toISOString() })
-          .eq("id", id)
-          .or(`lease_until.is.null,lease_until.lt.${new Date(now).toISOString()}`)
-          .select("id"),
-      );
-    },
+    // #3169: the claim and the release share the outbox lease's compare and swap
+    // (`outbox-lease.ts`), so the release frees only the lease this holder took.
+    // #2373 still holds: a refused claim throws rather than reading as busy.
+    leaseReservation: (id) =>
+      leaseReservationRow(supabaseAdmin(), id, Date.now()),
 
-    releaseReservationLease: async (id) => {
-      // write-ok: the lease expires on its own timeout, so a refused release costs the wait and never frees somebody else's lease.
-      await supabaseAdmin()
-        .from("booking_reservations")
-        .update({ lease_until: null })
-        .eq("id", id);
-    },
+    releaseReservationLease: (id, lease) => releaseReservationLeaseRow(supabaseAdmin(), id, lease),
 
     bumpReservationAttempt: async (id, attempts, lastError) => {
       // write-ok, and REPORTED (#2482): a refused update leaves the attempt count where

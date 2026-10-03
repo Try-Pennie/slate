@@ -5,10 +5,26 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // alert, and a clean pass clears the streak. The streak/alert decision logic is
 // covered elsewhere (isConsecutiveFailure); this exercises only the route glue.
 const cron = vi.hoisted(() => ({ isAuthorizedCron: vi.fn(() => true) }));
-const locks = vi.hoisted(() => ({
-  acquireLock: vi.fn(async () => "lease"),
-  releaseLock: vi.fn(async () => {}),
-}));
+const locks = vi.hoisted(() => {
+  const l = {
+    acquireLock: vi.fn(async (): Promise<string | null> => "lease"),
+    releaseLock: vi.fn(async () => {}),
+    // #3177: a lease that stays held. Losing it is driven in run-roster-sync-lease.test.ts.
+    makeLockLease: vi.fn((key: string, claim: string) => ({
+      key,
+      token: () => claim,
+      stillHeld: async () => true,
+      stopReason: (): "taken" | "refused" | null => null,
+    })),
+  };
+  // #3177: the run takes its lock as a lease. Built from the two above, so a case
+  // can refuse the claim or hand back a lease that is lost.
+  const acquireLease = vi.fn(async (key: string) => {
+    const claim = await l.acquireLock();
+    return claim === null ? null : l.makeLockLease(key, claim);
+  });
+  return { ...l, acquireLease };
+});
 const sync = vi.hoisted(() => ({
   syncSalesforceAgents: vi.fn(),
   AGENTS_SYNC_STREAK_KEY: "cron_agents_failures",
@@ -100,6 +116,7 @@ vi.mock("@/lib/offboarding/session-convergence-alert", () => ({
 
 import { GET } from "./route";
 import { noteAlertKey } from "@/lib/notify/alert-recording";
+import { ROSTER_LEASE_STOP_REASONS } from "@/lib/salesforce/run-roster-sync";
 
 const req = () => ({ headers: new Headers() }) as unknown as Parameters<typeof GET>[0];
 
@@ -141,7 +158,7 @@ describe("GET /api/cron/agents", () => {
     cron.isAuthorizedCron.mockReturnValueOnce(false);
     const res = await GET(req());
     expect(res.status).toBe(401);
-    expect(locks.acquireLock).not.toHaveBeenCalled();
+    expect(locks.acquireLease).not.toHaveBeenCalled();
     expect(sync.syncSalesforceAgents).not.toHaveBeenCalled();
   });
 
@@ -158,6 +175,42 @@ describe("GET /api/cron/agents", () => {
     ]);
     expect(streak.recordFailureStreak).not.toHaveBeenCalled();
     expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  // #3177: a run that stopped holding its lock says WHY in its response, as a 200
+  // rather than a failure: a newer run took the key, or the renewal was refused.
+  // The two never share a reason (L11), so a database error is never reported as
+  // another run having taken over.
+  it.each(["taken", "refused"] as const)(
+    "reports a run whose lock was %s part way, without counting it as a failure",
+    async (why) => {
+    locks.makeLockLease.mockImplementationOnce((key: string, claim: string) => ({
+      key,
+      token: () => claim,
+      stillHeld: async () => false,
+      stopReason: () => why,
+    }));
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      leaseStop: why,
+      hoursApplied: null,
+      twilio: { ok: false, leaseStop: why, reason: ROSTER_LEASE_STOP_REASONS[why] },
+    });
+    expect(twilio.syncTwilioRedistribute).not.toHaveBeenCalled();
+    expect(streak.recordFailureStreak).not.toHaveBeenCalled();
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+    },
+  );
+
+  it("never gives the two stop reasons one sentence", () => {
+    expect(ROSTER_LEASE_STOP_REASONS.taken).not.toBe(ROSTER_LEASE_STOP_REASONS.refused);
+    expect(ROSTER_LEASE_STOP_REASONS.refused).not.toMatch(/took over/);
+  });
+
+  it("says a clean run kept its lock", async () => {
+    const res = await GET(req());
+    expect(await res.json()).toMatchObject({ leaseStop: null, hoursApplied: 0 });
   });
 
   // #1151: a failing roster sync is a CONDITION, so a clean pass says it is over.

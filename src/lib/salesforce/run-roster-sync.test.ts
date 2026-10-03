@@ -6,10 +6,26 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // the sharing added: the lock is taken and released whatever happens, an
 // overlapping run is reported rather than run twice, and a manual run does the
 // same follow up work the hour does (default hours, the empty bucket check).
-const locks = vi.hoisted(() => ({
-  acquireLock: vi.fn(async (): Promise<string | null> => "lease"),
-  releaseLock: vi.fn(async () => {}),
-}));
+const locks = vi.hoisted(() => {
+  const l = {
+    acquireLock: vi.fn(async (): Promise<string | null> => "lease"),
+    releaseLock: vi.fn(async () => {}),
+    // #3177: a lease that stays held. Losing it is driven in run-roster-sync-lease.test.ts.
+    makeLockLease: vi.fn((key: string, claim: string) => ({
+      key,
+      token: () => claim,
+      stillHeld: async () => true,
+      stopReason: (): "taken" | "refused" | null => null,
+    })),
+  };
+  // #3177: the run takes its lock as a lease. Built from the two above, so a case
+  // can refuse the claim or hand back a lease that is lost.
+  const acquireLease = vi.fn(async (key: string) => {
+    const claim = await l.acquireLock();
+    return claim === null ? null : l.makeLockLease(key, claim);
+  });
+  return { ...l, acquireLease };
+});
 const sync = vi.hoisted(() => ({
   syncSalesforceAgents: vi.fn(),
   AGENTS_SYNC_STREAK_KEY: "cron_agents_failures",

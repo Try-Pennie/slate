@@ -34,6 +34,8 @@ const lease = vi.hoisted(() => ({
   releaseOutboxLeaseRow: vi.fn(async () => {}),
   saveOutboxStepsRow: vi.fn(async () => "written"),
   markOutboxDeliveredRow: vi.fn(async () => "written"),
+  leaseReservationRow: vi.fn(async (): Promise<string | null> => "lease-1"),
+  releaseReservationLeaseRow: vi.fn(async () => {}),
 }));
 const outbox = vi.hoisted(() => ({
   runOutboxSteps: vi.fn(
