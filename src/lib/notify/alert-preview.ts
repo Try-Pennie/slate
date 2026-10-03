@@ -496,6 +496,7 @@ import {
   formatDefinerGrantsClearedAlert,
 } from "@/lib/monitor/definer-grants";
 import { formatAuditChainBrokenAlert, formatAuditChainRecovery } from "@/lib/monitor/audit-chain";
+import { formatCronBudgetAlert, formatCronBudgetRecovery } from "@/lib/monitor/cron-budget";
 import {
   formatAuthSignInOpenAlert,
   formatAuthSignInClearedAlert,
@@ -3020,6 +3021,43 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the refresh is progressing again",
     channel: "recovery",
     text: formatHydrationRecovery(),
+  },
+  {
+    key: "cron_budget_headroom",
+    state: "the every minute schedule had a tick past half its ceiling",
+    channel: "alert",
+    text: formatCronBudgetAlert({
+      status: "over",
+      breaches: [{ cron: "* * * * *", atMs: Date.UTC(2026, 9, 3, 14, 2) }],
+      unreadable: [],
+    }),
+  },
+  {
+    key: "cron_budget_headroom",
+    state: "two schedules past the line, and a third whose row cannot be dated",
+    channel: "alert",
+    // Read this one for the plural grammar and for how an undated row is named as not
+    // judged rather than counted as a breach.
+    text: formatCronBudgetAlert({
+      status: "over",
+      breaches: [
+        { cron: "* * * * *", atMs: Date.UTC(2026, 9, 3, 14, 2) },
+        { cron: "*/5 * * * *", atMs: Date.UTC(2026, 9, 3, 9, 35) },
+      ],
+      unreadable: ["0 * * * *"],
+    }),
+  },
+  {
+    key: "cron_budget_headroom",
+    state: "a whole day with every tick under the line",
+    channel: "recovery",
+    text: formatCronBudgetRecovery({ status: "within", unreadable: [] }),
+  },
+  {
+    key: "cron_budget_headroom",
+    state: "cleared with an undated row left behind, named as not judged",
+    channel: "recovery",
+    text: formatCronBudgetRecovery({ status: "within", unreadable: ["* * * * *"] }),
   },
   {
     key: "definer_grants_to_web_roles",

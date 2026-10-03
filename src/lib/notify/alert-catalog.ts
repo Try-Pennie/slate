@@ -365,6 +365,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "An audit log entry no longer matches the hash chain written with it, which stays true until the trail is put back or re-anchored; the next complete walk from the first entry to the last that finds nothing wrong is the measured healthy reading that ends it (#3090).",
   },
   {
+    key: "cron_budget_headroom",
+    kind: "condition",
+    why: "A cron schedule had a tick take longer than its wall time line (half the CPU ceiling, but wall time, not CPU) inside the last day, which stays true for a day after the last such tick; the monitor lane re-reads it every tick, so a measured day with none is the healthy result that ends it (#3141).",
+  },
+  {
     key: "agents_on_unset_hours",
     kind: "condition",
     why:

@@ -147,6 +147,7 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // which is this family's premise, with a named repair: give it its own key.
   retired_booking_key: "the-booking-api-is-refusing-its-caller",
   recompute_headroom: "a-sweep-cannot-keep-up",
+  cron_budget_headroom: "a-sweep-cannot-keep-up",
   calendar_window_uncovered: "the-booker-is-offering-nothing-or-too-little",
   // #1591: the cache missing busy time means the booker offers times that are taken,
   // which is the calendar window page's family, for the same reason.

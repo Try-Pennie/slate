@@ -26,6 +26,7 @@
 // bounded poll rides out, which is why `shouldPollAgain` exists.
 
 import { tailObjects } from "./confirm-startup.ts";
+import { CRON_CPU_LIMIT_MS } from "../../src/lib/monitor/cron-budget.ts";
 
 /**
  * The `status` value that means the invocation finished normally.
@@ -269,12 +270,13 @@ export function shouldPollAgain(args: {
 /**
  * The scheduled invocation CPU ceiling, mirroring `limits.cpu_ms` in wrangler.jsonc.
  *
- * Written here and held against the real config by
- * scripts/test-loadtest-platform-reading.ts, so the two cannot drift apart (L41): a
- * judge carrying a stale ceiling would either pass a lane that is being killed or
- * fail one that is fine.
+ * The production headroom check judges against the same number (#3141), so it is the one
+ * constant in `src/lib/monitor/cron-budget.ts` rather than a second literal, and
+ * scripts/test-loadtest-platform-reading.ts still holds it against the real config (L41):
+ * a judge carrying a stale ceiling would either pass a lane that is being killed or fail
+ * one that is fine.
  */
-export const WRANGLER_CRON_CPU_MS = 120_000;
+export const WRANGLER_CRON_CPU_MS = CRON_CPU_LIMIT_MS;
 
 /** How long to keep polling, and how often. */
 export interface PollTimings {

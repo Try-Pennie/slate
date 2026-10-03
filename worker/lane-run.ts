@@ -38,6 +38,7 @@ import {
 } from "@/lib/monitor/lane-failure";
 import { shortErrorReason } from "@/lib/notify/error-text";
 import type { LogFields } from "@/lib/log";
+import { CRON_BUDGET_ROUTE, cronBudgetWrites } from "@/lib/monitor/cron-budget";
 
 export { TICK_ID_HEADER };
 
@@ -161,5 +162,32 @@ export async function reportLaneFailures(
         err,
       );
     }
+  }
+}
+
+/**
+ * Record what the daily wall time headroom check reads (#3141). Wall time, because the runtime
+ * gives an invocation no reading of its own CPU, and wall time is no bound on CPU in either
+ * direction (see @/lib/monitor/cron-budget). Most ticks record nothing and so spend nothing;
+ * one past the wall time line, and the hourly tick that
+ * proves this path still writes, hand the measurement to an in process route, built like
+ * every other request this dispatcher makes so it carries the tick id. Never throws.
+ */
+export async function recordCronBudget(
+  cron: string,
+  totalMs: number,
+  tick: LaneTick,
+  deps: LaneRunDeps,
+): Promise<void> {
+  const writes = cronBudgetWrites(cron, totalMs);
+  if (!writes.breach && !writes.verdict) return;
+  const query = new URLSearchParams({ cron, wall_ms: String(Math.round(totalMs)) });
+  try {
+    const res = await deps.fetch(laneRequest(`${CRON_BUDGET_ROUTE}?${query}`, tick));
+    if (!res.ok) {
+      deps.log.error("cron-budget", { msg: "recording the tick failed", cron, status: res.status, tick: tick.tickId });
+    }
+  } catch (err) {
+    deps.log.error("cron-budget", { msg: "recording the tick threw", cron, tick: tick.tickId }, err);
   }
 }

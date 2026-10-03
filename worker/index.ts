@@ -30,6 +30,7 @@ import { log } from "@/lib/log";
 import { laneTimingFields, type LaneRun } from "@/lib/monitor/lane-timing";
 import {
   mintTickId,
+  recordCronBudget,
   reportLaneFailures,
   runLane,
   type LaneRunDeps,
@@ -189,14 +190,17 @@ const worker = {
     const startedAt = performance.now();
     const outcomes = await Promise.all(paths.map((path) => runLane(path, tick, deps)));
     const runs: LaneRun[] = outcomes.map((o) => o.run);
+    const totalMs = performance.now() - startedAt;
     log.info("cron", {
       msg: "lane timings",
       cron: controller.cron,
       tick: tick.tickId,
-      ...laneTimingFields(runs, performance.now() - startedAt),
+      ...laneTimingFields(runs, totalMs),
     });
     const failures = outcomes.flatMap((o) => (o.failure ? [o.failure] : []));
     if (failures.length > 0) await reportLaneFailures(failures, tick, deps);
+    // #3141: the daily cron headroom check reads what this records (worker/lane-run.ts).
+    await recordCronBudget(controller.cron, totalMs, tick, deps);
   },
 };
 

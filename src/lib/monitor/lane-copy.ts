@@ -37,6 +37,7 @@ import {
   REGAL_CALL_OUTCOMES_VERDICT_LANE,
   ADVISOR_PHOTOS_VERDICT_LANE,
   BUSY_DRIFT_VERDICT_LANE,
+  CRON_BUDGET_VERDICT_LANE,
   parkedDetector,
   type DetectorVerdictLane,
 } from "@/lib/monitor/verdict-freshness";
@@ -459,6 +460,11 @@ const VERDICT_SUBJECT: Record<DetectorVerdictLane, VerdictSubject> = {
     what: "the sampler asking whether the busy time Slate has cached for each agent matches their live Google calendar",
     cost: "an agent whose cached busy time had fallen behind their calendar could be offered to leads over meetings, with no page saying the cache had drifted",
     look: 'the Worker logs for msg="tick" under tag=busy-drift, and whether it reports status="unreadable", which means the live freeBusy read or the busy_blocks read is failing',
+  },
+  [CRON_BUDGET_VERDICT_LANE]: {
+    what: "the Worker's hourly record that it is still timing its cron ticks in wall time",
+    cost: "a schedule could grow toward the point Cloudflare kills it, and the warning meant to come first would never arrive",
+    look: 'that the 0 * * * * cron is in wrangler.jsonc and firing, then the Worker logs for tag=cron-budget and tag=cron msg="lane timings"',
   },
   [OOO_PROTECTION_VERDICT_LANE]: {
     what: "the check asking whether approved time off is still blocking the hours it covers",

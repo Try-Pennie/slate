@@ -236,6 +236,14 @@ export const ADVISOR_PHOTOS_VERDICT_LANE = "verdict:advisor-photos";
  */
 export const BUSY_DRIFT_VERDICT_LANE = "verdict:busy-drift";
 
+/**
+ * The Worker's own cron timing (#3141). It writes a row only for a tick past its wall time
+ * line, so a day with nothing past the line and a writer that has stopped writing are the
+ * same silence. The hourly tick stamps this whatever it measured, which is what tells them
+ * apart, and `src/lib/monitor/cron-budget.ts` refuses to clear on a stale one.
+ */
+export const CRON_BUDGET_VERDICT_LANE = "verdict:cron-budget";
+
 export type DetectorVerdictLane =
   | typeof TIER_STAFFING_VERDICT_LANE
   | typeof AVAILABILITY_TRUTH_VERDICT_LANE
@@ -261,7 +269,8 @@ export type DetectorVerdictLane =
   | typeof REGAL_CALL_OUTCOMES_VERDICT_LANE
   | typeof ADVISOR_PHOTOS_VERDICT_LANE
   | typeof AVAILABILITY_LATENCY_VERDICT_LANE
-  | typeof BUSY_DRIFT_VERDICT_LANE;
+  | typeof BUSY_DRIFT_VERDICT_LANE
+  | typeof CRON_BUDGET_VERDICT_LANE;
 
 /**
  * Did this availability truth tick compare real calendars and decide?
