@@ -30,9 +30,11 @@ vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(
 import { GET } from "./route";
 import { CRON_BUDGET_WARN_MS } from "@/lib/monitor/cron-budget";
 
-const req = (cronExpr: string, wallMs: number | string) =>
+const req = (cronExpr: string, wallMs: number | string | null) =>
   ({
-    url: `https://slate.trypennie.app/api/cron/cron-budget?cron=${encodeURIComponent(cronExpr)}&wall_ms=${wallMs}`,
+    url:
+      `https://slate.trypennie.app/api/cron/cron-budget?cron=${encodeURIComponent(cronExpr)}` +
+      (wallMs === null ? "" : `&wall_ms=${wallMs}`),
   }) as unknown as Parameters<typeof GET>[0];
 
 beforeEach(() => {
@@ -65,7 +67,15 @@ describe("GET /api/cron/cron-budget (#3141)", () => {
   });
 
   it("refuses an unreadable measurement and writes nothing", async () => {
-    for (const bad of [req("* * * * *", "abc"), req("not a cron'; drop", 70_000), req("* * * * *", -1)]) {
+    for (const bad of [
+      req("* * * * *", "abc"),
+      req("not a cron'; drop", 70_000),
+      req("* * * * *", -1),
+      // Missing and blank both coerce to 0 under Number(), which would read as a healthy tick.
+      req("0 * * * *", null),
+      req("0 * * * *", ""),
+      req("0 * * * *", "%20"),
+    ]) {
       const res = await GET(bad);
       expect(res.status).toBe(400);
     }

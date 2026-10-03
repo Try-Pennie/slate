@@ -86,23 +86,31 @@ export function cronBudgetWrites(cron: string, wallMs: number): { breach: boolea
   };
 }
 
-/** One cron expression with a tick past the line inside the window. `atMs` null: unreadable. */
+/** One cron expression with a tick past the line inside the window. */
 export interface CronBudgetBreach {
   cron: string;
-  atMs: number | null;
+  atMs: number;
 }
 
+/**
+ * `unreadable` names the schedules whose breach row exists and whose time cannot be read. They
+ * are neither a breach nor a clear: an undated row can never age out of the window, so counting
+ * it as a breach would page for ever and never let the all clear fire (L665), and counting it as
+ * old would clear on a row that may be minutes old. The next breach on that schedule rewrites
+ * the row with a real time, which is what ends it.
+ */
 export type CronBudgetHealth =
-  | { status: "unmeasured"; why: string }
-  | { status: "over"; breaches: CronBudgetBreach[] }
+  | { status: "unmeasured"; why: string; unreadable: string[] }
+  | { status: "over"; breaches: CronBudgetBreach[]; unreadable: string[] }
   | { status: "within" };
 
 /**
  * The verdict over every stamp in `lane_heartbeats`.
  *
  * `stamps` null is a read that failed. A stored stamp that cannot be parsed arrives as 0 (the
- * heartbeat reader's sentinel, #1169), and here that FAILS CLOSED: a breach row whose time is
- * unreadable is reported as a breach, because the alternative reads it as ancient and clears.
+ * heartbeat reader's sentinel, #1169). A breach row carrying it is UNMEASURED: it pages only
+ * beside a real breach, where the page names it, and on its own it keeps the all clear back
+ * without paging (see `CronBudgetHealth`).
  */
 export function cronBudgetHealth(input: {
   stamps: Record<string, number | null> | null;
@@ -112,31 +120,43 @@ export function cronBudgetHealth(input: {
   verdictLane: string;
 }): CronBudgetHealth {
   if (input.stamps === null) {
-    return { status: "unmeasured", why: "lane_heartbeats could not be read this tick" };
+    return { status: "unmeasured", why: "lane_heartbeats could not be read this tick", unreadable: [] };
   }
   const breaches: CronBudgetBreach[] = [];
+  const unreadable: string[] = [];
   for (const [lane, ms] of Object.entries(input.stamps)) {
     if (!lane.startsWith(CRON_BUDGET_BREACH_PREFIX)) continue;
     const cron = lane.slice(CRON_BUDGET_BREACH_PREFIX.length);
-    if (ms === 0) breaches.push({ cron, atMs: null });
+    if (ms === 0) unreadable.push(cron);
     else if (ms !== null && input.nowMs - ms <= CRON_BUDGET_WINDOW_MS) breaches.push({ cron, atMs: ms });
   }
   // A breach is a positive measurement, so it is reported even while the verdict stamp is stale.
   if (breaches.length > 0) {
     breaches.sort((a, b) => a.cron.localeCompare(b.cron));
-    return { status: "over", breaches };
+    return { status: "over", breaches, unreadable: unreadable.sort() };
+  }
+  if (unreadable.length > 0) {
+    return {
+      status: "unmeasured",
+      why:
+        `the breach row for ${unreadable.sort().join(", ")} carries a time that cannot be read, so ` +
+        `this cannot tell whether it is inside the last day`,
+      unreadable,
+    };
   }
   const verdictMs = input.stamps[input.verdictLane];
   if (verdictMs === undefined || verdictMs === null) {
     return {
       status: "unmeasured",
       why: "the Worker has never recorded a cron timing, so a quiet day here proves nothing",
+      unreadable: [],
     };
   }
   if (input.nowMs - verdictMs > input.verdictBoundMs) {
     return {
       status: "unmeasured",
       why: "the Worker's hourly timing stamp is stale, so it may have stopped recording past the line ticks",
+      unreadable: [],
     };
   }
   return { status: "within" };
@@ -154,14 +174,18 @@ function seconds(ms: number): string {
 /** The page. Names each schedule and its latest tick, and where the CPU for it is read. */
 export function formatCronBudgetAlert(health: Extract<CronBudgetHealth, { status: "over" }>): string {
   const one = health.breaches.length === 1;
-  const lines = health.breaches.map(
-    (b) => `- \`${b.cron}\`, latest ${b.atMs === null ? "at a time its row does not say" : utcMinute(b.atMs)}`,
-  );
+  const lines = health.breaches.map((b) => `- \`${b.cron}\`, latest ${utcMinute(b.atMs)}`);
+  const undated = health.unreadable.length
+    ? `\nNot judged: the row for ${health.unreadable.map((c) => `\`${c}\``).join(", ")} in ` +
+      `lane_heartbeats carries a time that cannot be read, so whether it falls in the last day is ` +
+      `unknown. Its next tick past the line rewrites it.`
+    : "";
   return (
     `${health.breaches.length} cron ${one ? "schedule" : "schedules"} had a tick take longer than ` +
     `${seconds(CRON_BUDGET_WARN_MS)} of wall time in the last day, half the ` +
     `${seconds(CRON_CPU_LIMIT_MS)} CPU ceiling Cloudflare kills an invocation at.\n` +
     lines.join("\n") +
+    undated +
     `\nWall time runs at or above CPU, so read the real CPU for those ticks before trimming ` +
     `anything: cpuTimeUs in workersInvocationsScheduled. Which lane took the time is under ` +
     `tag=cron msg="lane timings".`

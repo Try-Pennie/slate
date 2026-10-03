@@ -92,13 +92,22 @@ const breach = (cron: string) => `${CRON_BUDGET_BREACH_PREFIX}${cron}`;
     "over",
     "a breach is a positive measurement and pages even while the stamp is stale",
   );
-  const unreadable = judge({ [VERDICT]: NOW - HOUR, [breach("* * * * *")]: 0 });
-  eq(unreadable, { status: "over", breaches: [{ cron: "* * * * *", atMs: null }] }, "an unreadable breach stamp fails closed");
+  // An undated breach row can never age out, so it is neither a breach nor a clear (L665).
+  const undated = judge({ [VERDICT]: NOW - HOUR, [breach("* * * * *")]: 0 });
+  eq(undated.status, "unmeasured", "an unreadable breach stamp alone is unmeasured, not a standing breach");
+  assert(undated.status === "unmeasured" && undated.unreadable[0] === "* * * * *", "and it names the row");
+  const beside = judge({ [VERDICT]: NOW - HOUR, [breach("* * * * *")]: 0, [breach("*/5 * * * *")]: NOW - HOUR });
+  eq(
+    beside,
+    { status: "over", breaches: [{ cron: "*/5 * * * *", atMs: NOW - HOUR }], unreadable: ["* * * * *"] },
+    "beside a real breach it is carried as not judged, never counted as one",
+  );
 }
 
 // --- the copy ---------------------------------------------------------------------
 {
-  const one = formatCronBudgetAlert({ status: "over", breaches: [{ cron: "* * * * *", atMs: NOW - HOUR }] });
+  const one = formatCronBudgetAlert({ status: "over", breaches: [{ cron: "* * * * *", atMs: NOW - HOUR }], unreadable: [] });
+  assert(!one.includes("Not judged"), "no undated note when every row is dated");
   assert(one.startsWith("1 cron schedule had"), "singular grammar for one schedule");
   assert(one.includes("60s of wall time") && one.includes("120s CPU ceiling"), "it names wall time and the ceiling, derived");
   assert(one.includes("2026-10-03 14:00 UTC"), "it dates the latest tick");
@@ -106,10 +115,12 @@ const breach = (cron: string) => `${CRON_BUDGET_BREACH_PREFIX}${cron}`;
     status: "over",
     breaches: [
       { cron: "* * * * *", atMs: NOW },
-      { cron: "*/5 * * * *", atMs: null },
+      { cron: "*/5 * * * *", atMs: NOW - 2 * HOUR },
     ],
+    unreadable: ["0 * * * *"],
   });
   assert(two.startsWith("2 cron schedules had"), "plural grammar");
+  assert(/Not judged: the row for `0 \* \* \* \*`/.test(two), "an undated row is named in the page as not judged");
   for (const text of [one, two, formatCronBudgetRecovery()]) {
     assert(!/[\u2014\u2013]/.test(text), "no dashes in the copy");
   }
@@ -147,6 +158,7 @@ async function run(readStamps: () => Promise<Record<string, number | null>>) {
     ["a read that throws", async () => { throw new Error("db down"); }],
     ["a stamp gone stale", async () => ({ [VERDICT]: NOW - BOUND - 1 })],
     ["a writer that never stamped", async () => ({ monitor: NOW })],
+    ["an undated breach row on its own", async () => ({ [VERDICT]: NOW, [breach("* * * * *")]: 0 })],
   ] as const) {
     const r = await run(readStamps as () => Promise<Record<string, number | null>>);
     eq(r.health.status, "unmeasured", `${why} is unmeasured`);

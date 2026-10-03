@@ -3029,20 +3029,22 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: formatCronBudgetAlert({
       status: "over",
       breaches: [{ cron: "* * * * *", atMs: Date.UTC(2026, 9, 3, 14, 2) }],
+      unreadable: [],
     }),
   },
   {
     key: "cron_budget_headroom",
-    state: "two schedules, one of them with a row whose time cannot be read",
+    state: "two schedules past the line, and a third whose row cannot be dated",
     channel: "alert",
-    // Read this one for the plural grammar and for the fail closed wording of a stamp nobody
-    // can date.
+    // Read this one for the plural grammar and for how an undated row is named as not
+    // judged rather than counted as a breach.
     text: formatCronBudgetAlert({
       status: "over",
       breaches: [
         { cron: "* * * * *", atMs: Date.UTC(2026, 9, 3, 14, 2) },
-        { cron: "*/5 * * * *", atMs: null },
+        { cron: "*/5 * * * *", atMs: Date.UTC(2026, 9, 3, 9, 35) },
       ],
+      unreadable: ["0 * * * *"],
     }),
   },
   {

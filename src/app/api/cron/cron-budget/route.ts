@@ -33,7 +33,10 @@ export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) return new NextResponse("unauthorized", { status: 401 });
   const params = new URL(req.url).searchParams;
   const cron = params.get("cron") ?? "";
-  const wallMs = Number(params.get("wall_ms"));
+  // Refused by name when missing or blank, never parsed: `Number(null)` and `Number("")` are
+  // both 0, which would read an absent measurement as a perfectly healthy tick (L50).
+  const rawWallMs = (params.get("wall_ms") ?? "").trim();
+  const wallMs = rawWallMs === "" ? Number.NaN : Number(rawWallMs);
   if (!CRON_SHAPE.test(cron) || !Number.isFinite(wallMs) || wallMs < 0) {
     log.error("cron-budget", { msg: "refused an unreadable measurement", cron, wall_ms: params.get("wall_ms") ?? "" });
     return NextResponse.json({ error: "cron and wall_ms are required" }, { status: 400 });
