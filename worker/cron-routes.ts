@@ -96,7 +96,8 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
     "/api/cron/prune-warehouse-pii",
     // #2090: the inbound Regal call feed, a few days of events kept and the rest
     // deleted in one statement. Here with its siblings rather than on the
-    // every-minute trigger for the reason given above.
+    // every-minute trigger for the reason given above. It also prunes dead
+    // rate_limits limiter rows (#3109), one more statement in the same lane.
     "/api/cron/prune-regal-calls",
     // #2726: the alert_state rows of alerts keyed by booking, once that booking is
     // a week past. One paged read per family, one bookings read and one delete, so

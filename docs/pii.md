@@ -30,7 +30,7 @@ holding some of it.
 | **Google Calendar** (the assigned agent's own calendar) | attendee name and email as a real invitee; phone in the event description | Indefinite. A completed meeting's event stays | **No** |
 | **Regal / Cadence** (webhook subscriber) | name, email, phone, prefill, manage URL, plus asserted `voiceOptIn` / `smsOptIn` / `emailOptIn` | Theirs, unknown to Slate | **No** |
 | **Snowflake** (archival mirror) | name, email, phone, prefill, **and the manage token** | 24 months, stated to match Supabase | **Yes**, but by a separate purge that must be run |
-| **Cloudflare** (Worker logs) | whatever a log line or a serialized error happens to carry, **plus the full request URL**, which for a prefilled booking link holds name, email and phone (#1046) | 7 days, then gone | **No**, and it does not need to be |
+| **Cloudflare** (Worker logs) | whatever a log line or a serialized error happens to carry, **plus the full request URL**, which for a prefilled booking link holds name, email and phone (#1046), and for a manage page holds **the manage token** in its path, an accepted risk (Dan, 2026-10-03; #3143) | 7 days, then gone | **No**, and it does not need to be |
 | **Slack** (alerts) | **no lead contact data at all** | Slack's own | n/a |
 
 The two rows worth pausing on are Google Calendar and Regal: both hold direct
@@ -246,6 +246,20 @@ path being retired.
 Seven day retention means this needs no erasure step: any copy here ages out well
 inside the 45 day response deadline.
 
+### The manage token is in the URL path (#3143)
+
+The manage page is `/booking/manage/[token]`, and the token alone authorizes
+viewing, rescheduling and cancelling that booking. So every manage page request
+puts a live credential into the same 7 day request log as the prefill above.
+
+**This is an accepted risk (Dan, 2026-10-03).** The link stays as it is. Moving
+the token out of the path (for example, exchanging it for a cookie on the first
+load and redirecting to a tokenless address) would change the link every lead
+already holds in an email and a calendar invite. What bounds the exposure is the
+same as for the prefill: 7 day retention, no export, and access only through the
+Cloudflare account. Treat the log as holding manage tokens. Reconsider if log
+retention grows (a Logpush job would make the copy indefinite).
+
 ---
 
 ## 6. Slack
@@ -256,6 +270,14 @@ or `attendee_phone`. Alerts identify *agents* (by work email) and *bookings* (by
 never leads by contact detail, and a guard already forbids interpolating a raw error
 into alert copy (`scripts/test-alert-error-text.ts`), which is the shape most likely
 to smuggle a record in.
+
+The one alert that carries a library's own error text is the unexpected fault page
+(`reportInternalError`, `src/lib/api/errors.ts`), whose detail is the diagnosis
+itself. Since #3143 that detail goes through `scrubContactData` (the client error
+beacon's scrub) before it is shortened, so an error quoting an email address, a
+phone number or a URL with its prefill query reaches Slack with those replaced by
+markers, while the log keeps the full text. A name has no shape and is not caught,
+the same residue the beacon carries.
 
 Agent work email addresses do reach Slack. That is workforce data, not consumer PII,
 and is out of scope for the consumer retention window.

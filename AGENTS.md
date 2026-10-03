@@ -980,7 +980,7 @@ never flagged. The allowlist (`SAFE_TABLES` in `scan-src-capped-reads.ts`) holds
 `organizations`, `users`, `buckets`, `bucket_members`, `availability_schedules`,
 `agent_calendars`, `event_types`, `webhook_endpoints`, `monitor_settings`,
 `monitor_alert_config`, `business_hours`, `bucket_slots`,
-`sync_locks`, `rate_limits`, `reschedule_locks`, `lane_heartbeats`,
+`sync_locks`, `reschedule_locks`, `lane_heartbeats`,
 `selfheal_scan_cursor`, `booking_failure_rate_state`, `export_cursor`,
 `reason_options`, `booking_settings`, and `advisor_photos` (#3027, one row per user). **Every other table defaults to a
 growth table (flagged): a new table must be justified, not silently
