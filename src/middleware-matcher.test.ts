@@ -11,6 +11,12 @@ import { join, relative, sep } from "node:path";
 vi.mock("@supabase/ssr", () => ({
   createServerClient: () => ({ auth: { getUser: async () => ({ data: { user: null } }) } }),
 }));
+// #3137: the frame lock switch and the framing record are database backed; this suite is
+// about which paths are reached, so the lock reads as off and nothing is recorded.
+vi.mock("@/lib/embed/frame-guard", () => ({
+  readFrameLock: async () => false,
+  recordFramingObservation: async () => {},
+}));
 vi.mock("@/lib/env", () => ({
   publicSupabaseUrl: () => "https://project.supabase.co",
   publicSupabasePublishableKey: () => "sb_publishable_test",

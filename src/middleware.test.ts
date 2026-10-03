@@ -14,6 +14,13 @@ const ssr = vi.hoisted(() => ({
   })),
 }));
 vi.mock("@supabase/ssr", () => ssr);
+// #3137: the frame lock switch and the framing record, both database backed, stubbed so
+// these drive only what the middleware does with them.
+const frameGuard = vi.hoisted(() => ({
+  readFrameLock: vi.fn(async () => false),
+  recordFramingObservation: vi.fn(async (_obs: { origin: string; surface: string }) => {}),
+}));
+vi.mock("@/lib/embed/frame-guard", () => frameGuard);
 vi.mock("@/lib/env", () => ({
   publicSupabaseUrl: () => "https://project.supabase.co",
   publicSupabasePublishableKey: () => "sb_publishable_test",
@@ -27,6 +34,7 @@ import {
   SESSION_STARTED_COOKIE,
   SESSION_TIME_BOX_MS,
 } from "@/lib/auth/session-age";
+import { frameAncestorSources } from "@/lib/embed/frame-policy";
 import { middleware } from "@/middleware";
 import { SECURITY_HEADERS } from "@/lib/security-headers";
 
@@ -114,6 +122,7 @@ describe("the enforced script policy (#2575)", () => {
           opts.cookies.setAll([{ name: "sb-token", value: "fresh", options: {} }]);
           return { data: { user: null } };
         },
+        signOut,
       },
     }));
     const res = await middleware(new NextRequest("https://slate.test/admin"));
@@ -237,5 +246,94 @@ describe("staff session age limits (#3084)", () => {
       throw new Error("auth server unreachable");
     });
     await expectRefused(await middleware(staffRequest("/admin", signedIn(SESSION_TIME_BOX_MS + 1, 0))), "session_expired");
+  });
+});
+
+/**
+ * #3137: OBSERVE who frames the booker, and LOCK framing to the allow list behind a
+ * stored switch that defaults off. The lock must cover every page the booker can move
+ * to inside its frame, so each of them is driven here, not only /book.
+ */
+describe("framing the booker (#3137)", () => {
+  const BOOKER_PAGES = [
+    "/book?xbc=411",
+    "/book/advisor/abc123",
+    "/booking/0b1c2d",
+    "/booking/manage/tok-abc",
+    "/booking/manage/tok-abc/rebook",
+  ];
+
+  beforeEach(() => {
+    frameGuard.readFrameLock.mockReset();
+    frameGuard.readFrameLock.mockResolvedValue(false);
+    frameGuard.recordFramingObservation.mockReset();
+    frameGuard.recordFramingObservation.mockResolvedValue(undefined);
+  });
+
+  const framed = (path: string, referer: string | null, dest = "iframe") =>
+    new NextRequest(`https://slate.test${path}`, {
+      headers: { "sec-fetch-dest": dest, ...(referer ? { referer } : {}) },
+    });
+
+  it.each(BOOKER_PAGES)("leaves %s frameable by anyone while the lock is off", async (path) => {
+    const res = await middleware(framed(path, "https://anywhere.example/"));
+    expect(res.headers.get("content-security-policy")).not.toContain("frame-ancestors");
+    expect(res.headers.get("x-frame-options")).toBeNull();
+  });
+
+  it.each(BOOKER_PAGES)("limits %s to Slate and the allow list once the lock is on", async (path) => {
+    frameGuard.readFrameLock.mockResolvedValue(true);
+    const res = await middleware(framed(path, "https://www.trypennie.com/"));
+    expect(directive(res.headers.get("content-security-policy"), "frame-ancestors")).toBe(
+      ["frame-ancestors", ...frameAncestorSources()].join(" "),
+    );
+    // The lock rides in the SAME policy Next reads the nonce from.
+    expect(res.headers.get("x-middleware-request-content-security-policy")).toBe(
+      res.headers.get("content-security-policy"),
+    );
+    // No X-Frame-Options: it cannot express an allow list, and DENY would black out
+    // the partners the list exists to admit.
+    expect(res.headers.get("x-frame-options")).toBeNull();
+  });
+
+  it("never reads the switch on a staff page, which is unframeable whatever it says", async () => {
+    frameGuard.readFrameLock.mockResolvedValue(true);
+    const res = await middleware(new NextRequest("https://slate.test/admin"));
+    expect(frameGuard.readFrameLock).not.toHaveBeenCalled();
+    expect(directive(res.headers.get("content-security-policy"), "frame-ancestors")).toBe("frame-ancestors 'none'");
+  });
+
+  it("records the framing origin and the page, after the response, for a framed load", async () => {
+    const waitUntil = vi.fn();
+    await middleware(
+      framed("/booking/manage/tok-abc", "https://partner.example/landing?email=jane%40x.com"),
+      { waitUntil } as never,
+    );
+    expect(frameGuard.recordFramingObservation).toHaveBeenCalledWith({
+      origin: "https://partner.example",
+      surface: "manage",
+    });
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+  });
+
+  it("records a framed load whether the lock is on or off", async () => {
+    frameGuard.readFrameLock.mockResolvedValue(true);
+    await middleware(framed("/book", "https://partner.example/"));
+    expect(frameGuard.recordFramingObservation).toHaveBeenCalledTimes(1);
+  });
+
+  it("records nothing for a top level visit or a staff page", async () => {
+    await middleware(framed("/book", "https://partner.example/", "document"));
+    await middleware(framed("/admin", "https://partner.example/"));
+    expect(frameGuard.recordFramingObservation).not.toHaveBeenCalled();
+  });
+
+  it("serves the page when the record fails", async () => {
+    frameGuard.recordFramingObservation.mockRejectedValue(new Error("db down"));
+    const waitUntil = vi.fn();
+    const res = await middleware(framed("/book", "https://partner.example/"), { waitUntil } as never);
+    expect(res.status).toBe(200);
+    // The deferred work settles rather than rejecting into the runtime.
+    await expect(waitUntil.mock.calls[0][0]).resolves.toBeUndefined();
   });
 });

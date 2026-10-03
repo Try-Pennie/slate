@@ -60,6 +60,8 @@ export const SAVE_OUTCOMES = [
   "event-type-created",
   "event-type-gap",
   "event-type-notice",
+  "frame-locked",
+  "frame-unlocked",
   "org-default-hours",
   "regal-ignore-added",
   "regal-ignore-removed",
@@ -100,6 +102,9 @@ export const SAVE_OUTCOME_COPY: Record<Exclude<SaveOutcome, DynamicOutcome>, str
   "event-type-created": "Event type created.",
   "event-type-gap": "Gap between calls saved. The booker offers times with the new gap within a minute or two.",
   "event-type-notice": "Notice saved. The booker offers times with the new notice within a minute or two.",
+  // #3137: which way it went and when it lands, like the booking switch above.
+  "frame-locked": "Framing is locked. Within 15 seconds, only the sites on the allow list can show the booker.",
+  "frame-unlocked": "Framing is unlocked. Within 15 seconds, any site can show the booker again.",
   "org-default-hours": "Default hours for a new agent saved.",
   // #2090. Each names what now happens, because the one thing the reader needs
   // confirmed is which way the list moved.

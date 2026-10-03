@@ -10,6 +10,7 @@ import type {
   AgentLinkName,
   AlertState,
   ApiCallerSeen,
+  FrameOriginDaily,
   PilotOfferSample,
   AuditEntry,
   AvailabilityRule,
@@ -182,6 +183,7 @@ export interface Database {
       >;
       lane_heartbeats: Table<LaneHeartbeat>;
       api_caller_seen: Table<ApiCallerSeen>;
+      frame_origin_daily: Table<FrameOriginDaily>;
       pilot_offer_samples: Table<PilotOfferSample>;
       selfheal_scan_cursor: Table<SelfhealScanCursor>;
       audit_log_chain_verify: Table<AuditLogChainVerify>;
@@ -249,6 +251,12 @@ export interface Database {
           /** #2752, migration 0143: 'production' | 'offsite' | 'none'. */
           p_host_class: "production" | "offsite" | "none";
         };
+        Returns: undefined;
+      };
+      /** #3137 (migration 0160): count one framed booker page load against today's
+       *  (origin, surface) row. Bounded per day and self pruning; see the migration. */
+      record_frame_origin: {
+        Args: { p_origin: string; p_surface: string };
         Returns: undefined;
       };
       /** #418: the aggregated outcome mix over [p_since, today] as a single jsonb

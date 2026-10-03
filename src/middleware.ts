@@ -1,4 +1,6 @@
-import { NextResponse, type NextRequest } from "next/server";
+import { NextResponse, type NextFetchEvent, type NextRequest } from "next/server";
+import { readFrameLock, recordFramingObservation } from "@/lib/embed/frame-guard";
+import { frameAncestorSources, framingObservation } from "@/lib/embed/frame-policy";
 import { createServerClient } from "@supabase/ssr";
 import { publicSupabasePublishableKey, publicSupabaseUrl } from "@/lib/env";
 import { SECURITY_HEADERS } from "@/lib/security-headers";
@@ -61,10 +63,14 @@ function isFrameablePath(pathname: string): boolean {
   );
 }
 
-export async function middleware(request: NextRequest) {
+export async function middleware(request: NextRequest, event?: NextFetchEvent) {
   const staff = isStaffPath(request.nextUrl.pathname);
   const frameable = isFrameablePath(request.nextUrl.pathname);
   const nonce = cspNonce();
+  // #3137: the frame lock, a stored admin switch that defaults off. Read only for the
+  // frameable pages, through a short per isolate cache, so the booker pays one small
+  // read per isolate every few seconds rather than one per load.
+  const frameLocked = frameable ? await readFrameLock() : false;
   // ENFORCED on every path this runs on, lead pages and staff alike (#2575).
   //
   // The staff paths were left out of the report only phase for a measured reason
@@ -88,6 +94,9 @@ export async function middleware(request: NextRequest) {
   const policy = buildContentSecurityPolicy({
     nonce,
     frameable,
+    // #3137: locked, every frameable page (the booker and each page it moves to inside
+    // its frame) may be framed only by Slate and the allow list. Unlocked, as before.
+    frameAncestors: frameLocked ? frameAncestorSources() : undefined,
     scriptHashes,
     // The sign in page builds a Supabase browser client, which talks to the
     // project's own origin. Only the staff pages have one.
@@ -162,6 +171,26 @@ export async function middleware(request: NextRequest) {
   if (!frameable) {
     for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
       response.headers.set(name, value);
+    }
+  }
+
+  // #3137 OBSERVE: count who frames the booker, as an origin and a page name, after the
+  // response has gone. Recorded whether or not the lock is on, so with it on the count
+  // still shows a partner the browser is now refusing.
+  if (frameable) {
+    const seen = framingObservation({
+      method: request.method,
+      dest: request.headers.get("sec-fetch-dest"),
+      referer: request.headers.get("referer"),
+      declared: request.nextUrl.searchParams.get("parentOrigin"),
+      ownOrigin: request.nextUrl.origin,
+      pathname: request.nextUrl.pathname,
+    });
+    if (seen) {
+      const work = recordFramingObservation(seen).catch((err) => {
+        log.warn("frame-observe", { msg: "framing record failed", surface: seen.surface }, err);
+      });
+      event?.waitUntil(work);
     }
   }
 
