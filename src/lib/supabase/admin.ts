@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { publicSupabaseUrl, supabaseSecretKey } from "@/lib/env";
 import type { Database } from "@/lib/db/schema";
+import { supabaseFetch } from "@/lib/supabase/fetch";
 
 /**
  * Secret-key client (replaces the legacy service_role key). Bypasses RLS — use
@@ -13,6 +14,7 @@ export function supabaseAdmin() {
   if (!cached) {
     cached = createClient<Database>(publicSupabaseUrl(), supabaseSecretKey(), {
       auth: { persistSession: false, autoRefreshToken: false },
+      global: { fetch: supabaseFetch },
     });
   }
   return cached;

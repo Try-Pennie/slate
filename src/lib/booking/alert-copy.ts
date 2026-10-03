@@ -287,6 +287,16 @@ export function verifyOutageAlert(): string {
   return "A booking failed because verify-on-book could not confirm ANY candidate's free/busy (likely a Google/DB outage), not because the slot was full. The lead saw a retryable error. Check Google Calendar API + DB health.";
 }
 
+/**
+ * A dependency on the booking path did not answer inside its deadline (#3102).
+ * Sent under the same key as the verify outage, because it is the same incident
+ * from the lead's side; the words say which dependency it was.
+ */
+export function dependencyTimeoutAlert(dependency: string, timeoutMs: number): string {
+  const seconds = Math.round(timeoutMs / 1000);
+  return `A booking failed because ${dependency} did not answer within ${seconds} seconds, not because the slot was full. The lead saw a retryable error. If the reservation was already written, the reservation drain finishes the booking on a later tick, so the lead can still receive an invite. Check Google Calendar API and Supabase health.`;
+}
+
 /** A reschedule failed closed because the lock claim hit a DB error. */
 export function rescheduleLockOutageAlert(): string {
   return "A reschedule failed CLOSED because the per-booking lock claim hit an unexpected DB error (not a real conflict). The actor saw a retryable 503. Check DB health.";

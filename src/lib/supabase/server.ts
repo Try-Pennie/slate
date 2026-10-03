@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { publicSupabasePublishableKey, publicSupabaseUrl } from "@/lib/env";
 import type { Database } from "@/lib/db/schema";
+import { supabaseFetch } from "@/lib/supabase/fetch";
 
 /**
  * Anon-key server client bound to the request's auth cookies. Used to identify
@@ -11,6 +12,7 @@ import type { Database } from "@/lib/db/schema";
 export async function supabaseServer() {
   const cookieStore = await cookies();
   return createServerClient<Database>(publicSupabaseUrl(), publicSupabasePublishableKey(), {
+    global: { fetch: supabaseFetch },
     cookies: {
       getAll: () => cookieStore.getAll(),
       setAll: (toSet) => {

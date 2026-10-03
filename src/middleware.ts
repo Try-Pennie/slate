@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { publicSupabasePublishableKey, publicSupabaseUrl } from "@/lib/env";
 import { SECURITY_HEADERS } from "@/lib/security-headers";
+import { supabaseFetch } from "@/lib/supabase/fetch";
 import {
   buildContentSecurityPolicy,
   cspNonce,
@@ -78,6 +79,8 @@ export async function middleware(request: NextRequest) {
       publicSupabaseUrl(),
       publicSupabasePublishableKey(),
       {
+        // #3102: a hung auth server must not hold every staff page open.
+        global: { fetch: supabaseFetch },
         cookies: {
           getAll: () => request.cookies.getAll(),
           setAll: (toSet) => {

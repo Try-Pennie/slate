@@ -444,6 +444,7 @@ import {
   reservationDrainStuckAlert,
   unfairOrderingAlert,
   verifyOutageAlert,
+  dependencyTimeoutAlert,
   rescheduleLockOutageAlert,
   verifyReadFailedAlert,
   stalePhoneInviteAlert,
@@ -3764,6 +3765,12 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "no candidate could be verified",
     channel: "alert",
     text: verifyOutageAlert(),
+  },
+  {
+    key: "verify_on_book_outage",
+    state: "a dependency did not answer inside its deadline",
+    channel: "alert",
+    text: dependencyTimeoutAlert("google events.insert", 8000),
   },
   {
     key: "reschedule_lock_outage",

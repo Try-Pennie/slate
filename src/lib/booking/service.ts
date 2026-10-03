@@ -151,6 +151,7 @@ import {
   reschedulePinDroppedAlert,
   rescheduleLockOutageAlert,
   verifyOutageAlert,
+  dependencyTimeoutAlert,
   reservationDrainRecovery,
   reservationDrainStuckAlert,
   verifyReadFailedAlert,
@@ -2059,6 +2060,15 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
 export function bookingFailureAlert(
   err: unknown,
 ): { key: string; cooldownMs: number; message: string } | null {
+  // #3102: the same incident as the verify outage from the lead's side, so the
+  // same key and cooldown, with words that name what did not answer.
+  if (err instanceof orchestration.DependencyTimeoutError) {
+    return {
+      key: VERIFY_OUTAGE_ALERT_KEY,
+      cooldownMs: VERIFY_OUTAGE_ALERT_COOLDOWN_MS,
+      message: dependencyTimeoutAlert(err.dependency, err.timeoutMs),
+    };
+  }
   if (err instanceof orchestration.VerifyUnavailableError) {
     return {
       key: VERIFY_OUTAGE_ALERT_KEY,
@@ -2090,7 +2100,13 @@ export function bookingFailureAlert(
 async function alertOnBookingFailure<T>(op: () => Promise<T>): Promise<T> {
   try {
     return await op();
-  } catch (err) {
+  } catch (caught) {
+    // #3102: a dependency that did not answer becomes the retryable outage here,
+    // before the alert is chosen, so it pages as one and every route answers 503.
+    const err = orchestration.timeoutAsRetryable(caught);
+    if (err !== caught) {
+      log.warn("booking", { msg: "a dependency timed out on the booking path; answering retryable" }, caught);
+    }
     const spec = bookingFailureAlert(err);
     if (spec) {
       // alert-text-ok: `spec.message` is the alert's own copy, built by

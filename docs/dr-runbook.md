@@ -312,6 +312,62 @@ SMOKE_STRICT=1 node --experimental-strip-types --import ./scripts/register-paths
 
 ---
 
+## When Supabase or Google hangs rather than fails
+
+Not a restore, and nothing here needs reconciling afterwards, but it is the
+outage most likely to arrive first, so what Slate does in it is written down
+(#3102). A dependency that refuses a request fails fast and every path already
+handles that. One that accepts the request and never answers used to hold the
+caller until something outside Slate gave up: a lead's confirm until the browser
+aborted at 20 seconds, and a cron lane until its invocation ran out. Every call
+now carries a deadline instead, enforced in one wrapper
+(`src/lib/fetch-within-deadline.ts`):
+
+| Call | Deadline | Where it is set |
+|---|---|---|
+| Every Supabase request (the secret key client, the cookie client, the middleware's session refresh) | 15 seconds | `SUPABASE_FETCH_TIMEOUT_MS`, `src/lib/supabase/fetch.ts` |
+| Google calls a lead waits on: verify on book, the event insert, a lead's move, cancel or correction | 8 seconds | `GOOGLE_CONFIRM_TIMEOUT_MS`, `src/lib/google/calendar.ts` |
+| Google calls the sync lanes make: the event sync, the calendar list, push watches | 15 seconds | `GOOGLE_SYNC_TIMEOUT_MS`, same file |
+| The OOO calendar writes a manager waits on | 8 seconds | `CALENDAR_WRITE_TIMEOUT_MS`, same file |
+| The delegated token mint | the deadline of the call it is minting for; 8 seconds for the Gmail digest and the photo lane | `DELEGATED_TOKEN_TIMEOUT_MS`, `src/lib/google/dwd.ts` |
+
+A Google call can only be sent without one by writing `NO_DEADLINE` at the call
+site, and today nothing does.
+
+**What a lead sees.** A confirm, an API booking or a lead's reschedule whose
+dependency times out answers **503** with the same sentence a verify outage
+uses ("We hit a temporary issue confirming this time. Please try again in a
+moment."), which the booker already shows, and the lead's rate limit hit is handed
+back. It is counted as `verify_unavailable` and pages under
+`verify_on_book_outage`, with the words naming which dependency did not answer.
+
+**What can still happen after that 503.** If the timeout came after the booking's
+reservation was written (the Google insert is the usual one), the reservation
+stays pending and the reservation drain finishes it on a later tick. The event
+insert carries a fixed client id, so the finish reuses an event that landed
+rather than writing a second. So the lead can receive an invite even though the
+page asked them to try again. A retry that carries the same stable booking key
+resumes that reservation rather than making a second booking; an anonymous retry
+has no key to resume by, which is the existing posture for any confirm that
+failed after its reservation was written.
+
+**What the lanes do.** A sync tick stops waiting on a hung calendar after 15
+seconds and records an ordinary failed sync for it; the next tick tries again.
+A hung Supabase read reaches the lane as an error rather than an empty result,
+so a lane that `unwrap`s it fails loudly and its heartbeat goes stale, as for any
+database outage. PostgREST does not retry a request that hit the deadline, so one
+hung read costs one deadline, not four.
+
+**Staff pages.** The middleware's session refresh gives up after 15 seconds and
+the page renders as signed out, so staff are sent to sign in again rather than
+facing a page that never loads.
+
+**What the deadline does not cover.** It runs until the response headers arrive.
+A response that starts and then stalls mid body is not cut by it; every call
+here reads a small JSON body, so that has not been worth arming for.
+
+---
+
 ## What would make the next one easier
 
 Recorded here rather than in an issue nobody reads during an incident:
