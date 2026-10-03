@@ -41,8 +41,9 @@
 //    Salesforce holds NOW is read and printed, and a current value that contradicts
 //    the assumption has its own exit code.
 // 8. A READOUT DATE fixed once. The first readable run proposes one; it is then
-//    recorded in READOUT_DATE below, in git, so later runs cannot move it. Every run
-//    before it is PROVISIONAL, and from it on the cohort stops growing.
+//    recorded in READOUT_DATE below, in git, so later runs cannot move it. A run
+//    after the first span closes and before that date is PROVISIONAL (one before the
+//    first span closes is PARTIAL, rule 9), and from the date on the cohort stops growing.
 // 9. A PARTIAL LOOK before the first full window (#2976, Dan 2026-10-01). Between the
 //    window opening and the first application's span closing, a run reports the
 //    rates measured so far over applications whose span is still OPEN, so the trend
@@ -938,10 +939,12 @@ function judgeLines(input: CompareInput): { exit: number; lines: string[]; propo
     const dBook = daysNeeded({ leadsPerDay: perDay, percent: ASSUMED_PERCENT, baseRate: booking.calcomRate, lift: window.lift });
     const showPerDay = (show.slate.units + show.calcom.units) / Math.max(perDayDays, 1e-9);
     const dShow = daysNeeded({ leadsPerDay: showPerDay, percent: ASSUMED_PERCENT, baseRate: show.calcom.rate, lift: window.lift });
-    if (!partial) out.push(
-      `  days needed to see ${points(window.lift)}: booking rate ${dBook.ok ? plural(dBook.days, "day") : `none (${dBook.reason})`}; ` +
-        `show rate ${dShow.ok ? `${plural(dShow.days, "day")} at least (advisor clustering adds to it)` : `none (${dShow.reason})`}`,
-    );
+    if (!partial) {
+      out.push(
+        `  days needed to see ${points(window.lift)}: booking rate ${dBook.ok ? plural(dBook.days, "day") : `none (${dBook.reason})`}; ` +
+          `show rate ${dShow.ok ? `${plural(dShow.days, "day")} at least (advisor clustering adds to it)` : `none (${dShow.reason})`}`,
+      );
+    }
     return { out, readableBooking, readableShow, dBook, dShow };
   };
 
