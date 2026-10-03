@@ -23,7 +23,9 @@ import {
   offsiteOriginReachedVerdict,
   awaitingActivationReachedVerdict,
   regalCallFeedReachedVerdict,
+  busyDriftReachedVerdict,
   GATED_CHECK_VERDICT_COVERAGE,
+  BUSY_DRIFT_VERDICT_LANE,
   AVAILABILITY_SCAN_VERDICT_LANE,
   CALENDAR_WINDOW_VERDICT_LANE,
   OFFSITE_ORIGIN_VERDICT_LANE,
@@ -213,6 +215,31 @@ const quiet = async () => {};
   assert(!regalCallFeedReachedVerdict(flowing, null), "regal feed: a skipped unreadable check is NOT a verdict");
 }
 
+// --- busy drift (#1591) -------------------------------------------------------
+// Armed, it pages on persistent drift, so a sampler that stops concluding silences
+// a page and needs its own lane. A tick concludes when it read both sides for at
+// least one agent, drift or not; skipped, unreadable, or nobody checked does not.
+{
+  const ok = { status: "observed" as const, agentsChecked: 18, agentsUnreadable: 0, gapAgents: [] };
+  assert(busyDriftReachedVerdict(ok), "busy drift: a clean sample is a verdict");
+  assert(
+    busyDriftReachedVerdict({
+      ...ok,
+      gapAgents: [{ email: "a@x.com", userId: "u", gaps: 1, gapMinutes: 20, firstGapStartIso: "2026-10-02T15:00:00.000Z" }],
+    }),
+    "busy drift: a sample that found drift is a verdict",
+  );
+  assert(!busyDriftReachedVerdict(null), "busy drift: a skipped or thrown step is NOT a verdict");
+  assert(
+    !busyDriftReachedVerdict({ status: "unreadable", agentsChecked: 0, agentsUnreadable: 0, gapAgents: [] }),
+    "busy drift: an unreadable side is NOT a verdict",
+  );
+  assert(
+    !busyDriftReachedVerdict({ ...ok, agentsChecked: 0, agentsUnreadable: 18 }),
+    "busy drift: a sample where every agent was unreadable is NOT a verdict",
+  );
+}
+
 // --- the registry: every check the issue named is now watched ----------------------
 {
   const expected: Record<string, string> = {
@@ -224,6 +251,8 @@ const quiet = async () => {};
     regalCallsUnreadable: REGAL_CALL_FEED_VERDICT_LANE,
     // #2944: its own lane, since it reads a second count the feed pair does not.
     regalCallOutcomes: REGAL_CALL_OUTCOMES_VERDICT_LANE,
+    // #1591: armed, so its blindness silences a page.
+    busyDrift: BUSY_DRIFT_VERDICT_LANE,
   };
   const coverage = GATED_CHECK_VERDICT_COVERAGE as Record<string, DetectorVerdictCoverage>;
   for (const [check, lane] of Object.entries(expected)) {

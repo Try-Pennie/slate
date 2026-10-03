@@ -629,6 +629,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "A bookable agent's calendar is no longer refreshed far enough ahead to cover the days the booker offers, so a lead can book an hour that calendar already has taken. It stays true until the refresh rotation reaches the calendar again, and the monitor lane re-measures every 5 minutes.",
   },
   {
+    key: "busy_cache_drift",
+    kind: "condition",
+    why: "An agent's Google calendar has held busy time for at least 30 minutes that the busy cache still lacks, so the booker can offer a time that agent already has taken (#1591). It stays true until the sync picks the time up, and the sampler re-measures every 5 minutes; it clears after a full pass of the roster with every calendar read and none drifting.",
+  },
+  {
     key: "ooo_calcom",
     kind: "condition",
     why:
@@ -961,6 +966,14 @@ export const ALERT_CATALOG: AlertEntry[] = [
     kind: "info",
     why:
       "Names the monitoring checks that are deliberately off because they cannot conclude before cutover; it is repeated so the missing cover stays visible, and there is no incident to end. Its page sibling, detector_unpark, owns the half that needs acting on.",
+  },
+  {
+    key: "pool_nearly_full",
+    kind: "info",
+    why:
+      "Fewer than 10% of a pool's possible starts today are still open (#1256): good news " +
+      "and a nudge to add coverage, never something broken. The moment it reaches zero is " +
+      "the booked solid page's, so this has nothing of its own to end.",
   },
   {
     key: "thin_tier_staffing",

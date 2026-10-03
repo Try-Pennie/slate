@@ -36,6 +36,7 @@ import type { RegalCallResult } from "@/lib/monitor/regal-calls";
 import type { RosterCoverageVerdict } from "@/lib/monitor/roster-coverage";
 import type { AvailabilityScanResult } from "@/lib/monitor/availability-scan";
 import type { CalendarWindowResult } from "@/lib/monitor/calendar-window-coverage";
+import type { BusyDriftResult } from "@/lib/monitor/busy-drift-sampler";
 import type { OffsiteOriginResult } from "@/lib/monitor/offsite-origin";
 import type { AwaitingActivationResult } from "@/lib/monitor/awaiting-activation";
 import type { StrandedHiresResult } from "@/lib/monitor/stranded-hires";
@@ -211,6 +212,14 @@ export const AVAILABILITY_LATENCY_VERDICT_LANE = "verdict:availability-latency";
  */
 export const ADVISOR_PHOTOS_VERDICT_LANE = "verdict:advisor-photos";
 
+/**
+ * The busy drift sampler (#1591). It shipped observe only and exempt from this
+ * family, because going blind silenced nothing. Armed, it pages on drift that
+ * persists, so a sampler whose live or cached read keeps failing would silence
+ * that page while reading exactly like a cache that agrees with Google.
+ */
+export const BUSY_DRIFT_VERDICT_LANE = "verdict:busy-drift";
+
 export type DetectorVerdictLane =
   | typeof TIER_STAFFING_VERDICT_LANE
   | typeof AVAILABILITY_TRUTH_VERDICT_LANE
@@ -233,7 +242,8 @@ export type DetectorVerdictLane =
   | typeof REGAL_CALL_FEED_VERDICT_LANE
   | typeof REGAL_CALL_OUTCOMES_VERDICT_LANE
   | typeof ADVISOR_PHOTOS_VERDICT_LANE
-  | typeof AVAILABILITY_LATENCY_VERDICT_LANE;
+  | typeof AVAILABILITY_LATENCY_VERDICT_LANE
+  | typeof BUSY_DRIFT_VERDICT_LANE;
 
 /**
  * Did this availability truth tick compare real calendars and decide?
@@ -400,6 +410,17 @@ export function calendarWindowReachedVerdict(result: CalendarWindowResult | null
   if (!result) return false;
   if (result.status === "uncovered") return true;
   return result.status === "clear" && result.judged > 0;
+}
+
+/**
+ * Did the busy drift sampler compare a real calendar against the cache? (#1591)
+ *
+ * A tick that read both sides for at least one agent concluded, whether it found
+ * drift or not. An unreadable side, a sample where every agent's calendar errored,
+ * and a skipped or thrown step measured nothing (L98).
+ */
+export function busyDriftReachedVerdict(result: BusyDriftResult | null): boolean {
+  return result !== null && result.status === "observed" && result.agentsChecked > 0;
 }
 
 /**
@@ -664,10 +685,12 @@ export const GATED_CHECK_VERDICT_COVERAGE: Record<MonitorGatedCheck, DetectorVer
   belowLeadTier: { lane: BELOW_LEAD_TIER_VERDICT_LANE },
   failureRate: { lane: FAILURE_RATE_VERDICT_LANE },
   regalCalls: { lane: REGAL_CALLS_VERDICT_LANE },
-  busyDrift: {
+  // #1591: armed report only, so going blind silences a page.
+  busyDrift: { lane: BUSY_DRIFT_VERDICT_LANE },
+  poolFullness: {
     exempt:
-      "observe only: it logs drift for calibration and pages nobody, so going blind silences " +
-      "no page, and the issue that activates it has to add a lane alongside the page",
+      "an info whisper that never pages (#1256): going blind silences a nudge, not a page, " +
+      "and the supply page (#1254) it reads from shows the same numbers to anyone looking",
   },
   // #2798: the five below each swallowed a failed read into a status that pages
   // nothing and throws nothing, so neither `monitor_step_failing` nor any lane saw

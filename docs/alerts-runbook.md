@@ -74,7 +74,7 @@ Keys: `empty_tier:*`, `bucket_slots_stale`, `availability_booked_solid`,
 `thin_tier_staffing`, `tier_fallback_deep:*`, `no_eligible_agents:*`,
 `low_booking_volume`, `booking_failure_rate`, `calendar_window_uncovered`,
 `booker_unstaffed:*`, `public_booking_stopped`, `booking_race_contention`,
-`booking_race_bound_hit`.
+`booking_race_bound_hit`, `pool_nearly_full`, `busy_cache_drift`.
 
 **What fired it.** Something between the roster and the cache means a lead sees fewer
 times than they should, or none. The alerts are deliberately split by CAUSE, because

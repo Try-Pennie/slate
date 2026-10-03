@@ -105,6 +105,7 @@ export function monitorSetupGates(readiness: SetupReadiness): {
   rosterCoverage: SetupGate;
   calendarWindow: SetupGate;
   busyDrift: SetupGate;
+  poolFullness: SetupGate;
   tierStaffing: SetupGate;
   belowLeadTier: SetupGate;
   offsiteOrigin: SetupGate;
@@ -172,6 +173,13 @@ export function monitorSetupGates(readiness: SetupReadiness): {
     // guessed horizon has it judging times the cache was never asked to hold and
     // logging the difference as drift (#216's shape, in a log line).
     busyDrift: gate(readiness, ["horizonDays"]),
+    // #1256: the nearly full pool whisper reads the supply report (#1254). Every
+    // maximum in it is derived from the org's week, the offered times ARE the cached
+    // slot rows, and the horizon sets the report's day columns and each pool's own
+    // allowance, so a guess at any of the three changes what every share means while
+    // it still looks normal. The bucket list is not needed: the report falls back to
+    // the cache's own codes. Its cooldown alone is no reason to go dark.
+    poolFullness: gate(readiness, ["slotHealth", "businessHours", "horizonDays"]),
     // #2505: does each DEBT TIER offer a bookable time inside the next open
     // business day? It needs the org's week twice over, so it must skip on it
     // rather than guess: the week is where the WINDOW comes from (the next open

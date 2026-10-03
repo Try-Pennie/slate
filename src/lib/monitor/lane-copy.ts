@@ -34,6 +34,7 @@ import {
   REGAL_CALL_FEED_VERDICT_LANE,
   REGAL_CALL_OUTCOMES_VERDICT_LANE,
   ADVISOR_PHOTOS_VERDICT_LANE,
+  BUSY_DRIFT_VERDICT_LANE,
   parkedDetector,
 } from "@/lib/monitor/verdict-freshness";
 
@@ -333,6 +334,11 @@ const VERDICT_SUBJECT: Record<string, { what: string; cost: string; look: string
     // This stamp is the lane's only heartbeat, so a schedule that stopped firing
     // lands here too, and that is the first thing to rule out (L11).
     look: 'that the 17 4 * * * and 17 10 * * * crons are in wrangler.jsonc and firing, then the Worker logs for tag=advisor-photos and any advisor_photos_unread page',
+  },
+  [BUSY_DRIFT_VERDICT_LANE]: {
+    what: "the sampler asking whether the busy time Slate has cached for each agent matches their live Google calendar",
+    cost: "an agent whose cached busy time had fallen behind their calendar could be offered to leads over meetings, with no page saying the cache had drifted",
+    look: 'the Worker logs for msg="tick" under tag=busy-drift, and whether it reports status="unreadable", which means the live freeBusy read or the busy_blocks read is failing',
   },
   [OOO_PROTECTION_VERDICT_LANE]: {
     what: "the check asking whether approved time off is still blocking the hours it covers",

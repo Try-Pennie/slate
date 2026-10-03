@@ -55,10 +55,15 @@ import {
 } from "@/lib/monitor/calendar-window-coverage";
 import {
   runBusyDriftSample,
+  reportBusyDrift,
   sampleForTick,
   type BusyDriftResult,
   type DriftInterval,
 } from "@/lib/monitor/busy-drift-sampler";
+import { DateTime } from "luxon";
+
+/** Agents the busy drift sampler reads per tick: under freeBusy's 20 calendar cap. */
+const BUSY_DRIFT_BATCH = 18;
 import { readAgentBusyRange } from "@/lib/monitor/availability-truth-store";
 import { coverageForRange, runRosterCoverageCheck } from "@/lib/monitor/roster-coverage";
 import {
@@ -188,6 +193,8 @@ import {
   availabilityScanReachedVerdict,
   CALENDAR_WINDOW_VERDICT_LANE,
   calendarWindowReachedVerdict,
+  BUSY_DRIFT_VERDICT_LANE,
+  busyDriftReachedVerdict,
   OFFSITE_ORIGIN_VERDICT_LANE,
   offsiteOriginReachedVerdict,
   AWAITING_ACTIVATION_VERDICT_LANE,
@@ -283,6 +290,10 @@ import {
   type ResolvedMonitorSettings,
 } from "@/lib/monitor/settings";
 import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
+import type { TierDepth } from "@/lib/routing/staffing-depth";
+import { runPoolFullnessCheck } from "@/lib/monitor/bucket-fullness";
+import { bucketSupplyReport, type CachedSlotRow } from "@/lib/admin/bucket-supply";
+import { loadBookedTimes, supplyDepthMap } from "@/lib/admin/bucket-supply-load";
 import { runThinTierStaffingCheck } from "@/lib/monitor/thin-tier";
 import {
   agentEmailForRetry,
@@ -1791,15 +1802,74 @@ export async function GET(req: NextRequest) {
     // staffing can add coverage before a thin tier saturates and trips the
     // reactive availability signals above. depth-0 dead-ends are those signals'
     // job and are excluded; the info-channel post self-throttles to ~daily. ---
+    // One staffing depth read per tick, shared by the thin tier whisper and the
+    // nearly full pool whisper (#1256), so the second costs no extra subrequests.
+    // A rejected read is shared too: each step contains it in its own boundary.
+    let tierDepthsOnce: Promise<TierDepth[]> | null = null;
+    const tierDepthsForTick = () =>
+      (tierDepthsOnce ??= loadTierDepths(db, undefined, new Date(now)));
     const thinTierCount = await steps.run("thin_tier", null, () =>
       runThinTierStaffingCheck({
-        loadDepths: () => loadTierDepths(db, undefined, new Date(now)),
+        loadDepths: tierDepthsForTick,
         // alert-key: thin_tier_staffing
         notify: sendThrottledInfo,
         cooldownMs: cooldownMs.thin_tier_staffing,
         log: (m) => log.info("thin-tier", { msg: m }),
       }),
     );
+
+    // --- A pool nearly full for the day (#1256): a quiet whisper when fewer than
+    // 10% of a pool's possible starts today are still open (Dan, 2026-10-02), well
+    // before the booked solid page (#1412) fires at zero. The measurement is the
+    // supply page's own (#1254), built from the setup reads this tick already holds
+    // (the slot rows, the week, the horizon, the bucket list) plus the shared depth
+    // read above, so the only new subrequests are the paginated read of today's
+    // window of bookings. A pool the scan just paged as booked solid is left to
+    // that page; with the scan's answer unknown or cut short, a pool with nothing
+    // open is held back for the same reason. ---
+    await steps.run("pool_fullness", null, async () => {
+      if (!gates.poolFullness.run) {
+        log.warn("monitor", { msg: "nearly full pool check skipped", why: gates.poolFullness.why });
+        return null;
+      }
+      const hours = businessHours!;
+      return runPoolFullnessCheck({
+        loadReport: async () => {
+          // The booked times and the depths each fail to an explicit unknown, as on
+          // the supply page: a share computed over a failed read would be believed.
+          const [booked, depths] = await Promise.all([
+            loadBookedTimes(db, undefined, hours, horizonDays as number, new Date(now)).catch((err) => {
+              log.error("monitor", { msg: "nearly full pool booked times unreadable" }, err);
+              return null;
+            }),
+            tierDepthsForTick().catch((err) => {
+              log.error("monitor", { msg: "nearly full pool depths unreadable" }, err);
+              return null;
+            }),
+          ]);
+          return bucketSupplyReport({
+            hours,
+            horizonDays: horizonDays as number,
+            nowMs: now,
+            buckets:
+              buckets === null
+                ? null
+                : buckets.filter((b) => !b.is_test).map((b) => ({ code: b.code, name: b.name })),
+            depthByCode: depths === null ? null : supplyDepthMap(depths),
+            // The same SELECT as the supply page's (bucket_code, payload,
+            // computed_at); SlotHealthRow only names fewer payload fields.
+            cacheRows: slotRows as unknown as CachedSlotRow[],
+            bookedByCodeAndDate: booked,
+          });
+        },
+        todayIso: DateTime.fromMillis(now, { zone: hours.zone }).toISODate() ?? "",
+        bookedSolidCodes: scan && !scan.truncated ? scan.cause.bookedSolid : null,
+        // alert-key: pool_nearly_full
+        notify: sendThrottledInfo,
+        cooldownMs: cooldownMs.pool_nearly_full,
+        log: (fields) => log.info("monitor", { msg: "nearly full pool", ...fields }),
+      });
+    });
 
     // --- Schedule coverage (#838): a bookable agent with no working hours silently
     // shows zero availability and takes no bookings. They should have some
@@ -2930,16 +3000,19 @@ export async function GET(req: NextRequest) {
       },
     );
 
-    // --- Does the cached busy index agree with Google (#1262)? OBSERVE-ONLY: a
-    // rotating sample's cached blocks are compared against a live freeBusy for
-    // the same window, and any difference is LOGGED for the calibration pass
-    // (tag=busy-drift), never paged. The union includes slate-source blocks,
+    // --- Does the cached busy index agree with Google (#1262)? A rotating sample's
+    // cached blocks are compared against a live freeBusy for the same window, and
+    // every difference is LOGGED (tag=busy-drift). Since #1591 a difference that
+    // persists past one revisit of the agent PAGES, report only: nothing here
+    // writes busy time. The union includes slate-source blocks,
     // because freeBusy merges anonymously and Slate deliberately never mirrors
     // its own bookings as gcal events (#166/#586): a google-only union would
-    // flag every Slate booking as a gap. Activation, after calibration against
-    // real samples, is its own issue so this inactive state stays visible.
+    // flag every Slate booking as a gap.
     // Cost: one freeBusy call per 20 sampled calendars per tick, on the same
     // budget the truth probe already draws from. ---
+    // Ticks for the rotation to visit every agent, set by the sampler step from the
+    // roster it read; the report step needs it to know how often an agent recurs.
+    let busyDriftRotationTicks = 1;
     const busyDrift = await steps.run<BusyDriftResult | null>("busy_drift", null, async () => {
       if (!gates.busyDrift.run) {
         log.warn("monitor", { msg: "busy drift sampler skipped", why: gates.busyDrift.why });
@@ -2962,7 +3035,8 @@ export async function GET(req: NextRequest) {
       // Stateless rotation: the 5-minute tick index walks the roster in batches
       // sized under freeBusy's 20-calendar cap, so a 120-agent roster is fully
       // sampled roughly every 35 minutes with no stored cursor.
-      const sample = sampleForTick(agents, Math.floor(now / (5 * 60_000)), 18);
+      busyDriftRotationTicks = Math.max(1, Math.ceil(agents.length / BUSY_DRIFT_BATCH));
+      const sample = sampleForTick(agents, Math.floor(now / (5 * 60_000)), BUSY_DRIFT_BATCH);
       const fromIso = new Date(now).toISOString();
       const toIso = new Date(now + (horizonDays as number) * 24 * 60 * 60_000).toISOString();
       return runBusyDriftSample({
@@ -2994,6 +3068,34 @@ export async function GET(req: NextRequest) {
         },
         logTick: (fields) => log.info("busy-drift", { msg: "tick", ...fields }),
       });
+    });
+    // #1591: armed REPORT ONLY (Dan, 2026-10-02). Pages on drift that persisted
+    // past one revisit of the agent; never writes busy time, so the sync stays the
+    // cache's one writer. Its own step, so a failed streak write or post cannot
+    // take the sample's result (and its verdict stamp) down with it. Cost: one
+    // streak RPC per drifting agent (at most two per tick in the calibration week)
+    // or one for the clean run, plus a resolve once per full rotation.
+    const busyDriftReport = await steps.run("busy_drift_report", null, () =>
+      reportBusyDrift({
+        result: busyDrift,
+        rotationTicks: busyDriftRotationTicks,
+        tickMs: 5 * 60_000,
+        cooldownMs: cooldownMs.busy_cache_drift,
+        hit: recordConsecutiveStreak,
+        clearStreak: clearFailureStreak,
+        // alert-key: busy_cache_drift
+        notify: sendThrottledAlert,
+        // alert-key: busy_cache_drift
+        // all-clear-proof: src/lib/monitor/busy-drift-sampler.test.ts - a skipped,
+        // unreadable or empty tick never resolves, nor a clean tick that could not
+        // read every sampled agent.
+        resolve: resolveAlert,
+      }),
+    );
+    log.info("busy-drift", {
+      msg: "report",
+      verdict: busyDriftReport?.verdict ?? null,
+      sustained: busyDriftReport?.sustained.length ?? null,
     });
 
     // Schema behind the deployed code (#516). Deploys do not apply migrations, so
@@ -3524,6 +3626,7 @@ export async function GET(req: NextRequest) {
       // measured answer; the Regal pair shares one lane because they read one RPC.
       recordDetectorVerdict(AVAILABILITY_SCAN_VERDICT_LANE, availabilityScanReachedVerdict(scan)),
       recordDetectorVerdict(CALENDAR_WINDOW_VERDICT_LANE, calendarWindowReachedVerdict(calendarWindow)),
+      recordDetectorVerdict(BUSY_DRIFT_VERDICT_LANE, busyDriftReachedVerdict(busyDrift)),
       recordDetectorVerdict(OFFSITE_ORIGIN_VERDICT_LANE, offsiteOriginReachedVerdict(offsiteOrigin)),
       recordDetectorVerdict(
         AWAITING_ACTIVATION_VERDICT_LANE,
@@ -3593,9 +3696,9 @@ export async function GET(req: NextRequest) {
       // inside when the roster read failed: "could not check coverage" must not
       // render as "every calendar is covered" (#1262).
       calendarWindow,
-      // Observe-only (#1262): findings are in the logs (tag=busy-drift), nothing
-      // pages until the activation issue lands. null when the step failed or its
-      // gate stood it down; status "unreadable" when a side could not be read.
+      // Findings are in the logs (tag=busy-drift), and drift that persists pages
+      // (#1591). null when the step failed or its gate stood it down; status
+      // "unreadable" when a side could not be read.
       busyDrift,
       migration: { status: migrationStatus, shipped: SHIPPED_MIGRATION_VERSION },
       // null when the step failed, and measured:false inside when the endpoint read
