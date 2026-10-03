@@ -76,6 +76,28 @@ function mayWriteAlerts(key: string, what: string): boolean {
 }
 
 /**
+ * What a single-row read of `alert_state` saw, kept whole so a later conditional
+ * write can name the exact stamp it is replacing (#3170). `unreadable` is a read
+ * that errored, which is not the same as a row that is not there.
+ */
+type StampRead =
+  | { kind: "absent" }
+  | { kind: "present"; raw: string; ms: number | null }
+  | { kind: "unreadable" };
+
+async function readStamp(rowKey: string): Promise<StampRead> {
+  const { data, error } = await supabaseAdmin()
+    .from("alert_state")
+    .select("last_sent_at")
+    .eq("key", rowKey)
+    .maybeSingle();
+  if (error) return { kind: "unreadable" };
+  if (!data) return { kind: "absent" };
+  const raw = (data as { last_sent_at: string }).last_sent_at;
+  return { kind: "present", raw, ms: parseStampMs(raw) };
+}
+
+/**
  * Whether `key`'s cooldown has elapsed at `nowMs`, so a send now would go out.
  * The one cooldown read, used by `sendThrottledAlert` itself and by a caller that
  * must not spend reads building a message the throttle would drop (PR #2883, the
@@ -85,22 +107,79 @@ function mayWriteAlerts(key: string, what: string): boolean {
  * always taken: a lost cooldown costs a duplicate message, a swallowed one mutes it.
  */
 export async function isAlertDue(key: string, cooldownMs: number, nowMs: number): Promise<boolean> {
-  // error-ok: an empty result reads as "never sent", which SENDS. That is the
-  // fail safe side and the same one #1169 chose for an unreadable stamp: a lost
-  // cooldown costs a duplicate page, a swallowed one would mute the alert.
-  const { data } = await supabaseAdmin()
+  return stampIsDue(await readStamp(key), cooldownMs, nowMs);
+}
+
+// #1169: fail closed. A corrupt last_sent_at used to parse to NaN, which
+// shouldSendAlert compared false against forever, permanently muting this alert.
+// Unreadable reads as "never sent" (null -> send), and the send then overwrites the
+// corrupt stamp with a fresh one. A refused read (#2542) also reads as never sent:
+// a lost cooldown costs a duplicate page, a swallowed one would mute the alert.
+function stampIsDue(seen: StampRead, cooldownMs: number, nowMs: number): boolean {
+  return shouldSendAlert(seen.kind === "present" ? seen.ms : null, nowMs, cooldownMs);
+}
+
+/**
+ * The outcome of claiming a send before posting it (#3170).
+ *
+ * `won`: this sender, and no other, may post. `lost`: another sender moved the row
+ * after this one read it, so posting would repeat its message. `unclaimed`: the
+ * claim could not be MADE (the read or the write errored, or the condition failed
+ * with the stamp unmoved), which is not a lost race, so the send goes ahead as it
+ * did before claims existed. That keeps the old failure direction: a broken
+ * `alert_state` costs a duplicate message, never a muted one.
+ */
+type Claim = "won" | "lost" | "unclaimed";
+
+/**
+ * Replace the row `seen` describes with `stampIso`, but only if it is still what
+ * `seen` saw: an insert the primary key refuses when somebody else wrote the row
+ * first, or an update filtered on the exact stamp that was read. Of two concurrent
+ * callers that read the same row, exactly one can win.
+ *
+ * Postgres decides the race, never this process, which is the point: two Worker
+ * invocations share nothing else.
+ */
+async function claimRow(rowKey: string, seen: StampRead, stampIso: string): Promise<Claim> {
+  if (seen.kind === "unreadable") return "unclaimed";
+  const db = supabaseAdmin();
+  if (seen.kind === "absent") {
+    const { error } = await db.from("alert_state").insert({ key: rowKey, last_sent_at: stampIso });
+    if (!error) return "won";
+    // 23505 is the primary key refusing: somebody wrote this row after the read.
+    if ((error as { code?: string }).code === "23505") return "lost";
+    log.warn("slack-alert", { msg: "send claim failed; sending unclaimed", key: rowKey, error: error.message });
+    return "unclaimed";
+  }
+  const { data, error } = await db
     .from("alert_state")
-    .select("last_sent_at")
-    .eq("key", key)
-    .maybeSingle();
-  // #1169: fail closed. A corrupt last_sent_at used to parse to NaN, which
-  // shouldSendAlert compared false against forever, permanently muting this
-  // alert. Unreadable reads as "never sent" (null -> send), and the send then
-  // overwrites the corrupt stamp with a fresh one.
-  const lastSentAtMs = data
-    ? parseStampMs((data as { last_sent_at: string }).last_sent_at)
-    : null;
-  return shouldSendAlert(lastSentAtMs, nowMs, cooldownMs);
+    .update({ last_sent_at: stampIso })
+    .eq("key", rowKey)
+    .eq("last_sent_at", seen.raw)
+    .select("key");
+  if (error) {
+    log.warn("slack-alert", { msg: "send claim failed; sending unclaimed", key: rowKey, error: error.message });
+    return "unclaimed";
+  }
+  if ((data ?? []).length > 0) return "won";
+  // Nothing matched. A lost race moved the stamp (or removed the row); a filter that
+  // cannot match the stamp it was handed leaves it exactly where the read found it.
+  // Only the first is a reason to stay quiet, so look before deciding (L93).
+  const after = await readStamp(rowKey);
+  if (after.kind === "present" && (after.raw === seen.raw || (after.ms !== null && after.ms === seen.ms))) {
+    log.warn("slack-alert", {
+      msg: "send claim matched nothing with the stamp unmoved; sending unclaimed",
+      key: rowKey,
+    });
+    return "unclaimed";
+  }
+  return "lost";
+}
+
+/** `ms` as a stamp, nudged off `seen` so a claim never writes the value it replaces. */
+function claimStampIso(ms: number, seen: StampRead): string {
+  const clash = seen.kind === "present" && seen.ms === ms;
+  return new Date(clash ? ms - 1 : ms).toISOString();
 }
 
 export async function sendThrottledAlert(
@@ -121,7 +200,17 @@ export async function sendThrottledAlert(
   if (!slackConfigured()) return;
   const db = supabaseAdmin();
   const nowMs = Date.now();
-  if (!(await isAlertDue(key, cooldownMs, nowMs))) return;
+  const seen = await readStamp(key);
+  if (!stampIsDue(seen, cooldownMs, nowMs)) return;
+
+  // #3170: claim the send BEFORE posting, so two overlapping runs of one lane post
+  // one page between them rather than one each. The claim is written as the SHORT
+  // retry stamp a failed send leaves, and lengthened to the full cooldown only once
+  // Slack confirms delivery below. So whatever goes wrong after the claim (the post
+  // fails, throws, or the invocation dies mid post) the page is held off for
+  // minutes, never for the whole cooldown (L368).
+  const claim = await claimRow(key, seen, claimStampIso(alertStampMs(false, nowMs, cooldownMs), seen));
+  if (claim === "lost") return;
 
   const result = await postSlack({ text, ...(channel ? { channel } : {}) });
   // Fail loud (#1035): a not-ok send used to be invisible AND burned the full
@@ -132,7 +221,7 @@ export async function sendThrottledAlert(
   if (!result.ok) {
     log.warn("slack-alert", { msg: "send failed", key, error: result.error ?? null });
   }
-  // write-ok: a refused stamp leaves no cooldown, so the alert re-sends next tick. Repeating a page is the safe direction; a stamp that landed wrongly would mute one.
+  // write-ok: a refused stamp leaves the claim's short retry window (or no cooldown at all, unclaimed), so the alert re-sends within minutes. Repeating a page is the safe direction; a stamp that landed wrongly would mute one.
   await db
     .from("alert_state")
     .upsert(
@@ -352,14 +441,20 @@ export async function resolveAlert(
   if (!mayWriteAlerts(key, "all-clear")) return false;
   if (!slackConfigured()) return false;
   const db = supabaseAdmin();
-  // error-ok: a read error defers the recovery notice to the next tick, which is
-  // safe (the marker survives); it can never invent a recovery that didn't happen.
-  const { data } = await db
-    .from("alert_state")
-    .select("last_sent_at")
-    .eq("key", firingKey(key))
-    .maybeSingle();
-  if (!data) return false;
+  // A read error defers the recovery notice to the next tick, which is safe (the
+  // marker survives); it can never invent a recovery that didn't happen.
+  const seen = await readStamp(firingKey(key));
+  if (seen.kind !== "present") return false;
+
+  // #3170: claim the all-clear before posting it, by re-stamping the marker on the
+  // condition that it still holds the stamp just read. Two overlapping resolvers post
+  // one notice between them, and an older run cannot clear a page that a newer run
+  // delivered after it looked (a delivered page re-stamps the marker, so the
+  // condition fails). The marker stays until the notice is delivered, so a post that
+  // fails, throws or never finishes leaves it for the next tick to retry (L368).
+  const claimIso = claimStampIso(Date.now(), seen);
+  const claim = await claimRow(firingKey(key), seen, claimIso);
+  if (claim === "lost") return false;
 
   const result = await postSlack({ text, ...(channel ? { channel } : {}) });
   if (!result.ok) {
@@ -370,13 +465,18 @@ export async function resolveAlert(
     });
     return false;
   }
+  // Cleared only while it still carries THIS claim: a page delivered while the notice
+  // was in flight re-stamped it, and that page is still open, so its marker and its
+  // cooldown both stay. An unclaimed notice clears unconditionally, as every notice
+  // did before claims existed.
+  const clear = db.from("alert_state").delete().eq("key", firingKey(key));
+  const cleared = await (claim === "won" ? clear.eq("last_sent_at", claimIso) : clear).select("key");
   // write-ok, and REPORTED (#2482): a refused delete leaves the firing marker, so
   // this condition reads as still firing and a later resolve clears it. It cannot
   // produce a recovery notice for something that never fired.
-  reportWriteFailure(
-    await db.from("alert_state").delete().eq("key", firingKey(key)),
-    "alert firing marker clear",
-  );
+  reportWriteFailure(cleared, "alert firing marker clear");
+  // The notice went out, but a newer page owns the marker now; its cooldown stays too.
+  if (!cleared.error && (cleared.data ?? []).length === 0) return true;
   // write-ok, and REPORTED (#2482): a refused delete leaves the cooldown stamp, so
   // the NEXT page on this key is muted for the rest of its window. That is a real
   // cost and it expires on its own, so it is tolerated and logged rather than raised.

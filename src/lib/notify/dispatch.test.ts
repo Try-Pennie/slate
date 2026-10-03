@@ -48,7 +48,50 @@ const delIn = vi.hoisted(() => vi.fn());
 const readIn = vi.hoisted(() => vi.fn());
 const failReadInCall = vi.hoisted(() => ({ value: 0 }));
 const failDeletes = vi.hoisted(() => ({ value: false }));
-vi.mock("@/lib/supabase/admin", () => ({
+// #3170: the conditional writes that claim a send. `enforce` is what Postgres does
+// (a primary key refuses a second insert, a filter on the stamp the reader saw
+// matches nothing once somebody else moved it); switching it off gives the fake the
+// old unconditional behaviour, which is the positive control proving the
+// concurrency tests can see a duplicate at all. `casNeverMatches` stands in for a
+// stamp filter that never matches for a reason other than a lost race.
+const claims = vi.hoisted(() => ({ enforce: true, casNeverMatches: false }));
+const inserted = vi.hoisted(() => vi.fn());
+// Holds every single-row read until `size` of them have arrived, so two senders
+// are guaranteed to have both read the same state before either claims, rather
+// than relying on how the microtasks happen to interleave. `afterRead` runs once,
+// after the next read, so a test can change the row between a read and the claim.
+const readBarrier = vi.hoisted(() => ({
+  size: 0,
+  waiting: [] as (() => void)[],
+  afterRead: null as null | (() => void),
+}));
+vi.mock("@/lib/supabase/admin", () => {
+  // A filter chain that applies on `.select()` or when awaited bare, like a
+  // PostgREST builder. Each chain is used one way, so it applies once.
+  const filtered = (apply: (filters: [string, string][]) => { data?: unknown; error: unknown }) => {
+    const filters: [string, string][] = [];
+    const b = {
+      eq: (col: string, val: string) => {
+        filters.push([col, val]);
+        return b;
+      },
+      select: async () => apply(filters),
+      then: (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) =>
+        Promise.resolve(apply(filters)).then(res, rej),
+    };
+    return b;
+  };
+  const matches = (filters: [string, string][]) => {
+    const key = filters.find(([c]) => c === "key")?.[1];
+    if (key === undefined || !rows.has(key)) return null;
+    for (const [col, val] of filters) {
+      if (col !== "last_sent_at") continue;
+      if (claims.casNeverMatches) return null;
+      if (claims.enforce && rows.get(key) !== val) return null;
+    }
+    return key;
+  };
+  return {
   supabaseAdmin: () => ({
     from: (_table: string) => ({
       select: () => ({
@@ -56,10 +99,24 @@ vi.mock("@/lib/supabase/admin", () => ({
           // #2542: a switch for the COOLDOWN read failing, so the `// error-ok:`
           // on it is proved rather than asserted. supabase-js resolves a refused
           // statement as `{ data: null, error }`, which is what this returns.
-          maybeSingle: async () =>
-            failCooldownRead.value
+          maybeSingle: async () => {
+            const result = failCooldownRead.value
               ? { data: null, error: { message: "statement timeout" } }
-              : { data: rows.has(key) ? { last_sent_at: rows.get(key) } : null, error: null },
+              : { data: rows.has(key) ? { last_sent_at: rows.get(key) } : null, error: null };
+            if (readBarrier.size > 0) {
+              await new Promise<void>((release) => {
+                readBarrier.waiting.push(release);
+                if (readBarrier.waiting.length >= readBarrier.size) {
+                  readBarrier.size = 0;
+                  for (const r of readBarrier.waiting.splice(0)) r();
+                }
+              });
+            }
+            const hook = readBarrier.afterRead;
+            readBarrier.afterRead = null;
+            hook?.();
+            return result;
+          },
         }),
         // The family read (#2593): a LIKE over the firing markers. It honours a
         // `.limit(n)` and an ordered `.range(from, to)` the way PostgREST does, so a
@@ -98,12 +155,31 @@ vi.mock("@/lib/supabase/admin", () => ({
         rows.set(row.key, row.last_sent_at);
         return {};
       },
+      insert: async (row: { key: string; last_sent_at: string }) => {
+        inserted(row);
+        if (claims.enforce && rows.has(row.key)) {
+          return { error: { code: "23505", message: "duplicate key value violates unique constraint" } };
+        }
+        rows.set(row.key, row.last_sent_at);
+        return { error: null };
+      },
+      update: (values: { last_sent_at: string }) =>
+        filtered((filters) => {
+          const key = matches(filters);
+          if (key === null) return { data: [], error: null };
+          rows.set(key, values.last_sent_at);
+          return { data: [{ key }], error: null };
+        }),
       delete: () => ({
-        eq: async (_col: string, key: string) => {
-          del(key);
-          rows.delete(key);
-          return {};
-        },
+        eq: (col: string, val: string) =>
+          filtered((more) => {
+            const filters: [string, string][] = [[col, val], ...more];
+            const key = matches(filters);
+            if (key === null) return { data: [], error: null };
+            del(key);
+            rows.delete(key);
+            return { data: [{ key }], error: null };
+          }),
         in: async (_col: string, keys: string[]) => {
           delIn(keys);
           if (failDeletes.value) return { error: { message: "delete timeout" } };
@@ -113,7 +189,8 @@ vi.mock("@/lib/supabase/admin", () => ({
       }),
     }),
   }),
-}));
+  };
+});
 
 // #1035: a failed send logs a warning (the paging channel can't page about itself).
 const warn = vi.hoisted(() => vi.fn());
@@ -142,6 +219,11 @@ beforeEach(() => {
   failReads.value = false;
   failReadInCall.value = 0;
   failDeletes.value = false;
+  claims.enforce = true;
+  claims.casNeverMatches = false;
+  readBarrier.size = 0;
+  readBarrier.waiting.length = 0;
+  readBarrier.afterRead = null;
   isWorkersRuntime.mockReturnValue(true);
   process.env = { ...ENV };
   // #571: the info channel now comes from a store-aware, briefly-cached resolver;
@@ -720,5 +802,148 @@ describe("the cooldown read failing (#2542)", () => {
     await sendThrottledAlert("muted_key", 60 * 60_000, "something is wrong");
 
     expect(slack.postSlack).not.toHaveBeenCalled();
+  });
+});
+
+// #3170: one failure produces exactly one message (Dan, 2026-10-03). Two overlapping
+// runs of one lane both read alert_state, both found the page due (or the marker
+// set), and both posted. A send is now CLAIMED by a conditional write on the stamp
+// the reader saw before anything is posted, so of two concurrent senders exactly one
+// can win. Every case here has a control with the condition switched off, proving
+// the same two senders DO post twice without it, so a pass is not the fake failing
+// to overlap them.
+describe("concurrent senders post once (#3170)", () => {
+  const COOLDOWN = 30 * 60 * 1000;
+  const twoAtOnce = async <T,>(fn: () => Promise<T>): Promise<T[]> => {
+    readBarrier.size = 2;
+    return Promise.all([fn(), fn()]);
+  };
+
+  it("two pages for a key never sent before: one is posted", async () => {
+    await twoAtOnce(() => sendThrottledAlert("lane_failed:sync", COOLDOWN, "broken"));
+    expect(slack.postSlack).toHaveBeenCalledTimes(1);
+    expect(rows.has(firingKey("lane_failed:sync"))).toBe(true);
+  });
+
+  it("CONTROL: without the condition the same two senders both post", async () => {
+    claims.enforce = false;
+    await twoAtOnce(() => sendThrottledAlert("lane_failed:sync", COOLDOWN, "broken"));
+    expect(slack.postSlack).toHaveBeenCalledTimes(2);
+  });
+
+  it("two pages whose cooldown has run out: one is posted", async () => {
+    rows.set("lane_failed:sync", new Date(Date.now() - 2 * COOLDOWN).toISOString());
+    await twoAtOnce(() => sendThrottledAlert("lane_failed:sync", COOLDOWN, "broken"));
+    expect(slack.postSlack).toHaveBeenCalledTimes(1);
+  });
+
+  it("CONTROL: an expired cooldown without the condition posts twice", async () => {
+    claims.enforce = false;
+    rows.set("lane_failed:sync", new Date(Date.now() - 2 * COOLDOWN).toISOString());
+    await twoAtOnce(() => sendThrottledAlert("lane_failed:sync", COOLDOWN, "broken"));
+    expect(slack.postSlack).toHaveBeenCalledTimes(2);
+  });
+
+  it("a lone sender is never refused by its own claim", async () => {
+    // The other direction: a claim that could fail with nobody competing would mute
+    // the page, which is worse than the duplicate this exists to stop.
+    await sendThrottledAlert("lane_failed:sync", COOLDOWN, "broken");
+    rows.set("lane_failed:sync", new Date(Date.now() - 2 * COOLDOWN).toISOString());
+    await sendThrottledAlert("lane_failed:sync", COOLDOWN, "broken again");
+    expect(slack.postSlack).toHaveBeenCalledTimes(2);
+  });
+
+  it("two all-clears for one page: one is posted, and the page is cleared", async () => {
+    await sendThrottledAlert("lane_failed:sync", COOLDOWN, "broken");
+    slack.postSlack.mockClear();
+    const sent = await twoAtOnce(() => resolveAlert("lane_failed:sync", "recovered"));
+    expect(slack.postSlack).toHaveBeenCalledTimes(1);
+    expect(sent.filter(Boolean)).toHaveLength(1);
+    expect(rows.has(firingKey("lane_failed:sync"))).toBe(false);
+    expect(rows.has("lane_failed:sync")).toBe(false);
+  });
+
+  it("CONTROL: without the condition the same two all-clears both post", async () => {
+    await sendThrottledAlert("lane_failed:sync", COOLDOWN, "broken");
+    slack.postSlack.mockClear();
+    claims.enforce = false;
+    await twoAtOnce(() => resolveAlert("lane_failed:sync", "recovered"));
+    expect(slack.postSlack).toHaveBeenCalledTimes(2);
+  });
+
+  it("an older run cannot clear a page a newer run fired after it looked", async () => {
+    await sendThrottledAlert("lane_failed:sync", COOLDOWN, "broken");
+    slack.postSlack.mockClear();
+    // Between the older run's read and its claim, a newer run pages again, which
+    // re-stamps the firing marker.
+    readBarrier.afterRead = () =>
+      rows.set(firingKey("lane_failed:sync"), new Date(Date.now() + 1000).toISOString());
+    expect(await resolveAlert("lane_failed:sync", "recovered")).toBe(false);
+    expect(slack.postSlack).not.toHaveBeenCalled();
+    expect(rows.has(firingKey("lane_failed:sync"))).toBe(true);
+  });
+
+  it("CONTROL: without the condition that older run does clear the newer page", async () => {
+    await sendThrottledAlert("lane_failed:sync", COOLDOWN, "broken");
+    slack.postSlack.mockClear();
+    claims.enforce = false;
+    readBarrier.afterRead = () =>
+      rows.set(firingKey("lane_failed:sync"), new Date(Date.now() + 1000).toISOString());
+    expect(await resolveAlert("lane_failed:sync", "recovered")).toBe(true);
+    expect(rows.has(firingKey("lane_failed:sync"))).toBe(false);
+  });
+
+  it("a claimed page whose post fails is retried within minutes, not a whole cooldown later (L368)", async () => {
+    slack.postSlack.mockResolvedValueOnce({ ok: false, error: "ratelimited" });
+    const before = Date.now();
+    await sendThrottledAlert("lane_failed:sync", COOLDOWN, "broken");
+    const nextDue = Date.parse(rows.get("lane_failed:sync") as string) + COOLDOWN;
+    expect(nextDue).toBeLessThan(before + 5 * 60_000);
+    expect(rows.has(firingKey("lane_failed:sync"))).toBe(false);
+  });
+
+  it("a claimed page whose post THROWS is still retried within minutes (L368)", async () => {
+    // The claim is the only write that landed, so it alone decides how long the page
+    // is held off. It is written as the short retry window and only lengthened once
+    // the post is delivered.
+    slack.postSlack.mockRejectedValueOnce(new Error("socket hang up"));
+    const before = Date.now();
+    await expect(sendThrottledAlert("lane_failed:sync", COOLDOWN, "broken")).rejects.toThrow();
+    const nextDue = Date.parse(rows.get("lane_failed:sync") as string) + COOLDOWN;
+    expect(nextDue).toBeLessThan(before + 5 * 60_000);
+    expect(nextDue).toBeGreaterThan(before);
+  });
+
+  it("a delivered page holds the full cooldown", async () => {
+    const before = Date.now();
+    await sendThrottledAlert("lane_failed:sync", COOLDOWN, "broken");
+    const nextDue = Date.parse(rows.get("lane_failed:sync") as string) + COOLDOWN;
+    expect(nextDue).toBeGreaterThanOrEqual(before + COOLDOWN - 1000);
+  });
+
+  it("a claimed all-clear whose post throws keeps the page open for the next tick", async () => {
+    await sendThrottledAlert("lane_failed:sync", COOLDOWN, "broken");
+    slack.postSlack.mockRejectedValueOnce(new Error("socket hang up"));
+    await expect(resolveAlert("lane_failed:sync", "recovered")).rejects.toThrow();
+    expect(rows.has(firingKey("lane_failed:sync"))).toBe(true);
+    expect(await resolveAlert("lane_failed:sync", "recovered")).toBe(true);
+    expect(rows.has(firingKey("lane_failed:sync"))).toBe(false);
+  });
+
+  it("a stamp filter that never matches sends anyway and says so, rather than muting", async () => {
+    // Nobody else moved the stamp, so the claim did not lose a race: it could not be
+    // made. Failing toward sending keeps the old behaviour (a duplicate at worst).
+    claims.casNeverMatches = true;
+    rows.set("lane_failed:sync", new Date(Date.now() - 2 * COOLDOWN).toISOString());
+    await sendThrottledAlert("lane_failed:sync", COOLDOWN, "broken");
+    expect(slack.postSlack).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(warn.mock.calls)).toMatch(/claim/);
+
+    slack.postSlack.mockClear();
+    warn.mockClear();
+    const sent = await resolveAlert("lane_failed:sync", "recovered");
+    expect(sent).toBe(true);
+    expect(slack.postSlack).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(warn.mock.calls)).toMatch(/claim/);
   });
 });

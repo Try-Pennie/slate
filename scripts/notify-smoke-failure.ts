@@ -15,6 +15,7 @@
 // speaks only when something already went wrong, and a half installed job that cannot
 // even say so leaves the failure to be found by somebody reading the Actions tab.
 import { runAlerter } from "./lib/run-alerter.ts";
+import { postToAlertsChannel } from "./lib/slack-post.ts";
 import {
   failureLogPath,
   nodeSmokeFailureIo,
@@ -106,15 +107,7 @@ export async function run(
   env: Record<string, string | undefined>,
   io: FailureLogIo = nodeSmokeFailureIo,
 ): Promise<{ ok: boolean; reason: string }> {
-  const text = buildSmokeFailureMessage(readContextFromEnv(env, io));
-  // The channel comes from the workflow, never from a database lookup (#1598). An
-  // empty value is refused by name (slack-channel-not-configured) rather than posted
-  // into nowhere, because an unset repo variable interpolates to the empty string.
-  const channel = env.SLACK_ALERTS_CHANNEL?.trim() || undefined;
-  const res = await post({ text, ...(channel ? { channel } : {}) });
-  return res.ok
-    ? { ok: true, reason: "posted" }
-    : { ok: false, reason: res.error ?? "unknown-error" };
+  return postToAlertsChannel(post, buildSmokeFailureMessage(readContextFromEnv(env, io)), env);
 }
 
 runAlerter(import.meta.url, async (post, env) => {
