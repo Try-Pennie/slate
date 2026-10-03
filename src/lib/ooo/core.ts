@@ -56,6 +56,21 @@ export function canModerate(actor: Actor, request: RequestLike): boolean {
 export const OWN_REQUEST_REFUSAL =
   "You can't approve or decline your own time off. Another admin or a team lead can.";
 
+/**
+ * Who can decide a request when no manager of record will, named so the sentence
+ * is true for its AUTHOR too (#3114, L659). For an admin's own request
+ * `NO_MANAGER_REVIEWER` ("a team lead or admin") includes the one person now
+ * refused, so it names everyone else instead.
+ */
+export const ADMIN_OWN_REVIEWER = "another admin or a team lead";
+
+export function fallbackReviewerFor(
+  author: Actor,
+  request: Pick<RequestLike, "user_id">,
+): string {
+  return isAdminDecidingOwn(author, request) ? ADMIN_OWN_REVIEWER : NO_MANAGER_REVIEWER;
+}
+
 /** An admin (or super admin) acting on a request they made themselves (#3114). */
 export function isAdminDecidingOwn(actor: Actor, request: Pick<RequestLike, "user_id">): boolean {
   return actor.id === request.user_id && atLeast(actor.role, "admin");

@@ -21,13 +21,13 @@ const ERROR_MESSAGES: Record<string, string> = {
   // unlike every other line here: signing in again can never work, and somebody
   // who has genuinely left should not be sent round the loop. It names the one
   // action that can change the answer, and says nothing about why.
+  account_deactivated:
+    "This Slate account is no longer active. Ask an admin to reactivate it if you still need access.",
   // #3083: the deploy is missing its sign-in domain, so the callback refuses
   // everyone rather than letting any Google account in. Nothing the person does
   // can fix it, so it points at the people who can.
   sign_in_unavailable:
     "Sign in is unavailable right now. Please let a Slate admin know.",
-  account_deactivated:
-    "This Slate account is no longer active. Ask an admin to reactivate it if you still need access.",
 };
 
 // Shown when the sign-in call itself never reaches Google (a transient network

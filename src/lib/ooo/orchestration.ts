@@ -35,13 +35,14 @@ import {
   canModerate,
   canModify,
   canRetrySideEffects,
+  capitalizeReviewer,
+  fallbackReviewerFor,
   isAdminDecidingOwn,
   OWN_REQUEST_REFUSAL,
   DEFAULT_REJECTION_NOTE,
   DUPLICATE_REQUEST_MESSAGE,
   formatRequestWhenAndReason,
   formatWhenLine,
-  NO_MANAGER_REVIEWER,
   overlaps,
   shortDate,
   stripModifiedMarkers,
@@ -608,16 +609,19 @@ async function notifyManagerOfPending(
     // DM is a Slack permissions problem, a manager who cannot approve is a roster
     // problem, and no manager at all is neither. One message for one cause (L11).
     let fallbackText: string;
+    // Who can act, true for the author too (#3114, L659): an admin's own request
+    // names everyone but them.
+    const reviewer = fallbackReviewerFor(agent, request);
     if (selfApprover) {
       fallbackText =
         `:information_source: *${agentDisplayName(agent)} is their own manager of record and cannot decide their own time off.* ` +
-        `Another admin or a team lead can approve it here.\n\n${text}`;
+        `${capitalizeReviewer(reviewer)} can approve it here.\n\n${text}`;
     } else if (manager) {
       fallbackText = `:warning: *Couldn't DM ${managerDisplayName(manager)}.* Posting here as a fallback; check the Slack bot's DM permissions.\n\n${text}`;
     } else if (namedManager) {
       fallbackText =
         `:warning: *${managerDisplayName(namedManager)} is set as the manager of record but cannot approve time off* ` +
-        `(they hold the ${roleLabel(namedManager.role)} role). A team lead or admin can action this, and their ` +
+        `(they hold the ${roleLabel(namedManager.role)} role). ${capitalizeReviewer(reviewer)} can action this, and their ` +
         `manager of record should be corrected in Salesforce.\n\n${text}`;
     } else if (request.manager_id === null) {
       // #1499: nobody was named, so nobody could be nudged. Say that, and name who
@@ -626,13 +630,13 @@ async function notifyManagerOfPending(
       // advice to have an admin set a manager: that field is read only (L111).
       fallbackText =
         `:information_source: *${agentDisplayName(agent)} has no manager of record, so nobody was nudged directly.* ` +
-        `${NO_MANAGER_REVIEWER.charAt(0).toUpperCase()}${NO_MANAGER_REVIEWER.slice(1)} can approve it here.\n\n${text}`;
+        `${capitalizeReviewer(reviewer)} can approve it here.\n\n${text}`;
     } else {
       // A manager of record is named but could not be read back at all (offboarded,
       // or a stale id). A third cause, and a roster repair rather than a Slack one.
       fallbackText =
         `:warning: *Their manager of record could not be found, so nobody was nudged.* ` +
-        `${NO_MANAGER_REVIEWER.charAt(0).toUpperCase()}${NO_MANAGER_REVIEWER.slice(1)} can approve it here, ` +
+        `${capitalizeReviewer(reviewer)} can approve it here, ` +
         `and their Agent Manager should be corrected in Salesforce.\n\n${text}`;
     }
     ref = await deps.postFallbackChannel(fallbackText, request.id);
