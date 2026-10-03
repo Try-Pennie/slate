@@ -572,7 +572,7 @@ export const COVERAGE_UNCHECKED_WARNING =
 export function formatRosterCoverageLiveRecovery(upcomingStillOpen: boolean): string {
   return (
     `From now on every hour the org says it is open inside the booking horizon has ` +
-    `at least one bookable agent rostered, so the booker holds none of them back. ` +
+    `at least one bookable agent rostered (Saturday hours are not checked), so the booker holds none of them back. ` +
     `No action is needed.` +
     (upcomingStillOpen ? ` A gap further out is still open and has its own alert.` : "")
   );
@@ -587,7 +587,7 @@ export function formatRosterCoverageLiveRecovery(upcomingStillOpen: boolean): st
 export function formatRosterCoverageUpcomingRecovery(liveStillOpen: boolean): string {
   return (
     `Every advertised hour in the week past the booking horizon now has at least ` +
-    `one bookable agent rostered. No action is needed for those days.` +
+    `one bookable agent rostered (Saturday hours are not checked). No action is needed for those days.` +
     (liveStillOpen ? ` A gap inside the booking horizon is still open and has its own alert.` : "")
   );
 }

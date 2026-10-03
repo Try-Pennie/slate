@@ -271,8 +271,18 @@ function liveText(notified: Sent[]): string {
   eq(
     recovery,
     "From now on every hour the org says it is open inside the booking horizon has at least one " +
-      "bookable agent rostered, so the booker holds none of them back. No action is needed.",
+      "bookable agent rostered (Saturday hours are not checked), so the booker holds none of them back. " +
+      "No action is needed.",
     "the live all-clear matches the live wording",
+  );
+}
+
+// Neither all clear may claim Saturday is covered, since Saturday is never judged.
+{
+  const { formatRosterCoverageUpcomingRecovery } = await import("../src/lib/monitor/roster-coverage.ts");
+  assert(
+    formatRosterCoverageUpcomingRecovery(false).includes("Saturday hours are not checked"),
+    "the upcoming all clear says Saturday is not checked",
   );
 }
 
