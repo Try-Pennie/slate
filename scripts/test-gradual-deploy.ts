@@ -29,6 +29,8 @@ import {
   runGradualDeploy,
   splitSpecs,
   uploadArgs,
+  readSplitRecords,
+  settleDecision,
   versionIdFromUploadOutput,
   workerNameFor,
   type GradualOps,
@@ -64,6 +66,12 @@ interface Scenario {
   triggers: boolean;
   /** How many restore calls fail before one succeeds (RESTORE_ATTEMPTS or more = all fail). */
   restoreFailures: number;
+  /** What the version view says about cron standby; default: only CANARY is in standby. */
+  standby?: Record<string, boolean | null>;
+  /** An operation that THROWS rather than reporting failure. */
+  throwAt?: "upload" | "probe:canary" | "promote" | "probe:promoted" | "triggers";
+  /** How many restore calls THROW (rather than return false) before one works. */
+  restoreThrows?: number;
 }
 
 const HAPPY: Scenario = {
@@ -85,6 +93,8 @@ interface Run {
   deployment: VersionShare[];
   probes: { stage: string; canaryId: string | null }[];
   restoreCalls: number;
+  /** What the run recorded about the split, in order. */
+  records: string[];
 }
 
 function parseSpecs(specs: string[]): VersionShare[] {
@@ -99,6 +109,10 @@ async function drive(s: Scenario): Promise<Run> {
   const probes: Run["probes"] = [];
   let deployment: VersionShare[] = s.start ?? [{ versionId: OLD, percentage: 100 }];
   let restoreCalls = 0;
+  const records: string[] = [];
+  const boom = (at: Scenario["throwAt"]) => {
+    if (s.throwAt === at) throw new Error(`planted throw at ${at}`);
+  };
   const ops: GradualOps = {
     status: async () => {
       calls.push("status");
@@ -106,6 +120,7 @@ async function drive(s: Scenario): Promise<Run> {
     },
     upload: async (kind) => {
       calls.push(`upload:${kind}`);
+      boom("upload");
       if (kind === "canary") return s.canaryUpload ? CANARY : null;
       return s.releaseUpload ? RELEASE : null;
     },
@@ -117,9 +132,11 @@ async function drive(s: Scenario): Promise<Run> {
       const isPromote = next.length === 1 && next[0].versionId !== OLD;
       if (isRestore) {
         restoreCalls++;
+        if (restoreCalls <= (s.restoreThrows ?? 0)) throw new Error("planted restore throw");
         if (restoreCalls <= s.restoreFailures) return false;
       }
       if (isSplit && !s.split) return false;
+      if (isPromote) boom("promote");
       if (isPromote && !s.promote) return false;
       deployment = next;
       return true;
@@ -127,19 +144,34 @@ async function drive(s: Scenario): Promise<Run> {
     probe: async (stage, canaryId) => {
       calls.push(`probe:${stage}`);
       probes.push({ stage, canaryId });
+      boom(`probe:${stage}` as Scenario["throwAt"]);
       return outcome(stage === "canary" ? s.canaryProbe : s.finalProbe);
     },
     triggers: async () => {
       calls.push("triggers");
+      boom("triggers");
       return s.triggers;
     },
     waitForCronWindow: async () => {
       calls.push("wait");
     },
+    isCronStandby: async (id) => {
+      const table = s.standby ?? { [CANARY]: true };
+      return id in table ? table[id] : false;
+    },
+    record: (event) => {
+      records.push(event);
+    },
     log: () => {},
   };
-  const result = await runGradualDeploy(ops);
-  return { result, calls, deployment, probes, restoreCalls };
+  let result: GradualResult;
+  try {
+    result = await runGradualDeploy(ops);
+  } catch (err) {
+    // A throw before the split opens propagates (nothing changed); record it as such.
+    result = { exit: -1, end: "unchanged", message: String(err) };
+  }
+  return { result, calls, deployment, probes, restoreCalls, records };
 }
 
 // --- the happy path, in order -------------------------------------------------
@@ -263,6 +295,79 @@ for (const fault of ["release", "version"] as const) {
   });
   eq(r.calls[1], `deploy:${OLD}@100%`, "a leftover split is settled on its larger share before anything else");
   eq(r.result.exit, EXIT.promoted, "and the run then proceeds normally");
+}
+
+// --- a leftover split whose larger share is a cron standby canary is NOT healed ---
+//
+// Healing puts the larger share at 100%. If that share is a canary (uploaded in cron
+// standby), healing would serve it to everyone with every cron lane switched off, so
+// the run refuses instead and changes nothing.
+{
+  const split = [
+    { versionId: CANARY, percentage: 90 },
+    { versionId: OLD, percentage: 10 },
+  ];
+  const r = await drive({ ...HAPPY, start: split });
+  eq(r.result.exit, EXIT.healRefused, "a leftover split led by a standby canary is refused");
+  eq(r.result.end, "unchanged", "and nothing changed");
+  assert(!r.calls.some((c) => c.startsWith("deploy") || c.startsWith("upload")), "no deploy or upload was attempted");
+  const unknown = await drive({ ...HAPPY, start: [{ versionId: OLD, percentage: 90 }, { versionId: CANARY, percentage: 10 }], standby: { [OLD]: null } });
+  eq(unknown.result.exit, EXIT.healRefused, "and so is one whose larger share cannot be read: it might be a canary");
+}
+
+// --- a THROW after the split opens is restored inside the run --------------------
+//
+// The settle step is a second line, not the first: a throw that escapes the run with
+// the split open would leave production split until it runs, and not at all on a
+// hand run. So anything thrown after the split call restores the old version itself.
+for (const at of ["probe:canary", "promote", "probe:promoted", "triggers"] as const) {
+  const r = await drive({ ...HAPPY, throwAt: at });
+  if (at === "triggers") {
+    // Promoted and probed: the new version is whole and correct; a throw from the
+    // triggers call is the triggers ending, and the code is not rolled back for it.
+    eq(r.result.exit, EXIT.triggersFailed, "a throw from the triggers call is the triggers ending");
+    eq(r.result.end, "new", "and the passed release stays");
+    continue;
+  }
+  eq(r.result.exit, EXIT.threw, `a throw at ${at} is its own ending`);
+  eq(r.result.end, "old", "and the old version was restored");
+  eq(JSON.stringify(r.deployment), JSON.stringify([{ versionId: OLD, percentage: 100 }]), `after a throw at ${at} production is whole on the old version`);
+  assert(r.result.message.includes("planted throw"), "the message carries what was thrown");
+}
+{
+  const r = await drive({ ...HAPPY, throwAt: "upload" });
+  eq(r.result.exit, -1, "a throw before the split propagates (the fake records it), since nothing was changed");
+  assert(!r.records.includes("split-attempted"), "and nothing recorded a split");
+}
+
+{
+  // A restore that itself throws counts as a failed attempt and is retried, rather
+  // than escaping the run with the split standing.
+  const r = await drive({ ...HAPPY, canaryProbe: "release", restoreThrows: 2 });
+  eq(r.result.exit, EXIT.canaryFailed, "a restore that throws twice and then works still ends on the old version");
+  eq(r.restoreCalls, 3, "each throw was a counted attempt");
+  const never = await drive({ ...HAPPY, canaryProbe: "release", restoreThrows: 99 });
+  eq(never.result.exit, EXIT.restoreFailed, "a restore that always throws is the restore-failed ending, not an escape");
+}
+
+// --- what the run records, which the settle step decides from ---------------------
+{
+  const ok = await drive(HAPPY);
+  eq(ok.records.join(","), "split-attempted,ended", "a clean run records the split attempt, then that it ended whole");
+  const refused = await drive({ ...HAPPY, canaryUpload: false });
+  eq(refused.records.length, 0, "a run that never reached the split records nothing");
+  const lost = await drive({ ...HAPPY, canaryProbe: "release", restoreFailures: 99 });
+  eq(lost.records.join(","), "split-attempted", "a run whose restore failed does NOT record that it ended");
+}
+{
+  eq(settleDecision(null).action, "none", "no record: the run never reached the split, so settle says nothing and reads nothing");
+  eq(settleDecision(["split-attempted", "ended"]).action, "none", "a recorded clean end needs no settling");
+  eq(settleDecision(["split-attempted"]).action, "read", "a split attempt with no recorded end is the only case that reads what is serving");
+  eq(settleDecision([]).action, "none", "an empty record is the same as none");
+  eq(readSplitRecords(null), null, "no state file is no record");
+  eq(readSplitRecords("split-attempted\n")?.join(","), "split-attempted", "a file with only the attempt reads as an open split");
+  eq(settleDecision(readSplitRecords("split-attempted\nended\n")).action, "none", "and one carrying its end reads as nothing to settle");
+  eq(readSplitRecords("garbage\nsplit-attempted")?.join(","), "split-attempted", "an unknown line is dropped, never guessed at");
 }
 
 // --- THE INVARIANT: every combination ends at 100% of one version, or says it could not

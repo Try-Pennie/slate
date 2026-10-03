@@ -603,6 +603,8 @@ jobs:
           APP_URL: https://slate.trypennie.app
           BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
           GITHUB_SHA: ${{ github.sha }}
+          # What this run did to the deployment, read by the settle step below.
+          DEPLOY_STATE_FILE: ${{ runner.temp }}/deploy-state.txt
         run: |
           # This job only runs on a push to main (see `if:` above), so a missing
           # token is never a legitimate skip: it means main is silently NOT
@@ -624,4 +626,5 @@ jobs:
         if: (failure() || cancelled()) && (steps.deploy.outcome == 'failure' || steps.deploy.outcome == 'cancelled')
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          DEPLOY_STATE_FILE: ${{ runner.temp }}/deploy-state.txt
         run: node --experimental-strip-types scripts/deploy-gradual.ts --settle

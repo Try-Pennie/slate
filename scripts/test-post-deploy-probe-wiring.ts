@@ -71,6 +71,16 @@ assert(
   "nothing in the deploy job still deploys straight to 100% (`opennextjs-cloudflare deploy`)",
 );
 
+// The settle step decides from what the deploy step recorded, so both must name the
+// SAME state file; two spellings would leave settle reading a file nobody wrote and
+// reporting nothing to settle with a split standing.
+{
+  const fileOf = (st: string) => /DEPLOY_STATE_FILE:\s*(.+)$/m.exec(st)?.[1].trim();
+  const written = fileOf(steps[deployAt] ?? "");
+  assert(written !== undefined, "the deploy step records to a state file");
+  assert(written !== undefined && fileOf(steps[settleAt] ?? "") === written, "and the settle step reads that same file");
+}
+
 // The deploy step needs the booking key and the commit, or its probes cannot run.
 const deployStep = steps[deployAt] ?? "";
 assert(

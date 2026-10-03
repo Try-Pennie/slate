@@ -19,6 +19,7 @@
 // env: CLOUDFLARE_API_TOKEN (read by wrangler), BOOKING_API_KEY_CANARY, GITHUB_SHA (or
 //      PROBE_COMMIT), APP_URL, WRANGLER_ENV (the load test rehearsal only).
 import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { isCanaryView, readVersionView } from "./lib/rollback-plan.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -30,6 +31,8 @@ import {
   overrideValue,
   planSettle,
   readDeploymentStatus,
+  readSplitRecords,
+  settleDecision,
   runGradualDeploy,
   uploadArgs,
   versionIdFromUploadOutput,
@@ -53,12 +56,42 @@ function deploy(specs: string[], message: string): boolean {
   return runLoud("pnpm", ["exec", "wrangler", "versions", "deploy", ...specs, "-y", "--message", message, ...wranglerEnv]);
 }
 
+/** Whether a version is a cron standby canary, from its own annotation; null when the
+ *  view could not be read. */
+function isCronStandby(versionId: string): boolean | null {
+  return isCanaryView(
+    readVersionView(jsonPart(runCapture("pnpm", ["exec", "wrangler", "versions", "view", versionId, "--json", ...wranglerEnv]))),
+  );
+}
+
+// What this run did to the deployment, for the settle step to decide from (#3095). The
+// CI job sets it to a file under the runner's temp directory, shared by both steps.
+// env-ok: DEPLOY_STATE_FILE (an internal handoff between two steps of one job; a hand
+//   run without it records nothing and its settle reads the deployment)
+const stateFile = process.env.DEPLOY_STATE_FILE ?? "";
+
+function readState(): string | null {
+  try {
+    return readFileSync(stateFile, "utf8");
+  } catch {
+    return null;
+  }
+}
+
 function summary(line: string): void {
   const file = process.env.GITHUB_STEP_SUMMARY;
   if (file) appendFileSync(file, `${line}\n`, "utf8");
 }
 
 if (process.argv[2] === "--settle") {
+  // Decided from what the run RECORDED: a run that never attempted the split (a gate
+  // refusal, a failed build or upload) never touched production, and reading the
+  // deployment then could only page "production may be split" on a failed read.
+  // Without a state file (a hand run) there is no record, so it reads.
+  if (stateFile && settleDecision(readSplitRecords(readState())).action === "none") {
+    console.log("settle: this run never opened the split, or recorded ending it whole, so it left nothing to settle.");
+    process.exit(0);
+  }
   const plan = planSettle(status());
   if (plan.action === "none") {
     console.log("settle: production is serving one version at 100%; nothing to do.");
@@ -66,6 +99,14 @@ if (process.argv[2] === "--settle") {
   }
   if (plan.action === "refuse") {
     console.error(`::error title=production may be split::${plan.reason}. Run the Rollback workflow.`);
+    process.exit(1);
+  }
+  const target = plan.specs[0].split("@")[0];
+  const standby = isCronStandby(target);
+  if (standby !== false) {
+    console.error(
+      `::error title=production may be split::the leftover split's larger share ${target} ${standby === null ? "could not be checked for cron standby" : "is a cron standby canary"}, so it was NOT put back at 100% (that would switch every cron lane off). End the split by hand (DEPLOY.md, Rollback).`,
+    );
     process.exit(1);
   }
   const ok = deploy(plan.specs, "slate-settle");
@@ -139,6 +180,10 @@ const ops: GradualOps = {
     });
   },
   triggers: async () => runLoud("pnpm", ["exec", "wrangler", "triggers", "deploy", ...wranglerEnv]),
+  isCronStandby: async (id) => isCronStandby(id),
+  record: (event) => {
+    if (stateFile) appendFileSync(stateFile, `${event}\n`, "utf8");
+  },
   waitForCronWindow: async () => {
     const wait = msUntilSplitWindowClear(Date.now(), crons);
     if (wait > 0) {

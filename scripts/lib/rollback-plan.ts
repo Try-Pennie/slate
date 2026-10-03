@@ -50,7 +50,10 @@ export function readDeploymentsList(text: string): Deployment[] | null {
 
 export type RollbackTarget =
   | { kind: "target"; versionId: string; current: string }
-  | { kind: "refuse"; reason: string };
+  /** `unreadable`: the deployments could not be read. `refused`: they were read, and no
+   *  target is acceptable. Two endings, two exit codes, decided here, never by
+   *  re-reading the reason text (L199). */
+  | { kind: "refuse"; why: "unreadable" | "refused"; reason: string };
 
 function whole(d: Deployment): string | null {
   return d.versions.length === 1 && d.versions[0].percentage === 100 ? d.versions[0].versionId : null;
@@ -59,14 +62,14 @@ function whole(d: Deployment): string | null {
 /** Which version to go back to: the one named, or the newest that served alone before
  *  the current deployment. */
 export function chooseRollbackTarget(list: Deployment[] | null, requested: string): RollbackTarget {
-  if (list === null) return { kind: "refuse", reason: "could not read the Worker's deployments" };
+  if (list === null) return { kind: "refuse", why: "unreadable", reason: "could not read the Worker's deployments" };
   const current = list[list.length - 1];
   const currentLabel = current.versions.map((v) => `${v.versionId}@${v.percentage}%`).join(", ");
   const currentWhole = whole(current);
   const req = requested.trim();
   if (req) {
-    if (!UUID.test(req)) return { kind: "refuse", reason: `"${req}" is not a version id` };
-    if (currentWhole === req) return { kind: "refuse", reason: `${req} is already serving 100%` };
+    if (!UUID.test(req)) return { kind: "refuse", why: "refused", reason: `"${req}" is not a version id` };
+    if (currentWhole === req) return { kind: "refuse", why: "refused", reason: `${req} is already serving 100%` };
     return { kind: "target", versionId: req, current: currentLabel };
   }
   for (let i = list.length - 2; i >= 0; i--) {
@@ -75,6 +78,7 @@ export function chooseRollbackTarget(list: Deployment[] | null, requested: strin
   }
   return {
     kind: "refuse",
+    why: "refused",
     reason: "no earlier deployment served a single version at 100%, so there is nothing known good to go back to; name a version id",
   };
 }
@@ -99,6 +103,14 @@ export function readVersionView(text: string): VersionView | null {
   const tag = typeof ann["workers/tag"] === "string" ? (ann["workers/tag"] as string) : null;
   const message = typeof ann["workers/message"] === "string" ? (ann["workers/message"] as string) : null;
   return { id, tag, message };
+}
+
+/** Whether a version is a gradual deploy canary (uploaded in cron standby), read from
+ *  its annotation. Null when the view could not be read, which every caller treats as
+ *  "might be": serving an unknown version at 100% could switch every cron lane off. */
+export function isCanaryView(view: VersionView | null): boolean | null {
+  if (view === null) return null;
+  return view.message?.startsWith(CANARY_MESSAGE_PREFIX) ?? false;
 }
 
 function commitOf(raw: string | null | undefined): string | null {
@@ -151,9 +163,8 @@ export async function runRollback(
 ): Promise<RollbackResult> {
   const target = chooseRollbackTarget(readDeploymentsList((await ops.list()) ?? ""), input.requestedVersionId);
   if (target.kind === "refuse") {
-    const unreadable = target.reason.startsWith("could not read");
     return {
-      exit: unreadable ? ROLLBACK_EXIT.unreadable : ROLLBACK_EXIT.refused,
+      exit: target.why === "unreadable" ? ROLLBACK_EXIT.unreadable : ROLLBACK_EXIT.refused,
       message: `Not rolled back: ${target.reason}. Nothing changed.`,
     };
   }
@@ -164,7 +175,7 @@ export async function runRollback(
       message: `Not rolled back: could not read version ${target.versionId}, so it could not be checked for being a canary. Nothing changed.`,
     };
   }
-  if (view.message?.startsWith(CANARY_MESSAGE_PREFIX)) {
+  if (isCanaryView(view)) {
     return {
       exit: ROLLBACK_EXIT.refused,
       message: `Not rolled back: ${target.versionId} is a gradual deploy canary, uploaded in cron standby, so serving it at 100% would switch every cron lane off. Name the release version instead. Nothing changed.`,

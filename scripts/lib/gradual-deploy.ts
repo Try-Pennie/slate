@@ -374,6 +374,11 @@ export const EXIT = {
   promotedFleetCondition: 16,
   /** Promoted, and the cron triggers could not be applied. */
   triggersFailed: 17,
+  /** Something THREW after the split opened. The old version was restored. */
+  threw: 18,
+  /** A leftover split's larger share is a cron standby canary, or could not be read.
+   *  Nothing changed: healing would serve it at 100% with every cron lane off. */
+  healRefused: 21,
   /** A restore failed: production may still be split. */
   restoreFailed: 20,
 } as const;
@@ -397,6 +402,16 @@ export interface GradualOps {
   probe(stage: "canary" | "promoted", canaryId: string | null): Promise<ProbeOutcome>;
   /** `wrangler triggers deploy`; true when it succeeded. */
   triggers(): Promise<boolean>;
+  /** Whether a version was uploaded in cron standby (a canary): read from its
+   *  annotation. Null when it could not be read. */
+  isCronStandby(versionId: string): Promise<boolean | null>;
+  /**
+   * Record, durably, what this run did to the deployment: `split-attempted` just
+   * BEFORE the split call (the call can apply and still report failure), and `ended`
+   * once production is whole again on a known version. The settle step decides from
+   * this record whether it has anything to look at (`settleDecision`).
+   */
+  record(event: SplitRecord): void;
   /** Wait before opening the split until the cron window is clear. */
   waitForCronWindow(): Promise<void>;
   log(line: string): void;
@@ -413,7 +428,13 @@ function probeLines(o: ProbeOutcome): string {
 async function restore(ops: GradualOps, stable: string, why: string): Promise<boolean> {
   for (let attempt = 1; attempt <= RESTORE_ATTEMPTS; attempt++) {
     ops.log(`restoring ${stable} at 100% (${why}), attempt ${attempt} of ${RESTORE_ATTEMPTS}`);
-    if (await ops.deploy(wholeSpecs(stable), `slate-restore-${stable.slice(0, 8)}`)) return true;
+    try {
+      if (await ops.deploy(wholeSpecs(stable), `slate-restore-${stable.slice(0, 8)}`)) return true;
+    } catch (err) {
+      // A restore that throws is a failed attempt, never an escape from the run: the
+      // split would then be left standing with nothing saying so.
+      ops.log(`the restore threw: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
   return false;
 }
@@ -439,6 +460,16 @@ export async function runGradualDeploy(ops: GradualOps): Promise<GradualResult> 
   }
   const stable = start.versionId;
   if (start.kind === "heal") {
+    // Healing serves the larger share at 100%. A cron standby canary there would run
+    // no cron lane for anybody, so it is refused, and so is one that cannot be read.
+    const standby = await ops.isCronStandby(stable);
+    if (standby !== false) {
+      return {
+        exit: EXIT.healRefused,
+        end: "unchanged",
+        message: `Not deploying: production was left split (${start.from.map((s) => `${s.versionId}@${s.percentage}%`).join(", ")}) and its larger share ${stable} ${standby === null ? "could not be checked for cron standby" : "is a cron standby canary"}, so it cannot be put back at 100% without switching every cron lane off. Nothing changed. Put the release version back by hand (DEPLOY.md, Rollback: ending a split by hand).`,
+      };
+    }
     // A split left by a run that died. Settling it first is what keeps the rule that no
     // run starts or ends on a split; the larger share is the version that was serving.
     ops.log(`production was left split (${start.from.map((s) => `${s.versionId}@${s.percentage}%`).join(", ")}); settling it on ${stable} first`);
@@ -477,6 +508,24 @@ export async function runGradualDeploy(ops: GradualOps): Promise<GradualResult> 
 
   await ops.waitForCronWindow();
 
+  // From the split call on, production may be split, so every way out of this run,
+  // a throw included, ends it here rather than leaving it for the settle step.
+  ops.record("split-attempted");
+  let result: GradualResult;
+  try {
+    result = await afterSplit(ops, stable, canary, release);
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    const ok = await restore(ops, stable, `an error was thrown after the split opened: ${why}`);
+    result = restored(ok, EXIT.threw, stable, `Not deployed: an error was thrown after the split opened (${why}).`);
+  }
+  if (result.end === "new" || result.end === "old") ops.record("ended");
+  return result;
+}
+
+/** Everything from opening the split on. Each return leaves production whole, or says
+ *  it could not; a throw is caught by the caller, which restores. */
+async function afterSplit(ops: GradualOps, stable: string, canary: string, release: string): Promise<GradualResult> {
   ops.log(`opening the split: ${canary} (canary, cron standby) at ${CANARY_PERCENT}%, ${stable} at ${100 - CANARY_PERCENT}%`);
   if (!(await ops.deploy(splitSpecs(stable, canary), `slate-canary-split`))) {
     // The call failed, but whether Cloudflare applied it is not known, so the restore is
@@ -520,7 +569,13 @@ export async function runGradualDeploy(ops: GradualOps): Promise<GradualResult> 
 
   // Only now: cron triggers belong to the code that will run them, and a restore above
   // would have left new triggers driving old code.
-  if (!(await ops.triggers())) {
+  let triggered = false;
+  try {
+    triggered = await ops.triggers();
+  } catch (err) {
+    ops.log(`wrangler triggers deploy threw: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!triggered) {
     return {
       exit: EXIT.triggersFailed,
       end: "new",
@@ -536,6 +591,31 @@ export async function runGradualDeploy(ops: GradualOps): Promise<GradualResult> 
     };
   }
   return { exit: EXIT.promoted, end: "new", message: `Deployed ${release} at 100%: it passed at ${CANARY_PERCENT}% and again at 100%.` };
+}
+
+export type SplitRecord = "split-attempted" | "ended";
+
+/**
+ * Whether the settle step has anything to look at, decided from what the run RECORDED
+ * rather than from a deployment read. A run that never attempted the split (a ci gate
+ * refusal, a failed build or upload) never touched production, and reading the
+ * deployment then could only produce a false "production may be split" when the read
+ * fails. Only an attempted split with no recorded end makes it read.
+ */
+/** The events a run appended to its state file, one per line. Null when there is no
+ *  file at all (the run never recorded anything). A line that is not a known event is
+ *  dropped rather than guessed at; `settleDecision` then reads only what is certain. */
+export function readSplitRecords(text: string | null): SplitRecord[] | null {
+  if (text === null) return null;
+  return text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l): l is SplitRecord => l === "split-attempted" || l === "ended");
+}
+
+export function settleDecision(records: SplitRecord[] | null): { action: "none" } | { action: "read" } {
+  if (records === null || !records.includes("split-attempted")) return { action: "none" };
+  return records.includes("ended") ? { action: "none" } : { action: "read" };
 }
 
 /** What the after-the-fact settle step should do: nothing, or put the larger share back

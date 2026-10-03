@@ -12,6 +12,7 @@ import {
   ROLLBACK_EXIT,
   chooseRollbackTarget,
   expectedCommitFor,
+  isCanaryView,
   readDeploymentsList,
   readVersionView,
   runRollback,
@@ -67,6 +68,14 @@ const listJson = JSON.stringify([
   eq(chooseRollbackTarget(readDeploymentsList(listJson), NEW).kind, "refuse", "naming the version already serving is refused");
   eq(chooseRollbackTarget(readDeploymentsList(listJson), "not-a-uuid").kind, "refuse", "a value that is not a version id is refused");
   eq(chooseRollbackTarget(null, "").kind, "refuse", "an unreadable list is refused");
+  // The ending is carried as a typed field, never re-derived from the reason's wording
+  // (L199): a reworded reason must not move a refusal between exit codes.
+  const unreadable = chooseRollbackTarget(null, "");
+  eq(unreadable.kind === "refuse" ? unreadable.why : "", "unreadable", "an unreadable list is the unreadable ending");
+  const refused = chooseRollbackTarget(readDeploymentsList(listJson), NEW);
+  eq(refused.kind === "refuse" ? refused.why : "", "refused", "naming the serving version is the refused ending");
+  const noTarget = chooseRollbackTarget(readDeploymentsList(JSON.stringify([{ created_on: "x", versions: [{ version_id: NEW, percentage: 100 }] }])), "");
+  eq(noTarget.kind === "refuse" ? noTarget.why : "", "refused", "nothing to go back to is refused, though it was read fine");
 }
 {
   // Rolling back FROM a split (a deploy died mid-way and the settle failed): the
@@ -143,6 +152,13 @@ async function drive(f: Fake) {
 {
   const r = await drive({ list: null });
   eq(r.result.exit, ROLLBACK_EXIT.unreadable, "an unreadable deployment list is refused before anything changes");
+  const named = await drive({ requested: NEW });
+  eq(named.result.exit, ROLLBACK_EXIT.refused, "naming the serving version exits refused, not unreadable");
+}
+{
+  eq(isCanaryView(readVersionView(JSON.stringify({ id: OLD, annotations: { "workers/message": "slate-canary-abc1234" } }))), true, "a canary is recognised by its annotation");
+  eq(isCanaryView(readVersionView(JSON.stringify({ id: OLD, annotations: {} }))), false, "an unannotated version is not a canary");
+  eq(isCanaryView(null), null, "an unreadable view is unknown, never 'not a canary'");
 }
 {
   const r = await drive({ view: null });
