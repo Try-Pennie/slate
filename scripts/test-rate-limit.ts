@@ -67,6 +67,12 @@ assert(clientIp(h({})) === "unknown", "no headers -> a stable fallback key");
   eq(ip6("[2001:db8::1]"), "2001:db8:0:0::/64", "brackets are dropped");
   eq(ip6("::ffff:203.0.113.7"), "203.0.113.7", "an IPv4 mapped address keys as its IPv4");
   eq(ip6("0:0:0:0:0:ffff:203.0.113.7"), "203.0.113.7", "so does its long form");
+  eq(ip6("::ffff:cb00:7107"), "203.0.113.7", "and its hex form, rather than collapsing into ::/64");
+  eq(ip6("0:0:0:0:0:FFFF:CB00:0007"), "203.0.0.7", "and the long hex form, any case");
+  assert(
+    ip6("::ffff:cb00:7107") !== ip6("::ffff:c633:6401"),
+    "two unrelated mapped callers never share a counter",
+  );
   eq(
     clientIp(h({ "x-forwarded-for": "2001:db8:1:2::3, 10.0.0.1" })),
     "2001:db8:1:2::/64",

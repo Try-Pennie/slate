@@ -287,6 +287,14 @@ export function rateLimitAddress(raw: string): string {
   if (zone >= 0) addr = addr.slice(0, zone);
   const mapped = /^(?:::|(?:0{1,4}:){5})ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(addr);
   if (mapped) return mapped[1]!;
+  // The same address written in hex (`::ffff:cb00:7107`). Its top 64 bits are all zero, so
+  // left to the /64 reduction below it would put every mapped caller in ONE counter.
+  const mappedHex = /^(?:::|(?:0{1,4}:){5})ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(addr);
+  if (mappedHex) {
+    const hi = parseInt(mappedHex[1]!, 16);
+    const lo = parseInt(mappedHex[2]!, 16);
+    return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+  }
   const halves = addr.split("::");
   if (halves.length > 2) return raw.trim();
   const head = halves[0] ? halves[0].split(":") : [];

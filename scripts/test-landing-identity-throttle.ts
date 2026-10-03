@@ -10,26 +10,35 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
-import { textHasOptOut } from "./lib/opt-out.ts";
+import { hasOptOutAtOffset } from "./lib/opt-out.ts";
+import { blankComments } from "./lib/strip-comments.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const READERS = ["landingAttendee", "existingCallForLanding"];
 
-/** The violations in one file's source: a reader called with anything but the gated id. */
+/**
+ * The violations in one file's source, judged per CALL SITE (L135): each reader call must
+ * be asked with `lookupId` derived from `landingLookupId` EARLIER in the file, or carry a
+ * reasoned `// landing-identity-ok:` on or directly above its own line. The hatch is for a
+ * page whose identity did not come from the link (the rebook page reads it off a row found
+ * by an unguessable manage token), and it covers only the call beneath it.
+ */
 export function ungatedLandingReads(src: string): string[] {
-  // A page whose identity did not come from the link (the rebook page reads it off a row
-  // found by an unguessable manage token) says so, with a reason that begins with a word.
-  if (textHasOptOut(src, "landing-identity-ok:")) return [];
+  const code = blankComments(src);
   const out: string[] = [];
+  const derived = /\blookupId\s*=\s*await\s+landingLookupId\(/.exec(code);
   for (const reader of READERS) {
-    const re = new RegExp(`\\b${reader}\\(\\s*\\{\\s*salesforceId:\\s*([A-Za-z_$][\\w$]*)`, "g");
-    for (const m of src.matchAll(re)) {
-      if (m[1] !== "lookupId") out.push(`${reader} is asked about ${m[1]}`);
-    }
-  }
-  if (out.length === 0 && READERS.some((r) => src.includes(`${r}(`))) {
-    if (!/\blookupId\s*=\s*await\s+landingLookupId\(/.test(src)) {
-      out.push("reads a landing identity without deriving lookupId from landingLookupId");
+    const call = new RegExp(`\\b${reader}\\(`, "g");
+    for (const m of code.matchAll(call)) {
+      const at = m.index ?? 0;
+      if (hasOptOutAtOffset(src, at, "landing-identity-ok:")) continue;
+      const arg = /^\(\s*\{\s*salesforceId(?:\s*:\s*([A-Za-z_$][\w$]*))?/.exec(code.slice(at + reader.length));
+      const asked = arg ? (arg[1] ?? "salesforceId") : "an identity this scan cannot read";
+      const line = code.slice(0, at).split("\n").length;
+      if (asked !== "lookupId") out.push(`line ${line}: ${reader} is asked about ${asked}`);
+      else if (!derived || derived.index > at) {
+        out.push(`line ${line}: ${reader} reads before lookupId is derived from landingLookupId`);
+      }
     }
   }
   return out;
@@ -71,6 +80,35 @@ for (const p of callers) {
     ungatedLandingReads("// landing-identity-ok:\nawait landingAttendee({ salesforceId: id }, l, w);").length,
     1,
     "an escape hatch with no reason does not exempt the file",
+  );
+  // Per call site (L135): a reasoned hatch covers only the call directly beneath it.
+  eq(
+    ungatedLandingReads(
+      "// landing-identity-ok: read off a row an unguessable token names\n" +
+        "await existingCallForLanding({ salesforceId }, w);\n" +
+        "const x = 1;\n" +
+        "await landingAttendee({ salesforceId: rawId }, l, w);",
+    ).length,
+    1,
+    "a hatch above one call does not exempt a second call further down the file",
+  );
+  eq(
+    ungatedLandingReads(
+      "await landingAttendee({ salesforceId: lookupId }, l, w);\n" +
+        "const lookupId = await landingLookupId(id, h);",
+    ).length,
+    1,
+    "a lookupId derived only AFTER the call does not gate it",
+  );
+  eq(
+    ungatedLandingReads("await existingCallForLanding({ salesforceId }, w);").length,
+    1,
+    "the shorthand `{ salesforceId }` is a raw id too",
+  );
+  eq(
+    ungatedLandingReads('const u = "https://x"; await landingAttendee({ salesforceId: rawId }, l, w);').length,
+    1,
+    "a URL literal does not hide the call after it",
   );
 }
 
