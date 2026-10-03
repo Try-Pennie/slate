@@ -8,9 +8,11 @@ import { setReasonOptions } from "@/app/admin/actions";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { inputCls, cardCls, btnCls, btnSecondaryCls } from "@/components/ui/styles";
 import { ReasonSwitch } from "@/components/ui/ReasonSwitch";
-import { REASON_LABEL_MAX, slugifyCode, type ReasonOptionRow } from "@/lib/booking/reason-options";
+import type { ReasonOptionRow } from "@/lib/booking/reason-options";
+import { REASON_LABEL_MAX, slugifyCode } from "@/lib/booking/reason-code";
 import type { ReasonAction } from "@/lib/booking/core";
-import { REASON_USAGE_WINDOW_DAYS, type ReasonUsageCounts } from "@/lib/booking/reason-usage";
+import type { ReasonUsageCounts } from "@/lib/booking/reason-usage";
+import { REASON_USAGE_WINDOW_DAYS } from "@/lib/booking/reason-usage-window";
 
 /** The editor's per-row working state (a superset of what it submits). */
 interface EditRow {

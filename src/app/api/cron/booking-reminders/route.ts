@@ -1,6 +1,7 @@
 import { loadCardPhotoRows } from "@/lib/advisor-photos/store";
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
+import { refuseCronSecret } from "@/lib/bearer-failure";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { appUrl } from "@/lib/env";
@@ -50,7 +51,7 @@ const REMINDER_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
-    return new NextResponse("unauthorized", { status: 401 });
+    return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
 
   const db = supabaseAdmin();

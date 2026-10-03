@@ -32,7 +32,7 @@ vi.mock("@/lib/monitor/sweep-failure", () => sweepFailure);
 
 import { GET } from "./route";
 
-const req = () => ({}) as unknown as Parameters<typeof GET>[0];
+const req = () => ({ headers: new Headers() }) as unknown as Parameters<typeof GET>[0];
 
 beforeEach(() => vi.clearAllMocks());
 

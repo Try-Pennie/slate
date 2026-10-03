@@ -15,6 +15,11 @@ import { blankComments } from "./lib/strip-comments.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const READERS = ["landingAttendee", "existingCallForLanding"];
+// #3173: the routing read. `resolveLandingCode(code, leadId)` reads the lead's XBC__c
+// from Salesforce when the link carries no routable code, so a blank code flood paid one
+// Salesforce read per guessed id. It takes the id POSITIONALLY, second, so it is judged
+// on that argument rather than on a `{ salesforceId }` object.
+const POSITIONAL_READERS = ["resolveLandingCode"];
 
 /**
  * The violations in one file's source, judged per CALL SITE (L135): each reader call must
@@ -27,13 +32,18 @@ export function ungatedLandingReads(src: string): string[] {
   const code = blankComments(src);
   const out: string[] = [];
   const derived = /\blookupId\s*=\s*await\s+landingLookupId\(/.exec(code);
-  for (const reader of READERS) {
+  for (const reader of [...READERS, ...POSITIONAL_READERS]) {
     const call = new RegExp(`\\b${reader}\\(`, "g");
     for (const m of code.matchAll(call)) {
       const at = m.index ?? 0;
       if (hasOptOutAtOffset(src, at, "landing-identity-ok:")) continue;
-      const arg = /^\(\s*\{\s*salesforceId(?:\s*:\s*([A-Za-z_$][\w$]*))?/.exec(code.slice(at + reader.length));
-      const asked = arg ? (arg[1] ?? "salesforceId") : "an identity this scan cannot read";
+      const rest = code.slice(at + reader.length);
+      const asked = POSITIONAL_READERS.includes(reader)
+        ? (/^\(\s*[^,()]+,\s*([A-Za-z_$][\w$]*)\s*\)/.exec(rest)?.[1] ?? "an identity this scan cannot read")
+        : (() => {
+            const arg = /^\(\s*\{\s*salesforceId(?:\s*:\s*([A-Za-z_$][\w$]*))?/.exec(rest);
+            return arg ? (arg[1] ?? "salesforceId") : "an identity this scan cannot read";
+          })();
       const line = code.slice(0, at).split("\n").length;
       if (asked !== "lookupId") out.push(`line ${line}: ${reader} is asked about ${asked}`);
       else if (!derived || derived.index > at) {
@@ -56,9 +66,13 @@ function pages(dir: string): string[] {
 
 const callers = pages(join(ROOT, "src", "app")).filter((p) => {
   const src = readFileSync(p, "utf8");
-  return READERS.some((r) => src.includes(`${r}(`));
+  return [...READERS, ...POSITIONAL_READERS].some((r) => src.includes(`${r}(`));
 });
 assert(callers.length >= 2, `found the landing pages that read an identity (${callers.length})`);
+assert(
+  callers.filter((p) => readFileSync(p, "utf8").includes("resolveLandingCode(")).length >= 3,
+  "the routing read is judged on every landing page that makes it",
+);
 for (const p of callers) {
   const bad = ungatedLandingReads(readFileSync(p, "utf8"));
   eq(bad.join("; "), "", `${relative(ROOT, p)} reads a landing identity only through the throttle`);
@@ -109,6 +123,24 @@ for (const p of callers) {
     ungatedLandingReads('const u = "https://x"; await landingAttendee({ salesforceId: rawId }, l, w);').length,
     1,
     "a URL literal does not hide the call after it",
+  );
+  // #3173: the routing read is judged on its second argument.
+  eq(
+    ungatedLandingReads("const resolved = await resolveLandingCode(requestedCode, entry.externalId);").length,
+    1,
+    "the routing read handed the raw id from the link is caught",
+  );
+  eq(
+    ungatedLandingReads("const resolved = await resolveLandingCode(requestedCode, id);").length,
+    1,
+    "the routing read handed the path id is caught",
+  );
+  eq(
+    ungatedLandingReads(
+      "const lookupId = await landingLookupId(id, h);\nconst resolved = await resolveLandingCode(requestedCode, lookupId);",
+    ).length,
+    0,
+    "the routing read handed the gated id passes",
   );
 }
 

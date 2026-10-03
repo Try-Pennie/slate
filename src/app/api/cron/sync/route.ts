@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { isAuthorizedCron } from "@/lib/cron";
+import { refuseCronSecret } from "@/lib/bearer-failure";
 import {
   runIncrementalSync,
   loadSyncAgents,
@@ -119,7 +120,7 @@ async function alertSyncFailures(
  */
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
-    return new NextResponse("unauthorized", { status: 401 });
+    return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
 
   // A slow pass (full resync) can outlive the 1-minute cadence; overlapping

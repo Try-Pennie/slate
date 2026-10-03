@@ -33,6 +33,7 @@ import {
   ADAPTER_ENV_FILES,
   BUNDLE_ENV_PATH,
   CLIENT_ASSET_DIR,
+  clientForbiddenNames,
   judgeBundleEnv,
   judgeClientAssets,
 } from "./lib/scan-bundle-env.ts";
@@ -63,7 +64,7 @@ const verdicts = [
   judgeBundleEnv({ source, envFiles }),
   judgeClientAssets({
     files: readJsFiles(CLIENT_ASSET_DIR),
-    names: PRODUCTION_ONLY_SECRETS,
+    names: clientForbiddenNames(PRODUCTION_ONLY_SECRETS),
   }),
 ];
 

@@ -3,6 +3,16 @@
 # opens PRs that raise the fix. Repo-level "Dependabot alerts" (Settings >
 # Advanced Security) must also be on for security-update PRs; this file drives
 # the scheduled version-update PRs and Action pinning.
+#
+# Cooldown (#3175): a version update is not proposed until the release has aged,
+# three days for a minor or patch release and seven for anything else (a major, or
+# a version with no semver to judge). A hijacked package is usually caught and
+# yanked within a few days of publishing, and PRs here merge within seconds, so
+# the wait is what keeps such a release out of the tree. It holds back only
+# VERSION updates: a security update is raised at once, whatever its age. Three
+# days is a choice rather than a measurement, and this is the place to change it.
+# The seven is the floor semgrep's p/owasp-top-ten (in the CI security scan)
+# accepts for default-days, so lowering it fails that scan.
 version: 2
 updates:
   # App dependencies (pnpm uses the npm ecosystem). Grouped so a routine week is
@@ -11,6 +21,10 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
+      semver-minor-days: 3
+      semver-patch-days: 3
     open-pull-requests-limit: 10
     groups:
       minor-and-patch:
@@ -23,4 +37,8 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
+      semver-minor-days: 3
+      semver-patch-days: 3
     open-pull-requests-limit: 5

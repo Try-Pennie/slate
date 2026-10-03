@@ -44,8 +44,15 @@ export default async function BookingPage({
   // #2638: the id in the path IS the lead's Salesforce id, so a blank code is
   // rescued from the lead's own `XBC__c` before the catch-all is considered, by
   // the resolver the confirm uses. A failed read throws to the error boundary.
+  //
+  // #3106 / #3173: what this page reads ABOUT the person named is throttled per address,
+  // since a lead id is not a secret, and that includes this routing read: a blank code
+  // flood would otherwise pay one Salesforce read per guessed id. Over the ceiling the
+  // page shows the default route's times and leaves out the prefill and the existing
+  // call notice; the id still reaches the confirm, which routes on the lead's own code.
   const requestedCode = first(sp, "xbc");
-  const resolved = await resolveLandingCode(requestedCode, id);
+  const lookupId = await landingLookupId(id, headers);
+  const resolved = await resolveLandingCode(requestedCode, lookupId);
   const bucketCode = resolved.code;
 
   // #2660: the same question `/book` asks of the same helper, so a test booking
@@ -73,12 +80,8 @@ export default async function BookingPage({
   // here rather than left to the confirm, where the notice would arrive one picked
   // time and one filled form too late and read as the product having forgotten
   // them. It never throws: a check that could not run shows the ordinary picker,
-  // and the confirm still refuses at the end of it.
-  //
-  // #3106: what this page reads ABOUT the person named is throttled per address, since a
-  // lead id is not a secret. Over the ceiling the id still routes and still reaches the
-  // confirm; only the prefill and this notice are left out.
-  const lookupId = await landingLookupId(id, headers);
+  // and the confirm still refuses at the end of it. Asked with the throttled `lookupId`
+  // derived above.
   const landingCall = lookupId
     ? await existingCallForLanding({ salesforceId: lookupId }, { isTest })
     : null;

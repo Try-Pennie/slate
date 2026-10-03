@@ -101,7 +101,7 @@ vi.mock("@/lib/offboarding/session-convergence-alert", () => ({
 import { GET } from "./route";
 import { noteAlertKey } from "@/lib/notify/alert-recording";
 
-const req = () => ({}) as unknown as Parameters<typeof GET>[0];
+const req = () => ({ headers: new Headers() }) as unknown as Parameters<typeof GET>[0];
 
 /** The healthy Twilio result, so a case can override one field and mean it. */
 const twilioResult = async () =>

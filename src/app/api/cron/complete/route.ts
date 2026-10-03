@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
+import { refuseCronSecret } from "@/lib/bearer-failure";
 import { completePastBookings } from "@/lib/booking/service";
 import { retryFailedDeliveries } from "@/lib/webhooks/emit";
 import { acquireLock, releaseLock } from "@/lib/locks";
@@ -23,7 +24,7 @@ const COMPLETION_SATURATED_KEY = "completion_sweep_saturated";
 /** Marks finished bookings complete and retries failed webhook deliveries. */
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
-    return new NextResponse("unauthorized", { status: 401 });
+    return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
 
   // Two overlapping */5 ticks would both read the same finished booking and

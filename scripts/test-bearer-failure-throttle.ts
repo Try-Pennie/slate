@@ -10,9 +10,14 @@
 //
 // The routes are ENUMERATED: any file under src/app, or a shared handler under src/lib that
 // builds a route's refusal, that calls one of the credential checks below is in scope, so a
-// new key authed route is covered by construction (L96). What is NOT in scope, said here so
-// it is not assumed: the cron routes, which check their secret through `isAuthorizedCron`
-// (src/lib/cron.ts) rather than calling a check themselves.
+// new key authed route is covered by construction (L96).
+//
+// The cron routes are in scope too since #3174: their check is `isAuthorizedCron`
+// (src/lib/cron.ts), and its failure must go through `refuseCronSecret` specifically, not
+// the general `refuseCredential`, because that is the one that leaves the Worker's own
+// scheduled ticks (an in process request with no client address) uncounted. What is NOT in
+// scope, said here so it is not assumed: a credential check inside a module under src/lib
+// other than the shared handlers listed below.
 //
 // The escape hatch is `// credential-throttle-ok: <reason>` on or directly above the check,
 // for a check whose failure must not be throttled per address (Google push, whose senders
@@ -25,8 +30,9 @@ import { hasOptOutAtOffset } from "./lib/opt-out.ts";
 import { blankComments } from "./lib/strip-comments.ts";
 
 const ROOT = join(import.meta.dirname, "..");
-const CHECK = /\b(?:bearerTokenMatches|authenticateBearer|timingSafeEqual)\(/g;
+const CHECK = /\b(?:bearerTokenMatches|authenticateBearer|timingSafeEqual|isAuthorizedCron)\(/g;
 const THROTTLED = /\b(?:refuseCredential|refuseBearerAuth|bearerFailureWithinLimit)\(/;
+const CRON_THROTTLED = /\brefuseCronSecret\(/;
 const HATCH = "credential-throttle-ok:";
 
 /** The first `{ ... }` block opening after `from`, brace matched, or "" when there is none. */
@@ -48,7 +54,8 @@ export function unthrottledRefusals(src: string): number[] {
   for (const m of code.matchAll(CHECK)) {
     const at = m.index ?? 0;
     if (hasOptOutAtOffset(src, at, HATCH)) continue;
-    if (THROTTLED.test(nextBlock(code, at))) continue;
+    const wanted = m[0].startsWith("isAuthorizedCron") ? CRON_THROTTLED : THROTTLED;
+    if (wanted.test(nextBlock(code, at))) continue;
     bad.push(code.slice(0, at).split("\n").length);
   }
   return bad;
@@ -105,6 +112,31 @@ for (const f of inScope) {
     [5],
     "and exempts only the check it sits on",
   );
+  // #3174: the cron check.
+  eq(
+    unthrottledRefusals('if (!isAuthorizedCron(req)) return new NextResponse("unauthorized", { status: 401 });').length,
+    1,
+    "a bare cron refusal is caught",
+  );
+  eq(
+    unthrottledRefusals(
+      'if (!isAuthorizedCron(req)) {\n  return refuseCronSecret(req.headers, () => new NextResponse("x"));\n}',
+    ).length,
+    0,
+    "the cron refusal through refuseCronSecret passes",
+  );
+  eq(
+    unthrottledRefusals(
+      'if (!isAuthorizedCron(req)) {\n  return refuseCredential(req.headers, () => new NextResponse("x"));\n}',
+    ).length,
+    1,
+    "a cron refusal through the general throttle is caught, since it would count the Worker's own ticks",
+  );
+}
+
+{
+  const cronRoutes = inScope.filter((f) => /\bisAuthorizedCron\(/.test(blankComments(readFileSync(f, "utf8"))));
+  assert(cronRoutes.length >= 20, `the cron routes are judged (${cronRoutes.length})`);
 }
 
 finish();

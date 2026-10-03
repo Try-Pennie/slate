@@ -2,14 +2,11 @@ import { supabaseAdmin } from "../supabase/admin.ts";
 import { unwrap } from "../db/result.ts";
 import { escapeLike } from "../sql-like.ts";
 import { compareStringsDesc } from "../compare.ts";
+import { SEARCH_LIMIT } from "./search-limit.ts";
 import {
   rosterNameResolver,
   type HistoryRosterUser,
 } from "./event-display.ts";
-
-/** Max booking rows a lookup returns (bounds the growth-table read, cap-safe).
- *  Exported so the lookup UI can tell when a text result filled the bound (#903). */
-export const SEARCH_LIMIT = 20;
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

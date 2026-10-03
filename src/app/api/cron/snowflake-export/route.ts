@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { laneFailure } from "@/lib/monitor/lane-failure-response";
 import { isAuthorizedCron } from "@/lib/cron";
+import { refuseCronSecret } from "@/lib/bearer-failure";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { runSnowflakeExport } from "@/lib/snowflake/export";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
@@ -19,7 +20,9 @@ const LOCK_TTL_MS = 120_000;
  * so a table failure surfaces instead of a silently stale warehouse.
  */
 export async function GET(req: NextRequest) {
-  if (!isAuthorizedCron(req)) return new NextResponse("unauthorized", { status: 401 });
+  if (!isAuthorizedCron(req)) {
+    return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
+  }
 
   const lock = await acquireLock("cron_snowflake_export", LOCK_TTL_MS);
   if (!lock) return NextResponse.json({ skipped: "overlapping-run" });

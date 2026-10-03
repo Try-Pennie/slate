@@ -66,13 +66,13 @@ runs:
     # shape rather than on entropy. p/react and p/nextjs (#3087) cover the
     # framework this app is written in: dangerouslySetInnerHTML, unsafe hrefs,
     # server action and route handler patterns. Both were clean on the tree
-    # when added. p/owasp-top-ten was tried too and is NOT here: on 2026-10-03 it
-    # reported three findings in workflow and Dependabot config (a shell
-    # interpolation in loadtest.yml, no update cooldown in dependabot.yml), so as a
-    # gate it would be red on every pull request.
+    # when added. p/owasp-top-ten (#3175) adds the workflow and supply chain
+    # rules: on 2026-10-03 it reported a dispatch input interpolated into a
+    # loadtest.yml `run:` and no update cooldown in dependabot.yml, and it went in
+    # once both were fixed and it was clean on the tree.
     - name: Static analysis
       shell: bash
       run: |
         semgrep scan --config p/typescript --config p/secrets \
-          --config p/react --config p/nextjs \
+          --config p/react --config p/nextjs --config p/owasp-top-ten \
           --error --quiet --metrics=off --disable-version-check

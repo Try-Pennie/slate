@@ -7,7 +7,8 @@ vi.mock("@/lib/rate-limit", async () => {
   return { clientIp: core.clientIp, bearerFailureWithinLimit };
 });
 
-import { refuseCredential, refuseBearerAuth } from "./bearer-failure";
+import { refuseCredential, refuseBearerAuth, refuseCronSecret } from "./bearer-failure";
+import { TICK_ID_HEADER } from "./monitor/lane-failure";
 
 const headers = new Headers({ "cf-connecting-ip": "203.0.113.9" });
 const unauthorized = () => new Response("unauthorized", { status: 401 });
@@ -45,5 +46,48 @@ describe("refuseBearerAuth (#3142)", () => {
     const res = await refuseBearerAuth(headers, { status: 503, error: "not configured" });
     expect(res.status).toBe(503);
     expect(bearerFailureWithinLimit).not.toHaveBeenCalled();
+  });
+});
+
+describe("refuseCronSecret (#3174)", () => {
+  it("throttles a refused cron secret from an outside address", async () => {
+    bearerFailureWithinLimit.mockResolvedValue(false);
+    const res = await refuseCronSecret(headers, unauthorized);
+    expect(res.status).toBe(429);
+    expect(bearerFailureWithinLimit).toHaveBeenCalledWith("203.0.113.9");
+  });
+
+  it("answers with the route's own refusal under the ceiling", async () => {
+    const res = await refuseCronSecret(headers, unauthorized);
+    expect(res.status).toBe(401);
+  });
+
+  it("never counts or throttles the Worker's own scheduled request", async () => {
+    bearerFailureWithinLimit.mockResolvedValue(false);
+    // What the Worker's dispatcher sends (worker/lane-run.ts): a bearer and the tick id
+    // header, and no client address, because the request is handed to the app in process
+    // and never crosses the network where Cloudflare would stamp one.
+    const scheduled = new Headers({ authorization: "Bearer stale", [TICK_ID_HEADER]: "abc" });
+    const res = await refuseCronSecret(scheduled, unauthorized);
+    expect(res.status).toBe(401);
+    expect(bearerFailureWithinLimit).not.toHaveBeenCalled();
+  });
+
+  it("throttles a request with no address that does not carry the dispatcher's tick header", async () => {
+    bearerFailureWithinLimit.mockResolvedValue(false);
+    // An absent address alone proves nothing about who sent it: only the two together
+    // (no address, and the header the dispatcher stamps) read as the Worker's own tick.
+    const stripped = new Headers({ authorization: "Bearer guess" });
+    const res = await refuseCronSecret(stripped, unauthorized);
+    expect(res.status).toBe(429);
+    expect(bearerFailureWithinLimit).toHaveBeenCalledTimes(1);
+  });
+
+  it("throttles an outside request that sends the tick header, since it carries an address", async () => {
+    bearerFailureWithinLimit.mockResolvedValue(false);
+    const forged = new Headers({ "cf-connecting-ip": "203.0.113.9", [TICK_ID_HEADER]: "abc" });
+    const res = await refuseCronSecret(forged, unauthorized);
+    expect(res.status).toBe(429);
+    expect(bearerFailureWithinLimit).toHaveBeenCalledWith("203.0.113.9");
   });
 });
