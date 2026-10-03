@@ -114,7 +114,8 @@ export interface BurstLimits {
  * wrong the moment five more endpoints did, because the whole safety argument for a ceiling is
  * its RATIO to the sustained limit it backs up, and 300 means "ten times" next to availability's
  * 30 and "a hundred times" next to the booking confirm's 3. Stated apart from the number it is a
- * multiple of, it is a number nobody can check. `allow` therefore takes the ceiling per call.
+ * multiple of, it is a number nobody can check. `allow` therefore takes each endpoint's limits
+ * per call (`BurstLimits`: its ceiling, its escalation point and the escalation callback).
  */
 
 /**

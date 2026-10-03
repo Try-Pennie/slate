@@ -3,6 +3,8 @@
  * booking policy. No imports, so scripts/test-rate-limit.ts can run it
  * node-native; the DB-backed check lives in rate-limit.ts.
  */
+// A type only import: erased when this runs, so the module still loads with no imports.
+import type { LimiterAudience } from "./rate-limit-burst";
 
 export interface RateLimitRule {
   /** Key prefix; the client ip is appended. */
@@ -317,7 +319,7 @@ interface EdgeLimiterBase {
    * escalates at the shared `BURST_ESCALATE_AT`, a machine one at its own sustained limit
    * (`burstEscalateAt` in `@/lib/rate-limit-burst`, which holds the reasoning).
    */
-  audience: "lead" | "machine";
+  audience: LimiterAudience;
   /**
    * The burst ceiling (#1556): the count across every isolate and datacenter that a
    * concurrent burst cannot spread across, per key per minute.
