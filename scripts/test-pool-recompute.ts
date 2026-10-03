@@ -88,6 +88,7 @@ function harness(
     },
     writeRow: async (code, val, computedAtMs) => {
       rec.writes.push({ code, val, computedAtMs });
+      return "written";
     },
     invalidate: async (code) => {
       rec.invalidated.push(code);
@@ -208,6 +209,29 @@ function harness(
   eq(rec.writes.map((w) => w.code), ["100", "101", "110", "111", "112"], "the other five are still written");
   eq(outcome.failed, ["102"], "and the failed code is named");
   eq(outcome.written.length, 5, "the outcome counts what actually landed");
+}
+
+{
+  // #3119: the database REFUSING the write is not a throw. `writeSlotRow` answers
+  // "failed" for a refused update or insert, and until this was read that answer
+  // was dropped, so a refused code was counted as written and the pooled write
+  // warning could never fire for the commonest way a write fails.
+  const { deps, rec } = harness({
+    writeRow: async (code, val, computedAtMs) => {
+      if (code === "102") return "failed";
+      rec.writes.push({ code, val, computedAtMs });
+      return code === "101" ? "kept-newer" : "written";
+    },
+  });
+  const outcome = await recomputePool(LOW_POOL, deps);
+  eq(outcome.failed, ["102"], "a refused write lands in failed[]");
+  eq(outcome.written.includes("102"), false, "and is not counted as written");
+  eq(
+    outcome.written.includes("101"),
+    true,
+    "a write that found a FRESHER row standing is a success, not a failure",
+  );
+  eq(outcome.written.length, 5, "the other five are counted");
 }
 
 {

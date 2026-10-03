@@ -20,6 +20,7 @@ import {
   shadowRankingDivergence,
 } from "@/lib/availability/roundrobin";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import { unfairOrderingAlert } from "@/lib/booking/alert-copy";
 import type { Attributes, Bucket, Criteria, EventType } from "@/lib/db/types";
 import { log } from "@/lib/log";
@@ -508,7 +509,7 @@ async function alertUnfairOrdering(context: string): Promise<void> {
     UNFAIR_ORDERING_ALERT_KEY,
     UNFAIR_ORDERING_COOLDOWN_MS,
     unfairOrderingAlert(context),
-  ).catch(() => {});
+  ).catch(logAlertSendFailure(UNFAIR_ORDERING_ALERT_KEY));
 }
 
 /**

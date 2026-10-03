@@ -3,6 +3,7 @@ import { isAuthorizedCron } from "@/lib/cron";
 import { AGENTS_SYNC_STREAK_KEY } from "@/lib/salesforce/sync";
 import { runRosterSync } from "@/lib/salesforce/run-roster-sync";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import { recordFailureStreak } from "@/lib/notify/streak";
 import { log } from "@/lib/log";
 import { agentSyncFailureAlert } from "@/lib/monitor/cron-alert-copy";
@@ -60,7 +61,7 @@ export async function GET(req: NextRequest) {
         "agent_sync_failures",
         SYNC_ALERT_COOLDOWN_MS,
         agentSyncFailureAlert(message.slice(0, 300)),
-      ).catch(() => {});
+      ).catch(logAlertSendFailure("agent_sync_failures"));
     }
     return NextResponse.json({ error: message }, { status: 500 });
   }

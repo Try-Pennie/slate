@@ -26,6 +26,13 @@ import { loadtestEntryRefusal } from "@/lib/loadtest-secrets";
 import { httpsRedirect } from "@/lib/http/https-redirect";
 import { log } from "@/lib/log";
 import { laneTimingFields, type LaneRun } from "@/lib/monitor/lane-timing";
+import {
+  mintTickId,
+  reportLaneFailures,
+  runLane,
+  type LaneRunDeps,
+  type LaneTick,
+} from "./lane-run";
 
 // The shared per-address burst counter (#1536). A Durable Object is the only
 // primitive that can hold ONE count across isolates, which is what the native
@@ -152,48 +159,40 @@ const worker = {
     if (paths.length === 0) return;
     // Fire each lane as an independent request so a co-scheduled lane's failure
     // (or slow run) can't abort the others; each route guards itself with its
-    // own lock. settle all before returning so cron tail captures every result.
+    // own lock. settle all before returning so cron tail captures every result
+    // (`runLane` never throws, so Promise.all waits for every lane).
     //
     // #1245: each lane is timed individually, because the lanes on one expression
     // SHARE this invocation's budget and nothing recorded what each of them cost.
     // When that budget tripled in four days the only symptom was a page from the
     // recompute lane, which is the lane that noticed rather than necessarily the
-    // one that spent it. A single timer around the allSettled below would
+    // one that spent it. A single timer around the Promise.all below would
     // attribute nothing, so the measurement brackets each lane's own request.
+    //
+    // #3133: a lane that throws or answers non-ok is logged with its cause and
+    // reported to the app, which pages `cron_lane_failed:<lane>` (worker/lane-run.ts).
+    // #3139: one id per tick, sent to every lane as a header and stamped on every
+    // line this tick writes, so a lane's lines can be tied to the tick that drove it.
+    const tick: LaneTick = {
+      tickId: mintTickId(() => crypto.randomUUID()),
+      cronSecret: env.CRON_SECRET ?? "",
+    };
+    const deps: LaneRunDeps = {
+      fetch: (request) => handler.fetch(request, env, ctx),
+      now: () => performance.now(),
+      log,
+    };
     const startedAt = performance.now();
-    const runs: LaneRun[] = [];
-    await Promise.allSettled(
-      paths.map(async (path) => {
-        const request = new Request(`https://slate.trypennie.app${path}`, {
-          headers: { authorization: `Bearer ${env.CRON_SECRET ?? ""}` },
-        });
-        const laneStartedAt = performance.now();
-        let ok = false;
-        try {
-          const res: Response = await handler.fetch(request, env, ctx);
-          ok = res.ok;
-          // Surface failures in the Workers dashboard/tail; cron has no retries.
-          if (!res.ok) {
-            log.error("cron", {
-              msg: "lane returned a non-ok response",
-              path,
-              status: res.status,
-              body: (await res.text()).slice(0, 300),
-            });
-          }
-        } finally {
-          // In `finally` so a thrown lane is still measured and still reported as
-          // failed: a lane that dies is usually the FAST one, and leaving it out
-          // would quietly shrink the record on exactly the tick worth reading.
-          runs.push({ path, ms: performance.now() - laneStartedAt, ok });
-        }
-      }),
-    );
+    const outcomes = await Promise.all(paths.map((path) => runLane(path, tick, deps)));
+    const runs: LaneRun[] = outcomes.map((o) => o.run);
     log.info("cron", {
       msg: "lane timings",
       cron: controller.cron,
+      tick: tick.tickId,
       ...laneTimingFields(runs, performance.now() - startedAt),
     });
+    const failures = outcomes.flatMap((o) => (o.failure ? [o.failure] : []));
+    if (failures.length > 0) await reportLaneFailures(failures, tick, deps);
   },
 };
 

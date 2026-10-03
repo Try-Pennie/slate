@@ -17,6 +17,7 @@ import { ensureDefaultOrg } from "@/lib/provision";
 import { ensureDefaultSchedules } from "@/lib/schedule";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
+import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import { clearFailureStreak, recordConsecutiveStreak } from "@/lib/notify/streak";
 import { log } from "@/lib/log";
 import {
@@ -237,7 +238,7 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
           "twilio_sync_failures",
           SYNC_ALERT_COOLDOWN_MS,
           twilioSyncFailureAlert(reason),
-        ).catch(() => {});
+        ).catch(logAlertSendFailure("twilio_sync_failures"));
       }
     }
 
@@ -312,7 +313,7 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
           idConflicts.claimed,
           sync.deactivationsRefusedAmbiguous,
         ),
-      ).catch(() => {});
+      ).catch(logAlertSendFailure("salesforce_user_id_conflicts"));
     } else {
       // alert-key: salesforce_user_id_conflicts
       const clearedIds = await resolveAlert(
@@ -337,7 +338,7 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
         "salesforce_manager_ambiguous",
         SYNC_ALERT_COOLDOWN_MS,
         salesforceManagerAmbiguousAlert(sync.managersAmbiguous, sync.managerNamesAmbiguous),
-      ).catch(() => {});
+      ).catch(logAlertSendFailure("salesforce_manager_ambiguous"));
     } else {
       // alert-key: salesforce_manager_ambiguous
       const clearedManagers = await resolveAlert(
@@ -370,7 +371,7 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
         "salesforce_roster_divergence",
         SYNC_ALERT_COOLDOWN_MS,
         salesforceRosterDivergenceAlert(sync.rosterUnconfirmedBookable.length),
-      ).catch(() => {});
+      ).catch(logAlertSendFailure("salesforce_roster_divergence"));
     } else {
       // alert-key: salesforce_roster_divergence
       const clearedDivergence = await resolveAlert(
@@ -426,7 +427,7 @@ async function reportTwilioWriteOutcome(result: TwilioSyncResult): Promise<void>
         "twilio_write_failures",
         SYNC_ALERT_COOLDOWN_MS,
         twilioWriteFailureAlert(failures),
-      ).catch(() => {});
+      ).catch(logAlertSendFailure("twilio_write_failures"));
     }
   } else {
     // Hung off the MEASURED clean run, which is the only thing that can know the
@@ -448,7 +449,7 @@ async function reportTwilioWriteOutcome(result: TwilioSyncResult): Promise<void>
       "twilio_marked_no_worker",
       SYNC_ALERT_COOLDOWN_MS,
       twilioOrphanedMarkAlert(orphaned),
-    ).catch(() => {});
+    ).catch(logAlertSendFailure("twilio_marked_no_worker"));
   } else {
     // alert-key: twilio_marked_no_worker
     const cleared = await resolveAlert(

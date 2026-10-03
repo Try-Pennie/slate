@@ -1,5 +1,6 @@
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
+import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import { parseStampMs } from "@/lib/date/stamp";
 import { formatWhenLine } from "@/lib/ooo/core";
 import { log } from "@/lib/log";
@@ -426,7 +427,7 @@ export async function runOooProtectionCheck(deps: {
       OOO_PROTECTION_KEY,
       deps.cooldownMs,
       formatOooProtectionAlert(found, deps.appBaseUrl),
-    ).catch(() => {});
+    ).catch(logAlertSendFailure(OOO_PROTECTION_KEY));
   }
   deps.log?.({
     status: "unprotected",

@@ -133,6 +133,7 @@ import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
 import { emitWebhook, type WebhookSendScheduler } from "@/lib/webhooks/emit";
 import { afterResponse, deferWebhookSend } from "@/lib/after-response";
 import { sendThrottledAlert, resolveRecovered } from "@/lib/notify/dispatch";
+import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import {
   bookingEventInsertAlert,
   stalePhoneInviteAlert,
@@ -349,7 +350,7 @@ async function checkAgentFree(
       VERIFY_READ_ALERT_KEY,
       VERIFY_READ_ALERT_COOLDOWN_MS,
       verifyReadFailedAlert("book", email),
-    ).catch(() => {});
+    ).catch(logAlertSendFailure(VERIFY_READ_ALERT_KEY));
     return "unverified";
   }
   // #2412: `null` is Google's per calendar failure inside a 200 response (an
@@ -413,7 +414,7 @@ export async function agentBusyIntervals(
       VERIFY_READ_ALERT_KEY,
       VERIFY_READ_ALERT_COOLDOWN_MS,
       verifyReadFailedAlert("reschedule", email),
-    ).catch(() => {});
+    ).catch(logAlertSendFailure(VERIFY_READ_ALERT_KEY));
     return null;
   }
   const busy = await freeBusy(email, fromIso, toIso, ids.length ? ids : ["primary"]);
@@ -493,7 +494,7 @@ export async function insertBusyBlocksWithRetry(blocks: BusyBlockInsert[]): Prom
     "busy_block_write_through",
     CACHE_ALERT_COOLDOWN_MS,
     busyBlockWriteThroughAlert("insert", what, shortFailureReason(error.message) ?? "no detail"),
-  ).catch(() => {});
+  ).catch(logAlertSendFailure("busy_block_write_through"));
 }
 
 /**
@@ -1237,7 +1238,7 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
           "busy_block_write_through",
           CACHE_ALERT_COOLDOWN_MS,
           busyBlockWriteThroughAlert("move", bookingId, shortFailureReason(error.message) ?? "no detail"),
-        ).catch(() => {});
+        ).catch(logAlertSendFailure("busy_block_write_through"));
       }
     },
 
@@ -1296,7 +1297,7 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
           "busy_block_write_through",
           CACHE_ALERT_COOLDOWN_MS,
           busyBlockWriteThroughAlert("delete", bookingId, shortFailureReason(error.message) ?? "no detail"),
-        ).catch(() => {});
+        ).catch(logAlertSendFailure("busy_block_write_through"));
       }
     },
 
@@ -1886,7 +1887,7 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
           "booking_event_insert",
           CACHE_ALERT_COOLDOWN_MS,
           bookingEventInsertAlert(String(row.booking_id), String(row.action), shortFailureReason(error.message) ?? "no detail"),
-        ).catch(() => {});
+        ).catch(logAlertSendFailure("booking_event_insert"));
         return null;
       }
       return (data as { id: string }).id;
@@ -2100,7 +2101,9 @@ async function alertOnBookingFailure<T>(op: () => Promise<T>): Promise<T> {
       // alert-key: verify_on_book_outage
       // alert-key: reschedule_lock_outage
       // alert-key: no_eligible_agents:*
-      await sendThrottledAlert(spec.key, spec.cooldownMs, spec.message).catch(() => {});
+      await sendThrottledAlert(spec.key, spec.cooldownMs, spec.message).catch(
+        logAlertSendFailure(spec.key),
+      );
     }
     throw err;
   }
@@ -2405,7 +2408,7 @@ export async function updateBookingPhone(
       `stale_phone_invite:${res.staleInvite.bookingId}`,
       orchestration.STALE_PHONE_INVITE_COOLDOWN_MS,
       stalePhoneInviteAlert(res.staleInvite.agentEmail, res.staleInvite.bookingId),
-    ).catch(() => {});
+    ).catch(logAlertSendFailure(`stale_phone_invite:${res.staleInvite.bookingId}`));
   }
   return res;
 }
@@ -3032,14 +3035,14 @@ export async function processPendingEventDeletions(limit: number) {
       PENDING_DELETION_REFUSED_ALERT_KEY,
       PENDING_DELETION_REFUSED_ALERT_COOLDOWN_MS,
       refusedText,
-    ).catch(() => {});
+    ).catch(logAlertSendFailure(PENDING_DELETION_REFUSED_ALERT_KEY));
   }
   if (res.stuck.length > 0) {
     await sendThrottledAlert(
       PENDING_DELETION_ALERT_KEY,
       PENDING_DELETION_ALERT_COOLDOWN_MS,
       pendingDeletionAlert(res.stuck.length, orchestration.PENDING_DELETION_ALERT_AFTER, res.stuck.slice(0, 5).map((r) => String(r.gcal_event_id))),
-    ).catch(() => {});
+    ).catch(logAlertSendFailure(PENDING_DELETION_ALERT_KEY));
   } else {
     // #1151: stuck deletions are a CONDITION (events keep firing reminders until
     // they drain), so say when the queue is clean. Hung off a sweep that RAN and
@@ -3074,7 +3077,7 @@ export async function checkCreationOrphans(limit: number) {
         res.confirmed.length,
         res.confirmed.slice(0, 5).map((r) => String(r.gcal_event_id)),
       ),
-    ).catch(() => {});
+    ).catch(logAlertSendFailure(CREATION_ORPHAN_ALERT_KEY));
   }
   return res;
 }
@@ -3109,7 +3112,7 @@ export async function reconcileCancelledBusyBlocks(limit: number, offset = 0) {
     RECONCILE_ALERT_KEY,
     RECONCILE_ALERT_COOLDOWN_MS,
     freedText,
-  ).catch(() => {});
+  ).catch(logAlertSendFailure(RECONCILE_ALERT_KEY));
 
   return res;
 }
@@ -3137,7 +3140,7 @@ export async function reconcileMissingBusyBlocks(limit: number, offset = 0) {
     RECONCILE_MISSING_ALERT_KEY,
     RECONCILE_ALERT_COOLDOWN_MS,
     reconcileRecreatedAlert(res.recreated, res.bookingIds.slice(0, 10).map(String), res.bookingIds.length > 10),
-  ).catch(() => {});
+  ).catch(logAlertSendFailure(RECONCILE_MISSING_ALERT_KEY));
 
   return res;
 }
@@ -3173,7 +3176,7 @@ export async function drainBookingOutbox() {
         OUTBOX_HANDOFF_STREAK_KEY,
         DRAIN_ALERT_COOLDOWN_MS,
         outboxAllHandedOffAlert(leased, OUTBOX_HANDOFF_ALERT_AFTER),
-      ).catch(() => {});
+      ).catch(logAlertSendFailure(OUTBOX_HANDOFF_STREAK_KEY));
     }
   } else {
     await clearFailureStreak(OUTBOX_HANDOFF_STREAK_KEY);
@@ -3185,7 +3188,7 @@ export async function drainBookingOutbox() {
       "outbox_drain_stuck",
       DRAIN_ALERT_COOLDOWN_MS,
       outboxDrainStuckAlert(result.stuck.length, DRAIN_ALERT_AFTER, ids),
-    ).catch(() => {});
+    ).catch(logAlertSendFailure("outbox_drain_stuck"));
   } else if (!allHandedOff) {
     // #1151: a backing-off outbox is a CONDITION (the side effects of real
     // bookings are not completing), so say when it drains. Measured, not assumed:
@@ -3233,7 +3236,7 @@ export async function drainBookingReservations() {
       "reservation_drain_stuck",
       DRAIN_ALERT_COOLDOWN_MS,
       reservationDrainStuckAlert(result.stuck.length, DRAIN_ALERT_AFTER, ids),
-    ).catch(() => {});
+    ).catch(logAlertSendFailure("reservation_drain_stuck"));
   } else {
     // #1151: same CONDITION on the reservation side, same measured-only rule.
     await resolveRecovered([
@@ -3281,7 +3284,7 @@ export async function sweepAbandonedReschedulePins() {
       "reschedule_pin_dropped",
       DRAIN_ALERT_COOLDOWN_MS,
       reschedulePinDroppedAlert(result.dropped),
-    ).catch(() => {});
+    ).catch(logAlertSendFailure("reschedule_pin_dropped"));
   }
   return result;
 }
@@ -3305,7 +3308,7 @@ export async function sweepAbandonedReassignIntents() {
       "reassign_intent_dropped",
       DRAIN_ALERT_COOLDOWN_MS,
       reassignIntentDroppedAlert(result.dropped),
-    ).catch(() => {});
+    ).catch(logAlertSendFailure("reassign_intent_dropped"));
   }
   return result;
 }

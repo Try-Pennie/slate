@@ -9,6 +9,7 @@
 import { DateTime } from "luxon";
 import { windowOnDate, type BusinessHoursException } from "../booking/business-hours.ts";
 import type { ThrottledNotify } from "./alert-deps";
+import { logAllClearFailure } from "../notify/send-failure.ts";
 
 /**
  * When the org is open, in the shape the org's own hours are stored in (#1298).
@@ -265,7 +266,9 @@ export async function runLowVolumeCheck(deps: {
   // outside business hours, a count that failed both reads, a reader that threw,
   // and a tick that is itself PAGING a breach each reach this line with nothing to
   // clear about volume (the first three never reach it at all).
-  await deps.resolveRecovered(recovered).catch(() => {});
+  await deps
+    .resolveRecovered(recovered)
+    .catch(logAllClearFailure(recovered.map((r) => r.key)));
   return { status: "checked", armed: deps.armed, windows, breaches };
 }
 

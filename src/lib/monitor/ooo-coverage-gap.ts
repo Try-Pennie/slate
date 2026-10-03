@@ -3,6 +3,7 @@ import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
 import { parseStampMs } from "@/lib/date/stamp";
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { sendThrottledAlert, sendThrottledInfo, resolveAlert } from "@/lib/notify/dispatch";
+import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import { log } from "@/lib/log";
 
 /**
@@ -373,7 +374,7 @@ export async function runOooCoverageGapCheck(deps: {
       OOO_COVERAGE_GAP_KEY,
       deps.cooldownMs,
       formatOooCoverageGapAlert(holders),
-    ).catch(() => {});
+    ).catch(logAlertSendFailure(OOO_COVERAGE_GAP_KEY));
   }
   const agents = holders.filter((h) => h.imminent > 0).length;
   deps.log?.({ status: "holding", agents, imminent, later, sustained });

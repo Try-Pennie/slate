@@ -11,6 +11,7 @@ import {
   firingFamilyMembers,
   existingAlertStateKeys,
 } from "@/lib/notify/dispatch";
+import { logAlertSendFailure, logAllClearFailure } from "@/lib/notify/send-failure";
 import {
   runRegalCallCheck,
   REGAL_CALL_ALERT_PREFIX,
@@ -1133,7 +1134,7 @@ export async function GET(req: NextRequest) {
         // alert-text-ok: our own copy from tier-staffing.ts, built from measured
         // counts and the diagnosis's own tallies; no error text can reach it.
         // alert-key: empty_tier:*
-        await sendThrottledAlert(key, cooldownMs.empty_tier, text).catch(() => {});
+        await sendThrottledAlert(key, cooldownMs.empty_tier, text).catch(logAlertSendFailure(key));
       }
       // Driven by the MEASURED healthy tiers, never by "we did not page this one":
       // a tier whose reads failed is in neither list, so a recovery is never
@@ -1146,7 +1147,9 @@ export async function GET(req: NextRequest) {
       // alert-key: empty_tier:*
       // all-clear-proof: scripts/test-tier-staffing.ts drives planTierAlerts with
       // each read failed in turn and pins that the clear list stays empty.
-      await resolveRecovered(tierAllClears).catch(() => {});
+      await resolveRecovered(tierAllClears).catch(
+        logAllClearFailure(tierAllClears.map((r) => r.key)),
+      );
       return plan;
     });
     if (!gates.tierStaffing.run) {

@@ -10,7 +10,7 @@ import type { Attributes, Bucket, Criteria } from "@/lib/db/types";
 import type { PooledBucket } from "./pool-recompute";
 import type { InvalidationMarker } from "./precompute-cron";
 import { log } from "@/lib/log";
-import { writeSlotRow } from "@/lib/availability/slot-row-write";
+import { writeSlotRow, type SlotRowWriteOutcome } from "@/lib/availability/slot-row-write";
 
 /**
  * IO for the precompute path (the `bucket_slots` table). The read orchestration
@@ -244,6 +244,21 @@ export async function writeBucketSlotsRow(
   val: BucketSlots,
   computedAtMs: number,
 ): Promise<string> {
+  await storeBucketSlotsRow(code, val, computedAtMs);
+  return new Date(computedAtMs).toISOString();
+}
+
+/**
+ * The same write, answering what it DID rather than the stamp (#3119). The pooled
+ * recompute needs the answer: a refused write comes back as `failed` rather than a
+ * throw, and dropping it counted the code as written, so the pooled write warning
+ * could never fire for the commonest way a write fails.
+ */
+export async function storeBucketSlotsRow(
+  code: string,
+  val: BucketSlots,
+  computedAtMs: number,
+): Promise<SlotRowWriteOutcome> {
   const outcome = await writeSlotRow(supabaseAdmin(), code, val as unknown, computedAtMs);
   if (outcome === "kept-newer") {
     // Worth a line: it means two computes for one bucket overlapped and the slower one
@@ -251,7 +266,7 @@ export async function writeBucketSlotsRow(
     // way to see the overlap from outside.
     log.info("precompute", { msg: "kept a fresher slot row", bucket: code });
   }
-  return new Date(computedAtMs).toISOString();
+  return outcome;
 }
 
 /**

@@ -1,4 +1,5 @@
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
+import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
 import { log } from "@/lib/log";
 
@@ -233,7 +234,7 @@ export async function runCoverageNeedsHumanCheck(deps: {
     COVERAGE_NEEDS_HUMAN_KEY,
     deps.cooldownMs,
     formatCoverageNeedsHumanAlert(holders),
-  ).catch(() => {});
+  ).catch(logAlertSendFailure(COVERAGE_NEEDS_HUMAN_KEY));
   deps.log?.({ status: "stranded", agents: holders.length, appointments });
   return { status: "stranded", agents: holders.length, appointments };
 }

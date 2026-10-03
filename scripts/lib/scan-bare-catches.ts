@@ -18,6 +18,10 @@
  * NOTIFICATION, and otherwise must either carry a real handler that logs, or an
  * explicit `// swallow-ok:` opt-out saying why losing the error is safe.
  *
+ * A narrower rule sits on top for two of those notifiers: a `sendThrottledAlert`
+ * or `resolveRecovered` failure must be LOGGED, never merely dropped, which
+ * `scan-alert-send-catches.ts` enforces (#3098).
+ *
  * Deliberately a text scan, not a parse: the shape is unambiguous and the
  * codebase's other convention guards (scan-capped-reads, scan-swallowed-error-reads)
  * are built the same way, so this stays cheap and readable.

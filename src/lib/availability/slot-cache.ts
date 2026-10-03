@@ -9,6 +9,7 @@ import {
 import {
   readBucketSlotsRow,
   writeBucketSlotsRow,
+  storeBucketSlotsRow,
   recomputeBucketSlots,
   computeBucketSlotsForWindow,
   bucketsForAgent,
@@ -177,9 +178,7 @@ export async function recomputePoolSlotsForToday(
     nowMs: Date.now,
     compute: (code) =>
       computeBucketSlotsForWindow(code, fromIso, toIso, resolveEligible, horizon),
-    writeRow: async (code, val, computedAtMs) => {
-      await writeBucketSlotsRow(code, val, computedAtMs);
-    },
+    writeRow: (code, val, computedAtMs) => storeBucketSlotsRow(code, val, computedAtMs),
     // The L1 key is on the fixed HORIZON_DAYS namespace, the same one the read
     // path looks up, so read and invalidate always agree.
     invalidate: (code) => invalidateBucketSlots(code),

@@ -22,6 +22,7 @@ import {
 import { floorsFor, judgedFloors, type VolumeBaseline } from "./volume-floors.ts";
 import { tierCheckFailedKey, tierCountUnreadableKey, tierLabel, tierVolumeAlertKey, type VolumeTier } from "./volume-tiers.ts";
 import type { ThrottledNotify } from "./alert-deps";
+import { logAllClearFailure } from "../notify/send-failure.ts";
 
 export async function runTierVolumeChecks(deps: {
   nowMs: number;
@@ -85,6 +86,10 @@ export async function runTierVolumeChecks(deps: {
       recovered.push({ key: tierCheckFailedKey(tier), text: formatTierVolumeCheckRanNotice(label) });
     }
   }
-  if (recovered.length > 0) await deps.resolveRecovered(recovered).catch(() => {});
+  if (recovered.length > 0) {
+    await deps
+      .resolveRecovered(recovered)
+      .catch(logAllClearFailure(recovered.map((r) => r.key)));
+  }
   return out;
 }

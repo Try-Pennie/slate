@@ -49,6 +49,7 @@ import {
 } from "./booking-volume.ts";
 import { floorsFor, judgedFloors, type VolumeBaseline } from "./volume-floors.ts";
 import type { ThrottledNotify } from "./alert-deps";
+import { logAllClearFailure } from "../notify/send-failure.ts";
 
 /** One Low landing page: a cal.com routing form, and the Slate sources its links carry. */
 export interface LowPage {
@@ -581,7 +582,11 @@ export async function runPageVolumeCheck(deps: {
   // all-clear-proof: scripts/test-page-volume.ts - pins that an unmeasured hour, a
   // low page, a tick outside business hours and a read that threw each clear
   // NOTHING about that page; only a page measured at or above its floors does.
-  if (recovered.length > 0) await deps.resolveRecovered(recovered).catch(() => {});
+  if (recovered.length > 0) {
+    await deps
+      .resolveRecovered(recovered)
+      .catch(logAllClearFailure(recovered.map((r) => r.key)));
+  }
   return { status: "checked", armed: deps.armed, pages, sources };
 }
 

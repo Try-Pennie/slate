@@ -20,6 +20,7 @@ vi.mock("./precompute", () => ({
   recomputeBucketSlots,
   readBucketSlotsRow: vi.fn(),
   writeBucketSlotsRow: vi.fn(),
+  storeBucketSlotsRow: vi.fn(async () => "written" as const),
   bucketsForAgent: vi.fn(async () => []),
 }));
 vi.mock("./service", () => ({ getBucketSlots: vi.fn() }));
