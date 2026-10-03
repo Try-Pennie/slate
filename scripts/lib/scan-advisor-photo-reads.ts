@@ -1,5 +1,6 @@
-// Two scans that keep every staff photo going through one resolver and keep image
-// bytes off every read that does not serve them (#3027). Driven by
+// Scans that keep every staff photo going through one resolver and keep image
+// bytes off every read that does not serve them (#3027), plus two (3 and 4, at
+// the bottom) that keep "who the refresh covers" one definition (#3161). Driven by
 // scripts/test-advisor-photo-reads.ts.
 //
 // 1. RAW AVATAR READS. `users.avatar_url` is the photo Google gave at sign in. It is
@@ -101,6 +102,52 @@ export function scanPhotoTableReads(files: SourceFile[]): string[] {
       const owner = bodies.find((b) => b.start < m.index! && m.index! < b.end)?.name ?? "(top level)";
       if (select.trim() === "*") out.push(`${f.path}:${lineOf(code, m.index!)} selects * from advisor_photos in ${owner}`);
       else if (!BYTE_READERS.includes(owner)) out.push(`${f.path}:${lineOf(code, m.index!)} selects image bytes in ${owner}, which does not serve them`);
+    }
+  }
+  return out;
+}
+
+/** Where who the refresh covers, and who is still waiting for it, are defined (#3161). */
+export const RESOLVE_PATH = "src/lib/advisor-photos/resolve.ts";
+
+/**
+ * 3. WHO IS NOT READ YET (#3161). `never-read` alone means "no record", which a
+ *    deactivated person has for ever, since the refresh never reads them. The
+ *    roster banner counted them and named a gap the Refresh button could not
+ *    close. So the state is judged only inside the resolver, where
+ *    `awaitingFirstRead` pairs it with `photoRefreshCovers`; any other comparison
+ *    against it is a reader that can say "not read yet" about somebody who never
+ *    will be. File level, so a comparison is caught wherever it sits.
+ */
+export function scanNeverReadJudges(files: SourceFile[]): string[] {
+  const out: string[] = [];
+  for (const f of files) {
+    if (f.path === RESOLVE_PATH) continue;
+    const code = stripComments(f.text);
+    const re = /(?:===|!==|==|!=)\s*["'`]never-read["'`]|["'`]never-read["'`]\s*(?:===|!==|==|!=)|\bcase\s+["'`]never-read["'`]/g;
+    for (const m of code.matchAll(re)) {
+      out.push(`${f.path}:${lineOf(code, m.index!)} judges never-read itself; use awaitingFirstRead`);
+    }
+  }
+  return out;
+}
+
+/**
+ * 4. ONE DEFINITION OF WHO THE REFRESH COVERS (#3161, L16). Inside the advisor
+ *    photo module, a comparison of `deactivated_at` against null, or a call to
+ *    the roster's `isActive`, is a second definition beside `photoRefreshCovers`,
+ *    and the two drift silently. Allowed only in the resolver, where the one
+ *    definition lives. A PostgREST `.is(..., null)` filter is a query, not a
+ *    predicate, and is not matched.
+ */
+export function scanRefreshCoverageDefinitions(files: SourceFile[]): string[] {
+  const out: string[] = [];
+  for (const f of files) {
+    if (!f.path.startsWith(AVATAR_ALLOWED_DIR) || f.path === RESOLVE_PATH) continue;
+    const code = stripComments(f.text);
+    const re = /\bdeactivated_at\s*(?:===|!==|==|!=)|(?:===|!==|==|!=)\s*[\w.?]*\bdeactivated_at\b|\bisActive\s*\(/g;
+    for (const m of code.matchAll(re)) {
+      out.push(`${f.path}:${lineOf(code, m.index!)} decides who the refresh covers itself; use photoRefreshCovers`);
     }
   }
   return out;

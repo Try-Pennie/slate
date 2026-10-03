@@ -35,7 +35,7 @@ export async function listPhotoSubjects(): Promise<PhotoSubjectUser[]> {
     await supabaseAdmin().from("users").select("id, email, deactivated_at"),
     "advisor photo subjects",
   ) as { id: string; email: string; deactivated_at: string | null }[] | null;
-  return (rows ?? []).map((r) => ({ id: r.id, email: r.email, active: r.deactivated_at === null }));
+  return (rows ?? []).map((r) => ({ id: r.id, email: r.email, deactivated_at: r.deactivated_at }));
 }
 
 /** What every row holds, without the image. One row per user, roster bounded. */

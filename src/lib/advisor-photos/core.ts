@@ -25,6 +25,7 @@
  *  - Read as the AGENT rather than an admin, `photos.get` answers 403 for
  *    everybody. That is why #2600's 2026-09-22 reading differed.
  */
+import { photoRefreshCovers } from "./resolve.ts";
 
 /**
  * Images Google serves as a photo that are really its "no photo" placeholder,
@@ -254,8 +255,11 @@ export async function readPhotoResponse(status: number, bodyText: string): Promi
 export interface PhotoSubjectUser {
   id: string;
   email: string;
-  /** False once deactivated: their row is deleted, never refreshed. */
-  active: boolean;
+  /**
+   * Set once deactivated: their row is deleted, never refreshed. Judged only
+   * through `photoRefreshCovers` (#3161).
+   */
+  deactivated_at: string | null;
 }
 
 /** What `advisor_photos` already holds for one person (never the bytes). */
@@ -376,7 +380,7 @@ export function planRefresh(input: PlanInput): RefreshPlan {
   // only, since a deactivated row is about to be deleted.
   const holdersBySha = new Map<string, Set<string>>();
   for (const u of input.users) {
-    if (!u.active) continue;
+    if (!photoRefreshCovers(u)) continue;
     const read = input.reads.get(u.id);
     let sha: string | null = null;
     if (read?.kind === "photo") sha = read.sha256;
@@ -496,7 +500,7 @@ export function planRefresh(input: PlanInput): RefreshPlan {
   }
 
   const deleteIds = input.full
-    ? input.users.filter((u) => !u.active && rowBy.has(u.id)).map((u) => u.id)
+    ? input.users.filter((u) => !photoRefreshCovers(u) && rowBy.has(u.id)).map((u) => u.id)
     : [];
   counts.deleted = deleteIds.length;
 
