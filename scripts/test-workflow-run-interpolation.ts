@@ -35,7 +35,9 @@ export function runScripts(yaml: string): { line: number; script: string }[] {
       out.push({ line: i + 1, script: first });
       continue;
     }
-    const indent = lines[i]!.match(/^\s*/)![0].length;
+    // The block ends at the step's next key, which sits at the column of `run:` itself,
+    // not of a leading `- `.
+    const indent = lines[i]!.indexOf("run:");
     const block: string[] = [];
     for (let j = i + 1; j < lines.length; j++) {
       const l = lines[j]!;
@@ -106,6 +108,21 @@ eq(
   injectableRuns("      - run: |\n          # was: ${{ inputs.fault_pct }}\n          echo ok\n"),
   [],
   "a comment inside a run block runs nothing",
+);
+// A block opened on the `- run:` line ends at the step's next key, which sits at the
+// column of `run:`, not of the dash. Measured from the dash, the `env:` below would be
+// read as script, and the input it carries safely would be flagged.
+eq(
+  injectableRuns(
+    '      - run: |\n          npx wrangler deploy --var "PCT:$FAULT_PCT"\n        env:\n          FAULT_PCT: ${{ inputs.fault_pct }}\n',
+  ),
+  [],
+  "an input in the step's env, after a `- run: |` block, is not part of the script",
+);
+eq(
+  injectableRuns('      - run: |\n          echo "${{ inputs.x }}"\n        env:\n          A: b\n'),
+  [1],
+  "control: the same layout with the input inside the block is still caught",
 );
 
 finish();
