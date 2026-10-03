@@ -132,7 +132,7 @@ assert(
 // failing.
 //
 // #3091: both credentials are Worker secrets now and the page has no field for
-// either, so each is a marker with four states, drawn by one row component.
+// either, so each is a marker with three states, drawn by one row component.
 assert(
   /variant="status-error">Not set, deliveries are refused/.test(page),
   "a missing credential is drawn as the failure it is",
@@ -140,10 +140,6 @@ assert(
 assert(
   /variant="status-ok">Set</.test(page),
   "a set credential is visible as a state without reading a hint",
-);
-assert(
-  /variant="status-pending">Still read from the database/.test(page),
-  "a credential still on the database column is its own state, not set and not missing",
 );
 // The error may only be shown for the format that USES the credential. A generic
 // endpoint authenticates with the HMAC secret, so a red key marker on one would

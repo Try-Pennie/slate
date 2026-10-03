@@ -5,7 +5,6 @@ import { canEditOrgSettings } from "@/lib/auth/roles";
 import { consoleHiddenFor, regalWebhookKey, webhookSigningSecret } from "@/lib/env";
 import {
   credentialSourcesFor,
-  hasStoredValue,
   type CredentialSource,
 } from "@/lib/webhooks/credentials";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -88,22 +87,19 @@ export default async function WebhooksPage({
   const db = supabaseAdmin();
   const webhookRes = await db
     .from("webhook_endpoints")
-    .select("id, url, format, auth_header, secret")
+    .select("id, url, format")
     .eq("org_id", me.org_id)
     .limit(1)
     .maybeSingle();
-  const row = webhookRes.data as Pick<WebhookEndpoint, "id" | "url" | "format" | "auth_header" | "secret"> | null;
-  // #3091: the credential columns are turned into PRESENCE here and go no further,
-  // so nothing below this line holds a key or a secret to render by accident.
-  const webhook = row ? { id: row.id, url: row.url, format: row.format } : null;
-  const credentialSources = row
-    ? credentialSourcesFor(
-        { hasDbKey: hasStoredValue(row.auth_header), hasDbSigning: hasStoredValue(row.secret) },
-        {
-          regalKeySet: regalWebhookKey().trim().length > 0,
-          signingSecretSet: webhookSigningSecret().trim().length > 0,
-        },
-      )
+  // #3091: the credentials are Worker secrets and their old columns are never
+  // read, so this page holds no key or secret it could render by accident. Each
+  // secret is turned into PRESENCE here.
+  const webhook = webhookRes.data as Pick<WebhookEndpoint, "id" | "url" | "format"> | null;
+  const credentialSources = webhook
+    ? credentialSourcesFor({
+        regalKeySet: regalWebhookKey().trim().length > 0,
+        signingSecretSet: webhookSigningSecret().trim().length > 0,
+      })
     : null;
   // #1629: a null here means "no endpoint configured" AND "could not read", and
   // the two differ by a data loss: the form below is prefilled from this row, so
@@ -448,9 +444,9 @@ function ActionNotice({ feedback }: { feedback: ResendFeedback | null }) {
 }
 
 /**
- * One credential's state (#3091). Four states, each its own marker, because each
- * sends the reader somewhere different: nothing to do, a secret still to put, a
- * delivery that is failing now, or a credential this format never sends.
+ * One credential's state (#3091). Three states, each its own marker, because each
+ * sends the reader somewhere different: nothing to do, a delivery that is failing
+ * now, or a credential this format never sends.
  */
 function CredentialRow({
   label,
@@ -469,8 +465,6 @@ function CredentialRow({
           <Pill variant="outline">Not used by this format</Pill>
         ) : source === "worker" ? (
           <Pill variant="status-ok">Set</Pill>
-        ) : source === "database" ? (
-          <Pill variant="status-pending">Still read from the database</Pill>
         ) : (
           <Pill variant="status-error">Not set, deliveries are refused</Pill>
         )}

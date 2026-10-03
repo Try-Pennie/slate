@@ -128,10 +128,10 @@ async function send(
     headers = {};
     configError = resolved.reason;
   } else {
-    // #3091: the key and the signing secret come from Worker secrets, falling back
-    // to the endpoint row's columns while the move is unfinished. The SOURCE is
-    // logged (never a value), so a tick of the log says which one each delivery
-    // used, and the monitor lane pages for as long as it is the column.
+    // #3091: the key and the signing secret come from Worker secrets only; the
+    // endpoint row's columns are never read (migration 0163 nulled them). The
+    // SOURCE is logged, never a value, so a delivery refused for an unset secret
+    // says so in the log beside its failed attempt.
     const credentials = resolveWebhookCredentials(endpoint, {
       regalKey: regalWebhookKey(),
       signingSecret: webhookSigningSecret(),

@@ -120,12 +120,12 @@ assert(
 
 // #3091: the page no longer has a key field at all (both credentials are Worker
 // secrets), so the plant goes beside the Save button, which every version of the
-// form keeps, and reads off `row`, the variable that still holds the columns.
+// form keeps, and reads the field the old regression read.
 const ANCHOR = "<SubmitButton className={btnCls}";
 
 for (const declared of DECLARED_SURFACES) {
   const real = realIo.readFile(declared);
-  const planted = real.replace(ANCHOR, `<input defaultValue={row?.auth_header} />\n          ${ANCHOR}`);
+  const planted = real.replace(ANCHOR, `<input defaultValue={webhook?.auth_header} />\n          ${ANCHOR}`);
   assert(
     planted !== real,
     `positive control: the Save button anchor is still in ${declared} to plant beside`,
@@ -151,7 +151,7 @@ for (const declared of DECLARED_SURFACES) {
   );
 
   // And the text render shape, which is the other way #600 shipped.
-  const printed = real.replace(ANCHOR, `{row?.auth_header}\n          ${ANCHOR}`);
+  const printed = real.replace(ANCHOR, `{webhook?.auth_header}\n          ${ANCHOR}`);
   assert(printed !== real, `positive control: the text render plant landed in ${declared}`);
   const caughtPrinted = auditRenderedSecrets(overlayIo({ [declared]: printed }), {
     roots: ROOTS,
@@ -364,14 +364,14 @@ assert(
   "setWebhookEndpoint writes no auth_header: the Regal key is a Worker secret (#3091)",
 );
 assert(
-  !/\bsecret\s*:(?!\s*"")/.test(setBody),
-  "setWebhookEndpoint writes no signing secret beyond the empty placeholder the NOT NULL column needs (#3091)",
+  !/\bsecret\s*:/.test(setBody),
+  "setWebhookEndpoint writes no signing secret: it is a Worker secret (#3091)",
 );
 // The positive control for the two assertions above, over the function as it used to be.
 assert(
   /\bauth_header\s*:/.test('update(authHeader ? { url, format, auth_header: authHeader } : { url, format })'),
   "positive control: the old write shape is caught by the auth_header pattern",
 );
-assert(/\bsecret\s*:(?!\s*"")/.test("secret: nanoid(32),"), "positive control: a minted secret is caught");
+assert(/\bsecret\s*:/.test("secret: nanoid(32),"), "positive control: a minted secret is caught");
 
 finish();

@@ -2681,11 +2681,9 @@ export async function setWebhookEndpoint(form: FormData): Promise<void> {
       org_id: admin.org_id,
       url,
       format,
-      // #3091: an empty string, never a generated value. The column is still NOT
-      // NULL until the contract migration, and minting a secret here would put a
-      // new credential back in the database the move takes them out of. Empty
-      // counts as absent, so the delivery reads WEBHOOK_SIGNING_SECRET or refuses.
-      secret: "",
+      // #3091: no credential column is written. The signing secret is the Worker
+      // secret WEBHOOK_SIGNING_SECRET, and since migration 0163 the column is
+      // nullable and never read.
     });
     if (error) {
       redirect(
