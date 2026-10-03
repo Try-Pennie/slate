@@ -197,6 +197,16 @@ const ops: GradualOps = {
 let result;
 try {
   result = await runGradualDeploy(ops);
+} catch (err) {
+  // runGradualDeploy catches its own throws; this is the last line, so nothing escapes
+  // as an unhandled rejection with no annotation. The settle step then decides from
+  // what the run recorded.
+  const why = err instanceof Error ? err.message : String(err);
+  result = {
+    exit: EXIT.threwBeforeSplit,
+    end: "unknown" as const,
+    message: `The deploy script itself failed (${why}). The settle step reads what this run recorded and ends any split it left.`,
+  };
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }

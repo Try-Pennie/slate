@@ -284,14 +284,42 @@ export function isFrequentCron(expr: string): boolean {
   return step !== null && Number(step[1]) <= FREQUENT_CRON_MAX_MINUTES;
 }
 
-function fieldMatches(field: string, value: number): boolean {
+/**
+ * Whether one cron field admits `value`. Understands `*`, `n`, `a-b`, and a `/step` on
+ * any of them. Anything else it cannot read answers TRUE, "may fire": the only cost of
+ * that is a wait (or, for a field that admits every minute, a deploy that refuses to
+ * open the split at all), while answering false would open the split across a rare
+ * tick the canary then drops.
+ */
+/** Whether every part of a cron field is a form `fieldMatches` understands. */
+export function fieldReadable(field: string): boolean {
+  return field.split(",").every((part) => {
+    const m = /^(\*|\d+|\d+-\d+)(?:\/(\d+))?$/.exec(part);
+    return m !== null && (m[2] === undefined || Number(m[2]) >= 1);
+  });
+}
+
+export function fieldMatches(field: string, value: number): boolean {
   return field.split(",").some((part) => {
-    if (part === "*") return true;
-    const step = /^\*\/(\d+)$/.exec(part);
-    if (step) return value % Number(step[1]) === 0;
-    const range = /^(\d+)-(\d+)$/.exec(part);
-    if (range) return value >= Number(range[1]) && value <= Number(range[2]);
-    return /^\d+$/.test(part) && Number(part) === value;
+    const m = /^(\*|\d+|\d+-\d+)(?:\/(\d+))?$/.exec(part);
+    if (!m) return true;
+    const [base, stepText] = [m[1], m[2]];
+    const step = stepText === undefined ? 1 : Number(stepText);
+    if (!(step >= 1)) return true;
+    let lo: number;
+    let hi: number;
+    if (base === "*") {
+      lo = 0;
+      hi = Number.MAX_SAFE_INTEGER;
+    } else if (base.includes("-")) {
+      [lo, hi] = base.split("-").map(Number) as [number, number];
+    } else {
+      lo = Number(base);
+      // `n/step` means from n to the end of the range in cron; `n` alone is just n.
+      hi = stepText === undefined ? lo : Number.MAX_SAFE_INTEGER;
+    }
+    if (value < lo || value > hi) return false;
+    return (value - lo) % step === 0;
   });
 }
 
@@ -303,8 +331,13 @@ function fieldMatches(field: string, value: number): boolean {
  * waiting, never toward opening the split across a real tick.
  */
 export function cronFiresAt(expr: string, minuteMs: number): boolean {
-  const [minute, hour] = expr.trim().split(/\s+/);
-  if (minute === undefined || hour === undefined) return true;
+  const fields = expr.trim().split(/\s+/);
+  // Not a five field expression: nothing about it can be read, so it may fire at any time.
+  if (fields.length !== 5) return true;
+  const [minute, hour] = fields;
+  // One field it cannot read makes the whole expression unknowable: "0 foo * * *"
+  // must not be read as "minute 0 of no hour", which would never wait for it.
+  if (!fieldReadable(minute) || !fieldReadable(hour)) return true;
   const d = new Date(minuteMs);
   return fieldMatches(minute, d.getUTCMinutes()) && fieldMatches(hour, d.getUTCHours());
 }
@@ -376,9 +409,15 @@ export const EXIT = {
   triggersFailed: 17,
   /** Something THREW after the split opened. The old version was restored. */
   threw: 18,
+  /** Something THREW before the split opened (an upload, the cron window, a read).
+   *  Nothing changed. */
+  threwBeforeSplit: 19,
   /** A leftover split's larger share is a cron standby canary, or could not be read.
    *  Nothing changed: healing would serve it at 100% with every cron lane off. */
   healRefused: 21,
+  /** Production was changed by something else mid-run (the Rollback workflow, a hand
+   *  deploy). This run stopped and left it exactly as it found it. */
+  interfered: 22,
   /** A restore failed: production may still be split. */
   restoreFailed: 20,
 } as const;
@@ -425,22 +464,49 @@ function probeLines(o: ProbeOutcome): string {
  * Put the old version back at 100%, retrying. The one call whose failure leaves
  * production split, so it is the only one retried, and its failure is its own ending.
  */
-async function restore(ops: GradualOps, stable: string, why: string): Promise<boolean> {
+async function restore(
+  ops: GradualOps,
+  stable: string,
+  why: string,
+  ours: VersionShare[][],
+): Promise<RestoreOutcome> {
   for (let attempt = 1; attempt <= RESTORE_ATTEMPTS; attempt++) {
+    // Never undo somebody else's change: a rollback that landed mid-run wins.
+    const now = await ops.status();
+    if (now !== null && sameDeployment(now, [{ versionId: stable, percentage: 100 }])) return "restored";
+    if (now !== null && !ours.some((o) => sameDeployment(now, o))) return "interfered";
     ops.log(`restoring ${stable} at 100% (${why}), attempt ${attempt} of ${RESTORE_ATTEMPTS}`);
     try {
-      if (await ops.deploy(wholeSpecs(stable), `slate-restore-${stable.slice(0, 8)}`)) return true;
+      if (await ops.deploy(wholeSpecs(stable), `slate-restore-${stable.slice(0, 8)}`)) return "restored";
     } catch (err) {
       // A restore that throws is a failed attempt, never an escape from the run: the
       // split would then be left standing with nothing saying so.
       ops.log(`the restore threw: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  return false;
+  return "failed";
 }
 
-function restored(ok: boolean, exit: number, stable: string, message: string): GradualResult {
-  return ok
+type RestoreOutcome = "restored" | "failed" | "interfered";
+
+/** Two deployments are the same when they hold the same versions at the same shares. */
+export function sameDeployment(a: VersionShare[], b: VersionShare[]): boolean {
+  const key = (d: VersionShare[]) =>
+    [...d].sort((x, y) => x.versionId.localeCompare(y.versionId)).map((v) => `${v.versionId}@${v.percentage}`).join(",");
+  return key(a) === key(b);
+}
+
+function interfered(where: string): GradualResult {
+  return {
+    exit: EXIT.interfered,
+    end: "unknown",
+    message: `Stopped ${where}: production was changed by something other than this run (most likely the Rollback workflow, or a hand deploy), so this run left it exactly as it found it rather than undo that change. Check what is serving (\`wrangler deployments status\`).`,
+  };
+}
+
+function restored(outcome: RestoreOutcome, exit: number, stable: string, message: string): GradualResult {
+  if (outcome === "interfered") return interfered(`while restoring ${stable}`);
+  return outcome === "restored"
     ? { exit, end: "old", message: `${message} The previous version ${stable} is serving 100% again.` }
     : {
         exit: EXIT.restoreFailed,
@@ -454,6 +520,27 @@ function restored(ok: boolean, exit: number, stable: string, message: string): G
  * old version or 100% of the new one, before returning, and says which.
  */
 export async function runGradualDeploy(ops: GradualOps): Promise<GradualResult> {
+  // Anything thrown before the split is attempted changed nothing, and is caught here
+  // into its own ending rather than escaping as an unhandled rejection. Throws after
+  // the split is attempted are caught where they can restore (below).
+  let attempted = false;
+  const tracked: GradualOps = {
+    ...ops,
+    record: (event) => {
+      if (event === "split-attempted") attempted = true;
+      ops.record(event);
+    },
+  };
+  try {
+    return await runUntilSplit(tracked);
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    if (attempted) throw err; // unreachable: everything after the attempt catches its own
+    return { exit: EXIT.threwBeforeSplit, end: "unchanged", message: `Not deployed: an error was thrown before the split opened (${why}). Nothing changed.` };
+  }
+}
+
+async function runUntilSplit(ops: GradualOps): Promise<GradualResult> {
   const start = planStart(await ops.status());
   if (start.kind === "refuse") {
     return { exit: EXIT.unreadable, end: "unchanged", message: `Not deploying: ${start.reason}.` };
@@ -473,9 +560,14 @@ export async function runGradualDeploy(ops: GradualOps): Promise<GradualResult> 
     // A split left by a run that died. Settling it first is what keeps the rule that no
     // run starts or ends on a split; the larger share is the version that was serving.
     ops.log(`production was left split (${start.from.map((s) => `${s.versionId}@${s.percentage}%`).join(", ")}); settling it on ${stable} first`);
-    if (!(await restore(ops, stable, "a previous run left production split"))) {
-      return restored(false, EXIT.restoreFailed, stable, "Production was already split when this run started.");
+    // Recorded first: a heal is a change to a split, and if every attempt fails the
+    // settle step must know there is a split to look at.
+    ops.record("split-attempted");
+    const healed = await restore(ops, stable, "a previous run left production split", [start.from]);
+    if (healed !== "restored") {
+      return restored(healed, EXIT.restoreFailed, stable, "Production was already split when this run started.");
     }
+    ops.record("ended");
   }
   ops.log(`production is serving ${stable} at 100%`);
 
@@ -508,6 +600,13 @@ export async function runGradualDeploy(ops: GradualOps): Promise<GradualResult> 
 
   await ops.waitForCronWindow();
 
+  // The uploads and the wait take minutes. If production changed meanwhile (a rollback,
+  // a hand deploy), splitting it now would undo that, so stop and leave it as it is.
+  const before = await ops.status();
+  if (before !== null && !sameDeployment(before, [{ versionId: stable, percentage: 100 }])) {
+    return interfered("before opening the split");
+  }
+
   // From the split call on, production may be split, so every way out of this run,
   // a throw included, ends it here rather than leaving it for the settle step.
   ops.record("split-attempted");
@@ -516,11 +615,28 @@ export async function runGradualDeploy(ops: GradualOps): Promise<GradualResult> 
     result = await afterSplit(ops, stable, canary, release);
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
-    const ok = await restore(ops, stable, `an error was thrown after the split opened: ${why}`);
+    const ok = await restore(ops, stable, `an error was thrown after the split opened: ${why}`, ownStates(stable, canary, release));
     result = restored(ok, EXIT.threw, stable, `Not deployed: an error was thrown after the split opened (${why}).`);
   }
-  if (result.end === "new" || result.end === "old") ops.record("ended");
+  // `ended` also when this run stopped for somebody else's change: production is then
+  // theirs, and the settle step must not "heal" it back.
+  if (result.end === "new" || result.end === "old" || result.exit === EXIT.interfered) ops.record("ended");
   return result;
+}
+
+/** Every deployment this run itself can have produced after opening the split. */
+function ownStates(stable: string, canary: string, release: string): VersionShare[][] {
+  return [
+    parseSpecList(splitSpecs(stable, canary)),
+    [{ versionId: release, percentage: 100 }],
+  ];
+}
+
+function parseSpecList(specs: string[]): VersionShare[] {
+  return specs.map((sp) => {
+    const [versionId, pct] = sp.split("@");
+    return { versionId, percentage: Number(pct.replace("%", "")) };
+  });
 }
 
 /** Everything from opening the split on. Each return leaves production whole, or says
@@ -530,14 +646,14 @@ async function afterSplit(ops: GradualOps, stable: string, canary: string, relea
   if (!(await ops.deploy(splitSpecs(stable, canary), `slate-canary-split`))) {
     // The call failed, but whether Cloudflare applied it is not known, so the restore is
     // made either way: restoring a deployment that never changed is harmless.
-    const ok = await restore(ops, stable, "the split call failed");
+    const ok = await restore(ops, stable, "the split call failed", ownStates(stable, canary, release));
     return restored(ok, EXIT.splitFailed, stable, "Not deployed: the split could not be opened.");
   }
 
   const canaryProbe = await ops.probe("canary", canary);
   ops.log(`canary probe: ${probeLines(canaryProbe)}`);
   if (canaryProbe.fault === "version" || canaryProbe.fault === "release") {
-    const ok = await restore(ops, stable, "the canary failed its probe");
+    const ok = await restore(ops, stable, "the canary failed its probe", ownStates(stable, canary, release));
     return restored(
       ok,
       EXIT.canaryFailed,
@@ -549,16 +665,22 @@ async function afterSplit(ops: GradualOps, stable: string, canary: string, relea
     ops.log("health reports a stale cron lane; that is read from the shared database, the same from either version, so it does not hold back the release");
   }
 
+  // The probe takes up to two minutes; a rollback in that time must not be overwritten.
+  const beforePromote = await ops.status();
+  if (beforePromote !== null && !sameDeployment(beforePromote, parseSpecList(splitSpecs(stable, canary)))) {
+    return interfered("before promoting");
+  }
+
   ops.log(`promoting ${release} (the same build, without cron standby) to 100%`);
   if (!(await ops.deploy(wholeSpecs(release), `slate-release`))) {
-    const ok = await restore(ops, stable, "the promotion call failed");
+    const ok = await restore(ops, stable, "the promotion call failed", ownStates(stable, canary, release));
     return restored(ok, EXIT.promoteFailed, stable, "Not deployed: the new version passed its probe but could not be promoted.");
   }
 
   const finalProbe = await ops.probe("promoted", null);
   ops.log(`promotion probe: ${probeLines(finalProbe)}`);
   if (finalProbe.fault === "version" || finalProbe.fault === "release") {
-    const ok = await restore(ops, stable, "the promoted version failed its probe");
+    const ok = await restore(ops, stable, "the promoted version failed its probe", ownStates(stable, canary, release));
     return restored(
       ok,
       EXIT.promotedFailed,
@@ -614,8 +736,10 @@ export function readSplitRecords(text: string | null): SplitRecord[] | null {
 }
 
 export function settleDecision(records: SplitRecord[] | null): { action: "none" } | { action: "read" } {
-  if (records === null || !records.includes("split-attempted")) return { action: "none" };
-  return records.includes("ended") ? { action: "none" } : { action: "read" };
+  // The LAST event decides: a run can heal a leftover split (attempted, ended) and then
+  // open its own (attempted again), and only the latest says where it stands.
+  const last = records?.[records.length - 1];
+  return last === "split-attempted" ? { action: "read" } : { action: "none" };
 }
 
 /** What the after-the-fact settle step should do: nothing, or put the larger share back

@@ -96,14 +96,17 @@ assert(/runProbe\(/.test(gradualSrc) && /httpProbeDeps\(/.test(gradualSrc), "the
 assert(/confirmations:\s*CONFIRMATIONS/.test(gradualSrc), "with a run of confirmations, since both versions answer during the split");
 assert(/versionOverride:\s*stage === "canary"/.test(gradualSrc), "and pins the canary probe to the canary through the override header");
 
-// A deploy and a rollback never move production at the same time.
-const rollback = readFileSync(join(ROOT, ".github", "workflows", "rollback.yml"), "utf8");
-const group = /^ {4}concurrency:\n {6}group:\s*(\S+)\n {6}cancel-in-progress:\s*false/m.exec(deployJob)?.[1];
-assert(group !== undefined, "the deploy job sits in a concurrency group that is never cancelled");
-assert(
-  group !== undefined && new RegExp(`group:\\s*${group}\\s*\\n\\s*cancel-in-progress:\\s*false`).test(rollback),
-  "and the rollback workflow shares that group, so the two never overlap",
-);
+// A deploy and a rollback are never queued behind each other. GitHub keeps one PENDING
+// run per concurrency group and cancels the older with no alert, so a shared group
+// would let either silently drop the other. The rollback's group is unique per run,
+// and the deploy job declares none of its own (the deploy guards against a rollback by
+// re-reading what is serving, pinned in scripts/test-gradual-deploy.ts).
+{
+  const rollback = readFileSync(join(ROOT, ".github", "workflows", "rollback.yml"), "utf8");
+  const rollbackGroup = /^concurrency:\n {2}group:\s*(.+)$/m.exec(rollback)?.[1] ?? "";
+  assert(rollbackGroup.includes("${{ github.run_id }}"), `the rollback's concurrency group is unique per run, so it is never queued or dropped (got ${JSON.stringify(rollbackGroup)})`);
+  assert(!/^ {4}concurrency:/m.test(deployJob), "the deploy job has no concurrency group a rollback could share");
+}
 
 // #766 regression shape: the probe must never pass green having checked nothing.
 const probeSrc = readFileSync(join(ROOT, "scripts", "post-deploy-probe.ts"), "utf8");

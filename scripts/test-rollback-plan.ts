@@ -8,6 +8,8 @@
 // restore the code and switch every cron lane off.
 //
 // Run: node --experimental-strip-types scripts/test-rollback-plan.ts
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   ROLLBACK_EXIT,
   chooseRollbackTarget,
@@ -192,6 +194,15 @@ async function drive(f: Fake) {
   const r = await drive({ view: JSON.stringify({ id: OLD, annotations: {} }), commit: "fedcba9876543" });
   eq(r.result.exit, ROLLBACK_EXIT.rolledBack, "an operator supplied commit lets an untagged target be confirmed");
   assert(r.calls.includes("probe:fedcba987654"), "and the probe asks for that commit");
+}
+{
+  // DEPLOY.md's rollback exit table lists every ending, and nothing else.
+  const doc = readFileSync(join(import.meta.dirname, "..", "DEPLOY.md"), "utf8");
+  const section = doc.slice(doc.indexOf("### The Rollback workflow"), doc.indexOf("### By hand"));
+  const rows = new Set([...section.matchAll(/^\| (\d+) \|/gm)].map((m) => Number(m[1])));
+  const missing = Object.entries(ROLLBACK_EXIT).filter(([, c]) => !rows.has(c)).map(([n, c]) => `${n}=${c}`);
+  eq(missing.join(", "), "", "every ROLLBACK_EXIT code has a row in DEPLOY.md's rollback table");
+  eq([...rows].filter((c) => !Object.values(ROLLBACK_EXIT).includes(c as never)).join(", "), "", "and no row names a code it cannot exit with");
 }
 {
   const codes = Object.values(ROLLBACK_EXIT);

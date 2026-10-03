@@ -40,10 +40,16 @@ on:
         description: "Why (recorded as the deployment message)."
         required: true
 
-# Shared with the deploy job in ci.yml, so a rollback never runs while a deploy is
-# moving production, and the other way round. Never cancelled.
+# A group of its OWN, one per run, so a rollback is never queued and never dropped.
+# GitHub keeps only ONE pending run per group and cancels the older pending one with no
+# alert, so sharing a group with the deploy would let a merge silently drop an
+# emergency rollback queued behind a running deploy, or the reverse. Instead the two
+# never wait for each other: a rollback always runs at once (Cloudflare can roll back
+# from a split), and the deploy re-reads what is serving before every change it makes
+# and stops, leaving it as it is, when something else has changed it
+# (scripts/lib/gradual-deploy.ts, EXIT.interfered; DEPLOY.md).
 concurrency:
-  group: slate-production-worker
+  group: slate-rollback-${{ github.run_id }}
   cancel-in-progress: false
 
 permissions:

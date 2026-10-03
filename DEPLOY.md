@@ -254,14 +254,33 @@ exits, and the exit code says which (`EXIT` in `scripts/lib/gradual-deploy.ts`, 
 | 15 | the release failed its probe at 100% | old (restored) |
 | 16 | promoted, and health reports a stale cron lane | new |
 | 17 | promoted, and `wrangler triggers deploy` failed (safe to re-run) | new |
+| 18 | an error was thrown after the split opened | old (restored) |
+| 19 | an error was thrown before the split opened (an upload, the cron window, a read) | unchanged |
 | 20 | **a restore failed 3 times: production may still be split** | unknown, run the Rollback workflow |
+| 21 | a split left by an earlier run is led by a cron standby canary, or its larger share cannot be read | unchanged; end it by hand |
+| 22 | production was changed by something else mid-run (a rollback, a hand deploy); this run stopped and left it as it was | whatever the other change made it |
 
 Any non-zero exit fails the job, and a failed job on a push to `main` posts a Slack alert
 (`.github/workflows/deploy-alert.yml`). A job cancelled or timed out mid-run cannot end the
 split itself, so its last step, `deploy-gradual.ts --settle` (`if: failure() ||
 cancelled()`), reads what is serving and puts a leftover split's larger share, the old
-version, back at 100%. The deploy job and the Rollback workflow share one concurrency group
-that is never cancelled, so they never move production at the same time.
+version, back at 100%.
+
+**A deploy and a rollback never wait for each other, and neither is ever dropped.** GitHub
+keeps only one PENDING run per concurrency group and cancels the older pending one with no
+alert, so a group shared by the two would let a merge silently drop an emergency rollback
+queued behind a running deploy, or the reverse. Instead:
+
+- The Rollback workflow has a group of its own per run, so it starts at once, every time.
+  Cloudflare can roll back from a split, so it never needs the deploy to finish.
+- The deploy re-reads what is serving before opening the split, before promoting, and
+  before every restore. If production is no longer a state this run produced, it stops
+  and leaves it exactly as it is (exit 22), so a rollback that landed mid-deploy stands.
+  The window left is the seconds between that read and the call; a rollback that loses
+  that race is overwritten by the promotion, and its own probe then fails and pages.
+- Deploys themselves stay serialised by the workflow's group on `main`. A pending main
+  run superseded by a newer merge never deploys, which drops nothing: `main` is linear, so
+  the newer commit contains it, and its own deploy pages if it fails.
 
 **A stale cron lane is not the release's fault.** Health answers 503 when a lane heartbeat
 is stale, which is read from the shared database and reads the same from either version.
@@ -1118,8 +1137,9 @@ Actions > **Rollback** > Run workflow. Leave `version_id` empty for the newest k
 version, or name one; give a reason. It runs `wrangler rollback <id> -y`, then the same
 post-deploy probe the deploy runs, against the commit the target was tagged with, five
 answers in a row before health is judged. Anything other than a confirmed, healthy
-rollback posts to the alerts channel. It shares the deploy job's concurrency group, so it
-never runs while a deploy is moving production.
+rollback posts to the alerts channel. It never waits for a deploy and is never queued
+behind one (see "A deploy and a rollback never wait for each other" above): a deploy that
+finds production changed under it stops and leaves the rollback standing.
 
 <!-- runbook-unverified: dispatching it re-points production traffic, and it has not yet
      been dispatched. Its decisions (target choice, the canary refusal, every ending and

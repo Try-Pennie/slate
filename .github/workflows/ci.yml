@@ -530,13 +530,15 @@ jobs:
     # condition here skipped every deploy with ci green and nothing paging.
     if: ${{ !cancelled() && needs.ci.result == 'success' && needs.static-checks.result == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
-    # Shared with .github/workflows/rollback.yml (#3094), so a rollback and a deploy
-    # never move production at the same time. Never cancelled: a deploy interrupted
-    # between opening and ending the split is the case the settle step exists for, and
-    # it should not be manufactured.
-    concurrency:
-      group: slate-production-worker
-      cancel-in-progress: false
+    # No concurrency group of its own, deliberately. Deploys are already serialised by
+    # the workflow's group on main (never cancelled while running), and a PENDING main
+    # run that a newer merge supersedes never deploys, which drops nothing: main is
+    # linear, so the newer commit contains it and its own deploy pages if it fails. A
+    # group shared with the Rollback workflow would be worse than none: GitHub keeps one
+    # pending run per group and cancels the older with no alert, so a merge could
+    # silently drop a queued rollback, or a rollback a queued deploy. The two are kept
+    # apart by the deploy instead, which re-reads what is serving before every change
+    # and stops if something else changed it (EXIT.interfered, DEPLOY.md).
     # Job level, so it REPLACES the repo default for this job only: checkout needs
     # contents, and the ci gate below reads the commit's check runs.
     permissions:

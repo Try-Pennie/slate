@@ -45,6 +45,7 @@ const ROOT = join(import.meta.dirname, "..");
 const OLD = "11111111-1111-4111-8111-111111111111";
 const CANARY = "22222222-2222-4222-8222-222222222222";
 const RELEASE = "33333333-3333-4333-8333-333333333333";
+const THEIRS = "44444444-4444-4444-8444-444444444444";
 
 function outcome(fault: ProbeFault): ProbeOutcome {
   return {
@@ -72,6 +73,10 @@ interface Scenario {
   throwAt?: "upload" | "probe:canary" | "promote" | "probe:promoted" | "triggers";
   /** How many restore calls THROW (rather than return false) before one works. */
   restoreThrows?: number;
+  /** The split call reports failure but Cloudflare applied it anyway. */
+  splitAppliesAnyway?: boolean;
+  /** Somebody else (a rollback) puts this version at 100% during that step. */
+  interfereDuring?: "upload" | "probe:canary";
 }
 
 const HAPPY: Scenario = {
@@ -115,12 +120,14 @@ async function drive(s: Scenario): Promise<Run> {
   };
   const ops: GradualOps = {
     status: async () => {
-      calls.push("status");
-      return s.start;
+      // Recorded once, so the order assertions read the run's actions, not its re-reads.
+      if (!calls.includes("status")) calls.push("status");
+      return s.start === null ? null : deployment;
     },
     upload: async (kind) => {
       calls.push(`upload:${kind}`);
       boom("upload");
+      if (s.interfereDuring === "upload") deployment = [{ versionId: THEIRS, percentage: 100 }];
       if (kind === "canary") return s.canaryUpload ? CANARY : null;
       return s.releaseUpload ? RELEASE : null;
     },
@@ -135,7 +142,10 @@ async function drive(s: Scenario): Promise<Run> {
         if (restoreCalls <= (s.restoreThrows ?? 0)) throw new Error("planted restore throw");
         if (restoreCalls <= s.restoreFailures) return false;
       }
-      if (isSplit && !s.split) return false;
+      if (isSplit && !s.split) {
+        if (s.splitAppliesAnyway) deployment = next;
+        return false;
+      }
       if (isPromote) boom("promote");
       if (isPromote && !s.promote) return false;
       deployment = next;
@@ -144,6 +154,7 @@ async function drive(s: Scenario): Promise<Run> {
     probe: async (stage, canaryId) => {
       calls.push(`probe:${stage}`);
       probes.push({ stage, canaryId });
+      if (s.interfereDuring === `probe:${stage}`) deployment = [{ versionId: THEIRS, percentage: 100 }];
       boom(`probe:${stage}` as Scenario["throwAt"]);
       return outcome(stage === "canary" ? s.canaryProbe : s.finalProbe);
     },
@@ -259,7 +270,25 @@ for (const fault of ["release", "version"] as const) {
 {
   const r = await drive({ ...HAPPY, split: false });
   eq(r.result.exit, EXIT.splitFailed, "a split that could not be opened is its own ending");
-  eq(r.calls[r.calls.length - 1], `deploy:${OLD}@100%`, "and it restores anyway, since whether Cloudflare applied the split is not known");
+  eq(JSON.stringify(r.deployment), JSON.stringify([{ versionId: OLD, percentage: 100 }]), "and production is whole on the old version");
+  const applied = await drive({ ...HAPPY, split: false, splitAppliesAnyway: true });
+  eq(applied.result.exit, EXIT.splitFailed, "a split call that failed but applied anyway is the same ending");
+  eq(applied.calls[applied.calls.length - 1], `deploy:${OLD}@100%`, "and the restore it reads as needed is made");
+  eq(JSON.stringify(applied.deployment), JSON.stringify([{ versionId: OLD, percentage: 100 }]), "so production is whole on the old version");
+}
+
+// --- somebody else changed production mid-run: never undo it -------------------------
+//
+// A rollback runs on its own and never waits for a deploy (DEPLOY.md). So the deploy
+// re-reads what is serving before each change it makes, and stops, leaving production
+// as it found it, when that is not a state this run produced.
+for (const during of ["upload", "probe:canary"] as const) {
+  const r = await drive({ ...HAPPY, interfereDuring: during });
+  eq(r.result.exit, EXIT.interfered, `a change made by somebody else during ${during} stops the run`);
+  eq(JSON.stringify(r.deployment), JSON.stringify([{ versionId: THEIRS, percentage: 100 }]), "and their change stands");
+  assert(!r.calls.includes(`deploy:${RELEASE}@100%`), "the release is not promoted over it");
+  assert(!r.calls.includes(`deploy:${OLD}@100%`), "and the old version is not restored over it");
+  eq(r.records[r.records.length - 1] ?? "", during === "upload" ? "" : "ended", "and the settle step is told to leave it alone once a split was attempted");
 }
 {
   const r = await drive({ ...HAPPY, promote: false });
@@ -336,7 +365,9 @@ for (const at of ["probe:canary", "promote", "probe:promoted", "triggers"] as co
 }
 {
   const r = await drive({ ...HAPPY, throwAt: "upload" });
-  eq(r.result.exit, -1, "a throw before the split propagates (the fake records it), since nothing was changed");
+  eq(r.result.exit, EXIT.threwBeforeSplit, "a throw before the split is caught into its own ending, never an unhandled rejection");
+  eq(r.result.end, "unchanged", "and nothing changed");
+  assert(r.result.message.includes("planted throw"), "the message carries what was thrown");
   assert(!r.records.includes("split-attempted"), "and nothing recorded a split");
 }
 
@@ -364,6 +395,19 @@ for (const at of ["probe:canary", "promote", "probe:promoted", "triggers"] as co
   eq(settleDecision(["split-attempted", "ended"]).action, "none", "a recorded clean end needs no settling");
   eq(settleDecision(["split-attempted"]).action, "read", "a split attempt with no recorded end is the only case that reads what is serving");
   eq(settleDecision([]).action, "none", "an empty record is the same as none");
+  eq(settleDecision(["split-attempted", "ended", "split-attempted"]).action, "read", "the LAST event decides: a heal that ended, then a split that did not, reads");
+}
+{
+  // A heal whose every restore fails records the attempt, so the settle step looks.
+  const r = await drive({
+    ...HAPPY,
+    start: [{ versionId: OLD, percentage: 90 }, { versionId: CANARY, percentage: 10 }],
+    restoreFailures: 99,
+  });
+  eq(r.result.exit, EXIT.restoreFailed, "a heal that never lands is the restore-failed ending");
+  eq(r.records.join(","), "split-attempted", "and it recorded the attempt, so settle reads the deployment");
+  const ok = await drive({ ...HAPPY, start: [{ versionId: OLD, percentage: 90 }, { versionId: CANARY, percentage: 10 }] });
+  eq(ok.records.join(","), "split-attempted,ended,split-attempted,ended", "a successful heal and deploy record both, in order");
   eq(readSplitRecords(null), null, "no state file is no record");
   eq(readSplitRecords("split-attempted\n")?.join(","), "split-attempted", "a file with only the attempt reads as an open split");
   eq(settleDecision(readSplitRecords("split-attempted\nended\n")).action, "none", "and one carrying its end reads as nothing to settle");
@@ -525,6 +569,39 @@ function windowIsClear(startMs: number, cs: string[]): boolean {
 }
 const worst = maxCronWaitMs(real);
 assert(worst > 0 && worst <= 20 * 60_000, `the longest wait any deploy can meet is bounded (${Math.round(worst / 1000)}s), and the deploy job's timeout is sized against it`);
+
+// --- cron fields it cannot read mean "may fire" ---------------------------------------
+{
+  const at = (h: number, m: number) => Date.UTC(2026, 9, 5, h, m);
+  assert(cronFiresAt("0-30/5 * * * *", at(9, 10)), "a stepped range fires on its step");
+  assert(!cronFiresAt("0-30/5 * * * *", at(9, 11)), "and not off it");
+  assert(!cronFiresAt("0-30/5 * * * *", at(9, 35)), "nor past the range");
+  assert(cronFiresAt("0 1-5/2 * * *", at(3, 0)), "a stepped hour range fires on its step");
+  assert(!cronFiresAt("0 1-5/2 * * *", at(4, 0)), "and not off it");
+  assert(cronFiresAt("5/15 * * * *", at(9, 20)), "n/step runs from n to the end of the range");
+  for (const odd of ["0 foo * * *", "L * * * *", "0 * * *", "@hourly"]) {
+    assert(cronFiresAt(odd, at(9, 7)), `an expression it cannot read (${odd}) may fire at any minute`);
+  }
+  let threw = false;
+  try {
+    msUntilSplitWindowClear(at(9, 0), ["0 foo * * *"]);
+  } catch {
+    threw = true;
+  }
+  assert(threw, "a schedule it cannot read at all leaves no clear window, so the deploy refuses rather than guesses");
+  assert(!isFrequentCron("0-30/5 * * * *"), "a stepped range is not one of the always-on lanes, so it is protected");
+}
+
+// --- the exit tables in DEPLOY.md list every ending ------------------------------------
+{
+  const doc = readFileSync(join(ROOT, "DEPLOY.md"), "utf8");
+  const section = doc.slice(doc.indexOf("### What CI does: a gradual deploy"), doc.indexOf("### What the split looks like"));
+  const rows = new Set([...section.matchAll(/^\| (\d+) \|/gm)].map((m) => Number(m[1])));
+  const missing = Object.entries(EXIT).filter(([, code]) => !rows.has(code)).map(([name, code]) => `${name}=${code}`);
+  eq(missing.join(", "), "", "every EXIT code has a row in DEPLOY.md's gradual deploy table");
+  const extra = [...rows].filter((c) => !Object.values(EXIT).includes(c as never));
+  eq(extra.join(", "), "", "and the table has no row for a code the deploy cannot exit with");
+}
 
 // --- exit codes: one ending, one number --------------------------------------------
 {
