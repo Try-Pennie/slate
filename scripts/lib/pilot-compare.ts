@@ -601,6 +601,9 @@ export interface Judged {
   bothSystems: boolean;
   /** At least one booking's final start fell inside the span, so a show can be judged. */
   judgeable: boolean;
+  /** A partial look only: a booking inside the span whose call can still happen and
+   *  reach the store, so it is set aside rather than read as not held. */
+  callAhead: boolean;
   held: boolean;
   noLead: boolean;
   advisor: string;
@@ -635,6 +638,10 @@ export function judgeApplication(app: AppOutcome, spanMs: number, callsByLead: R
     system: chains[0]?.system ?? null,
     bothSystems: new Set(chains.map((c) => c.system)).size > 1,
     judgeable: judgeableChains.length > 0 && app.leadKey !== null,
+    callAhead:
+      heldChain === undefined &&
+      app.leadKey !== null &&
+      chains.some((c) => !c.cancelled && c.finalStartMs !== null && c.finalStartMs < spanEnd && c.finalStartMs + SHOW_AFTER_MS > dueByMs),
     held: heldChain !== undefined,
     noLead: chains.length > 0 && app.leadKey === null,
     // An application with no named advisor is its own cluster, never pooled into one
@@ -799,7 +806,7 @@ function judgeLines(input: CompareInput): { exit: number; lines: string[]; propo
         `Cohort so far: applications made from ${etLabel(window.startMs)} to now, ${etLabel(window.readEndMs)} (${days.toFixed(2)} days), every one with its span still open.`,
         `Coverage: ${pct(Math.min(1, (window.readEndMs - window.startMs) / (firstMs - window.startMs)))} of the way to the first full window, judgeable from ${etLabel(firstMs)}` +
           (created.length > 0
-            ? `; the oldest application here has had ${ageDays(Math.min(...created))} of its ${spanLabel(window.spanMs)}s, the newest ${ageDays(Math.max(...created))}.`
+            ? `; the oldest application here has had ${ageDays(created.reduce((a, b) => Math.min(a, b), Infinity))} of its ${spanLabel(window.spanMs)}s, the newest ${ageDays(created.reduce((a, b) => Math.max(a, b), -Infinity))}.`
             : "."),
         ASSUMPTION_LINE,
       ]
@@ -905,7 +912,7 @@ function judgeLines(input: CompareInput): { exit: number; lines: string[]; propo
     // In a partial look a booking whose call is still ahead cannot have been held yet,
     // so it is left out of held per application rather than read as a no show, the
     // same way the show rate leaves it out.
-    const heldBase = (set: Judged[]) => (partial ? set.filter((j) => !(j.booked && !j.judgeable)).length : set.length);
+    const heldBase = (set: Judged[]) => (partial ? set.filter((j) => !j.callAhead).length : set.length);
     const sBase = heldBase(s);
     const kBase = heldBase(k);
     const booking = compareHalves({ leads: s.length, bookings: sb }, { leads: k.length, bookings: kb });

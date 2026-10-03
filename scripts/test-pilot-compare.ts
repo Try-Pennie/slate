@@ -328,6 +328,14 @@ const clean = (lines: string[]) => !lines.some((l) => /undefined|NaN|\[object Ob
   const notYet = dueAt(start + 60 * 60_000 - 1);
   eq([notYet.booked, notYet.judgeable, notYet.held], [true, false, false], "a booking whose show window is still open is booked and not judged, never a no show");
   eq(dueAt(start + 60 * 60_000).judgeable, true, "once its show window has closed it is judged");
+  // Only a call still AHEAD is set aside in a partial look; a booking for after the
+  // span, or one with no Lead, is not waiting on anything and counts as not held.
+  eq(notYet.callAhead, true, "a booking whose show window is still open is waiting on its call");
+  eq(dueAt(start + 60 * 60_000).callAhead, false, "once the window has closed it is not");
+  const lateAhead = judgeApplication(outcome([{ finalStartMs: start + 8 * D }]), SPAN_DAYS * D, new Map(), start);
+  eq(lateAhead.callAhead, false, "a final start after the span is not a call ahead, however far off it is");
+  const noLeadAhead = judgeApplication(outcome([{}], null), SPAN_DAYS * D, new Map(), start);
+  eq(noLeadAhead.callAhead, false, "an application with no Lead is never waiting on a call it could be tied to");
 }
 
 // --- 6. the clustered interval -----------------------------------------------------------------
