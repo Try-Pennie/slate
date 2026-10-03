@@ -184,15 +184,26 @@ const JUDGES = [
 // the replay (#3153); nothing offline noticed, and the replay went red on every PR. This
 // reads the revokes straight from the migration files, so the next one fails here, in the
 // unit suite, on the PR that adds it.
-const TABLE_REVOKE = /^\s*revoke\s+[\w\s,]+?\s+on\s+(?:table\s+)?(?:public\.)?([a-z_][a-z0-9_]*)\s+from\s+[^;]*\b(?:anon|authenticated)\b/gim;
+// Only a revoke that takes INSERT away (`all`, or a privilege list naming insert) moves
+// a table onto the exempt list; `revoke update on t` leaves the grant the replay checks.
+// A comma list of tables (`on a, b`) names every one of them.
+const TABLE_REVOKE =
+  /^\s*revoke\s+((?:all(?:\s+privileges)?|[a-z]+(?:\s*,\s*[a-z]+)*))\s+on\s+(?:table\s+)?((?:(?:public\.)?[a-z_][a-z0-9_]*\s*,\s*)*(?:public\.)?[a-z_][a-z0-9_]*)\s+from\s+[^;]*\b(?:anon|authenticated)\b/gim;
 function revokedTables(sql: string): string[] {
   const out: string[] = [];
-  for (const m of sql.matchAll(TABLE_REVOKE)) if (m[1] !== "function") out.push(m[1]);
+  for (const m of sql.matchAll(TABLE_REVOKE)) {
+    const privileges = (m[1] ?? "").toLowerCase();
+    if (!/^all\b/.test(privileges) && !/\binsert\b/.test(privileges)) continue;
+    for (const t of (m[2] ?? "").split(",")) out.push(t.trim().replace(/^public\./, ""));
+  }
   return out;
 }
 {
   eq(revokedTables("revoke all on table x_daily from anon, authenticated;"), ["x_daily"], "control: a table revoke is read");
   eq(revokedTables("revoke all on y from anon, authenticated;"), ["y"], "control: the bare `on <table>` form is read");
+  eq(revokedTables("revoke all on a, public.b from anon;"), ["a", "b"], "control: every table in a comma list is read");
+  eq(revokedTables("revoke insert, update on c from authenticated;"), ["c"], "control: a privilege list naming insert counts");
+  eq(revokedTables("revoke update on d from anon;"), [], "control: a revoke that leaves INSERT is not an exemption");
   eq(revokedTables("revoke execute on function f(text) from public, anon, authenticated;"), [], "control: a function revoke is not a table");
   eq(revokedTables("-- revoke all on z from anon;\nselect 1;"), [], "control: a commented revoke is not one");
 
