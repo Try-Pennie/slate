@@ -5,6 +5,11 @@ import { useSearchParams } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase/browser";
 import { useStalledAfter } from "@/lib/useStalledAfter";
 import { ArrowRightIcon } from "@/components/icons";
+import {
+  SESSION_IDLE_DAYS,
+  SESSION_TIME_BOX_DAYS,
+  sessionRefusalLoginError,
+} from "@/lib/auth/session-age";
 
 // Sign-in failures the callback can bounce back with. Kept plain and
 // non-technical; the domain case is the security gate from #589.
@@ -28,6 +33,14 @@ const ERROR_MESSAGES: Record<string, string> = {
   // can fix it, so it points at the people who can.
   sign_in_unavailable:
     "Sign in is unavailable right now. Please let a Slate admin know.",
+  // #3084: a sign in that reached its age limit. Each says which limit, because
+  // "you were signed out" alone reads as something having gone wrong.
+  [sessionRefusalLoginError("time-box")]:
+    `You were signed out because it has been ${SESSION_TIME_BOX_DAYS} days since you signed in. Please sign in again.`,
+  [sessionRefusalLoginError("idle")]:
+    `You were signed out because Slate was not used on this device for ${SESSION_IDLE_DAYS} days. Please sign in again.`,
+  [sessionRefusalLoginError("unstamped")]:
+    "You were signed out. Please sign in again.",
 };
 
 // Shown when the sign-in call itself never reaches Google (a transient network

@@ -9,6 +9,7 @@ import {
 import { devPreviewUser } from "@/lib/auth/dev-preview";
 import { impersonationSigningSecret } from "@/lib/env";
 import { gateSessionRow } from "@/lib/auth/active-session";
+import { SESSION_SEEN_COOKIE, SESSION_STARTED_COOKIE, judgeSessionAge } from "@/lib/auth/session-age";
 import { NotAuthorizedError } from "@/lib/auth/http";
 import { log } from "@/lib/log";
 import type { Role, User } from "@/lib/db/types";
@@ -45,6 +46,22 @@ export async function realCurrentUser(): Promise<User | null> {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return null;
+
+  // #3084: a sign in lasts at most 30 days and ends after 7 without use. Middleware
+  // enforces it on every staff page and sends the person to sign in again; this is the
+  // same judge for everything the middleware does not reach, the /api routes above
+  // all, so an aged session cannot go on acting through them. Judged before the row
+  // read, since an aged session is refused whoever it belongs to.
+  const store = await cookies();
+  const age = judgeSessionAge({
+    started: store.get(SESSION_STARTED_COOKIE)?.value,
+    seen: store.get(SESSION_SEEN_COOKIE)?.value,
+    nowMs: Date.now(),
+  });
+  if (!age.admit) {
+    log.warn("auth", { msg: "refused a session past its age limit", reason: age.reason, auth_user_id: user.id });
+    return null;
+  }
 
   const { data, error } = await supabaseAdmin()
     .from("users")

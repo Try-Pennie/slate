@@ -6,6 +6,7 @@ import { supabaseServer } from "@/lib/supabase/server";
 import { IMPERSONATE_COOKIE } from "@/lib/auth/impersonation";
 import { log } from "@/lib/log";
 import { THEME_COOKIE } from "@/lib/theme/boot";
+import { SESSION_STAMP_COOKIES } from "@/lib/auth/session-age";
 
 /**
  * End the current staff session (#1031). Before this there was no sign-out
@@ -36,5 +37,7 @@ export async function signOut(): Promise<void> {
   }
   store.delete(IMPERSONATE_COOKIE);
   store.delete(THEME_COOKIE);
+  // #3084: the session's age stamps, so nothing of this sign in outlives it.
+  for (const name of SESSION_STAMP_COOKIES) store.delete(name);
   redirect("/login");
 }

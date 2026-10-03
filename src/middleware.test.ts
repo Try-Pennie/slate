@@ -7,9 +7,10 @@ import { describe, it, expect, vi } from "vitest";
 // A spy rather than a plain function: #2565 needs to assert that the booker does
 // NOT pay the session refresh, which is a statement about whether this was CALLED.
 type CookieSetter = (toSet: { name: string; value: string; options: Record<string, unknown> }[]) => void;
+const signOut = vi.hoisted(() => vi.fn(async (): Promise<{ error: null }> => ({ error: null })));
 const ssr = vi.hoisted(() => ({
   createServerClient: vi.fn((_url: string, _key: string, _opts: { cookies: { setAll: CookieSetter } }) => ({
-    auth: { getUser: async () => ({ data: { user: null } }) },
+    auth: { getUser: async () => ({ data: { user: null } }), signOut },
   })),
 }));
 vi.mock("@supabase/ssr", () => ssr);
@@ -19,6 +20,13 @@ vi.mock("@/lib/env", () => ({
 }));
 
 import { NextRequest } from "next/server";
+import { afterEach, beforeEach } from "vitest";
+import {
+  SESSION_IDLE_MS,
+  SESSION_SEEN_COOKIE,
+  SESSION_STARTED_COOKIE,
+  SESSION_TIME_BOX_MS,
+} from "@/lib/auth/session-age";
 import { middleware } from "@/middleware";
 import { SECURITY_HEADERS } from "@/lib/security-headers";
 
@@ -134,5 +142,100 @@ describe("the enforced script policy (#2575)", () => {
 
     await middleware(new NextRequest("https://slate.test/admin"));
     expect(ssr.createServerClient).toHaveBeenCalled();
+  });
+});
+
+/**
+ * #3084: a staff sign in ends 30 days after it started, or after 7 days without a staff
+ * request. Driven through the middleware with a pinned clock, on both sides of each
+ * boundary, because what matters is what a real request meets: a redirect to sign in
+ * with a sentence, the session's cookies gone, and the refresh token revoked.
+ */
+describe("staff session age limits (#3084)", () => {
+  const NOW = Date.UTC(2026, 9, 3, 12, 0, 0);
+  const SESSION = "sb-project-auth-token";
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    signOut.mockClear();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const staffRequest = (path: string, cookies: Record<string, string | number>) =>
+    new NextRequest(`https://slate.test${path}`, {
+      headers: {
+        cookie: Object.entries(cookies)
+          .map(([k, v]) => `${k}=${v}`)
+          .join("; "),
+      },
+    });
+
+  const signedIn = (startedMsAgo: number, seenMsAgo: number) => ({
+    [SESSION]: "token",
+    [SESSION_STARTED_COOKIE]: NOW - startedMsAgo,
+    [SESSION_SEEN_COOKIE]: NOW - seenMsAgo,
+  });
+
+  const expectRefused = async (res: Response, error: string) => {
+    expect(res.status).toBe(307);
+    const to = new URL(res.headers.get("location") ?? "");
+    expect(to.pathname).toBe("/login");
+    expect(to.searchParams.get("error")).toBe(error);
+    const cleared = res.headers
+      .getSetCookie()
+      .filter((c) => /Max-Age=0/i.test(c))
+      .map((c) => c.split("=")[0]);
+    expect(cleared).toEqual(expect.arrayContaining([SESSION, SESSION_STARTED_COOKIE, SESSION_SEEN_COOKIE]));
+    // The refresh token is revoked too, so a copy of the cookie dies with this one.
+    expect(signOut).toHaveBeenCalled();
+    // The redirect is still a staff response: it keeps the framing rule.
+    expect(res.headers.get("x-frame-options")).toBe("DENY");
+  };
+
+  it("admits a session one millisecond inside 30 days, and restamps its last use", async () => {
+    const res = await middleware(staffRequest("/admin", signedIn(SESSION_TIME_BOX_MS - 1, 60_000)));
+    expect(res.status).toBe(200);
+    expect(signOut).not.toHaveBeenCalled();
+    const seen = res.cookies.get(SESSION_SEEN_COOKIE);
+    expect(seen?.value).toBe(String(NOW));
+    expect(seen?.httpOnly).toBe(true);
+    expect(seen?.maxAge).toBe(SESSION_IDLE_MS / 1000);
+  });
+
+  it("refuses a session exactly 30 days after sign in, however recently it was used", async () => {
+    await expectRefused(await middleware(staffRequest("/admin/agents", signedIn(SESSION_TIME_BOX_MS, 0))), "session_expired");
+  });
+
+  it("admits one millisecond short of 7 idle days and refuses at 7", async () => {
+    const inside = await middleware(staffRequest("/me", signedIn(10 * 86_400_000, SESSION_IDLE_MS - 1)));
+    expect(inside.status).toBe(200);
+    await expectRefused(await middleware(staffRequest("/me", signedIn(10 * 86_400_000, SESSION_IDLE_MS))), "session_idle");
+  });
+
+  it("refuses a session that carries no sign in stamp, rather than starting its clock now", async () => {
+    await expectRefused(await middleware(staffRequest("/admin", { [SESSION]: "token" })), "session_ended");
+  });
+
+  it("leaves a visitor who never signed in alone, so they are not told they were signed out", async () => {
+    const res = await middleware(staffRequest("/admin", {}));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("location")).toBeNull();
+    expect(res.cookies.get(SESSION_SEEN_COOKIE)).toBeUndefined();
+  });
+
+  it("never redirects the sign in page to itself", async () => {
+    const res = await middleware(staffRequest("/login", signedIn(SESSION_TIME_BOX_MS * 2, SESSION_IDLE_MS * 2)));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("location")).toBeNull();
+  });
+
+  it("still clears the session when the revoke itself fails", async () => {
+    signOut.mockImplementationOnce(async () => {
+      throw new Error("auth server unreachable");
+    });
+    await expectRefused(await middleware(staffRequest("/admin", signedIn(SESSION_TIME_BOX_MS + 1, 0))), "session_expired");
   });
 });

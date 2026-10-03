@@ -5,6 +5,18 @@ import { SECURITY_HEADERS } from "@/lib/security-headers";
 import { supabaseEdgeFetch } from "@/lib/supabase/fetch-deadline";
 import { hardenAuthCookie, serverAuthCookieOptions } from "@/lib/supabase/cookie-options";
 import {
+  SESSION_SEEN_COOKIE,
+  SESSION_STARTED_COOKIE,
+  hasSupabaseSessionCookie,
+  judgeSessionAge,
+  sessionCookiesToClear,
+  sessionRefusalLoginError,
+  sessionStampCookieOptions,
+  stampValue,
+  type SessionAgeRefusal,
+} from "@/lib/auth/session-age";
+import { log } from "@/lib/log";
+import {
   buildContentSecurityPolicy,
   cspNonce,
   reportingEndpointsHeader,
@@ -90,6 +102,25 @@ export async function middleware(request: NextRequest) {
   requestHeaders.set("content-security-policy", policy);
   requestHeaders.set("x-nonce", nonce);
 
+  // #3084: a staff sign in ends 30 days after it started, or after 7 days without a
+  // staff request. Judged before the refresh, so an expired session is not refreshed
+  // one last time. Only for a request that carries a session at all, so somebody who
+  // never signed in meets the ordinary sign in rather than "you were signed out"; and
+  // never on /login itself, which is where a refused session is sent.
+  const sessionPresent =
+    staff &&
+    request.nextUrl.pathname !== "/login" &&
+    hasSupabaseSessionCookie(request.cookies.getAll().map((c) => c.name));
+  const nowMs = Date.now();
+  if (sessionPresent) {
+    const verdict = judgeSessionAge({
+      started: request.cookies.get(SESSION_STARTED_COOKIE)?.value,
+      seen: request.cookies.get(SESSION_SEEN_COOKIE)?.value,
+      nowMs,
+    });
+    if (!verdict.admit) return endAgedSession(request, verdict.reason, policy);
+  }
+
   let response = NextResponse.next({ request: { headers: requestHeaders } });
 
   if (staff) {
@@ -119,6 +150,12 @@ export async function middleware(request: NextRequest) {
     await supabase.auth.getUser();
   }
 
+  // #3084: an admitted staff request is a use, so the idle clock restarts. Set after
+  // the refresh, which can reassign the response.
+  if (sessionPresent) {
+    response.cookies.set(SESSION_SEEN_COOKIE, stampValue(nowMs), sessionStampCookieOptions("seen"));
+  }
+
   // Clickjacking hardening on every surface that is not the booker (#592, #3136). Set
   // after the refresh so it lands on the final response, even after a cookie refresh
   // reassigned it above. The booker never gets these, so the embed stays frameable.
@@ -133,6 +170,52 @@ export async function middleware(request: NextRequest) {
   response.headers.set("content-security-policy", policy);
   response.headers.set("reporting-endpoints", reportingEndpointsHeader());
   return response;
+}
+
+/**
+ * Send a session past its age limit to sign in again (#3084), with a sentence saying
+ * why. Its refresh token is revoked as well as its cookies cleared, so a copy of the
+ * cookie taken off the device dies with it. A revoke that fails is logged and the
+ * cookies are cleared regardless: the person on this device is signed out either way,
+ * and the hosted session limits are what end the refresh token then.
+ */
+async function endAgedSession(
+  request: NextRequest,
+  reason: SessionAgeRefusal,
+  policy: string,
+): Promise<NextResponse> {
+  const to = new URL("/login", request.url);
+  to.searchParams.set("error", sessionRefusalLoginError(reason));
+  const res = NextResponse.redirect(to);
+  log.warn("auth", { msg: "session past its age limit, signing out", reason });
+
+  try {
+    const supabase = createServerClient(publicSupabaseUrl(), publicSupabasePublishableKey(), {
+      cookieOptions: serverAuthCookieOptions(),
+      cookies: {
+        getAll: () => request.cookies.getAll(),
+        setAll: (toSet) => {
+          for (const { name, value, options } of toSet) {
+            res.cookies.set(name, value, hardenAuthCookie(options));
+          }
+        },
+      },
+    });
+    const { error } = await supabase.auth.signOut({ scope: "local" });
+    if (error) log.warn("auth", { msg: "revoking an aged session failed", reason }, error);
+  } catch (err) {
+    log.warn("auth", { msg: "revoking an aged session failed", reason }, err);
+  }
+
+  for (const name of sessionCookiesToClear(request.cookies.getAll().map((c) => c.name))) {
+    res.cookies.set(name, "", { ...serverAuthCookieOptions(), maxAge: 0 });
+  }
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
+    res.headers.set(name, value);
+  }
+  res.headers.set("content-security-policy", policy);
+  res.headers.set("reporting-endpoints", reportingEndpointsHeader());
+  return res;
 }
 
 export const config = {

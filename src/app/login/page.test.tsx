@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import LoginPage from "@/app/login/page";
+import { sessionRefusalLoginError } from "@/lib/auth/session-age";
 
 // #626: signing in hands off to Google via a full-page redirect that can't be
 // aborted. If that redirect wedges, the button must not sit on "Redirecting…"
@@ -188,6 +189,22 @@ describe("LoginPage sign-in error copy", () => {
     const alert = screen.getByRole("alert").textContent ?? "";
     expect(alert).toMatch(/admin/i);
     expect(alert).not.toMatch(/GOOGLE_HOSTED_DOMAIN|env|configured/i);
+  });
+
+  // #3084: every reason the middleware can sign somebody out for lands here with its
+  // own sentence, enumerated from the judge's own reasons so a new one cannot ship
+  // without copy.
+  it.each([
+    ["time-box", /30 days/],
+    ["idle", /7 days/],
+    ["unstamped", /signed out/i],
+  ] as const)("explains a session ended for %s in its own words", (reason, words) => {
+    params.current = new URLSearchParams(`error=${sessionRefusalLoginError(reason)}`);
+    render(<LoginPage />);
+
+    const alert = screen.getByRole("alert").textContent ?? "";
+    expect(alert).toMatch(words);
+    expect(alert).toMatch(/sign in again/i);
   });
 
   it("renders no banner for a code it has no copy for", () => {

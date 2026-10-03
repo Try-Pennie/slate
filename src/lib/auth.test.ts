@@ -47,12 +47,25 @@ vi.mock("@/lib/supabase/server", () => ({
   }),
 }));
 vi.mock("@/lib/auth/dev-preview", () => ({ devPreviewUser: async () => null }));
+// #3084: the session age stamps are read from the same store. They default to a session
+// signed in a minute ago, so every suite below exercises its own rule rather than age.
+const stamps = vi.hoisted(() => ({
+  started: undefined as string | undefined,
+  seen: undefined as string | undefined,
+}));
 vi.mock("next/headers", () => ({
-  cookies: async () => ({ get: () => (cookieValue.v ? { value: cookieValue.v } : undefined) }),
+  cookies: async () => ({
+    get: (name: string) => {
+      const value =
+        name === "slate-signed-in-at" ? stamps.started : name === "slate-last-seen-at" ? stamps.seen : cookieValue.v;
+      return value ? { value } : undefined;
+    },
+  }),
 }));
 
 import {
   currentUser,
+  realCurrentUser,
   getImpersonation,
   getImpersonationView,
   requireRole,
@@ -102,6 +115,8 @@ beforeEach(() => {
   dbRows.queue = [];
   cookieValue.v = undefined;
   authUser.id = "auth-1";
+  stamps.started = String(Date.now() - 60_000);
+  stamps.seen = String(Date.now() - 60_000);
 });
 
 afterEach(() => {
@@ -359,5 +374,44 @@ describe("a deactivated session is refused (#2378)", () => {
 
     signedInAs(user("mgr-1", "manager"));
     expect((await requireManager()).id).toBe("mgr-1");
+  });
+});
+
+// #3084: the API routes are outside the middleware's reach, so the session's age is
+// judged here too. Each refusal is paired with the same person admitted in the same
+// fixture (L159). The boundaries themselves are driven in scripts/test-session-age.ts.
+describe("an aged session is refused (#3084)", () => {
+  const DAY = 86_400_000;
+
+  it("refuses a session past 30 days since sign in, and admits one inside it", async () => {
+    signedInAs(user("admin-1", "admin"));
+    stamps.started = String(Date.now() - 31 * DAY);
+    expect(await realCurrentUser()).toBeNull();
+    await expect(requireAdmin()).rejects.toThrow("Not authorized");
+
+    signedInAs(user("admin-1", "admin"));
+    stamps.started = String(Date.now() - 29 * DAY);
+    expect((await realCurrentUser())?.id).toBe("admin-1");
+  });
+
+  it("refuses a session unused for 7 days, and one with no sign in stamp at all", async () => {
+    signedInAs(user("mgr-1", "manager"));
+    stamps.seen = String(Date.now() - 8 * DAY);
+    expect(await currentUser()).toBeNull();
+
+    signedInAs(user("mgr-1", "manager"));
+    stamps.seen = String(Date.now() - DAY);
+    stamps.started = undefined;
+    expect(await currentUser()).toBeNull();
+
+    signedInAs(user("mgr-1", "manager"));
+    stamps.started = String(Date.now() - DAY);
+    expect((await currentUser())?.id).toBe("mgr-1");
+  });
+
+  it("does not let an aged admin act through an impersonation cookie", async () => {
+    await arrange(user("admin-1", "admin"), user("agent-9", "agent"));
+    stamps.started = String(Date.now() - 31 * DAY);
+    expect(await currentUser()).toBeNull();
   });
 });

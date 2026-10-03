@@ -46,6 +46,10 @@ describe("signOut (#1031)", () => {
     const deleted = store.delete.mock.calls.map((c) => c[0]);
     expect(deleted).toContain("slate_impersonate");
     expect(deleted).toContain("slate-theme");
+    // #3084: the session age stamps go too, so the next sign in on this browser
+    // starts its own clock rather than meeting a stale one.
+    expect(deleted).toContain("slate-signed-in-at");
+    expect(deleted).toContain("slate-last-seen-at");
     expect(redirect).toHaveBeenCalledWith("/login");
     expect(warn).not.toHaveBeenCalled();
   });
