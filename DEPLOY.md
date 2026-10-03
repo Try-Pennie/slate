@@ -700,31 +700,50 @@ Dry-run the flow in a non-prod context before you need it in anger: deploy a
 trivial change, `wrangler deployments list`, `wrangler rollback`, then re-hit
 `/api/health` to confirm `200`.
 
-## Backup & Point-in-Time Recovery (PITR)
+## Backup & recovery
 The Postgres database is managed by Supabase (project **`slate`**, ref
 `drukfvgaynzrralbzkzj`,
 [dashboard](https://supabase.com/dashboard/project/drukfvgaynzrralbzkzj)).
 
 - **Daily backups** are taken automatically by Supabase; restore from
-  Dashboard → Database → Backups. Restores are destructive (they replace the
-  current database), so take a fresh backup or snapshot first.
-- **Point-in-Time Recovery** (add-on, enable under Database → Backups) lets you
-  restore to any second within the retention window, which is what you want after
-  a bad migration or a data-corrupting write. Enable it before you need it: PITR
-  only covers the period after it is turned on.
-- **Before any manual migration, backfill, or destructive SQL**, note the current
-  UTC timestamp so PITR has a clean restore target, and prefer running changes
-  through `supabase db push` (versioned migrations in `supabase/migrations/`) over
-  ad-hoc SQL.
+  Dashboard → Database → Backups. They live in the same account as production.
+- **A daily off platform dump** (#3076): `.github/workflows/db-backup.yml` takes a
+  full logical dump (roles, schema, data, migration history) at 07:40 UTC, refuses it
+  if it is empty or cut short (`scripts/check-db-dump.ts`), uploads it to Cloudflare
+  R2, reads it back, and only then stamps the `db-backup` heartbeat. The lane watchdog
+  pages in Slack when the newest dump is older than 26 hours, or when none has ever
+  landed. It needs the `R2_BACKUP_ACCESS_KEY_ID`, `R2_BACKUP_SECRET_ACCESS_KEY`,
+  `R2_BACKUP_ENDPOINT` and `R2_BACKUP_BUCKET` repo secrets (an R2 API token scoped to
+  Object Read and Write on the one backup bucket, the account's
+  `https://<account id>.r2.cloudflarestorage.com` endpoint, and the bucket name),
+  beside the `SUPABASE_ACCESS_TOKEN`, `SUPABASE_DB_PASSWORD` and
+  `BOOKING_API_KEY_CANARY` it shares with CI and the canary. A missing one fails the
+  run red. About 2 to 4 billed Linux minutes a day. The bucket is `slate-db-backups`,
+  whose lifecycle rule expires each dump after 30 days; the dump is not encrypted on
+  the runner, by decision (R2 encrypts it at rest).
+- **The Snowflake mirror** holds bookings and the five tables around them within about
+  ten minutes of each write, and `pnpm restore:from-snowflake` writes them back after a
+  restore (`docs/dr-runbook.md` section 4).
+- **Point-in-Time Recovery is not enabled, by decision** (2026-10-03): about $100 a
+  month for 7 days plus at least the Small compute add-on, against a ten minute RPO the
+  mirror already gives on the tables where minutes matter. The runbook records the
+  booking volume at which to revisit it.
+- **Before any manual migration, backfill, or destructive SQL, take the pre-change
+  dump** in `docs/dr-runbook.md` Step 0. It is required: with PITR off there is no
+  restore target between two daily backups, so noting the time gives no protection,
+  and the dump is the only copy of what the change is about to alter. Prefer running
+  changes through `supabase db push` (versioned migrations in `supabase/migrations/`)
+  over ad-hoc SQL.
 - After any restore, re-hit `/api/health` and run the post-deploy verify steps
   above to confirm the app and crons reconnected.
 
-**Recovery objectives: RPO 24 hours, RTO same business day.** PITR is not
-enabled, so a restore loses everything written since the most recent nightly
-backup. A database-only restore is guaranteed to leave Slate disagreeing with
-Google Calendar, with the leads' inboxes and with Regal, because a booking is
-four writes and only one of them rolls back. **`docs/dr-runbook.md`** is the
-step by step: the restore, the reconciliation order (re-register the push
-channels FIRST, they fail silently otherwise), the bookings that have to be
-reconstructed by hand, and what to do about the downstream systems that cannot
-be rolled back at all. Read it before starting a restore, not during one.
+**Recovery objectives: RPO about 10 minutes for bookings and the other mirrored
+tables, 24 hours for everything else, RTO same business day.** A database-only
+restore is guaranteed to leave Slate disagreeing with Google Calendar, with the
+leads' inboxes and with Regal, because a booking is four writes and only one of them
+rolls back. **`docs/dr-runbook.md`** is the step by step: the pre-change dump, the
+restore (including from the R2 dump when Supabase's own backups are gone), the
+reconciliation order (re-register the push channels FIRST, they fail silently
+otherwise), writing the bookings back from Snowflake, and what to do about the
+downstream systems that cannot be rolled back at all. Read it before starting a
+restore, not during one.

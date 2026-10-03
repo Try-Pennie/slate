@@ -109,6 +109,14 @@ describe("POST /api/smoke/heartbeat (#525)", () => {
     expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("smoke-canary-full");
   });
 
+  // #3076: the daily dump workflow stamps its own lane once the upload is verified.
+  it("stamps db-backup when lane=db-backup", async () => {
+    canaryKey.primary.mockReturnValue("real-secret");
+    const res = await post("Bearer real-secret", "db-backup");
+    expect(res.status).toBe(200);
+    expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("db-backup");
+  });
+
   it("defaults to the smoke-canary lane when no lane is given", async () => {
     canaryKey.primary.mockReturnValue("real-secret");
     const res = await post("Bearer real-secret");
