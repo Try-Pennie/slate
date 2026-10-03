@@ -101,6 +101,27 @@ export function makeSlackPoster(opts: {
   };
 }
 
+/**
+ * Post `text` to the alerts channel the workflow names, and say whether it landed
+ * (#3171). Every bare node alerter ends with this, so it is the one place the
+ * channel is read: `scripts/test-alerts-channel-poster.ts` fails on a script that
+ * reads SLACK_ALERTS_CHANNEL itself.
+ *
+ * The channel comes from the workflow, never from a database lookup (#1598). An
+ * empty value is passed as no channel, so the poster refuses it by name
+ * (slack-channel-not-configured) rather than posting into nowhere, because an unset
+ * repo variable interpolates to the empty string (#1500).
+ */
+export async function postToAlertsChannel(
+  post: (msg: { text: string; channel?: string }) => Promise<{ ok: boolean; error?: string }>,
+  text: string,
+  env: Record<string, string | undefined>,
+): Promise<{ ok: boolean; reason: string }> {
+  const channel = env.SLACK_ALERTS_CHANNEL?.trim() || undefined;
+  const res = await post({ text, ...(channel ? { channel } : {}) });
+  return res.ok ? { ok: true, reason: "posted" } : { ok: false, reason: res.error ?? "unknown-error" };
+}
+
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }

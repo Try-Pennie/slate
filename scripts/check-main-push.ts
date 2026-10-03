@@ -14,6 +14,7 @@ import { appendFileSync } from "node:fs";
 // pnpm/action-setup meant it never ran at all. The WORDING is still shared
 // (buildViolationMessage below), so nothing about the copy is duplicated (L41).
 import { runAlerter } from "./lib/run-alerter.ts";
+import { postToAlertsChannel } from "./lib/slack-post.ts";
 import {
   classifyPush,
   buildViolationMessage,
@@ -132,8 +133,7 @@ export async function run(
   }
 
   const text = buildViolationMessage(ctx, verdict);
-  const channel = env.SLACK_ALERTS_CHANNEL?.trim() || undefined;
-  const res = await post({ text, ...(channel ? { channel } : {}) });
+  const res = await postToAlertsChannel(post, text, env);
   // Only a DELIVERED alert counts as handled. Everything else leaves the marker unset so
   // the failure route speaks for this commit.
   if (res.ok) recordHandled(env);
@@ -141,7 +141,7 @@ export async function run(
     ok: false,
     alerted: res.ok,
     unverified: !!verdict.unverified,
-    reason: res.ok ? verdict.reason : `${verdict.reason} (slack: ${res.error})`,
+    reason: res.ok ? verdict.reason : `${verdict.reason} (slack: ${res.reason})`,
   };
 }
 

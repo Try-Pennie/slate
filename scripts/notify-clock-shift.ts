@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { runAlerter } from "./lib/run-alerter.ts";
+import { postToAlertsChannel } from "./lib/slack-post.ts";
 import {
   decideClockShiftReport,
   expectedSuiteCount,
@@ -67,16 +68,8 @@ export async function run(
   if (decision.alert === null) {
     return { ok: true, reason: "nothing to say", detail: decision.detail };
   }
-  // The channel comes from the workflow, never from a database lookup (#1598). An
-  // empty value is refused by name rather than posted into nowhere, since an unset
-  // repo variable interpolates to the empty string.
-  const channel = env.SLACK_ALERTS_CHANNEL?.trim() || undefined;
-  const res = await post({ text: decision.alert, ...(channel ? { channel } : {}) });
-  return {
-    ok: false,
-    reason: res.ok ? "posted" : (res.error ?? "unknown-error"),
-    detail: decision.detail,
-  };
+  const res = await postToAlertsChannel(post, decision.alert, env);
+  return { ok: false, reason: res.reason, detail: decision.detail };
 }
 
 runAlerter(import.meta.url, async (post, env) => {
