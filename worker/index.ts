@@ -21,6 +21,7 @@ import handler from "../.open-next/worker.js";
 import * as bakedEnv from "../.open-next/cloudflare/next-env.mjs";
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { routesForCron } from "./cron-routes";
+import { cronStandby } from "./cron-standby";
 import { forwardReceipt } from "./log-shipping-receipt";
 import { laneDecision } from "./lanes-disabled";
 import { loadtestServingProductionHost } from "@/lib/loadtest-guard";
@@ -69,6 +70,8 @@ interface Env {
   SLATE_LOADTEST?: string;
   /** Comma separated lane names this deployment must not run (#2242). */
   SLATE_LANES_DISABLED?: string;
+  /** "1" only on a gradual deploy's canary, which runs no lane (#3095). */
+  SLATE_CRON_STANDBY?: string;
   [key: string]: unknown;
 }
 
@@ -131,6 +134,20 @@ const worker = {
     });
     if (credentials) {
       log.error("loadtest-guard", { msg: "refusing every lane", why: credentials });
+      return;
+    }
+    // #3095: a canary of a gradual deploy runs no lane. Two versions serve during the
+    // split and Cloudflare does not document which one a tick is handed to, so the
+    // canary stands down and only the version that was already serving runs lanes.
+    // Before the lanes are even resolved, so nothing below can reach a route.
+    const standby = cronStandby(env.SLATE_CRON_STANDBY);
+    if (standby.standby) {
+      const fields = { cron: controller.cron, value: String(env.SLATE_CRON_STANDBY) };
+      if (standby.why === "unreadable") {
+        log.error("cron", { msg: "SLATE_CRON_STANDBY is unreadable, so this version runs no lane", ...fields });
+      } else {
+        log.info("cron", { msg: "canary in cron standby, so this tick ran no lane; the serving version runs the next one", ...fields });
+      }
       return;
     }
     const scheduledPaths = routesForCron(controller.cron);

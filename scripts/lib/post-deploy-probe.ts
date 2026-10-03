@@ -26,8 +26,24 @@ export interface ProbeStep {
   detail: string;
 }
 
+/**
+ * Whose problem a failed probe is (#3095), which decides what a gradual deploy does
+ * about it:
+ *
+ *   - `none`: every check passed.
+ *   - `version`: the expected version never confirmed, so nothing about it was judged.
+ *   - `release`: something the deployed version is answerable for failed (the booker's
+ *     read path, an unreachable database, a health failure that does not say why).
+ *     Restoring the previous version is the remedy.
+ *   - `fleet`: the ONLY failure is health reporting a stale cron lane. That is read
+ *     from the shared database, so it reads the same from either version, and
+ *     restoring the old one would change nothing while blocking the fix.
+ */
+export type ProbeFault = "none" | "version" | "release" | "fleet";
+
 export interface ProbeOutcome {
   ok: boolean;
+  fault: ProbeFault;
   steps: ProbeStep[];
   /** Human summary for the GitHub annotation when it fails. */
   summary: string;
@@ -38,8 +54,10 @@ export interface ProbeDeps {
    *  or unreadable, which is a RETRY, not a failure: the old version answers here
    *  during propagation. */
   liveCommit: () => Promise<string | null>;
-  /** The unauthenticated liveness signal: 200 plus its parsed body. */
-  health: () => Promise<{ status: number; dbOk: boolean | null }>;
+  /** The unauthenticated liveness signal: 200 plus its parsed body. `reason` is the
+   *  body's own reason field (`ok`, `db_unreachable`, `heartbeat_stale`), or null
+   *  when it did not say. */
+  health: () => Promise<{ status: number; dbOk: boolean | null; reason?: string | null }>;
   /** The booker's read path for the isolated test bucket. */
   availability: () => Promise<{ status: number; slotsPresent: boolean }>;
   /** Injected so tests never wait. */
@@ -53,6 +71,15 @@ export interface ProbeConfig {
   versionTimeoutMs: number;
   /** Gap between version polls. */
   pollIntervalMs: number;
+  /**
+   * How many CONSECUTIVE answers must name the expected commit (#3095). Default 1.
+   *
+   * During a gradual deployment both versions answer at once, and a version override
+   * Cloudflare did not apply is routed by the split instead, so the new version still
+   * answers some of the time. One match then proves nothing about the next request;
+   * a run of them does.
+   */
+  confirmations?: number;
 }
 
 /**
@@ -80,22 +107,29 @@ export const DEFAULT_POLL_INTERVAL_MS = 5_000;
  */
 export async function waitForVersion(
   deps: Pick<ProbeDeps, "liveCommit" | "sleep" | "now">,
-  cfg: Pick<ProbeConfig, "expectedCommit" | "versionTimeoutMs" | "pollIntervalMs">,
-): Promise<{ matched: boolean; lastSeen: string | null; attempts: number }> {
+  cfg: Pick<ProbeConfig, "expectedCommit" | "versionTimeoutMs" | "pollIntervalMs" | "confirmations">,
+): Promise<{ matched: boolean; lastSeen: string | null; attempts: number; bestStreak: number }> {
+  const needed = Math.max(1, Math.floor(cfg.confirmations ?? 1));
   const deadline = deps.now() + cfg.versionTimeoutMs;
   let lastSeen: string | null = null;
   let attempts = 0;
+  let streak = 0;
+  let bestStreak = 0;
 
   for (;;) {
     attempts++;
     lastSeen = await deps.liveCommit();
-    if (lastSeen === cfg.expectedCommit) {
-      return { matched: true, lastSeen, attempts };
+    // Any other answer, including no answer, breaks the run: a confirmation is a
+    // statement about consecutive requests, never about how many matched in total.
+    streak = lastSeen === cfg.expectedCommit ? streak + 1 : 0;
+    bestStreak = Math.max(bestStreak, streak);
+    if (streak >= needed) {
+      return { matched: true, lastSeen, attempts, bestStreak };
     }
     // Check the deadline AFTER attempting, so a timeout of 0 still makes one
     // attempt: a probe that never even asks is the worst possible outcome.
     if (deps.now() >= deadline) {
-      return { matched: false, lastSeen, attempts };
+      return { matched: false, lastSeen, attempts, bestStreak };
     }
     await deps.sleep(cfg.pollIntervalMs);
   }
@@ -106,7 +140,15 @@ export function versionFailureDetail(
   lastSeen: string | null,
   expected: string,
   attempts: number,
+  bestStreak = 0,
+  confirmations = 1,
 ): string {
+  // Answered sometimes and never long enough: during a split that is the shape of a
+  // version override not being applied, which is neither "never answered" nor "still
+  // serving the old version", and sending the reader to either would be wrong (L11).
+  if (confirmations > 1 && bestStreak > 0) {
+    return `${expected} answered intermittently over ${attempts} attempts, at best ${bestStreak} in a row and never ${confirmations} in a row; the requests are not reliably reaching that version (a version override not being applied reads exactly like this)`;
+  }
   if (lastSeen === null) {
     return `the version endpoint never answered after ${attempts} attempts; the deploy may have uploaded but the Worker is not serving, or the probe key is wrong`;
   }
@@ -128,12 +170,19 @@ export async function runProbe(deps: ProbeDeps, cfg: ProbeConfig): Promise<Probe
     ok: version.matched,
     detail: version.matched
       ? `${cfg.expectedCommit} live after ${version.attempts} attempt(s)`
-      : versionFailureDetail(version.lastSeen, cfg.expectedCommit, version.attempts),
+      : versionFailureDetail(
+          version.lastSeen,
+          cfg.expectedCommit,
+          version.attempts,
+          version.bestStreak,
+          cfg.confirmations ?? 1,
+        ),
   });
 
   if (!version.matched) {
     return {
       ok: false,
+      fault: "version",
       steps,
       summary:
         "the deployed commit never became live, so the app's health was not judged " +
@@ -148,7 +197,9 @@ export async function runProbe(deps: ProbeDeps, cfg: ProbeConfig): Promise<Probe
     detail:
       health.status === 200
         ? "200, database reachable and no cron lane stale"
-        : `${health.status}${health.dbOk === false ? ", database unreachable" : ""}`,
+        : `${health.status}${health.dbOk === false ? ", database unreachable" : ""}${
+            health.reason === "heartbeat_stale" ? ", a cron lane is stale" : ""
+          }`,
   });
 
   const avail = await deps.availability();
@@ -165,8 +216,16 @@ export async function runProbe(deps: ProbeDeps, cfg: ProbeConfig): Promise<Probe
   });
 
   const failed = steps.filter((s) => !s.ok);
+  // Fleet only when the health failure is the ONLY failure and it says, in its own
+  // words, that a cron lane is stale. Anything less specific is the release's.
+  const onlyStaleLane =
+    failed.length === 1 &&
+    failed[0].name === "health endpoint" &&
+    health.status === 503 &&
+    health.reason === "heartbeat_stale";
   return {
     ok: failed.length === 0,
+    fault: failed.length === 0 ? "none" : onlyStaleLane ? "fleet" : "release",
     steps,
     summary:
       failed.length === 0

@@ -514,13 +514,15 @@ jobs:
   # schema. Under the runbook the migration is applied before merge, so the check
   # is already green here.
   deploy:
-    # 20, not the 15 its siblings get: the post-deploy probe POLLS for up to
-    # DEFAULT_VERSION_TIMEOUT_MS (240s) waiting for Cloudflare to serve the new
-    # commit, and this bound has to clear that comfortably or the job timeout
-    # kills the probe before the probe can report its own honest failure, which
-    # would read as a hung deploy rather than as propagation never completing.
-    # Pinned against the probe's own constant by scripts/test-workflow-timeouts.ts.
-    timeout-minutes: 20  # measured max 103s, of which the probe may poll 240s
+    # 40, sized against the gradual deploy's worst case rather than its usual run
+    # (#3095): the wait for a clear cron window (at most 12.5 minutes, from
+    # maxCronWaitMs over the real schedule), the canary probe (2 minutes), the
+    # promotion probe (DEFAULT_VERSION_TIMEOUT_MS, 4 minutes), two uploads and the
+    # build. Too short and the job is killed while the probe is still legitimately
+    # waiting, which reads as a hung deploy and, worse, can leave the split standing
+    # until the settle step below ends it. Pinned against those constants by
+    # scripts/test-workflow-timeouts.ts.
+    timeout-minutes: 40  # measured max 103s before #3095 (one deploy, one probe); the gradual path adds a second upload, a split and a second probe, not yet measured
     needs: [ci, static-checks]
     # Each need is judged by result, explicitly. A bare if: gets an implicit
     # success(), which GitHub fails whenever ANY job above this one was skipped,
@@ -528,6 +530,15 @@ jobs:
     # condition here skipped every deploy with ci green and nothing paging.
     if: ${{ !cancelled() && needs.ci.result == 'success' && needs.static-checks.result == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
+    # No concurrency group of its own, deliberately. Deploys are already serialised by
+    # the workflow's group on main (never cancelled while running), and a PENDING main
+    # run that a newer merge supersedes never deploys, which drops nothing: main is
+    # linear, so the newer commit contains it and its own deploy pages if it fails. A
+    # group shared with the Rollback workflow would be worse than none: GitHub keeps one
+    # pending run per group and cancels the older with no alert, so a merge could
+    # silently drop a queued rollback, or a rollback a queued deploy. The two are kept
+    # apart by the deploy instead, which re-reads what is serving before every change
+    # and stops if something else changed it (EXIT.interfered, DEPLOY.md).
     # Job level, so it REPLACES the repo default for this job only: checkout needs
     # contents, and the ci gate below reads the commit's check runs.
     permissions:
@@ -557,43 +568,65 @@ jobs:
         run: pnpm install --frozen-lockfile
       # #1037: stamp the commit INTO the bundle before building, so the live
       # Worker can report which version it is serving and the probe below can tell
-      # the new deploy from the previous one. Must run before cf:deploy (which
-      # builds), or the bundle carries the "dev" placeholder and the probe compares
-      # nothing.
+      # the new deploy from the previous one. Must run before cf:build, or the
+      # bundle carries the "dev" placeholder and the probe compares nothing.
       - name: Stamp build info with the deploying commit
         run: node --experimental-strip-types scripts/stamp-build-info.ts "$GITHUB_SHA"
 
-      - name: Deploy (Cloudflare / OpenNext)
+      # #3078: the build alone, through cf:build, so the bundle env guard
+      # (scripts/check-bundle-env.ts) still refuses a bundle carrying any .env value
+      # before anything is uploaded. The deploy below uploads THIS build.
+      - name: Build (Cloudflare / OpenNext, with the bundle env guard)
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           NEXT_PUBLIC_APP_URL: https://slate.trypennie.app
           NEXT_PUBLIC_SUPABASE_URL: https://drukfvgaynzrralbzkzj.supabase.co
           NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
           NEXT_PUBLIC_GOOGLE_HOSTED_DOMAIN: trypennie.com
+        run: pnpm cf:build
+
+      # #3095: a gradual deploy. It uploads the build twice (a canary in cron standby,
+      # and the release), sends 10% of traffic to the canary, probes it through the
+      # Cloudflare-Workers-Version-Overrides header, then promotes the release to 100%
+      # and probes again, or puts the old version back at 100%. Every path that opens
+      # the split ends it, at 100% old or 100% new, before this step exits, and its
+      # exit code names which (scripts/lib/gradual-deploy.ts, EXIT). A failure fails
+      # this job, and a failed job on a push to main posts a Slack alert
+      # (.github/workflows/deploy-alert.yml). The probe it runs is the post-deploy
+      # probe (#1037), shared through scripts/lib/post-deploy-probe-http.ts: it waits
+      # for the deployed commit before judging health, now five answers in a row.
+      #
+      # Bare node, no alias hook: scripts/test-dependency-free-scripts.ts holds it to
+      # importing nothing outside scripts/. wrangler and the adapter come from the
+      # install above, through `pnpm exec`.
+      - name: Deploy gradually (10% canary, probe, then promote or restore)
+        id: deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          APP_URL: https://slate.trypennie.app
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
+          GITHUB_SHA: ${{ github.sha }}
+          # What this run did to the deployment, read by the settle step below.
+          DEPLOY_STATE_FILE: ${{ runner.temp }}/deploy-state.txt
         run: |
           # This job only runs on a push to main (see `if:` above), so a missing
           # token is never a legitimate skip: it means main is silently NOT
           # deploying. Fail loudly (#233) with an annotation, don't exit 0 green.
           if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
-            echo "::error title=main is NOT deploying::CLOUDFLARE_API_TOKEN is unset on a push to main, so this merge did not deploy. Add the secret under Settings > Secrets and variables > Actions, then re-run this job (or run 'pnpm cf:deploy' locally)."
+            echo "::error title=main is NOT deploying::CLOUDFLARE_API_TOKEN is unset on a push to main, so this merge did not deploy. Add the secret under Settings > Secrets and variables > Actions, then re-run this job (or run 'pnpm cf:deploy:verified' locally)."
             exit 1
           fi
-          pnpm cf:deploy
+          node --experimental-strip-types scripts/deploy-gradual.ts
 
-      # #1037: every merge reaches 100% of traffic instantly, and detection used to
-      # fall to the scheduled canary (~30 min for the dry tick, ~6h for funnel
-      # breakage). This probes the live site immediately: it POLLS /api/smoke/version
-      # until the commit just deployed is actually being served, and only THEN judges
-      # /api/health and the availability read path. Checking health without that
-      # confirmation would get a 200 from the previous version during Cloudflare's
-      # propagation window and report a broken deploy as healthy.
-      #
-      # A failure here fails this job, and a failed job on a push to main already
-      # posts a Slack alert (.github/workflows/deploy-alert.yml), so no new alerting
-      # is needed. It does NOT roll back; it makes a bad deploy loud.
-      - name: Post-deploy probe (live site is serving this commit and is healthy)
+      # A run cancelled or timed out between opening and ending the split cannot end
+      # it itself. This reads what is serving and, if a split was left standing, puts
+      # its larger share (the old version, at 90%) back at 100%. On a whole deployment
+      # it does nothing. So production is never left split for longer than one run.
+      # Only once the deploy step has started: a refusal by the ci gate, or a failed
+      # install or build, never touched production, and settling then would only
+      # report that it could not read a deployment nobody changed.
+      - name: Settle a split left standing
+        if: (failure() || cancelled()) && (steps.deploy.outcome == 'failure' || steps.deploy.outcome == 'cancelled')
         env:
-          APP_URL: https://slate.trypennie.app
-          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
-          GITHUB_SHA: ${{ github.sha }}
-        run: node --experimental-strip-types scripts/post-deploy-probe.ts
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          DEPLOY_STATE_FILE: ${{ runner.temp }}/deploy-state.txt
+        run: node --experimental-strip-types scripts/deploy-gradual.ts --settle

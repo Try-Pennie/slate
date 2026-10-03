@@ -24,6 +24,12 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseWorkflowJobs, readTimeoutMinutes } from "./lib/scan-workflow-jobs.ts";
 import { assert, finish } from "./lib/harness.ts";
+import {
+  CANARY_VERSION_TIMEOUT_MS,
+  cronsFromWranglerConfig,
+  maxCronWaitMs,
+} from "./lib/gradual-deploy.ts";
+import { DEFAULT_VERSION_TIMEOUT_MS } from "./lib/post-deploy-probe.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const DIR = join(ROOT, ".github", "workflows");
@@ -163,5 +169,29 @@ assert(jobCount > 0, `there were jobs to check (checked ${jobCount})`);
   );
 }
 
+// --- the gradual deploy's worst case fits inside the job (#3095) -----------------
+//
+// The deploy now waits for a clear cron window, probes the canary, and probes again
+// after promoting. A job killed in the middle of that can leave the split standing
+// until its settle step runs, so the bound is sized against the worst case read from
+// the code's own constants and the real cron schedule, plus ten minutes for the
+// install, the build and the two uploads.
+{
+  const ci = readFileSync(join(DIR, "ci.yml"), "utf8");
+  const deploy = parseWorkflowJobs(ci).find((j) => j.name === "deploy");
+  const crons = cronsFromWranglerConfig(readFileSync(join(ROOT, "wrangler.jsonc"), "utf8"));
+  assert(crons !== null, "the cron schedule is readable, so the wait it can impose is known");
+  const worstMs = maxCronWaitMs(crons ?? []) + CANARY_VERSION_TIMEOUT_MS + DEFAULT_VERSION_TIMEOUT_MS;
+  const neededMinutes = worstMs / 60_000 + 10;
+  assert(
+    (deploy?.timeoutMinutes ?? 0) >= neededMinutes,
+    `the deploy job's timeout (${deploy?.timeoutMinutes}m) covers the gradual deploy's worst case (${Math.ceil(neededMinutes)}m: the longest cron wait, both probe windows, and ten minutes for install, build and uploads)`,
+  );
+  const rollback = parseWorkflowJobs(readFileSync(join(DIR, "rollback.yml"), "utf8")).find((j) => j.name === "rollback");
+  assert(
+    (rollback?.timeoutMinutes ?? 0) > (DEFAULT_VERSION_TIMEOUT_MS / 60_000) * 2,
+    `the rollback job's timeout (${rollback?.timeoutMinutes}m) clears the probe's own polling window with room to spare`,
+  );
+}
 
 finish();

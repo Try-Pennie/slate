@@ -191,34 +191,143 @@ Change one by editing `wrangler.jsonc` and redeploying.
   `docs/snowflake-setup.md`.
 
 ## 3. Build + deploy
-<!-- runbook-verified: 2026-08-03 (e753ab99) this exact command is what CI runs on every
-     push to main (.github/workflows/ci.yml, the deploy job), so it is executed several
-     times a week against the real target. Most recent success 2026-08-03 for PR #1221,
-     followed by a green post-deploy probe. -->
+
+Production is deployed by CI on every merge to `main`, gradually (#3095, below). By
+hand, the build and an instant deploy to 100% is:
+
+<!-- runbook-verified: 2026-08-03 (e753ab99) this exact command was what CI ran on every
+     push to main until the gradual deploy replaced it on 2026-10-03 (#3095), so it was
+     executed several times a week against the real target. Most recent success under CI
+     2026-08-03 for PR #1221, followed by a green post-deploy probe. It remains the hand
+     path, and the only path for a release that changes a Durable Object class. -->
 
 ```bash
 pnpm run cf:deploy   # build + deploy (NOT `pnpm deploy` — that's a pnpm builtin)
 ```
 
-### What CI does around that command (#1037)
-A merge to `main` reaches 100% of traffic instantly, so the `deploy` job wraps
-`cf:deploy` in two extra steps. Both matter if you ever deploy by hand:
+It goes to 100% of traffic at once with no probe. Prefer `pnpm cf:deploy:verified`
+(below), which at least confirms what went live.
 
-1. **Before** the build, `scripts/stamp-build-info.ts` writes the deploying commit
-   into `src/lib/build-info.ts`, which is compiled into the Worker bundle. The
-   committed value is the placeholder `"dev"` and is *expected* to be stale in git.
-2. **After** the deploy, `scripts/post-deploy-probe.ts` polls
-   `GET /api/smoke/version` (key-authed with `BOOKING_API_KEY_CANARY`) until the live site
-   reports that commit, and only then checks `/api/health` and the availability read
-   path for the isolated `SMOKE` bucket.
+### What CI does: a gradual deploy (#3095)
+The `deploy` job in `.github/workflows/ci.yml` does not deploy straight to 100%. Dan
+decided the shape on 2026-10-03: upload the new version, send 10% of real traffic to it,
+probe it, then promote it to 100% if the probes pass, or leave the old version serving and
+page if they fail. In order:
 
-The order is the point. Checking health without first confirming the new version is
-live gets a 200 from the *previous* version during Cloudflare's propagation window,
-so a completely broken deploy would report healthy. The probe **does not roll back**:
-it fails the job, and a failed job on a push to `main` posts a Slack alert
-(`.github/workflows/deploy-alert.yml`), which turns "broken until the scheduled
-canary notices, up to 30 minutes" into "broken and someone is told in about a
-minute".
+1. **Stamp.** `scripts/stamp-build-info.ts` writes the deploying commit into
+   `src/lib/build-info.ts`, which is compiled into the bundle (#1037). The committed
+   value is the placeholder `"dev"` and is *expected* to be stale in git.
+2. **Build.** `pnpm cf:build`, which carries the bundle env guard (#3078).
+3. **Read what is serving** (`wrangler deployments status`). It must be one version at
+   100%; that version is what every failure restores. A split left behind by a run that
+   died is settled on its larger share first.
+4. **Upload the build twice** (`opennextjs-cloudflare upload`, which is `wrangler versions
+   upload`): a **canary** carrying `SLATE_CRON_STANDBY=1`, and the **release**, the same
+   build without it. Both are tagged with the commit (the rollback reads the tag).
+   Uploading changes nothing anybody is served.
+5. **Wait for a clear cron window** (see "What the split looks like").
+6. **Split**: `wrangler versions deploy <canary>@10% <old>@90%`.
+7. **Probe the canary** through `Cloudflare-Workers-Version-Overrides: slate="<canary id>"`
+   on every request, with the post-deploy probe (#1037): it polls `/api/smoke/version`
+   until the canary's commit answers **five times in a row**, then judges `/api/health`
+   and the availability read for the `SMOKE` bucket. Five in a row because an override
+   Cloudflare does not apply is silently routed by the split, and at 10% one matching
+   answer proves nothing.
+8. **Promote the release** to 100% (`wrangler versions deploy <release>@100%`), and probe
+   again, without the override, five in a row.
+9. **Apply the cron triggers** (`wrangler triggers deploy`). Triggers are not part of a
+   version, so `versions upload` and `versions deploy` never touch them; this is what a
+   plain `wrangler deploy` used to do implicitly. Only after the promotion probe, so a
+   restore never leaves new triggers driving old code.
+10. **Deploy the log tail worker** (`slate-log-tail`, #3160) whole: `wrangler deploy -c
+   wrangler.log-tail.jsonc`. It is not split. It goes LAST because it binds to an
+   entrypoint of Slate's (`LogShippingReceipt`, through a service binding, #3191), which
+   has to be serving 100% before the tail worker that calls it is deployed. A change to
+   its redaction (`src/lib/log-shipping/`, `src/lib/api/client-error-scrub.ts`) ships
+   with the merge. If it fails (exit 23), Slate is NOT rolled back: it has already
+   passed its probes, and the tail worker deploy is safe to re-run. It is never deployed
+   when Slate did not reach a healthy 100%.
+
+Every failure path ends at **100% old or 100% new, decided explicitly**, before the step
+exits, and the exit code says which (`EXIT` in `scripts/lib/gradual-deploy.ts`, pinned by
+`scripts/test-gradual-deploy.ts`, which drives every combination of outcomes):
+
+| exit | what happened | production ends on |
+|---|---|---|
+| 0 | passed at 10% and at 100% | new |
+| 10 | could not read what is serving, the cron schedule, or the canary key | unchanged |
+| 11 | an upload failed (including a Durable Object class change, which Cloudflare refuses to upload as a version) | unchanged |
+| 12 | the split call failed | old (restored) |
+| 13 | **the canary failed its probe at 10%** | old (restored) |
+| 14 | the promotion call failed | old (restored) |
+| 15 | the release failed its probe at 100% | old (restored) |
+| 16 | promoted, and health reports a stale cron lane | new |
+| 17 | promoted, and `wrangler triggers deploy` failed (safe to re-run) | new |
+| 18 | an error was thrown after the split opened | old (restored) |
+| 19 | an error was thrown before the split opened (an upload, the cron window, a read); caught by the run | unchanged |
+| 20 | **a restore failed 3 times: production may still be split** | unknown: run the Rollback workflow |
+| 21 | a split left by an earlier run is led by a cron standby canary, or its larger share cannot be read | unchanged: end the split by hand |
+| 22 | production was changed by something else mid-run (a rollback, a hand deploy); this run stopped and touched nothing more | unknown: whatever that change left, which this run does not undo |
+| 23 | promoted and healthy, and the log tail worker (`slate-log-tail`) could not be deployed after it; Slate is not rolled back | new |
+| 24 | the deploy script itself failed outside its own handling | unknown: the settle step reads what the run recorded |
+
+Any non-zero exit fails the job, and a failed job on a push to `main` posts a Slack alert
+(`.github/workflows/deploy-alert.yml`). A job cancelled or timed out mid-run cannot end the
+split itself, so its last step, `deploy-gradual.ts --settle` (`if: failure() ||
+cancelled()`), reads what is serving and puts a leftover split's larger share, the old
+version, back at 100%.
+
+**A deploy and a rollback never wait for each other, and neither is ever dropped.** GitHub
+keeps only one PENDING run per concurrency group and cancels the older pending one with no
+alert, so a group shared by the two would let a merge silently drop an emergency rollback
+queued behind a running deploy, or the reverse. Instead:
+
+- The Rollback workflow has a group of its own per run, so it starts at once, every time.
+  Cloudflare can roll back from a split, so it never needs the deploy to finish.
+- The deploy re-reads what is serving before opening the split, before promoting, and
+  before every restore. If production is no longer a state this run produced, it stops
+  and leaves it exactly as it is (exit 22), so a rollback that landed mid-deploy stands.
+  The window left is the seconds between that read and the call; a rollback that loses
+  that race is overwritten by the promotion, and its own probe then fails and pages.
+- Deploys themselves stay serialised by the workflow's group on `main`. A pending main
+  run superseded by a newer merge never deploys, which drops nothing: `main` is linear, so
+  the newer commit contains it, and its own deploy pages if it fails.
+
+**A stale cron lane is not the release's fault.** Health answers 503 when a lane heartbeat
+is stale, which is read from the shared database and reads the same from either version.
+Restoring the old version would change nothing, and refusing to ship would block the fix
+for that very lane (the canary runs no lanes). So a stale lane alone neither holds back the
+canary nor restores the old version; at 100% it fails the job (exit 16) so somebody looks.
+Every other probe failure is the release's.
+
+### What the split looks like
+For the length of the canary probe (about 30 seconds when healthy, at most about six
+minutes), production is a deployment of two versions: the canary at 10% and the version
+that was serving at 90%. Each request is routed independently by those percentages, so a
+lead can meet both versions across page loads. Then it is one version at 100% again.
+
+- **Cron lanes run only on the old version.** Cloudflare does not document which version a
+  scheduled event is handed to while two serve, so nothing relies on it: the canary's
+  `scheduled()` sees `SLATE_CRON_STANDBY=1` and runs no lane (`worker/cron-standby.ts`),
+  so nothing runs twice and unproven code never runs a lane. A tick handed to the canary is
+  dropped, which is why the split only opens when no hourly or daily cron instant falls
+  inside it (the deploy waits, at most 12.5 minutes): only the every 1, 5, 10 and 15 minute
+  lanes can lose a tick, and their next tick catches up. The release, promoted at the end,
+  is the same build without the standby variable.
+- **Durable Objects** (`BURST_LIMITER`): Cloudflare assigns each object ONE version per
+  deployment by the same percentages, so about one in ten burst counters runs the canary's
+  `BurstLimiter` for the split, whichever version called it. An object is reset once when
+  its version changes; the count lives in storage, so nothing is lost. Keep the
+  BurstLimiter request shape compatible across one release, because old Worker code can
+  call a new object and the other way round. A change to a Durable Object CLASS (a
+  `migrations` entry) cannot ship gradually at all: the upload refuses (exit 11, nothing
+  changed), and that release ships by hand with `pnpm cf:deploy:verified`.
+- **Cost.** Two uploads, a split and a second probe add roughly a minute to each deploy,
+  plus the cron window wait when a merge lands just before the hour (about one deploy in
+  ten). At the 530 deploys of the 30 days to 2026-10-03, that is an estimated 500 to 600
+  extra billed minutes a month on the standard Linux runner, not yet measured.
+- **Rehearsal.** Not yet run against a real deployment; see "Rehearsing on the load test
+  Worker" under Rollback.
 
 ### The test buckets are seeded by hand, after the deploy (#396, #2660)
 
@@ -264,9 +373,10 @@ slots, `PARTNER` answers the same 404 a typo does:
 
 ### Deploying by hand, verified (#1190)
 
-`pnpm cf:deploy` on its own skips both steps, so the live site reports commit `dev`
-and the next CI deploy is the first thing to confirm a version again. The occasion for
-a hand deploy is an urgent fix when the pipeline is unavailable or too slow, which is
+`pnpm cf:deploy` on its own skips the stamp and the probe, so the live site reports
+commit `dev` and the next CI deploy is the first thing to confirm a version again. The
+occasion for a hand deploy is an urgent fix when the pipeline is unavailable or too slow,
+or a release that changes a Durable Object class (which cannot ship gradually), which is
 exactly when an unverified release is most expensive, so use:
 
 <!-- runbook-unverified: it deploys production, so running it to prove the command
@@ -280,9 +390,13 @@ exactly when an unverified release is most expensive, so use:
 BOOKING_API_KEY_CANARY=<the key the deployment holds> pnpm cf:deploy:verified
 ```
 
-It runs the same three steps as CI, calling the same two scripts, so the two paths
-cannot drift into verifying different things: stamp the commit from `git rev-parse
-HEAD`, deploy, then poll the live version and judge health. `APP_URL` targets
+**It is NOT gradual**: it goes to 100% at once and then probes, the way CI did before
+#3095. It also applies the cron triggers, as `wrangler deploy` always does.
+
+It runs the stamp, a deploy and the probe, through the same stamp script and the same
+probe CI uses (the probe's reads are shared, `scripts/lib/post-deploy-probe-http.ts`), so
+the two paths cannot drift into verifying different things: stamp the commit from `git
+rev-parse HEAD`, deploy, then poll the live version and judge health. `APP_URL` targets
 something other than production.
 
 The version it deploys is tagged with that commit and carries the release message
@@ -487,8 +601,12 @@ not a subset; `scripts/test-cron-routes.ts` fails CI if any lane below drifts):
 - `17 4 * * *` **and** `17 10 * * *` → `/api/cron/advisor-photos` (daily advisor photo refresh from the Google directory, #3027; the 10:17 run stands down when the 04:17 run already reached a verdict, so it is the automatic re attempt; held back on the load test Worker)
 - `0 */6 * * *` → `/api/cron/snowflake-reconcile` (counts Supabase vs Snowflake per mirrored table + a positive control, Slack-alerts on drift, #1101; the precondition future deletion must pass) **+** `/api/cron/erasure-audit` (reads the pii.erasure audit trail and Slack-alerts if Snowflake still holds contact PII for an erased booking, i.e. the warehouse purge is incomplete, #1103; also executes the purge SQL itself against the warehouse with an id that cannot match, so a statement that stops compiling pages on `snowflake_purge_sql_broken` instead of being discovered during a real deletion request, #1128)
 
-No secret beyond `CRON_SECRET` (already set on the app) is needed — the crons
-deploy with the app via `pnpm cf:deploy`. Until the domain is Google-verified,
+No secret beyond `CRON_SECRET` (already set on the app) is needed. The trigger
+schedule is NOT part of a Worker version: `pnpm cf:deploy` (a plain `wrangler deploy`)
+applies it, and the gradual deploy applies it with `wrangler triggers deploy` once the
+release is at 100% (#3095). A rollback does not revert it. During a gradual deploy's split
+only the version that was already serving runs lanes (see "What the split looks like").
+Until the domain is Google-verified,
 the watch-registration attempt fails harmlessly (caught); real-time push starts
 working once verification is done.
 
@@ -566,9 +684,12 @@ npx wrangler secret put BETTERSTACK_SOURCE_TOKEN -c wrangler.log-tail.jsonc
 
 ### Redeploying it
 
-CI deploys Slate only, never the tail worker. So a change to the redaction
-(`src/lib/log-shipping/`, or `src/lib/api/client-error-scrub.ts`, which it imports) is
-not live until somebody re-runs step 3. The secret survives a redeploy.
+CI deploys it on every production deploy, whole, LAST: after Slate is promoted and has
+passed its probe (#3165; "What CI does: a gradual deploy", step 10), because it binds to
+an entrypoint of Slate's (#3191). So a change to the redaction (`src/lib/log-shipping/`,
+or `src/lib/api/client-error-scrub.ts`, which it imports) is live with the merge. A
+failed tail worker deploy fails the job (exit 23) without rolling Slate back. By hand,
+step 3 above still works. The secret survives a redeploy.
 
 **Since #3182 the dependency runs both ways.** The tail worker binds Slate's
 `LogShippingReceipt` entrypoint, so for any change that ADDS, renames or removes that
@@ -578,8 +699,9 @@ and the entrypoint name is unchanged. Whether Cloudflare refuses a deploy whose
 binding names an entrypoint the target does not yet export, or accepts it and fails
 each call, was not measured (it means deploying production); in the second case the
 receipts fail, are logged as `receipt=failed`, and the watchdog pages until Slate
-catches up, so nothing is lost but a page. Any automated deploy that ships the tail
-worker beside Slate must follow the same order for those changes.
+catches up, so nothing is lost but a page. The CI deploy follows that order for EVERY
+change, not only those: the tail worker goes last, after Slate is promoted and healthy
+(step 10 of "What CI does: a gradual deploy").
 
 ### When records stop arriving
 
@@ -1026,11 +1148,67 @@ it is slower. Nobody outside the Worker holds this token.
   Slate; see "Log shipping to Better Stack".
 
 ## Rollback
-Both the app and its crons run on the single **main** Worker, so a rollback is one
-command. Redeploys are versioned by Cloudflare; roll back to the previous good
-version when a deploy breaks production.
+Both the app and its crons run on the single **main** Worker, so a rollback re-points
+one Worker. Every deploy leaves its versions uploaded at Cloudflare, so going back is a
+re-point rather than a rebuild.
 
-Find the last-known-good version id:
+**What a rollback does NOT revert.** The database, or any data a bound store holds
+(Cloudflare: "resources connected to your Worker will not be changed during a rollback").
+The cron trigger schedule, which is not part of a version. And do not count on it
+reverting a secret or var changed since the target version was uploaded: assume any such
+change is still in force and set it back by hand. If a bad deploy shipped alongside a DB
+migration, roll the code back first, then decide separately whether the schema change is
+backward-compatible or also needs reverting (see Backup below). Never roll code back to a
+version that predates a migration its successor depends on. `wrangler rollback` refuses
+to cross a Durable Object class change.
+
+**Which version.** Since #3095 every release leaves three deployments behind: the old
+version at 100%, the 10/90 split, and the new version at 100%. So "the previous
+deployment" is the split, and the version beside the old one in it is a canary uploaded
+in cron standby: serving it at 100% would restore the code and switch every cron lane
+off. The default target is therefore the newest version that served 100% ON ITS OWN,
+and a canary is refused even when named (`scripts/lib/rollback-plan.ts`, pinned by
+`scripts/test-rollback-plan.ts`). Among those it takes the newest that carries a commit
+tag, so the probe can confirm what serves: `wrangler secret put` makes an untagged version
+at 100% for every secret, and those are skipped and named in the result. With nothing
+tagged at all (history from before the gradual deploy) it falls back to the newest
+untagged version and reports the rollback as unconfirmed (exit 34). A NAMED version is
+honoured as is.
+
+### The Rollback workflow (#3094)
+Actions > **Rollback** > Run workflow. Leave `version_id` empty for the newest known good
+version, or name one; give a reason. It runs `wrangler rollback <id> -y`, then the same
+post-deploy probe the deploy runs, against the commit the target was tagged with, five
+answers in a row before health is judged. Anything other than a confirmed, healthy
+rollback posts to the alerts channel. It never waits for a deploy and is never queued
+behind one (see "A deploy and a rollback never wait for each other" above): a deploy that
+finds production changed under it stops and leaves the rollback standing.
+
+<!-- runbook-unverified: dispatching it re-points production traffic, and it has not yet
+     been dispatched. Its decisions (target choice, the canary refusal, every ending and
+     its alert) are proven offline by scripts/test-rollback-plan.ts and
+     scripts/test-notify-rollback.ts; the rehearsal below is what proves the commands. -->
+
+```bash
+gh workflow run rollback.yml -f reason="<why>"
+```
+
+A version deployed before #3095 carries no commit tag, so the workflow cannot know what
+it should report: it still rolls back (an emergency must not wait), then exits 34 and
+says so. Pass `expected_commit` to have it confirmed.
+
+| exit | what happened |
+|---|---|
+| 0 | rolled back; the target serves its commit and passed the probe |
+| 30 | could not read the deployments or the target; nothing changed |
+| 31 | refused (no known good version, the current version named, or a canary named); nothing changed |
+| 32 | `wrangler rollback` failed; production is most likely unchanged |
+| 33 | rolled back, and the target FAILED its probe |
+| 34 | rolled back, and which commit serves could not be confirmed (no tag, none supplied) |
+| 35 | rolled back, and health reports a stale cron lane |
+
+### By hand
+From a checkout with wrangler logged in. List the deployments to find a version id:
 
 <!-- runbook-verified: 2026-08-03 (b2d44552) run by an operator against the live Worker on
      wrangler 4.65.0; listed ten uploaded versions with the active one at 100%, so there
@@ -1040,26 +1218,92 @@ Find the last-known-good version id:
 wrangler deployments list
 ```
 
-Then roll back to it (omit the id to roll back to the immediately prior version):
+Then the same rollback and probe the workflow runs (`ROLLBACK_VERSION_ID` is optional):
 
 <!-- runbook-unverified: re-points production traffic, so it cannot be rehearsed against
-     the live Worker. The paragraph below says to dry-run the whole flow deliberately
-     before you need it in anger; that rehearsal is the only real proof of this step. -->
+     the live Worker; the rehearsal on the load test Worker below is its proof. -->
 
 ```bash
-wrangler rollback [<version-id>]
+BOOKING_API_KEY_CANARY=<the key the deployment holds> ROLLBACK_REASON="<why>" pnpm cf:rollback
 ```
 
-`wrangler rollback` re-points traffic to an already-uploaded version; it does not
-rebuild. It restores code and bindings only (**it does not revert secrets, `vars`,
-or the database**). If a bad deploy shipped alongside a DB migration, roll the code
-back first (above), then decide separately whether the schema change is
-backward-compatible or also needs reverting (see Backup below). Never roll code
-back to a version that predates a migration its predecessor depends on.
+Or the bare command, which probes nothing (omit the id to go to the immediately prior
+VERSION, which after a gradual deploy can be a canary: name the id):
 
-Dry-run the flow in a non-prod context before you need it in anger: deploy a
-trivial change, `wrangler deployments list`, `wrangler rollback`, then re-hit
-`/api/health` to confirm `200`.
+<!-- runbook-unverified: re-points production traffic, so it cannot be rehearsed against
+     the live Worker. -->
+
+```bash
+wrangler rollback <version-id>
+```
+
+To END a split by hand (a gradual deploy that died and whose settle step failed), put the
+version that should serve back at 100%:
+
+<!-- runbook-unverified: re-points production traffic; it is the command the gradual
+     deploy's own restore and settle steps run, which are proven offline by
+     scripts/test-gradual-deploy.ts. -->
+
+```bash
+wrangler versions deploy <version-id>@100% -y
+```
+
+### Rehearsing on the load test Worker
+The rehearsal is against `env.loadtest` in `wrangler.jsonc`, the load test Worker
+(`slate-loadtest`, no route, workers.dev only), never production. Both commands below
+print the Worker they resolved through wrangler's own config reader before touching
+anything (`target: the slate-loadtest Worker, routes []`), refuse when `WRANGLER_ENV` is
+set and the resolved Worker is not that environment's or holds a route, and under an
+environment every message names that Worker instead of saying "production" (#3165). So a
+rehearsal that loses `WRANGLER_ENV` does not reach production silently: it prints
+`target: production (the slate Worker)` first, and that line is the one to read.
+
+In order, which matters:
+
+1. **A Supabase branch to point at.** A branch made through the connector hands out only
+   a publishable key. Read the branch's real SECRET key with the Supabase CLI under your
+   own login (`supabase projects api-keys --project-ref <branch ref> --reveal -o json`; no
+   grants are needed), never through a tool that echoes it, and seed the branch per
+   `scripts/loadtest/RUNBOOK.md`.
+2. **Each build stamps the commit first, with the same sha the deploy is told.**
+   `node --experimental-strip-types scripts/stamp-build-info.ts <sha>`, then `pnpm
+   cf:build` from a tree with no `.env*` file, with the load test `NEXT_PUBLIC_*` values
+   (the runbook's "Build" section). Pass that same `<sha>` as `GITHUB_SHA` below, or the
+   probe waits for a commit the build does not report.
+3. **A baseline, the runbook's way:** `npx wrangler deploy --env loadtest`, so there is a
+   version serving 100% to restore to.
+4. **Then the secrets** (`SUPABASE_SECRET_KEY` from step 1, `BOOKING_API_KEY_CANARY`,
+   `CRON_SECRET`, each by `wrangler secret put --env loadtest`, value on stdin). After the
+   baseline, because a put needs the Worker to exist, and BEFORE the gradual deploys,
+   because every put makes a new untagged version at 100%. The rollback skips untagged
+   versions in favour of the newest tagged one and says which it skipped, so puts made
+   between the two gradual deploys move the rollback target nowhere surprising, but
+   they clutter what the rehearsal is meant to show.
+5. **Two gradual deploys**, on two different commits, each built as in step 2.
+   `SMOKE_BUCKET` must name a bucket the seeded branch holds and publishes slots for
+   (`112` worked), or the probe's availability read answers 404 and every run restores:
+
+<!-- runbook-verified: 2026-10-03 (935050a6) run against slate-loadtest (workers.dev only, never production) from a local build of PR #3165 head 505ce1ec; two gradual deploys exited 0 with both probes passing. Cron standby on a canary was NOT observed: no cron tick fell inside the roughly 30 second split. -->
+
+```bash
+WRANGLER_ENV=loadtest APP_URL=<the load test workers.dev URL> BOOKING_API_KEY_CANARY=<its key> SMOKE_BUCKET=<a seeded bucket> GITHUB_SHA=<the sha stamped into this build> pnpm cf:deploy:gradual
+```
+
+6. **Roll back** to the first, and let the probe confirm it:
+
+<!-- runbook-verified: 2026-10-03 (4da3dd89) run against slate-loadtest from a local build of PR #3165 head 505ce1ec; exit 0, the rollback restored version ed9902a0 (commit 505ce1ec2bb1), its probe passed, and /api/health answered 200 afterwards. -->
+
+```bash
+WRANGLER_ENV=loadtest APP_URL=<the load test workers.dev URL> BOOKING_API_KEY_CANARY=<its key> SMOKE_BUCKET=<a seeded bucket> ROLLBACK_REASON="rehearsal" pnpm cf:rollback
+```
+
+**Watching cron standby.** `npx wrangler tail --env loadtest --format json` shows which
+version each cron tick reached, and a tick on the canary logs `canary in cron standby`.
+Two things make that hard to catch. At 10% for a split of about 30 seconds, a tick reaching
+the canary at all is luck: the first rehearsal saw none. And a tail started before a
+deploy goes silent once the deployment changes, so restart it after every split,
+promotion and rollback. Exit 0 from both commands, and a `/api/health` 200 from the load
+test address afterwards, is the pass.
 
 ## Backup & recovery
 The Postgres database is managed by Supabase (project **`slate`**, ref

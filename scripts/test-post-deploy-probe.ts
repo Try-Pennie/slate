@@ -201,6 +201,95 @@ const cfg = {
   eq(r.steps.filter((s) => !s.ok).length, 2, "both failures are surfaced, not just the first");
 }
 
+// --- confirmations: one matching answer is not proof during a split (#3095) ----
+//
+// Under a gradual deployment BOTH versions answer at once. A version override that
+// Cloudflare silently did not apply routes the request by the split instead, so the
+// new version still answers about one request in ten, and a single matching answer
+// would let health and availability be judged against whichever version happened to
+// pick up the next request. A run of consecutive matches is what proves the answers
+// are coming from the new version and not from a coin.
+{
+  let n = 0;
+  const seq = ["oldsha1", SHA, "oldsha1", SHA, SHA, SHA];
+  const r = await waitForVersion(
+    deps({ liveCommit: async () => seq[Math.min(n++, seq.length - 1)] }),
+    { ...cfg, confirmations: 3 },
+  );
+  assert(r.matched, "three consecutive matching answers confirm the version");
+  eq(r.attempts, 6, "an isolated match followed by the old version does not count; the streak restarts");
+}
+{
+  // Alternating forever is the shape of an override that is not being applied.
+  let n = 0;
+  const r = await waitForVersion(
+    deps({ liveCommit: async () => (n++ % 2 === 0 ? SHA : "oldsha1") }),
+    { ...cfg, versionTimeoutMs: 60_000, confirmations: 3 },
+  );
+  assert(!r.matched, "a version that answers only some of the time never confirms");
+  assert(r.bestStreak === 1, `and the best run it saw is reported (got ${r.bestStreak})`);
+  assert(
+    versionFailureDetail(r.lastSeen, SHA, r.attempts, r.bestStreak, 3).includes("never 3 in a row"),
+    "the failure says the version answered intermittently, which is a different incident from never answering",
+  );
+}
+{
+  // Positive control on the default: with no confirmations set it behaves exactly as
+  // it always has, so the plain hand deploy path is unchanged.
+  let n = 0;
+  const r = await waitForVersion(
+    deps({ liveCommit: async () => (n++ === 0 ? "oldsha1" : SHA) }),
+    cfg,
+  );
+  assert(r.matched && r.attempts === 2, "with no confirmations configured, one match still suffices");
+}
+
+// --- the fault: whose problem a failure is (#3095) ------------------------------
+//
+// A gradual deploy restores the old version when the NEW version is at fault. A cron
+// lane gone stale is a fact about the fleet, recorded in the shared database: it
+// reads the same from either version, so restoring the old version would change
+// nothing, and refusing to ship would block the very fix for that lane, because the
+// canary does not run cron lanes.
+{
+  const ok = await runProbe(deps(), cfg);
+  eq(ok.fault, "none", "a clean probe has no fault");
+
+  const stale = await runProbe(
+    deps({ health: async () => ({ status: 503, dbOk: true, reason: "heartbeat_stale" }) }),
+    cfg,
+  );
+  assert(!stale.ok, "a stale lane still fails the probe, so it is never reported as healthy");
+  eq(stale.fault, "fleet", "and it is classed as a fleet condition, not a fault in the release");
+
+  const db = await runProbe(
+    deps({ health: async () => ({ status: 503, dbOk: false, reason: "db_unreachable" }) }),
+    cfg,
+  );
+  eq(db.fault, "release", "an unreachable database is the release's fault (a wrong baked URL reads exactly like this)");
+
+  const both = await runProbe(
+    deps({
+      health: async () => ({ status: 503, dbOk: true, reason: "heartbeat_stale" }),
+      availability: async () => ({ status: 500, slotsPresent: false }),
+    }),
+    cfg,
+  );
+  eq(both.fault, "release", "a stale lane never excuses a broken booker read beside it");
+
+  const unknownReason = await runProbe(
+    deps({ health: async () => ({ status: 503, dbOk: null, reason: null }) }),
+    cfg,
+  );
+  eq(unknownReason.fault, "release", "a 503 that does not say why is never excused as a fleet condition");
+
+  const notLive = await runProbe(deps({ liveCommit: async () => "oldsha1" }), {
+    ...cfg,
+    versionTimeoutMs: 10_000,
+  });
+  eq(notLive.fault, "version", "a version that never went live is its own fault");
+}
+
 // The defaults have to be sane on their own terms: long enough for a real
 // propagation, short enough that a broken deploy is known about quickly.
 // Sized from a MEASURED propagation, not a guess. The first real run (merge
