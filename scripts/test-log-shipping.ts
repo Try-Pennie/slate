@@ -109,6 +109,42 @@ const LINK_TOKEN = "9f".repeat(32);
   eq(redactText("see /booking/manage"), "see /booking/manage", "a bare prefix in text is untouched");
 }
 
+{
+  // A token path inside free text, wherever it sits (review of #3160): inside a
+  // query value, encoded or not, after a colon or an equals sign, in a JSON string,
+  // glued to punctuation, mid sentence.
+  const embedded = [
+    `redirect to /login?next=/booking/manage/${MANAGE_TOKEN} refused`,
+    `redirect to /login?next=%2Fbooking%2Fmanage%2F${MANAGE_TOKEN} refused`,
+    `https://slate.trypennie.app/login?next=/booking/manage/${MANAGE_TOKEN}&x=1`,
+    `POST /api/bookings/${MANAGE_TOKEN}/cancel returned 500`,
+    `path:/api/bookings/${MANAGE_TOKEN}/phone`,
+    `{"path":"/booking/manage/${MANAGE_TOKEN}","status":404}`,
+    `url=/book/advisor/${LINK_TOKEN},status=200`,
+    `see [/booking/manage/${MANAGE_TOKEN}]`,
+    `GET\t/booking/manage/${MANAGE_TOKEN}`,
+    `at /booking/manage/${MANAGE_TOKEN}:12:4`,
+  ];
+  for (const text of embedded) {
+    const out = redactText(text);
+    assert(!out.includes(MANAGE_TOKEN) && !out.includes(LINK_TOKEN), `no token survives in "${text}" (got ${out})`);
+  }
+  // The other direction: the surrounding text, and paths that are not token routes,
+  // are untouched.
+  eq(
+    redactText(`POST /api/bookings/${MANAGE_TOKEN}/cancel returned 500`),
+    `POST /api/bookings/${REDACTED_SEGMENT}/cancel returned 500`,
+    "the sentence around a mid sentence token path is kept word for word",
+  );
+  eq(
+    redactText(`{"path":"/booking/manage/${MANAGE_TOKEN}","status":404}`),
+    `{"path":"/booking/manage/${REDACTED_SEGMENT}","status":404}`,
+    "and a JSON string keeps its quotes",
+  );
+  eq(redactText("POST /api/bookings/cancel returned 500"), "POST /api/bookings/cancel returned 500", "a static route in text is kept");
+  eq(redactText("lane /api/cron/recompute took 5101ms"), "lane /api/cron/recompute took 5101ms", "an unrelated path is kept");
+}
+
 // ------------------------------------------------------------- free text
 
 {
@@ -257,6 +293,26 @@ function fetchItem(url: string, logs: TraceItemLike["logs"], exceptions: TraceIt
 }
 
 {
+  // Review of #3160: a field KEY can be built from data too, and a string field
+  // value can quote a token path. Both go through the same scrub.
+  const records = recordsFromTraces([
+    fetchItem("/x", [
+      {
+        timestamp: 1,
+        level: "warn",
+        message: [`slate tag=x msg="redirect refused" next="/booking/manage/${MANAGE_TOKEN}" lead_5551234567=1 ok_key=2`],
+      },
+    ]),
+  ]);
+  const fields = records.find((r) => r.kind === "log")?.fields as Record<string, unknown>;
+  const all = JSON.stringify(records);
+  assert(!all.includes(MANAGE_TOKEN), "a token path in a string field value does not ship");
+  eq(fields.next, `/booking/manage/${REDACTED_SEGMENT}`, "and the value keeps its route");
+  assert(!Object.keys(fields).some((k) => k.includes("5551234567")), "a phone number inside a field key does not ship");
+  eq(fields.ok_key, 2, "an ordinary key and its number are untouched");
+}
+
+{
   const [inv] = recordsFromTraces([{ ...fetchItem("/x", []), scriptVersion: undefined }]);
   eq(inv.version_id, null, "no version reads as null, never as a guessed id");
 }
@@ -309,7 +365,7 @@ await (async () => {
   const refused = fakeFetch(() => new Response("bad token", { status: 401 }));
   const out = await shipRecords(sample, GOOD, refused.fn);
   eq(out.dropped.refused, sample.length, "a refused POST is counted");
-  eq(out.refusedStatus, 401, "with its status");
+  eq(JSON.stringify(out.refusedStatuses), "[401]", "with its status");
   eq(refused.calls.length, 1, "and not retried");
 
   const down = fakeFetch(() => {
@@ -317,6 +373,28 @@ await (async () => {
   });
   const out2 = await shipRecords(sample, GOOD, down.fn);
   eq(out2.dropped.unreachable, sample.length, "a thrown fetch is counted, not rethrown");
+})();
+
+await (async () => {
+  // Review of #3160: a 401 (wrong token, never heals) followed by a 503 (their
+  // outage, heals) must not report only the 503. Every distinct status is kept,
+  // in the order seen.
+  const statuses = [401, 503];
+  const many = recordsFromTraces(
+    Array.from({ length: 20 }, () => fetchItem("/x", [{ timestamp: 1, level: "info", message: ["x".repeat(500)] }])),
+  );
+  const mixed = fakeFetch(() => new Response("", { status: statuses.shift() ?? 500 }));
+  const out = await shipRecords(many, GOOD, mixed.fn, { maxBatchBytes: 8000 });
+  eq(mixed.calls.length, 2, "two requests went");
+  eq(JSON.stringify(out.refusedStatuses), "[401,503]", "and both refusals are reported, the 401 included");
+
+  const same = fakeFetch(() => new Response("", { status: 401 }));
+  const out2 = await shipRecords(many, GOOD, same.fn, { maxBatchBytes: 8000 });
+  eq(JSON.stringify(out2.refusedStatuses), "[401]", "a repeated status is listed once");
+
+  const ok = fakeFetch(() => new Response("", { status: 202 }));
+  const out3 = await shipRecords(many, GOOD, ok.fn, { maxBatchBytes: 8000 });
+  eq(out3.refusedStatuses, undefined, "and none is reported when nothing was refused");
 })();
 
 await (async () => {

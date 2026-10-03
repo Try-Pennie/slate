@@ -60,8 +60,11 @@ export interface ShipOutcome {
   sent: number;
   /** Records that did not reach Better Stack, by reason. Empty when all went. */
   dropped: Partial<Record<DropReason, number>>;
-  /** The HTTP status of a refused POST, for the log line that reports it. */
-  refusedStatus?: number;
+  /** Every distinct HTTP status a POST was refused with, in the order seen. A list,
+   *  because a 401 (a wrong token, which never heals) followed by a 503 (their
+   *  outage, which does) must not be reported as the 503 alone. Absent when
+   *  nothing was refused. */
+  refusedStatuses?: number[];
 }
 
 /** A bare hostname: letters, digits, dots and hyphens. A scheme, a path or a port
@@ -148,7 +151,8 @@ export async function shipRecords(
       if (res.ok) outcome.sent += batch.length;
       else {
         add(outcome, "refused", batch.length);
-        outcome.refusedStatus = res.status;
+        const seen = (outcome.refusedStatuses ??= []);
+        if (!seen.includes(res.status)) seen.push(res.status);
       }
     } catch {
       // Judged on the signal, not the error's name: the runtime and a test double

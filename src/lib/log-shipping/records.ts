@@ -97,7 +97,11 @@ function argText(arg: unknown): string {
 function redactFields(fields: ParsedFields): ParsedFields {
   const out: ParsedFields = {};
   for (const [key, value] of Object.entries(fields)) {
-    out[key] = typeof value === "string" ? cap(redactText(value), TEXT_LIMITS.field) : value;
+    // The KEY through the same scrub as the value (review of #3160): a call site
+    // can build a key from data. The line was already scrubbed whole before it was
+    // parsed, so this is the second of two guards, kept so neither depends on the
+    // other staying in place.
+    out[redactText(key)] = typeof value === "string" ? cap(redactText(value), TEXT_LIMITS.field) : value;
   }
   return out;
 }

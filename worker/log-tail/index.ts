@@ -49,7 +49,7 @@ const tailWorker = {
           sent: outcome.sent,
           dropped,
           ...Object.fromEntries(Object.entries(outcome.dropped).map(([k, v]) => [`dropped_${k.replace(/-/g, "_")}`, v])),
-          refused_status: outcome.refusedStatus,
+          refused_statuses: outcome.refusedStatuses?.join(","),
         });
       }
     } catch (err) {
