@@ -116,8 +116,15 @@ so they survive every deploy; a dashboard-only plain var gets WIPED on the next
 `wrangler deploy`), so they ship with `pnpm cf:deploy` and need no `secret put`.
 Change one by editing `wrangler.jsonc` and redeploying.
 - `GOOGLE_HOSTED_DOMAIN` (required): the server-side SSO domain gate (e.g.
-  `trypennie.com`). Empty = any Google account may sign in. Its build-time
+  `trypennie.com`). It fails CLOSED (#3083): unset or empty refuses every sign-in
+  with "Sign in is unavailable right now", rather than letting any Google account
+  in. Allowing any account takes an explicit `ALLOW_ANY_GOOGLE_DOMAIN=1`, which
+  production must never carry; `scripts/test-hosted-domain-required.ts` pins both
+  for every environment in `wrangler.jsonc`. Its build-time
   `NEXT_PUBLIC_GOOGLE_HOSTED_DOMAIN` twin is set in 2a.
+- `SLATE_DEV_PREVIEW`: never set in a deployment. It is a local `.env.local`
+  opt-in for `/dev/preview`, which acts as any user with no sign-in, and is only
+  honoured under `pnpm dev` (NODE_ENV `development`) on a loopback host (#3086).
 - `AGENT_SCHEDULING_LIVE`: launch flag over the CONSOLE. `"false"` = only super
   admins reach `/admin`; `"true"` opens it to the managers and admins whose roles
   already allow it. The committed production value is `"true"` (changed 2026-10-02), pinned by

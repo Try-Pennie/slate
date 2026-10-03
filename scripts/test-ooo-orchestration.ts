@@ -704,6 +704,59 @@ const input = {
   assert(w.channelPosts.length === 0, "and nothing is posted to the fallback channel");
 }
 
+// --- #3114: an admin cannot decide their own time off; it goes to another admin ---
+//
+// Dan, 2026-10-03: only admins change. A team lead deciding their own stays
+// allowed, asserted below so a rule that refused everyone's own request cannot
+// pass.
+{
+  const w = makeWorld();
+  w.users.set(admin.id, admin);
+  w.users.set(superAdmin.id, superAdmin);
+  const sub = await submitOoo(admin, input, w.deps);
+  assert(sub.ok, "an admin's own request is accepted");
+  const id = sub.ok ? sub.request.id : "";
+  assert(w.channelPosts.length === 1, "with no manager of record it goes to the channel other moderators watch");
+
+  const selfApprove = await approveOoo(id, admin, w.deps);
+  assert(!selfApprove.ok, "the admin cannot approve their own request");
+  assert(
+    !selfApprove.ok && /your own time off/i.test(selfApprove.error ?? "") && /another admin/i.test(selfApprove.error ?? ""),
+    `and is told why and who can, not a bare Not authorized (got: ${selfApprove.ok ? "" : selfApprove.error})`,
+  );
+  const selfReject = await rejectOoo(id, admin, "no", w.deps);
+  assert(!selfReject.ok, "the admin cannot reject their own request either");
+  eq(w.requests.get(id)?.status, "pending", "and the request is still pending after both refusals");
+  assert(auditFor(w, "ooo.approve") === null && auditFor(w, "ooo.reject") === null, "nothing was audited as decided");
+
+  const byOther = await approveOoo(id, superAdmin, w.deps);
+  assert(byOther.ok, "another admin approves it");
+}
+{
+  // An admin who is their OWN manager of record is not DMed buttons that refuse them.
+  const w = makeWorld();
+  const selfManaged: User = { ...admin, id: "u-self-admin", email: "self-admin@trypennie.com", manager_id: "u-self-admin" };
+  w.users.set(selfManaged.id, selfManaged);
+  const sub = await submitOoo(selfManaged, input, w.deps);
+  assert(sub.ok, "a self-managed admin's request is accepted");
+  assert(w.dms.every((d) => d.email !== selfManaged.email), "the admin is NOT DMed approve buttons for their own request");
+  assert(w.channelPosts.length === 1, "it goes to the fallback channel instead");
+  assert(
+    /own manager of record/.test(w.channelPosts[0]) && /another admin/i.test(w.channelPosts[0]),
+    `and the post names this cause and who can act (got: ${w.channelPosts[0].slice(0, 160)})`,
+  );
+  assert(!w.channelPosts[0].includes("cannot approve time off ("), "not confused with the unqualified-role cause");
+}
+{
+  // The direction that must stay open: a team lead decides their own.
+  const w = makeWorld();
+  w.users.set(teamLead.id, teamLead);
+  const sub = await submitOoo(teamLead, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  const own = await approveOoo(id, teamLead, w.deps);
+  assert(own.ok, "a team lead can still approve their own time off (Dan, 2026-10-03)");
+}
+
 // --- approve: full happy path ---
 {
   const w = makeWorld();

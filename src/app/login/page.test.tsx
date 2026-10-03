@@ -181,6 +181,15 @@ describe("LoginPage sign-in error copy", () => {
     expect(alert).not.toMatch(/error|failed|unwrap|constraint|organization/i);
   });
 
+  it("explains an unconfigured sign-in domain as something an admin must fix (#3083)", () => {
+    params.current = new URLSearchParams("error=sign_in_unavailable");
+    render(<LoginPage />);
+
+    const alert = screen.getByRole("alert").textContent ?? "";
+    expect(alert).toMatch(/admin/i);
+    expect(alert).not.toMatch(/GOOGLE_HOSTED_DOMAIN|env|configured/i);
+  });
+
   it("renders no banner for a code it has no copy for", () => {
     params.current = new URLSearchParams("error=not_a_real_code");
     render(<LoginPage />);

@@ -35,6 +35,8 @@ import {
   canModerate,
   canModify,
   canRetrySideEffects,
+  isAdminDecidingOwn,
+  OWN_REQUEST_REFUSAL,
   DEFAULT_REJECTION_NOTE,
   DUPLICATE_REQUEST_MESSAGE,
   formatRequestWhenAndReason,
@@ -588,8 +590,14 @@ async function notifyManagerOfPending(
   // Read from the SAME predicate the action enforces, never a hand-rolled role
   // test, so the button offered and the action performed cannot drift apart. This
   // is the #1468 pattern applied to the notification rather than to a page.
+  //
+  // #3114: an admin named as their OWN manager of record is refused by the same
+  // rule, so they are not DMed either; the request goes to the moderators.
+  const selfApprover = namedManager !== null && isAdminDecidingOwn(namedManager, request);
   const manager =
-    namedManager && canHoldManagerOfRecord(namedManager.role) ? namedManager : null;
+    namedManager && canHoldManagerOfRecord(namedManager.role) && !selfApprover
+      ? namedManager
+      : null;
   // Pass the request id so the notification carries Approve/Decline buttons.
   let ref = manager
     ? await deps.dmUserByEmail(manager.email, text, request.id)
@@ -600,7 +608,11 @@ async function notifyManagerOfPending(
     // DM is a Slack permissions problem, a manager who cannot approve is a roster
     // problem, and no manager at all is neither. One message for one cause (L11).
     let fallbackText: string;
-    if (manager) {
+    if (selfApprover) {
+      fallbackText =
+        `:information_source: *${agentDisplayName(agent)} is their own manager of record and cannot decide their own time off.* ` +
+        `Another admin or a team lead can approve it here.\n\n${text}`;
+    } else if (manager) {
       fallbackText = `:warning: *Couldn't DM ${managerDisplayName(manager)}.* Posting here as a fallback; check the Slack bot's DM permissions.\n\n${text}`;
     } else if (namedManager) {
       fallbackText =
@@ -1120,6 +1132,7 @@ export async function approveOoo(
 ): Promise<OooActionResult> {
   const request = await deps.loadRequest(requestId);
   if (!request) return fail("Request not found.");
+  if (isAdminDecidingOwn(actor, request)) return fail(OWN_REQUEST_REFUSAL);
   if (!canModerate(actor, request)) return fail("Not authorized");
   if (request.status !== "pending") {
     return fail(`This request was already ${request.status}.`);
@@ -1171,6 +1184,7 @@ export async function rejectOoo(
 ): Promise<OooActionResult> {
   const request = await deps.loadRequest(requestId);
   if (!request) return fail("Request not found.");
+  if (isAdminDecidingOwn(actor, request)) return fail(OWN_REQUEST_REFUSAL);
   if (!canModerate(actor, request)) return fail("Not authorized");
   if (request.status !== "pending") {
     return fail(`This request was already ${request.status}.`);

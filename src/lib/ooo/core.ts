@@ -37,14 +37,28 @@ type RequestLike = Pick<OooRequest, "user_id" | "manager_id" | "status">;
  * When the named person does not qualify, nothing is stranded: `canModerateAllOoo`
  * still lets team leads and up act, which is the honest fallback rather than
  * silently treating an unqualified person as an approver.
+ *
+ * An admin may not decide their OWN request (#3114), by either route: another
+ * admin or a team lead does. A team lead deciding their own stays allowed (Dan,
+ * 2026-10-03: only admins change).
  */
 export function canModerate(actor: Actor, request: RequestLike): boolean {
+  if (isAdminDecidingOwn(actor, request)) return false;
   if (canModerateAllOoo(actor.role)) return true;
   return (
     request.manager_id !== null &&
     actor.id === request.manager_id &&
     canHoldManagerOfRecord(actor.role)
   );
+}
+
+/** What an admin is told when they try to decide their own request (#3114). */
+export const OWN_REQUEST_REFUSAL =
+  "You can't approve or decline your own time off. Another admin or a team lead can.";
+
+/** An admin (or super admin) acting on a request they made themselves (#3114). */
+export function isAdminDecidingOwn(actor: Actor, request: Pick<RequestLike, "user_id">): boolean {
+  return actor.id === request.user_id && atLeast(actor.role, "admin");
 }
 
 /**

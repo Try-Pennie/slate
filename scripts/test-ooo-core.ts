@@ -48,6 +48,33 @@ assert(
   "no manager of record means only team leads and up moderate",
 );
 
+// --- #3114: an admin cannot decide their own time off ---
+//
+// canModerateAllOoo let an admin approve or reject ANY request, their own
+// included, so an admin could sign off their own time off. Dan, 2026-10-03: only
+// admins change; a team lead approving their own stays allowed. Both directions,
+// and every rank, so a rule that refused everyone's own request (or nobody's)
+// cannot pass.
+{
+  for (const self of [admin, superAdmin]) {
+    const own = { user_id: self.id, manager_id: null, status: "pending" as const };
+    assert(!canModerate(self, own), `${self.role}: cannot moderate their own request`);
+    // Not even through the manager-of-record link, which is a separate route to yes.
+    assert(
+      !canModerate(self, { ...own, manager_id: self.id }),
+      `${self.role}: cannot moderate their own request as their own manager of record`,
+    );
+    // Another admin, or a team lead, still can: the request is routed, not stranded.
+    const other = { id: "u-other-admin", role: "admin" as const };
+    assert(canModerate(other, own), `another admin can moderate a ${self.role}'s request`);
+    assert(canModerate(teamLead, own), `a team lead can moderate a ${self.role}'s request`);
+    // And the admin keeps moderating everybody else's.
+    assert(canModerate(self, req), `${self.role}: still moderates somebody else's request`);
+  }
+  const leadOwn = { user_id: teamLead.id, manager_id: null, status: "pending" as const };
+  assert(canModerate(teamLead, leadOwn), "a team lead can still moderate their own request (Dan, 2026-10-03)");
+}
+
 // --- #1475: the manager of record needs a manager ROLE before the link counts ---
 //
 // The link used to grant approval with no floor on the named person's own role,
