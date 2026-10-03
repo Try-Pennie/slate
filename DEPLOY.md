@@ -948,10 +948,13 @@ SELECT warehouse_name,
  GROUP BY warehouse_name;
 ```
 
-Cap: **not yet measured**. Put the `monitor_quota` it returns in place of `<quota>`
-in the "RUN IN SNOWSIGHT" block at the end of `docs/snowflake-setup.sql` (the
-`STATEMENT_TIMEOUT_IN_SECONDS` ALTER near its top needs running too), run them, and record
-the number and the date here. No row back means the warehouse used no credits in 30
+Cap: **49 credits a month**, set 2026-10-03 by Dan in Snowsight, from 24.37 credits
+used by `SLATE_WH` over the 30 days before. `SLATE_WH_MONITOR` notifies at 80% and 100%
+and never suspends, and `STATEMENT_TIMEOUT_IN_SECONDS = 600` was applied the same day.
+To re-measure later, run the query above, put its `monitor_quota` in place of `<quota>`
+in the "RUN IN SNOWSIGHT" block at the end of `docs/snowflake-setup.sql` (or use the
+`ALTER RESOURCE MONITOR` line near its top), run it, and update the number and the date
+here. No row back means the warehouse used no credits in 30
 days, which is not a normal reading for a mirror that runs every 10 minutes: check
 the export lane before setting a quota of 1.
 
