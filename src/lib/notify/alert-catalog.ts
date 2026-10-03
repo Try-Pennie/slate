@@ -688,7 +688,9 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "One scheduled run of a cron lane threw or answered non-ok. The run is over and the " +
       "next tick is its own attempt; announcing that it ended would cost a read on every " +
       "healthy tick of every lane, and a lane that stays down is reported by its heartbeat " +
-      "watchdog. The suffix is mapped onto the scheduled lanes, with anything else as other (#3133).",
+      "watchdog. The suffix is mapped onto the scheduled lanes, with anything else as other (#3133). " +
+      "Sent only when the lane raised no alert of its own about the failure, so a failure is one " +
+      "message, never two (Dan, 2026-10-03).",
   },
   {
     key: "booking_reminder_failed",

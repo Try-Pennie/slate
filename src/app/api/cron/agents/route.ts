@@ -6,6 +6,7 @@ import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import { recordFailureStreak } from "@/lib/notify/streak";
 import { log } from "@/lib/log";
+import { laneFailure } from "@/lib/monitor/lane-failure-response";
 import { agentSyncFailureAlert } from "@/lib/monitor/cron-alert-copy";
 
 export const dynamic = "force-dynamic";
@@ -52,17 +53,20 @@ export async function GET(req: NextRequest) {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error("agents", { msg: "cron failed", error: message });
-    // Only alert on CONSECUTIVE failures (#486): a single transient blip (e.g. a
-    // Cloudflare 522 to Salesforce) self-heals on the next hourly run.
-    const consecutive = await recordFailureStreak(AGENTS_SYNC_STREAK_KEY, AGENTS_STREAK_WINDOW_S);
-    if (consecutive) {
-      // alert-key: agent_sync_failures
-      await sendThrottledAlert(
-        "agent_sync_failures",
-        SYNC_ALERT_COOLDOWN_MS,
-        agentSyncFailureAlert(message.slice(0, 300)),
-      ).catch(logAlertSendFailure("agent_sync_failures"));
-    }
-    return NextResponse.json({ error: message }, { status: 500 });
+    // This lane speaks for its own failure, so its alerting runs inside laneFailure
+    // and the dispatcher's generic page stands down (one failure, one message).
+    return laneFailure("agents", message, async () => {
+      // Only alert on CONSECUTIVE failures (#486): a single transient blip (e.g. a
+      // Cloudflare 522 to Salesforce) self-heals on the next hourly run.
+      const consecutive = await recordFailureStreak(AGENTS_SYNC_STREAK_KEY, AGENTS_STREAK_WINDOW_S);
+      if (consecutive) {
+        // alert-key: agent_sync_failures
+        await sendThrottledAlert(
+          "agent_sync_failures",
+          SYNC_ALERT_COOLDOWN_MS,
+          agentSyncFailureAlert(message.slice(0, 300)),
+        ).catch(logAlertSendFailure("agent_sync_failures"));
+      }
+    });
   }
 }

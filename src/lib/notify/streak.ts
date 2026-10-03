@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { log } from "@/lib/log";
+import { noteAlertKey } from "@/lib/notify/alert-recording";
 
 /**
  * Persistent consecutive-hit streak for a periodic job, built on the #31
@@ -36,7 +37,14 @@ export async function recordConsecutiveStreak(
       log.error("streak", { msg: "tracking failed", key }, error);
       return false;
     }
-    return underLimit === false;
+    const reached = underLimit === false;
+    // Tracked and deliberately QUIET: the caller's own decision about this failure
+    // is to say nothing yet, so the generic lane page must not overrule it (#3133
+    // follow-up, see alert-recording.ts). A streak that REACHED its threshold is not
+    // noted here: the caller is about to send, and the send notes itself only if it
+    // returns, so a send that fails still leaves the failure one message.
+    if (!reached) noteAlertKey(key);
+    return reached;
   } catch (err) {
     log.error("streak", { msg: "tracking threw", key }, err);
     return false;

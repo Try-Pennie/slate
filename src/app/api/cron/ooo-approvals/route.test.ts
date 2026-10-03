@@ -34,6 +34,7 @@ vi.mock("@/lib/env", () => ({
 }));
 
 import { GET } from "./route";
+import { noteAlertKey } from "@/lib/notify/alert-recording";
 
 const noAuthReq = () => ({}) as unknown as Parameters<typeof GET>[0];
 const forcedReq = () =>
@@ -218,9 +219,34 @@ describe("GET /api/cron/ooo-approvals: the catch-up watermark (#2543)", () => {
   it("leaves the mark where it was when the email itself failed", async () => {
     healthyTables();
     email.sendGmailEmail.mockRejectedValueOnce(new Error("gmail said no"));
-    await expect(GET(forcedReq())).rejects.toThrow(/gmail said no/);
+    const res = await GET(forcedReq());
+    expect(res.status).toBe(500);
     // The whole point of the mark: a morning nobody received is reported again.
     expect(heartbeats.written).not.toContain("ooo-approvals-report");
+  });
+
+  // One failure, one message (Dan, 2026-10-03). This lane pages about a failed
+  // send itself, so its 500 must tell the dispatcher, or the generic lane page
+  // goes out too. The fake send notes its key exactly as the real one does when
+  // it returns (pinned in src/lib/notify/alert-recording.test.ts).
+  it("tells the dispatcher it already paged, so the failure is one message", async () => {
+    healthyTables();
+    email.sendGmailEmail.mockRejectedValueOnce(new Error("gmail said no"));
+    dispatch.sendThrottledAlert.mockImplementationOnce(async (key: string) => {
+      noteAlertKey(key);
+    });
+    const res = await GET(forcedReq());
+    expect(res.status).toBe(500);
+    expect(res.headers.get("x-slate-lane-alerted")).toBe("ooo_approvals_digest");
+  });
+
+  it("leaves the generic page to speak when its own page could not be sent", async () => {
+    healthyTables();
+    email.sendGmailEmail.mockRejectedValueOnce(new Error("gmail said no"));
+    dispatch.sendThrottledAlert.mockRejectedValueOnce(new Error("slack down"));
+    const res = await GET(forcedReq());
+    expect(res.status).toBe(500);
+    expect(res.headers.get("x-slate-lane-alerted")).toBeNull();
   });
 
   it("covers the whole gap when earlier mornings were missed", async () => {

@@ -99,6 +99,7 @@ vi.mock("@/lib/offboarding/session-convergence-alert", () => ({
 }));
 
 import { GET } from "./route";
+import { noteAlertKey } from "@/lib/notify/alert-recording";
 
 const req = () => ({}) as unknown as Parameters<typeof GET>[0];
 
@@ -678,5 +679,43 @@ describe("GET /api/cron/agents", () => {
     expect(text).toContain("hourly");
     expect(text).not.toContain("daily");
     expect(text).toContain("522");
+  });
+
+  // One failure, one message (Dan, 2026-10-03). The fakes note their key exactly
+  // as the real ones do (pinned in src/lib/notify/alert-recording.test.ts): a
+  // tracked quiet streak and a send that returned each speak for the lane, a streak
+  // that could not be tracked speaks for nobody.
+  describe("the dispatcher's generic page (#3133 follow-up)", () => {
+    const failOnce = () =>
+      sync.syncSalesforceAgents.mockRejectedValueOnce(new Error("SF token failed: 522"));
+
+    it("stands down on a first failure the lane deliberately keeps quiet", async () => {
+      failOnce();
+      streak.recordFailureStreak.mockImplementationOnce(async (key: string) => {
+        noteAlertKey(key);
+        return false;
+      });
+      const res = await GET(req());
+      expect(res.status).toBe(500);
+      expect(res.headers.get("x-slate-lane-alerted")).toBe("cron_agents_failures");
+    });
+
+    it("stands down when the lane's own page went out", async () => {
+      failOnce();
+      streak.recordFailureStreak.mockResolvedValueOnce(true);
+      dispatch.sendThrottledAlert.mockImplementationOnce(async (key: string) => {
+        noteAlertKey(key);
+      });
+      const res = await GET(req());
+      expect(res.headers.get("x-slate-lane-alerted")).toBe("agent_sync_failures");
+    });
+
+    it("is left to speak when the lane's streak could not be tracked", async () => {
+      failOnce();
+      streak.recordFailureStreak.mockResolvedValueOnce(false); // not noted: untracked
+      const res = await GET(req());
+      expect(res.status).toBe(500);
+      expect(res.headers.get("x-slate-lane-alerted")).toBeNull();
+    });
   });
 });

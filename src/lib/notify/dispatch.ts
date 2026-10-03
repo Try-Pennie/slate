@@ -7,6 +7,7 @@ import { shouldSendAlert, alertStampMs } from "@/lib/notify/alerts";
 import { parseStampMs } from "@/lib/date/stamp";
 import { defaultInfoChannel } from "@/lib/notify/channels";
 import { log } from "@/lib/log";
+import { noteAlertKey } from "@/lib/notify/alert-recording";
 import { isWorkersRuntime, workersRuntimeMarker } from "@/lib/platform/runtime";
 import type { AlertResolve, ThrottledNotify } from "@/lib/monitor/alert-deps";
 
@@ -104,6 +105,19 @@ export async function isAlertDue(key: string, cooldownMs: number, nowMs: number)
 }
 
 export async function sendThrottledAlert(
+  key: string,
+  cooldownMs: number,
+  text: string,
+  channel?: string,
+): Promise<void> {
+  await sendThrottledAlertUnrecorded(key, cooldownMs, text, channel);
+  // Noted only once the send RETURNED (#3133 follow-up, see alert-recording.ts): a
+  // page sent, held back by its cooldown or dropped by an unconfigured Slack is the
+  // owner's word on the matter; a send that threw is nobody's.
+  noteAlertKey(key);
+}
+
+async function sendThrottledAlertUnrecorded(
   key: string,
   cooldownMs: number,
   text: string,
