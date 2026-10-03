@@ -1,8 +1,9 @@
 import { googleSaClientEmail, googleSaPrivateKey } from "@/lib/env";
 import { GoogleHttpError } from "@/lib/google/http-error";
 import { parseGoogleErrorReason } from "@/lib/google/reachability-classify";
-import type { Deadline } from "@/lib/fetch-within-deadline";
-import { fetchWithinBudget } from "@/lib/call-budget";
+import { DeadlineExceededError, NO_DEADLINE, type Deadline } from "@/lib/fetch-within-deadline";
+import { deadlineWithinBudget, fetchWithinBudget } from "@/lib/call-budget";
+import { makeSharedInFlight } from "@/lib/concurrency";
 
 /**
  * Google domain-wide delegation: mint an access token that impersonates a
@@ -26,6 +27,9 @@ export const DELEGATED_TOKEN_TIMEOUT_MS = 8000;
 
 // In-memory token cache per impersonated email (tokens last ~1h).
 const cache = new Map<string, { token: string; exp: number }>();
+// In flight mints per cache key (#3123). A failed mint is forgotten as it settles,
+// so the next caller retries rather than inheriting the failure.
+const mintShared = makeSharedInFlight<string, string>();
 
 function b64url(bytes: ArrayBuffer | Uint8Array): string {
   const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
@@ -96,6 +100,34 @@ export async function getDelegatedToken(
   const hit = cache.get(cacheKey);
   if (hit && hit.exp - Date.now() > 60_000) return hit.token;
 
+  // A burst for one identity shares one mint (#3123) rather than each request
+  // signing a JWT and calling Google's token endpoint. The mint runs under the
+  // deadline of the caller that started it, so each caller ALSO holds the shared
+  // wait to its own deadline and budget: joining a mint never lets a call wait
+  // longer than it would have waited for a mint of its own.
+  const { waitMs, reportAs } = deadlineWithinBudget(deadline, "google token mint");
+  const shared = mintShared(cacheKey, () => mintToken(cacheKey, email, scope, deadline));
+  if (waitMs === NO_DEADLINE || !Number.isFinite(waitMs)) return shared;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new DeadlineExceededError(reportAs.label, reportAs.timeoutMs, reportAs.budget)),
+      waitMs,
+    );
+  });
+  try {
+    return await Promise.race([shared, expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function mintToken(
+  cacheKey: string,
+  email: string,
+  scope: string,
+  deadline: Deadline,
+): Promise<string> {
   const assertion = await signJwt(email, scope);
   const res = await fetchWithinBudget(
     fetch,

@@ -34,6 +34,9 @@ export async function GET(req: NextRequest) {
   // One drain at a time: the per-row lease already prevents double-running a
   // single row, but the lock keeps two ticks from scanning the batch in
   // parallel for nothing. Mirrors cron_sync / cron_complete.
+  // lock-overlap: every outbox row is leased by a token and each write compares and
+  // swaps on it (src/lib/booking/outbox-lease.ts), so an overrunning drain cannot
+  // complete a step another drain owns.
   const lock = await acquireLock("cron_outbox", CRON_LOCK_TTL_MS);
   if (!lock) {
     return NextResponse.json({ skipped: "overlapping-run" });

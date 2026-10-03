@@ -102,6 +102,8 @@ export interface RunExportOpts {
   /** Cursor-scope prefix (the #1100 backfill lane passes its own). */
   keyPrefix?: string;
   tables?: TableSpec[];
+  /** The lane lock's fence (#3120), asked before each MERGE. */
+  stillHeld?: () => Promise<boolean>;
 }
 
 export async function runSnowflakeExport(
@@ -123,7 +125,15 @@ export async function runSnowflakeExport(
   for (const spec of tables) {
     if (Date.now() >= deadline) break;
     try {
-      results.push(await exportTable(spec, deps, { limit: batch, deadline, keyPrefix: opts.keyPrefix }));
+      const result = await exportTable(spec, deps, {
+        limit: batch,
+        deadline,
+        keyPrefix: opts.keyPrefix,
+        stillHeld: opts.stillHeld,
+      });
+      results.push(result);
+      // Another run owns the lane now (#3120): leave every remaining table to it.
+      if (result.leaseLost) break;
     } catch (e) {
       // One table's failure must not skip the rest: it re-exports next tick with
       // its cursor unadvanced. Collect and re-throw at the end so the lane fails

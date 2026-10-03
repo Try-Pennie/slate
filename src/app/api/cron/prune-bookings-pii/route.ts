@@ -45,6 +45,8 @@ export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
+  // lock-overlap: the redaction and the outbox delete are idempotent by id, so a second
+  // run only re-stamps pii_redacted_at.
   const lock = await acquireLock("cron_prune_bookings_pii", LOCK_TTL_MS);
   if (!lock) return NextResponse.json({ skipped: "overlapping-run" });
   try {

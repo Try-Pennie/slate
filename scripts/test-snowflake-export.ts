@@ -89,6 +89,33 @@ async function main() {
     eq(merged.length, 0, "deadline: no merge attempted");
   }
 
+  // 5. #3120: the lane lock was lost mid run. Another run now owns the export, and
+  // the MERGE overwrites unconditionally by id, so a batch from this older run could
+  // put a stale row version back over the newer run's. The fence is asked BEFORE
+  // each merge, and a lost lease stops the table with nothing merged or saved.
+  {
+    const full = Array.from({ length: 2 }, (_, i) => row(`r${i}`, `2026-01-0${i + 1}T00:00:00Z`));
+    const { deps, merged, saves } = makeDeps([full, full, full]);
+    let asks = 0;
+    const res = await exportTable(spec, deps, {
+      limit: 2,
+      deadline: Infinity,
+      stillHeld: async () => ++asks < 2,
+    });
+    eq(merged.length, 1, "lease lost: the batch after the loss is not merged");
+    eq(saves.length, 1, "lease lost: and its cursor is not saved");
+    assert(res.leaseLost === true, "lease lost: reported, so the run stops the remaining tables");
+    eq(asks, 2, "lease lost: asked once per batch, before its merge");
+  }
+
+  // CONTROL: a lease that stays held changes nothing.
+  {
+    const { deps, merged } = makeDeps([[row("a", "2026-01-01T00:00:00Z")]]);
+    const res = await exportTable(spec, deps, { limit: 500, deadline: Infinity, stillHeld: async () => true });
+    eq(merged.length, 1, "lease held: the batch merges");
+    assert(!res.leaseLost, "lease held: nothing reported lost");
+  }
+
   finish();
 }
 

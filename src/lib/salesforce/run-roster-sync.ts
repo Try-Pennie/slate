@@ -175,6 +175,8 @@ export type RosterSyncOutcome =
  * roster in a state only the next scheduled hour could finish.
  */
 export async function runRosterSync(): Promise<RosterSyncOutcome> {
+  // lock-overlap: fenced (#3177). stillHeld() renews the claim before each
+  // phase that writes and the run stops once another run holds the key.
   // #3177: the lock is a lease, so once its TTL passes the next hourly run may take
   // the key while this one is still working, and a stale run writing after a newer
   // one re-applies an old picture of who is bookable. So the run is FENCED: before

@@ -17,7 +17,7 @@ import {
   MAX_TOUCHED_AGENTS,
 } from "@/lib/google/sync-pace";
 import { refreshPoolsForAgents } from "@/lib/availability/slot-cache";
-import { acquireLock, releaseLock } from "@/lib/locks";
+import { acquireLease, releaseLock } from "@/lib/locks";
 import { CRON_LOCK_TTL_MS, SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
 import { sendThrottledAlert, resolveAlert, isAlertFiring } from "@/lib/notify/dispatch";
 import {
@@ -125,8 +125,14 @@ export async function GET(req: NextRequest) {
 
   // A slow pass (full resync) can outlive the 1-minute cadence; overlapping
   // invocations would re-sync every calendar in parallel for nothing (#30).
-  const lock = await acquireLock("cron_sync", CRON_LOCK_TTL_MS);
-  if (!lock) {
+  //
+  // lock-overlap: fenced. Worse than wasted work: the sync token write here has no
+  // compare and swap, and a stale full pass can purge busy blocks a newer pass just
+  // wrote, which makes an agent read as free. The lease renews before each agent
+  // and the tick stops starting agents once another holds the key (#3120). An
+  // agent already mid pass finishes; one agent's pass is bounded by the tick budget.
+  const lease = await acquireLease("cron_sync", CRON_LOCK_TTL_MS);
+  if (!lease) {
     return NextResponse.json({ skipped: "overlapping-run" });
   }
 
@@ -161,7 +167,12 @@ export async function GET(req: NextRequest) {
             goneSkipped?: number;
             claimSkipped?: number;
             error?: string;
+            leaseLost?: boolean;
           } = { userId: agent.userId };
+          if (!(await lease.stillHeld())) {
+            row.leaseLost = true;
+            return row;
+          }
           try {
             const sync = await runIncrementalSync(agent.userId, deadlineMs);
             row.synced = sync.events;
@@ -184,7 +195,9 @@ export async function GET(req: NextRequest) {
 
     // Stamp rotation for every agent we processed this tick in ONE write (#243)
     // instead of an UPDATE per agent inside the loop.
-    await markAgentsSynced(results.map((r) => r.userId));
+    // An agent skipped because the lease was lost was not synced, so it keeps its
+    // place at the front of the rotation for whichever run holds the lane now.
+    await markAgentsSynced(results.filter((r) => !r.leaseLost).map((r) => r.userId));
 
     await alertSyncFailures(results.filter((r) => r.error), ordered.length);
 
@@ -224,7 +237,8 @@ export async function GET(req: NextRequest) {
 
     // truncated = agents deferred by the per-tick cap, OR unreached at the
     // budget deadline, OR an agent's own calendars didn't all finish.
-    const truncated = deferred > 0 || budgetTruncated || results.some((r) => r.truncated);
+    const truncated =
+      deferred > 0 || budgetTruncated || results.some((r) => r.truncated || r.leaseLost);
     // #1187: how many calendars the #1049 gone-backoff held back this tick.
     const goneSkipped = results.reduce((n, r) => n + (r.goneSkipped ?? 0), 0);
     // #2411: how many were held by another pass (hydration, or a push sync).
@@ -255,6 +269,6 @@ export async function GET(req: NextRequest) {
       results,
     });
   } finally {
-    await releaseLock("cron_sync", lock);
+    await releaseLock("cron_sync", lease.token());
   }
 }

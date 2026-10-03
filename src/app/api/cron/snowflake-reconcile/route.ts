@@ -83,6 +83,9 @@ export async function GET(req: NextRequest) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
 
+  // lock-overlap: COUNT reads, a re-merge of one known row by id, and throttled alerts
+  // on a 6 hour cadence; an overlap needs a manual call and costs at most a duplicate
+  // Slack message.
   const lock = await acquireLock("cron_snowflake_reconcile", LOCK_TTL_MS);
   if (!lock) return NextResponse.json({ skipped: "overlapping-run" });
 

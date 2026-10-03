@@ -173,4 +173,69 @@ function reader(l: ReturnType<typeof loader>, clock: { ms: number }) {
   eq(recovered.rules[0].start_minute, 8 * 60, "the very next read after a failure tries again immediately");
 }
 
+// --- a burst of cold or expired reads shares ONE load (#3123) ----------------------
+// Without a shared in flight load, N requests arriving while the entry is missing or
+// expired each start their own round trip, which is the stampede the TTL exists to
+// prevent. The followers must await the leader's promise instead.
+{
+  const state = { calls: 0, release: null as null | ((v: BusinessHours) => void), reject: null as null | ((e: Error) => void) };
+  const clock = { ms: 1_000_000 };
+  const stale: number[] = [];
+  const read = makeCachedHoursReader({
+    load: () => {
+      state.calls++;
+      return new Promise<BusinessHours>((res, rej) => {
+        state.release = res;
+        state.reject = rej;
+      });
+    },
+    ttlMs: TTL,
+    now: () => clock.ms,
+    onStale: (ageMs) => stale.push(ageMs),
+  });
+
+  const burst = Promise.all([read(), read(), read(), read(), read()]);
+  eq(state.calls, 1, "five concurrent cold reads start exactly one load");
+  state.release!(week(9 * 60));
+  const served = await burst;
+  assert(served.every((h) => h.rules[0].start_minute === 9 * 60), "every caller in the burst gets the one load's answer");
+
+  // Expired entry, burst, and the shared load REJECTS: every caller falls back to the
+  // last known week (each one reported), and the failure is not left in flight.
+  clock.ms += TTL;
+  const failing = Promise.all([read(), read(), read()]);
+  eq(state.calls, 2, "a burst on an expired entry starts exactly one refresh");
+  state.reject!(new Error("connection reset"));
+  const fallback = await failing;
+  assert(fallback.every((h) => h.rules[0].start_minute === 9 * 60), "a shared refresh that fails serves the last known week to every caller");
+  eq(stale.length, 3, "each stale serve in the burst is reported");
+
+  const next = read();
+  eq(state.calls, 3, "a rejected load is cleared, so the next read tries again at once");
+  state.release!(week(10 * 60));
+  eq((await next).rules[0].start_minute, 10 * 60, "the retry serves the fresh week");
+}
+
+// --- a cold burst whose shared load fails throws for every caller ------------------
+{
+  let calls = 0;
+  let reject: ((e: Error) => void) | null = null;
+  const read = makeCachedHoursReader({
+    load: () => {
+      calls++;
+      return new Promise<BusinessHours>((_res, rej) => {
+        reject = rej;
+      });
+    },
+    ttlMs: TTL,
+    now: () => 1_000_000,
+    onStale: () => {},
+  });
+  const outcomes = Promise.allSettled([read(), read()]);
+  eq(calls, 1, "a cold burst shares one load even when it will fail");
+  reject!(new Error("unusable"));
+  const settled = await outcomes;
+  assert(settled.every((o) => o.status === "rejected"), "with nothing cached every caller in a failed cold burst throws");
+}
+
 finish();
