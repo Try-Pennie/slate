@@ -60,25 +60,38 @@ for minutes to be worth that.
 whole morning and work the sections in order.
 
 **On the forensic window, which is a third objective nobody usually writes down**
-(#1047). Cloudflare keeps every log line for **7 days** and there is no export, so
-anything that happened longer ago than a week can only be reconstructed from the
-database: the tables, `booking_events`, `audit_log`, `webhook_deliveries`. That is
-enough to answer what HAPPENED (every state change a booking went through is a durable
-row) and not enough to answer WHY at the level a log line would (which agent's calendar
-read failed, what Google actually returned, which code path a request took).
+(#1047, #3105). Two copies of the logs exist, and the window is whichever reaches
+further back:
 
-Accepted, with the trade stated: a Logpush job shipping error-level lines to R2
-would extend it indefinitely and costs both money and a new place holding customer data
-for longer, which the PII inventory would have to account for (`docs/pii.md` names the
-request URL as carrying contact data, so a longer-lived log copy is a longer-lived PII
-copy, not just more diagnostics). What would change it: a compliance requirement for
-longer retention, or a second incident where the answer was genuinely a week old. In
-practice the constraint is simpler than it sounds, because an incident that matters is
-noticed by an alert within minutes, and every alert here fires while the window is wide
-open.
+- **Cloudflare** keeps every log line, unredacted, for **7 days**.
+- **Better Stack** holds a REDACTED copy of every line, exception and invocation
+  outcome, shipped by the tail worker since #3105 (DEPLOY.md, "Log shipping to Better
+  Stack"), for the plan's retention.
+
+**On the free tier Better Stack starts on, that retention is 3 days, which is shorter
+than Cloudflare's 7, so the window is NOT widened: it is still 7 days.** What the
+free tier adds is search, error grouping and a per deploy `version_id` over the most
+recent 3 days, not history. The window grows only on a paid plan of more than 7 days
+(30 to 90), and then only for what survives the redaction: a full URL, a query
+string and a manage token exist only in Cloudflare's copy, for its 7 days.
+
+So, today: anything older than a week can only be reconstructed from the database:
+the tables, `booking_events`, `audit_log`, `webhook_deliveries`. That is enough to
+answer what HAPPENED (every state change a booking went through is a durable row) and
+not enough to answer WHY at the level a log line would (which agent's calendar read
+failed, what Google actually returned, which code path a request took).
+
+That is accepted while the free tier measures real volume. The longer retained copy
+was made acceptable as a place holding data by redacting it before it leaves
+(`docs/pii.md` §5); what is left is a cost decision about the paid plan, and a PII
+decision if that plan keeps more than 45 days (`docs/pii.md` §5 again). In practice
+the constraint is simpler than it sounds, because an incident that matters is noticed
+by an alert within minutes, and every alert here fires while the window is wide open.
 
 The operational consequence, worth knowing before you need it: **when an incident starts,
-capture the logs first.** They expire; the database rows do not.
+capture the logs first.** They expire; the database rows do not. If the shipped copy
+looks thin, check `tag=log-tail` in the tail worker's own Cloudflare logs: a missing
+token, a refused POST or a log storm past its per invocation budget is counted there.
 
 ---
 

@@ -35,7 +35,8 @@ export function laneFieldName(path: string): string {
 
 /**
  * The log fields for one invocation: `total_ms`, one `<lane>_ms` per lane, the
- * slowest lane by name, and any lane that failed.
+ * slowest lane by name, how many lanes succeeded and failed, and any lane that
+ * failed by name.
  *
  * Flat per-lane fields on purpose. A single nested blob cannot be charted, and
  * charting one lane against itself over days is the whole point: the growth that
@@ -54,6 +55,11 @@ export function laneTimingFields(
     if (!run.ok) failed.push(laneFieldName(run.path));
   }
   if (slowest) fields.slowest = laneFieldName(slowest.path);
+  // The outcome COUNTS, always present (#3138): the tail worker ships this line to
+  // Better Stack as numbers, and a count that is absent on a healthy tick cannot
+  // be summed or charted beside one where it is not.
+  fields.lanes_ok = runs.length - failed.length;
+  fields.lanes_failed = failed.length;
   // Only when there is something to say: an always-present empty field is noise
   // in every line and reads as a measurement rather than an absence.
   if (failed.length > 0) fields.failed = failed.join(",");

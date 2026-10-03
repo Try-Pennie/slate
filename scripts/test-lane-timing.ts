@@ -69,6 +69,8 @@ eq(laneFieldName(""), "unknown", "an empty path still yields a usable field name
   eq(fields.recompute_ms, 5101, "rounded to the nearest millisecond");
   eq(fields.slowest, "recompute", "and the slowest lane is named for a glance");
   assert(!("failed" in fields), "nothing about failure when every lane succeeded");
+  eq(fields.lanes_ok, 4, "every lane counted as succeeded (#3138)");
+  eq(fields.lanes_failed, 0, "and a zero failure count is present, not missing, so it sums");
 }
 
 {
@@ -94,6 +96,8 @@ eq(laneFieldName(""), "unknown", "an empty path still yields a usable field name
     12,
   );
   eq(fields.failed, "sync,outbox", "several failures are all named");
+  eq(fields.lanes_failed, 2, "and counted, so the count charts in Better Stack (#3138)");
+  eq(fields.lanes_ok, 0, "beside the count that succeeded");
 }
 
 {

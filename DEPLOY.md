@@ -459,6 +459,102 @@ working once verification is done.
 > lives on the one Worker. Nothing to do here on a fresh deploy, because a
 > rebuild never creates the second Worker in the first place.
 
+## Log shipping to Better Stack (#3105, #3138)
+
+Cloudflare keeps Slate's logs for 7 days. A second Worker, **`slate-log-tail`**
+(`worker/log-tail/index.ts`, its own config `wrangler.log-tail.jsonc`), is named in
+Slate's `tail_consumers`, so Cloudflare invokes it after every Slate invocation with
+that invocation's console lines, uncaught exceptions and outcome. It redacts them
+(query strings cut whole, manage and advisor link tokens replaced in every path,
+`scrubContactData` over every message and string field, no request headers; the
+detail is in `docs/pii.md` §5) and POSTs them to a Better Stack HTTP source in at most
+two requests per invocation. It runs after Slate's invocation and in its own, so
+nothing it does can slow or fail a request.
+
+What it adds for #3138: every record carries `version_id` (the deployed Slate
+version), uncaught exceptions arrive as their own `kind=exception` records, and the
+cron `lane timings` line arrives with its fields parsed into numbers (`total_ms`, one
+`<lane>_ms` per lane, `lanes_ok`, `lanes_failed`), so a lane can be charted against
+itself for as long as the plan keeps it.
+
+It works unchanged on any Better Stack plan: the free tier (3 GB a month, 3 days) it
+starts on to measure volume, or a paid retention plan (30 to 90 days). Only the
+source token and host couple it to Better Stack.
+
+### First setup, in this order
+
+The order is the point. `tail_consumers` is not checked by wrangler locally (it
+passes the list to the API as is), and Cloudflare's documentation does not say
+whether a deploy naming a Worker that does not exist is refused or accepted; this was
+not measured, because measuring it means deploying production. Treat it as refused:
+a merge to main deploys Slate, so if the tail worker does not exist yet, assume that
+deploy fails. **The tail worker and its secret go first, then the change that
+references it merges.**
+
+1. **Create the Better Stack source**: Logs, Sources, Connect source, platform
+   "HTTP", data region **US**. Its page shows a source token and an ingesting host
+   (a bare hostname ending `betterstackdata.com`).
+2. **Commit the host** as `BETTERSTACK_INGEST_HOST` in `wrangler.log-tail.jsonc`
+   (it is not a secret). Done for the current source (US, 2026-10-03); repeat only
+   when the source is replaced. Empty, the worker drops every record and counts it.
+3. **Deploy the tail worker**, from a checkout holding step 2:
+
+<!-- runbook-unverified: deploys a live Worker to the production account, so it cannot be
+     executed by a check. Its bundle is proven by `wrangler deploy --dry-run -c
+     wrangler.log-tail.jsonc`, and the resolved config by scripts/test-log-tail-config.ts. -->
+
+```bash
+npx wrangler deploy -c wrangler.log-tail.jsonc
+```
+
+4. **Put its secret**, on the tail worker only (Slate holds no Better Stack setting):
+
+<!-- runbook-unverified: writes a live Worker secret. The worker reads it as
+     env.BETTERSTACK_SOURCE_TOKEN in worker/log-tail/index.ts. -->
+
+```bash
+npx wrangler secret put BETTERSTACK_SOURCE_TOKEN -c wrangler.log-tail.jsonc
+```
+
+5. **Then merge** the change carrying `tail_consumers` in `wrangler.jsonc`; CI's
+   deploy of Slate attaches the tail worker.
+
+### Redeploying it
+
+CI deploys Slate only, never the tail worker. So a change to the redaction
+(`src/lib/log-shipping/`, or `src/lib/api/client-error-scrub.ts`, which it imports) is
+not live until somebody re-runs step 3. The secret survives a redeploy.
+
+### When records stop arriving
+
+The tail worker never throws. Every record it could not send is counted and written
+to ITS OWN Cloudflare logs under `tag=log-tail`, by reason: `no-token`, `no-host`,
+`bad-host` (a scheme or path pasted into the host), `refused` (with the status, for
+example 401 for a wrong token), `unreachable`, `timeout` (a POST with no answer
+inside 5 seconds, abandoned so the invocation is not held), `over-budget` (a log storm past two
+1 MB requests in one invocation) and `too-large` (a single record over 1 MB). Read
+them live with `npx wrangler tail slate-log-tail`.
+
+### Volume, and measuring it
+
+Estimated from the code paths, not measured: one `invocation` record (about 400
+bytes) per Slate invocation, plus one record (400 to 900 bytes, the parsed fields
+roughly doubling a `slate` line) per console line and per exception.
+
+| Source | Invocations a month | Records each | Approx. a month |
+|---|---|---|---|
+| `* * * * *` tick (four lanes) | 43,200 | 4 to 6 | 100 to 150 MB |
+| `*/5` tick (monitor plus four lanes; the monitor logs most) | 8,640 | 10 to 20 | 50 to 100 MB |
+| every other cron expression | about 8,000 | 2 to 5 | under 15 MB |
+| requests (availability reads, booker and manage pages, Google push pings, admin) | 0.5 to 1.5 million at pilot traffic, assumed | 1 to 3 | 0.3 to 1.2 GB |
+
+So roughly **0.5 to 1.5 GB a month**, inside the free tier's 3 GB, with requests
+dominating and growing with traffic at cutover. To measure the real number: after
+two full days live, read the source's ingested volume per day in Better Stack (or its
+usage page) and multiply by 30. The request count behind it is on the Cloudflare
+dashboard, Workers, `slate`, Metrics. Quote that daily figure, not this table, when
+choosing a paid plan.
+
 ## Verify after deploy
 1. Hit `https://slate.trypennie.app/api/health` → expect HTTP `200` with
    `{"status":"ok",...}`. A `503` `{"status":"degraded",...}` means the DB is

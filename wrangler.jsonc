@@ -140,6 +140,18 @@
 	"observability": {
 		"enabled": true
 	},
+	// #3105: Cloudflare keeps the logs above for 7 days. The tail worker named here
+	// (worker/log-tail/index.ts, its own config wrangler.log-tail.jsonc) is invoked
+	// after every Slate invocation, redacts what it was handed and ships it to Better
+	// Stack, whose retention is the plan's. It runs AFTER Slate's invocation and in
+	// its own, so nothing it does can slow or fail a request.
+	//
+	// That Worker must EXIST before a deploy of this file, because a merge to main
+	// deploys it: DEPLOY.md ("Log shipping to Better Stack") has the order. Not
+	// inherited by env.loadtest (wrangler treats tail_consumers as not inheritable),
+	// so the load test's synthetic traffic never reaches Better Stack.
+	// scripts/test-log-tail-config.ts pins all of that against the resolved config.
+	"tail_consumers": [{ "service": "slate-log-tail" }],
 	// Edge rate limiter for /api/availability (#56): 30 requests/min per IP, per
 	// datacenter, no DB round-trip. namespace_id is an arbitrary unique id (not a
 	// created resource). period must be 10 or 60.
@@ -275,6 +287,10 @@
 	"env": {
 		"loadtest": {
 			"routes": [],
+			// Explicitly none (#3105): the load run's synthetic traffic must not reach
+			// Better Stack. Empty rather than omitted, so wrangler does not warn on
+			// every deploy that the top level consumer was not inherited.
+			"tail_consumers": [],
 			"workers_dev": true,
 			"preview_urls": false,
 			"vars": {
