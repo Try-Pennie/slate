@@ -91,6 +91,16 @@ function problems(text: string, route = heartbeatRoute, healthSrc = health): str
     if (!text.includes(`secrets.${name}`)) out.push(`the workflow never reads the ${name} secret`);
   }
 
+  // Every node step runs on a pinned node, set up BEFORE it (L25): the runner image's
+  // own node may predate the type stripping flag, which would fail every run red.
+  const setupAt = all.findIndex(
+    (s) => /uses:\s*actions\/setup-node@[0-9a-f]{40}\b/.test(s.body) && /node-version:\s*24\b/.test(s.body),
+  );
+  const firstNode = all.findIndex((s) => /^\s*run:[\s\S]*\bnode\s+--/m.test(s.body));
+  if (firstNode >= 0 && (setupAt < 0 || setupAt > firstNode)) {
+    out.push("a step runs node before a pinned setup-node (sha pinned, node-version 24) has run");
+  }
+
   // A missing secret fails the run red, never a quiet skip.
   const pre = all[index(/^Preflight/)];
   if (!pre || !/exit 1/.test(pre.body)) out.push("a missing secret does not fail the run");
@@ -127,6 +137,17 @@ const broken: [string, string, RegExp][] = [
   ["a quiet upload", workflow.replace("      - name: Upload to R2\n", "      - name: Upload to R2\n        continue-on-error: true\n"), /continue-on-error/],
   ["an R2 setting renamed", workflow.replaceAll("R2_BACKUP_BUCKET }}", "R2_BUCKET }}"), /R2_BACKUP_BUCKET secret/],
   ["a skip instead of a failure", workflow.replace(/exit 1\n          fi\n\n      # #1437/, "exit 0\n          fi\n\n      # #1437"), /does not fail the run/],
+  ["no pinned node", workflow.replace(/\n      - uses: actions\/setup-node@[\s\S]*?node-version: 24\n/, "\n"), /before a pinned setup-node/],
+  ["a node pinned by tag, not sha", workflow.replace(/setup-node@[0-9a-f]{40}/, "setup-node@v4"), /before a pinned setup-node/],
+  ["setup-node after the first node step", (() => {
+    const all = steps(workflow);
+    const setup = all.findIndex((s) => /setup-node/.test(s.body));
+    const judge = all.findIndex((s) => /^Refuse a dump/.test(s.name));
+    const moved = [...all];
+    const [step] = moved.splice(setup, 1);
+    moved.splice(judge, 0, step!);
+    return workflow.split(/\n      - (?=name:|uses:)/)[0] + moved.map((s) => "\n      - " + s.body).join("");
+  })(), /before a pinned setup-node/],
   ["an artifact upload", workflow + "\n      - uses: actions/upload-artifact@v4\n", /GitHub artifact/],
 ];
 for (const [what, text, expect] of broken) {
