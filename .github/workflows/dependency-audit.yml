@@ -16,6 +16,11 @@ name: Dependency audit
 #     daily page for a moderate nobody has to act on today is how the pages that
 #     matter stop being read (L36).
 #
+# PATCH TARGET (Dan, 2026-10-03): a high or critical advisory is patched by the next
+# working day after this audit flags it. The alert says so in every finding
+# (PATCH_TARGET in scripts/lib/dependency-audit-report.ts) and the procedure is in
+# docs/alerts-runbook.md, "A dependency advisory was found".
+#
 # NO INSTALL, on purpose. `pnpm audit` reads pnpm-lock.yaml, so node_modules adds
 # nothing to the answer and an install is one more way for the run to fail before
 # it has audited anything. The alerter is bare node with no dependencies, like every

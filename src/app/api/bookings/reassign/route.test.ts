@@ -5,7 +5,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // transfer, so the denial branches are pinned here directly. The real
 // bearerTokenMatches is exercised (not mocked) so the constant-time compare is
 // part of the test; only the env key and the mutating service call are stubbed.
-const env = vi.hoisted(() => ({ reassignApiKey: vi.fn(() => "k3y") }));
+const env = vi.hoisted(() => ({ reassignApiKey: vi.fn(() => "k3y"), reassignApiKey2: vi.fn(() => "") }));
 const service = vi.hoisted(() => {
   // The route maps by typed error CLASS (not fragile substring matching, #621),
   // so the mock must expose the same classes the route does `instanceof` against.

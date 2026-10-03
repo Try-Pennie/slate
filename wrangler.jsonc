@@ -27,6 +27,13 @@
 	// honored for a sub-hourly cron, despite the frequency-gated docs table.
 	// Billed on actual CPU used, not the ceiling, so a high limit is free.
 	// Evidence and current headroom: docs/cloudflare-platform-notes.md.
+	//
+	// The same limit also applies to web requests, and that is DECIDED, not missed
+	// (Dan, 2026-10-03, #3107): billing is for CPU used, not the limit, so a high
+	// ceiling costs nothing by itself; the crons peak around 45s and need the room;
+	// web requests peak around 5s (CPU p99 4,908ms, 2026-09-14). A lower request
+	// limit would mean splitting the crons into a separate Worker, which was
+	// declined. Keep ONE limit here unless that decision is revisited.
 	"limits": { "cpu_ms": 120000 },
 	"account_id": "3e7f907a9c19e51417873e2cce4fbc5c",
 	"routes": [

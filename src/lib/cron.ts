@@ -1,5 +1,5 @@
 import { type NextRequest } from "next/server";
-import { cronSecret } from "@/lib/env";
+import { cronSecret, cronSecret2 } from "@/lib/env";
 import { bearerTokenMatches } from "@/lib/bearer-auth";
 
 /**
@@ -9,5 +9,5 @@ import { bearerTokenMatches } from "@/lib/bearer-auth";
  * the shared bearer helper (#594) so the secret can't be timed out.
  */
 export function isAuthorizedCron(req: NextRequest): boolean {
-  return bearerTokenMatches(req.headers.get("authorization"), cronSecret());
+  return bearerTokenMatches(req.headers.get("authorization"), [cronSecret(), cronSecret2()]);
 }

@@ -65,7 +65,9 @@ wrangler secret put SF_CLIENT_ID            # required; Salesforce roster sync. 
 wrangler secret put SF_CLIENT_SECRET        # required; Salesforce roster sync (paired with the id).
 wrangler secret put SF_INSTANCE_URL         # required; the Salesforce org URL, no trailing slash.
 wrangler secret put CRON_SECRET             # required; authorizes every cron endpoint. Unset = all cron lanes reject (sync, complete, watch, agents, monitor, outbox, selfheal).
+# wrangler secret put CRON_SECRET_2 # optional; the rotation slot (#3110), set only when rotating. See "Rotating a credential".
 wrangler secret put GOOGLE_CHANNEL_TOKEN    # required; signs/verifies Google calendar push pings. Unset = real-time push verification fails.
+# wrangler secret put GOOGLE_CHANNEL_TOKEN_PREVIOUS # optional; the token a rotation REPLACED, accepted on pushes from channels registered before it (#3110). Set only during a rotation, then deleted; see "Rotating a credential".
 wrangler secret put MAIN_OOO_CAL_ID         # required; the OOO approval calendar + default impersonation actor for manager-calendar writes. Unset = OOO approval throws.
 wrangler secret put SLACK_BOT_TOKEN         # optional; ops alerts + OOO DMs/digest. Empty = Slack is a no-op.
 wrangler secret put SLACK_ALERTS_CHANNEL    # optional; default alert channel id. Empty = alerts have nowhere to post. (Channel id, not sensitive; may live in wrangler.jsonc vars instead.)
@@ -76,10 +78,15 @@ wrangler secret put TWILIO_API_KEY_SID      # required; TaskRouter-scoped API ke
 wrangler secret put TWILIO_API_KEY_SECRET   # required; the matching API key secret.
 wrangler secret put TWILIO_WORKSPACE_SID    # required; the TaskRouter workspace holding the workers. Not really a secret, but set here so all three live in one place rather than split with wrangler.jsonc.
 wrangler secret put REASSIGN_API_KEY        # optional; bearer for the reassign API. Empty = POST /api/bookings/reassign returns 503.
+# wrangler secret put REASSIGN_API_KEY_2 # optional; the rotation slot (#3110), set only when rotating. See "Rotating a credential".
 wrangler secret put DUPLICATE_CANCEL_API_KEY # optional; bearer for the duplicate-cancel API (#2369). Empty = POST /api/bookings/cancel-duplicate returns 503.
+# wrangler secret put DUPLICATE_CANCEL_API_KEY_2 # optional; the rotation slot (#3110), set only when rotating. See "Rotating a credential".
 wrangler secret put OFFBOARDING_API_KEY     # optional; bearer for deactivate/reactivate. Empty = offboarding endpoints return 503.
+# wrangler secret put OFFBOARDING_API_KEY_2 # optional; the rotation slot (#3110), set only when rotating. See "Rotating a credential".
 wrangler secret put BOOKABLE_API_KEY        # optional; bearer for the bookable-toggle API. Empty = POST /api/users/bookable returns 503.
+# wrangler secret put BOOKABLE_API_KEY_2 # optional; the rotation slot (#3110), set only when rotating. See "Rotating a credential".
 wrangler secret put REGAL_INBOUND_KEY       # optional; bearer Regal's reporting webhook sends to POST /api/regal/calls (#2090). Its own secret, never the outbound Regal key. Empty = that endpoint returns 503 naming it.
+# wrangler secret put REGAL_INBOUND_KEY_2 # optional; the rotation slot (#3110), set only when rotating. See "Rotating a credential".
 wrangler secret put REGAL_WEBHOOK_KEY       # the OUTBOUND Regal API key, sent as the Authorization header on every Regal webhook delivery (#3091). Moved out of webhook_endpoints.auth_header so only the Worker can read it; the admin webhooks page shows whether it is set and cannot edit it, so changing it is this command. Empty = deliveries fall back to that column while it still holds a value, and the monitor lane pages webhook_credentials_in_database until this is set; once the column is nulled, empty = every Regal delivery is refused (#600). Never the same value as REGAL_INBOUND_KEY.
 wrangler secret put WEBHOOK_SIGNING_SECRET  # the HMAC secret a generic format endpoint's x-slate-signature is made with (#3091). Moved out of webhook_endpoints.secret like the key above, and paged on the same way while it is still read from the column. Empty with no column value = generic deliveries are refused rather than sent unsigned. Rotating it means telling the subscriber the new value in the same change.
 wrangler secret put BOOKING_API_KEY_REGAL   # optional; Regal's own booking API key (its journeys cancel through it, as the SLATE_BOOKING_API_KEY brand secret). Logs and the rate ceiling name the caller "regal". One key per caller (#2645): the shared BOOKING_API_KEY pair is retired and read by nothing (#2865). Every booking key empty = POST /api/bookings returns 503.
@@ -94,6 +101,7 @@ wrangler secret put BOOKING_API_KEY_MARCIA  # optional; Marcia's own booking API
 openssl rand -hex 32 | wrangler secret put EMBED_TEST_PASS_SECRET  # required for partner testing (#2666); signs the short lived pass /book hands a page on an EMBED_TEST_ORIGINS website. Piped so the value never appears. Empty = the public test bucket is OFF: /book says so, the routes answer 403 TEST_PASS_OFF, and the canary's gate read pages. Rotating it ends every open test page's pass (a reload fixes it).
 wrangler secret put GITHUB_CANARY_TOKEN     # optional; fine-grained GitHub token (Actions read/write on Try-Pennie/slate) so the monitor lane can re-fire the smoke-canary workflow when GitHub drops a scheduled run. Empty = gap-filler is a no-op (GitHub's schedule alone runs the canary).
 wrangler secret put UPTIME_HEARTBEAT_KEY    # required; the bearer noodge sends on its /api/health and /api/health/availability checks (#1228), so each stamps its own uptime heartbeat. The same value is SLATE_UPTIME_HEARTBEAT_KEY when noodge applies monitors/slate.sql. Empty = the endpoints never stamp, so both uptime heartbeats go stale and the lane watchdog pages every hour; the health answers themselves are unaffected.
+# wrangler secret put UPTIME_HEARTBEAT_KEY_2 # optional; the rotation slot (#3110), set only when rotating. See "Rotating a credential".
 wrangler secret put SNOWFLAKE_PRIVATE_KEY   # optional; RSA private key (PKCS#8 PEM) for the Snowflake archival mirror export lane. Empty = the export lane is a safe no-op (logs "not configured" and skips). See docs/snowflake-setup.md.
 ```
 
@@ -410,6 +418,19 @@ rather than in a deploy, so a rebuilt project needs them set by hand:
   domain must match; `scripts/test-auth-domain-hook.ts` fails the build if they
   differ.
 
+**In front of those, Google itself refuses an outside account.** Slate's Google
+OAuth client is configured as **Internal** to the Pennie Workspace, so Google turns
+away any account that is not `trypennie.com` before Supabase is ever asked ("Access
+blocked: Slate can only be used within its organization", `Error 403: org_internal`).
+Verified live on 2026-10-03 by Dan with a personal Google account: Google refused it,
+and `auth.users` still held only the 86 `trypennie.com` accounts afterwards. So there
+are three layers in order: the Google Internal app, the Supabase
+`before_user_created` hook (0159), and the app's own domain check. Because Google
+refused first, that live test **never reached the Supabase hook**, which remains
+verified only by `pnpm verify:auth-domain-hook`. The Internal setting lives in the
+Google Cloud console (APIs and Services, OAuth consent screen, User type) and nothing
+in this repository can see it change.
+
 The monitor lane reads the live `/auth/v1/settings` every tick and pages
 `auth_sign_in_beyond_google` while email is on or another provider can create an
 account, with an all clear once it is off.
@@ -718,6 +739,40 @@ change is when it moves. The organization is on the **Pro** plan (read 2026-09-1
 the cap itself is not exposed by the management API, so this one genuinely cannot be
 checked from here.
 
+**Snowflake (warehouse guard, #3125).** Decided by Dan on 2026-10-03: the `SLATE_WH`
+warehouse carries a **monthly resource monitor that warns only**, notifying at 80% and
+at 100% of its quota and **never suspending**, plus **`STATEMENT_TIMEOUT_IN_SECONDS =
+600`**. Never suspend, because suspending the warehouse stops the 10 minute booking
+mirror (`/api/cron/snowflake-export`), and that mirror is the booking backup: a spend
+cap must not be able to switch the backup off. The statements are in
+`docs/snowflake-setup.sql` under "Spend guard". Slate has no local Snowflake access,
+so they are run by hand in a Snowsight worksheet as `ACCOUNTADMIN`.
+
+The quota is **twice the measured monthly credits**, and it needs current usage, so
+it is filled in when somebody runs this read-only query in Snowsight (it reads
+`SNOWFLAKE.ACCOUNT_USAGE`, which lags up to three hours, and writes nothing):
+
+<!-- runbook-unverified: Slate has no local Snowflake access, so this cannot be run
+     from here. It is read-only (a SELECT over ACCOUNT_USAGE) and is run by hand in
+     Snowsight to size the resource monitor. -->
+
+```sql
+SELECT warehouse_name,
+       SUM(credits_used)                 AS credits_last_30_days,
+       GREATEST(CEIL(SUM(credits_used) * 2), 1) AS monitor_quota
+  FROM SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY
+ WHERE warehouse_name = 'SLATE_WH'
+   AND start_time >= DATEADD(day, -30, CURRENT_TIMESTAMP())
+ GROUP BY warehouse_name;
+```
+
+Cap: **not yet measured**. Put the `monitor_quota` it returns in place of `<quota>`
+in the "RUN IN SNOWSIGHT" block at the end of `docs/snowflake-setup.sql` (the
+`STATEMENT_TIMEOUT_IN_SECONDS` ALTER near its top needs running too), run them, and record
+the number and the date here. No row back means the warehouse used no credits in 30
+days, which is not a normal reading for a mirror that runs every 10 minutes: check
+the export lane before setting a quota of 1.
+
 Neither is verifiable from this repo, which is the honest limitation of writing them
 down here: nothing fails when somebody deletes the notification. What compensates is
 that both providers are cheap by architecture rather than by policing (a request
@@ -770,6 +825,145 @@ Calendar API > Quotas, and its Metrics tab for the traffic) for the project that
 `quotaExceeded` or a rate limit) is classified `transient` by
 `src/lib/google/reachability-classify.ts`, so running out reads as a run of
 transient calendar failures rather than under a quota name of its own.
+
+## Rotating a credential (#3110)
+
+Every secret Slate holds, with where a new value is minted, how it reaches the Worker,
+who else holds a copy, and what breaks between the steps. Rotate on a leak, on a
+holder leaving, or on a schedule if one is ever set; nothing here runs on a timer.
+
+**Three rules hold for all of them.**
+
+- **Never put a value in shell history or a command argument.** Paste it only at
+  the hidden prompt `wrangler secret put` shows, or pipe it in from a file
+  (`... < file`), never as `echo value |` or an argument. Keep the new value in
+  `.env.local` (never committed) while the rotation is in progress, then delete the
+  old line.
+- **A `wrangler secret put` deploys at once**: it creates a new version of the live
+  Worker with the new value, so each put below takes effect in seconds, and a put
+  with the wrong value breaks its feature in seconds too. A Worker secret cannot be
+  read back, so the copy in `.env.local` is the only record of what was put.
+- **Put the new value where it is ACCEPTED before giving it to the caller that SENDS
+  it.** Every rotation below is ordered that way where the provider allows it, and
+  says plainly where it does not and what is down in the gap.
+
+### Keys with a `_2` slot: zero downtime
+
+`CRON_SECRET`, `REASSIGN_API_KEY`, `DUPLICATE_CANCEL_API_KEY`, `OFFBOARDING_API_KEY`,
+`BOOKABLE_API_KEY`, `REGAL_INBOUND_KEY` and `UPTIME_HEARTBEAT_KEY` are each checked
+against the key AND its `_2` slot, either of which authenticates (the booking API
+keys' pattern, #2645). The primary alone decides whether the endpoint is configured,
+so an unset `_2` is inert. `scripts/test-bearer-rotation-slots.ts` refuses a bearer
+check written against one value, so a new key gets a slot on arrival.
+
+1. Mint the new value with `openssl rand -hex 32` redirected into `.env.local` under
+   its own name, so it is never printed.
+2. Put the new value in the `_2` slot (`wrangler secret put`, the key name plus
+   `_2`). Both values now authenticate.
+3. Give the new value to every holder named below. Each can move whenever it likes;
+   nothing breaks while some hold the old value and some the new.
+4. Put the new value in the key itself (`wrangler secret put`, the key name).
+5. Delete the `_2` slot (`wrangler secret delete`, the key name plus `_2`). The
+   old value now authenticates nothing.
+
+What breaks between steps: nothing, in that order. Skipping step 3 and going
+straight to step 4 is the one mistake: every holder still on the old value is
+refused with a 401 from step 5 on. Who else holds each one:
+
+| Secret | Who else holds it | If a holder is missed |
+|---|---|---|
+| `CRON_SECRET` | the Worker's own crons (they send the primary, and change with step 4); operators' `.env.local` for the reschedule smoke, the erasure purge and `docs/dr-runbook.md`'s recovery commands. The load test uses its own `LOADTEST_CRON_SECRET`. | the lane or command answers 401; the crons are never affected |
+| `REASSIGN_API_KEY` | the upstream reassign automation; the `REASSIGN_API_KEY` GitHub repo secret (the full canary pass's reschedule smoke) | the automation's reassigns 401; the 6 hourly full canary fails and alerts |
+| `DUPLICATE_CANCEL_API_KEY` | Regal's double booking journeys | duplicate cancels 401 and the duplicate stays booked |
+| `OFFBOARDING_API_KEY` | the offboarding automation | deactivations 401, so a departed agent stays bookable |
+| `BOOKABLE_API_KEY` | the roster and onboarding automation; NOT SET in production today (see 2b) | promotions 401 |
+| `REGAL_INBOUND_KEY` | Regal, Settings > Integrations, the reporting webhook's `Authorization` header | Regal does not retry, so every call event in the gap is lost and the call feed monitor pages. A delivery repeated across the change is harmless: both tables are unique on Regal's event id, so it lands as one row (`scripts/test-regal-call-store-idempotent.ts`) |
+| `UPTIME_HEARTBEAT_KEY` | noodge, as `SLATE_UPTIME_HEARTBEAT_KEY` when it applies `monitors/slate.sql` | both uptime heartbeats go stale and the lane watchdog pages within the hour; the health answers themselves are unaffected |
+
+### `GOOGLE_CHANNEL_TOKEN`: a previous slot, for a window
+
+Every Google watch channel carries the token it was REGISTERED with, and Google goes
+on sending that token until the channel expires; the watch lane renews a channel only
+in its last three days. So a plain put used to turn every push into a 403 until each
+channel renewed. The push route now also accepts `GOOGLE_CHANNEL_TOKEN_PREVIOUS`,
+and logs `push accepted on the previous channel token` (tag `google-push`) on every
+push that used it.
+
+1. Note the instant the window ends: the latest `agent_calendars.watch_expiration`
+   (read-only, in the Supabase SQL editor:
+   `select max(watch_expiration) from agent_calendars;`). Every channel carrying the
+   old token has expired by then.
+2. `wrangler secret put GOOGLE_CHANNEL_TOKEN_PREVIOUS` with the CURRENT value, from
+   `.env.local`.
+3. `wrangler secret put GOOGLE_CHANNEL_TOKEN` with a new value
+   (`openssl rand -hex 32`). New and renewed channels carry it from here.
+4. After the instant from step 1, and once `npx wrangler tail` shows no
+   `push accepted on the previous channel token` line for a full day,
+   `wrangler secret delete GOOGLE_CHANNEL_TOKEN_PREVIOUS`.
+
+What breaks between steps: nothing. If the current value is lost and step 2 cannot
+be done, the rotation still works, degraded: pushes from old channels answer 403
+until each renews (at most a few days), and in that time calendar changes reach the
+cache through the 1 minute sync backstop instead of in seconds. Nothing goes stale;
+it is slower. Nobody outside the Worker holds this token.
+
+### Secrets minted by a provider
+
+- **`SUPABASE_SECRET_KEY`.** Minted in the Supabase dashboard, Project Settings > API
+  Keys > Secret keys > create a new one. Several secret keys can be live at once, so
+  create the new one, put it (`wrangler secret put SUPABASE_SECRET_KEY`), update the
+  `SUPABASE_SECRET_KEY` GitHub repo secret (the canary, the kill switch, the router
+  replay and the schedule parity workflows read it) and operators' `.env.local`,
+  THEN delete the old key in the dashboard. Deleting it first takes down every
+  server route and cron at once. Side effect worth knowing: it also signs the admin
+  "view as" cookie (`impersonationSigningSecret`), so an admin mid impersonation is
+  returned to their own view and starts again.
+- **`GOOGLE_SA_PRIVATE_KEY`.** Rotated **only if leaked** (Dan, 2026-10-03): no
+  schedule. Minted in the Google Cloud console, IAM > Service Accounts > the account
+  named by `GOOGLE_SA_CLIENT_EMAIL` > Keys > Add key (JSON). Domain wide delegation
+  is granted to the service account's client id, not to a key, so a new key needs no
+  Workspace admin change. Put the JSON's `private_key` as it appears there (literal
+  `\n` newlines), run `pnpm verify:availability-truth` against a real agent, then
+  delete the old key in the console. Operators' `.env.local` / `.dev.vars` hold it
+  for the verify commands. A gap only exists if the old key is deleted before the
+  put lands: every calendar read and write fails meanwhile.
+- **`GOOGLE_CLIENT_SECRET`.** Minted in the Google Cloud console, APIs and Services >
+  Credentials > the OAuth client > Add secret (two can be live while you move). Sign
+  in runs through Supabase Auth, so the value that matters is the one in the
+  Supabase dashboard, Authentication > Providers > Google; update it there, put the
+  Worker copy to match, then disable and delete the old secret in Google. Existing
+  sessions are unaffected; between deleting the old secret and saving the new one
+  in Supabase, nobody can sign in.
+- **`SF_CLIENT_SECRET`.** Minted in Salesforce Setup, External Client App Manager >
+  the Slate app > its OAuth consumer secret. Put it straight away: Salesforce can
+  stop honouring the old secret as soon as the new one exists, and the hourly roster
+  sync fails until the put lands. One missed hour is recoverable (the next run
+  catches up); a longer gap pages on the sync's own failure alert.
+- **`SLACK_BOT_TOKEN`.** Minted by reinstalling the Slack app (api.slack.com, the
+  app > OAuth and Permissions); revoking the old token is a separate step. Two
+  holders: the Worker (`wrangler secret put SLACK_BOT_TOKEN`) and the
+  `SLACK_BOT_TOKEN` GitHub repo secret every alerting workflow posts with. Update
+  both before revoking the old one: in any gap, alerts go nowhere, which is the one
+  state nothing else will tell you about.
+- **`SLACK_SIGNING_SECRET`.** Minted in the Slack app, Basic Information > App
+  Credentials > Signing Secret > Regenerate. The old one stops at once, so put the
+  new one immediately; between the two, the Approve and Decline buttons on time off
+  requests are refused (the request itself is untouched and can be approved in the
+  app). Only the Worker holds it.
+- **Booking API keys** (`BOOKING_API_KEY_REGAL`, `BOOKING_API_KEY_TRYPENNIE`,
+  `BOOKING_API_KEY_CANARY`, `BOOKING_API_KEY_MARCIA`). Per caller `_2` slots, same order as above; the slot lines and the
+  retired key hash step are in 2b. The canary key is ALSO the
+  `BOOKING_API_KEY_CANARY` GitHub repo secret and must match.
+- **`SNOWFLAKE_PRIVATE_KEY`.** Generate the new pair per `docs/snowflake-setup.md`
+  Step 1, register the new PUBLIC key as `RSA_PUBLIC_KEY_2` on `SLATE_SERVICE` (so
+  both keys log in), put the private key, wait for one clean export run, then unset
+  the old public key. Done in that order nothing breaks; replacing `RSA_PUBLIC_KEY`
+  before the put stops the mirror until it lands.
+- **`REGAL_WEBHOOK_KEY` and `WEBHOOK_SIGNING_SECRET`** (what Slate SENDS on outbound
+  webhooks, not `REGAL_INBOUND_KEY`) are Worker secrets since #3091; how each is
+  changed, and what an empty one does, is on its own line in 2b.
+- **`BETTERSTACK_SOURCE_TOKEN`** belongs to the separate log tail Worker, never to
+  Slate; see "Log shipping to Better Stack".
 
 ## Rollback
 Both the app and its crons run on the single **main** Worker, so a rollback is one
