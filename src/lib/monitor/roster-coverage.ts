@@ -66,16 +66,45 @@ export const ROSTER_COVERAGE_UPCOMING_KEY = "roster_coverage_upcoming_gap";
  * working hours, or ask somebody to cover. A gap that surfaces with a week to spare
  * reaches whoever sets the rota while there is still a rota to change. It is also
  * exactly one turn of the weekly pattern, so every weekday is inside the range at
- * least once however short the horizon is set, and a Saturday gap is seen from the
- * Saturday before. That is the case the issue was filed about: the old Monday to
- * Sunday window, checked on a Saturday, gave hours of warning and could never see
- * the next Saturday at all.
+ * least once however short the horizon is set, and a gap is seen from the same
+ * weekday a week before. That was #1936's case: the old Monday to Sunday window,
+ * checked late in the week, gave hours of warning and could not see the next week
+ * at all. (Saturday gaps are no longer judged at all since #3054; see
+ * ROSTER_COVERAGE_UNJUDGED_WEEKDAY below.)
  *
  * Longer buys little. A gap three weeks out is almost always the same weekly rule
  * as the one a week out, already reported, and the range is walked every five
  * minutes on an invocation four cron lanes share.
  */
 export const STAFFING_LEAD_DAYS = 7;
+
+/**
+ * The weekday whose uncovered hours never trigger the roster coverage alert, on
+ * either key (Dan, 2026-10-02, #3054). Luxon numbering, 6 = Saturday. Saturday is
+ * staffed thinly on purpose, so a gap there is the expected state rather than a
+ * finding, and paging on it every week is how a channel gets muted (L36). Judged by
+ * the gap's own date in the org's zone, whenever the alert is sent.
+ */
+export const ROSTER_COVERAGE_UNJUDGED_WEEKDAY = 6;
+
+/**
+ * The weekday on which the roster coverage check sends nothing at all, neither the
+ * page nor the all-clear (Dan, 2026-10-02, #3054). Luxon numbering, 7 = Sunday,
+ * read in the org's zone (Eastern). The check still measures and logs, and the
+ * alert state is left as it stands, so Monday's tick decides.
+ */
+export const ROSTER_COVERAGE_QUIET_SEND_WEEKDAY = 7;
+
+/** Whether a gap counts toward either alert: every date except the unjudged weekday.
+ *  The ISO date is already the org's local date, so it is read with no zone shift. */
+function isJudgedGap(g: DatedCoverageGap): boolean {
+  return DateTime.fromISO(g.dateIso, { zone: "UTC" }).weekday !== ROSTER_COVERAGE_UNJUDGED_WEEKDAY;
+}
+
+/** Whether `nowMs` falls on the quiet send day in the org's zone. */
+function isQuietSendDay(nowMs: number, zone: string): boolean {
+  return DateTime.fromMillis(nowMs, { zone }).weekday === ROSTER_COVERAGE_QUIET_SEND_WEEKDAY;
+}
 
 /** A stretch of advertised time on one weekday with no bookable agent on shift. */
 export interface CoverageGap {
@@ -395,18 +424,61 @@ function opensEmpty(g: DatedCoverageGap): boolean {
   return g.opensUncovered && !g.wholeDay;
 }
 
+/** When a dated gap begins, as an instant, judged in the ORG's zone the same way
+ *  `rangeGaps` judges when one ends. */
+function gapStartMs(g: DatedCoverageGap, zone: string): number {
+  return DateTime.fromISO(g.dateIso, { zone })
+    .startOf("day")
+    .plus({ minutes: g.startMinute })
+    .toMillis();
+}
+
 /**
- * The LIVE page: a gap on a day a lead can book right now. It leads with what a
- * lead meets, because that is the cost, then names both remedies, because which
- * one is right is the org's call and not ours: the hours are either under-rostered
- * or over-advertised, and a message naming only the first has assumed the answer.
+ * How far off the earliest gap is, in the words the live page opens with (#3054).
+ * Hours while it is under two days away, days after that, because "In about 93
+ * hours" makes the reader do the arithmetic the sentence exists to save them.
  */
-export function formatRosterCoverageLiveAlert(gaps: DatedCoverageGap[]): string {
+function untilPhrase(msAway: number): string {
+  const hours = Math.round(msAway / 3_600_000);
+  if (msAway < 3_600_000) return "Within the hour";
+  if (hours < 2) return "In about an hour from this message";
+  if (hours < 48) return `In about ${hours} hours from this message`;
+  return `In about ${Math.round(hours / 24)} days from this message`;
+}
+
+/**
+ * The LIVE page: a gap on a day a lead can book right now (#3054).
+ *
+ * It leads with WHEN the gap starts mattering, because that sets how soon somebody
+ * has to act, then what a lead booking now meets, then both remedies, because
+ * which one is right is the org's call and not ours: the hours are either
+ * under-rostered or over-advertised, and a message naming only the first has
+ * assumed the answer.
+ *
+ * It used to open with "Leads are being turned away", which read as an outage
+ * under way when the gap was twelve hours off and nobody had been refused. So it
+ * says the gap is happening only when the earliest one has ALREADY STARTED at
+ * `sentAt`, the send time the runner passes in. Never the clock read here: the
+ * preview must render the same text on every run (#1153).
+ */
+export function formatRosterCoverageLiveAlert(
+  gaps: DatedCoverageGap[],
+  sentAt: { nowMs: number; zone: string },
+): string {
+  const first = [...gaps].sort(
+    (a, b) => gapStartMs(a, sentAt.zone) - gapStartMs(b, sentAt.zone),
+  )[0];
+  const startMs = gapStartMs(first, sentAt.zone);
+  const when = `${minutesToTime(first.startMinute)} on ${datePhrase(first.dateIso)}`;
+  const lead =
+    startMs <= sentAt.nowMs
+      ? `Since ${when} the org has been open with nobody bookable rostered, and it still is.`
+      : `${untilPhrase(startMs - sentAt.nowMs)}, at ${when}, the org will be open with ` +
+        `nobody bookable rostered.`;
   return (
-    `Leads are being turned away from hours the org says it is open, because no ` +
-    `bookable agent is rostered for them: ${joinClauses(datedGapPhrases(gaps))}.` +
-    ` Set agents' working hours to cover them, or narrow the org's business hours ` +
-    `so we stop advertising them.`
+    `${lead} The uncovered hours are ${joinClauses(datedGapPhrases(gaps))}, and the ` +
+    `booker is not offering them to leads booking now. Set agents' working hours to ` +
+    `cover them, or narrow the org's business hours so we stop advertising them.`
   );
 }
 
@@ -499,9 +571,9 @@ export const COVERAGE_UNCHECKED_WARNING =
  */
 export function formatRosterCoverageLiveRecovery(upcomingStillOpen: boolean): string {
   return (
-    `Every hour leads can book inside the booking horizon now has at least one ` +
-    `bookable agent rostered, so nobody asking for an open time is turned away for ` +
-    `want of staff. No action is needed.` +
+    `From now on every hour the org says it is open inside the booking horizon has ` +
+    `at least one bookable agent rostered (Saturday hours are not checked), so the booker holds none of them back. ` +
+    `No action is needed.` +
     (upcomingStillOpen ? ` A gap further out is still open and has its own alert.` : "")
   );
 }
@@ -515,7 +587,7 @@ export function formatRosterCoverageLiveRecovery(upcomingStillOpen: boolean): st
 export function formatRosterCoverageUpcomingRecovery(liveStillOpen: boolean): string {
   return (
     `Every advertised hour in the week past the booking horizon now has at least ` +
-    `one bookable agent rostered. No action is needed for those days.` +
+    `one bookable agent rostered (Saturday hours are not checked). No action is needed for those days.` +
     (liveStillOpen ? ` A gap inside the booking horizon is still open and has its own alert.` : "")
   );
 }
@@ -573,18 +645,28 @@ export async function runRosterCoverageCheck(deps: {
   cooldownMs: { live: number; upcoming: number };
   log?: (msg: string) => void;
 }): Promise<RosterCoverageVerdict> {
-  const split = rangeGaps(deps.coverage);
-  if (split === null) {
-    const why = deps.coverage.ok ? "nothing measured" : deps.coverage.why;
+  const coverage = deps.coverage;
+  const split = rangeGaps(coverage);
+  if (split === null || !coverage.ok) {
+    const why = coverage.ok ? "nothing measured" : coverage.why;
     deps.log?.(`monitor roster-coverage: skipped, ${why}`);
     return { status: "skipped", why };
   }
-  const { live, upcoming } = split;
-  if (deps.armed) {
+  // Saturday is never judged (Dan, 2026-10-02): a range whose only gaps fall on a
+  // Saturday is a covered range, and sends its all-clear like any other.
+  const live = split.live.filter(isJudgedGap);
+  const upcoming = split.upcoming.filter(isJudgedGap);
+  // Sunday sends nothing either way and leaves the alert state as it stands, so
+  // Monday's tick decides (Dan, 2026-10-02). It still measures and logs.
+  const quietDay = isQuietSendDay(coverage.nowMs, coverage.zone);
+  const send = deps.armed && !quietDay;
+  if (send) {
     if (live.length > 0) {
-      await deps
-        .notify(ROSTER_COVERAGE_KEY, deps.cooldownMs.live, formatRosterCoverageLiveAlert(live))
-        .catch(() => {});
+      // The readout's own instant, the one `rangeGaps` judged ended gaps by, so
+      // "already started" and "already over" are measured from one moment.
+      const sentAt = { nowMs: coverage.nowMs, zone: coverage.zone };
+      const liveText = formatRosterCoverageLiveAlert(live, sentAt);
+      await deps.notify(ROSTER_COVERAGE_KEY, deps.cooldownMs.live, liveText).catch(() => {});
     } else {
       await deps
         .resolve(ROSTER_COVERAGE_KEY, formatRosterCoverageLiveRecovery(upcoming.length > 0))
@@ -604,11 +686,15 @@ export async function runRosterCoverageCheck(deps: {
         .catch(() => {});
     }
   }
-  if (live.length === 0 && upcoming.length === 0) return { status: "covered" };
+  const outcome = !deps.armed ? "; disarmed, not sent" : quietDay ? "; Sunday, not sent" : "; sent";
+  if (live.length === 0 && upcoming.length === 0) {
+    if (deps.armed && quietDay) deps.log?.(`monitor roster-coverage: covered${outcome}`);
+    return { status: "covered" };
+  }
   deps.log?.(
     `monitor roster-coverage: ${live.length} stretch(es) inside the horizon and ` +
       `${upcoming.length} past it with no bookable agent` +
-      (deps.armed ? "; sent" : "; disarmed, not sent"),
+      outcome,
   );
-  return { status: "gaps", live, upcoming, paged: deps.armed };
+  return { status: "gaps", live, upcoming, paged: send };
 }

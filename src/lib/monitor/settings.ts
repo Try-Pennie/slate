@@ -302,13 +302,13 @@ export const ALERT_FIELDS: {
     key: "roster_coverage_gap",
     urgency: "page",
     label: "Advertised hours nobody is rostered for",
-    help: "Inside the booking horizon, the org's business hours include time no agent is scheduled to work, so a lead is offered nothing during hours we say we are open.",
+    help: "Inside the booking horizon, the org's business hours include time no agent is scheduled to work, so a lead is offered nothing during hours we say we are open. Saturday hours are never checked, and nothing is sent on a Sunday.",
   },
   {
     key: "roster_coverage_upcoming_gap",
     urgency: "alert",
     label: "Upcoming hours nobody is rostered for",
-    help: "In the week past the booking horizon, the org's business hours include time no agent is scheduled to work. No lead can book it yet, so there is time to change someone's hours or find cover.",
+    help: "In the week past the booking horizon, the org's business hours include time no agent is scheduled to work. No lead can book it yet, so there is time to change someone's hours or find cover. Saturday hours are never checked, and nothing is sent on a Sunday.",
   },
   {
     key: "ooo_protection_lost",

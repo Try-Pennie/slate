@@ -19,6 +19,8 @@ import { DateTime } from "luxon";
 import {
   ROSTER_COVERAGE_KEY,
   ROSTER_COVERAGE_UPCOMING_KEY,
+  ROSTER_COVERAGE_QUIET_SEND_WEEKDAY,
+  ROSTER_COVERAGE_UNJUDGED_WEEKDAY,
   STAFFING_LEAD_DAYS,
   coverageForRange,
   runRosterCoverageCheck,
@@ -126,7 +128,17 @@ async function tick(input: {
   eq(notified[0]?.key, ROSTER_COVERAGE_KEY, "a gap leads can reach raises the live key");
   eq(notified[0]?.cooldownMs, 111, "on the live key's own cooldown");
   const text = notified[0]?.text ?? "";
-  assert(/turned away/i.test(text), `the live wording says leads are being turned away (${text})`);
+  assert(!/turned away/i.test(text), `the live wording does not claim leads are being turned away (${text})`);
+  assert(
+    /the booker is not offering them to leads booking now/.test(text),
+    `the live wording says what leads booking now actually meet (${text})`,
+  );
+  // Four days out from a Saturday morning: counted in days, never "93 hours".
+  assert(
+    text.startsWith("In about 4 days from this message, at 07:00 on Wednesday Sep 30,"),
+    `a gap days away leads with when it starts, in days (${text})`,
+  );
+  assert(!/right now|\bSince\b/.test(text), `a gap that has not started never claims to be happening (${text})`);
   assert(text.includes("Wednesday Sep 30"), `it names the date, not only the weekday (${text})`);
   assert(text.includes("07:00 to 08:00"), `it names the uncovered stretch (${text})`);
   assert(!/nothing is broken/i.test(text), "the live wording never says nothing is broken");
@@ -165,6 +177,115 @@ async function tick(input: {
   assert(near.notified[0]?.text !== far.notified[0]?.text, "live and upcoming wording differ");
 }
 
+// ------------------------------------------------ when the live gap starts mattering (#3054)
+
+// The page Slack received on Friday 2026-10-02 at 20:10 Eastern said leads were
+// "being turned away" from a gap twelve hours off. Nobody was being refused: a lead
+// booking then simply could not pick Saturday 08:00. So the live wording leads with
+// WHEN the gap starts, judged from the gap's own start against the send time the
+// runner passes in, and says "Since" only for a gap already running at that moment.
+const AT = (localIso: string) => DateTime.fromISO(localIso, { zone: ZONE }).toMillis();
+const FRIDAY = (hhmm: string) => AT(`2026-10-02T${hhmm}`);
+const REMEDIES =
+  "Set agents' working hours to cover them, or narrow the org's business hours so we stop advertising them.";
+
+function liveText(notified: Sent[]): string {
+  return notified.find((n) => n.key === ROSTER_COVERAGE_KEY)?.text ?? "";
+}
+
+// (a) A gap twelve hours away, the shape of the page the issue was filed about. The
+// filed page was about a Saturday, which no longer pages at all (below), so the
+// same twelve hour gap is driven on a Tuesday.
+{
+  const roster = [agent([1, 3, 4, 5, 6], 8 * 60, 20 * 60), agent([2], 9 * 60, 20 * 60)];
+  const { notified } = await tick({ agents: roster, nowMs: AT("2026-10-05T20:10") });
+  eq(
+    liveText(notified),
+    "In about 12 hours from this message, at 08:00 on Tuesday Oct 6, the org will be open with " +
+      "nobody bookable rostered. The uncovered hours are 08:00 to 09:00 on Tuesday Oct 6 (the day " +
+      "opens with nobody on), and the booker is not offering them to leads booking now. " +
+      REMEDIES,
+    "a gap twelve hours off says when it starts and what leads booking now meet",
+  );
+}
+
+// (b) A gap already running at send time is the one case allowed to say it is happening.
+{
+  const roster = [
+    agent([1, 2, 3, 4], 8 * 60, 20 * 60),
+    agent([5], 8 * 60, 17 * 60),
+    agent([6], 8 * 60, 20 * 60),
+  ];
+  const { notified } = await tick({ agents: roster, nowMs: FRIDAY("18:10") });
+  eq(
+    liveText(notified),
+    "Since 17:00 on Friday Oct 2 the org has been open with nobody bookable rostered, and it still " +
+      "is. The uncovered hours are 17:00 to 20:00 on Friday Oct 2, and the booker is not offering " +
+      "them to leads booking now. " +
+      REMEDIES,
+    "a gap already running says since when, and that it still is",
+  );
+}
+
+// (c) Several gaps across days: it leads with the EARLIEST, which is the one that
+// matters first, and still lists every stretch with its dates. Nobody works
+// Saturday in this roster either, and that whole day is left out (below).
+{
+  const roster = [agent([1, 2, 3, 4, 5], 8 * 60, 17 * 60)];
+  const { notified } = await tick({ agents: roster, nowMs: FRIDAY("10:00") });
+  eq(
+    liveText(notified),
+    "In about 7 hours from this message, at 17:00 on Friday Oct 2, the org will be open with nobody " +
+      "bookable rostered. The uncovered hours are 17:00 to 20:00 on Friday Oct 2, Monday Oct 5, and " +
+      "Tuesday Oct 6, and the booker is not offering them to leads booking now. " +
+      REMEDIES,
+    "several gaps lead with the earliest and list every stretch",
+  );
+}
+
+// Under an hour away it says so rather than "In about 0 hours".
+{
+  const roster = [agent([1, 2, 3, 4, 5], 8 * 60, 17 * 60), agent([6], 8 * 60, 20 * 60)];
+  const { notified } = await tick({ agents: roster, nowMs: FRIDAY("16:30") });
+  const text = liveText(notified);
+  assert(
+    text.startsWith(
+      "Within the hour, at 17:00 on Friday Oct 2, the org will be open with nobody bookable rostered.",
+    ),
+    `a gap under an hour off says within the hour (${text})`,
+  );
+}
+
+// Between one and two hours reads as "an hour", never "1 hours".
+{
+  const roster = [agent([1, 2, 3, 4, 5], 8 * 60, 17 * 60), agent([6], 8 * 60, 20 * 60)];
+  const { notified } = await tick({ agents: roster, nowMs: FRIDAY("15:50") });
+  const text = liveText(notified);
+  assert(text.startsWith("In about an hour from this message,"), `about an hour reads naturally (${text})`);
+}
+
+// The live all-clear answers the new wording, not the old "turned away" claim.
+{
+  const { resolved } = await tick({ agents: FULL_ROSTER });
+  const recovery = resolved.find((r) => r.key === ROSTER_COVERAGE_KEY)?.text ?? "";
+  eq(
+    recovery,
+    "From now on every hour the org says it is open inside the booking horizon has at least one " +
+      "bookable agent rostered (Saturday hours are not checked), so the booker holds none of them back. " +
+      "No action is needed.",
+    "the live all-clear matches the live wording",
+  );
+}
+
+// Neither all clear may claim Saturday is covered, since Saturday is never judged.
+{
+  const { formatRosterCoverageUpcomingRecovery } = await import("../src/lib/monitor/roster-coverage.ts");
+  assert(
+    formatRosterCoverageUpcomingRecovery(false).includes("Saturday hours are not checked"),
+    "the upcoming all clear says Saturday is not checked",
+  );
+}
+
 // ------------------------------------------------ the edges of the evaluated range
 
 // The horizon ends with Wednesday 30 September, so the lead time runs seven
@@ -185,30 +306,112 @@ async function tick(input: {
   eq(beyond.notified.length, 0, "a gap beyond the evaluated range raises nothing");
 }
 
-// ------------------------------------------------ the case the issue was filed for
+// ------------------------------------------------ a week ahead, and today's gap
 
 // Checked on a Saturday morning, with nobody rostered for the first hour of any
-// Saturday. Today's 08:00 to 09:00 is already over, so it is not reported; next
-// Saturday's is, a week ahead, on the upcoming key. The old one week window ended
-// tomorrow and could never have seen it.
+// Friday. Friday is past the four open day horizon, so next Friday's gap is seen a
+// week ahead on the upcoming key. The old one week window ended tomorrow and could
+// never have seen it. (#1936 was filed about a Saturday; Saturday gaps no longer
+// page at all since #3054, so the same shape is driven on a Friday.)
 {
-  const roster = [agent([1, 2, 3, 4, 5], 8 * 60, 20 * 60), agent([6], 9 * 60, 20 * 60)];
+  const roster = [agent([1, 2, 3, 4, 6], 8 * 60, 20 * 60), agent([5], 9 * 60, 20 * 60)];
   const { notified } = await tick({ agents: roster });
-  eq(notified.length, 1, "one alert, for next Saturday only");
-  eq(notified[0]?.key, ROSTER_COVERAGE_UPCOMING_KEY, "next Saturday's gap is on the upcoming key");
+  eq(notified.length, 1, "one alert, for next Friday only");
+  eq(notified[0]?.key, ROSTER_COVERAGE_UPCOMING_KEY, "next Friday's gap is on the upcoming key");
   const text = notified[0]?.text ?? "";
-  assert(text.includes("Saturday Oct 3"), `next Saturday is named by date (${text})`);
-  assert(!text.includes("Sep 26"), `today's gap, already over, is not reported (${text})`);
+  assert(text.includes("Friday Oct 2"), `next Friday is named by date (${text})`);
 }
 
-// And the gap still running counts: at 08:30 today's first hour is not over.
+// Today's gap counts while it is still running (at 08:30 the first hour is not
+// over), and stops counting once it has ended (at 10:00 it is over).
 {
-  const roster = [agent([1, 2, 3, 4, 5], 8 * 60, 20 * 60), agent([6], 9 * 60, 20 * 60)];
-  const at0830 = DateTime.fromISO("2026-09-26T08:30", { zone: ZONE }).toMillis();
-  const { notified } = await tick({ agents: roster, nowMs: at0830 });
-  const live = notified.find((n) => n.key === ROSTER_COVERAGE_KEY);
+  const roster = [agent([2, 3, 4, 5, 6], 8 * 60, 20 * 60), agent([1], 9 * 60, 20 * 60)];
+  const running = await tick({ agents: roster, nowMs: AT("2026-09-28T08:30") });
+  const live = running.notified.find((n) => n.key === ROSTER_COVERAGE_KEY);
   assert(live !== undefined, "a gap still running today raises the live key");
-  assert(live!.text.includes("Saturday Sep 26"), `and names today (${live?.text})`);
+  assert(
+    live!.text.startsWith("Since 08:00 on Monday Sep 28"),
+    `and says it has been happening since it started (${live?.text})`,
+  );
+  const over = await tick({ agents: roster, nowMs: AT("2026-09-28T10:00") });
+  const liveOver = over.notified.find((n) => n.key === ROSTER_COVERAGE_KEY);
+  assert(
+    liveOver === undefined || !liveOver.text.includes("Sep 28"),
+    `today's gap, already over, is not reported (${liveOver?.text})`,
+  );
+}
+
+// ------------------------------------------------ Saturday is never judged (Dan, 2026-10-02)
+
+// Saturday is staffed thinly on purpose, so its uncovered hours raise neither key,
+// whenever the check runs. A range whose ONLY gaps are on Saturdays is healthy, and
+// sends both all-clears like any covered range.
+{
+  eq(ROSTER_COVERAGE_UNJUDGED_WEEKDAY, 6, "the unjudged weekday is Saturday");
+  const saturdayOnly = [agent([1, 2, 3, 4, 5], 8 * 60, 20 * 60), agent([6], 9 * 60, 20 * 60)];
+  for (const [label, nowMs] of [
+    ["from a Saturday", SATURDAY_10AM],
+    ["from a Friday evening, twelve hours before it", FRIDAY("20:10")],
+  ] as const) {
+    const { verdict, notified, resolved } = await tick({ agents: saturdayOnly, nowMs });
+    eq(verdict.status, "covered", `a Saturday only gap reads as covered ${label}`);
+    eq(notified.length, 0, `a Saturday only gap stays silent ${label}`);
+    eq(
+      resolved.map((r) => r.key).sort().join(","),
+      [ROSTER_COVERAGE_KEY, ROSTER_COVERAGE_UPCOMING_KEY].sort().join(","),
+      `a Saturday only range sends both all-clears ${label}`,
+    );
+  }
+  // A whole uncovered Saturday is the same: nobody on Saturday at all is silent.
+  const noSaturday = [agent([1, 2, 3, 4, 5], 8 * 60, 20 * 60)];
+  const { notified } = await tick({ agents: noSaturday, nowMs: FRIDAY("10:00") });
+  eq(notified.length, 0, "a whole uncovered Saturday stays silent");
+}
+
+// A Saturday gap beside a Monday one: the page names Monday only.
+{
+  const roster = [
+    agent([2, 3, 4, 5], 8 * 60, 20 * 60),
+    agent([1], 9 * 60, 20 * 60),
+    agent([6], 9 * 60, 20 * 60),
+  ];
+  const { verdict, notified } = await tick({ agents: roster, nowMs: FRIDAY("10:00") });
+  const text = liveText(notified);
+  assert(text.includes("Monday Oct 5"), `the Monday gap is named (${text})`);
+  assert(!text.includes("Saturday"), `the Saturday gap beside it is not (${text})`);
+  assert(
+    verdict.status === "gaps" && verdict.live.every((g) => g.weekday !== 6),
+    "and the verdict carries no Saturday gap either",
+  );
+}
+
+// ------------------------------------------------ Sunday sends nothing (Dan, 2026-10-02)
+
+// On a Sunday (Eastern) the check still measures, but neither the page nor the
+// all-clear is sent, so the alert state stands as it was and Monday's tick decides.
+{
+  eq(ROSTER_COVERAGE_QUIET_SEND_WEEKDAY, 7, "the quiet send day is Sunday");
+  const mondayGap = [agent([2, 3, 4, 5, 6], 8 * 60, 20 * 60), agent([1], 9 * 60, 20 * 60)];
+  const sunday = await tick({ agents: mondayGap, nowMs: AT("2026-10-04T10:00") });
+  eq(sunday.verdict.status, "gaps", "a Sunday tick still measures the gap");
+  eq(sunday.verdict.status === "gaps" && sunday.verdict.paged, false, "and records that it was not sent");
+  eq(sunday.notified.length, 0, "a Sunday tick sends no page");
+  eq(sunday.resolved.length, 0, "a Sunday tick sends no all-clear");
+
+  const sundayCovered = await tick({ agents: FULL_ROSTER, nowMs: AT("2026-10-04T10:00") });
+  eq(sundayCovered.verdict.status, "covered", "a covered Sunday still reads as covered");
+  eq(sundayCovered.resolved.length, 0, "and still clears nothing, leaving the state for Monday");
+
+  // Late Sunday Eastern is already Monday in UTC: the day is read in the org's zone.
+  const lateSunday = await tick({ agents: mondayGap, nowMs: AT("2026-10-04T22:30") });
+  eq(lateSunday.notified.length, 0, "late Sunday Eastern is still Sunday, so nothing is sent");
+
+  const monday = await tick({ agents: mondayGap, nowMs: AT("2026-10-05T07:30") });
+  const text = liveText(monday.notified);
+  assert(
+    text.startsWith("Within the hour, at 08:00 on Monday Oct 5,"),
+    `the Monday tick after it sends the page (${text})`,
+  );
 }
 
 // ------------------------------------------------ the day opens with nobody on
@@ -223,9 +426,9 @@ async function tick(input: {
   assert(!/arriving when the org opens|nothing at all/i.test(text), `the opening is stated once, not twice (${text})`);
 }
 
-// The same on the upcoming key: next Saturday opening empty is said once.
+// The same on the upcoming key: next Friday opening empty is said once.
 {
-  const roster = [agent([1, 2, 3, 4, 5], 8 * 60, 20 * 60), agent([6], 9 * 60, 20 * 60)];
+  const roster = [agent([1, 2, 3, 4, 6], 8 * 60, 20 * 60), agent([5], 9 * 60, 20 * 60)];
   const { notified } = await tick({ agents: roster });
   const text = notified.find((n) => n.key === ROSTER_COVERAGE_UPCOMING_KEY)?.text ?? "";
   eq((text.match(/opens with nobody on/g) ?? []).length, 1, `the upcoming opening is stated once (${text})`);

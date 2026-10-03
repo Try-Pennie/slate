@@ -198,9 +198,11 @@ function liveGapsFor(agents: Parameters<typeof coverageForWeek>[0]["agents"]) {
   return split?.live ?? [];
 }
 const PROD_LIVE = liveGapsFor([agent(ZONE, [1, 2, 3, 4, 5], 8 * 60, 17 * 60)]);
+/** The send time the live page is judged from: the same instant the gaps were measured at. */
+const SENT_AT = { nowMs: FRIDAY_9AM, zone: ZONE };
 
 {
-  const text = formatRosterCoverageLiveAlert(PROD_LIVE);
+  const text = formatRosterCoverageLiveAlert(PROD_LIVE, SENT_AT);
 
   // The identical weekday tails are ONE clause carrying their dates. Listing them
   // separately is how the one fact worth having (a whole uncovered Saturday) gets
@@ -217,8 +219,11 @@ const PROD_LIVE = liveGapsFor([agent(ZONE, [1, 2, 3, 4, 5], 8 * 60, 17 * 60)]);
   assert(text.includes("all day Saturday Aug 15"), `the whole uncovered day is named (${text})`);
   assert(text.includes("08:00 to 20:00"), "Saturday's uncovered window is stated in full");
   assert(
-    text.indexOf("Saturday") < text.indexOf("17:00"),
-    "the whole uncovered day comes before the tail, so it survives a truncated notification",
+    // Within the list of stretches. Since #3054 the opening sentence names the
+    // EARLIEST gap's start, which can be the tail, so the order is judged where the
+    // stretches are listed.
+    text.indexOf("all day Saturday") < text.indexOf("17:00 to 20:00"),
+    "the whole uncovered day comes before the tail in the list of stretches",
   );
 
   // It must say what to DO, and both directions are legitimate: roster the hours,
@@ -237,8 +242,8 @@ const PROD_LIVE = liveGapsFor([agent(ZONE, [1, 2, 3, 4, 5], 8 * 60, 17 * 60)]);
 // A whole uncovered day and a tail are DIFFERENT findings and must not read the
 // same: one is "we say we are open and are shut", the other is "we are thin".
 {
-  const wholeDayOnly = formatRosterCoverageLiveAlert(PROD_LIVE.filter((g) => g.wholeDay));
-  const tailOnly = formatRosterCoverageLiveAlert(PROD_LIVE.filter((g) => !g.wholeDay));
+  const wholeDayOnly = formatRosterCoverageLiveAlert(PROD_LIVE.filter((g) => g.wholeDay), SENT_AT);
+  const tailOnly = formatRosterCoverageLiveAlert(PROD_LIVE.filter((g) => !g.wholeDay), SENT_AT);
   assert(wholeDayOnly !== tailOnly, "a whole uncovered day does not read like a partial tail");
   assert(!tailOnly.includes("Saturday"), "the tail message does not mention the covered day");
 }
@@ -492,7 +497,7 @@ const COOLDOWNS = { live: 1000, upcoming: 1000 };
   const stretch = phrases[0].split(" ").slice(0, 3).join(" ");
   eq(stretch, "17:00 to 20:00", "the screen phrase opens with the uncovered stretch");
   assert(
-    formatRosterCoverageLiveAlert(PROD_LIVE).includes(stretch),
+    formatRosterCoverageLiveAlert(PROD_LIVE, SENT_AT).includes(stretch),
     "and the Slack page states that stretch in the same words",
   );
   assert(
