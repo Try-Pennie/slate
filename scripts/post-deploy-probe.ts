@@ -16,8 +16,8 @@ import {
   runProbe,
   DEFAULT_POLL_INTERVAL_MS,
   DEFAULT_VERSION_TIMEOUT_MS,
-  type ProbeDeps,
 } from "./lib/post-deploy-probe.ts";
+import { httpProbeDeps } from "./lib/post-deploy-probe-http.ts";
 import { normalizeCommit } from "./stamp-build-info.ts";
 
 const appUrl = (process.env.APP_URL ?? "https://slate.trypennie.app").replace(/\/$/, "");
@@ -42,50 +42,9 @@ if (!key) {
 //   one being deployed; in CI the runner's own GITHUB_SHA is the real input)
 const expectedCommit = normalizeCommit(process.env.PROBE_COMMIT ?? process.env.GITHUB_SHA);
 
-const authed = { authorization: `Bearer ${key}` };
-
-const deps: ProbeDeps = {
-  // null means RETRY, not fail: during propagation the previous version answers,
-  // and a transient network error here must not fail a good deploy.
-  liveCommit: async () => {
-    try {
-      const res = await fetch(`${appUrl}/api/smoke/version`, { headers: authed });
-      if (!res.ok) return null;
-      const body = (await res.json()) as { commit?: unknown };
-      return typeof body.commit === "string" ? body.commit : null;
-    } catch {
-      return null;
-    }
-  },
-  health: async () => {
-    try {
-      const res = await fetch(`${appUrl}/api/health`);
-      // The real contract (src/app/api/health/route.ts): `db` is the STRING
-      // "ok" | "unreachable", not a boolean. Anything else maps to null, i.e.
-      // "could not tell", so an unexpected shape never reads as healthy.
-      const body = (await res.json().catch(() => ({}))) as { db?: unknown };
-      const dbOk = body.db === "ok" ? true : body.db === "unreachable" ? false : null;
-      return { status: res.status, dbOk };
-    } catch {
-      return { status: 0, dbOk: null };
-    }
-  },
-  availability: async () => {
-    try {
-      const from = new Date().toISOString();
-      const res = await fetch(
-        `${appUrl}/api/availability?bucket=${encodeURIComponent(bucket)}&from=${encodeURIComponent(from)}`,
-        { headers: authed },
-      );
-      const body = (await res.json().catch(() => ({}))) as { slots?: unknown };
-      return { status: res.status, slotsPresent: Array.isArray(body.slots) && body.slots.length > 0 };
-    } catch {
-      return { status: 0, slotsPresent: false };
-    }
-  },
-  sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
-  now: () => Date.now(),
-};
+// The three reads live in one shared module so the gradual deploy (#3095) and the
+// rollback (#3094) judge a deployment by exactly these requests.
+const deps = httpProbeDeps({ appUrl, key, bucket, versionOverride: null });
 
 const outcome = await runProbe(deps, {
   // env-ok: PROBE_TIMEOUT_MS (a hand-run tuning knob; CI wants the pinned default,

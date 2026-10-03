@@ -184,7 +184,9 @@ function wiring(job: string) {
   const [header = "", body = ""] = job.split(/^ {4}steps:\n/m);
   const steps = body.split(/^(?= {6}- )/m).filter((st) => /^ {6}- /.test(st));
   const gate = steps.findIndex((st) => /^\s*run: node [^\n]*scripts\/check-ci-before-deploy\.ts\s*$/m.test(st));
-  const ship = steps.findIndex((st) => /^\s*pnpm cf:deploy\s*$/m.test(st));
+  // The step that ships: the gradual deploy since #3095 (its settle step, which also
+  // names the script, comes after it and must not be mistaken for it).
+  const ship = steps.findIndex((st) => /^\s*(?:run: )?(?:pnpm cf:deploy|node [^\n]*scripts\/deploy-gradual\.ts)\s*$/m.test(st));
   const install = steps.findIndex((st) => /^\s*run: pnpm install\b/m.test(st));
   return {
     gate,

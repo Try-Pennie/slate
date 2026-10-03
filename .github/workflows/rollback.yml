@@ -1,0 +1,96 @@
+name: Rollback
+
+# Put production back on an earlier version, then prove what is serving (#3094).
+#
+# The rollback used to be one documented command (`wrangler rollback`) that had never
+# been run, followed by nothing: whoever ran it in an incident had to remember to check
+# the result by hand. This runs it from the Actions tab, with no laptop, no wrangler
+# login and no TTY, and then runs the SAME probe the deploy runs (scripts/lib/
+# post-deploy-probe.ts) against the commit the target was tagged with, five answers in
+# a row before health is judged. Any ending other than a confirmed, healthy rollback
+# posts to Slack.
+#
+# Which version: by default the newest one that served 100% ON ITS OWN. Since #3095
+# every release leaves a 10/90 split behind it, and the version beside the old one in
+# that split is a canary that runs no cron lane, so "the previous deployment" is the
+# wrong answer and is never chosen (scripts/lib/rollback-plan.ts). Name a version id to
+# go further back; `wrangler deployments list` shows them.
+#
+# What it does NOT revert: the database ("resources connected to your Worker will not
+# be changed during a rollback", Cloudflare's rollback docs) and the cron triggers,
+# which are not part of a version. Assume a secret or var changed since the target was
+# uploaded is still in force. It refuses to cross a Durable Object class change.
+# DEPLOY.md, Rollback.
+#
+# Needs the CLOUDFLARE_API_TOKEN, BOOKING_API_KEY_CANARY and SLACK_BOT_TOKEN repo
+# secrets and the SLACK_ALERTS_CHANNEL repo variable, all of which the deploy job and
+# the canary already use.
+on:
+  workflow_dispatch:
+    inputs:
+      version_id:
+        description: "Version id to roll back to. Empty = the newest version that served 100% on its own before the current one."
+        required: false
+        default: ""
+      expected_commit:
+        description: "Only for a version with no commit tag (deployed before the gradual deploy): the commit it should report."
+        required: false
+        default: ""
+      reason:
+        description: "Why (recorded as the deployment message)."
+        required: true
+
+# Shared with the deploy job in ci.yml, so a rollback never runs while a deploy is
+# moving production, and the other way round. Never cancelled.
+concurrency:
+  group: slate-production-worker
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    # The rollback itself is one API call. What the fifteen minutes covers is the
+    # install and the probe, which may poll for up to DEFAULT_VERSION_TIMEOUT_MS (four
+    # minutes) for the target to serve; scripts/test-workflow-timeouts.ts pins this
+    # above that.
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+      # wrangler, pinned by the lockfile. Nothing is built: a rollback re-points traffic
+      # at a version Cloudflare already holds.
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # The inputs reach the script through env, never interpolated into the shell.
+      - name: Roll back and probe
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
+          APP_URL: https://slate.trypennie.app
+          ROLLBACK_VERSION_ID: ${{ inputs.version_id }}
+          ROLLBACK_EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          ROLLBACK_REASON: ${{ inputs.reason }}
+          # A literal path: an internal handoff to the step below.
+          ROLLBACK_SUMMARY_FILE: rollback-summary.json
+        run: node --experimental-strip-types scripts/rollback-production.ts
+
+      # Any ending but a confirmed, healthy rollback. Bare node, no alias hook:
+      # scripts/test-dependency-free-scripts.ts holds it to importing nothing outside
+      # scripts/.
+      - name: Say the rollback did not end cleanly
+        if: failure()
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_ALERTS_CHANNEL: ${{ vars.SLACK_ALERTS_CHANNEL }}
+          ROLLBACK_SUMMARY_FILE: rollback-summary.json
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ACTOR: ${{ github.actor }}
+        run: node --experimental-strip-types scripts/notify-rollback.ts

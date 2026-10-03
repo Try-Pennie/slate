@@ -31,8 +31,10 @@ import { assert, finish } from "./lib/harness.ts";
 const ROOT = join(import.meta.dirname, "..");
 const DIR = join(ROOT, ".github", "workflows");
 
-/** The step command that identifies the job which actually ships to production. */
-const DEPLOY_COMMAND = /\bpnpm\s+cf:deploy\b/;
+/** The step command that identifies the job which actually ships to production: the
+ *  gradual deploy since #3095, or a bare `pnpm cf:deploy`. Not `cf:deploy:verified`,
+ *  which the deploy step only NAMES in its own error message. */
+const DEPLOY_COMMAND = /scripts\/deploy-gradual\.ts|(?:^|\s)pnpm\s+cf:deploy(?=\s|$)/m;
 /** The step command that identifies the job which produces the coverage report. */
 const COVERAGE_COMMAND = /\bpnpm\s+test:coverage\b/;
 /** A job outside the deploy's closure declares why it may outlive nothing. */

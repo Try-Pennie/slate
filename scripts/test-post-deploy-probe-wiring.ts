@@ -5,9 +5,9 @@
 // the kind of step that gets dropped in a YAML edit months later with no test going
 // red. Three things are pinned:
 //
-//   1. the stamp runs BEFORE the deploy (cf:deploy builds, so a stamp afterwards
-//      would ship the "dev" placeholder and the probe would compare nothing),
-//   2. the probe runs AFTER the deploy,
+//   1. the stamp runs BEFORE the build, so the bundle carries the real commit,
+//   2. the build runs before the gradual deploy (#3095) that uploads and probes it,
+//      and a settle step after it ends any split a cancelled run left standing,
 //   3. the probe fails loud rather than skipping green when its key is absent.
 //
 // Run: node --experimental-strip-types scripts/test-post-deploy-probe-wiring.ts
@@ -19,36 +19,80 @@ import { assert, eq, finish } from "./lib/harness.ts";
 const ROOT = join(import.meta.dirname, "..");
 const ci = readFileSync(join(ROOT, ".github", "workflows", "ci.yml"), "utf8");
 
-// The deploy job body, up to the next top-level job (or end of file).
-const deployJob = ci.match(/^  deploy:\n((?:[ \t]+.*\n|\n)*)/m)?.[1] ?? "";
+// The deploy job body, up to the next top-level job (or end of file), with comment
+// lines removed: the comments around these steps name every script in them, so a
+// match that could land in a comment would pass with the step deleted (L135).
+const deployJob = (ci.match(/^  deploy:\n((?:[ \t]+.*\n|\n)*)/m)?.[1] ?? "")
+  .split("\n")
+  .filter((l) => !/^\s*#/.test(l))
+  .join("\n");
 assert(deployJob.trim().length > 0, "the deploy job exists in ci.yml");
 
-const stampAt = deployJob.indexOf("scripts/stamp-build-info.ts");
-const deployAt = deployJob.indexOf("pnpm cf:deploy");
-const probeAt = deployJob.indexOf("scripts/post-deploy-probe.ts");
+/** The steps of the deploy job, each as its own text. */
+const steps = (deployJob.split(/^ {4}steps:\n/m)[1] ?? "").split(/^(?= {6}- )/m).filter((st) => /^ {6}- /.test(st));
+const stepIndex = (re: RegExp) => steps.findIndex((st) => re.test(st));
+
+const stampAt = stepIndex(/run: node [^\n]*scripts\/stamp-build-info\.ts/);
+const buildAt = stepIndex(/run: pnpm cf:build\s*$/m);
+const deployAt = stepIndex(/^\s*node --experimental-strip-types scripts\/deploy-gradual\.ts\s*$/m);
+const settleAt = stepIndex(/run: node --experimental-strip-types scripts\/deploy-gradual\.ts --settle\s*$/m);
 
 assert(stampAt !== -1, "the deploy job stamps the build with the deploying commit");
-assert(deployAt !== -1, "the deploy job still runs pnpm cf:deploy");
-assert(probeAt !== -1, "the deploy job runs the post-deploy probe");
+assert(buildAt !== -1, "the deploy job builds through pnpm cf:build, which carries the bundle env guard (#3078)");
+assert(deployAt !== -1, "the deploy job deploys gradually (#3095)");
+assert(settleAt !== -1, "the deploy job has the step that settles a split left standing");
 
-// ORDER IS THE WHOLE POINT of these two.
+// ORDER IS THE WHOLE POINT of these.
 assert(
-  stampAt < deployAt,
-  "the stamp runs BEFORE cf:deploy; cf:deploy builds, so stamping after it would ship the 'dev' placeholder and the probe would verify nothing",
+  stampAt < buildAt,
+  "the stamp runs BEFORE the build, or the bundle ships the 'dev' placeholder and the probe verifies nothing",
 );
+assert(buildAt < deployAt, "the build runs BEFORE the gradual deploy uploads it");
+assert(deployAt < settleAt, "the settle step comes after the deploy it cleans up after");
 assert(
-  probeAt > deployAt,
-  "the probe runs AFTER cf:deploy; probing first would measure the previous version",
+  /if:\s*\(failure\(\) \|\| cancelled\(\)\)/.test(steps[settleAt] ?? ""),
+  "and runs only when the job failed or was cancelled, which is when a split can be left standing",
+);
+{
+  // And only once the deploy step itself started: after a ci gate refusal or a failed
+  // build nothing touched production, and a settle there would page about a
+  // deployment it merely could not read.
+  const id = /^\s*id:\s*(\S+)\s*$/m.exec(steps[deployAt] ?? "")?.[1];
+  assert(id !== undefined, "the deploy step has an id the settle step can ask about");
+  assert(
+    id !== undefined &&
+      (steps[settleAt] ?? "").includes(`steps.${id}.outcome == 'failure'`) &&
+      (steps[settleAt] ?? "").includes(`steps.${id}.outcome == 'cancelled'`),
+    "the settle step runs only when the deploy step itself failed or was cancelled",
+  );
+}
+assert(
+  !/opennextjs-cloudflare deploy|pnpm cf:deploy\s*$/m.test(deployJob),
+  "nothing in the deploy job still deploys straight to 100% (`opennextjs-cloudflare deploy`)",
 );
 
-// The probe needs the booking key and the commit, or it cannot do its job.
+// The deploy step needs the booking key and the commit, or its probes cannot run.
+const deployStep = steps[deployAt] ?? "";
 assert(
-  /BOOKING_API_KEY_CANARY:\s*\$\{\{\s*secrets\.BOOKING_API_KEY_CANARY\s*\}\}/.test(deployJob),
-  "the probe step is given BOOKING_API_KEY_CANARY (#2822, the canary's own key; the version endpoint is key-authed)",
+  /BOOKING_API_KEY_CANARY:\s*\$\{\{\s*secrets\.BOOKING_API_KEY_CANARY\s*\}\}/.test(deployStep),
+  "the deploy step is given BOOKING_API_KEY_CANARY (#2822, the canary's own key; the version endpoint is key-authed)",
 );
+assert(/GITHUB_SHA:\s*\$\{\{\s*github\.sha\s*\}\}/.test(deployStep), "the deploy step is told which commit to expect");
+
+// The gradual deploy runs the SAME probe, through the shared reads, with a run of
+// confirmations, and the canary probe through the override header.
+const gradualSrc = readFileSync(join(ROOT, "scripts", "deploy-gradual.ts"), "utf8");
+assert(/runProbe\(/.test(gradualSrc) && /httpProbeDeps\(/.test(gradualSrc), "the gradual deploy runs the post-deploy probe through the shared HTTP reads");
+assert(/confirmations:\s*CONFIRMATIONS/.test(gradualSrc), "with a run of confirmations, since both versions answer during the split");
+assert(/versionOverride:\s*stage === "canary"/.test(gradualSrc), "and pins the canary probe to the canary through the override header");
+
+// A deploy and a rollback never move production at the same time.
+const rollback = readFileSync(join(ROOT, ".github", "workflows", "rollback.yml"), "utf8");
+const group = /^ {4}concurrency:\n {6}group:\s*(\S+)\n {6}cancel-in-progress:\s*false/m.exec(deployJob)?.[1];
+assert(group !== undefined, "the deploy job sits in a concurrency group that is never cancelled");
 assert(
-  /GITHUB_SHA:\s*\$\{\{\s*github\.sha\s*\}\}/.test(deployJob),
-  "the probe step is told which commit to expect",
+  group !== undefined && new RegExp(`group:\\s*${group}\\s*\\n\\s*cancel-in-progress:\\s*false`).test(rollback),
+  "and the rollback workflow shares that group, so the two never overlap",
 );
 
 // #766 regression shape: the probe must never pass green having checked nothing.
