@@ -13,6 +13,11 @@ import {
   hasUpsertTarget,
 } from "./lib/parse-migration-constraints.ts";
 import { assert, finish } from "./lib/harness.ts";
+import {
+  findDestructiveStatements,
+  GRANDFATHERED_DESTRUCTIVE_MIGRATIONS,
+  GRANDFATHER_CEILING,
+} from "./lib/scan-migration-contract.ts";
 
 const files = readdirSync("supabase/migrations")
   .filter((f) => f.endsWith(".sql"))
@@ -355,6 +360,114 @@ assert(
     `users.bookable defaults to false, so an insert that omits it cannot put an agent ` +
       `into the live routing pool (effective default is "${effective?.value}" from ${effective?.file})`,
   );
+}
+
+// #3096: a migration is applied BEFORE the code that needs it deploys, so the
+// deployed code runs on the new schema for the whole review window. Adding is safe
+// in that window; dropping or renaming something the deployed code still reads is
+// an outage that starts the moment `supabase db push` returns. So every DROP
+// (table, column, function, view, type, schema) and every RENAME must carry a
+// `-- contract-ok: <reason>` marker saying why the deployed code no longer needs
+// the thing, which is the contract half of expand then contract
+// (docs/migrations-runbook.md, "Deployed code must keep working").
+//
+// The migrations that already drop something predate the rule. They are recorded by
+// NAME in GRANDFATHERED_DESTRUCTIVE_MIGRATIONS rather than marked, because an applied
+// migration is frozen by applied-content.lock, and the list is closed: an entry
+// above its ceiling fails, so the list cannot become the way round the marker.
+{
+  const findings = files.flatMap((f) =>
+    findDestructiveStatements(f, readFileSync(`supabase/migrations/${f}`, "utf8")),
+  );
+  const unmarked = findings.filter(
+    (x) => !x.marked && !GRANDFATHERED_DESTRUCTIVE_MIGRATIONS.has(x.file),
+  );
+  assert(
+    unmarked.length === 0,
+    unmarked.length === 0
+      ? "#3096: every DROP or RENAME in a migration carries a contract-ok marker"
+      : `#3096: a migration drops or renames something with no "-- contract-ok: <reason>" ` +
+          `marker. The deployed code runs on the new schema from the moment the migration ` +
+          `is applied, so say why it no longer needs it (docs/migrations-runbook.md, ` +
+          `"Deployed code must keep working"): ` +
+          unmarked.map((x) => `${x.file}:${x.line} "${x.statement}"`).join("; "),
+  );
+
+  // The list is closed. A stale entry (a file that no longer drops anything) is the
+  // list saying something untrue, and an entry above the ceiling is a new migration
+  // using the list to skip the marker.
+  for (const f of GRANDFATHERED_DESTRUCTIVE_MIGRATIONS) {
+    assert(
+      findings.some((x) => x.file === f),
+      `#3096: grandfathered migration ${f} still contains a DROP or RENAME (else remove the entry)`,
+    );
+    assert(
+      f.slice(0, 4) <= GRANDFATHER_CEILING,
+      `#3096: grandfathered migration ${f} predates the rule (ceiling ${GRANDFATHER_CEILING}); ` +
+        `a new migration carries a contract-ok marker instead`,
+    );
+  }
+
+  // Positive controls (L1): the scanner must see each shape it claims to, and the
+  // marker must clear exactly the statement it sits on.
+  const planted = (sql: string) => findDestructiveStatements("9999_planted.sql", sql);
+  const shapes: [string, string][] = [
+    ["drop table", "drop table if exists widgets;"],
+    ["drop column", "alter table buckets\n  drop column if exists code;"],
+    ["drop function", "drop function if exists some_rpc(uuid);"],
+    ["drop view", "drop view if exists v_things;"],
+    ["drop type", "drop type if exists mood;"],
+    ["rename column", "alter table bookings rename column status to state;"],
+    ["rename table", "alter table bookings rename to appointments;"],
+  ];
+  for (const [label, sql] of shapes) {
+    const got = planted(sql);
+    assert(got.length === 1 && !got[0].marked, `#3096 control: an unmarked ${label} is caught`);
+  }
+  assert(
+    planted("-- contract-ok: nothing reads widgets since #1\ndrop table if exists widgets;")[0]
+      ?.marked === true,
+    "#3096 control: a marker on the comment block above clears the statement",
+  );
+  assert(
+    planted(
+      "-- contract-ok: the column has been unread since #1\nalter table buckets\n  drop column if exists code;",
+    )[0]?.marked === true,
+    "#3096 control: a marker above the statement clears a drop on a continuation line",
+  );
+  assert(
+    planted("drop table if exists widgets; -- contract-ok: nothing reads it since #1")[0]?.marked ===
+      true,
+    "#3096 control: a marker on the statement's own line clears it",
+  );
+  assert(
+    planted("-- contract-ok:\ndrop table if exists widgets;")[0]?.marked === false,
+    "#3096 control: a marker with no reason does not count",
+  );
+  assert(
+    planted("-- contract-ok: (#1)\ndrop table if exists widgets;")[0]?.marked === false,
+    "#3096 control: a reason with no words in it does not count (L675)",
+  );
+  assert(
+    planted(
+      "-- contract-ok: nothing reads widgets since #1\ndrop table if exists widgets;\n\ndrop table if exists gadgets;",
+    ).filter((x) => !x.marked).length === 1,
+    "#3096 control: a marker covers only its own statement, not the next one",
+  );
+  for (const benign of [
+    "-- we may drop table widgets later, or rename it\ncreate table widgets (id int);",
+    "comment on column x.y is 'an admin may not rename this row';",
+    "alter table buckets drop constraint if exists buckets_code_key;",
+    "alter table users alter column bookable drop default;",
+    "drop index if exists some_idx;",
+    "drop trigger if exists t on x;",
+    "drop policy if exists p on x;",
+  ]) {
+    assert(
+      planted(benign).length === 0,
+      `#3096 control: not destructive to deployed code, so not flagged: ${benign.split("\n").at(-1)}`,
+    );
+  }
 }
 
 finish();

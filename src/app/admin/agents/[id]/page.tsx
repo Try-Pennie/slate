@@ -65,6 +65,8 @@ import { CLEAR_PENDING_FLIP_LABEL, pendingFlipSentence } from "@/lib/bookable/pe
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 import { SelectField } from "@/components/ui/SelectField";
 
+export const metadata = { title: "Agent" };
+
 export const dynamic = "force-dynamic";
 
 /**
@@ -412,10 +414,12 @@ export default async function AgentProfilePage({
               <SaveForm action={setUserRole} name="agent-role" unsaved="this role change" className="flex items-end gap-2">
                 <input type="hidden" name="user_id" value={agent.id} />
                 <div>
-                  <label className={labelCls}>Role</label>
+                  <label className={labelCls} htmlFor="agent-role">
+                    Role
+                  </label>
                   <SelectField
+                    id="agent-role"
                     name="role"
-                    ariaLabel="Role"
                     defaultValue={agent.role}
                     className="w-40"
                     options={roleOptions(agent.role).map((r) => ({

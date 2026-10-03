@@ -15,6 +15,8 @@ import { log } from "@/lib/log";
 import type { ReasonOptionRow, User } from "@/lib/db/types";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 
+export const metadata = { title: "Booking reasons" };
+
 export const dynamic = "force-dynamic";
 
 /**

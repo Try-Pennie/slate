@@ -27,7 +27,16 @@ export interface DeployFailureContext {
   runUrl: string;
   commitSha: string;
   actor: string;
+  /**
+   * The CI jobs that concluded failure, read by the workflow from the run (#3087).
+   * `null` when they could not be read, which is never the same as an empty list:
+   * the generic message is the only one that claims nothing about which job it was.
+   */
+  failedJobs?: string[] | null;
 }
+
+/** The scan job on a push to main (#3087): outside the fan-in, so it never holds back the deploy. */
+const SCAN_JOB = "security-scan-main";
 
 /** Injectable poster so the core is testable with a hand-written fake. */
 export type PostFn = (msg: {
@@ -39,9 +48,22 @@ export function buildDeployFailureMessage(ctx: DeployFailureContext): string {
   const shortSha = ctx.commitSha ? ctx.commitSha.slice(0, 7) : "unknown";
   const workflow = ctx.workflowName || "CI";
   const branch = ctx.branch || "main";
+  const failed = ctx.failedJobs ?? [];
+  // A red security scan on main fails the run WITHOUT holding back the deploy
+  // (#3087), so "the live site may not have updated" would be false and would send
+  // the reader to the wrong problem while the commit it objected to is live.
+  if (failed.length > 0 && failed.every((j) => j === SCAN_JOB)) {
+    return [
+      `Security scan failed on ${branch}.`,
+      `The secret scan or static analysis found something in commit ${shortSha} by ${ctx.actor || "unknown"}, and that commit is live: the scan does not hold back a deploy.`,
+      `Open the run now. If it found a credential, rotate it before anything else.`,
+      ctx.runUrl,
+    ].join("\n");
+  }
   return [
     `Slate deploy failed on ${branch}.`,
     `The "${workflow}" workflow did not finish, so the live site may not have updated.`,
+    ...(failed.length > 0 ? [`Failed: ${failed.join(", ")}.`] : []),
     `Commit ${shortSha} by ${ctx.actor || "unknown"}.`,
     ctx.runUrl,
   ].join("\n");
@@ -56,7 +78,18 @@ export function readContextFromEnv(
     runUrl: env.RUN_URL ?? "",
     commitSha: env.COMMIT_SHA ?? "",
     actor: env.ACTOR ?? "",
+    failedJobs: parseFailedJobs(env.FAILED_JOBS),
   };
+}
+
+/** `a,b` from the workflow; absent, empty or `unknown` means the read did not happen. */
+function parseFailedJobs(raw: string | undefined): string[] | null {
+  const v = raw?.trim() ?? "";
+  if (v === "" || v === "unknown") return null;
+  return v
+    .split(",")
+    .map((j) => j.trim())
+    .filter((j) => j !== "");
 }
 
 export async function run(

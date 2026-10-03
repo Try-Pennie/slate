@@ -9,6 +9,8 @@ import { loadBucketSupply } from "@/lib/admin/bucket-supply-load";
 import { BucketSupplyTable } from "@/components/BucketSupplyTable";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 
+export const metadata = { title: "Bucket availability" };
+
 export const dynamic = "force-dynamic";
 
 /**

@@ -4,7 +4,7 @@
 // idempotent function of the current row.
 // Run: node --experimental-strip-types scripts/test-offboarding-plan.ts
 import { planLifecycleChange } from "../src/lib/offboarding/plan.ts";
-import { eq, finish } from "./lib/harness.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
 
 const active = { deactivated_at: null };
 const gone = { deactivated_at: "2026-06-19T00:00:00Z" };
@@ -17,5 +17,18 @@ eq(planLifecycleChange(gone, "deactivate"), { status: "noop" }, "deactivate an a
 
 eq(planLifecycleChange(gone, "reactivate"), { status: "apply", deactivate: false }, "reactivate a deactivated user applies");
 eq(planLifecycleChange(active, "reactivate"), { status: "noop" }, "reactivate an already-active user is a no-op (idempotent)");
+
+// #3116: anything other than the two known actions must refuse, never fall
+// through to the reactivate branch. The type forbids it; a cast models a value
+// that reached here from untyped input.
+for (const bad of ["constructor", "activate", "", "bookable"]) {
+  let threw = false;
+  try {
+    planLifecycleChange(gone, bad as never);
+  } catch (err) {
+    threw = /unknown lifecycle action/.test(String(err));
+  }
+  assert(threw, `an unknown action (${JSON.stringify(bad)}) throws rather than reactivating`);
+}
 
 finish();

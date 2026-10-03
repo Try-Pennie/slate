@@ -82,6 +82,8 @@ export function OooForm({
   const [reason, setReason] = useState(editing?.reason ?? "");
   const [notes, setNotes] = useState(editing?.notes ?? "");
   const [allDay, setAllDay] = useState(editing?.allDay ?? false);
+  const startLabel = allDay ? "Start date" : "Start date and time";
+  const endLabel = allDay ? "End date" : "End date and time";
   // #1849: the list is a fixed US set now, so a stored zone outside it resolves
   // to a named default rather than being prepended. The searchable "more zones"
   // fallback (#1007) went with it: a way out of a fixed list is not a smaller
@@ -248,14 +250,15 @@ export function OooForm({
 
         <div className="space-y-4">
           <div>
-            <label className={formLabelCls}>
-              {allDay ? "Start date" : "Start date and time"}
-            </label>
+            {/* A caption, not a label: the field is a group of inputs with no
+                single control a label could point at, and the group carries
+                this same text as its own name (#3080). */}
+            <p className={formLabelCls}>{startLabel}</p>
             <div className="mt-1">
               <DateTimeField
                 nameDate="start_date"
                 nameTime="start_time"
-                ariaLabel={allDay ? "Start date" : "Start date and time"}
+                ariaLabel={startLabel}
                 defaultDate={editing?.startDate}
                 defaultTime={editing?.startTime}
                 min={bounds.minISO}
@@ -266,14 +269,12 @@ export function OooForm({
             </div>
           </div>
           <div>
-            <label className={formLabelCls}>
-              {allDay ? "End date" : "End date and time"}
-            </label>
+            <p className={formLabelCls}>{endLabel}</p>
             <div className="mt-1">
               <DateTimeField
                 nameDate="end_date"
                 nameTime="end_time"
-                ariaLabel={allDay ? "End date" : "End date and time"}
+                ariaLabel={endLabel}
                 round="up"
                 defaultDate={editing?.endDate}
                 defaultTime={editing?.endTime}
@@ -311,10 +312,12 @@ export function OooForm({
         </div>
 
         <div className="mt-4">
-          <label className={formLabelCls}>Reason</label>
+          <label className={formLabelCls} htmlFor="ooo-reason">
+            Reason
+          </label>
           <input
+            id="ooo-reason"
             name="reason"
-            aria-label="Reason"
             placeholder="Vacation, appointment, family"
             value={reason}
             onChange={(e) => setReason(e.target.value)}
@@ -322,12 +325,12 @@ export function OooForm({
           />
         </div>
         <div className="mt-4">
-          <label className={formLabelCls}>
+          <label className={formLabelCls} htmlFor="ooo-notes">
             Anything your manager should know? (optional)
           </label>
           <input
+            id="ooo-notes"
             name="notes"
-            aria-label="Notes for your manager (optional)"
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
             className={`${fieldBaseCls} mt-1 w-full`}

@@ -12,6 +12,8 @@ import { savedOutcome, savedSentence } from "@/lib/admin/save-outcomes";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
 import { btnCls, cardCls, labelCls, proseCls, textareaCls } from "@/components/ui/styles";
 
+export const metadata = { title: "Booker copy" };
+
 export const dynamic = "force-dynamic";
 
 export default async function BookerCopyPage({

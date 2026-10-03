@@ -109,6 +109,17 @@ describe("consolidated lifecycle action handler", () => {
     expect(svc.applyLifecycleByEmail).not.toHaveBeenCalled();
   });
 
+  // #3116 (L738): a bracket lookup on a plain object finds inherited members, so
+  // "constructor" resolved to Object and was passed on as a truthy action, which
+  // the state machine then read as a reactivate.
+  it("refuses an inherited property name as an action with 400", async () => {
+    for (const action of ["constructor", "toString", "__proto__", "hasOwnProperty", "valueOf"]) {
+      const res = await postAction({ email: "x@y.com", action });
+      expect(res.status, action).toBe(400);
+    }
+    expect(svc.applyLifecycleByEmail).not.toHaveBeenCalled();
+  });
+
   it("requires an email (400)", async () => {
     expect((await postAction({ action: "deactivate" })).status).toBe(400);
   });

@@ -272,6 +272,8 @@ const EXPECTED_PINNED = [
   "definer_function_web_grants",
   "erase_booking_pii",
   "move_busy_block",
+  // #3109: the daily rate_limits prune.
+  "prune_rate_limits",
   "rate_limit_hit",
   "rate_limit_refund",
   "reason_usage_counts",

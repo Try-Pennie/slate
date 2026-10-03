@@ -5,6 +5,8 @@ import { consoleHiddenFor } from "@/lib/env";
 import { ErasureWorklist } from "@/components/ErasureWorklist";
 import { loadErasureWorklist } from "@/lib/snowflake/erasure-worklist-load";
 
+export const metadata = { title: "Data erasures" };
+
 export const dynamic = "force-dynamic";
 
 /**

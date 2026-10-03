@@ -1,4 +1,5 @@
 import { atLeast } from "@/lib/auth/roles";
+import { timingSafeEqual } from "@/lib/bearer-auth";
 import type { Role } from "@/lib/db/types";
 
 /** Cookie carrying the impersonated user's id + issue time. Only honored for admin+ sessions. */
@@ -14,28 +15,83 @@ export const IMPERSONATE_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
 export const IMPERSONATE_TTL_SECONDS = IMPERSONATE_TTL_MS / 1000;
 
 /**
- * The cookie value: the target's id and the ms timestamp it was issued at, joined
- * by a `.`. User ids are UUIDs (no dots), so the last segment is unambiguously the
- * timestamp. Pair with `resolveEffectiveUserId`, which enforces the TTL.
+ * How far in the future an issue time may sit before the cookie is refused
+ * (#3113). The TTL check is `now - issuedAt`, so a FUTURE issue time never
+ * expired at all. A minute covers clock skew between Worker isolates, and
+ * nothing this module writes is ever ahead of the clock that reads it by more.
  */
-export function encodeImpersonationCookie(targetId: string, issuedAtMs: number): string {
-  return `${targetId}.${issuedAtMs}`;
+export const IMPERSONATE_FUTURE_SKEW_MS = 60 * 1000;
+
+/**
+ * Prefixed onto everything signed, so a MAC minted here can never be replayed as
+ * a MAC for anything else signed with the same key (#3113).
+ */
+const SIGNING_LABEL = "slate-impersonation-v1";
+
+const encoder = new TextEncoder();
+
+function base64Url(bytes: ArrayBuffer): string {
+  let bin = "";
+  for (const b of new Uint8Array(bytes)) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/**
+ * HMAC-SHA256 over the issuing admin, the target and the issue time (#3113). The
+ * issuer is in the MAC, so one admin's cookie is worthless in another admin's
+ * browser, and a hand-written cookie (which skipped the `impersonate.start`
+ * audit and could carry any issue time it liked) no longer verifies at all.
+ */
+async function sign(
+  secret: string,
+  issuerId: string,
+  targetId: string,
+  issuedAtMs: number,
+): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const message = `${SIGNING_LABEL}\n${issuerId}\n${targetId}\n${issuedAtMs}`;
+  return base64Url(await crypto.subtle.sign("HMAC", key, encoder.encode(message)));
+}
+
+/**
+ * The cookie value: the target's id, the ms timestamp it was issued at, and the
+ * signature, joined by `.`. User ids are UUIDs and the signature is base64url, so
+ * neither carries a dot. Pair with `impersonationCookieOutcome`, which verifies
+ * the signature and enforces the TTL. Refuses to mint with no secret, because an
+ * unsigned cookie would only ever be refused on its next read.
+ */
+export async function encodeImpersonationCookie(args: {
+  issuerId: string;
+  targetId: string;
+  issuedAtMs: number;
+  secret: string;
+}): Promise<string> {
+  if (!args.secret) throw new Error("impersonation cookie: no signing secret");
+  const mac = await sign(args.secret, args.issuerId, args.targetId, args.issuedAtMs);
+  return `${args.targetId}.${args.issuedAtMs}.${mac}`;
 }
 
 /**
  * Parse a cookie written by `encodeImpersonationCookie`. Returns null for anything
- * malformed (including a legacy bare-id cookie with no timestamp), so callers fail
- * closed and treat it as no impersonation.
+ * malformed (including a legacy cookie with no timestamp or no signature), so
+ * callers fail closed and treat it as no impersonation.
  */
 function parseImpersonationCookie(
   value: string,
-): { targetId: string; issuedAtMs: number } | null {
-  const dot = value.lastIndexOf(".");
-  if (dot <= 0) return null;
-  const targetId = value.slice(0, dot);
-  const issuedAtMs = Number(value.slice(dot + 1));
-  if (!Number.isFinite(issuedAtMs)) return null;
-  return { targetId, issuedAtMs };
+): { targetId: string; issuedAtMs: number; mac: string } | null {
+  const parts = value.split(".");
+  if (parts.length !== 3) return null;
+  const [targetId, issuedAt, mac] = parts;
+  if (!targetId || !mac || !/^\d+$/.test(issuedAt)) return null;
+  const issuedAtMs = Number(issuedAt);
+  if (!Number.isSafeInteger(issuedAtMs)) return null;
+  return { targetId, issuedAtMs, mac };
 }
 
 /**
@@ -45,7 +101,11 @@ function parseImpersonationCookie(
  */
 export function impersonationTargetId(value: string | undefined): string | undefined {
   if (!value) return undefined;
-  return parseImpersonationCookie(value)?.targetId ?? value;
+  const parsed = parseImpersonationCookie(value);
+  if (parsed) return parsed.targetId;
+  // A legacy cookie: `id.timestamp` before #3113, or a bare id before #653.
+  const dot = value.indexOf(".");
+  return dot > 0 ? value.slice(0, dot) : value;
 }
 
 /**
@@ -53,8 +113,10 @@ export function impersonationTargetId(value: string | undefined): string | undef
  * silent-drop apart from a plain no-cookie request:
  *   - `none`      no cookie, a non-admin session (never honored), or self-pointing.
  *                 Nothing to notify; the actor is simply themselves.
- *   - `ended`     an admin's cookie that is present but stale (past the TTL, or
- *                 malformed/legacy). The session has ended: notify + clear it.
+ *   - `ended`     an admin's cookie that is present but not honored: past the TTL,
+ *                 issued in the future, malformed/legacy, or not signed by this
+ *                 deployment for this admin (#3113). The session has ended:
+ *                 notify + clear it.
  *   - `candidate` a fresh, well-formed cookie pointing at someone else. Still
  *                 needs the target's role/status (the CEILING + deactivation
  *                 checks live downstream in auth.ts), which may turn it into a
@@ -67,18 +129,26 @@ export type ImpersonationCookieOutcome =
   | { kind: "ended" }
   | { kind: "candidate"; targetId: string };
 
-export function impersonationCookieOutcome(
-  realRole: Role,
-  realId: string,
-  impersonateCookie: string | undefined,
-  nowMs: number,
-): ImpersonationCookieOutcome {
+export async function impersonationCookieOutcome(args: {
+  realRole: Role;
+  realId: string;
+  cookie: string | undefined;
+  nowMs: number;
+  /** The signing secret. Empty verifies nothing, so every cookie is `ended`. */
+  secret: string;
+}): Promise<ImpersonationCookieOutcome> {
+  const { realRole, realId, cookie, nowMs, secret } = args;
   if (!atLeast(realRole, "admin")) return { kind: "none" };
-  if (!impersonateCookie) return { kind: "none" };
-  const parsed = parseImpersonationCookie(impersonateCookie);
+  if (!cookie) return { kind: "none" };
+  const parsed = parseImpersonationCookie(cookie);
   if (!parsed) return { kind: "ended" };
   if (parsed.targetId === realId) return { kind: "none" };
   if (nowMs - parsed.issuedAtMs >= IMPERSONATE_TTL_MS) return { kind: "ended" };
+  // #3113: a future issue time would never reach the TTL above.
+  if (parsed.issuedAtMs - nowMs > IMPERSONATE_FUTURE_SKEW_MS) return { kind: "ended" };
+  if (!secret) return { kind: "ended" };
+  const expected = await sign(secret, realId, parsed.targetId, parsed.issuedAtMs);
+  if (!timingSafeEqual(parsed.mac, expected)) return { kind: "ended" };
   return { kind: "candidate", targetId: parsed.targetId };
 }
 
@@ -88,17 +158,15 @@ export function impersonationCookieOutcome(
  * else the cookie is ignored, so a forged cookie can never escalate privileges. A
  * cookie pointing at the actor themselves is a no-op. Sessions also EXPIRE after
  * `IMPERSONATE_TTL_MS` (#653): a cookie older than the TTL, or malformed/legacy,
- * is ignored and the actor reverts to themselves. The CEILING (you can only ever
+ * is ignored and the actor reverts to themselves, as is one issued in the future
+ * or not signed for this admin (#3113). The CEILING (you can only ever
  * act as someone ranked strictly below you) needs the target's role and so is
  * enforced downstream in `currentUser()` via `canImpersonate`. See
  * `scripts/test-impersonation.ts`.
  */
-export function resolveEffectiveUserId(
-  realRole: Role,
-  realId: string,
-  impersonateCookie: string | undefined,
-  nowMs: number,
-): string {
-  const outcome = impersonationCookieOutcome(realRole, realId, impersonateCookie, nowMs);
-  return outcome.kind === "candidate" ? outcome.targetId : realId;
+export async function resolveEffectiveUserId(
+  args: Parameters<typeof impersonationCookieOutcome>[0],
+): Promise<string> {
+  const outcome = await impersonationCookieOutcome(args);
+  return outcome.kind === "candidate" ? outcome.targetId : args.realId;
 }

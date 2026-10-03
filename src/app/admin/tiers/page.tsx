@@ -16,6 +16,8 @@ import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
 import { log } from "@/lib/log";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 
+export const metadata = { title: "Staffing depth" };
+
 export const dynamic = "force-dynamic";
 
 /** Flag -> pill treatment + short label. Color is never the sole signal: the

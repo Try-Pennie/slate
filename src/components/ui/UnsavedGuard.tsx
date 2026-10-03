@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { btnCls, btnSecondaryCls } from "@/components/ui/styles";
 import { formSnapshot } from "./formSnapshot";
 import { entriesToRestored, stashForm } from "@/lib/form-restore";
@@ -31,6 +31,9 @@ export function UnsavedGuard({ what, formName }: { what: string; formName: strin
   /** Set when the browser would not keep the draft, so nothing promises it did. */
   const [couldNotKeep, setCouldNotKeep] = useState(false);
   const stayRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  /** The link that was stopped, so staying puts focus back where it was. */
+  const stoppedAt = useRef<HTMLAnchorElement | null>(null);
 
   useEffect(() => {
     const form = marker.current?.closest("form");
@@ -113,6 +116,7 @@ export function UnsavedGuard({ what, formName }: { what: string; formName: strin
       // proceed.
       e.preventDefault();
       e.stopPropagation();
+      stoppedAt.current = link;
       setLeavingTo(href);
     };
     document.addEventListener("click", onClick, true);
@@ -127,26 +131,69 @@ export function UnsavedGuard({ what, formName }: { what: string; formName: strin
     };
   }, []);
 
+  // #3081: a NATIVE modal. The div this used to be carried aria-modal="true" and
+  // delivered none of what that promises: Tab walked out of it into the page
+  // behind, the page stayed clickable under the scrim, and closing it dropped
+  // focus on the body. showModal() puts the dialog in the top layer and makes
+  // everything else inert, so containing focus is the platform's job rather than
+  // a trap written here. A layout effect, so it is modal before the first paint.
+  //
+  // jsdom has the element and implements neither method; there it is merely
+  // marked open, which is all a test can observe anyway.
+  useLayoutEffect(() => {
+    const d = dialogRef.current;
+    if (!leavingTo || !d || d.open) return;
+    if (typeof d.showModal === "function") d.showModal();
+    else d.setAttribute("open", "");
+  }, [leavingTo]);
+
   // Focus lands on STAYING, never on the button that discards the work, which is
   // the same choice the erasure confirm makes.
   useEffect(() => {
     if (leavingTo) stayRef.current?.focus();
   }, [leavingTo]);
 
+  /** Close without leaving, and hand focus back to the link that was stopped,
+   *  which is where the person was before the dialog interrupted them. */
+  const stay = () => {
+    setLeavingTo(null);
+    const back = stoppedAt.current;
+    stoppedAt.current = null;
+    // After the dialog has gone: a modal dialog makes the link inert, and an
+    // inert element cannot take focus.
+    window.setTimeout(() => back?.focus(), 0);
+  };
+
   return (
     <>
       <span ref={marker} hidden />
       {leavingTo && (
-        <div
+        <dialog
+          ref={dialogRef}
           role="alertdialog"
-          aria-modal="true"
           aria-labelledby="unsaved-guard-title"
           // The scrim is NAVY, not black. Slate has no hard black anywhere, in
           // text or in a shadow, and 55% navy dims the page to within a few
           // points of the 45% black it replaces (#1903).
-          className="fixed inset-0 z-50 flex items-center justify-center bg-[color-mix(in_srgb,var(--pennie-navy)_55%,transparent)] p-4"
+          //
+          // The dialog itself is the full screen scrim, as the div was, so the
+          // look is unchanged (#3081): every user agent default a modal dialog
+          // carries (its margin, border, padding, size caps, Canvas colours and a
+          // grey ::backdrop of its own) is reset here. `open:flex` rather than
+          // `flex`, which would override the closed dialog's display none.
+          className="fixed inset-0 z-50 m-0 h-full max-h-none w-full max-w-none items-center justify-center border-0 bg-[color-mix(in_srgb,var(--pennie-navy)_55%,transparent)] p-4 text-fg open:flex backdrop:bg-transparent"
           onKeyDown={(e) => {
-            if (e.key === "Escape") setLeavingTo(null);
+            if (e.key !== "Escape") return;
+            // Handled here, so the dialog's own cancel never also fires.
+            e.preventDefault();
+            stay();
+          }}
+          // The platform's other way out (a phone's back gesture, or an Escape
+          // that reached the dialog some other way). Kept in React's hands, so
+          // the dialog never closes behind the state's back.
+          onCancel={(e) => {
+            e.preventDefault();
+            stay();
           }}
         >
           <div className="w-full max-w-115 rounded-[var(--radius-lg)] border border-border bg-surface px-6 py-5 shadow-[var(--shadow-lg)]">
@@ -163,7 +210,7 @@ export function UnsavedGuard({ what, formName }: { what: string; formName: strin
                 ref={stayRef}
                 type="button"
                 className={btnCls}
-                onClick={() => setLeavingTo(null)}
+                onClick={stay}
               >
                 Stay on this page
               </button>
@@ -216,7 +263,7 @@ export function UnsavedGuard({ what, formName }: { what: string; formName: strin
               </button>
             </div>
           </div>
-        </div>
+        </dialog>
       )}
     </>
   );

@@ -22,6 +22,8 @@ import { log } from "@/lib/log";
 import { hoursOriginNote } from "@/lib/admin/working-hours-copy";
 import type { AvailabilitySchedule } from "@/lib/db/types";
 
+export const metadata = { title: "My availability" };
+
 export const dynamic = "force-dynamic";
 
 /**

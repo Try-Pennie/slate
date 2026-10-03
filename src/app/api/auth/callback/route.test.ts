@@ -19,7 +19,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const provision = vi.hoisted(() => ({ provisionUser: vi.fn() }));
 const google = vi.hoisted(() => ({ ensureWatches: vi.fn(async () => "ok") }));
-const env = vi.hoisted(() => ({ googleHostedDomain: () => "trypennie.com" }));
+const env = vi.hoisted(() => ({ googleHostedDomain: vi.fn((): string => "trypennie.com") }));
 const signOut = vi.hoisted(() => vi.fn(async () => {}));
 const exchangeCodeForSession = vi.hoisted(() => vi.fn());
 const server = vi.hoisted(() => ({
@@ -64,6 +64,8 @@ function request() {
 }
 
 beforeEach(() => {
+  env.googleHostedDomain.mockReset();
+  env.googleHostedDomain.mockReturnValue("trypennie.com");
   provision.provisionUser.mockReset();
   signOut.mockReset();
   logged.errors.length = 0;
@@ -124,5 +126,60 @@ describe("auth callback when provisioning refuses (#1648)", () => {
     );
     expect(signOut).not.toHaveBeenCalled();
     expect(logged.errors).toEqual([]);
+  });
+});
+
+// #3083: the domain gate fails CLOSED, in both of the ways it used to fail open.
+describe("auth callback domain gate (#3083)", () => {
+  function sessionWith(meta: Record<string, unknown>, email = "agent@trypennie.com") {
+    return { data: { session: { user: { id: "auth-1", email, user_metadata: meta } } }, error: null };
+  }
+
+  it("refuses a sign-in whose email_verified claim is absent", async () => {
+    exchangeCodeForSession.mockResolvedValue(sessionWith({ full_name: "An Agent" }));
+
+    const res = await GET(request());
+
+    expect(res.headers.get("location")).toBe(
+      "https://slate.trypennie.app/login?error=domain_not_allowed",
+    );
+    expect(signOut).toHaveBeenCalledTimes(1);
+    expect(provision.provisionUser).not.toHaveBeenCalled();
+  });
+
+  it("refuses a claim that is anything other than true", async () => {
+    for (const claim of [false, "true", 1, null]) {
+      signOut.mockReset();
+      exchangeCodeForSession.mockResolvedValue(sessionWith({ email_verified: claim }));
+      const res = await GET(request());
+      expect(res.headers.get("location"), String(claim)).toBe(
+        "https://slate.trypennie.app/login?error=domain_not_allowed",
+      );
+    }
+    expect(provision.provisionUser).not.toHaveBeenCalled();
+  });
+
+  it("refuses every sign-in when the domain is not configured, rather than allowing any", async () => {
+    env.googleHostedDomain.mockImplementation(() => {
+      throw new Error("GOOGLE_HOSTED_DOMAIN is not set");
+    });
+
+    const res = await GET(request());
+
+    expect(res.headers.get("location")).toBe(
+      "https://slate.trypennie.app/login?error=sign_in_unavailable",
+    );
+    expect(signOut).toHaveBeenCalledTimes(1);
+    expect(provision.provisionUser).not.toHaveBeenCalled();
+    expect(logged.errors).toEqual(["auth-callback sign-in domain not configured"]);
+  });
+
+  it("still signs in a verified in-domain account", async () => {
+    provision.provisionUser.mockResolvedValue({ id: "user-1", role: "agent", theme_preference: "system" });
+
+    const res = await GET(request());
+
+    expect(res.headers.get("location")).toBe(`https://slate.trypennie.app${ME_TABS[0].href}`);
+    expect(provision.provisionUser).toHaveBeenCalledTimes(1);
   });
 });

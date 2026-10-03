@@ -101,6 +101,13 @@ needs later and cannot reconstruct: what changed and why, the test evidence, and
 migration status. Those are the fields, and they exist because the PR body is the
 only durable record of a decision made without a conversation.
 
+It also asks whether the change makes a decision somebody could reasonably try to
+undo later, and if so, for an architecture decision record in the same PR
+(`docs/adr/`, with the rule for when one is due in `docs/adr/README.md`, "When to
+write one"). A PR body is findable only by somebody who already knows which PR to
+read; a decision record is where the next engineer looks before undoing something
+(#3130).
+
 ## When a UI PR is ready
 
 The gates cover a11y in exactly one place: the contrast guard, which checks the token

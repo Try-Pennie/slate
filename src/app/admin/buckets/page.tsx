@@ -23,6 +23,8 @@ import { btnCls, cardCls, labelCls, proseCls } from "@/components/ui/styles";
 import type { Bucket, BucketMember, EventType, User } from "@/lib/db/types";
 import { SelectField } from "@/components/ui/SelectField";
 
+export const metadata = { title: "Buckets" };
+
 export const dynamic = "force-dynamic";
 
 export default async function BucketsPage({

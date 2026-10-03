@@ -46,6 +46,16 @@ v4 · Luxon. Package manager: pnpm.
    `GOOGLE_SA_PRIVATE_KEY`, which drive all calendar reads/writes and
    availability) and **Salesforce** roster sync (`SF_CLIENT_ID` /
    `SF_CLIENT_SECRET` / `SF_INSTANCE_URL`).
+
+   > [!WARNING]
+   > **`pnpm dev` talks to whatever `.env.local` names, and there is no staging
+   > (docs/adr/0007-no-staging-environment.md).** With production's Supabase URL and
+   > secret key in `.env.local`, every row a local run writes is a production row,
+   > and with a real `SLACK_BOT_TOKEN` every alert it raises posts to the real
+   > alerts channel. For local work, point `NEXT_PUBLIC_SUPABASE_URL` and
+   > `SUPABASE_SECRET_KEY` at a separate Supabase project of your own (apply the
+   > whole migration set to it as in step 1), and leave `SLACK_BOT_TOKEN` empty,
+   > which makes every Slack send a no-op.
 5. Install + run:
    ```bash
    pnpm install

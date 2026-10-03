@@ -28,7 +28,7 @@ export const dynamic = "force-dynamic";
  */
 const ADVISOR_ROLE = "Senior Loan Advisor";
 // Lead-facing: the brand is Pennie; Slate stays internal.
-export const metadata = { title: "Manage your booking with Pennie" };
+export const metadata = { title: { absolute: "Manage your booking with Pennie" } };
 
 export default async function ManagePage({
   params,

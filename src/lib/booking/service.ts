@@ -1624,15 +1624,24 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
 
     deleteExpiredReservations: async (olderThanIso, limit) => {
       const db = supabaseAdmin();
-      // error-ok: best-effort GC of expired reservations; a read error deletes nothing this tick and the sweep retries.
-      const { data } = await db
-        .from("booking_reservations")
-        .select("id")
-        .eq("status", "pending")
-        .lt("created_at", olderThanIso)
-        .limit(limit);
-      const ids = ((data ?? []) as { id: string }[]).map((r) => r.id);
-      if (ids.length) await db.from("booking_reservations").delete().in("id", ids);
+      // #3126: both halves THROW on failure. This sweep is the only retention a
+      // pending reservation (the whole attendee record) has, and the drain's catch
+      // logs a failed cleanup only if something reaches it; discarding the result
+      // here made a refused delete read as a clean pass for ever.
+      const rows = unwrap(
+        await db
+          .from("booking_reservations")
+          .select("id")
+          .eq("status", "pending")
+          .lt("created_at", olderThanIso)
+          .limit(limit),
+        "expired reservations",
+      );
+      const ids = ((rows ?? []) as { id: string }[]).map((r) => r.id);
+      if (ids.length) {
+        const { error } = await db.from("booking_reservations").delete().in("id", ids);
+        if (error) throw new Error(`expired reservation delete failed: ${error.message}`);
+      }
     },
 
     commitReschedule: async (bookingId, patch, guard) => {

@@ -20,6 +20,8 @@ import {
 } from "@/lib/booking/event-type-defaults";
 import type { EventType } from "@/lib/db/types";
 
+export const metadata = { title: "Event types" };
+
 export const dynamic = "force-dynamic";
 
 export default async function EventTypesPage({
@@ -171,13 +173,16 @@ export default async function EventTypesPage({
           <div>
             {/* heading-gloss-ok: WHERE the value goes, which is what somebody
                 needs while typing it, not a definition of the word Description. */}
-            <label className={labelCls}>Description (shown to lead + sent to Regal)</label>
+            <label className={labelCls} htmlFor="new-event-type-description">
+              Description (shown to lead + sent to Regal)
+            </label>
             {/* #1945: a FOURTH textarea wearing the single line style, which
                 Dan's report did not name and the guard found. Same three
                 consequences: `rows` inert against `h-[44px]`, no vertical
                 padding so the text touches both edges, and inline so the Add
                 button could flow beside it. */}
             <textarea
+              id="new-event-type-description"
               name="description"
               rows={2}
               className={textareaCls}

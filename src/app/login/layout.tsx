@@ -12,6 +12,10 @@ import type { ReactNode } from "react";
  */
 export const dynamic = "force-dynamic";
 
+// The title lives here for the same reason: a client component cannot export
+// metadata (#3111).
+export const metadata = { title: "Sign in" };
+
 export default function LoginLayout({ children }: { children: ReactNode }) {
   return children;
 }

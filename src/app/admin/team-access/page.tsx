@@ -9,6 +9,8 @@ import { isStaffAccessOutcome } from "@/lib/admin/staff-access";
 import { pendingPrivilegedAccess } from "@/lib/admin/pending-access";
 import type { User } from "@/lib/db/types";
 
+export const metadata = { title: "Team access" };
+
 export const dynamic = "force-dynamic";
 
 // Read once, outside the render tree, so how long each unclaimed grant has waited

@@ -40,6 +40,15 @@ invisible to every gate here.
 Delete this section if the change is not visual. If it is, and there is no axe run, say
 why. -->
 
+## Decision record
+
+<!-- Does this change make a decision somebody could reasonably try to undo later:
+one Dan or a partner made, a new source of truth, a new gate on who can book or be
+routed, or an alternative deliberately rejected? If so, add docs/adr/NNNN-*.md in this
+PR and link it here (docs/adr/README.md, "When to write one"). If not, write "none". -->
+
+none
+
 ## Anything a reader should know
 
 <!-- Optional. A decision deliberately not taken, a follow-up issue, a risk accepted

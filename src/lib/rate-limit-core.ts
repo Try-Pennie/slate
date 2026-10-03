@@ -189,6 +189,66 @@ export const WEBHOOK_TEST_SEND_RATE_RULES: RateLimitRule[] = [
   { prefix: "whtest:h", windowSeconds: 3600, max: 50 },
 ];
 
+/**
+ * Every DB limiter rule above, in one list, so the prune below covers each one by
+ * construction (#3109). scripts/test-rate-limit-prune.ts reads this module's
+ * exports and fails when a rule set exists that this list leaves out.
+ */
+const DB_RATE_LIMIT_RULE_SETS: readonly RateLimitRule[][] = [
+  BOOKING_HOURLY_RATE_RULES,
+  BOOKING_CONTACT_HOURLY_RATE_RULES,
+  DIRECT_BOOKING_API_HOURLY_RATE_RULES,
+  DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
+  DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES,
+  BOOKABLE_CHECK_HOURLY_RATE_RULES,
+  CLIENT_ERROR_RATE_RULES,
+  CSP_REPORT_RATE_RULES,
+  ROUTING_HOURLY_RATE_RULES,
+  WEBHOOK_TEST_SEND_RATE_RULES,
+];
+
+/**
+ * How far past the longest limiter window a row must be before the prune takes it
+ * (#3109). A row older than its own window is already dead: the next hit resets
+ * it in place, exactly as a fresh insert would. The margin is there so a row is
+ * never judged on the edge of its window, and it is far wider than any clock
+ * difference, since the age is measured on the database's own clock anyway.
+ */
+export const RATE_LIMIT_PRUNE_MARGIN_SECONDS = 3600;
+
+/**
+ * What the `rate_limits` prune may delete (#3109): rows under a LIMITER prefix
+ * whose window opened more than `olderThanSeconds` ago.
+ *
+ * Scoped by prefix, never by age alone, because the same table holds the cron
+ * lanes' streak counters (`recordConsecutiveStreak`) and the boundary counts,
+ * whose windows run to hours and are not listed anywhere a prune could read.
+ * Deleting one mid streak would reset the count and hold back a page. Limiter
+ * keys are always `${prefix}:${key}`, which is the whole of what this relies on.
+ */
+export function rateLimitPrunePlan(): { prefixes: string[]; olderThanSeconds: number } {
+  const rules = DB_RATE_LIMIT_RULE_SETS.flat();
+  return {
+    prefixes: [...new Set(rules.map((r) => r.prefix))],
+    olderThanSeconds: Math.max(...rules.map((r) => r.windowSeconds)) + RATE_LIMIT_PRUNE_MARGIN_SECONDS,
+  };
+}
+
+export interface RateLimitPruneDeps {
+  /** Deletes the planned rows and returns how many. THROWS on a database error:
+   *  a failed delete scored as zero reads as nothing needing cleanup (#1165). */
+  prune: (prefixes: string[], olderThanSeconds: number) => Promise<number>;
+}
+
+/** One delete statement for the whole table, sized by `rateLimitPrunePlan`. */
+export async function pruneRateLimits(
+  deps: RateLimitPruneDeps,
+): Promise<{ deleted: number; olderThanSeconds: number }> {
+  const plan = rateLimitPrunePlan();
+  const deleted = await deps.prune(plan.prefixes, plan.olderThanSeconds);
+  return { deleted, olderThanSeconds: plan.olderThanSeconds };
+}
+
 // Availability (#56) no longer uses a DB rule: it's throttled at the edge by
 // the AVAIL_RATE_LIMITER Workers binding (wrangler.jsonc, 30/min per datacenter)
 // so the slot-cache hot path never makes a DB round-trip just to rate-limit. The

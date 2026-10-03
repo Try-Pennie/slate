@@ -76,6 +76,8 @@ fix can reconstruct it.
 2. **Write down the restore target** as a UTC timestamp, and the current UTC time.
    Everything below is scoped to the window between them. Call it the **gap
    window**.
+   Then run the erasure list query in section 5 now, against the database as it
+   stands, and keep its output: after the restore those rows are gone.
 3. **Check the migration version.** Restoring to a point before a migration was
    applied puts the database *behind* the deployed Worker, which fails the
    migration drift check in CI and pages the production monitor. If the restore target
@@ -266,6 +268,38 @@ from before an erasure reintroduces the data it deleted. `docs/pii-erasure-runbo
 (section 6, Backups) states the obligation: re-run the erasure runbook for every
 `pii.erasure` audit entry in the gap window. This is a legal commitment rather
 than a tidiness one, so it is not optional and it is not deferrable.
+
+The list comes from this query (#3132). **Run it BEFORE the restore, in step 0,
+against the database as it stands, or afterwards against the snapshot step 0
+took.** Never run it against the restored database: the restore removes the gap
+window's audit rows along with everything else in it, so there it returns nothing,
+which reads exactly like a window with no erasures in it. Replace
+`RESTORE_TARGET_UTC` with the restore target written down in step 0, for example
+`2026-10-03 06:00:00+00`; left unreplaced, it is refused as an unreadable timestamp
+rather than run against the wrong window.
+
+<!-- runbook-unverified: read only, and it reads only rows written by erase_booking_pii; it has not been run against production because there has been no restore to run it for. Its shape is pinned offline by scripts/test-dr-erasure-replay-sql.ts against the code that writes and reads these rows: the action literal erase_booking_pii inserts and the erasure audit lane filters on, the columns the lane selects, the two detail keys the trail carries, and that it holds no write. -->
+```sql
+-- Every erasure honoured inside the gap window. Read only.
+select id,
+       org_id,
+       created_at,
+       details ->> 'email_sha256' as email_sha256,
+       details -> 'booking_ids' as booking_ids,
+       jsonb_array_length(details -> 'booking_ids') as booking_count
+from audit_log
+where action = 'pii.erasure'
+  and created_at >= timestamptz 'RESTORE_TARGET_UTC'
+  and created_at <= now()
+order by created_at;
+```
+
+For each row, the booking ids name the bookings the restore brought back with their
+contact data. Read the attendee email off one of those restored bookings, check that
+its SHA-256, taken over the address lowercased and trimmed exactly as
+`erase_booking_pii` hashes it, matches `email_sha256`, and run the whole erasure runbook again for that email: the Supabase step,
+the Snowflake purge, and the verify. Zero rows is a real answer only when the query ran
+against the pre-restore database or the snapshot.
 
 ---
 

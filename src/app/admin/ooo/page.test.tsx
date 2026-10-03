@@ -569,3 +569,88 @@ describe("the clash warning's could-not-check state (#1649)", () => {
     expect(screen.getByText(/Vacation/i)).toBeTruthy();
   });
 });
+
+// #3114: an admin can no longer decide their own time off, so another admin or a
+// team lead has to be able to decide it HERE, not only from the Slack post. The
+// queue used to hide every admin-authored request from everyone. Now each row is
+// shown to exactly the viewers canModerate lets act on it: other admins and team
+// leads see an admin's request with its controls, and the admin who made it gets
+// no Approve or Decline on their own (L109).
+describe("OooQueuePage: an admin's own time off reaches the other moderators (#3114)", () => {
+  const pendingRow = (id: string, userId: string) => ({
+    id,
+    org_id: "o1",
+    user_id: userId,
+    manager_id: null,
+    status: "pending",
+    starts_at: "2026-09-01T13:00:00Z",
+    ends_at: "2026-09-01T21:00:00Z",
+    display_tz_id: "America/New_York",
+    display_tz_label: "ET",
+    all_day: false,
+    reason: "Vacation",
+    notes: null,
+    rejection_note: null,
+    decided_by: null,
+    decided_at: null,
+    cancelled_at: null,
+    side_effects: {},
+    created_at: "2026-08-01T00:00:00Z",
+    updated_at: "2026-08-01T00:00:00Z",
+  });
+  const person = (id: string, role: string, name: string) => ({
+    id,
+    name,
+    email: `${id}@trypennie.com`,
+    role,
+    manager_id: null,
+  });
+  const viewer = (id: string, role: string) => ({
+    id,
+    role,
+    org_id: "o1",
+    email: `${id}@trypennie.com`,
+  });
+
+  // Every Approve and Decline form carries its row in a hidden request_id.
+  const actionableIds = (container: HTMLElement) => [
+    ...new Set(
+      [...container.querySelectorAll('input[name="request_id"]')].map(
+        (el) => (el as HTMLInputElement).value,
+      ),
+    ),
+  ];
+
+  beforeEach(() => {
+    dbState.oooReads = 0;
+    dbState.history = [];
+    dbState.bookings = [];
+    dbState.users = [
+      person("u-ada", "admin", "Ada Admin"),
+      person("u-sam", "super_admin", "Sam Super"),
+      person("u-lee", "team_lead", "Lee Lead"),
+      person("u-aria", "agent", "Aria Agent"),
+    ];
+    dbState.pending = [pendingRow("r-ada", "u-ada"), pendingRow("r-aria", "u-aria")];
+  });
+
+  it("shows another admin's request, with its controls, to an admin", async () => {
+    auth.currentUser.mockResolvedValue(viewer("u-sam", "super_admin"));
+    const { container } = render(await OooQueuePage(props));
+    expect(actionableIds(container).sort()).toEqual(["r-ada", "r-aria"]);
+    expect(container.querySelector("#request-r-ada")?.textContent).toContain("Ada Admin");
+  });
+
+  it("shows an admin's request to a team lead", async () => {
+    auth.currentUser.mockResolvedValue(viewer("u-lee", "team_lead"));
+    const { container } = render(await OooQueuePage(props));
+    expect(actionableIds(container).sort()).toEqual(["r-ada", "r-aria"]);
+  });
+
+  it("offers an admin no controls on their own request, and keeps everyone else's", async () => {
+    auth.currentUser.mockResolvedValue(viewer("u-ada", "admin"));
+    const { container } = render(await OooQueuePage(props));
+    expect(actionableIds(container)).toEqual(["r-aria"]);
+    expect(container.querySelector("#request-r-ada")).toBeNull();
+  });
+});

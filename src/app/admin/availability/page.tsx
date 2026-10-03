@@ -9,6 +9,8 @@ import { loadAvailabilityGrid, GRID_DAYS } from "@/lib/admin/availability-grid-l
 import { AvailabilityGridTable } from "@/components/AvailabilityGridTable";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 
+export const metadata = { title: "Agent availability" };
+
 export const dynamic = "force-dynamic";
 
 /**

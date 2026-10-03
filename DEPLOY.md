@@ -10,8 +10,11 @@ prompts, so values never land in a transcript).
   auto-creates the DNS record and the TLS cert. Its apex zone must exist in the
   target Cloudflare account; if it is not there, add it to Cloudflare first, or drop
   the `routes` entry and bind the domain in the dashboard later.
-- `.env.local` is filled in (it provides the `NEXT_PUBLIC_*` values inlined at
-  build time; `NEXT_PUBLIC_APP_URL` is set to `https://slate.trypennie.app`).
+- The checkout you deploy from holds **no** `.env*` file. `pnpm cf:deploy` builds
+  through `pnpm cf:build`, which refuses a bundle carrying the values of any `.env`
+  file in the tree (#2335, #3078), because the adapter would ship them inside the
+  Worker. Deploy from a clean worktree, and pass the `NEXT_PUBLIC_*` build values in
+  the shell environment (2a), as the CI deploy job does.
 
 ## 1. Authenticate
 <!-- runbook-unverified: an interactive browser OAuth flow, so it cannot be executed
@@ -29,9 +32,10 @@ needs ALL of them. This is the full list (source of truth: `.env.example` and
 `src/lib/env.ts`); `scripts/test-deploy-env-coverage.ts` fails CI if a var read by
 the app or listed in `.env.example` is ever missing here.
 
-### 2a. Build-time public values (`.env.local`, inlined into the client bundle)
-Set these in `.env.local` BEFORE `pnpm run cf:deploy`: they are baked in at build,
-not read at runtime.
+### 2a. Build-time public values (the build's environment, inlined into the client bundle)
+Set these in the environment of `pnpm run cf:deploy`: they are baked in at build,
+not read at runtime. Not in `.env.local`: a deploy from a tree holding any `.env*`
+file is refused, since every value in it would ship inside the Worker (#3078).
 - `NEXT_PUBLIC_APP_URL` (required): base URL, no trailing slash. Drives OAuth
   redirects, the embed SDK, manage links, and the Google push callback URL.
 - `NEXT_PUBLIC_SUPABASE_URL` (required): the Supabase project URL.
@@ -116,8 +120,15 @@ so they survive every deploy; a dashboard-only plain var gets WIPED on the next
 `wrangler deploy`), so they ship with `pnpm cf:deploy` and need no `secret put`.
 Change one by editing `wrangler.jsonc` and redeploying.
 - `GOOGLE_HOSTED_DOMAIN` (required): the server-side SSO domain gate (e.g.
-  `trypennie.com`). Empty = any Google account may sign in. Its build-time
+  `trypennie.com`). It fails CLOSED (#3083): unset or empty refuses every sign-in
+  with "Sign in is unavailable right now", rather than letting any Google account
+  in. Allowing any account takes an explicit `ALLOW_ANY_GOOGLE_DOMAIN=1`, which
+  production must never carry; `scripts/test-hosted-domain-required.ts` pins both
+  for every environment in `wrangler.jsonc`. Its build-time
   `NEXT_PUBLIC_GOOGLE_HOSTED_DOMAIN` twin is set in 2a.
+- `SLATE_DEV_PREVIEW`: never set in a deployment. It is a local `.env.local`
+  opt-in for `/dev/preview`, which acts as any user with no sign-in, and is only
+  honoured under `pnpm dev` (NODE_ENV `development`) on a loopback host (#3086).
 - `AGENT_SCHEDULING_LIVE`: launch flag over the CONSOLE. `"false"` = only super
   admins reach `/admin`; `"true"` opens it to the managers and admins whose roles
   already allow it. The committed production value is `"true"` (changed 2026-10-02), pinned by
@@ -497,13 +508,38 @@ purpose, not an incident somebody reacts to, so neither wants an instant switch,
 a var in `wrangler.jsonc` survives every deploy where a dashboard-only value would be
 wiped.
 
-What it costs is that **there is no kill switch**. Nothing here can be turned off
-without shipping. If a flag ever gates something that has to be turnable off in
-seconds under load, do not add another var: back it with a `monitor_settings` row,
-which is the pattern the alert cooldowns already use (read from the database per
-tick, changed from the admin UI, no deploy). That is the reversal, and it is per flag
-rather than a general mechanism, deliberately: a general flag system nobody needs yet
-is a second source of truth for behaviour.
+Those two flags still cannot be turned off without shipping. **Public booking can**,
+and that is the switch to reach for in an incident (#2297):
+
+- **Where.** Admin, **Hours** (`/admin/business-hours`), the **Stop online booking**
+  button, which asks for confirmation first. **Start online booking** on the same
+  screen turns it back on. The admin Overview carries an **Online booking** row
+  saying which state it is in. It writes `booking_settings.public_booking_paused`,
+  which the public booker's route (`src/app/booking/route.ts`) reads on every
+  request, so it takes effect on the next lead with no deploy. It gates that route
+  only: the key authed booking API (`/api/bookings`) does not read it.
+- **What a paused lead sees.** The booking request is refused with a 503 carrying
+  `BOOKING_ERROR_COPY.bookingsPaused` (`src/lib/booking/booker-copy.ts`): "We are not
+  taking bookings online right now. Please try again a little later." Availability
+  keeps computing, calendars keep syncing, and anybody who already has a call can
+  still move or cancel it. A flag the route cannot READ refuses too, with a
+  different sentence (`bookingPauseUnreadable`), because the gate fails closed.
+- **The alert.** A switch left stopped pages `public_booking_stopped` once it has
+  stood for `PAUSE_NOTICE_AFTER_MS` (the low booking volume alarm's long window, two
+  hours), timed from `booking_settings.public_booking_paused_at` rather than from
+  when the monitor noticed, and it clears on the first tick that reads the switch
+  back on (`src/lib/monitor/booking-pause.ts`, #2366).
+- **It is proven nightly.** `.github/workflows/kill-switch.yml` runs
+  `pnpm verify:kill-switch`, which stops public booking for about two seconds
+  outside advertised hours, sends one booking that must be refused, and starts it
+  again (`docs/verify-commands.md`, #2493).
+
+If a launch flag ever gates something that has to be turnable off in seconds under
+load, do not add another var: back it with a database row read per request or per
+tick and changed from the admin UI, which is the pattern this switch and the
+`monitor_settings` alert cooldowns use. That reversal is per flag rather than a
+general mechanism, deliberately: a general flag system nobody needs yet is a second
+source of truth for behaviour.
 
 ## Spend and usage alerts (#1052)
 
@@ -543,6 +579,53 @@ down here: nothing fails when somebody deletes the notification. What compensate
 that both providers are cheap by architecture rather than by policing (a request
 that costs money is a lead booking, and the crons are bounded), and that the
 observability notes carry the real headroom numbers to compare against.
+
+## Capacity: the database and the Google quota (#3124)
+
+The Worker's own ceilings (CPU, subrequests, the shared every minute invocation) are
+measured and live in `docs/cloudflare-platform-notes.md`. The two shared resources
+OUTSIDE Cloudflare are not measured anywhere yet, and this section says what is known
+about each, what is not, and how to read the missing half, so the next capacity
+question starts from a recorded state rather than a guess.
+
+**The load premise.** How busy Slate really gets is the peak query in
+`scripts/loadtest/RUNBOOK.md` ("The peak the 60 a minute bar rests on"), re-runnable
+against production. Re-run it before any capacity decision and after cutover (#65),
+when Slate stops carrying only the pilot's share.
+
+**Supabase.** What is known:
+
+- The organization is on the **Pro** plan (read 2026-09-16, above) with the spend cap
+  on, so going over a quota THROTTLES the project rather than billing for it. A
+  throttled database is an outage that reads as a slow one, which is why the size of
+  the headroom matters more here than its price.
+- **The Worker holds no database connections of its own.** Every read and write goes
+  through PostgREST over HTTPS (`@supabase/supabase-js`); nothing under `src/` or
+  `worker/` imports a Postgres driver (`scripts/test-ops-doc-claims.ts` keeps that
+  true). So the connection limit that matters is Supabase's PostgREST pool for the
+  project, not anything a Worker isolate opens, and a burst of isolates does not
+  multiply connections.
+
+What is not known, and where to read it: the project's **compute size** and the
+**database size against its disk** (Dashboard > Project Settings > Compute and Disk),
+and the **PostgREST pool size and its saturation** (Dashboard > Reports > Database).
+None has been recorded, and none can be read from this repo. Growth is driven by the
+append only tables (`booking_events`, `audit_log`, `webhook_deliveries`) and by
+bookings, and retention is the only thing that bounds them (`docs/pii-retention.md`).
+
+**Google Calendar API.** What is known: every calendar read and write is made by one
+service account through domain wide delegation, so every call Slate makes counts
+against the ONE Google Cloud project that owns that service account's OAuth client.
+The calls are the every minute sync backstop, Google push channel renewals, the live
+`freeBusy` at confirm (batched at Google's 20 calendars a call, #2412), event writes
+on book, reschedule and cancel, and the verify commands run by hand. What is not
+known: that project's per day and per minute quota for the Calendar API, and how near
+Slate runs to it. Read both in the Google Cloud console (APIs and Services > Google
+Calendar API > Quotas, and its Metrics tab for the traffic) for the project that owns
+`GOOGLE_SA_CLIENT_EMAIL`. A quota refusal (a 429, or a 403 whose reason is
+`quotaExceeded` or a rate limit) is classified `transient` by
+`src/lib/google/reachability-classify.ts`, so running out reads as a run of
+transient calendar failures rather than under a quota name of its own.
 
 ## Rollback
 Both the app and its crons run on the single **main** Worker, so a rollback is one

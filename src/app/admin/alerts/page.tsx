@@ -57,6 +57,8 @@ import { lastChangedLine, shortStamp } from "@/lib/admin/last-changed";
 import { btnCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
 import type { MonitorAlertConfig, MonitorSettings, User } from "@/lib/db/types";
 
+export const metadata = { title: "Alerts and floors" };
+
 export const dynamic = "force-dynamic";
 
 // Module scope so the clock read does not trip react-hooks/purity in render: the

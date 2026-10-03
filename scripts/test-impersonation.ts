@@ -1,158 +1,168 @@
 // Tests for the impersonation security gate. This layer is the FLOOR: only a
 // real admin-or-above session may act as someone else; everyone below is ignored
-// (no privilege escalation). The role CEILING — you can only act as someone who
-// ranks strictly below you — needs the target's role and is enforced downstream
+// (no privilege escalation). The role CEILING (you can only act as someone who
+// ranks strictly below you) needs the target's role and is enforced downstream
 // (canImpersonate, exercised in test-roles.ts + auth.ts resolveImpersonationTarget).
-// Run: node --experimental-strip-types scripts/test-impersonation.ts
+//
+// #3113 added the two things the cookie could not prove before: that THIS
+// deployment minted it for THIS admin (an HMAC over issuer, target and issue
+// time), and that its issue time is not in the future (a future time made
+// `now - issuedAt` negative, so it never expired).
+// Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-impersonation.ts
 import {
   resolveEffectiveUserId,
   impersonationCookieOutcome,
   encodeImpersonationCookie,
   impersonationTargetId,
   IMPERSONATE_TTL_MS,
+  IMPERSONATE_FUTURE_SKEW_MS,
 } from "../src/lib/auth/impersonation.ts";
+import type { Role } from "../src/lib/db/types.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 const ADMIN = "admin-id";
 const SUPER = "super-id";
 const TARGET = "target-id";
 const NOW = 1_700_000_000_000;
-// A freshly-issued cookie (this instant).
-const fresh = (id: string) => encodeImpersonationCookie(id, NOW);
+const SECRET = "test-signing-secret";
+
+const cookieFor = (issuerId: string, targetId: string, issuedAtMs = NOW, secret = SECRET) =>
+  encodeImpersonationCookie({ issuerId, targetId, issuedAtMs, secret });
+
+async function actsAs(realRole: Role, realId: string, cookie: string | undefined, nowMs = NOW) {
+  return resolveEffectiveUserId({ realRole, realId, cookie, nowMs, secret: SECRET });
+}
+async function outcome(realRole: Role, realId: string, cookie: string | undefined, nowMs = NOW) {
+  return impersonationCookieOutcome({ realRole, realId, cookie, nowMs, secret: SECRET });
+}
 
 // --- admin can impersonate ---
 assert(
-  resolveEffectiveUserId("admin", ADMIN, fresh(TARGET), NOW) === TARGET,
+  (await actsAs("admin", ADMIN, await cookieFor(ADMIN, TARGET))) === TARGET,
   "admin with a fresh cookie acts as the target",
 );
+assert((await actsAs("admin", ADMIN, undefined)) === ADMIN, "admin without a cookie acts as themselves");
 assert(
-  resolveEffectiveUserId("admin", ADMIN, undefined, NOW) === ADMIN,
-  "admin without a cookie acts as themselves",
-);
-assert(
-  resolveEffectiveUserId("admin", ADMIN, fresh(ADMIN), NOW) === ADMIN,
+  (await actsAs("admin", ADMIN, await cookieFor(ADMIN, ADMIN))) === ADMIN,
   "a cookie pointing at the admin is a no-op",
 );
 
-// --- super_admin can impersonate too (the secondary bug: exact-match "admin"
-// locked them out of the feature entirely) ---
+// --- super_admin can impersonate too (exact-match "admin" once locked them out) ---
 assert(
-  resolveEffectiveUserId("super_admin", SUPER, fresh(TARGET), NOW) === TARGET,
+  (await actsAs("super_admin", SUPER, await cookieFor(SUPER, TARGET))) === TARGET,
   "super_admin with a fresh cookie acts as the target",
 );
-assert(
-  resolveEffectiveUserId("super_admin", SUPER, undefined, NOW) === SUPER,
-  "super_admin without a cookie acts as themselves",
-);
+assert((await actsAs("super_admin", SUPER, undefined)) === SUPER, "super_admin without a cookie acts as themselves");
 
-// --- non-admins can NEVER impersonate, even with a forged cookie ---
+// --- non-admins can NEVER impersonate, even with a validly signed cookie ---
 assert(
-  resolveEffectiveUserId("agent", "agent-id", fresh(TARGET), NOW) === "agent-id",
+  (await actsAs("agent", "agent-id", await cookieFor("agent-id", TARGET))) === "agent-id",
   "an agent's impersonation cookie is ignored",
 );
 assert(
-  resolveEffectiveUserId("manager", "mgr-id", fresh(ADMIN), NOW) === "mgr-id",
-  "a manager cannot escalate to admin via a forged cookie",
+  (await actsAs("manager", "mgr-id", await cookieFor("mgr-id", ADMIN))) === "mgr-id",
+  "a manager cannot escalate to admin via a cookie",
 );
-assert(
-  resolveEffectiveUserId("agent", "agent-id", undefined, NOW) === "agent-id",
-  "agent with no cookie is themselves",
-);
+assert((await actsAs("agent", "agent-id", undefined)) === "agent-id", "agent with no cookie is themselves");
 
 // --- expiry (#653): a stale impersonation cookie auto-ends ---
 assert(
-  resolveEffectiveUserId(
-    "admin",
-    ADMIN,
-    encodeImpersonationCookie(TARGET, NOW - IMPERSONATE_TTL_MS - 1),
-    NOW,
-  ) === ADMIN,
+  (await actsAs("admin", ADMIN, await cookieFor(ADMIN, TARGET, NOW - IMPERSONATE_TTL_MS - 1))) === ADMIN,
   "a cookie older than the TTL is ignored (session expired, acts as self)",
 );
 assert(
-  resolveEffectiveUserId(
-    "admin",
-    ADMIN,
-    encodeImpersonationCookie(TARGET, NOW - IMPERSONATE_TTL_MS + 1000),
-    NOW,
-  ) === TARGET,
+  (await actsAs("admin", ADMIN, await cookieFor(ADMIN, TARGET, NOW - IMPERSONATE_TTL_MS + 1000))) === TARGET,
   "a cookie just inside the TTL is still honored",
 );
 assert(
-  resolveEffectiveUserId(
-    "admin",
-    ADMIN,
-    encodeImpersonationCookie(TARGET, NOW - IMPERSONATE_TTL_MS),
-    NOW,
-  ) === ADMIN,
+  (await actsAs("admin", ADMIN, await cookieFor(ADMIN, TARGET, NOW - IMPERSONATE_TTL_MS))) === ADMIN,
   "a cookie at exactly the TTL boundary has expired (acts as self)",
 );
-// --- legacy / malformed cookies fail closed (ignored → acts as self) ---
-assert(
-  resolveEffectiveUserId("admin", ADMIN, TARGET, NOW) === ADMIN,
-  "a legacy bare-id cookie (no timestamp) is ignored",
-);
-assert(
-  resolveEffectiveUserId("admin", ADMIN, `${TARGET}.notanumber`, NOW) === ADMIN,
-  "a cookie with a non-numeric timestamp is ignored",
-);
-assert(
-  resolveEffectiveUserId("admin", ADMIN, "", NOW) === ADMIN,
-  "an empty cookie is ignored",
-);
+
+// --- #3113: a future issue time is refused, even when correctly signed ---
+{
+  const farFuture = await cookieFor(ADMIN, TARGET, NOW + 365 * 24 * 60 * 60 * 1000);
+  assert((await outcome("admin", ADMIN, farFuture)).kind === "ended", "a cookie issued a year ahead -> ended");
+  // It must STAY refused as time passes, which is the whole defect: before, it
+  // was honored until the clock caught up, a year later.
+  assert(
+    (await outcome("admin", ADMIN, farFuture, NOW + IMPERSONATE_TTL_MS * 10)).kind === "ended",
+    "and is still refused long after it would have expired had it been honest",
+  );
+  const beyondSkew = await cookieFor(ADMIN, TARGET, NOW + IMPERSONATE_FUTURE_SKEW_MS + 1);
+  assert((await outcome("admin", ADMIN, beyondSkew)).kind === "ended", "one millisecond past the skew -> ended");
+  // The positive side: ordinary clock skew between isolates is tolerated.
+  const withinSkew = await cookieFor(ADMIN, TARGET, NOW + IMPERSONATE_FUTURE_SKEW_MS);
+  const o = await outcome("admin", ADMIN, withinSkew);
+  assert(o.kind === "candidate" && o.targetId === TARGET, "a cookie at the skew limit is still honored");
+}
+
+// --- #3113: only a cookie this deployment signed for this admin is honored ---
+{
+  // The pre-#3113 shape, which anybody could write by hand.
+  assert((await outcome("admin", ADMIN, `${TARGET}.${NOW}`)).kind === "ended", "an unsigned id.timestamp cookie -> ended");
+  const real = await cookieFor(ADMIN, TARGET);
+  const [, , mac] = real.split(".");
+  assert(
+    (await outcome("admin", ADMIN, `other-target.${NOW}.${mac}`)).kind === "ended",
+    "a signature moved onto another target -> ended",
+  );
+  assert(
+    (await outcome("admin", ADMIN, `${TARGET}.${NOW + 1000}.${mac}`)).kind === "ended",
+    "a signature moved onto another issue time (the hand extended session) -> ended",
+  );
+  assert(
+    (await outcome("admin", "other-admin", real)).kind === "ended",
+    "one admin's cookie is refused in another admin's session",
+  );
+  assert(
+    (await outcome("admin", ADMIN, await cookieFor(ADMIN, TARGET, NOW, "some-other-secret"))).kind === "ended",
+    "a cookie signed with another key -> ended",
+  );
+  assert(
+    (await impersonationCookieOutcome({ realRole: "admin", realId: ADMIN, cookie: real, nowMs: NOW, secret: "" }))
+      .kind === "ended",
+    "with no secret to verify against, nothing is honored (fails closed)",
+  );
+  let threw = false;
+  try {
+    await cookieFor(ADMIN, TARGET, NOW, "");
+  } catch {
+    threw = true;
+  }
+  assert(threw, "minting a cookie with no secret refuses rather than writing an unsigned one");
+}
+
+// --- legacy / malformed cookies fail closed (ignored, acts as self) ---
+assert((await actsAs("admin", ADMIN, TARGET)) === ADMIN, "a legacy bare-id cookie is ignored");
+assert((await actsAs("admin", ADMIN, `${TARGET}.notanumber.x`)) === ADMIN, "a non-numeric timestamp is ignored");
+assert((await actsAs("admin", ADMIN, `${TARGET}.-5.x`)) === ADMIN, "a negative timestamp is ignored");
+assert((await actsAs("admin", ADMIN, "")) === ADMIN, "an empty cookie is ignored");
 
 // --- impersonationTargetId extracts the clean id for the stop audit (#653) ---
-assert(
-  impersonationTargetId(encodeImpersonationCookie(TARGET, NOW)) === TARGET,
-  "decodes the target id out of an encoded cookie",
-);
-assert(
-  impersonationTargetId(TARGET) === TARGET,
-  "returns a legacy bare-id cookie as-is",
-);
-assert(
-  impersonationTargetId(undefined) === undefined,
-  "undefined cookie stays undefined",
-);
+assert(impersonationTargetId(await cookieFor(ADMIN, TARGET)) === TARGET, "decodes the target id out of a signed cookie");
+assert(impersonationTargetId(`${TARGET}.${NOW}`) === TARGET, "and out of a pre-#3113 id.timestamp cookie");
+assert(impersonationTargetId(TARGET) === TARGET, "returns a legacy bare-id cookie as-is");
+assert(impersonationTargetId(undefined) === undefined, "undefined cookie stays undefined");
 
 // --- impersonationCookieOutcome classifies WHY a cookie was honored or not
-//     (#652): 'none' (ignore silently), 'ended' (present but stale -> notify),
-//     'candidate' (valid, still needs the downstream DB eligibility check) ---
+//     (#652): 'none' (ignore silently), 'ended' (present but not honored ->
+//     notify), 'candidate' (valid, still needs the downstream DB check) ---
+assert((await outcome("admin", ADMIN, undefined)).kind === "none", "no cookie -> none");
 assert(
-  impersonationCookieOutcome("admin", ADMIN, undefined, NOW).kind === "none",
-  "no cookie -> none",
-);
-assert(
-  impersonationCookieOutcome("agent", "agent-id", fresh(TARGET), NOW).kind === "none",
+  (await outcome("agent", "agent-id", await cookieFor("agent-id", TARGET))).kind === "none",
   "a non-admin's cookie -> none (never a drop notice for them)",
 );
-assert(
-  impersonationCookieOutcome("admin", ADMIN, fresh(ADMIN), NOW).kind === "none",
-  "a self-pointing cookie -> none",
-);
+assert((await outcome("admin", ADMIN, await cookieFor(ADMIN, ADMIN))).kind === "none", "a self-pointing cookie -> none");
 {
-  const o = impersonationCookieOutcome("admin", ADMIN, fresh(TARGET), NOW);
-  assert(
-    o.kind === "candidate" && o.targetId === TARGET,
-    "a fresh cookie pointing elsewhere -> candidate(targetId)",
-  );
+  const o = await outcome("admin", ADMIN, await cookieFor(ADMIN, TARGET));
+  assert(o.kind === "candidate" && o.targetId === TARGET, "a fresh cookie pointing elsewhere -> candidate(targetId)");
 }
 assert(
-  impersonationCookieOutcome(
-    "admin",
-    ADMIN,
-    encodeImpersonationCookie(TARGET, NOW - IMPERSONATE_TTL_MS),
-    NOW,
-  ).kind === "ended",
+  (await outcome("admin", ADMIN, await cookieFor(ADMIN, TARGET, NOW - IMPERSONATE_TTL_MS))).kind === "ended",
   "an expired cookie -> ended (session timed out)",
 );
-assert(
-  impersonationCookieOutcome("admin", ADMIN, TARGET, NOW).kind === "ended",
-  "a legacy bare-id cookie -> ended (stale, clear it)",
-);
-assert(
-  impersonationCookieOutcome("admin", ADMIN, `${TARGET}.nope`, NOW).kind === "ended",
-  "a malformed-timestamp cookie -> ended",
-);
+assert((await outcome("admin", ADMIN, TARGET)).kind === "ended", "a legacy bare-id cookie -> ended (stale, clear it)");
+assert((await outcome("admin", ADMIN, `${TARGET}.nope`)).kind === "ended", "a malformed-timestamp cookie -> ended");
 
 finish();
