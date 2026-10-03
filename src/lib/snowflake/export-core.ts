@@ -143,6 +143,8 @@ export interface ExportTableResult {
   exported: number;
   batches: number;
   hitDeadline: boolean;
+  /** The lane lock was lost before a merge (#3120), so the run must stop. */
+  leaseLost?: boolean;
 }
 
 export interface ExportTableOpts {
@@ -152,6 +154,12 @@ export interface ExportTableOpts {
   /** Cursor-scope prefix so the backfill lane (#1100) never shares a watermark
    *  with the incremental lane. Empty for the incremental lane. */
   keyPrefix?: string;
+  /**
+   * Asked before each MERGE (#3120). False means another run now owns the lane: the
+   * MERGE overwrites by id with no recency check, so a batch from this older run
+   * could put a stale row version back over the newer run's, and it is not sent.
+   */
+  stillHeld?: () => Promise<boolean>;
 }
 
 export async function exportTable(spec: TableSpec, deps: ExportDeps, opts: ExportTableOpts): Promise<ExportTableResult> {
@@ -169,6 +177,10 @@ export async function exportTable(spec: TableSpec, deps: ExportDeps, opts: Expor
 
     const rows = await deps.fetchBatch(spec, cursor, opts.limit);
     if (rows.length === 0) break;
+
+    if (opts.stillHeld && !(await opts.stillHeld())) {
+      return { table: spec.table, key, exported, batches, hitDeadline, leaseLost: true };
+    }
 
     // Advance ONLY after a confirmed terminal MERGE. A throw here aborts the
     // loop with the cursor unchanged, so this batch re-exports next tick.

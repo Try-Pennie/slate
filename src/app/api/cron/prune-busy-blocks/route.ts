@@ -42,6 +42,8 @@ export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
+  // lock-overlap: idempotent deletes of past Google busy blocks only; a second run
+  // deletes nothing new.
   const lock = await acquireLock("cron_prune_busy_blocks", LOCK_TTL_MS);
   if (!lock) return NextResponse.json({ skipped: "overlapping-run" });
   try {

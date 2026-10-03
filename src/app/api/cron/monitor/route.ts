@@ -1,7 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { leaseHeldThroughout } from "@/lib/monitor/lease-heartbeat";
 import { isAuthorizedCron } from "@/lib/cron";
 import { refuseCronSecret } from "@/lib/bearer-failure";
-import { acquireLock, releaseLock } from "@/lib/locks";
+import { acquireLease, acquireLock, releaseLock } from "@/lib/locks";
 import {
   sendThrottledAlert,
   sendThrottledInfo,
@@ -780,8 +781,12 @@ export async function GET(req: NextRequest) {
   }
   const now = Date.now();
 
-  const lock = await acquireLock("cron_monitor", MONITOR_LOCK_TTL_MS);
-  if (!lock) return NextResponse.json({ skipped: "overlapping-run" });
+  // lock-overlap: fenced. Two overlapping ticks would post the same booking handoff
+  // (it posts, then stamps) and overwrite each other's learned settings. The lease
+  // renews before each step, and once another tick holds the key the remaining
+  // steps are skipped and named on the cycle line (#3120).
+  const lease = await acquireLease("cron_monitor", MONITOR_LOCK_TTL_MS);
+  if (!lease) return NextResponse.json({ skipped: "overlapping-run" });
 
   try {
     // Every check below runs inside its OWN boundary and is timed on its own
@@ -804,6 +809,7 @@ export async function GET(req: NextRequest) {
     const stepFailureReasons = new Map<string, string>();
     const steps = createStepRunner({
       now: () => performance.now(),
+      stillHeld: lease.stillHeld,
       onError: (name, err) => {
         stepFailureReasons.set(name, shortErrorReason(err));
         log.error("monitor", { msg: "step failed", step: name }, err);
@@ -1238,6 +1244,10 @@ export async function GET(req: NextRequest) {
             wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
           },
           claimHeal: async (code) =>
+            // lock-overlap: deliberately never released: it is a once per bucket
+            // cooldown, and the heal it gates writes slots through the compute start
+            // compare and swap, so a heal after the window cannot overwrite fresher
+            // slots.
             (await acquireLock(`anomaly_selfheal:${code}`, ANOMALY_SELFHEAL_WINDOW_MS)) !== null,
           heal: (code) => recomputeBucketSlotsForToday(code, true, undefined, horizonDays!),
           onHealError: (code, err) =>
@@ -3636,6 +3646,9 @@ export async function GET(req: NextRequest) {
         now,
         token: canaryToken,
         readHeartbeatMs,
+        // lock-overlap: the canary and parity dispatch cooldowns, deliberately held for
+        // their TTL; dispatching again once a cooldown expires is the designed
+        // behaviour.
         acquireLock: async (name, ttl) => (await acquireLock(name, ttl)) !== null,
         dispatch: (pass) => postWorkflowDispatch(canaryToken, pass),
         // #2875: a cal.com lane is not re fired once cal.com is marked retired.
@@ -3793,7 +3806,8 @@ export async function GET(req: NextRequest) {
 
     // Stamp the dead-man's switch (#420): proves this lane ran this tick.
     // Best-effort, and must never affect the monitor's own response.
-    await recordHeartbeat("monitor").catch(() => {});
+    // #3120: withheld when the lease was lost part way, so the gap pages.
+    if (leaseHeldThroughout(lease, "monitor")) await recordHeartbeat("monitor").catch(() => {});
 
     // The SECOND kind of stamp (#1394): proves these detectors CONCLUDED
     // something this tick, which the heartbeat above cannot tell you. The
@@ -3969,6 +3983,6 @@ export async function GET(req: NextRequest) {
       steps: steps.outcomes().filter((o) => !o.ok).map((o) => o.name),
     });
   } finally {
-    await releaseLock("cron_monitor", lock);
+    await releaseLock("cron_monitor", lease.token());
   }
 }

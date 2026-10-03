@@ -170,6 +170,25 @@ async function run() {
   await drainBulkReassign(deps);
   assert(askedLimit === BULK_REASSIGN_ITEMS_PER_TICK, "the drain is bounded to a fixed number of items per tick");
 
+  // #3120: the per item claim is not exclusive and relies on the lane lock, so a run
+  // that has lost the lock must not start another item: two runs would pick targets
+  // against the same daily cap count and overload a covering agent. The fence is
+  // asked before each CLAIM, and a lost lease stops the drain where it stands.
+  {
+    let asks = 0;
+    ({ deps, log } = fakeDeps({
+      loadPendingItems: async () => [
+        { item: item({ id: "A", booking_id: "bkA" }), job },
+        { item: item({ id: "B", booking_id: "bkB" }), job },
+      ],
+    }));
+    const fenced = await drainBulkReassign(deps, BULK_REASSIGN_ITEMS_PER_TICK, async () => ++asks < 2);
+    assert(log.includes("reassign:bkA"), "lease held: the first item is moved");
+    assert(!log.includes("reassign:bkB"), "lease lost: the next item is not started");
+    assert(fenced.processed === 1, "lease lost: only the item started under the lease is counted");
+    assert(asks === 2, "the fence is asked once per item, before it is claimed");
+  }
+
   // After a tick, each touched job is checked for completion (marked done when drained).
   ({ deps, log } = fakeDeps({ loadPendingItems: async () => [{ item: item(), job }] }));
   await drainBulkReassign(deps);

@@ -8,10 +8,11 @@ import {
   mapWithConcurrency,
   SYNC_CONCURRENCY,
 } from "@/lib/google/sync-pace";
-import { acquireLock, releaseLock } from "@/lib/locks";
+import { acquireLease, releaseLock } from "@/lib/locks";
 import { WATCH_LOCK_TTL_MS, SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
 import { sendThrottledAlert, resolveAlert, isAlertFiring } from "@/lib/notify/dispatch";
 import { formatWatchLapseAlert, type FailingAgent } from "@/lib/notify/alerts";
+import { leaseHeldThroughout } from "@/lib/monitor/lease-heartbeat";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { log } from "@/lib/log";
 import { watchLapseRecovery } from "@/lib/notify/misc-alert-copy";
@@ -65,8 +66,12 @@ export async function GET(req: NextRequest) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
 
-  const lock = await acquireLock("cron_watch", WATCH_LOCK_TTL_MS);
-  if (!lock) {
+  // lock-overlap: fenced. Two runs renewing one calendar each open a Google push
+  // channel, and the one not recorded is orphaned until it expires. The lease
+  // renews before each agent and the tick stops starting agents once another holds
+  // the key (#3120).
+  const lease = await acquireLease("cron_watch", WATCH_LOCK_TTL_MS);
+  if (!lease) {
     return NextResponse.json({ skipped: "overlapping-run" });
   }
 
@@ -83,6 +88,7 @@ export async function GET(req: NextRequest) {
       toProcess,
       SYNC_CONCURRENCY,
       async (agent) => {
+        if (!(await lease.stillHeld())) return { userId: agent.userId, watch: "lease-lost" as const };
         const watch = await ensureWatches(agent.userId);
         return {
           userId: agent.userId,
@@ -111,7 +117,8 @@ export async function GET(req: NextRequest) {
     }
 
     // Dead-man's switch (#420/#685): prove this lane ran this tick. Best-effort.
-    await recordHeartbeat("watch").catch(() => {});
+    // #3120: withheld when the lease was lost part way, so the gap pages.
+    if (leaseHeldThroughout(lease, "watch")) await recordHeartbeat("watch").catch(() => {});
     return NextResponse.json({
       agents: ordered.length,
       processed: results.length,
@@ -121,6 +128,6 @@ export async function GET(req: NextRequest) {
       results,
     });
   } finally {
-    await releaseLock("cron_watch", lock);
+    await releaseLock("cron_watch", lease.token());
   }
 }

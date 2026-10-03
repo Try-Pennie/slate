@@ -2,8 +2,9 @@ import { NextResponse, type NextRequest } from "next/server";
 import { laneFailure } from "@/lib/monitor/lane-failure-response";
 import { isAuthorizedCron } from "@/lib/cron";
 import { refuseCronSecret } from "@/lib/bearer-failure";
-import { acquireLock, releaseLock } from "@/lib/locks";
+import { acquireLease, releaseLock } from "@/lib/locks";
 import { runSnowflakeExport } from "@/lib/snowflake/export";
+import { leaseHeldThroughout } from "@/lib/monitor/lease-heartbeat";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { log } from "@/lib/log";
 
@@ -24,20 +25,25 @@ export async function GET(req: NextRequest) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
 
-  const lock = await acquireLock("cron_snowflake_export", LOCK_TTL_MS);
-  if (!lock) return NextResponse.json({ skipped: "overlapping-run" });
+  // lock-overlap: fenced. One MERGE can outlast the TTL, and the MERGE overwrites by
+  // id with no recency check, so a stale batch from an overrunning run could land
+  // over a newer run's. The lease renews before each MERGE and stops the run once
+  // another holds the key (#3120).
+  const lease = await acquireLease("cron_snowflake_export", LOCK_TTL_MS);
+  if (!lease) return NextResponse.json({ skipped: "overlapping-run" });
 
   try {
-    const result = await runSnowflakeExport();
+    const result = await runSnowflakeExport({ stillHeld: lease.stillHeld });
     // Dead-man's switch (#1101): stamp only on a successful tick so the
     // lane-watchdog pages if the export goes silently quiet. Best-effort.
-    await recordHeartbeat("snowflake-export").catch(() => {});
+    // #3120: withheld when the lease was lost part way, so the gap pages.
+    if (leaseHeldThroughout(lease, "snowflake-export")) await recordHeartbeat("snowflake-export").catch(() => {});
     return NextResponse.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error("snowflake-export", { msg: "cron failed", error: message });
     return laneFailure("snowflake-export", message);
   } finally {
-    await releaseLock("cron_snowflake_export", lock);
+    await releaseLock("cron_snowflake_export", lease.token());
   }
 }

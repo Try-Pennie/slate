@@ -1,4 +1,4 @@
-import { resolveBucketSlots, type ReadDeps } from "../src/lib/availability/precompute-core.ts";
+import { resolveBucketSlots, SUPERSEDED_BY_SAVE, type ReadDeps } from "../src/lib/availability/precompute-core.ts";
 import type { BucketSlots } from "../src/lib/availability/service.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -108,6 +108,54 @@ function deps(over: Partial<ReadDeps> & { calls: Record<string, number> }): Read
   eq(refusals.length, 1, "the refusal is reported once");
   eq(refusals[0]!.err, refused, "with the error itself");
   assert(r!.computedAt !== WROTE_AT && r!.computedAt !== null, "labelled with when the compute began, not a stamp nothing wrote");
+}
+
+// 3c) #3118: a settings save landed while the cold compute ran, so the write was
+// refused as invalidated. Those slots were computed under the OLD settings, so they
+// are neither served nor cached: the read computes once more, after the save, and
+// serves and stores that.
+{
+  const calls: Record<string, number> = {};
+  const before = { ...sampleSlots(), slots: ["2026-06-19T16:00:00.000Z"] };
+  const after = { ...sampleSlots(), slots: ["2026-06-19T17:00:00.000Z"] };
+  const computed = [before, after];
+  const writes: BucketSlots[] = [];
+  const cached: unknown[] = [];
+  const d = deps({
+    calls,
+    compute: async () => computed.shift() ?? null,
+    writeRow: async (_c, v) => {
+      writes.push(v);
+      return writes.length === 1 ? SUPERSEDED_BY_SAVE : WROTE_AT;
+    },
+    cachePut: async (_k, v) => { cached.push(v); },
+  });
+  const r = await resolveBucketSlots("411", "2026-06-19T12:00:00.000Z", 4, d);
+  eq(r!.slots, after.slots, "the request is served the compute that began after the save");
+  eq(writes.length, 2, "the superseded compute is redone once and stored");
+  eq(cached.length, 1, "only the second compute is cached");
+  eq((cached[0] as BucketSlots).slots, after.slots, "and the cache holds the new settings, never the old");
+  eq(r!.computedAt, WROTE_AT, "labelled with the stamp the second write stored");
+}
+
+// 3d) #3118: a second save lands during the redo too. The redo began after the
+// first save, but not after the second, so it is served to this one request (the
+// fail-open path must not empty the booker) and NOT cached, and it stops there:
+// one redo, never a loop on a busy settings screen.
+{
+  const calls: Record<string, number> = {};
+  let n = 0;
+  const cached: unknown[] = [];
+  const d = deps({
+    calls,
+    compute: async () => { n++; return sampleSlots(); },
+    writeRow: async () => SUPERSEDED_BY_SAVE,
+    cachePut: async (_k, v) => { cached.push(v); },
+  });
+  const r = await resolveBucketSlots("411", "2026-06-19T12:00:00.000Z", 4, d);
+  eq(n, 2, "it redoes the compute once, and only once");
+  assert(r !== null && r.source === "compute", "the request is still answered");
+  eq(cached.length, 0, "a payload superseded twice is never cached");
 }
 
 // 4) Cache miss + no row + compute also yields nothing (unknown bucket): null.

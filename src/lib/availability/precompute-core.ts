@@ -10,6 +10,13 @@ import type { BucketSlots } from "./service";
  * exists — is unit-testable without Cloudflare/Supabase. The real IO deps are
  * bound in slot-cache.ts; this module imports only pure helpers + a type.
  */
+
+/**
+ * What `writeRow` answers when a settings save marked the row stale after the
+ * compute began (#3118): nothing was stored, and the payload describes the OLD
+ * settings, so it must be neither cached nor served as if it were current.
+ */
+export const SUPERSEDED_BY_SAVE = "superseded-by-save" as const;
 /** Where the served slots came from: L1 Cache API, L2 precomputed row, or a
  *  cold live compute. Surfaced as the `x-slot-cache` header (#234). */
 export type SlotSource = "hit" | "row" | "compute";
@@ -39,7 +46,7 @@ export interface ReadDeps {
    *  has to describe the data, or a slow compute landing last reports a fresh stamp
    *  over stale slots and the overwrite is invisible on the header that exists to
    *  show it. Required rather than defaulted, so every call site has to say. */
-  writeRow(code: string, val: BucketSlots, computedAtMs: number): Promise<string>;
+  writeRow(code: string, val: BucketSlots, computedAtMs: number): Promise<string | typeof SUPERSEDED_BY_SAVE>;
   /** The self-heal write threw (a refused row is `SlotRowRefused`, #3119). The read
    *  still serves what it computed, so this is where the refusal is recorded.
    *  Required, so every construction site has to say what it does with one. */
@@ -110,29 +117,43 @@ export async function resolveBucketSlots(
   // or served, exactly as the recompute path does. Without this the fail-open path
   // would store more days than the setting asks for, and the one bucket that took
   // this branch would quietly offer a longer strip than every other.
-  // #1048: taken before the compute reads anything, so the stored stamp describes the
-  // state these slots were computed from.
-  const computeStartedMs = Date.now();
-  const computed = await deps.compute(code, nf, nt);
-  if (!computed) return null;
-  // Days are grouped in the ORG's zone, the same clock the hours are judged in: a
-  // 21:00 slot is stored as the next day in UTC, and grouping in UTC would spend one
-  // of the days on a day the customer does not have.
-  const { zone } = await deps.businessHours();
-  const fresh: BucketSlots = mapSlotLists(computed, (list) =>
-    trimToBookableDays(list, zone, horizonDays),
-  );
-  // A refused or failed write must not take the lead's times with it: this is the
-  // fail-open path, and the computed answer is correct whether or not it was stored.
-  // It is labelled with when the compute began, the stamp the row would have had.
-  let computedAt: string;
-  try {
-    computedAt = await deps.writeRow(code, fresh, computeStartedMs);
-  } catch (err) {
-    deps.writeFailed(code, err);
-    computedAt = new Date(computeStartedMs).toISOString();
+  //
+  // #3118: a settings save can land while this compute runs, and the write then
+  // refuses it as superseded: those slots describe the OLD settings. They are neither
+  // cached nor served; the compute is redone once, and the redo began after that save.
+  // A second save during the redo is served to this one request without caching (the
+  // fail-open path must not empty the booker) and stops there rather than looping.
+  for (let attempt = 0; ; attempt++) {
+    // #1048: taken before the compute reads anything, so the stored stamp describes
+    // the state these slots were computed from.
+    const computeStartedMs = Date.now();
+    const computed = await deps.compute(code, nf, nt);
+    if (!computed) return null;
+    // Days are grouped in the ORG's zone, the same clock the hours are judged in: a
+    // 21:00 slot is stored as the next day in UTC, and grouping in UTC would spend
+    // one of the days on a day the customer does not have.
+    const { zone } = await deps.businessHours();
+    const fresh: BucketSlots = mapSlotLists(computed, (list) =>
+      trimToBookableDays(list, zone, horizonDays),
+    );
+    // A refused or failed write must not take the lead's times with it: this is the
+    // fail-open path, and the computed answer is correct whether or not it was
+    // stored. It is labelled with when the compute began, the stamp the row would
+    // have had.
+    let computedAt: string;
+    try {
+      const written = await deps.writeRow(code, fresh, computeStartedMs);
+      if (written === SUPERSEDED_BY_SAVE) {
+        if (attempt === 0) continue;
+        return served({ ...fresh, computedAt: new Date(computeStartedMs).toISOString() }, "compute");
+      }
+      computedAt = written;
+    } catch (err) {
+      deps.writeFailed(code, err);
+      computedAt = new Date(computeStartedMs).toISOString();
+    }
+    const cached: CachedBucketSlots = { ...fresh, computedAt };
+    await deps.cachePut(key, cached);
+    return served(cached, "compute");
   }
-  const cached: CachedBucketSlots = { ...fresh, computedAt };
-  await deps.cachePut(key, cached);
-  return served(cached, "compute");
 }

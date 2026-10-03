@@ -2846,8 +2846,10 @@ function realBulkReassignDeps(): BulkReassignDeps {
 }
 
 /** Drain one bounded tick of the bulk-reassign engine (the cron lane). */
-export function drainBulkReassignJobs(): Promise<BulkReassignDrainSummary> {
-  return drainBulkReassign(realBulkReassignDeps());
+export function drainBulkReassignJobs(
+  stillHeld?: () => Promise<boolean>,
+): Promise<BulkReassignDrainSummary> {
+  return drainBulkReassign(realBulkReassignDeps(), undefined, stillHeld);
 }
 
 /** How many of the out agent's active upcoming bookings a coverage sweep over

@@ -66,6 +66,10 @@ export async function GET(req: NextRequest) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
 
+  // lock-overlap: Google event deletes treat a 404 as done and busy block recreates are
+  // deduplicated by the unique index on booking_id, so overlapping runs repeat work
+  // rather than corrupt it; the residual is a duplicate alert and the scan cursor
+  // jumping one window.
   const lock = await acquireLock("cron_selfheal", SELFHEAL_LOCK_TTL_MS);
   if (!lock) {
     return NextResponse.json({ skipped: "overlapping-run" });

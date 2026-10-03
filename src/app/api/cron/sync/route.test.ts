@@ -5,8 +5,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // a successful tick stamps the 'sync' lane's dead-man's-switch heartbeat. The
 // sync LOGIC is covered by the booking-orchestration suite; this pins glue.
 const cron = vi.hoisted(() => ({ isAuthorizedCron: vi.fn(() => false) }));
+const lease = vi.hoisted(() => ({
+  key: "cron_sync",
+  token: () => "lease",
+  stillHeld: vi.fn(async () => true),
+  stopReason: vi.fn((): "taken" | "refused" | null => null),
+}));
 const locks = vi.hoisted(() => ({
-  acquireLock: vi.fn(async () => "lease"),
+  acquireLease: vi.fn(async () => lease),
   releaseLock: vi.fn(async () => {}),
 }));
 // No failing agents = the quiet happy path: alertSyncFailures just clears the
@@ -89,13 +95,55 @@ beforeEach(() => {
   vi.clearAllMocks();
   dispatch.isAlertFiring.mockResolvedValue(true);
   sync.loadFailingAgents.mockResolvedValue([]);
+  lease.stillHeld.mockResolvedValue(true);
+  lease.stopReason.mockReturnValue(null);
+});
+
+// #3120: a tick that outlives its TTL lets the next one take the key. The sync token
+// write has no compare and swap and a stale full pass can purge fresher busy blocks,
+// so a tick whose lease is gone must not start another agent, and an agent it did
+// not sync must not be stamped as synced.
+describe("the sync lane lease (#3120)", () => {
+  const twoAgents = [
+    { userId: "u1", hasCalendars: true },
+    { userId: "u2", hasCalendars: true },
+  ];
+  const runTasks = async (agents: unknown[], _c: number, task: (a: unknown) => Promise<{ userId: string }>) => {
+    const results = [];
+    for (const a of agents) results.push(await task(a));
+    return { results, processed: results.length, truncated: false };
+  };
+
+  it("starts no agent once the lease is lost, and stamps none of them synced", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    sync.loadSyncAgents.mockResolvedValueOnce(twoAgents as never);
+    pace.mapWithConcurrency.mockImplementationOnce(runTasks as never);
+    lease.stillHeld.mockResolvedValue(false);
+    lease.stopReason.mockReturnValue("taken");
+    await GET(req());
+    expect(sync.runIncrementalSync).not.toHaveBeenCalled();
+    expect(sync.markAgentsSynced).toHaveBeenCalledWith([]);
+    expect(locks.releaseLock).toHaveBeenCalledWith("cron_sync", "lease");
+    // A partly abandoned tick is not a healthy one: the dead man's switch is not
+    // stamped, so a lane that keeps losing its lease goes stale and pages.
+    expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
+  });
+
+  it("CONTROL: a held lease syncs and stamps every agent", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    sync.loadSyncAgents.mockResolvedValueOnce(twoAgents as never);
+    pace.mapWithConcurrency.mockImplementationOnce(runTasks as never);
+    await GET(req());
+    expect(sync.runIncrementalSync).toHaveBeenCalledTimes(2);
+    expect(sync.markAgentsSynced).toHaveBeenCalledWith(["u1", "u2"]);
+  });
 });
 
 describe("GET /api/cron/sync", () => {
   it("returns 401 and does no work when the cron bearer is missing or wrong", async () => {
     const res = await GET(req());
     expect(res.status).toBe(401);
-    expect(locks.acquireLock).not.toHaveBeenCalled();
+    expect(locks.acquireLease).not.toHaveBeenCalled();
     expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
   });
 

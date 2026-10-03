@@ -202,10 +202,16 @@ export async function processBulkReassignItem(
  * target selection reads. The caller holds a per-lane lock so no two ticks run
  * concurrently; items left over carry to the next tick (resumable). After the
  * tick, each touched job is checked for completion.
+ *
+ * `stillHeld` is that lock's fence (#3120). The per item claim is not exclusive
+ * (it leaves the item pending), so it is the lane lock alone that stops two ticks
+ * moving bookings against the same daily cap count. A tick that overruns its TTL
+ * renews the lock before each item and stops the moment another tick holds it.
  */
 export async function drainBulkReassign(
   deps: BulkReassignDeps,
   limit: number = BULK_REASSIGN_ITEMS_PER_TICK,
+  stillHeld: () => Promise<boolean> = async () => true,
 ): Promise<BulkReassignDrainSummary> {
   const pending = await deps.loadPendingItems(limit);
   const summary: BulkReassignDrainSummary = {
@@ -220,6 +226,7 @@ export async function drainBulkReassign(
   };
   const touchedJobs = new Set<string>();
   for (const { item, job } of pending) {
+    if (!(await stillHeld())) break;
     // The row may have been stopped since this batch was read (#1665). Ask the
     // database, per item, immediately before doing the work rather than trusting a
     // snapshot that can be minutes old.
