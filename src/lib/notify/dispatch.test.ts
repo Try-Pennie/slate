@@ -985,3 +985,37 @@ describe("a row deleted between the read and the claim (#3170)", () => {
     expect(rows.has(firingKey("lane_failed:sync"))).toBe(false);
   });
 });
+
+// #3170 review: when a claim matches nothing and the re-read that would tell a lost
+// race from a filter that cannot match is itself refused, nothing shows a race was
+// lost. A broken alert_state costs a duplicate, never silence, so it sends and says so.
+describe("an unmatched claim whose re-read fails (#3170)", () => {
+  const COOLDOWN = 30 * 60 * 1000;
+  afterEach(() => {
+    failCooldownRead.value = false;
+  });
+
+  it("a page still posts, with a warning", async () => {
+    rows.set("lane_failed:sync", new Date(Date.now() - 2 * COOLDOWN).toISOString());
+    claims.casNeverMatches = true;
+    readBarrier.afterRead = () => {
+      failCooldownRead.value = true;
+    };
+    await sendThrottledAlert("lane_failed:sync", COOLDOWN, "broken");
+    expect(slack.postSlack).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(warn.mock.calls)).toMatch(/claim/);
+  });
+
+  it("an all-clear still posts, with a warning", async () => {
+    await sendThrottledAlert("lane_failed:sync", COOLDOWN, "broken");
+    slack.postSlack.mockClear();
+    warn.mockClear();
+    claims.casNeverMatches = true;
+    readBarrier.afterRead = () => {
+      failCooldownRead.value = true;
+    };
+    expect(await resolveAlert("lane_failed:sync", "recovered")).toBe(true);
+    expect(slack.postSlack).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(warn.mock.calls)).toMatch(/claim/);
+  });
+});

@@ -167,6 +167,8 @@ async function claimRow(
   // cannot match the stamp it was handed leaves it exactly where the read found it.
   // Only the first is a reason to stay quiet, so look before deciding (L93).
   const after = await readStamp(rowKey);
+  // Unable to look is not evidence of a lost race either, so the send goes ahead.
+  if (after.kind === "unreadable") return claimFailed(rowKey, "re-read after an unmatched claim failed");
   if (after.kind === "present" && (after.raw === seen.raw || (after.ms !== null && after.ms === seen.ms))) {
     log.warn("slack-alert", {
       msg: "send claim matched nothing with the stamp unmoved; sending unclaimed",
