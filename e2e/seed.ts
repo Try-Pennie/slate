@@ -4,9 +4,12 @@
  * Deliberately small and deliberately real: one organization, the staff the
  * checks sign in as, one bookable agent in the Low pool (bucket 100), and hours
  * that are open every day around the clock, so the booker always has a time to
- * offer whatever hour the run starts. Nobody here has an `auth_user_id`: each
- * staff session is made by a real sign in through `/api/auth/callback`, which
- * links the auth user to these rows by email exactly as production does.
+ * offer whatever hour the run starts. Not always on TODAY, though: the lead's
+ * calling window (8 AM to 8 PM their time) still applies, so from late afternoon
+ * today can carry only times outside it, and a spec opens a day through
+ * `openDayWithTimes` in `fixtures.ts` rather than the first chip. Nobody here
+ * has an `auth_user_id`: each staff session is made by a real sign in through
+ * `/api/auth/callback`, which links the auth user to these rows by email exactly as production does.
  *
  * Every id is fixed, so a spec can name a row without a lookup, and every write
  * is checked, so a refused seed fails the run here rather than as a confusing
