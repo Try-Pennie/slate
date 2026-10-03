@@ -1,8 +1,32 @@
 import type { supabaseAdmin } from "@/lib/supabase/admin";
 import type { SlateRule } from "@/lib/calcom/schedule-import";
+import type { HoursSource } from "@/lib/monitor/unset-hours";
 import { calcomHoursWriteRefusal, loadCalcomRetired, type RetiredReadDb } from "@/lib/calcom/retirement";
 
 type Db = ReturnType<typeof supabaseAdmin>;
+
+/**
+ * The SQLSTATE `replace_user_schedule` raises when a guarded write finds the row's
+ * `hours_source` is no longer the one the caller read (#2702, migration 0157). A
+ * custom code rather than a message match, so rewording the exception cannot turn
+ * the refusal back into an ordinary failure.
+ */
+export const HOURS_CHANGED_SQLSTATE = "SL409";
+
+/**
+ * A guarded import refused because somebody wrote the week between the caller's
+ * read and this write (#2702). Not a failure: the week holds what a person set, and
+ * leaving it is the point of the guard.
+ */
+export class HoursChangedDuringImportError extends Error {
+  constructor(userId: string, detail: string) {
+    super(`imported week not written for ${userId}: the stored hours changed during the import (${detail})`);
+    this.name = "HoursChangedDuringImportError";
+  }
+}
+
+/** Who wrote the week the caller judged. null = written before the stamp existed. */
+type ExpectedSource = HoursSource | null;
 
 /**
  * Write a week imported from cal.com, the zone and the rules together, stamped
@@ -31,21 +55,49 @@ type Db = ReturnType<typeof supabaseAdmin>;
  * THROWS on a refused write and on a count it did not ask for. The expected count is
  * checked inside the transaction (`p_expected`) and again here, because a client
  * that cannot read the count back has no business claiming a save either (L12).
+ *
+ * GUARDED, when `opts.onlyIfSource` is given (#2702). The activation gate decides to
+ * import only after reading the stored week and judging it unset, and an admin save
+ * landing between that read and this write used to be overwritten with nothing said.
+ * So the caller passes the source it read (null for a row written before the stamp
+ * existed) and `replace_user_schedule` compares it against the row it has LOCKED,
+ * inside the same transaction as the write, refusing with `HOURS_CHANGED_SQLSTATE`
+ * when they differ. That refusal throws `HoursChangedDuringImportError`, so the
+ * caller can tell it from a write that failed. The daily importer passes no guard:
+ * its rule (Dan, 2026-09-10) is to overwrite an admin edit, so it reaches the
+ * unguarded five argument form, unchanged.
  */
 export async function writeImportedWeek(
   db: Db,
   userId: string,
   week: { timezone: string; rules: SlateRule[] },
+  opts: { onlyIfSource?: ExpectedSource } = {},
 ): Promise<void> {
   const refusal = calcomHoursWriteRefusal(await loadCalcomRetired(db as unknown as RetiredReadDb));
   if (refusal) throw new Error(`imported week not written: ${refusal}`);
-  const { data, error } = await db.rpc("replace_user_schedule", {
-    p_user_id: userId,
-    p_timezone: week.timezone,
-    p_rules: week.rules,
-    p_source: "calcom-import",
-    p_expected: week.rules.length,
-  });
+  // Only undefined means unguarded: an explicit null is a guard (still unstamped),
+  // and treating it as absent would send the write to the unguarded form. Each call
+  // spells out its own literal source, so the stamp guard can read it.
+  const guarded = opts.onlyIfSource !== undefined;
+  const { data, error } = guarded
+    ? await db.rpc("replace_user_schedule", {
+        p_user_id: userId,
+        p_timezone: week.timezone,
+        p_rules: week.rules,
+        p_source: "calcom-import",
+        p_expected: week.rules.length,
+        p_only_if_source: opts.onlyIfSource ?? null,
+      })
+    : await db.rpc("replace_user_schedule", {
+        p_user_id: userId,
+        p_timezone: week.timezone,
+        p_rules: week.rules,
+        p_source: "calcom-import",
+        p_expected: week.rules.length,
+      });
+  if (error && guarded && (error as { code?: string }).code === HOURS_CHANGED_SQLSTATE) {
+    throw new HoursChangedDuringImportError(userId, error.message);
+  }
   if (error) throw new Error(`imported week refused: ${error.message}`);
   const written = typeof data === "number" ? data : Number.NaN;
   if (written !== week.rules.length) {

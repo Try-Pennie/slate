@@ -14,7 +14,6 @@
 // needs Docker. No Docker is exit 2, never a pass (L98).
 //
 // Run: pnpm verify:agent-link-names
-import { spawn } from "node:child_process";
 import { startThrowawayPostgres } from "./lib/throwaway-postgres.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -137,16 +136,14 @@ try {
   // --- two concurrent inserts of one username ----------------------------------------
   // Each session holds its transaction open, so the second insert of the same name
   // has to wait on the first and then move to the next variant.
-  const racer = (email: string) =>
-    new Promise<number>((resolve) => {
-      const p = spawn("docker", ["exec", "-i", NAME, "psql", "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-qtAX", "-f", "-"]);
-      p.stdin.end(`begin;
+  const racer = async (email: string) =>
+    (
+      await pg.session(`begin;
         with a as (insert into auth.users (id) values (gen_random_uuid()) returning id)
         insert into users (id, org_id, email) select a.id, (select id from organizations), '${email}' from a;
         select pg_sleep(1);
-        commit;`);
-      p.on("close", (code) => resolve(code ?? 1));
-    });
+        commit;`)
+    ).code;
   const codes = await Promise.all([racer("racer@trypennie.com"), racer("racer@halo-lab.com")]);
   eq(codes, [0, 0], "both concurrent inserts committed, neither was refused");
   eq(

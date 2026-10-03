@@ -5,7 +5,7 @@
 // No Docker, or a container that cannot start, exits 2 UNMEASURED: it proved
 // nothing about the migration, so it is never a pass and never the failed check
 // exit either (L98, L411).
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 
 export interface ThrowawayPostgres {
   /** The container name, for a caller that drives psql itself. */
@@ -14,6 +14,11 @@ export interface ThrowawayPostgres {
   sql(text: string, role?: string): string;
   /** Run a statement expected to FAIL, returning the error text (or null if it succeeded). */
   sqlError(text: string, role?: string): string | null;
+  /**
+   * One psql session run CONCURRENTLY with the caller, for proving what two
+   * transactions do to each other. Resolves with its exit code and stderr; never rejects.
+   */
+  session(text: string): Promise<{ code: number; stderr: string }>;
   /** Remove the container. */
   stop(): void;
 }
@@ -51,6 +56,16 @@ export function startThrowawayPostgres(name: string, image: string): ThrowawayPo
       } catch (err) {
         return String((err as { stderr?: string }).stderr ?? err);
       }
+    },
+    session(text) {
+      return new Promise((resolve) => {
+        const p = spawn("docker", ["exec", "-i", name, "psql", "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-qtAX", "-f", "-"]);
+        let stderr = "";
+        p.stderr.on("data", (d) => (stderr += String(d)));
+        p.on("error", (err) => resolve({ code: 1, stderr: String(err) }));
+        p.on("close", (code) => resolve({ code: code ?? 1, stderr }));
+        p.stdin.end(text);
+      });
     },
     stop() {
       try {

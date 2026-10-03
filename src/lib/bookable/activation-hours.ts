@@ -41,10 +41,10 @@
 // the same way as the daily importer, because this is a write over a Slate week and
 // a missed import is repaired by the next morning's run while an overwrite is not.
 import type { OrgDefaults } from "@/lib/schedule-core";
-import { isUnsetHours, type UnsetHoursSchedule } from "@/lib/monitor/unset-hours";
+import { isUnsetHours, type HoursSource, type UnsetHoursSchedule } from "@/lib/monitor/unset-hours";
 import { diffSchedule, planImportedWeek, type SlateRule } from "@/lib/calcom/schedule-import";
 import { readScheduleForImport, type ScheduleForImportRead } from "@/lib/calcom/client";
-import { writeImportedWeek } from "@/lib/calcom/import-write";
+import { HoursChangedDuringImportError, writeImportedWeek } from "@/lib/calcom/import-write";
 import { loadCalcomRetired } from "@/lib/calcom/retirement";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
@@ -82,6 +82,11 @@ export type ActivationHoursReason =
   | "out-of-budget"
   /** Slate could not read the stored week or the org default that judges it. */
   | "slate-read-failed"
+  /**
+   * #2702: somebody wrote the week between the read that judged it unset and the
+   * write, so the database refused the import and their week stands.
+   */
+  | "hours-changed-during-import"
   | "write-failed";
 
 export type ActivationHoursOutcome =
@@ -97,8 +102,16 @@ export interface ActivationHoursDeps {
   loadOrgDefaults: (userId: string) => Promise<OrgDefaults | null>;
   /** One agent's default cal.com schedule; never throws. */
   readCalcom: (email: string, timeoutMs: number) => Promise<ScheduleForImportRead>;
-  /** The importer's write. Throws on a refused write or a wrong count. */
-  writeWeek: (userId: string, week: { timezone: string; rules: SlateRule[] }) => Promise<void>;
+  /**
+   * The importer's write, GUARDED on the source the check read (#2702): it refuses,
+   * throwing `HoursChangedDuringImportError`, when the row no longer holds
+   * `onlyIfSource`. Throws an ordinary error on any other refusal or a wrong count.
+   */
+  writeWeek: (
+    userId: string,
+    week: { timezone: string; rules: SlateRule[] },
+    onlyIfSource: HoursSource | null,
+  ) => Promise<void>;
   /** Milliseconds left of the activation budget. */
   remainingMs: () => number;
   log: {
@@ -120,6 +133,8 @@ const QUIET: ReadonlySet<ActivationHoursReason> = new Set([
   "calcom-retired",
   "calcom-not-configured",
   "loadtest",
+  // Somebody set the week while the import ran: their week stands, nothing is wrong.
+  "hours-changed-during-import",
 ]);
 
 const CALCOM_REASON: Record<Exclude<ScheduleForImportRead["kind"], "schedule">, ActivationHoursReason> = {
@@ -224,9 +239,14 @@ export async function importHoursOnActivation(
 
   if (deps.remainingMs() <= 0) return skip("out-of-budget", "the budget ran out while reading cal.com");
 
+  // The check above and this write are separate steps, so an admin or agent save can
+  // land between them. The write carries the source the check read, and the database
+  // compares it against the locked row in the same transaction (#2702), so a week
+  // somebody set in that window is refused rather than silently overwritten.
   try {
-    await deps.writeWeek(agent.id, { timezone: plan.timezone, rules: plan.rules });
+    await deps.writeWeek(agent.id, { timezone: plan.timezone, rules: plan.rules }, stored.hours_source);
   } catch (err) {
+    if (err instanceof HoursChangedDuringImportError) return skip("hours-changed-during-import", err.message);
     return skip("write-failed", err instanceof Error ? err.message : String(err));
   }
   // Written even when the week already matched, so the stamp says cal.com confirmed
@@ -290,7 +310,7 @@ export function defaultActivationHoursDeps(remainingMs: () => number): Activatio
       ) as OrgDefaults | null;
     },
     readCalcom: readScheduleForImport,
-    writeWeek: (userId, week) => writeImportedWeek(supabaseAdmin(), userId, week),
+    writeWeek: (userId, week, onlyIfSource) => writeImportedWeek(supabaseAdmin(), userId, week, { onlyIfSource }),
     remainingMs,
     log,
   };

@@ -7,10 +7,15 @@
 // between them, so what is pinned here is that it is ONE call carrying both, stamped
 // `calcom-import`, and that nothing short of the exact count it asked for reads as
 // a save (L12): a refusal, a short count and an unreadable count all throw.
-import { writeImportedWeek, stampImportedSource } from "@/lib/calcom/import-write";
+import {
+  writeImportedWeek,
+  stampImportedSource,
+  HoursChangedDuringImportError,
+  HOURS_CHANGED_SQLSTATE,
+} from "@/lib/calcom/import-write";
 import { assert, eq, finish } from "./lib/harness.ts";
 
-type Reply = { data: unknown; error: { message: string } | null };
+type Reply = { data: unknown; error: { message: string; code?: string } | null };
 
 /**
  * `retired` is what the "cal.com retired" read answers (#2875): a stored value, or
@@ -85,6 +90,55 @@ async function throws(p: Promise<unknown>): Promise<string | null> {
   const err = await throws(writeImportedWeek(db, "u1", WEEK));
   assert(err !== null && err.includes("an unreadable count"),
     `a count that is not a number throws as unreadable, never as a match (got ${err})`);
+}
+
+// --- #2702: the activation import names the source it read, and the write checks it ---
+// The guard lives in the database (migration 0157): the call carries the source the
+// caller judged, and `replace_user_schedule` refuses inside the same transaction when
+// the row no longer holds it. So the call must carry it, null included, because a
+// row written before the stamp existed is judged as unstamped and must still be.
+{
+  const { db, calls } = fakeDb({ data: 5, error: null });
+  eq(await throws(writeImportedWeek(db, "u1", WEEK, { onlyIfSource: "seed" })), null, "a guarded write that lands is a save");
+  eq(calls[0].args.p_only_if_source, "seed", "the guarded write carries the source the caller read");
+}
+{
+  const { db, calls } = fakeDb({ data: 5, error: null });
+  await throws(writeImportedWeek(db, "u1", WEEK, { onlyIfSource: null }));
+  assert("p_only_if_source" in calls[0].args && calls[0].args.p_only_if_source === null,
+    "an unstamped row is guarded as null, never dropped to the unguarded call");
+}
+{
+  const { db, calls } = fakeDb({ data: 5, error: null });
+  await throws(writeImportedWeek(db, "u1", WEEK));
+  assert(!("p_only_if_source" in calls[0].args),
+    "the daily importer's call stays unguarded (Dan's rule: it overwrites an admin edit), so it reaches the five argument form");
+}
+{
+  const { db } = fakeDb({
+    data: null,
+    error: { message: "hours for user u1 changed during the import", code: HOURS_CHANGED_SQLSTATE },
+  });
+  let caught: unknown = null;
+  try {
+    await writeImportedWeek(db, "u1", WEEK, { onlyIfSource: "seed" });
+  } catch (err) {
+    caught = err;
+  }
+  assert(caught instanceof HoursChangedDuringImportError,
+    `the database's changed source refusal is its own error, so the caller can tell it from a failed write (got ${String(caught)})`);
+}
+{
+  // Control: any other refusal is NOT that error.
+  const { db } = fakeDb({ data: null, error: { message: "permission denied", code: "42501" } });
+  let caught: unknown = null;
+  try {
+    await writeImportedWeek(db, "u1", WEEK, { onlyIfSource: "seed" });
+  } catch (err) {
+    caught = err;
+  }
+  assert(caught instanceof Error && !(caught instanceof HoursChangedDuringImportError),
+    "a refusal for any other reason stays an ordinary failure");
 }
 
 // --- #2875: once cal.com is retired, no week is ever written FROM it -----------------
