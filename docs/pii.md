@@ -237,12 +237,14 @@ booking link, no host page to talk to), and query parameters are the frozen cont
 different one taken depending on how a lead arrived, for a copy that ages out in a
 week inside a log only Pennie can read.
 
-What makes it acceptable, stated plainly so it can be challenged: the window is 7
-days and there is no export, the log is reachable only with Cloudflare account
-access, and nothing downstream reads a URL back out of it. What would change the
-decision is log retention growing (a Logpush job to R2 would turn a 7 day residue
-into an indefinite one, and would need this reconsidered first) or the bare link
-path being retired.
+What makes it acceptable, stated plainly so it can be challenged: the unredacted
+copy lives only in Cloudflare, for 7 days, reachable only with Cloudflare account
+access, and nothing downstream reads a URL back out of it. The logs ARE exported
+since #3105, to Better Stack, but the URL leaves without its query string: the tail
+worker cuts every query and fragment whole before anything is sent (next subsection),
+so the prefill never reaches the longer lived copy. What would change the decision is
+an export that kept the query (any new log destination must reuse that redaction, not
+ship raw lines) or the bare link path being retired.
 
 Seven day retention means this needs no erasure step: any copy here ages out well
 inside the 45 day response deadline.
@@ -294,11 +296,10 @@ puts a live credential into the same 7 day request log as the prefill above.
 the token out of the path (for example, exchanging it for a cookie on the first
 load and redirecting to a tokenless address) would change the link every lead
 already holds in an email and a calendar invite. What bounds the exposure is the
-same as for the prefill: 7 day retention, no export, and access only through the
-Cloudflare account. Treat the log as holding manage tokens. Log retention did grow
-(#3105), and the shipped copy carries `[redacted]` in place of every manage token, so
-the longer lived copy does not extend this risk; Cloudflare's own 7 day copy is
-unchanged.
+same as for the prefill: the copy holding the token is Cloudflare's, kept 7 days and
+reachable only through the Cloudflare account. Treat that log as holding manage
+tokens. The logs are exported since #3105, and the exported copy carries `[redacted]`
+in place of every manage token, so the longer lived copy does not extend this risk.
 
 ---
 
