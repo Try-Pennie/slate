@@ -48,6 +48,9 @@ function problems(sql: string): string[] {
     if (!buckets.has(m[1])) out.push(`buckets declares no column "${m[1]}"`);
   }
   if (!/\bwhere\s+not\s+k\.is_test\b/i.test(code)) out.push("it does not exclude test buckets");
+  // The premise is about ROUTED bookings: an agent's own named link does not route
+  // (0144), and every reader that reasons about routed bookings filters on kind (L418).
+  if (!/\band\s+b\.kind\s*=\s*'routed'/i.test(sql)) out.push("it does not keep to routed bookings");
   if (!/b\.created_at\s*>=\s*now\(\)\s*-\s*interval\s*'30 days'/i.test(sql)) {
     out.push("it does not read a fixed 30 day window");
   }
@@ -63,6 +66,7 @@ const controls: [string, string][] = [
   ["test buckets counted", query.replace(/where not k\.is_test\s*\n\s*and /, "where ")],
   ["a column bookings lacks", query.replace("b.created_at\n", "b.booked_at\n")],
   ["a column on the wrong table", query.replace("not k.is_test", "not b.is_test")],
+  ["agent link bookings counted", query.replace(/\s*and b\.kind = 'routed'/, "")],
   ["an open window", query.replace(/\s*and b\.created_at >= now\(\) - interval '30 days'/, "")],
   ["a write", query + "\nupdate bookings set status = 'cancelled';"],
 ];

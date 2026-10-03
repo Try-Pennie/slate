@@ -435,7 +435,7 @@ can re-identify the person).
 
 Send it only after step 4 returned all zeros. The wording below is engineering's
 draft of those positions and is listed for counsel's sign-off in
-`docs/pii-legal-positions.md` (positions 5 and 6) together with the positions it
+`docs/pii-legal-positions.md` (positions 5 to 7) together with the positions it
 rests on; until that sign-off is recorded, check the reply with whoever owns the
 request.
 

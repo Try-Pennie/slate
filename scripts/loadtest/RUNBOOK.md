@@ -179,11 +179,12 @@ form responses ran **450 to 1,013 a day** over the ten days before, and the
 real bookings then.
 
 Slate's own traffic answers the same question now. This query reads the last 30 days
-of real bookings (test buckets excluded, the same `is_test` the canary isolation
-uses) and reports the busiest minute, when it was, the busiest day, and how many
+of real routed bookings (test buckets excluded, the same `is_test` the canary
+isolation uses, and agent link bookings excluded by `kind = 'routed'`, since they do
+not route, migration 0144) and reports the busiest minute, when it was, the busiest day, and how many
 times over that minute the bar sits:
 
-<!-- runbook-unverified: read only; not run against production from the change that added it, because that change runs no SQL against the live database. Its shape is pinned offline by scripts/test-capacity-peak-sql.ts: it holds no write, names only columns the bookings and buckets row types declare, excludes test buckets, and reads a 30 day window. -->
+<!-- runbook-unverified: read only; not run against production from the change that added it, because that change runs no SQL against the live database. Its shape is pinned offline by scripts/test-capacity-peak-sql.ts: it holds no write, names only columns the bookings and buckets row types declare, excludes test buckets, keeps to routed bookings, and reads a 30 day window. -->
 ```sql
 -- Busiest minute and day of real bookings, last 30 days. Read only.
 with real_bookings as (
@@ -191,6 +192,7 @@ with real_bookings as (
   from bookings b
   join buckets k on k.id = b.bucket_id
   where not k.is_test
+    and b.kind = 'routed'
     and b.created_at >= now() - interval '30 days'
 ),
 per_minute as (

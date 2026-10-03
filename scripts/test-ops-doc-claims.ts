@@ -130,15 +130,23 @@ function walk(dir: string, out: string[] = []): string[] {
   const memo = read("docs/pii-legal-positions.md");
   assert(/Salesforce lead\s+reference stays/.test(memo), "position 3 still keeps the Salesforce reference");
 
-  // Positions 5 and 6 are engineering's proposal, not Dan's 2026-07-29 decision, and the
+  // Positions 5 to 7 are engineering's proposal, not Dan's 2026-07-29 decision, and the
   // memo must say so where it attributes decisions (L249).
   const header = memo.slice(0, memo.indexOf("## What we need from you"));
   assert(/Decided by:\*\* Dan Wright, 2026-07-29, positions 1 to 4/.test(header), "the memo scopes Dan's decision to positions 1 to 4");
-  assert(/Proposed by:\*\* Engineering \(Slate\), 2026-10-03, positions 5 and 6/.test(header), "the memo dates and attributes positions 5 and 6 as proposed");
-  for (const n of [5, 6]) {
-    const row = new RegExp(`^\\| ${n}\\. .*\\(proposed by engineering, 2026-10-03, not yet decided\\)`, "m");
-    assert(row.test(memo), `sign-off row ${n} is marked proposed, not decided`);
+  assert(/Proposed by:\*\* Engineering \(Slate\), 2026-10-03, positions 5 to 7/.test(header), "the memo dates and attributes positions 5 to 7 as proposed");
+  const row = (n: number) => new RegExp(`^\\| ${n}\\. (.*)$`, "m").exec(memo)?.[1] ?? "";
+  for (const n of [5, 6, 7]) {
+    assert(row(n).includes("(proposed by engineering, 2026-10-03, not yet decided)"), `sign-off row ${n} is marked proposed, not decided`);
   }
+  // Each statement the reply rests on has a row of its own: the two residuals the
+  // memo's own section lists, then the reply wording itself.
+  assert(/backups/i.test(row(5)) && /residual 1/.test(row(5)), "sign-off row 5 is the backups statement (residual 1)");
+  assert(/calendar/i.test(row(6)) && /residual 2/.test(row(6)), "sign-off row 6 is the calendar copy (residual 2)");
+  assert(/reply to the requester/i.test(row(7)), "sign-off row 7 is the reply wording");
+  const residuals = section(memo, "Two residuals the positions above do not cover");
+  assert(/backups as position 5, the agent's calendar as position 6/.test(residuals.replace(/\s+/g, " ")), "the residuals intro maps each residual to its own row");
+  assert(read("docs/pii-erasure-runbook.md").includes("(positions 5 to 7)"), "the erasure runbook cites the proposed rows by number");
 }
 
 // --- #3131: the system context diagram, and the credential table it links -------
