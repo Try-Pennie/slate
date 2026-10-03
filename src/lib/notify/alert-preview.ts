@@ -42,6 +42,7 @@ import {
 } from "@/lib/notify/alerts";
 import {
   retentionAlertText,
+  BACKUP_STALE_BOUNDS_MS,
   LANE_STALE_BOUNDS_MS,
   TIME_OFF_STALE_BOUNDS_MS,
   UPTIME_STALE_BOUNDS_MS,
@@ -363,6 +364,8 @@ import {
   webhookDeadRecovery,
 } from "@/lib/monitor/cron-alert-copy";
 import {
+  backupAlertText,
+  backupRecoveryText,
   coreLaneAlertText,
   canaryAlertText,
   canaryRecoveryText,
@@ -3440,6 +3443,49 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "noodge's check is reaching Slate again",
     channel: "recovery",
     text: uptimeRecoveryText("uptime:availability-canary"),
+  },
+  // #3076: the same key again, for the daily off platform database dump. Three
+  // pages, because each sends the reader somewhere different: a dump that stopped,
+  // one that has never landed (which is also what missing R2 secrets look like),
+  // and a record that cannot be read.
+  {
+    key: "cron_lane_stale:*",
+    state: "the newest off platform database backup is too old",
+    channel: "alert",
+    text: backupAlertText({
+      lane: "db-backup",
+      ageMs: 30 * 60 * 60_000,
+      maxStaleMs: BACKUP_STALE_BOUNDS_MS["db-backup"]!,
+      unreadable: false,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "no off platform database backup has ever landed",
+    channel: "alert",
+    text: backupAlertText({
+      lane: "db-backup",
+      ageMs: Infinity,
+      maxStaleMs: BACKUP_STALE_BOUNDS_MS["db-backup"]!,
+      unreadable: false,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "the database backup's last-run record cannot be read",
+    channel: "alert",
+    text: backupAlertText({
+      lane: "db-backup",
+      ageMs: NOW_MS,
+      maxStaleMs: BACKUP_STALE_BOUNDS_MS["db-backup"]!,
+      unreadable: true,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "a fresh database backup landed again",
+    channel: "recovery",
+    text: backupRecoveryText("db-backup"),
   },
   // #1394: the same key, a different fault. These lanes are NOT quiet; they run
   // faithfully and conclude nothing, which every other message here would
