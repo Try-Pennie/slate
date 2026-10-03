@@ -1,3 +1,4 @@
+import { staffPhotoSrc } from "@/lib/advisor-photos/own";
 import { currentUser } from "@/lib/auth";
 import { consoleHiddenFor } from "@/lib/env";
 import { AppHeader } from "@/components/AppHeader";
@@ -41,7 +42,7 @@ export default async function AdminLayout({
         userId={me.id}
         orgId={me.org_id}
         bookable={me.bookable}
-        avatarUrl={me.avatar_url}
+        photoSrc={await staffPhotoSrc(me)}
       />
       <div
         className={`mx-auto flex w-full min-w-0 ${PAGE_WIDTHS.wide} flex-col gap-0 px-6 sm:px-8 lg:flex-row lg:gap-8`}

@@ -10,6 +10,8 @@ import {
   refusesSave,
 } from "@/lib/notify/slack-channel-check";
 import { cookies } from "next/headers";
+import { refreshOnePhoto, runAdvisorPhotoLane } from "@/lib/advisor-photos/lane";
+import { photoOutcome, photoOutcomeQuery } from "@/lib/advisor-photos/copy";
 import { nanoid } from "nanoid";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
@@ -2998,4 +3000,55 @@ export async function setPublicBookingPaused(form: FormData): Promise<void> {
   revalidatePath("/admin/business-hours");
   revalidatePath("/admin");
   redirect(`/admin/business-hours${savedQuery(paused ? "booking-paused" : "booking-resumed")}`);
+}
+
+/**
+ * Refresh every advisor photo from the Google directory now (#3027): the same run
+ * the daily lane makes, with its guards, alerts and verdict, for rollout and for
+ * whenever an admin wants the roster current without waiting for the morning.
+ *
+ * WHO: admins only, checked here on the server. WHOSE DATA: the org's own staff
+ * photos, read from the org's own directory. The outcome comes back to the roster
+ * (L608), as counts and never names, since it travels in the address.
+ */
+export async function refreshAdvisorPhotosNow(): Promise<void> {
+  await requireAdmin();
+  const back = "/admin/agents";
+  // The run and the redirects are kept apart: a redirect is thrown, so one inside
+  // the try would be caught below and reported as a failure.
+  let query: string;
+  try {
+    query = photoOutcomeQuery(photoOutcome(await runAdvisorPhotoLane("manual"), "all"), "photos");
+  } catch (err) {
+    log.error("advisor-photos", { msg: "manual refresh failed" }, err);
+    query = photoOutcomeQuery({ code: "run-failed" }, "photos");
+  }
+  revalidatePath(back);
+  redirect(`${back}?${query}`);
+}
+
+/**
+ * "Refresh from Google" on one agent's page (#3027), so a photo fixed in Google
+ * Admin shows the same minute. Admins only, server side. It never touches the
+ * daily alerts or the verdict: one person's answer says nothing about the roster.
+ * The outcome goes back as a code, never as words (see `photoOutcomeQuery`).
+ */
+export async function refreshAdvisorPhotoFor(form: FormData): Promise<void> {
+  await requireAdmin();
+  const userId = String(form.get("user_id") ?? "").trim();
+  if (!userId) {
+    redirect(`/admin/agents?${photoOutcomeQuery({ code: "unknown-user" }, "photos")}`);
+    return;
+  }
+  const back = `/admin/agents/${encodeURIComponent(userId)}`;
+  let query: string;
+  try {
+    query = photoOutcomeQuery(photoOutcome(await refreshOnePhoto(userId), "one"), "photo");
+  } catch (err) {
+    log.error("advisor-photos", { msg: "one photo refresh failed" }, err);
+    query = photoOutcomeQuery({ code: "run-failed" }, "photo");
+  }
+  revalidatePath(back);
+  revalidatePath("/admin/agents");
+  redirect(`${back}?${query}`);
 }

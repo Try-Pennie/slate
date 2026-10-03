@@ -215,6 +215,12 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // #2097. The same family: while Twilio cannot be read, the Redistribute tag is
   // not being acted on, so Slate's idea of who may take a booked call is wrong.
   twilio_sync_failures: "the-roster-or-routing-data-is-wrong",
+  // #3027. The photo refresh has stopped producing (no subject, a refused one, an
+  // unanswering directory): the family's question is which scheduled work is not
+  // happening, and the copy names the cause.
+  advisor_photos_unread: "a-lane-or-schedule-has-gone-quiet",
+  // #3027. The refresh ran and the directory's data looks wrong for some people.
+  advisor_photos_held: "the-roster-or-routing-data-is-wrong",
   // #2114. The same family, one step later: Twilio was read fine and Slate could
   // not finish acting on it, so an agent Twilio withholds may still be in the
   // pool, or somebody's calls are still with an agent who has left it.

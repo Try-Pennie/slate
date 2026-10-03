@@ -201,6 +201,16 @@ export const REGAL_CALL_OUTCOMES_VERDICT_LANE = "verdict:regal-call-outcomes";
  */
 export const AVAILABILITY_LATENCY_VERDICT_LANE = "verdict:availability-latency";
 
+/**
+ * The daily advisor photo refresh (#3027): a run that read the directory and at
+ * least one photo, and did not trip the guard against a wave of lost photos.
+ *
+ * It needs this stamp because its failures are quiet. A refresh that stops
+ * reaching anybody leaves every page showing yesterday's photo, which looks
+ * exactly like a day on which nobody changed theirs.
+ */
+export const ADVISOR_PHOTOS_VERDICT_LANE = "verdict:advisor-photos";
+
 export type DetectorVerdictLane =
   | typeof TIER_STAFFING_VERDICT_LANE
   | typeof AVAILABILITY_TRUTH_VERDICT_LANE
@@ -222,6 +232,7 @@ export type DetectorVerdictLane =
   | typeof STRANDED_HIRES_VERDICT_LANE
   | typeof REGAL_CALL_FEED_VERDICT_LANE
   | typeof REGAL_CALL_OUTCOMES_VERDICT_LANE
+  | typeof ADVISOR_PHOTOS_VERDICT_LANE
   | typeof AVAILABILITY_LATENCY_VERDICT_LANE;
 
 /**

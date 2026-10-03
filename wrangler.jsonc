@@ -16,7 +16,9 @@
 			"5 3 * * *",
 			"*/15 * * * *",
 			"*/10 * * * *",
-			"0 */6 * * *"
+			"0 */6 * * *",
+			"17 4 * * *",
+			"17 10 * * *"
 		]
 	},
 	// The every-minute cron runs four lanes (sync/recompute/outbox/selfheal) in ONE
@@ -105,7 +107,12 @@
 		"SNOWFLAKE_DATABASE": "SLATE",
 		"SNOWFLAKE_SCHEMA": "PUBLIC",
 		"SNOWFLAKE_WAREHOUSE": "SLATE_WH",
-		"SNOWFLAKE_ROLE": "SLATE_ROLE"
+		"SNOWFLAKE_ROLE": "SLATE_ROLE",
+		// The Google Workspace account the advisor photo refresh reads the directory
+		// as (#3027). It must hold an admin role: as an agent, photos.get answers 403.
+		// Dan's own account for now (his decision, 2026-10-02); it moves to a non
+		// human admin mailbox at rollout, so a staff change cannot stop the photos.
+		"DIRECTORY_ADMIN_SUBJECT": "dwright@trypennie.com"
 	},
 	"assets": {
 		"binding": "ASSETS",
@@ -291,6 +298,8 @@
 				"SNOWFLAKE_SCHEMA": "PUBLIC",
 				"SNOWFLAKE_WAREHOUSE": "SLATE_WH",
 				"SNOWFLAKE_ROLE": "SLATE_ROLE",
+				// Follows production (#3027); the advisor-photos lane is held back below.
+				"DIRECTORY_ADMIN_SUBJECT": "dwright@trypennie.com",
 				// The flag every load test stub and refusal keys on. It exists HERE and
 				// nowhere else, which is the whole safety story: the Google stub, the
 				// webhook short circuit, the seen-address echo and the two refusals in
@@ -306,7 +315,7 @@
 				// `snowflake-export` writes the warehouse, and the two PII prunes redact
 				// against a mirror that is not there. The kept lanes are the ones the run
 				// is measuring; the full table is in `scripts/loadtest/RUNBOOK.md`.
-				"SLATE_LANES_DISABLED": "agents,bulk-reassign,erasure-audit,monitor,ooo-approvals,ooo-digest,prune-bookings-pii,prune-warehouse-pii,snowflake-export,snowflake-reconcile"
+				"SLATE_LANES_DISABLED": "advisor-photos,agents,bulk-reassign,erasure-audit,monitor,ooo-approvals,ooo-digest,prune-bookings-pii,prune-warehouse-pii,snowflake-export,snowflake-reconcile"
 			},
 			"ratelimits": [
 				{

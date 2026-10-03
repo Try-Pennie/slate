@@ -29,7 +29,7 @@ const row = (id: string, name: string, extra: Partial<RosterRow> = {}): RosterRo
   manager_id: null,
   deactivated_at: null,
   attributes: {},
-  avatar_url: null,
+  photo: { kind: "never-read", src: null },
   auth_user_id: `auth-${id}`,
   created_at: "2026-09-01T00:00:00Z",
   is_test: false,
@@ -548,9 +548,9 @@ describe("RosterTable never signed in", () => {
   const NOW = Date.UTC(2026, 8, 28, 12);
   const rows: RosterRow[] = [
     // Signed in, no photo: the avatar heuristic's wrong case.
-    row("s", "Signed Nophoto", { avatar_url: null }),
+    row("s", "Signed Nophoto", { photo: { kind: "none" } }),
     // Never signed in, photo from the Workspace directory (#2600).
-    row("n", "Never Photo", { auth_user_id: null, avatar_url: "https://photo", created_at: new Date(NOW - 3 * 86_400_000).toISOString() }),
+    row("n", "Never Photo", { auth_user_id: null, photo: { kind: "photo", src: "/advisor-photo/n" }, created_at: new Date(NOW - 3 * 86_400_000).toISOString() }),
     row("m", "Never Today", { auth_user_id: null, created_at: new Date(NOW).toISOString() }),
   ];
   const props = { ...base, roleOptions: [...base.roleOptions], rows };
@@ -629,21 +629,24 @@ describe("RosterTable never signed in", () => {
 // exception, in words rather than colour.
 describe("RosterTable needs a photo", () => {
   const rows: RosterRow[] = [
-    // Signed in with no photo: the marker, AND Signed in still says Yes.
-    row("s", "Signed Nophoto", { avatar_url: null }),
+    // Signed in, and the directory holds no photo: the marker, AND Signed in still says Yes.
+    row("s", "Signed Nophoto", { photo: { kind: "none" } }),
     // Never signed in, photo from the directory: no marker.
-    row("n", "Never Photo", { auth_user_id: null, avatar_url: "https://photo" }),
-    // A blank stored value is no photo: initials and the marker, never a broken img.
-    row("b", "Blank Photo", { avatar_url: "  " }),
+    row("n", "Never Photo", { auth_user_id: null, photo: { kind: "photo", src: "/advisor-photo/n" } }),
+    // A measured none hides a sign in photo: initials and the marker, never an img.
+    row("b", "Blank Photo", { photo: { kind: "none" } }),
+    // Not read yet: whatever it shows, no marker, since it is not a fact about them.
+    row("u", "Unread Person", { photo: { kind: "never-read", src: null } }),
   ];
   const props = { ...base, roleOptions: [...base.roleOptions], rows };
   const trFor = (name: string) => bodyRows().find((r) => (r.textContent ?? "").includes(name))!;
   const marker = (name: string) => within(trFor(name)).queryByText(/needs a photo/i);
 
-  it("marks exactly the rows with no stored photo", () => {
+  it("marks exactly the rows the directory holds no photo for", () => {
     render(<RosterTable {...props} />);
     expect(marker("Signed Nophoto")).not.toBeNull();
     expect(marker("Blank Photo")).not.toBeNull();
+    expect(marker("Unread Person")).toBeNull();
     // Positive control on the absence: the row really rendered.
     expect(trFor("Never Photo")).toBeTruthy();
     expect(marker("Never Photo")).toBeNull();
@@ -666,7 +669,7 @@ describe("RosterTable needs a photo", () => {
     expect(cell.textContent).not.toMatch(/photo/i);
   });
 
-  it("draws initials rather than an image for a blank stored photo", () => {
+  it("draws initials rather than an image for a measured none", () => {
     render(<RosterTable {...props} />);
     expect(trFor("Blank Photo").querySelector("img")).toBeNull();
     expect(trFor("Never Photo").querySelector("img")).not.toBeNull();
@@ -680,7 +683,18 @@ describe("RosterTable needs a photo", () => {
       expect.stringContaining("Signed Nophoto"),
       expect.stringContaining("Blank Photo"),
     ]);
-    expect(document.querySelector('[aria-live="polite"]')!.textContent).toBe("2 of 3 agents");
+    expect(document.querySelector('[aria-live="polite"]')!.textContent).toBe("2 of 4 agents");
+  });
+
+  // #2612: an image the browser cannot draw falls back to the initials, never a
+  // broken image icon, through the one avatar component.
+  it("falls back to initials when a photo will not load", () => {
+    render(<RosterTable {...props} />);
+    const img = trFor("Never Photo").querySelector("img")!;
+    expect(img.getAttribute("src")).toBe("/advisor-photo/n");
+    fireEvent.error(img);
+    expect(trFor("Never Photo").querySelector("img")).toBeNull();
+    expect(within(trFor("Never Photo")).getByText("NE")).toBeTruthy();
   });
 });
 

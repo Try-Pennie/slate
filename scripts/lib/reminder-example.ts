@@ -102,8 +102,7 @@ export interface ExampleIo {
   booking: DueBooking;
   nowMs: number;
   readCallingNumbers: ReminderDeps["readCallingNumbers"];
-  readAdvisorPhotoUrls: ReminderDeps["readAdvisorPhotoUrls"];
-  fetchPhoto: ReminderDeps["fetchPhoto"];
+  readAdvisorPhotos: ReminderDeps["readAdvisorPhotos"];
   sendEmail(msg: MimeMessage): Promise<string>;
   /** Shown the built message before it is (or is not) sent. */
   preview(msg: MimeMessage): void;
@@ -130,8 +129,7 @@ export function exampleDeps(io: ExampleIo): ReminderDeps {
       throw new Error("the reminder example never writes a calendar invite");
     },
     readInviteDescription: async () => null,
-    readAdvisorPhotoUrls: io.readAdvisorPhotoUrls,
-    fetchPhoto: io.fetchPhoto,
+    readAdvisorPhotos: io.readAdvisorPhotos,
     warn: io.warn,
   };
 }

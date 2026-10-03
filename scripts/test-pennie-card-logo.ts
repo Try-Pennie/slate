@@ -7,7 +7,7 @@
 // A truncated paste or a transparent PNG would otherwise ship silently and show as a
 // broken or black contact picture on the lead's phone.
 import { PENNIE_CARD_LOGO } from "../src/lib/booking/pennie-card-logo.ts";
-import { CARD_PHOTO_MAX_BYTES, CARD_PHOTO_SIZE_PX } from "../src/lib/booking/advisor-card-photo.ts";
+import { CARD_PHOTO_MAX_BYTES } from "../src/lib/booking/advisor-card-photo.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const bytes = Buffer.from(PENNIE_CARD_LOGO.base64, "base64");
@@ -23,8 +23,8 @@ eq(
   "and really is a PNG, by its signature",
 );
 eq(bytes.subarray(12, 16).toString("ascii"), "IHDR", "with its header where PNG puts it");
-eq(bytes.readUInt32BE(16), CARD_PHOTO_SIZE_PX, "as wide as an advisor photo is asked to be");
-eq(bytes.readUInt32BE(20), CARD_PHOTO_SIZE_PX, "and square, so the contact circle crops it evenly");
+eq(bytes.readUInt32BE(16), 256, "256 pixels wide");
+eq(bytes.readUInt32BE(20), bytes.readUInt32BE(16), "and square, so the contact circle crops it evenly");
 // Colour type 2 is RGB with no alpha channel. A transparent background reads as black
 // in an iPhone contact circle, so the logo must sit on a solid one.
 eq(bytes[25], 2, "opaque RGB, no transparency");

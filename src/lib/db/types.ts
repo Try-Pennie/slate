@@ -499,6 +499,23 @@ export interface RegalCallEvent {
   received_at: string;
 }
 
+/** #3027: one person's photo as read from the Google directory (migration 0156).
+ *  No row means never read. The image columns are set exactly when state is
+ *  'photo'. Read the bytes only where they are served (see advisor-photos/store). */
+export interface AdvisorPhotoRow {
+  user_id: string;
+  state: "photo" | "none";
+  bytes_b64: string | null;
+  mime: "image/jpeg" | "image/png" | null;
+  sha256: string | null;
+  width: number | null;
+  height: number | null;
+  checked_at: string;
+  changed_at: string;
+  last_error: string | null;
+  failing_since: string | null;
+}
+
 /** #2944: one completed Regal call's outcome, kept 120 days for the show rate.
  *  The lead is an external Salesforce Lead id key; no contact data. */
 export interface RegalCallOutcome {

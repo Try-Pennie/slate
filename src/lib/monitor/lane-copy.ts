@@ -33,6 +33,7 @@ import {
   STRANDED_HIRES_VERDICT_LANE,
   REGAL_CALL_FEED_VERDICT_LANE,
   REGAL_CALL_OUTCOMES_VERDICT_LANE,
+  ADVISOR_PHOTOS_VERDICT_LANE,
   parkedDetector,
 } from "@/lib/monitor/verdict-freshness";
 
@@ -325,6 +326,13 @@ const VERDICT_SUBJECT: Record<string, { what: string; cost: string; look: string
     what: "the check asking whether a call outcome is being stored for each completed call Regal posts",
     cost: "regal_call_outcomes could stop filling and the show rate in the Slate vs cal.com split would be computed from whichever calls happened to land",
     look: 'the Worker logs for msg="regal call outcomes" under tag=monitor, and whether regal_call_outcomes and the regal_call_reason_counts RPC can be read at all',
+  },
+  [ADVISOR_PHOTOS_VERDICT_LANE]: {
+    what: "the daily refresh of advisor photos from the Google directory",
+    cost: "the photos leads and the roster see stop following Google, so a photo somebody adds, changes or removes there never reaches Slate",
+    // This stamp is the lane's only heartbeat, so a schedule that stopped firing
+    // lands here too, and that is the first thing to rule out (L11).
+    look: 'that the 17 4 * * * and 17 10 * * * crons are in wrangler.jsonc and firing, then the Worker logs for tag=advisor-photos and any advisor_photos_unread page',
   },
   [OOO_PROTECTION_VERDICT_LANE]: {
     what: "the check asking whether approved time off is still blocking the hours it covers",

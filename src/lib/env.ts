@@ -247,6 +247,12 @@ export const oooApprovalsBcc = (): string[] => csvEnv("OOO_APPROVALS_BCC");
 export const oooApprovalsReplyTo = (): string =>
   process.env.OOO_APPROVALS_REPLY_TO ?? "";
 
+// The Google Workspace account the advisor photo refresh reads the directory as
+// (#3027). A committed wrangler.jsonc var rather than a secret: it is an address,
+// not a credential, and the delegation it rides on is the service account's.
+// Returned raw so the refresh can refuse a missing or blank value BY NAME.
+export const directoryAdminSubject = (): string | undefined => process.env.DIRECTORY_ADMIN_SUBJECT;
+
 // The public test bucket's two halves (#2666). The origin list is a COMMITTED
 // wrangler.jsonc var, so a deploy can never quietly widen it; the secret signs the
 // short lived pass `/book` hands an approved page. Either empty turns the test

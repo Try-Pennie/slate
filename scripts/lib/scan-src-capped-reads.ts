@@ -65,6 +65,8 @@ export const SAFE_TABLES = new Set([
   "rate_limits",
   "reschedule_locks",
   "lane_heartbeats",
+  // #3027: one row per user, so bounded by the roster like `users` itself.
+  "advisor_photos",
   "selfheal_scan_cursor",
   // #1313: one rolling-window state row on a fixed key space; can never grow.
   "booking_failure_rate_state",

@@ -37,6 +37,7 @@ import {
   STRANDED_HIRES_VERDICT_LANE,
   REGAL_CALL_FEED_VERDICT_LANE,
   REGAL_CALL_OUTCOMES_VERDICT_LANE,
+  ADVISOR_PHOTOS_VERDICT_LANE,
   type DetectorVerdictLane,
 } from "@/lib/monitor/verdict-freshness";
 
@@ -85,6 +86,7 @@ const STAMP: Record<WorkerStampedVerdictLane, () => Promise<void>> = {
   [STRANDED_HIRES_VERDICT_LANE]: () => recordHeartbeat("verdict:stranded-hires"),
   [REGAL_CALL_FEED_VERDICT_LANE]: () => recordHeartbeat("verdict:regal-call-feed"),
   [REGAL_CALL_OUTCOMES_VERDICT_LANE]: () => recordHeartbeat("verdict:regal-call-outcomes"),
+  [ADVISOR_PHOTOS_VERDICT_LANE]: () => recordHeartbeat("verdict:advisor-photos"),
 };
 
 /**

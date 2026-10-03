@@ -452,7 +452,8 @@ import { REBOOK_COLUMNS, loadRebookRow, type RebookLookup } from "@/lib/booking/
 import { pageRaceBoundHitAfterResponse } from "@/lib/booking/race-bound-page";
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { resolveAdvisorName, type AdvisorNameReader } from "@/lib/booking/advisor-name";
-import { resolveAdvisorPhoto, type AdvisorPhotoReader } from "@/lib/booking/advisor-photo";
+import { resolveBookingAdvisorPhoto } from "@/lib/booking/advisor-photo";
+import { loadPhotoRecords, loadUserSignInPhoto } from "@/lib/advisor-photos/store";
 export type { BookingResult, CreateBookingInput };
 export type { ExistingCall } from "@/lib/booking/orchestration";
 export type { BookingActor } from "@/lib/booking/core";
@@ -2967,14 +2968,14 @@ export function getBookingAdvisorName(
   );
 }
 
-/** The advisor's Workspace photo (#2600), resolved live beside the name and for
+/** The advisor's photo (#2600, #3027), resolved live beside the name and for
  *  the same reason: a booking can be reassigned, so a stamped one would show a
  *  lead the face of somebody who is no longer taking their call. */
 export function getBookingAdvisorPhoto(
   assignedUserId: string | null,
 ): Promise<string | null> {
-  return resolveAdvisorPhoto(
-    supabaseAdmin() as unknown as AdvisorPhotoReader,
+  return resolveBookingAdvisorPhoto(
+    { readUser: loadUserSignInPhoto, readRecords: loadPhotoRecords },
     assignedUserId,
   );
 }

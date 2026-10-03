@@ -196,6 +196,16 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "The Salesforce roster sync is failing on consecutive runs; a successful run ends it.",
   },
   {
+    key: "advisor_photos_unread",
+    kind: "condition",
+    why: "The daily advisor photo refresh measured nothing from Google (no subject, a refused subject, an unanswering directory, or a failed save); it stays true until a run reads the directory and at least one photo, which is the recovery (#3027).",
+  },
+  {
+    key: "advisor_photos_held",
+    kind: "condition",
+    why: "A measured photo refresh held something back for a person (a wave of lost photos, a repeated image, somebody failing three days running, somebody never read whose read failed, somebody missing from the directory); it ends when a measured run has none of those, which is the recovery (#3027).",
+  },
+  {
     key: "twilio_sync_failures",
     kind: "condition",
     why: "The roster sync cannot read Twilio, so the Redistribute tag is not being acted on; it stays true until a run reads Twilio successfully, which is the recovery.",

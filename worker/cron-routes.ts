@@ -128,6 +128,15 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
   // healthy. That check used to run solely when an admin opened the admin page,
   // which is how #1143's SQL compilation error reached prod past 1,100 green tests.
   "0 */6 * * *": ["/api/cron/snowflake-reconcile", "/api/cron/erasure-audit"],
+  // The daily advisor photo refresh from the Google directory (#3027). Its OWN
+  // expressions, never co-scheduled: it makes about 130 Google reads and writes
+  // image rows, so it gets an invocation of its own. Minute 17 shares a moment
+  // with no other trigger (every 5, 10 and 15 minute lane and the hourly one).
+  // The 10:17 run is the automatic re attempt (L533): the route stands down when
+  // the 04:17 run already reached a verdict today, so a healthy day reads Google
+  // once. Both expressions drive the one lane, under one lock.
+  "17 4 * * *": "/api/cron/advisor-photos",
+  "17 10 * * *": "/api/cron/advisor-photos",
 };
 
 /** Every route a cron expression drives (empty array when unmapped). */
