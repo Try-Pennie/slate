@@ -19,7 +19,7 @@ jobs:
       github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # #1598: NO dependency install. This job exists to send one Slack message, and it
       # fires precisely when CI on main has already failed, which correlates with GitHub
@@ -36,7 +36,7 @@ jobs:
       #
       # setup-node is the one that stays: it pins the node version the type stripping
       # flag needs, rather than trusting whatever the runner image happens to ship.
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
 
