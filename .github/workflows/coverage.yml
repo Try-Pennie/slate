@@ -45,17 +45,21 @@ name: Coverage
 # fails when it stops agreeing with that line, so the premise cannot go stale
 # while the schedule moves underneath it.
 #
-# NO ALERT AND NO HEARTBEAT, deliberately (L13, L71). Every other scheduled lane
-# here carries one because something acts on its verdict: the canary probes live
-# production, the parity lane corrects a roster, the lane watchdog pages when a
-# schedule stops firing. This produces a number a person reads when they care
-# about it, nothing downstream consumes the artifact, and a dropped night costs
-# one reading that the next night supplies. A page nobody should act on is how
-# the pages that matter stop being read (L36, L112). Note this REMOVES a false
-# alert rather than removing a real one: while coverage sat in ci.yml a failed
-# upload painted the whole CI run red, and on 2026-09-08 that posted "deploy
+# AN ALERT, NO HEARTBEAT (#3101). This used to carry neither, on the argument that the
+# number was only read when somebody cared. But the ratchet (#1050) FAILS the run on a
+# regressed or unmeasured verdict, and a scheduled red run nobody is told about is a
+# detector nobody looks at, reached after the change has already deployed. So the last
+# step runs whatever the coverage step exited with and posts on exactly those two
+# verdicts: a regression below a floor, or a night that measured nothing. A pass, or a
+# gain asking for the floor to be raised, says nothing (L36). Still no heartbeat: a
+# dropped night costs one reading the next night supplies. The alerter is bare node
+# with no dependencies (scripts/notify-coverage.ts), so it runs even when the install
+# is what failed, and that case reads as unmeasured rather than as a quiet night.
+#
+# Note this alert is about the RATCHET, not the deploy: while coverage sat in ci.yml a
+# failed upload painted the whole CI run red, and on 2026-09-08 that posted "deploy
 # failed" for a deploy that had succeeded (deploy-alert run 34250093987 on CI run
-# 34249335474, the 403 recorded in #2084).
+# 34249335474, the 403 recorded in #2084). That stays fixed: nothing here touches CI.
 on:
   schedule:
     # 05:40 UTC, about 01:40 Eastern: nobody is merging, so the report is not
@@ -109,3 +113,15 @@ jobs:
           name: coverage-lcov
           path: coverage/lcov.info
           if-no-files-found: warn
+      # #3101: tell a person on a regressed or unmeasured verdict, whatever the coverage
+      # step exited with. Reads coverage/verdict.json, which coverage.mjs writes; a run
+      # that died before writing it reads as unmeasured. Bare node, no alias hook:
+      # scripts/test-dependency-free-scripts.ts holds it to importing nothing outside
+      # scripts/.
+      - name: Say what the ratchet found
+        if: always()
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_ALERTS_CHANNEL: ${{ vars.SLACK_ALERTS_CHANNEL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node --experimental-strip-types scripts/notify-coverage.ts
