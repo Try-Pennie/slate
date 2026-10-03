@@ -182,12 +182,25 @@ test("save the webhook endpoint, first creating it and then changing it", async 
   const url = page.getByRole("textbox", { name: "URL", exact: true });
   await url.fill("https://hooks.slate-e2e.invalid/first");
   await choose(page, "Format", /^regal$/i);
-  await page.getByRole("textbox", { name: "Regal API key" }).fill("Bearer e2e-not-a-real-key");
+  // #3091: the Regal API key and the signing secret are Worker secrets, so the form
+  // has no field for either. Changing one is a deploy step.
+  await expect(page.getByRole("textbox", { name: "Regal API key" })).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "Signing secret" })).toHaveCount(0);
   await pressAndConfirm(page, /^Save$/);
   await expect(page.getByText(SAVE_OUTCOME_COPY["webhook-endpoint"])).toBeVisible();
   let rows = await endpoint();
   expect(rows).toHaveLength(1);
   expect(rows[0]).toMatchObject({ url: "https://hooks.slate-e2e.invalid/first", format: "regal" });
+
+  // What the page shows instead is whether each credential is set, as a marker, judged
+  // on the SAVED format. The stack's environment is built from nothing (e2e/env.ts) and
+  // the save writes no credential column, so the key the regal format sends is not set
+  // anywhere, and the signing secret is one this format does not use.
+  const marker = (label: string) =>
+    page.locator("dt", { hasText: label }).locator("xpath=following-sibling::dd[1]");
+  await expect(marker("Regal API key")).toHaveText("Not set, deliveries are refused");
+  await expect(marker("Signing secret")).toHaveText("Not used by this format");
+  expect(rows[0].auth_header ?? "", "the save stores no key").toBe("");
 
   // The second save is the update path: still one row, now pointing elsewhere.
   await page.getByRole("textbox", { name: "URL", exact: true }).fill(
@@ -200,5 +213,5 @@ test("save the webhook endpoint, first creating it and then changing it", async 
   ]);
   await expect(page.getByText(SAVE_OUTCOME_COPY["webhook-endpoint"])).toBeVisible();
   rows = await endpoint();
-  expect(rows[0].auth_header, "a blank key field keeps the stored key").toBe("Bearer e2e-not-a-real-key");
+  expect(rows[0].auth_header ?? "", "the update path writes no key either").toBe("");
 });
