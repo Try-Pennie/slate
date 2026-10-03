@@ -83,6 +83,14 @@ for (const event of ["pull_request"]) {
   eq(uncoveredInputs(paths ?? [], [...inputs].sort()), [], `every input the job reads is in the ${event} paths gate (L88)`);
 }
 
+// --- token scope: the job only reads the repo ---------------------------------------------
+{
+  const top = source.match(/^permissions:\s*\n((?: {2}.*\n)+)/m)?.[1] ?? "";
+  const scopes = top.split("\n").map((l) => l.replace(/\s+#.*$/, "").trim()).filter(Boolean);
+  eq(scopes, ["contents: read"], "the workflow's token is scoped to reading contents and nothing else");
+  assert(!/^\s{4,}permissions:/m.test(source), "no job widens it again");
+}
+
 // --- triggers, timeout, the run itself -------------------------------------------------
 const triggers = parseWorkflowTriggers(source);
 assert(triggers.events.includes("schedule") && triggers.crons.length === 1, `it also runs nightly (${JSON.stringify(triggers.crons)})`);

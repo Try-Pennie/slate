@@ -66,6 +66,10 @@ on:
     - cron: "40 7 * * *"
   workflow_dispatch:
 
+# The job only checks out the repo; the Slack alert uses its own bot token.
+permissions:
+  contents: read
+
 # Read only against a throwaway container, so a superseded pull request run is safe
 # to cancel (L671).
 concurrency:
