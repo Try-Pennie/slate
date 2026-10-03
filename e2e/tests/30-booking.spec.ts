@@ -9,7 +9,16 @@
  * token addresses. Google answers from the load test stub, so verify on book and
  * the invite run their real code paths against synthetic calendars.
  */
-import { test, expect, seed, db, expectAccessible, expectTheme } from "../fixtures.ts";
+import {
+  test,
+  expect,
+  seed,
+  db,
+  expectAccessible,
+  expectTheme,
+  openDayWithTimes,
+  timeButtons,
+} from "../fixtures.ts";
 
 const LEAD = {
   name: "Jordan Lead",
@@ -23,13 +32,8 @@ let manageToken = "";
 
 test("a lead books a call from the booker", async ({ page }) => {
   await page.goto(`/book?xbc=${seed.bucketCode}`);
-  const days = page.getByRole("group", { name: "Available days" }).getByRole("button");
-  await expect(days.first()).toBeVisible();
-  await days.first().click();
-
-  const times = page.getByRole("button", { name: /^\d{1,2}:\d{2}\s?(am|pm)/i });
-  await expect(times.first()).toBeVisible();
-  await times.first().click();
+  await openDayWithTimes(page);
+  await timeButtons(page).first().click();
 
   await page.getByRole("textbox", { name: /name/i }).first().fill(LEAD.name);
   await page.getByRole("textbox", { name: /email/i }).fill(LEAD.email);

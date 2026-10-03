@@ -90,6 +90,52 @@ export async function expectAccessible(page: Page, label: string): Promise<void>
   expect(findings, describeFindings(label, findings)).toEqual([]);
 }
 
+// --- the booker's days -----------------------------------------------------------------
+
+/** The day chips on the booker's strip, in order. */
+export function dayButtons(page: Page) {
+  return page.getByRole("group", { name: "Available days" }).getByRole("button");
+}
+
+/** The time buttons on the booker's open day ("9:30 am"). */
+export function timeButtons(page: Page) {
+  return page.getByRole("button", { name: /^\d{1,2}:\d{2}\s?(am|pm)/i });
+}
+
+/**
+ * Opens the first day on the strip that actually offers a time, and returns it.
+ *
+ * The strip's FIRST day is not that day at every hour. The booker keeps a day on
+ * the strip when every time left on it falls outside the lead's calling window
+ * (#2310), so it can say why rather than the day vanishing. With the seeded two
+ * hour notice and the window closing at 8 PM, from about 17:30 Eastern today's
+ * remaining times are all outside it, and a spec that opened the first chip found
+ * no times: the browser leg went red on every PR at 17:12 Eastern on 2026-10-03
+ * and stayed red into the evening. The seed opens every day around the clock over
+ * a seven day horizon, so a later day always has times and this always finds one.
+ *
+ * Each chip is judged once React has drawn it as chosen (`aria-pressed`), which is
+ * the same commit that draws its times, so there is no fixed wait (L290). Finding
+ * no day with times fails, naming each day tried.
+ */
+export async function openDayWithTimes(page: Page): Promise<string> {
+  const days = dayButtons(page);
+  await expect(days.first()).toBeVisible();
+  const tried: string[] = [];
+  for (let i = 0; i < (await days.count()); i++) {
+    const day = days.nth(i);
+    const label = (await day.innerText()).replace(/\s+/g, " ").trim();
+    await day.click();
+    await expect(day).toHaveAttribute("aria-pressed", "true");
+    if ((await timeButtons(page).count()) > 0) {
+      await expect(timeButtons(page).first()).toBeVisible();
+      return label;
+    }
+    tried.push(label);
+  }
+  throw new Error(`no day on the booker's strip offered a time; tried ${tried.join(", ")}`);
+}
+
 // --- signing in ------------------------------------------------------------------------
 
 type Jar = { name: string; value: string }[];
