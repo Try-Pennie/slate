@@ -33,9 +33,11 @@
  * `verdict:cron-budget`, and this check refuses to clear on a stale stamp, while the lane
  * watchdog pages on it in its own words (#1394).
  *
- * PURE: every branch is driven offline by scripts/test-cron-budget.ts. Type imports only.
+ * PURE: every branch is driven offline by scripts/test-cron-budget.ts. Its one value import is
+ * relative and logs only, so the node suite reads it without the alias hook.
  */
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
+import { logAlertSendFailure, logResolveFailure } from "../notify/send-failure.ts";
 
 /**
  * `limits.cpu_ms` in wrangler.jsonc. The Worker cannot read its own config at runtime, so the
@@ -237,11 +239,13 @@ export async function runCronBudgetCheck(deps: {
   if (health.status === "over") {
     await deps
       .notify(CRON_BUDGET_ALERT_KEY, CRON_BUDGET_COOLDOWN_MS, formatCronBudgetAlert(health))
-      .catch(() => {});
+      .catch(logAlertSendFailure(CRON_BUDGET_ALERT_KEY));
     deps.log?.(`monitor cron-budget: OVER crons=${health.breaches.map((b) => b.cron).join("|")}`);
     return health;
   }
-  await deps.resolve(CRON_BUDGET_ALERT_KEY, formatCronBudgetRecovery(health)).catch(() => {});
+  await deps
+    .resolve(CRON_BUDGET_ALERT_KEY, formatCronBudgetRecovery(health))
+    .catch(logResolveFailure(CRON_BUDGET_ALERT_KEY));
   deps.log?.(`monitor cron-budget: within undated=${health.unreadable.join("|") || "none"}`);
   return health;
 }

@@ -200,6 +200,32 @@ async function run(readStamps: () => Promise<Record<string, number | null>>) {
   }
 }
 
+// --- a failed send or all clear is logged by the shared logger and never escapes the step --
+{
+  const failingOver = await runCronBudgetCheck({
+    nowMs: NOW,
+    read: async () => ({ [VERDICT]: NOW, [breach("* * * * *")]: NOW }),
+    verdictBoundMs: BOUND,
+    verdictLane: VERDICT,
+    notify: async () => {
+      throw new Error("slack down");
+    },
+    resolve: async () => true,
+  });
+  eq(failingOver.status, "over", "a page that fails to send still returns its verdict");
+  const failingClear = await runCronBudgetCheck({
+    nowMs: NOW,
+    read: async () => ({ [VERDICT]: NOW }),
+    verdictBoundMs: BOUND,
+    verdictLane: VERDICT,
+    notify: async () => {},
+    resolve: async () => {
+      throw new Error("slack down");
+    },
+  });
+  eq(failingClear.status, "within", "an all clear that fails to send still returns its verdict");
+}
+
 // --- what the Worker sends, through the dispatcher's own request builder ---------------
 {
   const tick = { tickId: "abc123", cronSecret: "s3cret" };
