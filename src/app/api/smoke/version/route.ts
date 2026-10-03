@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { refuseBearerAuth } from "@/lib/bearer-failure";
 import { authenticateBearer, CANARY_CALLERS } from "@/lib/booking/api-auth";
 import { configuredBookingApiKeys } from "@/lib/booking/api-keys";
 import { BUILD_COMMIT } from "@/lib/build-info";
@@ -33,7 +34,7 @@ export async function GET(req: NextRequest) {
   const keys = configuredBookingApiKeys(CANARY_CALLERS);
   const auth = authenticateBearer(req.headers.get("authorization"), keys);
   if (!auth.ok) {
-    return NextResponse.json({ error: auth.error }, { status: auth.status });
+    return refuseBearerAuth(req.headers, auth);
   }
   // `loadtest` comes from the same predicate every stub and refusal keys on
   // (`@/lib/loadtest-guard`), never from a second read of the variable, so this

@@ -18,6 +18,10 @@ export async function POST(req: NextRequest) {
   // The null check comes first because the verifier takes two strings and a thrown
   // TypeError would answer 500, which Google reads as retriable.
   const token = req.headers.get("x-goog-channel-token");
+  // credential-throttle-ok: a stale channel token is EXPECTED traffic from Google (a channel
+  // outlives its token until it expires), Google's push senders share a small address pool,
+  // so a per address throttle would 429 valid pushes behind stale ones, and this refusal
+  // reads nothing and writes nothing, so it is already cheap (#3142, #3154).
   if (!token || !timingSafeEqual(token, googleChannelToken())) {
     return new NextResponse("forbidden", { status: 403 });
   }

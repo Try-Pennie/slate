@@ -127,6 +127,8 @@ async function runReject(
 }
 
 export async function POST(req: NextRequest) {
+  // body-cap-ok: Slack signs the raw form body, so it has to be read whole before the
+  // signature can be checked, and the size of an interaction payload is Slack's to set (#3135).
   const raw = await req.text();
   if (
     !verifySlackSignature({

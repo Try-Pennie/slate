@@ -6,6 +6,7 @@ import { cspViolationPage, summariseViolation } from "@/lib/csp";
 import { loadMonitorCooldowns } from "@/lib/monitor/settings";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { cspViolationAlert } from "@/lib/notify/misc-alert-copy";
+import { readJsonCapped, CSP_REPORT_MAX_BYTES } from "@/lib/http/read-json-capped";
 
 export const dynamic = "force-dynamic";
 
@@ -50,7 +51,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   ).catch(() => false);
   if (!allowed) return done();
 
-  const body = await req.json().catch(() => null);
+  // #3135: read under a byte cap. An oversized report is dropped on the same 204.
+  const read = await readJsonCapped(req, CSP_REPORT_MAX_BYTES);
+  if (read.tooLarge) return done();
+  const body = read.value;
   const violation = summariseViolation(body);
   // A body we could not read is not a violation of anything in particular, and
   // recording it as one would send somebody to fix a directive no browser named.

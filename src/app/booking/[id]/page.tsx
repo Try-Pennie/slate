@@ -6,6 +6,8 @@ import { resolveLandingCode } from "@/lib/routing/landing-code";
 import { loadLandingBucketIsTest } from "@/lib/booking/landing-bucket";
 import { existingCallForLanding, landingAttendee } from "@/lib/booking/service";
 import { DEFAULT_BRAND_COLOR } from "@/lib/brand-label";
+import { landingLookupId } from "@/lib/booking/landing-identity-gate";
+import { headers } from "next/headers";
 
 export const dynamic = "force-dynamic";
 // Lead-facing: the brand is Pennie; Slate stays internal.
@@ -72,7 +74,14 @@ export default async function BookingPage({
   // time and one filled form too late and read as the product having forgotten
   // them. It never throws: a check that could not run shows the ordinary picker,
   // and the confirm still refuses at the end of it.
-  const landingCall = await existingCallForLanding({ salesforceId: id }, { isTest });
+  //
+  // #3106: what this page reads ABOUT the person named is throttled per address, since a
+  // lead id is not a secret. Over the ceiling the id still routes and still reaches the
+  // confirm; only the prefill and this notice are left out.
+  const lookupId = await landingLookupId(id, headers);
+  const landingCall = lookupId
+    ? await existingCallForLanding({ salesforceId: lookupId }, { isTest })
+    : null;
   // #2208: the same id that recognises them fills the form they would otherwise
   // retype. The pilot link carries none of the three in its query string, so
   // before this every recognised lead typed out a name, an email and a number
@@ -80,7 +89,7 @@ export default async function BookingPage({
   // link's own value always wins, so nothing here is presented as a fact the lead
   // cannot correct.
   const attendee = await landingAttendee(
-    { salesforceId: id },
+    { salesforceId: lookupId },
     { name: first(sp, "name"), email: first(sp, "email"), phone },
     { isTest },
   );

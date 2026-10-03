@@ -144,10 +144,20 @@ describe("POST /api/regal/calls", () => {
 
   it("still measures what arrived when the declared length is missing or lies", async () => {
     const huge = JSON.stringify({ name: "call.completed", pad: "x".repeat(300_000) });
-    const req = {
-      headers: new Headers({ authorization: "Bearer inbound-secret", "content-length": "10" }),
-      text: vi.fn(async () => huge),
-    };
+    // A streamed body carries no length at all, so only what arrives can be measured.
+    const bytes = new TextEncoder().encode(huge);
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let i = 0; i < bytes.length; i += 4096) controller.enqueue(bytes.slice(i, i + 4096));
+        controller.close();
+      },
+    });
+    const req = new Request("https://slate.test/api/regal/calls", {
+      method: "POST",
+      headers: { authorization: "Bearer inbound-secret" },
+      body: stream,
+      duplex: "half",
+    } as RequestInit);
     expect((await POST(req as never)).status).toBe(413);
     await drain();
     expect(recorded.bodies).toEqual([null]);

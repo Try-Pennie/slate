@@ -21,3 +21,19 @@
 export function stripComments(text: string): string {
   return text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 }
+
+/**
+ * Comments BLANKED rather than removed, so every offset into the result is the same
+ * offset into the source, for a scanner that matches code and then has to look at the
+ * source around the match (#3154).
+ *
+ * A `//` counts as a comment only at the start of a line or after whitespace, so the
+ * `//` inside a URL literal (`"https://..."`) is code and the call after it survives.
+ * Block comments are blanked too, newlines kept.
+ */
+export function blankComments(text: string): string {
+  const blank = (s: string) => s.replace(/[^\n]/g, " ");
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, blank)
+    .replace(/(^|\s)(\/\/.*)$/gm, (_m, lead: string, comment: string) => lead + blank(comment));
+}

@@ -1,8 +1,10 @@
 import { NextResponse, after, type NextRequest } from "next/server";
+import { refuseCredential } from "@/lib/bearer-failure";
 import { regalInboundKey } from "@/lib/env";
 import { bearerTokenMatches } from "@/lib/bearer-auth";
 import { recordRegalCall } from "@/lib/regal/call-store";
 import { log } from "@/lib/log";
+import { readJsonCapped } from "@/lib/http/read-json-capped";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +13,7 @@ export const dynamic = "force-dynamic";
  * and reading it into memory to find that out is work an authenticated but broken
  * sender should not be able to make the Worker do.
  */
-const MAX_BODY_CHARS = 64 * 1024;
+const MAX_BODY_BYTES = 64 * 1024;
 
 /**
  * Regal's reporting webhook (#2090): one POST per completed call.
@@ -42,30 +44,18 @@ export async function POST(req: NextRequest) {
     );
   }
   if (!bearerTokenMatches(req.headers.get("authorization"), key)) {
-    return new NextResponse("unauthorized", { status: 401 });
+    return refuseCredential(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
 
-  // A body that DECLARES itself oversized is refused before a byte of it is read,
-  // so a broken sender cannot make the Worker buffer it. The declared length is
-  // only a claim, so what arrives is measured again below: a missing header, or
-  // one that lies, still cannot get a large body parsed.
-  const declared = Number(req.headers.get("content-length") ?? "");
-  const oversizedByHeader = Number.isFinite(declared) && declared > MAX_BODY_CHARS;
-  const text = oversizedByHeader ? null : await req.text().catch(() => null);
-  let body: unknown = null;
-  let status = 200;
-  if (oversizedByHeader) status = 413;
-  else if (text === null) status = 400;
-  else if (text.length > MAX_BODY_CHARS) status = 413;
-  else {
-    try {
-      body = JSON.parse(text);
-    } catch {
-      // Refused without throwing: a 500 reads as retriable to most senders, and
-      // this body will never parse however often it is sent.
-      status = 400;
-    }
-  }
+  // Read under the shared capped reader (#3135): a body that DECLARES itself
+  // oversized is refused before a byte of it is read, and since the declared length
+  // is only a claim, what arrives is counted as it streams and the read stops at
+  // the cap. An unreadable body is refused 400 without throwing: a 500 reads as
+  // retriable to most senders, and this body will never parse however often it is
+  // sent.
+  const read = await readJsonCapped(req, MAX_BODY_BYTES);
+  const body: unknown = read.tooLarge ? null : read.value;
+  const status = read.tooLarge ? 413 : body === null ? 400 : 200;
 
   // An unreadable body is recorded as `null`, which the classifier counts as
   // body_unreadable. The raw text is never kept: it carries the lead's details.

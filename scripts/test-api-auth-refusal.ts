@@ -63,7 +63,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
 // counting is the better of the two wrong answers, and the reasoning has to be
 // on the decision rather than in someone's head.
 {
-  for (const reason of ["throttled_key", "throttled_ip"] as const) {
+  for (const reason of ["throttled_key", "throttled_ip", "throttled_credential"] as const) {
     const d = authRefusalCounting(reason, "write");
     eq(d.kind, "none", `${reason} is not counted into the failure share`);
     assert(
@@ -94,7 +94,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
 // vocabulary silently takes its default branch for the entry nobody added, and a
 // default is indistinguishable from a deliberate choice.
 {
-  eq(AUTH_REFUSAL_REASONS.length, 4, "the four refusals the authorizer can make");
+  eq(AUTH_REFUSAL_REASONS.length, 5, "the five refusals the authorizer can make");
   for (const reason of AUTH_REFUSAL_REASONS) {
     for (const surface of ["write", "read"] as const) {
       const d = authRefusalCounting(reason, surface);

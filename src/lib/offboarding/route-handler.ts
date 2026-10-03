@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { refuseCredential } from "@/lib/bearer-failure";
 import { offboardingApiKey } from "@/lib/env";
 import { bearerTokenMatches } from "@/lib/bearer-auth";
 import { applyLifecycleByEmail } from "@/lib/offboarding/service";
@@ -19,13 +20,13 @@ const API_ACTION_TO_INTERNAL: ReadonlyMap<string, LifecycleAction> = new Map([
  * only (no ?secret= query param), 503 when unset (like the reassign API), 401 on
  * a bad token. Returns the failing response, or null when the caller may proceed.
  */
-function lifecycleAuthFailure(req: NextRequest): NextResponse | null {
+async function lifecycleAuthFailure(req: NextRequest): Promise<Response | null> {
   const key = offboardingApiKey();
   if (!key) {
     return NextResponse.json({ error: "offboarding api not configured" }, { status: 503 });
   }
   if (!bearerTokenMatches(req.headers.get("authorization"), key)) {
-    return new NextResponse("unauthorized", { status: 401 });
+    return refuseCredential(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
   return null;
 }
@@ -57,7 +58,7 @@ async function applyAndRespond(email: string, action: LifecycleAction): Promise<
  */
 export function makeLifecycleHandler(action: LifecycleAction) {
   return async function POST(req: NextRequest) {
-    const fail = lifecycleAuthFailure(req);
+    const fail = await lifecycleAuthFailure(req);
     if (fail) return fail;
     const body = (await req.json().catch(() => ({}))) as { email?: string };
     const email = String(body.email ?? "").trim();
@@ -79,7 +80,7 @@ export function makeLifecycleHandler(action: LifecycleAction) {
  */
 export function makeLifecycleActionHandler() {
   return async function POST(req: NextRequest) {
-    const fail = lifecycleAuthFailure(req);
+    const fail = await lifecycleAuthFailure(req);
     if (fail) return fail;
     const body = (await req.json().catch(() => ({}))) as { email?: string; action?: string };
     const email = String(body.email ?? "").trim();

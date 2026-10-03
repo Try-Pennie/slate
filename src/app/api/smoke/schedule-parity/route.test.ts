@@ -36,7 +36,13 @@ import { POST } from "./route";
 const RUN = "https://github.com/Try-Pennie/slate/actions/runs/1";
 
 function post(body: unknown, authorization = "Bearer real-secret") {
-  const headers = new Headers({ authorization, "content-type": "application/json" });
+  // A client address, as Cloudflare always sets one: without it the failed credential
+  // throttle (#3142) reports an unidentifiable caller, which is a different alert.
+  const headers = new Headers({
+    authorization,
+    "content-type": "application/json",
+    "cf-connecting-ip": "203.0.113.20",
+  });
   return POST(
     new Request("http://localhost/api/smoke/schedule-parity", {
       method: "POST",

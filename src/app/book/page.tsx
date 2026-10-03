@@ -15,6 +15,7 @@ import { currentTestPassFor } from "@/lib/embed/test-pass-gate";
 import { embedTestOrigins, embedTestPassSecret } from "@/lib/env";
 import { log } from "@/lib/log";
 import { readBookEntryQuery } from "@/lib/booking/book-link";
+import { landingLookupId } from "@/lib/booking/landing-identity-gate";
 
 export const dynamic = "force-dynamic";
 // Lead-facing: the brand is Pennie; Slate stays internal.
@@ -115,11 +116,15 @@ export default async function BookEntry({
   // strong id matches either id column, so this also recognises a booking an API
   // caller made with only `externalId`.
   const externalId = entry.externalId;
+  // #3106: what this page reads ABOUT the person named is throttled per address. Over the
+  // ceiling the id still routes and still reaches the confirm (as `salesforceId` below);
+  // only the prefill and the existing call notice are left out.
+  const lookupId = await landingLookupId(externalId ?? "", headers);
   // Asked in the WORLD of the bucket being landed on (#2660): a tester who pastes
   // a real lead's id into a test link is never shown that lead's call, and a real
   // lead never meets a tester's.
-  const landingCall = externalId
-    ? await existingCallForLanding({ salesforceId: externalId }, { isTest })
+  const landingCall = lookupId
+    ? await existingCallForLanding({ salesforceId: lookupId }, { isTest })
     : null;
 
   const prefill = entry.prefill;
@@ -128,7 +133,7 @@ export default async function BookEntry({
   // grade the same identity and a second copy of this rule would let one of them
   // go on asking a recognised lead to retype what Slate holds (L613).
   const attendee = await landingAttendee(
-    { salesforceId: externalId },
+    { salesforceId: lookupId },
     entry.link,
     { isTest },
   );

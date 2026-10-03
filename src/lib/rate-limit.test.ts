@@ -42,6 +42,8 @@ import {
   bookingApiIpWithinLimit,
   bookingApiReadWithinLimit,
   manageWithinLimit,
+  landingIdentityAllowed,
+  bearerFailureWithinLimit,
 } from "./rate-limit";
 import type { RateLimitRule } from "@/lib/rate-limit-core";
 import { BURST_ESCALATE_AT, burstEscalateAt } from "@/lib/rate-limit-burst";
@@ -880,6 +882,8 @@ describe("the burst ceiling reaches every edge limiter (#1556)", () => {
       "booking-api-ip": bookingApiIpWithinLimit,
       "booking-api-read": bookingApiReadWithinLimit,
       manage: manageWithinLimit,
+      landing: landingIdentityAllowed,
+      "bearer-failure": bearerFailureWithinLimit,
     };
     expect(Object.keys(wrappers).sort()).toEqual(EDGE_LIMITERS.map((l) => l.area).sort());
 
@@ -892,5 +896,83 @@ describe("the burst ceiling reaches every edge limiter (#1556)", () => {
       }
       expect(allowed, `${spec.binding} enforces its burst ceiling`).toBe(false);
     }
+  });
+});
+
+describe("landingIdentityAllowed (#3106)", () => {
+  let clock = Date.UTC(2026, 9, 3);
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    clock += 60 * 60_000;
+    vi.setSystemTime(clock);
+    burstCount = 1;
+    burstFetches = 0;
+    cf.env = { MANAGE_RATE_LIMITER: { limit }, BURST_LIMITER: burstNamespace() };
+    limit.mockResolvedValue({ success: true });
+    getCloudflareContext.mockImplementation(() => ({ env: cf.env }));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("allows a lookup under both ceilings, counting the edge window apart from the manage link's", async () => {
+    await expect(landingIdentityAllowed("203.0.113.5")).resolves.toBe(true);
+    // The binding is shared with the manage link, so the key must not be the bare address,
+    // or a lead reloading their landing page would spend their own manage allowance.
+    expect(limit).toHaveBeenCalledWith({ key: "landing:203.0.113.5" });
+    expect(rpc).toHaveBeenCalledWith("rate_limit_hit", {
+      p_key: "landing:h:203.0.113.5",
+      p_window_seconds: 3600,
+      p_max: 30,
+    });
+  });
+
+  it("refuses at the edge without a database round trip", async () => {
+    limit.mockResolvedValue({ success: false });
+    await expect(landingIdentityAllowed("203.0.113.5")).resolves.toBe(false);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("refuses once the exact hourly cap is spent", async () => {
+    rpc.mockResolvedValueOnce({ data: false, error: null });
+    await expect(landingIdentityAllowed("203.0.113.5")).resolves.toBe(false);
+  });
+
+  it("refuses a caller with no address rather than counting them into a shared bucket", async () => {
+    await expect(landingIdentityAllowed(UNIDENTIFIED_IP)).resolves.toBe(false);
+    expect(limit).not.toHaveBeenCalled();
+    expect(rpc).not.toHaveBeenCalled();
+  });
+});
+
+describe("bearerFailureWithinLimit (#3142)", () => {
+  let clock = Date.UTC(2026, 9, 4);
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    clock += 60 * 60_000;
+    vi.setSystemTime(clock);
+    burstCount = 1;
+    cf.env = { BOOKINGAPI_IP_RATE_LIMITER: { limit }, BURST_LIMITER: burstNamespace() };
+    limit.mockResolvedValue({ success: true });
+    getCloudflareContext.mockImplementation(() => ({ env: cf.env }));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("counts failures apart from the per address backstop an authenticated caller spends", async () => {
+    await expect(bearerFailureWithinLimit("203.0.113.9")).resolves.toBe(true);
+    expect(limit).toHaveBeenCalledWith({ key: "authfail:203.0.113.9" });
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("refuses past the ceiling and stays silent, since a flood of bad tokens is not news", async () => {
+    limit.mockResolvedValue({ success: false });
+    await expect(bearerFailureWithinLimit("203.0.113.9")).resolves.toBe(false);
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
   });
 });
