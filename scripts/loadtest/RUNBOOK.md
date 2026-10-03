@@ -168,6 +168,68 @@ trigger for the Durable-Objects fallback (a paid, escalated decision).
      subrequests across both during a backlog). Not a subrequest-ceiling threat at 10,000,
      but a CPU contributor worth capping.
 
+## The peak the 60 a minute bar rests on (#3124)
+
+The booking path run's bar is **60 confirmed bookings a minute for ten minutes**,
+set on 2026-09-11 in the plan on #2240 beside a measured busiest minute of 6, so it
+sits ten times over the peak measured then. That premise has to be re-checkable, because it is the whole reason 60 is the
+number. What was measured, from the plan's own comment on #2240: routed cal.com
+form responses ran **450 to 1,013 a day** over the ten days before, and the
+**busiest minute in 30 days held 6**. Those came from cal.com, since Slate took no
+real bookings then.
+
+Slate's own traffic answers the same question now. This query reads the last 30 days
+of real routed bookings (test buckets excluded, the same `is_test` the canary
+isolation uses, and agent link bookings excluded by `kind = 'routed'`, since they do
+not route, migration 0144) and reports the busiest minute, when it was, the busiest day, and how many
+times over that minute the bar sits:
+
+<!-- runbook-unverified: read only; not run against production from the change that added it, because that change runs no SQL against the live database. Its shape is pinned offline by scripts/test-capacity-peak-sql.ts: it holds no write, names only columns the bookings and buckets row types declare, excludes test buckets, keeps to routed bookings, and reads a 30 day window. -->
+```sql
+-- Busiest minute and day of real bookings, last 30 days. Read only.
+with real_bookings as (
+  select b.created_at
+  from bookings b
+  join buckets k on k.id = b.bucket_id
+  where not k.is_test
+    and b.kind = 'routed'
+    and b.created_at >= now() - interval '30 days'
+),
+per_minute as (
+  select date_trunc('minute', created_at) as minute, count(*) as bookings
+  from real_bookings
+  group by 1
+),
+per_day as (
+  select date_trunc('day', created_at) as day, count(*) as bookings
+  from real_bookings
+  group by 1
+)
+select
+  (select count(*) from real_bookings) as bookings_30d,
+  (select max(bookings) from per_day) as busiest_day,
+  (select max(bookings) from per_minute) as busiest_minute,
+  (select minute from per_minute order by bookings desc, minute desc limit 1) as busiest_minute_at,
+  round(60.0 / nullif((select max(bookings) from per_minute), 0), 1) as bar_over_peak;
+```
+
+Two things to know before reading the answer:
+
+- **Before cutover it counts only the pilot's share.** Slate carries the leads the
+  Salesforce pilot switch sends it (ADR 0009), so its busiest minute is a floor on
+  the real one, not the real one. Scale by the share Slate carries, or read cal.com's
+  routing form responses as the 2026-09-11 figure did, until cutover (#65) makes this
+  the whole of it.
+- **It counts bookings, not attempts.** A refused or failed attempt writes no
+  bookings row, so a minute of heavy refusals reads as quiet here. The booking API's
+  attempt tallies (`booking_api_outcome_daily`) are daily, so they cannot answer a per
+  minute question.
+
+`bar_over_peak` under ten means the premise no longer holds and the run's bar should
+be raised before the next one is dispatched. The run itself was measured at 90
+seeded agents (run 34658545203, 2026-09-11) against a design target of 100 to 200;
+running the booking leg at 200 is tracked on #3124 and has not been done.
+
 ## The booking path run (#2243)
 
 Everything above drives the CRON LANES. It never confirmed a booking, which is why

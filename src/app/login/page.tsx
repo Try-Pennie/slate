@@ -23,6 +23,11 @@ const ERROR_MESSAGES: Record<string, string> = {
   // action that can change the answer, and says nothing about why.
   account_deactivated:
     "This Slate account is no longer active. Ask an admin to reactivate it if you still need access.",
+  // #3083: the deploy is missing its sign-in domain, so the callback refuses
+  // everyone rather than letting any Google account in. Nothing the person does
+  // can fix it, so it points at the people who can.
+  sign_in_unavailable:
+    "Sign in is unavailable right now. Please let a Slate admin know.",
 };
 
 // Shown when the sign-in call itself never reaches Google (a transient network

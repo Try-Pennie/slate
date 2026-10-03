@@ -14,13 +14,13 @@
 // number be reached, only that a gain already made is not quietly given back.
 // Run: pnpm test:coverage
 import { spawnSync } from "node:child_process";
-import { appendFileSync, readFileSync, rmSync, mkdirSync, existsSync } from "node:fs";
+import { appendFileSync, readFileSync, rmSync, mkdirSync, existsSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import libCoverage from "istanbul-lib-coverage";
 import { createContext } from "istanbul-lib-report";
 import reports from "istanbul-reports";
-import { judgeCoverage, statementsPct } from "./lib/coverage-ratchet.mjs";
+import { judgeCoverage, metricPct, RATCHETED_METRICS, worstVerdict } from "./lib/coverage-ratchet.mjs";
 
 /**
  * Merge istanbul coverage-final.json objects into one coverage map. This is the
@@ -146,23 +146,34 @@ console.log(`\ncoverage: merged lcov written to ${resolve(COV, "lcov.info")}`);
 // 4. The ratchet (#1050). Read the number off the merged map rather than by scraping
 //    the printed summary: the text report is for a person, and parsing it would make
 //    this depend on istanbul's formatting.
-const measured = statementsPct(map.getCoverageSummary().toJSON());
-const floor = JSON.parse(readFileSync(FLOOR_FILE, "utf8")).statements;
-const judgement = judgeCoverage({ floor, measured });
-console.log(`\ncoverage: ${judgement.message}`);
+const summary = map.getCoverageSummary().toJSON();
+const floors = JSON.parse(readFileSync(FLOOR_FILE, "utf8"));
+/** @type {Record<string, { verdict: string, message: string }>} */
+const judgements = {};
+for (const metric of RATCHETED_METRICS) {
+  judgements[metric] = judgeCoverage({ floor: floors[metric], measured: metricPct(summary, metric), metric });
+  console.log(`\ncoverage: ${judgements[metric].message}`);
+}
+const verdict = worstVerdict(Object.values(judgements));
+
+// #3101: the verdicts as a file, for the alerter that runs after this step whatever
+// it exited with (scripts/notify-coverage.ts). Written BEFORE the exit below, so a
+// regression is reported as one; a run that never reaches here leaves no file, which
+// the alerter reads as unmeasured.
+writeFileSync(resolve(COV, "verdict.json"), JSON.stringify(judgements, null, 2) + "\n");
 
 // Written where a person sees it without opening a log, since the whole complaint
 // about the old report-only number was that reading it depended on somebody choosing to.
 if (process.env.GITHUB_STEP_SUMMARY) {
-  const mark = judgement.verdict === "pass" ? "" : ` (${judgement.verdict})`;
+  const mark = verdict === "pass" ? "" : ` (${verdict})`;
   appendFileSync(
     process.env.GITHUB_STEP_SUMMARY,
-    `### Coverage${mark}\n\n${judgement.message}\n`,
+    `### Coverage${mark}\n\n${Object.values(judgements).map((j) => `- ${j.message}`).join("\n")}\n`,
   );
 }
 
-if (judgement.verdict === "regressed" || judgement.verdict === "unmeasured") {
-  console.error(`\ncoverage: FAILING because ${judgement.verdict}.`);
+if (verdict === "regressed" || verdict === "unmeasured") {
+  console.error(`\ncoverage: FAILING because ${verdict}.`);
   process.exit(1);
 }
 }

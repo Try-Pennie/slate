@@ -42,15 +42,18 @@ select erase_booking_pii('person@example.com');
 ```
 
 It runs as a single transaction and returns a JSON summary, for example
-`{"erased": true, "bookings": 2, "events": 1, "deliveries": 3, "outbox": 1}`. If
+`{"erased": true, "bookings": 2, "events": 1, "deliveries": 3, "outbox": 1, "reservations": 0}`. If
 nothing matched (already erased, or never present) it returns
 `{"erased": false, "reason": "no-match"}` and you are done (there is nothing in
 Snowflake to purge either).
 
 A zero in any of those counts is worth a second look before you move on: it means
 that path matched no rows. That is normal for a person with no reschedule or
-cancel history (`events: 0`) but not for `bookings`, which is 0 only on a
-no-match.
+cancel history (`events: 0`), and for `reservations`, which counts only a booking
+still being created at the moment you ran it. `bookings` is 0 only on a no-match,
+or when the person had nothing but a pending reservation (#3126), in which case
+`reservations` is at least 1 and there is nothing in Snowflake to purge, since
+reservations are not mirrored.
 
 It is **idempotent**: re-running for the same email after a successful erasure is
 a safe no-op and writes no new audit row. The match is case-insensitive and
@@ -76,8 +79,12 @@ phone null; prefill emptied) and stamps `pii_redacted_at`; redacts those booking
 `booking_events.reason_detail`; blanks the matching outbound webhook payloads
 (matched by the affected booking ids); takes the free-text reason and any embedded
 error body out of those bookings' `booking_outbox` rows (#1140, keeping the
-operational fields the drain needs, so a still-pending row is safe to blank); and
-writes one `audit_log` entry with the affected booking ids and a **SHA-256 hash** of
+operational fields the drain needs, so a still-pending row is safe to blank);
+deletes the person's `booking_reservations` rows, whose payload holds the whole
+attendee record and the manage token until the booking lands (#3126, migration
+0158; deleted rather than redacted, and taken even when no booking matched, so the
+drain cannot resume one into a fresh booking after the erasure); and writes one
+`audit_log` entry with the affected booking ids and a **SHA-256 hash** of
 the email (never the cleartext).
 
 ## Step 2: get the affected booking ids
@@ -412,3 +419,42 @@ reintroduce the PII, so **any restore must re-run this runbook** for every
 `pii.erasure` audit entry as a post-restore reconciliation step. A defensible
 response states that erasure is complete in production immediately and in backups
 within the backup retention window.
+
+## Answering the requester (#3132)
+
+The reply to the person states what was NOT erased as well as what was, because
+three copies of their details sit outside anything this runbook reaches, and the
+erased booking itself keeps one identifier, so a reply that says only "deleted" is a
+claim the record contradicts. All four are recorded in `docs/pii-legal-positions.md`:
+the backups (above), the agent's Google Calendar event (item 2 of "What it
+deliberately does NOT do", and the legal positions memo's second residual), the
+copies already sent to Regal and Cadence (position 4, which Slate does not tell about
+a deletion), and the Salesforce lead reference the redacted booking keeps (item 1 of
+"What it deliberately does NOT do", and position 3, whose accepted risk is that it
+can re-identify the person).
+
+Send it only after step 4 returned all zeros. The wording below is engineering's
+draft of those positions and is listed for counsel's sign-off in
+`docs/pii-legal-positions.md` (positions 5 to 7) together with the positions it
+rests on; until that sign-off is recorded, check the reply with whoever owns the
+request.
+
+<!-- runbook-reference: the text of a reply to a data subject, not a command to run. -->
+```
+We have deleted your name, email address, phone number and any other contact
+details from our appointment booking system and from our reporting warehouse.
+
+Four things are outside that deletion, and we want you to know about them:
+
+1. Our backups still hold the earlier data until they expire on their normal
+   schedule. They are not used for anything unless we have to restore our
+   systems, and if we ever do, we repeat your deletion straight away.
+2. If you had a call booked, the advisor's work calendar still shows that
+   appointment with your details on it, as their record of the meeting.
+3. Your booking details were also sent to two service providers we use to
+   contact customers, Regal and Cadence. Deleting them from our system does not
+   delete their copies.
+4. The record of your appointment still carries a reference number that points
+   to your record in our customer database, Salesforce. It holds none of your
+   contact details itself, but it links the appointment to that record.
+```

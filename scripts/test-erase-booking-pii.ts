@@ -138,6 +138,29 @@ assert(
 );
 
 
+// #3126: a pending create reservation holds the whole attendee record (and the
+// manage token) in booking_reservations.payload until the booking lands. Erasure
+// has to take it, and has to take it even when no booking exists yet: a
+// reservation the drain later resumes would otherwise recreate the booking, with
+// every field the request asked us to remove.
+{
+  assert(
+    /delete from booking_reservations/.test(code),
+    "deletes the person's booking_reservations rows (#3126)",
+  );
+  assert(
+    /lower\(\s*trim\(\s*payload\s*->\s*'booking'\s*->>\s*'attendee_email'\s*\)\s*\)\s*=\s*norm/.test(code),
+    "matches a reservation by the same normalized attendee email the bookings match uses",
+  );
+  const reservationsAt = code.indexOf("delete from booking_reservations");
+  const noMatchAt = code.indexOf("'no-match'");
+  assert(
+    reservationsAt !== -1 && noMatchAt !== -1 && reservationsAt < noMatchAt,
+    "takes the reservations BEFORE the no-match return, so a person with only a pending reservation is still erased",
+  );
+  assert(/'reservations_deleted'/.test(code), "the audit row counts the reservations deleted");
+}
+
 // #2549: erasure on request clears EVERY contact column retention clears, derived
 // from the retention shape rather than listed again here, so a contact column
 // added to one (attendee_first_name was the first) cannot be missed by the other.

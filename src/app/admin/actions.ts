@@ -30,7 +30,7 @@ import {
   type StaffAccessOutcome,
   type StaffAccessTarget,
 } from "@/lib/admin/staff-access";
-import { googleHostedDomain } from "@/lib/env";
+import { googleHostedDomain, impersonationSigningSecret } from "@/lib/env";
 import {
   IMPERSONATE_COOKIE,
   IMPERSONATE_TTL_SECONDS,
@@ -1971,22 +1971,31 @@ export async function startImpersonation(form: FormData): Promise<void> {
     redirect(impersonationErrorUrl(`You can't impersonate a ${roleLabel(target.role)}.`));
   }
 
-  const store = await cookies();
-  // Timestamped value + matching maxAge so the session auto-expires (#653): the
-  // server-side TTL check in resolveEffectiveUserId is authoritative, maxAge is
-  // defense in depth.
-  store.set(IMPERSONATE_COOKIE, encodeImpersonationCookie(target.id, Date.now()), {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    path: "/",
-    maxAge: IMPERSONATE_TTL_SECONDS,
-  });
+  // Audited BEFORE the cookie is set (#3113), so no session can exist that the
+  // trail does not record starting. The cookie is signed for this admin, which is
+  // what stops one being written by hand and skipping this row altogether.
   await recordAudit({
     orgId: admin.org_id,
     actorId: admin.id,
     action: "impersonate.start",
     targetUserId: target.id,
+  });
+  const value = await encodeImpersonationCookie({
+    issuerId: admin.id,
+    targetId: target.id,
+    issuedAtMs: Date.now(),
+    secret: impersonationSigningSecret(),
+  });
+  const store = await cookies();
+  // Timestamped, signed value + matching maxAge so the session auto-expires
+  // (#653): the server-side TTL check in impersonationCookieOutcome is
+  // authoritative, maxAge is defense in depth.
+  store.set(IMPERSONATE_COOKIE, value, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: IMPERSONATE_TTL_SECONDS,
   });
   // Straight to the page rather than through /me's redirect: this is where
   // "view as" lands somebody, and the address is read from the tab list so it

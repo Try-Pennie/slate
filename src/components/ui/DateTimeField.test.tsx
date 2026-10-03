@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import { fireEvent, render } from "@testing-library/react";
+import { fireEvent, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DateTimeField } from "@/components/ui/DateTimeField";
 import { roundUpToQuarterHour } from "@/lib/date/parse";
@@ -373,5 +373,61 @@ describe("DateTimeField popup time control tracks the segments", () => {
     await u.click(getByLabelText("Open calendar and time"));
 
     expect((getByLabelText("Start time") as HTMLInputElement).value).toBe("2:15pm");
+  });
+});
+
+// #3081: the popup said role="dialog" aria-modal="true" and then left focus on
+// the button that opened it, so a keyboard user was told a modal had opened and
+// was standing outside it. It is NOT modal (a click elsewhere or a scroll closes
+// it and the page stays live), so the promise is withdrawn rather than faked, and
+// focus is moved in and handed back the way a popup's should be.
+describe("DateTimeField popup focus (#3081)", () => {
+  it("does not claim to be modal", async () => {
+    const u = userEvent.setup();
+    const { getByLabelText, getByRole } = renderField();
+    await u.click(getByLabelText("Open calendar and time"));
+    expect(getByRole("dialog").getAttribute("aria-modal")).toBeNull();
+  });
+
+  it("moves focus onto the selected day when it opens", async () => {
+    const u = userEvent.setup();
+    const { getByLabelText } = renderField({ defaultDate: "2026-06-10" });
+    await u.click(getByLabelText("Open calendar and time"));
+    expect(activeLabel()).toBe("Wednesday, June 10, 2026");
+  });
+
+  it("moves focus into the grid when no day is chosen yet", async () => {
+    const u = userEvent.setup();
+    const { getByLabelText } = renderField();
+    await u.click(getByLabelText("Open calendar and time"));
+    expect(activeLabel()).toBe("Wednesday, June 17, 2026");
+  });
+
+  it.each(["Cancel", "Confirm"])("hands focus back to the calendar button on %s", async (name) => {
+    const u = userEvent.setup();
+    const { getByLabelText, getByText } = renderField({ defaultDate: "2026-06-10" });
+    await u.click(getByLabelText("Open calendar and time"));
+    await u.click(getByText(name));
+    expect(activeLabel()).toBe("Open calendar and time");
+  });
+
+  it("hands focus back to the calendar button on Escape", async () => {
+    const u = userEvent.setup();
+    const { getByLabelText } = renderField({ defaultDate: "2026-06-10" });
+    await u.click(getByLabelText("Open calendar and time"));
+    await u.keyboard("{Escape}");
+    expect(activeLabel()).toBe("Open calendar and time");
+  });
+
+  // A scroll closes the popup while focus is on a day inside it. Left alone, focus
+  // went with the removed panel to the body, and a keyboard user lost their place.
+  it("hands focus back to the calendar button when a scroll dismisses it", async () => {
+    const u = userEvent.setup();
+    const { getByLabelText } = renderField({ defaultDate: "2026-06-10" });
+    await u.click(getByLabelText("Open calendar and time"));
+    expect(activeLabel()).toBe("Wednesday, June 10, 2026");
+    fireEvent.scroll(window);
+    // The panel coalesces scrolls onto one animation frame before dismissing.
+    await waitFor(() => expect(activeLabel()).toBe("Open calendar and time"));
   });
 });

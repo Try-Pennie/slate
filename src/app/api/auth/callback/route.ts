@@ -47,7 +47,19 @@ export async function GET(req: NextRequest) {
   // unverified or out-of-domain emails BEFORE provisioning so an outside account
   // never gets a live users row. Sign out first to clear the session cookies the
   // code exchange just set.
-  if (meta.email_verified === false || !isAllowedEmail(email, googleHostedDomain())) {
+  //
+  // Both halves fail CLOSED (#3083): an unconfigured domain refuses every
+  // sign-in rather than reading as "allow any account", and only a claim that
+  // is exactly true counts as verified, so an ABSENT claim is refused too.
+  let hostedDomain: string;
+  try {
+    hostedDomain = googleHostedDomain();
+  } catch (err) {
+    log.error("auth-callback", { msg: "sign-in domain not configured", auth_user_id: user.id }, err);
+    await supabase.auth.signOut();
+    return NextResponse.redirect(`${origin}/login?error=sign_in_unavailable`);
+  }
+  if (meta.email_verified !== true || !isAllowedEmail(email, hostedDomain)) {
     await supabase.auth.signOut();
     return NextResponse.redirect(`${origin}/login?error=domain_not_allowed`);
   }

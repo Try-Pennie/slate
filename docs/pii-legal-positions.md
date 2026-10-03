@@ -2,8 +2,9 @@
 
 **Prepared for:** Pennie legal / outside counsel
 **Prepared by:** Engineering (Slate), 2026-07-29
-**Decided by:** Dan Wright, 2026-07-29
-**Tracking:** #1074, milestone "PII retention, erasure & compliance" (#1029)
+**Decided by:** Dan Wright, 2026-07-29, positions 1 to 4
+**Proposed by:** Engineering (Slate), 2026-10-03, positions 5 to 7 (#3132), not yet decided by anyone
+**History:** positions 1 to 4 were written up under #1074, since closed, in milestone "PII retention, erasure & compliance" (#1029); positions 5 to 7 under #3132
 
 ## What we need from you
 
@@ -12,7 +13,11 @@ Four compliance questions had to be answered before the retention and deletion
 machinery could be called finished. Engineering could not answer them, so Dan
 decided all four on 2026-07-29 and we built to those answers.
 
-**This memo asks you to confirm or revise those four positions.** They are
+**This memo asks you to confirm or revise those four positions**, and three more
+that engineering PROPOSED on 2026-10-03 (#3132) and nobody has decided: the
+statement made about backups, that the agent's calendar copy of a booking stays, and
+what the reply to the person says about every copy that remains, the Salesforce
+reference included. They are
 Pennie's stated positions, not legal advice, and nothing here was reviewed by
 counsel before it shipped. Two of them carry risks we want you to see explicitly
 rather than discover later, and both are called out below.
@@ -174,7 +179,15 @@ delete, and the audit entry records that it was done. The expensive version is
 automatic propagation, which needs those vendors to build an endpoint that accepts
 a deletion signal before Slate has anything to call.
 
-## Two things this memo does not cover
+## Two residuals the positions above do not cover
+
+Engineering proposed on 2026-10-03 (#3132) that both be told to the person who asked
+for deletion, in the reply drafted in `docs/pii-erasure-runbook.md` ("Answering the
+requester"), and put each on the sign-off table below as its own row: backups as
+position 5, the agent's calendar as position 6, and the reply wording that rests on
+both as position 7, so that reply rests only on statements counsel has seen. None is
+a decision until it is signed off.
+
 
 1. **Backups.** Deletion is immediate in the live database and the warehouse, but
    both keep backups for their own retention windows, and a restore from before a
@@ -195,6 +208,9 @@ a deletion signal before Slate has anything to call.
 | 2. 24 month retention, warehouse included | | | |
 | 3. Redaction is deletion, Salesforce reference stays | | | |
 | 4. No processor obligation for Regal and Cadence | | | |
+| 5. Erasure is complete in production immediately and in backups once they roll off, and every recorded deletion is re-run after any restore (residual 1 above) (proposed by engineering, 2026-10-03, not yet decided) | | | |
+| 6. The agent's calendar copy of a booking is not erased (residual 2 above) (proposed by engineering, 2026-10-03, not yet decided) | | | |
+| 7. The reply to the requester names everything that remains: backups, the agent's calendar, the Regal and Cadence copies, and the Salesforce reference of position 3 (`docs/pii-erasure-runbook.md`, "Answering the requester") (proposed by engineering, 2026-10-03, not yet decided) | | | |
 
 Reviewed by: ____________________  Date: ____________
 

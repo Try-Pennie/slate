@@ -23,6 +23,8 @@ const db = vi.hoisted(() => ({
   /** Tables held open until a test releases them, so ordering is decided not raced. */
   hold: null as null | Set<string>,
   release: {} as Record<string, () => void>,
+  /** The filters the count applied, as `method:column:value` (#3114). */
+  filters: [] as string[],
 }));
 const supabaseAdmin = vi.hoisted(() =>
   vi.fn(() => ({
@@ -31,11 +33,16 @@ const supabaseAdmin = vi.hoisted(() =>
         table === "ooo_requests"
           ? { count: db.oooCountError ? null : db.oooCount, error: db.oooCountError }
           : { data: [], error: null };
+      const record = (method: string) => (col: string, ...rest: unknown[]) => {
+        if (table === "ooo_requests") db.filters.push(`${method}:${col}:${rest.map(String).join(":")}`);
+        return b;
+      };
       const b: Record<string, unknown> = {
         select: () => b,
-        eq: () => b,
-        in: () => b,
-        not: () => b,
+        eq: record("eq"),
+        neq: record("neq"),
+        in: record("in"),
+        not: record("not"),
         then: (resolve: (v: unknown) => unknown) => {
           db.trace.push(`${table}:issued`);
           const gate = db.hold?.has(table)
@@ -68,6 +75,7 @@ beforeEach(() => {
   db.trace = [];
   db.hold = null;
   db.release = {};
+  db.filters = [];
 });
 
 // #1847 moved this read out of the header so nothing waits on it. The BEHAVIOUR
@@ -103,14 +111,38 @@ describe("the pending approvals badge (#1165, moved by #1847)", () => {
     expect(container.textContent).toBe("");
   });
 
-  // The count filters on the staff ids, so it cannot be fired beside them. This
-  // is the one ordering that is REQUIRED rather than incidental.
-  it("reads the pending count only after the staff ids it filters on", async () => {
-    db.oooCount = 2;
-    render(await PendingApprovalsBadge(props));
-    expect(db.trace.indexOf("ooo_requests:issued")).toBeGreaterThan(
-      db.trace.indexOf("users:settled"),
-    );
+  // #3114: the badge counts what the Team Requests queue shows, which is what the
+  // viewer can decide (pendingQueueScope, held equal to canModerate). It used to
+  // drop every admin-authored request, which is now wrong: an admin cannot decide
+  // their own, so the OTHER moderators must be nudged about it.
+  describe("counts exactly the queue the viewer can decide (#3114)", () => {
+    const base = ["eq:org_id:org-1", "eq:status:pending"];
+
+    it("an admin counts everyone's but their own, including other admins'", async () => {
+      render(await PendingApprovalsBadge({ role: "admin", userId: "ada", orgId: "org-1" }));
+      expect(db.filters).toEqual([...base, "neq:user_id:ada"]);
+      // No staff list is read any more, so no admin's request is filtered out.
+      expect(db.trace.some((t) => t.startsWith("users:"))).toBe(false);
+    });
+
+    it("a team lead counts the whole org, an admin's request included", async () => {
+      render(await PendingApprovalsBadge({ role: "team_lead", userId: "lee", orgId: "org-1" }));
+      expect(db.filters).toEqual(base);
+    });
+
+    it("a manager counts only the requests naming them", async () => {
+      render(await PendingApprovalsBadge(props));
+      expect(db.filters).toEqual([...base, "eq:manager_id:mgr-1"]);
+    });
+
+    it("an agent, who can decide nothing, reads nothing and shows nothing", async () => {
+      db.oooCount = 4;
+      const { container } = render(
+        await PendingApprovalsBadge({ role: "agent", userId: "aria", orgId: "org-1" }),
+      );
+      expect(db.trace).toEqual([]);
+      expect(container.textContent).toBe("");
+    });
   });
 
   it("renders nothing without the ids it needs, rather than reading anything", async () => {

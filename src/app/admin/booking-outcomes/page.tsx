@@ -18,6 +18,8 @@ import { CallerSightings } from "@/components/admin/CallerSightings";
 import { cardCls } from "@/components/ui/styles";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 
+export const metadata = { title: "Booking API outcomes" };
+
 export const dynamic = "force-dynamic";
 
 // Module scope so the DateTime.now() call doesn't trip react-hooks/purity in render.

@@ -7,6 +7,7 @@ import {
   impersonationCookieOutcome,
 } from "@/lib/auth/impersonation";
 import { devPreviewUser } from "@/lib/auth/dev-preview";
+import { impersonationSigningSecret } from "@/lib/env";
 import { gateSessionRow } from "@/lib/auth/active-session";
 import { NotAuthorizedError } from "@/lib/auth/http";
 import { log } from "@/lib/log";
@@ -91,12 +92,15 @@ type ImpersonationState =
 
 async function resolveImpersonationState(real: User): Promise<ImpersonationState> {
   const cookieStore = await cookies();
-  const outcome = impersonationCookieOutcome(
-    real.role,
-    real.id,
-    cookieStore.get(IMPERSONATE_COOKIE)?.value,
-    Date.now(),
-  );
+  const cookie = cookieStore.get(IMPERSONATE_COOKIE)?.value;
+  // Only an admin's cookie is ever verified, so the secret is read for nobody else.
+  const outcome = await impersonationCookieOutcome({
+    realRole: real.role,
+    realId: real.id,
+    cookie,
+    nowMs: Date.now(),
+    secret: cookie && atLeast(real.role, "admin") ? impersonationSigningSecret() : "",
+  });
   if (outcome.kind === "none") return { status: "none" };
   if (outcome.kind === "ended") return { status: "dropped", reason: "expired" };
 

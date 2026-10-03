@@ -20,6 +20,7 @@
  */
 
 import { atLeast, isRole } from "@/lib/auth/roles";
+import { resolveHostedDomain } from "@/lib/auth/domain";
 import { isLoadtest, loadtestPointedAtProduction } from "@/lib/loadtest-guard";
 import type { BookingApiCaller, KeySlot } from "@/lib/booking/api-auth";
 
@@ -79,13 +80,28 @@ export const publicSupabasePublishableKey = (): string =>
 export const supabaseSecretKey = (): string =>
   requireEnv("SUPABASE_SECRET_KEY");
 
+/**
+ * The key the "view as" cookie is HMAC-signed with (#3113). It is the Supabase
+ * secret key rather than a secret of its own, so signing needed nothing new set
+ * in production: every deployment already holds it, nothing outside the Worker
+ * does, and anyone holding it can already read and write every row, so a MAC
+ * keyed on it grants nothing that key does not. The signed message carries its
+ * own label, so the MAC cannot be confused with anything else keyed the same
+ * way. Rotating that key ends every live "view as" session, which is the safe
+ * direction.
+ */
+export const impersonationSigningSecret = (): string => supabaseSecretKey();
+
 export const googleClientId = (): string => requireEnv("GOOGLE_CLIENT_ID");
 export const googleClientSecret = (): string =>
   requireEnv("GOOGLE_CLIENT_SECRET");
 
-/** Empty string means "allow any Google account". */
-export const googleHostedDomain = (): string =>
-  process.env.GOOGLE_HOSTED_DOMAIN ?? "";
+/**
+ * The Google Workspace domain sign-in is limited to. Throws
+ * `HostedDomainMissingError` when unset (#3083); an empty string ("allow any
+ * Google account") comes back only with an explicit ALLOW_ANY_GOOGLE_DOMAIN=1.
+ */
+export const googleHostedDomain = (): string => resolveHostedDomain(process.env);
 
 // Google service account for domain-wide delegation (impersonate agent calendars).
 export const googleSaClientEmail = (): string =>

@@ -49,6 +49,17 @@ assert(
   /SLACK_ALERTS_CHANNEL:\s*\$\{\{\s*vars\.SLACK_ALERTS_CHANNEL\s*\}\}/.test(wf),
   "passes the alerts channel variable",
 );
+// #3087: the message names the failed jobs, because a red security scan on main
+// fails the run without holding back the deploy, and "deploy failed" would then be
+// false. The jobs are read from the run, with a token allowed to read them, and a
+// read that fails becomes `unknown` rather than an empty list, so the notifier falls
+// back to the generic message instead of reading silence as "nothing failed".
+assert(/FAILED_JOBS:\s*\$\{\{\s*steps\.[\w-]+\.outputs\.failed\s*\}\}/.test(wf), "passes the failed jobs to the notifier");
+assert(/actions\/runs\/\$\{?RUN_ID\}?\/jobs/.test(wf), "reads them from the run's own jobs");
+assert(/RUN_ID:\s*\$\{\{\s*github\.event\.workflow_run\.id\s*\}\}/.test(wf), "for the run that failed");
+assert(/actions:\s*read/.test(wf), "with a token allowed to read Actions");
+assert(/failed=unknown/.test(wf), "and a read that fails is recorded as unknown, not as no failures");
+
 // #1598: it carries no dependency install. This alert fires exactly when CI on
 // main has already failed, which correlates with GitHub or the network having a
 // bad day, so every dependency it carries is another way for it to be

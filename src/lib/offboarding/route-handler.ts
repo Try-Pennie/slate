@@ -7,10 +7,12 @@ import type { LifecycleAction } from "@/lib/offboarding/plan";
 // The consolidated endpoint's public verbs (#282). The internal state machine
 // uses "reactivate"; the automation-facing URL uses "activate" so both the
 // bookable-toggle API (#281) and this one share one email+action mental model.
-const API_ACTION_TO_INTERNAL: Record<string, LifecycleAction> = {
-  activate: "reactivate",
-  deactivate: "deactivate",
-};
+// A Map, not an object literal (#3116, L738): a bracket lookup on a plain object
+// finds inherited members, so "constructor" resolved to a truthy action.
+const API_ACTION_TO_INTERNAL: ReadonlyMap<string, LifecycleAction> = new Map([
+  ["activate", "reactivate"],
+  ["deactivate", "deactivate"],
+]);
 
 /**
  * Bearer gate shared by the lifecycle endpoints: OFFBOARDING_API_KEY, header
@@ -84,7 +86,7 @@ export function makeLifecycleActionHandler() {
     if (!email) {
       return NextResponse.json({ error: "email is required" }, { status: 400 });
     }
-    const action = API_ACTION_TO_INTERNAL[String(body.action ?? "").trim()];
+    const action = API_ACTION_TO_INTERNAL.get(String(body.action ?? "").trim());
     if (!action) {
       return NextResponse.json(
         { error: "action must be 'activate' or 'deactivate'" },

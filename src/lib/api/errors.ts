@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
-import { shortErrorReason, DIAGNOSTIC_REASON_CHARS } from "@/lib/notify/error-text";
+import { shortFailureReason, DIAGNOSTIC_REASON_CHARS } from "@/lib/notify/error-text";
+import { scrubContactData } from "@/lib/api/client-error-scrub";
 import { log } from "@/lib/log";
 import { unexpectedFaultAlert } from "@/lib/notify/misc-alert-copy";
 
@@ -45,7 +46,16 @@ export async function reportInternalError(err: unknown, context: string): Promis
   // full text is already in the log line above, which Cloudflare keeps complete.
   // The wider budget: for an UNPREDICTED fault this text is the diagnosis itself,
   // not a supporting detail on copy that already names the condition.
-  const detail = shortErrorReason(err, { maxChars: DIAGNOSTIC_REASON_CHARS });
+  //
+  // #3143: scrubbed of contact data first, as the browser beacon's text already
+  // is. A library error can quote the row or the request it failed on (a unique
+  // violation names the key, a fetch error names the URL with its prefill query),
+  // and Slack keeps what it is sent. Scrubbed BEFORE it is shortened, so a cut
+  // can never leave half an address the shapes no longer recognise. The log line
+  // above keeps the full text. Names have no shape, so this narrows the residue
+  // rather than closing it (client-error-scrub.ts states the limit).
+  const raw = err instanceof Error ? err.message : String(err);
+  const detail = shortFailureReason(scrubContactData(raw), DIAGNOSTIC_REASON_CHARS) ?? "no detail";
   await sendThrottledAlert(
     `internal_error:${context}`,
     INTERNAL_ERROR_COOLDOWN_MS,

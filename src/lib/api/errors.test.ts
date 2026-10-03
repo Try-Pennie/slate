@@ -164,6 +164,40 @@ describe("internalErrorResponse alerting (#802)", () => {
       expect(body.split("\n")).toHaveLength(1);
     });
 
+    // #3143: a library error can quote the row or request it failed on, and this
+    // detail goes to Slack. The client error beacon already scrubbed its own text;
+    // this chokepoint carried every OTHER fault's message through untouched.
+    it("scrubs contact data out of the detail before it reaches Slack", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      await reportInternalError(
+        new Error(
+          'duplicate key value violates unique constraint: Key (attendee_email)=(jane.doe@example.com) ' +
+            "phone (203) 561-5295 from /book?bucket=411&name=Jane%20Doe&email=jane%40example.com",
+        ),
+        "book",
+      );
+
+      const body = alertText();
+      expect(body).not.toContain("jane.doe@example.com");
+      expect(body).not.toContain("561-5295");
+      expect(body).not.toContain("Jane%20Doe");
+      expect(body).not.toContain("jane%40example.com");
+      // The diagnosis survives around the markers.
+      expect(body).toContain("duplicate key value");
+      expect(body).toContain("[email]");
+      expect(body).toContain("[phone]");
+      expect(body).toContain("/book");
+    });
+
+    it("keeps the full, unscrubbed error in the log, where the diagnosis is read from", async () => {
+      const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+      const err = new Error("insert failed for jane.doe@example.com");
+      await reportInternalError(err, "book");
+      expect(alertText()).not.toContain("jane.doe@example.com");
+      const args = logged.mock.calls.flat();
+      expect(args.some((a) => a === err || String(a).includes("jane.doe@example.com"))).toBe(true);
+    });
+
     it("keeps a raw JSON body out of the page entirely", async () => {
       vi.spyOn(console, "error").mockImplementation(() => {});
       await reportInternalError(

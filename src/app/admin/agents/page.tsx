@@ -20,6 +20,8 @@ import { btnSecondaryCls, cardCls } from "@/components/ui/styles";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import type { User } from "@/lib/db/types";
 
+export const metadata = { title: "Agent roster" };
+
 export const dynamic = "force-dynamic";
 
 export default async function AgentRosterPage({

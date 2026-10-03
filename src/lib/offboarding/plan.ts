@@ -20,8 +20,16 @@ export function planLifecycleChange(
   // active === deactivated_at is null (mirrors isActive(); kept inline so this
   // stays a dependency-free leaf module the node test runner can import).
   const active = user.deactivated_at == null;
-  if (action === "deactivate") {
-    return active ? { status: "apply", deactivate: true } : { status: "noop" };
+  switch (action) {
+    case "deactivate":
+      return active ? { status: "apply", deactivate: true } : { status: "noop" };
+    case "reactivate":
+      return active ? { status: "noop" } : { status: "apply", deactivate: false };
+    default: {
+      // Exhaustive (#3116): a value from untyped input that is neither verb must
+      // refuse, never fall through to reactivating somebody.
+      const unknown: never = action;
+      throw new Error(`unknown lifecycle action: ${JSON.stringify(unknown)}`);
+    }
   }
-  return active ? { status: "noop" } : { status: "apply", deactivate: false };
 }

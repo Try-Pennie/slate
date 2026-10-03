@@ -35,6 +35,8 @@ import {
   WEBHOOK_FORMAT_OPTIONS,
 } from "@/lib/webhooks/formats";
 
+export const metadata = { title: "Webhooks" };
+
 export const dynamic = "force-dynamic";
 
 type DeliveryRow = Pick<
@@ -183,8 +185,11 @@ export default async function WebhooksPage({
         <SaveForm action={setWebhookEndpoint} name="webhook-endpoint" unsaved="changes to this endpoint" className="space-y-3">
           <div className="flex flex-wrap items-end gap-3">
             <div className="flex-1">
-              <label className={labelCls}>URL</label>
+              <label className={labelCls} htmlFor="webhook-url">
+                URL
+              </label>
               <input
+                id="webhook-url"
                 name="url"
                 defaultValue={webhook?.url ?? "https://events.regalvoice.com/events"}
                 placeholder="https://events.regalvoice.com/events"
@@ -192,14 +197,16 @@ export default async function WebhooksPage({
               />
             </div>
             <div>
-              <label className={labelCls}>Format</label>
+              <label className={labelCls} htmlFor="webhook-format">
+                Format
+              </label>
               {/* The options are DERIVED from the same record the builders are
                   keyed on, so a format added to the union cannot be missing from
                   this list, and one listed here cannot be missing a builder. It
                   used to be an array written by hand beside the union. */}
               <SelectField
+                id="webhook-format"
                 name="format"
-                ariaLabel="Format"
                 defaultValue={webhook?.format ?? "regal"}
                 className="w-full"
                 options={WEBHOOK_FORMAT_OPTIONS}

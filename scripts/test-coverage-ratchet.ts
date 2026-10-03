@@ -15,9 +15,11 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   judgeCoverage,
-  statementsPct,
+  metricPct,
+  worstVerdict,
   DEFAULT_TOLERANCE,
   RAISE_AT,
+  RATCHETED_METRICS,
 } from "./lib/coverage-ratchet.mjs";
 import { assert, eq, finish } from "./lib/harness.ts";
 import { fileURLToPath } from "node:url";
@@ -80,12 +82,35 @@ eq(
   eq(r.suggestFloor, 70, "a raise carries the exact value to write into the floor file");
 }
 
-// --- statementsPct: no number means null, never zero -------------------------
-eq(statementsPct({ statements: { pct: 63.3 } }), 63.3, "reads the statements percentage");
-eq(statementsPct({ statements: { pct: 0 } }), 0, "and zero, which is a real number");
+// --- metricPct: no number means null, never zero ------------------------------
+eq(metricPct({ statements: { pct: 63.3 } }), 63.3, "reads the statements percentage by default");
+eq(metricPct({ statements: { pct: 0 } }), 0, "and zero, which is a real number");
+eq(metricPct({ statements: { pct: 80 }, branches: { pct: 71.5 } }, "branches"), 71.5, "and the branches one by name");
+eq(metricPct({ statements: { pct: 80 } }, "branches"), null, "a metric the summary lacks is null, not the statements number");
 for (const bad of [undefined, null, {}, { statements: {} }, { statements: { pct: "63" } }]) {
-  eq(statementsPct(bad), null, `no usable number gives null, not 0 (${JSON.stringify(bad)})`);
+  eq(metricPct(bad), null, `no usable number gives null, not 0 (${JSON.stringify(bad)})`);
 }
+
+// --- #3101: branches are ratcheted too, each metric on its own words ----------
+{
+  assert(RATCHETED_METRICS.includes("statements") && RATCHETED_METRICS.includes("branches"), "both statements and branches are held to a floor");
+  const b = judgeCoverage({ floor: 70, measured: 65, metric: "branches" });
+  eq(b.verdict, "regressed", "a branches drop past the tolerance regresses");
+  assert(/^branches coverage is 65\.00%/.test(b.message), "and the message names the metric");
+  const r = judgeCoverage({ floor: 70, measured: 75, metric: "branches" });
+  assert(/Raise "branches" to 75\.00/.test(r.message), "a raise names the key to edit");
+  // No floor recorded for a metric is not a pass (L98), and it says what to record.
+  const none = judgeCoverage({ floor: undefined, measured: 72.4, metric: "branches" });
+  eq(none.verdict, "unmeasured", "a metric with no recorded floor compares against nothing, so it is unmeasured");
+  assert(/72\.40%/.test(none.message), "and it prints the measured value to record");
+}
+
+// --- the run's verdict is the worst metric's ----------------------------------
+eq(worstVerdict([{ verdict: "pass" }, { verdict: "pass" }]), "pass", "two passes pass");
+eq(worstVerdict([{ verdict: "raise" }, { verdict: "pass" }]), "raise", "a raise outranks a pass");
+eq(worstVerdict([{ verdict: "raise" }, { verdict: "regressed" }]), "regressed", "a regression is not hidden by a gain elsewhere");
+eq(worstVerdict([{ verdict: "regressed" }, { verdict: "unmeasured" }]), "unmeasured", "an unmeasured metric outranks everything");
+eq(worstVerdict([]), "unmeasured", "and judging nothing is unmeasured, never a pass");
 
 // --- the floor is committed, and is a real number ----------------------------
 {
@@ -110,6 +135,16 @@ for (const bad of [undefined, null, {}, { statements: {} }, { statements: { pct:
     typeof (parsed as { measuredOn?: unknown }).measuredOn === "string",
     "the floor records WHEN it was measured, so a stale one is visible",
   );
+  // #3101: every ratcheted metric has its own measured floor, or the run is
+  // unmeasured every night and pages for it.
+  const floors = parsed as Record<string, unknown>;
+  for (const metric of RATCHETED_METRICS) {
+    assert(
+      typeof floors[metric] === "number" && (floors[metric] as number) >= 50,
+      `the floor file holds a real ${metric} floor (${String(floors[metric])})`,
+    );
+  }
+  assert(typeof floors.branchesMeasuredOn === "string", "and the branches floor records when it was measured");
 }
 
 // --- the runner actually consults it -----------------------------------------
@@ -123,9 +158,13 @@ for (const bad of [undefined, null, {}, { statements: {} }, { statements: { pct:
     "and reads the committed floor rather than a literal in the script",
   );
   assert(
-    /verdict === "regressed" \|\| judgement\.verdict === "unmeasured"/.test(runner) &&
+    /verdict === "regressed" \|\| verdict === "unmeasured"/.test(runner) &&
       /process\.exit\(1\)/.test(runner),
     "and exits non-zero on a regression AND on an unmeasurable number",
+  );
+  assert(
+    /for \(const metric of RATCHETED_METRICS\)/.test(runner) && /worstVerdict\(/.test(runner),
+    "#3101: and judges every ratcheted metric, failing on the worst",
   );
   assert(
     runner.includes("GITHUB_STEP_SUMMARY"),

@@ -1,0 +1,107 @@
+name: Dependency audit
+
+# The vulnerability audit, every day, whether or not anybody pushed (#3092, #3093).
+#
+# ci.yml audits on every push and pull request, which means an advisory published
+# against an UNCHANGED tree goes unseen until the next push, and a quiet week is
+# exactly when nobody pushes. This runs the same two audits on a schedule and tells
+# a person:
+#
+#   - `pnpm audit --prod --audit-level=high`, what ships to the Worker;
+#   - `pnpm audit --audit-level=critical` over the whole tree, because wrangler and
+#     the OpenNext adapter build the shipped bundle and run with the Cloudflare
+#     deploy token, and `--prod` leaves them out (#3093);
+#   - production MODERATES, reported in the run summary and as a warning, never
+#     failing: they were neither failed nor recorded anywhere before (#3092), and a
+#     daily page for a moderate nobody has to act on today is how the pages that
+#     matter stop being read (L36).
+#
+# NO INSTALL, on purpose. `pnpm audit` reads pnpm-lock.yaml, so node_modules adds
+# nothing to the answer and an install is one more way for the run to fail before
+# it has audited anything. The alerter is bare node with no dependencies, like every
+# other alerter here (AGENTS.md, "An alerting workflow carries no dependency
+# install"), and it runs whatever the audits exited with (short of a cancelled run),
+# so a run that died before auditing says so rather than reading as a clean day.
+#
+# COST: one job of well under a minute (no install), which bills one minute a run,
+# so about 31 billed minutes a month on this private repo.
+#
+# Whether GitHub's own Dependabot alerts are on was read on 2026-10-03:
+# `gh api repos/Try-Pennie/slate/vulnerability-alerts` answered 204, enabled. That is
+# a repo setting, so it can change without a commit; re-read it with the same command.
+on:
+  schedule:
+    # 11:23 UTC, about 07:23 Eastern: early enough that a finding lands at the start of
+    # the working day, and not on the hour, where GitHub's scheduling queue is busiest
+    # and runs are most often dropped.
+    - cron: "23 11 * * *"
+  workflow_dispatch:
+
+# A superseded run is safe to cancel: it writes nothing durable. Its one outward
+# effect is the Slack post, and a cancelled run must not make it, or it reports an
+# audit it never finished (L36, L671). So the alert step runs on `!cancelled()`,
+# never `always()`.
+concurrency:
+  group: dependency-audit
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    timeout-minutes: 10  # new; two lockfile audits and one Slack post, no install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The version comes from package.json's packageManager key (#3128).
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Say which commit is being audited
+        run: git --no-pager log -1 --format='%H %ci %s'
+
+      - name: Audit production dependencies (high and critical)
+        id: prod
+        run: pnpm audit --prod --audit-level=high
+
+      # Runs whatever the production audit found, so one finding cannot hide the other.
+      - name: Audit the whole tree, build and deploy toolchain included (critical)
+        id: full
+        if: ${{ !cancelled() }}
+        run: pnpm audit --audit-level=critical
+
+      # Report only. Its exit code is read here and turned into a warning and a summary,
+      # never a failure, so it cannot page; the summary is the record #3092 asked for.
+      - name: Report moderate advisories in production dependencies
+        if: ${{ !cancelled() }}
+        run: |
+          set -uo pipefail
+          out="$(pnpm audit --prod --audit-level=moderate 2>&1)"
+          code=$?
+          {
+            echo "## Production advisories at moderate and above"
+            echo
+            echo '```'
+            printf '%s\n' "$out" | tail -n 60
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$code" -ne 0 ]; then
+            echo "::warning title=Moderate advisories::pnpm audit reports moderate or higher advisories in production dependencies; see the run summary."
+          fi
+
+      # Whatever the audits exited with, unless the run was cancelled (see the
+      # concurrency note above). Bare node, no alias hook:
+      # scripts/test-dependency-free-scripts.ts holds it to importing nothing outside
+      # scripts/.
+      - name: Say what the audit found
+        if: ${{ !cancelled() }}
+        env:
+          PROD_AUDIT: ${{ steps.prod.outcome }}
+          FULL_AUDIT: ${{ steps.full.outcome }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_ALERTS_CHANNEL: ${{ vars.SLACK_ALERTS_CHANNEL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node --experimental-strip-types scripts/notify-dependency-audit.ts

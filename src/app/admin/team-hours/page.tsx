@@ -9,6 +9,8 @@ import { TeamHoursTable } from "@/components/admin/TeamHoursTable";
 import { teamHoursScope } from "@/lib/admin/team-hours";
 import { loadTeamHours } from "@/lib/admin/team-hours-load";
 
+export const metadata = { title: "Team hours" };
+
 export const dynamic = "force-dynamic";
 
 /**

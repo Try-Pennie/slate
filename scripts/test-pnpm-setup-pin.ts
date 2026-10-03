@@ -1,17 +1,23 @@
-// Every `pnpm/action-setup` step can resolve a pnpm version (#2261).
+// pnpm's version is pinned exactly, in one place (#2261, #3128).
 //
-// Slate's package.json carries no `packageManager` key, so a step with no
-// `version:` fails immediately with "No pnpm version is specified" and takes its
-// whole job with it, before anything the job was written to do.
+// #2261: `loadtest.yml` shipped ten `pnpm/action-setup` steps that could not resolve
+// a version, and nothing saw it because the workflow is dispatch only. The fix then
+// was `version: 10` on every step, which resolves to the newest 10.x on the day a job
+// runs, while a laptop keeps whatever pnpm it was installed with, so the minor that
+// resolves the lockfile drifted between CI and the machines writing it (#3128).
 //
-// `loadtest.yml` shipped with TEN of them. Nothing could see it: the workflow is
-// dispatch-only, so its first execution was the first time any of those jobs had
-// started, and every one died in setup having measured nothing.
+// Now package.json carries an exact `packageManager: pnpm@X.Y.Z`, the action reads
+// it, and no step names a version of its own: a second place is a second thing to
+// keep in step, and the action refuses a step whose version disagrees with the key.
 //
 // Run: node --experimental-strip-types scripts/test-pnpm-setup-pin.ts
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { unpinnedPnpmSetups, packageManagerPinned } from "./lib/scan-pnpm-setup-pin.ts";
+import {
+  allPnpmSetups,
+  exactPnpmPin,
+  pnpmSetupsNamingAVersion,
+} from "./lib/scan-pnpm-setup-pin.ts";
 import { assert, eq, fail, finish } from "./lib/harness.ts";
 
 const ROOT = join(import.meta.dirname, "..");
@@ -22,153 +28,137 @@ const files = readdirSync(DIR)
   .map((f) => ({ name: f, yaml: readFileSync(join(DIR, f), "utf8") }));
 
 const pkg = readFileSync(join(ROOT, "package.json"), "utf8");
-const pinnedGlobally = packageManagerPinned(pkg);
 
 // --- the real tree ------------------------------------------------------------
 
 {
   assert(files.length > 3, `the scan really read the workflows (${files.length} files)`);
-  const uses = files.filter((f) => /uses:\s*pnpm\/action-setup@/.test(f.yaml));
-  assert(uses.length > 0, "and at least one workflow really uses the action");
+  // Counted by the scanner itself, so a scanner that matched nothing would fail
+  // here rather than report every workflow clean (L98).
+  const steps = allPnpmSetups(files);
+  assert(steps.length >= 10, `and found the action-setup steps they use (${steps.length})`);
 }
 
 {
-  const found = unpinnedPnpmSetups(files, pinnedGlobally);
-  if (found.length === 0) {
-    assert(true, "every pnpm/action-setup step can resolve a version");
+  const pin = exactPnpmPin(pkg);
+  if (pin.ok) {
+    assert(/^\d+\.\d+\.\d+$/.test(pin.version), `package.json pins pnpm exactly (${pin.version})`);
   } else {
-    for (const u of found) {
+    fail(
+      `package.json must carry "packageManager": "pnpm@X.Y.Z" with one exact release ` +
+        `(${pin.reason}${pin.got ? `: ${pin.got}` : ""}). Without it CI resolves the newest pnpm ` +
+        `of a major while laptops keep their own, and the lockfile drifts between them.`,
+    );
+  }
+}
+
+{
+  const found = pnpmSetupsNamingAVersion(files);
+  if (found.length === 0) {
+    assert(true, "no pnpm/action-setup step names a version of its own");
+  } else {
+    for (const s of found) {
       fail(
-        `${u.file}:${u.line} uses pnpm/action-setup with no version. package.json carries no ` +
-          `packageManager key, so this step fails with "No pnpm version is specified" and takes ` +
-          `its whole job with it. Add "with: { version: 10 }", as ci.yml does.`,
+        `${s.file}:${s.line} gives pnpm/action-setup its own version. The version lives in ` +
+          `package.json's packageManager key; delete this step's \`with: version:\` so there is ` +
+          `one place to change it, and so the action cannot refuse the step over a mismatch.`,
       );
     }
   }
 }
 
-{
-  // The premise. If somebody adds a `packageManager` key, this guard correctly goes
-  // quiet, and stating it here means the reason is visible rather than the guard
-  // silently covering nothing (L98).
-  eq(
-    pinnedGlobally,
-    false,
-    "package.json pins no packageManager, which is WHY each step must carry its own version",
-  );
-}
-
 // --- positive controls --------------------------------------------------------
 
 {
-  // The exact shape loadtest.yml shipped with, ten times over.
-  const bad = [
+  // Both directions of the pin (L159).
+  eq(exactPnpmPin('{"packageManager":"pnpm@10.33.0"}').ok, true, "an exact release is a pin");
+  eq(
+    exactPnpmPin('{"packageManager":"pnpm@10.33.0+sha512.abc123"}').ok,
+    true,
+    "and so is one carrying corepack's integrity suffix",
+  );
+  const major = exactPnpmPin('{"packageManager":"pnpm@10"}');
+  eq(major.ok ? "pinned" : major.reason, "not-exact", "a bare major is the drift itself");
+  const range = exactPnpmPin('{"packageManager":"pnpm@^10.33.0"}');
+  eq(range.ok ? "pinned" : range.reason, "not-exact", "as is a range");
+  const yarn = exactPnpmPin('{"packageManager":"yarn@4.1.0"}');
+  eq(yarn.ok ? "pinned" : yarn.reason, "not-pnpm", "another package manager is not a pnpm pin");
+  const none = exactPnpmPin('{"name":"slate"}');
+  eq(none.ok ? "pinned" : none.reason, "absent", "a package.json with no key is not pinned");
+  const bad = exactPnpmPin("not json");
+  eq(bad.ok ? "pinned" : bad.reason, "unreadable", "and an unreadable one says so on its own reason");
+}
+
+{
+  // The shape every workflow carried before #3128.
+  const withVersion = [
     {
       name: "fake.yml",
       yaml: [
         "    steps:",
         "      - uses: actions/checkout@abc # v6",
         "      - uses: pnpm/action-setup@0977fd99 # v6",
-        "      - uses: actions/setup-node@def # v6",
-        "        with:",
-        "          node-version: 24",
-        "          cache: pnpm",
-      ].join("\n"),
-    },
-  ];
-  const found = unpinnedPnpmSetups(bad, false);
-  eq(found.length, 1, "a control catches the shape loadtest.yml shipped with");
-  eq(found[0]!.line, 3, "and points at the step, not at the node-version below it");
-}
-
-{
-  // The trap that made a first attempt at this miss: `node-version:` on the NEXT
-  // step contains the word "version", so a naive scan reads it as the pin.
-  const found = unpinnedPnpmSetups(
-    [
-      {
-        name: "f.yml",
-        yaml: [
-          "      - uses: pnpm/action-setup@abc # v6",
-          "      - uses: actions/setup-node@def # v6",
-          "        with:",
-          "          node-version: 24",
-        ].join("\n"),
-      },
-    ],
-    false,
-  );
-  eq(found.length, 1, "a later step's node-version does not count as this step's pin");
-}
-
-{
-  // Both directions (L159): a properly pinned step is silent, so the control above
-  // is about the missing pin rather than about the action being present at all.
-  const good = [
-    {
-      name: "f.yml",
-      yaml: [
-        "      - uses: pnpm/action-setup@abc # v6",
         "        with:",
         "          version: 10",
         "      - uses: actions/setup-node@def # v6",
       ].join("\n"),
     },
   ];
-  eq(unpinnedPnpmSetups(good, false).length, 0, "a pinned step is not reported");
+  const found = pnpmSetupsNamingAVersion(withVersion);
+  eq(found.length, 1, "a step naming its own version is caught");
+  eq(found[0]!.line, 3, "and the report points at the step");
 }
 
 {
-  // Prose is not a step. Two workflows explain in comments why they deliberately
-  // carry no install, and naming the action is how they explain it.
-  const commented = [
+  // The trap: `node-version:` on the NEXT step contains the word "version", so a
+  // naive scan would read it as this step's input.
+  const found = pnpmSetupsNamingAVersion([
     {
       name: "f.yml",
-      yaml: "      # to carry pnpm/action-setup, setup-node with the pnpm cache and an install",
+      yaml: [
+        "      - uses: pnpm/action-setup@abc # v6",
+        "      - uses: actions/setup-node@def # v6",
+        "        with:",
+        "          node-version: 24",
+      ].join("\n"),
     },
+  ]);
+  eq(found.length, 0, "a later step's node-version is not this step's version");
+}
+
+{
+  // Prose is not a step.
+  const commented = [
+    { name: "f.yml", yaml: "      # to carry pnpm/action-setup, setup-node with the pnpm cache" },
   ];
-  eq(unpinnedPnpmSetups(commented, false).length, 0, "a comment naming the action is not a step");
+  eq(allPnpmSetups(commented).length, 0, "a comment naming the action is not a step");
 }
 
 {
-  // A packageManager key resolves every step at once, so the guard goes quiet.
-  const bad = [{ name: "f.yml", yaml: "      - uses: pnpm/action-setup@abc # v6" }];
-  eq(unpinnedPnpmSetups(bad, true).length, 0, "a packageManager key silences it");
-  assert(packageManagerPinned('{"packageManager":"pnpm@10.0.0"}'), "and that key is recognised");
-  assert(
-    packageManagerPinned('{"devEngines":{"packageManager":{"name":"pnpm"}}}'),
-    "as is the devEngines form",
-  );
-  assert(!packageManagerPinned('{"name":"slate"}'), "a package.json with neither is not pinned");
-  assert(!packageManagerPinned("not json"), "and an unreadable one reports rather than goes quiet");
-}
-
-{
-  // An overlay of the REAL tree, which is what keeps this from rotting into a
-  // check on a fixture nobody maintains. The pins are stripped out of the actual
-  // loadtest.yml in memory (nothing is written), and every one of them must be
-  // caught: a guard proved only against a hand written three line fixture can
-  // drift away from the file it exists to protect.
+  // An overlay of the REAL tree, so the scanner is proved against the files it
+  // protects and not only a fixture nobody maintains. A `version: 10` is put back
+  // under every action-setup step of the actual loadtest.yml in memory (nothing is
+  // written), and every one must be caught. The step line is matched whatever
+  // follows the ref, so a Dependabot rewrite of the SHA or its comment cannot turn
+  // the overlay into a no-op (#2492).
   const real = files.find((f) => f.name === "loadtest.yml");
   assert(real !== undefined, "loadtest.yml is there to overlay");
-  const pinned = (real!.yaml.match(/pnpm\/action-setup@/g) ?? []).length;
-  assert(pinned >= 5, `and it really uses the action a lot (${pinned} steps)`);
-  // The step line is matched whatever follows the ref, so the overlay does not
-  // depend on the SHA or on the version comment Dependabot rewrites beside it. It
-  // used to match a literal "# v6", and the first bump to "# v6.1.0" (#2492)
-  // turned the overlay into a no-op that failed for a reason unrelated to pins.
-  let removed = 0;
-  const stripped = real!.yaml.replace(
-    /( +- uses: pnpm\/action-setup@[^\n]*\n)( +with:\n +version: [^\n]+\n)/g,
-    (_m, step: string) => {
-      removed++;
-      return step;
+  const steps = (real!.yaml.match(/pnpm\/action-setup@/g) ?? []).length;
+  assert(steps >= 5, `and it really uses the action a lot (${steps} steps)`);
+  let added = 0;
+  const planted = real!.yaml.replace(
+    /^( +)(- uses: pnpm\/action-setup@[^\n]*\n)/gm,
+    (_m, indent: string, step: string) => {
+      added++;
+      return `${indent}${step}${indent}  with:\n${indent}    version: 10\n`;
     },
   );
-  assert(stripped !== real!.yaml, "the overlay really removed something");
-  eq(removed, pinned, "and it stripped the pin from every step, not only some of them");
-  const found = unpinnedPnpmSetups([{ name: "loadtest.yml", yaml: stripped }], false);
-  eq(found.length, pinned, "every unpinned step in the real file is caught");
+  eq(added, steps, "the overlay planted a version under every step");
+  eq(
+    pnpmSetupsNamingAVersion([{ name: "loadtest.yml", yaml: planted }]).length,
+    steps,
+    "and every planted version in the real file is caught",
+  );
 }
 
 finish();

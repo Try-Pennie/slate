@@ -1,0 +1,78 @@
+name: Security scan
+description: >-
+  The secret scan (gitleaks over the commits a push or pull request adds) and the
+  static analysis (semgrep). One copy, run by two jobs in ci.yml: `security-scan`,
+  which gates a pull request through the `ci` fan-in, and `security-scan-main`,
+  which runs on a push to main outside the fan-in so it never holds a deploy
+  (#1042, #3087). The caller checks out with fetch-depth 0 first.
+
+runs:
+  using: composite
+  steps:
+    # The official gitleaks action requires a paid licence key for an
+    # organisation, so the binary is fetched directly. Pinned by version AND
+    # verified by checksum: an unverified download into a job is the same class
+    # of exposure as an unpinned action tag, which is what #1051 was about.
+    - name: Install gitleaks
+      shell: bash
+      env:
+        GITLEAKS_VERSION: 8.30.1
+        GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+      run: |
+        set -euo pipefail
+        f="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+        curl -sSfL -o "$f" \
+          "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${f}"
+        echo "${GITLEAKS_SHA256}  ${f}" | sha256sum -c -
+        tar -xzf "$f" gitleaks
+        sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+        gitleaks version
+
+    # The COMMITS this push adds, not the working tree. A secret added in one
+    # commit and deleted in the next is still readable by anyone with repo
+    # access and still needs rotating, and a working tree scan calls that clean.
+    #
+    # --redact so a hit never prints the credential into a public build log,
+    # which would turn the detection into a second disclosure.
+    - name: Scan for committed secrets
+      shell: bash
+      env:
+        BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        HEAD: ${{ github.sha }}
+      run: |
+        set -euo pipefail
+        if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+          echo "No usable base commit, scanning full history instead of a range."
+          gitleaks git --no-banner --redact --config .gitleaks.toml
+        else
+          echo "Scanning $BASE..$HEAD"
+          gitleaks git --no-banner --redact --config .gitleaks.toml \
+            --log-opts "$BASE..$HEAD"
+        fi
+
+    # Pinned, like everything else. NOTE the deliberate residual risk: the rule
+    # PACKS are fetched from the semgrep registry at run time, so unlike the
+    # binary they are not pinned and a newly published rule can fail a build
+    # over code nobody touched. That is accepted rather than overlooked: the
+    # alternative is vendoring a large ruleset that then never improves. When it
+    # happens, fix the finding or annotate the line with `nosemgrep` and a
+    # reason, and do not disable the job.
+    - name: Install semgrep
+      shell: bash
+      run: pipx install semgrep==1.172.0
+
+    # p/typescript is the injection and authz surface the bespoke guards do not
+    # cover; p/secrets is defence in depth beside gitleaks, matching on code
+    # shape rather than on entropy. p/react and p/nextjs (#3087) cover the
+    # framework this app is written in: dangerouslySetInnerHTML, unsafe hrefs,
+    # server action and route handler patterns. Both were clean on the tree
+    # when added. p/owasp-top-ten was tried too and is NOT here: on 2026-10-03 it
+    # reported three findings in workflow and Dependabot config (a shell
+    # interpolation in loadtest.yml, no update cooldown in dependabot.yml), so as a
+    # gate it would be red on every pull request.
+    - name: Static analysis
+      shell: bash
+      run: |
+        semgrep scan --config p/typescript --config p/secrets \
+          --config p/react --config p/nextjs \
+          --error --quiet --metrics=off --disable-version-check

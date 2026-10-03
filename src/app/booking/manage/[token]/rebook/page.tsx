@@ -19,7 +19,7 @@ export const dynamic = "force-dynamic";
 // manage token, a credential that can cancel and move the call, so the page is
 // kept out of search and its URL out of any Referer but this site's own.
 export const metadata: Metadata = {
-  title: "Book a call with Pennie",
+  title: { absolute: "Book a call with Pennie" },
   robots: { index: false, follow: false },
   referrer: "same-origin",
 };
