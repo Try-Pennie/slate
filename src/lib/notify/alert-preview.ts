@@ -3534,6 +3534,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       ["verdict:calendar-window", "the calendar window check has stopped concluding"],
       ["verdict:busy-drift", "the busy drift sampler has stopped concluding"],
       ["verdict:offsite-origin", "the off site origin check has stopped concluding"],
+      ["verdict:auth-sign-in", "the auth sign in settings check has stopped concluding"],
       ["verdict:awaiting-activation", "the waiting to become bookable check has stopped concluding"],
       ["verdict:regal-call-feed", "the Regal feed checks have stopped concluding"],
       ["verdict:regal-call-outcomes", "the Regal call outcome check has stopped concluding"],

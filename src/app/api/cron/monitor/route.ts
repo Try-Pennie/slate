@@ -198,6 +198,8 @@ import {
   busyDriftReachedVerdict,
   OFFSITE_ORIGIN_VERDICT_LANE,
   offsiteOriginReachedVerdict,
+  AUTH_SIGN_IN_VERDICT_LANE,
+  authSignInReachedVerdict,
   AWAITING_ACTIVATION_VERDICT_LANE,
   awaitingActivationReachedVerdict,
   STRANDED_HIRES_VERDICT_LANE,
@@ -279,7 +281,7 @@ import { postSlack } from "@/lib/notify/slack";
 import { bookingDetailHref } from "@/lib/booking/detail";
 import { runEdgeLimiterCheck } from "@/lib/monitor/edge-limiter-health";
 import { runDefinerGrantsCheck, type DefinerFunctionRow } from "@/lib/monitor/definer-grants";
-import { runAuthSignInSurfaceCheck } from "@/lib/monitor/auth-sign-in-surface";
+import { runAuthSignInSurfaceCheck, readAuthSettings } from "@/lib/monitor/auth-sign-in-surface";
 import { EDGE_LIMITER_BINDINGS } from "@/lib/rate-limit-core";
 import { BURST_LIMITER_BINDING } from "@/lib/rate-limit-burst";
 import { isWorkersRuntime, workersRuntimeMarker } from "@/lib/platform/runtime";
@@ -3377,16 +3379,13 @@ export async function GET(req: NextRequest) {
     // database behind it. A failed or unreadable read is unmeasured and clears nothing.
     const authSignIn = await steps.run("auth_sign_in_surface", null, () =>
       runAuthSignInSurfaceCheck({
-        read: async () => {
-          const res = await fetch(`${publicSupabaseUrl()}/auth/v1/settings`, {
-            headers: { apikey: publicSupabasePublishableKey() },
-          });
-          if (!res.ok) {
-            log.warn("auth-sign-in", { msg: "settings read refused", status: res.status });
-            return null;
-          }
-          return (await res.json()) as unknown;
-        },
+        // Bounded by AUTH_SETTINGS_TIMEOUT_MS: a stall is unmeasured, never a hung lane.
+        read: () =>
+          readAuthSettings({
+            url: publicSupabaseUrl(),
+            key: publicSupabasePublishableKey(),
+            log: (msg, fields) => log.warn("auth-sign-in", { msg, ...fields }),
+          }),
         // alert-key: auth_sign_in_beyond_google
         // alert-text-ok: our own copy from auth-sign-in-surface.ts, never a raw error.
         notify: sendThrottledAlert,
@@ -3666,6 +3665,9 @@ export async function GET(req: NextRequest) {
       recordDetectorVerdict(CALENDAR_WINDOW_VERDICT_LANE, calendarWindowReachedVerdict(calendarWindow)),
       recordDetectorVerdict(BUSY_DRIFT_VERDICT_LANE, busyDriftReachedVerdict(busyDrift)),
       recordDetectorVerdict(OFFSITE_ORIGIN_VERDICT_LANE, offsiteOriginReachedVerdict(offsiteOrigin)),
+      // #3082: the auth settings check is silent while Google is the only way in AND
+      // while its read keeps failing, so only a measured reading stamps.
+      recordDetectorVerdict(AUTH_SIGN_IN_VERDICT_LANE, authSignInReachedVerdict(authSignIn)),
       recordDetectorVerdict(
         AWAITING_ACTIVATION_VERDICT_LANE,
         awaitingActivationReachedVerdict(awaitingActivation),

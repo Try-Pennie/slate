@@ -38,6 +38,7 @@ import type { AvailabilityScanResult } from "@/lib/monitor/availability-scan";
 import type { CalendarWindowResult } from "@/lib/monitor/calendar-window-coverage";
 import type { BusyDriftResult } from "@/lib/monitor/busy-drift-sampler";
 import type { OffsiteOriginResult } from "@/lib/monitor/offsite-origin";
+import type { AuthSignInSurfaceHealth } from "@/lib/monitor/auth-sign-in-surface";
 import type { AwaitingActivationResult } from "@/lib/monitor/awaiting-activation";
 import type { StrandedHiresResult } from "@/lib/monitor/stranded-hires";
 import type { RegalFeedQuietResult, RegalFeedUnreadableResult } from "@/lib/monitor/regal-call-feed";
@@ -169,6 +170,13 @@ export const ROSTER_COVERAGE_VERDICT_LANE = "verdict:roster-coverage";
 export const AVAILABILITY_SCAN_VERDICT_LANE = "verdict:availability-scan";
 export const CALENDAR_WINDOW_VERDICT_LANE = "verdict:calendar-window";
 export const OFFSITE_ORIGIN_VERDICT_LANE = "verdict:offsite-origin";
+/**
+ * The auth sign in settings check (#3082). Once the hosted Email provider is off it is
+ * silent on every healthy tick, and it is equally silent on a tick whose settings read
+ * failed, stalled or answered a shape it would not judge. The stamp is what tells a
+ * project where Google is the only way in from a detector that stopped reading.
+ */
+export const AUTH_SIGN_IN_VERDICT_LANE = "verdict:auth-sign-in";
 export const AWAITING_ACTIVATION_VERDICT_LANE = "verdict:awaiting-activation";
 /**
  * The stranded hire check (#2481). Silent on a healthy roster AND on a broken
@@ -237,6 +245,7 @@ export type DetectorVerdictLane =
   | typeof AVAILABILITY_SCAN_VERDICT_LANE
   | typeof CALENDAR_WINDOW_VERDICT_LANE
   | typeof OFFSITE_ORIGIN_VERDICT_LANE
+  | typeof AUTH_SIGN_IN_VERDICT_LANE
   | typeof AWAITING_ACTIVATION_VERDICT_LANE
   | typeof STRANDED_HIRES_VERDICT_LANE
   | typeof REGAL_CALL_FEED_VERDICT_LANE
@@ -434,6 +443,17 @@ export function busyDriftReachedVerdict(result: BusyDriftResult | null): boolean
  */
 export function offsiteOriginReachedVerdict(result: OffsiteOriginResult | null): boolean {
   return result?.status === "checked";
+}
+
+/**
+ * Did the auth sign in settings check read the hosted settings and judge them? (#3082)
+ *
+ * Healthy and open are both answers. Unmeasured (a failed, stalled or unreadable
+ * read) and a thrown step stamp nothing, so a check that has stopped reading goes
+ * stale and pages instead of looking like a project where Google is the only way in.
+ */
+export function authSignInReachedVerdict(result: AuthSignInSurfaceHealth | null): boolean {
+  return result !== null && result.status !== "unmeasured";
 }
 
 /**

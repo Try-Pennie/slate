@@ -38,6 +38,46 @@ export const AUTH_SIGN_IN_SURFACE_KEY = "auth_sign_in_beyond_google";
 /** The one provider Slate signs staff in with. */
 export const ALLOWED_PROVIDER = "google";
 
+/**
+ * How long the settings read may take before the tick calls it unmeasured. The
+ * endpoint answers from GoTrue's memory, normally in well under a second, so five
+ * seconds is generous for a slow day and still a small share of a five minute tick
+ * whose invocation four cron lanes share (#1246). A stall past it is unmeasured, never
+ * a hang that holds the lane.
+ */
+export const AUTH_SETTINGS_TIMEOUT_MS = 5_000;
+
+/**
+ * Read the hosted `/auth/v1/settings` with the public key. Null for every way of
+ * learning nothing: a refusal, a stall past the timeout, a network error, or a body
+ * that is not JSON. Never throws.
+ */
+export async function readAuthSettings(deps: {
+  url: string;
+  key: string;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+  log?: (msg: string, fields: Record<string, unknown>) => void;
+}): Promise<unknown> {
+  const doFetch = deps.fetchImpl ?? fetch;
+  const timeoutMs = deps.timeoutMs ?? AUTH_SETTINGS_TIMEOUT_MS;
+  try {
+    const res = await doFetch(`${deps.url}/auth/v1/settings`, {
+      headers: { apikey: deps.key },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) {
+      deps.log?.("settings read refused", { status: res.status });
+      return null;
+    }
+    return (await res.json()) as unknown;
+  } catch (err) {
+    const timedOut = err instanceof Error && err.name === "TimeoutError";
+    deps.log?.(timedOut ? "settings read timed out" : "settings read failed", { timeout_ms: timeoutMs });
+    return null;
+  }
+}
+
 /** What /auth/v1/settings says, reduced to the facts the verdict rests on. */
 export interface AuthSignInSettings {
   /** Every provider flag the endpoint reported, by its own name. */
@@ -68,12 +108,19 @@ function parse(body: unknown): AuthSignInSettings | string {
   if (ext === null || typeof ext !== "object" || Array.isArray(ext)) {
     return "the auth settings answered with no provider list";
   }
-  const external: Record<string, boolean> = {};
-  for (const [name, on] of Object.entries(ext as Record<string, unknown>)) {
-    if (typeof on === "boolean") external[name] = on;
-  }
   if (typeof (ext as Record<string, unknown>).email !== "boolean") {
     return "the auth settings did not say whether email sign in is on";
+  }
+  // Every flag must be a boolean, or the reading is not judged at all (L50). Skipping
+  // an odd one would score it as off, so a provider that creates accounts and arrives
+  // as "true" or 1 would read as closed, which is the one wrong answer this exists to
+  // prevent.
+  const external: Record<string, boolean> = {};
+  for (const [name, on] of Object.entries(ext as Record<string, unknown>)) {
+    if (typeof on !== "boolean") {
+      return `the auth settings reported the ${name} provider as something other than on or off`;
+    }
+    external[name] = on;
   }
   if (typeof b.disable_signup !== "boolean") {
     return "the auth settings did not say whether signup is enabled";

@@ -23,7 +23,14 @@ import {
   formatAuthSignInOpenAlert,
   formatAuthSignInClearedAlert,
   runAuthSignInSurfaceCheck,
+  readAuthSettings,
+  AUTH_SETTINGS_TIMEOUT_MS,
 } from "@/lib/monitor/auth-sign-in-surface";
+import {
+  AUTH_SIGN_IN_VERDICT_LANE,
+  authSignInReachedVerdict,
+} from "@/lib/monitor/verdict-freshness";
+import { VERDICT_STALE_BOUNDS_MS } from "@/lib/monitor/health";
 
 /** Production as read on 2026-10-03, with the public key: Google and Email on, signup open. */
 const MEASURED_2026_10_03 = {
@@ -62,6 +69,20 @@ function settings(over: { external?: Record<string, unknown>; [k: string]: unkno
     authSignInSurfaceHealth({ ...MEASURED_2026_10_03, disable_signup: undefined }).status,
     "unmeasured",
     "a missing disable_signup is unmeasured, since whether a provider can create accounts rests on it",
+  );
+  // L50: a provider flag that is not a boolean is not "off". Read as off, a phone flag
+  // arriving as the string "true" would score a provider that creates accounts as closed.
+  for (const odd of ["true", 1, null, {}]) {
+    eq(
+      authSignInSurfaceHealth(settings({ external: { email: false, phone: odd } })).status,
+      "unmeasured",
+      `a provider flag of ${JSON.stringify(odd)} is unmeasured, never read as off`,
+    );
+  }
+  eq(
+    authSignInSurfaceHealth(settings({ external: { email: false, google: "yes" } })).status,
+    "unmeasured",
+    "even the Google flag: an unreadable flag anywhere means the reading is not trusted",
   );
 }
 
@@ -157,6 +178,65 @@ async function drive(read: () => Promise<unknown>) {
   const unread = await drive(async () => null);
   eq(unread.sent.length, 0, "a read that answered nothing pages nothing");
   eq(unread.resolved.length, 0, "and clears nothing");
+}
+
+// --- the read: a stall is unmeasured, within a stated bound ----------------------------
+{
+  // A fetch that answers only when its signal aborts: the shape of a server that
+  // accepted the connection and never replied.
+  const stalled = ((_url: string, init?: { signal?: AbortSignal }) =>
+    new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+    })) as unknown as typeof fetch;
+  const started = Date.now();
+  // Node unrefs AbortSignal.timeout's timer, so with nothing else pending the process
+  // would exit before it fires. This holds the loop open; it is not the deadline.
+  const keepAlive = setTimeout(() => {}, 5_000);
+  const body = await readAuthSettings({ url: "https://x.supabase.co", key: "k", fetchImpl: stalled, timeoutMs: 20 });
+  clearTimeout(keepAlive);
+  eq(body, null, "a read that never answers resolves to null (unmeasured)");
+  assert(Date.now() - started < 2000, "and gives up near its timeout rather than hanging the lane");
+  eq(authSignInSurfaceHealth(body).status, "unmeasured", "which the verdict scores as unmeasured");
+
+  const refused = (async () => new Response("nope", { status: 401 })) as unknown as typeof fetch;
+  eq(await readAuthSettings({ url: "https://x", key: "k", fetchImpl: refused }), null, "a refused read is null");
+
+  const notJson = (async () => new Response("<html>", { status: 200 })) as unknown as typeof fetch;
+  eq(await readAuthSettings({ url: "https://x", key: "k", fetchImpl: notJson }), null, "a body that is not JSON is null");
+
+  let seenUrl = "";
+  let seenKey = "";
+  const answering = (async (url: string, init?: { headers?: Record<string, string> }) => {
+    seenUrl = url;
+    seenKey = init?.headers?.apikey ?? "";
+    return new Response(JSON.stringify(MEASURED_2026_10_03), { status: 200 });
+  }) as unknown as typeof fetch;
+  const read = await readAuthSettings({ url: "https://x.supabase.co", key: "pub", fetchImpl: answering });
+  eq(seenUrl, "https://x.supabase.co/auth/v1/settings", "it reads the settings endpoint");
+  eq(seenKey, "pub", "with the public key");
+  eq(authSignInSurfaceHealth(read).status, "open", "and a real answer is judged");
+
+  assert(
+    AUTH_SETTINGS_TIMEOUT_MS > 0 && AUTH_SETTINGS_TIMEOUT_MS <= 10_000,
+    `the shipped timeout is a stated bound well inside one monitor tick (${AUTH_SETTINGS_TIMEOUT_MS}ms)`,
+  );
+}
+
+// --- the verdict stamp: only a MEASURED reading proves the detector alive (L557) -------
+{
+  assert(authSignInReachedVerdict(authSignInSurfaceHealth(MEASURED_2026_10_03)), "open is a verdict");
+  assert(
+    authSignInReachedVerdict(authSignInSurfaceHealth(settings({ external: { email: false } }))),
+    "healthy is a verdict",
+  );
+  assert(!authSignInReachedVerdict(authSignInSurfaceHealth(null)), "unmeasured is NOT a verdict");
+  assert(!authSignInReachedVerdict(null), "a step that threw is NOT a verdict");
+  eq(AUTH_SIGN_IN_VERDICT_LANE, "verdict:auth-sign-in", "the stamp lives in the verdict family");
+  eq(
+    VERDICT_STALE_BOUNDS_MS[AUTH_SIGN_IN_VERDICT_LANE],
+    6 * 60 * 60_000,
+    "and is watched with a six hour bound, like the other every tick checks with no legitimate silence",
+  );
 }
 
 finish();

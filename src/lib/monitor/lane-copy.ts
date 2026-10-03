@@ -29,6 +29,7 @@ import {
   AVAILABILITY_SCAN_VERDICT_LANE,
   CALENDAR_WINDOW_VERDICT_LANE,
   OFFSITE_ORIGIN_VERDICT_LANE,
+  AUTH_SIGN_IN_VERDICT_LANE,
   AWAITING_ACTIVATION_VERDICT_LANE,
   STRANDED_HIRES_VERDICT_LANE,
   REGAL_CALL_FEED_VERDICT_LANE,
@@ -307,6 +308,11 @@ const VERDICT_SUBJECT: Record<string, { what: string; cost: string; look: string
     what: "the check asking whether real bookings are arriving from a page that is not the production site",
     cost: "bookings made from a test page or a copied embed would land on real agents' calendars with nobody told",
     look: 'the Worker logs for msg="offsite origin unreadable" under tag=monitor, and whether recent bookings can be read at all',
+  },
+  [AUTH_SIGN_IN_VERDICT_LANE]: {
+    what: "the check asking whether Supabase Auth in production accepts anything but Google sign in",
+    cost: "email sign in or another provider could be turned back on with nobody told",
+    look: 'the Worker logs for tag=auth-sign-in, and whether /auth/v1/settings answers with the public key',
   },
   [AWAITING_ACTIVATION_VERDICT_LANE]: {
     what: "the check asking whether anybody the roster counts as working has been stuck waiting to become bookable",
