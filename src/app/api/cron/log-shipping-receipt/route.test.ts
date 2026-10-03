@@ -8,8 +8,15 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const cron = vi.hoisted(() => ({ isAuthorizedCron: vi.fn(() => true) }));
 const heartbeat = vi.hoisted(() => ({ recordHeartbeat: vi.fn(async (_lane: string) => {}) }));
 
+// #3174: a refused bearer goes through the shared failed credential throttle, like
+// every other route that checks the cron secret.
+const bearer = vi.hoisted(() => ({
+  refuseCronSecret: vi.fn(async (_h: Headers, refusal: () => Response) => refusal()),
+}));
+
 vi.mock("@/lib/cron", () => cron);
 vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
+vi.mock("@/lib/bearer-failure", () => bearer);
 
 import { POST } from "./route";
 import { LOG_SHIPPING_LANE, LOG_SHIPPING_STALE_BOUNDS_MS } from "@/lib/monitor/health";
@@ -27,6 +34,7 @@ describe("POST /api/cron/log-shipping-receipt", () => {
     cron.isAuthorizedCron.mockReturnValueOnce(false);
     const res = await POST(req());
     expect(res.status).toBe(401);
+    expect(bearer.refuseCronSecret).toHaveBeenCalledTimes(1);
     expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
   });
 

@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
+import { refuseCronSecret } from "@/lib/bearer-failure";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { LOG_SHIPPING_LANE } from "@/lib/monitor/health";
 
@@ -18,7 +19,7 @@ export const dynamic = "force-dynamic";
  */
 export async function POST(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
-    return new NextResponse("unauthorized", { status: 401 });
+    return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
   await recordHeartbeat(LOG_SHIPPING_LANE);
   return NextResponse.json({ stamped: LOG_SHIPPING_LANE });
