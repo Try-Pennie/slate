@@ -444,6 +444,29 @@ a Google Workspace admin setting (Admin console, Security, Authentication, 2-Ste
 Verification, for every organizational unit that holds Slate staff), outside this
 repository; update this paragraph the day it is enforced.
 
+**How long a staff sign in lasts (#3084).** Dan, 2026-10-03: at most **30 days** in
+total, and it ends after **7 days** without use. Two layers hold it, and the first is
+set by hand in the dashboard:
+
+- **Supabase Auth sessions** (dashboard, Authentication, Sessions; a Pro plan
+  setting): **Time-box user sessions = 30 days (720h)** and **Inactivity timeout =
+  7 days (168h)**. These end the refresh token itself, so they are the stronger of
+  the two. `supabase/config.toml` carries the same values under `[auth.sessions]`
+  for the local stack. Leave the JWT expiry at its default (3600 seconds) and
+  refresh token rotation on; the 7 day idle limit relies on a token refresh about
+  hourly while a page is in use.
+- **In code**, because the Worker cannot read the dashboard values back, so a
+  setting never made or later cleared would be invisible from here. The sign in
+  callback stamps the sign in time in an httpOnly cookie, middleware restamps the
+  last use on every staff page request, and `src/lib/auth/session-age.ts` refuses a
+  session 30 days after sign in or 7 days after last use, both in middleware (which
+  revokes the refresh token and sends the person to `/login` with a sentence saying
+  which limit ended it) and in `realCurrentUser` (which covers the `/api` routes the
+  middleware does not run on). A session with no sign in stamp is refused rather
+  than stamped now, so every staff session that predates this signs in once more.
+  The stamps are not signed: somebody already holding the device who edits its
+  cookies by hand can extend them, which is the case the dashboard setting covers.
+
 ## Cron
 Cron runs entirely on the **main** Worker: `worker/index.ts` `scheduled()`
 dispatches each Cloudflare trigger through `worker/cron-routes.ts` to the app's

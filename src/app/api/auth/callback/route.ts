@@ -2,6 +2,12 @@ import { NextResponse, type NextRequest } from "next/server";
 import { supabaseServer } from "@/lib/supabase/server";
 import { provisionUser } from "@/lib/provision";
 import { DeactivatedAccountError } from "@/lib/auth/active-session";
+import {
+  SESSION_SEEN_COOKIE,
+  SESSION_STARTED_COOKIE,
+  sessionStampCookieOptions,
+  stampValue,
+} from "@/lib/auth/session-age";
 import { ensureWatches } from "@/lib/google/sync";
 import { canManageAgents } from "@/lib/auth/roles";
 import { isAllowedEmail } from "@/lib/auth/domain";
@@ -114,5 +120,12 @@ export async function GET(req: NextRequest) {
     maxAge: THEME_COOKIE_MAX_AGE,
     sameSite: "lax",
   });
+  // #3084: the sign in is when the 30 day clock starts, and it is also the first use.
+  // Stamped here and only here, on a sign in that completed, so no refused attempt
+  // can hand the browser a fresh clock. Middleware moves the last use stamp forward on
+  // every staff request and never touches the sign in one.
+  const signedInAt = stampValue(Date.now());
+  res.cookies.set(SESSION_STARTED_COOKIE, signedInAt, sessionStampCookieOptions("started"));
+  res.cookies.set(SESSION_SEEN_COOKIE, signedInAt, sessionStampCookieOptions("seen"));
   return res;
 }

@@ -17,10 +17,14 @@
  * `Secure` is on in production and off in development, because a dev server answers on
  * http://localhost, where some browsers refuse a `Secure` cookie outright.
  */
+import { SESSION_IDLE_MS } from "@/lib/auth/session-age";
 
 /** How long an idle staff session survives. Every token refresh (roughly hourly while a
- *  page is in use) re-sets the cookie, so this bounds IDLE time, not a working day. */
-export const AUTH_COOKIE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
+ *  page is in use) re-sets the cookie, so this bounds IDLE time, not a working day. Held
+ *  equal to the #3084 idle limit (`SESSION_IDLE_MS`), so the browser drops an idle session
+ *  on the same day the server would refuse it; the 30 day total is judged separately,
+ *  from the sign in stamp, because a refresh moves this cookie's expiry forward. */
+export const AUTH_COOKIE_MAX_AGE_SECONDS = SESSION_IDLE_MS / 1000;
 
 /** Whether auth cookies carry `Secure`. Off only for a development server. */
 export function authCookieSecure(): boolean {

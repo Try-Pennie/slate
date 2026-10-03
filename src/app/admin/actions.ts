@@ -3291,6 +3291,52 @@ export async function setPublicBookingPaused(form: FormData): Promise<void> {
 }
 
 /**
+ * Lock or unlock who may frame the booker (#3137). Admin only.
+ *
+ * Built the way `setPublicBookingPaused` above is, for the same reasons: one column on
+ * `booking_settings` id=1 through a column scoped upsert, the STATE the form wants rather
+ * than a toggle (L60), the write consulted before anything reports a save (#2379), and
+ * an audit entry carrying which way it went (L529). The middleware reads the column
+ * through a per isolate cache, so a flip lands within `FRAME_LOCK_TTL_MS`, with no
+ * deploy, in both directions.
+ *
+ * Anything that is not an explicit "true" UNLOCKS. Unlocked is how the booker has
+ * always run; a stray submit that locked it would black the booker out on any host
+ * not on the allow list, where nobody at Pennie would see the error.
+ */
+export async function setFrameLock(form: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const locked = String(form.get("locked") ?? "") === "true";
+
+  const { error } = await supabaseAdmin().from("booking_settings").upsert(
+    {
+      id: 1,
+      frame_lock_enabled: locked,
+      updated_at: new Date().toISOString(),
+      updated_by: admin.id,
+    },
+    { onConflict: "id" },
+  );
+  if (error) {
+    redirect(
+      `/admin/embedding${refusedQuery(
+        writeRefused(locked ? "The change to lock framing" : "The change to unlock framing", error),
+      )}`,
+    );
+  }
+
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "booking.settings",
+    details: { frame_lock_enabled: locked },
+  });
+
+  revalidatePath("/admin/embedding");
+  redirect(`/admin/embedding${savedQuery(locked ? "frame-locked" : "frame-unlocked")}`);
+}
+
+/**
  * Refresh every advisor photo from the Google directory now (#3027): the same run
  * the daily lane makes, with its guards, alerts and verdict, for rollout and for
  * whenever an admin wants the roster current without waiting for the morning.

@@ -85,6 +85,13 @@ export interface CspOptions {
    */
   frameable: boolean;
   /**
+   * #3137: the sources a FRAMEABLE page may be framed by, when the frame lock is on
+   * (`frameAncestorSources()` in `embed/frame-policy.ts`). Absent, a frameable page
+   * keeps no `frame-ancestors` at all, which is the default until the lock is turned on.
+   * Ignored on a page that is not frameable, which is always `'none'`.
+   */
+  frameAncestors?: readonly string[];
+  /**
    * Origins this page's own code connects to beyond Slate itself. The staff sign
    * in page builds a Supabase browser client, which talks to the project's origin;
    * the booker has no such client and passes nothing.
@@ -95,9 +102,15 @@ export interface CspOptions {
 export function buildContentSecurityPolicy({
   nonce,
   frameable,
+  frameAncestors,
   scriptHashes = [],
   connectSources = [],
 }: CspOptions): string {
+  const framing = !frameable
+    ? ["frame-ancestors 'none'"]
+    : frameAncestors && frameAncestors.length > 0
+      ? [["frame-ancestors", ...frameAncestors].join(" ")]
+      : [];
   const directives = [
     "default-src 'self'",
     // 'strict-dynamic' lets the nonced bootstrap load the page's own chunks
@@ -119,7 +132,7 @@ export function buildContentSecurityPolicy({
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",
-    ...(frameable ? [] : ["frame-ancestors 'none'"]),
+    ...framing,
     // BOTH report directives on purpose. `report-uri` is deprecated and is still
     // the only one Safari and older Chrome send to; `report-to` is its
     // replacement. Shipping one of them means a whole browser family reports

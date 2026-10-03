@@ -1,4 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import {
+  SESSION_IDLE_MS,
+  SESSION_SEEN_COOKIE,
+  SESSION_STARTED_COOKIE,
+  SESSION_TIME_BOX_MS,
+} from "@/lib/auth/session-age";
 
 // #1648: provisioning REFUSES rather than degrading, and the refusal lands on a
 // person signing in. What they see is the part a unit test on provisionUser
@@ -181,5 +187,45 @@ describe("auth callback domain gate (#3083)", () => {
 
     expect(res.headers.get("location")).toBe(`https://slate.trypennie.app${ME_TABS[0].href}`);
     expect(provision.provisionUser).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #3084: the sign in is where the 30 day clock starts, so the callback stamps it, and
+// stamps it only on a sign in it actually completed. A refused sign in carrying a fresh
+// stamp would hand the next session on that browser a clock it never earned.
+describe("auth callback session stamps (#3084)", () => {
+  const NOW = Date.UTC(2026, 9, 3, 12, 0, 0);
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("stamps the sign in time and the first use, both httpOnly, on a completed sign in", async () => {
+    provision.provisionUser.mockResolvedValue({ id: "user-1", role: "agent", theme_preference: "system" });
+
+    const res = await GET(request());
+
+    for (const [name, maxAge] of [
+      [SESSION_STARTED_COOKIE, SESSION_TIME_BOX_MS / 1000],
+      [SESSION_SEEN_COOKIE, SESSION_IDLE_MS / 1000],
+    ] as const) {
+      const c = res.cookies.get(name);
+      expect(c?.value, name).toBe(String(NOW));
+      expect(c?.httpOnly, name).toBe(true);
+      expect(c?.maxAge, name).toBe(maxAge);
+    }
+  });
+
+  it("stamps nothing on a refused sign in", async () => {
+    provision.provisionUser.mockRejectedValue(new Error("refused"));
+
+    const res = await GET(request());
+
+    expect(res.cookies.get(SESSION_STARTED_COOKIE)).toBeUndefined();
+    expect(res.cookies.get(SESSION_SEEN_COOKIE)).toBeUndefined();
   });
 });

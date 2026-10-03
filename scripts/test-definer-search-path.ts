@@ -285,6 +285,9 @@ const EXPECTED_PINNED = [
   "rate_limit_refund",
   "reason_usage_counts",
   "reassign_booking_swap",
+  // #3137: adds one batch of framed booker loads. Security definer, pinned; now() and the
+  // date arithmetic are pg_catalog built ins.
+  "record_frame_origins",
   "regal_call_reason_counts",
   // #1293: replaces a schedule's weekly rules in one transaction, so a failure
   // cannot leave an agent with no working hours (and therefore no availability).

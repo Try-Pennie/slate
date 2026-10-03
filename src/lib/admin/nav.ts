@@ -127,6 +127,8 @@ export const ADMIN_NAV: AdminNavGroup[] = [
     items: [
       { href: "/admin/event-types", label: "Event types", gate: "admin" },
       { href: "/admin/webhooks", label: "Webhooks", gate: "admin" },
+      // #3137: who frames the booker, and the lock that limits it to the allow list.
+      { href: "/admin/embedding", label: "Embedding", gate: "admin" },
     ],
   },
   {

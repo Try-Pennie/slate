@@ -7,18 +7,34 @@ import { describe, it, expect, vi } from "vitest";
 // A spy rather than a plain function: #2565 needs to assert that the booker does
 // NOT pay the session refresh, which is a statement about whether this was CALLED.
 type CookieSetter = (toSet: { name: string; value: string; options: Record<string, unknown> }[]) => void;
+const signOut = vi.hoisted(() => vi.fn(async (): Promise<{ error: null }> => ({ error: null })));
 const ssr = vi.hoisted(() => ({
   createServerClient: vi.fn((_url: string, _key: string, _opts: { cookies: { setAll: CookieSetter } }) => ({
-    auth: { getUser: async () => ({ data: { user: null } }) },
+    auth: { getUser: async () => ({ data: { user: null } }), signOut },
   })),
 }));
 vi.mock("@supabase/ssr", () => ssr);
+// #3137: the frame lock switch and the framing record, both database backed, stubbed so
+// these drive only what the middleware does with them.
+const frameGuard = vi.hoisted(() => ({
+  readFrameLock: vi.fn(async () => false),
+  recordFramingObservation: vi.fn((_obs: { origin: string; surface: string }, _defer: (work: Promise<unknown>) => void) => {}),
+}));
+vi.mock("@/lib/embed/frame-guard", () => frameGuard);
 vi.mock("@/lib/env", () => ({
   publicSupabaseUrl: () => "https://project.supabase.co",
   publicSupabasePublishableKey: () => "sb_publishable_test",
 }));
 
 import { NextRequest } from "next/server";
+import { afterEach, beforeEach } from "vitest";
+import {
+  SESSION_IDLE_MS,
+  SESSION_SEEN_COOKIE,
+  SESSION_STARTED_COOKIE,
+  SESSION_TIME_BOX_MS,
+} from "@/lib/auth/session-age";
+import { frameAncestorSources } from "@/lib/embed/frame-policy";
 import { middleware } from "@/middleware";
 import { SECURITY_HEADERS } from "@/lib/security-headers";
 
@@ -106,6 +122,7 @@ describe("the enforced script policy (#2575)", () => {
           opts.cookies.setAll([{ name: "sb-token", value: "fresh", options: {} }]);
           return { data: { user: null } };
         },
+        signOut,
       },
     }));
     const res = await middleware(new NextRequest("https://slate.test/admin"));
@@ -134,5 +151,212 @@ describe("the enforced script policy (#2575)", () => {
 
     await middleware(new NextRequest("https://slate.test/admin"));
     expect(ssr.createServerClient).toHaveBeenCalled();
+  });
+});
+
+/**
+ * #3084: a staff sign in ends 30 days after it started, or after 7 days without a staff
+ * request. Driven through the middleware with a pinned clock, on both sides of each
+ * boundary, because what matters is what a real request meets: a redirect to sign in
+ * with a sentence, the session's cookies gone, and the refresh token revoked.
+ */
+describe("staff session age limits (#3084)", () => {
+  const NOW = Date.UTC(2026, 9, 3, 12, 0, 0);
+  const SESSION = "sb-project-auth-token";
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    signOut.mockClear();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const staffRequest = (path: string, cookies: Record<string, string | number>) =>
+    new NextRequest(`https://slate.test${path}`, {
+      headers: {
+        cookie: Object.entries(cookies)
+          .map(([k, v]) => `${k}=${v}`)
+          .join("; "),
+      },
+    });
+
+  const signedIn = (startedMsAgo: number, seenMsAgo: number) => ({
+    [SESSION]: "token",
+    [SESSION_STARTED_COOKIE]: NOW - startedMsAgo,
+    [SESSION_SEEN_COOKIE]: NOW - seenMsAgo,
+  });
+
+  const expectRefused = async (res: Response, error: string) => {
+    // 303, never 307: a 307 makes the browser repeat a server action's POST against
+    // /login. 303 turns any method into a GET of the sign in page.
+    expect(res.status).toBe(303);
+    const to = new URL(res.headers.get("location") ?? "");
+    expect(to.pathname).toBe("/login");
+    expect(to.searchParams.get("error")).toBe(error);
+    const cleared = res.headers
+      .getSetCookie()
+      .filter((c) => /Max-Age=0/i.test(c))
+      .map((c) => c.split("=")[0]);
+    expect(cleared).toEqual(expect.arrayContaining([SESSION, SESSION_STARTED_COOKIE, SESSION_SEEN_COOKIE]));
+    // The refresh token is revoked too, so a copy of the cookie dies with this one.
+    expect(signOut).toHaveBeenCalled();
+    // The redirect is still a staff response: it keeps the framing rule.
+    expect(res.headers.get("x-frame-options")).toBe("DENY");
+  };
+
+  // A session Supabase still recognises. The default mock answers "no user", which is a
+  // dead session, so the restamp cases override it.
+  const liveSession = () =>
+    ssr.createServerClient.mockImplementationOnce(() => ({
+      auth: { getUser: async () => ({ data: { user: { id: "auth-1" } } }) as never, signOut },
+    }));
+
+  it("does not restamp the last use of a session Supabase no longer recognises", async () => {
+    const res = await middleware(staffRequest("/admin", signedIn(60_000, 60_000)));
+    expect(res.status).toBe(200);
+    expect(res.cookies.get(SESSION_SEEN_COOKIE)).toBeUndefined();
+  });
+
+  it("admits a session one millisecond inside 30 days, and restamps its last use", async () => {
+    liveSession();
+    const res = await middleware(staffRequest("/admin", signedIn(SESSION_TIME_BOX_MS - 1, 60_000)));
+    expect(res.status).toBe(200);
+    expect(signOut).not.toHaveBeenCalled();
+    const seen = res.cookies.get(SESSION_SEEN_COOKIE);
+    expect(seen?.value).toBe(String(NOW));
+    expect(seen?.httpOnly).toBe(true);
+    expect(seen?.maxAge).toBe(SESSION_IDLE_MS / 1000);
+  });
+
+  it("refuses a session exactly 30 days after sign in, however recently it was used", async () => {
+    await expectRefused(await middleware(staffRequest("/admin/agents", signedIn(SESSION_TIME_BOX_MS, 0))), "session_expired");
+  });
+
+  it("admits one millisecond short of 7 idle days and refuses at 7", async () => {
+    const inside = await middleware(staffRequest("/me", signedIn(10 * 86_400_000, SESSION_IDLE_MS - 1)));
+    expect(inside.status).toBe(200);
+    await expectRefused(await middleware(staffRequest("/me", signedIn(10 * 86_400_000, SESSION_IDLE_MS))), "session_idle");
+  });
+
+  it("answers an aged session's server action POST with a 303, so the browser does not re-POST to /login", async () => {
+    const req = new NextRequest("https://slate.test/admin/agents", {
+      method: "POST",
+      headers: {
+        cookie: Object.entries(signedIn(SESSION_TIME_BOX_MS, 0))
+          .map(([k, v]) => `${k}=${v}`)
+          .join("; "),
+      },
+    });
+    await expectRefused(await middleware(req), "session_expired");
+  });
+
+  it("refuses a session that carries no sign in stamp, rather than starting its clock now", async () => {
+    await expectRefused(await middleware(staffRequest("/admin", { [SESSION]: "token" })), "session_ended");
+  });
+
+  it("leaves a visitor who never signed in alone, so they are not told they were signed out", async () => {
+    const res = await middleware(staffRequest("/admin", {}));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("location")).toBeNull();
+    expect(res.cookies.get(SESSION_SEEN_COOKIE)).toBeUndefined();
+  });
+
+  it("never redirects the sign in page to itself", async () => {
+    const res = await middleware(staffRequest("/login", signedIn(SESSION_TIME_BOX_MS * 2, SESSION_IDLE_MS * 2)));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("location")).toBeNull();
+  });
+
+  it("still clears the session when the revoke itself fails", async () => {
+    signOut.mockImplementationOnce(async () => {
+      throw new Error("auth server unreachable");
+    });
+    await expectRefused(await middleware(staffRequest("/admin", signedIn(SESSION_TIME_BOX_MS + 1, 0))), "session_expired");
+  });
+});
+
+/**
+ * #3137: OBSERVE who frames the booker, and LOCK framing to the allow list behind a
+ * stored switch that defaults off. The lock must cover every page the booker can move
+ * to inside its frame, so each of them is driven here, not only /book.
+ */
+describe("framing the booker (#3137)", () => {
+  const BOOKER_PAGES = [
+    "/book?xbc=411",
+    "/book/advisor/abc123",
+    "/booking/0b1c2d",
+    "/booking/manage/tok-abc",
+    "/booking/manage/tok-abc/rebook",
+  ];
+
+  beforeEach(() => {
+    frameGuard.readFrameLock.mockReset();
+    frameGuard.readFrameLock.mockResolvedValue(false);
+    frameGuard.recordFramingObservation.mockReset();
+  });
+
+  const framed = (path: string, referer: string | null, dest = "iframe") =>
+    new NextRequest(`https://slate.test${path}`, {
+      headers: { "sec-fetch-dest": dest, ...(referer ? { referer } : {}) },
+    });
+
+  it.each(BOOKER_PAGES)("leaves %s frameable by anyone while the lock is off", async (path) => {
+    const res = await middleware(framed(path, "https://anywhere.example/"));
+    expect(res.headers.get("content-security-policy")).not.toContain("frame-ancestors");
+    expect(res.headers.get("x-frame-options")).toBeNull();
+  });
+
+  it.each(BOOKER_PAGES)("limits %s to Slate and the allow list once the lock is on", async (path) => {
+    frameGuard.readFrameLock.mockResolvedValue(true);
+    const res = await middleware(framed(path, "https://www.trypennie.com/"));
+    expect(directive(res.headers.get("content-security-policy"), "frame-ancestors")).toBe(
+      ["frame-ancestors", ...frameAncestorSources()].join(" "),
+    );
+    // The lock rides in the SAME policy Next reads the nonce from.
+    expect(res.headers.get("x-middleware-request-content-security-policy")).toBe(
+      res.headers.get("content-security-policy"),
+    );
+    // No X-Frame-Options: it cannot express an allow list, and DENY would black out
+    // the partners the list exists to admit.
+    expect(res.headers.get("x-frame-options")).toBeNull();
+  });
+
+  it("never reads the switch on a staff page, which is unframeable whatever it says", async () => {
+    frameGuard.readFrameLock.mockResolvedValue(true);
+    const res = await middleware(new NextRequest("https://slate.test/admin"));
+    expect(frameGuard.readFrameLock).not.toHaveBeenCalled();
+    expect(directive(res.headers.get("content-security-policy"), "frame-ancestors")).toBe("frame-ancestors 'none'");
+  });
+
+  it("records the framing origin and the page, after the response, for a framed load", async () => {
+    const waitUntil = vi.fn();
+    await middleware(
+      framed("/booking/manage/tok-abc", "https://partner.example/landing?email=jane%40x.com"),
+      { waitUntil } as never,
+    );
+    expect(frameGuard.recordFramingObservation).toHaveBeenCalledWith(
+      { origin: "https://partner.example", surface: "manage" },
+      expect.any(Function),
+    );
+    // Whatever write the recorder makes is handed to THIS request's waitUntil, so it
+    // outlives the response.
+    const defer = frameGuard.recordFramingObservation.mock.calls[0][1];
+    const work = Promise.resolve();
+    defer(work);
+    expect(waitUntil).toHaveBeenCalledWith(work);
+  });
+
+  it("records a framed load whether the lock is on or off", async () => {
+    frameGuard.readFrameLock.mockResolvedValue(true);
+    await middleware(framed("/book", "https://partner.example/"));
+    expect(frameGuard.recordFramingObservation).toHaveBeenCalledTimes(1);
+  });
+
+  it("records nothing for a top level visit or a staff page", async () => {
+    await middleware(framed("/book", "https://partner.example/", "document"));
+    await middleware(framed("/admin", "https://partner.example/"));
+    expect(frameGuard.recordFramingObservation).not.toHaveBeenCalled();
   });
 });
