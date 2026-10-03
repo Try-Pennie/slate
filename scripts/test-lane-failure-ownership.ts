@@ -65,6 +65,16 @@ eq(
   "a send on the healthy path, with a .catch handler, is not in a catch block",
 );
 
+eq(
+  scanLaneFailureOwnership(`
+  const run = await recordingAlerts(() => runAdvisorPhotoLane("cron"));
+  if (run.ok && run.value.status === "failed") return laneFailedResponse(run.value, run.keys);`).map(
+    (f) => f.kind,
+  ),
+  ["whole-run"],
+  "recording a whole run in a lane route is refused: an earlier unrelated alert would silence the failure",
+);
+
 // --- the real lanes ---------------------------------------------------------
 const paths = [...new Set(Object.values(CRON_ROUTES).flatMap((v) => (Array.isArray(v) ? v : [v])))];
 assert(paths.length > 15, `the lanes come from the schedule (${paths.length})`);
@@ -79,7 +89,9 @@ for (const path of paths) {
       false,
       f.kind === "raw"
         ? `${path}:${f.line} answers a 5xx by hand, which can never say the lane already alerted. Use laneFailure or laneFailedResponse from @/lib/monitor/lane-failure-response.`
-        : `${path}:${f.line} raises its own alert in a catch outside laneFailure, so the generic page goes out too. Move it into laneFailure's callback.`,
+        : f.kind === "outside"
+          ? `${path}:${f.line} raises its own alert in a catch outside laneFailure, so the generic page goes out too. Move it into laneFailure's callback.`
+          : `${path}:${f.line} records alerts across a whole run, so an unrelated earlier alert would silence the failure. Record the failure's own page where it is raised.`,
     );
   }
 }

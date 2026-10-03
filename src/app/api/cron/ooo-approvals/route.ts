@@ -194,8 +194,8 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // #2543: the watermark moves only AFTER the send has succeeded. The throw above
-  // skips it deliberately, so a morning whose email failed is reported again
+  // #2543: the watermark moves only AFTER the send has succeeded. The failure
+  // return above skips it deliberately, so a morning whose email failed is reported again
   // tomorrow rather than being recorded as covered by a report nobody received.
   await recordHeartbeat(OOO_APPROVALS_REPORT_LANE);
 

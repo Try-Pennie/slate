@@ -13,6 +13,7 @@ import { recordDetectorVerdict } from "@/lib/monitor/verdict-store";
 import { ADVISOR_PHOTOS_VERDICT_LANE } from "@/lib/monitor/verdict-freshness";
 import { loadMonitorCooldowns } from "@/lib/monitor/settings";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
+import { recordingAlerts } from "@/lib/notify/alert-recording";
 import { getDirectoryPhoto, listDirectoryAccounts } from "@/lib/advisor-photos/google";
 import { listPhotoSubjects, listStoredPhotoStates, photoWrites } from "@/lib/advisor-photos/store";
 import { needsAttention, runPhotoRefresh, type RefreshDeps, type RefreshOutcome } from "@/lib/advisor-photos/refresh";
@@ -59,7 +60,9 @@ export function liveRefreshDeps(apply: boolean): RefreshDeps {
 export type LaneResult =
   | { status: "skipped"; why: "overlapping-run" | "already-measured-today" }
   | RefreshOutcome
-  | { status: "failed"; detail: string };
+  /** `alerted`: the alerts raised ABOUT this failure and nothing else, so the cron
+   *  route can tell the dispatcher the lane already spoke (one failure, one message). */
+  | { status: "failed"; detail: string; alerted: string[] };
 
 /** Midnight UTC of the day `nowMs` falls in. */
 export function startOfUtcDay(nowMs: number): number {
@@ -101,8 +104,12 @@ export async function runAdvisorPhotoLane(trigger: "cron" | "manual"): Promise<L
       // Only a write can throw out of the refresh: every read failure is an outcome.
       const detail = err instanceof Error ? err.message : String(err);
       log.error("advisor-photos", { msg: "saving the refresh failed" }, err);
-      await page("advisor_photos_unread", photosUnreadAlert("write-failed", detail));
-      return { status: "failed", detail };
+      // Recorded around THIS page alone: an alert the run raised earlier for another
+      // reason must not stand the generic lane page down for this failure.
+      const raised = await recordingAlerts(() =>
+        page("advisor_photos_unread", photosUnreadAlert("write-failed", detail)),
+      );
+      return { status: "failed", detail, alerted: raised.keys };
     }
     await report(outcome);
     return outcome;
@@ -178,7 +185,8 @@ export async function refreshOnePhoto(userId: string): Promise<LaneResult> {
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     log.error("advisor-photos", { msg: "saving one photo failed" }, err);
-    return { status: "failed", detail };
+    // The manual one person refresh pages nothing; its caller shows the failure.
+    return { status: "failed", detail, alerted: [] };
   } finally {
     await releaseLock(ADVISOR_PHOTOS_LOCK, lock);
   }

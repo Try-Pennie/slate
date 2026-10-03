@@ -26,6 +26,13 @@ import { LANE_ALERTED_HEADER } from "./lane-failure";
  * A lane that throws without reaching its catch at all answers Next's own 500 with
  * no header, which is the generic page too.
  *
+ * Only alerts raised ABOUT this failure may count, never zero messages: a finding
+ * the run raised earlier on its healthy path (an erasure residual, a held photo) is
+ * a message about a different fact, so it must not stand the generic page down for
+ * a failure that came after it. That is why the recording wraps the lane's failure
+ * alerting alone and never a whole run; the guard refuses a recording in a lane
+ * route.
+ *
  * `scripts/test-lane-failure-ownership.ts` refuses a raw 5xx in a cron lane route
  * and an alert raised in a lane's catch outside `ownAlerting`, which is where it
  * would page and also let the generic one through.
@@ -44,8 +51,9 @@ export async function laneFailure(
 }
 
 /**
- * The 500 itself, for a lane whose alerting ran somewhere `laneFailure` cannot wrap
- * (it recorded the run with `recordingAlerts` and holds the keys).
+ * The 500 itself, for a lane whose failure alerting ran somewhere `laneFailure`
+ * cannot wrap: the code that raised it recorded that one alert and handed the keys
+ * back (the advisor photo lane's failed result carries `alerted`).
  */
 export function laneFailedResponse(body: unknown, alertedKeys: readonly string[]): NextResponse {
   const headers: Record<string, string> =

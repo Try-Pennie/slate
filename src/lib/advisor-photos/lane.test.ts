@@ -8,6 +8,7 @@ import type { RefreshPlan } from "@/lib/advisor-photos/core";
 const h = vi.hoisted(() => ({
   outcome: null as unknown,
   throwOnRun: false,
+  sendThrows: false,
   sent: [] as { key: string; text: string }[],
   resolved: [] as string[],
   verdicts: [] as { lane: string; reached: boolean }[],
@@ -35,10 +36,19 @@ const resolveAlert = vi.hoisted(() =>
     return true;
   }),
 );
-vi.mock("@/lib/notify/dispatch", () => ({
-  sendThrottledAlert: async (key: string, _ms: number, text: string) => void h.sent.push({ key, text }),
-  resolveAlert,
-}));
+// The fake send notes its key on return exactly as the real one does (pinned in
+// src/lib/notify/alert-recording.test.ts), and can be made to throw.
+vi.mock("@/lib/notify/dispatch", async () => {
+  const { noteAlertKey } = await import("@/lib/notify/alert-recording");
+  return {
+    sendThrottledAlert: async (key: string, _ms: number, text: string) => {
+      if (h.sendThrows) throw new Error("slack down");
+      h.sent.push({ key, text });
+      noteAlertKey(key);
+    },
+    resolveAlert,
+  };
+});
 vi.mock("@/lib/advisor-photos/google", () => ({ listDirectoryAccounts: async () => [], getDirectoryPhoto: async () => ({ status: 404, body: "" }) }));
 vi.mock("@/lib/advisor-photos/store", () => ({
   listPhotoSubjects: async () => [],
@@ -75,6 +85,7 @@ beforeEach(() => {
   resolveAlert.mockClear();
   h.outcome = null;
   h.throwOnRun = false;
+  h.sendThrows = false;
   h.sent = [];
   h.resolved = [];
   h.verdicts = [];
@@ -108,6 +119,22 @@ describe("the advisor photo lane", () => {
     expect(resolveAlert).not.toHaveBeenCalled();
     expect(h.verdicts).toEqual([]);
     expect(h.sent.map((s) => s.key)).toEqual(["advisor_photos_unread"]);
+  });
+
+  // One failure, one message (Dan, 2026-10-03): the failed result names the alert
+  // raised ABOUT this failure, so the cron route can stand the generic page down,
+  // and names nothing when that page could not be sent, so the generic one speaks.
+  it("names the page it raised about a failed save", async () => {
+    h.throwOnRun = true;
+    const result = await runAdvisorPhotoLane("cron");
+    expect(result).toMatchObject({ status: "failed", alerted: ["advisor_photos_unread"] });
+  });
+
+  it("names nothing when its page about the failed save could not be sent", async () => {
+    h.throwOnRun = true;
+    h.sendThrows = true;
+    const result = await runAdvisorPhotoLane("cron");
+    expect(result).toMatchObject({ status: "failed", alerted: [] });
   });
 
   it("pages and withholds both the held all clear and the verdict when the flip guard trips", async () => {

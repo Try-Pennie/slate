@@ -12,6 +12,10 @@
  *   - OUTSIDE: an alert send or failure streak inside a `catch` block that is not
  *     inside a `laneFailure(...)` call's arguments. It raises the lane's own alert
  *     where nothing records it, so the generic page goes out as well.
+ *   - WHOLE-RUN: `recordingAlerts(` in a lane route. From a route it can only
+ *     record a whole run, which counts an alert raised earlier for some other
+ *     reason as being about the failure and leaves that failure with no message.
+ *     The failure's own page is recorded where it is raised.
  *
  * Text based, like the other convention scanners, on the string and comment blanked
  * copy so a brace in alert copy cannot move a block boundary.
@@ -26,7 +30,7 @@ export const OWN_ALERTING_CALL =
 const RAW_5XX = /status:\s*(?:[^,}\n]*\?\s*)?5\d\d\b/g;
 
 export interface OwnershipFinding {
-  kind: "raw" | "outside";
+  kind: "raw" | "outside" | "whole-run";
   line: number;
 }
 
@@ -56,6 +60,10 @@ export function scanLaneFailureOwnership(source: string): OwnershipFinding[] {
 
   for (const m of code.matchAll(RAW_5XX)) {
     findings.push({ kind: "raw", line: lineAt(code, m.index!) });
+  }
+
+  for (const m of code.matchAll(/\brecordingAlerts\s*\(/g)) {
+    findings.push({ kind: "whole-run", line: lineAt(code, m.index!) });
   }
 
   // Argument ranges of every laneFailure(...) call.

@@ -2,8 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
 import { runAdvisorPhotoLane } from "@/lib/advisor-photos/lane";
 import { log } from "@/lib/log";
-import { recordingAlerts } from "@/lib/notify/alert-recording";
-import { laneFailedResponse } from "@/lib/monitor/lane-failure-response";
+import { laneFailedResponse, laneFailure } from "@/lib/monitor/lane-failure-response";
 
 export const dynamic = "force-dynamic";
 
@@ -21,21 +20,21 @@ export const dynamic = "force-dynamic";
  */
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) return new NextResponse("unauthorized", { status: 401 });
-  // The lane pages about its own failure from inside the run (lib/advisor-photos/
-  // lane.ts), so the run is recorded and whatever it raised goes back on a failed
-  // response: one failure, one message, with no list of which lanes alert.
-  const run = await recordingAlerts(() => runAdvisorPhotoLane("cron"));
-  if (!run.ok) {
-    log.error("advisor-photos", { msg: "cron failed" }, run.error);
-    const message = run.error instanceof Error ? run.error.message : String(run.error);
-    return laneFailedResponse({ error: message }, run.keys);
+  try {
+    const result = await runAdvisorPhotoLane("cron");
+    if (result.status === "measured") {
+      // Counts only: the plan carries image bytes and addresses, neither of which
+      // belongs in a cron response body.
+      return NextResponse.json({ status: result.status, verdict: result.verdict, counts: result.plan.counts });
+    }
+    // The lane pages about its own failure from inside the run, and the failed
+    // result names exactly the alerts raised ABOUT that failure (recorded around
+    // that page alone in lib/advisor-photos/lane.ts). Nothing else the run raised
+    // counts, so an unrelated page cannot silence the generic one.
+    if (result.status === "failed") return laneFailedResponse(result, result.alerted);
+    return NextResponse.json(result);
+  } catch (err) {
+    log.error("advisor-photos", { msg: "cron failed" }, err);
+    return laneFailure("advisor-photos", err instanceof Error ? err.message : String(err));
   }
-  const result = run.value;
-  if (result.status === "measured") {
-    // Counts only: the plan carries image bytes and addresses, neither of which
-    // belongs in a cron response body.
-    return NextResponse.json({ status: result.status, verdict: result.verdict, counts: result.plan.counts });
-  }
-  if (result.status === "failed") return laneFailedResponse(result, run.keys);
-  return NextResponse.json(result);
 }
