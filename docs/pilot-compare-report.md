@@ -64,8 +64,9 @@ memory, and never printed.
 - **A readout date fixed once.** The first run proposes one (the window start plus
   the longer days estimate). Record it as `READOUT_DATE` in
   `scripts/lib/pilot-compare.ts`, in a commit, so nobody can move it by setting a
-  variable. Every run before it is PROVISIONAL (exit 12), and from it on the cohort
-  stops growing.
+  variable. Before the first span closes a run is a PARTIAL look (exit 16); after
+  that and before the readout date it is PROVISIONAL (exit 12), and from the
+  readout date on the cohort stops growing.
 
 ## What it cannot see
 
@@ -76,6 +77,29 @@ memory, and never printed.
   written, and it reads as missed shows on both sides equally.
 - Bookings Slate made through the API with no application id (counted, not
   matched).
+
+## Partial look before the first full window (#2976)
+
+Before any application's span has closed (the first whole day is judgeable from
+2026-10-10 03:00 ET), a plain `pnpm report:pilot-compare` does not refuse: it
+reports the booking and show rates over every application made since the window
+opened, so the trend can be watched. It is not a readout and cannot be mistaken
+for one:
+
+- every line starts `[PARTIAL]`, and the run exits **16**, never 0, 11 or 12;
+- it says how much of the way to the first full window it is, and how long the
+  oldest and newest applications in it have had;
+- it prints the rates so far and no difference, interval, days estimate, verdict
+  or proposed readout date;
+- the booking rate is biased low on both sides, since every application has had
+  less than its 7 days, and the report says so beside the numbers;
+- a show counts only once its call is due (the final start plus 60 minutes, plus
+  the 3 hour grace for the call to reach the store); a booking whose call is still
+  ahead is left out rather than read as a no show, which favours bookings made for
+  soon after applying.
+
+The refusals (no applications, one side empty, too many unmatched, the call store)
+still refuse on their own codes, with every line labelled partial.
 
 ## Rehearsal
 
@@ -90,7 +114,7 @@ is why the store start check exists.
 
 ## Exit codes
 
-Exits 1 to 10 and 15 refuse before any result. Once a comparison is printed, more
+Exits 1 to 10 and 15 refuse before any result, and 16 is a partial look (above), never a result. Once a comparison is printed, more
 than one condition can hold, and the run exits on the first of these: **13**
 (rehearsal, never a result), then **14** (settings now differ), then **11** (too few
 on either headline rate), then **12** (provisional), then **0** (the readout). Every
@@ -100,7 +124,7 @@ condition that holds is still printed, whichever one names the run.
 |---|---|
 | 0 | the readout: the fixed date is reached and the headline is readable |
 | 1 | Salesforce, Supabase or cal.com credentials are missing here; nothing was read |
-| 2 | no application's span has closed yet (the first is judgeable from 2026-10-10 03:00 ET) |
+| 2 | nothing to judge yet: the window has not opened, or a rehearsal's span has not closed |
 | 3 | Salesforce could not be read, including a short read |
 | 4 | cal.com could not be read |
 | 5 | Slate could not be read |
@@ -114,6 +138,7 @@ condition that holds is still printed, whichever one names the run.
 | 13 | a rehearsal over days outside the window |
 | 14 | what Salesforce holds now contradicts the assumed split |
 | 15 | an input could not be read (`PILOT_COMPARE_LIFT`, the rehearsal values, `READOUT_DATE`), or a row carried a time that does not parse |
+| 16 | partial: the window is open and no span has closed yet, so these are rates so far (until 2026-10-10 03:00 ET) |
 
 ## Where the code lives
 

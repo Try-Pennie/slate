@@ -19,7 +19,8 @@
 // 3. A FIXED SPAN. Applications created in the window are judged on outcomes inside
 //    SPAN_DAYS of being made: a booking made inside the span, and a call held at a
 //    final start inside it. An application whose span has not closed is not in the
-//    cohort yet, so numerator and denominator always cover the same days (L711).
+//    cohort yet, so numerator and denominator always cover the same days (L711),
+//    except in a partial look (rule 9), which is labelled and never a result.
 // 4. MATCHING. A Slate booking carries the application id. A cal.com booking is
 //    matched by the id it carries, else by email AND phone to the LATEST application
 //    created before it; several prior applications on different Leads is ambiguous,
@@ -42,6 +43,13 @@
 // 8. A READOUT DATE fixed once. The first readable run proposes one; it is then
 //    recorded in READOUT_DATE below, in git, so later runs cannot move it. Every run
 //    before it is PROVISIONAL, and from it on the cohort stops growing.
+// 9. A PARTIAL LOOK before the first full window (#2976, Dan 2026-10-01). Between the
+//    window opening and the first application's span closing, a run reports the
+//    rates measured so far over applications whose span is still OPEN, so the trend
+//    can be watched. Every line is labelled partial, it says how much of the first
+//    full window it covers, it prints no difference, interval or verdict, and it exits
+//    on its own code. A show is judged only once its call can have happened and
+//    reached the store; the booking rate is biased low on both sides, and says so.
 
 import { DateTime } from "luxon";
 import { slateBucket, leadKey, compareHalves, daysNeeded, normalCdf, MIN_LEADS_PER_HALF, MIN_OUTCOMES_PER_HALF } from "./pilot-split.ts";
@@ -55,7 +63,11 @@ export const PILOT_COMPARE_EXIT = {
   compared: 0,
   /** Credentials for a source are missing here; nothing was read. */
   notConfigured: 1,
-  /** No application's span has closed yet, so nothing can be judged. */
+  /**
+   * Nothing to judge yet: the window has not opened, or a rehearsal's span has
+   * not closed. Once the window opens a real run looks at what is there so far
+   * and exits `partial` instead.
+   */
   windowNotOpen: 2,
   salesforceUnreadable: 3,
   calcomUnreadable: 4,
@@ -79,6 +91,8 @@ export const PILOT_COMPARE_EXIT = {
   settingsNowDiffer: 14,
   /** An input this command takes could not be read. */
   inputUnreadable: 15,
+  /** Rates so far before the first span closes (#2976): a trend to watch, never a result. */
+  partial: 16,
 } as const;
 
 const EXIT_LABEL: Record<number, string> = {
@@ -201,6 +215,8 @@ export interface PilotWindow {
   /** Bookings and calls are read up to here. */
   readEndMs: number;
   rehearsal: boolean;
+  /** No span has closed yet: every application so far is shown with its span open (rule 9). */
+  partial: boolean;
   readout: { date: string | null; reached: boolean };
   lift: number;
 }
@@ -275,15 +291,23 @@ export function planWindow(nowMs: number, env: Record<string, string | undefined
   }
   const reached = readoutMs !== null && cohortEndMs >= readoutMs;
   if (readoutMs !== null && cohortEndMs > readoutMs) cohortEndMs = readoutMs;
-  if (cohortEndMs <= startMs) {
-    const firstMs = startMs + 86_400_000 + spanMs + JUDGE_GRACE_MS;
-    return refuse(
-      PILOT_COMPARE_EXIT.windowNotOpen,
-      `no application made since ${etLabel(startMs)} has had its ${spanLabel(spanMs)} span close yet, so nothing can be judged. ` +
-        `The first whole day is judgeable from ${etLabel(firstMs)}.`,
-    );
+  // Rule 9: the window has opened but no span has closed, so look at what is there so far.
+  if (cohortEndMs <= startMs && !rehearsal && nowMs > startMs) {
+    return { ok: true, window: { startMs, spanMs, cohortEndMs: nowMs, readEndMs: nowMs, rehearsal, partial: true, readout: { date: null, reached: false }, lift } };
   }
-  return { ok: true, window: { startMs, spanMs, cohortEndMs, readEndMs: nowMs, rehearsal, readout: { date: rehearsal ? null : readoutDate, reached }, lift } };
+  if (cohortEndMs <= startMs) {
+    const firstMs = firstJudgeableMs(startMs, spanMs);
+    const why = rehearsal
+      ? `no application made since ${etLabel(startMs)} has had its ${spanLabel(spanMs)} span close yet, so nothing can be judged.`
+      : `the window opens at ${etLabel(startMs)}, so no application has been made in it yet.`;
+    return refuse(PILOT_COMPARE_EXIT.windowNotOpen, `${why} The first whole day is judgeable from ${etLabel(firstMs)}.`);
+  }
+  return { ok: true, window: { startMs, spanMs, cohortEndMs, readEndMs: nowMs, rehearsal, partial: false, readout: { date: rehearsal ? null : readoutDate, reached }, lift } };
+}
+
+/** When the first whole Eastern day of applications can be judged. */
+function firstJudgeableMs(startMs: number, spanMs: number): number {
+  return startMs + 86_400_000 + spanMs + JUDGE_GRACE_MS;
 }
 
 function spanLabel(spanMs: number): string {
@@ -577,16 +601,25 @@ export interface Judged {
   bothSystems: boolean;
   /** At least one booking's final start fell inside the span, so a show can be judged. */
   judgeable: boolean;
+  /** A partial look only: a booking inside the span whose call can still happen and
+   *  reach the store, so it is set aside rather than read as not held. */
+  callAhead: boolean;
   held: boolean;
   noLead: boolean;
   advisor: string;
   firstChain: Chain | null;
 }
 
-export function judgeApplication(app: AppOutcome, spanMs: number, callsByLead: ReadonlyMap<string, readonly RegalCall[]>): Judged {
+/**
+ * `dueByMs` is how far calls can be trusted to have arrived: a booking whose show window
+ * closes after it is not judged. A full run's spans closed long before now, so it
+ * passes nothing; a partial run passes now less the grace, so a call still ahead is
+ * left out rather than read as a no show.
+ */
+export function judgeApplication(app: AppOutcome, spanMs: number, callsByLead: ReadonlyMap<string, readonly RegalCall[]>, dueByMs = Infinity): Judged {
   const chains = [...app.chains].sort((a, b) => a.createdMs - b.createdMs);
   const spanEnd = app.createdMs + spanMs;
-  const judgeableChains = chains.filter((c) => c.finalStartMs !== null && c.finalStartMs < spanEnd);
+  const judgeableChains = chains.filter((c) => c.finalStartMs !== null && c.finalStartMs < spanEnd && c.finalStartMs + SHOW_AFTER_MS <= dueByMs);
   const calls = app.leadKey === null ? [] : (callsByLead.get(app.leadKey) ?? []);
   const isShow = (c: Chain) =>
     !c.cancelled &&
@@ -605,6 +638,10 @@ export function judgeApplication(app: AppOutcome, spanMs: number, callsByLead: R
     system: chains[0]?.system ?? null,
     bothSystems: new Set(chains.map((c) => c.system)).size > 1,
     judgeable: judgeableChains.length > 0 && app.leadKey !== null,
+    callAhead:
+      heldChain === undefined &&
+      app.leadKey !== null &&
+      chains.some((c) => !c.cancelled && c.finalStartMs !== null && c.finalStartMs < spanEnd && c.finalStartMs + SHOW_AFTER_MS > dueByMs),
     held: heldChain !== undefined,
     noLead: chains.length > 0 && app.leadKey === null,
     // An application with no named advisor is its own cluster, never pooled into one
@@ -717,8 +754,34 @@ export function settingsDisagreement(s: PilotSettings): string | null {
   return problems.length === 0 ? null : problems.join(", ");
 }
 
+/** The exits `judgeLines` gives when it judged something; every other exit is a refusal. */
+export const JUDGED_EXITS: ReadonlySet<number> = new Set([
+  PILOT_COMPARE_EXIT.compared,
+  PILOT_COMPARE_EXIT.partial,
+  PILOT_COMPARE_EXIT.rehearsal,
+  PILOT_COMPARE_EXIT.provisional,
+  PILOT_COMPARE_EXIT.settingsNowDiffer,
+  PILOT_COMPARE_EXIT.tooFewToRead,
+]);
+
 export function judgePilotCompare(input: CompareInput): { exit: number; lines: string[]; proposedReadout: string | null } {
+  const result = judgeLines(input);
+  if (!input.window.partial) return result;
+  // Rule 9: a partial look is labelled on every line, and exits on its own code
+  // unless it refused, so it can never be read or scripted as a result.
+  // Decided on the exit code, never the wording: anything that is not a judgement
+  // is a refusal and keeps its own code, so a new refusal is covered by default.
+  const refused = !JUDGED_EXITS.has(result.exit);
+  return {
+    exit: refused ? result.exit : PILOT_COMPARE_EXIT.partial,
+    lines: result.lines.map((l) => `[PARTIAL] ${l}`),
+    proposedReadout: null,
+  };
+}
+
+function judgeLines(input: CompareInput): { exit: number; lines: string[]; proposedReadout: string | null } {
   const { window, settings, matched, calls } = input;
+  const partial = window.partial;
   const lines: string[] = [];
   const callsByLead = new Map<string, RegalCall[]>();
   for (const c of calls.calls) {
@@ -726,7 +789,7 @@ export function judgePilotCompare(input: CompareInput): { exit: number; lines: s
     list.push(c);
     callsByLead.set(c.leadKey, list);
   }
-  const judged = matched.apps.map((a) => judgeApplication(a, window.spanMs, callsByLead));
+  const judged = matched.apps.map((a) => judgeApplication(a, window.spanMs, callsByLead, partial ? window.readEndMs - JUDGE_GRACE_MS : Infinity));
   const bySide = (side: Side) => judged.filter((j) => j.side === side);
   const days = (window.cohortEndMs - window.startMs) / 86_400_000;
   const c = matched.counts;
@@ -734,14 +797,29 @@ export function judgePilotCompare(input: CompareInput): { exit: number; lines: s
     `Compared: ${plural(judged.length, "application")} (Slate side ${bySide("slate").length}, cal.com side ${bySide("calcom").length}), ` +
     `${plural(judged.filter((j) => j.booked).length, "booked application")}, ${plural(calls.calls.length, "Regal call")} read for their Leads.`;
 
-  const header = [
-    `${window.rehearsal ? "REHEARSAL (not a result: these days were not the 50/50 split on every tier). " : ""}` +
-      `Slate against cal.com, intention to treat by hash side, tiers ${ASSUMED_TIERS.join(";")}.`,
-    `Cohort: applications made from ${etLabel(window.startMs)} to ${etLabel(window.cohortEndMs)} (${days.toFixed(window.rehearsal ? 2 : 0)} days), ` +
-      `each judged on what happened within ${spanLabel(window.spanMs)}s of being made.`,
-    ASSUMPTION_LINE,
+  const created = matched.apps.map((a) => a.createdMs);
+  const firstMs = firstJudgeableMs(window.startMs, window.spanMs);
+  const ageDays = (ms: number) => ((window.readEndMs - ms) / 86_400_000).toFixed(2);
+  const header = partial
+    ? [
+        `Not a readout: no application's ${spanLabel(window.spanMs)} span has closed yet. Slate against cal.com so far, intention to treat by hash side, tiers ${ASSUMED_TIERS.join(";")}.`,
+        `Cohort so far: applications made from ${etLabel(window.startMs)} to now, ${etLabel(window.readEndMs)} (${days.toFixed(2)} days), every one with its span still open.`,
+        `Coverage: ${pct(Math.min(1, (window.readEndMs - window.startMs) / (firstMs - window.startMs)))} of the way to the first full window, judgeable from ${etLabel(firstMs)}` +
+          (created.length > 0
+            ? `; the oldest application here has had ${ageDays(created.reduce((a, b) => Math.min(a, b), Infinity))} of its ${spanLabel(window.spanMs)}s, the newest ${ageDays(created.reduce((a, b) => Math.max(a, b), -Infinity))}.`
+            : "."),
+        ASSUMPTION_LINE,
+      ]
+    : [
+        `${window.rehearsal ? "REHEARSAL (not a result: these days were not the 50/50 split on every tier). " : ""}` +
+          `Slate against cal.com, intention to treat by hash side, tiers ${ASSUMED_TIERS.join(";")}.`,
+        `Cohort: applications made from ${etLabel(window.startMs)} to ${etLabel(window.cohortEndMs)} (${days.toFixed(window.rehearsal ? 2 : 0)} days), ` +
+          `each judged on what happened within ${spanLabel(window.spanMs)}s of being made.`,
+        ASSUMPTION_LINE,
+      ];
+  header.push(
     `Salesforce now holds: active ${String(settings.active)}, ${String(settings.percent)}%, tiers ${settings.tiers ?? "empty"}, last modified ${settings.lastModified ?? "unknown"}.`,
-  ];
+  );
 
   const unreadableRows = c.unreadable + calls.calls.filter((call) => !Number.isFinite(Date.parse(call.startedAt))).length;
   if (unreadableRows > 0) {
@@ -831,36 +909,51 @@ export function judgePilotCompare(input: CompareInput): { exit: number; lines: s
     const kb = k.filter((j) => j.booked).length;
     const sh = s.filter((j) => j.held).length;
     const kh = k.filter((j) => j.held).length;
+    // In a partial look a booking whose call is still ahead cannot have been held yet,
+    // so it is left out of held per application rather than read as a no show, the
+    // same way the show rate leaves it out.
+    const heldBase = (set: Judged[]) => (partial ? set.filter((j) => !j.callAhead).length : set.length);
+    const sBase = heldBase(s);
+    const kBase = heldBase(k);
     const booking = compareHalves({ leads: s.length, bookings: sb }, { leads: k.length, bookings: kb });
-    const heldPer = compareHalves({ leads: s.length, bookings: sh }, { leads: k.length, bookings: kh });
+    const heldPer = compareHalves({ leads: sBase, bookings: sh }, { leads: kBase, bookings: kh });
     const show = clusteredDifference(set.filter((j) => j.judgeable).map((j) => ({ side: j.side, cluster: j.advisor, y: j.held })));
     const out: string[] = [];
     const readableBooking = !short(s.length, sb) && !short(k.length, kb);
     const readableShow = !short(show.slate.units, show.slate.outcomes) && !short(show.calcom.units, show.calcom.outcomes);
+    // A partial look prints the rates so far and nothing that reads as a finding.
+    const judgedText = (readable: boolean, d: Parameters<typeof intervalText>[0]) => (partial ? "so far" : readable ? intervalText(d) : "not yet readable");
     out.push(`${label}:`);
     out.push(
       `  applications  Slate ${s.length}, cal.com ${k.length}`,
       `  booking rate  Slate ${sb}/${s.length} (${pct(booking.slateRate)}), cal.com ${kb}/${k.length} (${pct(booking.calcomRate)}); ` +
-        (readableBooking ? intervalText(booking) : "not yet readable"),
-      `  held per application  Slate ${sh}/${s.length} (${pct(heldPer.slateRate)}), cal.com ${kh}/${k.length} (${pct(heldPer.calcomRate)}); ` +
-        (!short(s.length, sh) && !short(k.length, kh) ? intervalText(heldPer) : "not yet readable"),
+        judgedText(readableBooking, booking),
+      `  held per application  Slate ${sh}/${sBase} (${pct(heldPer.slateRate)}), cal.com ${kh}/${kBase} (${pct(heldPer.calcomRate)}); ` +
+        judgedText(!short(sBase, sh) && !short(kBase, kh), heldPer),
       `  show rate (held over booked)  Slate ${show.slate.outcomes}/${show.slate.units} (${pct(show.slate.rate)}), ` +
         `cal.com ${show.calcom.outcomes}/${show.calcom.units} (${pct(show.calcom.rate)}), ${plural(show.clusters, "advisor")}; ` +
-        (readableShow ? intervalText(show) : "not yet readable"),
+        judgedText(readableShow, show),
     );
     const perDay = (s.length + k.length) / Math.max(perDayDays, 1e-9);
     const dBook = daysNeeded({ leadsPerDay: perDay, percent: ASSUMED_PERCENT, baseRate: booking.calcomRate, lift: window.lift });
     const showPerDay = (show.slate.units + show.calcom.units) / Math.max(perDayDays, 1e-9);
     const dShow = daysNeeded({ leadsPerDay: showPerDay, percent: ASSUMED_PERCENT, baseRate: show.calcom.rate, lift: window.lift });
-    out.push(
+    if (!partial) out.push(
       `  days needed to see ${points(window.lift)}: booking rate ${dBook.ok ? plural(dBook.days, "day") : `none (${dBook.reason})`}; ` +
         `show rate ${dShow.ok ? `${plural(dShow.days, "day")} at least (advisor clustering adds to it)` : `none (${dShow.reason})`}`,
     );
     return { out, readableBooking, readableShow, dBook, dShow };
   };
 
-  const overall = rateBlock("All pilot tiers (headline, intention to treat)", judged, days);
+  const overall = rateBlock(partial ? "All pilot tiers so far (intention to treat)" : "All pilot tiers (headline, intention to treat)", judged, days);
   lines.push(...overall.out);
+  if (partial) {
+    lines.push(
+      `Read with care: the booking rate is biased low on both sides, because every application here has had less than its ${spanLabel(window.spanMs)}s to book. ` +
+        `The show rate and held per application count only bookings whose call time has passed (plus ${JUDGE_GRACE_MS / 3_600_000} hours for the call to reach the store); a booking whose call is still ahead is left out ` +
+        "rather than read as a no show, which favours bookings made for soon after applying.",
+    );
+  }
   for (const tier of ASSUMED_TIERS) {
     const set = judged.filter((j) => j.tier === tier);
     if (set.length === 0) {
@@ -879,7 +972,7 @@ export function judgePilotCompare(input: CompareInput): { exit: number; lines: s
     "By the system that took the booking (NOT randomised: who books where is chosen by the lead and the page, so this row can differ from the headline for reasons that are not the booker):",
     `  booked applications  Slate ${booked.filter((j) => j.system === "slate").length}, cal.com ${booked.filter((j) => j.system === "calcom").length}`,
     `  show rate  Slate ${bySystem.slate.outcomes}/${bySystem.slate.units} (${pct(bySystem.slate.rate)}), cal.com ${bySystem.calcom.outcomes}/${bySystem.calcom.units} (${pct(bySystem.calcom.rate)}); ` +
-      intervalText(bySystem),
+      (partial ? "so far" : intervalText(bySystem)),
   );
 
   // --- leakage by cause ----------------------------------------------------------------
@@ -911,7 +1004,11 @@ export function judgePilotCompare(input: CompareInput): { exit: number; lines: s
   if (c.unresolved > 0) left.push(`${plural(c.unresolved, "cal.com reschedule")} whose new booking could not be read (booked, show not judged)`);
   const other = Object.entries(c.otherEventTypes);
   if (other.length > 0) left.push(`cal.com bookings on event types that are not a lead booking: ${other.map(([id, n]) => `${id} (${n})`).join(", ")}`);
-  if (notJudgeable > 0) left.push(`${plural(notJudgeable, "booked application")} whose final start fell after the span, so its show is not judged`);
+  if (notJudgeable > 0) {
+    left.push(
+      `${plural(notJudgeable, "booked application")} whose final start fell after the span${partial ? " or whose call is still ahead" : ""}, so its show is not judged`,
+    );
+  }
   const noLead = booked.filter((j) => j.noLead).length;
   if (noLead > 0) left.push(`${plural(noLead, "booked application")} with no Lead in Salesforce, so no call can be tied to it`);
   lines.push(
@@ -924,12 +1021,16 @@ export function judgePilotCompare(input: CompareInput): { exit: number; lines: s
   );
 
   // --- the verdict -----------------------------------------------------------------------
+  const disagree = settingsDisagreement(settings);
+  if (partial) {
+    if (disagree !== null) lines.push(`SETTINGS NOW DIFFER from the assumed split: ${disagree}.`);
+    return { exit: PILOT_COMPARE_EXIT.partial, lines, proposedReadout: null };
+  }
   let proposedReadout: string | null = null;
   const needDays = [overall.dBook, overall.dShow].filter((d) => d.ok).map((d) => (d as { days: number }).days);
   if (needDays.length > 0) {
     proposedReadout = DateTime.fromMillis(window.startMs, { zone: ZONE }).plus({ days: Math.max(...needDays) }).toISODate();
   }
-  const disagree = settingsDisagreement(settings);
   let exit: number = PILOT_COMPARE_EXIT.compared;
   if (window.rehearsal) {
     lines.push("REHEARSAL: the reads and the judgement ran end to end; the numbers above are not a result.");
