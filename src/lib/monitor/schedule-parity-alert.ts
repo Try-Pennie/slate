@@ -87,8 +87,12 @@ export const PARITY_VERDICT_CLASS = {
 
 export type ParityVerdict = keyof typeof PARITY_VERDICT_CLASS;
 
-/** How each paging verdict is said to a person, in the vocabulary of the roster. */
-const PAGING_LABEL: Record<string, string> = {
+/**
+ * How each paging verdict is said to a person, in the vocabulary of the roster.
+ * Exported for `pnpm verify:parallel-run-readiness` (#2089), so its drift line and
+ * this page name a difference in the same words.
+ */
+export const PAGING_LABEL: Record<string, string> = {
   "departed-still-hosting": "have left Slate and can still be booked in cal.com",
   "held-back-still-hosting": "Slate will not route to and cal.com still can",
   "timezone-differs": "are in a different timezone",

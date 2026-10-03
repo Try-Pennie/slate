@@ -199,6 +199,23 @@ jobs:
           PARITY_SUMMARY_FILE: parity-summary.json
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-calcom-parity-live.ts
 
+      # Kept so `pnpm verify:parallel-run-readiness` can name WHO drifted (#2089)
+      # without re-running a four minute sweep: the alert carries counts and a few
+      # names, and nothing in Slate stores the rest. `continue-on-error`, because a
+      # failed upload must never fail the job, which would skip the heartbeat stamp
+      # and page the lane as stale over a convenience. No file (the sweep stopped
+      # before it judged anything) uploads nothing, which the readiness command
+      # reports as names unavailable.
+      - name: Keep the sweep summary for the readiness command
+        if: always() && steps.sweep.outcome != 'skipped'
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: parity-summary
+          path: parity-summary.json
+          if-no-files-found: ignore
+          retention-days: 7
+
       # Bare node, no alias hook: this is the step that speaks after the expensive
       # part of the job, and scripts/test-dependency-free-scripts.ts holds it to
       # importing nothing outside scripts/.

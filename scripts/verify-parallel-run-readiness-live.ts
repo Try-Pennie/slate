@@ -8,6 +8,10 @@
 //
 // Exit codes are READINESS_EXIT, plus 1 for "no credentials here", decided before
 // anything is read so it can never be confused with a finding.
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { requireSupabaseCredentials } from "./lib/supabase-credentials.ts";
 
 const creds = requireSupabaseCredentials();
@@ -31,8 +35,12 @@ const { DEBT_TIER } = await import("@/lib/xbc");
 const { CALLER_HOST_KINDS } = await import("@/lib/booking/caller-seen");
 const { BOOKING_API_CALLERS } = await import("@/lib/booking/api-auth");
 type CallerSeenRow = import("@/lib/booking/caller-seen").CallerSeenRow;
-const { judgeReadiness } = await import("./lib/parallel-run-readiness.ts");
+const { judgeReadiness, parityDriftFromSummary, pickParityRun } = await import("./lib/parallel-run-readiness.ts");
 type ReadinessFacts = import("./lib/parallel-run-readiness.ts").ReadinessFacts;
+type ParityDriftDetail = import("./lib/parallel-run-readiness.ts").ParityDriftDetail;
+/** Where the daily lane runs, and what it keeps (`.github/workflows/schedule-parity.yml`). */
+const PARITY_REPO = "Try-Pennie/slate";
+const PARITY_ARTIFACT = "parity-summary";
 type LowVolumeArmingFacts = import("./lib/parallel-run-readiness.ts").LowVolumeArmingFacts;
 const { measurePageSources } = await import("@/lib/monitor/customer-bookings");
 const { loadBusinessHours } = await import("@/lib/booking/business-hours-load");
@@ -73,6 +81,46 @@ const calcomRetired = await loadCalcomRetired();
 
 const lastRunMs = await section("parity heartbeat", () => readHeartbeatMs("schedule-parity"));
 const drifting = await section("drift alert state", () => isAlertFiring("schedule_parity_drift"));
+
+/**
+ * Who drifted (#2089), from the summary the daily lane kept as its run's
+ * `parity-summary` artifact, never by re-running the four minute sweep. Asked only
+ * while the alert is firing, and every way it can fail becomes a reason in the
+ * finding rather than an unreadable section: the drift is measured either way, and
+ * only the names are missing.
+ */
+function readParityDrift(): ParityDriftDetail {
+  if (drifting !== true) return { kind: "unavailable", why: "the comparison is not reporting drift" };
+  const gh = (args: string[]): string =>
+    execFileSync("gh", ["-R", PARITY_REPO, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 });
+  let runs: { id: number; updatedAtMs: number; url: string }[];
+  try {
+    const listed = JSON.parse(
+      gh(["run", "list", "--workflow", "schedule-parity.yml", "--status", "success", "--limit", "5", "--json", "databaseId,updatedAt,url"]),
+    ) as { databaseId: number; updatedAt: string; url: string }[];
+    runs = listed
+      .map((r) => ({ id: r.databaseId, updatedAtMs: Date.parse(r.updatedAt), url: r.url }))
+      .filter((r) => Number.isFinite(r.updatedAtMs));
+  } catch (err) {
+    return { kind: "unavailable", why: `the schedule parity runs could not be listed with gh (${shortReason(err)})` };
+  }
+  const run = pickParityRun(runs, lastRunMs);
+  if ("why" in run) return { kind: "unavailable", why: run.why };
+  const dir = mkdtempSync(join(tmpdir(), "parity-summary-"));
+  try {
+    gh(["run", "download", String(run.id), "-n", PARITY_ARTIFACT, "-D", dir]);
+    return parityDriftFromSummary(JSON.parse(readFileSync(join(dir, "parity-summary.json"), "utf8")), run.url);
+  } catch (err) {
+    return { kind: "unavailable", why: `run ${run.url} kept no readable ${PARITY_ARTIFACT} artifact (${shortReason(err)})` };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+function shortReason(err: unknown): string {
+  const text = err instanceof Error ? err.message : String(err);
+  return text.split("\n")[0].slice(0, 160);
+}
+const parityDrift = readParityDrift();
 
 const pendingBookable = await section("pending bookable flips", async () => {
   const rows = (unwrap(
@@ -253,7 +301,7 @@ const holidays = await section("holiday exceptions", async () => {
 const facts: ReadinessFacts = {
   nowMs,
   stretchedCooldowns,
-  parity: { lastRunMs, boundMs: CANARY_STALE_BOUNDS_MS["schedule-parity"], drifting },
+  parity: { lastRunMs, boundMs: CANARY_STALE_BOUNDS_MS["schedule-parity"], drifting, drift: parityDrift },
   pendingBookable,
   calendars,
   emptyBuckets,

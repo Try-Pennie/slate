@@ -12,6 +12,10 @@ import {
   READINESS_ORDER,
   type ReadinessFacts,
   type LowVolumeArmingFacts,
+  type ParityDriftDetail,
+  parityDriftFromSummary,
+  pickParityRun,
+  PARITY_RUN_PAIRING_MS,
 } from "./lib/parallel-run-readiness.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 import type { CallerSeenRow } from "../src/lib/booking/caller-seen.ts";
@@ -26,6 +30,8 @@ const NOW = Date.parse("2026-09-08T16:00:00Z");
 /** How the summary says the source precondition is met, asserted both ways below. */
 const SOURCES_MET = /every real booking (in the last \d+ days )?carried its source/i;
 const DAY = 24 * 60 * 60_000;
+/** The drift detail when nobody went to look, which every non drifting case is. */
+const NOT_LOOKED_UP: ParityDriftDetail = { kind: "unavailable", why: "the comparison is not reporting drift" };
 
 /** One `api_caller_seen` row for trypennie, seen `agoMs` before NOW (#2717). */
 function seen(host_kind: CallerSeenRow["host_kind"], agoMs: number, origin: string | null): CallerSeenRow {
@@ -37,7 +43,7 @@ function healthy(over: Partial<ReadinessFacts> = {}): ReadinessFacts {
   return {
     nowMs: NOW,
     stretchedCooldowns: [],
-    parity: { lastRunMs: NOW - 4 * 60 * 60_000, boundMs: 30 * 60 * 60_000, drifting: false },
+    parity: { lastRunMs: NOW - 4 * 60 * 60_000, boundMs: 30 * 60 * 60_000, drifting: false, drift: NOT_LOOKED_UP },
     pendingBookable: [],
     calendars: { bookableAgents: 102, missingRows: [], uncovered: [] },
     emptyBuckets: { realBuckets: 60, empty: [] },
@@ -105,9 +111,9 @@ function armed(over: Partial<LowVolumeArmingFacts> = {}): LowVolumeArmingFacts {
 {
   const cases: [string, Partial<ReadinessFacts>, number][] = [
     ["a stretched cooldown", { stretchedCooldowns: [{ key: "empty_buckets", minutes: 10080, defaultMinutes: 360 }] }, READINESS_EXIT.alarmMuted],
-    ["parity never ran", { parity: { lastRunMs: null, boundMs: 30 * 60 * 60_000, drifting: false } }, READINESS_EXIT.parityStale],
-    ["parity ran too long ago", { parity: { lastRunMs: NOW - 2 * DAY, boundMs: 30 * 60 * 60_000, drifting: false } }, READINESS_EXIT.parityStale],
-    ["parity is reporting drift", { parity: { lastRunMs: NOW - 60_000, boundMs: 30 * 60 * 60_000, drifting: true } }, READINESS_EXIT.parityDrifting],
+    ["parity never ran", { parity: { lastRunMs: null, boundMs: 30 * 60 * 60_000, drifting: false, drift: NOT_LOOKED_UP } }, READINESS_EXIT.parityStale],
+    ["parity ran too long ago", { parity: { lastRunMs: NOW - 2 * DAY, boundMs: 30 * 60 * 60_000, drifting: false, drift: NOT_LOOKED_UP } }, READINESS_EXIT.parityStale],
+    ["parity is reporting drift", { parity: { lastRunMs: NOW - 60_000, boundMs: 30 * 60 * 60_000, drifting: true, drift: NOT_LOOKED_UP } }, READINESS_EXIT.parityDrifting],
     ["somebody waiting to become bookable", { pendingBookable: ["hire@x"] }, READINESS_EXIT.bookablePending],
     ["a bookable agent with no calendar row", { calendars: { bookableAgents: 102, missingRows: ["a@x"], uncovered: [] } }, READINESS_EXIT.calendarMissing],
     ["a calendar not hydrated to the horizon", { calendars: { bookableAgents: 102, missingRows: [], uncovered: ["b@x"] } }, READINESS_EXIT.calendarUncovered],
@@ -462,7 +468,7 @@ eq(
 // command could never exit READY again: the comparison stops, and parity-stale
 // holds it red for ever. It says plainly that the run it judges has ended instead.
 {
-  const j = judgeReadiness(healthy({ calcomRetired: true, parity: { lastRunMs: null, boundMs: 30 * 60 * 60_000, drifting: null } }));
+  const j = judgeReadiness(healthy({ calcomRetired: true, parity: { lastRunMs: null, boundMs: 30 * 60 * 60_000, drifting: null, drift: NOT_LOOKED_UP } }));
   eq(j.exit, READINESS_EXIT.calcomRetired, "retired: exits on its own code");
   assert(j.exit !== READINESS_EXIT.ready, "retired is never READY, so a script cannot read it as a green shadow run");
   assert(/^RETIRED/.test(j.summary), "retired: the summary says so first");
@@ -475,6 +481,83 @@ eq(
   assert(/cal\.com retired setting/.test(unknown.summary), "and names which one");
 
   eq(judgeReadiness(healthy({ calcomRetired: false })).exit, READINESS_EXIT.ready, "live: READY as today");
+}
+
+// --- #2089: the parity finding names who drifted ------------------------------------
+// The generic "the cal.com comparison is currently reporting drift" sent the reader to
+// a four minute sweep, under time pressure, to learn it was two Saturdays. The names
+// come from the summary the daily lane already wrote, never from re-running it.
+{
+  const RUN = "https://github.com/Try-Pennie/slate/actions/runs/123";
+  const drifting = (drift: ParityDriftDetail) =>
+    healthy({ parity: { lastRunMs: NOW - 60_000, boundMs: 30 * 60 * 60_000, drifting: true, drift } });
+  const lineOf = (drift: ParityDriftDetail) =>
+    judgeReadiness(drifting(drift)).findings.find((x) => x.kind === "parity-drifting")?.detail ?? "";
+
+  const drift = parityDriftFromSummary(
+    {
+      total: 102,
+      compared: 98,
+      findings: [
+        { verdict: "hours-differ", count: 6, agents: ["h1@x", "h2@x", "h3@x", "h4@x", "h5@x", "h6@x"] },
+        { verdict: "days-differ", count: 2, agents: ["sat1@x", "sat2@x"] },
+        // Standing and unmeasured verdicts never page, so they are not drift to name.
+        { verdict: "staff-not-bookable", count: 9, agents: ["mgr@x"] },
+        { verdict: "calcom-unreachable", count: 1, agents: ["rl@x"] },
+      ],
+    },
+    RUN,
+  );
+  eq(drift.kind, "named", "a readable summary names the drift");
+  eq(judgeReadiness(drifting(drift)).exit, READINESS_EXIT.parityDrifting, "named drift still exits on the drift code");
+  const line = lineOf(drift);
+  assert(/sat1@x/.test(line) && /sat2@x/.test(line), `the drifting agents are named: ${line}`);
+  assert(/2 work different days/.test(line), "with the shape of each difference, in the alert's own words");
+  assert(/6 work different hours/.test(line), "and every paging kind is listed");
+  assert(line.indexOf("different days") < line.indexOf("different hours"), "worst kind first, in the alert's order");
+  assert(/h4@x/.test(line) && !/h5@x/.test(line) && /and 2 more/.test(line), "a long list is capped with a count of the rest");
+  assert(!/mgr@x/.test(line) && !/rl@x/.test(line), "standing and unmeasured verdicts are not named as drift");
+  assert(line.includes(RUN), "and it points at the run that measured it");
+
+  // The summary caps each verdict at eight names while its count is the whole
+  // number, so the rest is counted from the COUNT, never the list length.
+  const cappedLine = lineOf(
+    parityDriftFromSummary({ total: 102, compared: 98, findings: [{ verdict: "hours-differ", count: 30, agents: ["a@x", "b@x"] }] }, RUN),
+  );
+  assert(/30 work different hours/.test(cappedLine) && /and 28 more/.test(cappedLine), `the rest is counted from the count: ${cappedLine}`);
+
+  // The alert can still be firing over a sweep that paged nothing (a clear that has
+  // not landed). Naming nobody as though that were the drift would be a false all clear.
+  const quietLine = lineOf(
+    parityDriftFromSummary({ total: 102, compared: 98, findings: [{ verdict: "staff-not-bookable", count: 9, agents: [] }] }, RUN),
+  );
+  assert(/found no difference that pages/.test(quietLine), `a firing alert over a quiet sweep says so: ${quietLine}`);
+
+  // Unavailable names keep the finding and say WHY nobody is named (L11).
+  const unnamed: ParityDriftDetail = { kind: "unavailable", why: "gh is not installed here" };
+  eq(judgeReadiness(drifting(unnamed)).exit, READINESS_EXIT.parityDrifting, "unnamed drift is still the drift code, never a pass");
+  const unnamedLine = lineOf(unnamed);
+  assert(/reporting drift/.test(unnamedLine) && /gh is not installed here/.test(unnamedLine), `it says why nobody is named: ${unnamedLine}`);
+  assert(/verify:calcom-parity/.test(unnamedLine), "and where the names can be had");
+
+  // A summary that is not a sweep is refused by the endpoint's own reader, so the
+  // readiness line can never render a verdict the alert would refuse.
+  const bad = parityDriftFromSummary({ total: 1, compared: 1, findings: [{ verdict: "made-up", count: 1, agents: ["x@x"] }] }, RUN);
+  eq(bad.kind, "unavailable", "an unknown verdict is refused, not rendered");
+  assert(bad.kind === "unavailable" && /made-up/.test(bad.why), "and the refusal says which");
+  eq(parityDriftFromSummary("not json", RUN).kind, "unavailable", "a summary that is not an object is refused");
+
+  // Pairing: the summary must come from the run that stamped the heartbeat (L420).
+  const stamp = NOW - 2 * 60 * 60_000;
+  const older = { id: 8, updatedAtMs: stamp - DAY, url: "https://github.com/Try-Pennie/slate/actions/runs/8" };
+  const picked = pickParityRun([{ id: 9, updatedAtMs: stamp + 60_000, url: RUN }, older], stamp);
+  assert("id" in picked && picked.id === 9, "the run finishing just after the heartbeat is the one paired");
+  const none = pickParityRun([older], stamp);
+  assert("why" in none && /no successful/.test(none.why), `a run from another day is not paired: ${"why" in none ? none.why : ""}`);
+  const late = pickParityRun([{ id: 10, updatedAtMs: stamp + PARITY_RUN_PAIRING_MS + 60_000, url: RUN }], stamp);
+  assert("why" in late, "a run finishing well after the heartbeat is not that run");
+  const unstamped = pickParityRun([older], null);
+  assert("why" in unstamped && /never/.test(unstamped.why), "with no heartbeat there is no run to pair");
 }
 
 finish();
