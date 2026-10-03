@@ -6,7 +6,8 @@
 // meet a server that is shutting down) and the psql call a batch is sent through.
 //
 // Run: node --experimental-strip-types scripts/test-throwaway-postgres.ts
-import { initFinished, psqlArgs, readiness } from "./lib/throwaway-postgres.ts";
+import { EventEmitter } from "node:events";
+import { initFinished, psqlArgs, readiness, registerCleanup, removeLeftover } from "./lib/throwaway-postgres.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 // --- readiness: only after the entrypoint says initialisation is over ----------------
@@ -48,6 +49,54 @@ import { assert, eq, finish } from "./lib/harness.ts";
   const gone = readiness({ logsStatus: 1, logsError: "Error response from daemon: No such container: c1", logs: "", running: null, exitCode: null });
   assert(gone.state === "dead" && /No such container/.test(gone.reason),
     "a docker logs call that fails is not read as still initialising, and its error is passed on");
+}
+
+// --- no container is left behind, and a leftover never blocks the next run -----------
+{
+  // A leftover from a run that died before stop() is removed before starting, so its
+  // name cannot conflict with this run's.
+  const calls: string[][] = [];
+  const fakeDocker = (result: { status: number; stderr: string }) => (args: string[]) => {
+    calls.push(args);
+    return result;
+  };
+  eq(removeLeftover("c1", fakeDocker({ status: 0, stderr: "" })), null, "a leftover container is removed and the run goes ahead");
+  eq(calls[0], ["rm", "-f", "c1"], "by force, by its exact name");
+  eq(removeLeftover("c1", fakeDocker({ status: 1, stderr: "Error response from daemon: No such container: c1" })), null,
+    "no leftover at all is the ordinary case, not an error");
+  const refused = removeLeftover("c1", fakeDocker({ status: 1, stderr: "Error response from daemon: permission denied" }));
+  assert(refused !== null && /permission denied/.test(refused),
+    "a removal Docker refuses for another reason is reported, since the run would then meet a name conflict");
+}
+{
+  // Every way out removes the container: a normal exit, process.exit, an uncaught
+  // throw (all reach "exit"), and Ctrl-C or a kill (signals, which skip "exit").
+  const make = () => {
+    const proc = new EventEmitter() as EventEmitter & { exit: (code: number) => void; exitCode?: number };
+    const exits: number[] = [];
+    proc.exit = (code) => exits.push(code);
+    let stops = 0;
+    const cleanup = registerCleanup(() => stops++, proc);
+    return { proc, exits, stops: () => stops, cleanup };
+  };
+  {
+    const t = make();
+    t.proc.emit("exit", 1);
+    eq(t.stops(), 1, "an exit, including process.exit and an uncaught throw, removes the container");
+  }
+  for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]] as const) {
+    const t = make();
+    t.proc.emit(signal);
+    eq(t.stops(), 1, `${signal} removes the container`);
+    eq(t.exits, [code], `and then exits ${code}, rather than carrying on (L473)`);
+  }
+  {
+    const t = make();
+    t.cleanup();
+    t.proc.emit("exit", 0);
+    eq(t.stops(), 1, "a stop already done is not repeated on the way out");
+    eq(t.proc.listenerCount("SIGINT"), 0, "and the handlers are taken down with it");
+  }
 }
 
 // --- the psql call ----------------------------------------------------------------------

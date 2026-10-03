@@ -104,6 +104,54 @@ function probeContainer(name: string): ContainerProbe {
   };
 }
 
+/**
+ * Remove a container left under `name` by a run that died before its stop(), so the
+ * name cannot conflict with this one. "No such container" is the ordinary case. Any
+ * other refusal is returned, because the run would then meet a name conflict.
+ */
+export function removeLeftover(
+  name: string,
+  run: (args: string[]) => { status: number | null; stderr: string },
+): string | null {
+  const r = run(["rm", "-f", name]);
+  if (r.status === 0 || /No such container/i.test(r.stderr)) return null;
+  return r.stderr.trim() || `docker rm exited ${String(r.status)}`;
+}
+
+type CleanupProcess = Pick<NodeJS.EventEmitter, "on" | "off"> & { exit: (code: number) => void };
+
+/**
+ * Remove the container on every way out of the process: a normal exit,
+ * process.exit and an uncaught throw all reach "exit"; Ctrl-C and a kill are
+ * signals, which skip it, so those stop and then exit with the signal's code rather
+ * than carrying on (L473). The container runs without --rm (its logs must outlive a
+ * crash during init), so this is what keeps it from being left behind. Returns a
+ * function that stops once and takes the handlers down.
+ */
+export function registerCleanup(stop: () => void, proc: CleanupProcess = process): () => void {
+  let done = false;
+  const once = () => {
+    if (done) return;
+    done = true;
+    proc.off("exit", once);
+    proc.off("SIGINT", onInt);
+    proc.off("SIGTERM", onTerm);
+    stop();
+  };
+  const onInt = () => {
+    once();
+    proc.exit(130);
+  };
+  const onTerm = () => {
+    once();
+    proc.exit(143);
+  };
+  proc.on("exit", once);
+  proc.on("SIGINT", onInt);
+  proc.on("SIGTERM", onTerm);
+  return once;
+}
+
 export function startThrowawayPostgres(name: string, image: string): ThrowawayPostgres {
   try {
     docker(["version", "--format", "{{.Server.Version}}"]);
@@ -111,9 +159,26 @@ export function startThrowawayPostgres(name: string, image: string): ThrowawayPo
     console.error("UNMEASURED: Docker is not available here, so nothing was proved.");
     process.exit(2);
   }
+  const leftover = removeLeftover(name, (args) => {
+    const r = spawnSync("docker", args, { encoding: "utf8" });
+    return { status: r.status, stderr: String(r.stderr ?? r.error ?? "") };
+  });
+  if (leftover !== null) {
+    console.error(`UNMEASURED: a leftover ${name} container could not be removed (${leftover}), so nothing was proved.`);
+    process.exit(2);
+  }
+  // Registered BEFORE the run, so a container docker created and then failed to
+  // start is removed too.
+  const stopOnce = registerCleanup(() => {
+    try {
+      docker(["rm", "-f", name]);
+    } catch {
+      // Already gone.
+    }
+  });
   try {
     // No --rm: a container that dies during init must keep its logs for readiness()
-    // to read. stop() removes it on every path out.
+    // to read. The cleanup above removes it on every way out of the process.
     docker(["run", "-d", "--name", name, "-e", "POSTGRES_PASSWORD=x", image]);
   } catch (err) {
     const why = err instanceof Error ? err.message.split("\n")[0] : String(err);
@@ -143,13 +208,7 @@ export function startThrowawayPostgres(name: string, image: string): ThrowawayPo
         p.stdin.end(text);
       });
     },
-    stop() {
-      try {
-        docker(["rm", "-f", name]);
-      } catch {
-        // Already gone.
-      }
-    },
+    stop: stopOnce,
   };
   let last: ContainerProbe | null = null;
   for (let i = 0; i < 90; i++) {
