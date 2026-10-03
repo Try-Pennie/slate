@@ -1,5 +1,10 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { log } from "@/lib/log";
+import {
+  BOUNDARY_CATCH_COUNTER,
+  BOUNDARY_COUNT_WINDOW_SECONDS,
+  UNRECOGNISED_PAGE_COUNTER,
+} from "@/lib/rate-limit-core";
 
 /**
  * How often a page's error boundary has caught, in a rolling window (#1974).
@@ -21,7 +26,7 @@ import { log } from "@/lib/log";
  *
  * `rate_limit_hit` is already an atomic count-under-a-key-in-a-rolling-window,
  * committed in one statement, correct under concurrent callers, and pruned by
- * its own window. That is exactly this question, so it is asked rather than
+ * its own window (the window counter group of `rateLimitPrunePlan`, #3176). That is exactly this question, so it is asked rather than
  * reimplemented beside it (L370: a second implementation of one rule drifts, and
  * this one would drift silently because nothing compares them).
  *
@@ -42,12 +47,12 @@ import { log } from "@/lib/log";
 /** The window a page's catches are counted over. Equal to the alert's own
  *  cooldown on purpose: a break that persists across the window pages again,
  *  which is the same cadence the cooldown already allows. */
-export const BOUNDARY_WINDOW_MS = 30 * 60_000;
+export const BOUNDARY_WINDOW_MS = BOUNDARY_COUNT_WINDOW_SECONDS * 1000;
 
 /** The key space, distinct from every rate limiting rule prefix, and keyed on the
  *  same signature the alert is keyed on so the count and the page cannot end up
  *  describing different things (L70). */
-const COUNT_PREFIX = "boundary_count";
+const COUNT_PREFIX = BOUNDARY_CATCH_COUNTER.prefix;
 
 export interface BoundaryCount {
   /** Whether this catch is the SECOND or later in the window, which is what
@@ -75,7 +80,7 @@ export async function countBoundaryCatch(signature: string): Promise<BoundaryCou
 /** The key space for reports from pages Slate does not serve (#2755), distinct
  *  from the boundary one so a boundary catch on an invented path is not counted
  *  twice under one key. */
-const UNRECOGNISED_PAGE_PREFIX = "unrecognised_page_count";
+const UNRECOGNISED_PAGE_PREFIX = UNRECOGNISED_PAGE_COUNTER.prefix;
 
 /**
  * Record one report from a page Slate does not serve, and say how many there have
