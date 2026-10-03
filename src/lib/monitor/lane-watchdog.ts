@@ -68,15 +68,17 @@ const STALE_LANE_COOLDOWN_MS = 60 * 60_000;
 const BLIND_DETECTOR_COOLDOWN_MS = 24 * 60 * 60_000;
 
 /**
- * A quiet time off lane re-pages every 12 hours, not hourly (#2543).
+ * A quiet DAILY lane re-pages every 12 hours, not hourly (#2543, #3076).
  *
- * These lanes run once a day, so the proof that a fix worked is tomorrow morning's
- * run: there is nothing a reader can do that would clear this inside an hour, and
- * repeating the same page twenty four times before anything could change is how an
- * alert trains people to ignore it (L36). Twelve hours still puts it in front of
- * both a morning and an evening reader while a report is not going out.
+ * The time off lanes and the database dump run once a day, so the proof that a fix
+ * worked is the next day's run: there is nothing a reader can do that would clear
+ * this inside an hour, and repeating the same page twenty four times before anything
+ * could change is how an alert trains people to ignore it (L36). Half the daily
+ * cadence still puts it in front of both a morning and an evening reader. Derived
+ * from the cadence rather than written as 12 hours, so the two cannot drift apart.
  */
-const TIME_OFF_LANE_COOLDOWN_MS = 12 * 60 * 60_000;
+const DAILY_CADENCE_MS = 24 * 60 * 60_000;
+const DAILY_LANE_COOLDOWN_MS = DAILY_CADENCE_MS / 2;
 
 /**
  * How often the parked detectors say they are parked (#1561).
@@ -282,7 +284,7 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
   await pageWithGraceWindow(timeOffStale, now, "time off lane", (lane) =>
     sendThrottledAlert(
       staleLaneAlertKey(lane.lane),
-      TIME_OFF_LANE_COOLDOWN_MS,
+      DAILY_LANE_COOLDOWN_MS,
       timeOffLaneAlertText(lane),
     ),
   );
@@ -298,7 +300,7 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
   await pageWithGraceWindow(backupStale, now, "database backup", (lane) =>
     sendThrottledAlert(
       staleLaneAlertKey(lane.lane),
-      STALE_LANE_COOLDOWN_MS,
+      DAILY_LANE_COOLDOWN_MS,
       backupAlertText(lane),
     ),
   );

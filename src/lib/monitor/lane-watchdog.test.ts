@@ -795,6 +795,14 @@ describe("alertOnStaleLanes (#803)", () => {
       expect(pageFor("db-backup")?.[3]).toBeUndefined();
     });
 
+    it("re-pages twice a day, not hourly, since only the next daily run can clear it", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), "db-backup": ago(27 * 60 * MIN) });
+      await alertOnStaleLanes();
+      // Half the daily cadence: a morning and an evening reader see it, and nothing
+      // a reader does inside an hour could clear it before tomorrow's dump (L36).
+      expect(pageFor("db-backup")?.[1]).toBe(12 * 60 * MIN);
+    });
+
     it("gives a dump that has never run its grace window, then pages that no backup exists", async () => {
       const { "db-backup": _omitted, ...rest } = healthy();
       heartbeat.readAllHeartbeatMs.mockResolvedValue(rest);
