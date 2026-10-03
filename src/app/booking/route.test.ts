@@ -69,6 +69,7 @@ const service = vi.hoisted(() => {
     NoEligibleAgentsError,
     ExistingCallError,
     ExistingCallCheckUnavailableError,
+    pageBookingFailure: vi.fn(async (_err: unknown) => {}),
   };
 });
 const rateLimit = vi.hoisted(() => ({
@@ -111,6 +112,7 @@ const agentLinkStore = vi.hoisted(() => ({ resolveAgentLink: vi.fn() }));
 vi.mock("@/lib/agent-link/store", () => agentLinkStore);
 
 import { POST } from "./route";
+import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
 import { deadlineWithinBudget } from "@/lib/call-budget";
 import { BOOKING_CONFIRM_BUDGET_MS } from "@/lib/booking/confirm-budget";
 import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
@@ -254,6 +256,95 @@ describe("POST /booking (embed) error mapping", () => {
     expect(labels.length).toBeGreaterThan(0);
     expect(new Set(labels)).toEqual(new Set(["the booking cleanup"]));
     recordApiOutcome.mockReset();
+  });
+
+  // #3102: the paused-booker read happens BEFORE the booking's try, under the
+  // confirm budget, so a deadline there used to escape as an unhandled 500. It is
+  // the same outage the confirm answers with its retryable 503.
+  it("answers a deadline from a read before the try with the retryable 503 (#3102)", async () => {
+    bookingSettings.readPublicBookingPaused.mockRejectedValueOnce(
+      new DeadlineExceededError("supabase", 4000, { label: "the booking confirm", totalMs: 12_000 }),
+    );
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(503);
+    expect(((await res.json()) as { error?: string }).error).toBe("We hit a temporary issue confirming this time. Please try again in a moment.");
+    expect(service.createBooking).not.toHaveBeenCalled();
+    expect(service.pageBookingFailure).toHaveBeenCalledOnce();
+    expect(recordApiOutcome).toHaveBeenCalledWith(
+      "error",
+      "",
+      "verify_unavailable",
+      expect.objectContaining({ by: "unidentifiable" }),
+    );
+    service.pageBookingFailure.mockClear();
+  });
+
+  it("answers a deadline in the advisor link read the same way, not as a 500 (#3102)", async () => {
+    agentLinkStore.resolveAgentLink.mockRejectedValueOnce(new DeadlineExceededError("supabase", 15000));
+    rateLimit.refundRequest.mockClear();
+    recordApiOutcome.mockClear();
+    const { bucketCode: _code, ...noBucket } = VALID_BODY;
+    const res = await post({ ...noBucket, agentLink: "rdaboub", prefill: {} });
+    expect(res.status).toBe(503);
+    // Every cap this request spent before the read is handed back: the IP cap and
+    // both contact caps. The outage is ours, so the lead must not pay for it.
+    const refunded = rateLimit.refundRequest.mock.calls.map((c) => rateLimitKey(c[0] as CallerKey));
+    expect(refunded.sort()).toEqual(["203.0.113.1", "email:dana@example.com", "phone:2155550100"].sort());
+    // An advisor link confirm is not a routed booking, so it stays out of the
+    // routed tally, on this path as on every other.
+    expect(recordApiOutcome).not.toHaveBeenCalled();
+    service.pageBookingFailure.mockClear();
+  });
+
+  it("hands back only the caps a request had spent when a later cap read times out (#3102)", async () => {
+    rateLimit.refundRequest.mockClear();
+    rateLimit.allowRequest.mockReset();
+    rateLimit.allowRequest
+      .mockResolvedValueOnce(true) // the IP hourly cap
+      .mockResolvedValueOnce(true) // the email cap
+      .mockRejectedValueOnce(new DeadlineExceededError("supabase", 4000, { label: "the booking confirm", totalMs: 12_000 }));
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(503);
+    const refunded = rateLimit.refundRequest.mock.calls.map((c) => rateLimitKey(c[0] as CallerKey));
+    expect(refunded.sort()).toEqual(["203.0.113.1", "email:dana@example.com"].sort());
+    // Counted against the bucket the request named, now that it is known.
+    expect(recordApiOutcome).toHaveBeenCalledWith(
+      "error",
+      "411",
+      "verify_unavailable",
+      expect.objectContaining({ by: "bucket", code: "411" }),
+    );
+    rateLimit.allowRequest.mockReset();
+    rateLimit.allowRequest.mockResolvedValue(true);
+    service.pageBookingFailure.mockClear();
+  });
+
+  // The duplicate warning is read AFTER the booking exists. A deadline there must
+  // not turn a booking that was made into a failure: the lead gets the call they
+  // booked, with no warning, rather than a 500 or an outage they would retry into.
+  it("keeps a created booking's success when the duplicate warning read times out (#3102)", async () => {
+    service.createBooking.mockResolvedValueOnce({
+      booking: {
+        id: "b1",
+        starts_at: "2026-07-01T15:00:00.000Z",
+        ends_at: "2026-07-01T15:30:00.000Z",
+        agent_name: "Jane",
+        prefill: null,
+        salesforce_id: null,
+        external_id: null,
+      },
+      manageUrl: "https://x.test/m/t",
+      newlyInserted: true,
+    } as never);
+    service.findDuplicateBookingWarning.mockRejectedValueOnce(
+      new DeadlineExceededError("supabase", 2000, { label: "the booking confirm", totalMs: 12_000 }),
+    );
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id?: string; duplicateWarning?: unknown };
+    expect(body.id).toBe("b1");
+    expect(body.duplicateWarning).toBeNull();
+    expect(service.pageBookingFailure).not.toHaveBeenCalled();
   });
 
   it("answers a retriable 503 when the existing-call check could not be made (#1641)", async () => {

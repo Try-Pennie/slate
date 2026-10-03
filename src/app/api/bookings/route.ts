@@ -1,12 +1,14 @@
 import { stampSeenIp } from "@/lib/loadtest-echo";
 import { NextResponse, type NextRequest } from "next/server";
-import { withinBookingCleanupBudget, withinBookingConfirmBudget } from "@/lib/booking/confirm-budget";
+import { withinBookingCleanupBudget, withinBookingRequest } from "@/lib/booking/confirm-budget";
+import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import { authorizeBookingApi } from "@/lib/booking/route-auth";
 import { parseDirectBookingRequest, parseLookupQuery, parseCancelQuery, parseListQuery, LIST_ONLY_PARAMS } from "@/lib/booking/api-request";
 import { respondToDirectCancel, apiErrorBody, mapLookupError } from "@/lib/booking/direct-cancel-http";
 import {
   bookViaApi,
   previewBooking,
+  pageBookingFailure,
   lookupPersonBookings,
   getPersonBookingById,
   listBookings,
@@ -51,8 +53,24 @@ export const dynamic = "force-dynamic";
  * flag unset `stampSeenIp` adds a header to nothing.
  */
 export async function POST(req: NextRequest) {
-  // #3102: one budget for the whole request; see `confirm-budget.ts`.
-  return stampSeenIp(await withinBookingConfirmBudget(() => handlePost(req)), req.headers);
+  // #3102: one budget for the whole request; see `confirm-budget.ts`. A deadline
+  // from a read before the booking's own try (the key ceilings, the hourly cap) is
+  // the same outage the booking path answers with VERIFY_UNAVAILABLE, rather than
+  // escaping as an unhandled 500.
+  return stampSeenIp(
+    await withinBookingRequest(
+      () => handlePost(req),
+      async (timeout) => {
+        await pageBookingFailure(timeout);
+        recordApiOutcome("error", "", "VERIFY_UNAVAILABLE", { by: "unidentifiable", why: "a dependency timed out before the request was read" });
+        // refusal: api_verify_unavailable
+        return NextResponse.json(await apiErrorBody(timeout, "VERIFY_UNAVAILABLE", "book", "Booking failed"), {
+          status: 503,
+        });
+      },
+    ),
+    req.headers,
+  );
 }
 
 async function handlePost(req: NextRequest) {
@@ -113,6 +131,9 @@ async function handlePost(req: NextRequest) {
       // budget, which a timeout has already spent; its outcome and report would
       // otherwise fail at once and the failure would go unrecorded.
       return withinBookingCleanupBudget(async () => {
+        // #3102: a dry run that ran out of time hit the same outage a booking
+        // would, answered as one by POST rather than as INTERNAL.
+        if (isDeadlineExceeded(err)) throw err;
         const { status, code } = mapBookingError(err);
         return NextResponse.json(await apiErrorBody(err, code, "preview", "Preview failed"), { status });
       });

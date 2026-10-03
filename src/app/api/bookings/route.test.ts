@@ -52,6 +52,7 @@ const service = vi.hoisted(() => {
     OutsideCallingWindowError,
     bookViaApi: vi.fn(),
     previewBooking: vi.fn(),
+    pageBookingFailure: vi.fn(async (_err: unknown) => {}),
     listBookings: vi.fn(),
     getPersonBookingById: vi.fn(),
     lookupPersonBookings: vi.fn(),
@@ -73,6 +74,7 @@ vi.mock("@/lib/booking/service", () => service);
 vi.mock("@/lib/monitor/record-api-outcome", () => monitor);
 
 import { POST, GET } from "./route";
+import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
 import { deadlineWithinBudget } from "@/lib/call-budget";
 import { BOOKING_CONFIRM_BUDGET_MS } from "@/lib/booking/confirm-budget";
 import { PARTNER_KEYS } from "@/lib/booking/partner-keys";
@@ -331,6 +333,37 @@ describe("POST /api/bookings (auth skeleton)", () => {
     monitor.recordApiOutcome.mockReset();
   });
 
+
+  // #3102: the hourly cap is read BEFORE the booking's try, under the confirm
+  // budget, so a deadline there used to escape as an unhandled 500. It is the
+  // same outage the booking path answers with VERIFY_UNAVAILABLE.
+  it("answers a deadline from a read before the try with 503 VERIFY_UNAVAILABLE (#3102)", async () => {
+    regalKey.primary.mockReturnValue("real-secret");
+    rateLimit.allowRequest.mockRejectedValueOnce(
+      new DeadlineExceededError("supabase", 4000, { label: "the booking confirm", totalMs: 12_000 }),
+    );
+    const res = await post("Bearer real-secret", VALID_BODY);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ code: "VERIFY_UNAVAILABLE" });
+    expect(service.bookViaApi).not.toHaveBeenCalled();
+    expect(service.pageBookingFailure).toHaveBeenCalledOnce();
+    expect(monitor.recordApiOutcome).toHaveBeenCalledWith(
+      "error",
+      "",
+      "VERIFY_UNAVAILABLE",
+      expect.objectContaining({ by: "unidentifiable" }),
+    );
+    service.pageBookingFailure.mockClear();
+  });
+
+  it("answers a dry run that times out the same way, not as INTERNAL (#3102)", async () => {
+    regalKey.primary.mockReturnValue("real-secret");
+    service.previewBooking.mockRejectedValueOnce(new DeadlineExceededError("google freeBusy.many", 8000));
+    const res = await post("Bearer real-secret", { ...VALID_BODY, dryRun: true });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ code: "VERIFY_UNAVAILABLE" });
+    service.pageBookingFailure.mockClear();
+  });
 
   it("maps each booking error to a stable status + machine code", async () => {
     regalKey.primary.mockReturnValue("real-secret");
