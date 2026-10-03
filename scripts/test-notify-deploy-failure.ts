@@ -50,7 +50,7 @@ assert(
 // "deploy failed, the live site may not have updated" would send the reader to the
 // wrong problem while the commit the scan objected to is already live (L11).
 {
-  const scan = buildDeployFailureMessage({ ...ctx, failedJobs: ["security-scan"] });
+  const scan = buildDeployFailureMessage({ ...ctx, failedJobs: ["security-scan-main"] });
   assert(/security scan/i.test(scan), "a scan-only failure says the security scan failed");
   assert(!/deploy failed/i.test(scan), "and does NOT say the deploy failed");
   assert(/live/i.test(scan) && /rotate/i.test(scan), "it says the commit is live and to rotate anything found");
@@ -60,9 +60,9 @@ assert(
     "the scan message passes the house style too",
   );
 
-  const both = buildDeployFailureMessage({ ...ctx, failedJobs: ["deploy", "security-scan"] });
+  const both = buildDeployFailureMessage({ ...ctx, failedJobs: ["deploy", "security-scan-main"] });
   assert(/deploy failed/i.test(both), "a failed deploy alongside the scan still leads with the deploy");
-  assert(/deploy, security-scan/.test(both), "and names every failed job");
+  assert(/deploy, security-scan-main/.test(both), "and names every failed job");
 
   const unknown = buildDeployFailureMessage({ ...ctx, failedJobs: null });
   assert(unknown === text, "when the jobs could not be read the message is the generic one, claiming nothing more");

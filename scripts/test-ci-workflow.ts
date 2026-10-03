@@ -15,7 +15,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assert, finish } from "./lib/harness.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const ci = readFileSync(join(ROOT, ".github", "workflows", "ci.yml"), "utf8");
@@ -250,6 +250,7 @@ assert(fanInNeeds.length > 0, "#1592: the `ci` job is a fan-in with a `needs` li
 // default (L129, L233).
 const FAN_IN_EXEMPT: Record<string, string> = {
   ci: "the fan-in itself",
+  "security-scan-main": "the scan on a push to main: detective there (#3087), so it must never hold the fan-in or the deploy",
   deploy: "runs AFTER the gate (needs: [ci, migration-drift]), it is not one of its legs",
 };
 
@@ -307,17 +308,40 @@ assert(
   "#1592: the fan-in requires each leg to be exactly `success`, so a skipped or cancelled leg is not read as a pass",
 );
 
-// --- #3087: security-scan gates a pull request and never the deploy ------------
-// It is a leg of the fan-in, judged on a pull_request and warned about on any other
-// event, and it is not in deploy's needs: its rule packs are fetched at run time,
-// so a newly published rule must not hold back an emergency fix. The fan-in's
-// shell is EXTRACTED from this file and run against hand written `needs` payloads,
-// so what is proven is what ships (the same pattern as test-guard-unrun-alert.ts).
+// --- #3087: the security scan gates a pull request and never holds a deploy ----
+// On a pull request the `security-scan` job is a leg of the fan-in. On a push to
+// main that job does not run at all (its job level `if:`), so the fan-in, and the
+// deploy behind it, never WAIT for a scan whose result main tolerates (L304); the
+// scan on main is a separate job, `security-scan-main`, outside the fan-in and
+// outside deploy's needs, whose red result fails the run and pages. Both jobs run
+// the same steps from ONE local composite action, so there is one scan to keep.
+// The fan-in's shell is EXTRACTED from this file and run against hand written
+// `needs` payloads, so what is proven is what ships (as test-guard-unrun-alert.ts).
 {
+  const ifOf = (job: string) => jobHeader(jobBlock(job)).match(/^ {4}if:\s*(.+)$/m)?.[1]?.trim() ?? "";
   assert(fanInNeeds.includes("security-scan"), "#3087: security-scan is a leg of the `ci` fan-in");
+  assert(
+    /^\$\{\{\s*github\.event_name == 'pull_request'\s*\}\}$|^github\.event_name == 'pull_request'$/.test(ifOf("security-scan")),
+    `#3087: the fan-in's security-scan leg runs on a pull request ONLY, so on main it is skipped at once and nothing waits for it (got if: ${ifOf("security-scan") || "none"})`,
+  );
+  assert(jobNames.includes("security-scan-main"), "#3087: main has its own scan job");
+  assert(
+    /github\.event_name == 'push'/.test(ifOf("security-scan-main")),
+    `#3087: and it runs on a push only (got if: ${ifOf("security-scan-main") || "none"})`,
+  );
+  assert(!fanInNeeds.includes("security-scan-main"), "#3087: main's scan is NOT a leg of the fan-in, so it never holds the deploy");
   const deployNeeds = jobBlock("deploy").match(/^\s*needs:\s*\[([^\]]*)\]/m)?.[1] ?? "";
   assert(deployNeeds.trim().length > 0, "#3087: the deploy job's needs are readable");
-  assert(!/security-scan/.test(deployNeeds), "#3087: deploy does NOT need security-scan directly");
+  assert(!/security-scan/.test(deployNeeds), "#3087: deploy does NOT need either scan directly");
+  for (const job of ["security-scan", "security-scan-main"]) {
+    const uses = jobSteps(jobBlock(job)).filter((st) => /^ {6}- uses: \.\/\.github\/actions\/security-scan\s*$/m.test(st));
+    eq(uses.length, 1, `#3087: \`${job}\` runs the one shared scan action`);
+    assert(!/semgrep scan|gitleaks git/.test(jobBlock(job)), `#3087: and holds no copy of the scan steps itself`);
+  }
+  const action = readFileSync(join(ROOT, ".github", "actions", "security-scan", "action.yml"), "utf8");
+  assert(/using:\s*["']?composite["']?/.test(action), "#3087: the shared scan is a composite action");
+  assert(/gitleaks git /.test(action) && /semgrep scan /.test(action), "#3087: and it runs both scanners");
+  assert(/--config p\/react/.test(action) && /--config p\/nextjs/.test(action), "#3087: with the react and nextjs packs");
 
   const steps = jobSteps(fanIn);
   const step = steps.find((st) => /name:\s*Every CI leg succeeded/.test(st)) ?? "";
@@ -352,10 +376,17 @@ assert(
   const prRed = fanInRun("pull_request", legs({ "security-scan": "failure" }));
   assert(prRed.status === 1, "#3087: a red security-scan FAILS the fan-in on a pull request");
   assert(/security-scan=failure/.test(prRed.stdout), "#3087: and names it");
-  const mainRed = fanInRun("push", legs({ "security-scan": "failure" }));
-  assert(mainRed.status === 0, "#3087: on a push to main a red security-scan does not hold back the deploy");
-  assert(/::warning::security-scan/.test(mainRed.stdout), "#3087: and is warned about rather than passed in silence");
-  const mainBuildRed = fanInRun("push", legs({ build: "failure", "security-scan": "failure" }));
+  const prSkipped = fanInRun("pull_request", legs({ "security-scan": "skipped" }));
+  assert(prSkipped.status === 1, "#3087: a SKIPPED scan on a pull request is not a pass");
+  // What a push to main really hands the fan-in: the leg skipped by its own `if:`.
+  const mainSkipped = fanInRun("push", legs({ "security-scan": "skipped" }));
+  assert(mainSkipped.status === 0, "#3087: on a push to main the skipped scan leg does not fail the fan-in, so the deploy goes ahead");
+  const mainRan = fanInRun("push", legs({ "security-scan": "failure" }));
+  assert(
+    mainRan.status === 1,
+    "#3087: only SKIPPED is excused on main: a scan leg that somehow ran and failed there still fails, rather than a broken `if:` being waved through",
+  );
+  const mainBuildRed = fanInRun("push", legs({ build: "failure", "security-scan": "skipped" }));
   assert(mainBuildRed.status === 1, "#3087: the exemption covers security-scan ONLY, so a red build still fails on main");
   const skipped = fanInRun("pull_request", legs({ vitest: "skipped" }));
   assert(skipped.status === 1, "#1592: a skipped leg is not a pass");

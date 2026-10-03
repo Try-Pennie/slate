@@ -164,23 +164,60 @@ async function gate(env: Record<string, string | undefined>, f: ReturnType<typeo
 }
 
 // --- wired, not merely written (L3) ---------------------------------------------
+//
+// Judged on STEPS with comments stripped, never on the job's raw text: the comment
+// above the gate step names the script, so a check that searched the text would
+// pass with the step deleted (L135). The control below plants exactly that.
+
+/** The deploy job's text with comment lines removed. */
+function deployJob(ci: string): string {
+  const lines = ci.split("\n");
+  const start = lines.findIndex((l) => l === "  deploy:");
+  if (start < 0) return "";
+  const rest = lines.slice(start + 1);
+  const end = rest.findIndex((l) => /^ {2}[\w-]+:$/.test(l));
+  return (end < 0 ? rest : rest.slice(0, end)).filter((l) => !/^\s*#/.test(l)).join("\n");
+}
+
+/** What the wiring checks found, so a planted control can be judged the same way. */
+function wiring(job: string) {
+  const [header = "", body = ""] = job.split(/^ {4}steps:\n/m);
+  const steps = body.split(/^(?= {6}- )/m).filter((st) => /^ {6}- /.test(st));
+  const gate = steps.findIndex((st) => /^\s*run: node [^\n]*scripts\/check-ci-before-deploy\.ts\s*$/m.test(st));
+  const ship = steps.findIndex((st) => /^\s*pnpm cf:deploy\s*$/m.test(st));
+  const install = steps.findIndex((st) => /^\s*run: pnpm install\b/m.test(st));
+  return {
+    gate,
+    beforeDeploy: gate >= 0 && ship > gate,
+    beforeInstall: gate >= 0 && (install < 0 || gate < install),
+    sha: gate >= 0 && /HEAD_SHA:\s*\$\{\{\s*github\.sha\s*\}\}/.test(steps[gate]!),
+    checksRead: /^\s*checks:\s*read\s*$/m.test(header),
+  };
+}
 
 {
   const ci = readFileSync(join(import.meta.dirname, "..", ".github", "workflows", "ci.yml"), "utf8");
-  const lines = ci.split("\n");
-  const start = lines.findIndex((l) => l === "  deploy:");
-  assert(start > 0, "ci.yml has a deploy job");
-  const rest = lines.slice(start + 1);
-  const end = rest.findIndex((l) => /^ {2}[\w-]+:$/.test(l));
-  const deploy = (end < 0 ? rest : rest.slice(0, end)).join("\n");
-  const gateAt = deploy.indexOf("scripts/check-ci-before-deploy.ts");
-  const deployAt = deploy.indexOf("pnpm cf:deploy");
-  assert(gateAt > 0, "the deploy job runs the ci gate");
-  assert(deployAt > gateAt, "BEFORE it deploys");
-  const installAt = deploy.indexOf("pnpm install");
-  assert(installAt < 0 || gateAt < installAt, "and before the install, so a refusal spends nothing");
-  assert(/HEAD_SHA:\s*\$\{\{\s*github\.sha\s*\}\}/.test(deploy), "against the sha this run is about to ship");
-  assert(/checks:\s*read/.test(deploy), "with a token allowed to read check runs");
+  const job = deployJob(ci);
+  assert(job.length > 0, "ci.yml has a deploy job");
+  const w = wiring(job);
+  assert(w.gate >= 0, "the deploy job has a step whose run line invokes the ci gate");
+  assert(w.beforeDeploy, "BEFORE the step that deploys");
+  assert(w.beforeInstall, "and before the install, so a refusal spends nothing");
+  assert(w.sha, "against the sha this run is about to ship, set on that step");
+  assert(w.checksRead, "with a token allowed to read check runs");
+
+  // Positive control: the gate STEP deleted from the real ci.yml in memory, its
+  // explanatory comment left in place. Every wiring check must notice.
+  const raw = ci.split("\n");
+  const at = raw.findIndex((l) => /- name: Refuse unless ci passed on this exact commit/.test(l));
+  assert(at > 0, "control: the real gate step is there to delete");
+  let stop = at + 1;
+  while (stop < raw.length && !/^ {6}- /.test(raw[stop]!)) stop++;
+  const planted = [...raw.slice(0, at), ...raw.slice(stop)].join("\n");
+  assert(/scripts\/check-ci-before-deploy\.ts/.test(planted), "control: the comment naming the script survives the deletion");
+  const pw = wiring(deployJob(planted));
+  eq(pw.gate, -1, "control: with the step gone, no step invokes the gate, whatever the comment says");
+  assert(!pw.beforeDeploy && !pw.beforeInstall && !pw.sha, "control: and every wiring check fails");
 }
 
 finish();

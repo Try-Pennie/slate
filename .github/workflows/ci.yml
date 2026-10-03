@@ -300,13 +300,12 @@ jobs:
       # name, which the one exception below needs.
       #
       # #3087: security-scan is a leg, and it GATES A PULL REQUEST, so a change that
-      # fails the secret scan or static analysis cannot merge green. On any other
-      # event (a push to main) it is judged as a warning only, so it stays out of the
-      # deploy: its semgrep rule packs are fetched at run time, and a newly published
-      # rule must not hold back an emergency fix over code nobody touched. A red scan
-      # on main still fails its own job, which makes the CI run fail, which pages
-      # through deploy-alert.yml naming the scan. Pinned, block and all, by
-      # scripts/test-ci-workflow.ts, which runs this exact script.
+      # fails the secret scan or static analysis cannot merge green. On a push its
+      # own `if:` skips it at once, so nothing here waits for a scan; this step
+      # excuses exactly that skip. The push is scanned by security-scan-main, outside
+      # this fan-in, whose red result fails the run and pages through
+      # deploy-alert.yml. Pinned, block and all, by scripts/test-ci-workflow.ts,
+      # which runs this exact script.
       - name: Every CI leg succeeded
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -326,8 +325,11 @@ jobs:
           failed=""
           while IFS='=' read -r leg r; do
             if [ "$r" != "success" ]; then
-              if [ "$EVENT_NAME" != "pull_request" ] && [[ " $PR_ONLY_LEGS " == *" $leg "* ]]; then
-                echo "::warning::$leg did not succeed ($r). It gates pull requests only, so it does not hold back this $EVENT_NAME run; the run still goes red and the deploy failure alert names it."
+              # Only SKIPPED is excused, and only off a pull request: that is the leg's
+              # own `if:` keeping it off main. A pull-request-only leg that somehow ran
+              # and failed here still fails, so a broken `if:` is not waved through.
+              if [ "$EVENT_NAME" != "pull_request" ] && [ "$r" = "skipped" ] && [[ " $PR_ONLY_LEGS " == *" $leg "* ]]; then
+                echo "$leg is skipped on $EVENT_NAME by design: it gates pull requests only, and security-scan-main covers this push."
                 continue
               fi
               failed="$failed $leg=$r"
@@ -362,15 +364,34 @@ jobs:
   # cannot block a correctness failure from being reported, and so its runtime is
   # visible separately.
   #
-  # On a PULL REQUEST it is a leg of the `ci` fan-in (#3087), so a change that fails
-  # it cannot merge green. On main it is judged as a warning only and is NOT in
-  # `deploy`'s `needs`: the semgrep rule packs are fetched at run time (see below),
-  # so a newly published rule could otherwise block an emergency deploy over code
-  # nobody touched, which is a worse outcome than a late finding. There it is
-  # DETECTIVE, like every other control over main on the free plan (see the
-  # main-push guard, #1027): a red scan fails the CI run, deploy-alert.yml pages
-  # naming it, and a red run means look now and rotate if needed.
+  # TWO jobs, one scan (#3087). The steps live once, in the local composite action
+  # .github/actions/security-scan, and each job is a checkout plus that action:
+  #
+  #   - `security-scan` runs on a PULL REQUEST only and is a leg of the `ci`
+  #     fan-in, so a change that fails it cannot merge green. On a push its job
+  #     level `if:` skips it at once, so the fan-in, and the deploy behind it,
+  #     never WAIT for a scan whose result main tolerates (L304).
+  #   - `security-scan-main` runs on a PUSH only, outside the fan-in and outside
+  #     `deploy`'s `needs`. The semgrep rule packs are fetched at run time, so a
+  #     newly published rule must not block an emergency deploy over code nobody
+  #     touched. There it is DETECTIVE, like every other control over main on the
+  #     free plan (see the main-push guard, #1027): a red scan fails the CI run,
+  #     deploy-alert.yml pages naming it, and a red run means look now and rotate
+  #     if needed.
   security-scan:
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 15  # measured max 97s
+    runs-on: ubuntu-latest
+    steps:
+      # Full history: the secret scan reads the commits a pull request ADDS, and
+      # needs the base commit present to work out what that range is.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/security-scan
+
+  security-scan-main:
+    if: github.event_name == 'push'
     # alert-latency-ok: it finishes about three minutes BEFORE the deploy does, so
     # it never holds the run open and never delays the deploy failure alert
     # (#2402). Measured 86s and 97s against deploys ending at 302s and 300s, runs
@@ -378,75 +399,11 @@ jobs:
     timeout-minutes: 15  # measured max 97s
     runs-on: ubuntu-latest
     steps:
-      # Full history: the secret scan reads the commits a push ADDS, and needs the
-      # base commit present to work out what that range is.
+      # Full history: the secret scan reads the commits a push ADDS.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-
-      # The official gitleaks action requires a paid licence key for an
-      # organisation, so the binary is fetched directly. Pinned by version AND
-      # verified by checksum: an unverified download into a job is the same class
-      # of exposure as an unpinned action tag, which is what #1051 was about.
-      - name: Install gitleaks
-        env:
-          GITLEAKS_VERSION: 8.30.1
-          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
-        run: |
-          set -euo pipefail
-          f="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          curl -sSfL -o "$f" \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${f}"
-          echo "${GITLEAKS_SHA256}  ${f}" | sha256sum -c -
-          tar -xzf "$f" gitleaks
-          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
-          gitleaks version
-
-      # The COMMITS this push adds, not the working tree. A secret added in one
-      # commit and deleted in the next is still readable by anyone with repo
-      # access and still needs rotating, and a working tree scan calls that clean.
-      #
-      # --redact so a hit never prints the credential into a public build log,
-      # which would turn the detection into a second disclosure.
-      - name: Scan for committed secrets
-        env:
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-          HEAD: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
-            echo "No usable base commit, scanning full history instead of a range."
-            gitleaks git --no-banner --redact --config .gitleaks.toml
-          else
-            echo "Scanning $BASE..$HEAD"
-            gitleaks git --no-banner --redact --config .gitleaks.toml \
-              --log-opts "$BASE..$HEAD"
-          fi
-
-      # Pinned, like everything else. NOTE the deliberate residual risk: the rule
-      # PACKS are fetched from the semgrep registry at run time, so unlike the
-      # binary they are not pinned and a newly published rule can fail a build
-      # over code nobody touched. That is accepted rather than overlooked: the
-      # alternative is vendoring a large ruleset that then never improves. When it
-      # happens, fix the finding or annotate the line with `nosemgrep` and a
-      # reason, and do not disable the job.
-      - name: Install semgrep
-        run: pipx install semgrep==1.172.0
-
-      # p/typescript is the injection and authz surface the bespoke guards do not
-      # cover; p/secrets is defence in depth beside gitleaks, matching on code
-      # shape rather than on entropy. p/react and p/nextjs (#3087) cover the
-      # framework this app is written in: dangerouslySetInnerHTML, unsafe hrefs,
-      # server action and route handler patterns. Both were clean on the tree
-      # when added. p/owasp-top-ten was tried too and is NOT here: on 2026-10-03 it
-      # reported three findings in workflow and Dependabot config (a shell
-      # interpolation in loadtest.yml, no update cooldown in dependabot.yml), so as a
-      # gate it would be red on every pull request.
-      - name: Static analysis
-        run: |
-          semgrep scan --config p/typescript --config p/secrets \
-            --config p/react --config p/nextjs \
-            --error --quiet --metrics=off --disable-version-check
+      - uses: ./.github/actions/security-scan
 
   # Deploy to the slate Worker on every push to main, after ci passes. Skips
   # (passes) until the CLOUDFLARE_API_TOKEN secret is set; run pnpm cf:deploy

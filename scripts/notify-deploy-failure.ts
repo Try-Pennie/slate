@@ -35,8 +35,8 @@ export interface DeployFailureContext {
   failedJobs?: string[] | null;
 }
 
-/** The leg that is judged on pull requests only and never holds back the deploy. */
-const SCAN_JOB = "security-scan";
+/** The scan job on a push to main (#3087): outside the fan-in, so it never holds back the deploy. */
+const SCAN_JOB = "security-scan-main";
 
 /** Injectable poster so the core is testable with a hand-written fake. */
 export type PostFn = (msg: {
