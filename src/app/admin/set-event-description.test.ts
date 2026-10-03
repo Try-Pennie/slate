@@ -42,7 +42,15 @@ const update = vi.hoisted(() => vi.fn((...args: unknown[]) => {
   updateArgs.push(args[0]);
   return chain;
 }));
-const from = vi.hoisted(() => vi.fn(() => ({ update })));
+/** #3122: the read that tells a row that moved on from one that is not there. */
+const existing = vi.hoisted(() => ({ row: null as { id: string } | null }));
+const select = vi.hoisted(() =>
+  vi.fn(() => {
+    const c = { eq: () => c, maybeSingle: async () => ({ data: existing.row, error: null }) };
+    return c;
+  }),
+);
+const from = vi.hoisted(() => vi.fn(() => ({ update, select })));
 const markAllBucketSlotsStale = vi.hoisted(() => vi.fn(async () => 3));
 
 vi.mock("@/lib/auth", () => auth);
@@ -60,15 +68,23 @@ vi.mock("@/lib/salesforce/sync", () => ({ syncSalesforceAgents: vi.fn(), AGENTS_
 vi.mock("@/lib/notify/streak", () => ({ clearFailureStreak: vi.fn(), recordFailureStreak: vi.fn(), recordConsecutiveStreak: vi.fn() }));
 
 import { setEventDescription } from "./actions";
+import { refusedQuery } from "@/lib/admin/save-outcomes";
+import { CHANGED_SINCE_OPENED, PAGE_OUT_OF_DATE } from "@/lib/admin/edit-version";
+
+/** The version the editor was drawn from (#3122). */
+const LOADED = "2026-10-03T10:00:00.123456+00:00";
 
 function form(entries: Record<string, string>): FormData {
   const fd = new FormData();
+  // #3122: the version the editor was drawn from; a case removes it to test the refusal.
+  fd.set("loaded_updated_at", LOADED);
   for (const [k, v] of Object.entries(entries)) fd.set(k, v);
   return fd;
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  existing.row = null;
   eqCalls.length = 0;
   updateArgs.length = 0;
   result.error = null;
@@ -107,6 +123,7 @@ describe("setEventDescription", () => {
     expect(eqCalls).toEqual([
       ["id", "et1"],
       ["org_id", "o1"],
+      ["updated_at", LOADED],
     ]);
     expect(recordAudit).toHaveBeenCalled();
     // The description rides in the cached slots payload, so the served copy is
@@ -151,10 +168,29 @@ describe("setEventDescription", () => {
   // this org owns. Indistinguishable from success on the error field alone.
   it("tells the author when the save matched no row of theirs", async () => {
     result.count = 0;
+    existing.row = null;
     const to = await run({ event_type_id: "someone-elses", description: DANS_COPY });
     expect(to).toContain("error=");
     expect(to).not.toContain("ok=");
+    expect(to).toBe(`/admin/booker-copy${refusedQuery("That event type was not found.")}`);
     expect(recordAudit).not.toHaveBeenCalled();
+  });
+
+  // #3122: two admins editing the description at once. The second save matches
+  // nothing because the first moved the version, and is told so, not "not found".
+  it("tells the author somebody else saved since they opened the page", async () => {
+    result.count = 0;
+    existing.row = { id: "et1" };
+    const to = await run({ event_type_id: "et1", description: DANS_COPY });
+    expect(to).toBe(`/admin/booker-copy${refusedQuery(CHANGED_SINCE_OPENED)}`);
+    expect(markAllBucketSlotsStale).not.toHaveBeenCalled();
+    expect(recordAudit).not.toHaveBeenCalled();
+  });
+
+  it("refuses a form that carried no version, before writing anything", async () => {
+    const to = await run({ event_type_id: "et1", description: DANS_COPY, loaded_updated_at: "" });
+    expect(to).toBe(`/admin/booker-copy${refusedQuery(PAGE_OUT_OF_DATE)}`);
+    expect(update).not.toHaveBeenCalled();
   });
 
   // Both directions, or an action wired to redirect to an error every time would

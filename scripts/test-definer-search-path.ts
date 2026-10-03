@@ -295,6 +295,7 @@ const EXPECTED_PINNED = [
   // #2002: replaces an agent's timezone AND their week in one transaction, so a
   // failed rules write cannot leave the new zone sitting over the old hours.
   "replace_user_schedule",
+  "replace_user_schedule_if_unchanged",
   "reserve_agent_link_name",
   // #2369: the digit rule two stored phone numbers are compared by. Deliberately not
   // libphonenumber, which no SQL expression reproduces; see migration 0124.

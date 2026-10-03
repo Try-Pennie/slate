@@ -17,7 +17,7 @@
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs \
 //        scripts/test-slot-row-write.ts
-import { writeSlotRow } from "../src/lib/availability/slot-row-write.ts";
+import { markSlotRowsInvalidated, writeSlotRow } from "../src/lib/availability/slot-row-write.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 interface Recorded {
@@ -25,6 +25,7 @@ interface Recorded {
   values: Record<string, unknown>;
   eq: [string, unknown][];
   lt: [string, unknown][];
+  or: string[];
 }
 
 /**
@@ -45,7 +46,7 @@ function fakeDb(results: { rows?: unknown[]; error?: { code?: string; message: s
     from(_table: string) {
       return {
         update(values: Record<string, unknown>) {
-          const rec: Recorded = { kind: "update", values, eq: [], lt: [] };
+          const rec: Recorded = { kind: "update", values, eq: [], lt: [], or: [] };
           calls.push(rec);
           const b: Record<string, unknown> = {
             eq(col: string, val: unknown) {
@@ -56,13 +57,29 @@ function fakeDb(results: { rows?: unknown[]; error?: { code?: string; message: s
               rec.lt.push([col, val]);
               return b;
             },
+            or(expr: string) {
+              rec.or.push(expr);
+              return b;
+            },
             select: () => answer(),
           };
           return b;
         },
         insert(values: Record<string, unknown>) {
-          calls.push({ kind: "insert", values, eq: [], lt: [] });
+          calls.push({ kind: "insert", values, eq: [], lt: [], or: [] });
           return answer();
+        },
+        // The one read: why a refused write was refused. Answers the next scripted
+        // result's first row, or no row.
+        select(_cols: string) {
+          const b: Record<string, unknown> = {
+            eq: () => b,
+            maybeSingle: async () => {
+              const r = await answer();
+              return { data: (r.data as unknown[] | null)?.[0] ?? null, error: r.error };
+            },
+          };
+          return b;
         },
       };
     },
@@ -92,6 +109,12 @@ const PAYLOAD = { slots: [{ start: "2026-09-02T13:00:00.000Z" }] };
     upd.lt.some(([c, v]) => c === "computed_at" && v === STAMP),
     "and gated on the stored row being OLDER than this compute",
   );
+  // #3118: and on no save having invalidated the row since this compute began.
+  eq(
+    upd.or,
+    [`invalidated_at.is.null,invalidated_at.lt.${STAMP}`],
+    "and gated on the row not having been invalidated at or after this compute began",
+  );
 }
 
 // --- a fresher row stands -----------------------------------------------------
@@ -103,6 +126,7 @@ const PAYLOAD = { slots: [{ start: "2026-09-02T13:00:00.000Z" }] };
     { rows: [] },
     { error: { code: "23505", message: "duplicate key value violates unique constraint" } },
     { rows: [] },
+    { rows: [{ computed_at: "2026-09-01T12:00:05.000Z", invalidated_at: null }] },
   ]);
   eq(
     await writeSlotRow(db, "101", PAYLOAD, STARTED),
@@ -158,6 +182,161 @@ const PAYLOAD = { slots: [{ start: "2026-09-02T13:00:00.000Z" }] };
     await writeSlotRow(db, "101", PAYLOAD, STARTED),
     "failed",
     "an insert error other than a duplicate is a failure, not a fresher row",
+  );
+}
+
+// --- a compute that straddles an event type save must not land (#3118) --------
+//
+// An admin save marks every row stale so the recompute lane rebuilds it under the
+// new settings. A compute that STARTED before the save read the old settings, and
+// its stamp (the compute start) is newer than the epoch the save wrote, so the
+// computed_at gate alone let it overwrite the stale mark. The row then looked fresh
+// for the whole freshness window while offering times under the old settings.
+//
+// So the save also records `invalidated_at`, and a write whose compute began at or
+// before that instant is refused. This drives the real interleaving against a
+// table that applies the filters it is given: compute start, save, then write.
+
+interface SlotRow {
+  bucket_code: string;
+  payload: unknown;
+  computed_at: string;
+  invalidated_at: string | null;
+}
+
+/** An in-memory `bucket_slots` that evaluates the filter shapes the writers send. */
+function tableDb(rows: SlotRow[]) {
+  const matches = (row: SlotRow, filters: ((r: SlotRow) => boolean)[]) => filters.every((f) => f(row));
+  const cell = (r: SlotRow, col: string) => (r as unknown as Record<string, string | null>)[col];
+  const orFilter = (expr: string) => (r: SlotRow) =>
+    expr.split(",").some((part) => {
+      const [col, op, ...rest] = part.split(".");
+      const val = rest.join(".");
+      const v = cell(r, col);
+      if (op === "is" && val === "null") return v === null;
+      if (op === "lt") return v !== null && Date.parse(v) < Date.parse(val);
+      throw new Error(`fake cannot read or() part ${part}`);
+    });
+  const db = {
+    from(_t: string) {
+      return {
+        update(values: Partial<SlotRow>) {
+          const filters: ((r: SlotRow) => boolean)[] = [];
+          const b: Record<string, unknown> = {
+            eq(col: string, val: string) {
+              filters.push((r) => cell(r, col) === val);
+              return b;
+            },
+            lt(col: string, val: string) {
+              filters.push((r) => Date.parse(String(cell(r, col))) < Date.parse(val));
+              return b;
+            },
+            gte(col: string, val: string) {
+              filters.push((r) => Date.parse(String(cell(r, col))) >= Date.parse(val));
+              return b;
+            },
+            or(expr: string) {
+              filters.push(orFilter(expr));
+              return b;
+            },
+            select: async () => {
+              const hit = rows.filter((r) => matches(r, filters));
+              for (const r of hit) Object.assign(r, values);
+              return { data: hit.map((r) => ({ bucket_code: r.bucket_code })), error: null };
+            },
+          };
+          return b;
+        },
+        insert: async (values: SlotRow) => {
+          if (rows.some((r) => r.bucket_code === values.bucket_code)) {
+            return { data: null, error: { code: "23505", message: "duplicate key" } };
+          }
+          rows.push({ ...values, invalidated_at: null });
+          return { data: null, error: null };
+        },
+        select(_cols: string) {
+          const filters: ((r: SlotRow) => boolean)[] = [];
+          const b: Record<string, unknown> = {
+            eq(col: string, val: string) {
+              filters.push((r) => cell(r, col) === val);
+              return b;
+            },
+            maybeSingle: async () => ({ data: rows.find((r) => matches(r, filters)) ?? null, error: null }),
+          };
+          return b;
+        },
+      };
+    },
+  };
+  return { db: db as never, rows };
+}
+
+{
+  const OLD = { slots: ["old settings"] };
+  const NEW = { slots: ["new settings"] };
+  const computeStarted = Date.parse("2026-10-03T10:00:00.000Z");
+  const savedAt = Date.parse("2026-10-03T10:00:01.000Z");
+  const nextCompute = Date.parse("2026-10-03T10:01:00.000Z");
+
+  const { db, rows } = tableDb([
+    { bucket_code: "101", payload: OLD, computed_at: "2026-10-03T09:58:00.000Z", invalidated_at: null },
+  ]);
+
+  // 1. a compute starts and reads the old settings (nothing is written yet)
+  // 2. the admin saves: every row is marked stale
+  eq(await markSlotRowsInvalidated(db, savedAt), 1, "the save marks the one row");
+  eq(rows[0].computed_at, "1970-01-01T00:00:00.000Z", "the row is back dated so the lane treats it as due");
+  eq(rows[0].invalidated_at, new Date(savedAt).toISOString(), "and carries the instant it was invalidated");
+
+  // 3. the straddling compute finishes and tries to write
+  eq(
+    await writeSlotRow(db, "101", OLD, computeStarted),
+    "invalidated",
+    "a compute that began before the save is refused, and says why",
+  );
+  eq(rows[0].computed_at, "1970-01-01T00:00:00.000Z", "so the row stays due and cannot look fresh");
+
+  // 4. the next compute starts after the save and lands
+  eq(await writeSlotRow(db, "101", NEW, nextCompute), "written", "a compute that began after the save writes");
+  eq(rows[0].payload, NEW, "carrying the new settings");
+  eq(rows[0].computed_at, new Date(nextCompute).toISOString(), "stamped from its own start");
+}
+
+{
+  // A compute that began at the very instant of the save cannot be shown to have
+  // read the new settings, so equality is refused too.
+  const savedAt = Date.parse("2026-10-03T10:00:01.000Z");
+  const { db } = tableDb([
+    { bucket_code: "101", payload: {}, computed_at: "2026-10-03T09:00:00.000Z", invalidated_at: null },
+  ]);
+  await markSlotRowsInvalidated(db, savedAt);
+  eq(await writeSlotRow(db, "101", {}, savedAt), "invalidated", "a compute starting at the save instant is refused");
+}
+
+{
+  // A row ALREADY at the stale stamp (a second save while the first is draining)
+  // must still be re-marked: a compute straddling the second save is just as wrong.
+  const firstSave = Date.parse("2026-10-03T10:00:00.000Z");
+  const computeStarted = Date.parse("2026-10-03T10:00:30.000Z");
+  const secondSave = Date.parse("2026-10-03T10:00:40.000Z");
+  const { db, rows } = tableDb([
+    { bucket_code: "101", payload: {}, computed_at: "2026-10-03T09:00:00.000Z", invalidated_at: null },
+  ]);
+  await markSlotRowsInvalidated(db, firstSave);
+  eq(await markSlotRowsInvalidated(db, secondSave), 1, "a second save re-marks a row that is already stale");
+  eq(rows[0].invalidated_at, new Date(secondSave).toISOString(), "moving its invalidation forward");
+  eq(await writeSlotRow(db, "101", {}, computeStarted), "invalidated", "so a compute between the two saves is refused");
+}
+
+{
+  // CONTROL: an ordinary overlap with no save in it is still the fresher row standing.
+  const { db } = tableDb([
+    { bucket_code: "101", payload: {}, computed_at: "2026-10-03T10:00:05.000Z", invalidated_at: null },
+  ]);
+  eq(
+    await writeSlotRow(db, "101", {}, Date.parse("2026-10-03T10:00:00.000Z")),
+    "kept-newer",
+    "with no invalidation, a slower compute is still reported as keeping the fresher row",
   );
 }
 

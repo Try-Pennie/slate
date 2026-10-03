@@ -54,6 +54,9 @@ export interface UpdateEventTypeResult {
   error: { message: string } | null;
   /** True when the served copy was refreshed. False when the refresh itself failed. */
   invalidated: boolean;
+  /** True when the row exists but no longer holds the version the editor loaded
+   *  (#3122): somebody saved it after the page was opened, so nothing was written. */
+  changed: boolean;
 }
 
 /**
@@ -76,24 +79,44 @@ export async function updateEventType(opts: {
   eventTypeId: string;
   orgId: string;
   patch: EventTypePatch;
+  /**
+   * The row's `updated_at` as the editor's page loaded it (#3122). REQUIRED, so
+   * every editor is enumerated by tsc: the write lands only while the row still
+   * holds it, which is what stops two admins silently overwriting each other.
+   */
+  loadedUpdatedAt: string;
 }): Promise<UpdateEventTypeResult> {
-  const { error, count } = await supabaseAdmin()
+  const db = supabaseAdmin();
+  const { error, count } = await db
     .from("event_types")
     .update(opts.patch, { count: "exact" })
     .eq("id", opts.eventTypeId)
-    .eq("org_id", opts.orgId);
+    .eq("org_id", opts.orgId)
+    .eq("updated_at", opts.loadedUpdatedAt);
 
-  if (error) return { count: 0, error, invalidated: false };
+  if (error) return { count: 0, error, invalidated: false, changed: false };
   // A null count with no error is not a measurement of zero. Treating it as zero
   // would skip the invalidation on a write that may well have landed, so it is
   // handled as "changed something" for invalidation purposes while still being
   // reported honestly to the caller.
-  const changed = count ?? null;
-  if (changed === 0) return { count: 0, error: null, invalidated: false };
+  const written = count ?? null;
+  if (written === 0) {
+    // Nothing matched: either the row is not this org's (or not there at all), or
+    // it moved on since the page was drawn. One PK read tells them apart, so the
+    // person is told the right one; an unreadable answer is an error, never a guess.
+    const { data, error: readError } = await db
+      .from("event_types")
+      .select("id")
+      .eq("id", opts.eventTypeId)
+      .eq("org_id", opts.orgId)
+      .maybeSingle();
+    if (readError) return { count: 0, error: readError, invalidated: false, changed: false };
+    return { count: 0, error: null, invalidated: false, changed: data !== null };
+  }
 
   try {
     await markAllBucketSlotsStale();
-    return { count: changed ?? 1, error: null, invalidated: true };
+    return { count: written ?? 1, error: null, invalidated: true, changed: false };
   } catch (err) {
     log.error(
       "event-type-store",
@@ -103,6 +126,6 @@ export async function updateEventType(opts: {
       },
       err,
     );
-    return { count: changed ?? 1, error: null, invalidated: false };
+    return { count: written ?? 1, error: null, invalidated: false, changed: false };
   }
 }

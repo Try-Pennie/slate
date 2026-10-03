@@ -11,6 +11,7 @@ import type { PooledBucket } from "./pool-recompute";
 import type { InvalidationMarker } from "./precompute-cron";
 import { log } from "@/lib/log";
 import {
+  markSlotRowsInvalidated,
   writeSlotRow,
   SlotRowRefused,
   type SlotRowWriteOutcome,
@@ -122,10 +123,6 @@ export async function listBucketSlotCounts(): Promise<{ code: string; slots: num
   });
 }
 
-/** Epoch stamp used to force a row "due" for recompute (older than any freshness
- *  window). */
-const STALE_STAMP = "1970-01-01T00:00:00.000Z";
-
 /**
  * Mark every precomputed row stale (#216): back-date `computed_at` so
  * `bucketsDueForRecompute` treats all buckets as due and the recompute lane
@@ -133,8 +130,9 @@ const STALE_STAMP = "1970-01-01T00:00:00.000Z";
  * horizon-save so a change converges promptly instead of trickling out only as
  * rows naturally age past the freshness window. A bulk write (never a capped read);
  * roster-bounded, so a single statement covers every bucket. Returns the number of
- * rows re-stamped. Idempotent: a second run matches nothing (rows are already at the
- * epoch stamp, so `gt` excludes them).
+ * rows re-stamped. Safe to repeat: a second run re-marks the same rows, and moves
+ * their `invalidated_at` forward so a compute that straddled EITHER save is refused
+ * (#3118, see `markSlotRowsInvalidated`).
  */
 export async function markAllBucketSlotsStale(): Promise<number> {
   // Record the INTENT before causing the staleness (#1301, and the L33 ordering).
@@ -142,15 +140,7 @@ export async function markAllBucketSlotsStale(): Promise<number> {
   // staleness with no marker is the false page this exists to prevent, so the
   // write that can strand us must not be the second one.
   await recordMassInvalidation();
-  const data = unwrap(
-    await supabaseAdmin()
-      .from("bucket_slots")
-      .update({ computed_at: STALE_STAMP })
-      .gt("computed_at", STALE_STAMP)
-      .select("bucket_code"),
-    "markAllBucketSlotsStale",
-  );
-  return (data ?? []).length;
+  return markSlotRowsInvalidated(supabaseAdmin(), Date.now());
 }
 
 /**
@@ -274,6 +264,10 @@ export async function storeBucketSlotsRow(
     // finished last. Harmless (the fresher row is the one serving) but it is the only
     // way to see the overlap from outside.
     log.info("precompute", { msg: "kept a fresher slot row", bucket: code });
+  } else if (outcome === "invalidated") {
+    // A settings save landed while this compute ran (#3118), so these slots describe
+    // the old settings. The row stays due and the next tick rebuilds it.
+    log.info("precompute", { msg: "dropped a compute that began before a settings save", bucket: code });
   }
   return outcome;
 }

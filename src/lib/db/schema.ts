@@ -363,6 +363,20 @@ export interface Database {
             };
         Returns: number;
       };
+      /** #3122, migration 0161: the week write guarded on the schedule row's
+       *  `updated_at` the form loaded (null = the form was drawn with no row).
+       *  Raises SQLSTATE SL409 when the row holds another. */
+      replace_user_schedule_if_unchanged: {
+        Args: {
+          p_user_id: string;
+          p_timezone: string;
+          p_rules: { weekday: number; start_minute: number; end_minute: number }[];
+          p_source: "seed" | "agent" | "admin" | "calcom-import";
+          p_expected: number;
+          p_loaded_updated_at: string | null;
+        };
+        Returns: number;
+      };
       /** Every SECURITY DEFINER function in `public` with whether the two web roles hold
        *  EXECUTE on it (#2447, migration 0130). The repository guard cannot see a grant made
        *  by hand or a function defined in no migration, so the monitor lane asks the
