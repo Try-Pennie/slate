@@ -1416,10 +1416,12 @@ export async function GET(req: NextRequest) {
         armed: settings!.lowVolumeArmed,
         cooldownMs: cooldownMs.low_booking_volume,
         // alert-key: low_page_volume:*
+        // alert-key: page_volume_share_unknown
         // alert-text-ok: our own copy from page-volume.ts, built from measured
         // counts and the page's own names; no error text can reach it.
         notify: (key, cooldownMs, text) => sendThrottledAlert(key, cooldownMs, text),
         // alert-key: low_page_volume:*
+        // alert-key: page_volume_share_unknown
         // all-clear-proof: scripts/test-page-volume.ts - pins that an unmeasured
         // hour, a low page, a tick outside business hours and a read that threw
         // each clear NOTHING about that page.

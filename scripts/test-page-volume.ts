@@ -33,6 +33,8 @@ import {
   sourceNotRecorded,
   runPageVolumeCheck,
   pageBaselinesAtShare,
+  PAGE_VOLUME_SHARE_UNKNOWN_KEY,
+  PAGE_VOLUME_SHARE_UNKNOWN_COOLDOWN_MS,
   type HeldOffSlate,
   type LowPageId,
   type PageVerdict,
@@ -300,7 +302,16 @@ function harness(opts: {
   share?: ShareInForce;
   heldOff?: Readonly<Partial<Record<LowPageId, HeldOffSlate>>>;
 }) {
-  const calls = { reads: 0, seen: 0, sent: [] as { key: string; text: string }[], resolved: [] as { key: string; text: string }[] };
+  // The share condition (#3193) is kept apart from the pages' own keys, so every case
+  // about a page reads its own keys and the share's cases read theirs.
+  const calls = {
+    reads: 0,
+    seen: 0,
+    sent: [] as { key: string; text: string }[],
+    resolved: [] as { key: string; text: string }[],
+    shareSent: [] as { key: string; ms: number; text: string }[],
+    shareCleared: [] as { key: string; text: string }[],
+  };
   const baselines = {
     "income-verification": flat(0, 1),
     "application-review-follow-up": flat(0, 2),
@@ -329,11 +340,12 @@ function harness(opts: {
       tierLow: opts.tierLow === undefined ? false : opts.tierLow,
       armed: opts.armed ?? true,
       cooldownMs: COOLDOWN,
-      notify: async (key, _ms, text) => {
-        calls.sent.push({ key, text });
+      notify: async (key, ms, text) => {
+        if (key === PAGE_VOLUME_SHARE_UNKNOWN_KEY) calls.shareSent.push({ key, ms, text });
+        else calls.sent.push({ key, text });
       },
       resolveRecovered: async (recovered) => {
-        calls.resolved.push(...recovered);
+        for (const r of recovered) (r.key === PAGE_VOLUME_SHARE_UNKNOWN_KEY ? calls.shareCleared : calls.resolved).push(r);
         return recovered.map((r) => r.key);
       },
     });
@@ -380,6 +392,8 @@ const HEALTHY_ROWS: SourceRow[] = [
 // booking. That floor is cal.com's for every lead on the page; the pilot sends Slate
 // 44% of Low (`volume_learning.carriedShare`), so the page is judged at that share.
 const LOW_SHARE: ShareInForce = { state: "applied", share: 0.44, heldSince: null, countedTo: "2026-10-02T07:00:00.000Z" };
+/** Floors high enough to survive thinning to 44%, for the cases about an applied share. */
+const BIG = Object.fromEntries(LOW_PAGES.map((p) => [p.id, flat(0, 20)])) as Record<LowPageId, VolumeBaseline>;
 {
   const SAT_246PM = DateTime.fromISO("2026-10-03T14:46", { zone: ZONE }).toMillis();
   const sat = (min: number, source: string): SourceRow => ({ createdMs: SAT_246PM - min * MIN, source, hostless: false });
@@ -397,14 +411,29 @@ const LOW_SHARE: ShareInForce = { state: "applied", share: 0.44, heldSince: null
     "control: at the whole page's floors the 2:46pm page reproduces",
   );
 
+  // Measured on the committed floors: at 44% NO hour of any Low page survives the
+  // thinning (the busiest cell is a floor of 10, and a binomial draw of 10 at 0.44
+  // falls to 0 far more often than the fit's 0.001 tolerance). So at today's share
+  // the per page alarm cannot judge any page at all, and says so rather than paging.
+  const atToday = pageBaselinesAtShare(MEASURED_PAGE_BASELINES, LOW_SHARE);
+  eq(atToday.state, "unmeasured", "at 44% every committed page floor thins to 0");
   const carried = at(LOW_SHARE);
   const out = await carried.run();
-  eq(carried.calls.sent.length, 0, "at the share Slate carries, a page booking at its share pages nothing");
-  assert(
-    out.status === "checked" && verdictOf(out.pages, "income-verification").verdict === "unmeasured-hour",
-    "and Income Verification's Saturday afternoon reads UNMEASURED, since 44% of a floor of 1 cannot breach (L543)",
-  );
-  assert(!carried.calls.resolved.some((r) => r.key === pageVolumeAlertKey("income-verification")), "which clears nothing about it");
+  eq(carried.calls.sent.length, 0, "at the share Slate carries, the 2:46pm tick pages nothing about any page");
+  assert(out.status === "share-unknown" && /Slate carried 44% of Low bookings/.test(out.text), `and stands down, naming the share (${out.status === "share-unknown" ? out.text : out.status})`);
+  eq(carried.calls.shareSent.length, 1, "with the one share condition in place of a page");
+  eq(carried.calls.resolved.length, 0, "clearing nothing about any page");
+}
+{
+  // An hour a thinned floor drops to 0 in reads UNMEASURED (L543), beside a page whose
+  // floor survives the thinning and is judged.
+  const SAT_246PM = DateTime.fromISO("2026-10-03T14:46", { zone: ZONE }).toMillis();
+  const h = harness({ nowMs: SAT_246PM, rows: [], share: LOW_SHARE, baselines: { "income-verification": flat(0, 1), "application-review": flat(0, 20) } });
+  const out = await h.run();
+  assert(out.status === "checked" && verdictOf(out.pages, "income-verification").verdict === "unmeasured-hour", "44% of a floor of 1 cannot breach, so that hour reads UNMEASURED");
+  assert(!h.calls.sent.some((s) => s.key === pageVolumeAlertKey("income-verification")), "and is never paged");
+  assert(!h.calls.resolved.some((r) => r.key === pageVolumeAlertKey("income-verification")), "nor cleared");
+  assert(h.calls.sent.some((s) => s.key === pageVolumeAlertKey("application-review")), "control: the page whose floor survives is judged, and pages when silent");
   assert(out.status === "checked" && out.share.share === 0.44 && out.share.heldSince === null, "the step reports the share it judged at");
 }
 {
@@ -451,7 +480,45 @@ const LOW_SHARE: ShareInForce = { state: "applied", share: 0.44, heldSince: null
     ["unreadable", unreadable, r],
   ] as const) {
     assert(out.status === "share-unknown" && out.share === name, `a share ${name} stands the step down (got ${out.status})`);
-    eq(h.calls.reads + h.calls.seen + h.calls.sent.length + h.calls.resolved.length, 0, `and with the share ${name} nothing is read, paged or cleared`);
+    eq(h.calls.reads + h.calls.seen + h.calls.sent.length + h.calls.resolved.length, 0, `and with the share ${name} nothing is read, and no page is paged or cleared`);
+    // It does not stand down silently: one condition, on its own key, at a daily cooldown.
+    eq(h.calls.shareSent.map((s) => s.key), [PAGE_VOLUME_SHARE_UNKNOWN_KEY], `a share ${name} raises the share condition, once`);
+    eq(h.calls.shareSent[0]?.ms, PAGE_VOLUME_SHARE_UNKNOWN_COOLDOWN_MS, "at its own long cooldown");
+    assert(out.status === "share-unknown" && h.calls.shareSent[0]!.text.startsWith(out.text), "saying the cause in the step's own words");
+    assert(/per page low volume alarm cannot page about any one page/.test(h.calls.shareSent[0]!.text), `and what that costs (${h.calls.shareSent[0]?.text})`);
+    eq(h.calls.shareCleared.length, 0, "and clears nothing about the share");
+  }
+  eq(PAGE_VOLUME_SHARE_UNKNOWN_COOLDOWN_MS, 24 * 60 * MIN, "the share condition repeats at most daily");
+  // Disarmed, the per page alarm pages nobody anyway, so saying it is not judging is noise.
+  const disarmed = harness({ rows: [], share: { state: "unreadable" }, armed: false });
+  await disarmed.run();
+  eq(disarmed.calls.shareSent.length, 0, "a disarmed alarm raises no share condition");
+
+  // The all-clear: only a tick that applied a share and judged the pages clears it.
+  const judgedTick = harness({ rows: HEALTHY_ROWS, share: LOW_SHARE, baselines: { "application-review": flat(0, 20) } });
+  eq((await judgedTick.run()).status, "checked", "a share in force judges the pages");
+  eq(judgedTick.calls.shareCleared.map((r) => r.key), [PAGE_VOLUME_SHARE_UNKNOWN_KEY], "and clears the share condition");
+  assert(/judging the Low pages again, at the 44% of Low bookings Slate carries/.test(judgedTick.calls.shareCleared[0]!.text), `in words that say so (${judgedTick.calls.shareCleared[0]?.text})`);
+  eq(judgedTick.calls.shareSent.length, 0, "and raises nothing");
+  const shut = harness({ nowMs: SUNDAY_2PM, share: LOW_SHARE });
+  await shut.run();
+  eq(shut.calls.shareCleared.length + shut.calls.shareSent.length, 0, "a tick outside hours judged nothing, so it neither raises nor clears the share condition");
+  const broken = harness({ rows: [], share: LOW_SHARE, readThrows: true, baselines: BIG });
+  let threw = false;
+  await broken.run().catch(() => (threw = true));
+  assert(threw && broken.calls.shareCleared.length === 0, "a read that threw judged nothing, so it clears nothing");
+
+  // #3193 review: a share of 0, or one so small every floor thins to 0, is not a share
+  // the pages can be judged at. Applied, it would read as a week with no hour to judge
+  // and clear the condition; so it stands the step down as unmeasured, in its own words.
+  for (const tiny of [0, 0.01]) {
+    const zero = harness({ rows: [], share: { ...LOW_SHARE, share: tiny }, baselines: BIG });
+    const zOut = await zero.run();
+    assert(zOut.status === "share-unknown" && zOut.share === "unmeasured", `a share of ${tiny} stands the step down as unmeasured (got ${zOut.status})`);
+    assert(zOut.status === "share-unknown" && new RegExp(`carried ${Math.round(tiny * 100)}% of Low bookings`).test(zOut.text), `and says the share it read (${zOut.status === "share-unknown" ? zOut.text : ""})`);
+    eq(zero.calls.shareSent.length, 1, "and raises the share condition");
+    eq(zero.calls.shareCleared.length, 0, "never clearing it");
+    eq(pageBaselinesAtShare(BIG, { ...LOW_SHARE, share: tiny }).state, "unmeasured", "the shared thinning agrees, so the admin page says the same");
   }
   assert(u.status === "share-unknown" && /has not been measured yet/.test(u.text), `unmeasured says so (${u.status === "share-unknown" ? u.text : ""})`);
   assert(r.status === "share-unknown" && /could not be read/.test(r.text), `unreadable says so (${r.status === "share-unknown" ? r.text : ""})`);
@@ -471,10 +538,10 @@ const LOW_SHARE: ShareInForce = { state: "applied", share: 0.44, heldSince: null
   eq((await harness({ nowMs: SUNDAY_2PM, share: { state: "unreadable" } }).run()).status, "outside-hours", "outside hours reads as outside hours, share or none");
 
   // The one place the admin page and the alarm take their floors from agrees with it.
-  const atLow = pageBaselinesAtShare(MEASURED_PAGE_BASELINES, LOW_SHARE);
-  assert(atLow.state === "applied" && atLow.baselines["income-verification"].cells[5]![14]!.floor120 === 0, "the shared thinning puts Saturday 2pm at a floor of 0");
+  const atLow = pageBaselinesAtShare(BIG, LOW_SHARE);
+  assert(atLow.state === "applied" && atLow.baselines["income-verification"].cells[5]![14]!.floor120 === thinBaseline(flat(0, 20), 0.44).cells[5]![14]!.floor120, "the shared thinning is thinBaseline at the share");
   assert(atLow.state === "applied" && /44% of Low bookings/.test(atLow.text), `and says the share (${atLow.text})`);
-  const atHeld = pageBaselinesAtShare(MEASURED_PAGE_BASELINES, { ...LOW_SHARE, heldSince: "2026-10-02T07:00:00.000Z" });
+  const atHeld = pageBaselinesAtShare(BIG, { ...LOW_SHARE, heldSince: "2026-10-02T07:00:00.000Z" });
   assert(atHeld.state === "applied" && /held since 2026-10-02/.test(atHeld.text), `a held share says it is held (${atHeld.text})`);
   const atWhole = pageBaselinesAtShare(MEASURED_PAGE_BASELINES, WHOLE_SHARE);
   assert(atWhole.state === "applied" && JSON.stringify(atWhole.baselines) === JSON.stringify(MEASURED_PAGE_BASELINES), "at a share of 1 the floors are the measurement, untouched");

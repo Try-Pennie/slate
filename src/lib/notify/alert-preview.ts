@@ -226,7 +226,15 @@ import {
   formatPageUnseenAlert,
   formatPageVolumeAlert,
   formatPageVolumeRecoveryNotice,
+  formatPageShareKnownNotice,
+  formatPageShareUnknownAlert,
+  pageBaselinesAtShare,
 } from "@/lib/monitor/page-volume";
+import { MEASURED_PAGE_BASELINES } from "@/lib/monitor/page-volume-baseline";
+import type { ShareInForce } from "@/lib/monitor/carried-share";
+
+/** #3193: the share condition's cause, in the words the step itself would use. */
+const pageShareCause = (share: ShareInForce): string => pageBaselinesAtShare(MEASURED_PAGE_BASELINES, share).text;
 
 /** A Tuesday 2pm tick, measured, and the same tick with the long floor overridden (#1956). */
 const TUESDAY_2PM: FloorsNow = {
@@ -1019,6 +1027,35 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       { label: "30 min", count: 1, floor: 0 },
       { label: "120 min", count: 6, floor: 2 },
     ]),
+  },
+  {
+    // #3193. One message for the whole per page alarm, in each cause's own words,
+    // because each sends the reader somewhere different: wait for the refit, look at
+    // the stored record, or accept that the share is too small to judge a page at.
+    key: "page_volume_share_unknown",
+    state: "no share of Low has been measured yet",
+    channel: "alert",
+    text: formatPageShareUnknownAlert(pageShareCause({ state: "unmeasured" })),
+  },
+  {
+    key: "page_volume_share_unknown",
+    state: "the stored share cannot be read",
+    channel: "alert",
+    text: formatPageShareUnknownAlert(pageShareCause({ state: "unreadable" })),
+  },
+  {
+    key: "page_volume_share_unknown",
+    state: "the share is too small for any page floor to survive",
+    channel: "alert",
+    text: formatPageShareUnknownAlert(
+      pageShareCause({ state: "applied", share: 0.44, heldSince: null, countedTo: "2026-10-02T07:00:00.000Z" }),
+    ),
+  },
+  {
+    key: "page_volume_share_unknown",
+    state: "the pages are judged at a share again",
+    channel: "recovery",
+    text: formatPageShareKnownNotice(0.75),
   },
   {
     // #1288. Distinct from the low-volume page on purpose: this one sends the

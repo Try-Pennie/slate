@@ -169,6 +169,19 @@ export function pageVolumeAlertKey(id: LowPageId): string {
 }
 
 /**
+ * The condition raised while the per page alarm cannot judge because the share of
+ * Low Slate carries is not known (#3193). One key for the whole alarm, not one per
+ * page: the cause is shared, so one message says it once.
+ */
+export const PAGE_VOLUME_SHARE_UNKNOWN_KEY = "page_volume_share_unknown";
+
+/**
+ * Daily. The condition changes at most once a day, when the refit runs, so repeating
+ * it more often says nothing new, and the tier alarm still watches Low meanwhile.
+ */
+export const PAGE_VOLUME_SHARE_UNKNOWN_COOLDOWN_MS = 24 * 60 * 60_000;
+
+/**
  * How far back a page must have recorded ANY booking before its silence is read as
  * the page breaking. A page whose links carry no `source` records every booking as
  * `not-given`, and would otherwise read as a page that has stopped booking forever.
@@ -495,6 +508,13 @@ export async function runPageVolumeCheck(deps: {
   const atShare = pageBaselinesAtShare(deps.baselines, deps.share);
   if (atShare.state !== "applied") {
     deps.log?.({ share: atShare.state, why: atShare.text });
+    // Standing down is not silent: it says so on its own key, at a daily cooldown.
+    // Disarmed, the alarm pages nobody anyway, so there is nothing it has stopped doing.
+    if (deps.armed) {
+      await deps
+        .notify(PAGE_VOLUME_SHARE_UNKNOWN_KEY, PAGE_VOLUME_SHARE_UNKNOWN_COOLDOWN_MS, formatPageShareUnknownAlert(atShare.text))
+        .catch(logAlertSendFailure(PAGE_VOLUME_SHARE_UNKNOWN_KEY));
+    }
     return { status: "share-unknown", share: atShare.state, text: atShare.text };
   }
 
@@ -608,9 +628,14 @@ export async function runPageVolumeCheck(deps: {
       )
       .join(" "),
   });
+  // A share was applied and every page reached a verdict, measured or unmeasured, so
+  // the alarm is judging again: that, and only that, ends the share condition.
+  recovered.push({ key: PAGE_VOLUME_SHARE_UNKNOWN_KEY, text: formatPageShareKnownNotice(atShare.share) });
   // all-clear-proof: scripts/test-page-volume.ts - pins that an unmeasured hour, a
   // low page, a tick outside business hours and a read that threw each clear
-  // NOTHING about that page; only a page measured at or above its floors does.
+  // NOTHING about that page; only a page measured at or above its floors does. And
+  // that the share condition is cleared only by a tick that applied a share and
+  // judged, never by one that stood down, was outside hours, or threw.
   if (recovered.length > 0) {
     await deps
       .resolveRecovered(recovered)
@@ -627,7 +652,8 @@ export async function runPageVolumeCheck(deps: {
  * (L370). A page's floors cover the whole page, and Slate's half of a split is a
  * thinning of every page alike, so each is thinned by the share itself.
  *
- * An unmeasured or unreadable share yields no floors, only the words for why.
+ * An unmeasured or unreadable share yields no floors, only the words for why, and so
+ * does a share too small for any floor to survive thinning.
  */
 export type PageBaselinesAtShare =
   | { state: "applied"; baselines: Record<LowPageId, VolumeBaseline>; share: number; heldSince: string | null; text: string }
@@ -659,6 +685,22 @@ export function pageBaselinesAtShare(
     LOW_PAGES.map((p) => [p.id, thinBaseline(baselines[p.id], share.share)]),
   ) as Record<LowPageId, VolumeBaseline>;
   const pct = Math.round(share.share * 100);
+  // A share of 0, or one so small that every floor thins to 0, leaves no hour any
+  // page could breach. Applied, it would read as a judged week with nothing wrong and
+  // end the share condition, so it is treated as no share at all, in its own words.
+  // Judged against the floors as measured, so it is the SHARE that is refused, never
+  // a measurement that had no floor to begin with (that is the unmeasured hour above).
+  const anyFloor = (all: Record<LowPageId, VolumeBaseline>) =>
+    LOW_PAGES.some((p) => all[p.id].cells.some((d) => d.some((c) => c.floor30 > 0 || c.floor120 > 0)));
+  if (anyFloor(baselines) && !anyFloor(thinned)) {
+    return {
+      state: "unmeasured",
+      text:
+        `The Low pages are not judged: Slate carried ${pct}% of Low bookings in the day to ` +
+        `${share.countedTo.slice(0, 10)}, too few for any page to clear a floor of even 1 booking in two hours, ` +
+        `so no page could ever be found low.`,
+    };
+  }
   const held = share.heldSince
     ? ` That share has been held since ${share.heldSince.slice(0, 10)}, because Low bookings as a whole fell when it moved, which reads as lost bookings rather than a split.`
     : "";
@@ -671,6 +713,25 @@ export function pageBaselinesAtShare(
       `Each page's floors are cal.com's for the whole page, thinned to the ${pct}% of Low bookings Slate carried ` +
       `in the day to ${share.countedTo.slice(0, 10)}.${held}`,
   };
+}
+
+/**
+ * The condition for the per page alarm standing down (#3193): the cause in the same
+ * words the step and the admin page use, then what it costs and what still watches.
+ */
+export function formatPageShareUnknownAlert(cause: string): string {
+  return (
+    `${cause} Meanwhile the per page low volume alarm cannot page about any one page; ` +
+    `the Low tier alarm still watches Low bookings as a whole.`
+  );
+}
+
+/** The all-clear, hung off a tick that applied a share and judged the pages. */
+export function formatPageShareKnownNotice(share: number): string {
+  return (
+    `The per page low volume alarm is judging the Low pages again, at the ${Math.round(share * 100)}% of Low ` +
+    `bookings Slate carries. The earlier message about it is cleared. No action is needed.`
+  );
 }
 
 /** The untagged bookings in the long window: `recent` also in the short one, `older` not. */

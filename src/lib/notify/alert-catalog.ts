@@ -514,6 +514,15 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "page's own floors every 5 minutes.",
   },
   {
+    key: "page_volume_share_unknown",
+    kind: "condition",
+    why:
+      "The per page low volume alarm is standing down because the share of Low Slate " +
+      "carries is unmeasured, unreadable or too small to judge any page at (#3193); a " +
+      "refit that stores a usable share ends it, and the next tick that judges the pages " +
+      "at that share clears it.",
+  },
+  {
     key: "booking_failure_rate",
     kind: "condition",
     why: "Customers are being turned away right now; it ends when bookings start completing again, and the monitor re-measures the window every 5 minutes.",

@@ -459,31 +459,42 @@ describe("AlertSettings per page floors wait on recorded sources (#2765)", () =>
   const coverageRows = () => learningCard().querySelectorAll("[data-page-coverage]");
 
   // #3193: the pages' floors are judged at the share of Low Slate carries, so these
-  // cases store one, as the daily refit does: 202 of 456 Low bookings, 44%.
-  const DAY_FROM = "2026-10-01T07:00:00.000Z";
-  const DAY_TO = "2026-10-02T07:00:00.000Z";
-  const WITH_SHARE = {
-    volume_learning: {
-      version: 3,
-      declaredRampEndOn: null,
-      fittedAt: DAY_TO,
-      tiers: { "1": { firstBookingAt: null, rampStartAt: null, result: null } },
-      carriedShare: {
-        measuredAt: DAY_TO,
-        from: DAY_FROM,
-        to: DAY_TO,
-        tiers: {
-          "1": {
-            applied: { share: 0.44, slate: 202, calcom: 254, level: null, from: DAY_FROM, to: DAY_TO },
-            last: { slate: 202, calcom: 254, level: null, outcome: "applied" },
-            heldSince: null,
+  // cases store one, as the daily refit does. 75%, because at today's 44% no committed
+  // page floor survives the thinning and there would be no table to show. The day is
+  // the one just ended, read off the real clock, so no stamp here ages into another
+  // state (an overdue refit, say) as the calendar moves.
+  const shareRecord = (share: number) => {
+    const to = new Date(Date.now() - 60_000).toISOString();
+    const from = new Date(Date.now() - 24 * 60 * 60_000 - 60_000).toISOString();
+    const slate = Math.round(share * 400);
+    return {
+      to,
+      row: {
+        volume_learning: {
+          version: 3,
+          declaredRampEndOn: null,
+          fittedAt: to,
+          tiers: { "1": { firstBookingAt: null, rampStartAt: null, result: null } },
+          carriedShare: {
+            measuredAt: to,
+            from,
+            to,
+            tiers: {
+              "1": {
+                applied: { share, slate, calcom: 400 - slate, level: null, from, to },
+                last: { slate, calcom: 400 - slate, level: null, outcome: "applied" },
+                heldSince: null,
+              },
+            },
           },
         },
       },
-    },
+    };
   };
+  let stored = shareRecord(0.75);
   beforeEach(() => {
-    db.results.monitor_alert_config = { data: WITH_SHARE, error: null };
+    stored = shareRecord(0.75);
+    db.results.monitor_alert_config = { data: stored.row, error: null };
   });
 
   it("says the pages are not judged, in place of their floors, while the share Slate carries is unmeasured", async () => {
@@ -509,8 +520,20 @@ describe("AlertSettings per page floors wait on recorded sources (#2765)", () =>
     db.results.business_hours = { data: [], error: null };
     db.results.business_hours_exceptions = { data: [], error: null };
     render(await AlertSettingsPage(props));
-    expect(learningCard().querySelector("[data-page-share]")!.textContent).toContain("thinned to the 44% of Low bookings Slate carried in the day to 2026-10-02");
+    expect(learningCard().querySelector("[data-page-share]")!.textContent).toContain(
+      `thinned to the 75% of Low bookings Slate carried in the day to ${stored.to.slice(0, 10)}`,
+    );
     expect(coverageRows().length).toBeGreaterThan(0);
+  });
+
+  it("says a share too small for any page floor to survive is not one the pages are judged at", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    db.results.monitor_alert_config = { data: shareRecord(0.44).row, error: null };
+    db.results.business_hours = { data: [], error: null };
+    db.results.business_hours_exceptions = { data: [], error: null };
+    render(await AlertSettingsPage(props));
+    expect(learningCard().querySelector("[data-page-share]")!.textContent).toMatch(/^The Low pages are not judged: Slate carried 44% of Low bookings/);
+    expect(coverageRows()).toHaveLength(0);
   });
 
   it("says how many bookings recorded no source, instead of the pages' floors", async () => {
