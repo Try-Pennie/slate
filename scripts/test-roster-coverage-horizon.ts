@@ -236,10 +236,12 @@ function liveText(notified: Sent[]): string {
   eq(
     liveText(notified),
     "In about 7 hours from this message, at 17:00 on Friday Oct 2, the org will be open with nobody " +
-      "bookable rostered. The uncovered hours are 17:00 to 20:00 on Friday Oct 2, Monday Oct 5, and " +
-      "Tuesday Oct 6, and the booker is not offering them to leads booking now. " +
+      // Three consecutive checked days carry the same tail, so they read as one
+      // range (#2810); the Saturday between them is never judged and is set aside.
+      "bookable rostered. The uncovered hours are 17:00 to 20:00 on every open day but Saturday " +
+      "from Friday Oct 2 through Tuesday Oct 6, and the booker is not offering them to leads booking now. " +
       REMEDIES,
-    "several gaps lead with the earliest and list every stretch",
+    "several gaps lead with the earliest and state the recurring stretch as a range",
   );
 }
 

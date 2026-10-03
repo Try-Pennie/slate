@@ -48,10 +48,12 @@
  * several pages at full volume, and reading it every five minutes to decide
  * nothing would spend the lane's budget on a number that moves over days.
  *
- * THE FLOOR IS DERIVED TOO (L716). Below 1 / share confirms (55 at the Low
- * constant), a single coincidence is the whole threshold on its own, so the share
- * cannot tell noise from a problem and the day is `unmeasured`. A loser floor of
- * three keeps one or two unlucky pairs from ever reporting. Saturation (half or
+ * THE FLOOR IS DERIVED TOO (L716), and apart from the share (#2886). A loser floor
+ * of three keeps one or two unlucky pairs from ever reporting. The confirm floor
+ * (`RACE_MIN_CONFIRMS`, seven) is the first day size where three losers is still
+ * short of saturation, so the share rule decides the day; below it the day is
+ * `unmeasured`. It was one over the share until #2886, which rose to hundreds of
+ * confirms at pilot volume and left nearly every pilot day unjudged. Saturation (half or
  * more losing, with the loser floor met) reports below the confirm floor, because
  * a proportion floor that silences noise also silences a total failure (L139).
  *
@@ -126,10 +128,41 @@ export const RACE_RATE_LOOKBACK_DAYS = 14;
  */
 export const RACE_RATE_MIN_ACTIVE_HOURS = 24;
 
-/** Any arrival rate as a share and a confirm floor, through the one race window. */
+/** Fewer losers than this never report, whatever the share. */
+export const RACE_MIN_LOSERS = 3;
+
+/** At or above this share the confirm floor stops mattering (L139). */
+export const RACE_SATURATION_SHARE = 0.5;
+
+/**
+ * The fewest confirms a day needs before it is judged (#2886): the first day size
+ * at which reaching `RACE_MIN_LOSERS` is still BELOW saturation, so the share rule,
+ * and not saturation alone, is what decides the day. Seven, with today's loser floor
+ * and saturation share.
+ *
+ * It used to be one over the share, which was sized for the wrong job: it stopped a
+ * single coincidence from carrying the share on its own, which the loser floor
+ * already does. And it moved the wrong way with traffic. At the pilot's measured six
+ * bookings an hour the share is about 0.4%, so the floor rose to 264 confirms and
+ * nearly every pilot day read unmeasured, leaving only saturation able to report.
+ *
+ * What a day needs to be statistically meaningful is that a report from it cannot
+ * be coincidence, and the loser floor gives that at this size: if every confirm
+ * raced at the worst case share (all of them converging on one time), three losers
+ * in seven confirms has a chance far under 1% at the pilot rate, at the Low
+ * fallback, and at twice the Low rate (`scripts/test-race-contention.ts` computes
+ * the Poisson tail at each). A bigger day only makes three losers MORE likely by
+ * chance, so raising the floor buys no confidence a report does not already have;
+ * past it the share rule is what holds a large day to ordinary traffic.
+ */
+export const RACE_MIN_CONFIRMS = Math.floor(RACE_MIN_LOSERS / RACE_SATURATION_SHARE) + 1;
+
+/** Any arrival rate as a share and a confirm floor, through the one race window.
+ *  The floor is the same at every rate (#2886); it travels with the threshold so a
+ *  verdict can name the floor it was judged against. */
 export function raceThresholdForRate(perHour: number): { share: number; minConfirms: number } {
   const share = (perHour / 3_600_000) * MEASURED_CONFIRM_P95_MS;
-  return { share, minConfirms: Math.ceil(1 / share) };
+  return { share, minConfirms: RACE_MIN_CONFIRMS };
 }
 
 /** The share the Low constant gives: the fallback when Slate cannot measure its own. */
@@ -256,12 +289,6 @@ export function measuredRaceThreshold(bookings: readonly TierBooking[], nowMs: n
     },
   };
 }
-
-/** Fewer losers than this never report, whatever the share. */
-export const RACE_MIN_LOSERS = 3;
-
-/** At or above this share the confirm floor stops mattering (L139). */
-export const RACE_SATURATION_SHARE = 0.5;
 
 /** Which tally row a successful confirm adds, or null for an uncontested one. */
 export function raceOutcomeForBooking(
@@ -466,11 +493,6 @@ export function createRaceThresholdCache(): RaceThresholdCache {
   };
 }
 
-/** Where a fallback threshold came from, as a clause a sentence can end with. */
-function fallbackNote(t: RaceThreshold): string {
-  return t.basis.source === "fallback" ? ` (the Low constant's floor, because ${t.basis.reason})` : "";
-}
-
 /** Judge one window against a threshold. */
 export function raceContentionVerdict(
   w: RaceContentionWindow | null,
@@ -494,9 +516,10 @@ export function raceContentionVerdict(
   if (confirms < threshold.minConfirms) {
     return {
       kind: "unmeasured",
-      reason:
-        `${confirms} confirms on ${w.day}, fewer than the ${threshold.minConfirms} a race share needs` +
-        fallbackNote(threshold),
+      // No word about where the share came from: the floor is the same at every
+      // rate since #2886, so naming the Low constant here would be a claim about a
+      // floor it did not set (L11).
+      reason: `${confirms} confirms on ${w.day}, fewer than the ${threshold.minConfirms} a race share needs`,
       threshold,
     };
   }

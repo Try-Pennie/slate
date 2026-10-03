@@ -19,6 +19,7 @@ import {
   RACE_BOUND_HIT_COOLDOWN_MS,
   RACE_CONTENTION_COOLDOWN_MS,
   RACE_CONTENTION_NOTICE_KEY,
+  RACE_MIN_CONFIRMS,
   RACE_MIN_LOSERS,
   RACE_RATE_LOOKBACK_DAYS,
   RACE_RATE_MIN_ACTIVE_HOURS,
@@ -68,11 +69,50 @@ assert(
     FALLBACK_RACE_SHARE_THRESHOLD > 0.01 && FALLBACK_RACE_SHARE_THRESHOLD < 0.03,
     `the fallback share is about 1.8% (got ${FALLBACK_RACE_SHARE_THRESHOLD})`,
   );
-  eq(FALLBACK_RACE_MIN_CONFIRMS, Math.ceil(1 / FALLBACK_RACE_SHARE_THRESHOLD), "the floor is where one coincidence stops carrying the share alone");
+  eq(FALLBACK_RACE_MIN_CONFIRMS, RACE_MIN_CONFIRMS, "#2886: the fallback's confirm floor is the one floor, not one over its share");
   assert(RACE_MIN_LOSERS >= 2, "one lost race can never report on its own");
   const t = raceThresholdForRate(58);
   eq(t.share, (58 / 3_600_000) * MEASURED_CONFIRM_P95_MS, "any rate becomes a share through the same race window");
-  eq(t.minConfirms, Math.ceil(1 / t.share), "and its floor through the same rule");
+  eq(t.minConfirms, RACE_MIN_CONFIRMS, "#2886: and its confirm floor does not move with the rate");
+}
+
+// --- #2886: the confirm floor is derived apart from the share --------------------
+{
+  // The floor is the fewest confirms at which a day reaching the loser floor is
+  // still BELOW saturation, so the share rule rather than saturation alone decides
+  // it. Derived by walking up from one, so a changed loser floor or saturation
+  // share moves the expectation with it.
+  let n = 1;
+  while (RACE_MIN_LOSERS / n >= RACE_SATURATION_SHARE) n++;
+  eq(RACE_MIN_CONFIRMS, n, "the floor is the first day size the share rule can judge at the loser floor");
+  assert(
+    RACE_MIN_LOSERS / (RACE_MIN_CONFIRMS - 1) >= RACE_SATURATION_SHARE,
+    "one confirm fewer and the loser floor would already be saturation",
+  );
+
+  // And at that floor the loser floor is already a statistically meaningful
+  // excess: if every confirm raced at the WORST case share (all of them converging
+  // on one time), the chance of reaching it by coincidence is under 1%. Checked at
+  // the pilot's measured rate, at the Low fallback, and at twice the Low rate, so
+  // a busier tier still leaves the floor meaningful.
+  const tail = (lambda: number, k: number): number => {
+    let below = 0;
+    let term = Math.exp(-lambda);
+    for (let i = 0; i < k; i++) {
+      below += term;
+      term *= lambda / (i + 1);
+    }
+    return 1 - below;
+  };
+  for (const perHour of [6, MEASURED_TIER_LEADS_PER_HOUR, 2 * MEASURED_TIER_LEADS_PER_HOUR]) {
+    const { share } = raceThresholdForRate(perHour);
+    const p = tail(RACE_MIN_CONFIRMS * share, RACE_MIN_LOSERS);
+    assert(p < 0.01, `at ${perHour} an hour, ${RACE_MIN_LOSERS} losers in ${RACE_MIN_CONFIRMS} confirms is not coincidence (p=${p.toExponential(2)})`);
+  }
+  // Positive control on the tail itself, so the assertion above is not a function
+  // that answers zero: at a mean of 3 losers, three or more is a coin flip or so.
+  const control = tail(3, 3);
+  assert(control > 0.5 && control < 0.6, `the Poisson tail is computed, not zero (got ${control})`);
 }
 
 // --- the tally names stay out of the failure share -----------------------------
@@ -141,10 +181,15 @@ eq(verdict(null).kind, "unmeasured", "an unreadable tally is unmeasured");
   eq(v.kind, "unmeasured", "zero confirms is unmeasured, never quiet (L98)");
 }
 {
-  const v = verdict(w({ created: 20, reassigned: 2 }));
+  const v = verdict(w({ created: 5, reassigned: 2 }));
   eq(v.kind, "unmeasured", `a thin sample below ${FALLBACK_RACE_MIN_CONFIRMS} confirms is unmeasured rather than alarming`);
   assert(v.kind === "unmeasured" && v.reason.includes(String(FALLBACK_RACE_MIN_CONFIRMS)), "the thin reason names the floor");
-  assert(v.kind === "unmeasured" && v.reason.includes("a fixture"), "and says the floor came from the fallback, and why");
+  // #2886: the floor no longer comes from the share, so the reason must not
+  // attribute it to the Low constant (L11).
+  assert(
+    v.kind === "unmeasured" && !v.reason.includes("a fixture") && !/Low constant/.test(v.reason),
+    "and does not claim the floor came from the fallback",
+  );
 }
 eq(
   verdict(w({ created: 3, reassigned: 4 })).kind,
@@ -479,9 +524,27 @@ function traffic(code: string, perHour: number, hours: number, startHoursAgo = 1
   // At 58 an hour the share is about 3.7%, so 6 of 202 (3.0%) is quiet.
   eq(v.kind, "quiet", "the same day is judged against the measured share, not the constant");
   const thin = measuredRaceThreshold(traffic("111", 2, 30), NOW);
-  const floor = raceContentionVerdict(w({ created: 200, reassigned: 3 }), thin);
-  eq(floor.kind, "unmeasured", "a lower measured rate raises the confirm floor with it");
+  eq(thin.minConfirms, RACE_MIN_CONFIRMS, "#2886: a lower measured rate no longer raises the confirm floor");
+  const floor = raceContentionVerdict(w({ created: 4, reassigned: 1 }), thin);
+  eq(floor.kind, "unmeasured", "a day under the floor is still unmeasured");
   assert(floor.kind === "unmeasured" && floor.reason.includes(String(thin.minConfirms)), "and names the floor it used");
+}
+
+// --- #2886: an ordinary day at pilot volume is judged ------------------------------
+{
+  // The Low pilot carries about 6 bookings an hour. Under 1 / share that set the
+  // floor at 264 confirms, so a pilot day of a few dozen read unmeasured and only
+  // saturation could ever report.
+  const pilot = measuredRaceThreshold(traffic("111", 6, 30), NOW);
+  assert(pilot.basis.source === "measured", "the pilot rate is measured, not the fallback");
+  assert(Math.ceil(1 / pilot.share) > 200, `the old floor at this rate was in the hundreds (${Math.ceil(1 / pilot.share)})`);
+  const ordinary = raceContentionVerdict(w({ created: 40 }), pilot);
+  eq(ordinary.kind, "quiet", "an ordinary pilot day of 40 confirms with no race is judged quiet");
+  const contended = raceContentionVerdict(w({ created: 40, reassigned: 4 }), pilot);
+  eq(contended.kind, "report", "and 4 of 40 losing, far past the share and short of saturation, reports");
+  if (contended.kind === "report") eq(contended.trigger, "rate", "on the rate rule, not saturation");
+  const two = raceContentionVerdict(w({ created: 40, reassigned: 2 }), pilot);
+  eq(two.kind, "quiet", "two losers is still under the loser floor at pilot volume");
 }
 
 // --- the copy --------------------------------------------------------------------

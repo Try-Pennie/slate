@@ -374,14 +374,93 @@ function datePhrase(dateIso: string): string {
 }
 
 /**
+ * The dates in one range the check actually judged: open, with advertised hours,
+ * and not the unjudged weekday (#2810). This is what decides whether two gap dates
+ * are CONSECUTIVE for the copy. A shut Sunday between them is not a checked date,
+ * so it does not break a run; an open Wednesday whose evening IS covered is one,
+ * so it does, and a range spanning it would claim a gap that is not there.
+ *
+ * Empty for an unmeasured readout, which only means nothing can be collapsed
+ * across; the runner never formats copy off one.
+ */
+export function checkedOpenDates(readout: CoverageRangeReadout, range: CoverageRange): string[] {
+  if (!readout.ok) return [];
+  return readout.days
+    .filter(
+      (d) =>
+        d.range === range &&
+        d.day.is_open &&
+        d.day.hours.length > 0 &&
+        DateTime.fromISO(d.dateIso, { zone: "UTC" }).weekday !== ROSTER_COVERAGE_UNJUDGED_WEEKDAY,
+    )
+    .map((d) => d.dateIso);
+}
+
+/**
+ * The shortest run stated as a range (#2810). Two dates read better named: "every
+ * open day from Monday through Tuesday" says less than "Monday and Tuesday".
+ */
+const MIN_RANGED_RUN = 3;
+
+/** Luxon weekday to its name, for the one weekday a range sets aside. */
+const WEEKDAY_NAME: Record<number, string> = {
+  1: "Monday",
+  2: "Tuesday",
+  3: "Wednesday",
+  4: "Thursday",
+  5: "Friday",
+  6: "Saturday",
+  7: "Sunday",
+};
+
+/**
+ * One stretch's dates as clauses, with each run of MIN_RANGED_RUN or more
+ * consecutive checked dates collapsed into "every open day from A through B"
+ * (#2810).
+ *
+ * A date carrying this gap is always a member, whatever `checked` says, so no gap
+ * is ever dropped from the copy. A run whose span holds the unjudged weekday says
+ * so ("but Saturday") rather than appearing to claim that day as uncovered too.
+ */
+function dateClauses(dates: string[], checked: string[]): string[] {
+  const members = new Set(dates);
+  const order = [...new Set([...checked, ...dates])].sort();
+  const runs: string[][] = [];
+  let run: string[] = [];
+  for (const d of order) {
+    if (members.has(d)) run.push(d);
+    else if (run.length > 0) {
+      runs.push(run);
+      run = [];
+    }
+  }
+  if (run.length > 0) runs.push(run);
+  return runs.flatMap((r) => {
+    if (r.length < MIN_RANGED_RUN) return r.map(datePhrase);
+    const first = DateTime.fromISO(r[0], { zone: "UTC" });
+    const last = DateTime.fromISO(r[r.length - 1], { zone: "UTC" });
+    let setsAside = false;
+    for (let d = first; d <= last; d = d.plus({ days: 1 })) {
+      if (d.weekday === ROSTER_COVERAGE_UNJUDGED_WEEKDAY && !members.has(d.toISODate() ?? "")) {
+        setsAside = true;
+      }
+    }
+    const aside = setsAside ? ` but ${WEEKDAY_NAME[ROSTER_COVERAGE_UNJUDGED_WEEKDAY]}` : "";
+    return [`every open day${aside} from ${datePhrase(r[0])} through ${datePhrase(r[r.length - 1])}`];
+  });
+}
+
+/**
  * Dated gaps as phrases, one per stretch shape, with the dates it falls on.
  *
  * The weekly `coverageGapPhrases` cannot serve here: the range can hold two
  * Saturdays, and "Saturday" alone would not say which one is uncovered. Grouped
  * the same way (whole days first, then by start), so the reader who only sees the
- * first line still gets the worst finding.
+ * first line still gets the worst finding. A gap recurring on every checked day
+ * reads as a range rather than a list of up to eleven dates (#2810); `checked` is
+ * the dates the check judged in that range, from `checkedOpenDates`.
  */
-function datedGapPhrases(gaps: DatedCoverageGap[]): string[] {
+function datedGapPhrases(gaps: DatedCoverageGap[], checked: string[]): string[] {
   const by = new Map<
     string,
     { startMinute: number; endMinute: number; wholeDay: boolean; opens: boolean; dates: string[] }
@@ -403,9 +482,13 @@ function datedGapPhrases(gaps: DatedCoverageGap[]): string[] {
   return [...by.values()]
     .sort((a, b) => Number(b.wholeDay) - Number(a.wholeDay) || a.startMinute - b.startMinute)
     .map((g) => {
-      const dates = joinClauses([...g.dates].sort().map(datePhrase));
+      const clauses = dateClauses(g.dates, checked);
+      const dates = joinClauses(clauses);
       const window = `${minutesToTime(g.startMinute)} to ${minutesToTime(g.endMinute)}`;
-      if (g.wholeDay) return `all day ${dates} (${window})`;
+      if (g.wholeDay) {
+        const ranged = clauses[0]?.startsWith("every open day") ?? false;
+        return `all day ${ranged ? "on " : ""}${dates} (${window})`;
+      }
       return g.opens ? `${window} on ${dates} (the day opens with nobody on)` : `${window} on ${dates}`;
     });
 }
@@ -464,6 +547,10 @@ function untilPhrase(msAway: number): string {
 export function formatRosterCoverageLiveAlert(
   gaps: DatedCoverageGap[],
   sentAt: { nowMs: number; zone: string },
+  /** The dates the check judged inside the horizon (`checkedOpenDates`), so a
+   *  recurring gap can be stated as a range (#2810). Required, so every caller
+   *  says which days were looked at. */
+  checked: string[],
 ): string {
   const first = [...gaps].sort(
     (a, b) => gapStartMs(a, sentAt.zone) - gapStartMs(b, sentAt.zone),
@@ -476,7 +563,7 @@ export function formatRosterCoverageLiveAlert(
       : `${untilPhrase(startMs - sentAt.nowMs)}, at ${when}, the org will be open with ` +
         `nobody bookable rostered.`;
   return (
-    `${lead} The uncovered hours are ${joinClauses(datedGapPhrases(gaps))}, and the ` +
+    `${lead} The uncovered hours are ${joinClauses(datedGapPhrases(gaps, checked))}, and the ` +
     `booker is not offering them to leads booking now. Set agents' working hours to ` +
     `cover them, or narrow the org's business hours so we stop advertising them.`
   );
@@ -487,10 +574,14 @@ export function formatRosterCoverageLiveAlert(
  * time. It must not read like the live page, because it is not one: no lead can
  * reach those days yet, and what the reader has is time (L11).
  */
-export function formatRosterCoverageUpcomingAlert(gaps: DatedCoverageGap[]): string {
+export function formatRosterCoverageUpcomingAlert(
+  gaps: DatedCoverageGap[],
+  /** The dates the check judged past the horizon (`checkedOpenDates`), #2810. */
+  checked: string[],
+): string {
   return (
     `No bookable agent is rostered yet for hours the org will soon be offering: ` +
-    `${joinClauses(datedGapPhrases(gaps))}.` +
+    `${joinClauses(datedGapPhrases(gaps, checked))}.` +
     ` Nothing is broken yet, because those days are past the booking horizon and no ` +
     `lead can book them today. There is time to change someone's working hours, ask ` +
     `someone to cover, or narrow the org's business hours for those days.`
@@ -665,7 +756,7 @@ export async function runRosterCoverageCheck(deps: {
       // The readout's own instant, the one `rangeGaps` judged ended gaps by, so
       // "already started" and "already over" are measured from one moment.
       const sentAt = { nowMs: coverage.nowMs, zone: coverage.zone };
-      const liveText = formatRosterCoverageLiveAlert(live, sentAt);
+      const liveText = formatRosterCoverageLiveAlert(live, sentAt, checkedOpenDates(coverage, "live"));
       await deps.notify(ROSTER_COVERAGE_KEY, deps.cooldownMs.live, liveText).catch(() => {});
     } else {
       await deps
@@ -677,7 +768,7 @@ export async function runRosterCoverageCheck(deps: {
         .notify(
           ROSTER_COVERAGE_UPCOMING_KEY,
           deps.cooldownMs.upcoming,
-          formatRosterCoverageUpcomingAlert(upcoming),
+          formatRosterCoverageUpcomingAlert(upcoming, checkedOpenDates(coverage, "upcoming")),
         )
         .catch(() => {});
     } else {

@@ -221,6 +221,14 @@ export const CANARY_STALE_BOUNDS_MS: Record<string, number> = {
   // one deliberately re-run week; a 3x bound would take three weeks to notice a
   // schedule that had stopped, by which point the thing it watches has drifted
   // through every roster change in between.
+  //
+  // A BACKSTOP since #2466, like the parity bound above. The monitor lane re fires
+  // the replay once its heartbeat passes `REPLAY_TRIGGER_STALE_MS` (7d4h: the
+  // weekly cadence, the worst measured GitHub lateness and the job's 45 minute
+  // timeout), and retries a refused dispatch a `REPLAY_DISPATCH_COOLDOWN_MS` (a
+  // day) later. Threshold, one retry and one full run come to under 8 days 5
+  // hours, so this pages only once GitHub AND the re fire have both failed to
+  // conclude a replay. `scripts/test-canary-trigger.ts` asserts that relation.
   "router-replay": 9 * 24 * 60 * MIN,
 };
 

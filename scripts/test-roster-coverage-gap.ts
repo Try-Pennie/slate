@@ -30,6 +30,7 @@ import {
   formatRosterCoverageLiveRecovery,
   formatRosterCoverageUpcomingRecovery,
   COVERAGE_UNCHECKED_WARNING,
+  checkedOpenDates,
   coverageForRange,
   coverageGapPhrases,
   gapsFromCoverage,
@@ -178,9 +179,8 @@ const PROD_GAPS = gapsFor([agent(ZONE, [1, 2, 3, 4, 5], 8 * 60, 17 * 60)]) ?? []
 // real range: checked Friday 2026-08-14 at 09:00 with a four day horizon, the live
 // days are Friday, Saturday, Monday and Tuesday (Sunday is shut).
 const FRIDAY_9AM = DateTime.fromISO("2026-08-14T09:00", { zone: ZONE }).toMillis();
-function liveGapsFor(agents: Parameters<typeof coverageForWeek>[0]["agents"]) {
-  const split = rangeGaps(
-    coverageForRange({
+function liveReadoutFor(agents: Parameters<typeof coverageForWeek>[0]["agents"]) {
+  return coverageForRange({
       hours: {
         zone: ZONE,
         rules: OPEN_WEEK.filter((d) => d.is_open).map(({ weekday, start_minute, end_minute }) => ({
@@ -193,16 +193,17 @@ function liveGapsFor(agents: Parameters<typeof coverageForWeek>[0]["agents"]) {
       agents,
       horizonDays: 4,
       nowMs: FRIDAY_9AM,
-    }),
-  );
-  return split?.live ?? [];
+    });
 }
-const PROD_LIVE = liveGapsFor([agent(ZONE, [1, 2, 3, 4, 5], 8 * 60, 17 * 60)]);
+const PROD_READOUT = liveReadoutFor([agent(ZONE, [1, 2, 3, 4, 5], 8 * 60, 17 * 60)]);
+const PROD_LIVE = rangeGaps(PROD_READOUT)?.live ?? [];
+/** The dates the check judged inside the horizon, so the copy can range a run (#2810). */
+const PROD_CHECKED = checkedOpenDates(PROD_READOUT, "live");
 /** The send time the live page is judged from: the same instant the gaps were measured at. */
 const SENT_AT = { nowMs: FRIDAY_9AM, zone: ZONE };
 
 {
-  const text = formatRosterCoverageLiveAlert(PROD_LIVE, SENT_AT);
+  const text = formatRosterCoverageLiveAlert(PROD_LIVE, SENT_AT, PROD_CHECKED);
 
   // The identical weekday tails are ONE clause carrying their dates. Listing them
   // separately is how the one fact worth having (a whole uncovered Saturday) gets
@@ -242,10 +243,15 @@ const SENT_AT = { nowMs: FRIDAY_9AM, zone: ZONE };
 // A whole uncovered day and a tail are DIFFERENT findings and must not read the
 // same: one is "we say we are open and are shut", the other is "we are thin".
 {
-  const wholeDayOnly = formatRosterCoverageLiveAlert(PROD_LIVE.filter((g) => g.wholeDay), SENT_AT);
-  const tailOnly = formatRosterCoverageLiveAlert(PROD_LIVE.filter((g) => !g.wholeDay), SENT_AT);
+  const wholeDayOnly = formatRosterCoverageLiveAlert(PROD_LIVE.filter((g) => g.wholeDay), SENT_AT, PROD_CHECKED);
+  const tailOnly = formatRosterCoverageLiveAlert(PROD_LIVE.filter((g) => !g.wholeDay), SENT_AT, PROD_CHECKED);
   assert(wholeDayOnly !== tailOnly, "a whole uncovered day does not read like a partial tail");
-  assert(!tailOnly.includes("Saturday"), "the tail message does not mention the covered day");
+  // The tail's range sets Saturday aside by name ("every open day but Saturday",
+  // #2810), so the check is that the uncovered Saturday itself is not claimed.
+  assert(
+    !tailOnly.includes("Saturday Aug 15") && !tailOnly.includes("all day"),
+    "the tail message does not mention the whole uncovered day",
+  );
 }
 
 for (const text of [
@@ -497,7 +503,7 @@ const COOLDOWNS = { live: 1000, upcoming: 1000 };
   const stretch = phrases[0].split(" ").slice(0, 3).join(" ");
   eq(stretch, "17:00 to 20:00", "the screen phrase opens with the uncovered stretch");
   assert(
-    formatRosterCoverageLiveAlert(PROD_LIVE, SENT_AT).includes(stretch),
+    formatRosterCoverageLiveAlert(PROD_LIVE, SENT_AT, PROD_CHECKED).includes(stretch),
     "and the Slack page states that stretch in the same words",
   );
   assert(
