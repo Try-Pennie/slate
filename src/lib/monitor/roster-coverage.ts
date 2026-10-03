@@ -66,10 +66,11 @@ export const ROSTER_COVERAGE_UPCOMING_KEY = "roster_coverage_upcoming_gap";
  * working hours, or ask somebody to cover. A gap that surfaces with a week to spare
  * reaches whoever sets the rota while there is still a rota to change. It is also
  * exactly one turn of the weekly pattern, so every weekday is inside the range at
- * least once however short the horizon is set, and a Saturday gap is seen from the
- * Saturday before. That is the case the issue was filed about: the old Monday to
- * Sunday window, checked on a Saturday, gave hours of warning and could never see
- * the next Saturday at all.
+ * least once however short the horizon is set, and a gap is seen from the same
+ * weekday a week before. That was #1936's case: the old Monday to Sunday window,
+ * checked late in the week, gave hours of warning and could not see the next week
+ * at all. (Saturday gaps are no longer judged at all since #3054; see
+ * ROSTER_COVERAGE_UNJUDGED_WEEKDAY below.)
  *
  * Longer buys little. A gap three weeks out is almost always the same weekly rule
  * as the one a week out, already reported, and the range is walked every five
