@@ -42,15 +42,18 @@ select erase_booking_pii('person@example.com');
 ```
 
 It runs as a single transaction and returns a JSON summary, for example
-`{"erased": true, "bookings": 2, "events": 1, "deliveries": 3, "outbox": 1}`. If
+`{"erased": true, "bookings": 2, "events": 1, "deliveries": 3, "outbox": 1, "reservations": 0}`. If
 nothing matched (already erased, or never present) it returns
 `{"erased": false, "reason": "no-match"}` and you are done (there is nothing in
 Snowflake to purge either).
 
 A zero in any of those counts is worth a second look before you move on: it means
 that path matched no rows. That is normal for a person with no reschedule or
-cancel history (`events: 0`) but not for `bookings`, which is 0 only on a
-no-match.
+cancel history (`events: 0`), and for `reservations`, which counts only a booking
+still being created at the moment you ran it. `bookings` is 0 only on a no-match,
+or when the person had nothing but a pending reservation (#3126), in which case
+`reservations` is at least 1 and there is nothing in Snowflake to purge, since
+reservations are not mirrored.
 
 It is **idempotent**: re-running for the same email after a successful erasure is
 a safe no-op and writes no new audit row. The match is case-insensitive and
@@ -76,8 +79,12 @@ phone null; prefill emptied) and stamps `pii_redacted_at`; redacts those booking
 `booking_events.reason_detail`; blanks the matching outbound webhook payloads
 (matched by the affected booking ids); takes the free-text reason and any embedded
 error body out of those bookings' `booking_outbox` rows (#1140, keeping the
-operational fields the drain needs, so a still-pending row is safe to blank); and
-writes one `audit_log` entry with the affected booking ids and a **SHA-256 hash** of
+operational fields the drain needs, so a still-pending row is safe to blank);
+deletes the person's `booking_reservations` rows, whose payload holds the whole
+attendee record and the manage token until the booking lands (#3126, migration
+0158; deleted rather than redacted, and taken even when no booking matched, so the
+drain cannot resume one into a fresh booking after the erasure); and writes one
+`audit_log` entry with the affected booking ids and a **SHA-256 hash** of
 the email (never the cleartext).
 
 ## Step 2: get the affected booking ids

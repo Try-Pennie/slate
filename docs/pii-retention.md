@@ -22,6 +22,9 @@ and which data we deliberately keep forever and why.
 | Reschedule/cancel reason (free text) | `booking_events.reason_detail` | manage link / admin | may carry PII |
 | Full delivery payload | `webhook_deliveries.payload` (jsonb) | derived, per delivery | copy of attendee PII |
 | Subscriber response body | `webhook_deliveries.last_response` | derived | may echo PII |
+| Outbox reason copy | `booking_outbox.payload` (jsonb, its `reasonDetail`) | manage link / admin | the same free text as `booking_events.reason_detail`; see §7 |
+| Create reservation (#3126) | `booking_reservations.payload` (jsonb) | public booker, direct booking API | the whole attendee record (name, email, phone, prefill) and the manage token, held only while the booking is being created; not mirrored to Snowflake |
+| Rate limit keys (#3109) | `rate_limits.key` | public booker | a lead's normalized email and phone as limiter keys (`book:contact:h:email:...`), and every caller IP; not mirrored |
 | External Salesforce/lead reference | `bookings.salesforce_id`, `bookings.external_id` | booking URL / landing page | **external reference, NOT Slate-controlled PII** (see §4) |
 
 The attendee's meeting also exists as an event on the **assigned agent's Google
@@ -44,6 +47,8 @@ written: see [pii.md](./pii.md) §3.
 | `routing_decisions` | 12 months | delete, `/api/cron/prune-routing` (existing) |
 | `booking_events.reason_detail` | on an erasure request, not on a timer | redact in place via `erase_booking_pii` through the §5 sentinel (shipped, migration 0092) |
 | `regal_call_events` (staff data: an agent email on candidate rows, no lead data) | 3 days after receipt | delete, `/api/cron/prune-regal-calls` (#2090) |
+| `booking_reservations` | deleted when the booking lands; a pending one after 24 hours | delete, the reservation drain (`deleteExpiredReservations`, #429) |
+| `rate_limits` limiter rows | two hours after their window opened (the longest limiter window plus a margin) | delete, `prune_rate_limits` on `/api/cron/prune-regal-calls` (#3109); streak and boundary counters are out of its scope |
 | `regal_call_outcomes` (the lead's Salesforce Lead id key, an external reference, plus call start, talk time and labels; no contact data) | 120 days after receipt | delete, `/api/cron/prune-regal-calls` (#2944) |
 
 **A window above does not propagate to the Snowflake mirror by itself.** Redacting
@@ -210,9 +215,12 @@ attack surface). In one idempotent transaction it:
    payload still carries the person's other PII);
 4. takes the free-text reason out of those bookings' `booking_outbox` rows
    (migration 0093, #1140), described below;
-5. writes an `audit_log` erasure entry recording the affected booking ids and an
+5. deletes the person's `booking_reservations` rows, matched on the attendee email
+   in their payload (migration 0158, #3126), even when no booking matched, so a
+   pending create cannot be resumed into a new booking after the erasure;
+6. writes an `audit_log` erasure entry recording the affected booking ids and an
    **email hash** (never the cleartext email);
-6. does **not** delete Google Calendar events (§4).
+7. does **not** delete Google Calendar events (§4).
 
 **The `booking_outbox` step (#1140)** closes a gap: 0092 redacted the reason text
 in `booking_events` but left the identical text in `booking_outbox.payload`, whose

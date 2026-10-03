@@ -62,7 +62,9 @@ export const SAFE_TABLES = new Set([
   // one row per bucket (~60). Bounded by the bucket count, never by volume.
   "bucket_slots",
   "sync_locks",
-  "rate_limits",
+  // NOT rate_limits (#3109): it holds one row per caller IP and per lead email
+  // and phone, so it scales with traffic. The daily prune keeps it to about a
+  // day of callers, which can still be more than a page.
   "reschedule_locks",
   "lane_heartbeats",
   // #3027: one row per user, so bounded by the roster like `users` itself.

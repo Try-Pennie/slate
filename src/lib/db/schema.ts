@@ -282,6 +282,11 @@ export interface Database {
         Args: { p_key: string };
         Returns: undefined;
       };
+      // #3109: deletes dead limiter rows, returning how many.
+      prune_rate_limits: {
+        Args: { p_prefixes: string[]; p_older_than_seconds: number };
+        Returns: number;
+      };
       move_busy_block: {
         Args: {
           p_booking_id: string;

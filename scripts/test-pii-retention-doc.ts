@@ -50,4 +50,33 @@ assert(
 assert(/24 months/.test(doc) && /90 days/.test(doc), "records the provisional retention windows");
 assert(/CCPA/.test(doc) && /legal/i.test(doc), "lists the legal-confirmation questions owed");
 
+// #3143: the flow map in docs/pii.md must keep saying that the Worker logs hold
+// the manage token. It is a credential to a lead's booking, it sits in the URL
+// PATH of every manage page request (/booking/manage/[token]), and Cloudflare
+// records that URL for seven days. Dan accepted that risk on 2026-10-03 rather
+// than change the link every lead holds, so the record of it must not be lost.
+{
+  let map = "";
+  try {
+    map = readFileSync(join(root, "docs", "pii.md"), "utf8");
+  } catch {
+    /* asserted below */
+  }
+  const cloudflareRow = map.split("\n").find((l) => l.startsWith("| **Cloudflare**")) ?? "";
+  assert(cloudflareRow.length > 0, "docs/pii.md has the Cloudflare row in its flow table");
+  assert(/manage token/i.test(cloudflareRow), "the Cloudflare row names the manage token the request URL carries");
+  assert(
+    /booking\/manage\/\[token\]/.test(map),
+    "docs/pii.md names the manage page path the token travels in",
+  );
+  assert(
+    /accepted risk \(Dan, 2026-10-03\)/.test(map.slice(map.indexOf("### The manage token is in the URL path"))),
+    "the manage token paragraph records Dan's acceptance of the risk, with its date",
+  );
+  assert(
+    /scrubContactData/.test(map.slice(map.indexOf("## 6. Slack"))),
+    "the Slack section says unexpected fault detail is scrubbed of contact data",
+  );
+}
+
 finish();
