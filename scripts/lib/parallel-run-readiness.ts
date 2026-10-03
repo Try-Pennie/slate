@@ -6,7 +6,7 @@
 // by fixtures where no database exists, in the same family as
 // `verify:availability-truth`, `verify:ooo-protection` and `verify:calcom-parity`.
 //
-// Five preconditions, each already measured somewhere in Slate and none of them
+// The preconditions, each already measured somewhere in Slate and none of them
 // visible together anywhere:
 //
 // - no alert cooldown is stretched above its default (two sat at a week for a month
@@ -43,6 +43,84 @@ import {
   type CallerSeenRow,
 } from "../../src/lib/booking/caller-seen.ts";
 import { pageSourceStatus, type PageSourceMeasure } from "../../src/lib/monitor/page-volume.ts";
+import { judgeCalendarCoverage, type CalendarWindowRow } from "../../src/lib/monitor/calendar-window-coverage.ts";
+import {
+  classifyParitySweep,
+  parseParitySweep,
+  PAGING_LABEL,
+  type ParityFinding,
+} from "../../src/lib/monitor/schedule-parity-alert.ts";
+
+/**
+ * Who drifted, or why nobody can be named (#2089).
+ *
+ * "named" carries only the PAGING findings, worst first, classified by the same
+ * judge the alert uses, so this line and the page cannot disagree about what counts
+ * as drift. "unavailable" keeps the finding and says why the names are missing,
+ * because a drift line with nobody in it and no reason reads as a broken check.
+ */
+export type ParityDriftDetail =
+  | { kind: "named"; runUrl: string; paging: ParityFinding[] }
+  | { kind: "unavailable"; why: string };
+
+/**
+ * The summary the daily lane wrote (`parity-summary.json`, kept as the run's
+ * `parity-summary` artifact), read through the endpoint's own `parseParitySweep`,
+ * so a verdict the alert would refuse is refused here too rather than rendered.
+ */
+export function parityDriftFromSummary(raw: unknown, runUrl: string): ParityDriftDetail {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return { kind: "unavailable", why: "the sweep summary is not an object" };
+  }
+  const sweep = parseParitySweep({ ...(raw as Record<string, unknown>), runUrl });
+  if ("error" in sweep) return { kind: "unavailable", why: `the sweep summary was refused: ${sweep.error}` };
+  return { kind: "named", runUrl: sweep.runUrl, paging: classifyParitySweep(sweep).paging };
+}
+
+/**
+ * How long after the heartbeat stamp the run that stamped it may finish. The stamp
+ * is one of the job's last steps, so its run ends within minutes; anything finishing
+ * later is a different run, and anything finishing before it cannot have stamped it.
+ */
+export const PARITY_RUN_PAIRING_MS = 60 * 60_000;
+/** Clock skew allowed between the database stamp and GitHub's run time. */
+const PARITY_RUN_SKEW_MS = 5 * 60_000;
+
+/**
+ * The successful schedule parity run whose summary describes the sweep the drift
+ * alert is about (L420). The heartbeat records no run id, so the pairing is by
+ * time: the run must END just after the stamp it wrote, never merely be the newest.
+ */
+export function pickParityRun<R extends { id: number; updatedAtMs: number; url: string }>(
+  runs: readonly R[],
+  heartbeatMs: number | null,
+): R | { why: string } {
+  if (heartbeatMs === null) return { why: "the comparison has never reached a verdict, so there is no run to read" };
+  const match = runs.find(
+    (r) => r.updatedAtMs >= heartbeatMs - PARITY_RUN_SKEW_MS && r.updatedAtMs <= heartbeatMs + PARITY_RUN_PAIRING_MS,
+  );
+  return match ?? { why: "no successful schedule parity run finished just after the last verdict, so its summary cannot be paired" };
+}
+
+/** How many agents one kind of difference names before counting the rest. */
+const DRIFT_NAME_CAP = 4;
+
+function driftLine(d: ParityDriftDetail): string {
+  if (d.kind === "unavailable") {
+    return `the cal.com comparison is currently reporting drift; nobody is named here because ${d.why}. pnpm verify:calcom-parity names them`;
+  }
+  if (d.paging.length === 0) {
+    return `the drift alert is still firing, but the newest sweep found no difference that pages, so the alert has not cleared: ${d.runUrl}`;
+  }
+  const total = d.paging.reduce((n, f) => n + f.count, 0);
+  const groups = d.paging.map((f) => {
+    const shown = f.agents.slice(0, DRIFT_NAME_CAP);
+    const rest = f.count - shown.length;
+    const who = shown.length ? ` (${shown.join(", ")}${rest > 0 ? ` and ${rest} more` : ""})` : "";
+    return `${f.count} ${PAGING_LABEL[f.verdict] ?? f.verdict}${who}`;
+  });
+  return `the cal.com comparison is reporting drift on ${total} agent(s): ${groups.join("; ")}; ${d.runUrl}`;
+}
 
 export interface StretchedCooldown {
   key: string;
@@ -60,6 +138,12 @@ export interface ReadinessFacts {
     boundMs: number;
     /** Whether the drift alert is currently firing. null = alert_state unreadable. */
     drifting: boolean | null;
+    /**
+     * Who the newest measured sweep found drifting (#2089), read from the summary
+     * the daily lane kept as a run artifact, or why nobody can be named. Only looked
+     * up while `drifting` is true; it never changes the exit, only the sentence.
+     */
+    drift: ParityDriftDetail;
   };
   /** Emails with `bookable_pending_since` set. null = unreadable. */
   pendingBookable: string[] | null;
@@ -301,7 +385,7 @@ export function judgeReadiness(f: ReadinessFacts): ReadinessJudgement {
 
   if (f.parity.drifting === null) unreadable.push("drift alert state");
   else if (f.parity.drifting) {
-    findings.push({ kind: "parity-drifting", detail: "the cal.com comparison is currently reporting drift" });
+    findings.push({ kind: "parity-drifting", detail: driftLine(f.parity.drift) });
   }
   if (f.parity.lastRunMs === null) {
     findings.push({ kind: "parity-stale", detail: "the cal.com comparison has never reached a verdict" });
@@ -487,4 +571,43 @@ export function judgeReadiness(f: ReadinessFacts): ReadinessJudgement {
     advisories,
     summary: `NOT READY (${findings[0].kind}): ${measured}\n` + findings.map((x) => `  ${x.kind}: ${x.detail}`).join("\n") + armingLine,
   };
+}
+
+/**
+ * Why a gh call failed, in one short line. execFileSync's message opens with the
+ * "Command failed: gh ..." line, which names the command and not the cause; gh prints
+ * the cause (not signed in, no access, not found) to stderr, so that is read first.
+ */
+export function ghFailureReason(err: unknown): string {
+  const firstLine = (text: string): string =>
+    text
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => l !== "") ?? "";
+  const stderr = typeof err === "object" && err !== null ? (err as { stderr?: unknown }).stderr : undefined;
+  const fromStderr = typeof stderr === "string" || Buffer.isBuffer(stderr) ? firstLine(String(stderr)) : "";
+  const fromMessage = firstLine(err instanceof Error ? err.message : String(err));
+  return (fromStderr || fromMessage).slice(0, 160);
+}
+
+/**
+ * The calendars that keep readiness from READY, named for the reader. The monitor's
+ * judge is used so both agree on what a lapsed calendar is, but its first run
+ * patience is NOT granted here: this command is run at a chosen moment before real
+ * leads, and a calendar that has never been hydrated is not hydrated however new it
+ * is. So a calendar the monitor would still be waiting on is named, as such.
+ */
+export function readinessUncoveredCalendars(input: {
+  rows: CalendarWindowRow[];
+  horizonDays: number;
+  nowIso: string;
+}): string[] {
+  const label = (r: CalendarWindowRow) => `${r.email ?? r.userId} (${r.calendarId})`;
+  const { uncovered } = judgeCalendarCoverage(input);
+  const named = new Set(uncovered);
+  const waiting = input.rows.filter((r) => !named.has(r) && r.syncWindowToIso === null);
+  return [
+    ...uncovered.map(label),
+    ...waiting.map((r) => `${label(r)}, joined the rotation moments ago and not hydrated yet`),
+  ];
 }

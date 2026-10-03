@@ -8,6 +8,10 @@
 //
 // Exit codes are READINESS_EXIT, plus 1 for "no credentials here", decided before
 // anything is read so it can never be confused with a finding.
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { requireSupabaseCredentials } from "./lib/supabase-credentials.ts";
 
 const creds = requireSupabaseCredentials();
@@ -19,7 +23,8 @@ const { eligibleAgentIds } = await import("@/lib/availability/service");
 const { withoutLowCarriers } = await import("@/lib/availability/low-exclusion");
 const { emptyBuckets: emptyBucketCodes } = await import("@/lib/availability/bucket-coverage");
 type BucketCoverage = import("@/lib/availability/bucket-coverage").BucketCoverage;
-const { uncoveredCalendars } = await import("@/lib/monitor/calendar-window-coverage");
+const { calendarWindowRow, CALENDAR_WINDOW_COLUMNS } = await import("@/lib/monitor/calendar-window-coverage");
+type CalendarWindowSourceRow = import("@/lib/monitor/calendar-window-coverage").CalendarWindowSourceRow;
 const { MONITOR_DEFAULTS } = await import("@/lib/monitor/settings");
 const { CANARY_STALE_BOUNDS_MS } = await import("@/lib/monitor/health");
 const { readHeartbeatMs } = await import("@/lib/monitor/heartbeat");
@@ -31,8 +36,12 @@ const { DEBT_TIER } = await import("@/lib/xbc");
 const { CALLER_HOST_KINDS } = await import("@/lib/booking/caller-seen");
 const { BOOKING_API_CALLERS } = await import("@/lib/booking/api-auth");
 type CallerSeenRow = import("@/lib/booking/caller-seen").CallerSeenRow;
-const { judgeReadiness } = await import("./lib/parallel-run-readiness.ts");
+const { judgeReadiness, parityDriftFromSummary, pickParityRun, ghFailureReason, readinessUncoveredCalendars } = await import("./lib/parallel-run-readiness.ts");
 type ReadinessFacts = import("./lib/parallel-run-readiness.ts").ReadinessFacts;
+type ParityDriftDetail = import("./lib/parallel-run-readiness.ts").ParityDriftDetail;
+/** Where the daily lane runs, and what it keeps (`.github/workflows/schedule-parity.yml`). */
+const PARITY_REPO = "Try-Pennie/slate";
+const PARITY_ARTIFACT = "parity-summary";
 type LowVolumeArmingFacts = import("./lib/parallel-run-readiness.ts").LowVolumeArmingFacts;
 const { measurePageSources } = await import("@/lib/monitor/customer-bookings");
 const { loadBusinessHours } = await import("@/lib/booking/business-hours-load");
@@ -74,6 +83,42 @@ const calcomRetired = await loadCalcomRetired();
 const lastRunMs = await section("parity heartbeat", () => readHeartbeatMs("schedule-parity"));
 const drifting = await section("drift alert state", () => isAlertFiring("schedule_parity_drift"));
 
+/**
+ * Who drifted (#2089), from the summary the daily lane kept as its run's
+ * `parity-summary` artifact, never by re-running the four minute sweep. Asked only
+ * while the alert is firing, and every way it can fail becomes a reason in the
+ * finding rather than an unreadable section: the drift is measured either way, and
+ * only the names are missing.
+ */
+function readParityDrift(): ParityDriftDetail {
+  if (drifting !== true) return { kind: "unavailable", why: "the comparison is not reporting drift" };
+  const gh = (args: string[]): string =>
+    execFileSync("gh", ["-R", PARITY_REPO, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 });
+  let runs: { id: number; updatedAtMs: number; url: string }[];
+  try {
+    const listed = JSON.parse(
+      gh(["run", "list", "--workflow", "schedule-parity.yml", "--status", "success", "--limit", "5", "--json", "databaseId,updatedAt,url"]),
+    ) as { databaseId: number; updatedAt: string; url: string }[];
+    runs = listed
+      .map((r) => ({ id: r.databaseId, updatedAtMs: Date.parse(r.updatedAt), url: r.url }))
+      .filter((r) => Number.isFinite(r.updatedAtMs));
+  } catch (err) {
+    return { kind: "unavailable", why: `the schedule parity runs could not be listed with gh (${ghFailureReason(err)})` };
+  }
+  const run = pickParityRun(runs, lastRunMs);
+  if ("why" in run) return { kind: "unavailable", why: run.why };
+  const dir = mkdtempSync(join(tmpdir(), "parity-summary-"));
+  try {
+    gh(["run", "download", String(run.id), "-n", PARITY_ARTIFACT, "-D", dir]);
+    return parityDriftFromSummary(JSON.parse(readFileSync(join(dir, "parity-summary.json"), "utf8")), run.url);
+  } catch (err) {
+    return { kind: "unavailable", why: `run ${run.url} kept no readable ${PARITY_ARTIFACT} artifact (${ghFailureReason(err)})` };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+const parityDrift = readParityDrift();
+
 const pendingBookable = await section("pending bookable flips", async () => {
   const rows = (unwrap(
     await db.from("users").select("email").not("bookable_pending_since", "is", null).is("deactivated_at", null),
@@ -91,24 +136,18 @@ const calendars = await section("calendars", async () => {
   const ids = agents.map((a) => a.id);
   // cap-safe: one row per (agent, calendar) for a roster bounded at ~200 agents
   const cals = (unwrap(
-    await db.from("agent_calendars").select("user_id, calendar_id, sync_window_to").in("user_id", ids),
+    await db.from("agent_calendars").select(CALENDAR_WINDOW_COLUMNS).in("user_id", ids),
     "agent_calendars",
-  ) ?? []) as { user_id: string; calendar_id: string; sync_window_to: string | null }[];
+  ) ?? []) as CalendarWindowSourceRow[];
   const byUser = new Map(agents.map((a) => [a.id, a]));
   const withRow = new Set(cals.map((c) => c.user_id));
   const missingRows = agents.filter((a) => !withRow.has(a.id)).map((a) => a.email);
   const horizonDays = await loadBookingHorizonDays();
-  const uncovered = uncoveredCalendars({
-    rows: cals.map((c) => ({
-      userId: c.user_id,
-      name: byUser.get(c.user_id)?.name ?? null,
-      email: byUser.get(c.user_id)?.email ?? null,
-      calendarId: c.calendar_id,
-      syncWindowToIso: c.sync_window_to,
-    })),
+  const uncovered = readinessUncoveredCalendars({
+    rows: cals.map((c) => calendarWindowRow(c, byUser.get(c.user_id))),
     horizonDays,
     nowIso: new Date(nowMs).toISOString(),
-  }).map((r) => `${r.email ?? r.userId} (${r.calendarId})`);
+  });
   return { bookableAgents: agents.length, missingRows, uncovered };
 });
 
@@ -253,7 +292,7 @@ const holidays = await section("holiday exceptions", async () => {
 const facts: ReadinessFacts = {
   nowMs,
   stretchedCooldowns,
-  parity: { lastRunMs, boundMs: CANARY_STALE_BOUNDS_MS["schedule-parity"], drifting },
+  parity: { lastRunMs, boundMs: CANARY_STALE_BOUNDS_MS["schedule-parity"], drifting, drift: parityDrift },
   pendingBookable,
   calendars,
   emptyBuckets,

@@ -91,6 +91,39 @@ export interface CalendarWindowRow {
   hasRecordedFailure: boolean;
 }
 
+/** The `agent_calendars` columns `calendarWindowRow` reads, for the select that feeds it. */
+export const CALENDAR_WINDOW_COLUMNS =
+  "user_id, calendar_id, sync_window_to, created_at, consecutive_failures, last_sync_error";
+
+/** One `agent_calendars` row as `CALENDAR_WINDOW_COLUMNS` selects it. */
+export interface CalendarWindowSourceRow {
+  user_id: string;
+  calendar_id: string;
+  sync_window_to: string | null;
+  created_at: string | null;
+  consecutive_failures: number | null;
+  last_sync_error: string | null;
+}
+
+/**
+ * The one way a stored calendar becomes a row the judge reads, shared by the monitor
+ * and the readiness command so both grant the same first run patience (#3063).
+ */
+export function calendarWindowRow(
+  c: CalendarWindowSourceRow,
+  user: { name: string | null; email: string | null } | undefined,
+): CalendarWindowRow {
+  return {
+    userId: c.user_id,
+    name: user?.name ?? null,
+    email: user?.email ?? null,
+    calendarId: c.calendar_id,
+    syncWindowToIso: c.sync_window_to,
+    createdAtIso: c.created_at,
+    hasRecordedFailure: (c.consecutive_failures ?? 0) > 0 || c.last_sync_error !== null,
+  };
+}
+
 /**
  * Which calendars fail the coverage bound. Pure, so the boundary (and both
  * fail-safe directions) are pinned by tests rather than living in a query.

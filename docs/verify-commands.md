@@ -1243,12 +1243,15 @@ The fifth command in the family above, and the one to run right before the pilot
 bookings (#2066). On 2026-09-07 answering "is the parallel run trustworthy today"
 took a database query plus reading eight issues, because each precondition is
 measured somewhere in Slate and nowhere together. This reads production, writes
-nothing, and judges five things through the code that already owns each of them
-(L107): no alert cooldown stretched above its default, the daily cal.com comparison
-fresh and not reporting drift, nobody waiting to become bookable behind a refused
+nothing, and judges each precondition through the code that already owns it (L107):
+no alert cooldown stretched above its default, the daily cal.com comparison fresh
+and not reporting drift, nobody waiting to become bookable behind a refused
 activation, every bookable agent's calendar present and hydrated to the booking
-horizon (the hydration monitor's own judge), and no real bucket empty (the empty
-bucket alarm's own eligibility predicate).
+horizon (the hydration monitor's own judge), no debt tier and no real bucket empty
+(the empty bucket alarm's own eligibility predicate), every bookable agent on a week
+somebody set (#1753, `agentsOnUnsetHours`), and trypennie's key proven from
+production. The exit table below is the list; `scripts/test-readiness-exit-table.ts`
+fails when a code in `READINESS_EXIT` has no row in it, or a row names no code.
 
 ```
 pnpm verify:parallel-run-readiness
@@ -1369,10 +1372,29 @@ whole question. The numbers stay unused so an old log never reads as a new findi
 Rows the shared key left in `api_caller_seen` are never read: every read asks for
 the callers the authorizer knows.
 
-A deliberately dropped check, so nobody adds it back by accident: a bookable agent
-sitting on the seeded default week is NOT reported. The seeded week is also a real
-week some agents genuinely keep, so the proxy would be a standing false finding;
-telling the two apart needs the stamp #1753 asks for, and belongs there.
+**Exit 8 names who drifted (#2089).** "The comparison is reporting drift" sent the
+reader to `pnpm verify:calcom-parity`, a four minute sweep, to learn it was two
+Saturdays, at the moment this command exists for. So the daily lane keeps its
+`parity-summary.json` as the run's `parity-summary` artifact (7 days), and while the
+drift alert is firing this command fetches it with `gh` and names each paging
+difference in the alert's own words, worst first, four names per kind and a count of
+the rest, with the run link. It reads the summary through the endpoint's own
+`parseParitySweep` and `classifyParitySweep`, so it cannot call something drift that
+the page would not. The heartbeat records no run id, so the run is paired by time:
+it must have FINISHED just after the stamp it wrote (`pickParityRun`), never merely
+be the newest. Every way of not getting the names (no `gh`, no access, no paired
+run, no artifact, a refused summary) keeps exit 8 and says why nobody is named,
+because the drift itself was measured either way.
+
+**Exit 11, a bookable agent on hours nobody set (#1753, #2080).** It was left out of
+the first cut on purpose, because the only test then was "is this week shaped like
+the seeded default", and the seeded week is also a real week some agents keep. Since
+#2080 every schedule carries `hours_source`, so the check names an agent whose week
+was written by the seed, or an unstamped row still shaped exactly like the org
+default, through `agentsOnUnsetHours`, the same judge the daily alert uses. It has no
+grace period here, unlike the alert: this is run at a chosen moment before real
+leads are sent, and an agent seeded yesterday is offered on coincidence hours just
+the same. It ranks last, because the agent IS offered on a plausible week.
 
 **It retires at cutover (#65)** with the rest of the family, and since #2875 it
 says so itself: once cal.com is marked retired on /admin/alerts it exits 19 with a
