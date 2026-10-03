@@ -462,9 +462,9 @@ const VERDICT_SUBJECT: Record<DetectorVerdictLane, VerdictSubject> = {
     look: 'the Worker logs for msg="tick" under tag=busy-drift, and whether it reports status="unreadable", which means the live freeBusy read or the busy_blocks read is failing',
   },
   [CRON_BUDGET_VERDICT_LANE]: {
-    what: "the Worker's hourly record that it is still timing its cron ticks in wall time",
+    what: "the hourly check reading each cron schedule's real CPU from Cloudflare's analytics",
     cost: "a schedule could grow toward the point Cloudflare kills it, and the warning meant to come first would never arrive",
-    look: 'that the 0 * * * * cron is in wrangler.jsonc and firing, then the Worker logs for tag=cron-budget and tag=cron msg="lane timings"',
+    look: 'the Worker logs for tag=cron-budget, where msg="cron cpu: unmeasured, ..." quotes why the read failed (a CF_ANALYTICS_TOKEN that was revoked or expired is the usual cause), then that the 0 * * * * cron is in wrangler.jsonc and firing',
   },
   [OOO_PROTECTION_VERDICT_LANE]: {
     what: "the check asking whether approved time off is still blocking the hours it covers",

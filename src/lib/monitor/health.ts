@@ -689,9 +689,11 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // sits beside, its longest legitimate silence is a handful of ticks, and six
   // hours is the same maintenance window over a failed read.
   "verdict:busy-drift": 6 * 60 * MIN,
-  // The Worker's cron timing (#3141), stamped on every hourly tick whatever it measured, so
-  // its longest legitimate silence is one hour plus a late tick. Six hours is the same
-  // maintenance window as its siblings above, over a stamp that cannot legitimately lapse.
+  // The hourly cron CPU check (#3141), stamped on every hour whose analytics read measured a
+  // day, so its longest legitimate silence is one hour plus a late tick. Six hours is the same
+  // maintenance window as its siblings above, over an analytics API having a bad afternoon.
+  // While CF_ANALYTICS_TOKEN is unset it cannot conclude by construction, and the watchdog
+  // does not call it blind (`unconfiguredDetector`, verdict-freshness.ts).
   "verdict:cron-budget": 6 * 60 * MIN,
 };
 

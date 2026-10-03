@@ -227,6 +227,9 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // #2843: sales ops made the Ultra High and Very High cascade ordinary routing on
   // 2026-09-28, so the number is put on the record and nobody is sent to act on it.
   top_tier_cascade_rate: "something-was-measured-and-is-only-worth-knowing",
+  // #3141: the cron CPU check cannot run without its optional token. An info line,
+  // so it sits with the other things only worth knowing rather than with the pages.
+  cron_cpu_not_configured: "something-was-measured-and-is-only-worth-knowing",
   // #2641: a host misconfiguration Slate cannot fix, worth passing on and never
   // worth waking for, because bookings still complete inside the embed.
   embed_origin_mismatch: "something-was-measured-and-is-only-worth-knowing",

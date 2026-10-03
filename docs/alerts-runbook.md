@@ -177,11 +177,12 @@ drains it.
   lane, not a wobble, and the thing to read is #2022.
 - What is in the backlog? The alert names the table and the count.
 - `cron_budget_headroom` (#3141) is the invocation rather than one sweep: some tick in
-  the last day took longer than 60s of WALL time, which is all the Worker can measure of
-  itself. It is not a CPU reading in either direction, so read the real CPU for those
-  ticks (`cpuTimeUs` in `workersInvocationsScheduled`, see
-  `docs/cloudflare-platform-notes.md`) before deciding anything. Wall time well above CPU
-  means the tick was waiting, not computing. Its all clear says nothing about CPU either.
+  the last day used more than 60s of CPU, half the 120s ceiling Cloudflare kills it at.
+  It is read hourly from Cloudflare's own `cpuTimeUs` (`workersInvocationsScheduled`),
+  and the page names each schedule with its max and p99. Which lane spent it is under
+  `tag=cron msg="lane timings"` for the ticks named. A page dated before 2026-10-04 was
+  the old WALL time version, which was switched off because waiting is not CPU; the
+  first measured day under the line clears it.
 - Is the work itself failing, so nothing ever leaves the queue? That is a different
   family (a side effect that did not complete, below).
 
@@ -590,7 +591,12 @@ nothing either way; re-run it.
 
 Keys: `rate_limit_blocked:*`, `ooo_agent_dm`, `ooo_approvals_digest`,
 `ooo-digest-unreachable:*`, `ooo-digest-unrouted-unreachable`, `ooo_undo`,
-`embed_origin_mismatch`.
+`embed_origin_mismatch`, `cron_cpu_not_configured`.
+
+**`cron_cpu_not_configured`** (#3141) says, once a day, that the Worker has no
+`CF_ANALYTICS_TOKEN`, so nothing is reading cron CPU and nothing will page about it. It
+is a decision waiting to be made rather than a fault. DEPLOY.md's secrets block says how
+to create the token; the line stops on the first hourly tick after it is set.
 
 **`embed_origin_mismatch` is the one here with a job attached, and the job is not
 ours** (#2641). A page embedding the booker told it to report to one address while

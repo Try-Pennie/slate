@@ -367,7 +367,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "cron_budget_headroom",
     kind: "condition",
-    why: "A cron schedule had a tick take longer than its wall time line (half the CPU ceiling, but wall time, not CPU) inside the last day, which stays true for a day after the last such tick; the monitor lane re-reads it every tick, so a measured day with none is the healthy result that ends it (#3141).",
+    why: "A cron schedule's worst tick in the last day used more than half the CPU ceiling, read from Cloudflare's own cpuTimeUs, which stays true for a day after the last such tick; the hourly check re-reads the trailing day, so a measured day with every schedule under the line is the healthy result that ends it, and an unread day ends nothing (#3141).",
   },
   {
     key: "agents_on_unset_hours",
@@ -991,6 +991,15 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "stopped was a test one and the page is the partner's to fix, so nobody is woken; the " +
       "full report is in the log. There is no all-clear worth sending: a working staging " +
       "page sends no report at all, and absence of reports is the healthy state.",
+  },
+  {
+    key: "cron_cpu_not_configured",
+    kind: "info",
+    why:
+      "The Worker has no CF_ANALYTICS_TOKEN, so cron CPU is not measured (#3141). The token is " +
+      "optional and setting it is a decision, not a fault, so nobody is woken; the line says so " +
+      "daily rather than leaving the missing check silent, and it never resolves because it never " +
+      "claimed anything was wrong.",
   },
   {
     key: "embed_origin_mismatch",

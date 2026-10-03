@@ -46,16 +46,45 @@ Current headroom for the every minute cron (7 days, 19,260 ticks):
 CPU is billed on **actual usage, not the limit**, so raising the ceiling costs
 nothing by itself. Raise it rather than let invocations get killed.
 
-**The CPU table above is still a hand reading, and nothing watches CPU automatically.**
-The running Worker has no reading of its own CPU, and the analytics that do need an
-account token the deployment does not hold. What #3141 added is a WALL time check: the
-monitor lane pages (`cron_budget_headroom`) when any tick in the last day took longer than
-half the ceiling in wall time, from what `worker/index.ts` already measures per tick. That
-is not a CPU bound in either direction (the clock advances only at I/O, so compute between
-waits can read as no time at all, which is how a load run tick spent 119s of CPU, below),
-so it catches a schedule growing slow and never vouches for CPU headroom. The line is
-`CRON_BUDGET_WARN_MS` in `src/lib/monitor/cron-budget.ts`, derived from
-`CRON_CPU_LIMIT_MS`, which `scripts/test-cron-budget.ts` holds equal to `limits.cpu_ms`.
+**Cron CPU is watched hourly from the analytics, once `CF_ANALYTICS_TOKEN` is set (#3141).**
+The running Worker has no reading of its own CPU, so the hourly tick asks
+`/api/cron/cron-budget` to read it from the GraphQL Analytics API
+(`https://api.cloudflare.com/client/v4/graphql`):
+
+```graphql
+query($account:String!,$script:String!,$from:Time!,$to:Time!){
+  viewer { accounts(filter:{accountTag:$account}) {
+    workersInvocationsScheduled(limit:10000, filter:{scriptName:$script, datetime_geq:$from, datetime_leq:$to}) {
+      cpuTimeUs cron status
+    } } }
+}
+```
+
+with `account` the `account_id` in wrangler.jsonc, `script` `slate`, and the trailing 24
+hours as RFC 3339 to the second. Why this dataset and not the documented one:
+Cloudflare's docs describe `workersInvocationsAdaptive`, which counts cron invocations
+alongside requests with no dimension separating them (the mixed p99 read 48.9 SECONDS on
+2026-09-13, which is the crons, not a request). `workersInvocationsScheduled` is a RAW
+dataset, one row per scheduled invocation, whose fields were read from the live schema on
+2026-09-13: `cpuTimeUs`, `cron`, `datetime`, `environmentName`, `scheduledDatetime`,
+`scriptName`, `status`. It has no `sum` or `quantiles` block, so the max and p99 per
+schedule are computed in `src/lib/monitor/cron-budget.ts`. **`cpuTimeUs` is MICROSECONDS.**
+A day is about 2,000 rows, well inside the 10,000 page; a page that comes back full is read
+as possibly truncated, and an empty one as a blind read, never as zero.
+
+It pages `cron_budget_headroom` when any schedule's worst tick passes half the ceiling
+(`CRON_BUDGET_WARN_MS`, derived from `CRON_CPU_LIMIT_MS`, which
+`scripts/test-cron-budget.ts` holds equal to `limits.cpu_ms`), and clears on a measured day
+under it. The token is an ACCOUNT token with Account Analytics Read only; without it the
+check measures nothing and says so in a daily info line. The table above stays the last
+hand reading.
+
+What it replaced: #3168 paged on WALL time, the one thing the Worker can time about
+itself, and fired on 2026-10-03 for a five minute tick of about 84s that was nearly all
+waiting. Wall time is not a CPU bound in either direction (the clock advances only at I/O,
+so compute between waits can read as no time at all, which is how a load run tick spent
+119s of CPU, below), so that page was switched off. A tick past the line is still logged
+under `tag=cron-budget`, and never pages.
 
 ### One limit for crons and requests, by decision (#3107)
 

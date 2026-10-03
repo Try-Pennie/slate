@@ -504,7 +504,7 @@ import {
   formatDefinerGrantsClearedAlert,
 } from "@/lib/monitor/definer-grants";
 import { formatAuditChainBrokenAlert, formatAuditChainRecovery } from "@/lib/monitor/audit-chain";
-import { formatCronBudgetAlert, formatCronBudgetRecovery } from "@/lib/monitor/cron-budget";
+import { formatCronCpuAlert, formatCronCpuNotConfigured, formatCronCpuRecovery } from "@/lib/monitor/cron-budget";
 import {
   formatAuthSignInOpenAlert,
   formatAuthSignInClearedAlert,
@@ -3061,40 +3061,57 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   },
   {
     key: "cron_budget_headroom",
-    state: "the every minute schedule had a tick past half its ceiling",
+    state: "the every minute schedule had a tick past half its CPU ceiling",
     channel: "alert",
-    text: formatCronBudgetAlert({
+    text: formatCronCpuAlert({
       status: "over",
-      breaches: [{ cron: "* * * * *", atMs: Date.UTC(2026, 9, 3, 14, 2) }],
-      unreadable: [],
-    }),
-  },
-  {
-    key: "cron_budget_headroom",
-    state: "two schedules past the line, and a third whose row cannot be dated",
-    channel: "alert",
-    // Read this one for the plural grammar and for how an undated row is named as not
-    // judged rather than counted as a breach.
-    text: formatCronBudgetAlert({
-      status: "over",
-      breaches: [
-        { cron: "* * * * *", atMs: Date.UTC(2026, 9, 3, 14, 2) },
-        { cron: "*/5 * * * *", atMs: Date.UTC(2026, 9, 3, 9, 35) },
+      over: [{ cron: "* * * * *", invocations: 1440, maxCpuMs: 64_250, p99CpuMs: 41_800 }],
+      crons: [
+        { cron: "* * * * *", invocations: 1440, maxCpuMs: 64_250, p99CpuMs: 41_800 },
+        { cron: "*/5 * * * *", invocations: 288, maxCpuMs: 21_400, p99CpuMs: 18_000 },
       ],
-      unreadable: ["0 * * * *"],
+      invocations: 1728,
+      unreadable: 0,
     }),
   },
   {
     key: "cron_budget_headroom",
-    state: "a whole day with every tick under the line",
-    channel: "recovery",
-    text: formatCronBudgetRecovery({ status: "within", unreadable: [] }),
+    state: "two schedules past the line, and one tick with no readable CPU",
+    channel: "alert",
+    // Read this one for the plural grammar and for how an unreadable row is named rather
+    // than scored as a cheap tick.
+    text: formatCronCpuAlert({
+      status: "over",
+      over: [
+        { cron: "* * * * *", invocations: 1440, maxCpuMs: 64_250, p99CpuMs: 41_800 },
+        { cron: "*/5 * * * *", invocations: 288, maxCpuMs: 61_000, p99CpuMs: 30_500 },
+      ],
+      crons: [
+        { cron: "* * * * *", invocations: 1440, maxCpuMs: 64_250, p99CpuMs: 41_800 },
+        { cron: "*/5 * * * *", invocations: 288, maxCpuMs: 61_000, p99CpuMs: 30_500 },
+      ],
+      invocations: 1729,
+      unreadable: 1,
+    }),
   },
   {
     key: "cron_budget_headroom",
-    state: "cleared with an undated row left behind, named as not judged",
+    state: "a measured day with every schedule under the line",
     channel: "recovery",
-    text: formatCronBudgetRecovery({ status: "within", unreadable: ["* * * * *"] }),
+    text: formatCronCpuRecovery({
+      status: "within",
+      crons: [
+        { cron: "* * * * *", invocations: 1440, maxCpuMs: 44_700, p99CpuMs: 30_100 },
+        { cron: "*/5 * * * *", invocations: 288, maxCpuMs: 21_400, p99CpuMs: 18_000 },
+      ],
+      invocations: 1728,
+    }),
+  },
+  {
+    key: "cron_cpu_not_configured",
+    state: "the Worker has no CF_ANALYTICS_TOKEN",
+    channel: "info",
+    text: formatCronCpuNotConfigured(),
   },
   {
     key: "definer_grants_to_web_roles",

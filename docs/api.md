@@ -1008,7 +1008,7 @@ cost matters; see `docs/cloudflare-platform-notes.md`.
 | `GET /api/cron/prune-bookings-pii` | Redacts consumer contact data on bookings past the 24 month window (#1071). |
 | `GET /api/cron/prune-webhook-payloads` | Blanks `webhook_deliveries.payload`, which carries attendee PII, once a delivery is settled (#1073). |
 | `GET /api/cron/prune-warehouse-pii` | The warehouse half of the same 24 month booking PII window (#1180). |
-| `GET /api/cron/cron-budget` | Not a scheduled lane: the Worker calls it in process after a tick whose wall time passed a line set at half `limits.cpu_ms`, and on every hourly tick, so the daily wall time headroom check has something to read (#3141). Takes `cron` and `wall_ms`; answers `400` on either missing or unreadable. |
+| `GET /api/cron/cron-budget` | Not a scheduled lane: the Worker calls it in process on the hourly tick, and it reads the trailing day of scheduled invocation CPU from Cloudflare's GraphQL Analytics API and pages when a schedule passed half `limits.cpu_ms` (#3141). Takes nothing in the query. Answers `200` with `{ status }`, one of `within`, `over`, `unmeasured` or `not-configured` (no `CF_ANALYTICS_TOKEN`), and `500` when the verdict stamp could not be written. |
 | `GET /api/cron/snowflake-export` | The archival mirror export (#1099), on its own cron expression and lock. |
 | `GET /api/cron/snowflake-reconcile` | Runs the warehouse self-check on a schedule (#1144), including the rows stranded behind the export watermark. |
 | `GET /api/cron/erasure-audit` | The Snowflake half of a data-subject erasure audit (#1103). |
