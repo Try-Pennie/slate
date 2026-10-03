@@ -11,25 +11,20 @@
 //
 // A spec therefore never addresses the day strip itself. Any line in
 // `e2e/tests/` naming the strip's accessible name is a finding, unless it (or
-// the `//` block directly above it) carries `// day-choice-ok: <reason>`, with a
-// reason that begins with a word. The rule is on the NAME rather than on one
+// the comment block directly above it) carries `// day-choice-ok: <reason>`, read
+// by the shared opt out reader (`scripts/lib/opt-out.ts`). The rule is on the NAME rather than on one
 // spelling of a click, because the outage was spelled two ways (`.first().click()`
 // on the locator, and a `days` variable clicked later), and a third spelling
 // would pass a scan for either.
 
+import { hasOptOut } from "./opt-out.ts";
+
 export const DAY_STRIP_NAME = "Available days";
-const OPT_OUT = /\/\/\s*day-choice-ok:\s*[A-Za-z]/;
 
 export type DayChoiceFinding = { file: string; line: number; text: string };
 
 function optedOut(lines: string[], i: number): boolean {
-  if (OPT_OUT.test(lines[i])) return true;
-  for (let j = i - 1; j >= 0; j--) {
-    const t = lines[j].trim();
-    if (!t.startsWith("//")) return false;
-    if (OPT_OUT.test(t)) return true;
-  }
-  return false;
+  return hasOptOut(lines, i, "day-choice-ok:");
 }
 
 export function scanDayChoice(file: string, source: string): DayChoiceFinding[] {

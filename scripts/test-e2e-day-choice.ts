@@ -37,6 +37,14 @@ eq(
   0,
   "an opt out with a reason on the line is honoured",
 );
+// The opt out is read by the shared reader (scripts/lib/opt-out.ts), so it is
+// placed exactly as every other guard's is: a blank line between the comment and
+// the code it is about does not detach it.
+eq(
+  scanDayChoice("a.spec.ts", `// day-choice-ok: only checks the chip is drawn\n\nconst x = "${DAY_STRIP_NAME}";`).length,
+  0,
+  "an opt out above a blank line is honoured, as the shared reader places it",
+);
 eq(
   scanDayChoice("a.spec.ts", `// day-choice-ok:\nconst x = "${DAY_STRIP_NAME}";`).length,
   1,
