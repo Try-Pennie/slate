@@ -31,6 +31,7 @@
  */
 
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
+import { logAlertSendFailure, logResolveFailure } from "../notify/send-failure.ts";
 
 /** alert_state key for the condition. */
 export const AUTH_SIGN_IN_SURFACE_KEY = "auth_sign_in_beyond_google";
@@ -241,7 +242,7 @@ export async function runAuthSignInSurfaceCheck(deps: {
   if (health.status === "open") {
     await deps
       .notify(AUTH_SIGN_IN_SURFACE_KEY, deps.cooldownMs, formatAuthSignInOpenAlert(health))
-      .catch(() => {});
+      .catch(logAlertSendFailure(AUTH_SIGN_IN_SURFACE_KEY));
     deps.log?.(
       `monitor auth-sign-in: OPEN email=${health.emailOn} signup_providers=${health.signupProviders.join("|") || "none"} ` +
         `saml_signup=${health.samlSignup} providers_on=${health.providersOn.join("|") || "none"}`,
@@ -251,7 +252,9 @@ export async function runAuthSignInSurfaceCheck(deps: {
 
   // The all clear hangs off this MEASURED healthy result, never off "we did not alert this
   // tick" (#1134, #1152): the unmeasured branch above returns before reaching it.
-  await deps.resolve(AUTH_SIGN_IN_SURFACE_KEY, formatAuthSignInClearedAlert(health)).catch(() => {});
+  await deps
+    .resolve(AUTH_SIGN_IN_SURFACE_KEY, formatAuthSignInClearedAlert(health))
+    .catch(logResolveFailure(AUTH_SIGN_IN_SURFACE_KEY));
   deps.log?.(`monitor auth-sign-in: healthy providers_on=${health.providersOn.join("|") || "none"}`);
   return health;
 }
