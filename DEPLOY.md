@@ -389,7 +389,7 @@ rather than in a deploy, so a rebuilt project needs them set by hand:
   dev preview sets a cookie and never touches Supabase Auth).
 - **The `before_user_created` hook** (dashboard, Authentication, Hooks): a Postgres
   hook pointing at `public.before_user_created_domain_gate`, defined by migration
-  0158. Supabase Auth calls it before it creates ANY account, by any provider, and
+  0159. Supabase Auth calls it before it creates ANY account, by any provider, and
   it refuses every email whose domain is not exactly `trypennie.com`, so an outside
   Google account is turned away **before an account or a session exists**. The app's
   own check in the OAuth callback (`src/lib/auth/domain.ts`) stays as the second

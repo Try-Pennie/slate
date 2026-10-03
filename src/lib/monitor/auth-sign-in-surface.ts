@@ -2,7 +2,7 @@
  * Does production's Supabase Auth accept anything but Google? (#3082)
  *
  * Slate staff sign in with Google only. The app refuses an outside Google account in
- * the OAuth callback, and the before_user_created hook (migration 0158) refuses any new
+ * the OAuth callback, and the before_user_created hook (migration 0159) refuses any new
  * account outside trypennie.com before it exists. Neither can see two settings that
  * live only in the Supabase dashboard:
  *

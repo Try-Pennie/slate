@@ -5,7 +5,7 @@
 // calls the function, reads its reply as a refusal, and creates no account, and a
 // mocked auth server would agree with whatever it was told (L52). So this starts
 // Supabase's own Postgres image and Supabase's own auth server in Docker, applies
-// migration 0158 VERBATIM, registers the hook exactly as config.toml does, and
+// migration 0159 VERBATIM, registers the hook exactly as config.toml does, and
 // signs up through the auth API:
 //
 //   - an outside address, a subdomain and a suffix lookalike are each refused
@@ -32,7 +32,7 @@ import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const ROOT = join(import.meta.dirname, "..");
-const MIGRATION = readFileSync(join(ROOT, "supabase", "migrations", "0158_auth_domain_gate_hook.sql"), "utf8");
+const MIGRATION = readFileSync(join(ROOT, "supabase", "migrations", "0159_auth_domain_gate_hook.sql"), "utf8");
 const PG_IMAGE = process.env.AUTH_HOOK_PG_IMAGE ?? "supabase/postgres:17.6.1.175";
 const AUTH_IMAGE = process.env.AUTH_HOOK_GOTRUE_IMAGE ?? "public.ecr.aws/supabase/gotrue:v2.196.0";
 const HOOK_URI = "pg-functions://postgres/public/before_user_created_domain_gate";

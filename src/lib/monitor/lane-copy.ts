@@ -37,6 +37,7 @@ import {
   ADVISOR_PHOTOS_VERDICT_LANE,
   BUSY_DRIFT_VERDICT_LANE,
   parkedDetector,
+  type DetectorVerdictLane,
 } from "@/lib/monitor/verdict-freshness";
 
 /** Minutes, rounded, for the copy. */
@@ -249,8 +250,18 @@ export function retentionRecoveryText(lane: string): string {
  * thing that is gone is the assurance. Each detector gets its own sentence for
  * the #1123 reason: a shared "a detector went blind" would send whoever reads it
  * looking for the wrong thing.
+ *
+ * Keyed by the verdict lane TYPE, never by string (L113): a lane added to the family
+ * and forgotten here fails `tsc`, rather than throwing on `.what` inside the very
+ * page that is meant to say the detector went blind.
  */
-const VERDICT_SUBJECT: Record<string, { what: string; cost: string; look: string }> = {
+interface VerdictSubject {
+  what: string;
+  cost: string;
+  look: string;
+}
+
+const VERDICT_SUBJECT: Record<DetectorVerdictLane, VerdictSubject> = {
   [AVAILABILITY_TRUTH_VERDICT_LANE]: {
     what: "the check asking whether the times the booker is offering are really free on the agents' calendars",
     cost: "nothing is confirming that the published availability is true, so a drifted cache would only surface as customers being refused at the last step",
@@ -419,6 +430,24 @@ const VERDICT_SUBJECT: Record<string, { what: string; cost: string; look: string
 };
 
 /**
+ * The subject for a lane read back off the heartbeat table, where it is a string.
+ *
+ * Every lane in the family has an entry, which the type above enforces. A string that
+ * is not in the family can only come from a code fault (a bound or a stamp for a lane
+ * nobody declared), and it is named as exactly that rather than rendering `undefined`
+ * into a page or throwing inside the alert path (L11).
+ */
+function verdictSubject(lane: string): VerdictSubject {
+  const known = (VERDICT_SUBJECT as Record<string, VerdictSubject | undefined>)[lane];
+  if (known) return known;
+  return {
+    what: `the detector stamping ${lane}, which has no entry in VERDICT_SUBJECT`,
+    cost: "whatever it watches is not being reported, and its alert copy is missing, which is a code fault",
+    look: "src/lib/monitor/lane-copy.ts and src/lib/monitor/verdict-freshness.ts for that lane",
+  };
+}
+
+/**
  * A detector that has gone blind: it keeps running, and it has stopped (or never
  * started) reaching a verdict (#1394).
  *
@@ -427,7 +456,7 @@ const VERDICT_SUBJECT: Record<string, { what: string; cost: string; look: string
  * check a stuck lock would send them after a fault that is not there.
  */
 export function verdictBlindAlertText(lane: StaleLane): string {
-  const subject = VERDICT_SUBJECT[lane.lane];
+  const subject = verdictSubject(lane.lane);
   const bound = describeGap(lane.maxStaleMs);
   // Sentence case: these render as the first line of a Slack message.
   const opener = `${subject.what[0].toUpperCase()}${subject.what.slice(1)} is running, but `;
@@ -455,7 +484,7 @@ export function verdictBlindAlertText(lane: StaleLane): string {
 /** All-clear for a detector that is concluding again (#1394). It names what is
  *  being measured once more, because the page was about a missing answer. */
 export function verdictRecoveryText(lane: string): string {
-  const subject = VERDICT_SUBJECT[lane];
+  const subject = verdictSubject(lane);
   return (
     `${subject.what[0].toUpperCase()}${subject.what.slice(1)} has reached a verdict again, so it ` +
     `is measuring rather than merely running, and the earlier page is cleared. No action is needed.`
@@ -530,7 +559,7 @@ export function verdictParkedInfoText(
   registry?: Parameters<typeof parkedDetector>[1],
 ): string {
   const items = lanes.map((lane) => {
-    const subject = VERDICT_SUBJECT[lane];
+    const subject = verdictSubject(lane);
     const parked = parkedDetector(lane, registry);
     // A lane with no entry cannot describe a park, so it says what it knows rather
     // than rendering the word undefined twice into a sentence (#2484, L11).
@@ -580,7 +609,7 @@ export function verdictUnparkAlertText(
   lane: string,
   registry?: Parameters<typeof parkedDetector>[1],
 ): string {
-  const subject = VERDICT_SUBJECT[lane];
+  const subject = verdictSubject(lane);
   return (
     `${subject.what[0].toUpperCase()}${subject.what.slice(1)} has reached a verdict, ` +
     `so the reason it was parked has stopped being true and it is now switched off ` +
@@ -596,7 +625,7 @@ export function verdictUnparkAlertText(
  * `verdictUnparkLapsedText` for the other.
  */
 export function verdictUnparkRecoveryText(lane: string): string {
-  const subject = VERDICT_SUBJECT[lane];
+  const subject = verdictSubject(lane);
   return (
     `${subject.what[0].toUpperCase()}${subject.what.slice(1)} is armed again, so it is ` +
     `being watched against its own bound like every other detector and the earlier ` +
@@ -623,7 +652,7 @@ export function verdictUnparkLapsedText(
   lane: string,
   registry?: Parameters<typeof parkedDetector>[1],
 ): string {
-  const subject = VERDICT_SUBJECT[lane];
+  const subject = verdictSubject(lane);
   // Deliberately does NOT recite the park's reason. The weekly whisper carries that,
   // at length, and this is a message whose whole content is that there is nothing to
   // do: repeating four lines of arithmetic here buries the one fact worth reading.

@@ -1480,7 +1480,7 @@ pinned offline by `scripts/test-agent-link.ts`, which reads the migration's CHEC
 
 #3082: Supabase Auth used to create an account for ANY Google account, and the
 `trypennie.com` check ran only in the OAuth callback, after the account and a signed in
-session already existed. Migration 0158 adds a `before_user_created` auth hook,
+session already existed. Migration 0159 adds a `before_user_created` auth hook,
 `public.before_user_created_domain_gate`, which Supabase Auth calls before it creates any
 account by any provider, and which refuses every email whose domain is not exactly
 `trypennie.com`. The offline suite (`scripts/test-auth-domain-hook.ts`) holds the
@@ -1502,7 +1502,7 @@ Google included.
 It writes nothing outside its own containers and removes them on the way out. No Docker,
 or a container that will not start, is exit 2, never a pass (L98); any failed check is
 exit 1. Measured 2026-10-03 with `supabase/postgres:17.6.1.175` and `gotrue:v2.196.0`:
-all checks passed. **Re-run it after any change to migration 0158's function.** It does
+all checks passed. **Re-run it after any change to migration 0159's function.** It does
 not touch production: the hosted hook is registered in the dashboard (DEPLOY.md, "Staff
 sign in: Google only").
 

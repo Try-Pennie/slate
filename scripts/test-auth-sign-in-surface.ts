@@ -1,7 +1,7 @@
 // #3082: does production's Supabase Auth accept anything but Google?
 //
 // Slate staff sign in with Google only, and the before_user_created hook (migration
-// 0158) refuses any new account outside trypennie.com. Two settings in the Supabase
+// 0159) refuses any new account outside trypennie.com. Two settings in the Supabase
 // dashboard sit outside both of those and outside the repository: the Email
 // provider, which opens password, magic link and recovery routes to anybody holding
 // the public key (and lets an existing account in without Google's own checks), and

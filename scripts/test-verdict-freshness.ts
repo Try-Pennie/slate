@@ -493,4 +493,16 @@ assert(
   "a tick that skipped or threw has not concluded either",
 );
 
+// --- a lane outside the family is named as a code fault, never a crash (L11) ---------
+// Every family lane has copy, which tsc enforces on VERDICT_SUBJECT's type. A string
+// off the heartbeat table that is not in the family can only be a code fault, and the
+// page about it must still render rather than throw inside the alert path.
+{
+  const text = verdictBlindAlertText({ lane: "verdict:nobody-declared", ageMs: 7 * HOUR, maxStaleMs: 6 * HOUR, unreadable: false });
+  assert(/verdict:nobody-declared/.test(text), "an undeclared lane's blind page names the lane");
+  assert(/code fault/.test(text), "and says it is a code fault");
+  assert(!/undefined/.test(text), "and renders no undefined");
+  assert(/verdict:nobody-declared/.test(verdictRecoveryText("verdict:nobody-declared")), "its all clear names the lane too");
+}
+
 finish();
