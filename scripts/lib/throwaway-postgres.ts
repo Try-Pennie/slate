@@ -5,7 +5,7 @@
 // No Docker, or a container that cannot start, exits 2 UNMEASURED: it proved
 // nothing about the migration, so it is never a pass and never the failed check
 // exit either (L98, L411).
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -17,8 +17,11 @@ export function readMigration(file: string): string {
 export interface ThrowawayPostgres {
   /** The container name, for a caller that drives psql itself. */
   name: string;
-  /** One statement batch through psql, ON_ERROR_STOP, tuples only. Throws on an error. */
-  sql(text: string, role?: string): string;
+  /**
+   * One statement batch through psql, ON_ERROR_STOP, tuples only. Throws on an error.
+   * `singleTransaction` runs the whole batch as one transaction, as `db push` runs a file.
+   */
+  sql(text: string, role?: string, opts?: { singleTransaction?: boolean }): string;
   /** Run a statement expected to FAIL, returning the error text (or null if it succeeded). */
   sqlError(text: string, role?: string): string | null;
   /**
@@ -32,6 +35,28 @@ export interface ThrowawayPostgres {
 
 function docker(args: string[], input?: string): string {
   return execFileSync("docker", args, { input, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
+}
+
+/** The `docker exec ... psql` argument list for one batch read from stdin. */
+export function psqlArgs(name: string, role?: string, opts?: { singleTransaction?: boolean }): string[] {
+  return [
+    "exec", "-i", name, "psql", "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-qtAX",
+    ...(opts?.singleTransaction ? ["--single-transaction"] : []),
+    ...(role ? ["-c", `set role ${role};`] : []),
+    "-f", "-",
+  ];
+}
+
+/**
+ * Whether the container's logs say initialisation is over. An image initialising a
+ * fresh data directory answers on its socket WHILE its init scripts run, then stops
+ * that server and starts the real one, so a `select 1` in the first phase reads as
+ * ready and the next statement meets "the database system is shutting down". The
+ * supabase/postgres image runs init scripts long enough to hit that every time
+ * (#3099), so readiness waits for the entrypoint's own line first.
+ */
+export function initFinished(logs: string): boolean {
+  return /PostgreSQL init process complete/.test(logs);
 }
 
 export function startThrowawayPostgres(name: string, image: string): ThrowawayPostgres {
@@ -48,11 +73,8 @@ export function startThrowawayPostgres(name: string, image: string): ThrowawayPo
     console.error(`UNMEASURED: the ${image} container could not start (${why}), so nothing was proved.`);
     process.exit(2);
   }
-  const sql = (text: string, role?: string): string =>
-    docker(
-      ["exec", "-i", name, "psql", "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-qtAX", ...(role ? ["-c", `set role ${role};`] : []), "-f", "-"],
-      text,
-    ).trim();
+  const sql = (text: string, role?: string, opts?: { singleTransaction?: boolean }): string =>
+    docker(psqlArgs(name, role, opts), text).trim();
   const pg: ThrowawayPostgres = {
     name,
     sql,
@@ -82,8 +104,13 @@ export function startThrowawayPostgres(name: string, image: string): ThrowawayPo
       }
     },
   };
-  for (let i = 0; i < 60; i++) {
+  const initialised = (): boolean => {
+    const logs = spawnSync("docker", ["logs", name], { encoding: "utf8" });
+    return initFinished(`${logs.stdout ?? ""}${logs.stderr ?? ""}`);
+  };
+  for (let i = 0; i < 90; i++) {
     try {
+      if (!initialised()) throw new Error("still initialising");
       sql("select 1;");
       return pg;
     } catch {

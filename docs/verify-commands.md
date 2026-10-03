@@ -1636,3 +1636,50 @@ exits 2, UNMEASURED.
 
 **Run it after any change to migration 0160's functions or to `audit-chain.ts`.**
 
+# Replaying every migration into an empty database (`pnpm verify:migration-replay-sql`)
+
+#3099: until this existed the migrations had been replayed from empty once, on a
+preview branch on 2026-09-02, and RLS and grants were checked only as text, so a
+migration leaning on state production already holds (a role, a grant, a snapshot
+table a backfill left behind) could merge unnoticed.
+
+It starts the `supabase/postgres` image in Docker, which carries the platform's roles
+and its DEFAULT GRANTS (every table `postgres` creates in `public` is granted to anon
+and authenticated the moment it exists, L714), and refuses to judge anything on an
+image without them, since a refusal measured there would be a missing grant rather
+than RLS. It creates the CLI's history table, applies every `NNNN_*.sql` as
+`postgres`, one transaction per file with the history row `db push` writes, and then
+checks: every version reads back through `applied_migration_versions()`; every public
+table has RLS on; the only policy a browser role can use is the allowlisted self read
+(`BROWSER_POLICY_ALLOWLIST` in `scripts/lib/migration-replay.ts`, each entry with its
+reason); as anon and authenticated an insert into every public table is refused; a
+signed in user reads their own row and nobody else's and can neither update nor
+delete it; no SECURITY DEFINER function in public is executable by a browser role;
+service_role, which the Snowflake export reads with, reads every `MIRROR_TABLES`
+table and `export_cursor`; and pet_reader reads `pet_export.closed_days` and nothing
+in public.
+
+```
+pnpm verify:migration-replay-sql
+```
+
+A migration that does not apply to an empty database is reported by file name with
+Postgres's error, and is a real finding: fix it in a NEW migration, never by editing
+an applied one. With no Docker it exits 2, UNMEASURED. It writes nothing outside the
+container. `MIGRATION_REPLAY_PG_IMAGE` overrides the pinned image and
+`MIGRATION_REPLAY_DIR` the directory, the latter only so a planted control can be
+replayed from a scratch copy.
+
+**It runs in CI**, with the other `scripts/verify-*-sql.ts` suites, in
+`.github/workflows/db-replay.yml`: on a pull request touching anything they read, and
+nightly, where a failure posts to Slack. A suite exiting 2 fails the job there. The
+path gate is checked against the suites' real import graph by
+`scripts/test-db-replay-workflow.ts`, so an import the gate misses fails `pnpm test`
+and names the file to add (L88).
+
+As of 2026-10-03 all 157 migrations replay from empty in about 6 seconds and every
+check passes. Seen failing on planted controls: a migration altering
+`availability_rules_backup_1255` (a table only production holds), a browser policy
+on bookings, RLS turned off on one table, a SECURITY DEFINER function granted to anon,
+and a plain `postgres:17-alpine` image with no default grants.
+

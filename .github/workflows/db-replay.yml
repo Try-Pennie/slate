@@ -1,0 +1,115 @@
+name: DB replay
+
+# Real database checks (#3099).
+#
+# The offline suite has no database, so everything Postgres decides was proved
+# only by hand: the three throwaway Postgres suites (scripts/verify-*-sql.ts) ran
+# when somebody remembered, RLS and grants were checked only as text, and the
+# migrations had been replayed from empty once, on a preview branch on 2026-09-02.
+# A migration leaning on state production already holds could merge unnoticed.
+#
+# This runs every scripts/verify-*-sql.ts against Docker on the runner. One of them,
+# verify-migration-replay-sql.ts, applies every migration to an empty
+# supabase/postgres container, which carries the platform's roles and its DEFAULT
+# GRANTS (L714), then checks RLS and grants as anon, authenticated, service_role
+# (the Snowflake export's credential) and pet_reader (the PET export login).
+#
+# A suite with no Docker exits 2 and says UNMEASURED. Here that FAILS the job like
+# any other non-zero exit: a runner that cannot start a container proved nothing.
+#
+# WHEN IT RUNS. On a pull request that changes anything the job reads, and nightly.
+# The paths below are not written from where the code lives: they are checked
+# against the real import graph of every suite and of the alerter by
+# scripts/test-db-replay-workflow.ts, which names any input the gate misses (L88).
+# Nightly, because two green changes can merge into a broken main (L85) and a
+# platform image or an unrelated change can break a replay with no migration
+# touched; a failed nightly run posts to Slack, since nobody watches the Actions tab
+# at night. Not on push to main: the nightly run covers what merged, within a day,
+# for a fraction of the minutes.
+#
+# NO HEARTBEAT, deliberately. A dropped nightly run costs one night that the next
+# one, or the next migration pull request, supplies; nothing acts on the verdict
+# in between.
+#
+# COST, in billed minutes (the repo is private). Measured locally on 2026-10-03:
+# the four suites take about 35s with images cached; on a runner add the checkout,
+# node setup and two image pulls (supabase/postgres is about 370 MB), so a run is
+# estimated at 2 to 3 minutes and billed as 3. Nightly is 31 runs, about 93 billed
+# minutes a month. In the 30 days to 2026-10-03, 47 commits touched a migration or
+# a suite input and 28 touched package.json, so pull request runs add roughly 150
+# to 250 billed minutes a month. Re-measure from real runs with:
+#   gh api "repos/Try-Pennie/slate/actions/workflows/db-replay.yml/runs?per_page=20" --jq '.workflow_runs[].id'
+#   gh api "repos/Try-Pennie/slate/actions/runs/<id>/jobs" --jq '.jobs[] | [.name, .started_at, .completed_at] | @tsv'
+on:
+  pull_request:
+    paths:
+      - "supabase/migrations/**"
+      - "scripts/verify-*-sql.ts"
+      - "scripts/lib/harness.ts"
+      - "scripts/lib/throwaway-postgres.ts"
+      - "scripts/lib/migration-replay.ts"
+      - "scripts/lib/run-alerter.ts"
+      - "scripts/lib/slack-post.ts"
+      - "scripts/notify-db-replay-failure.ts"
+      # The export's mirrored table list, and what its type only imports reach.
+      - "src/lib/snowflake/export-core.ts"
+      - "src/lib/snowflake/merge.ts"
+      - "src/lib/snowflake/client.ts"
+      - "src/lib/snowflake/jwt-cache.ts"
+      - "src/lib/snowflake/mirror-credentials.ts"
+      # Node reads its "type" to decide how to load a .ts file.
+      - "package.json"
+      - ".github/workflows/db-replay.yml"
+  schedule:
+    # 07:40 UTC, before anybody's working day, and off the hour where GitHub's
+    # scheduling queue is busiest.
+    - cron: "40 7 * * *"
+  workflow_dispatch:
+
+# Read only against a throwaway container, so a superseded pull request run is safe
+# to cancel (L671).
+concurrency:
+  group: db-replay-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  replay:
+    # Estimated 2 to 3 minutes; the slack is for a slow image pull.
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # No pnpm install: every suite imports only scripts/, node builtins and one
+      # type only src/ module, which scripts/test-db-replay-workflow.ts pins.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Run every real database suite
+        run: |
+          failed=""
+          ran=0
+          for f in scripts/verify-*-sql.ts; do
+            [ -f "$f" ] || continue
+            ran=$((ran + 1))
+            echo "::group::$f"
+            if ! node --experimental-strip-types "$f"; then failed="$failed $f"; fi
+            echo "::endgroup::"
+          done
+          if [ "$ran" -eq 0 ]; then
+            echo "::error title=No real database suite ran::No scripts/verify-*-sql.ts was found, so nothing was proved."
+            exit 1
+          fi
+          if [ -n "$failed" ]; then
+            echo "::error title=Real database suites failed::$failed. Exit 2 means Docker was not available, which fails here."
+            exit 1
+          fi
+          echo "All $ran real database suites passed."
+
+      - name: Slack alert when the nightly run fails
+        if: failure() && github.event_name == 'schedule'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_ALERTS_CHANNEL: ${{ vars.SLACK_ALERTS_CHANNEL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node --experimental-strip-types scripts/notify-db-replay-failure.ts

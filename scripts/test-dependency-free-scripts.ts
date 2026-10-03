@@ -78,6 +78,10 @@ const DECLARED_ALERTERS: { script: string; why: string }[] = [
     script: "scripts/notify-parity-failure.ts",
     why: "the only notification that the daily cal.com comparison could not run or report (#2031)",
   },
+  {
+    script: "scripts/notify-db-replay-failure.ts",
+    why: "the only notification that the nightly migration replay and real database suites failed (#3099)",
+  },
 ];
 
 // ---------------------------------------------------------------------------
