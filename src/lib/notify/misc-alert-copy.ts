@@ -459,3 +459,37 @@ export function bookableTraitUnrecordedAlert(email: string, slateBookable: boole
     `Diagnose via tag=bookable-trait in the Worker logs.`
   );
 }
+
+/** A held back stretch as a person would say it. */
+function heldFor(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 1) return "under a minute";
+  return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+}
+
+/**
+ * The Google Calendar breaker opened (#3134): Google stopped answering, so calls
+ * are held back and one test call goes through per window.
+ *
+ * Says what the reader will see while it holds, since that is what they get asked
+ * about: leads told to try again, and calendar sync not refreshing. `lastFailure`
+ * is already short (`shortErrorReason`, or a status and the call's name).
+ */
+export function googleBreakerOpenAlert(failures: number, lastFailure: string | null, openMs: number): string {
+  const seconds = Math.round(openMs / 1000);
+  const last = lastFailure ? ` (the last: ${lastFailure})` : "";
+  return (
+    `Google Calendar is not answering: ${failures} calls in a row failed${last}. ` +
+    `Slate is holding Google calls back and trying one every ${seconds} seconds. Until one succeeds, ` +
+    "bookings ask the lead to try again in a moment and calendar sync is paused. " +
+    "An all-clear follows when Google answers. Diagnose via tag=google-breaker in the Worker logs."
+  );
+}
+
+/** The breaker closed: a test call to Google succeeded (#3134). */
+export function googleBreakerClosedAlert(openForMs: number): string {
+  return (
+    `Google Calendar is answering again: a test call succeeded after Google calls were held back for ${heldFor(openForMs)}. ` +
+    "Bookings and calendar sync are sending calls to Google again."
+  );
+}

@@ -296,6 +296,13 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "is going stale; they re-enter the rotation and the same gauge re-measures it.",
   },
   {
+    key: "google_calendar_breaker_open",
+    kind: "condition",
+    why:
+      "Google Calendar calls are being held back after repeated failures (#3134); it ends " +
+      "when the breaker's probe call is answered, which is what posts the all-clear.",
+  },
+  {
     key: "availability_booked_solid",
     kind: "condition",
     why:
