@@ -14,6 +14,7 @@ import { regalSendsNothingFor } from "@/lib/webhooks/regal";
 import { payloadForSend, type CurrentRoutableRead } from "@/lib/webhooks/agent-trait";
 import type { WebhookEndpoint, WebhookEvent } from "@/lib/db/types";
 import { gatedWriteApplied } from "@/lib/booking/gated-write";
+import { webhookLoadtestFault } from "@/lib/loadtest-fault";
 
 const WEBHOOK_TIMEOUT_MS = 5000;
 const DEAD_LETTER_COOLDOWN_MS = 30 * 60 * 1000;
@@ -77,10 +78,22 @@ const readCurrentRoutable: CurrentRoutableRead = async (userId) => {
  * would otherwise turn every notify into a timeout + failed-retry, polluting the
  * lane timings. Returns null off the flag so production does the real send.
  * Inert anywhere the flag isn't set. Exported for testing.
+ *
+ * A fault pass naming the `webhook` target fails a share of these instead (#3104),
+ * keyed on the delivery and the attempt, so the retry and the dead letter alert run
+ * at scale rather than only the success a stub always reported.
  */
-export function loadtestDeliveryResult(): { ok: boolean; lastResponse: string } | null {
+export function loadtestDeliveryResult(
+  deliveryId = "",
+  attempt = 1,
+): { ok: boolean; lastResponse: string } | null {
   if (process.env.SLATE_LOADTEST !== "true") return null;
-  return { ok: true, lastResponse: "loadtest: external POST skipped" };
+  return (
+    webhookLoadtestFault(deliveryId, attempt) ?? {
+      ok: true,
+      lastResponse: "loadtest: external POST skipped",
+    }
+  );
 }
 
 async function send(
@@ -129,7 +142,7 @@ async function send(
   // reader to do; the second goes to the log and never to Slack.
   let intermediary = false;
   let fullReply: string | null = null;
-  const stub = loadtestDeliveryResult();
+  const stub = loadtestDeliveryResult(deliveryId, attempt);
   if (configError) {
     lastResponse = configError;
   } else if (stub) {

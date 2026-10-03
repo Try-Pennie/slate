@@ -124,7 +124,9 @@ import { fileURLToPath } from "node:url";
 {
   // And with it configured, they DO throw. Built is not wired (L3): the injector being
   // correct proves nothing if no stub calls it, and the percentage is read at import
-  // time, so this needs its own process rather than a mutated env var.
+  // time, so this needs its own process rather than a mutated env var. The load test
+  // flag is set as well as the percentage, because since #3104 a percentage alone
+  // faults nothing anywhere (scripts/test-loadtest-fault-targets.ts drives that half).
   const probe = `
     import { stubFreeBusy, stubCalendarList, stubSyncEvents, LOADTEST_FAULT_PCT }
       from "${new URL("../src/lib/google/loadtest-stub.ts", import.meta.url).href}";
@@ -145,7 +147,7 @@ import { fileURLToPath } from "node:url";
     {
       encoding: "utf8",
       cwd: fileURLToPath(new URL("..", import.meta.url)),
-      env: { ...process.env, SLATE_LOADTEST_FAULT_PCT: "100" },
+      env: { ...process.env, SLATE_LOADTEST: "true", SLATE_LOADTEST_FAULT_PCT: "100" },
     },
   );
   const line = (res.stdout || "").trim().split("\n").pop() ?? "";

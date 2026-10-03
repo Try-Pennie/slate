@@ -20,6 +20,7 @@ import {
   stubFreeBusy,
   stubCreateEvent,
   stubEventOnPrimary,
+  stubEventWrite,
 } from "@/lib/google/loadtest-stub";
 
 const BASE = "https://www.googleapis.com/calendar/v3";
@@ -537,7 +538,7 @@ export async function updateEventTimeOnCalendar(
 ): Promise<void> {
   // #2371: nothing was written under the flag, so there is nothing to move, and the
   // typed EventGone below is unreachable (the same note as updateEventTime).
-  if (LOADTEST) return;
+  if (LOADTEST) return stubEventWrite("patch", eventId);
   const res = await gfetch(
     actorEmail,
     `${BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
@@ -562,7 +563,7 @@ export async function deleteEventOnCalendar(
   eventId: string,
 ): Promise<void> {
   // #2371: nothing was written under the flag, so there is nothing to delete.
-  if (LOADTEST) return;
+  if (LOADTEST) return stubEventWrite("delete", eventId);
   const res = await gfetch(
     actorEmail,
     `${BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
@@ -596,7 +597,7 @@ export async function updateEventTime(
   // #2241: the in-place reschedule's move. Nothing was written, so nothing is gone:
   // the typed `EventGone` below is unreachable under the flag, which is why the
   // reschedule's recreate branch is not exercised by a load run.
-  if (LOADTEST) return;
+  if (LOADTEST) return stubEventWrite("patch", eventId);
   const res = await gfetch(
     email,
     `${BASE}/calendars/${CAL}/events/${encodeURIComponent(eventId)}?sendUpdates=all`,
@@ -670,7 +671,7 @@ export async function deleteEvent(
   // delete (a real cancellation) keeps sendUpdates=all so the customer is told.
   // #2241: the rollback `completeReservation` takes when the insert loses, and the
   // cancel. A no-op, since nothing was created to remove.
-  if (LOADTEST) return;
+  if (LOADTEST) return stubEventWrite("delete", eventId);
   const sendUpdates = opts?.notifyAttendee === false ? "none" : "all";
   const res = await gfetch(
     email,
@@ -889,7 +890,7 @@ export async function updateEventContact(
   // #2241: the lead's own corrections on the way to a reschedule, which `realDeps`
   // reaches and so a booking path run can drive. `updateEventDescription` delegates
   // here, so it is gated with it.
-  if (LOADTEST) return;
+  if (LOADTEST) return stubEventWrite("patch", eventId);
   const body: Record<string, unknown> = {};
   if (patch.summary !== undefined) body.summary = patch.summary;
   if (patch.description !== undefined) body.description = patch.description;

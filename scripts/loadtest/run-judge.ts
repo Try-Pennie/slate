@@ -28,7 +28,7 @@ import {
 } from "./confirm-startup.ts";
 import { DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES } from "../../src/lib/rate-limit-core.ts";
 import { burstControlStrength, type BurstDepthReading } from "./burst-target.ts";
-import { REQUEST_CPU_P99_MS, cronCpuShareText } from "./judge-booking-run.ts";
+import { REQUEST_CPU_P99_MS, cronCpuShareText, faultPassKeepsFiveXxBar } from "./judge-booking-run.ts";
 import {
   INVOCATIONS_QUERY,
   SCHEDULED_QUERY,
@@ -52,6 +52,10 @@ import {
 } from "./book-plan.ts";
 import type { SoakSample } from "./invariants.ts";
 import { PRODUCTION_SUPABASE_REF } from "../../src/lib/loadtest-guard.ts";
+import { allLaneNames } from "../../worker/lanes-disabled.ts";
+import { LANE_STALE_BOUNDS_MS } from "../../src/lib/monitor/health.ts";
+import { parseFaultTargets } from "../../src/lib/loadtest-fault.ts";
+import { faultLaneExpectationsFor, type FaultLaneEvidence } from "./fault-lanes.ts";
 
 // ONE constant, shared with the app's own load test refusals (#2242). A second
 // spelling beside each script is how one of them ends up naming a project that
@@ -408,10 +412,78 @@ if (faultDrivers.length > 0) {
         "carried so the judge compares against what at least one of them actually met",
     );
   }
+  // WHICH systems the deployment reported failing (#3104). Drivers that disagree were
+  // not measuring one deployment; nothing is carried, and the judge calls a pass with
+  // no recorded targets incomplete rather than picking one of them.
+  const targetLists = [...new Set(faultDrivers.map((d) => [...(d.faultTargets ?? [])].sort().join(",")))];
+  if (targetLists.length > 1) {
+    console.error(`note: fault drivers reported different fault targets (${targetLists.join(" | ")})`);
+  }
   faultPass = {
     attempts: attempts.length,
     fiveXx: attempts.filter((a) => a.status >= 500 && a.status <= 599).length,
     faultPct: Math.min(...reported),
+    faultTargets: targetLists.length === 1 && targetLists[0] !== "" ? targetLists[0]!.split(",") : [],
+  };
+}
+
+/**
+ * What the fault leg was ASKED to fail (#3104), the workflow's `fault_targets` input,
+ * read through the deployment's own parser so the three sides agree on what a list
+ * means. Unset is the default list, which is what a fault leg dispatched before the
+ * input existed ran.
+ *
+ * env-ok: EXPECT_FAULT_TARGETS (optional; the workflow's fault_targets input, and
+ * unset for a hand run, which means the default read only list)
+ */
+const expectedFaultTargets = parseFaultTargets(process.env.EXPECT_FAULT_TARGETS);
+if (expectedFaultTargets.unknown.length > 0) {
+  console.error(
+    `FAILED: EXPECT_FAULT_TARGETS names ${expectedFaultTargets.unknown.join(", ")}, which is no fault target.`,
+  );
+  process.exit(1);
+}
+
+/**
+ * The cron lanes while the deployment was faulted (#3104): the lane sampler's file
+ * and what the lanes are held to.
+ *
+ * The lanes are every lane the watchdog bounds, MINUS the ones the load test
+ * environment holds back. Which those are arrives as a setting, like the judge's
+ * other expectations, and NOT by reading wrangler.jsonc here: that read needed
+ * wrangler installed and the repo root as the working directory, and threw after
+ * every driver had run, leaving the run with no verdict. A setting that is missing
+ * or names no lane is an incomplete verdict (`lanesRunByDeployment`), and
+ * `scripts/test-fault-lanes.ts` holds the workflow's value equal to wrangler's, so
+ * the copy cannot drift from the deployment it describes (L41, L422). The window
+ * opens when the fault driver started, which is after the deployment confirmed it
+ * was faulting.
+ *
+ * env-ok: EXPECT_LANES_DISABLED (optional; the load test environment's
+ * SLATE_LANES_DISABLED, and unset for a hand run, which makes a fault pass
+ * incomplete rather than guessed)
+ */
+let faultLanes: JudgeInput["faultLanes"];
+if (faultDrivers.length > 0) {
+  let evidence: FaultLaneEvidence | null = null;
+  try {
+    const raw = readJson<FaultLaneEvidence>(join(RESULTS, "fault-lanes.json"));
+    if (raw.kind === "fault-lanes" && raw.runId === RUN_ID) evidence = raw;
+    else console.error("note: fault-lanes.json is not this run's lane evidence; counted as missing");
+  } catch (err) {
+    console.error(`note: no lane sampler file could be read (${(err as Error).message})`);
+  }
+  faultLanes = {
+    evidence,
+    // From what the run was CONFIGURED to fail, never what the deployment reported;
+    // a disagreement between the two is already incomplete in the judge.
+    expectations: faultLaneExpectationsFor({
+      configuredTargets: expectedFaultTargets.targets,
+      rawDisabled: process.env.EXPECT_LANES_DISABLED,
+      bounds: LANE_STALE_BOUNDS_MS,
+      knownLanes: allLaneNames(),
+      windowStartMs: Math.min(...faultDrivers.map((d) => d.startedAtMs)),
+    }),
   };
 }
 
@@ -481,6 +553,7 @@ const input: JudgeInput = {
   confirmStartup,
   platform,
   faultPass,
+  faultLanes,
   // What this run was CONFIGURED to include, so a leg asked for and never
   // delivered is incomplete rather than quietly skipped. Both default to zero, so
   // a hand run that drove only the steady pass judges exactly as it did before.
@@ -492,6 +565,7 @@ const input: JudgeInput = {
   expectedLegs: {
     burstDrivers: wholeNumber(process.env.EXPECT_BURST_DRIVERS, "EXPECT_BURST_DRIVERS"),
     faultPct: wholeNumber(process.env.EXPECT_FAULT_PCT, "EXPECT_FAULT_PCT"),
+    faultTargets: expectedFaultTargets.targets,
   },
   budgets: { cpuMsP99: cpuBudgetMs(), cronCpuMs: cronCpuBudgetMs() },
 };
@@ -558,6 +632,27 @@ if (m) {
       `(same slot pairs: ${m.sameSlotPairs})`,
   );
   lines.push(`- worst recompute age: ${m.freshnessMaxSec}s`);
+  // #3104: said on every faulted run, including the ones whose 5xx are reported
+  // rather than barred, so a database fault pass's errors are still in front of the
+  // reader, with the reason they did not fail the run beside them.
+  if (faultPass) {
+    lines.push(
+      `- fault pass: ${faultPass.faultTargets.join(", ") || "unrecorded systems"} failing ` +
+        `${faultPass.faultPct} percent of calls; ${faultPass.attempts} requests, ${faultPass.fiveXx} 5xx ` +
+        (faultPassKeepsFiveXxBar(faultPass.faultTargets)
+          ? "(held to no 5xx)"
+          : "(reported, not barred: a failure of one of these systems is a 5xx by design)"),
+    );
+  }
+  const laneX = faultLanes?.expectations;
+  if (faultLanes?.evidence && laneX && !("why" in laneX)) {
+    const e = faultLanes.evidence;
+    lines.push(
+      `- cron lanes under fault: ${e.samples.length} readings over ` +
+        `${((e.finishedAtMs - laneX.windowStartMs) / 60_000).toFixed(1)} min ` +
+        `(${e.failedReads} failed), ${Object.keys(laneX.lanes).length} lanes judged`,
+    );
+  }
   // The two halves of a confirm's wall time, reported APART (#2340). The platform
   // CPU percentile below counts them as one number, and the run that failed on it
   // was failing on the half the confirm does not control.

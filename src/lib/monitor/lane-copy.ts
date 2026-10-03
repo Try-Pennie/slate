@@ -5,7 +5,7 @@
  * calling these, instead of holding a second copy that would drift the first time
  * someone edited one and not the other (L41). The watchdog imports them back.
  *
- * Seven lane families, seven voices, deliberately: these lanes fail for different
+ * Eight lane families, eight voices, deliberately: these lanes fail for different
  * reasons and are recovered by different people doing different things, and
  * #1123 already had to unpick one shared message that pointed responders at the
  * wrong lane and lock.
@@ -29,6 +29,7 @@ import {
   AVAILABILITY_SCAN_VERDICT_LANE,
   CALENDAR_WINDOW_VERDICT_LANE,
   OFFSITE_ORIGIN_VERDICT_LANE,
+  AUTH_SIGN_IN_VERDICT_LANE,
   AWAITING_ACTIVATION_VERDICT_LANE,
   STRANDED_HIRES_VERDICT_LANE,
   REGAL_CALL_FEED_VERDICT_LANE,
@@ -36,6 +37,7 @@ import {
   ADVISOR_PHOTOS_VERDICT_LANE,
   BUSY_DRIFT_VERDICT_LANE,
   parkedDetector,
+  type DetectorVerdictLane,
 } from "@/lib/monitor/verdict-freshness";
 
 /** Minutes, rounded, for the copy. */
@@ -229,6 +231,53 @@ export function timeOffRecoveryText(lane: string): string {
   );
 }
 
+/**
+ * The daily off platform database dump has gone quiet (#3076).
+ *
+ * Its own voice, because the reader's question is not "which lane" but "what can I
+ * no longer get back": bookings are still recoverable from the Snowflake mirror, and
+ * everything else is only as recent as the last dump. The bound is quoted in hours,
+ * like the time off lanes, for the same reason.
+ */
+export function backupAlertText(lane: StaleLane): string {
+  const bound = describeGap(lane.maxStaleMs);
+  const stake =
+    `Bookings are still recoverable from the Snowflake mirror, but advisors, pools, ` +
+    `working hours, settings and time off are only as recent as the last dump, so a ` +
+    `restore today would lose everything changed since.`;
+  const look =
+    `Read the last db-backup run in the Actions tab: it fails red on a missing R2 or ` +
+    `Supabase secret, a dump that came out empty, or an upload R2 did not keep. If no ` +
+    `run happened at all (GitHub drops scheduled runs), Run workflow on db-backup takes ` +
+    `one now.`;
+  if (lane.unreadable) {
+    return (
+      `The record of the last off platform database backup cannot be read, so it is being ` +
+      `treated as stopped (expected one at least every ${bound}). ${stake} ${look}`
+    );
+  }
+  if (!Number.isFinite(lane.ageMs)) {
+    return (
+      `The daily off platform database backup has NEVER once landed in R2, so there is no ` +
+      `copy of the database outside Supabase (expected one at least every ${bound}). ${stake} ` +
+      `${look} A missing or rotated R2_BACKUP secret is the usual cause.`
+    );
+  }
+  return (
+    `The newest off platform database backup is ${describeGap(lane.ageMs)} old (expected one ` +
+    `at least every ${bound}). ${stake} ${look}`
+  );
+}
+
+/** All-clear for the daily database dump (#3076). It names what is protected again,
+ *  because the page was about what a restore would lose. */
+export function backupRecoveryText(_lane: string): string {
+  return (
+    `A fresh off platform database backup has landed in R2, so a restore would again lose ` +
+    `at most a day of the non booking tables, and the earlier page is cleared. No action is needed.`
+  );
+}
+
 /** All-clear for a daily retention lane (#1102). These destroy customer data, so
  *  the notice says plainly that the deletion work has resumed. */
 export function retentionRecoveryText(lane: string): string {
@@ -248,8 +297,18 @@ export function retentionRecoveryText(lane: string): string {
  * thing that is gone is the assurance. Each detector gets its own sentence for
  * the #1123 reason: a shared "a detector went blind" would send whoever reads it
  * looking for the wrong thing.
+ *
+ * Keyed by the verdict lane TYPE, never by string (L113): a lane added to the family
+ * and forgotten here fails `tsc`, rather than throwing on `.what` inside the very
+ * page that is meant to say the detector went blind.
  */
-const VERDICT_SUBJECT: Record<string, { what: string; cost: string; look: string }> = {
+interface VerdictSubject {
+  what: string;
+  cost: string;
+  look: string;
+}
+
+const VERDICT_SUBJECT: Record<DetectorVerdictLane, VerdictSubject> = {
   [AVAILABILITY_TRUTH_VERDICT_LANE]: {
     what: "the check asking whether the times the booker is offering are really free on the agents' calendars",
     cost: "nothing is confirming that the published availability is true, so a drifted cache would only surface as customers being refused at the last step",
@@ -307,6 +366,11 @@ const VERDICT_SUBJECT: Record<string, { what: string; cost: string; look: string
     what: "the check asking whether real bookings are arriving from a page that is not the production site",
     cost: "bookings made from a test page or a copied embed would land on real agents' calendars with nobody told",
     look: 'the Worker logs for msg="offsite origin unreadable" under tag=monitor, and whether recent bookings can be read at all',
+  },
+  [AUTH_SIGN_IN_VERDICT_LANE]: {
+    what: "the check asking whether Supabase Auth in production accepts anything but Google sign in",
+    cost: "email sign in or another provider could be turned back on with nobody told",
+    look: 'the Worker logs for tag=auth-sign-in, and whether /auth/v1/settings answers with the public key',
   },
   [AWAITING_ACTIVATION_VERDICT_LANE]: {
     what: "the check asking whether anybody the roster counts as working has been stuck waiting to become bookable",
@@ -413,6 +477,24 @@ const VERDICT_SUBJECT: Record<string, { what: string; cost: string; look: string
 };
 
 /**
+ * The subject for a lane read back off the heartbeat table, where it is a string.
+ *
+ * Every lane in the family has an entry, which the type above enforces. A string that
+ * is not in the family can only come from a code fault (a bound or a stamp for a lane
+ * nobody declared), and it is named as exactly that rather than rendering `undefined`
+ * into a page or throwing inside the alert path (L11).
+ */
+function verdictSubject(lane: string): VerdictSubject {
+  const known = (VERDICT_SUBJECT as Record<string, VerdictSubject | undefined>)[lane];
+  if (known) return known;
+  return {
+    what: `the detector stamping ${lane}, which has no entry in VERDICT_SUBJECT`,
+    cost: "whatever it watches is not being reported, and its alert copy is missing, which is a code fault",
+    look: "src/lib/monitor/lane-copy.ts and src/lib/monitor/verdict-freshness.ts for that lane",
+  };
+}
+
+/**
  * A detector that has gone blind: it keeps running, and it has stopped (or never
  * started) reaching a verdict (#1394).
  *
@@ -421,7 +503,7 @@ const VERDICT_SUBJECT: Record<string, { what: string; cost: string; look: string
  * check a stuck lock would send them after a fault that is not there.
  */
 export function verdictBlindAlertText(lane: StaleLane): string {
-  const subject = VERDICT_SUBJECT[lane.lane];
+  const subject = verdictSubject(lane.lane);
   const bound = describeGap(lane.maxStaleMs);
   // Sentence case: these render as the first line of a Slack message.
   const opener = `${subject.what[0].toUpperCase()}${subject.what.slice(1)} is running, but `;
@@ -449,7 +531,7 @@ export function verdictBlindAlertText(lane: StaleLane): string {
 /** All-clear for a detector that is concluding again (#1394). It names what is
  *  being measured once more, because the page was about a missing answer. */
 export function verdictRecoveryText(lane: string): string {
-  const subject = VERDICT_SUBJECT[lane];
+  const subject = verdictSubject(lane);
   return (
     `${subject.what[0].toUpperCase()}${subject.what.slice(1)} has reached a verdict again, so it ` +
     `is measuring rather than merely running, and the earlier page is cleared. No action is needed.`
@@ -524,7 +606,7 @@ export function verdictParkedInfoText(
   registry?: Parameters<typeof parkedDetector>[1],
 ): string {
   const items = lanes.map((lane) => {
-    const subject = VERDICT_SUBJECT[lane];
+    const subject = verdictSubject(lane);
     const parked = parkedDetector(lane, registry);
     // A lane with no entry cannot describe a park, so it says what it knows rather
     // than rendering the word undefined twice into a sentence (#2484, L11).
@@ -574,7 +656,7 @@ export function verdictUnparkAlertText(
   lane: string,
   registry?: Parameters<typeof parkedDetector>[1],
 ): string {
-  const subject = VERDICT_SUBJECT[lane];
+  const subject = verdictSubject(lane);
   return (
     `${subject.what[0].toUpperCase()}${subject.what.slice(1)} has reached a verdict, ` +
     `so the reason it was parked has stopped being true and it is now switched off ` +
@@ -590,7 +672,7 @@ export function verdictUnparkAlertText(
  * `verdictUnparkLapsedText` for the other.
  */
 export function verdictUnparkRecoveryText(lane: string): string {
-  const subject = VERDICT_SUBJECT[lane];
+  const subject = verdictSubject(lane);
   return (
     `${subject.what[0].toUpperCase()}${subject.what.slice(1)} is armed again, so it is ` +
     `being watched against its own bound like every other detector and the earlier ` +
@@ -617,7 +699,7 @@ export function verdictUnparkLapsedText(
   lane: string,
   registry?: Parameters<typeof parkedDetector>[1],
 ): string {
-  const subject = VERDICT_SUBJECT[lane];
+  const subject = verdictSubject(lane);
   // Deliberately does NOT recite the park's reason. The weekly whisper carries that,
   // at length, and this is a message whose whole content is that there is nothing to
   // do: repeating four lines of arithmetic here buries the one fact worth reading.

@@ -1476,6 +1476,36 @@ failed check is exit 1.
 It does not touch production. That the app and the database agree on the name's shape is
 pinned offline by `scripts/test-agent-link.ts`, which reads the migration's CHECKs.
 
+# Proving the sign in domain gate against the real auth server (`pnpm verify:auth-domain-hook`)
+
+#3082: Supabase Auth used to create an account for ANY Google account, and the
+`trypennie.com` check ran only in the OAuth callback, after the account and a signed in
+session already existed. Migration 0159 adds a `before_user_created` auth hook,
+`public.before_user_created_domain_gate`, which Supabase Auth calls before it creates any
+account by any provider, and which refuses every email whose domain is not exactly
+`trypennie.com`. The offline suite (`scripts/test-auth-domain-hook.ts`) holds the
+migration, `supabase/config.toml` and `GOOGLE_HOSTED_DOMAIN` together as text; it cannot
+show that the auth server calls the function and honours its refusal, and a mock would
+agree with whatever it was told (L52).
+
+`pnpm verify:auth-domain-hook` starts Supabase's own Postgres image and Supabase's own
+auth server (GoTrue) in Docker, applies the migration verbatim, registers the hook the way
+`config.toml` does, and signs up through the auth API: an outside address, a subdomain
+(`@evil.trypennie.com`) and a suffix lookalike (`@trypennie.com.evil.com`) are each
+refused with 403 and leave no `auth.users` row; a mixed case `trypennie.com` address is
+created; and, as the control, the same outside address signs up with the hook switched
+off, so the refusals are the hook's. It also checks that `anon` and `authenticated` cannot
+execute the function and `supabase_auth_admin` can. It signs up by email because that is
+the route an API call can drive without a browser; the hook runs for every provider,
+Google included.
+
+It writes nothing outside its own containers and removes them on the way out. No Docker,
+or a container that will not start, is exit 2, never a pass (L98); any failed check is
+exit 1. Measured 2026-10-03 with `supabase/postgres:17.6.1.175` and `gotrue:v2.196.0`:
+all checks passed. **Re-run it after any change to migration 0159's function.** It does
+not touch production: the hosted hook is registered in the dashboard (DEPLOY.md, "Staff
+sign in: Google only").
+
 # Proving the activation import's guard in a real database (`pnpm verify:replace-user-schedule-guard`)
 
 #2702: the activation gate imports an agent's cal.com week only when their stored week is

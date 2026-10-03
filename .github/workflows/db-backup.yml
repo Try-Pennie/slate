@@ -1,0 +1,195 @@
+name: Database backup
+
+# The daily off platform database backup (#3076).
+#
+# Until this, the only backups were Supabase's own daily ones, held in the same account
+# as production, and nothing checked that one existed. Dan's decision of 2026-10-03 sets
+# the recovery point as two numbers (docs/dr-runbook.md, "Recovery objectives"):
+#
+#   - bookings and the other five tables the Snowflake mirror carries are recoverable to
+#     within about ten minutes, from the warehouse (scripts/restore-from-snowflake.ts);
+#   - everything else (advisors, pools, hours, settings, time off) is recoverable to the
+#     last dump THIS workflow took, so to within a day.
+#
+# So this is the half of the recovery point that is not the mirror. It takes a full
+# logical dump (roles, schema, data, and the migration history, which the default dump
+# leaves out and without which a restored project would not know which migrations it
+# already has), refuses a dump that came out empty or cut short, uploads it to R2 through
+# the S3 compatible API, reads the object back at the size that was written, and only
+# then stamps the `db-backup` heartbeat. The lane watchdog pages once that stamp is older
+# than 26 hours (BACKUP_STALE_BOUNDS_MS in src/lib/monitor/health.ts), and also when it
+# has never been stamped at all, after one bound's grace.
+#
+# A MISSING SECRET FAILS THE RUN RED rather than skipping it. A backup is not optional,
+# and a run that skipped quietly would leave the heartbeat unstamped with nothing in the
+# Actions tab saying why.
+#
+# Needs SUPABASE_ACCESS_TOKEN and SUPABASE_DB_PASSWORD (the pair the migration drift
+# check in ci.yml already uses), BOOKING_API_KEY_CANARY (the heartbeat stamp, as the
+# canary and the parity sweep use it), the four R2_BACKUP_* repo secrets (an R2 API
+# token scoped to Object Read and Write on the one backup bucket), and the SLATE_BASE_URL
+# repo variable.
+#
+# COST: one ubuntu job a day. Installing the CLI and pulling the Postgres image the dump
+# runs in is most of it; measured against a local copy of the schema the five dumps take
+# about 20 seconds. Budget 2 to 4 billed minutes a day, so 60 to 120 a month at the 1x
+# Linux rate, against the plan's included minutes.
+#
+# NOT AN ARTIFACT. The dump holds customer contact data, so it goes to R2 and nowhere
+# else: never upload-artifact, never the job log.
+on:
+  schedule:
+    # 07:40 UTC, which is the small hours Eastern, when nothing is booking. Not on the
+    # hour, where GitHub's scheduling queue is busiest and runs are most often dropped,
+    # and clear of the burst counter at 10:50, the parity sweep at 12:20 and the weekly
+    # replay at 13:20.
+    - cron: "40 7 * * *"
+  # No inputs, so a hand dispatch is the same run the schedule makes. This is also the
+  # remedy the staleness page names when GitHub dropped a scheduled run.
+  workflow_dispatch:
+
+concurrency:
+  group: db-backup
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    # The CLI install, the image pull and five dumps. Twenty minutes is several times the
+    # expected run, and an explicit timeout is required of every job here (L313).
+    # scripts/test-db-backup-workflow.ts holds the 26 hour staleness bound above this
+    # cadence plus this timeout plus an hour of GitHub lateness.
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Pins the node version the dump judge's type stripping flag needs, rather than
+      # trusting whatever the runner image happens to ship (L25), exactly as the main
+      # push guard and the deploy alert do. No install: the judge imports nothing.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Preflight (every secret the backup needs)
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
+          R2_BACKUP_ACCESS_KEY_ID: ${{ secrets.R2_BACKUP_ACCESS_KEY_ID }}
+          R2_BACKUP_SECRET_ACCESS_KEY: ${{ secrets.R2_BACKUP_SECRET_ACCESS_KEY }}
+          R2_BACKUP_ENDPOINT: ${{ secrets.R2_BACKUP_ENDPOINT }}
+          R2_BACKUP_BUCKET: ${{ secrets.R2_BACKUP_BUCKET }}
+        run: |
+          missing=""
+          for name in SUPABASE_ACCESS_TOKEN SUPABASE_DB_PASSWORD BOOKING_API_KEY_CANARY R2_BACKUP_ACCESS_KEY_ID R2_BACKUP_SECRET_ACCESS_KEY R2_BACKUP_ENDPOINT R2_BACKUP_BUCKET; do
+            eval "value=\${$name}"
+            if [ -z "$value" ]; then missing="$missing $name"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::No backup was taken. Not set as repo secrets:$missing. Add them in Settings > Secrets and variables > Actions; docs/dr-runbook.md says what each holds."
+            exit 1
+          fi
+
+      # #1437: the CLI download hangs up now and then, so one bounded retry, exactly as
+      # the migration drift check does it. Same pinned version for the same reason.
+      - uses: supabase/setup-cli@45a513f8c64c0bc8e0e3dfe572b5c95be85f6359 # v3.0.1
+        id: setup-supabase-cli
+        continue-on-error: true
+        with:
+          version: 2.84.2
+      - name: Retry the Supabase CLI install (the download hung up, #1437)
+        if: steps.setup-supabase-cli.outcome == 'failure'
+        uses: supabase/setup-cli@45a513f8c64c0bc8e0e3dfe572b5c95be85f6359 # v3.0.1
+        with:
+          version: 2.84.2
+
+      - name: Dump the database (roles, schema, data, migration history)
+        id: dump
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: |
+          set -euo pipefail
+          supabase link --project-ref drukfvgaynzrralbzkzj
+          dir="$RUNNER_TEMP/slate-backup"
+          mkdir -p "$dir"
+          supabase db dump --linked --role-only -f "$dir/roles.sql"
+          supabase db dump --linked -f "$dir/schema.sql"
+          supabase db dump --linked --data-only --use-copy -f "$dir/data.sql"
+          supabase db dump --linked --schema supabase_migrations -f "$dir/history_schema.sql"
+          supabase db dump --linked --data-only --use-copy --schema supabase_migrations -f "$dir/history_data.sql"
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+
+      # Bare node, no install: an empty or truncated dump is refused here, before it can
+      # be uploaded and stamped as a backup. It prints row counts, never row contents.
+      - name: Refuse a dump that is empty or cut short
+        run: node --experimental-strip-types scripts/check-db-dump.ts "${{ steps.dump.outputs.dir }}"
+
+      # NO CLIENT SIDE ENCRYPTION, by decision (Dan, 2026-10-03, #3076): R2 encrypts
+      # every object at rest, and the bucket's token is scoped to it alone. A scheme added
+      # later belongs between this step and the upload, with the matching decrypt in
+      # docs/dr-runbook.md section 1b.
+      - name: Package the dump
+        id: package
+        run: |
+          set -euo pipefail
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          archive="$RUNNER_TEMP/slate-db-$stamp.tar.gz"
+          tar -czf "$archive" -C "${{ steps.dump.outputs.dir }}" .
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "key=slate/db/$(date -u +%Y/%m/%d)/slate-db-$stamp.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "bytes=$(stat -c %s "$archive")" >> "$GITHUB_OUTPUT"
+
+      # The AWS CLI on the runner image talks to R2 through its S3 compatible endpoint.
+      # The two checksum settings keep the CLI to the integrity headers a request
+      # strictly needs: newer AWS CLI versions add default ones that S3 compatible stores
+      # have refused, and the read back below is what proves the object arrived whole.
+      - name: Upload to R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_BACKUP_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_BACKUP_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          R2_BACKUP_ENDPOINT: ${{ secrets.R2_BACKUP_ENDPOINT }}
+          R2_BACKUP_BUCKET: ${{ secrets.R2_BACKUP_BUCKET }}
+        run: |
+          set -euo pipefail
+          aws s3 cp "${{ steps.package.outputs.archive }}" "s3://$R2_BACKUP_BUCKET/${{ steps.package.outputs.key }}" \
+            --endpoint-url "$R2_BACKUP_ENDPOINT" --only-show-errors
+
+      # An upload command that exited 0 is a claim about the request, not about the
+      # bucket, so the object is read back and its size compared with what was written.
+      - name: Read the upload back from R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_BACKUP_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_BACKUP_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          R2_BACKUP_ENDPOINT: ${{ secrets.R2_BACKUP_ENDPOINT }}
+          R2_BACKUP_BUCKET: ${{ secrets.R2_BACKUP_BUCKET }}
+        run: |
+          set -euo pipefail
+          stored="$(aws s3api head-object --bucket "$R2_BACKUP_BUCKET" --key "${{ steps.package.outputs.key }}" \
+            --endpoint-url "$R2_BACKUP_ENDPOINT" --query ContentLength --output text)"
+          written="${{ steps.package.outputs.bytes }}"
+          if [ "$stored" != "$written" ]; then
+            echo "::error::R2 holds $stored bytes for ${{ steps.package.outputs.key }}, and $written were written. Not stamping the backup heartbeat."
+            exit 1
+          fi
+          echo "Stored ${{ steps.package.outputs.key }} ($stored bytes)."
+
+      # Stamped ONLY after the object was read back, never merely because the workflow
+      # ran, so a dump that never reached R2 leaves the heartbeat to go stale and page.
+      - name: Stamp the backup heartbeat (a verified upload only)
+        if: success()
+        env:
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
+          SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
+        run: |
+          base="${SLATE_BASE_URL:-https://slate.trypennie.app}"
+          curl -fsS -X POST "${base%/}/api/smoke/heartbeat?lane=db-backup" \
+            -H "authorization: Bearer $BOOKING_API_KEY_CANARY"

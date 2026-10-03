@@ -618,7 +618,7 @@ export function loadtestModeVerdict(
  *  itself, and polling one of those just spends the deadline before saying what it
  *  could have said at once. */
 export type FaultModeVerdict =
-  | { ok: true; faultPct: number }
+  | { ok: true; faultPct: number; faultTargets?: string[] }
   | { ok: false; why: string; retriable: boolean };
 
 /**
@@ -639,7 +639,7 @@ export type FaultModeVerdict =
 export function faultModeVerdict(
   status: number,
   body: unknown,
-  wanted: { faultPct: number; commit?: string },
+  wanted: { faultPct: number; commit?: string; faultTargets?: readonly string[] },
 ): FaultModeVerdict {
   const mode = loadtestModeVerdict(status, body);
   if (!mode.ok) {
@@ -699,6 +699,52 @@ export function faultModeVerdict(
       retriable: true,
     };
   }
+  // WHICH systems fail (#3104), asked only by the fault leg. Confirmed from the
+  // deployment for the same reason the percentage is: a pass that meant to fail the
+  // database and is failing only Google would be judged against the database's bar
+  // having injected nothing there (L98).
+  let reportedTargets: string[] | undefined;
+  if (wanted.faultTargets !== undefined) {
+    const t = body as { faultTargets?: unknown; faultTargetsUnknown?: unknown };
+    const unknown = Array.isArray(t.faultTargetsUnknown) ? t.faultTargetsUnknown.map(String) : [];
+    if (unknown.length > 0) {
+      return {
+        ok: false,
+        why:
+          `this deployment's SLATE_LOADTEST_FAULT_TARGETS names ${unknown.join(", ")}, which is no ` +
+          `fault target, so it is faulting nothing at all. Fix the fault_targets input and re-run.`,
+        retriable: false,
+      };
+    }
+    if (!Array.isArray(t.faultTargets)) {
+      return {
+        ok: false,
+        why:
+          "/api/smoke/version reports no faultTargets list, so which systems this deployment fails " +
+          "could not be established. Nothing was driven.",
+        retriable: false,
+      };
+    }
+    reportedTargets = t.faultTargets.map(String);
+    const want = [...new Set(wanted.faultTargets)].sort();
+    const got = [...new Set(reportedTargets)].sort();
+    if (want.join(",") !== got.join(",")) {
+      const missing = want.filter((x) => !got.includes(x));
+      const extra = got.filter((x) => !want.includes(x));
+      return {
+        ok: false,
+        why:
+          `this deployment faults ${got.join(", ") || "no system"} and the leg was configured for ` +
+          want.join(", ") +
+          (missing.length > 0 ? `; it is not faulting ${missing.join(", ")}` : "") +
+          (extra.length > 0 ? `; it is also faulting ${extra.join(", ")}` : "") +
+          ".",
+        // The deployment being replaced reports the default list, so a redeploy that
+        // has not landed yet looks exactly like this.
+        retriable: true,
+      };
+    }
+  }
   if (wanted.commit !== undefined) {
     // Compared through the STAMPER'S OWN shortening, never as equality (#2261).
     // `scripts/stamp-build-info.ts` writes the first twelve characters of the sha
@@ -730,7 +776,11 @@ export function faultModeVerdict(
       };
     }
   }
-  return { ok: true, faultPct: payload.faultPct };
+  return {
+    ok: true,
+    faultPct: payload.faultPct,
+    ...(reportedTargets !== undefined ? { faultTargets: reportedTargets } : {}),
+  };
 }
 
 /**
@@ -749,7 +799,7 @@ export const FAULT_PROPAGATION_DEADLINE_MS = 180_000;
 export const FAULT_PROPAGATION_POLL_MS = 5_000;
 
 export type PollStep =
-  | { action: "accept"; faultPct: number }
+  | { action: "accept"; faultPct: number; faultTargets?: string[] }
   | { action: "wait"; waitMs: number; why: string }
   | { action: "give-up"; why: string };
 
@@ -770,7 +820,13 @@ export function faultPollStep(
   deadlineMs: number = FAULT_PROPAGATION_DEADLINE_MS,
   pollMs: number = FAULT_PROPAGATION_POLL_MS,
 ): PollStep {
-  if (verdict.ok) return { action: "accept", faultPct: verdict.faultPct };
+  if (verdict.ok) {
+    return {
+      action: "accept",
+      faultPct: verdict.faultPct,
+      ...(verdict.faultTargets !== undefined ? { faultTargets: verdict.faultTargets } : {}),
+    };
+  }
   if (!verdict.retriable) return { action: "give-up", why: verdict.why };
   if (elapsedMs >= deadlineMs) {
     return {

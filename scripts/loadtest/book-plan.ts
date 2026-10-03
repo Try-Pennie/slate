@@ -209,6 +209,12 @@ export interface DriverResult {
    * test, and refuses before driving when that is not what was asked for.
    */
   faultPct?: number;
+  /**
+   * Set only in fault mode, beside the percentage and for the same reason (#3104):
+   * WHICH systems the deployment reported failing. The judge reads it to decide
+   * which bar the pass is held to, so it is the deployment's word, never the job's.
+   */
+  faultTargets?: string[];
   attempts: BookingAttempt[];
 }
 

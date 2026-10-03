@@ -407,6 +407,31 @@ export const TIME_OFF_STALE_BOUNDS_MS: Record<string, number> = {
 };
 
 /**
+ * How old the newest off platform database dump may be (#3076).
+ *
+ * `.github/workflows/db-backup.yml` takes a full logical dump once a day, uploads it
+ * to R2, and stamps `db-backup` only after the uploaded object has been read back at
+ * the size that was written. It is the only copy of the tables the Snowflake mirror
+ * does not carry (advisors, pools, hours, settings, time off) that lives outside the
+ * Supabase account, so a dump that stopped is the 24 hour RPO in docs/dr-runbook.md
+ * quietly becoming an unbounded one.
+ *
+ * 26 hours: the daily cadence plus two hours for GitHub's scheduled run lateness and
+ * the job's own timeout. `scripts/test-db-backup-workflow.ts` reads the cron and the
+ * timeout out of the workflow and fails on a bound that one late but successful run
+ * would cross.
+ *
+ * Judged with `neverIsStale` ON and the grace window, for the retention lanes'
+ * reason and a sharper one: a dump that has never once landed is a database with no
+ * off platform copy at all, and the default leniency would keep that silent for
+ * ever. Slack only: a missing backup is a missing safety net, not an outage, so it
+ * must not reach the external /api/health 503.
+ */
+export const BACKUP_STALE_BOUNDS_MS: Record<string, number> = {
+  "db-backup": 26 * 60 * MIN,
+};
+
+/**
  * How long a DETECTOR may go without reaching a measured verdict (#1394).
  *
  * A fifth family, kept apart from the four above because it answers a different
@@ -604,6 +629,11 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // The off site origin check concludes on every tick the bookings read works,
   // including ticks with no recent booking at all, so it needs no traffic.
   "verdict:offsite-origin": 6 * 60 * MIN,
+  // The auth sign in settings check (#3082) reads the hosted /auth/v1/settings on every
+  // 5 minute tick and needs no traffic: Google only and open are both answers. So, like
+  // the checks above, it has no legitimate silence, and six hours is a maintenance
+  // window (about seventy failed reads in a row) rather than a measure of the cadence.
+  "verdict:auth-sign-in": 6 * 60 * MIN,
   // Waiting to become bookable concludes on every tick the roster reads, and an
   // empty queue is its ordinary answer.
   "verdict:awaiting-activation": 6 * 60 * MIN,

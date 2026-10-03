@@ -48,6 +48,13 @@ const REAL_SECRETS = [
   "LOADTEST_SUPABASE_PUBLISHABLE_KEY",
   "LOADTEST_SUPABASE_SECRET_KEY",
   "LOADTEST_SUPABASE_URL",
+  // The daily off platform database dump (#3076). Listed because this is what a
+  // FULLY CONFIGURED repo holds; until they are created, the live check in the
+  // pre-push hook is what says they are missing.
+  "R2_BACKUP_ACCESS_KEY_ID",
+  "R2_BACKUP_BUCKET",
+  "R2_BACKUP_ENDPOINT",
+  "R2_BACKUP_SECRET_ACCESS_KEY",
   "REASSIGN_API_KEY",
   "SLACK_BOT_TOKEN",
   "SUPABASE_ACCESS_TOKEN",

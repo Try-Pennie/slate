@@ -826,7 +826,8 @@ happened to arrive.
 | the per address ceiling | its own step, run AFTER the steady pass so it has the API key's budget to itself, sends from one address until the deployment CREDITS a refusal to the per address ceiling, up to past the exact 1,200 an hour cap. It reads back both echoes: the address it was keyed on (unidentified, several, or unechoed each get their own conclusion) and WHICH ceiling refused, so a per key refusal is never counted as proof of the per address one (#2339) |
 | confirm startup | what a lead waits BEFORE the confirm begins, read from the run's own archived log and judged only on the confirms that were the FIRST on their isolate, under `REQUEST_STARTUP_P95_MS` (what is left of the latency bar once the confirm's own CPU share is taken out). Three ways it FAILS without a slow start: no archive at all, an archive holding nothing readable (the stream is written under a `wrangler tail` timeout, so its last line is routinely half written), and a reading in which nothing was ever the first on its isolate. Each has its own sentence, because nothing to check is never a pass (#2340, L98) |
 | platform | CPU p99 under the REQUEST budget (`REQUEST_CPU_P99_MS`, half the latency bar, and applied only to a window with no cron in it), the cron half under `limits.cpu_ms`, and **no invocation outcome other than `ok`**. The cron half is reconciled against the run's own archived log (#2352): `workersInvocationsScheduled` has never once reported a tick for a load test Worker, so a zero from it alone is the reader being blind and the window may only be called empty when BOTH sources say so. It used to borrow the 200ms LANE budget, which is a different question about a scheduled tick (#2321). The finding NAMES the startup split beside it, because this percentile counts the isolate's own startup as the confirm's compute (#2340) |
-| the fault pass | at `SLATE_LOADTEST_FAULT_PCT=10`, zero 5xx, and a pass that made no requests fails rather than passing on an empty sample. A pass whose deployment reported a DIFFERENT percentage is incomplete, and zero is the case that matters: it passes the bar having injected nothing |
+| the fault pass | at `SLATE_LOADTEST_FAULT_PCT=10` on the systems in `fault_targets` (calendar reads by default), zero 5xx while every faulted system is one the path degrades around, and a pass that made no requests fails rather than passing on an empty sample. With `google-write` or `supabase` faulted the 5xx count is reported, not barred, because a failure there is a 5xx by design (#3104). A pass whose deployment reported a DIFFERENT percentage or different systems is incomplete, and zero is the case that matters: it passes the bar having injected nothing |
+| the cron lanes under fault | sampled every 15 seconds for the whole faulted window by `fault-lane-sampler.ts` and scored by `fault-lanes.ts` (#3104): no lane the deployment runs goes past its stale bound at any reading, every one minute lane stamps inside the window, the lane watchdog records no stale page, and, when calendar reads are faulted, the `sync_failures` page is recorded exactly once. A missing lane file, or a series with a hole in it, is incomplete rather than healthy |
 
 **Subrequests are deliberately not a bar**, and that is a decision rather than an
 omission. Cloudflare's observability exposes **no subrequest counter**
@@ -1204,11 +1205,51 @@ branch rather than the transient one repeatedly. Every message is marked
 `(loadtest fault)`, so an injected failure is never mistaken for a real Google one while
 reading the results.
 
-What to look for in a faulted run: the failing agents are named in a throttled Slack
-alert rather than one per failure; a `notACalendarUser` agent is treated as definitively
-failing rather than retried every minute; the booker still offers times from agents who
-are fine; and no lane's heartbeat goes stale, because a Google failure must not stop a
-lane running.
+What a faulted run should show: the failing agents are named in a throttled page rather
+than one per failure; a `notACalendarUser` agent is treated as definitively failing
+rather than retried every minute; the booker still offers times from agents who are
+fine; and no lane's heartbeat goes stale, because a Google failure must not stop a lane
+running. On the booking run the page and the heartbeats are now SCORED by the judge
+(the fault leg section below), not read by a person.
+
+### Which systems fail (#3104)
+
+`SLATE_LOADTEST_FAULT_TARGETS` names the systems, comma separated. Unset is
+`google-read` alone, which is the switch exactly as it was before the others existed.
+
+| target | what fails | key a verdict is hashed on | what it exercises |
+|---|---|---|---|
+| `google-read` | every stubbed calendar read, in the three shapes above | the call (`freeBusy:<email>`, `calendarList:<email>`, the sync window) | the coalescer, the classifier, the streak page, verify-on-book's re-route |
+| `google-write` | the stubbed create, patch and delete, in the same three shapes | the operation and the event id, so a retry meets the same answer | the confirm path's failed create, `pending_event_deletions`, the outbox's resume |
+| `supabase` | every call through the secret key client EXCEPT `lane_heartbeats` and `alert_state`: half are held 1.5 seconds and let through, half answer a PostgREST shaped **500** | the method, address and body, inside the minute, so a fixed read is not failed on every tick for the whole run | the fail loud reads (`unwrap`), the lanes' failure boundaries, and every read behind the decision to page |
+| `salesforce` | a call is held 3 seconds, past the booking path's 2.5 second calling number deadline, then fails as a timeout | the request address, so one lead is slow on every run | the deadline branch, which the instant load test refusal (#2335) could never reach |
+| `webhook` | the synthetic delivery records a 503 instead of a success | the delivery AND the attempt, so some land on a retry and some reach the dead letter | the outbox retry and the dead letter page |
+
+The two tables the lane judge reads as its evidence, `lane_heartbeats` and `alert_state`,
+are never faulted (`SUPABASE_FAULT_EXEMPT_TABLES`), reads and writes alike: a fault there
+would produce exactly the stale lane or missing page the judge reports, caused by the
+injector rather than the code. What decides whether to page (the failure streak, the
+failing agents read) is still faulted, because a page lost to those is real behaviour.
+
+The database failure is a 500 and not a 503 on purpose: postgrest-js retries a 503 on
+every read with a 1, 2 and 4 second ladder, the retry meets the same verdict, and every
+faulted read would be held seven seconds and then failed anyway, which measures the
+client's backoff rather than Slate (`scripts/test-loadtest-fault-targets.ts` asserts the
+client sends it once).
+
+`google-write` and `supabase` are **fails loud** systems (`FAULT_TARGET_CONTRACT` in
+`src/lib/loadtest-fault.ts`): a failure there is a 5xx by design, because the event or
+the booking was not written. With either named, the fault pass reports its 5xx count
+rather than barring it, and the cron lanes are what is judged. With only the others
+named, "no 5xx under fault" holds as before.
+
+**It cannot be turned on in production**, by two facts that must both hold for anything
+to fire: every injector asks `SLATE_LOADTEST` at call time, and the percentage is
+committed nowhere. `scripts/test-wrangler-loadtest-env.ts` fails the build if the
+production block (or the committed `env.loadtest` block) carries the flag or either fault
+setting, and `scripts/test-loadtest-fault-targets.ts` drives every wired injector in a
+real process at 100 percent with every target named and no flag, and requires each to
+do nothing.
 
 ### The booking run's fault leg (#2262)
 
@@ -1241,18 +1282,45 @@ preflight also refuses a deployment already reporting a fault percentage, so a
 restore that itself failed is caught at the top of the next run rather than
 inherited silently. Two guards, and each is blind where the other looks.
 
-**What it does NOT cover**, said here rather than left to be assumed: the leg faults
-the whole deployment, so the cron lanes are faulted too, but nothing about their
-behaviour is JUDGED. The bar is the booking path's 5xx count. The lane-level
-expectations in the section above (a throttled alert naming the failing agents,
-`notACalendarUser` treated as definitive, no lane heartbeat going stale) are read by
-a person from the archived log tail; no check scores them.
+**The systems are measured too (#3104).** The `fault_targets` input goes to the
+deployment as `SLATE_LOADTEST_FAULT_TARGETS`, `/api/smoke/version` reports the list the
+injectors read (`faultTargets`, plus `faultTargetsUnknown` for a name that matched
+nothing and so faults nothing), and the driver refuses on a mismatch exactly as it does
+on the percentage. The judge holds the pass to the bar the DEPLOYMENT'S list implies.
 
-**Not covered, and deliberately not built here:** a failing calendar WRITE at scale.
-The confirm path's writes are never faulted on purpose (`src/lib/google/loadtest-stub.ts`
-says why): a failed write there is a 500 by design, so injecting one would make the
-run's 5xx count a measurement of the percentage rather than of the code, and the bar
-would be unreachable for a reason nobody should fix.
+**The cron lanes are judged, not read (#3104).** The leg faults the whole deployment,
+so the lanes run under it, and `scripts/loadtest/fault-lane-sampler.ts` reads the
+branch's `lane_heartbeats` and `alert_state` every 15 seconds beside the driver and for
+`FAULT_LANE_TAIL_MINUTES` (default 3) after it, while the deployment is still faulted.
+It reads the branch directly, never through the Worker under test. The judge then
+requires, through `scripts/loadtest/fault-lanes.ts`:
+
+- every lane the deployment runs (the watchdog's bounded lanes minus the held back ones,
+  handed to the judge as `EXPECT_LANES_DISABLED`, a copy of `env.loadtest`'s
+  `SLATE_LANES_DISABLED` that `scripts/test-fault-lanes.ts` holds equal to wrangler's
+  value; missing or naming no lane makes the run incomplete) inside its stale bound at
+  every reading, and never missing;
+- every one minute lane to have stamped INSIDE the window, since its ten minute bound
+  would otherwise be satisfied by a stamp from before the faults began;
+- no `cron_lane_stale:<lane>` page recorded in the window, the watchdog's own verdict;
+- with calendar reads faulted (as CONFIGURED for the run, never as the deployment reported;
+  the two disagreeing is incomplete), the `sync_failures` page recorded, and recorded ONCE: its
+  thirty minute cooldown outlasts the sampler's twenty minute ceiling, so a second
+  stamp in one window is the throttle failing.
+
+Slack refuses every load test post (#2335) and the deployment holds no bot token, so
+`sendThrottledAlert` RECORDS a load test page in `alert_state` in place of sending it,
+with the cooldown applied as production applies it and no firing marker (nobody was
+told, so no all clear is owed). That record is what the judge counts. The sampler
+counts each distinct stamp as one send, which is why it samples rather than reading
+once: both tables hold only the latest value, so one read at the end could not tell
+one page from one a minute, or a lane that stalled and recovered from one that never
+stalled. A missing lane file, or a series with a hole in it, is incomplete.
+
+**What it does NOT cover:** `notACalendarUser` being treated as definitive is still not
+scored at scale; it is pinned by the classifier's unit tests (`isDefinitiveFailure`).
+And a calendar WRITE or database fault pass judges the lanes rather than the booking
+path's 5xx count, which on such a pass is the percentage showing through by design.
 
 ## Teardown
 Delete the branch DB. The `SLATE_LOADTEST` flag is inert anywhere it isn't set, so no

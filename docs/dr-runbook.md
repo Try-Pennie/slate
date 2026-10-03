@@ -18,19 +18,43 @@ page.
 
 | | Objective | What is in force today |
 |---|---|---|
-| **RPO** (data we may lose) | **24 hours** | Supabase daily backups only. Point-in-Time Recovery is **not** enabled, so the restore target is the most recent nightly backup and everything written since is lost. |
+| **RPO, bookings** (and the other five mirrored tables: `booking_events`, `booking_outbox`, `routing_decisions`, `webhook_deliveries`, `audit_log`) | **About 10 minutes** | The Snowflake export lane copies every change to these tables to the warehouse every 10 minutes (`MIRROR_TABLES` in `src/lib/snowflake/export-core.ts`). If it stops, the lane watchdog pages once its heartbeat is 30 minutes old (`MIRROR_STALE_BOUNDS_MS`), so the worst case before anybody is told is 30 minutes. Section 4 writes them back with `pnpm restore:from-snowflake`. |
+| **RPO, everything else** (advisors, pools, working hours, business hours, settings, time off, calendars) | **24 hours** | One full logical dump a day, stored off platform in Cloudflare R2 by `.github/workflows/db-backup.yml`. The lane watchdog pages when the newest dump is older than 26 hours (`BACKUP_STALE_BOUNDS_MS`), and when none has ever landed. Supabase's own daily backups still exist beside it, in the same account as production. |
 | **RTO** (time to serve again) | **Same business day** | Slate's bookings are business hours only, so a restore that lands before the next working morning has not breached. |
 
 These are deliberate choices, not aspirations.
 
-**On the RPO.** Losing up to a day of bookings is accepted because PITR is a paid
-Supabase add-on and, before cutover, the only bookings in the system are the
-canary's. Revisit this the moment real leads are booking: at that point a day of
-lost bookings is a day of leads with a calendar invite for a call Slate has no
-record of, and section 4 below is the only thing standing between that and a
-no-show. The decision is recorded here rather than left implicit so that turning
-PITR on is a decision somebody makes, not something discovered during an
-incident.
+**On the RPO (decided 2026-10-03, #3075).** Until that date this page said 24 hours
+for everything and accepted it because the only bookings were the canary's, with a
+note to revisit once real leads were booking. They are: the pilot went live on
+2026-09-29 and real bookings per day were **18, 73, 357 and 446** on 29 September to
+2 October. A day of lost bookings at that volume is hundreds of leads holding a
+calendar invite for a call Slate has no record of.
+
+So the objective is now two numbers, because the data is two kinds. Bookings and the
+tables around them change all day and are already copied off platform every ten
+minutes by the Snowflake mirror, so they recover from there. The rest changes a few
+times a day by hand (somebody edits a pool or approves time off), so a daily dump is
+enough. Dan's words: "bookings every 10 minutes is enough" and "the rest once a day
+and be fine".
+
+**Point-in-Time Recovery was considered and NOT bought** (2026-10-03). Supabase prices
+it at about **$100 a month for 7 days of retention** (about $200 for 14, $400 for
+28), and a project using it must also run at least the **Small compute** add-on
+([Supabase backups](https://supabase.com/docs/guides/platform/backups#point-in-time-recovery)).
+It would give a two minute RPO on every table, but the mirror already gives ten
+minutes on the tables where minutes matter, and the rest does not change fast enough
+for minutes to be worth that.
+
+**Revisit when** either of these holds, both of which can be re-measured:
+
+- **real bookings pass 2,000 a day** (`select count(*) from bookings where created_at
+  >= now() - interval '1 day'`, excluding test buckets), because ten minutes of
+  bookings is then about 14 leads, and a minute by minute objective starts to cost
+  more in reconciliation than PITR costs in money; or
+- **the non booking tables start changing continuously** rather than by hand, for
+  example an automated roster or hours sync writing all day, because a day of those
+  is then no longer a handful of edits somebody can redo.
 
 **On the RTO.** The restore is minutes; the reconciliation is not. Budget the
 whole morning and work the sections in order.
@@ -69,10 +93,38 @@ this is not.
 A restore IS the answer when data has been destroyed or corrupted and no forward
 fix can reconstruct it.
 
-1. **Take a fresh backup or snapshot first**, so the current (broken) state is
-   still available. You may need it to reconstruct what the restore is about to
-   discard: section 4 depends on being able to read the bookings that existed
-   after the restore point.
+1. **Take a pre-change dump first. This is required, not advice**, and it applies
+   to every manual migration, backfill or destructive SQL as much as to a restore.
+   The current (broken) state has to stay readable: section 4 depends on reading the
+   rows that existed after the restore point, and Point-in-Time Recovery is not
+   enabled, so this dump is the only copy of them that is not in the warehouse.
+
+   From the repo root, with `SUPABASE_ACCESS_TOKEN` and `SUPABASE_DB_PASSWORD` in the
+   shell. It writes five files to a folder named for the moment it ran: the roles,
+   the schema, the data, and the migration history's schema and data (the default
+   dump leaves the history out, and a database restored without it does not know
+   which migrations it already has). Then set `TABLES` to the tables the change or
+   the incident touches, and each one's rows are pulled out of the data dump into a
+   file of its own, so what was lost can be read without restoring anything.
+<!-- runbook-unverified: this reads production, and a production dump was not taken while writing this page (2026-10-03, #3076). The same five dump commands, with --db-url pointed at a throwaway local copy of the schema instead of --linked, were run that day and produced files the restore in section 1b loaded with every table count identical; the table extraction loop was run against that dump and pulled out audit_log (5,000 rows) and business_hours (7) exactly. What is unproven is only the production read itself: the link and the time five dumps take at production's size. The daily workflow runs these same dump commands against production once its secrets exist. -->
+```bash
+supabase link --project-ref drukfvgaynzrralbzkzj
+dir="$HOME/slate-snapshots/$(date -u +%Y%m%dT%H%M%SZ)" && mkdir -p "$dir" && echo "$dir"
+supabase db dump --linked --role-only -f "$dir/roles.sql"
+supabase db dump --linked -f "$dir/schema.sql"
+supabase db dump --linked --data-only --use-copy -f "$dir/data.sql"
+supabase db dump --linked --schema supabase_migrations -f "$dir/history_schema.sql"
+supabase db dump --linked --data-only --use-copy --schema supabase_migrations -f "$dir/history_data.sql"
+TABLES="bookings booking_events ooo_requests"
+echo "$TABLES" | tr ' ' '\n' | while read -r t; do awk -v t="$t" 'index($0, "COPY \"public\".\"" t "\" ") == 1 {on=1} on {print} on && $0 == "\\." {on=0}' "$dir/data.sql" > "$dir/table-$t.sql"; echo "$t: $(($(wc -l < "$dir/table-$t.sql") - 2)) rows"; done
+pnpm check:db-dump "$dir"
+```
+
+   The last line is the same judge the daily backup runs: it refuses a dump that is
+   empty, cut short, or missing a table, and prints the row count per table. Do not
+   go further until it passes. The folder holds customer contact data; keep it on an
+   encrypted disk and delete it once the incident is closed.
+
 2. **Write down the restore target** as a UTC timestamp, and the current UTC time.
    Everything below is scoped to the window between them. Call it the **gap
    window**.
@@ -109,6 +161,48 @@ heartbeat since the restore, so several will read as stale for a few minutes.
 
 If the restore target predated a migration, apply the outstanding migrations now,
 following `docs/migrations-runbook.md`, before anything below.
+
+### 1b. When Supabase's own backups are not there: restore the R2 dump
+
+Supabase's daily backups live in the same account as production, and deleting the
+project deletes them. The daily dump in R2 is the copy that survives that. It is
+restored into a NEW Supabase project (create it in the dashboard, same region, then
+point the Worker's `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_SECRET_KEY` at it).
+
+List the dumps and fetch the newest, with the R2 token Dan holds for the backup
+bucket (the same four values the workflow reads as `R2_BACKUP_*` secrets) in the
+shell as `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `R2_BACKUP_ENDPOINT` and
+`R2_BACKUP_BUCKET`. Then load it in ONE transaction, so a failure part way leaves the
+new project empty rather than half restored. `NEW_DB_URL` is the new project's
+session pooler connection string from its dashboard (Connect).
+
+<!-- runbook-unverified: the R2 half needs a dump in the backup bucket (slate-db-backups, created 2026-10-03), and none had been taken when this was written. The psql half was rehearsed on 2026-10-03 (#3076) against two throwaway local Postgres containers running the Supabase image (supabase/postgres:17.6.1.175), never a Supabase project: a source carrying all 157 migrations plus 5,001 synthetic rows (and the 21 the migrations seed) was dumped with the same five supabase db dump commands as Step 0 (21 seconds), then these exact psql flags loaded the five files into a fresh container in 2 seconds with exit 0, after which all 49 public tables had identical row counts, 247 functions, the triggers and the RLS policy matched, and the migration history read back with the same number of rows as the source. What is unproven: the R2 download, a Supabase project as the target, and the time at production's size. -->
+```bash
+aws s3 ls "s3://$R2_BACKUP_BUCKET/slate/db/" --recursive --endpoint-url "$R2_BACKUP_ENDPOINT" | sort | tail -3
+key="$(aws s3 ls "s3://$R2_BACKUP_BUCKET/slate/db/" --recursive --endpoint-url "$R2_BACKUP_ENDPOINT" | sort | tail -1 | awk '{print $4}')"
+dir="$HOME/slate-restore/$(basename "$key" .tar.gz)" && mkdir -p "$dir"
+aws s3 cp "s3://$R2_BACKUP_BUCKET/$key" "$dir/dump.tar.gz" --endpoint-url "$R2_BACKUP_ENDPOINT"
+tar -xzf "$dir/dump.tar.gz" -C "$dir"
+pnpm check:db-dump "$dir"
+psql --single-transaction --variable ON_ERROR_STOP=1 \
+  --file "$dir/roles.sql" --file "$dir/schema.sql" --file "$dir/history_schema.sql" \
+  --command 'SET session_replication_role = replica' \
+  --file "$dir/data.sql" --file "$dir/history_data.sql" \
+  --dbname "$NEW_DB_URL"
+```
+
+`session_replication_role = replica` is not optional: the data has circular foreign
+keys (`busy_blocks` and `ooo_requests`), and the dump's own warning says it cannot be
+loaded with them enforced. The dump is up to a day old by design, so the restore
+point for everything after this is the dump's timestamp (it is in the file name), and
+section 4 starts with the warehouse writing back the bookings since then.
+
+**Rehearsal record.** 2026-10-03, offline, as described in the marker above: dump 21
+seconds and restore 2 seconds, against a database of about 5,000 rows. That proves the
+commands and the file set (it is how the missing migration history was found: the
+first rehearsal restored every table and no history at all, which is why the dump is
+five files and not three). It does not measure production; time the first real
+restore drill and record it here.
 
 ---
 
@@ -219,6 +313,31 @@ agent's calendar is the surviving source of truth, and it is the one to
 reconcile against.
 
 **The order that matters:**
+
+0. **Write the mirrored tables back from Snowflake first.** Every booking, booking
+   event, outbox row, routing decision, webhook delivery and audit entry written
+   since the restore point is in the warehouse, copied there within about ten
+   minutes of being written. Dry run first, which reads both sides and writes
+   nothing:
+
+<!-- runbook-unverified: it reads the live warehouse and writes a live project, so it was not run while writing this page (2026-10-03, #3075), and the brief that built it forbade running it against production. Every rule it applies (the keyset paging, decoding Snowflake's text cells, never over a newer row, never over a redacted one, parents first, the write gate) is driven offline by scripts/test-snowflake-restore.ts. Unproven: the Snowflake read and the Supabase write against real systems. Rehearse it against a scratch project before it is needed. -->
+```bash
+RESTORE_POINT=2026-10-03T06:00:00Z pnpm restore:from-snowflake
+RESTORE_POINT=2026-10-03T06:00:00Z APPLY=1 RESTORE_CONFIRM_HOST=drukfvgaynzrralbzkzj.supabase.co pnpm restore:from-snowflake
+```
+
+   Set `RESTORE_POINT` to the restore target from step 0 (a UTC time ending in Z), and
+   `RESTORE_CONFIRM_HOST` to the host of the project being written to (the example is
+   production's; after a 1b restore it is the new project's). It needs the Snowflake
+   key (`SNOWFLAKE_PRIVATE_KEY`, `SNOWFLAKE_ACCOUNT`) in the shell, which only the
+   Worker holds today. It never writes over a row Supabase holds a newer copy of
+   (Slate is serving again, so a booking cancelled after the restore stays cancelled),
+   never over a row Supabase holds redacted, and it prints the columns the mirror does
+   not carry, which a restored row cannot get back: `reminder_sent_for` is the one that
+   matters, because a restored booking may be sent its reminder twice. It is safe to
+   run again. What it cannot see: a booking written and then lost inside the last
+   export interval (up to ten minutes, or up to 30 if the export lane was stalled),
+   which is what the rest of this list is for.
 
 1. **Read the pre-restore snapshot you took in step 0.** That is the fastest and
    most complete list of what was lost: `bookings` rows created or modified
@@ -439,11 +558,19 @@ here reads a small JSON body, so that has not been worth arming for.
 
 Recorded here rather than in an issue nobody reads during an incident:
 
-- **Point-in-Time Recovery** turns section 4 from a day of manual reconciliation
-  into a handful of minutes of lost writes. It is the single highest-value thing
-  to buy before real leads are booking.
-- **A pre-restore export of `bookings` inside the gap window**, taken as step 0
-  every time, is what makes section 4 tractable at all. Never skip it.
+- **Point-in-Time Recovery** was priced and not bought on 2026-10-03 (see "On the
+  RPO" above, with the volume at which to revisit it). The Snowflake mirror plus
+  `pnpm restore:from-snowflake` is what does that job for bookings instead.
+- **The pre-change dump in step 0**, taken every time, is what makes section 4
+  tractable at all. Never skip it.
+- **The daily dump is not encrypted on the runner, by decision** (Dan, 2026-10-03,
+  #3076). R2 encrypts every object at rest and the bucket's token is scoped to that
+  one bucket. A scheme added later goes between packaging and upload in the workflow,
+  and section 1b then needs the matching decrypt.
+- **The backup bucket is `slate-db-backups`, and its lifecycle rule expires each dump
+  after 30 days** (set by Dan, 2026-10-03). Each dump holds customer contact data, so
+  that rule is part of the retention story in `docs/pii-retention.md`, not just
+  storage housekeeping.
 - **A rehearsal of the RESTORE ITSELF.** Most of this page has now been
   exercised (2026-09-02, #1584): section 2's SQL was run verbatim against a
   branch with the identical schema and both directions were measured, the two

@@ -42,6 +42,7 @@ import {
 } from "@/lib/notify/alerts";
 import {
   retentionAlertText,
+  BACKUP_STALE_BOUNDS_MS,
   LANE_STALE_BOUNDS_MS,
   TIME_OFF_STALE_BOUNDS_MS,
   UPTIME_STALE_BOUNDS_MS,
@@ -363,6 +364,8 @@ import {
   webhookDeadRecovery,
 } from "@/lib/monitor/cron-alert-copy";
 import {
+  backupAlertText,
+  backupRecoveryText,
   coreLaneAlertText,
   canaryAlertText,
   canaryRecoveryText,
@@ -466,6 +469,10 @@ import {
   formatDefinerGrantsExposedAlert,
   formatDefinerGrantsClearedAlert,
 } from "@/lib/monitor/definer-grants";
+import {
+  formatAuthSignInOpenAlert,
+  formatAuthSignInClearedAlert,
+} from "@/lib/monitor/auth-sign-in-surface";
 import {
   formatHydrationFailingAlert,
   formatHydrationRecovery,
@@ -2977,6 +2984,37 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     }),
   },
   {
+    key: "auth_sign_in_beyond_google",
+    state: "email sign in is on, as production stood on 2026-10-03",
+    channel: "alert",
+    text: formatAuthSignInOpenAlert({
+      status: "open",
+      emailOn: true,
+      signupProviders: [],
+      samlSignup: false,
+      providersOn: ["email", "google"],
+    }),
+  },
+  {
+    key: "auth_sign_in_beyond_google",
+    state: "email, two other providers and SAML at once",
+    channel: "alert",
+    // Read this one for the list grammar and for whether four lines still scan on a phone.
+    text: formatAuthSignInOpenAlert({
+      status: "open",
+      emailOn: true,
+      signupProviders: ["anonymous_users", "phone"],
+      samlSignup: true,
+      providersOn: ["anonymous_users", "email", "google", "phone"],
+    }),
+  },
+  {
+    key: "auth_sign_in_beyond_google",
+    state: "cleared",
+    channel: "recovery",
+    text: formatAuthSignInClearedAlert({ status: "healthy", providersOn: ["google"] }),
+  },
+  {
     key: "edge_limiter_unusable",
     state: "one endpoint's ceiling is missing from the deploy",
     channel: "alert",
@@ -3407,6 +3445,49 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "recovery",
     text: uptimeRecoveryText("uptime:availability-canary"),
   },
+  // #3076: the same key again, for the daily off platform database dump. Three
+  // pages, because each sends the reader somewhere different: a dump that stopped,
+  // one that has never landed (which is also what missing R2 secrets look like),
+  // and a record that cannot be read.
+  {
+    key: "cron_lane_stale:*",
+    state: "the newest off platform database backup is too old",
+    channel: "alert",
+    text: backupAlertText({
+      lane: "db-backup",
+      ageMs: 30 * 60 * 60_000,
+      maxStaleMs: BACKUP_STALE_BOUNDS_MS["db-backup"]!,
+      unreadable: false,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "no off platform database backup has ever landed",
+    channel: "alert",
+    text: backupAlertText({
+      lane: "db-backup",
+      ageMs: Infinity,
+      maxStaleMs: BACKUP_STALE_BOUNDS_MS["db-backup"]!,
+      unreadable: false,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "the database backup's last-run record cannot be read",
+    channel: "alert",
+    text: backupAlertText({
+      lane: "db-backup",
+      ageMs: NOW_MS,
+      maxStaleMs: BACKUP_STALE_BOUNDS_MS["db-backup"]!,
+      unreadable: true,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "a fresh database backup landed again",
+    channel: "recovery",
+    text: backupRecoveryText("db-backup"),
+  },
   // #1394: the same key, a different fault. These lanes are NOT quiet; they run
   // faithfully and conclude nothing, which every other message here would
   // misdescribe.
@@ -3500,6 +3581,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       ["verdict:calendar-window", "the calendar window check has stopped concluding"],
       ["verdict:busy-drift", "the busy drift sampler has stopped concluding"],
       ["verdict:offsite-origin", "the off site origin check has stopped concluding"],
+      ["verdict:auth-sign-in", "the auth sign in settings check has stopped concluding"],
       ["verdict:awaiting-activation", "the waiting to become bookable check has stopped concluding"],
       ["verdict:regal-call-feed", "the Regal feed checks have stopped concluding"],
       ["verdict:regal-call-outcomes", "the Regal call outcome check has stopped concluding"],

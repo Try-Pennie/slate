@@ -1,7 +1,8 @@
 import { createClient } from "@supabase/supabase-js";
 import { publicSupabaseUrl, supabaseSecretKey } from "@/lib/env";
 import type { Database } from "@/lib/db/schema";
-import { supabaseFetch } from "@/lib/supabase/fetch";
+import { supabaseFetch, supabaseFetchOver } from "@/lib/supabase/fetch";
+import { loadtestSupabaseFetch } from "@/lib/loadtest-fault";
 
 /**
  * Secret-key client (replaces the legacy service_role key). Bypasses RLS — use
@@ -12,9 +13,14 @@ let cached: ReturnType<typeof createClient<Database>> | null = null;
 
 export function supabaseAdmin() {
   if (!cached) {
+    // #3104: null everywhere but a load run faulting the database, so production
+    // gets the plain deadline fetch.
+    const faulting = loadtestSupabaseFetch((input, init) => fetch(input, init));
     cached = createClient<Database>(publicSupabaseUrl(), supabaseSecretKey(), {
       auth: { persistSession: false, autoRefreshToken: false },
-      global: { fetch: supabaseFetch },
+      // #3102 over #3104: the deadline sits OUTSIDE the load run's fault
+      // injector, so an injected hang is cut by the same deadline a real one is.
+      global: { fetch: faulting ? supabaseFetchOver(faulting) : supabaseFetch },
     });
   }
   return cached;

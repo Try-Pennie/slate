@@ -14,6 +14,7 @@
 import { refuseUnderLoadtest } from "@/lib/loadtest-guard";
 import { deadlineWithinBudget } from "@/lib/call-budget";
 import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
+import { salesforceLoadtestFault } from "@/lib/loadtest-fault";
 
 /** Total attempts (initial try + retries) for a Salesforce request. */
 export const SF_MAX_ATTEMPTS = 3;
@@ -65,12 +66,16 @@ export async function fetchSfWithRetry(
   // rather than answering empty: a roster read that returned nothing is
   // indistinguishable from an empty Salesforce, and the sync would write that
   // emptiness over the roster the load run just seeded.
+  const sleep =
+    opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  // #3104: under a fault pass naming Salesforce, a share of calls hang past the
+  // booking path's deadlines before failing, so the SLOW failure is exercised as
+  // well as the instant refusal below. Inert unless SLATE_LOADTEST is set.
+  await salesforceLoadtestFault(url, sleep);
   refuseUnderLoadtest("Salesforce");
   const maxAttempts = opts.maxAttempts ?? SF_MAX_ATTEMPTS;
   const timeoutMs = opts.timeoutMs ?? SF_TIMEOUT_MS;
   const doFetch = opts.fetchImpl ?? fetch;
-  const sleep =
-    opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
 
   let lastErr: unknown;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {

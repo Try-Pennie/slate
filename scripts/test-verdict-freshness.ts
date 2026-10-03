@@ -37,6 +37,7 @@ import {
   CALENDAR_WINDOW_VERDICT_LANE,
   BUSY_DRIFT_VERDICT_LANE,
   OFFSITE_ORIGIN_VERDICT_LANE,
+  AUTH_SIGN_IN_VERDICT_LANE,
   AWAITING_ACTIVATION_VERDICT_LANE,
   STRANDED_HIRES_VERDICT_LANE,
   REGAL_CALL_FEED_VERDICT_LANE,
@@ -208,6 +209,7 @@ const HOUR = 60 * 60_000;
         AVAILABILITY_SCAN_VERDICT_LANE,
         CALENDAR_WINDOW_VERDICT_LANE,
         OFFSITE_ORIGIN_VERDICT_LANE,
+        AUTH_SIGN_IN_VERDICT_LANE,
         AWAITING_ACTIVATION_VERDICT_LANE,
         STRANDED_HIRES_VERDICT_LANE,
         REGAL_CALL_FEED_VERDICT_LANE,
@@ -490,5 +492,17 @@ assert(
   !tierStaffingReachedVerdict(null),
   "a tick that skipped or threw has not concluded either",
 );
+
+// --- a lane outside the family is named as a code fault, never a crash (L11) ---------
+// Every family lane has copy, which tsc enforces on VERDICT_SUBJECT's type. A string
+// off the heartbeat table that is not in the family can only be a code fault, and the
+// page about it must still render rather than throw inside the alert path.
+{
+  const text = verdictBlindAlertText({ lane: "verdict:nobody-declared", ageMs: 7 * HOUR, maxStaleMs: 6 * HOUR, unreadable: false });
+  assert(/verdict:nobody-declared/.test(text), "an undeclared lane's blind page names the lane");
+  assert(/code fault/.test(text), "and says it is a code fault");
+  assert(!/undefined/.test(text), "and renders no undefined");
+  assert(/verdict:nobody-declared/.test(verdictRecoveryText("verdict:nobody-declared")), "its all clear names the lane too");
+}
 
 finish();
