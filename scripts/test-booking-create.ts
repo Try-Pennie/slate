@@ -309,7 +309,7 @@ async function run() {
       maxInFlight = Math.max(maxInFlight, inFlight);
       await new Promise((r) => setTimeout(r, 5)); // yield so peers can start
       inFlight--;
-      return true;
+      return `lease-${id}`;
     };
     deps.releaseReservationLease = async (id: string) => { released.push(id); };
     const res = await processBookingReservations(deps, 15);

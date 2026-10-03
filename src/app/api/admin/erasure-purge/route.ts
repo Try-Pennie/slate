@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
+import { refuseCronSecret } from "@/lib/bearer-failure";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { purgeSnowflakeErasure } from "@/lib/snowflake/purge";
 import { log } from "@/lib/log";
@@ -53,7 +54,9 @@ export async function POST(req: NextRequest) {
   // operator whose tool happened to send an Origin header.
   // An operator secret and nothing else (#1961). A signed-in admin is refused
   // here like anybody else: that is the whole point of taking the buttons off.
-  if (!isAuthorizedCron(req)) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  if (!isAuthorizedCron(req)) {
+    return refuseCronSecret(req.headers, () => NextResponse.json({ error: "forbidden" }, { status: 403 }));
+  }
 
   let bookingIds: string[] | undefined;
   let authorisedBy: string | undefined;

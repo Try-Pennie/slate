@@ -993,6 +993,7 @@ cost matters; see `docs/cloudflare-platform-notes.md`.
 | `GET /api/cron/complete` | Flips due appointments to completed. It sends no webhook: completion is decided on the clock, not on whether the call happened (#2915). |
 | `GET /api/cron/agents` | Hourly roster sync from Salesforce: agent and team changes, attributes, and departures. |
 | `GET /api/cron/watch` | Renews Google calendar push channels before they expire, and names persistently failing agents. |
+| `POST /api/cron/log-shipping-receipt` | Not a lane and never scheduled: Slate's `LogShippingReceipt` entrypoint calls it in process, with the cron bearer, each time the tail worker reports that Better Stack accepted every record of a cron tick, and it stamps the `log-shipping` heartbeat. The lane watchdog pages `cron_lane_stale:log-shipping` when no receipt arrives for 15 minutes (#3182). Takes no body and no lane from the request. |
 | `POST /api/cron/lane-failure` | Not a lane and never scheduled: the Worker's dispatcher reports a lane that threw or answered non-ok here, in process and with the cron bearer, and it pages `cron_lane_failed:<lane>` at most hourly per lane (#3133). The tick's id arrives in `x-slate-tick-id` (#3139). A lane's 500 that carries `x-slate-lane-alerted` (written by `laneFailure`, from the alerts the lane's own code raised) is not reported, so a failure is one message, never two. |
 | `GET /api/cron/hydrate-calendars` | Fills in calendar metadata for agents whose calendars have not been read yet. |
 | `GET /api/cron/bulk-reassign` | Drains queued bulk coverage reassign jobs (#973, #562). |
@@ -1007,6 +1008,7 @@ cost matters; see `docs/cloudflare-platform-notes.md`.
 | `GET /api/cron/prune-bookings-pii` | Redacts consumer contact data on bookings past the 24 month window (#1071). |
 | `GET /api/cron/prune-webhook-payloads` | Blanks `webhook_deliveries.payload`, which carries attendee PII, once a delivery is settled (#1073). |
 | `GET /api/cron/prune-warehouse-pii` | The warehouse half of the same 24 month booking PII window (#1180). |
+| `GET /api/cron/cron-budget` | Not a scheduled lane: the Worker calls it in process after a tick whose wall time passed a line set at half `limits.cpu_ms`, and on every hourly tick, so the daily wall time headroom check has something to read (#3141). Takes `cron` and `wall_ms`; answers `400` on either missing or unreadable. |
 | `GET /api/cron/snowflake-export` | The archival mirror export (#1099), on its own cron expression and lock. |
 | `GET /api/cron/snowflake-reconcile` | Runs the warehouse self-check on a schedule (#1144), including the rows stranded behind the export watermark. |
 | `GET /api/cron/erasure-audit` | The Snowflake half of a data-subject erasure audit (#1103). |

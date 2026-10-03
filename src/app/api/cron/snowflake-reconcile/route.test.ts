@@ -41,7 +41,7 @@ vi.mock("@/lib/log", () => ({ log }));
 
 import { GET } from "./route";
 
-const req = () => ({}) as unknown as Parameters<typeof GET>[0];
+const req = () => ({ headers: new Headers() }) as unknown as Parameters<typeof GET>[0];
 const stamped = () => heartbeat.recordHeartbeat.mock.calls.map((c) => c[0]);
 const alertKeys = () => dispatch.sendThrottledAlert.mock.calls.map((c) => c[0]);
 

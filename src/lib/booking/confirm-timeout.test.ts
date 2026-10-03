@@ -25,6 +25,7 @@ import {
 } from "./orchestration";
 import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
 import { deadlineWithinBudget } from "@/lib/call-budget";
+import { GoogleBreakerOpenError } from "@/lib/google/breaker";
 import type { CreateBookingInput } from "./service";
 
 const input = {} as CreateBookingInput;
@@ -104,6 +105,17 @@ describe("a timeout on the confirm path (#3102)", () => {
     createBooking.mockRejectedValue(new DeadlineExceededError("google events.insert", 8000));
     await serviceCreateBooking(input).catch(() => {});
     expect(label).toBe("the booking cleanup");
+  });
+
+  // #3134: an open Google breaker refuses verify-on-book's reads at once. It must
+  // reach the lead as the same retryable 503 a timeout does, never as a 500 and
+  // never as a booking.
+  it("answers an open Google breaker as the retryable outage", async () => {
+    createBooking.mockRejectedValue(new GoogleBreakerOpenError(30_000));
+    const caught = await serviceCreateBooking(input).catch((e: unknown) => e);
+    expect(caught).toBeInstanceOf(VerifyUnavailableError);
+    expect((caught as Error).message).toBe(new VerifyUnavailableError().message);
+    expect(alert.mock.calls[0]?.[0]).toBe("verify_on_book_outage");
   });
 
   it("leaves every other failure exactly as it was", async () => {

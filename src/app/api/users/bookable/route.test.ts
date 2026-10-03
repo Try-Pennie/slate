@@ -5,7 +5,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // 200. A non-boolean bookable is a 400 (never coerce "false" to truthy). Service
 // + env are mocked.
 
-const env = vi.hoisted(() => ({ bookableApiKey: vi.fn(() => "secret") }));
+const env = vi.hoisted(() => ({ bookableApiKey: vi.fn(() => "secret"), bookableApiKey2: vi.fn(() => "") }));
 const svc = vi.hoisted(() => ({ applyBookableByEmail: vi.fn() }));
 vi.mock("@/lib/env", () => env);
 vi.mock("@/lib/bookable/service", () => svc);

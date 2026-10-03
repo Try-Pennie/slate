@@ -51,6 +51,14 @@ all, so start at `worker/cron-routes.ts` and `wrangler.jsonc`. A page on
 is not finishing, so start at the tail. The approvals report catches up its own gap
 from a watermark when it next runs, so the missed mornings are still recoverable.
 
+`cron_lane_stale:log-shipping` (#3182) is not a lane: it is the receipt the tail worker
+hands Slate each time Better Stack accepts a cron tick's records, and it means log
+history has stopped reaching Better Stack. Nothing about the site is wrong. Start at
+`npx wrangler tail slate-log-tail`, which logs every dropped batch by reason and every
+receipt that did not land; DEPLOY.md, "When records stop arriving", maps each reason to
+its fix. If the page says shipping was NEVER confirmed, the usual cause is a tail worker
+not redeployed since the receipt shipped (`npx wrangler deploy -c wrangler.log-tail.jsonc`).
+
 **First checks.**
 - The Cloudflare dashboard's cron triggers: did the schedule fire at all?
 - `npx wrangler tail`, attach, and wait one cadence. A lane that is running logs a
@@ -153,7 +161,7 @@ run `pnpm verify:availability-truth` against a real agent and read what Google s
 
 Keys: `completion_sweep_saturated`, `reconcile_cancelled_saturated`,
 `reconcile_missing_saturated`, `deletion_drain_saturated`, `pending_event_deletions`,
-`recompute_headroom`.
+`recompute_headroom`, `cron_budget_headroom`.
 
 **What fired it.** A per-tick budget was exhausted with work still waiting. This is not
 a failure: each of these sweeps is bounded on purpose so it cannot eat the invocation
@@ -168,6 +176,12 @@ drains it.
   it is over only after it has kept up for as long again, so one of these means the
   lane, not a wobble, and the thing to read is #2022.
 - What is in the backlog? The alert names the table and the count.
+- `cron_budget_headroom` (#3141) is the invocation rather than one sweep: some tick in
+  the last day took longer than 60s of WALL time, which is all the Worker can measure of
+  itself. It is not a CPU reading in either direction, so read the real CPU for those
+  ticks (`cpuTimeUs` in `workersInvocationsScheduled`, see
+  `docs/cloudflare-platform-notes.md`) before deciding anything. Wall time well above CPU
+  means the tick was waiting, not computing. Its all clear says nothing about CPU either.
 - Is the work itself failing, so nothing ever leaves the queue? That is a different
   family (a side effect that did not complete, below).
 
@@ -182,7 +196,7 @@ that the budget is small.
 
 Keys: `sync_failures`, `watch_lapse`, `bookable_blocked:*`, `bookable_unverified:*`,
 `verify_on_book_outage`, `verify_on_book_calendars_read`, `hydration_all_failing`,
-`pending_event_deletions_refused`.
+`pending_event_deletions_refused`, `google_calendar_breaker_open`.
 
 **What fired it.** A calendar read failed, repeatedly, for one agent or for many. Or,
 for `pending_event_deletions_refused` (#2577), a queued calendar event DELETE was
@@ -204,6 +218,11 @@ carries it (`gone`, `not-provisioned`, `transient`):
 - **`transient`** (5xx, timeout, rate limit): usually self-heals. If EVERY agent is
   failing, it is not the agents: check domain-wide delegation and the service account,
   because `hydration_all_failing` is the shape that means the credential itself broke.
+- **`google_calendar_breaker_open`** (#3134): Google itself stopped answering (five
+  transient failures in a row), so Slate is holding Calendar calls back and trying one
+  every 30 seconds. Check Google's status page before anything in Slate. Bookings answer
+  "try again in a moment" until it closes, and the all-clear arrives on its own when a
+  probe call is answered.
 
 **Fix or escalate.** One agent, `gone` or `not-provisioned`: a person action, and
 `bookable` should go false until it is done, or the rotation spends its budget retrying
@@ -535,6 +554,35 @@ needs somebody with billing access. While a refusal lasts, nothing server side i
 watching main at all: `main-push-guard.yml` and `merge-gap.yml` are themselves
 workflows, so treat a direct push or a red merge during that window as unguarded and
 check it by hand afterwards.
+
+---
+
+## A dependency advisory was found
+
+Not a monitor lane key: this one is posted by the daily GitHub workflow
+`.github/workflows/dependency-audit.yml` (#3092, #3093), which audits the lockfile
+every day whether or not anybody pushed. Its wording is built in
+`scripts/lib/dependency-audit-report.ts`.
+
+**The patch target.** Decided by Dan on 2026-10-03: **a high or critical advisory is
+patched by the next working day after the daily audit flags it.** The alert states
+that target in every finding, so it arrives with the page. Moderate advisories in
+production dependencies are written to the run summary and do not page; they are
+picked up with the next ordinary dependency bump.
+
+**First checks.** Open the linked run. The production audit (`--prod
+--audit-level=high`) names what ships to the Worker; the full tree audit
+(`--audit-level=critical`) names the build and deploy toolchain, which runs with the
+Cloudflare deploy token. The package path in the advisory says which direct
+dependency pulls it in.
+
+**Fix or escalate.** Bump or replace the package on a fresh branch, and let the
+pre-push gate and CI run the same audits. Where no fixed version exists yet, record the
+advisory in `pnpm.auditConfig.ignoreGhsas` in `package.json`, with its reason and the
+issue that will remove it in the note above the audit step in `ci.yml`, rather than
+leaving the daily run red: a run that is red
+every day stops being read. A run that says it could not finish an audit found
+nothing either way; re-run it.
 
 ---
 

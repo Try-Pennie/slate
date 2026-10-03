@@ -1,0 +1,117 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// #3141: the recorder the Worker hands each notable tick to. What is pinned here is the
+// write: a tick past half the CPU ceiling lands as its own lane_heartbeats row, the hourly
+// tick stamps the verdict lane, a failed breach write fails the request rather than reading
+// as recorded, and nothing unauthenticated or unreadable writes anything. The decision itself
+// is pinned in scripts/test-cron-budget.ts.
+
+const cron = vi.hoisted(() => ({ isAuthorizedCron: vi.fn(() => true) }));
+const db = vi.hoisted(() => {
+  const state = {
+    upserts: [] as Array<Record<string, unknown>>,
+    error: null as { message: string } | null,
+  };
+  const from = vi.fn((table: string) => ({
+    upsert: async (row: Record<string, unknown>) => {
+      state.upserts.push({ table, ...row });
+      return { error: state.error };
+    },
+  }));
+  return { state, from };
+});
+const verdicts = vi.hoisted(() => ({ recordDetectorVerdict: vi.fn(async () => {}) }));
+const throttle = vi.hoisted(() => ({
+  refuseCronSecret: vi.fn(async (_headers: Headers, refusal: () => Response) => refusal()),
+}));
+
+vi.mock("@/lib/cron", () => cron);
+vi.mock("@/lib/bearer-failure", () => throttle);
+vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from: db.from }) }));
+vi.mock("@/lib/monitor/verdict-store", () => verdicts);
+vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
+
+import { GET } from "./route";
+import { CRON_BUDGET_WARN_MS } from "@/lib/monitor/cron-budget";
+
+const req = (cronExpr: string, wallMs: number | string | null) =>
+  ({
+    url:
+      `https://slate.trypennie.app/api/cron/cron-budget?cron=${encodeURIComponent(cronExpr)}` +
+      (wallMs === null ? "" : `&wall_ms=${wallMs}`),
+    headers: new Headers(),
+  }) as unknown as Parameters<typeof GET>[0];
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  cron.isAuthorizedCron.mockReturnValue(true);
+  db.state.upserts = [];
+  db.state.error = null;
+});
+
+describe("GET /api/cron/cron-budget (#3141)", () => {
+  it("records a tick past the line under its own cron expression", async () => {
+    const res = await GET(req("* * * * *", CRON_BUDGET_WARN_MS + 500));
+    expect(res.status).toBe(200);
+    expect(db.state.upserts).toHaveLength(1);
+    expect(db.state.upserts[0]).toMatchObject({ table: "lane_heartbeats", lane: "cron-over-budget:* * * * *" });
+    expect(verdicts.recordDetectorVerdict).toHaveBeenCalledWith("verdict:cron-budget", false);
+  });
+
+  it("stamps the verdict on the hourly tick and writes no breach under the line", async () => {
+    const res = await GET(req("0 * * * *", 4_000));
+    expect(res.status).toBe(200);
+    expect(db.state.upserts).toHaveLength(0);
+    expect(verdicts.recordDetectorVerdict).toHaveBeenCalledWith("verdict:cron-budget", true);
+  });
+
+  it("fails the request when the breach write fails, so it is not read as recorded", async () => {
+    db.state.error = { message: "relation does not exist" };
+    const res = await GET(req("* * * * *", CRON_BUDGET_WARN_MS + 1));
+    expect(res.status).toBe(500);
+  });
+
+  it("still stamps the hourly proof of life when the breach write fails on the same tick", async () => {
+    // The two writes have separate jobs: a lost breach is a warning that never arrives,
+    // and a lost stamp makes a working recorder read as a dead one. One fault must not
+    // take both.
+    db.state.error = { message: "relation does not exist" };
+    const res = await GET(req("0 * * * *", CRON_BUDGET_WARN_MS + 1));
+    expect(res.status).toBe(500);
+    expect(verdicts.recordDetectorVerdict).toHaveBeenCalledWith("verdict:cron-budget", true);
+  });
+
+  it("answers the breach failure even when the stamp throws too", async () => {
+    db.state.error = { message: "relation does not exist" };
+    verdicts.recordDetectorVerdict.mockRejectedValueOnce(new Error("stamp down"));
+    const res = await GET(req("0 * * * *", CRON_BUDGET_WARN_MS + 1));
+    expect(res.status).toBe(500);
+  });
+
+  it("refuses an unreadable measurement and writes nothing", async () => {
+    for (const bad of [
+      req("* * * * *", "abc"),
+      req("not a cron'; drop", 70_000),
+      req("* * * * *", -1),
+      // Missing and blank both coerce to 0 under Number(), which would read as a healthy tick.
+      req("0 * * * *", null),
+      req("0 * * * *", ""),
+      req("0 * * * *", "%20"),
+    ]) {
+      const res = await GET(bad);
+      expect(res.status).toBe(400);
+    }
+    expect(db.state.upserts).toHaveLength(0);
+    expect(verdicts.recordDetectorVerdict).not.toHaveBeenCalled();
+  });
+
+  it("refuses a caller without the cron secret", async () => {
+    cron.isAuthorizedCron.mockReturnValue(false);
+    const res = await GET(req("* * * * *", CRON_BUDGET_WARN_MS + 1));
+    expect(res.status).toBe(401);
+    expect(db.state.upserts).toHaveLength(0);
+    // #3142, #3174: through the failed credential throttle, which leaves the Worker's own
+    // in process ticks uncounted.
+    expect(throttle.refuseCronSecret).toHaveBeenCalledTimes(1);
+  });
+});

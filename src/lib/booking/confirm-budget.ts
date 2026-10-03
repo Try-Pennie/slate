@@ -24,6 +24,7 @@
  * clients against a dependency that answers just inside every limit.
  */
 import { withinCallBudget, withinCleanupBudget } from "@/lib/call-budget";
+import { DependencyTimeoutError, timeoutAsRetryable } from "@/lib/booking/orchestration";
 
 export const BOOKING_CONFIRM_BUDGET_MS = 12_000;
 export const BOOKING_CLEANUP_BUDGET_MS = 2_000;
@@ -37,4 +38,32 @@ export function withinBookingConfirmBudget<T>(work: () => Promise<T>): Promise<T
 /** Run the cleanup a request owes the lead, under its own small allowance. */
 export function withinBookingCleanupBudget<T>(work: () => Promise<T>): Promise<T> {
   return withinCleanupBudget(BOOKING_CLEANUP_BUDGET_MS, "the booking cleanup", work);
+}
+
+/**
+ * Run a whole booking request under the confirm budget, and answer a deadline
+ * that escapes it (#3102).
+ *
+ * The budget covers everything the request does, including the reads a route
+ * makes BEFORE it reaches the service (the rate limits, the reason options, the
+ * paused booker flag, an advisor link). The service turns a deadline into the
+ * retryable outage, but those reads are not in the service, so a deadline there
+ * used to escape the route as an unhandled 500. `onTimeout` is the route's answer
+ * to it, written in the route so its refusal is annotated and counted where the
+ * catalog guard reads it, and run under the cleanup allowance, since the budget
+ * that cut the read short is spent. Every other failure is rethrown unchanged.
+ */
+export function withinBookingRequest<T>(
+  handle: () => Promise<T>,
+  onTimeout: (timeout: DependencyTimeoutError) => Promise<T>,
+): Promise<T> {
+  return withinBookingConfirmBudget(async () => {
+    try {
+      return await handle();
+    } catch (err) {
+      const timeout = timeoutAsRetryable(err);
+      if (!(timeout instanceof DependencyTimeoutError)) throw err;
+      return withinBookingCleanupBudget(() => onTimeout(timeout));
+    }
+  });
 }

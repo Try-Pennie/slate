@@ -150,6 +150,7 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // which is this family's premise, with a named repair: give it its own key.
   retired_booking_key: "the-booking-api-is-refusing-its-caller",
   recompute_headroom: "a-sweep-cannot-keep-up",
+  cron_budget_headroom: "a-sweep-cannot-keep-up",
   calendar_window_uncovered: "the-booker-is-offering-nothing-or-too-little",
   // #1591: the cache missing busy time means the booker offers times that are taken,
   // which is the calendar window page's family, for the same reason.
@@ -173,6 +174,8 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   pending_event_deletions_refused: "google-cannot-be-reached-for-an-agent",
   verify_on_book_outage: "google-cannot-be-reached-for-an-agent",
   verify_on_book_calendars_read: "google-cannot-be-reached-for-an-agent",
+  // #3134. The transient branch at its widest: Google is not answering anybody.
+  google_calendar_breaker_open: "google-cannot-be-reached-for-an-agent",
 
   // A booking exists and one of its side effects did not land.
   // #2359. The reminder is a side effect of a booking like the invite and the

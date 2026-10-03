@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
+import { refuseCronSecret } from "@/lib/bearer-failure";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
@@ -51,7 +52,9 @@ const ALL_FAILED_WINDOW_SECONDS = 90 * 60;
  * coverage expiring everywhere with nothing saying so.
  */
 export async function GET(req: NextRequest) {
-  if (!isAuthorizedCron(req)) return new NextResponse("unauthorized", { status: 401 });
+  if (!isAuthorizedCron(req)) {
+    return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
+  }
   const lock = await acquireLock("cron_hydrate_calendars", LOCK_TTL_MS);
   if (!lock) return NextResponse.json({ skipped: "overlapping-run" });
   try {

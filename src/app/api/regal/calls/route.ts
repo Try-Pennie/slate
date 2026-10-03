@@ -1,6 +1,6 @@
 import { NextResponse, after, type NextRequest } from "next/server";
 import { refuseCredential } from "@/lib/bearer-failure";
-import { regalInboundKey } from "@/lib/env";
+import { regalInboundKey, regalInboundKey2 } from "@/lib/env";
 import { bearerTokenMatches } from "@/lib/bearer-auth";
 import { recordRegalCall } from "@/lib/regal/call-store";
 import { log } from "@/lib/log";
@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
       { status: 503 },
     );
   }
-  if (!bearerTokenMatches(req.headers.get("authorization"), key)) {
+  if (!bearerTokenMatches(req.headers.get("authorization"), [key, regalInboundKey2()])) {
     return refuseCredential(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
 

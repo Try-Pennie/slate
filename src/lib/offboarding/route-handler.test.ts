@@ -5,7 +5,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // so it must return 200, NOT a 404 the caller treats as a failure. Reactivating
 // a missing user IS a real error and stays 404. Service + env are mocked.
 
-const env = vi.hoisted(() => ({ offboardingApiKey: vi.fn(() => "secret") }));
+const env = vi.hoisted(() => ({ offboardingApiKey: vi.fn(() => "secret"), offboardingApiKey2: vi.fn(() => "") }));
 const svc = vi.hoisted(() => ({ applyLifecycleByEmail: vi.fn() }));
 vi.mock("@/lib/env", () => env);
 vi.mock("@/lib/offboarding/service", () => svc);

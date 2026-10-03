@@ -85,6 +85,7 @@ import { shortErrorReason } from "../notify/error-text.ts";
 import { callingNumberWithinDeadline } from "../salesforce/lead-calling-number.ts";
 import type { ScheduleTimer } from "../read-within-deadline.ts";
 import { findDeadlineExceeded, type DeadlineFound } from "../fetch-within-deadline.ts";
+import { GoogleBreakerOpenError } from "../google/breaker.ts";
 import { log } from "@/lib/log";
 import { readBookingSource } from "./booking-source.ts";
 import type { FullApiCaller } from "./api-callers.ts";
@@ -304,6 +305,13 @@ export class DependencyTimeoutError extends VerifyUnavailableError {
  */
 export function timeoutAsRetryable(err: unknown): unknown {
   if (err instanceof VerifyUnavailableError) return err;
+  // #3134: the Google breaker refusing a call is the same outage seen sooner, so
+  // the lead gets the same retryable answer, and it can never become a booking.
+  if (err instanceof GoogleBreakerOpenError) {
+    const refused = new VerifyUnavailableError();
+    refused.cause = err;
+    return refused;
+  }
   const found = findDeadlineExceeded(err);
   return found ? new DependencyTimeoutError(found, err) : err;
 }
@@ -1207,9 +1215,12 @@ export interface BookingDeps {
   deleteReservation(id: string): Promise<void>;
   /** Pending reservations whose lease is free/expired, for the drain. */
   loadDrainableReservations(limit: number): Promise<BookingReservation[]>;
-  /** Gated lease claim; true if THIS call took it (drain vs inline guard). */
-  leaseReservation(id: string): Promise<boolean>;
-  releaseReservationLease(id: string): Promise<void>;
+  /** Gated lease claim: the token if THIS call took it, null when another holder
+   *  has it (drain vs inline guard). */
+  leaseReservation(id: string): Promise<string | null>;
+  /** Release only while the row still holds `lease` (#3169), so a drain that
+   *  overran never frees the lease a newer holder took. */
+  releaseReservationLease(id: string, lease: string): Promise<void>;
   /** Record a failed reservation-drain pass (#445): bump attempts, store
    *  last_error, set next_attempt_at to now + exponential backoff. */
   bumpReservationAttempt(id: string, attempts: number, lastError: string): Promise<void>;
@@ -3489,7 +3500,8 @@ export async function processBookingReservations(
   // first, so two drains never double-run a row; a large backlog clears in far
   // fewer ticks than a serial await-per-row loop.
   await mapWithConcurrency(rows, RESERVATION_DRAIN_CONCURRENCY, async (reservation) => {
-    if (!(await deps.leaseReservation(reservation.id))) return;
+    const lease = await deps.leaseReservation(reservation.id);
+    if (lease === null) return;
     try {
       await completeReservation(deps, reservation);
       completed++;
@@ -3512,7 +3524,8 @@ export async function processBookingReservations(
     } finally {
       // Always release, even if the bump above rejected - mirror the outbox
       // drain so a transient bump error can't leak the lease or abort the batch.
-      await deps.releaseReservationLease(reservation.id);
+      // Gated on our own token (#3169): past the TTL another drain may hold it now.
+      await deps.releaseReservationLease(reservation.id, lease);
     }
   });
   return { processed: rows.length, completed, failed, stuck };

@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
+import { refuseCronSecret } from "@/lib/bearer-failure";
 import { ensureWatches, loadSyncAgents, loadFailingAgents } from "@/lib/google/sync";
 import {
   orderAgentsForTick,
@@ -61,7 +62,7 @@ async function alertWatchLapse(
  */
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
-    return new NextResponse("unauthorized", { status: 401 });
+    return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
 
   const lock = await acquireLock("cron_watch", WATCH_LOCK_TTL_MS);

@@ -10,6 +10,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const env = vi.hoisted(() => ({
   googleChannelToken: vi.fn(() => "secret-token"),
+  googleChannelTokenPrevious: vi.fn(() => ""),
 }));
 const sync = vi.hoisted(() => ({
   syncByChannel: vi.fn(async () => {}),
@@ -32,11 +33,13 @@ vi.mock("@/lib/log", () => ({ log: { error: logError, warn: vi.fn(), info: logIn
 // after #594 consolidated every other one onto the shared constant-time verifier.
 // The spy wraps the REAL implementation, so the behaviour under test is the real
 // comparison and only the delegation is observed.
-const timingSafeEqualSpy = vi.hoisted(() => vi.fn());
+// #3110: the verifier is the slot aware `matchingSecretIndex`, which compares every
+// slot through the same constant time `timingSafeEqual`.
+const matchingSecretIndexSpy = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/bearer-auth", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/bearer-auth")>();
-  timingSafeEqualSpy.mockImplementation(actual.timingSafeEqual);
-  return { ...actual, timingSafeEqual: timingSafeEqualSpy };
+  matchingSecretIndexSpy.mockImplementation(actual.matchingSecretIndex);
+  return { ...actual, matchingSecretIndex: matchingSecretIndexSpy };
 });
 
 vi.mock("@/lib/env", () => env);
@@ -66,6 +69,7 @@ function push(headers: Record<string, string>) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  env.googleChannelTokenPrevious.mockReturnValue("");
 });
 
 describe("Google push handler", () => {
@@ -232,7 +236,7 @@ describe("Google push channel token is compared in constant time", () => {
     );
 
     expect(res.status).toBe(200);
-    expect(timingSafeEqualSpy).toHaveBeenCalledWith("secret-token", "secret-token");
+    expect(matchingSecretIndexSpy).toHaveBeenCalledWith("secret-token", ["secret-token", ""]);
   });
 
   it("still 403s a wrong token through the verifier", async () => {
@@ -245,7 +249,7 @@ describe("Google push channel token is compared in constant time", () => {
     );
 
     expect(res.status).toBe(403);
-    expect(timingSafeEqualSpy).toHaveBeenCalledWith("wrong", "secret-token");
+    expect(matchingSecretIndexSpy).toHaveBeenCalledWith("wrong", ["secret-token", ""]);
   });
 
   it("403s a request with no channel token at all, without comparing a null", async () => {
@@ -259,8 +263,50 @@ describe("Google push channel token is compared in constant time", () => {
     expect(res.status).toBe(403);
     // A missing header must be refused BEFORE the comparison: passing null into a
     // string comparison would throw a 500, which reads to Google as retriable.
-    expect(timingSafeEqualSpy).not.toHaveBeenCalled();
+    expect(matchingSecretIndexSpy).not.toHaveBeenCalled();
     expect(server.after).not.toHaveBeenCalled();
     expect(sync.syncByChannel).not.toHaveBeenCalled();
+  });
+});
+
+// #3110: every live watch channel carries the token it was registered with, so
+// rotating GOOGLE_CHANNEL_TOKEN used to turn every push into a 403 until each
+// channel renewed, with nothing saying why. The replaced value is accepted from
+// GOOGLE_CHANNEL_TOKEN_PREVIOUS while it is set, and each push that used it is
+// logged, so the end of the window is something a person can watch arrive.
+describe("Google push across a channel token rotation", () => {
+  const ping = (token: string) =>
+    push({ "x-goog-channel-token": token, "x-goog-resource-state": "exists", "x-goog-channel-id": "chan-1" });
+
+  it("accepts the replaced token while GOOGLE_CHANNEL_TOKEN_PREVIOUS holds it, and says so", async () => {
+    env.googleChannelTokenPrevious.mockReturnValue("old-token");
+    const res = await POST(ping("old-token"));
+    expect(res.status).toBe(200);
+    expect(sync.syncByChannel).toHaveBeenCalledWith("chan-1");
+    expect(logInfo).toHaveBeenCalledWith("google-push", {
+      msg: "push accepted on the previous channel token",
+      channel_id: "chan-1",
+    });
+  });
+
+  it("still accepts the current token during the window, without the rotation line", async () => {
+    env.googleChannelTokenPrevious.mockReturnValue("old-token");
+    const res = await POST(ping("secret-token"));
+    expect(res.status).toBe(200);
+    const rotation = logInfo.mock.calls.filter(
+      ([, f]) => (f as { msg?: string }).msg === "push accepted on the previous channel token",
+    );
+    expect(rotation).toHaveLength(0);
+  });
+
+  it("refuses the replaced token once the slot is cleared", async () => {
+    const res = await POST(ping("old-token"));
+    expect(res.status).toBe(403);
+    expect(sync.syncByChannel).not.toHaveBeenCalled();
+  });
+
+  it("an unset previous slot never authenticates an empty token", async () => {
+    const res = await POST(ping(""));
+    expect(res.status).toBe(403);
   });
 });

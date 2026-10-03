@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
+import { refuseCronSecret } from "@/lib/bearer-failure";
 import { AGENTS_SYNC_STREAK_KEY } from "@/lib/salesforce/sync";
 import { runRosterSync } from "@/lib/salesforce/run-roster-sync";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
@@ -36,7 +37,7 @@ const AGENTS_STREAK_WINDOW_S = 3 * 60 * 60;
  */
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
-    return new NextResponse("unauthorized", { status: 401 });
+    return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
 
   try {
@@ -49,6 +50,8 @@ export async function GET(req: NextRequest) {
       // one that found nobody tagged, and those are opposite facts.
       twilio: outcome.twilio,
       hoursApplied: outcome.hoursApplied,
+      // #3177: why this run stopped part way (its lock taken, or its renewal refused), or null.
+      leaseStop: outcome.leaseStop,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

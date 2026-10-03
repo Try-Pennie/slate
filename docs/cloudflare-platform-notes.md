@@ -46,6 +46,36 @@ Current headroom for the every minute cron (7 days, 19,260 ticks):
 CPU is billed on **actual usage, not the limit**, so raising the ceiling costs
 nothing by itself. Raise it rather than let invocations get killed.
 
+**The CPU table above is still a hand reading, and nothing watches CPU automatically.**
+The running Worker has no reading of its own CPU, and the analytics that do need an
+account token the deployment does not hold. What #3141 added is a WALL time check: the
+monitor lane pages (`cron_budget_headroom`) when any tick in the last day took longer than
+half the ceiling in wall time, from what `worker/index.ts` already measures per tick. That
+is not a CPU bound in either direction (the clock advances only at I/O, so compute between
+waits can read as no time at all, which is how a load run tick spent 119s of CPU, below),
+so it catches a schedule growing slow and never vouches for CPU headroom. The line is
+`CRON_BUDGET_WARN_MS` in `src/lib/monitor/cron-budget.ts`, derived from
+`CRON_CPU_LIMIT_MS`, which `scripts/test-cron-budget.ts` holds equal to `limits.cpu_ms`.
+
+### One limit for crons and requests, by decision (#3107)
+
+`limits.cpu_ms` is a single value for the whole Worker, so the 120s the crons need
+is also the ceiling on every web request. That is a recorded decision, not an
+oversight (Dan, 2026-10-03): **keep the single 120s limit.** The reasons:
+
+- Billing is for **CPU used, not the limit**, so the ceiling costs nothing by itself.
+- The crons peak around **45s** (the max in the table above) and need the room.
+- Web requests peak around **5s** (CPU p99 4,908ms on 2026-09-14, below), so the
+  limit never decides anything for a request in normal running.
+- A lower request limit would need the crons split into a **separate Worker**, and
+  that split was declined.
+
+What the high ceiling costs is a runaway request path: one that spins would run
+to 120s instead of being cut off at a lower limit. That is accepted, and it shows
+up in the request CPU percentiles below long before it shows up in spend. The same
+reasoning sits beside the value in `wrangler.jsonc`, and
+`scripts/test-recorded-decisions.ts` keeps the two in step.
+
 ### The `*/5` invocation has its own budget, and it is mostly one lane
 
 Everything above is the **every minute** cron. The `*/5` trigger is a SECOND shared

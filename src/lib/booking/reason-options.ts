@@ -8,6 +8,7 @@ import {
   type ReasonAction,
   type ReasonOption,
 } from "./core.ts";
+import { REASON_LABEL_MAX, slugifyCode } from "./reason-code.ts";
 
 /**
  * Org-configurable reschedule/cancel/reassign reason options (#346). The three
@@ -16,8 +17,10 @@ import {
  * are a STABLE analytics taxonomy (#325): immutable once created, never
  * repurposed; retiring is soft (active=false) so history stays readable.
  *
- * This module is PURE (no DB): sluging + collision + resolve + form parse. The
- * error-safe loader that reads the store lives beside it in `reason-options-load.ts`.
+ * Collision + resolve + form parse are pure; the error-safe loaders at the bottom
+ * read the store through the secret key client, so nothing here may be imported by
+ * a client component. The label bound and slug rule it shares with the editor live
+ * in `reason-code.ts` (#3172).
  */
 
 /** The working shape of a store row for the pure logic: the columns that drive
@@ -70,22 +73,6 @@ export const LOCKED_CODES: Record<ReasonAction, string[]> = {
  */
 export function isSystemOnlyCode(action: ReasonAction, code: string, storedFlag?: boolean): boolean {
   return storedFlag === true || SYSTEM_ONLY_CODES[action].includes(code);
-}
-
-/** Max length of a reason label (the admin editor enforces the same bound). */
-export const REASON_LABEL_MAX = 80;
-
-/**
- * Derive a stable analytics code from a human label: lowercase, keep [a-z0-9],
- * collapse any run of other characters to a single underscore, trim leading and
- * trailing underscores. A label with no usable characters yields "" and the
- * caller must reject it (a code can never be empty).
- */
-export function slugifyCode(label: string): string {
-  return label
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
 }
 
 /**

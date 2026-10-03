@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { drainBulkReassignJobs } from "@/lib/booking/service";
 import { isAuthorizedCron } from "@/lib/cron";
+import { refuseCronSecret } from "@/lib/bearer-failure";
 import { CRON_LOCK_TTL_MS } from "@/lib/google/sync-coalesce";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { log } from "@/lib/log";
@@ -18,7 +19,7 @@ export const dynamic = "force-dynamic";
  */
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
-    return new NextResponse("unauthorized", { status: 401 });
+    return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
 
   const lock = await acquireLock("cron_bulk_reassign", CRON_LOCK_TTL_MS);

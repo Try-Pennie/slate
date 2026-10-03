@@ -18,7 +18,13 @@
 //
 // Run: node --experimental-strip-types scripts/test-bundle-env-guard.ts
 import { readFileSync } from "node:fs";
-import { judgeBundleEnv, judgeClientAssets, secretNamesInAssets } from "./lib/scan-bundle-env.ts";
+import {
+  clientForbiddenNames,
+  judgeBundleEnv,
+  judgeClientAssets,
+  secretNamesInAssets,
+} from "./lib/scan-bundle-env.ts";
+import { PRODUCTION_ONLY_SECRETS } from "../src/lib/loadtest-secrets.ts";
 import { deployingScripts, unguardedDeployScripts } from "./lib/scan-deploy-scripts.ts";
 import { assert, eq, fail, finish } from "./lib/harness.ts";
 
@@ -278,6 +284,26 @@ const NAMES = ["SLACK_BOT_TOKEN", "TWILIO_API_KEY_SECRET"];
     0,
     "no names to look for finds nothing",
   );
+}
+
+{
+  // #3172: the secret key's NAME is refused in a browser chunk too, though it is not
+  // a production only setting. The text below is the env chunk a real `next build`
+  // shipped to /login, /admin/bookings and /admin/booking-reasons on 2026-10-03,
+  // trimmed to the read that gave it away.
+  const names = clientForbiddenNames(PRODUCTION_ONLY_SECRETS);
+  for (const n of PRODUCTION_ONLY_SECRETS) assert(names.includes(n), `${n} is still looked for`);
+  const v = judgeClientAssets({
+    files: [
+      {
+        path: "_next/static/chunks/0crhulbmtyrx5.js",
+        text: '"supabaseSecretKey",0,()=>(function(e){let t=sh.default.env[e];if(!t)throw Error(`Missing required environment variable: ${e}`);return t})("SUPABASE_SECRET_KEY")',
+      },
+    ],
+    names,
+  });
+  assert(!v.ok, "a browser chunk carrying the secret key read is refused");
+  eq(v.offenders.join(","), "SUPABASE_SECRET_KEY", "and the name is the one reported");
 }
 
 finish();

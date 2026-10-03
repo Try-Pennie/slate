@@ -2,7 +2,7 @@
 // #3093). Hand written step outcomes, a fake poster, no network.
 //
 // Run: node --experimental-strip-types scripts/test-dependency-audit-report.ts
-import { decideAuditAlert } from "./lib/dependency-audit-report.ts";
+import { decideAuditAlert, PATCH_TARGET } from "./lib/dependency-audit-report.ts";
 import { run } from "./notify-dependency-audit.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 import { assertHouseStyle, HOUSE_STYLE_CHECKS } from "./lib/alerter-contract.ts";
@@ -27,6 +27,14 @@ eq(d("success", "success").alert, null, "both audits passing says nothing");
 
   const both = d("failure", "failure").alert ?? "";
   assert(/production dependency/.test(both) && /toolchain/.test(both), "both findings are both said");
+
+  // #3092: the patch target (Dan, 2026-10-03) travels with every finding, so the
+  // reader holding the page knows the deadline without looking it up.
+  for (const [label, msg] of [["production", prod], ["toolchain", full], ["both", both]] as const) {
+    assert(msg.includes(PATCH_TARGET), `a ${label} finding states the patch target`);
+  }
+  assert(/next working day/.test(PATCH_TARGET), "the target is the next working day after the audit flags it");
+  assert(!(d("", "").alert ?? "").includes(PATCH_TARGET), "an audit that never finished found nothing to patch, so no deadline");
 }
 
 // --- an audit that never finished is never a pass, and never a finding (L98) -------

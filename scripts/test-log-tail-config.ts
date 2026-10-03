@@ -19,6 +19,7 @@ type Resolved = {
   name?: string;
   main?: string;
   tail_consumers?: { service: string }[];
+  services?: { binding: string; service: string; entrypoint?: string }[];
   vars?: Record<string, unknown>;
   workers_dev?: boolean;
   observability?: { enabled?: boolean };
@@ -60,6 +61,44 @@ assert(/async tail\(/.test(entry), "the tail worker exports a tail() handler");
   // for try and catch is satisfied by any catch anywhere, which is not containment.
   const fault = tailHandlerWrapFault(entry);
   assert(fault === null, `and its whole body is wrapped, so it contains its failures (${fault ?? "wrapped"})`);
+}
+
+// --- #3182: the receipt's wiring, both halves ---------------------------------
+//
+// The tail worker hands Slate a receipt over a service binding to a NAMED
+// entrypoint. A binding to the wrong Worker, or to an entrypoint Slate does not
+// export, fails only at the call, inside a handler that contains every failure, so
+// the only symptom would be the very page this exists to send, for a reason nobody
+// would look for. Pinned here instead.
+{
+  const binding = (tail.services ?? []).find((s) => s.binding === "SLATE");
+  assert(binding !== undefined, "the tail worker binds Slate as SLATE");
+  eq(binding?.service, slate.name, "to the Worker the main config deploys");
+  eq(binding?.entrypoint, "LogShippingReceipt", "at the receipt entrypoint, never Slate's public fetch handler");
+  const slateEntry = readFileSync(join(import.meta.dirname, "..", "worker/index.ts"), "utf8");
+  assert(
+    /export class LogShippingReceipt extends WorkerEntrypoint\b/.test(slateEntry),
+    "and Slate's entry really exports that entrypoint as an RPC class",
+  );
+  assert(/async shipped\(/.test(slateEntry), "with the shipped() method the tail worker calls");
+  // Its forwarding writes a `fetch:` of its own, and the https redirect guard
+  // (scripts/test-https-redirect-wiring.ts) reads the FIRST `fetch:` in the file as the
+  // request handler. So the entrypoint sits after the default export.
+  assert(
+    slateEntry.indexOf("export class LogShippingReceipt") > slateEntry.indexOf("export default worker"),
+    "and is declared after the default export, so the request handler stays the first fetch",
+  );
+  assert(
+    !/binding\.shipped\(\)\.catch|call\.catch\(\(\) => \{\}\)/.test(
+      readFileSync(join(import.meta.dirname, "..", "src/lib/log-shipping/receipt.ts"), "utf8"),
+    ),
+    "the receipt call carries no bare catch: Promise.race already handles a late rejection",
+  );
+  assert(
+    /confirmReceipt\(env\.SLATE\)/.test(entry) && /SLATE\?: ReceiptBinding/.test(entry),
+    "and the tail handler calls it through that binding",
+  );
+  eq((loadtest.services ?? []).length, 0, "the load test environment binds nothing to Slate");
 }
 
 // --- positive controls: the judge must speak (L1) -----------------------------

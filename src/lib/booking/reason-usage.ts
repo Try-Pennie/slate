@@ -1,10 +1,7 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import type { ReasonAction } from "@/lib/booking/core";
-
-/** Default lookback for "recently used" (#990): a full quarter, so a seasonal or
- *  lower-frequency reason is not mistaken for unused. */
-export const REASON_USAGE_WINDOW_DAYS = 90;
+import { REASON_USAGE_WINDOW_DAYS } from "@/lib/booking/reason-usage-window";
 
 /** Per-action reason_code -> times picked in the window. */
 export type ReasonUsageCounts = Record<ReasonAction, Record<string, number>>;

@@ -160,7 +160,7 @@ function makeDeps(): BookingDeps {
     loadReservationByKey: async () => null,
     deleteReservation: noop,
     loadDrainableReservations: async () => [] as BookingReservation[],
-    leaseReservation: async () => true,
+    leaseReservation: async () => "lease-1",
     releaseReservationLease: noop,
     bumpReservationAttempt: noop,
     deleteExpiredReservations: noop,

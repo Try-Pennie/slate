@@ -30,6 +30,13 @@ vi.mock("@/lib/salesforce/lead-xbc", async (importOriginal) => ({
 }));
 
 vi.mock("@/lib/supabase/admin", () => admin);
+// #3106 / #3173: the per address landing throttle, under the ceiling unless a case says
+// otherwise. The address derivation stays real.
+const landingIdentityAllowed = vi.hoisted(() => vi.fn(async (_ip: string) => true));
+vi.mock("@/lib/rate-limit", async () => {
+  const core = await import("@/lib/rate-limit-core");
+  return { clientIp: core.clientIp, landingIdentityAllowed };
+});
 // #2666: the Referer of the iframe's own document request, which is how `/book`
 // learns which website framed it.
 const requestHeaders = vi.hoisted(() => ({ referer: null as string | null }));
@@ -314,5 +321,31 @@ describe("/book with no code on the link and a Lead id (#2638)", () => {
     await BookEntry({ searchParams: Promise.resolve({ xbc: "111", external_id: LEAD }) });
 
     expect(leadXbc.readLeadXbcLive).not.toHaveBeenCalled();
+  });
+
+  // #3173: the routing read sits behind the same per address throttle as the identity
+  // reads, so a blank code flood of guessed ids costs no Salesforce read once over it.
+  it("over the landing ceiling, shows the default route without asking Salesforce", async () => {
+    landingIdentityAllowed.mockResolvedValueOnce(false);
+    const asked: string[] = [];
+    admin.supabaseAdmin.mockReturnValue(dbByCode({ [CATCHALL_CODE]: { org_id: "o1", is_test: false } }, asked));
+
+    const el = await BookEntry({ searchParams: Promise.resolve({ external_id: LEAD }) });
+
+    expect(landingIdentityAllowed).toHaveBeenCalledTimes(1);
+    expect(leadXbc.readLeadXbcLive).not.toHaveBeenCalled();
+    expect(asked).toEqual([CATCHALL_CODE]);
+    // The id still reaches the confirm, which routes on the lead's own code.
+    expect(bookerElement(el)).toMatchObject({ bucketCode: CATCHALL_CODE, salesforceId: LEAD });
+  });
+
+  it("CONTROL: under the ceiling, one page spends one count for both reads", async () => {
+    leadXbc.readLeadXbcLive.mockResolvedValueOnce("512");
+    admin.supabaseAdmin.mockReturnValue(dbByCode({ "512": { org_id: "o1", is_test: false } }, []));
+
+    await BookEntry({ searchParams: Promise.resolve({ external_id: LEAD }) });
+
+    expect(landingIdentityAllowed).toHaveBeenCalledTimes(1);
+    expect(leadXbc.readLeadXbcLive).toHaveBeenCalledWith(LEAD);
   });
 });

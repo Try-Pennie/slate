@@ -116,33 +116,50 @@ export const sfClientSecret = (): string => requireEnv("SF_CLIENT_SECRET");
 export const sfInstanceUrl = (): string =>
   requireEnv("SF_INSTANCE_URL").replace(/\/$/, "");
 
+// Rotation slots (#3110). Every machine bearer key below has a `_2` slot the routes
+// accept beside the primary, so a caller can be moved to a new value before the old
+// one is retired (the booking API keys' pattern, #2645). Unset slots are inert, and
+// the primary alone decides whether an endpoint is configured. The procedure is in
+// DEPLOY.md, "Rotating a credential"; scripts/test-bearer-rotation-slots.ts refuses a
+// bearer check written against one value.
 export const cronSecret = (): string => requireEnv("CRON_SECRET");
+export const cronSecret2 = (): string => process.env.CRON_SECRET_2 ?? "";
 export const googleChannelToken = (): string =>
   requireEnv("GOOGLE_CHANNEL_TOKEN");
+// The channel token a rotation REPLACED (#3110). Every live watch channel carries
+// the token it was registered with, so until each has renewed or expired Google
+// keeps sending the old one; the push route accepts it while this is set. Unset
+// outside a rotation.
+export const googleChannelTokenPrevious = (): string => process.env.GOOGLE_CHANNEL_TOKEN_PREVIOUS ?? "";
 
 // Bearer key for the agent-reassign API (POST /api/bookings/reassign). Empty = disabled.
 export const reassignApiKey = (): string => process.env.REASSIGN_API_KEY ?? "";
+export const reassignApiKey2 = (): string => process.env.REASSIGN_API_KEY_2 ?? "";
 
 // Bearer key for the duplicate-cancel API (POST /api/bookings/cancel-duplicate, #2369),
 // called by Regal's double-booking journeys. Its OWN key rather than the reassign one:
 // one key per machine capability, so the journey that may cancel a call is not also
 // handed the ability to move one. Empty = endpoint disabled (503).
 export const duplicateCancelApiKey = (): string => process.env.DUPLICATE_CANCEL_API_KEY ?? "";
+export const duplicateCancelApiKey2 = (): string => process.env.DUPLICATE_CANCEL_API_KEY_2 ?? "";
 
 // Bearer key for the offboarding lifecycle API (POST /api/users/deactivate|reactivate),
 // called by the existing offboarding automation. Empty = endpoints disabled (503).
 export const offboardingApiKey = (): string => process.env.OFFBOARDING_API_KEY ?? "";
+export const offboardingApiKey2 = (): string => process.env.OFFBOARDING_API_KEY_2 ?? "";
 
 // Bearer key noodge carries on its checks of /api/health and /api/health/availability
 // (#1228), so each can stamp its own uptime heartbeat. Its OWN key: it can do
 // nothing but stamp those two rows. Empty = neither endpoint ever stamps, so both
 // heartbeats go stale and the lane watchdog pages; the health answers are unaffected.
 export const uptimeHeartbeatKey = (): string => process.env.UPTIME_HEARTBEAT_KEY ?? "";
+export const uptimeHeartbeatKey2 = (): string => process.env.UPTIME_HEARTBEAT_KEY_2 ?? "";
 
 // Bearer key for the bookable-toggle API (POST /api/users/bookable, #281),
 // called by the roster/onboarding automation to promote an agent into (or out
 // of) the booking pool. Empty = endpoint disabled (503).
 export const bookableApiKey = (): string => process.env.BOOKABLE_API_KEY ?? "";
+export const bookableApiKey2 = (): string => process.env.BOOKABLE_API_KEY_2 ?? "";
 
 // Bearer key Regal's reporting webhook carries on POST /api/regal/calls (#2090), the
 // inbound call feed the "calling while not routable" detector reads. Its OWN secret,
@@ -151,6 +168,7 @@ export const bookableApiKey = (): string => process.env.BOOKABLE_API_KEY ?? "";
 // rotations so rotating either takes both directions down. Empty = endpoint refuses
 // every post with a 503 naming this variable.
 export const regalInboundKey = (): string => process.env.REGAL_INBOUND_KEY ?? "";
+export const regalInboundKey2 = (): string => process.env.REGAL_INBOUND_KEY_2 ?? "";
 
 // The two OUTBOUND webhook credentials (#3091): the Regal API key sent as the
 // Authorization header, and the HMAC secret the generic format signs with. Worker

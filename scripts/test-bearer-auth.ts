@@ -4,8 +4,8 @@
 // offboarding, and cron each did with a plain === (a timing side channel) onto
 // one constant-time path, matching what the booking API already used.
 // Run: node --experimental-strip-types scripts/test-bearer-auth.ts
-import { bearerToken, timingSafeEqual, bearerTokenMatches } from "../src/lib/bearer-auth.ts";
-import { assert, finish } from "./lib/harness.ts";
+import { bearerToken, timingSafeEqual, bearerTokenMatches, matchingSecretIndex } from "../src/lib/bearer-auth.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
 
 // --- bearerToken: extract the token from an Authorization header ---
 {
@@ -35,6 +35,27 @@ import { assert, finish } from "./lib/harness.ts";
     bearerTokenMatches("s3cr3t", "s3cr3t") === false,
     "raw secret without the 'Bearer ' scheme -> false",
   );
+}
+
+// --- rotation slots (#3110): a key and its _2 slot, either of which authenticates ---
+{
+  const slots = ["new-key", "old-key"] as const;
+  assert(bearerTokenMatches("Bearer new-key", slots) === true, "the primary slot authenticates");
+  assert(bearerTokenMatches("Bearer old-key", slots) === true, "the _2 slot authenticates, so a caller can move first");
+  assert(bearerTokenMatches("Bearer other", slots) === false, "a value in neither slot is refused");
+  assert(bearerTokenMatches("Bearer new-key", ["new-key", ""]) === true, "an unset _2 slot changes nothing");
+  assert(bearerTokenMatches("Bearer ", ["", ""]) === false, "two blank slots never authenticate");
+  assert(bearerTokenMatches("Bearer x", []) === false, "no slots at all never authenticates");
+  assert(bearerTokenMatches("Bearer x", ["", "x"]) === true, "a _2 slot alone still authenticates (the primary is the 503 check, not this)");
+}
+
+// --- matchingSecretIndex: WHICH slot matched, so a caller can log the old one ---
+{
+  eq(matchingSecretIndex("a", ["a", "b"]), 0, "the first slot is index 0");
+  eq(matchingSecretIndex("b", ["a", "b"]), 1, "the second slot is index 1");
+  eq(matchingSecretIndex("c", ["a", "b"]), -1, "no slot is -1");
+  eq(matchingSecretIndex("", ["", "b"]), -1, "a blank token never matches a blank slot");
+  eq(matchingSecretIndex("a", ["a", "a"]), 0, "the same value in both slots reads as the primary");
 }
 
 finish();

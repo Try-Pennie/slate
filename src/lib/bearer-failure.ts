@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { bearerFailureWithinLimit, clientIp } from "@/lib/rate-limit";
+import { UNIDENTIFIED_IP } from "@/lib/rate-limit-core";
+import { TICK_ID_HEADER } from "@/lib/monitor/lane-failure";
 
 /**
  * The answer for a refused credential on a key authenticated route (#3142): the route's own
@@ -18,6 +20,26 @@ export async function refuseCredential(
     { error: "Too many failed attempts. Try again in a minute." },
     { status: 429, headers: { "retry-after": "60" } },
   );
+}
+
+/**
+ * The answer for a refused cron secret (#3174): the same failed credential throttle, with
+ * one exception. The Worker's own scheduled ticks reach the cron routes as an in process
+ * request (`worker/lane-run.ts`) that never crosses the network, so it carries no client
+ * address, and the dispatcher stamps every one with `TICK_ID_HEADER`. Only BOTH together
+ * read as the Worker's own tick: an absent address alone proves nothing about the sender,
+ * and the header alone can be sent by anybody, while every outside request through
+ * Cloudflare carries `cf-connecting-ip`. Such a tick is answered with the route's own
+ * refusal and counts against nothing, so if the deployment's secret were ever wrong, the
+ * lanes' refusals read as the 401 they are rather than as a 429 against one shared counter.
+ */
+export async function refuseCronSecret(
+  headers: Headers,
+  refusal: () => Response,
+): Promise<Response> {
+  const workerTick = clientIp(headers) === UNIDENTIFIED_IP && headers.get(TICK_ID_HEADER) !== null;
+  if (workerTick) return refusal();
+  return refuseCredential(headers, refusal);
 }
 
 /**

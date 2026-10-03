@@ -149,6 +149,17 @@ export function judgeBundleEnv(args: {
  */
 export const CLIENT_ASSET_DIR = ".open-next/assets";
 
+/**
+ * Every name no browser chunk may carry: the production only settings, plus the
+ * secret key (#3172). The secret key is off the production only list because a load
+ * run holds one of its own, but its NAME in a chunk still means the env read behind
+ * the admin client reached a client component, which is how that client shipped to
+ * /admin/bookings and /admin/booking-reasons while every check stayed green.
+ */
+export function clientForbiddenNames(productionOnly: readonly string[]): string[] {
+  return [...productionOnly, "SUPABASE_SECRET_KEY"];
+}
+
 export interface AssetHit {
   name: string;
   file: string;

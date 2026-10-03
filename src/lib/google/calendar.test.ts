@@ -9,6 +9,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const dwd = vi.hoisted(() => ({ getDelegatedToken: vi.fn() }));
 vi.mock("@/lib/google/dwd", () => dwd);
+// #3134: the breaker is module state shared by every case here, and several cases
+// fail Google on purpose, so it is reset before each and its pages never leave.
+vi.mock("@/lib/google/breaker-alert", () => ({ announceGoogleBreaker: vi.fn() }));
+beforeEach(() => googleBreaker.reset());
 
 import {
   listCalendars,
@@ -22,6 +26,7 @@ import {
   updateEventTime,
   GOOGLE_CONFIRM_TIMEOUT_MS,
   GOOGLE_SYNC_TIMEOUT_MS,
+  googleBreaker,
 } from "./calendar";
 import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
 import { REQUEST_TIMEOUT_MS } from "@/lib/http";

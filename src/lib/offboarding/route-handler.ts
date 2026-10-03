@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { refuseCredential } from "@/lib/bearer-failure";
-import { offboardingApiKey } from "@/lib/env";
+import { offboardingApiKey, offboardingApiKey2 } from "@/lib/env";
 import { bearerTokenMatches } from "@/lib/bearer-auth";
 import { applyLifecycleByEmail } from "@/lib/offboarding/service";
 import type { LifecycleAction } from "@/lib/offboarding/plan";
@@ -25,7 +25,7 @@ async function lifecycleAuthFailure(req: NextRequest): Promise<Response | null> 
   if (!key) {
     return NextResponse.json({ error: "offboarding api not configured" }, { status: 503 });
   }
-  if (!bearerTokenMatches(req.headers.get("authorization"), key)) {
+  if (!bearerTokenMatches(req.headers.get("authorization"), [key, offboardingApiKey2()])) {
     return refuseCredential(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
   return null;

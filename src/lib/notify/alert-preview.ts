@@ -44,6 +44,8 @@ import {
   retentionAlertText,
   BACKUP_STALE_BOUNDS_MS,
   LANE_STALE_BOUNDS_MS,
+  LOG_SHIPPING_LANE,
+  LOG_SHIPPING_STALE_BOUNDS_MS,
   TIME_OFF_STALE_BOUNDS_MS,
   UPTIME_STALE_BOUNDS_MS,
   VERDICT_STALE_BOUNDS_MS,
@@ -319,6 +321,8 @@ import {
   unknownReasonCodeNotice,
   unrecognisedPageReports,
   watchLapseRecovery,
+  googleBreakerClosedAlert,
+  googleBreakerOpenAlert,
 } from "@/lib/notify/misc-alert-copy";
 import {
   friendlyRateArea,
@@ -380,6 +384,8 @@ import {
   canaryRecoveryText,
   calcomLaneRetiredText,
   laneRecoveryText,
+  logShippingAlertText,
+  logShippingRecoveryText,
   mirrorAlertText,
   mirrorRecoveryText,
   retentionRecoveryText,
@@ -498,6 +504,7 @@ import {
   formatDefinerGrantsClearedAlert,
 } from "@/lib/monitor/definer-grants";
 import { formatAuditChainBrokenAlert, formatAuditChainRecovery } from "@/lib/monitor/audit-chain";
+import { formatCronBudgetAlert, formatCronBudgetRecovery } from "@/lib/monitor/cron-budget";
 import {
   formatAuthSignInOpenAlert,
   formatAuthSignInClearedAlert,
@@ -3053,6 +3060,43 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: formatHydrationRecovery(),
   },
   {
+    key: "cron_budget_headroom",
+    state: "the every minute schedule had a tick past half its ceiling",
+    channel: "alert",
+    text: formatCronBudgetAlert({
+      status: "over",
+      breaches: [{ cron: "* * * * *", atMs: Date.UTC(2026, 9, 3, 14, 2) }],
+      unreadable: [],
+    }),
+  },
+  {
+    key: "cron_budget_headroom",
+    state: "two schedules past the line, and a third whose row cannot be dated",
+    channel: "alert",
+    // Read this one for the plural grammar and for how an undated row is named as not
+    // judged rather than counted as a breach.
+    text: formatCronBudgetAlert({
+      status: "over",
+      breaches: [
+        { cron: "* * * * *", atMs: Date.UTC(2026, 9, 3, 14, 2) },
+        { cron: "*/5 * * * *", atMs: Date.UTC(2026, 9, 3, 9, 35) },
+      ],
+      unreadable: ["0 * * * *"],
+    }),
+  },
+  {
+    key: "cron_budget_headroom",
+    state: "a whole day with every tick under the line",
+    channel: "recovery",
+    text: formatCronBudgetRecovery({ status: "within", unreadable: [] }),
+  },
+  {
+    key: "cron_budget_headroom",
+    state: "cleared with an undated row left behind, named as not judged",
+    channel: "recovery",
+    text: formatCronBudgetRecovery({ status: "within", unreadable: ["* * * * *"] }),
+  },
+  {
     key: "definer_grants_to_web_roles",
     state: "one privileged function is open to an unauthenticated caller",
     channel: "alert",
@@ -3628,6 +3672,49 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "a fresh database backup landed again",
     channel: "recovery",
     text: backupRecoveryText("db-backup"),
+  },
+  // #3182: the same key again, for the log shipping receipt. Three pages, because a
+  // pipe that stopped, one that never started (which is also what a tail worker not
+  // redeployed with its binding looks like) and an unreadable record each send the
+  // reader somewhere different.
+  {
+    key: "cron_lane_stale:*",
+    state: "logs have stopped being confirmed in Better Stack",
+    channel: "alert",
+    text: logShippingAlertText({
+      lane: LOG_SHIPPING_LANE,
+      ageMs: 40 * 60_000,
+      maxStaleMs: LOG_SHIPPING_STALE_BOUNDS_MS[LOG_SHIPPING_LANE]!,
+      unreadable: false,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "logs have never been confirmed in Better Stack",
+    channel: "alert",
+    text: logShippingAlertText({
+      lane: LOG_SHIPPING_LANE,
+      ageMs: Infinity,
+      maxStaleMs: LOG_SHIPPING_STALE_BOUNDS_MS[LOG_SHIPPING_LANE]!,
+      unreadable: false,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "the log shipping receipt's record cannot be read",
+    channel: "alert",
+    text: logShippingAlertText({
+      lane: LOG_SHIPPING_LANE,
+      ageMs: NOW_MS,
+      maxStaleMs: LOG_SHIPPING_STALE_BOUNDS_MS[LOG_SHIPPING_LANE]!,
+      unreadable: true,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "logs are reaching Better Stack again",
+    channel: "recovery",
+    text: logShippingRecoveryText(LOG_SHIPPING_LANE),
   },
   // #1394: the same key, a different fault. These lanes are NOT quiet; they run
   // faithfully and conclude nothing, which every other message here would
@@ -4395,6 +4482,14 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
 
   // --- the rest ----------------------------------------------------------------
   { key: "watch_lapse", state: "renewal healthy again", channel: "recovery", text: watchLapseRecovery() },
+  { key: "google_calendar_breaker_open", state: "Google stopped answering", channel: "alert",
+    text: googleBreakerOpenAlert(5, "503 from google freeBusy", 30_000) },
+  { key: "google_calendar_breaker_open", state: "the last failure carried no detail", channel: "alert",
+    text: googleBreakerOpenAlert(5, null, 30_000) },
+  { key: "google_calendar_breaker_open", state: "answering again after a short outage", channel: "recovery",
+    text: googleBreakerClosedAlert(40_000) },
+  { key: "google_calendar_breaker_open", state: "answering again after a long outage", channel: "recovery",
+    text: googleBreakerClosedAlert(47 * 60_000) },
   { key: "retention_skipped:*", state: "deleting again", channel: "recovery",
     text: retentionResumedText("prune-bookings-pii") },
   { key: "bookable_trait_unrecorded:*", state: "an agent taken out of the pool and Regal not told", channel: "alert",

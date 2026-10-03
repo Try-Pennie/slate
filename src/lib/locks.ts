@@ -1,5 +1,7 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { claimWindow } from "@/lib/google/sync-coalesce";
+import { log } from "@/lib/log";
+import { makeSharedInFlight } from "@/lib/concurrency";
 
 /**
  * DB-backed cross-request locks (#30): Workers isolates share no memory, so
@@ -32,6 +34,130 @@ export async function acquireLock(
     .lt("claimed_at", staleBeforeIso)
     .select("key");
   return data?.length ? claimIso : null;
+}
+
+/**
+ * Why a lease stopped being provably ours. Two causes, never one, because they
+ * call for different readings (L11):
+ *
+ *   taken    the renewal ran and matched nothing: another run holds the key now
+ *   refused  the renewal itself could not run (the database refused it), so
+ *            nothing shows whether the claim is still held
+ *
+ * Both make the run stop writing, since neither can show the claim is ours. Only
+ * the first may be reported as another run having taken over.
+ */
+export type LeaseStopReason = "taken" | "refused";
+
+/** What one renewal did: the new token, or which of the two ways it failed. */
+export type RenewLockResult = { ok: true; token: string } | { ok: false; why: LeaseStopReason };
+
+/**
+ * Renews our own claim (#3120): moves `claimed_at` forward only while the row still
+ * holds `claimIso`, so a claim another run has since stolen is never taken back.
+ * Returns the NEW token, or why it could not: `taken` when the claim is no longer
+ * ours, `refused` when the renewal could not run at all.
+ */
+export async function renewLock(key: string, claimIso: string): Promise<RenewLockResult> {
+  const { claimIso: next } = claimWindow(Date.now(), 0);
+  const { data, error } = await supabaseAdmin()
+    .from("sync_locks")
+    .update({ claimed_at: next })
+    .eq("key", key)
+    .eq("claimed_at", claimIso)
+    .select("key");
+  if (error) {
+    log.warn("locks", { msg: "lock renewal could not run", key }, error);
+    return { ok: false, why: "refused" };
+  }
+  return data?.length ? { ok: true, token: next } : { ok: false, why: "taken" };
+}
+
+/**
+ * A held lane lock that knows whether it is still held (#3120).
+ *
+ * `acquireLock` is a lease: after its TTL the next tick may take the key even
+ * while this run is still working, and then two runs write at once with the older
+ * one unaware. A lane that writes in a loop asks `stillHeld()` before each unit of
+ * work. That renews the claim, so a run that is making progress keeps its key and
+ * the next tick never takes over, and it answers false once the claim has been
+ * taken (or cannot be shown to be ours), which is the run's signal to stop.
+ *
+ * A renewal costs a subrequest on a budget several lanes share, so it is only sent
+ * once a third of the TTL has passed since the last one. Inside that window the
+ * claim cannot have been stolen: a steal needs `claimed_at` older than the TTL.
+ * Once lost it stays lost, so a run never resumes writing after another took over.
+ */
+export interface LockLease {
+  readonly key: string;
+  /** The current claim token, for `releaseLock`. Changes on each renewal. */
+  token(): string;
+  /** Renews when due; false once the claim is not provably ours. */
+  stillHeld(): Promise<boolean>;
+  /** Why `stillHeld()` went false, or null while it has not. */
+  stopReason(): LeaseStopReason | null;
+}
+
+export function makeLockLease(
+  key: string,
+  claimIso: string,
+  ttlMs: number,
+  deps: { now?: () => number; renew?: typeof renewLock } = {},
+): LockLease {
+  const now = deps.now ?? Date.now;
+  const renew = deps.renew ?? renewLock;
+  let token = claimIso;
+  let renewedAt = now();
+  let stopped: LeaseStopReason | null = null;
+  // A lane working concurrently asks from several tasks at once. Two renewals of
+  // the same token would race, and the loser would find the token already moved
+  // and report the claim lost while this very run holds it, so they share one.
+  const shared = makeSharedInFlight<"renew", boolean>();
+  const renewOnce = async (): Promise<boolean> => {
+    // A renewal that throws is a refusal like any other: nothing shows the claim is
+    // still ours. Caught here so `stillHeld()` answers stop rather than rejecting,
+    // which its caller would otherwise read as its own work failing.
+    let pending: Promise<RenewLockResult>;
+    try {
+      pending = renew(key, token);
+    } catch (err) {
+      pending = Promise.reject(err);
+    }
+    const result: RenewLockResult = await pending.catch((err: unknown) => {
+      log.warn("locks", { msg: "lock renewal threw", key }, err);
+      return { ok: false, why: "refused" } as const;
+    });
+    if (!result.ok) {
+      stopped = result.why;
+      log.warn("locks", {
+        msg:
+          result.why === "taken"
+            ? "lane lock taken by another run, stopping this run"
+            : "lane lock renewal refused, stopping this run",
+        key,
+      });
+      return false;
+    }
+    token = result.token;
+    renewedAt = now();
+    return true;
+  };
+  return {
+    key,
+    token: () => token,
+    stopReason: () => stopped,
+    async stillHeld() {
+      if (stopped !== null) return false;
+      if (now() - renewedAt < ttlMs / 3) return true;
+      return shared("renew", renewOnce);
+    },
+  };
+}
+
+/** Takes the key and returns it as a lease, or null when another run holds it. */
+export async function acquireLease(key: string, ttlMs: number): Promise<LockLease | null> {
+  const claim = await acquireLock(key, ttlMs);
+  return claim === null ? null : makeLockLease(key, claim, ttlMs);
 }
 
 /** Releases only our own claim - a post-TTL thief's newer claim survives. */

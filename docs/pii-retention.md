@@ -66,12 +66,17 @@ explicitly.
   with the deletion-request purge, so the two cannot clear different field sets,
   and it needs no marker column: "past the window and still holding contact data"
   is directly observable, which also makes it idempotent and resumable.
-- **`webhook_deliveries` payloads and `routing_decisions` have no warehouse
-  window.** So "90 days" for `webhook_deliveries.payload` + `last_response` is the
-  Supabase lifetime, not the lifetime of the data. For an erasure request the
-  purge clears them (#1205 found `last_response` missing from that purge and from
-  the audit that checks it; #1207 found `booking_outbox.steps` the same way), but
-  nothing clears them on a timer.
+- **`webhook_deliveries` payloads keep the 24 month window in the warehouse, by
+  decision** (#3127, Dan, 2026-10-03; §9 position 5). The warehouse window is keyed
+  by BOOKING: the 24 month lane clears a booking's mirrored webhook payloads and
+  `last_response` together with its contact fields, through the same shared purge
+  statements, so "90 days" for `webhook_deliveries.payload` + `last_response` is the
+  Supabase lifetime, and the mirrored copy lives as long as the booking's contact
+  data does. A separate 90 day warehouse purge keyed on delivery time was considered
+  and declined. For an erasure request the purge clears them at once, whatever their
+  age (#1205 found `last_response` missing from that purge and from the audit that
+  checks it; #1207 found `booking_outbox.steps` the same way).
+- **`routing_decisions` has no warehouse window.** Nothing clears it on a timer.
 
 The 24 month booking window is **confirmed** (Dan, 2026-07-29, see §9), not
 provisional. Nothing in production is near it yet: the oldest bookings date from
@@ -116,8 +121,9 @@ only, that nothing was past the window. Nothing is close to it yet (Slate's olde
 bookings are June 2026), so this exists to be already working in mid 2028 rather
 than to have work to do today.
 
-The other two windows (`webhook_deliveries` payloads, `routing_decisions`) still
-govern Supabase only; see the note in §2 above.
+The `webhook_deliveries` payload window (90 days) and the `routing_decisions`
+window govern Supabase only. The warehouse copy of a webhook payload follows its
+booking's 24 month window instead, by decision; see §2 and §9 position 5.
 
 ## 3. Redaction, not deletion
 
@@ -420,3 +426,15 @@ code implements what is below.
    copy**. A person told by Pennie that their data is erased still has it held
    downstream. Revisit this if counsel reads position 1 as binding on the whole
    data flow rather than on Slate's own store.
+5. **Mirrored `webhook_deliveries` keep the 24 month warehouse lifetime** (Dan,
+   2026-10-03, #3127). Supabase blanks a delivery's payload and `last_response` 90
+   days after it is terminal; the Snowflake copy is cleared with its booking at 24
+   months, not at 90 days. The reason is Dan's decision to keep one warehouse
+   window keyed by booking rather than add a second purge keyed on delivery time.
+   What it means for erasure: **nothing changes.** A verified deletion request clears
+   the warehouse webhook payloads for that person's bookings at once, at any age,
+   through the same purge and verify (§7), so the longer lifetime applies only to
+   people who never asked to be erased. What it means for exposure: a lead's
+   name, email and phone sit in the mirrored payloads for up to 24 months, the same
+   as in the mirrored booking row itself, so the warehouse holds no contact data
+   for longer than the booking already does.

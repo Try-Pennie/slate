@@ -57,8 +57,17 @@ export default async function BookEntry({
   // Salesforce and routed on, by the same resolver the confirm uses, so the times
   // shown and the pool booked agree. A failed read throws to the error boundary,
   // which offers a retry, rather than showing the catch-all's times.
+  //
+  // #3106 / #3173: everything this page reads ABOUT the person named is throttled per
+  // address, the routing read above included, because a lead id is not a secret and a
+  // blank code flood would otherwise pay one Salesforce read per guessed id. Over the
+  // ceiling the page shows the default route's times and leaves out the prefill and the
+  // existing call notice; the id still reaches the confirm (as `salesforceId` below),
+  // which routes on the lead's own code.
   const requestedCode = entry.requestedCode;
-  const resolved = await resolveLandingCode(requestedCode, entry.externalId);
+  const externalId = entry.externalId;
+  const lookupId = await landingLookupId(externalId ?? "", headers);
+  const resolved = await resolveLandingCode(requestedCode, lookupId);
   const bucketCode = resolved.code;
   const embedded = first(sp, "embed") === "1";
   const theme = first(sp, "theme") === "dark" ? ("dark" as const) : ("light" as const);
@@ -114,12 +123,9 @@ export default async function BookEntry({
   // same value (`Booker` takes `external_id` into its `salesforceId` prop and posts
   // it under that name), so both ends grade the identical identity. Since #2663 a
   // strong id matches either id column, so this also recognises a booking an API
-  // caller made with only `externalId`.
-  const externalId = entry.externalId;
-  // #3106: what this page reads ABOUT the person named is throttled per address. Over the
-  // ceiling the id still routes and still reaches the confirm (as `salesforceId` below);
-  // only the prefill and the existing call notice are left out.
-  const lookupId = await landingLookupId(externalId ?? "", headers);
+  // caller made with only `externalId`. It is asked with `lookupId`, the throttled id
+  // derived above.
+  //
   // Asked in the WORLD of the bucket being landed on (#2660): a tester who pastes
   // a real lead's id into a test link is never shown that lead's call, and a real
   // lead never meets a tester's.

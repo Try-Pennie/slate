@@ -431,6 +431,29 @@ export const BACKUP_STALE_BOUNDS_MS: Record<string, number> = {
   "db-backup": 26 * 60 * MIN,
 };
 
+/** The heartbeat the log shipping receipt stamps (#3182). One constant, read by the
+ *  route that stamps it and the bound that watches it, so the two cannot drift. */
+export const LOG_SHIPPING_LANE = "log-shipping";
+
+/**
+ * How long Slate's logs may go unconfirmed in Better Stack (#3182).
+ *
+ * The tail worker hands Slate a receipt each time Better Stack accepts a cron tick's
+ * records, so a healthy pipe stamps this every minute
+ * (`src/lib/log-shipping/receipt.ts` has the design). Fifteen minutes is the window
+ * the issue asked for: fifteen missed ticks is no blip, and the history lost before
+ * anybody looks is a quarter of an hour rather than the week Cloudflare's own copy
+ * would quietly age out.
+ *
+ * Judged with `neverIsStale` ON and the grace window: a tail worker that has never
+ * sent a receipt (deployed without the `SLATE` binding, or its secret never put) is
+ * the fault itself, not a fresh deploy. Slack only: log history stopping is a
+ * missing record, never the site being down, so it must not reach /api/health.
+ */
+export const LOG_SHIPPING_STALE_BOUNDS_MS: Record<string, number> = {
+  [LOG_SHIPPING_LANE]: 15 * MIN,
+};
+
 /**
  * How long a DETECTOR may go without reaching a measured verdict (#1394).
  *
@@ -666,6 +689,10 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // sits beside, its longest legitimate silence is a handful of ticks, and six
   // hours is the same maintenance window over a failed read.
   "verdict:busy-drift": 6 * 60 * MIN,
+  // The Worker's cron timing (#3141), stamped on every hourly tick whatever it measured, so
+  // its longest legitimate silence is one hour plus a late tick. Six hours is the same
+  // maintenance window as its siblings above, over a stamp that cannot legitimately lapse.
+  "verdict:cron-budget": 6 * 60 * MIN,
 };
 
 /**

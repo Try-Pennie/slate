@@ -170,10 +170,12 @@ const STEPS: OutboxStep[] = [{ name: "a", state: "done" }];
 
 // --- releaseOutboxLeaseRow ----------------------------------------------------
 {
-  const lease = "tok";
+  const lease = new Date(NOW + OUTBOX_LEASE_TTL_MS).toISOString();
   const { db, calls } = fakeDb({ rows: [{ id: "ob-1" }] });
   await releaseOutboxLeaseRow(db, "ob-1", lease);
-  eq(calls[0]!.update?.lease_until, null, "clears the lease");
+  // #3169: freed to the claim instant, which is past, rather than to null, so the
+  // next claim can never be handed this same token (scripts/test-reservation-lease.ts).
+  eq(calls[0]!.update?.lease_until, new Date(NOW).toISOString(), "frees the lease back to its claim instant");
   assert(
     calls[0]!.eq.some(([c, v]) => c === "lease_until" && v === lease),
     "ONLY when the row still holds the token we wrote, which is the whole fix",

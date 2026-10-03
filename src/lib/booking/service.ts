@@ -6,6 +6,8 @@ import {
   saveOutboxStepsRow,
   markOutboxDeliveredRow,
   releaseOutboxLeaseRow,
+  leaseReservationRow,
+  releaseReservationLeaseRow,
 } from "@/lib/booking/outbox-lease";
 import { unwrap, isSlotClash, type DbResult } from "@/lib/db/result";
 import { gatedWriteApplied, gatedWriteRows } from "@/lib/booking/gated-write";
@@ -189,10 +191,10 @@ const REASSIGN_INTENT_LEASE_MS = 2 * 60 * 1000;
 // Lease held while a drain processes one outbox row; only governs reclaiming a
 // row orphaned by a torn-down Worker, so keep it above the slowest single-row run.
 const OUTBOX_DRAIN_LIMIT = 50;
-// Reservation lease + drain bounds (#429 P4). Crash-during-create is rare, so a
-// small cap with a multi-tick backlog is fine; bounds Worker CPU. Retention
-// deletes abandoned pending reservations older than the TTL.
-const RESERVATION_LEASE_TTL_MS = 2 * 60 * 1000;
+// Reservation drain bounds (#429 P4). Crash-during-create is rare, so a small cap
+// with a multi-tick backlog is fine; bounds Worker CPU. Retention deletes abandoned
+// pending reservations older than the TTL. The lease length lives with the lease
+// (RESERVATION_LEASE_TTL_MS in outbox-lease.ts), which derives the release from it.
 const RESERVATION_DRAIN_LIMIT = 15;
 const RESERVATION_RETENTION_MS = 24 * 60 * 60 * 1000;
 // Throttle the "drain rows are stuck" Slack alert (#445) so a persistently-
@@ -1583,29 +1585,13 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
       return (data ?? []) as BookingReservation[];
     },
 
-    leaseReservation: async (id) => {
-      const now = Date.now();
-      // #2373: false means another holder has the lease, which is the drain
-      // coalescing correctly. A refused statement is not that, and pretending it
-      // is leaves the reservation looking busy rather than unreachable.
-      return gatedWriteApplied(
-        "reservation_lease",
-        await supabaseAdmin()
-          .from("booking_reservations")
-          .update({ lease_until: new Date(now + RESERVATION_LEASE_TTL_MS).toISOString() })
-          .eq("id", id)
-          .or(`lease_until.is.null,lease_until.lt.${new Date(now).toISOString()}`)
-          .select("id"),
-      );
-    },
+    // #3169: the claim and the release share the outbox lease's compare and swap
+    // (`outbox-lease.ts`), so the release frees only the lease this holder took.
+    // #2373 still holds: a refused claim throws rather than reading as busy.
+    leaseReservation: (id) =>
+      leaseReservationRow(supabaseAdmin(), id, Date.now()),
 
-    releaseReservationLease: async (id) => {
-      // write-ok: the lease expires on its own timeout, so a refused release costs the wait and never frees somebody else's lease.
-      await supabaseAdmin()
-        .from("booking_reservations")
-        .update({ lease_until: null })
-        .eq("id", id);
-    },
+    releaseReservationLease: (id, lease) => releaseReservationLeaseRow(supabaseAdmin(), id, lease),
 
     bumpReservationAttempt: async (id, attempts, lastError) => {
       // write-ok, and REPORTED (#2482): a refused update leaves the attempt count where
@@ -2118,24 +2104,33 @@ async function alertOnBookingFailure<T>(op: () => Promise<T>): Promise<T> {
     if (err !== caught) {
       log.warn("booking", { msg: "a dependency timed out on the booking path; answering retryable" }, caught);
     }
-    const spec = bookingFailureAlert(err);
-    if (spec) {
-      // #3102: under the cleanup allowance. A timeout page is sent after the
-      // request's budget may already be spent, and its alert_state read would
-      // otherwise fail at once and lose the page about the outage itself.
-      await withinBookingCleanupBudget(() =>
-        // alert-text-ok: `spec.message` is the alert's own copy, built by
-        // bookingFailureAlert from the pure builders in booking/alert-copy.ts. The
-        // name ends in `.message` and is not an error; the widened #2418 scan reads
-        // arguments as well as templates, so it reaches this shape now.
-        // alert-key: verify_on_book_outage
-        // alert-key: reschedule_lock_outage
-        // alert-key: no_eligible_agents:*
-        sendThrottledAlert(spec.key, spec.cooldownMs, spec.message),
-      ).catch(logAlertSendFailure(spec.key));
-    }
+    await pageBookingFailure(err);
     throw err;
   }
+}
+
+/**
+ * Page about a booking failure that warrants it (`bookingFailureAlert` decides),
+ * under the request's cleanup allowance. Exported for the booking routes, which
+ * answer a deadline that struck BEFORE the service was reached (#3102) and must
+ * page about it the same way. Never throws: a send that fails is logged.
+ */
+export async function pageBookingFailure(err: unknown): Promise<void> {
+  const spec = bookingFailureAlert(err);
+  if (!spec) return;
+  // #3102: under the cleanup allowance. A timeout page is sent after the
+  // request's budget may already be spent, and its alert_state read would
+  // otherwise fail at once and lose the page about the outage itself.
+  await withinBookingCleanupBudget(() =>
+    // alert-text-ok: `spec.message` is the alert's own copy, built by
+    // bookingFailureAlert from the pure builders in booking/alert-copy.ts. The
+    // name ends in `.message` and is not an error; the widened #2418 scan reads
+    // arguments as well as templates, so it reaches this shape now.
+    // alert-key: verify_on_book_outage
+    // alert-key: reschedule_lock_outage
+    // alert-key: no_eligible_agents:*
+    sendThrottledAlert(spec.key, spec.cooldownMs, spec.message),
+  ).catch(logAlertSendFailure(spec.key));
 }
 
 /**
