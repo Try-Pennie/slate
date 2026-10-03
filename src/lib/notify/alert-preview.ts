@@ -22,6 +22,7 @@
  * where the alert reads differently in each. If a message can be embarrassing,
  * the fixture should be the state that embarrasses it.
  */
+import { DateTime } from "luxon";
 import { ALERT_CATALOG, type AlertKind } from "@/lib/notify/alert-catalog";
 import { formatRetiredKeyAlert } from "@/lib/booking/retired-keys";
 import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
@@ -678,6 +679,13 @@ function coverageGap(
     Partial<Pick<DatedCoverageGap, "wholeDay" | "opensUncovered">>,
 ): DatedCoverageGap {
   return { wholeDay: false, opensUncovered: false, ...g };
+}
+
+/** A fixed send time for the roster coverage page, in the org's zone, so the
+ *  preview never reads the clock and renders the same text on every run. */
+function rosterSentAt(localIso: string): { nowMs: number; zone: string } {
+  const zone = "America/New_York";
+  return { nowMs: DateTime.fromISO(localIso, { zone }).toMillis(), zone };
 }
 
 export const ALERT_PREVIEWS: AlertPreview[] = [
@@ -2026,30 +2034,46 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   },
   {
     // The live page (#1936) at its smallest: one day inside the booking horizon
-    // whose first hour nobody covers, the Saturday opening production still left
-    // uncovered when #1936 was built. It must
-    // carry the "opens with nobody on" emphasis, since a lead arriving at opening
-    // finds the business looking shut.
+    // whose first hour nobody covers. It must carry the "opens with nobody on"
+    // emphasis, since a lead arriving at opening finds the business looking shut.
+    // Sent the evening before, as the page #3054 was filed about was: the gap is
+    // twelve hours off and nothing is happening yet, so it must not read as if it is.
     key: "roster_coverage_gap",
-    state: "one day inside the horizon opens with nobody on",
+    state: "one day inside the horizon opens with nobody on, twelve hours from now",
     channel: "alert",
-    text: formatRosterCoverageLiveAlert([
-      coverageGap({ dateIso: "2026-09-26", weekday: 6, startMinute: 480, endMinute: 540, range: "live", opensUncovered: true }),
-    ]),
+    text: formatRosterCoverageLiveAlert(
+      [coverageGap({ dateIso: "2026-10-03", weekday: 6, startMinute: 480, endMinute: 540, range: "live", opensUncovered: true })],
+      rosterSentAt("2026-10-02T20:10"),
+    ),
+  },
+  {
+    // The one state allowed to say the gap is happening: it had already started
+    // when the page was sent (#3054).
+    key: "roster_coverage_gap",
+    state: "an evening gap already running when the page is sent",
+    channel: "alert",
+    text: formatRosterCoverageLiveAlert(
+      [coverageGap({ dateIso: "2026-10-02", weekday: 5, startMinute: 1020, endMinute: 1200, range: "live" })],
+      rosterSentAt("2026-10-02T18:10"),
+    ),
   },
   {
     // Several findings at once: a whole uncovered day plus an evening tail on three
     // dates. Grouped so the whole day comes first and the tail is stated once with
-    // its dates, which is what keeps the worst finding on a phone's first line.
+    // its dates. The opening sentence names the EARLIEST start, the one that
+    // matters first.
     key: "roster_coverage_gap",
     state: "a whole day and an evening tail inside the horizon",
     channel: "alert",
-    text: formatRosterCoverageLiveAlert([
-      coverageGap({ dateIso: "2026-09-26", weekday: 6, startMinute: 480, endMinute: 1200, wholeDay: true, range: "live", opensUncovered: true }),
-      ...["2026-09-28", "2026-09-29", "2026-09-30"].map((dateIso, i) =>
-        coverageGap({ dateIso, weekday: i + 1, startMinute: 1020, endMinute: 1200, range: "live" }),
-      ),
-    ]),
+    text: formatRosterCoverageLiveAlert(
+      [
+        coverageGap({ dateIso: "2026-10-03", weekday: 6, startMinute: 480, endMinute: 1200, wholeDay: true, range: "live", opensUncovered: true }),
+        ...["2026-10-02", "2026-10-05", "2026-10-06"].map((dateIso, i) =>
+          coverageGap({ dateIso, weekday: [5, 1, 2][i], startMinute: 1020, endMinute: 1200, range: "live" }),
+        ),
+      ],
+      rosterSentAt("2026-10-02T10:00"),
+    ),
   },
   {
     key: "roster_coverage_gap",

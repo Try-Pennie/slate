@@ -126,7 +126,17 @@ async function tick(input: {
   eq(notified[0]?.key, ROSTER_COVERAGE_KEY, "a gap leads can reach raises the live key");
   eq(notified[0]?.cooldownMs, 111, "on the live key's own cooldown");
   const text = notified[0]?.text ?? "";
-  assert(/turned away/i.test(text), `the live wording says leads are being turned away (${text})`);
+  assert(!/turned away/i.test(text), `the live wording does not claim leads are being turned away (${text})`);
+  assert(
+    /the booker is not offering them to leads booking now/.test(text),
+    `the live wording says what leads booking now actually meet (${text})`,
+  );
+  // Four days out from a Saturday morning: counted in days, never "93 hours".
+  assert(
+    text.startsWith("In about 4 days from this message, at 07:00 on Wednesday Sep 30,"),
+    `a gap days away leads with when it starts, in days (${text})`,
+  );
+  assert(!/right now|\bSince\b/.test(text), `a gap that has not started never claims to be happening (${text})`);
   assert(text.includes("Wednesday Sep 30"), `it names the date, not only the weekday (${text})`);
   assert(text.includes("07:00 to 08:00"), `it names the uncovered stretch (${text})`);
   assert(!/nothing is broken/i.test(text), "the live wording never says nothing is broken");
@@ -163,6 +173,102 @@ async function tick(input: {
   const near = await tick({ exceptions: [earlyOpening("2026-09-30")], agents: FULL_ROSTER });
   const far = await tick({ exceptions: [earlyOpening("2026-10-05")], agents: FULL_ROSTER });
   assert(near.notified[0]?.text !== far.notified[0]?.text, "live and upcoming wording differ");
+}
+
+// ------------------------------------------------ when the live gap starts mattering (#3054)
+
+// The page Slack received on Friday 2026-10-02 at 20:10 Eastern said leads were
+// "being turned away" from a gap twelve hours off. Nobody was being refused: a lead
+// booking then simply could not pick Saturday 08:00. So the live wording leads with
+// WHEN the gap starts, judged from the gap's own start against the send time the
+// runner passes in, and says "Since" only for a gap already running at that moment.
+const FRIDAY = (hhmm: string) => DateTime.fromISO(`2026-10-02T${hhmm}`, { zone: ZONE }).toMillis();
+const REMEDIES =
+  "Set agents' working hours to cover them, or narrow the org's business hours so we stop advertising them.";
+
+function liveText(notified: Sent[]): string {
+  return notified.find((n) => n.key === ROSTER_COVERAGE_KEY)?.text ?? "";
+}
+
+// (a) A gap twelve hours away: the case the issue was filed about.
+{
+  const roster = [agent([1, 2, 3, 4, 5], 8 * 60, 20 * 60), agent([6], 9 * 60, 20 * 60)];
+  const { notified } = await tick({ agents: roster, nowMs: FRIDAY("20:10") });
+  eq(
+    liveText(notified),
+    "In about 12 hours from this message, at 08:00 on Saturday Oct 3, the org will be open with " +
+      "nobody bookable rostered. The uncovered hours are 08:00 to 09:00 on Saturday Oct 3 (the day " +
+      "opens with nobody on), and the booker is not offering them to leads booking now. " +
+      REMEDIES,
+    "a gap twelve hours off says when it starts and what leads booking now meet",
+  );
+}
+
+// (b) A gap already running at send time is the one case allowed to say it is happening.
+{
+  const roster = [
+    agent([1, 2, 3, 4], 8 * 60, 20 * 60),
+    agent([5], 8 * 60, 17 * 60),
+    agent([6], 8 * 60, 20 * 60),
+  ];
+  const { notified } = await tick({ agents: roster, nowMs: FRIDAY("18:10") });
+  eq(
+    liveText(notified),
+    "Since 17:00 on Friday Oct 2 the org has been open with nobody bookable rostered, and it still " +
+      "is. The uncovered hours are 17:00 to 20:00 on Friday Oct 2, and the booker is not offering " +
+      "them to leads booking now. " +
+      REMEDIES,
+    "a gap already running says since when, and that it still is",
+  );
+}
+
+// (c) Several gaps across days: it leads with the EARLIEST, which is the one that
+// matters first, and still lists every stretch with its dates.
+{
+  const roster = [agent([1, 2, 3, 4, 5], 8 * 60, 17 * 60)];
+  const { notified } = await tick({ agents: roster, nowMs: FRIDAY("10:00") });
+  eq(
+    liveText(notified),
+    "In about 7 hours from this message, at 17:00 on Friday Oct 2, the org will be open with nobody " +
+      "bookable rostered. The uncovered hours are all day Saturday Oct 3 (08:00 to 20:00) and 17:00 " +
+      "to 20:00 on Friday Oct 2, Monday Oct 5, and Tuesday Oct 6, and the booker is not offering " +
+      "them to leads booking now. " +
+      REMEDIES,
+    "several gaps lead with the earliest and list every stretch",
+  );
+}
+
+// Under an hour away it says so rather than "In about 0 hours".
+{
+  const roster = [agent([1, 2, 3, 4, 5], 8 * 60, 17 * 60), agent([6], 8 * 60, 20 * 60)];
+  const { notified } = await tick({ agents: roster, nowMs: FRIDAY("16:30") });
+  const text = liveText(notified);
+  assert(
+    text.startsWith(
+      "Within the hour, at 17:00 on Friday Oct 2, the org will be open with nobody bookable rostered.",
+    ),
+    `a gap under an hour off says within the hour (${text})`,
+  );
+}
+
+// Between one and two hours reads as "an hour", never "1 hours".
+{
+  const roster = [agent([1, 2, 3, 4, 5], 8 * 60, 17 * 60), agent([6], 8 * 60, 20 * 60)];
+  const { notified } = await tick({ agents: roster, nowMs: FRIDAY("15:50") });
+  const text = liveText(notified);
+  assert(text.startsWith("In about an hour from this message,"), `about an hour reads naturally (${text})`);
+}
+
+// The live all-clear answers the new wording, not the old "turned away" claim.
+{
+  const { resolved } = await tick({ agents: FULL_ROSTER });
+  const recovery = resolved.find((r) => r.key === ROSTER_COVERAGE_KEY)?.text ?? "";
+  eq(
+    recovery,
+    "From now on every hour the org says it is open inside the booking horizon has at least one " +
+      "bookable agent rostered, so the booker holds none of them back. No action is needed.",
+    "the live all-clear matches the live wording",
+  );
 }
 
 // ------------------------------------------------ the edges of the evaluated range

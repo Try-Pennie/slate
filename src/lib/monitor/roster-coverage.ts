@@ -395,18 +395,61 @@ function opensEmpty(g: DatedCoverageGap): boolean {
   return g.opensUncovered && !g.wholeDay;
 }
 
+/** When a dated gap begins, as an instant, judged in the ORG's zone the same way
+ *  `rangeGaps` judges when one ends. */
+function gapStartMs(g: DatedCoverageGap, zone: string): number {
+  return DateTime.fromISO(g.dateIso, { zone })
+    .startOf("day")
+    .plus({ minutes: g.startMinute })
+    .toMillis();
+}
+
 /**
- * The LIVE page: a gap on a day a lead can book right now. It leads with what a
- * lead meets, because that is the cost, then names both remedies, because which
- * one is right is the org's call and not ours: the hours are either under-rostered
- * or over-advertised, and a message naming only the first has assumed the answer.
+ * How far off the earliest gap is, in the words the live page opens with (#3054).
+ * Hours while it is under two days away, days after that, because "In about 93
+ * hours" makes the reader do the arithmetic the sentence exists to save them.
  */
-export function formatRosterCoverageLiveAlert(gaps: DatedCoverageGap[]): string {
+function untilPhrase(msAway: number): string {
+  const hours = Math.round(msAway / 3_600_000);
+  if (msAway < 3_600_000) return "Within the hour";
+  if (hours < 2) return "In about an hour from this message";
+  if (hours < 48) return `In about ${hours} hours from this message`;
+  return `In about ${Math.round(hours / 24)} days from this message`;
+}
+
+/**
+ * The LIVE page: a gap on a day a lead can book right now (#3054).
+ *
+ * It leads with WHEN the gap starts mattering, because that sets how soon somebody
+ * has to act, then what a lead booking now meets, then both remedies, because
+ * which one is right is the org's call and not ours: the hours are either
+ * under-rostered or over-advertised, and a message naming only the first has
+ * assumed the answer.
+ *
+ * It used to open with "Leads are being turned away", which read as an outage
+ * under way when the gap was twelve hours off and nobody had been refused. So it
+ * says the gap is happening only when the earliest one has ALREADY STARTED at
+ * `sentAt`, the send time the runner passes in. Never the clock read here: the
+ * preview must render the same text on every run (#1153).
+ */
+export function formatRosterCoverageLiveAlert(
+  gaps: DatedCoverageGap[],
+  sentAt: { nowMs: number; zone: string },
+): string {
+  const first = [...gaps].sort(
+    (a, b) => gapStartMs(a, sentAt.zone) - gapStartMs(b, sentAt.zone),
+  )[0];
+  const startMs = gapStartMs(first, sentAt.zone);
+  const when = `${minutesToTime(first.startMinute)} on ${datePhrase(first.dateIso)}`;
+  const lead =
+    startMs <= sentAt.nowMs
+      ? `Since ${when} the org has been open with nobody bookable rostered, and it still is.`
+      : `${untilPhrase(startMs - sentAt.nowMs)}, at ${when}, the org will be open with ` +
+        `nobody bookable rostered.`;
   return (
-    `Leads are being turned away from hours the org says it is open, because no ` +
-    `bookable agent is rostered for them: ${joinClauses(datedGapPhrases(gaps))}.` +
-    ` Set agents' working hours to cover them, or narrow the org's business hours ` +
-    `so we stop advertising them.`
+    `${lead} The uncovered hours are ${joinClauses(datedGapPhrases(gaps))}, and the ` +
+    `booker is not offering them to leads booking now. Set agents' working hours to ` +
+    `cover them, or narrow the org's business hours so we stop advertising them.`
   );
 }
 
@@ -499,9 +542,9 @@ export const COVERAGE_UNCHECKED_WARNING =
  */
 export function formatRosterCoverageLiveRecovery(upcomingStillOpen: boolean): string {
   return (
-    `Every hour leads can book inside the booking horizon now has at least one ` +
-    `bookable agent rostered, so nobody asking for an open time is turned away for ` +
-    `want of staff. No action is needed.` +
+    `From now on every hour the org says it is open inside the booking horizon has ` +
+    `at least one bookable agent rostered, so the booker holds none of them back. ` +
+    `No action is needed.` +
     (upcomingStillOpen ? ` A gap further out is still open and has its own alert.` : "")
   );
 }
@@ -573,9 +616,10 @@ export async function runRosterCoverageCheck(deps: {
   cooldownMs: { live: number; upcoming: number };
   log?: (msg: string) => void;
 }): Promise<RosterCoverageVerdict> {
-  const split = rangeGaps(deps.coverage);
-  if (split === null) {
-    const why = deps.coverage.ok ? "nothing measured" : deps.coverage.why;
+  const coverage = deps.coverage;
+  const split = rangeGaps(coverage);
+  if (split === null || !coverage.ok) {
+    const why = coverage.ok ? "nothing measured" : coverage.why;
     deps.log?.(`monitor roster-coverage: skipped, ${why}`);
     return { status: "skipped", why };
   }
@@ -583,7 +627,13 @@ export async function runRosterCoverageCheck(deps: {
   if (deps.armed) {
     if (live.length > 0) {
       await deps
-        .notify(ROSTER_COVERAGE_KEY, deps.cooldownMs.live, formatRosterCoverageLiveAlert(live))
+        .notify(
+          ROSTER_COVERAGE_KEY,
+          deps.cooldownMs.live,
+          // The readout's own instant, the one `rangeGaps` judged ended gaps by,
+          // so "already started" and "already over" are measured from one moment.
+          formatRosterCoverageLiveAlert(live, { nowMs: coverage.nowMs, zone: coverage.zone }),
+        )
         .catch(() => {});
     } else {
       await deps
