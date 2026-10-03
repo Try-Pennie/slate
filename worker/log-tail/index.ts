@@ -7,8 +7,9 @@
  * outcome. It redacts them (`src/lib/log-shipping/records.ts`) and forwards them
  * to a Better Stack HTTP source, whose retention is whatever plan Slate is on.
  *
- * Its own configuration is `wrangler.log-tail.jsonc`, deployed by hand with
- * `npx wrangler deploy -c wrangler.log-tail.jsonc`; DEPLOY.md has the order, which
+ * Its own configuration is `wrangler.log-tail.jsonc`, deployed by CI on every
+ * production deploy (`wrangler deploy -c wrangler.log-tail.jsonc`), LAST, once Slate
+ * is promoted and healthy (scripts/deploy-gradual.ts, #3165); DEPLOY.md has the order, which
  * matters and runs BOTH ways now. Slate names this Worker in `tail_consumers`, so
  * this Worker had to exist first (done 2026-10-03). This Worker binds Slate's
  * `LogShippingReceipt` entrypoint (#3182), so a Slate that exports it must be live

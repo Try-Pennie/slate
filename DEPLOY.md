@@ -675,8 +675,9 @@ and the entrypoint name is unchanged. Whether Cloudflare refuses a deploy whose
 binding names an entrypoint the target does not yet export, or accepts it and fails
 each call, was not measured (it means deploying production); in the second case the
 receipts fail, are logged as `receipt=failed`, and the watchdog pages until Slate
-catches up, so nothing is lost but a page. Any automated deploy that ships the tail
-worker beside Slate must follow the same order for those changes.
+catches up, so nothing is lost but a page. The CI deploy follows that order for EVERY
+change, not only those: the tail worker goes last, after Slate is promoted and healthy
+(step 10 of "What CI does: a gradual deploy").
 
 ### When records stop arriving
 
