@@ -32,8 +32,8 @@ export function FrameLockSwitch({
       <div data-state="unreadable" className="rounded-sm border border-border bg-[var(--field)] p-4">
         <p className="text-sm text-fg">Could not read whether framing is locked.</p>
         <p className="mt-2 text-sm text-fg-muted">
-          Until it can be read, the booker keeps the setting it last read, or treats framing
-          as locked if it has none. Sites on the allow list are unaffected either way.
+          Until it can be read, the booker keeps the setting it last read, or leaves framing
+          unlocked if it has none. Sites on the allow list are unaffected either way.
         </p>
       </div>
     );

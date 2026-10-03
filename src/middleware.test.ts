@@ -204,7 +204,21 @@ describe("staff session age limits (#3084)", () => {
     expect(res.headers.get("x-frame-options")).toBe("DENY");
   };
 
+  // A session Supabase still recognises. The default mock answers "no user", which is a
+  // dead session, so the restamp cases override it.
+  const liveSession = () =>
+    ssr.createServerClient.mockImplementationOnce(() => ({
+      auth: { getUser: async () => ({ data: { user: { id: "auth-1" } } }) as never, signOut },
+    }));
+
+  it("does not restamp the last use of a session Supabase no longer recognises", async () => {
+    const res = await middleware(staffRequest("/admin", signedIn(60_000, 60_000)));
+    expect(res.status).toBe(200);
+    expect(res.cookies.get(SESSION_SEEN_COOKIE)).toBeUndefined();
+  });
+
   it("admits a session one millisecond inside 30 days, and restamps its last use", async () => {
+    liveSession();
     const res = await middleware(staffRequest("/admin", signedIn(SESSION_TIME_BOX_MS - 1, 60_000)));
     expect(res.status).toBe(200);
     expect(signOut).not.toHaveBeenCalled();

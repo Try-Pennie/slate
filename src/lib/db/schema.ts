@@ -253,7 +253,7 @@ export interface Database {
         };
         Returns: undefined;
       };
-      /** #3137 (migration 0161): add one batch of framed booker loads to the day's
+      /** #3137 (migration 0162): add one batch of framed booker loads to the day's
        *  (origin, surface) rows, the day taken in `p_zone`. Bounded per day and self
        *  pruning; see the migration. */
       record_frame_origins: {

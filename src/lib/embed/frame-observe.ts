@@ -51,7 +51,15 @@ export interface FramingBatchRow {
   capped: boolean;
 }
 
-const DAY_MS = 24 * 60 * 60_000;
+/** The calendar day in FRAME_DAY_ZONE, the boundary the database keys rows by, so a
+ *  first sighting here and a new row there begin on the same day. Intl rather than a
+ *  date library, because the middleware loads this module on every request. */
+const dayKey = new Intl.DateTimeFormat("en-CA", {
+  timeZone: FRAME_DAY_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
 
 /** Hosts that always get a row of their own: a fixed set, so not an attacker's to grow. */
 function uncapped(origin: string): boolean {
@@ -74,7 +82,7 @@ export function makeFramingRecorder(deps: {
 }): (obs: { origin: string; surface: FrameSurface | string }, defer: Defer) => void {
   let pending = new Map<string, FramingBatchRow>();
   let lastFlushMs = -Infinity;
-  let day = -1;
+  let day = "";
   // Every key this isolate has written a first sighting of today.
   let seen = new Set<string>();
   // Of those, how many are capped hosts, the set a caller could try to grow.
@@ -101,7 +109,7 @@ export function makeFramingRecorder(deps: {
   };
 
   return (obs, defer) => {
-    const today = Math.floor(deps.now() / DAY_MS);
+    const today = dayKey.format(deps.now());
     if (today !== day) {
       day = today;
       seen = new Set();

@@ -131,6 +131,7 @@ export async function middleware(request: NextRequest, event?: NextFetchEvent) {
   }
 
   let response = NextResponse.next({ request: { headers: requestHeaders } });
+  let sessionLive = false;
 
   if (staff) {
     const supabase = createServerClient(
@@ -156,12 +157,14 @@ export async function middleware(request: NextRequest, event?: NextFetchEvent) {
       },
     );
 
-    await supabase.auth.getUser();
+    const { data } = await supabase.auth.getUser();
+    sessionLive = data.user != null;
   }
 
   // #3084: an admitted staff request is a use, so the idle clock restarts. Set after
-  // the refresh, which can reassign the response.
-  if (sessionPresent) {
+  // the refresh, which can reassign the response. Only for a session Supabase still
+  // recognises: restamping a dead one would keep a stale cookie looking freshly used.
+  if (sessionPresent && sessionLive) {
     response.cookies.set(SESSION_SEEN_COOKIE, stampValue(nowMs), sessionStampCookieOptions("seen"));
   }
 

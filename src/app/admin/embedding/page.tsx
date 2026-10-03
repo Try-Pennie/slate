@@ -29,7 +29,7 @@ const WINDOW_DAYS = 14;
 
 // Module scope so the clock read does not trip react-hooks/purity in render. The window
 // starts on the business zone's day boundary, which is the one `record_frame_origins`
-// keys its rows by (migration 0161).
+// keys its rows by (migration 0162).
 function sinceIso(): string {
   return DateTime.now().setZone(FRAME_DAY_ZONE).minus({ days: WINDOW_DAYS - 1 }).toISODate() ?? "";
 }

@@ -35,43 +35,43 @@ async function main() {
     eq(errors.length, 0, "nothing was reported");
   }
 
-  // An unreadable switch keeps the last value it read, and with none it is off.
+  // An unreadable switch keeps the last value it read, and with none it is OPEN, the way
+  // the booker has always run, so a blip never locks out framing nobody turned on. A
+  // failed read is cached for the TTL too, so an outage adds no failing call per load.
   {
     let now = 0;
     let fail = true;
     let stored = true;
+    let reads = 0;
     const errors: unknown[] = [];
     const read = makeFrameLockReader({
       read: async () => {
+        reads++;
         if (fail) throw new Error("db down");
         return stored;
       },
       now: () => now,
       onError: (e) => errors.push(e),
     });
-    eq(
-      await read(),
-      true,
-      "never read: LOCKED, so a blip on a cold isolate cannot open a lock an admin turned on; every real host is on the allow list",
-    );
+    eq(await read(), false, "never read: unlocked, so observing carries on and nobody listed is locked out");
     eq(errors.length, 1, "and the failure is reported, not swallowed");
-    now = 1;
-    eq(await read(), true, "a failed read is retried on the next request, not cached for the TTL");
-    eq(errors.length, 2, "which is reported again");
+    now = FRAME_LOCK_TTL_MS - 1;
+    eq(await read(), false, "inside the TTL the failed read's answer stands");
+    eq(reads, 1, "without another call to a database that is down");
+    fail = false;
+    now = FRAME_LOCK_TTL_MS;
+    eq(await read(), true, "at the TTL it is read again, and a good read of ON lands");
+    fail = true;
+    now = 2 * FRAME_LOCK_TTL_MS;
+    eq(await read(), true, "a failed read after that keeps the lock on rather than dropping it");
+    eq(errors.length, 2, "which is reported");
     stored = false;
     fail = false;
-    now = 2;
+    now = 3 * FRAME_LOCK_TTL_MS;
     eq(await read(), false, "a good read of OFF lands");
     fail = true;
-    now = 2 + FRAME_LOCK_TTL_MS;
-    eq(await read(), false, "after that, a failed read keeps the last value read (off) rather than guessing");
-    stored = true;
-    fail = false;
-    now = 3 + 2 * FRAME_LOCK_TTL_MS;
-    eq(await read(), true, "a good read of ON lands");
-    fail = true;
-    now = 3 + 3 * FRAME_LOCK_TTL_MS;
-    eq(await read(), true, "and a failed read after it keeps the lock on");
+    now = 4 * FRAME_LOCK_TTL_MS;
+    eq(await read(), false, "and a failed read after it keeps it off");
   }
 
   // Concurrent requests on a cold isolate share one read.

@@ -36,6 +36,7 @@ function rig() {
     writes,
     errors,
     tick: (ms: number) => (now += ms),
+    at: (ms: number) => (now = ms),
     failNext: () => (failNext = true),
     settle: () => Promise.all(deferred.splice(0)),
   };
@@ -106,6 +107,29 @@ async function main() {
     r.record({ origin: "https://partner.example", surface: "manage" });
     await r.settle();
     eq(total(r.writes, "https://partner.example"), 2, "the failed load is written with the next one");
+  }
+
+  // The "first sighting today" set rolls on the business day, the one the database keys
+  // rows by, never the UTC day. Checked across both boundaries, which differ by hours.
+  {
+    const r = rig();
+    // Twenty seconds either side of 04:00 UTC on 2026-10-03, inside one flush window:
+    // one UTC day, two Eastern days (EDT, UTC-4).
+    r.at(Date.UTC(2026, 9, 3, 3, 59, 50));
+    r.record({ origin: "https://partner.example", surface: "book" });
+    r.at(Date.UTC(2026, 9, 3, 4, 0, 10));
+    r.record({ origin: "https://partner.example", surface: "book" });
+    await r.settle();
+    eq(r.writes.length, 2, "a new Eastern day is a new first sighting, though the UTC day is the same");
+
+    const s = rig();
+    // Twenty seconds either side of UTC midnight: two UTC days, one Eastern day.
+    s.at(Date.UTC(2026, 9, 3, 23, 59, 50));
+    s.record({ origin: "https://partner.example", surface: "book" });
+    s.at(Date.UTC(2026, 9, 4, 0, 0, 10));
+    s.record({ origin: "https://partner.example", surface: "book" });
+    await s.settle();
+    eq(s.writes.length, 1, "the same Eastern day is not a new first sighting, though the UTC day changed");
   }
 
   // self and unstated name no site and never count against the cap.

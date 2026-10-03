@@ -27,7 +27,7 @@ async function readFrameLockColumn(): Promise<boolean> {
 export const readFrameLock = makeFrameLockReader({
   read: readFrameLockColumn,
   now: () => Date.now(),
-  onError: (err) => log.warn("frame-lock", { msg: "frame lock unreadable, keeping the last value read, or locked with none" }, err),
+  onError: (err) => log.warn("frame-lock", { msg: "frame lock unreadable, keeping the last value read, or unlocked with none" }, err),
 });
 
 /**

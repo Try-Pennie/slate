@@ -84,6 +84,13 @@ begin
   -- An unknown zone raises here rather than keying rows to a guessed day.
   v_day := (now() at time zone p_zone)::date;
 
+  -- One batch at a time per day. Without this, two batches from two isolates can
+  -- both count 199 capped rows and both insert, passing the cap, or both see an
+  -- empty day and both run the retention delete. Batches are rare (at most one per
+  -- isolate per 30 seconds plus first sightings), so waiting costs nothing; the lock
+  -- is released when the transaction ends.
+  perform pg_advisory_xact_lock(hashtext('frame_origin_daily'), (v_day - date '2000-01-01'));
+
   -- The first write of each day also clears rows past retention.
   if not exists (select 1 from frame_origin_daily where day = v_day) then
     delete from frame_origin_daily where day < v_day - 90;
