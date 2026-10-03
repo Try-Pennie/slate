@@ -18,6 +18,7 @@ vi.mock("@/lib/after-response", () => ({
 
 import { announceGoogleBreaker, GOOGLE_BREAKER_ALERT_KEY, GOOGLE_BREAKER_ALERT_COOLDOWN_MS } from "./breaker-alert";
 import { createCircuitBreaker } from "./breaker";
+import { alertFamily } from "@/lib/notify/alert-runbook";
 
 function rig() {
   let t = 0;
@@ -74,6 +75,10 @@ describe("Google breaker alerts (#3134)", () => {
     const [key, text] = dispatch.resolveAlert.mock.calls[0];
     expect(key).toBe(GOOGLE_BREAKER_ALERT_KEY);
     expect(text).toContain("3 minutes");
+  });
+
+  it("sends the reader to the Google procedure in the runbook", () => {
+    expect(alertFamily(GOOGLE_BREAKER_ALERT_KEY)).toBe("google-cannot-be-reached-for-an-agent");
   });
 
   it("never lets a failed send escape into the call path", async () => {
