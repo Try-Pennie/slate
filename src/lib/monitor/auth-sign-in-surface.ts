@@ -51,29 +51,44 @@ export const AUTH_SETTINGS_TIMEOUT_MS = 5_000;
  * Read the hosted `/auth/v1/settings` with the public key. Null for every way of
  * learning nothing: a refusal, a stall past the timeout, a network error, or a body
  * that is not JSON. Never throws.
+ *
+ * Each of those logs its own message, and every one that has an error passes it
+ * through, so a DNS failure is never read as a stall and a broken body is never read
+ * as a refused key (L11). Only the timeout names the bound, because only the timeout
+ * is about it.
  */
 export async function readAuthSettings(deps: {
   url: string;
   key: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
-  log?: (msg: string, fields: Record<string, unknown>) => void;
+  log?: (msg: string, fields: Record<string, unknown>, err?: unknown) => void;
 }): Promise<unknown> {
   const doFetch = deps.fetchImpl ?? fetch;
   const timeoutMs = deps.timeoutMs ?? AUTH_SETTINGS_TIMEOUT_MS;
+  const timedOut = (err: unknown) => err instanceof Error && err.name === "TimeoutError";
+
+  let res: Response;
   try {
-    const res = await doFetch(`${deps.url}/auth/v1/settings`, {
+    res = await doFetch(`${deps.url}/auth/v1/settings`, {
       headers: { apikey: deps.key },
       signal: AbortSignal.timeout(timeoutMs),
     });
-    if (!res.ok) {
-      deps.log?.("settings read refused", { status: res.status });
-      return null;
-    }
+  } catch (err) {
+    if (timedOut(err)) deps.log?.("settings read timed out", { timeout_ms: timeoutMs }, err);
+    else deps.log?.("settings read failed", {}, err);
+    return null;
+  }
+  if (!res.ok) {
+    deps.log?.("settings read refused", { status: res.status });
+    return null;
+  }
+  try {
     return (await res.json()) as unknown;
   } catch (err) {
-    const timedOut = err instanceof Error && err.name === "TimeoutError";
-    deps.log?.(timedOut ? "settings read timed out" : "settings read failed", { timeout_ms: timeoutMs });
+    // The same signal still bounds the body, so a body that stalls is a timeout too.
+    if (timedOut(err)) deps.log?.("settings read timed out", { timeout_ms: timeoutMs }, err);
+    else deps.log?.("settings body was not JSON", {}, err);
     return null;
   }
 }

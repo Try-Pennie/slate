@@ -3384,7 +3384,8 @@ export async function GET(req: NextRequest) {
           readAuthSettings({
             url: publicSupabaseUrl(),
             key: publicSupabasePublishableKey(),
-            log: (msg, fields) => log.warn("auth-sign-in", { msg, ...fields }),
+            // The error itself goes through, so the log line carries the real cause.
+            log: (msg, fields, err) => log.warn("auth-sign-in", { msg, ...fields }, err),
           }),
         // alert-key: auth_sign_in_beyond_google
         // alert-text-ok: our own copy from auth-sign-in-surface.ts, never a raw error.

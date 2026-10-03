@@ -191,18 +191,40 @@ async function drive(read: () => Promise<unknown>) {
   const started = Date.now();
   // Node unrefs AbortSignal.timeout's timer, so with nothing else pending the process
   // would exit before it fires. This holds the loop open; it is not the deadline.
+  // Each way of learning nothing logs its OWN message and carries its real cause, so a
+  // DNS failure is never read as a stall, nor a broken body as a refused key (L11).
+  const logged: { msg: string; fields: Record<string, unknown>; err: unknown }[] = [];
+  const log = (msg: string, fields: Record<string, unknown>, err?: unknown) => {
+    logged.push({ msg, fields, err });
+  };
+
   const keepAlive = setTimeout(() => {}, 5_000);
-  const body = await readAuthSettings({ url: "https://x.supabase.co", key: "k", fetchImpl: stalled, timeoutMs: 20 });
+  const body = await readAuthSettings({ url: "https://x.supabase.co", key: "k", fetchImpl: stalled, timeoutMs: 20, log });
   clearTimeout(keepAlive);
   eq(body, null, "a read that never answers resolves to null (unmeasured)");
   assert(Date.now() - started < 2000, "and gives up near its timeout rather than hanging the lane");
   eq(authSignInSurfaceHealth(body).status, "unmeasured", "which the verdict scores as unmeasured");
+  eq(logged.at(-1)?.msg, "settings read timed out", "a stall logs as a timeout");
+  eq(logged.at(-1)?.fields.timeout_ms, 20, "naming the bound it ran out of");
+
+  const dnsError = new TypeError("fetch failed: getaddrinfo ENOTFOUND x.supabase.co");
+  const unreachable = (async () => {
+    throw dnsError;
+  }) as unknown as typeof fetch;
+  eq(await readAuthSettings({ url: "https://x", key: "k", fetchImpl: unreachable, log }), null, "an unreachable host is null");
+  eq(logged.at(-1)?.msg, "settings read failed", "a network failure is not called a timeout");
+  assert(logged.at(-1)?.err === dnsError, "and the real error is passed through to the log");
+  assert(!("timeout_ms" in (logged.at(-1)?.fields ?? {})), "without a timeout field that would mislead the reader");
 
   const refused = (async () => new Response("nope", { status: 401 })) as unknown as typeof fetch;
-  eq(await readAuthSettings({ url: "https://x", key: "k", fetchImpl: refused }), null, "a refused read is null");
+  eq(await readAuthSettings({ url: "https://x", key: "k", fetchImpl: refused, log }), null, "a refused read is null");
+  eq(logged.at(-1)?.msg, "settings read refused", "a refusal logs as one");
+  eq(logged.at(-1)?.fields.status, 401, "with its status");
 
   const notJson = (async () => new Response("<html>", { status: 200 })) as unknown as typeof fetch;
-  eq(await readAuthSettings({ url: "https://x", key: "k", fetchImpl: notJson }), null, "a body that is not JSON is null");
+  eq(await readAuthSettings({ url: "https://x", key: "k", fetchImpl: notJson, log }), null, "a body that is not JSON is null");
+  eq(logged.at(-1)?.msg, "settings body was not JSON", "an unreadable body logs as one, not as a failed read");
+  assert(logged.at(-1)?.err instanceof Error, "carrying the parse error");
 
   let seenUrl = "";
   let seenKey = "";

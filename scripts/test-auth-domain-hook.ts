@@ -23,17 +23,33 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
-import { checkAuthDomainHook } from "./lib/auth-domain-hook-wiring.ts";
+import { checkAuthDomainHook, findAuthHookMigration } from "./lib/auth-domain-hook-wiring.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const MIGRATIONS = join(ROOT, "supabase", "migrations");
-const HOOK_FILE = readdirSync(MIGRATIONS).find((f) => /_auth_domain_gate_hook\.sql$/.test(f));
+// Found by name, never by number: the number moves whenever another migration merges
+// first, and the Docker proof (verify-auth-domain-hook.ts) finds it the same way.
+const found = findAuthHookMigration(readdirSync(MIGRATIONS));
+const HOOK_FILE = "file" in found ? found.file : null;
 
 const config = readFileSync(join(ROOT, "supabase", "config.toml"), "utf8");
 const wrangler = readFileSync(join(ROOT, "wrangler.jsonc"), "utf8");
 const migration = HOOK_FILE ? readFileSync(join(MIGRATIONS, HOOK_FILE), "utf8") : "";
 
-assert(Boolean(HOOK_FILE), "a migration defines the auth domain gate hook");
+assert(Boolean(HOOK_FILE), `exactly one migration defines the auth domain gate hook (${"refusal" in found ? found.refusal : HOOK_FILE})`);
+
+// --- the finder refuses rather than guessing ---------------------------------
+{
+  const none = findAuthHookMigration(["0157_x.sql", "0158_y.sql"]);
+  assert("refusal" in none && /no migration/.test(none.refusal), "no hook migration is a named refusal");
+  const two = findAuthHookMigration(["0159_auth_domain_gate_hook.sql", "0160_auth_domain_gate_hook.sql"]);
+  assert(
+    "refusal" in two && /0159_auth_domain_gate_hook\.sql/.test(two.refusal) && /0160/.test(two.refusal),
+    "two hook migrations is a refusal naming both, never the first one silently",
+  );
+  const one = findAuthHookMigration(["0158_y.sql", "0159_auth_domain_gate_hook.sql", "applied-content.lock"]);
+  eq("file" in one ? one.file : null, "0159_auth_domain_gate_hook.sql", "one hook migration is found whatever its number");
+}
 
 // --- the real tree ---------------------------------------------------------
 {

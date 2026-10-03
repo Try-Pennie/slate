@@ -808,7 +808,7 @@ one's bound, are in `docs/verify-commands.md`.
 | `verify:pool-slot-parity` | the bucket codes sharing one availability pool really offer the same times |
 | `verify:table-drift` | production holds no table that no migration created |
 | `verify:advisor-photos`, `verify:advisor-photos-sql` | the photo refresh (#3027) against live Google with no writes, and migration 0156 in a real Postgres; why every face goes through `resolveAdvisorPhoto` |
-| `verify:agent-link-names`, `verify:replace-user-schedule-guard`, `verify:auth-domain-hook` | in Docker: 0155's link names (from the email username, lowest free variant even under concurrency, never reused, never token shaped); 0157's import refusing a week edited mid run; 0159's sign in hook |
+| `verify:agent-link-names`, `verify:replace-user-schedule-guard`, `verify:auth-domain-hook` | in Docker: 0155's link names (from the email username, lowest free variant even under concurrency, never reused, never token shaped); 0157's import refusing a week edited mid run; auth hook |
 
 **The detail for every one of them, each exit code table, what it writes, which
 credentials it needs, what its last live run measured and the decisions behind

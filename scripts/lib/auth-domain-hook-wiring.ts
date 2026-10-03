@@ -3,6 +3,22 @@
 // auth server and nobody else, refusing against the same domain the app's own gate
 // reads? Returns one sentence per disagreement, empty when the three agree.
 
+/**
+ * The migration that defines the hook, found by NAME among the files in
+ * supabase/migrations, never by number: the number moves whenever another migration
+ * merges first. Zero or several is a refusal naming what it saw, never a guess.
+ */
+export function findAuthHookMigration(files: string[]): { file: string } | { refusal: string } {
+  const matches = files.filter((f) => /^\d{4}_auth_domain_gate_hook\.sql$/.test(f)).sort();
+  if (matches.length === 1) return { file: matches[0] };
+  if (matches.length === 0) {
+    return { refusal: "no migration named NNNN_auth_domain_gate_hook.sql is in supabase/migrations" };
+  }
+  return {
+    refusal: `${matches.length} migrations are named for the auth domain gate hook (${matches.join(", ")}), so which one ships is ambiguous`,
+  };
+}
+
 /** The `pg-functions://postgres/<schema>/<name>` URI the config registers, or null. */
 function registeredHook(config: string): { enabled: boolean; schema: string; name: string } | null {
   const block = config.match(/^\[auth\.hook\.before_user_created\]\s*\n([\s\S]*?)(?=^\s*#?\s*\[|(?![\s\S]))/m);

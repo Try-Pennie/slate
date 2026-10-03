@@ -5,7 +5,7 @@
 // calls the function, reads its reply as a refusal, and creates no account, and a
 // mocked auth server would agree with whatever it was told (L52). So this starts
 // Supabase's own Postgres image and Supabase's own auth server in Docker, applies
-// migration 0159 VERBATIM, registers the hook exactly as config.toml does, and
+// the hook migration VERBATIM, registers the hook exactly as config.toml does, and
 // signs up through the auth API:
 //
 //   - an outside address, a subdomain and a suffix lookalike are each refused
@@ -27,12 +27,22 @@
 //
 // Run: pnpm verify:auth-domain-hook
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { findAuthHookMigration } from "./lib/auth-domain-hook-wiring.ts";
 
 const ROOT = join(import.meta.dirname, "..");
-const MIGRATION = readFileSync(join(ROOT, "supabase", "migrations", "0159_auth_domain_gate_hook.sql"), "utf8");
+const MIGRATIONS = join(ROOT, "supabase", "migrations");
+// Found by name, the same way the offline test finds it, because the number moves
+// whenever another migration merges first. Zero or several is a refusal, exit 1,
+// before any container starts: it is a fault in the tree, not a missing Docker.
+const found = findAuthHookMigration(readdirSync(MIGRATIONS));
+if ("refusal" in found) {
+  console.error(`REFUSED: ${found.refusal}. There is no single migration to prove, so nothing was run.`);
+  process.exit(1);
+}
+const MIGRATION = readFileSync(join(MIGRATIONS, found.file), "utf8");
 const PG_IMAGE = process.env.AUTH_HOOK_PG_IMAGE ?? "supabase/postgres:17.6.1.175";
 const AUTH_IMAGE = process.env.AUTH_HOOK_GOTRUE_IMAGE ?? "public.ecr.aws/supabase/gotrue:v2.196.0";
 const HOOK_URI = "pg-functions://postgres/public/before_user_created_domain_gate";
