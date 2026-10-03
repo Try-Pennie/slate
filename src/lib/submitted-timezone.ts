@@ -14,8 +14,9 @@
  */
 export function submittedTimezone(form: FormData): string | null {
   const raw = form.get("timezone");
-  if (typeof raw !== "string" || raw.trim() === "") return null;
-  return raw;
+  if (typeof raw !== "string") return null;
+  const zone = raw.trim();
+  return zone === "" ? null : zone;
 }
 
 /** The refusal on either working hours save. Nothing was written. */
