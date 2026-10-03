@@ -15,7 +15,7 @@ import { syncSalesforceAgents, AGENTS_SYNC_STREAK_KEY, type SyncResult } from "@
 import { activationAllowance, ROSTER_RUN_LOCK_TTL_MS } from "@/lib/bookable/activation-allowance";
 import { ensureDefaultOrg } from "@/lib/provision";
 import { ensureDefaultSchedules } from "@/lib/schedule";
-import { acquireLock, makeLockLease, releaseLock } from "@/lib/locks";
+import { acquireLock, makeLockLease, releaseLock, type LeaseStopReason, type LockLease } from "@/lib/locks";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 import { logAlertSendFailure, logResolveFailure } from "@/lib/notify/send-failure";
 import { clearFailureStreak, recordConsecutiveStreak } from "@/lib/notify/streak";
@@ -97,26 +97,40 @@ const TWILIO_READ_STREAK_ALERT_AT = 2;
 const SYNC_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 /**
- * Why a half did not run when this run lost its lock part way through (#3177).
+ * Why a half did not run when this run stopped holding its lock part way through
+ * (#3177), one sentence per cause, because the two are different facts (L11):
  *
- * Its own sentence, and marked `leaseLost` on the outcome, because it is neither a
- * failed read nor a refusal: a newer run holds the key and is doing this work
- * itself. So it records no failure streak, pages nobody and stamps no verdict.
+ *   taken    a newer run holds the key and is doing this work itself
+ *   refused  renewing the lock could not run, so nothing shows the key is still
+ *            this run's; it stops rather than risk writing beside another run
+ *
+ * Each is marked `leaseStop` on the outcome, because neither is a failed read of
+ * the half it stands for. So neither records that half's failure streak or stamps
+ * its verdict. A refused renewal is logged as a warning where it happens
+ * (`renewLock`), and the next hourly run does the work.
  */
-export const ROSTER_LEASE_LOST_REASON =
-  "this run overran its lock and a newer roster sync took over, so it stopped and left the rest to that run";
+export const ROSTER_LEASE_STOP_REASONS: Record<LeaseStopReason, string> = {
+  taken:
+    "this run overran its lock and a newer roster sync took over, so it stopped and left the rest to that run",
+  refused:
+    "this run could not renew its lock, so it could not show the lock was still its own and stopped; the next hourly sync does the rest",
+};
 
-/** One half of the run: what it did, why it could not, or that the run lost its lock first. */
+/** One half of the run: what it did, why it could not, or that the run stopped holding its lock first. */
 type HalfOutcome<R> =
   | { ok: true; result: R }
-  | { ok: false; reason: string; leaseLost?: undefined }
-  | { ok: false; reason: typeof ROSTER_LEASE_LOST_REASON; leaseLost: true };
+  | { ok: false; reason: string; leaseStop?: undefined }
+  | { ok: false; reason: string; leaseStop: LeaseStopReason };
 
-const LEASE_LOST_HALF = {
-  ok: false,
-  reason: ROSTER_LEASE_LOST_REASON,
-  leaseLost: true,
-} as const;
+/** A half that never ran because the lease stopped before it. */
+function leaseStopHalf(why: LeaseStopReason) {
+  return { ok: false, reason: ROSTER_LEASE_STOP_REASONS[why], leaseStop: why } as const;
+}
+
+/** What `stillHeld()` going false means; a lease always records a reason when it does. */
+function stopReasonOf(lease: LockLease): LeaseStopReason {
+  return lease.stopReason() ?? "refused";
+}
 
 export type RosterSyncOutcome =
   /** Another run holds the lock. Nothing was done, and the caller says so. */
@@ -131,11 +145,11 @@ export type RosterSyncOutcome =
        * Twilio read that found nobody tagged are different facts, and a default
        * would let the caller report the second while the first happened (L214), so
        * this is a discriminated pair the banner and the cron response both have to
-       * branch on. A run that lost its lock before this half carries the
-       * lease-lost reason here (#3177), never a read failure.
+       * branch on. A run that stopped holding its lock before this half carries
+       * that reason here (#3177), never a read failure.
        */
       twilio: HalfOutcome<TwilioSyncResult>;
-      /** Null when the run lost its lock before applying default hours (#3177):
+      /** Null when the run stopped holding its lock before applying default hours (#3177):
        *  it did not run, which a zero would report as having found nobody. */
       hoursApplied: number | null;
       /**
@@ -143,8 +157,9 @@ export type RosterSyncOutcome =
        * read. A discriminated pair for the same reason `twilio` is one.
        */
       sessions: HalfOutcome<SessionConvergenceResult>;
-      /** True when a newer run took the key and this one stopped part way (#3177). */
-      leaseLost: boolean;
+      /** Why this run stopped part way because its lock was not provably its own
+       *  (#3177), or null when it held the lock to the end. */
+      leaseStop: LeaseStopReason | null;
     };
 
 /**
@@ -174,7 +189,8 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
     const allowance = activationAllowance();
     const sync = await syncSalesforceAgents({ allowance });
     if (!(await lease.stillHeld())) {
-      return { sync, sessions: LEASE_LOST_HALF, twilio: LEASE_LOST_HALF, hoursApplied: null, leaseLost: true };
+      const why = stopReasonOf(lease);
+      return { sync, sessions: leaseStopHalf(why), twilio: leaseStopHalf(why), hoursApplied: null, leaseStop: why };
     }
 
     // #2459: the reap above departs people with a batch write that never came
@@ -223,7 +239,8 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
     // The Twilio half is the other writer of who is bookable, so it is the one a
     // stale run must never reach after a newer run has started (#3177).
     if (!(await lease.stillHeld())) {
-      return { sync, sessions, twilio: LEASE_LOST_HALF, hoursApplied: null, leaseLost: true };
+      const why = stopReasonOf(lease);
+      return { sync, sessions, twilio: leaseStopHalf(why), hoursApplied: null, leaseStop: why };
     }
 
     // The Twilio half, after Salesforce and BEFORE the bucket coverage check
@@ -303,7 +320,7 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
     // The last fence: what follows writes default hours and settles this run's
     // alerts, both of which the newer run now owns (#3177).
     if (!(await lease.stillHeld())) {
-      return { sync, sessions, twilio, hoursApplied: null, leaseLost: true };
+      return { sync, sessions, twilio, hoursApplied: null, leaseStop: stopReasonOf(lease) };
     }
     const hoursApplied = await ensureDefaultSchedules(org.id);
     // The per bucket coverage sweep used to run here (#327). It was retired by
@@ -434,7 +451,7 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
       twilio,
       hoursApplied,
       sessions,
-      leaseLost: false,
+      leaseStop: null,
     };
   } finally {
     await releaseLock(AGENTS_LOCK_KEY, lease.token());

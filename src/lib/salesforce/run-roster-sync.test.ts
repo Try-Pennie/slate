@@ -14,6 +14,7 @@ const locks = vi.hoisted(() => ({
     key,
     token: () => claim,
     stillHeld: async () => true,
+    stopReason: (): "taken" | "refused" | null => null,
   })),
 }));
 const sync = vi.hoisted(() => ({

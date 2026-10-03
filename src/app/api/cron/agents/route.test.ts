@@ -13,6 +13,7 @@ const locks = vi.hoisted(() => ({
     key,
     token: () => claim,
     stillHeld: async () => true,
+    stopReason: (): "taken" | "refused" | null => null,
   })),
 }));
 const sync = vi.hoisted(() => ({
@@ -106,6 +107,7 @@ vi.mock("@/lib/offboarding/session-convergence-alert", () => ({
 
 import { GET } from "./route";
 import { noteAlertKey } from "@/lib/notify/alert-recording";
+import { ROSTER_LEASE_STOP_REASONS } from "@/lib/salesforce/run-roster-sync";
 
 const req = () => ({}) as unknown as Parameters<typeof GET>[0];
 
@@ -166,29 +168,40 @@ describe("GET /api/cron/agents", () => {
     expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
   });
 
-  // #3177: a run a newer one took the key from says so in its response, as a 200
-  // rather than a failure, and the lost Twilio half carries its own reason.
-  it("reports a run that lost its lock part way, without counting it as a failure", async () => {
+  // #3177: a run that stopped holding its lock says WHY in its response, as a 200
+  // rather than a failure: a newer run took the key, or the renewal was refused.
+  // The two never share a reason (L11), so a database error is never reported as
+  // another run having taken over.
+  it.each(["taken", "refused"] as const)(
+    "reports a run whose lock was %s part way, without counting it as a failure",
+    async (why) => {
     locks.makeLockLease.mockImplementationOnce((key: string, claim: string) => ({
       key,
       token: () => claim,
       stillHeld: async () => false,
+      stopReason: () => why,
     }));
     const res = await GET(req());
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({
-      leaseLost: true,
+      leaseStop: why,
       hoursApplied: null,
-      twilio: { ok: false, leaseLost: true },
+      twilio: { ok: false, leaseStop: why, reason: ROSTER_LEASE_STOP_REASONS[why] },
     });
     expect(twilio.syncTwilioRedistribute).not.toHaveBeenCalled();
     expect(streak.recordFailureStreak).not.toHaveBeenCalled();
     expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+    },
+  );
+
+  it("never gives the two stop reasons one sentence", () => {
+    expect(ROSTER_LEASE_STOP_REASONS.taken).not.toBe(ROSTER_LEASE_STOP_REASONS.refused);
+    expect(ROSTER_LEASE_STOP_REASONS.refused).not.toMatch(/took over/);
   });
 
   it("says a clean run kept its lock", async () => {
     const res = await GET(req());
-    expect(await res.json()).toMatchObject({ leaseLost: false, hoursApplied: 0 });
+    expect(await res.json()).toMatchObject({ leaseStop: null, hoursApplied: 0 });
   });
 
   // #1151: a failing roster sync is a CONDITION, so a clean pass says it is over.

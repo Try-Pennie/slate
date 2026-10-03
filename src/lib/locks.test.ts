@@ -18,7 +18,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const supabase = vi.hoisted(() => ({ supabaseAdmin: vi.fn() }));
 vi.mock("@/lib/supabase/admin", () => supabase);
 
-import { acquireLock, makeLockLease, renewLock } from "@/lib/locks";
+import { acquireLock, makeLockLease, renewLock, type RenewLockResult } from "@/lib/locks";
 
 type Result = { data: unknown; error: { message: string } | null };
 
@@ -83,7 +83,7 @@ describe("renewLock (#3120)", () => {
     const { db, eqs } = locksWhoseRenewalAnswers({ data: [{ key: "sync" }], error: null });
     supabase.supabaseAdmin.mockReturnValue(db);
     const next = await renewLock("sync", "2026-10-03T10:00:00.000Z");
-    expect(next).not.toBeNull();
+    expect(next.ok).toBe(true);
     // Compare and swap on OUR token: a claim another run has taken is never renewed.
     expect(eqs).toEqual([
       ["key", "sync"],
@@ -91,16 +91,16 @@ describe("renewLock (#3120)", () => {
     ]);
   });
 
-  it("returns null when the claim has been taken", async () => {
+  it("reports the claim TAKEN when the renewal ran and matched nothing", async () => {
     supabase.supabaseAdmin.mockReturnValue(locksWhoseRenewalAnswers({ data: [], error: null }).db);
-    expect(await renewLock("sync", "2026-10-03T10:00:00.000Z")).toBeNull();
+    expect(await renewLock("sync", "2026-10-03T10:00:00.000Z")).toEqual({ ok: false, why: "taken" });
   });
 
-  it("returns null when the renewal could not run, since nothing shows the claim is held", async () => {
+  it("reports the renewal REFUSED, not taken, when the statement could not run (L11)", async () => {
     supabase.supabaseAdmin.mockReturnValue(
       locksWhoseRenewalAnswers({ data: null, error: { message: "statement timeout" } }).db,
     );
-    expect(await renewLock("sync", "2026-10-03T10:00:00.000Z")).toBeNull();
+    expect(await renewLock("sync", "2026-10-03T10:00:00.000Z")).toEqual({ ok: false, why: "refused" });
   });
 });
 
@@ -109,7 +109,7 @@ describe("makeLockLease (#3120)", () => {
 
   it("answers held without a round trip inside a third of the TTL", async () => {
     const clock = { ms: 0 };
-    const renew = vi.fn(async () => "t2");
+    const renew = vi.fn(async () => ({ ok: true as const, token: "t2" }));
     const lease = makeLockLease("k", "t1", TTL, { now: () => clock.ms, renew });
     clock.ms = TTL / 3 - 1;
     expect(await lease.stillHeld()).toBe(true);
@@ -118,7 +118,7 @@ describe("makeLockLease (#3120)", () => {
 
   it("renews once due, and carries the new token for the release", async () => {
     const clock = { ms: 0 };
-    const renew = vi.fn(async () => "t2");
+    const renew = vi.fn(async () => ({ ok: true as const, token: "t2" }));
     const lease = makeLockLease("k", "t1", TTL, { now: () => clock.ms, renew });
     clock.ms = TTL / 3;
     expect(await lease.stillHeld()).toBe(true);
@@ -133,7 +133,7 @@ describe("makeLockLease (#3120)", () => {
   it("keeps a run that is working past its TTL holding the key, renewal by renewal", async () => {
     const clock = { ms: 0 };
     let n = 1;
-    const renew = vi.fn(async () => `t${++n}`);
+    const renew = vi.fn(async () => ({ ok: true as const, token: `t${++n}` }));
     const lease = makeLockLease("k", "t1", TTL, { now: () => clock.ms, renew });
     for (let i = 0; i < 10; i++) {
       clock.ms += TTL / 2;
@@ -144,25 +144,43 @@ describe("makeLockLease (#3120)", () => {
 
   it("shares one renewal between concurrent askers, so the run never races itself", async () => {
     const clock = { ms: TTL };
-    let release: (v: string) => void = () => {};
-    const renew = vi.fn(() => new Promise<string | null>((r) => (release = r)));
+    let release: (v: RenewLockResult) => void = () => {};
+    const renew = vi.fn(() => new Promise<RenewLockResult>((r) => (release = r)));
     const lease = makeLockLease("k", "t1", TTL, { now: () => clock.ms, renew });
     clock.ms = TTL * 2;
     const asks = Promise.all([lease.stillHeld(), lease.stillHeld(), lease.stillHeld()]);
     expect(renew).toHaveBeenCalledTimes(1);
-    release("t2");
+    release({ ok: true, token: "t2" });
     expect(await asks).toEqual([true, true, true]);
   });
 
   it("says stop once the claim is taken, and never resumes", async () => {
     const clock = { ms: 0 };
-    const renew = vi.fn(async (): Promise<string | null> => null);
+    const renew = vi.fn(async (): Promise<RenewLockResult> => ({ ok: false, why: "taken" }));
     const lease = makeLockLease("k", "t1", TTL, { now: () => clock.ms, renew });
+    expect(lease.stopReason()).toBeNull();
     clock.ms = TTL;
     expect(await lease.stillHeld()).toBe(false);
-    renew.mockResolvedValue("t9");
+    expect(lease.stopReason()).toBe("taken");
+    renew.mockResolvedValue({ ok: true, token: "t9" });
     clock.ms += TTL;
     expect(await lease.stillHeld()).toBe(false);
     expect(renew).toHaveBeenCalledTimes(1);
+  });
+
+  // L11: a renewal the database refused stops the run just as safely, since
+  // nothing shows the claim is still ours, but it must never read as another run
+  // having taken over.
+  it("stops on a refused renewal too, and says it was refused rather than taken", async () => {
+    const clock = { ms: 0 };
+    const renew = vi.fn(async (): Promise<RenewLockResult> => ({ ok: false, why: "refused" }));
+    const lease = makeLockLease("k", "t1", TTL, { now: () => clock.ms, renew });
+    clock.ms = TTL;
+    expect(await lease.stillHeld()).toBe(false);
+    expect(lease.stopReason()).toBe("refused");
+    renew.mockResolvedValue({ ok: true, token: "t9" });
+    clock.ms += TTL;
+    expect(await lease.stillHeld()).toBe(false);
+    expect(lease.stopReason()).toBe("refused");
   });
 });

@@ -23,20 +23,27 @@ const lockStore = vi.hoisted(() => {
   const clock = { now: 0 };
   const claims = new Map<string, number>();
   const iso = (ms: number) => new Date(ms).toISOString();
+  // When set, every renewal is refused as a database error would be.
+  const store = { refuseRenewals: false };
   return {
     clock,
     claims,
+    store,
     acquireLock: async (key: string, ttlMs: number): Promise<string | null> => {
       const held = claims.get(key);
       if (held !== undefined && held >= clock.now - ttlMs) return null;
       claims.set(key, clock.now);
       return iso(clock.now);
     },
-    renew: async (key: string, token: string): Promise<string | null> => {
+    renew: async (
+      key: string,
+      token: string,
+    ): Promise<{ ok: true; token: string } | { ok: false; why: "taken" | "refused" }> => {
+      if (store.refuseRenewals) return { ok: false, why: "refused" };
       const held = claims.get(key);
-      if (held === undefined || iso(held) !== token) return null;
+      if (held === undefined || iso(held) !== token) return { ok: false, why: "taken" };
       claims.set(key, clock.now);
-      return iso(clock.now);
+      return { ok: true, token: iso(clock.now) };
     },
     releaseLock: async (key: string, token: string): Promise<void> => {
       const held = claims.get(key);
@@ -98,7 +105,7 @@ vi.mock("@/lib/offboarding/session-convergence-alert", () => ({
   SESSION_CONVERGENCE_STREAK_ALERT_AT: 2,
 }));
 
-import { runRosterSync, AGENTS_LOCK_KEY, ROSTER_LEASE_LOST_REASON } from "./run-roster-sync";
+import { runRosterSync, AGENTS_LOCK_KEY, ROSTER_LEASE_STOP_REASONS } from "./run-roster-sync";
 import type { RosterSyncOutcome } from "./run-roster-sync";
 
 const cleanSync = () => ({
@@ -144,6 +151,7 @@ const settle = () => new Promise((r) => setTimeout(r, 0));
 beforeEach(() => {
   vi.clearAllMocks();
   lockStore.claims.clear();
+  lockStore.store.refuseRenewals = false;
   lockStore.clock.now = T0;
   sync.syncSalesforceAgents.mockResolvedValue(cleanSync());
   twilio.syncTwilioRedistribute.mockResolvedValue(cleanTwilio());
@@ -171,9 +179,9 @@ describe("runRosterSync lease fencing (#3177)", () => {
     if (older.skipped) throw new Error("the older run started");
 
     // It said why it stopped, in a reason no other failure produces.
-    expect(older.leaseLost).toBe(true);
-    expect(older.twilio).toEqual({ ok: false, leaseLost: true, reason: ROSTER_LEASE_LOST_REASON });
-    expect(older.sessions).toEqual({ ok: false, leaseLost: true, reason: ROSTER_LEASE_LOST_REASON });
+    expect(older.leaseStop).toBe("taken");
+    expect(older.twilio).toEqual({ ok: false, leaseStop: "taken", reason: ROSTER_LEASE_STOP_REASONS.taken });
+    expect(older.sessions).toEqual({ ok: false, leaseStop: "taken", reason: ROSTER_LEASE_STOP_REASONS.taken });
     expect(older.hoursApplied).toBeNull();
     // And it wrote nothing after the point it lost the key.
     expect(twilio.syncTwilioRedistribute).not.toHaveBeenCalled();
@@ -190,7 +198,7 @@ describe("runRosterSync lease fencing (#3177)", () => {
     newerSync.resolve(cleanSync());
     const finished = await newer!;
     if (finished.skipped) throw new Error("the newer run started");
-    expect(finished.leaseLost).toBe(false);
+    expect(finished.leaseStop).toBeNull();
     expect(finished.twilio.ok).toBe(true);
     expect(finished.hoursApplied).toBe(2);
     expect(twilio.syncTwilioRedistribute).toHaveBeenCalledTimes(1);
@@ -216,12 +224,33 @@ describe("runRosterSync lease fencing (#3177)", () => {
     const older = await runRosterSync();
     expect(newer).toEqual({ skipped: "overlapping-run" });
     if (older.skipped) throw new Error("the older run started");
-    expect(older.leaseLost).toBe(false);
+    expect(older.leaseStop).toBeNull();
     expect(older.twilio.ok).toBe(true);
     expect(older.hoursApplied).toBe(2);
     expect(sync.syncSalesforceAgents).toHaveBeenCalledTimes(1);
     // It released with the token it renewed to, not the one it started with, or
     // the key would stay held until the TTL ran out.
     expect(lockStore.claims.has(AGENTS_LOCK_KEY)).toBe(false);
+  });
+
+  it("stops just as safely when the renewal is refused, and never calls that a takeover (L11)", async () => {
+    sync.syncSalesforceAgents.mockImplementationOnce(async () => {
+      // A renewal is due, and the database refuses it. No other run exists.
+      lockStore.clock.now = T0 + TTL / 2;
+      lockStore.store.refuseRenewals = true;
+      return cleanSync();
+    });
+
+    const out = await runRosterSync();
+    if (out.skipped) throw new Error("the run started");
+    expect(out.leaseStop).toBe("refused");
+    expect(out.twilio).toEqual({ ok: false, leaseStop: "refused", reason: ROSTER_LEASE_STOP_REASONS.refused });
+    expect(out.twilio.ok ? "" : out.twilio.reason).not.toMatch(/took over/);
+    expect(out.hoursApplied).toBeNull();
+    // It could not show the key was its own, so it wrote nothing further.
+    expect(twilio.syncTwilioRedistribute).not.toHaveBeenCalled();
+    expect(schedule.ensureDefaultSchedules).not.toHaveBeenCalled();
+    expect(streak.recordConsecutiveStreak).not.toHaveBeenCalled();
+    expect(verdict.recordDetectorVerdict).not.toHaveBeenCalled();
   });
 });
