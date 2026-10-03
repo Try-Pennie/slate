@@ -43,6 +43,7 @@ import {
   type CallerSeenRow,
 } from "../../src/lib/booking/caller-seen.ts";
 import { pageSourceStatus, type PageSourceMeasure } from "../../src/lib/monitor/page-volume.ts";
+import { judgeCalendarCoverage, type CalendarWindowRow } from "../../src/lib/monitor/calendar-window-coverage.ts";
 import {
   classifyParitySweep,
   parseParitySweep,
@@ -587,4 +588,26 @@ export function ghFailureReason(err: unknown): string {
   const fromStderr = typeof stderr === "string" || Buffer.isBuffer(stderr) ? firstLine(String(stderr)) : "";
   const fromMessage = firstLine(err instanceof Error ? err.message : String(err));
   return (fromStderr || fromMessage).slice(0, 160);
+}
+
+/**
+ * The calendars that keep readiness from READY, named for the reader. The monitor's
+ * judge is used so both agree on what a lapsed calendar is, but its first run
+ * patience is NOT granted here: this command is run at a chosen moment before real
+ * leads, and a calendar that has never been hydrated is not hydrated however new it
+ * is. So a calendar the monitor would still be waiting on is named, as such.
+ */
+export function readinessUncoveredCalendars(input: {
+  rows: CalendarWindowRow[];
+  horizonDays: number;
+  nowIso: string;
+}): string[] {
+  const label = (r: CalendarWindowRow) => `${r.email ?? r.userId} (${r.calendarId})`;
+  const { uncovered } = judgeCalendarCoverage(input);
+  const named = new Set(uncovered);
+  const waiting = input.rows.filter((r) => !named.has(r) && r.syncWindowToIso === null);
+  return [
+    ...uncovered.map(label),
+    ...waiting.map((r) => `${label(r)}, joined the rotation moments ago and not hydrated yet`),
+  ];
 }

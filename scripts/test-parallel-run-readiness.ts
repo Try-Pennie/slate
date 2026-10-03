@@ -17,6 +17,7 @@ import {
   pickParityRun,
   PARITY_RUN_PAIRING_MS,
   ghFailureReason,
+  readinessUncoveredCalendars,
 } from "./lib/parallel-run-readiness.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 import type { CallerSeenRow } from "../src/lib/booking/caller-seen.ts";
@@ -580,6 +581,40 @@ eq(
   const silent = Object.assign(new Error("spawnSync gh ETIMEDOUT\nstack"), { stderr: "  \n" });
   eq(ghFailureReason(silent), "spawnSync gh ETIMEDOUT", "with nothing on stderr it falls back to the message's first line");
   eq(ghFailureReason("x".repeat(400)).length, 160, "and stays one short line");
+}
+
+// Readiness is run at a chosen moment before real leads, so a calendar inside the
+// monitor's first run patience is still not hydrated, and READY must not be claimed
+// over it. It is named as such rather than passed.
+{
+  const now = "2026-10-02T12:00:00.000Z";
+  const row = (over: Record<string, unknown>) => ({
+    userId: "u",
+    name: null,
+    email: "a@trypennie.com",
+    calendarId: "c",
+    syncWindowToIso: null,
+    createdAtIso: "2026-10-02T11:58:00.000Z",
+    hasRecordedFailure: false,
+    ...over,
+  });
+  const fresh = readinessUncoveredCalendars({ rows: [row({})], horizonDays: 4, nowIso: now });
+  eq(fresh.length, 1, "a calendar inside its first run window still blocks READY");
+  assert(/not hydrated yet/.test(fresh[0]) && fresh[0].includes("a@trypennie.com"), `and says it has not been hydrated yet (${fresh[0]})`);
+
+  const lapsed = readinessUncoveredCalendars({
+    rows: [row({ email: "b@trypennie.com", syncWindowToIso: "2026-10-03T00:00:00.000Z", createdAtIso: "2026-01-01T00:00:00.000Z" })],
+    horizonDays: 4,
+    nowIso: now,
+  });
+  eq(lapsed, ["b@trypennie.com (c)"], "a lapsed calendar is named the way the monitor names it");
+
+  const covered = readinessUncoveredCalendars({
+    rows: [row({ syncWindowToIso: "2026-10-10T00:00:00.000Z", createdAtIso: "2026-01-01T00:00:00.000Z" })],
+    horizonDays: 4,
+    nowIso: now,
+  });
+  eq(covered, [], "a calendar hydrated past the horizon is not named");
 }
 
 finish();

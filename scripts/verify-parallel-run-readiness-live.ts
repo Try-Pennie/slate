@@ -23,7 +23,7 @@ const { eligibleAgentIds } = await import("@/lib/availability/service");
 const { withoutLowCarriers } = await import("@/lib/availability/low-exclusion");
 const { emptyBuckets: emptyBucketCodes } = await import("@/lib/availability/bucket-coverage");
 type BucketCoverage = import("@/lib/availability/bucket-coverage").BucketCoverage;
-const { uncoveredCalendars, calendarWindowRow, CALENDAR_WINDOW_COLUMNS } = await import("@/lib/monitor/calendar-window-coverage");
+const { calendarWindowRow, CALENDAR_WINDOW_COLUMNS } = await import("@/lib/monitor/calendar-window-coverage");
 type CalendarWindowSourceRow = import("@/lib/monitor/calendar-window-coverage").CalendarWindowSourceRow;
 const { MONITOR_DEFAULTS } = await import("@/lib/monitor/settings");
 const { CANARY_STALE_BOUNDS_MS } = await import("@/lib/monitor/health");
@@ -36,7 +36,7 @@ const { DEBT_TIER } = await import("@/lib/xbc");
 const { CALLER_HOST_KINDS } = await import("@/lib/booking/caller-seen");
 const { BOOKING_API_CALLERS } = await import("@/lib/booking/api-auth");
 type CallerSeenRow = import("@/lib/booking/caller-seen").CallerSeenRow;
-const { judgeReadiness, parityDriftFromSummary, pickParityRun, ghFailureReason } = await import("./lib/parallel-run-readiness.ts");
+const { judgeReadiness, parityDriftFromSummary, pickParityRun, ghFailureReason, readinessUncoveredCalendars } = await import("./lib/parallel-run-readiness.ts");
 type ReadinessFacts = import("./lib/parallel-run-readiness.ts").ReadinessFacts;
 type ParityDriftDetail = import("./lib/parallel-run-readiness.ts").ParityDriftDetail;
 /** Where the daily lane runs, and what it keeps (`.github/workflows/schedule-parity.yml`). */
@@ -143,11 +143,11 @@ const calendars = await section("calendars", async () => {
   const withRow = new Set(cals.map((c) => c.user_id));
   const missingRows = agents.filter((a) => !withRow.has(a.id)).map((a) => a.email);
   const horizonDays = await loadBookingHorizonDays();
-  const uncovered = uncoveredCalendars({
+  const uncovered = readinessUncoveredCalendars({
     rows: cals.map((c) => calendarWindowRow(c, byUser.get(c.user_id))),
     horizonDays,
     nowIso: new Date(nowMs).toISOString(),
-  }).map((r) => `${r.email ?? r.userId} (${r.calendarId})`);
+  });
   return { bookableAgents: agents.length, missingRows, uncovered };
 });
 
