@@ -44,13 +44,14 @@ import {
   manageWithinLimit,
 } from "./rate-limit";
 import type { RateLimitRule } from "@/lib/rate-limit-core";
-import { BURST_ESCALATE_AT } from "@/lib/rate-limit-burst";
+import { BURST_ESCALATE_AT, burstEscalateAt } from "@/lib/rate-limit-burst";
 import {
   UNIDENTIFIED_IP,
   AVAILABILITY_LIMITER,
   BOOKING_LIMITER,
   BOOKING_API_WRITE_LIMITER,
   BOOKING_API_IP_LIMITER,
+  BOOKING_API_READ_LIMITER,
   CLIENT_ERROR_ADDRESS_POLICY,
   EDGE_LIMITERS,
 } from "@/lib/rate-limit-core";
@@ -740,10 +741,56 @@ describe("the burst ceiling reaches every edge limiter (#1556)", () => {
 
     cf.env = { BOOKINGAPI_RATE_LIMITER: { limit }, BURST_LIMITER: burstNamespace() };
     let keyAllowed = true;
-    for (let i = 0; i <= BURST_ESCALATE_AT; i++) {
+    for (let i = 0; i <= burstEscalateAt(BOOKING_API_WRITE_LIMITER); i++) {
       keyAllowed = await bookingApiWriteWithinLimit("leaked-key");
     }
     expect(keyAllowed).toBe(false);
+  });
+
+  // #1565: the machine to machine limiters escalate at their own sustained limit, not at
+  // availability's 20, so an integrator polling inside its allowance pays no round trip.
+  it("does not charge a booking API key a round trip for polling inside its sustained limit", async () => {
+    cf.env = { BOOKINGAPI_READ_RATE_LIMITER: { limit }, BURST_LIMITER: burstNamespace() };
+    burstFetches = 0;
+    // Past the old shared threshold, and well inside the read path's 600 a minute.
+    for (let i = 0; i <= BURST_ESCALATE_AT * 5; i++) {
+      await expect(bookingApiReadWithinLimit("regal")).resolves.toBe(true);
+    }
+    expect(burstFetches).toBe(0);
+
+    for (let i = 0; i < BOOKING_API_READ_LIMITER.perMinute; i++) {
+      await bookingApiReadWithinLimit("regal");
+    }
+    expect(burstFetches, "past its sustained limit it is counted exactly").toBeGreaterThan(0);
+  });
+
+  it("logs an escalation once, naming the lane and the integrator but never an address", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    cf.env = {
+      BOOKINGAPI_RATE_LIMITER: { limit },
+      BOOKINGAPI_IP_RATE_LIMITER: { limit },
+      BURST_LIMITER: burstNamespace(),
+    };
+    const escalatedLines = () =>
+      info.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('msg="escalated"'));
+
+    for (let i = 0; i < burstEscalateAt(BOOKING_API_WRITE_LIMITER) + 30; i++) {
+      await bookingApiWriteWithinLimit("regal");
+    }
+    expect(escalatedLines()).toHaveLength(1);
+    const line = escalatedLines()[0]!;
+    expect(line).toContain("tag=rate-limit-burst");
+    expect(line).toContain('area="booking-api"');
+    expect(line).toContain(`escalate_at=${burstEscalateAt(BOOKING_API_WRITE_LIMITER)}`);
+    expect(line).toContain('caller="regal"');
+
+    for (let i = 0; i <= burstEscalateAt(BOOKING_API_IP_LIMITER); i++) {
+      await bookingApiIpWithinLimit("203.0.113.77");
+    }
+    expect(escalatedLines()).toHaveLength(2);
+    expect(escalatedLines()[1]).toContain('area="booking-api-ip"');
+    expect(escalatedLines()[1]).not.toContain("203.0.113.77");
+    info.mockRestore();
   });
 
   it("counts each endpoint separately, so one endpoint's traffic cannot spend another's ceiling", async () => {
@@ -812,7 +859,7 @@ describe("the burst ceiling reaches every edge limiter (#1556)", () => {
     burstCount = BOOKING_API_WRITE_LIMITER.burstCeilingPerMinute + 1;
 
     let allowed = true;
-    for (let i = 0; i <= BURST_ESCALATE_AT; i++) {
+    for (let i = 0; i <= burstEscalateAt(BOOKING_API_WRITE_LIMITER); i++) {
       allowed = await bookingApiWriteWithinLimit(UNIDENTIFIED_IP);
     }
 
@@ -840,7 +887,7 @@ describe("the burst ceiling reaches every edge limiter (#1556)", () => {
       burstCount = spec.burstCeilingPerMinute + 1;
       cf.env = { [spec.binding]: { limit }, BURST_LIMITER: burstNamespace() };
       let allowed = true;
-      for (let i = 0; i <= BURST_ESCALATE_AT; i++) {
+      for (let i = 0; i <= burstEscalateAt(spec); i++) {
         allowed = await wrappers[spec.area]!(`198.51.100.${EDGE_LIMITERS.indexOf(spec)}`);
       }
       expect(allowed, `${spec.binding} enforces its burst ceiling`).toBe(false);

@@ -3,6 +3,8 @@
  * booking policy. No imports, so scripts/test-rate-limit.ts can run it
  * node-native; the DB-backed check lives in rate-limit.ts.
  */
+// A type only import: erased when this runs, so the module still loads with no imports.
+import type { LimiterAudience } from "./rate-limit-burst";
 
 export interface RateLimitRule {
   /** Key prefix; the client ip is appended. */
@@ -312,6 +314,13 @@ interface EdgeLimiterBase {
   /** The sustained ceiling `wrangler.jsonc` configures, per minute, per datacenter. */
   perMinute: number;
   /**
+   * Who calls this endpoint (#1565): a lead's browser, or a machine (an integrator, or our own
+   * bot). It decides where the burst ceiling starts counting precisely: a lead facing limiter
+   * escalates at the shared `BURST_ESCALATE_AT`, a machine one at its own sustained limit
+   * (`burstEscalateAt` in `@/lib/rate-limit-burst`, which holds the reasoning).
+   */
+  audience: LimiterAudience;
+  /**
    * The burst ceiling (#1556): the count across every isolate and datacenter that a
    * concurrent burst cannot spread across, per key per minute.
    *
@@ -467,6 +476,7 @@ export const AVAILABILITY_LIMITER = {
   area: "availability",
   friendly: "booking availability",
   keyKind: "ip",
+  audience: "lead",
   onUnidentified: "serve",
   unidentifiedWhy:
     "this is a cached read that sits in front of a lead choosing a time, and the slot payload is public data that is cheap to serve; the burst ceiling behind it is per key too, so the compensating bound is that nothing here creates or sends anything",
@@ -490,6 +500,7 @@ export const BOOKING_LIMITER = {
   area: "booking",
   friendly: "public booking",
   keyKind: "ip",
+  audience: "lead",
   onUnidentified: "serve",
   unidentifiedWhy:
     "refusing a caller we cannot identify refuses a customer at the last step of the funnel, and the per contact hourly cap still bounds this endpoint without needing an address at all",
@@ -503,6 +514,7 @@ export const ROUTING_LIMITER = {
   area: "routing",
   friendly: "routing lookup",
   keyKind: "ip",
+  audience: "lead",
   onUnidentified: "serve",
   unidentifiedWhy:
     "this resolves the bucket a landing page books into, so a refusal here stops a lead before the booker ever loads, and the work behind it is one cached database resolve rather than anything that writes",
@@ -516,6 +528,7 @@ export const BOOKING_API_WRITE_LIMITER = {
   area: "booking-api",
   friendly: "booking API",
   keyKind: "api-key",
+  audience: "machine",
   perMinute: 120,
   burstCeilingPerMinute: 1200,
 } as const satisfies EdgeLimiterSpec;
@@ -537,6 +550,7 @@ export const BOOKING_API_IP_LIMITER = {
   area: "booking-api-ip",
   friendly: "booking API",
   keyKind: "ip",
+  audience: "machine",
   onUnidentified: "serve",
   unidentifiedWhy:
     "this is a backstop UNDER the per key ceiling, and that ceiling is keyed on an id that came from authentication, so an integrator whose address we cannot read is still bounded by their key's own budget",
@@ -552,6 +566,7 @@ export const BOOKING_API_READ_LIMITER = {
   area: "booking-api-read",
   friendly: "booking API",
   keyKind: "api-key",
+  audience: "machine",
   perMinute: 600,
   burstCeilingPerMinute: 6000,
 } as const satisfies EdgeLimiterSpec;
@@ -575,6 +590,7 @@ export const MANAGE_LIMITER = {
   area: "manage",
   friendly: "booking manage links",
   keyKind: "ip",
+  audience: "lead",
   onUnidentified: "serve",
   unidentifiedWhy:
     "the only way to reach a booking here is to already hold its unguessable manage token, so a caller we cannot identify can still act only on the one appointment somebody sent them the link for, and the reschedule lock bounds repeat attempts on it",

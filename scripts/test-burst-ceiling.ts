@@ -39,8 +39,11 @@ import {
   burstKey,
   BURST_LIMITER_BINDING,
   BURST_LIMITER_CLASS,
+  burstEscalateAt,
+  MACHINE_ESCALATE_SUSTAINED_MULTIPLE,
+  type BurstLimits,
 } from "@/lib/rate-limit-burst";
-import { EDGE_LIMITERS } from "@/lib/rate-limit-core";
+import { EDGE_LIMITERS, BOOKING_API_READ_LIMITER } from "@/lib/rate-limit-core";
 
 const T0 = 1_760_000_000_000;
 
@@ -49,6 +52,11 @@ const T0 = 1_760_000_000_000;
  *  no longer enforces (L41). */
 const AVAILABILITY = EDGE_LIMITERS.find((l) => l.area === "availability")!;
 const CEILING = AVAILABILITY.burstCeilingPerMinute;
+/** Availability's ceiling and escalation point, derived the way the product derives them. */
+const LIMITS: BurstLimits = {
+  ceilingPerMinute: CEILING,
+  escalateAt: burstEscalateAt(AVAILABILITY),
+};
 
 /** A tracker whose clock and DO answers are both injected, so nothing here is timing dependent. */
 function tracker(answers: { count: number }[] | ((bump: number) => { count: number })) {
@@ -82,10 +90,44 @@ function tracker(answers: { count: number }[] | ((bump: number) => { count: numb
         "quiet tightening of the limit real callers are served under",
     );
     assert(
-      BURST_ESCALATE_AT < spec.burstCeilingPerMinute,
-      `${spec.binding} escalates before its ceiling, or the ceiling could never be measured`,
+      burstEscalateAt(spec) < spec.burstCeilingPerMinute,
+      `${spec.binding} escalates (at ${burstEscalateAt(spec)}) before its ceiling, or the ` +
+        "ceiling could never be measured",
     );
   }
+
+  // #1565: the escalation point is derived per limiter now. A lead facing limiter keeps the
+  // shared 20, which was sized for a lead's page loads. A machine to machine limiter escalates
+  // at its own sustained limit, so an integrator polling inside its allowance never pays a
+  // round trip, and one past it is counted exactly.
+  for (const spec of EDGE_LIMITERS) {
+    assert(
+      spec.audience === "lead" || spec.audience === "machine",
+      `${spec.binding} says who calls it, which is what decides its escalation point`,
+    );
+    // Every limiter keyed on an authenticated key, or alerting on a block because its caller
+    // is our own bot, is machine to machine. A new one declared "lead" would quietly inherit
+    // availability's threshold, which is the defect #1565 is about.
+    if (spec.keyKind === "api-key" || spec.alertOnBlock === true) {
+      eq(spec.audience, "machine", `${spec.binding} is a machine to machine limiter`);
+    }
+    if (spec.audience === "machine") {
+      eq(
+        burstEscalateAt(spec),
+        Math.max(BURST_ESCALATE_AT, spec.perMinute * MACHINE_ESCALATE_SUSTAINED_MULTIPLE),
+        `${spec.binding} escalates at its own sustained limit, not at availability's 20`,
+      );
+    } else {
+      eq(burstEscalateAt(spec), BURST_ESCALATE_AT, `${spec.binding} keeps the lead threshold`);
+    }
+  }
+  // Not vacuous: the read path really does escalate later than it used to.
+  eq(burstEscalateAt(BOOKING_API_READ_LIMITER), 600, "the read path escalates at its 600 a minute");
+  eq(
+    EDGE_LIMITERS.filter((l) => l.audience === "machine").map((l) => l.area).sort(),
+    ["booking-api", "booking-api-ip", "booking-api-read"],
+    "the three booking API limiters are the machine to machine ones",
+  );
 
   // Two limiters sharing an area would share ONE burst counter, so the tighter endpoint's
   // ceiling would be spent by the looser one's traffic: the same defect the unique
@@ -158,17 +200,48 @@ function tracker(answers: { count: number }[] | ((bump: number) => { count: numb
   const { t, asked } = tracker([{ count: 1 }]);
   let allowed = true;
   for (let i = 0; i < BURST_ESCALATE_AT; i++) {
-    allowed = await t.allow("1.2.3.4", T0, CEILING);
+    allowed = await t.allow("1.2.3.4", T0, LIMITS);
   }
   eq(allowed, true, "an ordinary address is allowed");
   eq(asked.length, 0, "and costs no round trip at all: the whole point of the escalation");
+}
+
+{
+  // #1565: a machine caller inside its sustained limit pays nothing, however hard it polls.
+  const read = BOOKING_API_READ_LIMITER;
+  const readLimits: BurstLimits = {
+    ceilingPerMinute: read.burstCeilingPerMinute,
+    escalateAt: burstEscalateAt(read),
+  };
+  const { t, asked } = tracker(() => ({ count: 1 }));
+  for (let i = 0; i < read.perMinute; i++) await t.allow("key:regal", T0, readLimits);
+  eq(asked.length, 0, "600 reads in a minute from one key cost no round trip");
+  await t.allow("key:regal", T0, readLimits);
+  eq(asked.length, 1, "the first read past the sustained limit is counted exactly");
+  eq(asked[0]!.bump, read.perMinute + 1, "and reports every read the isolate saw");
+}
+
+{
+  // The log line that lets the escalation rate be measured once real traffic exists. Once
+  // per key per window, not once per request, so a hot key cannot flood the logs.
+  const escalations: number[] = [];
+  const limits: BurstLimits = { ...LIMITS, onEscalate: (count) => escalations.push(count) };
+  const { t } = tracker(() => ({ count: 1 }));
+  for (let i = 0; i < LIMITS.escalateAt; i++) await t.allow("1.2.3.4", T0, limits);
+  eq(escalations.length, 0, "no escalation is reported below the threshold");
+  for (let i = 0; i < 10; i++) await t.allow("1.2.3.4", T0 + BURST_MEMO_MS * 2 * i, limits);
+  eq(escalations, [LIMITS.escalateAt + 1], "crossing it is reported once, with the count");
+  for (let i = 0; i <= LIMITS.escalateAt; i++) {
+    await t.allow("1.2.3.4", T0 + BURST_WINDOW_MS, limits);
+  }
+  eq(escalations.length, 2, "and again in the next window, when the key escalates again");
 }
 
 // --- escalation, and what it reports ----------------------------------------
 
 {
   const { t, asked } = tracker([{ count: BURST_ESCALATE_AT + 1 }]);
-  for (let i = 0; i <= BURST_ESCALATE_AT; i++) await t.allow("1.2.3.4", T0, CEILING);
+  for (let i = 0; i <= BURST_ESCALATE_AT; i++) await t.allow("1.2.3.4", T0, LIMITS);
   eq(asked.length, 1, "crossing the escalation point asks the shared counter, once");
   eq(
     asked[0]!.bump,
@@ -183,11 +256,11 @@ function tracker(answers: { count: number }[] | ((bump: number) => { count: numb
   // covers must still be reported on the NEXT ask, or the shared count silently under-counts
   // exactly the traffic the ceiling exists to measure.
   const { t, asked } = tracker(() => ({ count: 40 }));
-  for (let i = 0; i <= BURST_ESCALATE_AT; i++) await t.allow("1.2.3.4", T0, CEILING);
+  for (let i = 0; i <= BURST_ESCALATE_AT; i++) await t.allow("1.2.3.4", T0, LIMITS);
   eq(asked.length, 1, "one ask so far");
-  for (let i = 0; i < 5; i++) await t.allow("1.2.3.4", T0 + 10, CEILING);
+  for (let i = 0; i < 5; i++) await t.allow("1.2.3.4", T0 + 10, LIMITS);
   eq(asked.length, 1, "requests inside the memo window reuse the verdict");
-  await t.allow("1.2.3.4", T0 + BURST_MEMO_MS + 1, CEILING);
+  await t.allow("1.2.3.4", T0 + BURST_MEMO_MS + 1, LIMITS);
   eq(asked.length, 2, "and the memo expires");
   eq(asked[1]!.bump, 6, "the six requests it covered are reported on the next ask, not lost");
 }
@@ -197,22 +270,22 @@ function tracker(answers: { count: number }[] | ((bump: number) => { count: numb
 {
   const { t } = tracker(() => ({ count: CEILING + 1 }));
   let allowed = true;
-  for (let i = 0; i <= BURST_ESCALATE_AT; i++) allowed = await t.allow("1.2.3.4", T0, CEILING);
+  for (let i = 0; i <= BURST_ESCALATE_AT; i++) allowed = await t.allow("1.2.3.4", T0, LIMITS);
   eq(allowed, false, "past the ceiling the request is refused");
 
   const { t: t2 } = tracker(() => ({ count: CEILING }));
   let allowed2 = false;
-  for (let i = 0; i <= BURST_ESCALATE_AT; i++) allowed2 = await t2.allow("1.2.3.4", T0, CEILING);
+  for (let i = 0; i <= BURST_ESCALATE_AT; i++) allowed2 = await t2.allow("1.2.3.4", T0, LIMITS);
   eq(allowed2, true, "exactly at the ceiling is still served: the ceiling is what is allowed");
 }
 
 {
   // A refusal is memoed too, so a flood does not buy a round trip per request by being blocked.
   const { t, asked } = tracker(() => ({ count: CEILING + 1 }));
-  for (let i = 0; i <= BURST_ESCALATE_AT; i++) await t.allow("9.9.9.9", T0, CEILING);
+  for (let i = 0; i <= BURST_ESCALATE_AT; i++) await t.allow("9.9.9.9", T0, LIMITS);
   const asksAfterFirstBlock = asked.length;
   for (let i = 0; i < 20; i++) {
-    eq(await t.allow("9.9.9.9", T0 + 5, CEILING), false, "still refused");
+    eq(await t.allow("9.9.9.9", T0 + 5, LIMITS), false, "still refused");
   }
   eq(asked.length, asksAfterFirstBlock, "and refusing costs nothing more while the memo holds");
 }
@@ -231,7 +304,7 @@ function tracker(answers: { count: number }[] | ((bump: number) => { count: numb
     },
   });
   let allowed = false;
-  for (let i = 0; i <= BURST_ESCALATE_AT; i++) allowed = await t.allow("1.2.3.4", T0, CEILING);
+  for (let i = 0; i <= BURST_ESCALATE_AT; i++) allowed = await t.allow("1.2.3.4", T0, LIMITS);
   eq(allowed, true, "an unreachable shared counter serves the request");
   assert(asked.length > 0, "and it really did try, so this is not passing on a skipped call");
 }
@@ -249,8 +322,8 @@ function tracker(answers: { count: number }[] | ((bump: number) => { count: numb
       return { count: 1 };
     },
   });
-  for (let i = 0; i <= BURST_ESCALATE_AT; i++) await t.allow("1.2.3.4", T0, CEILING);
-  await t.allow("1.2.3.4", T0 + BURST_MEMO_MS + 1, CEILING);
+  for (let i = 0; i <= BURST_ESCALATE_AT; i++) await t.allow("1.2.3.4", T0, LIMITS);
+  await t.allow("1.2.3.4", T0 + BURST_MEMO_MS + 1, LIMITS);
   eq(seen.length, 2, "it asked again after the failure");
   eq(
     seen[1],
@@ -277,7 +350,7 @@ function tracker(answers: { count: number }[] | ((bump: number) => { count: numb
     },
   });
   await Promise.all(
-    Array.from({ length: 30 }, () => t.allow("1.2.3.4", T0, CEILING)),
+    Array.from({ length: 30 }, () => t.allow("1.2.3.4", T0, LIMITS)),
   );
   eq(maxInFlight, 1, "concurrent requests for one address share a single round trip");
 }
@@ -299,9 +372,9 @@ function tracker(answers: { count: number }[] | ((bump: number) => { count: numb
   // Proven through the tracker, not only through the helper: the in-isolate count is keyed
   // the same way, so a shared prefix would also let one endpoint escalate the other.
   const { t, asked } = tracker(() => ({ count: 1 }));
-  for (let i = 0; i <= BURST_ESCALATE_AT; i++) await t.allow(a, T0, CEILING);
+  for (let i = 0; i <= BURST_ESCALATE_AT; i++) await t.allow(a, T0, LIMITS);
   eq(asked.length, 1, "the availability key escalated");
-  await t.allow(b, T0, CEILING);
+  await t.allow(b, T0, LIMITS);
   eq(asked.length, 1, "and one request on the booking key has not, so the counts are separate");
 }
 
@@ -316,14 +389,14 @@ function tracker(answers: { count: number }[] | ((bump: number) => { count: numb
   const { t } = tracker(() => ({ count: booking.burstCeilingPerMinute + 1 }));
   let allowed = true;
   for (let i = 0; i <= BURST_ESCALATE_AT; i++) {
-    allowed = await t.allow(burstKey("booking", "1.2.3.4"), T0, booking.burstCeilingPerMinute);
+    allowed = await t.allow(burstKey("booking", "1.2.3.4"), T0, { ceilingPerMinute: booking.burstCeilingPerMinute, escalateAt: BURST_ESCALATE_AT });
   }
   eq(allowed, false, "a count over THIS endpoint's ceiling is refused");
 
   const { t: t2 } = tracker(() => ({ count: booking.burstCeilingPerMinute + 1 }));
   let allowed2 = false;
   for (let i = 0; i <= BURST_ESCALATE_AT; i++) {
-    allowed2 = await t2.allow(burstKey("availability", "1.2.3.4"), T0, CEILING);
+    allowed2 = await t2.allow(burstKey("availability", "1.2.3.4"), T0, LIMITS);
   }
   eq(allowed2, true, "and the same count under availability's higher ceiling is served");
 }

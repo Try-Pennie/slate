@@ -41,7 +41,8 @@
 export const BURST_WINDOW_MS = 60_000;
 
 /**
- * How busy an address has to look in ONE isolate before we spend a round trip on it.
+ * How busy an address has to look in ONE isolate before we spend a round trip on it, for the
+ * LEAD FACING limiters. Machine to machine ones derive their own (see `burstEscalateAt`).
  *
  * Never blocks anything: it only decides whose requests get counted properly. A lead loading
  * the booker costs one availability call, and the closure search adds another, so 20 in a
@@ -51,6 +52,61 @@ export const BURST_WINDOW_MS = 60_000;
 export const BURST_ESCALATE_AT = 20;
 
 /**
+ * Where a MACHINE TO MACHINE limiter escalates, as a multiple of its own sustained per minute
+ * limit (#1565).
+ *
+ * `BURST_ESCALATE_AT` above was sized for a lead loading the booker, and since #1556 it was
+ * also the threshold for the booking API, whose read path is allowed 600 a minute. So an
+ * integrator polling well inside its allowance escalated permanently and paid a Durable Object
+ * round trip per memo window (about one a second) for as long as it was busy, to be counted
+ * precisely while doing nothing wrong.
+ *
+ * The derivation: escalate once ONE isolate has seen the caller's whole sustained allowance.
+ * The in-isolate count is a lower bound on what the datacenter saw, so past that point the
+ * caller is already beyond what the native limiter is meant to let through, which is exactly
+ * when its approximate count stops being trustworthy and the exact one is worth paying for.
+ * Below it, a caller is by definition inside its budget and counting it precisely buys
+ * nothing. One times, not a fraction, because the cost being removed is paid by callers who
+ * are inside their limit.
+ *
+ * What this gives up, stated so nobody rediscovers it: a burst spread so that every isolate
+ * stays under the sustained limit is never escalated, so for these limiters the burst ceiling
+ * is reached only once some isolate crosses that line. These callers are authenticated (or, for
+ * the per address backstop, sit under an authenticated key), and the EXACT hourly caps in
+ * Postgres (`DIRECT_BOOKING_API_*_HOURLY_RATE_RULES`) still bound them regardless.
+ *
+ * Lead facing limiters keep `BURST_ESCALATE_AT`: their sustained limits (3 to 30 a minute) are
+ * small enough that the shared number is already at or near them.
+ */
+export const MACHINE_ESCALATE_SUSTAINED_MULTIPLE = 1;
+
+/** Who calls a limiter, which decides how its escalation point is derived. */
+export type LimiterAudience = "lead" | "machine";
+
+/**
+ * The escalation point for one limiter (#1565). Never below the lead threshold, so a future
+ * machine limiter with a tiny sustained limit cannot become MORE eager to pay round trips than
+ * the lead facing ones.
+ */
+export function burstEscalateAt(spec: { audience: LimiterAudience; perMinute: number }): number {
+  if (spec.audience === "lead") return BURST_ESCALATE_AT;
+  return Math.max(BURST_ESCALATE_AT, spec.perMinute * MACHINE_ESCALATE_SUSTAINED_MULTIPLE);
+}
+
+/** One endpoint's limits, passed per call so one tracker per isolate serves them all. */
+export interface BurstLimits {
+  /** The burst ceiling for this endpoint, per key per minute. */
+  ceilingPerMinute: number;
+  /** How many requests one isolate sees in a window before it asks the shared counter. */
+  escalateAt: number;
+  /**
+   * Called once when a key escalates in a window, with the in-isolate count at that moment, so
+   * the escalation rate can be measured (#1565). Never given the decision.
+   */
+  onEscalate?: (count: number) => void;
+}
+
+/**
  * The ceiling itself is NOT here. It is per endpoint, and it lives on that endpoint's entry in
  * `EDGE_LIMITERS` (`@/lib/rate-limit-core`), beside the sustained limit it is a multiple of.
  *
@@ -58,7 +114,8 @@ export const BURST_ESCALATE_AT = 20;
  * wrong the moment five more endpoints did, because the whole safety argument for a ceiling is
  * its RATIO to the sustained limit it backs up, and 300 means "ten times" next to availability's
  * 30 and "a hundred times" next to the booking confirm's 3. Stated apart from the number it is a
- * multiple of, it is a number nobody can check. `allow` therefore takes the ceiling per call.
+ * multiple of, it is a number nobody can check. `allow` therefore takes each endpoint's limits
+ * per call (`BurstLimits`: its ceiling, its escalation point and the escalation callback).
  */
 
 /**
@@ -154,15 +211,15 @@ export class BurstTracker {
   /**
    * May this request be served?
    *
-   * `key` carries the endpoint as well as the caller (see `burstKey`), and `ceilingPerMinute` is
-   * that endpoint's own ceiling. Both are passed per call rather than fixed on the tracker, so
-   * one tracker per isolate serves every endpoint while none of them can spend another's
-   * allowance.
+   * `key` carries the endpoint as well as the caller (see `burstKey`), and `limits` are that
+   * endpoint's own ceiling and escalation point. Both are passed per call rather than fixed on
+   * the tracker, so one tracker per isolate serves every endpoint while none of them can spend
+   * another's allowance.
    */
   async allow(
     key: string,
     nowMs: number,
-    ceilingPerMinute: number,
+    limits: BurstLimits,
     /**
      * Called on an unreachable shared counter, so the caller can fail LOUD while this fails
      * open. Never given the decision: this class always serves the request.
@@ -174,7 +231,8 @@ export class BurstTracker {
     onFailure?: (err: unknown) => void,
   ): Promise<boolean> {
     const count = burstWindowCount(this.counts, key, nowMs, BURST_WINDOW_MS);
-    if (count <= BURST_ESCALATE_AT) {
+    const { ceilingPerMinute, escalateAt } = limits;
+    if (count <= escalateAt) {
       // The ordinary case, and the reason the hot path keeps its no-round-trip property.
       this.escalations.delete(key);
       return true;
@@ -188,6 +246,9 @@ export class BurstTracker {
       // first report has to carry them: an unreported request is one the shared count never
       // learns about, which is how a ceiling ends up measuring less than the traffic.
       state.unreported = count - 1;
+      // Reported once per key per window (the state is dropped when the next window starts
+      // below the threshold), so a hot key costs one line a minute, not one per request.
+      limits.onEscalate?.(count);
     }
     state.unreported += 1;
 
