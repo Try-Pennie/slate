@@ -51,6 +51,12 @@ on:
       - "scripts/lib/run-alerter.ts"
       - "scripts/lib/slack-post.ts"
       - "scripts/notify-db-replay-failure.ts"
+      # The audit chain suite recomputes hashes with the Worker's own code.
+      - "scripts/lib/audit-chain-vector.ts"
+      - "src/lib/monitor/audit-chain.ts"
+      - "src/lib/monitor/alert-deps.ts"
+      - "src/lib/notify/send-failure.ts"
+      - "src/lib/log.ts"
       # The export's mirrored table list, and what its type only imports reach.
       - "src/lib/snowflake/export-core.ts"
       - "src/lib/snowflake/merge.ts"

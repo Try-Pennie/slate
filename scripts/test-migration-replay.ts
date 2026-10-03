@@ -146,9 +146,12 @@ const JUDGES = [
 
 // --- grant exemptions: exactly the recorded list, and only RLS counts elsewhere ---------
 {
-  eq(judgeGrantExemptions(["advisor_photos"]), { unexplained: [], stale: [] }, "the one revoked table is the exempt list");
-  eq(judgeGrantExemptions(["advisor_photos", "bookings"]).unexplained, ["bookings"], "a table losing its grant without a reason is named");
-  eq(judgeGrantExemptions([]).stale, ["advisor_photos"], "an exemption whose revoke is gone is named as stale");
+  const exempt = BROWSER_GRANT_EXEMPT.map((e) => e.table);
+  assert(exempt.includes("advisor_photos"), "advisor_photos (0156's revoke) is on the exempt list");
+  eq(judgeGrantExemptions(exempt), { unexplained: [], stale: [] }, "exactly the revoked tables is the exempt list");
+  eq(judgeGrantExemptions([...exempt, "bookings"]).unexplained, ["bookings"], "a table losing its grant without a reason is named");
+  eq(judgeGrantExemptions(exempt.filter((t) => t !== "advisor_photos")).stale, ["advisor_photos"],
+    "an exemption whose revoke is gone is named as stale");
   assert(BROWSER_GRANT_EXEMPT.every((e) => e.reason.length > 20), "every exemption carries its reason");
 
   assert(browserWriteRefused("bookings", "refused-by-rls"), "on a granted table RLS refusing is a pass");

@@ -158,6 +158,14 @@ export const BROWSER_GRANT_EXEMPT: readonly { table: string; reason: string }[] 
     table: "advisor_photos",
     reason: "0156 revokes all from anon and authenticated, because default privileges would otherwise grant the image table to the browser roles (L124).",
   },
+  {
+    table: "audit_log_chain_head",
+    reason: "0160 revokes all from anon and authenticated: only the SECURITY DEFINER chain trigger moves the head of the audit log hash chain (#3090).",
+  },
+  {
+    table: "audit_log_chain_verify",
+    reason: "0160 revokes all from anon and authenticated: it holds where the monitor lane's audit chain verifier has got to, which only the server reads and moves (#3090).",
+  },
 ];
 
 /**

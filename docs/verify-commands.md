@@ -1649,7 +1649,7 @@ and authenticated the moment it exists, L714), and refuses to judge anything on 
 image without them (exit 2, UNMEASURED, like a missing Docker), since a refusal
 measured there would be a missing grant rather than RLS. Every public table must
 still hold the browser INSERT grant except those in `BROWSER_GRANT_EXEMPT`, each
-with its reason (today only `advisor_photos`, whose grant 0156 revokes), and on every
+with its reason (`advisor_photos` from 0156, and the two audit chain tables from 0160), and on every
 other table only an RLS refusal counts. It creates the CLI's history table, applies every `NNNN_*.sql` as
 `postgres`, one transaction per file with the history row `db push` writes, and then
 checks: every version reads back through `applied_migration_versions()`; every public
@@ -1680,7 +1680,7 @@ path gate is checked against the suites' real import graph by
 `scripts/test-db-replay-workflow.ts`, so an import the gate misses fails `pnpm test`
 and names the file to add (L88).
 
-As of 2026-10-03 all 157 migrations replay from empty in about 6 seconds and every
+As of 2026-10-03 all 161 migrations replay from empty in about 6 seconds and every
 check passes. Seen failing on planted controls: a migration altering
 `availability_rules_backup_1255` (a table only production holds), a browser policy
 on bookings, RLS turned off on one table, a SECURITY DEFINER function granted to anon,
