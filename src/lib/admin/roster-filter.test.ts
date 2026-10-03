@@ -481,6 +481,20 @@ describe("needs a photo", () => {
     expect(rosterPhotoNotice([row({ id: "a", photo: { kind: "unreadable", src: null } })])).toMatch(/could not be read/);
   });
 
+  it("counts only the people the refresh covers, so the button beside it can close the gap (#3161)", () => {
+    const gone = (id: string) => row({ id, deactivated_at: "2026-09-01T00:00:00.000Z" });
+    // A deactivated person with no record is never going to be read: nothing is said.
+    expect(rosterPhotoNotice([gone("left")])).toBeNull();
+    // An active one with no record still is, and still counts.
+    expect(rosterPhotoNotice([row({ id: "a" })])).toMatch(/^1 person has not/);
+    // Mixed: only the active ones are counted.
+    expect(rosterPhotoNotice([row({ id: "a" }), row({ id: "b" }), gone("x"), gone("y"), gone("z")])).toMatch(/^2 people have not/);
+    // A failed table read is about the table, so it is said whoever is on the page.
+    expect(rosterPhotoNotice([row({ id: "left", deactivated_at: "2026-09-01T00:00:00.000Z", photo: { kind: "unreadable", src: null } })])).toMatch(/could not be read/);
+    // The photo filter's "unread" view cannot hold them either: they are off the roster.
+    expect(filterRoster([row({ id: "a" }), gone("left")], { ...NONE, photo: "unread" }).map((u) => u.id)).toEqual(["a"]);
+  });
+
   it("carries the photo filter through the URL and counts it as a filter", () => {
     const f: RosterFilters = { ...NONE, photo: "needed" };
     expect(rosterFiltersToQuery(f)).toBe("photo=needed");

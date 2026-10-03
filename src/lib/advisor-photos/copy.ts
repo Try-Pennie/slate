@@ -5,6 +5,7 @@
  */
 import { FLIP_TO_NONE_LIMIT, type RefreshPlan } from "@/lib/advisor-photos/core";
 import { needsAttention, type RefreshOutcome, type RefusedWhy } from "@/lib/advisor-photos/refresh";
+import { awaitingFirstRead, type AdvisorPhoto } from "@/lib/advisor-photos/resolve";
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
@@ -302,16 +303,20 @@ export function photoOutcomeText(o: PhotoOutcome): { ok: boolean; text: string }
  * The line under a person's name on their agent page (#3027), or null when the
  * face already says it. Domain words: where the photo comes from and how a
  * missing one gets fixed.
+ *
+ * "Not read yet" only for somebody the refresh will reach (#3161). A deactivated
+ * person with no record keeps their sign in photo with nothing said, because no
+ * refresh will ever read them.
  */
-export function agentPhotoStateText(kind: "photo" | "none" | "never-read" | "unreadable"): string | null {
-  switch (kind) {
-    case "photo":
-      return null;
+export function agentPhotoStateText(photo: AdvisorPhoto, person: { deactivated_at: string | null }): string | null {
+  if (awaitingFirstRead(photo, person)) return "Their photo has not been read from Google yet.";
+  switch (photo.kind) {
     case "none":
       return "Google holds no photo for them. One added in Google shows here after the next morning's refresh.";
-    case "never-read":
-      return "Their photo has not been read from Google yet.";
     case "unreadable":
       return "Photos could not be read just now, so this is the photo from their own sign in, if any.";
+    default:
+      // A photo, or a deactivated person's sign in photo: the face says it.
+      return null;
   }
 }

@@ -7,7 +7,15 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { scanPhotoTableReads, scanRawAvatarReads, STORE_PATH, type SourceFile } from "./lib/scan-advisor-photo-reads.ts";
+import {
+  RESOLVE_PATH,
+  scanNeverReadJudges,
+  scanPhotoTableReads,
+  scanRawAvatarReads,
+  scanRefreshCoverageDefinitions,
+  STORE_PATH,
+  type SourceFile,
+} from "./lib/scan-advisor-photo-reads.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -54,6 +62,39 @@ eq(scanPhotoTableReads(tree), [], "advisor_photos is read only in the store, and
   assert(scanPhotoTableReads([{ path: STORE_PATH, text: star }]).some((f) => f.includes("selects *")), "a select star in the store is caught");
   const bytes = store.replace('.select("user_id, state, sha256, failing_since")', '.select("user_id, state, sha256, failing_since, bytes_b64")');
   assert(scanPhotoTableReads([{ path: STORE_PATH, text: bytes }]).some((f) => f.includes("listStoredPhotoStates")), "bytes selected by a reader that does not serve them are caught, naming it");
+}
+
+// --- who is not read yet (#3161) --------------------------------------------------
+assert(tree.some((f) => f.path === RESOLVE_PATH), "the scan reads the resolver");
+eq(scanNeverReadJudges(tree), [], "never-read is judged only inside the resolver");
+{
+  // The shape #3161 removed, put back into the real roster filter.
+  const path = "src/lib/admin/roster-filter.ts";
+  const real = readFileSync(join(ROOT, path), "utf8");
+  const planted = real.replace("awaitingFirstRead(r.photo, r)", 'r.photo.kind === "never-read"');
+  assert(planted !== real, "the planted count replaces the real one in the real roster filter");
+  eq(scanNeverReadJudges([{ path, text: planted }]).length, 1, "a banner counting never-read itself is caught");
+  const viaCase: SourceFile = { path: "src/lib/advisor-photos/copy.ts", text: 'switch (k) {\n  case "never-read":\n    return "x";\n}' };
+  eq(scanNeverReadJudges([viaCase]), ["src/lib/advisor-photos/copy.ts:2 judges never-read itself; use awaitingFirstRead"], "a switch case is a judge too");
+  const comment: SourceFile = { path: "src/app/x.ts", text: '// kind === "never-read" used to be counted here' };
+  eq(scanNeverReadJudges([comment]), [], "a comment naming it is not a judge");
+}
+
+eq(scanRefreshCoverageDefinitions(tree), [], "the photo module defines who the refresh covers in one place");
+{
+  const path = "src/lib/advisor-photos/refresh.ts";
+  const real = readFileSync(join(ROOT, path), "utf8");
+  const planted = real.replace("users.filter(photoRefreshCovers)", "users.filter((u) => u.deactivated_at === null)");
+  assert(planted !== real, "the planted filter replaces the real one in the real refresh");
+  eq(scanRefreshCoverageDefinitions([{ path, text: planted }]).length, 1, "a second definition in the refresh is caught");
+  const reversed: SourceFile = { path: "src/lib/advisor-photos/core.ts", text: "if (null !== u.deactivated_at) continue;" };
+  eq(scanRefreshCoverageDefinitions([reversed]).length, 1, "written the other way round, too");
+  const active: SourceFile = { path: "src/lib/advisor-photos/core.ts", text: "users.filter((u) => isActive(u))" };
+  eq(scanRefreshCoverageDefinitions([active]).length, 1, "and borrowing the roster's isActive");
+  const query: SourceFile = { path: "src/lib/advisor-photos/store.ts", text: '.is("users.deactivated_at", null)' };
+  eq(scanRefreshCoverageDefinitions([query]), [], "a PostgREST filter is a query, not a predicate");
+  const outside: SourceFile = { path: "src/lib/active-user.ts", text: "return user.deactivated_at == null;" };
+  eq(scanRefreshCoverageDefinitions([outside]), [], "outside the photo module is a different question");
 }
 
 finish();

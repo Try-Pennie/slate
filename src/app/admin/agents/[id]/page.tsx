@@ -283,7 +283,7 @@ export default async function AgentProfilePage({
     log.error("agent-detail", { msg: "advisor photo unreadable" }, err);
   }
   const photo = resolveAdvisorPhoto(agent, photoRecords);
-  const photoLine = agentPhotoStateText(photo.kind);
+  const photoLine = agentPhotoStateText(photo, agent);
   // #3027: a code looked up in copy.ts, never words from the address.
   const photoRun = photoOutcomeFromParams(query ?? {}, "photo");
   const photoNoticeFromRun = photoRun ? photoOutcomeText(photoRun) : null;

@@ -2,7 +2,7 @@ import { isActive } from "@/lib/active-user";
 import { matchesSearchQuery, normalizeSearchQuery } from "@/lib/search-query";
 import { teamsOf } from "@/lib/admin/agent-display";
 import { isNeverSignedIn } from "@/lib/admin/unclaimed";
-import { needsPhoto as needsDirectoryPhoto, type AdvisorPhoto } from "@/lib/advisor-photos/resolve";
+import { awaitingFirstRead, needsPhoto as needsDirectoryPhoto, type AdvisorPhoto } from "@/lib/advisor-photos/resolve";
 import type { User } from "@/lib/db/types";
 import {
   BOOKABLE_STATES,
@@ -105,7 +105,12 @@ export function needsPhoto(u: Pick<RosterRow, "photo">): boolean {
   return needsDirectoryPhoto(u.photo);
 }
 
-/** Which photo filter value a row answers to. Exactly one, for every row. */
+/**
+ * Which photo filter value a row answers to. Exactly one, for every row.
+ *
+ * "unread" never holds a deactivated person the refresh skips (#3161):
+ * `filterRoster` drops offboarded rows before any filter is consulted.
+ */
 export function rosterPhotoState(u: Pick<RosterRow, "photo">): RosterPhoto {
   if (u.photo.kind === "none") return "needed";
   if (u.photo.kind === "photo") return "has";
@@ -117,12 +122,16 @@ export function rosterPhotoState(u: Pick<RosterRow, "photo">): RosterPhoto {
  * above the table rather than on every row: before the first daily refresh that
  * is every row, and a marker repeated 136 times is a wall nobody reads (L579).
  * Null when there is nothing to say.
+ *
+ * It counts only people the refresh covers (#3161). The page resolves every
+ * user, deactivated ones included, and a deactivated person is never read, so
+ * counting them named a gap the Refresh button beside it could not close.
  */
-export function rosterPhotoNotice(rows: Pick<RosterRow, "photo">[]): string | null {
+export function rosterPhotoNotice(rows: Pick<RosterRow, "photo" | "deactivated_at">[]): string | null {
   if (rows.some((r) => r.photo.kind === "unreadable")) {
     return "Photos could not be read, so each person shows the photo from their own sign in, if any. Reload in a moment.";
   }
-  const unread = rows.filter((r) => r.photo.kind === "never-read").length;
+  const unread = rows.filter((r) => awaitingFirstRead(r.photo, r)).length;
   if (unread === 0) return null;
   return `${unread === 1 ? "1 person has" : `${unread} people have`} not had their photo read from Google yet, so they show the photo from their own sign in, if any.`;
 }

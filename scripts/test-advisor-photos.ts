@@ -36,6 +36,8 @@ import {
   fakeImage,
   photoBody,
 } from "./lib/advisor-photo-fixtures.ts";
+import { awaitingFirstRead, photoRefreshCovers, type AdvisorPhoto } from "../src/lib/advisor-photos/resolve.ts";
+import { agentPhotoStateText } from "../src/lib/advisor-photos/copy.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const NOW = Date.parse("2026-10-03T04:20:00Z");
@@ -120,7 +122,11 @@ assert(!isPhotoHash("../" + "a".repeat(61)), "a path is not");
 }
 
 // --- planning ---------------------------------------------------------------------
-const user = (id: string, active = true): PhotoSubjectUser => ({ id, email: `${id}@x.test`, active });
+const user = (id: string, active = true): PhotoSubjectUser => ({
+  id,
+  email: `${id}@x.test`,
+  deactivated_at: active ? null : "2026-09-01T00:00:00.000Z",
+});
 const photoRead = async (seed: number): Promise<Extract<PhotoRead, { kind: "photo" }>> =>
   (await readPhotoResponse(200, photoBody(fakeImage("jpeg", seed)))) as Extract<PhotoRead, { kind: "photo" }>;
 const row = (id: string, state: "photo" | "none", sha: string | null, failing: string | null = null): StoredPhotoState => ({
@@ -497,6 +503,33 @@ function deps(over: Partial<RefreshDeps> & { photos?: Record<string, { status: n
   eq(gone.status === "refused" && gone.why, "unknown-user", "a deactivated person cannot be refreshed");
   const notThere = await runPhotoRefresh(deps({ photos: { "a@x.test": { status: 404, body: NO_USER_404 } } }), { only: "a" });
   eq(notThere.status === "measured" && notThere.plan.notInDirectory.join(","), "a@x.test", "a userKey 404 for one person is not in the directory");
+}
+
+{
+  // #3161: who the refresh covers is one predicate, and "not read yet" is said
+  // only about somebody it covers.
+  const active = { deactivated_at: null };
+  const gone = { deactivated_at: "2026-09-01T00:00:00.000Z" };
+  eq(photoRefreshCovers(active), true, "the refresh covers an active person");
+  eq(photoRefreshCovers(gone), false, "and not a deactivated one");
+
+  // The refresh's own target list follows it: a full run asks about active people only.
+  const d = deps({ photos: { "a@x.test": { status: 200, body: photoBody(fakeImage("jpeg", 31)) } } });
+  await runPhotoRefresh(d);
+  eq(d.asked.includes("gone@x.test"), false, "a full run never asks about somebody the predicate leaves out");
+
+  const unread: AdvisorPhoto = { kind: "never-read", src: "https://lh3.googleusercontent.com/a/x" };
+  eq(awaitingFirstRead(unread, active), true, "an active person with no record is waiting for the refresh");
+  eq(awaitingFirstRead(unread, gone), false, "a deactivated one is not, and never will be");
+  eq(awaitingFirstRead({ kind: "unreadable", src: null }, active), false, "a failed table read is not a person waiting");
+  eq(awaitingFirstRead({ kind: "none" }, active), false, "a measured no photo is not waiting");
+
+  // The agent page says it only where the refresh will reach them.
+  assert(agentPhotoStateText(unread, active)?.includes("not been read") === true, "the agent page says an active person is not read yet");
+  eq(agentPhotoStateText(unread, gone), null, "and says nothing for a deactivated one, whose sign in photo is drawn");
+  assert(agentPhotoStateText({ kind: "unreadable", src: null }, gone)?.includes("could not be read") === true, "a failed read is still said for anybody");
+  assert(agentPhotoStateText({ kind: "none" }, active)?.includes("Google holds no photo") === true, "a measured none still names the remedy");
+  eq(agentPhotoStateText({ kind: "photo", src: "/advisor-photo/x" }, active), null, "a photo needs no line");
 }
 
 finish();

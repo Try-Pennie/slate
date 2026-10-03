@@ -18,6 +18,7 @@ import {
   type RefreshPlan,
   type StoredPhotoState,
 } from "./core.ts";
+import { photoRefreshCovers } from "./resolve.ts";
 
 /** The directory's answer for one account, as `users.list` returns it. */
 export interface DirectoryAccount {
@@ -173,7 +174,8 @@ export async function runPhotoRefresh(deps: RefreshDeps, opts: RefreshOptions = 
   }
 
   const full = !opts.only;
-  let targets = users.filter((u) => u.active);
+  // #3161: the same predicate the roster's photo notice counts with.
+  let targets = users.filter(photoRefreshCovers);
   if (opts.only) {
     targets = targets.filter((u) => u.id === opts.only);
     if (targets.length === 0) {

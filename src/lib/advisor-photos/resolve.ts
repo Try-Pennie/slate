@@ -67,6 +67,30 @@ export function resolveAdvisorPhoto(
   return { kind: "none" };
 }
 
+/**
+ * Whether the photo refresh covers this person (#3161): the ONE definition of who
+ * gets a photo read from Google. The refresh's target list and every surface that
+ * says somebody has not been read yet ask this, so the sentence can never name a
+ * gap the refresh was built never to close (L16, L342).
+ *
+ * Active people only. Most deactivated people have left and the directory no
+ * longer holds them, so reading them would only report them missing.
+ */
+export function photoRefreshCovers(person: { deactivated_at: string | null }): boolean {
+  return person.deactivated_at == null;
+}
+
+/**
+ * Whether this person is waiting for the refresh to reach them: no record yet,
+ * and somebody the refresh covers. A deactivated person with no record is not
+ * waiting for anything, so their sign in photo is drawn with nothing said (Dan,
+ * 2026-10-03). The only judge of `never-read` outside this file, which
+ * scripts/test-advisor-photo-reads.ts enforces.
+ */
+export function awaitingFirstRead(photo: AdvisorPhoto, person: { deactivated_at: string | null }): boolean {
+  return photo.kind === "never-read" && photoRefreshCovers(person);
+}
+
 /** The address to draw, or null for the initials. */
 export function photoSrc(photo: AdvisorPhoto): string | null {
   return photo.kind === "none" ? null : photo.src;
