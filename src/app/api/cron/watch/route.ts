@@ -12,6 +12,7 @@ import { acquireLease, releaseLock } from "@/lib/locks";
 import { WATCH_LOCK_TTL_MS, SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
 import { sendThrottledAlert, resolveAlert, isAlertFiring } from "@/lib/notify/dispatch";
 import { formatWatchLapseAlert, type FailingAgent } from "@/lib/notify/alerts";
+import { leaseHeldThroughout } from "@/lib/monitor/lease-heartbeat";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { log } from "@/lib/log";
 import { watchLapseRecovery } from "@/lib/notify/misc-alert-copy";
@@ -116,7 +117,8 @@ export async function GET(req: NextRequest) {
     }
 
     // Dead-man's switch (#420/#685): prove this lane ran this tick. Best-effort.
-    await recordHeartbeat("watch").catch(() => {});
+    // #3120: withheld when the lease was lost part way, so the gap pages.
+    if (leaseHeldThroughout(lease, "watch")) await recordHeartbeat("watch").catch(() => {});
     return NextResponse.json({
       agents: ordered.length,
       processed: results.length,

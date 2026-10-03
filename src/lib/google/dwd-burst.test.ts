@@ -96,4 +96,20 @@ describe("getDelegatedToken under a burst", () => {
     held[0].resolve(ok("tok-d"));
     expect(await leader).toBe("tok-d");
   });
+
+  // The other direction: the LEADER's deadline is the shorter one. Its mint giving
+  // up says nothing about the joiner, which still has time, so the joiner mints for
+  // itself rather than failing on a deadline it never had.
+  it("never fails a joiner on the leader's shorter deadline", async () => {
+    const { getDelegatedToken } = await import("@/lib/google/dwd");
+    const { DeadlineExceededError } = await import("@/lib/fetch-within-deadline");
+    const leader = getDelegatedToken("e@trypennie.com", undefined, 20);
+    await untilFetches(1);
+    const joiner = getDelegatedToken("e@trypennie.com", undefined, 60_000);
+    await expect(leader).rejects.toBeInstanceOf(DeadlineExceededError);
+    await untilFetches(2);
+    expect(held.length).toBe(2);
+    held[1].resolve(ok("tok-e"));
+    expect(await joiner).toBe("tok-e");
+  });
 });

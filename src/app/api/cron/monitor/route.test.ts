@@ -5,7 +5,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const cron = vi.hoisted(() => ({ isAuthorizedCron: vi.fn(() => false) }));
 const locks = vi.hoisted(() => ({
   acquireLock: vi.fn(async () => "lease"),
-  acquireLease: vi.fn(async () => ({ key: "cron_monitor", token: () => "lease", stillHeld: async () => true })),
+  acquireLease: vi.fn(async () => ({ key: "cron_monitor", token: () => "lease", stillHeld: async () => true, stopReason: () => null })),
   releaseLock: vi.fn(async () => {}),
 }));
 

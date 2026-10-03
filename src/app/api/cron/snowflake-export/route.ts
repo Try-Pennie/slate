@@ -4,6 +4,7 @@ import { isAuthorizedCron } from "@/lib/cron";
 import { refuseCronSecret } from "@/lib/bearer-failure";
 import { acquireLease, releaseLock } from "@/lib/locks";
 import { runSnowflakeExport } from "@/lib/snowflake/export";
+import { leaseHeldThroughout } from "@/lib/monitor/lease-heartbeat";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { log } from "@/lib/log";
 
@@ -35,7 +36,8 @@ export async function GET(req: NextRequest) {
     const result = await runSnowflakeExport({ stillHeld: lease.stillHeld });
     // Dead-man's switch (#1101): stamp only on a successful tick so the
     // lane-watchdog pages if the export goes silently quiet. Best-effort.
-    await recordHeartbeat("snowflake-export").catch(() => {});
+    // #3120: withheld when the lease was lost part way, so the gap pages.
+    if (leaseHeldThroughout(lease, "snowflake-export")) await recordHeartbeat("snowflake-export").catch(() => {});
     return NextResponse.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

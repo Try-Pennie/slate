@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { leaseHeldThroughout } from "@/lib/monitor/lease-heartbeat";
 import { isAuthorizedCron } from "@/lib/cron";
 import { refuseCronSecret } from "@/lib/bearer-failure";
 import { acquireLease, acquireLock, releaseLock } from "@/lib/locks";
@@ -3796,7 +3797,8 @@ export async function GET(req: NextRequest) {
 
     // Stamp the dead-man's switch (#420): proves this lane ran this tick.
     // Best-effort, and must never affect the monitor's own response.
-    await recordHeartbeat("monitor").catch(() => {});
+    // #3120: withheld when the lease was lost part way, so the gap pages.
+    if (leaseHeldThroughout(lease, "monitor")) await recordHeartbeat("monitor").catch(() => {});
 
     // The SECOND kind of stamp (#1394): proves these detectors CONCLUDED
     // something this tick, which the heartbeat above cannot tell you. The

@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // watch/renewal LOGIC is covered by the sync suite; this pins the route glue.
 const cron = vi.hoisted(() => ({ isAuthorizedCron: vi.fn(() => false) }));
 const locks = vi.hoisted(() => ({
-  acquireLease: vi.fn(async () => ({ key: "cron_watch", token: () => "lease", stillHeld: async () => true })),
+  acquireLease: vi.fn(async () => ({ key: "cron_watch", token: () => "lease", stillHeld: async () => true, stopReason: (): "taken" | "refused" | null => null })),
   releaseLock: vi.fn(async () => {}),
 }));
 const sync = vi.hoisted(() => ({
@@ -67,9 +67,11 @@ describe("the watch lane lease (#3120)", () => {
     cron.isAuthorizedCron.mockReturnValueOnce(true);
     pace.watchAgentsForTick.mockReturnValueOnce(twoAgents as never);
     pace.mapWithConcurrency.mockImplementationOnce(runTasks as never);
-    locks.acquireLease.mockResolvedValueOnce({ key: "cron_watch", token: () => "lease", stillHeld: async () => false });
+    locks.acquireLease.mockResolvedValueOnce({ key: "cron_watch", token: () => "lease", stillHeld: async () => false, stopReason: () => "taken" as const });
     await GET(req());
     expect(sync.ensureWatches).not.toHaveBeenCalled();
+    // A partly abandoned tick does not stamp the dead man's switch.
+    expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
   });
 
   it("CONTROL: a held lease renews every agent", async () => {

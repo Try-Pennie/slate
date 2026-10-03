@@ -9,6 +9,7 @@ const lease = vi.hoisted(() => ({
   key: "cron_sync",
   token: () => "lease",
   stillHeld: vi.fn(async () => true),
+  stopReason: vi.fn((): "taken" | "refused" | null => null),
 }));
 const locks = vi.hoisted(() => ({
   acquireLease: vi.fn(async () => lease),
@@ -95,6 +96,7 @@ beforeEach(() => {
   dispatch.isAlertFiring.mockResolvedValue(true);
   sync.loadFailingAgents.mockResolvedValue([]);
   lease.stillHeld.mockResolvedValue(true);
+  lease.stopReason.mockReturnValue(null);
 });
 
 // #3120: a tick that outlives its TTL lets the next one take the key. The sync token
@@ -117,10 +119,14 @@ describe("the sync lane lease (#3120)", () => {
     sync.loadSyncAgents.mockResolvedValueOnce(twoAgents as never);
     pace.mapWithConcurrency.mockImplementationOnce(runTasks as never);
     lease.stillHeld.mockResolvedValue(false);
+    lease.stopReason.mockReturnValue("taken");
     await GET(req());
     expect(sync.runIncrementalSync).not.toHaveBeenCalled();
     expect(sync.markAgentsSynced).toHaveBeenCalledWith([]);
     expect(locks.releaseLock).toHaveBeenCalledWith("cron_sync", "lease");
+    // A partly abandoned tick is not a healthy one: the dead man's switch is not
+    // stamped, so a lane that keeps losing its lease goes stale and pages.
+    expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
   });
 
   it("CONTROL: a held lease syncs and stamps every agent", async () => {

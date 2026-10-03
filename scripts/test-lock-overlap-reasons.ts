@@ -8,7 +8,7 @@
 // matched nothing cannot pass (L1, L98), then holds the real tree to it.
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { scanLockOverlap, unreasonedLockSites } from "./lib/scan-lock-overlap.ts";
+import { lockCallSiteLines, scanLockOverlap, unreasonedLockSites } from "./lib/scan-lock-overlap.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -44,6 +44,16 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
   const prose = ` * \`acquireLock\` (src/lib/locks.ts) is a lease; acquireLock(k, ttl) returns a token.`;
   eq(unreasonedLockSites("a.ts", prose).length, 0, "a doc comment naming the call is not a call site");
+}
+
+// --- the count and the findings judge a line the same way -----------------------
+// The coverage count used to re-implement the call site test and skipped `//` and
+// `*` lines but not `/*`, so a block comment naming the call counted as a site the
+// findings never judged.
+{
+  const block = `/* acquireLock("k", T) is a lease */\nconst lock = await acquireLock("k", T);`;
+  eq(lockCallSiteLines(block), [1], "a block comment opening line naming the call is not a site");
+  eq(unreasonedLockSites("a.ts", block).map((f) => f.line), [2], "and the findings agree on the one real site");
 }
 
 // --- the real tree -------------------------------------------------------------

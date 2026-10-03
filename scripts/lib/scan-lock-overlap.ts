@@ -32,19 +32,29 @@ export interface LockSiteFinding {
   text: string;
 }
 
-/** The call sites in one source that carry no reasoned `lock-overlap:` marker. */
-export function unreasonedLockSites(file: string, source: string): LockSiteFinding[] {
-  const lines = source.split("\n");
-  const out: LockSiteFinding[] = [];
-  lines.forEach((raw, i) => {
+/**
+ * The ONE judgement of what a call site is, as line indexes. Both the findings and
+ * the coverage count read it, so the two can never disagree about a line: a count
+ * that skipped one comment form the findings did not would report coverage of
+ * sites that are never judged.
+ */
+export function lockCallSiteLines(source: string): number[] {
+  const out: number[] = [];
+  source.split("\n").forEach((raw, i) => {
     const t = raw.trim();
     if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")) return;
     if (/\bfunction\s+acquire(?:Lock|Lease)\b/.test(t)) return;
-    if (!CALL.test(raw)) return;
-    if (hasOptOut(lines, i, LOCK_OVERLAP_TOKEN)) return;
-    out.push({ file, line: i + 1, text: t });
+    if (CALL.test(raw)) out.push(i);
   });
   return out;
+}
+
+/** The call sites in one source that carry no reasoned `lock-overlap:` marker. */
+export function unreasonedLockSites(file: string, source: string): LockSiteFinding[] {
+  const lines = source.split("\n");
+  return lockCallSiteLines(source)
+    .filter((i) => !hasOptOut(lines, i, LOCK_OVERLAP_TOKEN))
+    .map((i) => ({ file, line: i + 1, text: lines[i].trim() }));
 }
 
 function walk(dir: string, acc: string[]): string[] {
@@ -64,10 +74,7 @@ export function scanLockOverlap(repoRoot: string): { findings: LockSiteFinding[]
     const file = relative(repoRoot, abs);
     if (file === join("src", "lib", "locks.ts")) continue;
     const source = readFileSync(abs, "utf8");
-    sites += source.split("\n").filter((l) => {
-      const t = l.trim();
-      return !t.startsWith("//") && !t.startsWith("*") && CALL.test(l) && !/\bfunction\s+acquire/.test(t);
-    }).length;
+    sites += lockCallSiteLines(source).length;
     findings.push(...unreasonedLockSites(file, source));
   }
   return { findings, sites };

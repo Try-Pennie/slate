@@ -5,6 +5,7 @@ import { refuseCronSecret } from "@/lib/bearer-failure";
 import { CRON_LOCK_TTL_MS } from "@/lib/google/sync-coalesce";
 import { acquireLease, releaseLock } from "@/lib/locks";
 import { log } from "@/lib/log";
+import { leaseHeldThroughout } from "@/lib/monitor/lease-heartbeat";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 
 export const dynamic = "force-dynamic";
@@ -38,7 +39,8 @@ export async function GET(req: NextRequest) {
     });
     // Best-effort heartbeat for observability; stamped even on a failed drain
     // (which logs on its own path), since it only proves the lane executed.
-    await recordHeartbeat("bulk-reassign").catch(() => {});
+    // #3120: withheld when the lease was lost part way, so the gap pages.
+    if (leaseHeldThroughout(lease, "bulk-reassign")) await recordHeartbeat("bulk-reassign").catch(() => {});
     if (summary) {
       log.info("bulk-reassign", {
         msg: "drain tick",

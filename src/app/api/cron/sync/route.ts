@@ -25,6 +25,7 @@ import {
   formatSyncRecoveryNotice,
   isConsecutiveFailure,
 } from "@/lib/notify/alerts";
+import { leaseHeldThroughout } from "@/lib/monitor/lease-heartbeat";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { alertOnStaleLanes } from "@/lib/monitor/lane-watchdog";
 import { log } from "@/lib/log";
@@ -258,7 +259,8 @@ export async function GET(req: NextRequest) {
       truncated,
     });
     // Dead-man's switch (#420/#685): prove this lane ran this tick. Best-effort.
-    await recordHeartbeat("sync").catch(() => {});
+    // #3120: withheld when the lease was lost part way, so the gap pages.
+    if (leaseHeldThroughout(lease, "sync")) await recordHeartbeat("sync").catch(() => {});
     return NextResponse.json({
       agents: agents.length,
       deferred,

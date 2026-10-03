@@ -1,7 +1,7 @@
 import { googleSaClientEmail, googleSaPrivateKey } from "@/lib/env";
 import { GoogleHttpError } from "@/lib/google/http-error";
 import { parseGoogleErrorReason } from "@/lib/google/reachability-classify";
-import { DeadlineExceededError, NO_DEADLINE, type Deadline } from "@/lib/fetch-within-deadline";
+import { DeadlineExceededError, NO_DEADLINE, isDeadlineExceeded, type Deadline } from "@/lib/fetch-within-deadline";
 import { deadlineWithinBudget, fetchWithinBudget } from "@/lib/call-budget";
 import { makeSharedInFlight } from "@/lib/concurrency";
 
@@ -106,7 +106,21 @@ export async function getDelegatedToken(
   // wait to its own deadline and budget: joining a mint never lets a call wait
   // longer than it would have waited for a mint of its own.
   const { waitMs, reportAs } = deadlineWithinBudget(deadline, "google token mint");
-  const shared = mintShared(cacheKey, () => mintToken(cacheKey, email, scope, deadline));
+  const mint = () => mintToken(cacheKey, email, scope, deadline);
+  let led = false;
+  // The load runs synchronously up to its first await, so `led` is settled before
+  // the next line reads it.
+  const joined = mintShared(cacheKey, () => ((led = true), mint()));
+  // A joined mint that ran out of the LEADER's time says nothing about ours: when
+  // the leader's deadline was the shorter one, this caller mints again under its
+  // own (shared, so any other waiting joiners share the second attempt too). Any
+  // other failure would have been ours as well, so it is passed through.
+  const shared = led
+    ? joined
+    : joined.catch((err: unknown) => {
+        if (!isDeadlineExceeded(err)) throw err;
+        return mintShared(cacheKey, mint);
+      });
   if (waitMs === NO_DEADLINE || !Number.isFinite(waitMs)) return shared;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<never>((_, reject) => {
