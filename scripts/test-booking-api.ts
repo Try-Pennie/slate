@@ -77,6 +77,63 @@ async function run() {
     );
   }
 
+  // --- #2670: the requested bucket is read ONCE per API create ---
+  //
+  // The person decision has to know the bucket's world first (#2660), so it
+  // resolves it; the create then used to resolve it again. The baseline is a plain
+  // createBooking with the same input, which reads the requested bucket once and
+  // the booked bucket once more for the booking.created webhook (shared with the
+  // reservation drain, so out of reach here). An API create must cost no more.
+  {
+    const apiInput: ApiBookingInput = { ...input, externalId: "ext-once", confirmReschedule: false };
+    const plain = makeDeps({ personBookings: [] });
+    await createBooking(apiInput, plain.deps);
+    const baseline = plain.calls.resolveBucketByCode.length;
+    assert(baseline >= 1, "#2670 control: a plain create reads the bucket at all");
+
+    const api = makeDeps({ personBookings: [] });
+    const res = await bookViaApi(apiInput, api.deps);
+    assert(res.outcome === "created", "#2670: the API create still creates");
+    assert(
+      api.calls.resolveBucketByCode.length === baseline,
+      `#2670: an API create reads the bucket no more often than a plain create (${api.calls.resolveBucketByCode.length} vs ${baseline})`,
+    );
+    assert(
+      api.calls.resolveBucketByCode.filter((c) => c === apiInput.bucketCode).length ===
+        plain.calls.resolveBucketByCode.filter((c) => c === apiInput.bucketCode).length,
+      "#2670: and the requested code in particular is read the same number of times",
+    );
+    assert(api.calls.createEvent.length === 1, "#2670: one calendar event, as before");
+    assert(
+      api.calls.personWorlds.length === 1 && api.calls.personWorlds[0]!.isTest === false,
+      "#2670: the person decision is still asked, in the bucket's world, before the create",
+    );
+
+    // The dry run of a create: one read, where it used to be two.
+    const dry = makeDeps({ personBookings: [] });
+    const preview = await previewBooking(apiInput, dry.deps);
+    assert(preview.outcome === "created", "#2670: the dry run still answers created");
+    assert(
+      dry.calls.resolveBucketByCode.length === 1,
+      `#2670: the dry run reads the bucket once (${dry.calls.resolveBucketByCode.length})`,
+    );
+
+    // The refusals are unchanged: an unknown bucket and a hidden test bucket are
+    // still the same 422 before anything is read about the person.
+    for (const opts of [{ unknownBucket: true }, { testBucket: true }]) {
+      const refused = makeDeps({ personBookings: [], ...opts });
+      let err: unknown = null;
+      try {
+        await bookViaApi(apiInput, refused.deps);
+      } catch (e) {
+        err = e;
+      }
+      assert(err instanceof UnknownBucketError, `#2670: ${Object.keys(opts)[0]} is still refused`);
+      assert(refused.calls.resolveBucketByCode.length === 1, "#2670: after a single read");
+      assert(refused.calls.createEvent.length === 0, "#2670: and nothing was written");
+    }
+  }
+
   // --- bookViaApi: same person, SAME slot -> dedupe (no new booking) ---
   {
     const existingB = makeBooking({ id: "bk-existing", external_id: "ext-1", manage_token: "tokX" });
@@ -151,6 +208,15 @@ async function run() {
     assert(
       calls.webhooks.some((w) => w.event === "booking.cancelled"),
       "bookViaApi cross-bucket: the old appointment is cancelled",
+    );
+    // #2670: the move reads the requested bucket no more often than a plain create
+    // of it does, where it used to read it in the decision, the move and the create.
+    const plain = makeDeps({ personBookings: [] });
+    await createBooking({ ...apiInput, externalId: "ext-plain" }, plain.deps);
+    const reads = (list: string[]) => list.filter((c) => c === apiInput.bucketCode).length;
+    assert(
+      reads(calls.resolveBucketByCode) === reads(plain.calls.resolveBucketByCode),
+      `#2670: a cross bucket move reads the requested bucket as a plain create does (${reads(calls.resolveBucketByCode)} vs ${reads(plain.calls.resolveBucketByCode)})`,
     );
   }
 

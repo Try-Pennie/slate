@@ -4,7 +4,12 @@ import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import type { RateLimitRule, EdgeLimiterSpec } from "@/lib/rate-limit-core";
 import { log } from "@/lib/log";
 import { isWorkersRuntime, workersRuntimeMarker } from "@/lib/platform/runtime";
-import { BurstTracker, BURST_LIMITER_BINDING, burstKey } from "@/lib/rate-limit-burst";
+import {
+  BurstTracker,
+  BURST_LIMITER_BINDING,
+  burstKey,
+  burstEscalateAt,
+} from "@/lib/rate-limit-burst";
 import {
   judgeCaller,
   rateLimitKey,
@@ -138,10 +143,29 @@ async function withinBurstCeiling(
     return true;
   }
   try {
+    const escalateAt = burstEscalateAt(spec);
     return await burstTracker(ns).allow(
       burstKey(spec.area, key),
       Date.now(),
-      spec.burstCeilingPerMinute,
+      {
+        ceilingPerMinute: spec.burstCeilingPerMinute,
+        escalateAt,
+        // #1565: one line per key per window, so the escalation rate per lane can be measured
+        // from the logs once real integrator traffic exists. The caller is named only for a
+        // key limiter, where it is an integrator name from authentication; an address is
+        // never logged.
+        onEscalate: (count) => {
+          log.info("rate-limit-burst", {
+            msg: "escalated",
+            area: spec.area,
+            audience: spec.audience,
+            escalate_at: escalateAt,
+            ceiling: spec.burstCeilingPerMinute,
+            count,
+            ...(spec.keyKind === "api-key" ? { caller: key } : {}),
+          });
+        },
+      },
       // Fail LOUD while the tracker fails open, and say WHICH endpoint's ceiling stopped
       // counting: one tracker serves them all, so a report that just said "the burst ceiling"
       // would send the reader to the wrong endpoint. Routed through the same alerting the edge

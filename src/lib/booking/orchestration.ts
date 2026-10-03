@@ -2793,9 +2793,27 @@ export async function findExistingCallForIdentity(
   };
 }
 
+/**
+ * A bucket already resolved by code earlier in the same request (#2670), so a
+ * later step can reuse it rather than read the same row again. Carries the CODE
+ * it was resolved for, because a step may only reuse it for that same code.
+ */
+export interface KnownBucket {
+  code: string;
+  resolved: { bucket: Bucket; eventType: EventType };
+}
+
 export async function createBooking(
   requestedInput: CreateBookingInput,
   deps: BookingDeps,
+  /**
+   * #2670: the direct booking API resolves the bucket before the person decision
+   * (#2660), and hands it here so the create does not read it a second time. Used
+   * only when it was resolved for the very code this create books into; any other
+   * code (a booker confirm rerouted on the lead's Salesforce code) is resolved as
+   * before. The test bucket check below still runs on it either way.
+   */
+  opts: { requested?: KnownBucket } = {},
 ): Promise<BookingResult> {
   /**
    * Where this confirm's time went (#2321), under SLATE_LOADTEST only.
@@ -2872,9 +2890,10 @@ export async function createBooking(
   // completes it on its own, so refusing the retry loses nothing.
   assertWithinLeadCallingWindow(input.startIso, input.timezone);
 
-  const resolved = await profile.time("resolve-bucket", () =>
-    deps.resolveBucketByCode(input.bucketCode),
-  );
+  const known = opts.requested?.code === input.bucketCode ? opts.requested.resolved : null;
+  const resolved =
+    known ??
+    (await profile.time("resolve-bucket", () => deps.resolveBucketByCode(input.bucketCode)));
   if (!resolved) throw new UnknownBucketError();
   const { bucket, eventType } = resolved;
 
@@ -3652,11 +3671,14 @@ async function resolvePersonDecision(
     isTest: resolved.bucket.is_test,
   });
   const match = findPersonMatch(identity, candidates);
-  return decidePersonBooking({
+  const decision = decidePersonBooking({
     startIso: input.startIso,
     match,
     confirmReschedule: input.confirmReschedule,
   });
+  // #2670: handed on, so the create (or the move) does not read the bucket again.
+  const requested: KnownBucket = { code: input.bucketCode, resolved };
+  return { decision, requested };
 }
 
 /**
@@ -3669,7 +3691,7 @@ export async function previewBooking(
   input: ApiBookingInput,
   deps: BookingDeps,
 ): Promise<ApiBookingPreview> {
-  const decision = await resolvePersonDecision(input, deps);
+  const { decision, requested } = await resolvePersonDecision(input, deps);
   // #2310, L686: the dry run runs the same calling-window judge the real call
   // does, on exactly the arms where the real call runs it: a create, and a rebook
   // that becomes a reschedule (judged in the request's zone there too). A dedupe
@@ -3679,9 +3701,9 @@ export async function previewBooking(
     assertWithinLeadCallingWindow(input.startIso, input.timezone);
   }
   if (decision.action === "create") {
-    const resolved = await deps.resolveBucketByCode(input.bucketCode);
-    if (!resolved) throw new UnknownBucketError();
-    if (resolved.bucket.is_test && !input.allowTestBuckets) throw new UnknownBucketError();
+    // #2670: the bucket the person decision already resolved and vetted (unknown
+    // and hidden test buckets were refused there), so it is not read twice.
+    const { resolved } = requested;
     // Route through the SAME per-slot tier cascade the real book uses
     // (assignAgentWithTierFallback), not a plain single-bucket assign. Otherwise
     // the dry run answers "no eligible" for a busy-but-not-empty top tier that the
@@ -3875,15 +3897,15 @@ async function moveToRequestedBucket(
   input: ApiBookingInput,
   existing: Booking,
   deps: BookingDeps,
+  /** #2670: the bucket the person decision already resolved, so it is read once. */
+  requested: KnownBucket,
   opts: { tolerateRefusal?: boolean } = {},
 ): Promise<BucketMove> {
-  const resolved = await deps.resolveBucketByCode(input.bucketCode);
-  if (!resolved) throw new UnknownBucketError();
-  if (resolved.bucket.id === existing.bucket_id) return { outcome: "unchanged" };
+  if (requested.resolved.bucket.id === existing.bucket_id) return { outcome: "unchanged" };
 
   let created: Awaited<ReturnType<typeof createBooking>>;
   try {
-    created = await createBooking(input, deps);
+    created = await createBooking(input, deps, { requested });
   } catch (err) {
     if (opts.tolerateRefusal === false) throw err;
     // Only the two ordinary "no" answers are tolerated. A transient verify
@@ -3922,11 +3944,11 @@ export async function bookViaApi(
   input: ApiBookingInput,
   deps: BookingDeps,
 ): Promise<ApiBookingResult> {
-  const decision = await resolvePersonDecision(input, deps);
+  const { decision, requested } = await resolvePersonDecision(input, deps);
 
   switch (decision.action) {
     case "create": {
-      const res = await createBooking(input, deps);
+      const res = await createBooking(input, deps, { requested });
       return {
         outcome: "created",
         booking: res.booking,
@@ -3940,7 +3962,7 @@ export async function bookViaApi(
       // bucket with nowhere to be noticed. A re-tiered lead confirming the time
       // they already hold is the ordinary call, and answering 200 deduped left
       // them with the old pool and the old agent while the response said nothing.
-      const moved = await moveToRequestedBucket(input, decision.booking, deps);
+      const moved = await moveToRequestedBucket(input, decision.booking, deps, requested);
       if (moved.outcome === "moved") {
         return {
           outcome: "rescheduled",
@@ -3970,7 +3992,7 @@ export async function bookViaApi(
       // A refusal here is NOT swallowed: the lead asked for a different time and
       // did not get it, so there is nothing to report as handled and the error
       // propagates. That asymmetry with the dedupe arm is the point.
-      const moved = await moveToRequestedBucket(input, decision.booking, deps, {
+      const moved = await moveToRequestedBucket(input, decision.booking, deps, requested, {
         tolerateRefusal: false,
       });
       if (moved.outcome === "moved") {
