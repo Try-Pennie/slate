@@ -17,13 +17,16 @@
 --    NAME (book, confirmation, manage...), never an id or a token.
 --
 --    BOUNDED, because the referrer is whatever the caller sends. The middleware batches
---    and folds in memory first, so a flood costs few writes. Here, a day holds at most
---    200 CAPPED (origin, surface) rows; past that a new capped one is counted under
---    '(other)'. A row is capped unless the caller marked it otherwise, which it does
---    only for the fixed set of exact allow list hosts and the three literals, so junk
---    can never push the production site or a listed partner into '(other)'. Rows
---    older than 90 days are deleted by the first write of each day, so the table needs
---    no lane of its own.
+--    and folds in memory first, so a flood costs few writes. Here, a day names at most
+--    200 CAPPED hosts; past that a new capped host is counted under '(other)'. A row
+--    is capped unless the caller marked it otherwise, which it does only for the fixed
+--    set of exact allow list hosts and the three literals, so junk can never push the
+--    production site or a listed partner into '(other)'. Each row of a batch is
+--    validated on its own and a bad one is dropped and counted, so one bad row never
+--    aborts the batch.
+--
+--    RETENTION: 90 days, Dan's decision (2026-10-03). Rows older than that are deleted
+--    by the first write of each day, so the table needs no lane of its own.
 --
 --    The day boundary is the zone the CALLER passes (BUSINESS_ZONE), so the database
 --    and the admin page that reads the rows cannot disagree about which day a load
@@ -59,15 +62,16 @@ create or replace function record_frame_origins(
   p_zone text,
   p_rows jsonb
 )
-returns void
+returns integer
 language plpgsql
 security definer
 set search_path = public
 as $$
 declare
-  v_day    date;
-  v_origin text;
-  r        record;
+  v_day     date;
+  v_origin  text;
+  v_dropped integer := 0;
+  r         record;
 begin
   if p_zone is null or p_zone = '' then
     raise exception 'record_frame_origins: a zone is required';
@@ -99,7 +103,14 @@ begin
   for r in
     select * from jsonb_to_recordset(p_rows) as x(origin text, surface text, loads bigint, capped boolean)
   loop
-    if r.loads is null or r.loads < 1 or r.loads > 1000000 then
+    -- Each row is judged on its own and a bad one is DROPPED and counted, never left
+    -- to the table's CHECK: a CHECK failure aborts the whole batch, the recorder puts
+    -- it back, and every later flush would fail on the same row for ever.
+    if r.loads is null or r.loads < 1 or r.loads > 1000000
+       or r.origin is null or char_length(r.origin) not between 1 and 255
+       or r.surface is null
+       or r.surface not in ('book', 'advisor-link', 'confirmation', 'manage', 'rebook', 'other') then
+      v_dropped := v_dropped + 1;
       continue;
     end if;
     v_origin := r.origin;
@@ -111,8 +122,11 @@ begin
       continue;
     end if;
 
+    -- The cap counts HOSTS, not (host, page) rows, and a host already named today keeps
+    -- its name on a new page.
     if coalesce(r.capped, true)
-       and (select count(*) from frame_origin_daily where day = v_day and capped) >= 200 then
+       and not exists (select 1 from frame_origin_daily where day = v_day and origin = v_origin)
+       and (select count(distinct origin) from frame_origin_daily where day = v_day and capped) >= 200 then
       v_origin := '(other)';
     end if;
 
@@ -122,6 +136,7 @@ begin
     on conflict (day, origin, surface)
     do update set loads = frame_origin_daily.loads + excluded.loads, last_seen = now();
   end loop;
+  return v_dropped;
 end
 $$;
 

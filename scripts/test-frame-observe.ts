@@ -117,6 +117,7 @@ async function main() {
     // one UTC day, two Eastern days (EDT, UTC-4).
     r.at(Date.UTC(2026, 9, 3, 3, 59, 50));
     r.record({ origin: "https://partner.example", surface: "book" });
+    await r.settle(); // one write in flight at a time: let the first land
     r.at(Date.UTC(2026, 9, 3, 4, 0, 10));
     r.record({ origin: "https://partner.example", surface: "book" });
     await r.settle();
@@ -130,6 +131,72 @@ async function main() {
     s.record({ origin: "https://partner.example", surface: "book" });
     await s.settle();
     eq(s.writes.length, 1, "the same Eastern day is not a new first sighting, though the UTC day changed");
+  }
+
+  // A failed FIRST sighting is not marked seen: the next load of anything retries it at
+  // once, rather than waiting a whole window, and the rare partner is not lost.
+  {
+    const r = rig();
+    r.failNext();
+    r.record({ origin: "https://rare.example", surface: "book" });
+    await r.settle();
+    eq(r.writes.length, 0, "the first sighting's write failed");
+    r.tick(1_000);
+    r.record({ origin: "https://www.trypennie.com", surface: "book" });
+    await r.settle();
+    eq(total(r.writes, "https://rare.example"), 1, "the next load, a second later, carries the rare host's first sighting");
+  }
+
+  // Only one write is in flight per isolate, so a failing database is not hit once per load.
+  {
+    const r = rig();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((res) => (release = res));
+    const writes: FramingBatchRow[][] = [];
+    const recorder = makeFramingRecorder({
+      write: async (rows) => {
+        writes.push(rows);
+        await gate;
+      },
+      now: () => 0,
+      onError: () => {},
+    });
+    const deferred: Promise<unknown>[] = [];
+    for (let i = 0; i < 20; i++) recorder({ origin: `https://h${i}.example`, surface: "book" }, (p) => deferred.push(p));
+    eq(writes.length, 1, "twenty new hosts while a write is in flight: still one write");
+    release();
+    await Promise.all(deferred);
+    void r;
+  }
+
+  // The per isolate cap counts HOSTS, not (host, page) pairs: one host on six pages is one.
+  {
+    const r = rig();
+    const pages = ["book", "advisor-link", "confirmation", "manage", "rebook", "other"];
+    for (let i = 0; i < FRAME_OBSERVE_MAX_KEYS; i++) {
+      for (const surface of pages) r.record({ origin: `https://h${i}.example`, surface });
+      r.tick(FRAME_OBSERVE_FLUSH_MS);
+    }
+    await r.settle();
+    eq(total(r.writes, "(other)"), 0, `${FRAME_OBSERVE_MAX_KEYS} hosts on every page are all named`);
+    r.record({ origin: "https://one-too-many.example", surface: "book" });
+    r.tick(FRAME_OBSERVE_FLUSH_MS);
+    r.record({ origin: "https://h0.example", surface: "book" });
+    await r.settle();
+    eq(total(r.writes, "(other)"), 1, "the next new host is folded");
+  }
+
+  // A localhost port is allowed by the lock but not uncapped here, or a caller could mint
+  // a fresh port per request and grow the table; an exact allow list host is uncapped.
+  {
+    const r = rig();
+    r.record({ origin: "http://localhost:3000", surface: "book" });
+    await r.settle(); // one write in flight at a time: let the first land
+    r.record({ origin: "https://dev.trypennie.com", surface: "book" });
+    await r.settle();
+    const rows = r.writes.flat();
+    eq(rows.find((w) => w.origin === "http://localhost:3000")?.capped, true, "a localhost port counts against the cap");
+    eq(rows.find((w) => w.origin === "https://dev.trypennie.com")?.capped, false, "an exact listed host does not");
   }
 
   // self and unstated name no site and never count against the cap.

@@ -25,7 +25,7 @@
  *
  * Pure apart from its injected write, scheduler and clock: scripts/test-frame-observe.ts.
  */
-import { FRAME_ANCESTOR_ALLOW_LIST, type FrameSurface } from "@/lib/embed/frame-policy";
+import { allowListMatch, type FrameSurface } from "@/lib/embed/frame-policy";
 
 /**
  * The zone the record's days are keyed in, passed to `record_frame_origins` and read
@@ -61,13 +61,15 @@ const dayKey = new Intl.DateTimeFormat("en-CA", {
   day: "2-digit",
 });
 
-/** Hosts that always get a row of their own: a fixed set, so not an attacker's to grow. */
+/** Hosts that always get a row of their own: a fixed set, so not an attacker's to grow.
+ *  Judged by the same predicate as the lock (`allowListMatch`); only an EXACT match is
+ *  fixed, since a `:*` source admits a fresh port per request. */
 function uncapped(origin: string): boolean {
   return (
     origin === "self" ||
     origin === "unstated" ||
     origin === "(other)" ||
-    FRAME_ANCESTOR_ALLOW_LIST.includes(origin)
+    allowListMatch(origin) === "exact"
   );
 }
 
@@ -82,56 +84,67 @@ export function makeFramingRecorder(deps: {
 }): (obs: { origin: string; surface: FrameSurface | string }, defer: Defer) => void {
   let pending = new Map<string, FramingBatchRow>();
   let lastFlushMs = -Infinity;
+  let inFlight = false;
   let day = "";
-  // Every key this isolate has written a first sighting of today.
-  let seen = new Set<string>();
-  // Of those, how many are capped hosts, the set a caller could try to grow.
-  let cappedSeen = 0;
+  // (host, page) keys whose first sighting today has been WRITTEN. Marked only after
+  // the write succeeds, so a failed one is retried at the next flush, not lost (L368).
+  let written = new Set<string>();
+  // Capped HOSTS this isolate has named today, the set a caller could try to grow.
+  let cappedHosts = new Set<string>();
+
+  const keyOf = (row: { origin: string; surface: string }) => `${row.origin}|${row.surface}`;
 
   const add = (row: FramingBatchRow) => {
-    const key = `${row.origin}|${row.surface}`;
+    const key = keyOf(row);
     const prev = pending.get(key);
     if (prev) prev.loads += row.loads;
     else pending.set(key, { ...row });
   };
 
   const flush = (defer: Defer) => {
-    if (pending.size === 0) return;
+    // One write in flight per isolate, so a failing database is not hit once per load.
+    if (inFlight || pending.size === 0) return;
     const batch = [...pending.values()];
     pending = new Map();
     lastFlushMs = deps.now();
+    inFlight = true;
+    const batchDay = day;
     defer(
-      deps.write(batch).catch((err) => {
-        deps.onError(err);
-        for (const row of batch) add(row);
-      }),
+      deps
+        .write(batch)
+        .then(
+          () => {
+            if (batchDay === day) for (const row of batch) written.add(keyOf(row));
+          },
+          (err) => {
+            deps.onError(err);
+            for (const row of batch) add(row);
+          },
+        )
+        .finally(() => {
+          inFlight = false;
+        }),
     );
   };
+
+  /** A key whose first sighting has not landed yet: flushed at once, never batched. */
+  const unwrittenPending = () => [...pending.keys()].some((k) => !written.has(k));
 
   return (obs, defer) => {
     const today = dayKey.format(deps.now());
     if (today !== day) {
       day = today;
-      seen = new Set();
-      cappedSeen = 0;
+      written = new Set();
+      cappedHosts = new Set();
     }
 
     let origin = obs.origin;
-    const isUncapped = uncapped(origin);
-    let key = `${origin}|${obs.surface}`;
-    let firstSighting = false;
-    if (!seen.has(key)) {
-      if (isUncapped || cappedSeen < FRAME_OBSERVE_MAX_KEYS) {
-        seen.add(key);
-        if (!isUncapped) cappedSeen++;
-        firstSighting = true;
-      } else {
-        origin = "(other)";
-        key = `${origin}|${obs.surface}`;
-      }
+    if (!uncapped(origin) && !cappedHosts.has(origin)) {
+      if (cappedHosts.size < FRAME_OBSERVE_MAX_KEYS) cappedHosts.add(origin);
+      else origin = "(other)";
     }
 
     add({ origin, surface: obs.surface, loads: 1, capped: !uncapped(origin) });
-    if (firstSighting || deps.now() - lastFlushMs >= FRAME_OBSERVE_FLUSH_MS) flush(defer);
+    if (unwrittenPending() || deps.now() - lastFlushMs >= FRAME_OBSERVE_FLUSH_MS) flush(defer);
   };
 }

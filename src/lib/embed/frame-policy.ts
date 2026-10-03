@@ -42,23 +42,40 @@ export function frameAncestorSources(list: readonly string[] = FRAME_ANCESTOR_AL
  * refuse, so it and the lock cannot disagree.
  */
 export function isOriginAllowed(origin: string, list: readonly string[] = FRAME_ANCESTOR_ALLOW_LIST): boolean {
+  return allowListMatch(origin, list) !== null;
+}
+
+/**
+ * HOW an origin matches the allow list: `exact` for a source naming its port (or none),
+ * `any-port` for a `:*` source, null for no match. The one predicate behind both the lock
+ * (`isOriginAllowed`, either kind) and the framing record, which exempts only `exact`
+ * hosts from its cap: a caller can mint a fresh localhost port per request, so treating
+ * a `:*` match as part of a fixed set would let it grow the table without bound.
+ */
+export function allowListMatch(
+  origin: string,
+  list: readonly string[] = FRAME_ANCESTOR_ALLOW_LIST,
+): "exact" | "any-port" | null {
   let url: URL;
   try {
     url = new URL(origin);
   } catch {
-    return false;
+    return null;
   }
-  return list.some((source) => {
+  let match: "exact" | "any-port" | null = null;
+  for (const source of list) {
     const anyPort = source.endsWith(":*");
     let allowed: URL;
     try {
       allowed = new URL(anyPort ? source.slice(0, -2) : source);
     } catch {
-      return false;
+      continue;
     }
-    if (allowed.protocol !== url.protocol || allowed.hostname !== url.hostname) return false;
-    return anyPort || allowed.port === url.port;
-  });
+    if (allowed.protocol !== url.protocol || allowed.hostname !== url.hostname) continue;
+    if (anyPort) match = "any-port";
+    else if (allowed.port === url.port) return "exact";
+  }
+  return match;
 }
 
 /** One recorded row of `frame_origin_daily`. */

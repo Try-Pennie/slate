@@ -1,7 +1,7 @@
 // #3137: who may frame the booker, and what Slate records about who does. Pure rules,
 // driven without a network or a database.
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-frame-policy.ts
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -106,6 +106,27 @@ eq(
   "an origin too long to be real is not stored",
 );
 eq(new Set(FRAME_SURFACES).size, FRAME_SURFACES.length, "surface names are distinct");
+
+// The database knows the same page names, in the table's CHECK and in the function's
+// per row validation. One bad row must be dropped by that validation, never reach the
+// CHECK, because a CHECK failure aborts the whole batch, the recorder puts it back, and
+// every later flush then fails on the same row.
+{
+  const sql = readFileSync(
+    fileURLToPath(new URL("../supabase/migrations/0162_frame_origin_observe_and_lock.sql", import.meta.url)),
+    "utf8",
+  );
+  const lists = [...sql.matchAll(/surface\s+(?:text\s+not null\s+check\s*\(\s*surface\s+)?(?:not\s+)?in\s*\(([^)]*)\)/gi)].map(
+    (m) => m[1].split(",").map((s) => s.trim().replace(/^'|'$/g, "")),
+  );
+  assert(lists.length >= 2, `the table CHECK and the per row validation both name the pages (found ${lists.length})`);
+  for (const list of lists) eq(list, [...FRAME_SURFACES], "a database list of pages matches FRAME_SURFACES");
+  assert(
+    /r\.surface\s+not\s+in\s*\(/i.test(sql) && /continue;/i.test(sql),
+    "record_frame_origins skips a row with an unknown page rather than letting the CHECK abort the batch",
+  );
+  assert(/returns integer/i.test(sql), "and reports how many rows it dropped");
+}
 
 // Whether a recorded origin would still be let in once the lock is on. Judged the way
 // the browser judges the CSP sources, so the admin page and the lock cannot disagree.

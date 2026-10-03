@@ -189,7 +189,9 @@ describe("staff session age limits (#3084)", () => {
   });
 
   const expectRefused = async (res: Response, error: string) => {
-    expect(res.status).toBe(307);
+    // 303, never 307: a 307 makes the browser repeat a server action's POST against
+    // /login. 303 turns any method into a GET of the sign in page.
+    expect(res.status).toBe(303);
     const to = new URL(res.headers.get("location") ?? "");
     expect(to.pathname).toBe("/login");
     expect(to.searchParams.get("error")).toBe(error);
@@ -236,6 +238,18 @@ describe("staff session age limits (#3084)", () => {
     const inside = await middleware(staffRequest("/me", signedIn(10 * 86_400_000, SESSION_IDLE_MS - 1)));
     expect(inside.status).toBe(200);
     await expectRefused(await middleware(staffRequest("/me", signedIn(10 * 86_400_000, SESSION_IDLE_MS))), "session_idle");
+  });
+
+  it("answers an aged session's server action POST with a 303, so the browser does not re-POST to /login", async () => {
+    const req = new NextRequest("https://slate.test/admin/agents", {
+      method: "POST",
+      headers: {
+        cookie: Object.entries(signedIn(SESSION_TIME_BOX_MS, 0))
+          .map(([k, v]) => `${k}=${v}`)
+          .join("; "),
+      },
+    });
+    await expectRefused(await middleware(req), "session_expired");
   });
 
   it("refuses a session that carries no sign in stamp, rather than starting its clock now", async () => {

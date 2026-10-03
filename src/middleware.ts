@@ -216,7 +216,9 @@ async function endAgedSession(
 ): Promise<NextResponse> {
   const to = new URL("/login", request.url);
   to.searchParams.set("error", sessionRefusalLoginError(reason));
-  const res = NextResponse.redirect(to);
+  // 303 rather than the default 307: a server action is a POST, and a 307 would have
+  // the browser repeat it against /login. 303 makes any method a GET of the page.
+  const res = NextResponse.redirect(to, 303);
   log.warn("auth", { msg: "session past its age limit, signing out", reason });
 
   try {

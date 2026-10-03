@@ -53,11 +53,16 @@ export async function readFrameLockSetting(): Promise<boolean | null> {
  */
 const framingRecorder = makeFramingRecorder({
   write: async (rows) => {
-    const { error } = await supabaseAdmin().rpc("record_frame_origins", {
+    const { data, error } = await supabaseAdmin().rpc("record_frame_origins", {
       p_zone: FRAME_DAY_ZONE,
       p_rows: rows,
     });
     if (error) throw new Error(`record_frame_origins failed: ${error.message}`);
+    // The batch landed; a row the database judged invalid was dropped rather than
+    // failing the rest, and is reported here rather than vanishing.
+    if (typeof data === "number" && data > 0) {
+      log.warn("frame-observe", { msg: "framing rows dropped as invalid", dropped: data, batch: rows.length });
+    }
   },
   now: () => Date.now(),
   onError: (err) => log.warn("frame-observe", { msg: "framing record failed, counts kept for the next flush" }, err),

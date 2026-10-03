@@ -255,13 +255,14 @@ export interface Database {
       };
       /** #3137 (migration 0162): add one batch of framed booker loads to the day's
        *  (origin, surface) rows, the day taken in `p_zone`. Bounded per day and self
-       *  pruning; see the migration. */
+       *  pruning; see the migration. Returns how many rows of the batch it dropped as
+       *  invalid, each judged on its own so one bad row never aborts the batch. */
       record_frame_origins: {
         Args: {
           p_zone: string;
           p_rows: { origin: string; surface: string; loads: number; capped: boolean }[];
         };
-        Returns: undefined;
+        Returns: number;
       };
       /** #418: the aggregated outcome mix over [p_since, today] as a single jsonb
        *  row ({ by_outcome, by_error }) so it never hits the 1000-row SETOF cap.
