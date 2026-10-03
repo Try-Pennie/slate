@@ -458,6 +458,61 @@ describe("AlertSettings per page floors wait on recorded sources (#2765)", () =>
   const learningCard = () => document.getElementById("volume-learning")!;
   const coverageRows = () => learningCard().querySelectorAll("[data-page-coverage]");
 
+  // #3193: the pages' floors are judged at the share of Low Slate carries, so these
+  // cases store one, as the daily refit does: 202 of 456 Low bookings, 44%.
+  const DAY_FROM = "2026-10-01T07:00:00.000Z";
+  const DAY_TO = "2026-10-02T07:00:00.000Z";
+  const WITH_SHARE = {
+    volume_learning: {
+      version: 3,
+      declaredRampEndOn: null,
+      fittedAt: DAY_TO,
+      tiers: { "1": { firstBookingAt: null, rampStartAt: null, result: null } },
+      carriedShare: {
+        measuredAt: DAY_TO,
+        from: DAY_FROM,
+        to: DAY_TO,
+        tiers: {
+          "1": {
+            applied: { share: 0.44, slate: 202, calcom: 254, level: null, from: DAY_FROM, to: DAY_TO },
+            last: { slate: 202, calcom: 254, level: null, outcome: "applied" },
+            heldSince: null,
+          },
+        },
+      },
+    },
+  };
+  beforeEach(() => {
+    db.results.monitor_alert_config = { data: WITH_SHARE, error: null };
+  });
+
+  it("says the pages are not judged, in place of their floors, while the share Slate carries is unmeasured", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    db.results.monitor_alert_config = { data: null, error: null };
+    db.results.business_hours = { data: [], error: null };
+    db.results.business_hours_exceptions = { data: [], error: null };
+    render(await AlertSettingsPage(props));
+    expect(learningCard().querySelector("[data-page-share]")!.textContent).toMatch(/^The Low pages are not judged: the share of Low bookings Slate carries has not been measured yet/);
+    expect(coverageRows()).toHaveLength(0);
+  });
+
+  it("control: with a share stored, says it beside the pages' floors", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    const counts = [40, 0];
+    db.results.bookings = {
+      data: [{ id: "b1" }],
+      error: null,
+      get count() {
+        return counts.shift() ?? 0;
+      },
+    } as unknown as { data: unknown; error: unknown };
+    db.results.business_hours = { data: [], error: null };
+    db.results.business_hours_exceptions = { data: [], error: null };
+    render(await AlertSettingsPage(props));
+    expect(learningCard().querySelector("[data-page-share]")!.textContent).toContain("thinned to the 44% of Low bookings Slate carried in the day to 2026-10-02");
+    expect(coverageRows().length).toBeGreaterThan(0);
+  });
+
   it("says how many bookings recorded no source, instead of the pages' floors", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
     // The fake answers every bookings read alike: 40 real, 40 unsourced rows framed
