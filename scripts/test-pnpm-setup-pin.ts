@@ -153,11 +153,20 @@ const pinnedGlobally = packageManagerPinned(pkg);
   assert(real !== undefined, "loadtest.yml is there to overlay");
   const pinned = (real!.yaml.match(/pnpm\/action-setup@/g) ?? []).length;
   assert(pinned >= 5, `and it really uses the action a lot (${pinned} steps)`);
+  // The step line is matched whatever follows the ref, so the overlay does not
+  // depend on the SHA or on the version comment Dependabot rewrites beside it. It
+  // used to match a literal "# v6", and the first bump to "# v6.1.0" (#2492)
+  // turned the overlay into a no-op that failed for a reason unrelated to pins.
+  let removed = 0;
   const stripped = real!.yaml.replace(
-    /( +- uses: pnpm\/action-setup@\S+ # v6\n)( +with:\n +version: \d+\n)/g,
-    "$1",
+    /( +- uses: pnpm\/action-setup@[^\n]*\n)( +with:\n +version: [^\n]+\n)/g,
+    (_m, step: string) => {
+      removed++;
+      return step;
+    },
   );
   assert(stripped !== real!.yaml, "the overlay really removed something");
+  eq(removed, pinned, "and it stripped the pin from every step, not only some of them");
   const found = unpinnedPnpmSetups([{ name: "loadtest.yml", yaml: stripped }], false);
   eq(found.length, pinned, "every unpinned step in the real file is caught");
 }
