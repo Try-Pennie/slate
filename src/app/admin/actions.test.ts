@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // Type only, so it is erased and cannot pull the real module in ahead of the mocks.
 import type { TwilioSyncResult } from "@/lib/twilio/sync";
 
@@ -318,7 +318,10 @@ import {
   sendTestWebhook,
 } from "./actions";
 import { ALERT_KEYS } from "@/lib/monitor/settings";
-import { encodeImpersonationCookie } from "@/lib/auth/impersonation";
+import {
+  encodeImpersonationCookie,
+  impersonationCookieOutcome,
+} from "@/lib/auth/impersonation";
 
 const admin = { id: "admin1", role: "admin", org_id: "o1" };
 
@@ -340,7 +343,15 @@ function form(entries: Record<string, string | string[]>): FormData {
   return fd;
 }
 
+// The "view as" cookie is signed with the key impersonationSigningSecret reads (#3113).
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 beforeEach(() => {
+  vi.stubEnv("SUPABASE_SECRET_KEY", "test-signing-secret");
+  // The sign-in domain fails closed when unset (#3083), as production carries it.
+  vi.stubEnv("GOOGLE_HOSTED_DOMAIN", "trypennie.com");
   vi.clearAllMocks();
   dbState.single = null;
   dbState.singleError = null;
@@ -524,11 +535,37 @@ describe("startImpersonation denial branches", () => {
     expect(cookieStore.set).toHaveBeenCalledTimes(1);
     const [name, value, opts] = cookieStore.set.mock.calls[0];
     expect(name).toBe("slate_impersonate");
-    // Value carries the target id AND an issued-at timestamp (id.timestamp).
-    expect(value).toMatch(/^agent1\.\d+$/);
+    // Value carries the target id, an issued-at timestamp and a signature
+    // (id.timestamp.mac, #3113), and verifies for THIS admin under the key.
+    expect(value).toMatch(/^agent1\.\d+\.[A-Za-z0-9_-]+$/);
+    const verdict = await impersonationCookieOutcome({
+      realRole: "admin",
+      realId: admin.id,
+      cookie: value,
+      nowMs: Date.now(),
+      secret: "test-signing-secret",
+    });
+    expect(verdict).toEqual({ kind: "candidate", targetId: "agent1" });
     // A finite maxAge bounds the cookie's own lifetime as defense in depth.
     expect(opts.maxAge).toBeGreaterThan(0);
     expect(Number.isFinite(opts.maxAge)).toBe(true);
+  });
+
+  // #3113: the start is audited BEFORE the cookie exists, so no session can be
+  // live that the trail does not record starting.
+  it("records impersonate.start before it sets the cookie", async () => {
+    auth.realCurrentUser.mockResolvedValueOnce(admin);
+    dbState.single = { id: "agent1", role: "agent" };
+    await expect(startImpersonation(form({ email: "agent@x.com" }))).rejects.toThrow(
+      /NEXT_REDIRECT:\/me/,
+    );
+    const startCall = recordAudit.mock.calls.findIndex(
+      ([e]) => (e as { action: string }).action === "impersonate.start",
+    );
+    expect(startCall).toBeGreaterThanOrEqual(0);
+    expect(recordAudit.mock.invocationCallOrder[startCall]).toBeLessThan(
+      cookieStore.set.mock.invocationCallOrder[0],
+    );
   });
 
   // The cookie now carries "id.timestamp" (#653); the stop audit must record the
@@ -536,7 +573,12 @@ describe("startImpersonation denial branches", () => {
   it("records the decoded target id in the stop audit, not the raw cookie", async () => {
     auth.realCurrentUser.mockResolvedValueOnce(admin);
     cookieStore.get.mockReturnValueOnce({
-      value: encodeImpersonationCookie("agent1", 1_700_000_000_000),
+      value: await encodeImpersonationCookie({
+        issuerId: admin.id,
+        targetId: "agent1",
+        issuedAtMs: 1_700_000_000_000,
+        secret: "test-signing-secret",
+      }),
     });
     await expect(stopImpersonation()).rejects.toThrow(/NEXT_REDIRECT:\/admin/);
     expect(recordAudit).toHaveBeenCalledWith(
@@ -552,7 +594,12 @@ describe("endDroppedImpersonation (#652)", () => {
   it("clears the cookie and audits the auto-end with the reason and decoded target", async () => {
     auth.realCurrentUser.mockResolvedValueOnce(admin);
     cookieStore.get.mockReturnValueOnce({
-      value: encodeImpersonationCookie("agent1", 1_700_000_000_000),
+      value: await encodeImpersonationCookie({
+        issuerId: admin.id,
+        targetId: "agent1",
+        issuedAtMs: 1_700_000_000_000,
+        secret: "test-signing-secret",
+      }),
     });
     await endDroppedImpersonation("expired");
     expect(cookieStore.delete).toHaveBeenCalledWith("slate_impersonate");

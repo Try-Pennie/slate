@@ -7,10 +7,12 @@ import { atLeast, canManageAgents, canModerateAllOoo } from "@/lib/auth/roles";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
   canHoldManagerOfRecord,
+  canModerate,
   canRetrySideEffects,
   formatWhenLine,
   managerCannotApproveNotice,
   overlaps,
+  pendingQueueScope,
 } from "@/lib/ooo/core";
 import { oooDayCount } from "@/lib/ooo/cancel-copy";
 import { describeEffects } from "@/lib/ooo/effect-copy";
@@ -124,7 +126,10 @@ export default async function OooQueuePage({
   const canRetry = canRetrySideEffects(me);
   const db = supabaseAdmin();
 
-  // Managers see their reports' requests; team leads and up see the whole org.
+  // Managers see their reports' requests; team leads and up see the whole org,
+  // less an admin's own (#3114: they cannot decide it, so another admin or a
+  // team lead does). The same scope the header badge counts.
+  const queueScope = pendingQueueScope(me);
   let pendingQuery = db
     // cap-safe: the org's pending time off queue, drained by moderation, well under a page.
     .from("ooo_requests")
@@ -132,7 +137,8 @@ export default async function OooQueuePage({
     .eq("org_id", me.org_id)
     .eq("status", "pending")
     .order("starts_at", { ascending: true });
-  if (!seesAll) pendingQuery = pendingQuery.eq("manager_id", me.id);
+  if (queueScope?.managerId) pendingQuery = pendingQuery.eq("manager_id", queueScope.managerId);
+  if (queueScope?.excludeUserId) pendingQuery = pendingQuery.neq("user_id", queueScope.excludeUserId);
 
   const historySince = historySinceIso();
   let historyQuery = db
@@ -188,10 +194,11 @@ export default async function OooQueuePage({
   const orgRow = orgRes.data as { default_timezone: string } | null;
   const orgZone = orgRow?.default_timezone ?? "America/New_York";
 
-  // Exclude OOO requests authored by admins/super admins everywhere on this
-  // page — they're operators (and the source of test requests), not part of the
-  // bookable team, so their requests would otherwise poison the queue and the
-  // insights. They still see their own on /me. (team_lead and below stay in.)
+  // Exclude OOO requests authored by admins/super admins from the history and the
+  // insights: they're operators (and the source of test requests), not part of
+  // the bookable team. NOT from the pending queue (#3114): an admin cannot
+  // decide their own time off, so another admin or a team lead has to be able to
+  // decide it here. They still see their own on /me. (team_lead and below stay in.)
   const staffIds = new Set(
     users.filter((u) => atLeast(u.role, "admin")).map((u) => u.id),
   );
@@ -225,8 +232,12 @@ export default async function OooQueuePage({
   // #1629: this IS a moderation queue, so an empty one says "nothing is waiting
   // for you" to the person whose job is to clear it, and the history says "no
   // decisions were made". Both are answers, not absences.
+  // Every row is one the viewer can decide, by the predicate the approve and
+  // decline actions enforce (#3114), so no row carries controls that answer "Not
+  // authorized" (L109). The query is scoped the same way; this keeps the
+  // controls honest even where the two could ever differ.
   const pending = ((unwrap(pendingRes, "ooo pending queue") ?? []) as OooRequest[]).filter(
-    notStaff,
+    (r) => canModerate(me, r),
   );
   const history = ((unwrap(historyRes, "ooo decision history") ?? []) as OooRequest[]).filter(
     notStaff,

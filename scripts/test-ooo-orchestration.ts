@@ -704,6 +704,95 @@ const input = {
   assert(w.channelPosts.length === 0, "and nothing is posted to the fallback channel");
 }
 
+// --- #3114: an admin cannot decide their own time off; it goes to another admin ---
+//
+// Dan, 2026-10-03: only admins change. A team lead deciding their own stays
+// allowed, asserted below so a rule that refused everyone's own request cannot
+// pass.
+{
+  const w = makeWorld();
+  w.users.set(admin.id, admin);
+  w.users.set(superAdmin.id, superAdmin);
+  const sub = await submitOoo(admin, input, w.deps);
+  assert(sub.ok, "an admin's own request is accepted");
+  const id = sub.ok ? sub.request.id : "";
+  assert(w.channelPosts.length === 1, "with no manager of record it goes to the channel other moderators watch");
+  // L659: the post must be true for its author too. "A team lead or admin can
+  // approve it" includes the admin who wrote it, who is now refused.
+  assert(
+    /another admin or a team lead can approve it here/i.test(w.channelPosts[0]),
+    `the post names another admin or a team lead as the reviewer (got: ${w.channelPosts[0].slice(0, 200)})`,
+  );
+  assert(
+    !/a team lead or admin can approve/i.test(w.channelPosts[0]),
+    "and does not name a reviewer set that includes the author",
+  );
+
+  const selfApprove = await approveOoo(id, admin, w.deps);
+  assert(!selfApprove.ok, "the admin cannot approve their own request");
+  assert(
+    !selfApprove.ok && /your own time off/i.test(selfApprove.error ?? "") && /another admin/i.test(selfApprove.error ?? ""),
+    `and is told why and who can, not a bare Not authorized (got: ${selfApprove.ok ? "" : selfApprove.error})`,
+  );
+  const selfReject = await rejectOoo(id, admin, "no", w.deps);
+  assert(!selfReject.ok, "the admin cannot reject their own request either");
+  eq(w.requests.get(id)?.status, "pending", "and the request is still pending after both refusals");
+  assert(auditFor(w, "ooo.approve") === null && auditFor(w, "ooo.reject") === null, "nothing was audited as decided");
+
+  const byOther = await approveOoo(id, superAdmin, w.deps);
+  assert(byOther.ok, "another admin approves it");
+}
+{
+  // An admin who is their OWN manager of record is not DMed buttons that refuse them.
+  const w = makeWorld();
+  const selfManaged: User = { ...admin, id: "u-self-admin", email: "self-admin@trypennie.com", manager_id: "u-self-admin" };
+  w.users.set(selfManaged.id, selfManaged);
+  const sub = await submitOoo(selfManaged, input, w.deps);
+  assert(sub.ok, "a self-managed admin's request is accepted");
+  assert(w.dms.every((d) => d.email !== selfManaged.email), "the admin is NOT DMed approve buttons for their own request");
+  assert(w.channelPosts.length === 1, "it goes to the fallback channel instead");
+  assert(
+    /own manager of record/.test(w.channelPosts[0]) && /another admin/i.test(w.channelPosts[0]),
+    `and the post names this cause and who can act (got: ${w.channelPosts[0].slice(0, 160)})`,
+  );
+  assert(!w.channelPosts[0].includes("cannot approve time off ("), "not confused with the unqualified-role cause");
+}
+{
+  // The same rule on the other two branches an admin's request can take: a named
+  // manager who cannot approve, and one who cannot be read back. Each names the
+  // reviewers, so each must leave the author out.
+  for (const [label, managerId, setup] of [
+    ["an unqualified manager of record", "u-agent-mgr-x", true],
+    ["a manager of record that cannot be found", "u-missing", false],
+  ] as const) {
+    const w = makeWorld();
+    if (setup) w.users.set("u-agent-mgr-x", { ...agent, id: "u-agent-mgr-x", email: "x@trypennie.com", role: "agent" });
+    const author: User = { ...admin, id: `u-admin-${managerId}`, email: `${managerId}@trypennie.com`, manager_id: managerId };
+    w.users.set(author.id, author);
+    const sub = await submitOoo(author, input, w.deps);
+    assert(sub.ok, `${label}: accepted`);
+    assert(
+      /another admin or a team lead/i.test(w.channelPosts[0] ?? ""),
+      `${label}: an admin's request names another admin or a team lead (got: ${(w.channelPosts[0] ?? "").slice(0, 220)})`,
+    );
+  }
+  // And an agent's request keeps the ordinary wording, so the rule is scoped.
+  const w = makeWorld();
+  const orphan: User = { ...agent, id: "u-orph-2", email: "orph2@trypennie.com", manager_id: null };
+  w.users.set(orphan.id, orphan);
+  await submitOoo(orphan, input, w.deps);
+  assert(/A team lead or admin can approve it here/.test(w.channelPosts[0] ?? ""), "an agent's request keeps the ordinary reviewer");
+}
+{
+  // The direction that must stay open: a team lead decides their own.
+  const w = makeWorld();
+  w.users.set(teamLead.id, teamLead);
+  const sub = await submitOoo(teamLead, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  const own = await approveOoo(id, teamLead, w.deps);
+  assert(own.ok, "a team lead can still approve their own time off (Dan, 2026-10-03)");
+}
+
 // --- approve: full happy path ---
 {
   const w = makeWorld();

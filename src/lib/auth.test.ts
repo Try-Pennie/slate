@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Role, User } from "@/lib/db/types";
 import {
   encodeImpersonationCookie,
@@ -80,27 +80,38 @@ const user = (id: string, role: Role, extra: Partial<User> = {}): User =>
     ...extra,
   }) as User;
 
+// The "view as" cookie is signed (#3113) with the key `impersonationSigningSecret`
+// reads, so the suite gives it one and mints cookies the way startImpersonation does.
+const SIGNING_SECRET = "test-signing-secret";
+const signed = (issuerId: string, targetId: string, issuedAtMs: number) =>
+  encodeImpersonationCookie({ issuerId, targetId, issuedAtMs, secret: SIGNING_SECRET });
+
 // Arrange a session for `real` impersonating `target` (target null = the row
 // the target-fetch returns, e.g. null when deactivated/vanished).
-function arrange(real: User, target: User | null) {
+async function arrange(real: User, target: User | null) {
   authUser.id = real.auth_user_id ?? "auth-1";
   // A freshly-issued impersonation cookie (id + current timestamp, #653) so the
   // TTL check honors it and these tests exercise the ceiling, not expiry.
-  cookieValue.v = encodeImpersonationCookie(target ? target.id : "some-target-id", Date.now());
+  cookieValue.v = await signed(real.id, target ? target.id : "some-target-id", Date.now());
   dbRows.queue = [real, target];
 }
 
 beforeEach(() => {
+  vi.stubEnv("SUPABASE_SECRET_KEY", SIGNING_SECRET);
   vi.clearAllMocks();
   dbRows.queue = [];
   cookieValue.v = undefined;
   authUser.id = "auth-1";
 });
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe("currentUser impersonation ceiling (#588)", () => {
   it("blocks admin -> super_admin: acts as the admin, not the super_admin", async () => {
     const admin = user("admin-1", "admin");
-    arrange(admin, user("super-1", "super_admin"));
+    await arrange(admin, user("super-1", "super_admin"));
     const acting = await currentUser();
     expect(acting?.id).toBe("admin-1");
     expect(acting?.role).toBe("admin");
@@ -108,25 +119,25 @@ describe("currentUser impersonation ceiling (#588)", () => {
 
   it("blocks admin -> peer admin (equal rank): acts as the real admin", async () => {
     const admin = user("admin-1", "admin");
-    arrange(admin, user("admin-2", "admin"));
+    await arrange(admin, user("admin-2", "admin"));
     expect((await currentUser())?.id).toBe("admin-1");
   });
 
   it("allows admin -> agent (strictly below): acts as the agent", async () => {
     const admin = user("admin-1", "admin");
-    arrange(admin, user("agent-9", "agent"));
+    await arrange(admin, user("agent-9", "agent"));
     expect((await currentUser())?.id).toBe("agent-9");
   });
 
   it("allows super_admin -> admin: acts as the admin", async () => {
     const su = user("super-1", "super_admin");
-    arrange(su, user("admin-3", "admin"));
+    await arrange(su, user("admin-3", "admin"));
     expect((await currentUser())?.id).toBe("admin-3");
   });
 
   it("falls back to the real user when the target vanished/deactivated", async () => {
     const admin = user("admin-1", "admin");
-    arrange(admin, null);
+    await arrange(admin, null);
     expect((await currentUser())?.id).toBe("admin-1");
   });
 });
@@ -184,13 +195,13 @@ describe("requireRole denial (#606)", () => {
 describe("getImpersonation ceiling (#588)", () => {
   it("returns null when an admin's cookie points at a super_admin", async () => {
     const admin = user("admin-1", "admin");
-    arrange(admin, user("super-1", "super_admin"));
+    await arrange(admin, user("super-1", "super_admin"));
     expect(await getImpersonation()).toBeNull();
   });
 
   it("returns real+target for a valid down-rank impersonation", async () => {
     const admin = user("admin-1", "admin");
-    arrange(admin, user("agent-9", "agent"));
+    await arrange(admin, user("agent-9", "agent"));
     const imp = await getImpersonation();
     expect(imp?.real.id).toBe("admin-1");
     expect(imp?.target.id).toBe("agent-9");
@@ -204,7 +215,7 @@ describe("getImpersonationView drop states (#652)", () => {
     const admin = user("admin-1", "admin");
     authUser.id = "auth-1";
     dbRows.queue = [admin]; // only realCurrentUser resolves; no target fetch
-    cookieValue.v = encodeImpersonationCookie("agent-9", Date.now() - IMPERSONATE_TTL_MS - 1);
+    cookieValue.v = await signed("admin-1", "agent-9", Date.now() - IMPERSONATE_TTL_MS - 1);
     const view = await getImpersonationView();
     expect(view.status).toBe("dropped");
     expect(view.status === "dropped" && view.reason).toBe("expired");
@@ -212,7 +223,7 @@ describe("getImpersonationView drop states (#652)", () => {
 
   it("reports a vanished/deactivated target as dropped/unavailable", async () => {
     const admin = user("admin-1", "admin");
-    arrange(admin, null); // target row comes back null (deactivated or removed)
+    await arrange(admin, null); // target row comes back null (deactivated or removed)
     const view = await getImpersonationView();
     expect(view.status).toBe("dropped");
     expect(view.status === "dropped" && view.reason).toBe("unavailable");
@@ -220,7 +231,7 @@ describe("getImpersonationView drop states (#652)", () => {
 
   it("reports a target that now outranks the admin as dropped/unavailable (ceiling)", async () => {
     const admin = user("admin-1", "admin");
-    arrange(admin, user("super-1", "super_admin"));
+    await arrange(admin, user("super-1", "super_admin"));
     const view = await getImpersonationView();
     expect(view.status).toBe("dropped");
     expect(view.status === "dropped" && view.reason).toBe("unavailable");
@@ -231,15 +242,33 @@ describe("getImpersonationView drop states (#652)", () => {
     authUser.id = "auth-1";
     // realCurrentUser resolves the admin, then the target lookup errors out.
     dbRows.queue = [admin, DB_ERROR];
-    cookieValue.v = encodeImpersonationCookie("agent-9", Date.now());
+    cookieValue.v = await signed("admin-1", "agent-9", Date.now());
     // A DB blip must read as "none" (act as self this request), not a dropped
     // session, so the cookie is left intact to resume once the lookup recovers.
     expect((await getImpersonationView()).status).toBe("none");
   });
 
+  // #3113: the two cookies an admin could write by hand before signing. Both
+  // skipped the impersonate.start audit, and the future dated one never expired.
+  it("refuses a hand-written unsigned cookie and a future-dated signed one, without a target lookup", async () => {
+    const admin = user("admin-1", "admin");
+    authUser.id = "auth-1";
+    for (const cookie of [
+      `agent-9.${Date.now()}`,
+      await signed("admin-1", "agent-9", Date.now() + 365 * 24 * 60 * 60 * 1000),
+    ]) {
+      dbRows.queue = [admin, user("agent-9", "agent")];
+      cookieValue.v = cookie;
+      const view = await getImpersonationView();
+      expect(view.status).toBe("dropped");
+      // The target row was never read: only realCurrentUser consumed the queue.
+      expect(dbRows.queue).toHaveLength(1);
+    }
+  });
+
   it("reports a valid down-rank session as active with the target", async () => {
     const admin = user("admin-1", "admin");
-    arrange(admin, user("agent-9", "agent"));
+    await arrange(admin, user("agent-9", "agent"));
     const view = await getImpersonationView();
     expect(view.status).toBe("active");
     expect(view.status === "active" && view.target.id).toBe("agent-9");
@@ -251,7 +280,7 @@ describe("getImpersonationView drop states (#652)", () => {
     expect((await getImpersonationView()).status).toBe("none");
     // On an expired cookie, currentUser must still resolve to the admin themselves.
     dbRows.queue = [admin];
-    cookieValue.v = encodeImpersonationCookie("agent-9", Date.now() - IMPERSONATE_TTL_MS - 1);
+    cookieValue.v = await signed("admin-1", "agent-9", Date.now() - IMPERSONATE_TTL_MS - 1);
     expect((await currentUser())?.id).toBe("admin-1");
   });
 });
@@ -304,11 +333,11 @@ describe("a deactivated session is refused (#2378)", () => {
   // A deactivated admin must not get back in by acting as somebody else: the
   // ACTOR is judged before the target is ever fetched.
   it("does not let a deactivated admin act through an impersonation cookie", async () => {
-    arrange(user("admin-1", "admin", { deactivated_at: LEFT }), user("agent-9", "agent"));
+    await arrange(user("admin-1", "admin", { deactivated_at: LEFT }), user("agent-9", "agent"));
     expect(await currentUser()).toBeNull();
     await expect(requireManager()).rejects.toThrow("Not authorized");
 
-    arrange(user("admin-1", "admin"), user("agent-9", "agent"));
+    await arrange(user("admin-1", "admin"), user("agent-9", "agent"));
     expect((await currentUser())?.id).toBe("agent-9");
   });
 

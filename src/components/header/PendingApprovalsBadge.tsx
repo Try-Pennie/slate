@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { canModerateAllOoo, isRole } from "@/lib/auth/roles";
+import { isRole } from "@/lib/auth/roles";
+import { pendingQueueScope } from "@/lib/ooo/core";
 import { log } from "@/lib/log";
 import { PendingBadge } from "@/components/ui/PendingBadge";
 
@@ -11,8 +12,9 @@ import { PendingBadge } from "@/components/ui/PendingBadge";
  * It was the LAST SERIAL HOP in front of every internal page. Measured in
  * production on 2026-09-03, an admin page came back in 100 to 563ms of wall time
  * on 8 to 37ms of Worker CPU: those pages were not working, they were waiting.
- * The header ran its reads in a chain, and this one is at the end of it because
- * it filters on the staff ids the read before it returns.
+ * The header ran its reads in a chain, and this one was at the end of it because
+ * it filtered on the staff ids the read before it returned (that read went with
+ * #3114, below).
  *
  * On `/admin/agents` the roster read the person actually asked for finished at
  * +391ms while this count had not started until +390ms. The content was ready
@@ -41,29 +43,20 @@ export async function PendingApprovalsBadge({
 }) {
   if (!role || !isRole(role) || !userId || !orgId) return null;
 
-  // Exclude requests authored by admins and super admins, mirroring the Team
-  // Requests page, so test and operator requests cannot inflate the badge.
-  //
-  // error-ok: an unreadable staff list means the exclusion is not applied; the
-  // count below consults its own error and hides the badge either way.
-  const staffRows = (
-    await supabaseAdmin()
-      .from("users")
-      .select("id")
-      .eq("org_id", orgId)
-      .in("role", ["admin", "super_admin"])
-  ).data as { id: string }[] | null;
-
-  const staffIds = (staffRows ?? []).map((u) => u.id);
+  // #3114: count exactly the Team Requests queue, which is what this viewer can
+  // decide (`pendingQueueScope`, held equal to canModerate). Admin-authored
+  // requests used to be dropped here; an admin cannot decide their own time off
+  // now, so the other moderators are the ones who must be nudged about it.
+  const scope = pendingQueueScope({ id: userId, role });
+  if (!scope) return null;
 
   let q = supabaseAdmin()
     .from("ooo_requests")
     .select("id", { count: "exact", head: true })
     .eq("org_id", orgId)
     .eq("status", "pending");
-  if (staffIds.length > 0) q = q.not("user_id", "in", `(${staffIds.join(",")})`);
-  // Scoped to the manager's own reports; team leads and up see the whole org.
-  if (!canModerateAllOoo(role)) q = q.eq("manager_id", userId);
+  if (scope.managerId) q = q.eq("manager_id", scope.managerId);
+  if (scope.excludeUserId) q = q.neq("user_id", scope.excludeUserId);
 
   // #1165: consult `error`. A failed count came back null and `?? 0` hid the
   // badge, which is exactly what an empty queue looks like, so a broken read
