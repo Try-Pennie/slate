@@ -36,7 +36,7 @@ const { DEBT_TIER } = await import("@/lib/xbc");
 const { CALLER_HOST_KINDS } = await import("@/lib/booking/caller-seen");
 const { BOOKING_API_CALLERS } = await import("@/lib/booking/api-auth");
 type CallerSeenRow = import("@/lib/booking/caller-seen").CallerSeenRow;
-const { judgeReadiness, parityDriftFromSummary, pickParityRun } = await import("./lib/parallel-run-readiness.ts");
+const { judgeReadiness, parityDriftFromSummary, pickParityRun, ghFailureReason } = await import("./lib/parallel-run-readiness.ts");
 type ReadinessFacts = import("./lib/parallel-run-readiness.ts").ReadinessFacts;
 type ParityDriftDetail = import("./lib/parallel-run-readiness.ts").ParityDriftDetail;
 /** Where the daily lane runs, and what it keeps (`.github/workflows/schedule-parity.yml`). */
@@ -103,7 +103,7 @@ function readParityDrift(): ParityDriftDetail {
       .map((r) => ({ id: r.databaseId, updatedAtMs: Date.parse(r.updatedAt), url: r.url }))
       .filter((r) => Number.isFinite(r.updatedAtMs));
   } catch (err) {
-    return { kind: "unavailable", why: `the schedule parity runs could not be listed with gh (${shortReason(err)})` };
+    return { kind: "unavailable", why: `the schedule parity runs could not be listed with gh (${ghFailureReason(err)})` };
   }
   const run = pickParityRun(runs, lastRunMs);
   if ("why" in run) return { kind: "unavailable", why: run.why };
@@ -112,14 +112,10 @@ function readParityDrift(): ParityDriftDetail {
     gh(["run", "download", String(run.id), "-n", PARITY_ARTIFACT, "-D", dir]);
     return parityDriftFromSummary(JSON.parse(readFileSync(join(dir, "parity-summary.json"), "utf8")), run.url);
   } catch (err) {
-    return { kind: "unavailable", why: `run ${run.url} kept no readable ${PARITY_ARTIFACT} artifact (${shortReason(err)})` };
+    return { kind: "unavailable", why: `run ${run.url} kept no readable ${PARITY_ARTIFACT} artifact (${ghFailureReason(err)})` };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-}
-function shortReason(err: unknown): string {
-  const text = err instanceof Error ? err.message : String(err);
-  return text.split("\n")[0].slice(0, 160);
 }
 const parityDrift = readParityDrift();
 

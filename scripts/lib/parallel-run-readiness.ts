@@ -571,3 +571,20 @@ export function judgeReadiness(f: ReadinessFacts): ReadinessJudgement {
     summary: `NOT READY (${findings[0].kind}): ${measured}\n` + findings.map((x) => `  ${x.kind}: ${x.detail}`).join("\n") + armingLine,
   };
 }
+
+/**
+ * Why a gh call failed, in one short line. execFileSync's message opens with the
+ * "Command failed: gh ..." line, which names the command and not the cause; gh prints
+ * the cause (not signed in, no access, not found) to stderr, so that is read first.
+ */
+export function ghFailureReason(err: unknown): string {
+  const firstLine = (text: string): string =>
+    text
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => l !== "") ?? "";
+  const stderr = typeof err === "object" && err !== null ? (err as { stderr?: unknown }).stderr : undefined;
+  const fromStderr = typeof stderr === "string" || Buffer.isBuffer(stderr) ? firstLine(String(stderr)) : "";
+  const fromMessage = firstLine(err instanceof Error ? err.message : String(err));
+  return (fromStderr || fromMessage).slice(0, 160);
+}

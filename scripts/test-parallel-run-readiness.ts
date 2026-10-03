@@ -16,6 +16,7 @@ import {
   parityDriftFromSummary,
   pickParityRun,
   PARITY_RUN_PAIRING_MS,
+  ghFailureReason,
 } from "./lib/parallel-run-readiness.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 import type { CallerSeenRow } from "../src/lib/booking/caller-seen.ts";
@@ -565,6 +566,20 @@ eq(
   assert("why" in late, "a run finishing well after the heartbeat is not that run");
   const unstamped = pickParityRun([older], null);
   assert("why" in unstamped && /never/.test(unstamped.why), "with no heartbeat there is no run to pair");
+}
+
+// A failed gh call names its CAUSE, which gh prints to stderr, never the "Command failed"
+// line execFileSync puts first in the message.
+{
+  const failed = Object.assign(new Error("Command failed: gh -R Try-Pennie/slate run list --workflow x\nmore"), {
+    stderr: "\nHTTP 404: Not Found (https://api.github.com/repos/x)\nsecond line",
+  });
+  eq(ghFailureReason(failed), "HTTP 404: Not Found (https://api.github.com/repos/x)", "a gh failure names the first line gh printed");
+  const asBuffer = Object.assign(new Error("Command failed: gh"), { stderr: Buffer.from("To get started with GitHub CLI, please run:  gh auth login") });
+  eq(ghFailureReason(asBuffer), "To get started with GitHub CLI, please run:  gh auth login", "stderr arriving as bytes reads the same");
+  const silent = Object.assign(new Error("spawnSync gh ETIMEDOUT\nstack"), { stderr: "  \n" });
+  eq(ghFailureReason(silent), "spawnSync gh ETIMEDOUT", "with nothing on stderr it falls back to the message's first line");
+  eq(ghFailureReason("x".repeat(400)).length, 160, "and stays one short line");
 }
 
 finish();
