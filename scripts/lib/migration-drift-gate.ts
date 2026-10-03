@@ -136,8 +136,11 @@ export function changedFilesFromMergeCommit(git: (args: string[]) => string): st
     // --no-renames: with rename detection on, a migration MOVED out of
     // supabase/migrations/ lists only its new path and would read as untouched.
     // Without it a rename lists both the deleted old path and the added new one.
-    const out = git(["diff", "--name-only", "--no-renames", "HEAD^1", "HEAD"]);
-    return out.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+    // -z: names come NUL separated and never quoted. Without it git quotes a path
+    // holding a non ASCII character, and a quoted path no longer starts with
+    // supabase/migrations/, so the migration would read as untouched.
+    const out = git(["diff", "--name-only", "--no-renames", "-z", "HEAD^1", "HEAD"]);
+    return out.split("\0").filter((l) => l.length > 0);
   } catch {
     return null;
   }

@@ -113,16 +113,33 @@ function fakeGit(parents: string, diff: string, calls: string[][] = []): (args: 
 }
 {
   const calls: string[][] = [];
-  const files = changedFilesFromMergeCommit(fakeGit("m p1 p2\n", "package.json\npnpm-lock.yaml\n", calls));
+  const files = changedFilesFromMergeCommit(fakeGit("m p1 p2\n", "package.json\0pnpm-lock.yaml\0", calls));
   eq(files, ["package.json", "pnpm-lock.yaml"], "a two parent merge yields the diff against its first parent");
-  eq(calls[1], ["diff", "--name-only", "--no-renames", "HEAD^1", "HEAD"], "the diff is taken against the merge's first parent (the base), renames off");
+  eq(calls[1], ["diff", "--name-only", "--no-renames", "-z", "HEAD^1", "HEAD"], "the diff is taken against the merge's first parent (the base), renames off, NUL separated");
+}
+// git quotes a path holding a non ASCII character (core.quotePath) unless -z is
+// given, and a quoted path no longer starts with supabase/migrations/. With -z the
+// name arrives raw, so it is still seen as a migration.
+{
+  const out = changedFilesFromMergeCommit((args) =>
+    args[0] === "rev-list"
+      ? "m p1 p2\n"
+      : args.includes("-z")
+        ? "supabase/migrations/0200_caf\u00e9.sql\0"
+        : '"supabase/migrations/0200_caf\\303\\251.sql"\n',
+  );
+  eq(
+    decideMigrationDriftGate({ ...DEPENDABOT, changedFiles: out }).action,
+    "refuse",
+    "a migration whose name holds a non ASCII character is still seen (the diff is read NUL separated, never quoted)",
+  );
 }
 // A rename, modelled the way git reports it: with rename detection on only the
 // NEW path is listed; with --no-renames both the deleted and the added path are.
 function renamingGit(from: string, to: string): (args: string[]) => string {
   return (args) => {
     if (args[0] === "rev-list") return "m p1 p2\n";
-    if (args[0] === "diff") return args.includes("--no-renames") ? `${from}\n${to}\n` : `${to}\n`;
+    if (args[0] === "diff") return args.includes("--no-renames") ? `${from}\0${to}\0` : `${to}\0`;
     throw new Error(`unexpected git ${args.join(" ")}`);
   };
 }
