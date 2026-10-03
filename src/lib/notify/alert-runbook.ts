@@ -27,6 +27,7 @@ export const ALERT_FAMILIES = [
   "the-roster-or-routing-data-is-wrong",
   "the-warehouse-mirror-or-an-erasure-is-in-doubt",
   "a-limit-or-a-guard-is-not-working",
+  "the-audit-log-was-changed-after-it-was-written",
   "the-booking-api-is-refusing-its-caller",
   "an-unexpected-fault-was-reported",
   "a-merge-has-not-shipped-or-ci-cannot-run",
@@ -304,6 +305,9 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   edge_limiter_unusable: "a-limit-or-a-guard-is-not-working",
   definer_grants_to_web_roles: "a-limit-or-a-guard-is-not-working",
   auth_sign_in_beyond_google: "a-limit-or-a-guard-is-not-working",
+  // #3090. Its own family: the guard did not fail, somebody switched it off, and the
+  // first move is to keep the evidence rather than to repair anything.
+  audit_log_chain_broken: "the-audit-log-was-changed-after-it-was-written",
   rate_limit_broken: "a-limit-or-a-guard-is-not-working",
   rate_limit_refund_broken: "a-limit-or-a-guard-is-not-working",
   rate_limit_unidentified: "a-limit-or-a-guard-is-not-working",

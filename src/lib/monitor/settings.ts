@@ -54,6 +54,7 @@ export const ALERT_KEYS = [
   "edge_limiter_unusable",
   "definer_grants_to_web_roles",
   "auth_sign_in_beyond_google",
+  "audit_log_chain_broken",
   "hydration_all_failing",
   "calendar_window_uncovered",
   "busy_cache_drift",
@@ -373,6 +374,12 @@ export const ALERT_FIELDS: {
     help: "The live Supabase Auth settings allow email sign in, or another provider can create an account, so there is a way into Slate that does not go through Google. Clears itself once the provider is turned off in the Supabase dashboard.",
   },
   {
+    key: "audit_log_chain_broken",
+    urgency: "page",
+    label: "The audit log was changed after it was written",
+    help: "Every audit log entry carries a hash of itself and of the entry before it, and the monitor re-checks the whole trail a few hundred entries at a time. This fires when an entry was edited, deleted or cut off the end, which only a role able to switch off the log's append only guard can do. It clears once a check from the first entry to the last finds nothing wrong.",
+  },
+  {
     key: "hydration_all_failing",
     urgency: "page",
     label: "Calendar refresh failing on every calendar",
@@ -623,6 +630,10 @@ export const MONITOR_DEFAULTS = {
     // the Supabase dashboard, and nothing self-heals it. Hourly, like the function grants
     // above: it is a way in from outside that should not exist.
     auth_sign_in_beyond_google: 60 * 60_000,
+    // The audit log changed after it was written (#3090). Nothing heals it on its own
+    // and it means a privileged role has been used against the trail, so hourly, like
+    // the privileged function page above: it is a security incident, not a chore.
+    audit_log_chain_broken: 60 * 60_000,
     // The refresh failing everywhere (#1544) persists until somebody fixes the cause, and
     // nothing self-heals it, so repeat while it lasts. Every 6 hours rather than hourly:
     // cached cover has weeks of margin before it stops reaching the booking horizon, so this

@@ -6,6 +6,13 @@
 // nothing about the migration, so it is never a pass and never the failed check
 // exit either (L98, L411).
 import { execFileSync, spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+/** A migration file's SQL, verbatim, by file name, for applying to the throwaway database. */
+export function readMigration(file: string): string {
+  return readFileSync(join(import.meta.dirname, "..", "..", "supabase", "migrations", file), "utf8");
+}
 
 export interface ThrowawayPostgres {
   /** The container name, for a caller that drives psql itself. */

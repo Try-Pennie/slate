@@ -488,6 +488,7 @@ import {
   formatDefinerGrantsExposedAlert,
   formatDefinerGrantsClearedAlert,
 } from "@/lib/monitor/definer-grants";
+import { formatAuditChainBrokenAlert, formatAuditChainRecovery } from "@/lib/monitor/audit-chain";
 import {
   formatAuthSignInOpenAlert,
   formatAuthSignInClearedAlert,
@@ -3085,6 +3086,36 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "cleared",
     channel: "recovery",
     text: formatAuthSignInClearedAlert({ status: "healthy", providersOn: ["google"] }),
+  },
+  {
+    key: "audit_log_chain_broken",
+    state: "a row's content was edited",
+    channel: "alert",
+    text: formatAuditChainBrokenAlert({ kind: "altered", seq: 4812, id: "5b1d0c3e-8f2a-4c6b-9d7e-1a2b3c4d5e6f" }),
+  },
+  {
+    key: "audit_log_chain_broken",
+    state: "a row was deleted from the middle",
+    channel: "alert",
+    text: formatAuditChainBrokenAlert({ kind: "missing", expectedSeq: 4812, foundSeq: 4813, id: "5b1d0c3e-8f2a-4c6b-9d7e-1a2b3c4d5e6f" }),
+  },
+  {
+    key: "audit_log_chain_broken",
+    state: "an edit with every later hash recomputed",
+    channel: "alert",
+    text: formatAuditChainBrokenAlert({ kind: "rewritten", seq: 5120, id: "5b1d0c3e-8f2a-4c6b-9d7e-1a2b3c4d5e6f" }),
+  },
+  {
+    key: "audit_log_chain_broken",
+    state: "rows cut off the end",
+    channel: "alert",
+    text: formatAuditChainBrokenAlert({ kind: "truncated", anchorSeq: 5120, lastSeq: 5098 }),
+  },
+  {
+    key: "audit_log_chain_broken",
+    state: "cleared",
+    channel: "recovery",
+    text: formatAuditChainRecovery(5120),
   },
   {
     key: "edge_limiter_unusable",

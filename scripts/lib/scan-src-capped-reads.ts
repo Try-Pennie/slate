@@ -70,6 +70,8 @@ export const SAFE_TABLES = new Set([
   // #3027: one row per user, so bounded by the roster like `users` itself.
   "advisor_photos",
   "selfheal_scan_cursor",
+  // #3090: one row, the audit chain walk's position.
+  "audit_log_chain_verify",
   // #1313: one rolling-window state row on a fixed key space; can never grow.
   "booking_failure_rate_state",
   // Snowflake export watermark (#1098): one row per (lane, mirrored table), so
