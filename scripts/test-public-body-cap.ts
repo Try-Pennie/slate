@@ -16,6 +16,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
 import { textHasOptOut } from "./lib/opt-out.ts";
+import { blankComments } from "./lib/strip-comments.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const BARE_READ = /\b(?:req|request)\.(?:json|text|formData|arrayBuffer)\(\)/;
@@ -25,10 +26,7 @@ const HATCH = "body-cap-ok:";
 
 /** Whether a route file reads a body uncapped while nothing authenticates the caller. */
 export function uncappedPublicRead(src: string): boolean {
-  const code = src
-    .split("\n")
-    .map((l) => l.replace(/\/\/.*$/, ""))
-    .join("\n");
+  const code = blankComments(src);
   return BARE_READ.test(code) && !AUTH_GATES.test(code) && !textHasOptOut(src, HATCH);
 }
 
@@ -62,6 +60,14 @@ for (const f of all) {
   assert(!uncappedPublicRead("// const b = await req.json();\nconst r = await readJsonCapped(req, 1);"), "prose about a read is not a read");
   assert(!uncappedPublicRead("if (!bearerTokenMatches(h, k)) return x;\nconst b = await req.json();"), "an authenticated route is out of scope");
   assert(uncappedPublicRead("// body-cap-ok:\nconst t = await req.text();"), "a hatch with no reason exempts nothing");
+  assert(
+    uncappedPublicRead('const u = "https://slate.test"; const b = await req.json();'),
+    "the // inside a URL literal is not a comment, so the read after it is still seen",
+  );
+  assert(
+    !uncappedPublicRead("const r = await readJsonCapped(req, 1); // was: await req.json()"),
+    "a trailing comment after code is still a comment",
+  );
 }
 
 finish();

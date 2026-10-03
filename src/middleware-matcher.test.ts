@@ -57,6 +57,7 @@ describe("the middleware matcher reaches every page (#3136)", () => {
   });
 
   it.each([
+    "/api",
     "/api/availability",
     "/api/health",
     "/_next/static/chunks/main.js",

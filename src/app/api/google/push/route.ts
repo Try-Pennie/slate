@@ -1,5 +1,4 @@
 import { NextResponse, after, type NextRequest } from "next/server";
-import { refuseCredential } from "@/lib/bearer-failure";
 import { log } from "@/lib/log";
 import { timingSafeEqual } from "@/lib/bearer-auth";
 import { googleChannelToken } from "@/lib/env";
@@ -19,8 +18,12 @@ export async function POST(req: NextRequest) {
   // The null check comes first because the verifier takes two strings and a thrown
   // TypeError would answer 500, which Google reads as retriable.
   const token = req.headers.get("x-goog-channel-token");
+  // credential-throttle-ok: a stale channel token is EXPECTED traffic from Google (a channel
+  // outlives its token until it expires), Google's push senders share a small address pool,
+  // so a per address throttle would 429 valid pushes behind stale ones, and this refusal
+  // reads nothing and writes nothing, so it is already cheap (#3142, #3154).
   if (!token || !timingSafeEqual(token, googleChannelToken())) {
-    return refuseCredential(req.headers, () => new NextResponse("forbidden", { status: 403 }));
+    return new NextResponse("forbidden", { status: 403 });
   }
 
   // The first ping after watch() just confirms the channel — nothing to sync.

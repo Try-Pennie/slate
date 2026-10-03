@@ -150,6 +150,6 @@ export const config = {
   // because an API response renders no scripts and a policy on it would protect
   // nothing. src/middleware-matcher.test.ts asks Next whether each served path matches.
   matcher: [
-    "/((?!api/|_next/|.*\\.(?:js|mjs|css|map|png|jpe?g|gif|svg|ico|webp|avif|txt|xml|json|webmanifest|woff2?|ttf|html)$).*)",
+    "/((?!api(?:/|$)|_next/|.*\\.(?:js|mjs|css|map|png|jpe?g|gif|svg|ico|webp|avif|txt|xml|json|webmanifest|woff2?|ttf|html)$).*)",
   ],
 };
