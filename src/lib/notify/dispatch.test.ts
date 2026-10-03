@@ -947,3 +947,41 @@ describe("concurrent senders post once (#3170)", () => {
     expect(JSON.stringify(warn.mock.calls)).toMatch(/claim/);
   });
 });
+
+// #3170 review: a row DELETED between the read and the claim is not a lost race. An
+// all-clear removes the cooldown row, so a page that read the old stamp just before
+// would find its conditional update matching nothing. Nobody posted that page, so it
+// must still go out, claimed as an insert.
+describe("a row deleted between the read and the claim (#3170)", () => {
+  const COOLDOWN = 30 * 60 * 1000;
+  const expired = () => new Date(Date.now() - 2 * COOLDOWN).toISOString();
+
+  it("a page whose cooldown row was deleted after the read still posts, once, and is stamped", async () => {
+    rows.set("lane_failed:sync", expired());
+    readBarrier.afterRead = () => rows.delete("lane_failed:sync");
+    await sendThrottledAlert("lane_failed:sync", COOLDOWN, "broken");
+    expect(slack.postSlack).toHaveBeenCalledTimes(1);
+    expect(rows.has("lane_failed:sync")).toBe(true);
+    expect(rows.has(firingKey("lane_failed:sync"))).toBe(true);
+  });
+
+  it("two such pages still post once between them, the insert deciding", async () => {
+    rows.set("lane_failed:sync", expired());
+    readBarrier.size = 2;
+    readBarrier.afterRead = () => rows.delete("lane_failed:sync");
+    await Promise.all([
+      sendThrottledAlert("lane_failed:sync", COOLDOWN, "broken"),
+      sendThrottledAlert("lane_failed:sync", COOLDOWN, "broken"),
+    ]);
+    expect(slack.postSlack).toHaveBeenCalledTimes(1);
+  });
+
+  it("an all-clear whose marker was deleted after the read stays quiet and does not re-create it", async () => {
+    await sendThrottledAlert("lane_failed:sync", COOLDOWN, "broken");
+    slack.postSlack.mockClear();
+    readBarrier.afterRead = () => rows.delete(firingKey("lane_failed:sync"));
+    expect(await resolveAlert("lane_failed:sync", "recovered")).toBe(false);
+    expect(slack.postSlack).not.toHaveBeenCalled();
+    expect(rows.has(firingKey("lane_failed:sync"))).toBe(false);
+  });
+});

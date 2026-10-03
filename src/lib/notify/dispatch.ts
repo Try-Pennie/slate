@@ -140,7 +140,12 @@ type Claim = "won" | "lost" | "unclaimed";
  * Postgres decides the race, never this process, which is the point: two Worker
  * invocations share nothing else.
  */
-async function claimRow(rowKey: string, seen: StampRead, stampIso: string): Promise<Claim> {
+async function claimRow(
+  rowKey: string,
+  seen: StampRead,
+  stampIso: string,
+  opts: { reclaimIfDeleted: boolean },
+): Promise<Claim> {
   if (seen.kind === "unreadable") return "unclaimed";
   const db = supabaseAdmin();
   if (seen.kind === "absent") {
@@ -169,6 +174,12 @@ async function claimRow(rowKey: string, seen: StampRead, stampIso: string): Prom
     });
     return "unclaimed";
   }
+  // The row is GONE: an all-clear deleted the cooldown between this read and the
+  // claim. For a page that is not a lost race, since nobody posted this page, so the
+  // claim is retried as an insert, whose primary key still arbitrates between
+  // concurrent senders. For an all-clear a missing marker means another resolver
+  // already cleared it, and re-creating it would announce the recovery twice.
+  if (after.kind === "absent" && opts.reclaimIfDeleted) return claimRow(rowKey, after, stampIso, opts);
   return "lost";
 }
 
@@ -211,7 +222,9 @@ export async function sendThrottledAlert(
   // Slack confirms delivery below. So whatever goes wrong after the claim (the post
   // fails, throws, or the invocation dies mid post) the page is held off for
   // minutes, never for the whole cooldown (L368).
-  const claim = await claimRow(key, seen, claimStampIso(alertStampMs(false, nowMs, cooldownMs), seen));
+  const claim = await claimRow(key, seen, claimStampIso(alertStampMs(false, nowMs, cooldownMs), seen), {
+    reclaimIfDeleted: true,
+  });
   if (claim === "lost") return;
 
   const result = await postSlack({ text, ...(channel ? { channel } : {}) });
@@ -455,7 +468,7 @@ export async function resolveAlert(
   // condition fails). The marker stays until the notice is delivered, so a post that
   // fails, throws or never finishes leaves it for the next tick to retry (L368).
   const claimIso = claimStampIso(Date.now(), seen);
-  const claim = await claimRow(firingKey(key), seen, claimIso);
+  const claim = await claimRow(firingKey(key), seen, claimIso, { reclaimIfDeleted: false });
   if (claim === "lost") return false;
 
   const result = await postSlack({ text, ...(channel ? { channel } : {}) });
