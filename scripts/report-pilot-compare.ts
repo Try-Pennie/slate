@@ -44,8 +44,8 @@
 // PARTIAL (#2976): between the window opening and the first closed span (the first
 // whole day is judgeable from 2026-10-10 03:00 ET), the run reports the booking and
 // show rates over every application made so far, with every line labelled partial,
-// how much of the first full window it covers, and no difference, interval or
-// verdict. A show counts only once its call is due; the booking rate is biased low
+// how much of the first full window it covers, an early interval on each rate worded
+// as biased low and not a result (#3073), and no verdict. A show counts only once its call is due; the booking rate is biased low
 // and the report says so. It always exits 16 unless it refused, never 0, 11 or 12.
 //
 // Once a comparison is printed, the run exits on the first condition that holds of

@@ -48,8 +48,8 @@
 //    window opening and the first application's span closing, a run reports the
 //    rates measured so far over applications whose span is still OPEN, so the trend
 //    can be watched. Every line is labelled partial, it says how much of the first
-//    full window it covers, it prints no difference, interval or verdict, and it exits
-//    on its own code. A show is judged only once its call can have happened and
+//    full window it covers, each rate carries an EARLY interval worded as biased low
+//    and not a result (#3073), it prints no verdict, and it exits on its own code. A show is judged only once its call can have happened and
 //    reached the store; the booking rate is biased low on both sides, and says so.
 
 import { DateTime } from "luxon";
@@ -720,6 +720,20 @@ function intervalText(d: { difference: number | null; low: number | null; high: 
   return `${points(d.difference)}, 95% interval ${points(d.low)} to ${points(d.high)}, ${p}: ${verdict}`;
 }
 
+/**
+ * The partial look's interval (#3073, Dan 2026-10-03): the same estimate, worded so it
+ * can never be read as the result. Every application here has had less than its span
+ * to book and some calls are still ahead, so both rates are biased low on both sides,
+ * and the line says so beside the numbers. It carries no verdict: "Slate higher" is a
+ * finding, and a partial look must not make one.
+ */
+function partialIntervalText(readable: boolean, d: { difference: number | null; low: number | null; high: number | null }): string {
+  if (!readable) return "so far; too few to estimate an early interval";
+  if (d.difference === null) return "so far; no early interval: a side is empty";
+  if (d.low === null || d.high === null) return "so far; no early interval (no spread to estimate one from)";
+  return `so far; early 95% interval ${points(d.low)} to ${points(d.high)} around ${points(d.difference)} (biased low, not a result)`;
+}
+
 export interface CallsRead {
   calls: RegalCall[];
   /** Every call the store received over the span read, for anyone: zero means the store is not filling. */
@@ -923,7 +937,8 @@ function judgeLines(input: CompareInput): { exit: number; lines: string[]; propo
     const readableBooking = !short(s.length, sb) && !short(k.length, kb);
     const readableShow = !short(show.slate.units, show.slate.outcomes) && !short(show.calcom.units, show.calcom.outcomes);
     // A partial look prints the rates so far and nothing that reads as a finding.
-    const judgedText = (readable: boolean, d: Parameters<typeof intervalText>[0]) => (partial ? "so far" : readable ? intervalText(d) : "not yet readable");
+    const judgedText = (readable: boolean, d: Parameters<typeof intervalText>[0]) =>
+      partial ? partialIntervalText(readable, d) : readable ? intervalText(d) : "not yet readable";
     out.push(`${label}:`);
     out.push(
       `  applications  Slate ${s.length}, cal.com ${k.length}`,
@@ -975,7 +990,9 @@ function judgeLines(input: CompareInput): { exit: number; lines: string[]; propo
     "By the system that took the booking (NOT randomised: who books where is chosen by the lead and the page, so this row can differ from the headline for reasons that are not the booker):",
     `  booked applications  Slate ${booked.filter((j) => j.system === "slate").length}, cal.com ${booked.filter((j) => j.system === "calcom").length}`,
     `  show rate  Slate ${bySystem.slate.outcomes}/${bySystem.slate.units} (${pct(bySystem.slate.rate)}), cal.com ${bySystem.calcom.outcomes}/${bySystem.calcom.units} (${pct(bySystem.calcom.rate)}); ` +
-      (partial ? "so far" : intervalText(bySystem)),
+      (partial
+        ? partialIntervalText(!short(bySystem.slate.units, bySystem.slate.outcomes) && !short(bySystem.calcom.units, bySystem.calcom.outcomes), bySystem)
+        : intervalText(bySystem)),
   );
 
   // --- leakage by cause ----------------------------------------------------------------
