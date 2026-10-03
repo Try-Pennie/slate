@@ -804,6 +804,9 @@
     }
 
     function destroy() {
+      // hide() returns early for a frame never shown, so the timer armed at a
+      // pre build is stopped here as well, or it fires on a detached frame.
+      stopLoadTimer();
       hide();
       if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
     }

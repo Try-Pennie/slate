@@ -1055,6 +1055,24 @@ describe("widget.js pre builds the modal frame on the trigger's first intent (#2
     expect(viewed).not.toHaveBeenCalled();
   });
 
+  it("lets no load timeout fire on a pre built frame that is replaced before anyone opened it", () => {
+    vi.useFakeTimers();
+    const ns = freshNs();
+    hoverTrigger(ns, "router?xbc=411");
+    const thrownAway = hiddenIframes()[0].closest(".slate-widget-overlay") as HTMLElement;
+
+    const other = document.createElement("button");
+    other.setAttribute("data-cal-link", "router?xbc=412");
+    other.setAttribute("data-cal-namespace", ns);
+    document.body.appendChild(other);
+    other.click();
+    shownIframe()!.dispatchEvent(new Event("load"));
+
+    vi.advanceTimersByTime(12000);
+    expect(thrownAway.isConnected).toBe(false);
+    expect(thrownAway.querySelector('[role="alert"]')).toBeNull();
+  });
+
   it("does not replace a namespace's existing frame on the hover of a different link", () => {
     const ns = freshNs();
     const first = document.createElement("button");
