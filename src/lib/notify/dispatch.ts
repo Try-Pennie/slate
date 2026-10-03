@@ -148,8 +148,7 @@ async function claimRow(rowKey: string, seen: StampRead, stampIso: string): Prom
     if (!error) return "won";
     // 23505 is the primary key refusing: somebody wrote this row after the read.
     if ((error as { code?: string }).code === "23505") return "lost";
-    log.warn("slack-alert", { msg: "send claim failed; sending unclaimed", key: rowKey, error: error.message });
-    return "unclaimed";
+    return claimFailed(rowKey, error.message);
   }
   const { data, error } = await db
     .from("alert_state")
@@ -157,10 +156,7 @@ async function claimRow(rowKey: string, seen: StampRead, stampIso: string): Prom
     .eq("key", rowKey)
     .eq("last_sent_at", seen.raw)
     .select("key");
-  if (error) {
-    log.warn("slack-alert", { msg: "send claim failed; sending unclaimed", key: rowKey, error: error.message });
-    return "unclaimed";
-  }
+  if (error) return claimFailed(rowKey, error.message);
   if ((data ?? []).length > 0) return "won";
   // Nothing matched. A lost race moved the stamp (or removed the row); a filter that
   // cannot match the stamp it was handed leaves it exactly where the read found it.
@@ -174,6 +170,12 @@ async function claimRow(rowKey: string, seen: StampRead, stampIso: string): Prom
     return "unclaimed";
   }
   return "lost";
+}
+
+/** A claim write that errored: not a lost race, so the send goes ahead, and says so. */
+function claimFailed(rowKey: string, error: string): Claim {
+  log.warn("slack-alert", { msg: "send claim failed; sending unclaimed", key: rowKey, error });
+  return "unclaimed";
 }
 
 /** `ms` as a stamp, nudged off `seen` so a claim never writes the value it replaces. */

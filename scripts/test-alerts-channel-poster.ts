@@ -107,7 +107,8 @@ const CONVERTED = [
 for (const rel of CONVERTED) {
   assert(scanned.has(rel), `${rel} is in the scan`);
   const src = files.find((f) => f.rel === rel)?.src ?? "";
-  assert(/\bpostToAlertsChannel\(/.test(src), `${rel} posts through postToAlertsChannel`);
+  // Directly, or through the shared ending of a detector that reports a conclusion.
+  assert(/\b(?:postToAlertsChannel|postConcludedDecision)\(/.test(src), `${rel} posts through postToAlertsChannel`);
 }
 
 const findings = files.flatMap((f) =>

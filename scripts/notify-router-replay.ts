@@ -21,7 +21,7 @@
 // pretending it warned anyone.
 import { readFileSync, appendFileSync } from "node:fs";
 import { runAlerter } from "./lib/run-alerter.ts";
-import { postToAlertsChannel } from "./lib/slack-post.ts";
+import { postConcludedDecision } from "./lib/post-decision.ts";
 import { decideReplayReport, type ReplaySummaryFile } from "./lib/router-replay-report.ts";
 
 export type PostFn = (msg: {
@@ -61,10 +61,7 @@ export async function run(
     readSummary(env.REPLAY_SUMMARY_FILE ?? ""),
     env.RUN_URL ?? "",
   );
-  if (decision.alert === null) {
-    return { ok: true, reason: "nothing to say", concluded: decision.concluded };
-  }
-  return { ...(await postToAlertsChannel(post, decision.alert, env)), concluded: decision.concluded };
+  return postConcludedDecision(post, env, decision);
 }
 
 runAlerter(import.meta.url, async (post, env) => {

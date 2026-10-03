@@ -11,6 +11,25 @@ export type PostFn = (msg: {
   channel?: string;
 }) => Promise<{ ok: boolean; error?: string }>;
 
+/**
+ * The ending of a detector that reports whether it CONCLUDED (the burst counter, the
+ * kill switch and the router replay): post the decided alert, if any, and carry the
+ * conclusion through untouched, because the workflow stamps a heartbeat from it
+ * whatever happened to the post. Unlike `postDecision`, a delivered alert is ok: these
+ * runs go red on their own verdict, not on having spoken.
+ */
+export async function postConcludedDecision(
+  post: PostFn,
+  env: Record<string, string | undefined>,
+  decision: { alert: string | null; concluded: boolean },
+): Promise<{ ok: boolean; reason: string; concluded: boolean }> {
+  const res =
+    decision.alert === null
+      ? { ok: true, reason: "nothing to say" }
+      : await postToAlertsChannel(post, decision.alert, env);
+  return { ...res, concluded: decision.concluded };
+}
+
 export async function postDecision(
   post: PostFn,
   env: Record<string, string | undefined>,

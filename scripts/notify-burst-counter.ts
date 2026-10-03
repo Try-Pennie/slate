@@ -19,7 +19,7 @@
 // warned anyone.
 import { readFileSync, appendFileSync } from "node:fs";
 import { runAlerter } from "./lib/run-alerter.ts";
-import { postToAlertsChannel } from "./lib/slack-post.ts";
+import { postConcludedDecision } from "./lib/post-decision.ts";
 import {
   decideBurstCounterReport,
   type BurstSummaryFile,
@@ -61,10 +61,7 @@ export async function run(
     readSummary(env.BURST_SUMMARY_FILE ?? ""),
     env.RUN_URL ?? "",
   );
-  if (decision.alert === null) {
-    return { ok: true, reason: "nothing to say", concluded: decision.concluded };
-  }
-  return { ...(await postToAlertsChannel(post, decision.alert, env)), concluded: decision.concluded };
+  return postConcludedDecision(post, env, decision);
 }
 
 runAlerter(import.meta.url, async (post, env) => {
