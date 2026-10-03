@@ -179,7 +179,7 @@ import {
   driftAlertContext,
   markBucketDrifting,
 } from "@/lib/monitor/availability-truth-store";
-import { recordHeartbeat, readHeartbeatMs, readHeartbeatMsStrict } from "@/lib/monitor/heartbeat";
+import { recordHeartbeat, readAllHeartbeatMs, readHeartbeatMs, readHeartbeatMsStrict } from "@/lib/monitor/heartbeat";
 import { recordDetectorVerdict } from "@/lib/monitor/verdict-store";
 import {
   AVAILABILITY_TRUTH_VERDICT_LANE,
@@ -198,6 +198,7 @@ import {
   CALENDAR_WINDOW_VERDICT_LANE,
   calendarWindowReachedVerdict,
   BUSY_DRIFT_VERDICT_LANE,
+  CRON_BUDGET_VERDICT_LANE,
   busyDriftReachedVerdict,
   OFFSITE_ORIGIN_VERDICT_LANE,
   offsiteOriginReachedVerdict,
@@ -223,7 +224,7 @@ import {
   oooProtectionReachedVerdict,
   laneWatchdogReachedVerdict,
 } from "@/lib/monitor/verdict-freshness";
-import { LANE_WATCHDOG_UNJUDGED } from "@/lib/monitor/health";
+import { LANE_WATCHDOG_UNJUDGED, VERDICT_STALE_BOUNDS_MS } from "@/lib/monitor/health";
 import { createStepRunner } from "@/lib/monitor/step-runner";
 import {
   judgeMonitorSteps,
@@ -297,6 +298,7 @@ import { runEdgeLimiterCheck } from "@/lib/monitor/edge-limiter-health";
 import { runDefinerGrantsCheck, type DefinerFunctionRow } from "@/lib/monitor/definer-grants";
 import { runAuthSignInSurfaceCheck, readAuthSettings } from "@/lib/monitor/auth-sign-in-surface";
 import { runAuditChainCheck, type AuditChainRow } from "@/lib/monitor/audit-chain";
+import { runCronBudgetCheck } from "@/lib/monitor/cron-budget";
 import { EDGE_LIMITER_BINDINGS } from "@/lib/rate-limit-core";
 import { BURST_LIMITER_BINDING } from "@/lib/rate-limit-burst";
 import { isWorkersRuntime, workersRuntimeMarker } from "@/lib/platform/runtime";
@@ -3556,6 +3558,31 @@ export async function GET(req: NextRequest) {
         ...(auditChain.status === "intact" ? { checked: auditChain.checked, through_seq: auditChain.throughSeq } : {}),
       });
     }
+
+    // Cron CPU headroom, judged over the trailing day (#3141). The Worker records a tick whose
+    // wall time passed half the CPU ceiling (it has no reading of its own CPU, and the copy says
+    // so), and an hourly stamp that proves it is still recording; this reads both from one
+    // query of lane_heartbeats, a table bounded by the number of lanes, on a lane whose
+    // invocation is shared with every other lane on its schedule (#1246). A failed read, or a
+    // stamp gone stale, clears nothing.
+    await steps.run("cron_budget", null, () =>
+      runCronBudgetCheck({
+        nowMs: now,
+        read: readAllHeartbeatMs,
+        verdictBoundMs: VERDICT_STALE_BOUNDS_MS[CRON_BUDGET_VERDICT_LANE],
+        verdictLane: CRON_BUDGET_VERDICT_LANE,
+        // alert-key: cron_budget_headroom
+        // alert-text-ok: our own copy from cron-budget.ts, never a raw error.
+        notify: sendThrottledAlert,
+        // A condition: it holds while any tick inside the day was past the line, and ends on a
+        // measured day with none.
+        // alert-key: cron_budget_headroom
+        // all-clear-proof: scripts/test-cron-budget.ts - a failed read, a stamp gone stale and
+        // a writer that never stamped each clear nothing, because none of them measured a day.
+        resolve: resolveAlert,
+        log: (msg) => log.info("cron-budget", { msg }),
+      }),
+    );
 
     // Watch the other lanes (#803). The sync lane does this too; running it from
     // BOTH means the every-minute lanes and the 5-minute lanes watch each other,

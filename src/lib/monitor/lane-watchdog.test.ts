@@ -151,6 +151,8 @@ const healthy = () => ({
   "verdict:stranded-hires": ago(5 * MIN),
   // #3090: the audit chain walk judges every tick the trail reads.
   "verdict:audit-chain": ago(5 * MIN),
+  // #3141: the Worker's cron timing, stamped on every hourly tick.
+  "verdict:cron-budget": ago(40 * MIN),
   "verdict:regal-call-feed": ago(5 * MIN),
   // #2944: the call outcome ratio judges every tick with calls flowing.
   "verdict:regal-call-outcomes": ago(10 * MIN),

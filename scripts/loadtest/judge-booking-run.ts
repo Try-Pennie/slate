@@ -17,6 +17,7 @@ import { CEILING_CONCLUSION, type CeilingVerdict } from "./preflight-checks.ts";
 // Type-only (erased under --experimental-strip-types), so the judge never pulls
 // the reader in at runtime and the two stay one direction apart.
 import type { ConfirmStartupReading } from "./confirm-startup.ts";
+import { CRON_BUDGET_WARN_SHARE } from "../../src/lib/monitor/cron-budget.ts";
 import type { SoakSample } from "./invariants.ts";
 import {
   faultLaneIncompleteness,
@@ -610,8 +611,11 @@ export const REQUEST_STARTUP_P95_MS = OK_P95_MS - REQUEST_CPU_P99_MS;
  * that run was one slow agent away from it. Half leaves room for the worst tick to
  * double before the platform kills it, which is the measured trend on this roster
  * shape: 27s, then 65.6s, then 119s across three consecutive runs.
+ *
+ * Production warns at the same line every day (#3141), so this is that constant rather
+ * than a second 0.5 that could be moved alone.
  */
-export const CRON_CPU_MARGIN_SHARE = 0.5;
+export const CRON_CPU_MARGIN_SHARE = CRON_BUDGET_WARN_SHARE;
 
 /**
  * The worst tick's share of the kill limit, in ONE wording for the report line

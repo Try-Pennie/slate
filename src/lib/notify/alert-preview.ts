@@ -496,6 +496,7 @@ import {
   formatDefinerGrantsClearedAlert,
 } from "@/lib/monitor/definer-grants";
 import { formatAuditChainBrokenAlert, formatAuditChainRecovery } from "@/lib/monitor/audit-chain";
+import { formatCronBudgetAlert, formatCronBudgetRecovery } from "@/lib/monitor/cron-budget";
 import {
   formatAuthSignInOpenAlert,
   formatAuthSignInClearedAlert,
@@ -3020,6 +3021,35 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the refresh is progressing again",
     channel: "recovery",
     text: formatHydrationRecovery(),
+  },
+  {
+    key: "cron_budget_headroom",
+    state: "the every minute schedule had a tick past half its ceiling",
+    channel: "alert",
+    text: formatCronBudgetAlert({
+      status: "over",
+      breaches: [{ cron: "* * * * *", atMs: Date.UTC(2026, 9, 3, 14, 2) }],
+    }),
+  },
+  {
+    key: "cron_budget_headroom",
+    state: "two schedules, one of them with a row whose time cannot be read",
+    channel: "alert",
+    // Read this one for the plural grammar and for the fail closed wording of a stamp nobody
+    // can date.
+    text: formatCronBudgetAlert({
+      status: "over",
+      breaches: [
+        { cron: "* * * * *", atMs: Date.UTC(2026, 9, 3, 14, 2) },
+        { cron: "*/5 * * * *", atMs: null },
+      ],
+    }),
+  },
+  {
+    key: "cron_budget_headroom",
+    state: "a whole day with every tick under the line",
+    channel: "recovery",
+    text: formatCronBudgetRecovery(),
   },
   {
     key: "definer_grants_to_web_roles",

@@ -161,7 +161,7 @@ run `pnpm verify:availability-truth` against a real agent and read what Google s
 
 Keys: `completion_sweep_saturated`, `reconcile_cancelled_saturated`,
 `reconcile_missing_saturated`, `deletion_drain_saturated`, `pending_event_deletions`,
-`recompute_headroom`.
+`recompute_headroom`, `cron_budget_headroom`.
 
 **What fired it.** A per-tick budget was exhausted with work still waiting. This is not
 a failure: each of these sweeps is bounded on purpose so it cannot eat the invocation
@@ -176,6 +176,11 @@ drains it.
   it is over only after it has kept up for as long again, so one of these means the
   lane, not a wobble, and the thing to read is #2022.
 - What is in the backlog? The alert names the table and the count.
+- `cron_budget_headroom` (#3141) is the invocation rather than one sweep: some tick in
+  the last day ran past half the CPU ceiling in WALL time, which is all the Worker can
+  measure of itself. Read the real CPU for those ticks first (`cpuTimeUs` in
+  `workersInvocationsScheduled`, see `docs/cloudflare-platform-notes.md`); wall time
+  well above CPU means the tick was waiting, not computing, and no budget is at risk.
 - Is the work itself failing, so nothing ever leaves the queue? That is a different
   family (a side effect that did not complete, below).
 
