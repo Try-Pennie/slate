@@ -27,8 +27,9 @@ import {
 } from "./lib/scan-scripts-typecheck.ts";
 import { typecheckWithControl, unreadConfigFiles } from "./lib/typecheck-program.ts";
 import { assert, finish } from "./lib/harness.ts";
+import { fileURLToPath } from "node:url";
 
-const repoRoot = new URL("..", import.meta.url).pathname;
+const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const CONFIG = "tsconfig.scripts.json";
 const CONTROL_SOURCE = "export const planted = thisNameIsNotDefined;\n";
 
@@ -144,7 +145,7 @@ assert(
 
 // THE COVERAGE. The control proves this pipeline reports the class; this proves
 // the run it came from read the tree the verdict is about.
-const self = new URL(import.meta.url).pathname;
+const self = fileURLToPath(import.meta.url);
 const namesTree = run.configFiles.includes(self) && run.configFiles.length > 200;
 assert(
   namesTree,

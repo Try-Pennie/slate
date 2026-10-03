@@ -20,8 +20,9 @@ import {
   RAISE_AT,
 } from "./lib/coverage-ratchet.mjs";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { fileURLToPath } from "node:url";
 
-const ROOT = new URL("..", import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const FLOOR = 63.3;
 
 // --- the three verdicts -------------------------------------------------------

@@ -29,6 +29,7 @@ import {
 } from "../src/lib/booking/retired-keys.ts";
 import { CALLER_HOST_KINDS } from "../src/lib/booking/caller-seen.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { fileURLToPath } from "node:url";
 
 // Fixture keys are invented here; no real key value appears in this file.
 const RETIRED = "retired-fixture-key-0001";
@@ -175,8 +176,8 @@ const nodeHash = (s: string) => createHash("sha256").update(s, "utf8").digest("h
   const home = mkdtempSync(join(tmpdir(), "retired-keys-file-"));
   const elsewhere = mkdtempSync(join(tmpdir(), "retired-keys-cwd-"));
   const file = join(home, "retired-booking-key-hashes.txt");
-  const script = new URL("./hash-retired-key.ts", import.meta.url).pathname;
-  const hook = new URL("./register-paths.mjs", import.meta.url).pathname;
+  const script = fileURLToPath(new URL("./hash-retired-key.ts", import.meta.url));
+  const hook = fileURLToPath(new URL("./register-paths.mjs", import.meta.url));
   const run = (args: string[], key: string, path: string | null = file) =>
     spawnSync(process.execPath, ["--experimental-strip-types", "--import", hook, script, ...args], {
       cwd: elsewhere,
@@ -222,7 +223,7 @@ const nodeHash = (s: string) => createHash("sha256").update(s, "utf8").digest("h
   // nothing there.
   assert(!existsSync(join(elsewhere, "docs")), "nothing was written relative to the working directory");
   const { retiredKeyHashesPath } = await import("./lib/retired-key-file.ts");
-  eq(retiredKeyHashesPath(), new URL("../docs/retired-booking-key-hashes.txt", import.meta.url).pathname, "the default path is the repo's own file, resolved from the script");
+  eq(retiredKeyHashesPath(), fileURLToPath(new URL("../docs/retired-booking-key-hashes.txt", import.meta.url)), "the default path is the repo's own file, resolved from the script");
   const repoFile = retiredKeyHashesPath();
   const before = read(repoFile, "utf8");
   const fromElsewhere = run(["probe-only"], "fixture-value-from-elsewhere", null);

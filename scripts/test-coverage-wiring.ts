@@ -10,8 +10,9 @@ import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parseWorkflowJobs } from "./lib/scan-workflow-jobs.ts";
 import { assert, finish } from "./lib/harness.ts";
+import { fileURLToPath } from "node:url";
 
-const ROOT = new URL("..", import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const read = (p: string) => readFileSync(join(ROOT, p), "utf8");
 
 // 1. The orchestrator exists and merges BOTH harnesses into lcov + a summary.

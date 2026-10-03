@@ -27,8 +27,9 @@ import {
   STANDALONE_CONTENT,
   centresWithoutClipping,
 } from "../src/lib/booking/page-shell.ts";
+import { fileURLToPath } from "node:url";
 
-const ROOT = new URL("..", import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 /** Every route that renders the standalone booker. Named, so a third one added
  *  later fails here rather than quietly writing its own layout. */

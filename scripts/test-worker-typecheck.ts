@@ -25,8 +25,9 @@ import { join } from "node:path";
 import { BREAKING_CODES, breakingErrors } from "./lib/scan-scripts-typecheck.ts";
 import { typecheckWithControl, unreadConfigFiles } from "./lib/typecheck-program.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { fileURLToPath } from "node:url";
 
-const repoRoot = new URL("..", import.meta.url).pathname;
+const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const CONFIG = "tsconfig.worker.json";
 const CONTROL_SOURCE = "export const planted = thisNameIsNotDefinedAnywhere;\n";
 

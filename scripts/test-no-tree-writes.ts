@@ -18,8 +18,9 @@ import { join, relative } from "node:path";
 import { scanTreeWrites } from "./lib/scan-tree-writes.ts";
 import { discoverSuiteNames } from "./lib/suite-discovery.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { fileURLToPath } from "node:url";
 
-const ROOT = new URL("..", import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 // --- the rule, on fixtures ----------------------------------------------------
 {

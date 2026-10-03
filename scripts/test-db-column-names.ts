@@ -33,8 +33,9 @@ import {
   withoutWholeLineComments,
 } from "./lib/scan-db-columns.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { fileURLToPath } from "node:url";
 
-const root = new URL("..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("..", import.meta.url));
 const schemaSrc = readFileSync(join(root, "src/lib/db/schema.ts"), "utf8");
 const typesSrc = readFileSync(join(root, "src/lib/db/types.ts"), "utf8");
 const tables = tableTypeMap(schemaSrc);

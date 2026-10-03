@@ -34,8 +34,9 @@ import {
   type SettingListing,
   type UncheckedRef,
 } from "./lib/scan-workflow-env-coverage.ts";
+import { fileURLToPath } from "node:url";
 
-const repoRoot = new URL("..", import.meta.url).pathname;
+const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 // A test seam, so the per-run declaration grammar can be driven against fixture
 // workflows rather than by committing a broken one to prove the guard catches it.
 // It is not a narrowing: a directory holding no workflow fails below, exactly as

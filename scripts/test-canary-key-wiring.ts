@@ -18,8 +18,9 @@ import {
   workflowSharedKeyHits,
 } from "./lib/scan-canary-key-wiring.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { fileURLToPath } from "node:url";
 
-const ROOT = new URL("..", import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const WORKFLOWS = join(ROOT, ".github/workflows");
 const SCRIPTS = join(ROOT, "scripts");
 

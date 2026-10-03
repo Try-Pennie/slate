@@ -9,7 +9,11 @@
 // write into the very tree the outer run's tripwire is watching. That is also why
 // nothing here imports vitest (a temp directory has no node_modules to resolve it
 // from): the config is a plain object, and the test uses vitest's globals.
-const here = new URL(".", import.meta.url).pathname;
+// `node:url` is a builtin, so it resolves anywhere; fileURLToPath decodes the
+// directory, where a URL's `.pathname` stays percent encoded (#3041).
+import { fileURLToPath } from "node:url";
+
+const here = fileURLToPath(new URL(".", import.meta.url));
 
 const config = {
   test: {

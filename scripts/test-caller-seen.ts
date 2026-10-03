@@ -22,6 +22,7 @@ import {
   type CallerSeenWrite,
 } from "../src/lib/booking/caller-seen.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { fileURLToPath } from "node:url";
 
 function headers(h: Record<string, string>): Headers {
   return new Headers(h);
@@ -283,7 +284,7 @@ function row(host_kind: CallerSeenRow["host_kind"], agoMs: number, origin: strin
 {
   const { readdirSync, statSync } = await import("node:fs");
   const { join, relative } = await import("node:path");
-  const root = new URL("..", import.meta.url).pathname;
+  const root = fileURLToPath(new URL("..", import.meta.url));
   const walk = (dir: string): string[] =>
     readdirSync(dir).flatMap((e) => {
       const p = join(dir, e);
