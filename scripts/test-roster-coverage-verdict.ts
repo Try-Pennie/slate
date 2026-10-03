@@ -131,9 +131,10 @@ async function tick(
     cooldownMs: { live: HOUR, upcoming: HOUR },
   });
   assert(rosterCoverageReachedVerdict(disarmed), "a disarmed tick that measured gaps still stamps");
-  // #1936: a gap only PAST the horizon is still a measured verdict. Saturday is
-  // outside Monday's four day horizon and inside the week after it.
-  const farOnly = await tick([agent([1, 2, 3, 4, 5], 8 * 60, 20 * 60)]);
+  // #1936: a gap only PAST the horizon is still a measured verdict. Friday is
+  // outside Monday's four day horizon and inside the week after it. (Not Saturday:
+  // Saturday gaps are never judged since #3054, so they would read as covered.)
+  const farOnly = await tick([agent([1, 2, 3, 4, 6], 8 * 60, 20 * 60)]);
   assert(
     farOnly.result.status === "gaps" &&
       farOnly.result.live.length === 0 &&

@@ -2038,12 +2038,13 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     // emphasis, since a lead arriving at opening finds the business looking shut.
     // Sent the evening before, as the page #3054 was filed about was: the gap is
     // twelve hours off and nothing is happening yet, so it must not read as if it is.
+    // A Tuesday, because Saturday gaps never page (Dan, 2026-10-02).
     key: "roster_coverage_gap",
     state: "one day inside the horizon opens with nobody on, twelve hours from now",
     channel: "alert",
     text: formatRosterCoverageLiveAlert(
-      [coverageGap({ dateIso: "2026-10-03", weekday: 6, startMinute: 480, endMinute: 540, range: "live", opensUncovered: true })],
-      rosterSentAt("2026-10-02T20:10"),
+      [coverageGap({ dateIso: "2026-10-06", weekday: 2, startMinute: 480, endMinute: 540, range: "live", opensUncovered: true })],
+      rosterSentAt("2026-10-05T20:10"),
     ),
   },
   {
@@ -2061,15 +2062,16 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     // Several findings at once: a whole uncovered day plus an evening tail on three
     // dates. Grouped so the whole day comes first and the tail is stated once with
     // its dates. The opening sentence names the EARLIEST start, the one that
-    // matters first.
+    // matters first. The whole day is a Monday holiday opening nobody covers, since
+    // Saturday gaps never page (Dan, 2026-10-02).
     key: "roster_coverage_gap",
     state: "a whole day and an evening tail inside the horizon",
     channel: "alert",
     text: formatRosterCoverageLiveAlert(
       [
-        coverageGap({ dateIso: "2026-10-03", weekday: 6, startMinute: 480, endMinute: 1200, wholeDay: true, range: "live", opensUncovered: true }),
-        ...["2026-10-02", "2026-10-05", "2026-10-06"].map((dateIso, i) =>
-          coverageGap({ dateIso, weekday: [5, 1, 2][i], startMinute: 1020, endMinute: 1200, range: "live" }),
+        coverageGap({ dateIso: "2026-10-05", weekday: 1, startMinute: 480, endMinute: 1200, wholeDay: true, range: "live", opensUncovered: true }),
+        ...["2026-10-02", "2026-10-06", "2026-10-07"].map((dateIso, i) =>
+          coverageGap({ dateIso, weekday: [5, 2, 3][i], startMinute: 1020, endMinute: 1200, range: "live" }),
         ),
       ],
       rosterSentAt("2026-10-02T10:00"),
@@ -2090,13 +2092,14 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: formatRosterCoverageLiveRecovery(true),
   },
   {
-    // The case #1936 was filed about: checked on a Saturday, next Saturday opens
-    // with nobody on. Nothing is broken yet, and the wording has to say so.
+    // The shape #1936 was filed about: next week's day opens with nobody on.
+    // Nothing is broken yet, and the wording has to say so. A Friday, because
+    // Saturday gaps never page (Dan, 2026-10-02).
     key: "roster_coverage_upcoming_gap",
-    state: "next Saturday opens with nobody on",
+    state: "next Friday opens with nobody on",
     channel: "alert",
     text: formatRosterCoverageUpcomingAlert([
-      coverageGap({ dateIso: "2026-10-03", weekday: 6, startMinute: 480, endMinute: 540, range: "upcoming", opensUncovered: true }),
+      coverageGap({ dateIso: "2026-10-02", weekday: 5, startMinute: 480, endMinute: 540, range: "upcoming", opensUncovered: true }),
     ]),
   },
   {
