@@ -1,4 +1,5 @@
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import {
   bookerUnstaffedAlert,
   bookingWindowExtendedAlert,
@@ -164,7 +165,7 @@ async function handle(req: NextRequest) {
       `booker_unstaffed:${result.bucket.code}`,
       BOOKER_UNSTAFFED_COOLDOWN_MS,
       bookerUnstaffedAlert(result.bucket.code),
-    ).catch(() => {});
+    ).catch(logAlertSendFailure(`booker_unstaffed:${result.bucket.code}`));
   }
 
   // #2841: every tier this lead's cascade may use was full for the whole three
@@ -178,7 +179,7 @@ async function handle(req: NextRequest) {
       `booking_window_extended:${result.routing.requested_code}`,
       BOOKING_WINDOW_EXTENDED_COOLDOWN_MS,
       bookingWindowExtendedAlert(result.routing.requested_code),
-    ).catch(() => {});
+    ).catch(logAlertSendFailure(`booking_window_extended:${result.routing.requested_code}`));
   }
 
   // Rule #259: leads must never see routing internals, even in the network

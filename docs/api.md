@@ -993,6 +993,7 @@ cost matters; see `docs/cloudflare-platform-notes.md`.
 | `GET /api/cron/complete` | Flips due appointments to completed. It sends no webhook: completion is decided on the clock, not on whether the call happened (#2915). |
 | `GET /api/cron/agents` | Hourly roster sync from Salesforce: agent and team changes, attributes, and departures. |
 | `GET /api/cron/watch` | Renews Google calendar push channels before they expire, and names persistently failing agents. |
+| `POST /api/cron/lane-failure` | Not a lane and never scheduled: the Worker's dispatcher reports a lane that threw or answered non-ok here, in process and with the cron bearer, and it pages `cron_lane_failed:<lane>` at most hourly per lane (#3133). The tick's id arrives in `x-slate-tick-id` (#3139). |
 | `GET /api/cron/hydrate-calendars` | Fills in calendar metadata for agents whose calendars have not been read yet. |
 | `GET /api/cron/bulk-reassign` | Drains queued bulk coverage reassign jobs (#973, #562). |
 | `GET /api/cron/booking-reminders` | Emails each lead a reminder 24 hours before their call, from their advisor's own mailbox (#2359). |

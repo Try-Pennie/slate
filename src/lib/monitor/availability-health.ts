@@ -6,6 +6,7 @@
  * can run it node-native; the IO (eligible counts, schedules, bucket_slots reads,
  * Slack) lives in the cron route.
  */
+import { logAlertSendFailure, logResolveFailure } from "../notify/send-failure.ts";
 import { DateTime } from "luxon";
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 import { rungExcludesLow } from "../routing/tiers.ts";
@@ -307,7 +308,7 @@ export async function reportAvailabilityHealth(deps: {
         deps.cooldownMs,
         formatDataAnomalyAlert(deps.cause, deps.healed),
       )
-      .catch(() => {});
+      .catch(logAlertSendFailure(DATA_ANOMALY_ALERT_KEY));
     return { verdict, cleared: false };
   }
   if (verdict === "unknown") return { verdict, cleared: false };
@@ -315,7 +316,7 @@ export async function reportAvailabilityHealth(deps: {
   // on the fault still being present could never run.
   const cleared = await deps
     .resolve(DATA_ANOMALY_ALERT_KEY, formatAvailabilityRecovery())
-    .catch(() => false);
+    .catch(logResolveFailure(DATA_ANOMALY_ALERT_KEY));
   return { verdict, cleared };
 }
 

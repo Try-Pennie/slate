@@ -11,6 +11,7 @@ import {
 } from "@/lib/env";
 import { sendGmailEmail } from "@/lib/notify/email";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import { shortErrorReason } from "@/lib/notify/error-text";
 import {
   approvalsBody,
@@ -183,7 +184,7 @@ export async function GET(req: NextRequest) {
       "ooo_approvals_digest",
       DIGEST_ALERT_COOLDOWN_MS,
       oooApprovalsDigestAlert(rows.length, recipients.length, shortErrorReason(e)),
-    ).catch(() => {});
+    ).catch(logAlertSendFailure("ooo_approvals_digest"));
     throw e;
   }
 

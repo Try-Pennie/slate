@@ -3,6 +3,7 @@ import type { Bucket } from "@/lib/db/types";
 import type { BucketSlots } from "./service";
 import { groupByPool, type PoolInput } from "./pool-key";
 import { bucketsDueForRecompute, type KnownRow } from "./precompute-cron";
+import type { SlotRowWriteOutcome } from "./slot-row-write";
 
 /**
  * Compute a POOL's availability once and store it under every bucket code in
@@ -39,8 +40,10 @@ export interface PoolRecomputeDeps {
   /** The existing per code compute, run once for the pool's representative.
    *  Resolves to null when it could not answer. */
   compute(code: string): Promise<BucketSlots | null>;
-  /** Store one code's row, stamped from when the COMPUTE began (#1048). */
-  writeRow(code: string, val: BucketSlots, computedAtMs: number): Promise<void>;
+  /** Store one code's row, stamped from when the COMPUTE began (#1048). Answers what
+   *  the write did, because a database REFUSAL is an answer rather than a throw
+   *  (#3119): `failed` lands the code in `failed[]` exactly as a throw does. */
+  writeRow(code: string, val: BucketSlots, computedAtMs: number): Promise<SlotRowWriteOutcome>;
   /** Drop one code's L1 cache entry so the next read serves the fresh row. */
   invalidate(code: string): Promise<void>;
 }
@@ -94,8 +97,10 @@ export async function recomputePool(
     // sixth's bucket everywhere the payload is read back.
     const forMember: BucketSlots = { ...computed, bucket: member.bucket };
     try {
-      await deps.writeRow(member.code, forMember, computedAtMs);
-      written.push(member.code);
+      // `kept-newer` is a success: a fresher row already stands for this code.
+      const outcome = await deps.writeRow(member.code, forMember, computedAtMs);
+      if (outcome === "failed") failed.push(member.code);
+      else written.push(member.code);
     } catch {
       // One bad write does not cost the other five; the sweep retries this code.
       failed.push(member.code);

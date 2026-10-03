@@ -36,6 +36,8 @@ const slack = vi.hoisted(() => ({
   },
 }));
 
+const channels = vi.hoisted(() => ({ clearChannelCache: vi.fn() }));
+vi.mock("@/lib/notify/channels", () => channels);
 vi.mock("@/lib/auth", () => auth);
 vi.mock("next/navigation", () => ({ redirect }));
 vi.mock("next/cache", () => ({ revalidatePath }));
@@ -77,6 +79,17 @@ describe("setMonitorSettings channel check", () => {
     );
     expect(slack.asked).toEqual(["C-GOOD"]);
     expect(upsert).toHaveBeenCalled();
+    // #3121: the in-process channel cache is cleared, so the next alert goes to
+    // the channel just saved rather than the one cached a minute ago.
+    expect(channels.clearChannelCache).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the channel cache alone when the save is refused", async () => {
+    slack.reply = { ok: false, error: "channel_not_found" };
+    await expect(setMonitorSettings(form({ alerts_channel: "C-TYPO" }))).rejects.toThrow(
+      /NEXT_REDIRECT:.*error=/,
+    );
+    expect(channels.clearChannelCache).not.toHaveBeenCalled();
   });
 
   // A CHANNEL THAT DOES NOT EXIST IS NEVER STORED. Storing it is what makes the

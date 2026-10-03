@@ -1,3 +1,4 @@
+import { logAlertSendFailure } from "../notify/send-failure.ts";
 import type { Attributes } from "@/lib/db/types";
 import type { ThrottledNotify } from "./alert-deps";
 
@@ -87,7 +88,7 @@ export async function runAttributeCoverageCheck(deps: {
   if (agents.length) {
     await deps
       .notify(AGENTS_WITHOUT_ROUTING_KEY, deps.cooldownMs, formatAttributeGapNotice(agents))
-      .catch(() => {});
+      .catch(logAlertSendFailure(AGENTS_WITHOUT_ROUTING_KEY));
   }
   deps.log?.(`monitor attribute-coverage: ${agents.length} unroutable agent(s)`);
   return { unroutable: agents.length };

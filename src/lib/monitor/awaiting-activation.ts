@@ -27,6 +27,7 @@
  * Pure apart from two dependency free helpers, so the node suite drives it
  * directly (scripts/test-awaiting-activation.ts).
  */
+import { logAlertSendFailure, logResolveFailure } from "../notify/send-failure.ts";
 import { parseStampMs } from "@/lib/date/stamp";
 import { isRoutable } from "@/lib/routing/staffing-depth";
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
@@ -254,13 +255,13 @@ export async function runAwaitingActivationCheck(
     if (deps.armed) {
       await deps
         .notify(AWAITING_ACTIVATION_KEY, deps.cooldownMs, formatAwaitingActivationAlert(agents, deps.nowMs))
-        .catch(() => {});
+        .catch(logAlertSendFailure(AWAITING_ACTIVATION_KEY));
     }
     return { status: "waiting", agents, paged: deps.armed };
   }
 
   if (deps.armed) {
-    await deps.resolve(AWAITING_ACTIVATION_KEY, formatAwaitingActivationRecovery()).catch(() => {});
+    await deps.resolve(AWAITING_ACTIVATION_KEY, formatAwaitingActivationRecovery()).catch(logResolveFailure(AWAITING_ACTIVATION_KEY));
   }
   return { status: "clear", measured: rows.length };
 }

@@ -22,6 +22,7 @@ import {
 } from "@/lib/notify/slack";
 import { approvalBlocks } from "@/lib/notify/ooo-slack-blocks";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import { shortFailureReason } from "@/lib/notify/error-text";
 import { recordAudit } from "@/lib/audit";
 import { unwrap } from "@/lib/db/result";
@@ -175,7 +176,7 @@ export function realDeps(): OooDeps {
           "busy_block_write_through",
           OOO_ALERT_COOLDOWN_MS,
           `Busy_blocks INSERT for an approved OOO request failed (${shortFailureReason(error?.message)}). The agent may keep getting bookings until the next sync pass.`,
-        ).catch(() => {});
+        ).catch(logAlertSendFailure("busy_block_write_through"));
         return null;
       }
       // OOO just blocked this agent: refresh the precomputed rows for the buckets
@@ -224,7 +225,7 @@ export function realDeps(): OooDeps {
           "busy_block_write_through",
           OOO_ALERT_COOLDOWN_MS,
           `Busy_blocks DELETE for a cancelled OOO request failed. The agent may look busy until cleaned up.`,
-        ).catch(() => {});
+        ).catch(logAlertSendFailure("busy_block_write_through"));
       }
     },
 
@@ -350,7 +351,7 @@ export function realDeps(): OooDeps {
       // alert-key: ooo_calcom_stale_unrecorded:*
       // alert-key: ooo_undo
       // alert-key: ooo_coverage_stop
-      sendThrottledAlert(key, OOO_ALERT_COOLDOWN_MS, message).catch(() => {}),
+      sendThrottledAlert(key, OOO_ALERT_COOLDOWN_MS, message).catch(logAlertSendFailure(key)),
 
     recordAudit: ({ action, actorId, orgId, targetUserId, requestId, details }) =>
       recordAudit({

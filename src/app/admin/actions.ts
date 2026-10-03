@@ -119,7 +119,7 @@ import {
   newlyUncoveredGaps,
   newlyUncoveredWarning,
 } from "@/lib/monitor/roster-coverage";
-import { __clearChannelCache } from "@/lib/notify/channels";
+import { clearChannelCache } from "@/lib/notify/channels";
 import {
   planScheduleReplacement,
   planUniformSchedule,
@@ -1064,7 +1064,7 @@ export async function setMonitorSettings(form: FormData): Promise<void> {
     details: { cooldowns: parsed.cooldowns, config: parsed.config },
   });
   // Channels are cached in-process; clear so the new destination takes effect now.
-  __clearChannelCache();
+  clearChannelCache();
   revalidatePath("/admin/alerts");
   redirect(`/admin/alerts${savedQuery("alerts")}`);
 }

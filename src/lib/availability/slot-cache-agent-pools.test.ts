@@ -19,6 +19,7 @@ const precompute = vi.hoisted(() => ({
     slots: ["2026-10-01T14:00:00.000Z"],
   })),
   writeBucketSlotsRow: vi.fn(async (_code: string, _val: unknown, _atMs: number) => {}),
+  storeBucketSlotsRow: vi.fn(async (_code: string, _val: unknown, _atMs: number) => "written" as const),
   recomputeBucketSlots: vi.fn(async () => {}),
   readBucketSlotsRow: vi.fn(),
   touchedBucketCodes: vi.fn(async (_ids: string[], _max: number, _label: string): Promise<string[]> => []),
@@ -71,9 +72,28 @@ describe("recomputeBucketsForAgent refreshes by pool (#2922)", () => {
 
     expect(precompute.bucketsForAgent).toHaveBeenCalledWith("agent-1");
     expect(precompute.computeBucketSlotsForWindow).toHaveBeenCalledTimes(2);
-    const written = precompute.writeBucketSlotsRow.mock.calls.map((c) => c[0]).sort();
+    const written = precompute.storeBucketSlotsRow.mock.calls.map((c) => c[0]).sort();
     expect(written).toEqual([...LOW, ...MID].map((b) => b.code).sort());
     expect(out).toEqual({ refreshed: 2, deferred: 0, failed: 0, debounced: 0 });
+  });
+
+  // #3119: a database REFUSAL is an answer, not a throw. It used to be dropped, so
+  // the refused code was counted as written and this warning never fired for it.
+  it("names a code whose row the database refused, and does not count it as written", async () => {
+    precompute.bucketsForAgent.mockResolvedValueOnce(["200"]);
+    precompute.storeBucketSlotsRow.mockImplementation(async (code: string) =>
+      code === "201" ? ("failed" as never) : "written",
+    );
+    try {
+      await recomputeBucketsForAgent("agent-5");
+    } finally {
+      precompute.storeBucketSlotsRow.mockImplementation(async () => "written");
+    }
+    const warned = log.warn.mock.calls.filter(
+      ([tag, fields]) => tag === "slot-cache" && fields.msg === "pooled slot write failed for some codes",
+    );
+    expect(warned).toHaveLength(1);
+    expect(warned[0][1]).toMatchObject({ codes: "201" });
   });
 
   it("logs one countable line for the finished refresh", async () => {

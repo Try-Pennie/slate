@@ -20,6 +20,7 @@
  *       (node-testable). IO: runMigrationDriftCheck, dependency-injected.
  */
 
+import { logAlertSendFailure, logResolveFailure } from "../notify/send-failure.ts";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 
@@ -209,14 +210,14 @@ export async function runMigrationDriftCheck(deps: {
   const status = classifyMigrationDrift(deps.shippedVersion, applied);
   const text = formatMigrationDriftAlert(status, deps.shippedVersion, applied);
   if (text) {
-    await deps.notify(MIGRATION_VERSION_LAG_KEY, deps.cooldownMs, text).catch(() => {});
+    await deps.notify(MIGRATION_VERSION_LAG_KEY, deps.cooldownMs, text).catch(logAlertSendFailure(MIGRATION_VERSION_LAG_KEY));
   } else {
     // No alert text means `in-sync` or `db-ahead`, the two statuses that can only
     // come from a successful read. Same swallow rule as notify: a flaky Slack must
     // not fail the monitor tick, and the firing marker survives for a later retry.
     await deps
       .resolve(MIGRATION_VERSION_LAG_KEY, formatMigrationDriftRecovery(deps.shippedVersion))
-      .catch(() => {});
+      .catch(logResolveFailure(MIGRATION_VERSION_LAG_KEY));
   }
   deps.log?.("migration version check", status, applied);
   return status;
