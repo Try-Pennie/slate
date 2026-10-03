@@ -123,6 +123,7 @@ vi.mock("@/lib/agent-link/store", () => agentLinkStore);
 
 import { btnDangerCls, btnSecondaryCls } from "@/components/ui/styles";
 import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
+import { SAVE_OUTCOME_COPY } from "@/lib/admin/save-outcomes";
 import AgentProfilePage from "./page";
 
 const props = { params: Promise.resolve({ id: "x1" }) };
@@ -425,6 +426,21 @@ describe("the time off calendar field says what it is (#2161)", () => {
   it("is not shown on a plain agent, who has no team to write time off for", async () => {
     await asAdminViewing("agent");
     expect(screen.queryByLabelText(/team time off calendar/i)).toBeNull();
+  });
+
+  // #3100: found by the first browser run. `setOooCalendarId` redirects with
+  // `?ok=agent-ooo-calendar`, and this page drew only the working hours outcome,
+  // so the save wrote the calendar and said nothing at all (L608).
+  it("says the calendar was saved when the save comes back", async () => {
+    auth.currentUser.mockResolvedValueOnce({ id: "ad1", role: "admin", org_id: "o1" });
+    dbState.agent = agentOf("manager");
+    render(
+      await AgentProfilePage({
+        ...props,
+        searchParams: Promise.resolve({ ok: "agent-ooo-calendar" }),
+      }),
+    );
+    expect(screen.getByRole("status").textContent).toBe(SAVE_OUTCOME_COPY["agent-ooo-calendar"]);
   });
 });
 

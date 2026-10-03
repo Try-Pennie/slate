@@ -1,0 +1,105 @@
+name: Browser checks
+
+# The browser layer #611 declined, added on Dan's decision of 2026-10-03 (#3079,
+# #3100): an axe scan of the rendered pages in both themes, and clicks through
+# sign in, impersonation, the eleven admin saves #2379 found had never been
+# pressed, and the booking flow. It runs a PRODUCTION build (`next build` then
+# `next start`) against a throwaway local Supabase, never `next dev`, whose
+# keyframes never settle and which is what #611 found too unstable to automate.
+#
+# STRUCTURALLY UNABLE TO REACH PRODUCTION (L2). This job is handed NO secret at
+# all, and `scripts/test-browser-checks-workflow.ts` fails the build if one is
+# ever added. The server's environment is built from nothing in `e2e/env.ts`,
+# runs with `SLATE_LOADTEST=true` (Google stubbed; Slack, Salesforce, cal.com and
+# Twilio refused), and carries an egress guard that refuses and records any
+# connection off the runner; the run fails on a single record. The browser aborts
+# any request that is not to this machine.
+#
+# Its OWN workflow rather than a leg of ci.yml, so the `ci` fan-in and the main
+# push guard are untouched. That means a red run here does not by itself fail
+# `ci`: it is a red check on the pull request, and making it part of the gate is
+# a separate decision (adding it to the fan-in's `needs`).
+#
+# PRICE (private repo, billed): one ubuntu-latest job at the 1x multiplier.
+# Measured locally at about 2.5 minutes for stack, build and 32 tests; on a runner
+# expect about 6 billed minutes per run with the image pulls and the browser
+# install. At the September rate of about 800 pull request runs a month, if every
+# one touched an input, that is about 4,800 billed minutes a month. The path gate
+# below is what keeps a docs or workflow only change from paying it, and the
+# concurrency rule cancels a superseded run.
+on:
+  pull_request:
+    # Every input the run reads, and nothing it does not (L88): the app the
+    # build compiles and serves (`src/`, `public/`, and the root configs and
+    # TypeScript files `next build` typechecks), the schema the local stack is
+    # built from, the suite itself, and this file. Derived and checked, file by
+    # file against `git ls-files`, by scripts/test-browser-checks-workflow.ts.
+    paths:
+      - "src/**"
+      - "public/**"
+      - "e2e/**"
+      - "supabase/migrations/**"
+      - "*.ts"
+      - "*.mts"
+      - "*.mjs"
+      - "*.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - ".github/workflows/browser-checks.yml"
+
+# A newer push supersedes the run in flight. Safe here because the job writes
+# nothing outside its own runner (L671).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  browser:
+    timeout-minutes: 20  # measured 2.5 min locally end to end; runner pulls and a cold build add about 4
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Cache the browser
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/ms-playwright
+          # Keyed on the lockfile, which pins @playwright/test exactly, so a bump
+          # fetches a matching browser instead of silently reusing an old one.
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install the browser
+        # chromium only, with the system libraries a headless run needs.
+        run: pnpm exec playwright install --with-deps chromium
+
+      # Pinned: `supabase status -o json` is read for the stack's address and its
+      # publishable and secret keys, and that output is what this version prints.
+      - uses: supabase/setup-cli@45a513f8c64c0bc8e0e3dfe572b5c95be85f6359 # v3.0.1
+        with:
+          version: 2.117.0
+
+      - name: Browser checks (local stack, production build)
+        env:
+          CI: "1"
+        run: pnpm test:e2e
+
+      - name: Keep the report, traces and server log
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-checks
+          path: e2e/.artifacts/
+          retention-days: 7

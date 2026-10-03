@@ -1,0 +1,82 @@
+# The throwaway local Supabase the browser checks run against (#3079, #3100).
+#
+# NOT the project's own `supabase/config.toml`: that one is the developer stack on
+# the default ports, and a machine running any other local Supabase already holds
+# them. This one is copied into a scratch workdir by `e2e/run.ts`, beside a copy of
+# `supabase/migrations`, so the schema under test is exactly the committed one and
+# nothing here can be mistaken for the real project's settings.
+#
+# Only the four services the app reads through are on: Postgres, PostgREST, GoTrue
+# (sessions) and the gateway in front of them, plus Mailpit, which is where the
+# sign in check reads its magic link from. Everything else is off, because each
+# extra container is pull time on every CI run and none of them is read.
+project_id = "slate-e2e"
+
+[api]
+enabled = true
+port = 54421
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54422
+shadow_port = 54420
+major_version = 17
+
+[db.pooler]
+enabled = false
+
+[db.migrations]
+enabled = true
+
+[db.seed]
+enabled = false
+
+[realtime]
+enabled = false
+
+[studio]
+enabled = false
+
+[inbucket]
+enabled = true
+port = 54424
+
+[storage]
+enabled = false
+
+[edge_runtime]
+enabled = false
+
+[analytics]
+enabled = false
+
+[auth]
+enabled = true
+# The app under test serves on localhost:3100 (see E2E_APP_ORIGIN in e2e/env.ts).
+site_url = "http://localhost:3100"
+additional_redirect_urls = ["http://localhost:3100/api/auth/callback"]
+jwt_expiry = 3600
+enable_refresh_token_rotation = true
+refresh_token_reuse_interval = 10
+enable_signup = true
+enable_anonymous_sign_ins = false
+minimum_password_length = 6
+
+[auth.rate_limit]
+# The sign in check sends one magic link per run, and a developer re-running the
+# suite would meet the default of two an hour on the third run.
+email_sent = 100
+sign_in_sign_ups = 300
+token_verifications = 300
+token_refresh = 300
+
+[auth.email]
+enable_signup = true
+double_confirm_changes = false
+enable_confirmations = false
+secure_password_change = false
+max_frequency = "1s"
+otp_length = 6
+otp_expiry = 3600

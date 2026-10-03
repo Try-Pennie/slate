@@ -281,7 +281,10 @@ export default async function AlertSettingsPage({
       <AdminPageHeader title="Alerts and floors">
         How often the monitor alerts fire, the volumes they judge against, and
         which Slack channel each one posts to. No deploy needed.
-        <p className="mt-3 text-xs text-pennie-beige/70">{lastChanged}</p>
+        {/* #3079: was beige at 70% from when this header sat on navy; on the
+            light card it measured below 4.5:1 in the rendered scan. Same
+            treatment as the booking reasons header. */}
+        <p className="mt-3 text-xs">{lastChanged}</p>
       </AdminPageHeader>
       {/* #1990: the sentence comes from the OUTCOME, so it names the form
           that saved rather than whatever this page had written down. An

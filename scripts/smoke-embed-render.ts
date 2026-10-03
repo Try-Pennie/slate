@@ -9,13 +9,13 @@
 //
 // ## Why this lives in the canary rather than in CI
 //
-// AGENTS.md records a deliberate decision not to add a browser layer to CI (#611,
-// audit AUD-037): `next dev` screenshots are unstable to automate (the `.pn-*`
-// entrance keyframes never settle, font loading stalls a full page shot), so a
-// headless browser job would be flaky for the payoff, and the risky seams are
-// covered post deploy by the canary instead.
+// When this was written, AGENTS.md recorded a decision not to add a browser layer
+// to CI (#611, audit AUD-037), because `next dev` screenshots never settle. Dan
+// reversed that on 2026-10-03 (ADR 0011, #3079, #3100): a pre merge browser run
+// now drives a production build on a local stack. That run cannot see the
+// DEPLOYED Worker or the real embed host, so this check keeps its own job.
 //
-// This does not reverse that. It runs POST DEPLOY, against the real deployment,
+// It runs POST DEPLOY, against the real deployment,
 // on the canary's own schedule, and it drives the DEPLOYED widget.js rather than a
 // dev server, so none of the instability that decision was about applies. It is
 // the compensating control being extended, not the rejected one being added.

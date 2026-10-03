@@ -69,3 +69,7 @@ scripts/typecheck-control.tmp.ts
 # The tree write tripwire's own probe (#2733). It only ever survives a run that
 # was killed part way through, or one whose removal of it failed and said so.
 .tree-write-tripwire-probe-*
+
+# Browser check output: traces, the HTML report, the server log and the
+# egress record (#3079, #3100). Local only; CI uploads it as an artifact.
+/e2e/.artifacts/

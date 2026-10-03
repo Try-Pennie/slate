@@ -42,6 +42,22 @@ describe("VolumeFloors", () => {
     expect(line).not.toContain("of that tier's bookings");
   });
 
+  // #3079: found by the first rendered page scan. Each floor table is wider than
+  // its card and scrolls sideways, and a scrolling box a keyboard cannot reach
+  // hides every hour past the edge from anybody not using a pointer (axe
+  // scrollable-region-focusable, serious). Each one is a named, focusable region.
+  it("lets a keyboard reach and scroll each floor table, and names what it scrolls", () => {
+    const { container } = renderFloors();
+    const tables = container.querySelectorAll("table[data-floor-table]");
+    expect(tables.length).toBeGreaterThan(0);
+    for (const table of tables) {
+      const scroller = table.parentElement!;
+      expect(scroller.getAttribute("tabindex")).toBe("0");
+      expect(scroller.getAttribute("role")).toBe("region");
+      expect(scroller.getAttribute("aria-label")).toBe(table.querySelector("caption")!.textContent);
+    }
+  });
+
   it("states no share when the floors are the whole tier's", () => {
     const whole = { ...MEASURED_VOLUME_BASELINE, tierShare: null };
     const { container } = renderFloors({ baseline: whole, table: floorTable(whole, WEEK) });
