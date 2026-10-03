@@ -207,6 +207,8 @@ import {
   awaitingActivationReachedVerdict,
   STRANDED_HIRES_VERDICT_LANE,
   strandedHiresReachedVerdict,
+  AUDIT_CHAIN_VERDICT_LANE,
+  auditChainReachedVerdict,
   REGAL_CALL_FEED_VERDICT_LANE,
   regalCallFeedReachedVerdict,
   REGAL_CALL_OUTCOMES_VERDICT_LANE,
@@ -294,6 +296,7 @@ import { bookingDetailHref } from "@/lib/booking/detail";
 import { runEdgeLimiterCheck } from "@/lib/monitor/edge-limiter-health";
 import { runDefinerGrantsCheck, type DefinerFunctionRow } from "@/lib/monitor/definer-grants";
 import { runAuthSignInSurfaceCheck, readAuthSettings } from "@/lib/monitor/auth-sign-in-surface";
+import { runAuditChainCheck, type AuditChainRow } from "@/lib/monitor/audit-chain";
 import { EDGE_LIMITER_BINDINGS } from "@/lib/rate-limit-core";
 import { BURST_LIMITER_BINDING } from "@/lib/rate-limit-burst";
 import { isWorkersRuntime, workersRuntimeMarker } from "@/lib/platform/runtime";
@@ -3475,6 +3478,84 @@ export async function GET(req: NextRequest) {
         log: (msg) => log.info("auth-sign-in", { msg }),
       }),
     );
+    // Has the audit log been changed after it was written? (#3090)
+    //
+    // Migration 0160 chains every audit_log row to the one before it by hash. This walks
+    // that chain a page at a time from the first row to the last, then from the first
+    // again, so an edit made a month ago is found as surely as one made today. The hash
+    // is recomputed HERE rather than by a database function, because a role able to
+    // switch off the append only trigger could replace a verifying function too.
+    //
+    // Three subrequests a tick on the budget four cron lanes share: the position, one
+    // page of rows (`details::text`, because the hash is over Postgres's own rendering of
+    // the jsonb), and the position written back. A broken tick skips the write.
+    const auditChain = await steps.run("audit_chain", null, () =>
+      runAuditChainCheck({
+        loadPosition: async () => {
+          const row = unwrap(
+            await db
+              .from("audit_log_chain_verify")
+              .select("pass_seq, pass_hash, anchor_seq, anchor_hash")
+              .maybeSingle(),
+            "audit chain position",
+          );
+          return row
+            ? {
+                passSeq: Number(row.pass_seq),
+                passHash: String(row.pass_hash),
+                anchorSeq: Number(row.anchor_seq),
+                anchorHash: String(row.anchor_hash),
+              }
+            : null;
+        },
+        loadRows: async (afterSeq, limit) =>
+          unwrap(
+            await db
+              .from("audit_log")
+              .select("id, org_id, actor_id, action, target_id, details::text, created_at, chain_seq, chain_hash")
+              .gt("chain_seq", afterSeq)
+              .order("chain_seq", { ascending: true })
+              .limit(limit),
+            "audit chain rows",
+          ) as unknown as AuditChainRow[],
+        savePosition: async (p) => {
+          const at = new Date(now).toISOString();
+          unwrap(
+            await db.from("audit_log_chain_verify").upsert({
+              singleton: true,
+              pass_seq: p.passSeq,
+              pass_hash: p.passHash,
+              anchor_seq: p.anchorSeq,
+              anchor_hash: p.anchorHash,
+              // A walk always restarts from 0 when it completes, and a walk part way
+              // through is always past 0, so 0 here means a complete walk just ended.
+              ...(p.passSeq === 0 ? { last_full_pass_at: at } : {}),
+              updated_at: at,
+            }),
+            "audit chain position write",
+          );
+        },
+        // alert-key: audit_log_chain_broken
+        // alert-text-ok: our own copy from audit-chain.ts, never a raw error.
+        notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+        // A condition: it ends on a complete walk that finds nothing wrong.
+        // alert-key: audit_log_chain_broken
+        // all-clear-proof: scripts/test-audit-chain.ts - a failed read, a failed write and
+        // an unreadable row each report unmeasured and clear nothing.
+        resolve: (key, text) => resolveAlert(key, text),
+        cooldownMs: cooldownMs.audit_log_chain_broken,
+      }),
+    );
+    if (auditChain) {
+      log.info("monitor", {
+        msg: "audit chain",
+        status: auditChain.status,
+        ...(auditChain.status === "unmeasured" ? { why: auditChain.why } : {}),
+        ...(auditChain.status === "broken" ? { kind: auditChain.break.kind, checked: auditChain.checked } : {}),
+        ...(auditChain.status === "progressing" ? { checked: auditChain.checked, pass_seq: auditChain.passSeq } : {}),
+        ...(auditChain.status === "intact" ? { checked: auditChain.checked, through_seq: auditChain.throughSeq } : {}),
+      });
+    }
 
     // Watch the other lanes (#803). The sync lane does this too; running it from
     // BOTH means the every-minute lanes and the 5-minute lanes watch each other,
@@ -3750,6 +3831,8 @@ export async function GET(req: NextRequest) {
       ),
       // #2481: the stranded hire check, stamped on any read that concluded.
       recordDetectorVerdict(STRANDED_HIRES_VERDICT_LANE, strandedHiresReachedVerdict(strandedHires)),
+      // #3090: the audit chain walk, stamped on every tick that read and judged rows.
+      recordDetectorVerdict(AUDIT_CHAIN_VERDICT_LANE, auditChainReachedVerdict(auditChain)),
       recordDetectorVerdict(
         REGAL_CALL_FEED_VERDICT_LANE,
         regalCallFeedReachedVerdict(regalQuiet, regalUnreadable),

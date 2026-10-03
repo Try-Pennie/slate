@@ -17,7 +17,15 @@ import {
   deleteEventOnCalendar,
   updateEventDescription,
   syncEvents,
+  createEvent,
+  freeBusyMany,
+  updateEventTime,
+  GOOGLE_CONFIRM_TIMEOUT_MS,
+  GOOGLE_SYNC_TIMEOUT_MS,
 } from "./calendar";
+import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
+import { REQUEST_TIMEOUT_MS } from "@/lib/http";
+import { SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
 import { isDefinitiveFailure, reachabilityFromError } from "@/lib/google/reachability-classify";
 import { EventGone } from "@/lib/booking/core";
 
@@ -43,8 +51,9 @@ describe("listCalendars timeout (#922)", () => {
         );
       }),
     );
-    await expect(listCalendars("a@b.com", 20)).rejects.toThrow(/abort/i);
-    expect(dwd.getDelegatedToken).toHaveBeenCalledWith("a@b.com");
+    await expect(listCalendars("a@b.com", 20)).rejects.toBeInstanceOf(DeadlineExceededError);
+    // The token mint is held to the same deadline as the call it is for (#3102).
+    expect(dwd.getDelegatedToken).toHaveBeenCalledWith("a@b.com", undefined, 20);
   });
 
   it("does not abort a calendarList fetch that responds before timeoutMs", async () => {
@@ -303,7 +312,11 @@ describe("updateEventDescription (#1341)", () => {
   it("impersonates the agent whose calendar holds the event", async () => {
     capture();
     await updateEventDescription("agent@trypennie.com", "evt-1", "x");
-    expect(dwd.getDelegatedToken).toHaveBeenCalledWith("agent@trypennie.com");
+    expect(dwd.getDelegatedToken).toHaveBeenCalledWith(
+      "agent@trypennie.com",
+      undefined,
+      GOOGLE_CONFIRM_TIMEOUT_MS,
+    );
   });
 
   for (const status of [404, 410]) {
@@ -363,5 +376,103 @@ describe("syncEvents windows a BOOTSTRAP and never a delta (#1261)", () => {
     // incremental sync in the fleet outright.
     expect(params.get("timeMin")).toBeNull();
     expect(params.get("timeMax")).toBeNull();
+  });
+});
+
+// #3102: no Google call is unbounded any more. Every call names a deadline, sized
+// for who is waiting: a lead on the confirm path, or a cron lane's shared budget.
+// The fetch here never settles, not even on abort, and the timers are fake, so
+// nothing waits for real time.
+describe("default Google deadlines (#3102)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    dwd.getDelegatedToken.mockResolvedValue("tok");
+    vi.stubGlobal("fetch", () => new Promise<Response>(() => {}));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  /** Advance to one millisecond short of `ms`, then to it, recording when it settled. */
+  async function settlesAt(p: Promise<unknown>, ms: number): Promise<unknown> {
+    let outcome: unknown = "pending";
+    p.then(
+      () => (outcome = "resolved"),
+      (e: unknown) => (outcome = e),
+    );
+    await vi.advanceTimersByTimeAsync(ms - 1);
+    expect(outcome).toBe("pending");
+    await vi.advanceTimersByTimeAsync(1);
+    return outcome;
+  }
+
+  // The confirm path's WORST CASE, every call in a row, is pinned by
+  // `booking/confirm-budget.test.ts`; one call here only has to fit inside it.
+  it("keeps one confirm path call well inside the booker's abort", () => {
+    expect(GOOGLE_CONFIRM_TIMEOUT_MS).toBeLessThan(REQUEST_TIMEOUT_MS / 2);
+  });
+
+  it("sizes the sync deadline inside one sync tick's budget", () => {
+    expect(GOOGLE_SYNC_TIMEOUT_MS).toBeLessThan(SYNC_TICK_BUDGET_MS);
+  });
+
+  it("bounds the confirm path's event insert, which used to wait forever", async () => {
+    const outcome = await settlesAt(
+      createEvent("a@b.com", { ...event, attendeeEmail: "lead@x.com" }, "slateabc"),
+      GOOGLE_CONFIRM_TIMEOUT_MS,
+    );
+    expect(outcome).toBeInstanceOf(DeadlineExceededError);
+    expect((outcome as DeadlineExceededError).label).toBe("google events.insert");
+    expect(dwd.getDelegatedToken).toHaveBeenCalledWith("a@b.com", undefined, GOOGLE_CONFIRM_TIMEOUT_MS);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("gives the token mint and the request ONE expiry, not a deadline each", async () => {
+    // A mint that takes 7.9 of the call's 8 seconds leaves the request 0.1. Two
+    // full deadlines would have let this one call run to 15.9 seconds.
+    dwd.getDelegatedToken.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve("tok"), 7_900)),
+    );
+    const outcome = await settlesAt(
+      createEvent("a@b.com", { ...event, attendeeEmail: "lead@x.com" }, "slateabc"),
+      GOOGLE_CONFIRM_TIMEOUT_MS,
+    );
+    expect(outcome).toBeInstanceOf(DeadlineExceededError);
+    expect((outcome as DeadlineExceededError).label).toBe("google events.insert");
+    expect((outcome as DeadlineExceededError).timeoutMs).toBe(GOOGLE_CONFIRM_TIMEOUT_MS);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("bounds verify-on-book's bulk free/busy read", async () => {
+    const outcome = await settlesAt(
+      freeBusyMany("ops@x.com", event.start, event.end, ["a@x.com"]),
+      GOOGLE_CONFIRM_TIMEOUT_MS,
+    );
+    expect(outcome).toBeInstanceOf(DeadlineExceededError);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("bounds a lead's in place reschedule move", async () => {
+    const outcome = await settlesAt(
+      updateEventTime("a@b.com", "evt-1", event.start, event.end, event.timezone),
+      GOOGLE_CONFIRM_TIMEOUT_MS,
+    );
+    expect(outcome).toBeInstanceOf(DeadlineExceededError);
+  });
+
+  it("gives a sync read the longer lane deadline, not the confirm one", async () => {
+    const outcome = await settlesAt(
+      syncEvents("a@b.com", "primary", "tok", "2026-06-08T00:00:00.000Z", "2026-06-29T00:00:00.000Z"),
+      GOOGLE_SYNC_TIMEOUT_MS,
+    );
+    expect(outcome).toBeInstanceOf(DeadlineExceededError);
+    expect((outcome as DeadlineExceededError).timeoutMs).toBe(GOOGLE_SYNC_TIMEOUT_MS);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("bounds the calendar list on the sync path too, when no caller names a deadline", async () => {
+    const outcome = await settlesAt(listCalendars("a@b.com"), GOOGLE_SYNC_TIMEOUT_MS);
+    expect(outcome).toBeInstanceOf(DeadlineExceededError);
   });
 });

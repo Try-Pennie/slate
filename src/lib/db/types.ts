@@ -825,6 +825,10 @@ export interface AuditEntry {
   target_id: string | null;
   details: Record<string, unknown>;
   created_at: string;
+  /** Position in the #3090 hash chain, 1, 2, 3, ... Set by the trigger, never by a caller. */
+  chain_seq: number;
+  /** SHA-256 hex of the previous row's chain_hash plus this row's content. Set by the trigger. */
+  chain_hash: string;
 }
 
 export interface WebhookDelivery {
@@ -1102,6 +1106,19 @@ export interface BookingFailureRateState {
      *  measured in that interval", not as zero refusals. */
     refusals?: Record<string, number>;
   }[];
+  updated_at: string;
+}
+
+/** Where the monitor lane's audit_log hash chain walk is (#3090, migration 0160).
+ *  One row. `pass_*` is how far the current walk from the start has got, and
+ *  `anchor_*` the furthest row a complete walk has verified, with its hash then. */
+export interface AuditLogChainVerify {
+  singleton: boolean;
+  pass_seq: number;
+  pass_hash: string;
+  anchor_seq: number;
+  anchor_hash: string;
+  last_full_pass_at: string | null;
   updated_at: string;
 }
 

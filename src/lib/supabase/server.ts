@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { publicSupabasePublishableKey, publicSupabaseUrl } from "@/lib/env";
 import type { Database } from "@/lib/db/schema";
+import { supabaseFetch } from "@/lib/supabase/fetch";
 import { hardenAuthCookie, serverAuthCookieOptions } from "@/lib/supabase/cookie-options";
 
 /**
@@ -16,6 +17,7 @@ import { hardenAuthCookie, serverAuthCookieOptions } from "@/lib/supabase/cookie
 export async function supabaseServer() {
   const cookieStore = await cookies();
   return createServerClient<Database>(publicSupabaseUrl(), publicSupabasePublishableKey(), {
+    global: { fetch: supabaseFetch },
     cookieOptions: serverAuthCookieOptions(),
     cookies: {
       getAll: () => cookieStore.getAll(),

@@ -6,6 +6,8 @@ import {
   shouldRetrySf,
   fetchSfWithRetry,
 } from "../src/lib/salesforce/retry.ts";
+import { withinCallBudget } from "../src/lib/call-budget.ts";
+import { DeadlineExceededError } from "../src/lib/fetch-within-deadline.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 // --- sfBackoffMs: positive and strictly increasing across attempts ---
@@ -130,6 +132,90 @@ async function run() {
       (h.inits[0].headers as Record<string, string>)["content-type"] === "x",
       "preserves the caller's headers",
     );
+  }
+
+  // #3102: on the confirm path a lead's routing code can be read from Salesforce,
+  // and three attempts of 10 seconds each would hold the lead past the booker's
+  // abort on their own. Inside a call budget that is already spent, no attempt
+  // starts and nothing is retried: the deadline surfaces at once.
+  {
+    const h = harness([200]);
+    let caught: unknown = null;
+    await withinCallBudget(0, "the booking confirm", () =>
+      fetchSfWithRetry("https://sf/q", {}, { fetchImpl: h.fetchImpl, sleep: h.sleep }),
+    ).catch((e: unknown) => {
+      caught = e;
+    });
+    assert(caught instanceof DeadlineExceededError, "a spent call budget refuses a Salesforce attempt");
+    assert(h.inits.length === 0, "and sends nothing");
+    assert(h.sleeps.length === 0, "and does not back off to retry a budget that cannot come back");
+  }
+
+  // An attempt the BUDGET cut short ends in the platform's TimeoutError, which says
+  // nothing about the budget. It must surface as the deadline (named for
+  // Salesforce, carrying the budget), so the confirm path answers its retryable
+  // 503 and pages, and it must not be retried: the time it ran out of is gone.
+  // The fetch throws the abort's own error at once, so nothing waits for real.
+  {
+    const inits: RequestInit[] = [];
+    const sleeps: number[] = [];
+    let caught: unknown = null;
+    await withinCallBudget(1_000, "the booking confirm", () =>
+      fetchSfWithRetry(
+        "https://sf/q",
+        {},
+        {
+          fetchImpl: (async (_u: string, init: RequestInit) => {
+            inits.push(init);
+            throw new DOMException("The operation timed out.", "TimeoutError");
+          }) as unknown as typeof fetch,
+          sleep: async (ms: number) => {
+            sleeps.push(ms);
+          },
+        },
+      ),
+    ).catch((e: unknown) => {
+      caught = e;
+    });
+    assert(caught instanceof DeadlineExceededError, "a budget-shortened Salesforce timeout surfaces as the deadline");
+    assert((caught as DeadlineExceededError).label === "salesforce", "named for Salesforce");
+    assert((caught as DeadlineExceededError).budget?.label === "the booking confirm", "and carrying the budget that cut it short");
+    assert(inits.length === 1, "and is not retried");
+    assert(sleeps.length === 0, "with no backoff spent on it");
+  }
+
+  // A timeout on Salesforce's OWN limit, with no budget involved, is the
+  // transient failure it always was, and is still retried.
+  {
+    let calls = 0;
+    const sleeps: number[] = [];
+    let caught: unknown = null;
+    await fetchSfWithRetry(
+      "https://sf/q",
+      {},
+      {
+        fetchImpl: (async () => {
+          calls++;
+          throw new DOMException("The operation timed out.", "TimeoutError");
+        }) as unknown as typeof fetch,
+        sleep: async (ms: number) => {
+          sleeps.push(ms);
+        },
+      },
+    ).catch((e: unknown) => {
+      caught = e;
+    });
+    assert(calls === SF_MAX_ATTEMPTS, "outside a budget a Salesforce timeout is retried as before");
+    assert(!(caught instanceof DeadlineExceededError), "and is not relabelled as a budget deadline");
+  }
+
+  // With budget to spare it behaves exactly as before.
+  {
+    const h = harness([503, 200]);
+    const res = await withinCallBudget(60_000, "the booking confirm", () =>
+      fetchSfWithRetry("https://sf/q", {}, { fetchImpl: h.fetchImpl, sleep: h.sleep }),
+    );
+    assert(res.status === 200, "inside a roomy budget a transient failure is still retried");
   }
 
   assert(SF_MAX_ATTEMPTS >= 2, "default allows at least one retry");

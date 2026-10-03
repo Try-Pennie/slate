@@ -274,6 +274,7 @@ src/lib/errors         what an error boundary says when a page could not finish
 src/lib/theme          one rule for which theme a person gets: the pre-hydration boot script and its runtime half
 src/lib/twilio         the TaskRouter read: who carries the Redistribute tag, and the flip out of the pool it decides
 src/lib/regal          the inbound Regal call feed: what each call.completed body means, and its retention
+src/lib/log-shipping   what the slate-log-tail Worker ships to Better Stack: the redaction, the line parser, the bounded POST
 src/lib/advisor-photos advisor photos from the Google directory: the daily refresh, its guards, and the one resolver every face goes through
 src/lib/{calcom,date,db,embed,supabase}   cal.com dual-write, Luxon helpers, hand-written DB types, embed origin, Supabase clients
 src/app/api            availability, bookings, auth callback, google push, cron/* lanes, keyed reassign/booking/offboarding APIs
@@ -283,7 +284,7 @@ src/app/book           short-code booking entry
 src/app/advisor-photo  the public, content addressed advisor photo route
 src/app/me             agent self-serve (hours, calendar, OOO)
 src/app/login          Google SSO
-worker/                Cloudflare Worker entry (index.ts) + cron dispatch (cron-routes.ts)
+worker/                Cloudflare Worker entry (index.ts) + cron dispatch (cron-routes.ts) + the log tail Worker (log-tail/, config wrangler.log-tail.jsonc)
 scripts/               node-native tests (test-*.ts) + migration / env / doc drift guards
 public/widget.js       embed SDK (inline + popup)
 supabase/migrations    schema (apply the whole set; see SHIPPED_MIGRATION_VERSION)

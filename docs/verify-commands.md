@@ -1603,3 +1603,36 @@ cascade on a deleted user. With no Docker it exits 2, UNMEASURED.
 and again after the subject changes** (Dan moves it to a non human admin mailbox at
 rollout).
 
+# Proving the audit log hash chain in a real database (`pnpm verify:audit-chain-sql`)
+
+#3090: `audit_log` refuses UPDATE, DELETE and TRUNCATE (0089), but a role with DDL
+rights can switch that trigger off, edit a row and switch it back on with nothing to
+show for it. Migration 0160 chains every row to the one before it: a BEFORE INSERT
+trigger stamps `chain_seq` and `chain_hash` (SHA-256 of the previous hash plus the row's
+content) under a row lock on `audit_log_chain_head`, and the monitor lane's
+`audit_chain` step re-walks the chain a page at a time, recomputing every hash in the
+Worker (`src/lib/monitor/audit-chain.ts`), and pages `audit_log_chain_broken` on a break.
+
+The two halves must produce the same bytes, and the offline suite cannot see the
+database's. So this command starts a throwaway Postgres in Docker, lays down the slice
+of the schema 0160 reads plus the 0089 triggers, applies 0160 VERBATIM, and proves:
+
+- the backfill chains existing rows oldest first, and the Worker's recomputation agrees
+  with every hash, read back the way PostgREST renders rows, in three time zones;
+- the trigger chains new rows and overwrites anything a caller supplied;
+- six concurrent writers, a rolled back insert and a refused insert leave the sequence
+  with no fork and no gap;
+- the append only guard still refuses an UPDATE, and the web roles can neither execute
+  the functions nor read the two new tables;
+- a second run of the migration changes nothing;
+- each break the walk names (an edited row, a deleted row, a chain recomputed after an
+  edit, rows cut off the end) is caught by the walk itself over the real rows, with a
+  control showing the recomputed chain verifies when nothing is anchored.
+
+It also measures the vector in `scripts/lib/audit-chain-vector.ts`, which
+`scripts/test-audit-chain.ts` pins offline, so an encoding change on either side fails
+the build. It writes nothing outside the container, which it removes. With no Docker it
+exits 2, UNMEASURED.
+
+**Run it after any change to migration 0160's functions or to `audit-chain.ts`.**
+

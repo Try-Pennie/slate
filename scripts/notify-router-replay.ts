@@ -21,6 +21,7 @@
 // pretending it warned anyone.
 import { readFileSync, appendFileSync } from "node:fs";
 import { runAlerter } from "./lib/run-alerter.ts";
+import { postConcludedDecision } from "./lib/post-decision.ts";
 import { decideReplayReport, type ReplaySummaryFile } from "./lib/router-replay-report.ts";
 
 export type PostFn = (msg: {
@@ -60,19 +61,7 @@ export async function run(
     readSummary(env.REPLAY_SUMMARY_FILE ?? ""),
     env.RUN_URL ?? "",
   );
-  if (decision.alert === null) {
-    return { ok: true, reason: "nothing to say", concluded: decision.concluded };
-  }
-  // The channel comes from the workflow, never from a database lookup (#1598). An
-  // empty value is refused by name rather than posted into nowhere, because an
-  // unset repo variable interpolates to the empty string.
-  const channel = env.SLACK_ALERTS_CHANNEL?.trim() || undefined;
-  const res = await post({ text: decision.alert, ...(channel ? { channel } : {}) });
-  return {
-    ok: res.ok,
-    reason: res.ok ? "posted" : (res.error ?? "unknown-error"),
-    concluded: decision.concluded,
-  };
+  return postConcludedDecision(post, env, decision);
 }
 
 runAlerter(import.meta.url, async (post, env) => {

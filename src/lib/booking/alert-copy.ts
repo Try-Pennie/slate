@@ -287,6 +287,29 @@ export function verifyOutageAlert(): string {
   return "A booking failed because verify-on-book could not confirm ANY candidate's free/busy (likely a Google/DB outage), not because the slot was full. The lead saw a retryable error. Check Google Calendar API + DB health.";
 }
 
+/**
+ * A dependency on the booking path did not answer inside its deadline (#3102).
+ * Sent under the same key as the verify outage, because it is the same incident
+ * from the lead's side. The words name the call that was in flight, and the
+ * request's budget when that is what cut it short. They claim nothing about what
+ * happened to the booking afterwards (L11): whether its reservation had been
+ * written is not known at the moment of the page, so it points at where to look.
+ */
+export function dependencyTimeoutAlert(timeout: {
+  dependency: string;
+  timeoutMs: number;
+  budget: { label: string; totalMs: number } | null;
+}): string {
+  const secs = (ms: number) => `${Math.round(ms / 1000)} seconds`;
+  const { dependency, timeoutMs, budget } = timeout;
+  const what = !budget
+    ? `${dependency} did not answer within ${secs(timeoutMs)}`
+    : timeoutMs === 0
+      ? `${dependency} was not started, because ${budget.label} had already used its ${secs(budget.totalMs)}`
+      : `${dependency} was still running when ${budget.label} ran out of its ${secs(budget.totalMs)}`;
+  return `A booking failed because ${what}, not because the slot was full. The lead saw a retryable error. Check booking_reservations for a pending row before asking them to rebook, and Google Calendar API and Supabase health.`;
+}
+
 /** A reschedule failed closed because the lock claim hit a DB error. */
 export function rescheduleLockOutageAlert(): string {
   return "A reschedule failed CLOSED because the per-booking lock claim hit an unexpected DB error (not a real conflict). The actor saw a retryable 503. Check DB health.";

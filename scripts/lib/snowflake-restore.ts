@@ -61,7 +61,11 @@ export const UNMIRRORED_COLUMNS: Record<string, Record<string, string>> = {
   },
   booking_outbox: {},
   booking_events: {},
-  audit_log: {},
+  audit_log: {
+    chain_seq:
+      "assigned by the hash chain trigger (#3090) on insert, so a restored row is appended at the end of the chain rather than at its original place",
+    chain_hash: "computed by the same trigger over the restored row, linking it to the current chain head",
+  },
 };
 
 /** The Supabase column that says a row was redacted in place, per table. */

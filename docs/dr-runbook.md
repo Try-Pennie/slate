@@ -60,25 +60,38 @@ for minutes to be worth that.
 whole morning and work the sections in order.
 
 **On the forensic window, which is a third objective nobody usually writes down**
-(#1047). Cloudflare keeps every log line for **7 days** and there is no export, so
-anything that happened longer ago than a week can only be reconstructed from the
-database: the tables, `booking_events`, `audit_log`, `webhook_deliveries`. That is
-enough to answer what HAPPENED (every state change a booking went through is a durable
-row) and not enough to answer WHY at the level a log line would (which agent's calendar
-read failed, what Google actually returned, which code path a request took).
+(#1047, #3105). Two copies of the logs exist, and the window is whichever reaches
+further back:
 
-Accepted, with the trade stated: a Logpush job shipping error-level lines to R2
-would extend it indefinitely and costs both money and a new place holding customer data
-for longer, which the PII inventory would have to account for (`docs/pii.md` names the
-request URL as carrying contact data, so a longer-lived log copy is a longer-lived PII
-copy, not just more diagnostics). What would change it: a compliance requirement for
-longer retention, or a second incident where the answer was genuinely a week old. In
-practice the constraint is simpler than it sounds, because an incident that matters is
-noticed by an alert within minutes, and every alert here fires while the window is wide
-open.
+- **Cloudflare** keeps every log line, unredacted, for **7 days**.
+- **Better Stack** holds a REDACTED copy of every line, exception and invocation
+  outcome, shipped by the tail worker since #3105 (DEPLOY.md, "Log shipping to Better
+  Stack"), for the plan's retention.
+
+**On the free tier Better Stack starts on, that retention is 3 days, which is shorter
+than Cloudflare's 7, so the window is NOT widened: it is still 7 days.** What the
+free tier adds is search, error grouping and a per deploy `version_id` over the most
+recent 3 days, not history. The window grows only on a paid plan of more than 7 days
+(30 to 90), and then only for what survives the redaction: a full URL, a query
+string and a manage token exist only in Cloudflare's copy, for its 7 days.
+
+So, today: anything older than a week can only be reconstructed from the database:
+the tables, `booking_events`, `audit_log`, `webhook_deliveries`. That is enough to
+answer what HAPPENED (every state change a booking went through is a durable row) and
+not enough to answer WHY at the level a log line would (which agent's calendar read
+failed, what Google actually returned, which code path a request took).
+
+That is accepted while the free tier measures real volume. The longer retained copy
+was made acceptable as a place holding data by redacting it before it leaves
+(`docs/pii.md` §5); what is left is a cost decision about the paid plan, and a PII
+decision if that plan keeps more than 45 days (`docs/pii.md` §5 again). In practice
+the constraint is simpler than it sounds, because an incident that matters is noticed
+by an alert within minutes, and every alert here fires while the window is wide open.
 
 The operational consequence, worth knowing before you need it: **when an incident starts,
-capture the logs first.** They expire; the database rows do not.
+capture the logs first.** They expire; the database rows do not. If the shipped copy
+looks thin, check `tag=log-tail` in the tail worker's own Cloudflare logs: a missing
+token, a refused POST or a log storm past its per invocation budget is counted there.
 
 ---
 
@@ -462,6 +475,95 @@ SMOKE_STRICT=1 node --experimental-strip-types --import ./scripts/register-paths
 5. **Nothing in section 4 is still outstanding.** A restore is not finished when
    the app is up; it is finished when Slate's record of the world matches the
    calendars and inboxes of the people in it.
+
+---
+
+## When Supabase or Google hangs rather than fails
+
+Not a restore, and nothing here needs reconciling afterwards, but it is the
+outage most likely to arrive first, so what Slate does in it is written down
+(#3102). A dependency that refuses a request fails fast and every path already
+handles that. One that accepts the request and never answers used to hold the
+caller until something outside Slate gave up: a lead's confirm until the browser
+aborted at 20 seconds, and a cron lane until its invocation ran out. Every call
+now carries a deadline instead, enforced in one wrapper
+(`src/lib/fetch-within-deadline.ts`).
+
+**Per call.** Each request waits no longer than its own limit:
+
+| Call | Deadline | Where it is set |
+|---|---|---|
+| Every Supabase request (the secret key client, the cookie client, the middleware's session refresh). The slowest statement measured on production is 7.9 seconds | 15 seconds | `SUPABASE_FETCH_TIMEOUT_MS`, `src/lib/supabase/fetch-deadline.ts` |
+| Google calls a lead waits on: verify on book, the event insert, a lead's move, cancel or correction. One expiry for the call, token mint included | 8 seconds | `GOOGLE_CONFIRM_TIMEOUT_MS`, `src/lib/google/calendar.ts` |
+| Google calls the sync lanes make: the event sync, the calendar list, push watches | 15 seconds | `GOOGLE_SYNC_TIMEOUT_MS`, same file |
+| The OOO calendar writes a manager waits on | 8 seconds | `CALENDAR_WRITE_TIMEOUT_MS`, same file |
+| The delegated token mint | shares the expiry of the call it is minting for; 8 seconds for the Gmail digest and the photo lane | `DELEGATED_TOKEN_TIMEOUT_MS`, `src/lib/google/dwd.ts` |
+| Each Salesforce attempt | 10 seconds, three attempts | `SF_TIMEOUT_MS`, `src/lib/salesforce/retry.ts` |
+
+A Google call can only be sent without one by writing `NO_DEADLINE` at the call
+site, and today nothing does. `NO_DEADLINE` opts out of the per call limit only:
+inside a request budget (below) such a call is still held to what the budget has
+left, and refused once it is spent.
+
+**Per request a lead is waiting on.** A per call limit bounds one call, and a
+confirm makes a dozen Supabase reads and two or three Google calls in a row, so
+those limits alone still add up past the booker's 20 seconds. So the three lead
+facing booking routes (`/booking`, the key authed `POST /api/bookings`, and a
+lead's reschedule) run under one budget (`src/lib/booking/confirm-budget.ts`,
+carried through the async context by `src/lib/call-budget.ts`). Every Supabase,
+Google and Salesforce call inside it waits for the smaller of its own limit and
+what the budget has left, and once the budget is spent the next call fails at
+once instead of starting.
+
+| Part | Length |
+|---|---|
+| The confirm budget, for everything the request does | 12 seconds (`BOOKING_CONFIRM_BUDGET_MS`) |
+| The cleanup allowance after it, for the whole failure path: handing back the lead's rate limit hit, recording the outcome, reporting the error and sending the page. One allowance per request, however many layers open it | 2 seconds (`BOOKING_CLEANUP_BUDGET_MS`) |
+| Worst case, against the booker's 20 | 14 seconds, leaving 6 for computation and the response |
+
+Work deferred past the response (webhook sends, recomputes) leaves the budget and
+gets the per call limits again, because the lead already has their answer. The
+cron lanes never run under a budget, so for them only the per call limits apply.
+
+**What a lead sees.** A confirm, an API booking or a lead's reschedule whose
+dependency times out answers **503** with the same sentence a verify outage
+uses ("We hit a temporary issue confirming this time. Please try again in a
+moment."), which the booker already shows, and the lead's rate limit hit is handed
+back. It is counted as `verify_unavailable` and pages under
+`verify_on_book_outage`, with the words naming which dependency did not answer.
+
+**What can still happen after that 503.** If the timeout came after the booking's
+reservation was written (the Google insert is the usual one), the reservation
+stays pending and the reservation drain retries it on later ticks. The event
+insert carries a fixed client id, so a retry reuses an event that landed rather
+than writing a second. So the lead can receive an invite even though the page
+asked them to try again; the page does not say whether that happened, because
+nothing knows at that moment, and points at `booking_reservations` instead. A retry that carries the same stable booking key
+resumes that reservation rather than making a second booking; an anonymous retry
+has no key to resume by, which is the existing posture for any confirm that
+failed after its reservation was written.
+
+**A budget miss.** When the budget runs out, the page names the call that was in
+flight AND the budget that cut it short ("supabase was still running when the
+booking confirm ran out of its 12 seconds"), so it says which dependency to look
+at and that it was slow on top of others. A call refused because the budget was
+already spent says so ("was not started, because the booking confirm had already
+used its 12 seconds").
+
+**What the lanes do.** A sync tick stops waiting on a hung calendar after 15
+seconds and records an ordinary failed sync for it; the next tick tries again.
+A hung Supabase read reaches the lane as an error rather than an empty result,
+so a lane that `unwrap`s it fails loudly and its heartbeat goes stale, as for any
+database outage. PostgREST does not retry a request that hit the deadline, so one
+hung read costs one deadline, not four.
+
+**Staff pages.** The middleware's session refresh gives up after 15 seconds and
+the page renders as signed out, so staff are sent to sign in again rather than
+facing a page that never loads.
+
+**What the deadline does not cover.** It runs until the response headers arrive.
+A response that starts and then stalls mid body is not cut by it; every call
+here reads a small JSON body, so that has not been worth arming for.
 
 ---
 

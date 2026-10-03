@@ -20,6 +20,7 @@
 // is duplicated anywhere (L41). scripts/test-dependency-free-scripts.ts walks this
 // file's transitive imports and fails on any edge that leaves scripts/.
 import { runAlerter } from "./lib/run-alerter.ts";
+import { postToAlertsChannel } from "./lib/slack-post.ts";
 
 export interface DeployFailureContext {
   workflowName: string;
@@ -96,16 +97,9 @@ export async function run(
   post: PostFn,
   env: Record<string, string | undefined>,
 ): Promise<{ ok: boolean; reason: string }> {
-  const text = buildDeployFailureMessage(readContextFromEnv(env));
   // The channel comes from the workflow, never from a database lookup: reaching the
-  // tunable channel (#571) is what made this alert need an install. An empty value is
-  // refused by name (slack-channel-not-configured) rather than posted into nowhere,
-  // because an unset repo variable interpolates to the empty string (#1500).
-  const channel = env.SLACK_ALERTS_CHANNEL?.trim() || undefined;
-  const res = await post({ text, ...(channel ? { channel } : {}) });
-  return res.ok
-    ? { ok: true, reason: "posted" }
-    : { ok: false, reason: res.error ?? "unknown-error" };
+  // tunable channel (#571) is what made this alert need an install.
+  return postToAlertsChannel(post, buildDeployFailureMessage(readContextFromEnv(env)), env);
 }
 
 runAlerter(import.meta.url, async (post, env) => {

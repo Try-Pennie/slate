@@ -14,6 +14,7 @@
 // Fails loud: a Slack post that errors, or Slack being unconfigured, exits non-zero
 // so the alert job goes visibly red rather than pretending it warned anyone.
 import { runAlerter } from "./lib/run-alerter.ts";
+import { postToAlertsChannel } from "./lib/slack-post.ts";
 
 export type PostFn = (msg: {
   text: string;
@@ -50,13 +51,7 @@ export async function run(
   post: PostFn,
   env: Record<string, string | undefined>,
 ): Promise<{ ok: boolean; reason: string }> {
-  const text = buildParityFailureMessage(readContextFromEnv(env));
-  // The channel comes from the workflow, never from a database lookup (#1598). An
-  // empty value is refused by name rather than posted into nowhere, because an unset
-  // repo variable interpolates to the empty string.
-  const channel = env.SLACK_ALERTS_CHANNEL?.trim() || undefined;
-  const res = await post({ text, ...(channel ? { channel } : {}) });
-  return res.ok ? { ok: true, reason: "posted" } : { ok: false, reason: res.error ?? "unknown-error" };
+  return postToAlertsChannel(post, buildParityFailureMessage(readContextFromEnv(env)), env);
 }
 
 runAlerter(import.meta.url, async (post, env) => {

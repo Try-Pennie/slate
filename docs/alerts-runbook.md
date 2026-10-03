@@ -394,6 +394,43 @@ stopping an abusive caller either.
 
 ---
 
+## The audit log was changed after it was written
+
+Keys: `audit_log_chain_broken`.
+
+**What fired it.** Every `audit_log` row carries `chain_seq` and `chain_hash`, the hash of
+the previous row's hash and its own content, written by a trigger when the row is
+inserted (migration 0160, #3090). The monitor lane re-walks the whole chain a few hundred
+rows a tick, from the first row to the last and round again, and this page means the walk
+met one of four things: a row whose content no longer matches its hash (`altered`), a
+sequence that skips (`missing`), a hash at the last fully verified row that has changed
+because the chain was recomputed after an edit (`rewritten`), or a chain that now ends
+before that row (`truncated`). `audit_log` refuses UPDATE, DELETE and TRUNCATE (0089), so
+none of these happens by accident: something with DDL rights switched that guard off.
+
+**First checks.**
+- Do not repair the row and do not re-run anything that rewrites hashes. The broken
+  chain is the evidence.
+- Take a copy of `audit_log`, `audit_log_chain_head` and `audit_log_chain_verify` as they
+  are now.
+- The page names the entry and its row id. Compare that row against the Snowflake
+  mirror (`audit_log` there, merged on `id`), which holds the row as it was exported and
+  is outside the reach of a role that can only change this database.
+- Find who disabled or dropped the `audit_log` triggers: the database logs, and which
+  credentials hold DDL rights.
+
+**Fix or escalate.** This is a security incident and escalates at once. Once it has been
+investigated, there are two ways to end the page. If the original rows can be put back
+exactly as written (from the mirror), the next complete walk verifies and sends the all
+clear. If they cannot, the chain has to be re-anchored by deliberately accepting the
+trail as it now stands: recompute the hashes from the first changed row with the
+database's own `audit_log_chain_link`, move `audit_log_chain_head` to match, and delete
+the single `audit_log_chain_verify` row so the next walk starts with nothing anchored.
+That is a decision about the record, so it is made by whoever owns the incident and
+written down with the reason, never done to make the page stop.
+
+---
+
 ## The booking API is refusing its caller
 
 Keys: `booking_api_ceiling`, `booking_api_credential`, `booking_api_list_read`,

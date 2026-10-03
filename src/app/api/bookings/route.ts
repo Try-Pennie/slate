@@ -1,5 +1,6 @@
 import { stampSeenIp } from "@/lib/loadtest-echo";
 import { NextResponse, type NextRequest } from "next/server";
+import { withinBookingCleanupBudget, withinBookingConfirmBudget } from "@/lib/booking/confirm-budget";
 import { authorizeBookingApi } from "@/lib/booking/route-auth";
 import { parseDirectBookingRequest, parseLookupQuery, parseCancelQuery, parseListQuery, LIST_ONLY_PARAMS } from "@/lib/booking/api-request";
 import { respondToDirectCancel, apiErrorBody, mapLookupError } from "@/lib/booking/direct-cancel-http";
@@ -50,7 +51,8 @@ export const dynamic = "force-dynamic";
  * flag unset `stampSeenIp` adds a header to nothing.
  */
 export async function POST(req: NextRequest) {
-  return stampSeenIp(await handlePost(req), req.headers);
+  // #3102: one budget for the whole request; see `confirm-budget.ts`.
+  return stampSeenIp(await withinBookingConfirmBudget(() => handlePost(req)), req.headers);
 }
 
 async function handlePost(req: NextRequest) {
@@ -107,8 +109,13 @@ async function handlePost(req: NextRequest) {
       });
       return NextResponse.json(preview);
     } catch (err) {
-      const { status, code } = mapBookingError(err);
-      return NextResponse.json(await apiErrorBody(err, code, "preview", "Preview failed"), { status });
+      // #3102: the failure path runs under the cleanup allowance, not the confirm
+      // budget, which a timeout has already spent; its outcome and report would
+      // otherwise fail at once and the failure would go unrecorded.
+      return withinBookingCleanupBudget(async () => {
+        const { status, code } = mapBookingError(err);
+        return NextResponse.json(await apiErrorBody(err, code, "preview", "Preview failed"), { status });
+      });
     }
   }
 
@@ -219,28 +226,33 @@ async function handlePost(req: NextRequest) {
     }
     return NextResponse.json(body, { status });
   } catch (err) {
-    const { status, code } = mapBookingError(err);
-    log.info("booking-api", {
-      msg: "outcome",
-      outcome: "error",
-      bucket: v.bucketCode,
-      key: authd.keyId,
-      status,
-      code,
-    });
-    recordApiOutcome("error", v.bucketCode, code, { by: "bucket", code: v.bucketCode, host: apiHost });
-    // #2838: refused after a lost overlap race, on a row outside the failure share.
-    if (err instanceof RaceLostRefusalError) {
-      recordApiOutcome(raceOutcomeForRefusal(err), v.bucketCode, null, {
-        by: "bucket",
-        code: v.bucketCode,
-        host: apiHost,
+    // #3102: the failure path runs under the cleanup allowance, not the confirm
+    // budget, which a timeout has already spent; its outcome and report would
+    // otherwise fail at once and the failure would go unrecorded.
+    return withinBookingCleanupBudget(async () => {
+      const { status, code } = mapBookingError(err);
+      log.info("booking-api", {
+        msg: "outcome",
+        outcome: "error",
+        bucket: v.bucketCode,
+        key: authd.keyId,
+        status,
+        code,
       });
-    }
-    return NextResponse.json(
-      await apiErrorBody(err, code, "book", "Booking failed"),
-      { status },
-    );
+      recordApiOutcome("error", v.bucketCode, code, { by: "bucket", code: v.bucketCode, host: apiHost });
+      // #2838: refused after a lost overlap race, on a row outside the failure share.
+      if (err instanceof RaceLostRefusalError) {
+        recordApiOutcome(raceOutcomeForRefusal(err), v.bucketCode, null, {
+          by: "bucket",
+          code: v.bucketCode,
+          host: apiHost,
+        });
+      }
+      return NextResponse.json(
+        await apiErrorBody(err, code, "book", "Booking failed"),
+        { status },
+      );
+    });
   }
 }
 

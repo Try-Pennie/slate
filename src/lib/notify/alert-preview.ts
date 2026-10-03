@@ -453,6 +453,7 @@ import {
   reservationDrainStuckAlert,
   unfairOrderingAlert,
   verifyOutageAlert,
+  dependencyTimeoutAlert,
   rescheduleLockOutageAlert,
   verifyReadFailedAlert,
   stalePhoneInviteAlert,
@@ -488,6 +489,7 @@ import {
   formatDefinerGrantsExposedAlert,
   formatDefinerGrantsClearedAlert,
 } from "@/lib/monitor/definer-grants";
+import { formatAuditChainBrokenAlert, formatAuditChainRecovery } from "@/lib/monitor/audit-chain";
 import {
   formatAuthSignInOpenAlert,
   formatAuthSignInClearedAlert,
@@ -3087,6 +3089,36 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: formatAuthSignInClearedAlert({ status: "healthy", providersOn: ["google"] }),
   },
   {
+    key: "audit_log_chain_broken",
+    state: "a row's content was edited",
+    channel: "alert",
+    text: formatAuditChainBrokenAlert({ kind: "altered", seq: 4812, id: "5b1d0c3e-8f2a-4c6b-9d7e-1a2b3c4d5e6f" }),
+  },
+  {
+    key: "audit_log_chain_broken",
+    state: "a row was deleted from the middle",
+    channel: "alert",
+    text: formatAuditChainBrokenAlert({ kind: "missing", expectedSeq: 4812, foundSeq: 4813, id: "5b1d0c3e-8f2a-4c6b-9d7e-1a2b3c4d5e6f" }),
+  },
+  {
+    key: "audit_log_chain_broken",
+    state: "an edit with every later hash recomputed",
+    channel: "alert",
+    text: formatAuditChainBrokenAlert({ kind: "rewritten", seq: 5120, id: "5b1d0c3e-8f2a-4c6b-9d7e-1a2b3c4d5e6f" }),
+  },
+  {
+    key: "audit_log_chain_broken",
+    state: "rows cut off the end",
+    channel: "alert",
+    text: formatAuditChainBrokenAlert({ kind: "truncated", anchorSeq: 5120, lastSeq: 5098 }),
+  },
+  {
+    key: "audit_log_chain_broken",
+    state: "cleared",
+    channel: "recovery",
+    text: formatAuditChainRecovery(5120),
+  },
+  {
     key: "edge_limiter_unusable",
     state: "one endpoint's ceiling is missing from the deploy",
     channel: "alert",
@@ -3968,6 +4000,32 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "no candidate could be verified",
     channel: "alert",
     text: verifyOutageAlert(),
+  },
+  {
+    key: "verify_on_book_outage",
+    state: "a dependency did not answer inside its deadline",
+    channel: "alert",
+    text: dependencyTimeoutAlert({ dependency: "google events.insert", timeoutMs: 8000, budget: null }),
+  },
+  {
+    key: "verify_on_book_outage",
+    state: "the request's budget ran out while a dependency was running",
+    channel: "alert",
+    text: dependencyTimeoutAlert({
+      dependency: "supabase",
+      timeoutMs: 3000,
+      budget: { label: "the booking confirm", totalMs: 12_000 },
+    }),
+  },
+  {
+    key: "verify_on_book_outage",
+    state: "the request's budget was spent before a dependency could start",
+    channel: "alert",
+    text: dependencyTimeoutAlert({
+      dependency: "supabase",
+      timeoutMs: 0,
+      budget: { label: "the booking confirm", totalMs: 12_000 },
+    }),
   },
   {
     key: "reschedule_lock_outage",

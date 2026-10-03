@@ -1,6 +1,8 @@
 import { googleSaClientEmail, googleSaPrivateKey } from "@/lib/env";
 import { GoogleHttpError } from "@/lib/google/http-error";
 import { parseGoogleErrorReason } from "@/lib/google/reachability-classify";
+import type { Deadline } from "@/lib/fetch-within-deadline";
+import { fetchWithinBudget } from "@/lib/call-budget";
 
 /**
  * Google domain-wide delegation: mint an access token that impersonates a
@@ -13,6 +15,14 @@ const SCOPE =
 /** Send-only Gmail scope for the daily OOO-approvals digest (no read access). */
 export const GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
+
+/**
+ * The deadline on minting a token when the caller names none (#3102): the Gmail
+ * digest and the directory photo lane. A calendar call passes its OWN deadline
+ * instead, and the mint also waits no longer than the enclosing call budget has
+ * left, so a mint on the confirm path is held to what the lead can wait.
+ */
+export const DELEGATED_TOKEN_TIMEOUT_MS = 8000;
 
 // In-memory token cache per impersonated email (tokens last ~1h).
 const cache = new Map<string, { token: string; exp: number }>();
@@ -75,24 +85,32 @@ async function signJwt(subject: string, scope: string): Promise<string> {
  * Returns a delegated access token impersonating `email` (cached ~55 min).
  * Defaults to the calendar scopes; pass GMAIL_SEND_SCOPE for the digest mailer.
  * The cache is keyed by scope too, so calendar and Gmail tokens never collide.
+ * A cached token answers at once; only a real mint can wait, up to `deadline`.
  */
 export async function getDelegatedToken(
   email: string,
   scope: string = SCOPE,
+  deadline: Deadline = DELEGATED_TOKEN_TIMEOUT_MS,
 ): Promise<string> {
   const cacheKey = `${scope}\n${email}`;
   const hit = cache.get(cacheKey);
   if (hit && hit.exp - Date.now() > 60_000) return hit.token;
 
   const assertion = await signJwt(email, scope);
-  const res = await fetch(TOKEN_URL, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-      assertion,
-    }),
-  });
+  const res = await fetchWithinBudget(
+    fetch,
+    TOKEN_URL,
+    {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        assertion,
+      }),
+    },
+    deadline,
+    "google token mint",
+  );
   if (!res.ok) {
     const text = await res.text();
     throw new GoogleHttpError(
