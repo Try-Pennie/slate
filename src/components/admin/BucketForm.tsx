@@ -55,6 +55,9 @@ export function BucketForm({
   overflowTo?: string | null;
 }) {
   const editing = !!bucket;
+  // One form per bucket on the page, so every label/control pair needs an id
+  // unique to this bucket (#3080).
+  const idBase = `bucket-${bucket?.id ?? "new"}`;
   // #2006: what is read only is what the SEEDER writes, not "this bucket
   // exists". The seeder writes only the sixty XBC codes, so a bucket created by
   // hand keeps its own fields editable; #1935 froze those too and left a typo in
@@ -118,7 +121,13 @@ export function BucketForm({
               routing code is called, in `xbc.ts`, in the URL contract and by the
               people who use it, so the label is the name rather than a generic
               word with the name in brackets after it. */}
-          <label className={labelCls}>XBC</label>
+          {seederOwned ? (
+            <span className={labelCls}>XBC</span>
+          ) : (
+            <label className={labelCls} htmlFor={`${idBase}-code`}>
+              XBC
+            </label>
+          )}
           {/* #1935: EDITABLE WHEN CREATING, READ ONLY WHEN EDITING, and the same
               for the name and the criteria below.
 
@@ -141,8 +150,8 @@ export function BucketForm({
             </p>
           ) : (
             <input
+              id={`${idBase}-code`}
               name="code"
-              aria-label="XBC"
               defaultValue={bucket?.code ?? ""}
               className={`${inputCls} w-28`}
               required
@@ -150,13 +159,19 @@ export function BucketForm({
           )}
         </div>
         <div>
-          <label className={labelCls}>Name</label>
+          {seederOwned ? (
+            <span className={labelCls}>Name</span>
+          ) : (
+            <label className={labelCls} htmlFor={`${idBase}-name`}>
+              Name
+            </label>
+          )}
           {seederOwned ? (
             <p className="mt-1 h-11 text-sm leading-[2.75rem]">{bucket?.name}</p>
           ) : (
             <input
+              id={`${idBase}-name`}
               name="name"
-              aria-label="Name"
               defaultValue={bucket?.name ?? ""}
               className={inputCls}
               required
@@ -164,14 +179,16 @@ export function BucketForm({
           )}
         </div>
         <div>
-          <label className={labelCls}>Event type</label>
+          <label className={labelCls} htmlFor={`${idBase}-event-type`}>
+            Event type
+          </label>
           {/* #1849: `required` is gone with the native select and is not missed here:
               every option carries a real id, so there is no empty value it could
               have refused. A list that CAN be empty needs real validation
               instead, since a hidden input is not validated by the browser. */}
           <SelectField
+            id={`${idBase}-event-type`}
             name="event_type_id"
-            ariaLabel="Event type"
             defaultValue={bucket?.event_type_id ?? eventTypes[0]?.id ?? ""}
             className="w-full"
             options={eventTypes.map((e) => ({ value: e.id, label: e.name }))}
@@ -179,10 +196,12 @@ export function BucketForm({
         </div>
         <div>
           {/* heading-gloss-ok: optionality. */}
-          <label className={labelCls}>Cal routing form id (optional)</label>
+          <label className={labelCls} htmlFor={`${idBase}-routing-form`}>
+            Cal routing form id (optional)
+          </label>
           <input
+            id={`${idBase}-routing-form`}
             name="routing_form_id"
-            aria-label="Cal routing form id (optional)"
             defaultValue={bucket?.routing_form_id ?? ""}
             className={`${inputCls} w-44`}
           />

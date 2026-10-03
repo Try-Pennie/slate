@@ -48,6 +48,8 @@ import { PublicBookingSwitch } from "@/components/admin/PublicBookingSwitch";
 import { btnCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
 import { OFFERED_OPEN_DAYS } from "@/lib/availability/bookable-days";
 
+export const metadata = { title: "Hours" };
+
 export const dynamic = "force-dynamic";
 
 /** The org's seeding template for a newly added agent (#1892, moved here). */

@@ -22,6 +22,8 @@ import type { OooRequest, OooStatus, User } from "@/lib/db/types";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 import { MarkedLabel } from "@/components/ui/MarkedLabel";
 
+export const metadata = { title: "My time off" };
+
 export const dynamic = "force-dynamic";
 
 const OOO_TIMEZONES = [

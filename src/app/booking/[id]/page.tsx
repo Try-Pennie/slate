@@ -9,7 +9,7 @@ import { DEFAULT_BRAND_COLOR } from "@/lib/brand-label";
 
 export const dynamic = "force-dynamic";
 // Lead-facing: the brand is Pennie; Slate stays internal.
-export const metadata = { title: "Book a call with Pennie" };
+export const metadata = { title: { absolute: "Book a call with Pennie" } };
 
 type SP = Record<string, string | string[] | undefined>;
 
