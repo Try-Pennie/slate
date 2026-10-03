@@ -10,8 +10,11 @@ prompts, so values never land in a transcript).
   auto-creates the DNS record and the TLS cert. Its apex zone must exist in the
   target Cloudflare account; if it is not there, add it to Cloudflare first, or drop
   the `routes` entry and bind the domain in the dashboard later.
-- `.env.local` is filled in (it provides the `NEXT_PUBLIC_*` values inlined at
-  build time; `NEXT_PUBLIC_APP_URL` is set to `https://slate.trypennie.app`).
+- The checkout you deploy from holds **no** `.env*` file. `pnpm cf:deploy` builds
+  through `pnpm cf:build`, which refuses a bundle carrying the values of any `.env`
+  file in the tree (#2335, #3078), because the adapter would ship them inside the
+  Worker. Deploy from a clean worktree, and pass the `NEXT_PUBLIC_*` build values in
+  the shell environment (2a), as the CI deploy job does.
 
 ## 1. Authenticate
 <!-- runbook-unverified: an interactive browser OAuth flow, so it cannot be executed
@@ -29,9 +32,10 @@ needs ALL of them. This is the full list (source of truth: `.env.example` and
 `src/lib/env.ts`); `scripts/test-deploy-env-coverage.ts` fails CI if a var read by
 the app or listed in `.env.example` is ever missing here.
 
-### 2a. Build-time public values (`.env.local`, inlined into the client bundle)
-Set these in `.env.local` BEFORE `pnpm run cf:deploy`: they are baked in at build,
-not read at runtime.
+### 2a. Build-time public values (the build's environment, inlined into the client bundle)
+Set these in the environment of `pnpm run cf:deploy`: they are baked in at build,
+not read at runtime. Not in `.env.local`: a deploy from a tree holding any `.env*`
+file is refused, since every value in it would ship inside the Worker (#3078).
 - `NEXT_PUBLIC_APP_URL` (required): base URL, no trailing slash. Drives OAuth
   redirects, the embed SDK, manage links, and the Google push callback URL.
 - `NEXT_PUBLIC_SUPABASE_URL` (required): the Supabase project URL.

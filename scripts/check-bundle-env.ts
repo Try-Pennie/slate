@@ -1,10 +1,14 @@
 // Refuse a Worker bundle carrying settings that belong to a deployment (#2335).
 //
-// Runs as the second half of `pnpm cf:build`, so EVERY path that produces a
-// deployable bundle is covered: the pre-push gate, CI, the load run's fault leg and
-// a build somebody runs by hand before `wrangler deploy`. Wrangler has no predeploy
-// hook, so the build is the last place a single check can stand in front of every
-// deploy.
+// Runs as the second half of `pnpm cf:build`. Wrangler has no predeploy hook, so the
+// build is the last place a single check can stand in front of a deploy, and it only
+// stands there for a deploy that BUILDS THROUGH `cf:build`: the pre-push gate, CI's
+// build leg, the load run's fault leg, and since #3078 `pnpm cf:deploy` (which the CI
+// deploy job, DEPLOY.md and `cf:deploy:verified` all run). Until #3078 `cf:deploy`
+// called the adapter's build directly, so the hand deploy this exists for skipped it.
+// `scripts/test-bundle-env-guard.ts` now fails any package.json script that deploys
+// without running this first. A bare `opennextjs-cloudflare build` or `wrangler
+// deploy` typed at a prompt is still outside its reach.
 //
 // It reads `.open-next/cloudflare/next-env.mjs`, which the adapter writes from every
 // `.env*` file in the build tree and which ships inside the bundle. The decision

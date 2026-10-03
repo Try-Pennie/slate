@@ -81,8 +81,6 @@ jobs:
           fetch-depth: 2
 
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          version: 10
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -112,6 +110,18 @@ jobs:
       # step, and a job of its own would pay 25s of setup to run it.
       - name: Audit production dependencies
         run: pnpm audit --prod --audit-level=high
+
+      # #3093: the build and deploy toolchain, which `--prod` leaves out. wrangler and
+      # the OpenNext adapter build the shipped bundle and run with the Cloudflare
+      # deploy token in their environment, so an advisory in them, or in anything
+      # they pull in, passed every gate. Critical only: the dev tree carried seven
+      # high advisories and no critical one on 2026-10-03, in test and lint tooling
+      # that never sees a credential, and a level that fails on all of them would be
+      # red from the day it shipped. The daily audit (dependency-audit.yml) runs the
+      # same command, so an advisory published against an unchanged tree is seen too.
+      - name: Audit the whole tree, build and deploy toolchain included
+        if: ${{ !cancelled() }}
+        run: pnpm audit --audit-level=critical
 
       - name: Typecheck
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
@@ -198,8 +208,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          version: 10
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -231,8 +239,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          version: 10
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -252,8 +258,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          version: 10
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -286,27 +290,55 @@ jobs:
   # shard fails the gate. Anything other than `success` fails: a cancelled or
   # skipped leg is not a pass.
   ci:
-    needs: [static-checks, node-tests, vitest, build]
+    needs: [static-checks, node-tests, vitest, build, security-scan]
     if: always()
     timeout-minutes: 5  # measured max 4s
     runs-on: ubuntu-latest
     steps:
+      # The legs are read from `toJSON(needs)`, so a leg added to `needs` is judged
+      # without anyone editing this step (L41), and each result carries its leg's
+      # name, which the one exception below needs.
+      #
+      # #3087: security-scan is a leg, and it GATES A PULL REQUEST, so a change that
+      # fails the secret scan or static analysis cannot merge green. On a push its
+      # own `if:` skips it at once, so nothing here waits for a scan; this step
+      # excuses exactly that skip. The push is scanned by security-scan-main, outside
+      # this fan-in, whose red result fails the run and pages through
+      # deploy-alert.yml. Pinned, block and all, by scripts/test-ci-workflow.ts,
+      # which runs this exact script.
       - name: Every CI leg succeeded
         env:
-          RESULTS: ${{ join(needs.*.result, ' ') }}
+          EVENT_NAME: ${{ github.event_name }}
+          NEEDS: ${{ toJSON(needs) }}
         run: |
           set -euo pipefail
-          echo "leg results: $RESULTS"
-          if [ -z "$RESULTS" ]; then
+          PR_ONLY_LEGS="security-scan"
+          if ! results="$(jq -r 'to_entries[] | "\(.key)=\(.value.result)"' <<<"$NEEDS")"; then
+            echo "::error::The CI fan-in could not read its legs' results, so it has verified nothing. Failing rather than passing green."
+            exit 1
+          fi
+          echo "leg results ($EVENT_NAME): $(tr '\n' ' ' <<<"$results")"
+          if [ -z "$results" ]; then
             echo "::error::The CI fan-in read no leg results at all, so it has verified nothing. Failing rather than passing green."
             exit 1
           fi
-          for r in $RESULTS; do
+          failed=""
+          while IFS='=' read -r leg r; do
             if [ "$r" != "success" ]; then
-              echo "::error::A CI leg did not succeed (results: $RESULTS). Open the run and look at the red leg."
-              exit 1
+              # Only SKIPPED is excused, and only off a pull request: that is the leg's
+              # own `if:` keeping it off main. A pull-request-only leg that somehow ran
+              # and failed here still fails, so a broken `if:` is not waved through.
+              if [ "$EVENT_NAME" != "pull_request" ] && [ "$r" = "skipped" ] && [[ " $PR_ONLY_LEGS " == *" $leg "* ]]; then
+                echo "$leg is skipped on $EVENT_NAME by design: it gates pull requests only, and security-scan-main covers this push."
+                continue
+              fi
+              failed="$failed $leg=$r"
             fi
-          done
+          done <<<"$results"
+          if [ -n "$failed" ]; then
+            echo "::error::A CI leg did not succeed:$failed. Open the run and look at the red leg."
+            exit 1
+          fi
           echo "All CI legs succeeded."
 
   # Coverage USED TO BE A JOB HERE and now lives in .github/workflows/coverage.yml
@@ -332,13 +364,34 @@ jobs:
   # cannot block a correctness failure from being reported, and so its runtime is
   # visible separately.
   #
-  # Deliberately NOT in `deploy`'s `needs`. The semgrep rule packs are fetched at
-  # run time (see below), so a newly published rule could otherwise block an
-  # emergency deploy over code nobody touched, which is a worse outcome than a
-  # late finding. Like every other control in this repo on the free plan (see the
-  # main-push guard, #1027), it is DETECTIVE: a red run means look now and rotate
-  # if needed, not "the change was prevented".
+  # TWO jobs, one scan (#3087). The steps live once, in the local composite action
+  # .github/actions/security-scan, and each job is a checkout plus that action:
+  #
+  #   - `security-scan` runs on a PULL REQUEST only and is a leg of the `ci`
+  #     fan-in, so a change that fails it cannot merge green. On a push its job
+  #     level `if:` skips it at once, so the fan-in, and the deploy behind it,
+  #     never WAIT for a scan whose result main tolerates (L304).
+  #   - `security-scan-main` runs on a PUSH only, outside the fan-in and outside
+  #     `deploy`'s `needs`. The semgrep rule packs are fetched at run time, so a
+  #     newly published rule must not block an emergency deploy over code nobody
+  #     touched. There it is DETECTIVE, like every other control over main on the
+  #     free plan (see the main-push guard, #1027): a red scan fails the CI run,
+  #     deploy-alert.yml pages naming it, and a red run means look now and rotate
+  #     if needed.
   security-scan:
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 15  # measured max 97s
+    runs-on: ubuntu-latest
+    steps:
+      # Full history: the secret scan reads the commits a pull request ADDS, and
+      # needs the base commit present to work out what that range is.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/security-scan
+
+  security-scan-main:
+    if: github.event_name == 'push'
     # alert-latency-ok: it finishes about three minutes BEFORE the deploy does, so
     # it never holds the run open and never delays the deploy failure alert
     # (#2402). Measured 86s and 97s against deploys ending at 302s and 300s, runs
@@ -346,68 +399,11 @@ jobs:
     timeout-minutes: 15  # measured max 97s
     runs-on: ubuntu-latest
     steps:
-      # Full history: the secret scan reads the commits a push ADDS, and needs the
-      # base commit present to work out what that range is.
+      # Full history: the secret scan reads the commits a push ADDS.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-
-      # The official gitleaks action requires a paid licence key for an
-      # organisation, so the binary is fetched directly. Pinned by version AND
-      # verified by checksum: an unverified download into a job is the same class
-      # of exposure as an unpinned action tag, which is what #1051 was about.
-      - name: Install gitleaks
-        env:
-          GITLEAKS_VERSION: 8.30.1
-          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
-        run: |
-          set -euo pipefail
-          f="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          curl -sSfL -o "$f" \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${f}"
-          echo "${GITLEAKS_SHA256}  ${f}" | sha256sum -c -
-          tar -xzf "$f" gitleaks
-          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
-          gitleaks version
-
-      # The COMMITS this push adds, not the working tree. A secret added in one
-      # commit and deleted in the next is still readable by anyone with repo
-      # access and still needs rotating, and a working tree scan calls that clean.
-      #
-      # --redact so a hit never prints the credential into a public build log,
-      # which would turn the detection into a second disclosure.
-      - name: Scan for committed secrets
-        env:
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-          HEAD: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
-            echo "No usable base commit, scanning full history instead of a range."
-            gitleaks git --no-banner --redact --config .gitleaks.toml
-          else
-            echo "Scanning $BASE..$HEAD"
-            gitleaks git --no-banner --redact --config .gitleaks.toml \
-              --log-opts "$BASE..$HEAD"
-          fi
-
-      # Pinned, like everything else. NOTE the deliberate residual risk: the rule
-      # PACKS are fetched from the semgrep registry at run time, so unlike the
-      # binary they are not pinned and a newly published rule can fail a build
-      # over code nobody touched. That is accepted rather than overlooked: the
-      # alternative is vendoring a large ruleset that then never improves. When it
-      # happens, fix the finding or annotate the line with `nosemgrep` and a
-      # reason, and do not disable the job.
-      - name: Install semgrep
-        run: pipx install semgrep==1.172.0
-
-      # p/typescript is the injection and authz surface the bespoke guards do not
-      # cover; p/secrets is defence in depth beside gitleaks, matching on code
-      # shape rather than on entropy.
-      - name: Static analysis
-        run: |
-          semgrep scan --config p/typescript --config p/secrets \
-            --error --quiet --metrics=off --disable-version-check
+      - uses: ./.github/actions/security-scan
 
   # Deploy to the slate Worker on every push to main, after ci passes. Skips
   # (passes) until the CLOUDFLARE_API_TOKEN secret is set; run pnpm cf:deploy
@@ -433,11 +429,27 @@ jobs:
     needs: [ci, static-checks]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # Job level, so it REPLACES the repo default for this job only: checkout needs
+    # contents, and the ci gate below reads the commit's check runs.
+    permissions:
+      contents: read
+      checks: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # #3088: refuse unless the `ci` fan-in passed on THIS exact sha, read back from
+      # GitHub rather than trusted from `needs` above. `needs` is one line of YAML: an
+      # edit to it, or an always() on this job, would ship with nothing checking. This
+      # is the second, independent half, and it runs before the install so a refusal
+      # spends nothing. Bare node, no dependencies (scripts/check-ci-before-deploy.ts).
+      # It does NOT stop a direct push to main whose own ci is green; that half stays
+      # with the main push guard, which detects it after the fact.
+      - name: Refuse unless ci passed on this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.sha }}
+        run: node --experimental-strip-types scripts/check-ci-before-deploy.ts
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with:
-          version: 10
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
