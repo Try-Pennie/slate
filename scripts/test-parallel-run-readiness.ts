@@ -24,7 +24,14 @@ import {
   pageSourceStatus,
   sourceNotRecorded,
   type PageSourceMeasure,
+  type PageSourceStatus,
 } from "../src/lib/monitor/page-volume.ts";
+
+/** A status's sentence; a recorded one carries none, so asking for it is a test fault. */
+function statusText(s: PageSourceStatus): string {
+  if (s.state === "recorded") throw new Error("a recorded page source status carries no text");
+  return s.text;
+}
 
 const NOW = Date.parse("2026-09-08T16:00:00Z");
 /** How the summary says the source precondition is met, asserted both ways below. */
@@ -310,7 +317,7 @@ eq(
     src.findings[0].detail.startsWith(sourceNotRecorded(3, 40, "7 days")),
     `and opens with how many bookings recorded no source (got: ${src.findings[0].detail})`,
   );
-  eq(src.findings[0].detail, pageSourceStatus(missing).text, "with untagged bookings about, it says exactly what the alerts page says about them (#2796)");
+  eq(src.findings[0].detail, statusText(pageSourceStatus(missing)), "with untagged bookings about, it says exactly what the alerts page says about them (#2796)");
   // With NO untagged booking, nothing could be hiding the page's bookings: it simply
   // recorded none, and saying otherwise claims an ambiguity nobody measured (L11).
   const bare = judgeReadiness(healthy({ lowVolumeArming: armed({ pageSources: { ...missing, unsourced: 0 } }) }));
@@ -383,7 +390,7 @@ eq(
   eq(pageSourceStatus(untagged).state, "unrecorded", "and the alerts page holds the floors back on them");
   const armedUntagged = judgeReadiness(healthy({ lowVolumeArming: armed({ pageSources: untagged }) }));
   eq(armedUntagged.exit, READINESS_EXIT.pageSourceMissing, "so the armed gate refuses on the missing source code rather than READY");
-  eq(armedUntagged.findings[0].detail, pageSourceStatus(untagged).text, "in the alerts page's own sentence");
+  eq(armedUntagged.findings[0].detail, statusText(pageSourceStatus(untagged)), "in the alerts page's own sentence");
   const offUntagged = judgeReadiness(healthy({ lowVolumeArming: disarmed({ pageSources: untagged }) }));
   eq(offUntagged.exit, READINESS_EXIT.ready, "disarmed, it is reported and does not gate");
   eq(offUntagged.advisories.map((a) => a.kind), ["page-source-missing"], "and is listed as an arming advisory");
@@ -449,7 +456,7 @@ eq(
         if (realBookings === 0) {
           eq(sourceFinding?.kind, "page-source-unmeasured", `${label}: both call it unmeasured`);
         } else if (!bookingSourcesRecorded(m)) {
-          eq(sourceFinding?.detail, status.text, `${label}: the gate refuses in the alerts page's own words`);
+          eq(sourceFinding?.detail, statusText(status), `${label}: the gate refuses in the alerts page's own words`);
         } else if (pages.some((p) => !p.recorded)) {
           eq(sourceFinding?.kind, "page-source-missing", `${label}: sources recorded, and a page with none is still named`);
         } else {

@@ -47,8 +47,11 @@ import { slotHealthForTick, availabilityScanReport } from "@/lib/monitor/availab
 import { monitorSetupGates } from "@/lib/monitor/setup-gates";
 import {
   runCalendarWindowCheck,
+  calendarWindowRow,
+  CALENDAR_WINDOW_COLUMNS,
   type CalendarWindowResult,
   type CalendarWindowRow,
+  type CalendarWindowSourceRow,
 } from "@/lib/monitor/calendar-window-coverage";
 import {
   runBusyDriftSample,
@@ -2902,27 +2905,12 @@ export async function GET(req: NextRequest) {
       // recorded failure is what ends that patience.
       const { data: cals, error: calErr } = await db
         .from("agent_calendars")
-        .select("user_id, calendar_id, sync_window_to, created_at, consecutive_failures, last_sync_error");
+        .select(CALENDAR_WINDOW_COLUMNS);
       if (calErr) throw new Error(`calendar window read failed: ${calErr.message}`);
       const byId = new Map(users.map((u) => [u.id, u]));
-      return ((cals ?? []) as {
-        user_id: string;
-        calendar_id: string;
-        sync_window_to: string | null;
-        created_at: string | null;
-        consecutive_failures: number | null;
-        last_sync_error: string | null;
-      }[])
+      return ((cals ?? []) as CalendarWindowSourceRow[])
         .filter((c) => byId.has(c.user_id))
-        .map((c) => ({
-          userId: c.user_id,
-          name: byId.get(c.user_id)?.name ?? null,
-          email: byId.get(c.user_id)?.email ?? null,
-          calendarId: c.calendar_id,
-          syncWindowToIso: c.sync_window_to,
-          createdAtIso: c.created_at,
-          hasRecordedFailure: (c.consecutive_failures ?? 0) > 0 || c.last_sync_error !== null,
-        }));
+        .map((c) => calendarWindowRow(c, byId.get(c.user_id)));
     };
     const calendarWindow = await steps.run<CalendarWindowResult | null>(
       "calendar_window",

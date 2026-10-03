@@ -25,6 +25,8 @@ import {
   CALENDAR_WINDOW_KEY,
   CALENDAR_WINDOW_GRACE_MS,
   CALENDAR_WINDOW_FIRST_RUN_MS,
+  CALENDAR_WINDOW_COLUMNS,
+  calendarWindowRow,
   type CalendarWindowRow,
 } from "./calendar-window-coverage";
 
@@ -321,5 +323,47 @@ describe("what the check says about a graced calendar (#2300)", () => {
     const body = sendThrottledAlert.mock.calls[0]?.[2] ?? "";
     expect(body).toContain("old@trypennie.com");
     expect(body).not.toContain("new@trypennie.com");
+  });
+});
+
+// #3063: the readiness command and the monitor build their rows through ONE function,
+// so the command judges with the same first-run grace and failure facts the page does.
+describe("calendarWindowRow", () => {
+  const cal = {
+    user_id: "u1",
+    calendar_id: "c1",
+    sync_window_to: null,
+    created_at: "2026-10-02T12:00:00Z",
+    consecutive_failures: 0,
+    last_sync_error: null,
+  };
+  const user = { id: "u1", name: "Ada", email: "ada@trypennie.com" };
+
+  it("carries every fact the judge reads", () => {
+    expect(calendarWindowRow(cal, user)).toEqual({
+      userId: "u1",
+      name: "Ada",
+      email: "ada@trypennie.com",
+      calendarId: "c1",
+      syncWindowToIso: null,
+      createdAtIso: "2026-10-02T12:00:00Z",
+      hasRecordedFailure: false,
+    });
+  });
+
+  it("counts a failure streak or a stored error as a recorded failure", () => {
+    expect(calendarWindowRow({ ...cal, consecutive_failures: 2 }, user).hasRecordedFailure).toBe(true);
+    expect(calendarWindowRow({ ...cal, last_sync_error: "403" }, user).hasRecordedFailure).toBe(true);
+    expect(calendarWindowRow({ ...cal, consecutive_failures: null }, user).hasRecordedFailure).toBe(false);
+  });
+
+  it("names the columns it needs, so a read cannot leave one out", () => {
+    for (const col of Object.keys(cal)) expect(CALENDAR_WINDOW_COLUMNS).toContain(col);
+  });
+
+  it("leaves name and email null for an agent the caller could not find", () => {
+    const row = calendarWindowRow(cal, undefined);
+    expect(row.name).toBeNull();
+    expect(row.email).toBeNull();
   });
 });

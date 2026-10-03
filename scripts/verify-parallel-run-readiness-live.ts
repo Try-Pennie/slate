@@ -23,7 +23,8 @@ const { eligibleAgentIds } = await import("@/lib/availability/service");
 const { withoutLowCarriers } = await import("@/lib/availability/low-exclusion");
 const { emptyBuckets: emptyBucketCodes } = await import("@/lib/availability/bucket-coverage");
 type BucketCoverage = import("@/lib/availability/bucket-coverage").BucketCoverage;
-const { uncoveredCalendars } = await import("@/lib/monitor/calendar-window-coverage");
+const { uncoveredCalendars, calendarWindowRow, CALENDAR_WINDOW_COLUMNS } = await import("@/lib/monitor/calendar-window-coverage");
+type CalendarWindowSourceRow = import("@/lib/monitor/calendar-window-coverage").CalendarWindowSourceRow;
 const { MONITOR_DEFAULTS } = await import("@/lib/monitor/settings");
 const { CANARY_STALE_BOUNDS_MS } = await import("@/lib/monitor/health");
 const { readHeartbeatMs } = await import("@/lib/monitor/heartbeat");
@@ -139,21 +140,15 @@ const calendars = await section("calendars", async () => {
   const ids = agents.map((a) => a.id);
   // cap-safe: one row per (agent, calendar) for a roster bounded at ~200 agents
   const cals = (unwrap(
-    await db.from("agent_calendars").select("user_id, calendar_id, sync_window_to").in("user_id", ids),
+    await db.from("agent_calendars").select(CALENDAR_WINDOW_COLUMNS).in("user_id", ids),
     "agent_calendars",
-  ) ?? []) as { user_id: string; calendar_id: string; sync_window_to: string | null }[];
+  ) ?? []) as CalendarWindowSourceRow[];
   const byUser = new Map(agents.map((a) => [a.id, a]));
   const withRow = new Set(cals.map((c) => c.user_id));
   const missingRows = agents.filter((a) => !withRow.has(a.id)).map((a) => a.email);
   const horizonDays = await loadBookingHorizonDays();
   const uncovered = uncoveredCalendars({
-    rows: cals.map((c) => ({
-      userId: c.user_id,
-      name: byUser.get(c.user_id)?.name ?? null,
-      email: byUser.get(c.user_id)?.email ?? null,
-      calendarId: c.calendar_id,
-      syncWindowToIso: c.sync_window_to,
-    })),
+    rows: cals.map((c) => calendarWindowRow(c, byUser.get(c.user_id))),
     horizonDays,
     nowIso: new Date(nowMs).toISOString(),
   }).map((r) => `${r.email ?? r.userId} (${r.calendarId})`);
