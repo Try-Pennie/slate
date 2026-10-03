@@ -19,7 +19,9 @@ import handler from "../.open-next/worker.js";
 // guard must not miss.
 // @ts-expect-error - generated at build time by opennextjs-cloudflare build
 import * as bakedEnv from "../.open-next/cloudflare/next-env.mjs";
+import { WorkerEntrypoint } from "cloudflare:workers";
 import { routesForCron } from "./cron-routes";
+import { forwardReceipt } from "./log-shipping-receipt";
 import { laneDecision } from "./lanes-disabled";
 import { loadtestServingProductionHost } from "@/lib/loadtest-guard";
 import { loadtestEntryRefusal } from "@/lib/loadtest-secrets";
@@ -68,6 +70,7 @@ interface Env {
   SLATE_LANES_DISABLED?: string;
   [key: string]: unknown;
 }
+
 
 const worker = {
   // #1024: bounce plaintext to https BEFORE the app sees the request, so a lead
@@ -198,3 +201,36 @@ const worker = {
 };
 
 export default worker;
+
+/**
+ * The log shipping receipt (#3182). The tail worker (`worker/log-tail/index.ts`)
+ * calls `shipped()` over its `SLATE` service binding each time Better Stack accepted
+ * a cron tick's records, and this stamps the `log-shipping` heartbeat the lane
+ * watchdog pages on. A named entrypoint is reachable only through a binding in this
+ * account, never over HTTP, so the receipt needs no key of its own.
+ *
+ * Defined after the default export so the fetch handler stays the first `fetch:` in
+ * this file, which scripts/test-https-redirect-wiring.ts reads the redirect order from.
+ *
+ * The same credential refusal the cron lanes get comes first (#2335): a load test
+ * build holding production's credentials must not write to production's heartbeats.
+ */
+export class LogShippingReceipt extends WorkerEntrypoint<Env> {
+  async shipped(): Promise<{ stamped: boolean }> {
+    const refusal = loadtestEntryRefusal({
+      loadtest: this.env.SLATE_LOADTEST === "true",
+      pathname: undefined,
+      bindings: this.env as unknown as Record<string, unknown>,
+      baked: bakedEnv,
+    });
+    if (refusal) {
+      log.error("loadtest-guard", { msg: "refusing the log shipping receipt", why: refusal });
+      return { stamped: false };
+    }
+    return forwardReceipt({
+      fetch: (request) => handler.fetch(request, this.env, this.ctx),
+      cronSecret: this.env.CRON_SECRET ?? "",
+      log,
+    });
+  }
+}

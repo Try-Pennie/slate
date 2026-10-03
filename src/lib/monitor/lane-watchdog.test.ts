@@ -171,6 +171,8 @@ const healthy = () => ({
   // #3076: the daily off platform database dump, judged with neverIsStale ON, so a
   // healthy fleet has this morning's upload in it.
   "db-backup": ago(6 * 60 * MIN),
+  // #3182: the log shipping receipt arrives on every cron tick Better Stack accepts.
+  "log-shipping": ago(1 * MIN),
 });
 
 beforeEach(() => {
@@ -826,6 +828,65 @@ describe("alertOnStaleLanes (#803)", () => {
       const call = dispatch.resolveAlert.mock.calls.find((c) => c[0] === "cron_lane_stale:db-backup");
       expect(call).toBeDefined();
       expect(String(call?.[1])).toMatch(/No action is needed/);
+    });
+  });
+
+  // #3182: a revoked token, a Better Stack outage or a tail worker that is not
+  // running all end the receipts the same way, and none of them may look like a
+  // quiet day.
+  describe("log shipping to Better Stack (#3182)", () => {
+    const pageFor = (lane: string) =>
+      dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === `cron_lane_stale:${lane}`);
+
+    it("does not page inside the 15 minute bound", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), "log-shipping": ago(14 * MIN) });
+      const { stale } = await alertOnStaleLanes();
+      expect(stale.map((l) => l.lane)).not.toContain("log-shipping");
+      expect(pageFor("log-shipping")).toBeUndefined();
+    });
+
+    it("pages once no receipt has arrived for 15 minutes, Slack only, saying where the cause is", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), "log-shipping": ago(20 * MIN) });
+      const { stale } = await alertOnStaleLanes();
+      expect(stale.map((l) => l.lane)).toContain("log-shipping");
+      const page = pageFor("log-shipping");
+      expect(String(page?.[2])).toMatch(/Better Stack/);
+      expect(String(page?.[2])).toMatch(/wrangler tail slate-log-tail/);
+      expect(page?.[1]).toBe(60 * MIN);
+      // Slack only: log history stopping is not the site being down.
+      expect(page?.[3]).toBeUndefined();
+    });
+
+    it("gives a tail worker that has never sent a receipt its grace window, then pages never", async () => {
+      const { "log-shipping": _omitted, ...rest } = healthy();
+      heartbeat.readAllHeartbeatMs.mockResolvedValue(rest);
+      await alertOnStaleLanes();
+      expect(pageFor("log-shipping")).toBeUndefined();
+      expect(marker.written).toContain("lane_never_seen:log-shipping");
+
+      dispatch.sendThrottledAlert.mockClear();
+      marker.firstSeenAt = new Date(Date.now() - 20 * MIN).toISOString();
+      await alertOnStaleLanes();
+      expect(String(pageFor("log-shipping")?.[2])).toMatch(/never/i);
+    });
+
+    it("all-clears only once a receipt arrives inside the bound", async () => {
+      dispatch.existingAlertStateKeys.mockResolvedValue(new Set(["alert_firing:cron_lane_stale:log-shipping"]));
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), "log-shipping": ago(20 * MIN) });
+      await alertOnStaleLanes();
+      expect(dispatch.resolveAlert.mock.calls.find((c) => c[0] === "cron_lane_stale:log-shipping")).toBeUndefined();
+
+      heartbeat.readAllHeartbeatMs.mockResolvedValue(healthy());
+      await alertOnStaleLanes();
+      const call = dispatch.resolveAlert.mock.calls.find((c) => c[0] === "cron_lane_stale:log-shipping");
+      expect(String(call?.[1])).toMatch(/reaching Better Stack again/);
+    });
+
+    it("clears nothing when the heartbeats could not be read", async () => {
+      dispatch.existingAlertStateKeys.mockResolvedValue(new Set(["alert_firing:cron_lane_stale:log-shipping"]));
+      heartbeat.readAllHeartbeatMs.mockRejectedValue(new Error("supabase unreachable"));
+      await alertOnStaleLanes();
+      expect(dispatch.resolveAlert).not.toHaveBeenCalled();
     });
   });
 
