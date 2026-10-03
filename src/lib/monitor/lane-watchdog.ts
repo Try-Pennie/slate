@@ -1,5 +1,7 @@
 import { readAllHeartbeatMs } from "@/lib/monitor/heartbeat";
 import {
+  backupAlertText,
+  backupRecoveryText,
   coreLaneAlertText,
   canaryAlertText,
   canaryRecoveryText,
@@ -21,6 +23,7 @@ import {
 } from "@/lib/monitor/lane-copy";
 import {
   findStaleLanes,
+  BACKUP_STALE_BOUNDS_MS,
   LANE_STALE_BOUNDS_MS,
   CANARY_STALE_BOUNDS_MS,
   MIRROR_STALE_BOUNDS_MS,
@@ -187,6 +190,10 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
   // Slack only: a paused monitor is not an outage, and flipping /api/health would
   // have noodge report its own pause as one.
   const uptimeStale = findStaleLanes(heartbeats, now, UPTIME_STALE_BOUNDS_MS, true);
+  // The daily off platform database dump (#3076). `neverIsStale` is ON: a dump that
+  // has never landed is a database with no copy outside Supabase, and silent for
+  // ever is the worse failure. Slack only: a missing backup is not an outage.
+  const backupStale = findStaleLanes(heartbeats, now, BACKUP_STALE_BOUNDS_MS, true);
   // The detector verdict stamps (#1394): not "did this lane run" but "did this
   // detector CONCLUDE anything". `neverIsStale` is ON for a sharper reason than
   // the retention lanes': a detector that has never once reached a verdict is the
@@ -288,6 +295,14 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
     ),
   );
 
+  await pageWithGraceWindow(backupStale, now, "database backup", (lane) =>
+    sendThrottledAlert(
+      staleLaneAlertKey(lane.lane),
+      STALE_LANE_COOLDOWN_MS,
+      backupAlertText(lane),
+    ),
+  );
+
   await pageWithGraceWindow(armedVerdictStale, now, "detector", (lane) =>
     sendThrottledAlert(
       staleLaneAlertKey(lane.lane),
@@ -334,6 +349,7 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
         ...retentionStale,
         ...timeOffStale,
         ...uptimeStale,
+        ...backupStale,
         ...armedVerdictStale,
       ].map((l) => l.lane),
     ),
@@ -371,6 +387,7 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
       ...retentionStale,
       ...timeOffStale,
       ...uptimeStale,
+      ...backupStale,
       ...armedVerdictStale,
     ],
   };
@@ -426,7 +443,7 @@ async function pageWithGraceWindow(
 }
 
 /**
- * The seven lane families and the all-clear each one speaks (#1134, #1394, #2543, #1228).
+ * The eight lane families and the all-clear each one speaks (#1134, #1394, #2543, #1228).
  *
  * Kept alongside the per family alert-text functions rather than collapsed into one
  * generic "recovered": these lanes fail for different reasons, are recovered by
@@ -450,6 +467,7 @@ function laneFamilies(canaryBounds: Record<string, number>): {
     { bounds: RETENTION_STALE_BOUNDS_MS, recovery: retentionRecoveryText, graceWindow: true },
     { bounds: TIME_OFF_STALE_BOUNDS_MS, recovery: timeOffRecoveryText, graceWindow: true },
     { bounds: UPTIME_STALE_BOUNDS_MS, recovery: uptimeRecoveryText, graceWindow: true },
+    { bounds: BACKUP_STALE_BOUNDS_MS, recovery: backupRecoveryText, graceWindow: true },
     { bounds: VERDICT_STALE_BOUNDS_MS, recovery: verdictRecoveryText, graceWindow: true },
   ];
 }

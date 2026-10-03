@@ -24,6 +24,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
+  BACKUP_STALE_BOUNDS_MS,
   LANE_STALE_BOUNDS_MS,
   CANARY_STALE_BOUNDS_MS,
   MIRROR_STALE_BOUNDS_MS,
@@ -52,6 +53,8 @@ const BOUNDS: Record<string, Record<string, number>> = {
   TIME_OFF_STALE_BOUNDS_MS,
   // #1228: noodge's two keyed checks of Slate, stamped from the health endpoints.
   UPTIME_STALE_BOUNDS_MS,
+  // #3076: the daily off platform database dump, stamped by db-backup.yml.
+  BACKUP_STALE_BOUNDS_MS,
 };
 
 // A lane that deliberately stamps with NO bound watching it. Empty on purpose: an
@@ -254,6 +257,8 @@ for (const [mapName, bounds] of Object.entries(BOUNDS)) {
       file: "smoke-canary.yml",
       call: /lane=verdict:availability-latency(?![\w:-])/,
     },
+    // #3076: the daily dump, watched by its own map with the grace window.
+    { lane: "db-backup", file: "db-backup.yml", call: /lane=db-backup(?![\w-])/ },
   ];
   // Anchored on a word boundary, never a bare substring. `includes("lane=router-replay")`
   // is satisfied by `lane=router-replay-typo`, and the first version of this guard
@@ -261,7 +266,9 @@ for (const [mapName, bounds] of Object.entries(BOUNDS)) {
   // seen to fail).
   for (const { lane, file, call } of WORKFLOW_STAMPED) {
     assert(
-      CANARY_STALE_BOUNDS_MS[lane] !== undefined || VERDICT_STALE_BOUNDS_MS[lane] !== undefined,
+      CANARY_STALE_BOUNDS_MS[lane] !== undefined ||
+        VERDICT_STALE_BOUNDS_MS[lane] !== undefined ||
+        BACKUP_STALE_BOUNDS_MS[lane] !== undefined,
       `${lane} is watched by a staleness bound`,
     );
     const yml = readFileSync(join(HERE, "..", ".github", "workflows", file), "utf8");
@@ -274,7 +281,7 @@ for (const [mapName, bounds] of Object.entries(BOUNDS)) {
   // And the reverse: a bound nobody in this list stamps is a bound that can never
   // go stale, so a lane added to the map and never wired is caught here rather than
   // by somebody noticing the alert never fires.
-  for (const lane of Object.keys(CANARY_STALE_BOUNDS_MS)) {
+  for (const lane of [...Object.keys(CANARY_STALE_BOUNDS_MS), ...Object.keys(BACKUP_STALE_BOUNDS_MS)]) {
     assert(
       WORKFLOW_STAMPED.some((w) => w.lane === lane),
       `${lane} is bounded and no workflow in this list stamps it`,

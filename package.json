@@ -40,6 +40,8 @@
     "verify:pool-slot-parity": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-pool-slot-parity.ts",
     "measure:lead-hours": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/measure-lead-hours.ts",
     "measure:volume-floors": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/measure-volume-floors.ts",
+    "check:db-dump": "node --experimental-strip-types scripts/check-db-dump.ts",
+    "restore:from-snowflake": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/restore-from-snowflake.ts",
     "verify:kill-switch": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-kill-switch-live.ts",
     "verify:burst-counter": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-burst-counter-live.ts",
     "verify:ooo-protection": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-ooo-protection-live.ts",

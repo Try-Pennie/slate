@@ -57,6 +57,10 @@ const CANARY_HEARTBEAT_LANES = new Set([
   // and same rule: it records that the check read a real median, never that the
   // step ran, so a run whose every request was refused leaves it unstamped.
   "verdict:availability-latency",
+  // The daily off platform database dump (#3076). Stamped only after the uploaded
+  // object was read back from R2 at the size that was written, never merely because
+  // the workflow ran, so a dump that never reached R2 goes stale and pages.
+  "db-backup",
 ]);
 
 export async function POST(req: NextRequest) {

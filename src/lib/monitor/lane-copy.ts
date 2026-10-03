@@ -5,7 +5,7 @@
  * calling these, instead of holding a second copy that would drift the first time
  * someone edited one and not the other (L41). The watchdog imports them back.
  *
- * Seven lane families, seven voices, deliberately: these lanes fail for different
+ * Eight lane families, eight voices, deliberately: these lanes fail for different
  * reasons and are recovered by different people doing different things, and
  * #1123 already had to unpick one shared message that pointed responders at the
  * wrong lane and lock.
@@ -228,6 +228,53 @@ export function timeOffRecoveryText(lane: string): string {
   return (
     `${subject.what[0]!.toUpperCase()}${subject.what.slice(1)} has run again inside its ` +
     `bound, so the earlier page is cleared. No action is needed.`
+  );
+}
+
+/**
+ * The daily off platform database dump has gone quiet (#3076).
+ *
+ * Its own voice, because the reader's question is not "which lane" but "what can I
+ * no longer get back": bookings are still recoverable from the Snowflake mirror, and
+ * everything else is only as recent as the last dump. The bound is quoted in hours,
+ * like the time off lanes, for the same reason.
+ */
+export function backupAlertText(lane: StaleLane): string {
+  const bound = describeGap(lane.maxStaleMs);
+  const stake =
+    `Bookings are still recoverable from the Snowflake mirror, but advisors, pools, ` +
+    `working hours, settings and time off are only as recent as the last dump, so a ` +
+    `restore today would lose everything changed since.`;
+  const look =
+    `Read the last db-backup run in the Actions tab: it fails red on a missing R2 or ` +
+    `Supabase secret, a dump that came out empty, or an upload R2 did not keep. If no ` +
+    `run happened at all (GitHub drops scheduled runs), Run workflow on db-backup takes ` +
+    `one now.`;
+  if (lane.unreadable) {
+    return (
+      `The record of the last off platform database backup cannot be read, so it is being ` +
+      `treated as stopped (expected one at least every ${bound}). ${stake} ${look}`
+    );
+  }
+  if (!Number.isFinite(lane.ageMs)) {
+    return (
+      `The daily off platform database backup has NEVER once landed in R2, so there is no ` +
+      `copy of the database outside Supabase (expected one at least every ${bound}). ${stake} ` +
+      `${look} A missing or rotated R2_BACKUP secret is the usual cause.`
+    );
+  }
+  return (
+    `The newest off platform database backup is ${describeGap(lane.ageMs)} old (expected one ` +
+    `at least every ${bound}). ${stake} ${look}`
+  );
+}
+
+/** All-clear for the daily database dump (#3076). It names what is protected again,
+ *  because the page was about what a restore would lose. */
+export function backupRecoveryText(_lane: string): string {
+  return (
+    `A fresh off platform database backup has landed in R2, so a restore would again lose ` +
+    `at most a day of the non booking tables, and the earlier page is cleared. No action is needed.`
   );
 }
 

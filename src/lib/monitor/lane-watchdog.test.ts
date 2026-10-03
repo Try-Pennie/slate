@@ -166,6 +166,9 @@ const healthy = () => ({
   // keeps enough attempts inside its window for a verdict on essentially every
   // tick. It was deliberately absent here while it was parked (#2499).
   "verdict:booking-failure-rate": ago(5 * MIN),
+  // #3076: the daily off platform database dump, judged with neverIsStale ON, so a
+  // healthy fleet has this morning's upload in it.
+  "db-backup": ago(6 * 60 * MIN),
 });
 
 beforeEach(() => {
@@ -761,6 +764,56 @@ describe("alertOnStaleLanes (#803)", () => {
       const call = dispatch.resolveAlert.mock.calls.find(
         (c) => c[0] === "cron_lane_stale:ooo-approvals-report",
       );
+      expect(call).toBeDefined();
+      expect(String(call?.[1])).toMatch(/No action is needed/);
+    });
+  });
+
+  // #3076: the daily dump to R2 is the only copy of the non booking tables that
+  // lives outside Supabase, so a dump that stopped is a backup that stopped.
+  describe("the daily off platform database dump (#3076)", () => {
+    const pageFor = (lane: string) =>
+      dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === `cron_lane_stale:${lane}`);
+
+    it("does not page a dump that is a few hours late, inside the 26 hour bound", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), "db-backup": ago(25 * 60 * MIN) });
+      const { stale } = await alertOnStaleLanes();
+      expect(stale.map((l) => l.lane)).not.toContain("db-backup");
+      expect(pageFor("db-backup")).toBeUndefined();
+    });
+
+    it("pages once the newest dump is older than 26 hours, and says what is unprotected", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), "db-backup": ago(27 * 60 * MIN) });
+      const { stale } = await alertOnStaleLanes();
+      expect(stale.map((l) => l.lane)).toContain("db-backup");
+      const text = String(pageFor("db-backup")?.[2]);
+      expect(text).toMatch(/backup/i);
+      expect(text).toMatch(/advisors|working hours|time off/i);
+      expect(text).toMatch(/db-backup/);
+      expect(text).not.toMatch(/Infinity|NaN|undefined/);
+      // Slack only: a missing backup is not the site being down.
+      expect(pageFor("db-backup")?.[3]).toBeUndefined();
+    });
+
+    it("gives a dump that has never run its grace window, then pages that no backup exists", async () => {
+      const { "db-backup": _omitted, ...rest } = healthy();
+      heartbeat.readAllHeartbeatMs.mockResolvedValue(rest);
+      await alertOnStaleLanes();
+      expect(pageFor("db-backup")).toBeUndefined();
+      expect(marker.written).toContain("lane_never_seen:db-backup");
+
+      // A whole bound later it has still never stamped: that is a database with no
+      // off platform copy at all, which must not stay silent for ever.
+      dispatch.sendThrottledAlert.mockClear();
+      marker.firstSeenAt = new Date(Date.now() - 27 * 60 * MIN).toISOString();
+      await alertOnStaleLanes();
+      expect(String(pageFor("db-backup")?.[2])).toMatch(/never/i);
+    });
+
+    it("all-clears once a dump lands again", async () => {
+      dispatch.existingAlertStateKeys.mockResolvedValue(new Set(["alert_firing:cron_lane_stale:db-backup"]));
+      await alertOnStaleLanes();
+      const call = dispatch.resolveAlert.mock.calls.find((c) => c[0] === "cron_lane_stale:db-backup");
       expect(call).toBeDefined();
       expect(String(call?.[1])).toMatch(/No action is needed/);
     });
