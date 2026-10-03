@@ -2,7 +2,12 @@ import { redirect } from "next/navigation";
 import { SaveForm } from "@/components/ui/SaveForm";
 import { currentUser } from "@/lib/auth";
 import { canEditOrgSettings } from "@/lib/auth/roles";
-import { consoleHiddenFor } from "@/lib/env";
+import { consoleHiddenFor, regalWebhookKey, webhookSigningSecret } from "@/lib/env";
+import {
+  credentialSourcesFor,
+  hasStoredValue,
+  type CredentialSource,
+} from "@/lib/webhooks/credentials";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
   replayFailedWebhooks,
@@ -83,11 +88,23 @@ export default async function WebhooksPage({
   const db = supabaseAdmin();
   const webhookRes = await db
     .from("webhook_endpoints")
-    .select("*")
+    .select("id, url, format, auth_header, secret")
     .eq("org_id", me.org_id)
     .limit(1)
     .maybeSingle();
-  const webhook = webhookRes.data as WebhookEndpoint | null;
+  const row = webhookRes.data as Pick<WebhookEndpoint, "id" | "url" | "format" | "auth_header" | "secret"> | null;
+  // #3091: the credential columns are turned into PRESENCE here and go no further,
+  // so nothing below this line holds a key or a secret to render by accident.
+  const webhook = row ? { id: row.id, url: row.url, format: row.format } : null;
+  const credentialSources = row
+    ? credentialSourcesFor(
+        { hasDbKey: hasStoredValue(row.auth_header), hasDbSigning: hasStoredValue(row.secret) },
+        {
+          regalKeySet: regalWebhookKey().trim().length > 0,
+          signingSecretSet: webhookSigningSecret().trim().length > 0,
+        },
+      )
+    : null;
   // #1629: a null here means "no endpoint configured" AND "could not read", and
   // the two differ by a data loss: the form below is prefilled from this row, so
   // saving a blank one over a real endpoint is the worst direction to fail in.
@@ -224,73 +241,30 @@ export default async function WebhooksPage({
             ))}
           </dl>
           <p className={`text-xs text-fg-muted ${proseCls}`}>{WEBHOOK_FORMAT_NOTE}</p>
-          <div>
-            {/* #1901, the fourth instance of the pattern, found by the guard
-                rather than by eye. The field IS the Regal API key; sending it as
-                the Authorization header is the mechanism, and the placeholder
-                below already says which. So the label is the name. */}
-            {/* #1952: the key's state as a MARKER, not as two sentences that
-                differ only in wording. Both states used to be the same empty
-                password input with the same grey hint under it, so a reader
-                scanning the page saw an empty field, which reads as "not set",
-                and had to read to learn otherwise.
+          {/* #3091: both credentials are Worker secrets, readable by the running
+              Worker alone, so there is no field for either. Changing one is a
+              deploy step (DEPLOY.md, section 2b). What is left here is whether
+              each is set, as a MARKER (#1952), never a masked value: dots invent a
+              length and the real length leaks something about the key (#600).
 
-                And the failing state was drawn like the healthy one. `buildRequest`
-                REFUSES to build a regal request with no key (#600), so "no key
-                saved" means every booking event is failing to deliver: that is an
-                error, and it now looks like one.
-
-                Deliberately NOT a masked value. Rendering dots invents a length,
-                and rendering the real length leaks something about the key; #600
-                exists because the key used to reach this page at all. */}
-            <div className="flex flex-wrap items-center gap-2">
-              <label className={labelCls} htmlFor="webhook-auth-header">
-                Regal API key
-              </label>
-              {/* The state is judged on the SAVED format, not on the dropdown's
-                  current selection: a generic endpoint authenticates with the
-                  HMAC secret and needs no key here at all, so a red "No key
-                  saved" on one would be a false alarm about a field it does not
-                  use. And an endpoint that does not exist yet gets no marker,
-                  because "nothing is configured" is not a key that is missing. */}
-              {webhook == null ? null : webhook.format !== "regal" ? (
-                <Pill variant="outline">Not used by this format</Pill>
-              ) : webhook.auth_header ? (
-                <Pill variant="status-ok">Key saved</Pill>
-              ) : (
-                <Pill variant="status-error">No key saved</Pill>
-              )}
-            </div>
-            {/* #600: never render the stored key. It used to come down as this input's
-                defaultValue, which put the live secret in the page HTML and on screen in
-                plain text. Write only: blank leaves the saved key untouched. */}
-            <input
-              id="webhook-auth-header"
-              name="auth_header"
-              type="password"
-              autoComplete="off"
-              defaultValue=""
-              placeholder={
-                webhook?.auth_header ? "Leave blank to keep the current key" : "Regal API key"
-              }
-              className={inputCls}
-            />
-            {webhook?.auth_header ? (
-              <p className="mt-1 text-xs text-fg-muted">
-                Leave this blank to keep the saved key, or type a new one to replace it.
-              </p>
-            ) : webhook != null && webhook.format === "regal" ? (
-              <p className="mt-1 text-xs text-error">
-                Regal deliveries fail until a key is set, because Slate refuses to
-                send an unauthenticated one.
-              </p>
-            ) : (
-              <p className="mt-1 text-xs text-fg-muted">
-                Needed only by the Regal format, which sends it as the
-                Authorization header.
-              </p>
-            )}
-          </div>
+              Judged on the SAVED format, not the dropdown: a credential the saved
+              format does not use is not one that is missing. And an endpoint that
+              does not exist yet gets no markers, because nothing configured is not
+              a credential that is missing. */}
+          {webhook && credentialSources ? (
+            <dl className="space-y-1.5 text-xs">
+              <CredentialRow
+                label="Regal API key"
+                source={credentialSources.key}
+                used={webhook.format === "regal"}
+              />
+              <CredentialRow
+                label="Signing secret"
+                source={credentialSources.signing}
+                used={webhook.format === "generic"}
+              />
+            </dl>
+          ) : null}
           <SubmitButton className={btnCls} pendingLabel="Saving…">
             Save
           </SubmitButton>
@@ -470,5 +444,37 @@ function ActionNotice({ feedback }: { feedback: ResendFeedback | null }) {
       saved={ok ? feedback.message : ""}
       error={ok ? undefined : feedback.message}
     />
+  );
+}
+
+/**
+ * One credential's state (#3091). Four states, each its own marker, because each
+ * sends the reader somewhere different: nothing to do, a secret still to put, a
+ * delivery that is failing now, or a credential this format never sends.
+ */
+function CredentialRow({
+  label,
+  source,
+  used,
+}: {
+  label: string;
+  source: CredentialSource;
+  used: boolean;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <dt className="font-semibold text-fg">{label}</dt>
+      <dd>
+        {!used ? (
+          <Pill variant="outline">Not used by this format</Pill>
+        ) : source === "worker" ? (
+          <Pill variant="status-ok">Set</Pill>
+        ) : source === "database" ? (
+          <Pill variant="status-pending">Still read from the database</Pill>
+        ) : (
+          <Pill variant="status-error">Not set, deliveries are refused</Pill>
+        )}
+      </dd>
+    </div>
   );
 }

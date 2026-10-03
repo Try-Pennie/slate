@@ -302,6 +302,59 @@ the reader open it, which is the pattern the alert copy rules already require.
   manage token alone. Note slate#1340: a weak contact match must never disclose
   another lead's booking or its token, because that token is a credential.
 
+**What the audit trail records, and what it deliberately does not (#3089).** The
+trail (`audit_log`, written through `recordAudit` in `src/lib/audit.ts`) records
+CHANGES: every privileged write, after it succeeds, with the value before and after.
+It does **not** record staff VIEWS of lead data, by decision (Dan, 2026-10-03: "No,
+changes only"). So "which staff member looked at this lead's details" cannot be
+answered from Slate; "who changed this, from what, to what" can. Reconsider if a
+regulator or a contract asks for an access log, which would be a new table and a
+write on every admin page read rather than an extension of this one.
+
+---
+
+## 7a. Credentials Slate stores, and encryption at rest (#3091)
+
+Anyone who can read the database (a leaked service key, a backup copy, a SQL editor
+session) can read whatever is stored in plaintext in it. Four columns hold a bearer
+credential, and each has a recorded position:
+
+- **`bookings.manage_token`, the lead's manage code, stays as it is.** It is handed
+  to the lead in their confirmation email and calendar invite, and it authorizes
+  only that one booking. It is deliberately public to the person who holds it, so
+  hashing it would protect nothing the email does not already expose, while making
+  it impossible to re-send the link (Dan, 2026-10-03).
+- **`agent_links.token`, an advisor's personal booking link code, stays as it is**,
+  for the same reason: it is the advisor's own link, handed out to leads on purpose,
+  and it books a call with that advisor and nothing more. When it ends up somewhere
+  it should not, it is rotated (`rotated_at`, `rotated_by`) rather than hidden.
+- **`webhook_endpoints.auth_header`, the Regal API key, moves into the Worker secret
+  `REGAL_WEBHOOK_KEY`**, and
+- **`webhook_endpoints.secret`, the HMAC signing secret, moves into the Worker
+  secret `WEBHOOK_SIGNING_SECRET`.** Both are real credentials that nobody outside
+  Slate should hold, so only the running Worker can read them. The admin webhooks
+  page shows whether each is set and cannot edit either; changing one is a deploy
+  step (DEPLOY.md, section 2b). The move is expand then contract: the code reads the
+  Worker secret and falls back to the column while the column still holds a value,
+  logs which one each delivery used, and the monitor lane pages
+  `webhook_credentials_in_database` until both are set. The contract migration then
+  nulls both columns and removes the fallback.
+
+**Encryption at rest, as each platform states it.** This protects a stolen disk or a
+raw storage copy. It does NOT protect against a reader with database access, which
+is why the two real credentials above move into the Worker rather than relying on it.
+
+- **Supabase** (the Postgres database and its backups): "All customer data is
+  encrypted at rest with AES-256 and in transit via TLS." Source:
+  [supabase.com/security](https://supabase.com/security), read 2026-10-03.
+- **Snowflake** (the archival mirror): "All Snowflake customer data is encrypted by
+  default", with "strong AES encryption with a hierarchical key model rooted in a
+  cloud-provider-hosted hardware security module", keys rotated automatically every
+  30 days. Source:
+  [Understanding encryption key management in Snowflake](https://docs.snowflake.com/en/user-guide/security-encryption-manage),
+  and [end-to-end encryption](https://docs.snowflake.com/en/user-guide/security-encryption-end-to-end),
+  read 2026-10-03.
+
 ---
 
 ## 8. Answering a request

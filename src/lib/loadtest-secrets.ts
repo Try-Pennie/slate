@@ -78,6 +78,10 @@ export const PRODUCTION_ONLY_SECRETS = [
   "OFFBOARDING_API_KEY",
   "BOOKABLE_API_KEY",
   "REGAL_INBOUND_KEY",
+  // #3091: the outbound Regal key and the generic signing secret. A load run never
+  // posts to a real subscriber (SLATE_LOADTEST short circuits the send).
+  "REGAL_WEBHOOK_KEY",
+  "WEBHOOK_SIGNING_SECRET",
   "BOOKING_API_KEY_REGAL",
   "BOOKING_API_KEY_REGAL_2",
   "BOOKING_API_KEY_TRYPENNIE",

@@ -89,7 +89,7 @@ function buildRegalRequest({
   const key = endpoint.auth_header?.trim();
   if (!key) {
     throw new Error(
-      "Regal webhook endpoint has no API key (auth_header). Set it in /admin; refusing to send an unauthenticated delivery (#600).",
+      "Regal webhook endpoint has no API key (REGAL_WEBHOOK_KEY). Set the Worker secret; refusing to send an unauthenticated delivery (#600).",
     );
   }
   return {
@@ -125,6 +125,15 @@ function buildGenericRequest({
   payload,
   timestamp,
 }: WireContext): WireRequest {
+  // #3091: the same refusal #600 made for a Regal endpoint with no key. Signing
+  // with an empty secret produces a signature anybody can forge, so a subscriber
+  // that verifies it would accept anything; with the secret moving to the Worker,
+  // "unset" is a state a deploy can actually reach.
+  if (!endpoint.secret?.trim()) {
+    throw new Error(
+      "Webhook endpoint has no signing secret (WEBHOOK_SIGNING_SECRET); refusing to send an unsigned delivery (#3091).",
+    );
+  }
   const body = JSON.stringify({ event, data: payload });
   return {
     body,

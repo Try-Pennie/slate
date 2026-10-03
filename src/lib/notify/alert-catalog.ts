@@ -424,6 +424,13 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "nobody; a person updates the subscription and the same lane re-measures it.",
   },
   {
+    key: "webhook_credentials_in_database",
+    kind: "condition",
+    why:
+      "A webhook credential is still read from the database column because its Worker " +
+      "secret is not set (#3091); it ends when the secret is put and the next tick sees it.",
+  },
+  {
     key: "handoff_channel_unset",
     kind: "condition",
     why:
