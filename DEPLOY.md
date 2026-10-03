@@ -220,30 +220,32 @@ page if they fail. In order:
 3. **Read what is serving** (`wrangler deployments status`). It must be one version at
    100%; that version is what every failure restores. A split left behind by a run that
    died is settled on its larger share first.
-4. **Deploy the log tail worker** (`slate-log-tail`, #3160) whole: `wrangler deploy -c
-   wrangler.log-tail.jsonc`. It is not split. It goes first so a change to its
-   redaction (`src/lib/log-shipping/`, `src/lib/api/client-error-scrub.ts`) ships with
-   the merge; if it fails, nothing of Slate's is touched (exit 23). A canary that later
-   fails restores Slate but not the tail worker, which runs on its own and depends on
-   nothing in Slate's version.
-5. **Upload the build twice** (`opennextjs-cloudflare upload`, which is `wrangler versions
+4. **Upload the build twice** (`opennextjs-cloudflare upload`, which is `wrangler versions
    upload`): a **canary** carrying `SLATE_CRON_STANDBY=1`, and the **release**, the same
    build without it. Both are tagged with the commit (the rollback reads the tag).
    Uploading changes nothing anybody is served.
-6. **Wait for a clear cron window** (see "What the split looks like").
-7. **Split**: `wrangler versions deploy <canary>@10% <old>@90%`.
-8. **Probe the canary** through `Cloudflare-Workers-Version-Overrides: slate="<canary id>"`
+5. **Wait for a clear cron window** (see "What the split looks like").
+6. **Split**: `wrangler versions deploy <canary>@10% <old>@90%`.
+7. **Probe the canary** through `Cloudflare-Workers-Version-Overrides: slate="<canary id>"`
    on every request, with the post-deploy probe (#1037): it polls `/api/smoke/version`
    until the canary's commit answers **five times in a row**, then judges `/api/health`
    and the availability read for the `SMOKE` bucket. Five in a row because an override
    Cloudflare does not apply is silently routed by the split, and at 10% one matching
    answer proves nothing.
-9. **Promote the release** to 100% (`wrangler versions deploy <release>@100%`), and probe
+8. **Promote the release** to 100% (`wrangler versions deploy <release>@100%`), and probe
    again, without the override, five in a row.
-10. **Apply the cron triggers** (`wrangler triggers deploy`). Triggers are not part of a
+9. **Apply the cron triggers** (`wrangler triggers deploy`). Triggers are not part of a
    version, so `versions upload` and `versions deploy` never touch them; this is what a
    plain `wrangler deploy` used to do implicitly. Only after the promotion probe, so a
    restore never leaves new triggers driving old code.
+10. **Deploy the log tail worker** (`slate-log-tail`, #3160) whole: `wrangler deploy -c
+   wrangler.log-tail.jsonc`. It is not split. It goes LAST because it binds to an
+   entrypoint of Slate's (`LogShippingReceipt`, through a service binding, #3191), which
+   has to be serving 100% before the tail worker that calls it is deployed. A change to
+   its redaction (`src/lib/log-shipping/`, `src/lib/api/client-error-scrub.ts`) ships
+   with the merge. If it fails (exit 23), Slate is NOT rolled back: it has already
+   passed its probes, and the tail worker deploy is safe to re-run. It is never deployed
+   when Slate did not reach a healthy 100%.
 
 Every failure path ends at **100% old or 100% new, decided explicitly**, before the step
 exits, and the exit code says which (`EXIT` in `scripts/lib/gradual-deploy.ts`, pinned by
@@ -265,7 +267,7 @@ exits, and the exit code says which (`EXIT` in `scripts/lib/gradual-deploy.ts`, 
 | 20 | **a restore failed 3 times: production may still be split** | unknown: run the Rollback workflow |
 | 21 | a split left by an earlier run is led by a cron standby canary, or its larger share cannot be read | unchanged: end the split by hand |
 | 22 | production was changed by something else mid-run (a rollback, a hand deploy); this run stopped and touched nothing more | unknown: whatever that change left, which this run does not undo |
-| 23 | the log tail worker (`slate-log-tail`) could not be deployed | unchanged |
+| 23 | promoted and healthy, and the log tail worker (`slate-log-tail`) could not be deployed after it; Slate is not rolled back | new |
 | 24 | the deploy script itself failed outside its own handling | unknown: the settle step reads what the run recorded |
 
 Any non-zero exit fails the job, and a failed job on a push to `main` posts a Slack alert
@@ -658,11 +660,12 @@ npx wrangler secret put BETTERSTACK_SOURCE_TOKEN -c wrangler.log-tail.jsonc
 
 ### Redeploying it
 
-CI deploys it on every production deploy, whole, before Slate's own upload (#3165; "What
-CI does: a gradual deploy", step 3). So a change to the redaction
-(`src/lib/log-shipping/`, or `src/lib/api/client-error-scrub.ts`, which it imports) is
-live with the merge. A failed tail worker deploy fails the whole deploy before Slate is
-touched (exit 23). By hand, step 3 above still works. The secret survives a redeploy.
+CI deploys it on every production deploy, whole, LAST: after Slate is promoted and has
+passed its probe (#3165; "What CI does: a gradual deploy", step 10), because it binds to
+an entrypoint of Slate's (#3191). So a change to the redaction (`src/lib/log-shipping/`,
+or `src/lib/api/client-error-scrub.ts`, which it imports) is live with the merge. A
+failed tail worker deploy fails the job (exit 23) without rolling Slate back. By hand,
+step 3 above still works. The secret survives a redeploy.
 
 **Since #3182 the dependency runs both ways.** The tail worker binds Slate's
 `LogShippingReceipt` entrypoint, so for any change that ADDS, renames or removes that

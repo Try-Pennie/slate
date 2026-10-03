@@ -426,7 +426,8 @@ export const EXIT = {
   /** Production was changed by something else mid-run (the Rollback workflow, a hand
    *  deploy). This run stopped and left it exactly as it found it. */
   interfered: 22,
-  /** The log tail worker (slate-log-tail) could not be deployed. Slate was not touched. */
+  /** Slate promoted and healthy, and the log tail worker (slate-log-tail) could not be
+   *  deployed after it. Slate is NOT rolled back for this. */
   tailWorkerFailed: 23,
   /** The deploy script itself failed outside the run's own handling. What production
    *  is serving is not known to it; the settle step reads what was recorded. */
@@ -457,7 +458,7 @@ export const EXIT_END: Record<keyof typeof EXIT, EndState> = {
   restoreFailed: "unknown",
   healRefused: "unchanged",
   interfered: "unknown",
-  tailWorkerFailed: "unchanged",
+  tailWorkerFailed: "new",
   scriptFailed: "unknown",
 };
 
@@ -480,8 +481,10 @@ export interface GradualOps {
   triggers(): Promise<boolean>;
   /**
    * Deploy the log tail worker (`wrangler deploy -c wrangler.log-tail.jsonc`) whole,
-   * before anything of Slate's is uploaded; true when it succeeded, or when this run
-   * targets an environment that has no tail worker (`shouldDeployTailWorker`).
+   * AFTER Slate is promoted and has passed its probe: the tail worker binds to an
+   * entrypoint of Slate's (#3191), which must exist before it does. True when it
+   * succeeded, or when this run targets an environment that has no tail worker
+   * (`shouldDeployTailWorker`).
    */
   tailWorker(): Promise<boolean>;
   /** Whether a version was uploaded in cron standby (a canary): read from its
@@ -623,19 +626,6 @@ async function runUntilSplit(ops: GradualOps): Promise<GradualResult> {
   }
   ops.log(`production is serving ${stable} at 100%`);
 
-  // The log tail worker goes first and whole (Dan, 2026-10-03): it is not split, and a
-  // change to the redaction it runs (src/lib/log-shipping, client-error-scrub) reaches
-  // production with the merge rather than waiting for a hand redeploy. If it fails,
-  // nothing of Slate's has been touched.
-  if (!(await ops.tailWorker())) {
-    return {
-      exit: EXIT.tailWorkerFailed,
-      end: "unchanged",
-      message:
-        "Not deployed: the log tail worker (slate-log-tail) could not be deployed, so Slate was not touched and the previous version is still serving 100%. Read the run log; `pnpm exec wrangler deploy -c wrangler.log-tail.jsonc` is the step that failed.",
-    };
-  }
-
   // Both versions are uploaded BEFORE the split opens, so the split lasts only as long as
   // the probe, and a failed upload has changed nothing anybody is served.
   const canary = await ops.upload("canary");
@@ -762,11 +752,35 @@ async function afterSplit(ops: GradualOps, stable: string, canary: string, relea
   } catch (err) {
     ops.log(`wrangler triggers deploy threw: ${err instanceof Error ? err.message : String(err)}`);
   }
+
+  // The log tail worker, whole and last (#3191): it binds to an entrypoint of Slate's
+  // (LogShippingReceipt, through a service binding), so it may only be deployed once
+  // that version is serving 100% and healthy. A failure or a throw here never restores
+  // Slate, which has already passed, and is caught here so the caller's restore on a
+  // throw cannot reach it. Attempted even when the triggers failed: both are safe to
+  // repeat, and the run reports every one that failed.
+  let tailed = false;
+  try {
+    tailed = await ops.tailWorker();
+  } catch (err) {
+    ops.log(`the log tail worker deploy threw: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const tailNote = tailed
+    ? ""
+    : " The log tail worker (slate-log-tail) could not be deployed either: re-run `pnpm exec wrangler deploy -c wrangler.log-tail.jsonc`.";
   if (!triggered) {
     return {
       exit: EXIT.triggersFailed,
       end: "new",
-      message: `Deployed ${release} at 100%, but \`wrangler triggers deploy\` failed, so the cron schedule may still be the previous one. Re-run this job, or run \`pnpm exec wrangler triggers deploy\`. The code is NOT rolled back for this: it passed its probes, and the triggers call is safe to repeat.`,
+      message: `Deployed ${release} at 100%, but \`wrangler triggers deploy\` failed, so the cron schedule may still be the previous one. Re-run this job, or run \`pnpm exec wrangler triggers deploy\`. The code is NOT rolled back for this: it passed its probes, and the triggers call is safe to repeat.${tailNote}`,
+    };
+  }
+  if (!tailed) {
+    return {
+      exit: EXIT.tailWorkerFailed,
+      end: "new",
+      message: `Deployed ${release} at 100% and it passed its probes, but the log tail worker (slate-log-tail) could not be deployed after it, so log shipping still runs the previous tail worker. Slate is NOT rolled back for this. Re-run this job, or run \`pnpm exec wrangler deploy -c wrangler.log-tail.jsonc\`.`,
     };
   }
 

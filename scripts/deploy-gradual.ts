@@ -1,13 +1,14 @@
 // The production deploy, gradually (#3095).
 //
 // Run by the CI deploy job after `pnpm cf:build` (which carries the bundle env guard,
-// #3078) and replaces `opennextjs-cloudflare deploy` there. It first deploys the log
-// tail worker (slate-log-tail, #3160) whole, so a change to its redaction ships with
-// the merge. It uploads the build twice,
+// #3078) and replaces `opennextjs-cloudflare deploy` there. It uploads the build twice,
 // as a canary in cron standby and as the release, opens a 10/90 split, probes the
 // canary through the version override header, then promotes the release to 100% and
 // probes again, or restores the version that was serving. Every decision is in
 // scripts/lib/gradual-deploy.ts and pinned offline by scripts/test-gradual-deploy.ts;
+// Last, once Slate is promoted and healthy, it deploys the log tail worker
+// (slate-log-tail, #3160) whole: that worker binds to an entrypoint of Slate's (#3191),
+// so it can only follow Slate, never lead it.
 // this file is only I/O.
 //
 //   node --experimental-strip-types scripts/deploy-gradual.ts            # deploy

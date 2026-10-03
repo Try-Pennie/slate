@@ -79,8 +79,8 @@ interface Scenario {
   splitAppliesAnyway?: boolean;
   /** Somebody else (a rollback) puts this version at 100% during that step. */
   interfereDuring?: "upload" | "probe:canary" | "heal";
-  /** The log tail worker deploy result (default true). */
-  tailWorker?: boolean;
+  /** The log tail worker deploy result (default true); "throw" makes it throw. */
+  tailWorker?: boolean | "throw";
   /** Every status read after the first THROWS. */
   statusThrowsLater?: boolean;
 }
@@ -137,6 +137,7 @@ async function drive(s: Scenario): Promise<Run> {
     },
     tailWorker: async () => {
       calls.push("tail-worker");
+      if (s.tailWorker === "throw") throw new Error("planted tail worker throw");
       return s.tailWorker ?? true;
     },
     upload: async (kind) => {
@@ -209,7 +210,6 @@ async function drive(s: Scenario): Promise<Run> {
     r.calls.join(" | "),
     [
       "status",
-      "tail-worker",
       "upload:canary",
       "upload:release",
       "wait",
@@ -218,8 +218,9 @@ async function drive(s: Scenario): Promise<Run> {
       `deploy:${RELEASE}@100%`,
       "probe:promoted",
       "triggers",
+      "tail-worker",
     ].join(" | "),
-    "the order: read what serves, deploy the log tail worker whole, upload both, wait out the cron window, split 10/90, probe the canary, promote, probe, apply triggers",
+    "the order: read what serves, upload both, wait out the cron window, split 10/90, probe the canary, promote, probe, apply triggers, then deploy the log tail worker whole",
   );
   eq(r.probes[0].canaryId, CANARY, "the canary probe is pinned to the CANARY version, by its id");
   eq(r.probes[1].canaryId, null, "the promotion probe is not pinned: it asks production as a whole");
@@ -235,12 +236,32 @@ async function drive(s: Scenario): Promise<Run> {
   );
 }
 
-// --- the log tail worker goes first and whole -------------------------------------
+// --- the log tail worker goes LAST, after Slate is promoted and healthy (#3191) ------
+//
+// It binds to an entrypoint of Slate's, so it may only deploy once that version serves
+// 100% and passed its probe. Its failure is its own ending and never restores Slate.
+for (const tail of [false, "throw"] as const) {
+  const r = await drive({ ...HAPPY, tailWorker: tail });
+  eq(r.result.exit, EXIT.tailWorkerFailed, `a tail worker deploy that ${tail === "throw" ? "throws" : "fails"} is its own ending`);
+  eq(r.result.end, "new", "and Slate stays on the release");
+  eq(JSON.stringify(r.deployment), JSON.stringify([{ versionId: RELEASE, percentage: 100 }]), "Slate was not restored for it");
+  assert(!r.calls.includes(`deploy:${OLD}@100%`), "no restore was attempted");
+}
+for (const bad of [
+  { canaryProbe: "release" as const },
+  { finalProbe: "release" as const },
+  { promote: false },
+  { split: false },
+  { canaryUpload: false },
+]) {
+  const r = await drive({ ...HAPPY, ...bad });
+  assert(!r.calls.includes("tail-worker"), `the tail worker is not deployed when Slate did not reach a healthy 100% (${JSON.stringify(bad)})`);
+}
 {
-  const r = await drive({ ...HAPPY, tailWorker: false });
-  eq(r.result.exit, EXIT.tailWorkerFailed, "a failed tail worker deploy is its own ending");
-  eq(r.result.end, "unchanged", "and Slate was not touched");
-  assert(!r.calls.some((c) => c.startsWith("upload") || c.startsWith("deploy")), "nothing of Slate's was uploaded or deployed");
+  const both = await drive({ ...HAPPY, triggers: false, tailWorker: false });
+  eq(both.result.exit, EXIT.triggersFailed, "with the triggers AND the tail worker failing, the triggers ending names the run");
+  assert(both.result.message.includes("slate-log-tail"), "and its message reports the tail worker too");
+  assert(both.calls.includes("tail-worker"), "the tail worker was still attempted after the triggers failed");
   eq(shouldDeployTailWorker(undefined), true, "production deploys its tail worker");
   eq(shouldDeployTailWorker(""), true, "an empty environment is production");
   eq(shouldDeployTailWorker("loadtest"), false, "the load test rehearsal never redeploys production's tail worker (its env has no tail consumer)");

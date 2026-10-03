@@ -2,7 +2,8 @@
 	"$schema": "node_modules/wrangler/config-schema.json",
 	// The tail worker that ships Slate's logs to Better Stack (#3105, #3138). Slate
 	// names it in `tail_consumers` (wrangler.jsonc). Deployed by CI on every production
-	// deploy, whole, before Slate's own upload (scripts/deploy-gradual.ts, #3165):
+	// deploy, whole, AFTER Slate is promoted and healthy (scripts/deploy-gradual.ts,
+	// #3165), because it binds to an entrypoint of Slate's (#3191):
 	//
 	//   npx wrangler deploy -c wrangler.log-tail.jsonc
 	//
