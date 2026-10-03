@@ -458,8 +458,11 @@ export async function sendThrottledInfo(
   text: string,
 ): Promise<void> {
   const channel = await defaultInfoChannel();
-  if (!channel) return;
-  await sendThrottledAlert(key, cooldownMs, text, channel);
+  // Noted on return by the same rule as a page (see alert-recording.ts), including
+  // the return with no info channel set, which drops the message exactly as an
+  // unconfigured Slack does. A throw (the channel read, or the send) notes nothing.
+  if (channel) await sendThrottledAlert(key, cooldownMs, text, channel);
+  noteAlertKey(key);
 }
 
 /**

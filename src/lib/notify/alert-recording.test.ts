@@ -19,13 +19,23 @@ vi.mock("@/lib/platform/runtime", () => ({
   workersRuntimeMarker: () => "test",
 }));
 vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
+const channels = vi.hoisted(() => ({ info: "C-INFO" as string, throws: false }));
+vi.mock("@/lib/notify/channels", () => ({
+  defaultInfoChannel: async () => {
+    if (channels.throws) throw new Error("config unreadable");
+    return channels.info;
+  },
+  defaultAlertsChannel: async () => "C-ALERTS",
+}));
 
 import { noteAlertKey, recordingAlerts } from "./alert-recording";
-import { sendThrottledAlert } from "./dispatch";
+import { sendThrottledAlert, sendThrottledInfo } from "./dispatch";
 import { recordConsecutiveStreak } from "./streak";
 
 beforeEach(() => {
   rpc.reply = { data: true, error: null };
+  channels.info = "C-INFO";
+  channels.throws = false;
 });
 
 describe("recordingAlerts", () => {
@@ -85,6 +95,27 @@ describe("the senders note their key", () => {
     const r = await recordingAlerts(() => sendThrottledAlert("agent_sync_failures", Number.NaN, "t"));
     expect(r.ok).toBe(false);
     expect(r.keys).toEqual([]);
+  });
+
+  // sendThrottledInfo is a lane's own alerting exactly as a page is (the ownership
+  // guard counts it), so it notes on the same rule: on return, never on a throw.
+  it("sendThrottledInfo notes a key it returned for", async () => {
+    const r = await recordingAlerts(() => sendThrottledInfo("k_info", 60_000, "t"));
+    expect(r.keys).toEqual(["k_info"]);
+  });
+
+  it("sendThrottledInfo notes its key even with no info channel set, like an unconfigured Slack", async () => {
+    channels.info = "";
+    const r = await recordingAlerts(() => sendThrottledInfo("k_info", 60_000, "t"));
+    expect(r).toMatchObject({ ok: true, keys: ["k_info"] });
+  });
+
+  it("sendThrottledInfo does NOT note a send that threw", async () => {
+    const bad = await recordingAlerts(() => sendThrottledInfo("k_info", Number.NaN, "t"));
+    expect(bad).toMatchObject({ ok: false, keys: [] });
+    channels.throws = true;
+    const unreadable = await recordingAlerts(() => sendThrottledInfo("k_info", 60_000, "t"));
+    expect(unreadable).toMatchObject({ ok: false, keys: [] });
   });
 
   it("recordConsecutiveStreak notes a streak it tracked that is deliberately quiet", async () => {

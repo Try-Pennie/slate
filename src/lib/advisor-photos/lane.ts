@@ -109,6 +109,17 @@ export async function runAdvisorPhotoLane(trigger: "cron" | "manual"): Promise<L
       const raised = await recordingAlerts(() =>
         page("advisor_photos_unread", photosUnreadAlert("write-failed", detail)),
       );
+      if (!raised.ok) {
+        // The page itself threw (its cooldown read, say) before sending anything.
+        // Logged rather than swallowed, and it names only what it noted before the
+        // throw, so with nothing raised the generic lane page is this failure's one
+        // message.
+        log.error(
+          "advisor-photos",
+          { msg: "the page about a failed save threw", alerted: raised.keys.join(",") },
+          raised.error,
+        );
+      }
       return { status: "failed", detail, alerted: raised.keys };
     }
     await report(outcome);
