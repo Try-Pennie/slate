@@ -318,6 +318,32 @@ export function lanesRunByDeployment(
   return { lanes };
 }
 
+/**
+ * What the lanes are held to on one run, built from the run's OWN inputs.
+ *
+ * Whether the sync page must fire follows what the run was CONFIGURED to fail, never
+ * what the deployment reported failing. Taking the deployment's word would let a
+ * deployment that silently dropped calendar reads also drop the requirement that
+ * would have caught it; the two disagreeing is already its own incomplete verdict in
+ * the run judge, so nothing is lost by holding the lanes to the configuration.
+ */
+export function faultLaneExpectationsFor(args: {
+  configuredTargets: readonly string[];
+  rawDisabled: string | undefined;
+  bounds: Readonly<Record<string, number>>;
+  knownLanes: readonly string[];
+  windowStartMs: number;
+}): FaultLaneExpectations | { why: string } {
+  const run = lanesRunByDeployment(args.rawDisabled, args.bounds, args.knownLanes);
+  if ("why" in run) return { why: run.why };
+  return {
+    windowStartMs: args.windowStartMs,
+    lanes: run.lanes,
+    mustRunInWindow: shortestBoundLanes(run.lanes),
+    syncPageExpected: args.configuredTargets.includes("google-read"),
+  };
+}
+
 /** The every minute lanes, the ones whose bound a short window cannot vouch for.
  *  Derived from the bounds rather than listed: the four every minute lanes share the
  *  shortest bound (`LANE_STALE_BOUNDS_MS`), so a lane added at that cadence is

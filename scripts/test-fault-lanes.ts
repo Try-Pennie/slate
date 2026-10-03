@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import {
   faultLaneIncompleteness,
   judgeFaultLanes,
+  faultLaneExpectationsFor,
   lanesRunByDeployment,
   shortestBoundLanes,
   LANE_SAMPLER_MAX_MS,
@@ -173,6 +174,26 @@ function findingsOf(e: FaultLaneEvidence, x: FaultLaneExpectations = EXPECT): st
   }
   const typo = lanesRunByDeployment("monitr", bounds, known);
   assert("why" in typo && typo.why.includes("monitr"), "a name that is no lane is a reason, naming it");
+}
+{
+  // The page requirement follows what the run was CONFIGURED to fail. Taking the
+  // deployment's report instead would let a deployment that silently dropped calendar
+  // reads drop the requirement that would have caught it (the mismatch itself is
+  // incomplete in the run judge, tested in scripts/test-judge-booking-run.ts).
+  const base = {
+    rawDisabled: "monitor",
+    bounds: { sync: 10 * MIN, monitor: 20 * MIN },
+    knownLanes: ["sync", "monitor"],
+    windowStartMs: T0,
+  };
+  const reads = faultLaneExpectationsFor({ ...base, configuredTargets: ["google-read", "supabase"] });
+  eq("why" in reads ? null : reads.syncPageExpected, true, "configured to fail calendar reads, the page is required");
+  const noReads = faultLaneExpectationsFor({ ...base, configuredTargets: ["supabase"] });
+  eq("why" in noReads ? null : noReads.syncPageExpected, false, "and not when it was not");
+  eq("why" in reads ? null : reads.lanes, { sync: 10 * MIN }, "held back lanes are left out");
+  eq("why" in reads ? null : reads.mustRunInWindow, ["sync"], "and the every minute lanes must run");
+  const blind = faultLaneExpectationsFor({ ...base, rawDisabled: undefined, configuredTargets: ["google-read"] });
+  assert("why" in blind, "an unknown lane setting is a reason, not expectations");
 }
 {
   // The workflow carries a COPY of env.loadtest's setting; it must be the same one.

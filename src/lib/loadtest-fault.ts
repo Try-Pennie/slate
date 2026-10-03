@@ -227,6 +227,38 @@ export function supabaseFaultResponse(): Response {
   );
 }
 
+/**
+ * The tables a database fault NEVER touches, reads and writes alike: the two the load
+ * run's lane judge reads as its evidence (`scripts/loadtest/fault-lanes.ts`).
+ *
+ * A fault injected into a heartbeat write would make a lane read as stale, and one in
+ * the page's cooldown read or its record would make the page read as missing or sent
+ * twice. Each is exactly the finding the judge exists to report, caused by the injector
+ * rather than by the code under test, so the evidence is kept out of reach by
+ * construction. Everything that DECIDES whether to page (the failure streak, the
+ * failing agents read) is still faulted: a page that never goes out because the
+ * database refused the reads behind it is the system's real behaviour.
+ */
+export const SUPABASE_FAULT_EXEMPT_TABLES = ["alert_state", "lane_heartbeats"] as const;
+
+/** The table a PostgREST address names, judged on the path alone, so a query that
+ *  merely MENTIONS an exempt table is not mistaken for one that touches it. */
+function postgrestTable(url: string): string | null {
+  let path: string;
+  try {
+    path = new URL(url).pathname;
+  } catch {
+    return null;
+  }
+  const m = /\/rest\/v1\/([^/]+)$/.exec(path);
+  return m ? decodeURIComponent(m[1]!) : null;
+}
+
+function isEvidenceTable(url: string): boolean {
+  const table = postgrestTable(url);
+  return table !== null && (SUPABASE_FAULT_EXEMPT_TABLES as readonly string[]).includes(table);
+}
+
 function bodyText(body: unknown): string {
   return typeof body === "string" ? body : "";
 }
@@ -250,6 +282,7 @@ export function loadtestSupabaseFetch(
   const now = opts.now ?? Date.now;
   const faulting = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (isEvidenceTable(url)) return base(input, init);
     const method = init?.method ?? (input instanceof Request ? input.method : "GET");
     const key = supabaseFaultKey(method, url, bodyText(init?.body), now());
     if (!shouldFault(key, sw.pct)) return base(input, init);

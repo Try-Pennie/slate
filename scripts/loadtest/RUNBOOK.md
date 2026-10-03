@@ -1221,9 +1221,15 @@ running. On the booking run the page and the heartbeats are now SCORED by the ju
 |---|---|---|---|
 | `google-read` | every stubbed calendar read, in the three shapes above | the call (`freeBusy:<email>`, `calendarList:<email>`, the sync window) | the coalescer, the classifier, the streak page, verify-on-book's re-route |
 | `google-write` | the stubbed create, patch and delete, in the same three shapes | the operation and the event id, so a retry meets the same answer | the confirm path's failed create, `pending_event_deletions`, the outbox's resume |
-| `supabase` | every call through the secret key client: half are held 1.5 seconds and let through, half answer a PostgREST shaped **500** | the method, address and body, inside the minute, so a fixed read is not failed on every tick for the whole run | the fail loud reads (`unwrap`), the lanes' failure boundaries, the heartbeat writes themselves |
+| `supabase` | every call through the secret key client EXCEPT `lane_heartbeats` and `alert_state`: half are held 1.5 seconds and let through, half answer a PostgREST shaped **500** | the method, address and body, inside the minute, so a fixed read is not failed on every tick for the whole run | the fail loud reads (`unwrap`), the lanes' failure boundaries, and every read behind the decision to page |
 | `salesforce` | a call is held 3 seconds, past the booking path's 2.5 second calling number deadline, then fails as a timeout | the request address, so one lead is slow on every run | the deadline branch, which the instant load test refusal (#2335) could never reach |
 | `webhook` | the synthetic delivery records a 503 instead of a success | the delivery AND the attempt, so some land on a retry and some reach the dead letter | the outbox retry and the dead letter page |
+
+The two tables the lane judge reads as its evidence, `lane_heartbeats` and `alert_state`,
+are never faulted (`SUPABASE_FAULT_EXEMPT_TABLES`), reads and writes alike: a fault there
+would produce exactly the stale lane or missing page the judge reports, caused by the
+injector rather than the code. What decides whether to page (the failure streak, the
+failing agents read) is still faulted, because a page lost to those is real behaviour.
 
 The database failure is a 500 and not a 503 on purpose: postgrest-js retries a 503 on
 every read with a 1, 2 and 4 second ladder, the retry meets the same verdict, and every
@@ -1297,7 +1303,8 @@ requires, through `scripts/loadtest/fault-lanes.ts`:
 - every one minute lane to have stamped INSIDE the window, since its ten minute bound
   would otherwise be satisfied by a stamp from before the faults began;
 - no `cron_lane_stale:<lane>` page recorded in the window, the watchdog's own verdict;
-- with calendar reads faulted, the `sync_failures` page recorded, and recorded ONCE: its
+- with calendar reads faulted (as CONFIGURED for the run, never as the deployment reported;
+  the two disagreeing is incomplete), the `sync_failures` page recorded, and recorded ONCE: its
   thirty minute cooldown outlasts the sampler's twenty minute ceiling, so a second
   stamp in one window is the throttle failing.
 

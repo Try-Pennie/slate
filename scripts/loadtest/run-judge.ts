@@ -55,7 +55,7 @@ import { PRODUCTION_SUPABASE_REF } from "../../src/lib/loadtest-guard.ts";
 import { allLaneNames } from "../../worker/lanes-disabled.ts";
 import { LANE_STALE_BOUNDS_MS } from "../../src/lib/monitor/health.ts";
 import { parseFaultTargets } from "../../src/lib/loadtest-fault.ts";
-import { lanesRunByDeployment, shortestBoundLanes, type FaultLaneEvidence } from "./fault-lanes.ts";
+import { faultLaneExpectationsFor, type FaultLaneEvidence } from "./fault-lanes.ts";
 
 // ONE constant, shared with the app's own load test refusals (#2242). A second
 // spelling beside each script is how one of them ends up naming a project that
@@ -473,18 +473,17 @@ if (faultDrivers.length > 0) {
   } catch (err) {
     console.error(`note: no lane sampler file could be read (${(err as Error).message})`);
   }
-  const run = lanesRunByDeployment(process.env.EXPECT_LANES_DISABLED, LANE_STALE_BOUNDS_MS, allLaneNames());
   faultLanes = {
     evidence,
-    expectations:
-      "why" in run
-        ? { why: run.why }
-        : {
-            windowStartMs: Math.min(...faultDrivers.map((d) => d.startedAtMs)),
-            lanes: run.lanes,
-            mustRunInWindow: shortestBoundLanes(run.lanes),
-            syncPageExpected: (faultPass?.faultTargets ?? []).includes("google-read"),
-          },
+    // From what the run was CONFIGURED to fail, never what the deployment reported;
+    // a disagreement between the two is already incomplete in the judge.
+    expectations: faultLaneExpectationsFor({
+      configuredTargets: expectedFaultTargets.targets,
+      rawDisabled: process.env.EXPECT_LANES_DISABLED,
+      bounds: LANE_STALE_BOUNDS_MS,
+      knownLanes: allLaneNames(),
+      windowStartMs: Math.min(...faultDrivers.map((d) => d.startedAtMs)),
+    }),
   };
 }
 

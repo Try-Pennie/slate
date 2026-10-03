@@ -27,6 +27,7 @@ import {
   FAULT_TARGET_CONTRACT,
   SALESFORCE_FAULT_LATENCY_MS,
   SUPABASE_FAULT_LATENCY_MS,
+  SUPABASE_FAULT_EXEMPT_TABLES,
   everyTargetDegrades,
   faultActive,
   loadtestSupabaseFetch,
@@ -166,6 +167,62 @@ const ON: FaultSwitch = { loadtest: true, pct: 100, targets: [...FAULT_TARGETS] 
   eq(calls, 1, "and the client sends it once, so the fault fails the read without a retry ladder");
 }
 
+// --- the judge's evidence tables are never faulted ---------------------------------
+//
+// The lane judge reads `lane_heartbeats` and `alert_state` as its evidence. A fault
+// injected into a heartbeat write, or into the page's cooldown read or record, would
+// produce exactly the stale lane or missing (or doubled) page the judge then reports,
+// caused by the injector rather than by the code under test. So both tables are exempt,
+// reads and writes, at 100 percent, in every minute.
+{
+  let reached = 0;
+  const base = (async () => {
+    reached++;
+    return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  const slept: number[] = [];
+  let minute = 0;
+  const wrapped = loadtestSupabaseFetch(base, {
+    sw: ON,
+    sleep: async (ms) => {
+      slept.push(ms);
+    },
+    now: () => minute * 60_000,
+  })!;
+  const root = "https://x.supabase.co/rest/v1";
+  const evidence = [
+    { url: `${root}/lane_heartbeats?on_conflict=lane`, method: "POST", body: '{"lane":"sync"}' },
+    { url: `${root}/lane_heartbeats?select=lane,last_ran_at`, method: "GET", body: "" },
+    { url: `${root}/alert_state?on_conflict=key`, method: "POST", body: '{"key":"sync_failures"}' },
+    { url: `${root}/alert_state?select=last_sent_at&key=eq.sync_failures`, method: "GET", body: "" },
+  ];
+  let calls = 0;
+  for (minute = 0; minute < 30; minute++) {
+    for (const c of evidence) {
+      calls++;
+      const res = await wrapped(c.url, { method: c.method, body: c.body });
+      if (res.status !== 200) break;
+    }
+  }
+  eq(reached, calls, "every evidence table call reached the database, in every minute, at 100 percent");
+  eq(slept, [], "and none was held");
+  eq(SUPABASE_FAULT_EXEMPT_TABLES, ["alert_state", "lane_heartbeats"], "the exempt tables are exactly the judge's two");
+
+  // Control (L159): the exemption is by TABLE, not by a substring of the address, so a
+  // neighbouring name and a query MENTIONING an evidence table are still faulted.
+  for (const url of [
+    `${root}/lane_heartbeats_archive?select=*`,
+    `${root}/alert_states?select=*`,
+    `${root}/bookings?select=*&note=eq.alert_state`,
+  ]) {
+    slept.length = 0;
+    let answered500 = 0;
+    for (minute = 0; minute < 30; minute++) if ((await wrapped(url)).status === 500) answered500++;
+    // At 100 percent every call is faulted: held (a latency fault) or answered 500.
+    eq(answered500 + slept.length, 30, `${url.slice(root.length)} is still faulted on every call`);
+  }
+}
+
 // --- Salesforce: slow, then failed ---------------------------------------------------
 {
   assert(
@@ -231,6 +288,15 @@ const probe = `
   const reads = await Promise.all(
     Array.from({ length: 20 }, (_, i) => admin.supabaseAdmin().from("probe_table_" + i).select("id")),
   );
+  const readsReached = reachedDb;
+  // The judge's evidence, written and read the way the heartbeat and the page do.
+  const db = admin.supabaseAdmin();
+  const evidence = await Promise.all([
+    db.from("lane_heartbeats").upsert({ lane: "sync", last_ran_at: new Date().toISOString() }, { onConflict: "lane" }),
+    db.from("lane_heartbeats").select("lane,last_ran_at"),
+    db.from("alert_state").upsert({ key: "sync_failures", last_sent_at: new Date().toISOString() }, { onConflict: "key" }),
+    db.from("alert_state").select("last_sent_at").eq("key", "sync_failures").maybeSingle(),
+  ]);
   const out = {
     read: await run(() => stub.stubFreeBusy("agent@trypennie.com")),
     create: await run(() => stub.stubCreateEvent({ summary: "s", start: "a", end: "b" }, "client-1")),
@@ -242,7 +308,9 @@ const probe = `
     salesforceSlept: slept,
     webhook: emit.loadtestDeliveryResult("delivery-1", 1),
     dbInjected: reads.filter((r) => String(r.error?.message ?? "").includes("loadtest fault")).length,
-    dbReached: reachedDb,
+    dbReached: readsReached,
+    evidenceErrors: evidence.filter((r) => r.error).length,
+    evidenceReached: reachedDb - readsReached,
   };
   console.log(JSON.stringify(out));
 `;
@@ -338,6 +406,9 @@ const [prodShape, defaults, everything, typo] = await Promise.all([
     20,
     "and every other read was a latency fault that went on to the database",
   );
+  // With the database faulted at 100 percent, the judge's evidence still lands.
+  eq(p.evidenceErrors, 0, "no heartbeat or alert_state call through the real admin client is faulted");
+  eq(p.evidenceReached, 4, "every one of them reaching the database");
 }
 {
   // A typo faults nothing at all, which the fault leg's driver refuses on.
