@@ -89,9 +89,11 @@ for one:
 - every line starts `[PARTIAL]`, and the run exits **16**, never 0, 11 or 12;
 - it says how much of the way to the first full window it is, and how long the
   oldest and newest applications in it have had;
-- it prints the rates so far, each with an EARLY 95% interval written as
-  "biased low, not a result" (#3073, Dan 2026-10-03), or "too few to estimate an
-  early interval" when a side is under the readable minimum;
+- it prints the rates so far, each with an EARLY 95% interval (#3073, Dan
+  2026-10-03): "biased low, not a result" on the booking rate and held per
+  application, which can still grow for applications already counted, and "early,
+  not a result" on a show rate, which leaves calls still ahead out of both sides.
+  A side under the readable minimum says "too few to estimate an early interval";
 - it prints no verdict (never "Slate higher", "Slate lower" or "cannot be told
   apart"), no days estimate and no proposed readout date;
 - the booking rate is biased low on both sides, since every application has had
