@@ -33,6 +33,7 @@
  *   exposed    - measured, and something else is. This pages.
  */
 
+import { logAlertSendFailure, logResolveFailure } from "../notify/send-failure.ts";
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 
 /** alert_state key for the condition. */
@@ -234,7 +235,7 @@ export async function runDefinerGrantsCheck(deps: {
   if (health.status === "exposed") {
     await deps
       .notify(DEFINER_GRANTS_KEY, deps.cooldownMs, formatDefinerGrantsExposedAlert(health))
-      .catch(() => {});
+      .catch(logAlertSendFailure(DEFINER_GRANTS_KEY));
     deps.log?.(
       `monitor definer-grants: EXPOSED scanned=${health.scanned} exposed=${health.exposed.length} ` +
         `names=${health.exposed.map((f) => f.name).join("|")} unused_exemptions=${health.unusedExemptions.length}`,
@@ -244,7 +245,7 @@ export async function runDefinerGrantsCheck(deps: {
 
   // The all clear hangs off this MEASURED healthy result, never off "we did not alert this
   // tick" (#1134, #1152): the unmeasured branch above returns before reaching it.
-  await deps.resolve(DEFINER_GRANTS_KEY, formatDefinerGrantsClearedAlert(health)).catch(() => {});
+  await deps.resolve(DEFINER_GRANTS_KEY, formatDefinerGrantsClearedAlert(health)).catch(logResolveFailure(DEFINER_GRANTS_KEY));
   deps.log?.(
     `monitor definer-grants: healthy scanned=${health.scanned} exempted=${health.exempted.join("|") || "none"} ` +
       `unused_exemptions=${health.unusedExemptions.join("|") || "none"}`,

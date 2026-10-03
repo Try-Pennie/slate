@@ -23,6 +23,7 @@ import {
   bookingApiWriteWithinLimit,
   bookingApiReadWithinLimit,
   bookingApiIpWithinLimit,
+  bearerFailureWithinLimit,
 } from "@/lib/rate-limit";
 import { BOOKING_API_IP_LIMITER } from "@/lib/rate-limit-core";
 import {
@@ -163,6 +164,18 @@ export async function authorizeBookingApi<C extends BookingApiCaller = FullApiCa
 ): Promise<AuthOutcome<C>> {
   const auth = authenticateBearer(req.headers.get("authorization"), configuredBookingApiKeys(callers));
   if (!auth.ok) {
+    // #3142: past a minute's worth of refused credentials from one address, answer 429 and
+    // skip the work a refusal otherwise buys (the retired key watch, the outcome record).
+    // Asked only after the credential failed, so a caller with a good key spends nothing.
+    if (auth.status === 401 && !(await bearerFailureWithinLimit(clientIp(req.headers)))) {
+      return refuse(
+        "throttled_credential",
+        "Too many failed attempts. Try again in a minute.",
+        429,
+        readPath,
+        req.headers,
+      );
+    }
     // #2879: a present token that is not one of ours may be a RETIRED key, which the
     // caller sightings cannot see because they record only successes. The watcher
     // defers everything past the response, so the refusal below is unchanged.

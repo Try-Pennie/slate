@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { MonitorAlertConfig } from "@/lib/db/types";
+import { log } from "@/lib/log";
 
 /**
  * App-wide default Slack destinations (#571). The store's channels override the
@@ -11,7 +12,8 @@ import type { MonitorAlertConfig } from "@/lib/db/types";
  *
  * The resolved config is cached in-process briefly so this doesn't add a DB read
  * to every Slack post; a fresh isolate simply reads once. NEVER throws: any DB
- * error falls back to env so notifications can't be broken by their own config.
+ * error falls back to env so notifications can't be broken by their own config,
+ * and that fallback is logged and never cached (#3121).
  */
 
 const nonEmpty = (s: string | null | undefined): string => (s && s.trim() ? s : "");
@@ -31,23 +33,32 @@ let cache: { at: number; value: { alerts: string; info: string } } | null = null
 async function resolvedChannels(nowMs: number): Promise<{ alerts: string; info: string }> {
   if (cache && nowMs - cache.at < CACHE_TTL_MS) return cache.value;
   let config: Pick<MonitorAlertConfig, "alerts_channel" | "info_channel"> | null = null;
+  let readable = true;
   try {
     const { data, error } = await supabaseAdmin()
       .from("monitor_alert_config")
       .select("alerts_channel, info_channel")
       .eq("id", 1)
       .maybeSingle();
-    if (!error && data) {
+    if (error) {
+      readable = false;
+      log.warn("alert-channels", { msg: "channel config unreadable, posting to the env channels" }, error);
+    } else if (data) {
       config = data as Pick<MonitorAlertConfig, "alerts_channel" | "info_channel">;
     }
-  } catch {
+  } catch (err) {
     // Fall through to env (config must never break notifications).
+    readable = false;
+    log.warn("alert-channels", { msg: "channel config read threw, posting to the env channels" }, err);
   }
   const value = resolveChannels(config, {
     alertsEnv: process.env.SLACK_ALERTS_CHANNEL ?? "",
     infoEnv: process.env.SLACK_INFO_CHANNEL ?? "",
   });
-  cache = { at: nowMs, value };
+  // #3121: only a READ is cached. A fallback cached for a minute kept a store-set
+  // channel replaced by the env one long after the store was readable again, and
+  // with no line saying so. An empty store (no row) is a real answer and caches.
+  if (readable) cache = { at: nowMs, value };
   return value;
 }
 
@@ -61,7 +72,8 @@ export async function defaultInfoChannel(): Promise<string> {
   return (await resolvedChannels(Date.now())).info;
 }
 
-/** Test-only: clear the in-process cache so env changes take effect immediately. */
-export function __clearChannelCache(): void {
+/** Clear the in-process cache so a change takes effect immediately. Called by the
+ *  alert settings save action, so a newly saved channel is used on the next post. */
+export function clearChannelCache(): void {
   cache = null;
 }

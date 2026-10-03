@@ -30,6 +30,7 @@
  *
  * Pure (no `@/` imports) so the node suite drives it directly.
  */
+import { logAlertSendFailure, logResolveFailure } from "../notify/send-failure.ts";
 import { DateTime } from "luxon";
 import {
   coverageForDate,
@@ -757,11 +758,11 @@ export async function runRosterCoverageCheck(deps: {
       // "already started" and "already over" are measured from one moment.
       const sentAt = { nowMs: coverage.nowMs, zone: coverage.zone };
       const liveText = formatRosterCoverageLiveAlert(live, sentAt, checkedOpenDates(coverage, "live"));
-      await deps.notify(ROSTER_COVERAGE_KEY, deps.cooldownMs.live, liveText).catch(() => {});
+      await deps.notify(ROSTER_COVERAGE_KEY, deps.cooldownMs.live, liveText).catch(logAlertSendFailure(ROSTER_COVERAGE_KEY));
     } else {
       await deps
         .resolve(ROSTER_COVERAGE_KEY, formatRosterCoverageLiveRecovery(upcoming.length > 0))
-        .catch(() => {});
+        .catch(logResolveFailure(ROSTER_COVERAGE_KEY));
     }
     if (upcoming.length > 0) {
       await deps
@@ -770,11 +771,11 @@ export async function runRosterCoverageCheck(deps: {
           deps.cooldownMs.upcoming,
           formatRosterCoverageUpcomingAlert(upcoming, checkedOpenDates(coverage, "upcoming")),
         )
-        .catch(() => {});
+        .catch(logAlertSendFailure(ROSTER_COVERAGE_UPCOMING_KEY));
     } else {
       await deps
         .resolve(ROSTER_COVERAGE_UPCOMING_KEY, formatRosterCoverageUpcomingRecovery(live.length > 0))
-        .catch(() => {});
+        .catch(logResolveFailure(ROSTER_COVERAGE_UPCOMING_KEY));
     }
   }
   const outcome = !deps.armed ? "; disarmed, not sent" : quietDay ? "; Sunday, not sent" : "; sent";

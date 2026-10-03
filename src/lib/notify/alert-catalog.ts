@@ -143,6 +143,28 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "never re-attempted. It ends when a run comes back with a result (#2544).",
   },
   {
+    key: "reservation_drain_failing",
+    kind: "condition",
+    why:
+      "The booking crash recovery drain on the outbox lane is throwing, so a lead booking " +
+      "that crashed part way is not resumed. It ends when a run comes back with a result, " +
+      "which the lane measures every minute (#3077).",
+  },
+  {
+    key: "reschedule_pin_sweep_failing",
+    kind: "condition",
+    why:
+      "The abandoned reschedule cleanup on the outbox lane is throwing, so a lost reschedule " +
+      "is neither cleaned up nor reported. It ends when a run comes back with a result (#3077).",
+  },
+  {
+    key: "reassign_intent_sweep_failing",
+    kind: "condition",
+    why:
+      "The abandoned reassign cleanup on the outbox lane is throwing, so a lost reassign is " +
+      "neither cleaned up nor reported. It ends when a run comes back with a result (#3077).",
+  },
+  {
     key: "reconcile_cancelled_saturated",
     kind: "condition",
     why: "The cancelled-booking reconcile sweep is saturated; a tick under the cap ends it.",
@@ -658,6 +680,16 @@ export const ALERT_CATALOG: AlertEntry[] = [
   // would the all-clear SAY? "The thing that already happened has stopped
   // happening" is not information, and a notice that says it trains people to
   // skim the channel.
+  {
+    key: "cron_lane_failed:*",
+    kind: "incident",
+    suffix: "bounded",
+    why:
+      "One scheduled run of a cron lane threw or answered non-ok. The run is over and the " +
+      "next tick is its own attempt; announcing that it ended would cost a read on every " +
+      "healthy tick of every lane, and a lane that stays down is reported by its heartbeat " +
+      "watchdog. The suffix is mapped onto the scheduled lanes, with anything else as other (#3133).",
+  },
   {
     key: "booking_reminder_failed",
     kind: "incident",

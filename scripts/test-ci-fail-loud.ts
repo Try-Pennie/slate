@@ -30,7 +30,7 @@ const codeOnly = (s: string) =>
 // The deploy job stays gated to main pushes (so a missing token can only mean a
 // real, must-not-be-silent failure).
 assert(
-  /if:\s*github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'/.test(ci),
+  /\n {2}deploy:\n(?:(?! {2}\S).*\n)*? {4}if:.*github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'/.test(ci),
   "deploy job runs only on a push to main",
 );
 

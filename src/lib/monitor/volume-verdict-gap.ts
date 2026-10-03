@@ -36,6 +36,7 @@
  *
  * No `@/` imports, so scripts/test-volume-verdict-gap.ts drives it node natively.
  */
+import { logAlertSendFailure } from "../notify/send-failure.ts";
 import { DateTime } from "luxon";
 import { windowOnDate } from "../booking/business-hours.ts";
 import { formatClockTime } from "../date/parse.ts";
@@ -150,7 +151,7 @@ export async function runVolumeVerdictGapCheck(deps: {
       VOLUME_VERDICT_GAP_COOLDOWN_MS,
       formatVolumeVerdictGapAlert(openMinutes, lastVerdictMs, deps.businessHours.zone),
     )
-    .catch(() => {});
+    .catch(logAlertSendFailure(VOLUME_VERDICT_GAP_KEY));
   return { status: "gap", openMinutes, lastVerdictMs };
 }
 

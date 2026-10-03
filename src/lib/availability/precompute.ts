@@ -10,7 +10,11 @@ import type { Attributes, Bucket, Criteria } from "@/lib/db/types";
 import type { PooledBucket } from "./pool-recompute";
 import type { InvalidationMarker } from "./precompute-cron";
 import { log } from "@/lib/log";
-import { writeSlotRow } from "@/lib/availability/slot-row-write";
+import {
+  writeSlotRow,
+  SlotRowRefused,
+  type SlotRowWriteOutcome,
+} from "@/lib/availability/slot-row-write";
 
 /**
  * IO for the precompute path (the `bucket_slots` table). The read orchestration
@@ -244,6 +248,26 @@ export async function writeBucketSlotsRow(
   val: BucketSlots,
   computedAtMs: number,
 ): Promise<string> {
+  // #3119: a refusal comes back as an answer, not a throw, so returning the stamp
+  // regardless told every caller the row was stored. It throws instead, so a writer
+  // that only awaits this cannot count a refused write as a refresh.
+  if ((await storeBucketSlotsRow(code, val, computedAtMs)) === "failed") {
+    throw new SlotRowRefused(code);
+  }
+  return new Date(computedAtMs).toISOString();
+}
+
+/**
+ * The same write, answering what it DID rather than the stamp (#3119). The pooled
+ * recompute needs the answer: a refused write comes back as `failed` rather than a
+ * throw, and dropping it counted the code as written, so the pooled write warning
+ * could never fire for the commonest way a write fails.
+ */
+export async function storeBucketSlotsRow(
+  code: string,
+  val: BucketSlots,
+  computedAtMs: number,
+): Promise<SlotRowWriteOutcome> {
   const outcome = await writeSlotRow(supabaseAdmin(), code, val as unknown, computedAtMs);
   if (outcome === "kept-newer") {
     // Worth a line: it means two computes for one bucket overlapped and the slower one
@@ -251,7 +275,7 @@ export async function writeBucketSlotsRow(
     // way to see the overlap from outside.
     log.info("precompute", { msg: "kept a fresher slot row", bucket: code });
   }
-  return new Date(computedAtMs).toISOString();
+  return outcome;
 }
 
 /**
@@ -259,6 +283,9 @@ export async function writeBucketSlotsRow(
  * refresh-on-change writers (booking / Google sync / OOO) and the cron backstop.
  * On compute failure we do NOT overwrite an existing good row with an empty one
  * — better to serve slightly-stale slots than a false "no times".
+ *
+ * A row the database REFUSES throws `SlotRowRefused` (#3119), so a caller never
+ * counts it as refreshed; the previous row stands, as on a compute failure.
  */
 export async function recomputeBucketSlots(
   code: string,

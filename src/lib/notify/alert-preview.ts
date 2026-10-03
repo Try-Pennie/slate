@@ -424,7 +424,12 @@ import {
   COMPLETION_SWEEP_FAILING_KEY,
   WEBHOOK_RETRY_SWEEP_FAILING_KEY,
   SWEEP_FAILURE_ALERT_AFTER_RUNS,
+  RESERVATION_DRAIN_FAILING_KEY,
+  RESCHEDULE_PIN_SWEEP_FAILING_KEY,
+  REASSIGN_INTENT_SWEEP_FAILING_KEY,
+  sweepFailureAfterRuns,
 } from "@/lib/monitor/sweep-failure";
+import { formatLaneFailureAlert } from "@/lib/monitor/lane-failure";
 import {
   bookingEventInsertAlert,
   busyBlockWriteThroughAlert,
@@ -2086,6 +2091,25 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "recovery",
     text: formatSweepFailureRecovery(WEBHOOK_RETRY_SWEEP_FAILING_KEY),
   },
+  // --- the same on the outbox lane's three secondary jobs (#3077) ---
+  ...[
+    RESERVATION_DRAIN_FAILING_KEY,
+    RESCHEDULE_PIN_SWEEP_FAILING_KEY,
+    REASSIGN_INTENT_SWEEP_FAILING_KEY,
+  ].flatMap((key) => [
+    {
+      key,
+      state: "throwing on consecutive runs",
+      channel: "alert" as const,
+      text: formatSweepFailureAlert(key, sweepFailureAfterRuns(key)),
+    },
+    {
+      key,
+      state: "running again",
+      channel: "recovery" as const,
+      text: formatSweepFailureRecovery(key),
+    },
+  ]),
   {
     key: "deletion_drain_saturated",
     state: "running at the cap",
@@ -3154,6 +3178,31 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
         coverDepth: 4,
       },
     ]),
+  },
+  // --- a lane that ran and failed on its tick (#3133) -------------------------
+  {
+    key: "cron_lane_failed:*",
+    state: "the lane threw",
+    channel: "alert",
+    text: formatLaneFailureAlert(
+      { lane: "outbox", status: null, reason: "Worker exceeded CPU time limit" },
+      "0f1e2d3c4b5a6978",
+    ),
+  },
+  {
+    key: "cron_lane_failed:*",
+    state: "the lane answered non-ok",
+    channel: "alert",
+    text: formatLaneFailureAlert(
+      { lane: "sync", status: 500, reason: "answered 500" },
+      "0f1e2d3c4b5a6978",
+    ),
+  },
+  {
+    key: "cron_lane_failed:*",
+    state: "no tick id reached the route",
+    channel: "alert",
+    text: formatLaneFailureAlert({ lane: "bulk_reassign", status: 503, reason: "answered 503" }, null),
   },
   // --- the cron dead-man's switch -------------------------------------------
   {

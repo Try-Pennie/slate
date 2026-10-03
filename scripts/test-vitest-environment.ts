@@ -16,6 +16,10 @@ const SRC = join(ROOT, "src");
 /** Plain *.test.ts files allowed to request jsdom, with the reason they need it. */
 const JSDOM_TS_EXCEPTIONS = new Map<string, string>([
   ["src/components/widget-embed.test.ts", "drives the real widget.js IIFE in a browser environment"],
+  [
+    "src/lib/supabase/pkce-flow.test.ts",
+    "the real Supabase browser client writes the PKCE verifier through document.cookie (#3112)",
+  ],
 ]);
 
 const DOCBLOCK = /@vitest-environment\s+jsdom/;

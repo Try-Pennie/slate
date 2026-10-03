@@ -23,6 +23,7 @@ const rateLimit = vi.hoisted(() => ({
   bookingApiWriteWithinLimit: vi.fn(async (_keyId: string) => true),
   bookingApiReadWithinLimit: vi.fn(async (_keyId: string) => true),
   bookingApiIpWithinLimit: vi.fn(async (_ip: string) => true),
+  bearerFailureWithinLimit: vi.fn(async (_ip: string) => true),
   clientIp: (headers: Headers) => headers.get("cf-connecting-ip")?.trim() ?? "unknown",
 }));
 const tally = vi.hoisted(() => ({ recordApiOutcome: vi.fn() }));
@@ -70,6 +71,25 @@ describe("authorizeBookingApi refusal reasons (#1429)", () => {
     rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
+    rateLimit.bearerFailureWithinLimit.mockResolvedValue(true);
+  });
+
+  it("#3142 answers 429 past the failed credential ceiling, and buys none of a refusal's work", async () => {
+    rateLimit.bearerFailureWithinLimit.mockResolvedValue(false);
+    const out = await authorizeBookingApi(req("Bearer stalekey"));
+    expect(out.ok).toBe(false);
+    if (out.ok) return;
+    expect(out.reason).toBe("throttled_credential");
+    expect(out.response.status).toBe(429);
+    expect(rateLimit.bearerFailureWithinLimit).toHaveBeenCalledWith("203.0.113.7");
+    expect(retired.watchRetiredKey).not.toHaveBeenCalled();
+    expect(recordedOutcomes()).toEqual([]);
+  });
+
+  it("#3142 never asks the failed credential ceiling about a good key", async () => {
+    const out = await authorizeBookingApi(req("Bearer goodsecret"));
+    expect(out.ok).toBe(true);
+    expect(rateLimit.bearerFailureWithinLimit).not.toHaveBeenCalled();
   });
 
   it("names a rotated key as bad_credential and counts it, so a locked out integration moves the failure share", async () => {

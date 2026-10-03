@@ -79,7 +79,7 @@ assert(
 // Restricting push to main must not break the deploy, which is gated on a push to
 // main. If push stopped firing on main, merges would silently stop deploying.
 assert(
-  /if:\s*github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'/.test(ci),
+  /^ {4}if:.*github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'/m.test(jobBlock("deploy")),
   "the deploy job still triggers on a push to main (merges keep deploying)",
 );
 
@@ -333,6 +333,20 @@ assert(
   const deployNeeds = jobBlock("deploy").match(/^\s*needs:\s*\[([^\]]*)\]/m)?.[1] ?? "";
   assert(deployNeeds.trim().length > 0, "#3087: the deploy job's needs are readable");
   assert(!/security-scan/.test(deployNeeds), "#3087: deploy does NOT need either scan directly");
+  // A job whose `if:` carries no status function is given an implicit success(),
+  // and GitHub skips it when ANY job above it in the chain was skipped, not only
+  // its direct needs. security-scan is skipped on every push to main by design,
+  // and it sits under `ci`, so a bare `if:` here skipped every deploy from the day
+  // #3087 shipped, with ci green and no alert (a skipped deploy is not a failed
+  // one). So the deploy must judge each of its needs by result itself.
+  const deployIf = ifOf("deploy");
+  assert(/!cancelled\(\)/.test(deployIf), `deploy's if: carries an explicit status function, so a skipped leg above ci cannot skip it (got if: ${deployIf || "none"})`);
+  for (const need of [...deployNeeds.matchAll(/[\w-]+/g)].map((m) => m[0])) {
+    assert(
+      new RegExp(`needs\\.${need}\\.result == 'success'`).test(deployIf),
+      `deploy's if: requires needs.${need}.result == 'success' explicitly (got if: ${deployIf || "none"})`,
+    );
+  }
   for (const job of ["security-scan", "security-scan-main"]) {
     const uses = jobSteps(jobBlock(job)).filter((st) => /^ {6}- uses: \.\/\.github\/actions\/security-scan\s*$/m.test(st));
     eq(uses.length, 1, `#3087: \`${job}\` runs the one shared scan action`);

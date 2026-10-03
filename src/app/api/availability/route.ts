@@ -1,4 +1,5 @@
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import {
   bookerUnstaffedAlert,
   bookingWindowExtendedAlert,
@@ -108,6 +109,8 @@ async function handle(req: NextRequest) {
   // refused pass answers 403 with its own code, never the 404: the public bucket's
   // existence is no secret, and the Booker has to tell an expired pass apart.
   const keys = configuredBookingApiKeys(CANARY_CALLERS);
+  // credential-throttle-ok: a failed key here refuses nothing, it only leaves the test
+  // buckets hidden, and the availability ceiling above already counts every request (#3142).
   let authorizedForTest = authenticateBearer(req.headers.get("authorization"), keys).ok;
   if (!authorizedForTest && isPublicTestBucket(code)) {
     const refused = refuseUnlessTestPass(req.headers, code, "availability");
@@ -164,7 +167,7 @@ async function handle(req: NextRequest) {
       `booker_unstaffed:${result.bucket.code}`,
       BOOKER_UNSTAFFED_COOLDOWN_MS,
       bookerUnstaffedAlert(result.bucket.code),
-    ).catch(() => {});
+    ).catch(logAlertSendFailure(`booker_unstaffed:${result.bucket.code}`));
   }
 
   // #2841: every tier this lead's cascade may use was full for the whole three
@@ -178,7 +181,7 @@ async function handle(req: NextRequest) {
       `booking_window_extended:${result.routing.requested_code}`,
       BOOKING_WINDOW_EXTENDED_COOLDOWN_MS,
       bookingWindowExtendedAlert(result.routing.requested_code),
-    ).catch(() => {});
+    ).catch(logAlertSendFailure(`booking_window_extended:${result.routing.requested_code}`));
   }
 
   // Rule #259: leads must never see routing internals, even in the network

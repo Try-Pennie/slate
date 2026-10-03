@@ -46,6 +46,7 @@
  * Retires with cal.com (#65, #2875): marked retired, nothing is read and every
  * outstanding page ends saying why.
  */
+import { logAlertSendFailure, logResolveFailure } from "../notify/send-failure.ts";
 import { formatSlotDay, formatSlotTime } from "@/lib/booking/slot-label";
 import { partnerKeysFrom } from "@/lib/booking/partner-keys";
 import type { CalcomBookingRead, CalcomUpcomingBooking, CalcomUpcomingRead } from "@/lib/calcom/upcoming-bookings";
@@ -308,7 +309,7 @@ export async function runCrossSystemBookingsCheck(deps: CrossSystemBookingsDeps)
       const slateId = parseCrossSystemBookingMember(member)?.slateId ?? member;
       const sent = await deps
         .resolve(`${CROSS_SYSTEM_BOOKING_KEY}:${member}`, formatCrossSystemBookingRetired(slateId))
-        .catch(() => false);
+        .catch(logResolveFailure(`${CROSS_SYSTEM_BOOKING_KEY}:${member}`));
       if (sent) cleared++;
     }
     return { status: "retired", cleared };
@@ -355,7 +356,7 @@ export async function runCrossSystemBookingsCheck(deps: CrossSystemBookingsDeps)
         deps.cooldownMs,
         formatCrossSystemBookingAlert(p, deps.bookingUrl(p.slate.id)),
       )
-      .catch(() => {});
+      .catch(logAlertSendFailure(crossSystemBookingKey(p.slate.id, p.calcom.uid)));
   }
 
   // Each outstanding page is cleared only off a MEASURED fact about its own pair,
@@ -397,7 +398,7 @@ export async function runCrossSystemBookingsCheck(deps: CrossSystemBookingsDeps)
           `${CROSS_SYSTEM_BOOKING_KEY}:${member}`,
           formatCrossSystemBookingRecovery(parsed.slateId, parsed.uid, why, deps.bookingUrl(parsed.slateId)),
         )
-        .catch(() => false);
+        .catch(logResolveFailure(`${CROSS_SYSTEM_BOOKING_KEY}:${member}`));
       if (sent) cleared++;
     }
   }

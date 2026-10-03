@@ -6,6 +6,8 @@ import { AgentLinkUnavailable } from "@/components/AgentLinkUnavailable";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { landingAttendee } from "@/lib/booking/service";
+import { landingLookupId } from "@/lib/booking/landing-identity-gate";
+import { headers } from "next/headers";
 import { agentLinkPoolCode, resolveAgentLink } from "@/lib/agent-link/store";
 import { agentLinkPoolHref } from "@/lib/agent-link/link";
 import { DEFAULT_BRAND_COLOR } from "@/lib/brand-label";
@@ -90,8 +92,13 @@ export default async function AgentLinkPage({
   const isTest = link.bucket.is_test;
   // #2208: the same resolver the routed pages use, so an id on the link fills the
   // details Slate already holds and the link's own values always win.
+  //
+  // #3106: throttled per address like the routed pages, since this link is shared and a
+  // lead id is not a secret. Over the ceiling the id still reaches the confirm; only the
+  // prefill is left out.
+  const lookupId = await landingLookupId(externalId ?? "", headers);
   const attendee = await landingAttendee(
-    { salesforceId: externalId },
+    { salesforceId: lookupId },
     { name: first(sp, "name"), email: first(sp, "email"), phone },
     { isTest },
   );

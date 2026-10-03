@@ -96,6 +96,7 @@ import {
 } from "@/lib/booking/confirm-profile";
 import { isLoadtest } from "@/lib/loadtest-guard";
 import { sendThrottledAlert } from "../notify/dispatch.ts";
+import { logAlertSendFailure } from "../notify/send-failure.ts";
 import {
   raceBoundHitPage,
   raceOutcomeForConfirm,
@@ -3412,7 +3413,9 @@ async function completeReservation(
     });
     if (tierAlert) {
       // alert-key: tier_fallback_deep:*
-      await sendThrottledAlert(tierAlert.key, tierAlert.cooldownMs, tierAlert.text).catch(() => {});
+      await sendThrottledAlert(tierAlert.key, tierAlert.cooldownMs, tierAlert.text).catch(
+        logAlertSendFailure(tierAlert.key),
+      );
     }
   }
 

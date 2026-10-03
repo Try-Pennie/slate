@@ -133,7 +133,7 @@ import {
   isAlertDue,
 } from "./dispatch";
 import { slackInfoChannel } from "@/lib/env";
-import { __clearChannelCache } from "@/lib/notify/channels";
+import { clearChannelCache } from "@/lib/notify/channels";
 
 const ENV = process.env;
 beforeEach(() => {
@@ -146,7 +146,7 @@ beforeEach(() => {
   process.env = { ...ENV };
   // #571: the info channel now comes from a store-aware, briefly-cached resolver;
   // clear it so each test's env is honored (the mocked config table is empty).
-  __clearChannelCache();
+  clearChannelCache();
 });
 afterEach(() => {
   process.env = ENV;
@@ -645,7 +645,7 @@ describe("off the Workers runtime, a write dispatcher does nothing (#1537)", () 
     isWorkersRuntime.mockReturnValue(false);
     process.env.SLACK_BOT_TOKEN = "xoxb-test";
     process.env.SLACK_ALERTS_CHANNEL = "#alerts";
-    __clearChannelCache();
+    clearChannelCache();
   });
 
   it("does not post a page, and does not touch the cooldown", async () => {
@@ -659,7 +659,7 @@ describe("off the Workers runtime, a write dispatcher does nothing (#1537)", () 
 
   it("does not post an info notice either", async () => {
     process.env.SLACK_INFO_CHANNEL = "#info";
-    __clearChannelCache();
+    clearChannelCache();
     await sendThrottledInfo("some_key", 60_000, "a whisper from a laptop");
 
     expect(slack.postSlack).not.toHaveBeenCalled();

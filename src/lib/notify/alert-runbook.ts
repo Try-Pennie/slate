@@ -44,6 +44,10 @@ export type AlertFamily = (typeof ALERT_FAMILIES)[number];
 const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // A lane, a schedule, or a detector has stopped producing.
   cron_lane_stale: "a-lane-or-schedule-has-gone-quiet",
+  // #3133. The lane ran and FAILED, which is the case the stale watchdog cannot see
+  // when the lane stamped its heartbeat first. Same question: which scheduled work
+  // is not happening.
+  cron_lane_failed: "a-lane-or-schedule-has-gone-quiet",
   // #2382. The same family one level in: the lane is running, and one CHECK on it
   // has stopped producing. The remedy is the family's, since what the reader has to
   // establish is the same thing, which of the scheduled work is not happening.
@@ -66,6 +70,10 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // cap, and neither exists when the sweep never ran.
   completion_sweep_failing: "a-lane-or-schedule-has-gone-quiet",
   webhook_retry_sweep_failing: "a-lane-or-schedule-has-gone-quiet",
+  // #3077. The same family on the outbox lane.
+  reservation_drain_failing: "a-lane-or-schedule-has-gone-quiet",
+  reschedule_pin_sweep_failing: "a-lane-or-schedule-has-gone-quiet",
+  reassign_intent_sweep_failing: "a-lane-or-schedule-has-gone-quiet",
   detector_parked: "a-lane-or-schedule-has-gone-quiet",
   detector_unpark: "a-lane-or-schedule-has-gone-quiet",
   migration_version_lag: "a-lane-or-schedule-has-gone-quiet",

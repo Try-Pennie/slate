@@ -1,6 +1,7 @@
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
+import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import { log } from "@/lib/log";
 
 /**
@@ -243,7 +244,7 @@ export async function runInactiveAgentBookingsCheck(deps: {
       INACTIVE_AGENT_BOOKINGS_KEY,
       deps.cooldownMs,
       formatInactiveAgentBookingsAlert(holders),
-    ).catch(() => {});
+    ).catch(logAlertSendFailure(INACTIVE_AGENT_BOOKINGS_KEY));
   }
   deps.log?.({ status: "holding", agents: holders.length, bookings, sustained });
   return { status: "holding", agents: holders.length, bookings };

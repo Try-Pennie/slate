@@ -4,6 +4,7 @@
  * two cannot drift. The per agent refresh uses `refreshOnePhoto` below, which
  * takes the same lock and never touches the daily alerts or the verdict.
  */
+import { logResolveFailure } from "../notify/send-failure.ts";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { log } from "@/lib/log";
 import { directoryAdminSubject } from "@/lib/env";
@@ -158,12 +159,12 @@ async function report(outcome: RefreshOutcome): Promise<void> {
     // its all clear, and never a verdict.
     await page("advisor_photos_unread", photosDeadlineAlert(c.attempted, outcome.notReached));
   } else if (outcome.verdict) {
-    await resolveAlert("advisor_photos_unread", photosUnreadRecovery()).catch(() => false);
+    await resolveAlert("advisor_photos_unread", photosUnreadRecovery()).catch(logResolveFailure("advisor_photos_unread"));
   }
   if (needsAttention(outcome.plan)) {
     await page("advisor_photos_held", photosHeldAlert(outcome.plan));
   } else if (outcome.verdict) {
-    await resolveAlert("advisor_photos_held", photosHeldRecovery()).catch(() => false);
+    await resolveAlert("advisor_photos_held", photosHeldRecovery()).catch(logResolveFailure("advisor_photos_held"));
   }
   await recordDetectorVerdict(ADVISOR_PHOTOS_VERDICT_LANE, outcome.verdict);
 }

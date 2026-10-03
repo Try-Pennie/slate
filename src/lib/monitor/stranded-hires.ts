@@ -36,6 +36,7 @@
  * COST. One read of a few non bookable Sales rows per monitor tick, and two more
  * only when there is a candidate, which on an ordinary tick there is not.
  */
+import { logAlertSendFailure, logResolveFailure } from "../notify/send-failure.ts";
 import { agentsAwaitingActivation } from "@/lib/monitor/awaiting-activation";
 import { onSalesWithNoRecordedHold } from "@/lib/salesforce/onboarding";
 import { carriesRedistributeTag, isMarkedRedistribute } from "@/lib/twilio/roster-plan";
@@ -182,9 +183,9 @@ export async function runStrandedHiresCheck(deps: StrandedHiresDeps): Promise<St
   }
 
   if (agents.length) {
-    await deps.notify(STRANDED_HIRES_KEY, deps.cooldownMs, formatStrandedHiresAlert(agents)).catch(() => {});
+    await deps.notify(STRANDED_HIRES_KEY, deps.cooldownMs, formatStrandedHiresAlert(agents)).catch(logAlertSendFailure(STRANDED_HIRES_KEY));
     return { status: "stranded", agents };
   }
-  await deps.resolve(STRANDED_HIRES_KEY, formatStrandedHiresRecovery()).catch(() => {});
+  await deps.resolve(STRANDED_HIRES_KEY, formatStrandedHiresRecovery()).catch(logResolveFailure(STRANDED_HIRES_KEY));
   return { status: "clear", measured };
 }

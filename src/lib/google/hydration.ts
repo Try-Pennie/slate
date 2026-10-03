@@ -12,6 +12,7 @@
  * Pure, and free of Cloudflare and Supabase imports, so every branch is driven offline by
  * scripts/test-calendar-hydration.ts.
  */
+import { logAlertSendFailure, logResolveFailure } from "../notify/send-failure.ts";
 import {
   BOOTSTRAP_LOOKBACK_MS,
   BUSY_WINDOW_AHEAD_DAYS,
@@ -275,7 +276,7 @@ export async function runHydrationTickCheck(deps: {
       // swallow-ok: a failed alert must not fail the lane, or a Slack outage would stop the
       // refresh itself. The streak is already recorded, so the condition is still true and
       // the next tick re-attempts; nothing is lost but this one send.
-      await deps.notify(HYDRATION_FAILING_KEY, deps.cooldownMs, text).catch(() => {});
+      await deps.notify(HYDRATION_FAILING_KEY, deps.cooldownMs, text).catch(logAlertSendFailure(HYDRATION_FAILING_KEY));
     }
     return verdict;
   }
@@ -287,7 +288,7 @@ export async function runHydrationTickCheck(deps: {
     await deps.clearStreak().catch(() => {});
     // swallow-ok: a failed all-clear leaves the condition showing as open, which is the safe
     // direction, and the next healthy tick re-sends it.
-    await deps.resolve(HYDRATION_FAILING_KEY, formatHydrationRecovery()).catch(() => {});
+    await deps.resolve(HYDRATION_FAILING_KEY, formatHydrationRecovery()).catch(logResolveFailure(HYDRATION_FAILING_KEY));
     return verdict;
   }
 

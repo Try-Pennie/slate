@@ -28,6 +28,7 @@
  * time this module ran anywhere but production.
  */
 
+import { logAlertSendFailure, logResolveFailure } from "../notify/send-failure.ts";
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 
 /** alert_state key for the condition. One key: the causes differ, the state does not. */
@@ -334,7 +335,7 @@ export async function runEdgeLimiterCheck(deps: {
   if (health.status === "unusable") {
     await deps
       .notify(EDGE_LIMITER_KEY, deps.cooldownMs, formatEdgeLimiterUnusableAlert(health))
-      .catch(() => {});
+      .catch(logAlertSendFailure(EDGE_LIMITER_KEY));
     deps.log?.(
       `monitor edge-limiter: UNUSABLE runtime=${health.runtime ?? "unknown"} ` +
         `missing=${health.missing.length} contextUnreadable=${health.contextUnreadable} ` +
@@ -344,7 +345,7 @@ export async function runEdgeLimiterCheck(deps: {
     return health;
   }
 
-  await deps.resolve(EDGE_LIMITER_KEY, formatEdgeLimiterRecovery()).catch(() => {});
+  await deps.resolve(EDGE_LIMITER_KEY, formatEdgeLimiterRecovery()).catch(logResolveFailure(EDGE_LIMITER_KEY));
   // The runtime marker is logged on the HEALTHY path too, deliberately. It is the only
   // place the assumption behind the hot path's gate can be read back off production.
   deps.log?.(

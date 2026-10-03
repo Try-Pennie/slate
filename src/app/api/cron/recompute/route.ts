@@ -5,6 +5,7 @@ import { acquireLock, releaseLock } from "@/lib/locks";
 import { RECOMPUTE_LOCK_TTL_MS } from "@/lib/google/sync-coalesce";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { sendThrottledAlert, resolveRecovered } from "@/lib/notify/dispatch";
+import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import { recomputePoolSlotsForToday } from "@/lib/availability/slot-cache";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { eligibleAgentIdsCached } from "@/lib/availability/eligible-cache";
@@ -96,7 +97,7 @@ async function judgeHeadroom(
         headroom.utilizationPct,
         RECOMPUTE_BEHIND_CYCLES,
       ),
-    ).catch(() => {});
+    ).catch(logAlertSendFailure("recompute_headroom"));
   }
   return { recovered: verdict.recovered };
 }
@@ -246,7 +247,9 @@ export async function GET(req: NextRequest) {
               INVALIDATION_UNREADABLE_TOLERANCE,
             )
           : bucketSlotsStaleAlert(stale.length, STALE_ALARM_MS / 60_000, stale.slice(0, 5));
-      await sendThrottledAlert("bucket_slots_stale", STALE_ALERT_COOLDOWN_MS, text).catch(() => {});
+      await sendThrottledAlert("bucket_slots_stale", STALE_ALERT_COOLDOWN_MS, text).catch(
+        logAlertSendFailure("bucket_slots_stale"),
+      );
     }
 
     // #1151: both of this lane's alerts describe CONDITIONS that end, so say when

@@ -35,6 +35,9 @@ function deps(over: Partial<ReadDeps>): ReadDeps {
     readRow: async () => null,
     compute: async () => null,
     writeRow: async () => "2026-06-22T12:00:00.000Z",
+    writeFailed: () => {
+      throw new Error("no write fails in this suite");
+    },
     businessHours: async () => NINE_TO_FIVE,
     ...over,
   };

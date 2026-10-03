@@ -76,11 +76,13 @@ vi.mock("@/lib/booking/reason-options", () => ({
 import { POST } from "./route";
 
 function req(body: unknown): Parameters<typeof POST>[0] {
-  return {
-    json: async () => body,
-    // The route throttles per address (#1046), so the fake carries one.
-    headers: new Headers({ "cf-connecting-ip": "203.0.113.9" }),
-  } as unknown as Parameters<typeof POST>[0];
+  // A real Request: the route reads its body through the capped reader (#3135),
+  // which reads the stream rather than calling json().
+  return new Request("https://slate.test/api/bookings/tok1", {
+    method: "POST",
+    headers: { "cf-connecting-ip": "203.0.113.9" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  }) as unknown as Parameters<typeof POST>[0];
 }
 const BODY = { start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" };
 const params = (token: string) => ({ params: Promise.resolve({ token }) });

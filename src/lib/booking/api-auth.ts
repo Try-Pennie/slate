@@ -120,6 +120,8 @@ export const AUTH_REFUSAL_REASONS = [
   "throttled_key",
   /** 429: the coarse per-IP backstop, so one host cannot spend the whole budget. */
   "throttled_ip",
+  /** 429: too many refused credentials from one address (#3142), asked only after a refusal. */
+  "throttled_credential",
 ] as const;
 
 export type AuthRefusalReason = (typeof AUTH_REFUSAL_REASONS)[number];
@@ -180,6 +182,7 @@ export function authRefusalCounting(
       return { kind: "error", code: "API_NOT_CONFIGURED" };
     case "throttled_key":
     case "throttled_ip":
+    case "throttled_credential":
       return {
         kind: "none",
         why:

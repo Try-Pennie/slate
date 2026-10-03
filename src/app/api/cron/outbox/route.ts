@@ -9,6 +9,13 @@ import {
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { CRON_LOCK_TTL_MS } from "@/lib/google/sync-coalesce";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
+import {
+  reportSweepFailures,
+  RESERVATION_DRAIN_FAILING_KEY,
+  RESCHEDULE_PIN_SWEEP_FAILING_KEY,
+  REASSIGN_INTENT_SWEEP_FAILING_KEY,
+} from "@/lib/monitor/sweep-failure";
+import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -34,15 +41,37 @@ export async function GET(req: NextRequest) {
   try {
     const outbox = await drainBookingOutbox();
     // Same lane resumes crashed create reservations (#429 P4) + sweeps abandoned
-    // ones. Best-effort: a failure here must not break the outbox drain.
-    const reservations = await drainBookingReservations().catch(() => null);
+    // ones. Best-effort: a failure here must not break the outbox drain. Logged and
+    // fed to the failing streak below (#3077), because a bare catch here was the
+    // only place a drain throwing on every tick was recorded, and it kept nothing.
+    const reservations = await drainBookingReservations().catch((err) => {
+      log.error("outbox", { msg: "reservation drain failed" }, err);
+      return null;
+    });
     // GC abandoned reschedule lease-pins (#439): cleanup only, best-effort.
-    const reschedulePins = await sweepAbandonedReschedulePins().catch(() => null);
+    const reschedulePins = await sweepAbandonedReschedulePins().catch((err) => {
+      log.error("outbox", { msg: "reschedule pin sweep failed" }, err);
+      return null;
+    });
     // GC abandoned standalone-reassign create intents (#518): cleanup + fail-loud
     // alert on a genuinely-lost reassign, best-effort.
-    const reassignIntents = await sweepAbandonedReassignIntents().catch(() => null);
+    const reassignIntents = await sweepAbandonedReassignIntents().catch((err) => {
+      log.error("outbox", { msg: "reassign intent sweep failed" }, err);
+      return null;
+    });
     // Dead-man's switch (#420/#685): prove this lane ran this tick. Best-effort.
+    // Stamped even when a sweep failed: it proves the LANE executed, and the
+    // streak below is what speaks for a sweep that did not.
     await recordHeartbeat("outbox").catch(() => {});
+    // #3077: page when a sweep has thrown on several consecutive ticks, mirroring
+    // the complete lane (#2544). After the heartbeat and guarded, so a monitoring
+    // hiccup can neither skip the health stamp nor fail the lane it watches.
+    const sweepOutcomes = [
+      { key: RESERVATION_DRAIN_FAILING_KEY, ok: reservations !== null },
+      { key: RESCHEDULE_PIN_SWEEP_FAILING_KEY, ok: reschedulePins !== null },
+      { key: REASSIGN_INTENT_SWEEP_FAILING_KEY, ok: reassignIntents !== null },
+    ];
+    await reportSweepFailures(sweepOutcomes).catch(() => {});
     return NextResponse.json({ outbox, reservations, reschedulePins, reassignIntents });
   } finally {
     await releaseLock("cron_outbox", lock);

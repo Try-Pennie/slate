@@ -1,8 +1,10 @@
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { sendThrottledAlert, resolveRecovered } from "@/lib/notify/dispatch";
+import { logAlertSendFailure, logAllClearFailure } from "@/lib/notify/send-failure";
 
 /**
- * A sweep on the complete lane that is FAILING rather than falling behind (#2544).
+ * A sweep on the complete or outbox lane that is FAILING rather than falling
+ * behind (#2544, #3077).
  *
  * Its sibling `sweep-saturation.ts` answers a different question, and the two are
  * deliberately separate. Saturation is "the sweep ran and could not keep up",
@@ -29,6 +31,20 @@ export const COMPLETION_SWEEP_FAILING_KEY = "completion_sweep_failing";
 export const WEBHOOK_RETRY_SWEEP_FAILING_KEY = "webhook_retry_sweep_failing";
 
 /**
+ * The outbox lane's three secondary jobs (#3077), which had the same silence one
+ * lane over: each was `.catch(() => null)` with no log line, the heartbeat stamped
+ * anyway, and the reservation drain's own `reservation_drain_stuck` page can only
+ * fire from inside a drain that SUCCEEDED. A drain throwing on every tick left
+ * crashed lead bookings unresumed behind a lane answering 200.
+ */
+/** alert-key: reservation_drain_failing */
+export const RESERVATION_DRAIN_FAILING_KEY = "reservation_drain_failing";
+/** alert-key: reschedule_pin_sweep_failing */
+export const RESCHEDULE_PIN_SWEEP_FAILING_KEY = "reschedule_pin_sweep_failing";
+/** alert-key: reassign_intent_sweep_failing */
+export const REASSIGN_INTENT_SWEEP_FAILING_KEY = "reassign_intent_sweep_failing";
+
+/**
  * Consecutive failing runs before paging. The complete lane runs every 5 minutes,
  * so three runs is about fifteen minutes of the sweep not working, which clears a
  * transient blip and is well inside the `complete` lane's own 20 minute heartbeat
@@ -36,6 +52,13 @@ export const WEBHOOK_RETRY_SWEEP_FAILING_KEY = "webhook_retry_sweep_failing";
  * man's switch first, and this is for the case where the lane is perfectly alive.
  */
 export const SWEEP_FAILURE_ALERT_AFTER_RUNS = 3;
+
+/**
+ * The same judgement for a sweep on the EVERY MINUTE outbox lane. Three runs there
+ * would be three minutes, which is inside an ordinary Supabase blip; five is five
+ * minutes, still far inside the 30 minute window, so the runs land in one window.
+ */
+export const OUTBOX_SWEEP_FAILURE_ALERT_AFTER_RUNS = 5;
 
 /** Streak window. Comfortably over 3 runs times 5 minutes, with slack for a tick
  *  delayed by lock contention, so genuinely consecutive runs land in one window. */
@@ -52,8 +75,13 @@ const SWEEP_FAILURE_COOLDOWN_MS = 30 * 60_000;
  * two sweeps are recovered by different people looking at different things, and a
  * reader woken by this needs the consequence rather than the mechanism.
  */
-const SWEEP_SUBJECT: Record<string, { what: string; cost: string; back: string }> = {
+const SWEEP_SUBJECT: Record<
+  string,
+  { what: string; cost: string; back: string; tag: string; afterRuns: number }
+> = {
   [COMPLETION_SWEEP_FAILING_KEY]: {
+    tag: "complete",
+    afterRuns: SWEEP_FAILURE_ALERT_AFTER_RUNS,
     what: "The booking completion sweep on the complete cron lane",
     cost:
       "Finished bookings are not being marked complete, so they keep counting as upcoming " +
@@ -61,13 +89,47 @@ const SWEEP_SUBJECT: Record<string, { what: string; cost: string; back: string }
     back: "Finished bookings are being marked complete again, and they no longer count as upcoming",
   },
   [WEBHOOK_RETRY_SWEEP_FAILING_KEY]: {
+    tag: "complete",
+    afterRuns: SWEEP_FAILURE_ALERT_AFTER_RUNS,
     what: "The failed webhook delivery retry on the complete cron lane",
     cost:
       "A delivery that failed once is never re-attempted, so events sit in the queue until " +
       "they dead letter instead of reaching Regal.",
     back: "Failed webhook deliveries are being re-attempted again, so the queue that had stopped draining is moving",
   },
+  [RESERVATION_DRAIN_FAILING_KEY]: {
+    tag: "outbox",
+    afterRuns: OUTBOX_SWEEP_FAILURE_ALERT_AFTER_RUNS,
+    what: "The booking crash recovery drain on the outbox cron lane",
+    cost:
+      "A lead booking that crashed part way through is not being resumed, so that lead may " +
+      "have no calendar invite and Regal may never hear about the call.",
+    back: "Crashed lead bookings are being resumed again",
+  },
+  [RESCHEDULE_PIN_SWEEP_FAILING_KEY]: {
+    tag: "outbox",
+    afterRuns: OUTBOX_SWEEP_FAILURE_ALERT_AFTER_RUNS,
+    what: "The abandoned reschedule cleanup on the outbox cron lane",
+    cost:
+      "A reschedule that crashed part way through is neither cleaned up nor reported, so its " +
+      "booking can stay at the old time with nobody told.",
+    back: "Abandoned reschedules are being cleaned up and reported again",
+  },
+  [REASSIGN_INTENT_SWEEP_FAILING_KEY]: {
+    tag: "outbox",
+    afterRuns: OUTBOX_SWEEP_FAILURE_ALERT_AFTER_RUNS,
+    what: "The abandoned reassign cleanup on the outbox cron lane",
+    cost:
+      "A reassign that crashed part way through is neither cleaned up nor reported, so a lost " +
+      "contact owner change goes unnoticed.",
+    back: "Abandoned reassigns are being cleaned up and reported again",
+  },
 };
+
+/** How many consecutive failing runs page for this key, set by its lane's cadence. */
+export function sweepFailureAfterRuns(key: string): number {
+  return SWEEP_SUBJECT[key]!.afterRuns;
+}
 
 /**
  * Page body. `runs` is the threshold that was crossed, so the wording says "at
@@ -79,7 +141,7 @@ export function formatSweepFailureAlert(key: string, runs: number): string {
   return (
     `${subject.what} has thrown on at least ${runs} consecutive runs. ${subject.cost} ` +
     `The lane itself is still running, so its heartbeat is fresh and nothing else will say ` +
-    `this. Check the Worker logs for tag=complete.`
+    `this. Check the Worker logs for tag=${subject.tag}.`
   );
 }
 
@@ -100,7 +162,7 @@ export interface SweepRunOutcome {
  * Fold one tick's sweep outcomes into their streaks, and page when sustained.
  *
  * The recoveries are settled in ONE `alert_state` read for every sweep that came
- * back healthy, because this runs on the five minute invocation four cron lanes
+ * back healthy, because this runs on cron invocations several lanes
  * share and a resolve per key would be a read each for rows that almost never
  * exist.
  *
@@ -121,23 +183,30 @@ export async function reportSweepFailures(outcomes: SweepRunOutcome[]): Promise<
     // list, so a failed tick can never announce recovery (#1134, #1152).
     // alert-key: completion_sweep_failing
     // alert-key: webhook_retry_sweep_failing
-    await resolveRecovered(recovered).catch(() => []);
+    // alert-key: reservation_drain_failing
+    // alert-key: reschedule_pin_sweep_failing
+    // alert-key: reassign_intent_sweep_failing
+    await resolveRecovered(recovered).catch(logAllClearFailure(recovered.map((r) => r.key)));
   }
 
   for (const o of outcomes) {
     if (o.ok) continue;
+    const afterRuns = sweepFailureAfterRuns(o.key);
     const sustained = await recordConsecutiveStreak(
       o.key,
       SWEEP_FAILURE_WINDOW_SECONDS,
-      SWEEP_FAILURE_ALERT_AFTER_RUNS,
+      afterRuns,
     ).catch(() => false);
     if (!sustained) continue;
     // alert-key: completion_sweep_failing
     // alert-key: webhook_retry_sweep_failing
+    // alert-key: reservation_drain_failing
+    // alert-key: reschedule_pin_sweep_failing
+    // alert-key: reassign_intent_sweep_failing
     await sendThrottledAlert(
       o.key,
       SWEEP_FAILURE_COOLDOWN_MS,
-      formatSweepFailureAlert(o.key, SWEEP_FAILURE_ALERT_AFTER_RUNS),
-    ).catch(() => {});
+      formatSweepFailureAlert(o.key, afterRuns),
+    ).catch(logAlertSendFailure(o.key));
   }
 }
