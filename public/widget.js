@@ -7,7 +7,7 @@
  *
  *   Cal("init", "<namespace>", { origin });   // per-namespace origin
  *   Cal.ns["<ns>"]("ui", { ... });             // accepted (Slate styles itself)
- *   Cal.ns["<ns>"]("prerender", { ... });      // accepted, no-op (see below)
+ *   Cal.ns["<ns>"]("prerender", { ... });      // accepted, no-op (pre build is on intent, below)
  *   Cal("on", { action: "bookingSuccessful", callback });
  *   Cal.ns["<ns>"]("closeModal"); Cal("closeModal");  // hide the modal, as the close button does
  *   window.Cal.config.forwardQueryParams = true;
@@ -48,17 +48,30 @@
  * booked with, so a host looks a booking up with the id from the event's booking,
  * never with one it re-derives from its own page.
  *
- * The modal frame is built on the FIRST open and kept across close and reopen
+ * The modal frame is built by the FIRST open (or before it, on intent: see Pre
+ * build below) and kept across close and reopen
  * (#2678), the way cal.com keeps its modal: closing hides the overlay, and the
  * next click on a trigger with the same namespace and the same booking URL shows
  * the same iframe again, so the Booker inside keeps its chosen day, time and
  * typed details, and bookerViewed / bookerReady fire once per page load rather
  * than once per open. One frame is kept per namespace: a trigger whose booking
  * URL differs (another xbc, other params) replaces that namespace's frame, and a
- * second namespace gets a frame of its own. `prerender` stays a no-op: Slate
- * does NOT build the frame at page load as cal.com's pre-render does, it warms
- * the availability read instead (#251), and the frame is built on the first
- * click.
+ * second namespace gets a frame of its own.
+ *
+ * Pre build (#2679): cal.com's `prerender` builds its modal at page load so the
+ * first click opens a booker that has already loaded. Slate does the same thing
+ * one step later, on the trigger's FIRST hover, focus or touch: the same intent
+ * that warms the availability read (#251) also builds that namespace's frame,
+ * hidden, so the click only shows it. The `prerender` command itself stays an
+ * accepted no-op. A pre built frame is invisible to the lead and to the host: it
+ * takes no focus, no key and no scroll lock, and nothing it says is announced
+ * until the first show, because a hover is not a view (bookerViewed,
+ * bookerReady and any linkFailed are held and announced right after that
+ * click's navigatedToBooker). Its 12 second load clock starts at the pre build,
+ * so a frame that never loads is reported on the first open rather than after
+ * another twelve seconds. Intent never replaces a namespace's existing frame;
+ * only a click does. A device with no hover pre builds on the touch, or simply
+ * builds on the click as before.
  */
 (function () {
   "use strict";
@@ -398,17 +411,38 @@
     frame.show(trigger);
   }
 
+  // The trigger's first hover, focus or touch (#2679): build the namespace's
+  // frame hidden, so the click that usually follows only shows it. Never replaces
+  // a frame the namespace already holds, whatever link it was built for, because
+  // that frame may hold a booker the lead has already used; a click on another
+  // link still replaces it, as above. A frame the host page tore out is gone, so
+  // it is built again. At most one build per namespace and link per page load.
+  function prebuildFrame(link, ns, trigger) {
+    var frame = frames[ns];
+    if (frame && document.body.contains(frame.overlay)) return;
+    if (frame) frame.destroy();
+    frames[ns] = buildFrame(bookingUrl(link, ns, readTriggerConfig(trigger)));
+  }
+
   function buildFrame(bookUrl) {
     ensureChromeStyle();
     var reduceMotion =
       window.matchMedia &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-    // Built hidden; show() is what puts it on screen.
+    // Built hidden; show() is what puts it on screen. Until that first show it is
+    // hidden with `visibility`, not `display:none` (#2679): a frame inside a
+    // display:none box is given a zero width viewport, so a pre built Booker
+    // would lay itself out at 0px and only reach its real layout after the
+    // click. Measured in Chromium: innerWidth 0 and scrollHeight 0 under
+    // display:none, the real width under visibility:hidden. A hidden box takes
+    // no pointer events and no focus, and aria-hidden plus inert keep it out of
+    // the accessibility tree. After the first close it is display:none like any
+    // kept frame (#2678), by which time it has laid out at its real size.
     var overlay = document.createElement("div");
     overlay.className = "slate-widget-overlay";
     overlay.style.cssText =
-      "position:fixed;inset:0;z-index:2147483647;display:none;" +
+      "position:fixed;inset:0;z-index:2147483647;display:flex;visibility:hidden;" +
       "align-items:center;justify-content:center;background:rgba(29,33,47,0.55)";
 
     var modal = document.createElement("div");
@@ -505,9 +539,23 @@
     var LOAD_TIMEOUT_MS = 12000;
     var loadTimer = null;
     // "loading" until the iframe's first load, then "loaded"; "failed" while the
-    // error and its retry are up. The timer runs only while "loading" and only
-    // while the modal is shown, so a reopen of a loaded frame starts no clock.
+    // error and its retry are up. The timer runs only while "loading", from the
+    // build until the first close (so a pre built frame's clock starts at the
+    // pre build, #2679), and after that only while the modal is shown, so a
+    // reopen of a loaded frame starts no clock.
     var loadState = "loading";
+
+    // Whether this frame has ever been on screen, and what it said before then
+    // (#2679). A pre built frame loads, renders and reads its times while
+    // nobody is looking, and announcing that would count a hover as a view, so
+    // every event it raises waits here and is announced on the first show. A
+    // frame replaced or left unopened announces nothing at all.
+    var everShown = false;
+    var held = [];
+    function announce(action, payload) {
+      if (everShown) emit(action, payload);
+      else held.push({ action: action, payload: payload });
+    }
 
     var loader = document.createElement("div");
     loader.className = "slate-widget-loader";
@@ -575,7 +623,9 @@
 
       loader.appendChild(msg);
       loader.appendChild(retry);
-      retry.focus();
+      // Only a frame on screen may take focus: a pre built one that timed out
+      // while hidden must leave the host page's focus where it is (#2679).
+      if (visible) retry.focus();
     }
 
     // The two ways the modal itself can fail to show a booker (#2658), announced
@@ -594,7 +644,7 @@
         loadTimer = null;
         loadState = "failed";
         renderError();
-        emit("linkFailed", LOAD_FAILED.timeout);
+        announce("linkFailed", LOAD_FAILED.timeout);
       }, LOAD_TIMEOUT_MS);
     }
 
@@ -607,6 +657,10 @@
 
     renderLoading();
     paintClose();
+    // The clock starts at the build: for a click that is the open itself, and
+    // for a pre build it is the hover, so the first open of a frame that has
+    // been failing to load for twelve seconds says so at once (#2679).
+    armLoadTimer();
 
     // Loads of THIS iframe. The second and later announce `bookerReloaded`: a
     // retry after a failed load, or a reload from inside the frame. A close and
@@ -631,14 +685,21 @@
       paintClose();
       if (loader.parentNode) loader.parentNode.removeChild(loader);
       iframe.style.opacity = "1";
+      // A pre built frame that timed out while hidden and then loaded after all
+      // never failed anyone: by the time the lead opens it, it works. So its held
+      // timeout is dropped rather than announced (#2679). A timeout the lead saw
+      // was announced when it happened and stands.
+      held = held.filter(function (h) {
+        return !(h.action === "linkFailed" && h.payload === LOAD_FAILED.timeout);
+      });
       loads++;
-      if (loads > 1) emit("bookerReloaded", {});
+      if (loads > 1) announce("bookerReloaded", {});
     });
     iframe.addEventListener("error", function () {
       stopLoadTimer();
       loadState = "failed";
       renderError();
-      emit("linkFailed", LOAD_FAILED.error);
+      announce("linkFailed", LOAD_FAILED.error);
     });
 
     // Forward-tab sentinel: focus leaving the iframe's last element lands
@@ -697,6 +758,7 @@
       if (activeModalHide && activeModalHide !== hide) activeModalHide();
       visible = true;
       overlay.style.display = "flex";
+      overlay.style.visibility = "visible";
       overlay.removeAttribute("aria-hidden");
       if (typeof overlay.inert === "boolean") overlay.inert = false;
 
@@ -719,12 +781,26 @@
       document.addEventListener("keydown", onKeydown, true);
       // The 12s clock runs against the FIRST load only: a frame that already
       // loaded needs none, and a close mid-load stopped it, so a reopen of a
-      // frame still loading starts it again rather than spinning forever.
+      // frame still loading starts it again rather than spinning forever. A
+      // pre built frame's first show finds its clock already running from the
+      // pre build and keeps it (#2679).
       if (loadState === "loading" && !loadTimer) armLoadTimer();
 
       activeIframe = iframe;
       activeModalHide = hide;
       close.focus();
+
+      // The first show is the view (#2679): whatever the frame said while it was
+      // pre built is announced now, in the order it was said, right after the
+      // click's navigatedToBooker.
+      if (!everShown) {
+        everShown = true;
+        var said = held;
+        held = [];
+        said.forEach(function (h) {
+          emit(h.action, h.payload);
+        });
+      }
     }
 
     function destroy() {
@@ -758,7 +834,10 @@
     overlay.addEventListener("click", function (e) {
       if (e.target === overlay) hide();
     });
-    document.addEventListener("keydown", onKeydown, true);
+    // No keydown listener here: show() adds it and hide() removes it. Added at
+    // build, a pre built frame nobody had opened would take the host page's
+    // Escape and pull a Tab from the page body into its hidden close button
+    // (#2679).
 
     modal.appendChild(close);
     modal.appendChild(iframe);
@@ -769,7 +848,15 @@
     if (typeof overlay.inert === "boolean") overlay.inert = true;
     document.body.appendChild(overlay);
 
-    return { url: bookUrl, overlay: overlay, iframe: iframe, show: show, hide: hide, destroy: destroy };
+    return {
+      url: bookUrl,
+      overlay: overlay,
+      iframe: iframe,
+      show: show,
+      hide: hide,
+      destroy: destroy,
+      announce: announce,
+    };
   }
 
   // --- error beacon (#1368) --------------------------------------------------
@@ -888,14 +975,34 @@
     var els = document.querySelectorAll("[data-cal-link]");
     for (var i = 0; i < els.length; i++) warmTrigger(els[i]);
   }
-  // Intent: warm on the first hover/focus/touch of a trigger (delegated, so
-  // dynamically-added triggers are covered). All three events bubble.
+  // A pre build is a head start and nothing more, so a throw here is swallowed
+  // and NOT reported: the click that follows builds the frame again on the path
+  // the error beacon already watches, and reports there if it still throws, once
+  // rather than twice for one fault.
+  function prebuildTrigger(el) {
+    try {
+      prebuildFrame(
+        el.getAttribute("data-cal-link") || "",
+        el.getAttribute("data-cal-namespace") || "",
+        el,
+      );
+    } catch (_e) {
+      /* never throw into the host page */
+    }
+  }
+  // Intent: on the first hover/focus/touch of a trigger, warm its times and pre
+  // build its frame (#2679), delegated so dynamically-added triggers are
+  // covered. All three events bubble. Render below only warms: building a frame
+  // for every trigger a page carries, before anyone shows interest, would load
+  // a booker per button on every page view.
   ["pointerover", "focusin", "touchstart"].forEach(function (type) {
     document.addEventListener(
       type,
       function (e) {
         var el = e.target && e.target.closest && e.target.closest("[data-cal-link]");
-        if (el) warmTrigger(el);
+        if (!el) return;
+        warmTrigger(el);
+        prebuildTrigger(el);
       },
       true,
     );
@@ -951,7 +1058,9 @@
     // frame this file built, hidden ones included, because they are facts about
     // that frame load. A hidden frame's height must be right when it is shown
     // again, and a bookerReady that arrives after a fast close will never be
-    // posted again, so it is announced when it arrives.
+    // posted again, so it is announced when it arrives. A frame that has never
+    // been shown (a pre build, #2679) holds its stages until its first show
+    // instead, since nobody has viewed it yet.
     var frame = frameFor(e.source);
     if (d.type === "slate:resize" && typeof d.height === "number" && frame) {
       frame.iframe.style.height = d.height + "px";
@@ -966,7 +1075,7 @@
       var v2 = V2_BY_OUTCOME[d.data && d.data.outcome];
       if (v2) emit(v2, v2Payload(d.data));
     } else if (LIFECYCLE[d.type] && frame) {
-      emit(LIFECYCLE[d.type], d.data);
+      frame.announce(LIFECYCLE[d.type], d.data);
     } else if (
       d.type === "slate:escape" &&
       activeModalHide &&

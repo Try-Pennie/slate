@@ -908,3 +908,254 @@ describe("widget.js closes the modal on the host's command (closeModal)", () => 
     expect(shownIframe()).toBe(first);
   });
 });
+
+// #2679: the frame is built, hidden, on the trigger's first hover, focus or
+// touch, so the click only shows it. cal.com pre renders its modal the same way.
+// The pre build must be invisible to the lead AND to the host: nothing on
+// screen, nothing focusable, no scroll lock, no key taken, and no event announced
+// until the first show, because a hover is not a view.
+describe("widget.js pre builds the modal frame on the trigger's first intent (#2679)", () => {
+  function hoverTrigger(ns: string, link = "router?xbc=411", type = "pointerover"): HTMLButtonElement {
+    const trigger = document.createElement("button");
+    trigger.setAttribute("data-cal-link", link);
+    trigger.setAttribute("data-cal-namespace", ns);
+    document.body.appendChild(trigger);
+    trigger.dispatchEvent(new Event(type, { bubbles: true }));
+    return trigger;
+  }
+  const hiddenIframes = () =>
+    Array.from(document.querySelectorAll<HTMLIFrameElement>('.slate-widget-overlay[aria-hidden="true"] iframe'));
+
+  it("builds one hidden frame on the first hover, with nothing on screen and nothing announced", () => {
+    const all = calOn("*");
+    const ns = freshNs();
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    const focusedBefore = document.activeElement;
+    hoverTrigger(ns);
+
+    expect(shownOverlay()).toBeNull();
+    const built = hiddenIframes();
+    expect(built).toHaveLength(1);
+    expect(built[0].getAttribute("src")).toMatch(/\/book\?.*xbc=411/);
+    const overlay = built[0].closest(".slate-widget-overlay") as HTMLElement;
+    expect(overlay.getAttribute("aria-hidden")).toBe("true");
+    // Hidden by visibility, never display:none, so the Booker inside lays out
+    // at its real width before the click rather than at a zero width viewport.
+    expect(overlay.style.visibility).toBe("hidden");
+    expect(overlay.style.display).not.toBe("none");
+    expect(document.body.style.overflow).toBe("");
+    expect(document.activeElement).toBe(focusedBefore);
+    expect(all).not.toHaveBeenCalled();
+  });
+
+  it("shows a pre built frame visibly on the click, and hides it with display:none on close like any kept frame", () => {
+    const ns = freshNs();
+    const trigger = hoverTrigger(ns);
+    trigger.click();
+    const overlay = shownOverlay()!;
+    expect(overlay.style.visibility).toBe("visible");
+    expect(overlay.style.display).toBe("flex");
+    closeModal();
+    expect(overlay.style.display).toBe("none");
+  });
+
+  it("drops a held load timeout when the pre built frame loads after all before anyone opened it", () => {
+    vi.useFakeTimers();
+    const failed = calOn("linkFailed");
+    const ns = freshNs();
+    const trigger = hoverTrigger(ns);
+    vi.advanceTimersByTime(12000);
+    hiddenIframes()[0].dispatchEvent(new Event("load"));
+
+    trigger.click();
+    expect(failed).not.toHaveBeenCalled();
+    expect(loaderEl()).toBeNull();
+    expect(retryBtn()).toBeUndefined();
+  });
+
+  it("builds it at most once however many intent events arrive", () => {
+    const ns = freshNs();
+    const trigger = hoverTrigger(ns);
+    trigger.dispatchEvent(new Event("focusin", { bubbles: true }));
+    trigger.dispatchEvent(new Event("touchstart", { bubbles: true }));
+    trigger.dispatchEvent(new Event("pointerover", { bubbles: true }));
+    expect(document.querySelectorAll("iframe")).toHaveLength(1);
+  });
+
+  it("builds it on a touch too, for a device with no hover", () => {
+    const ns = freshNs();
+    const trigger = hoverTrigger(ns, "router?xbc=411", "touchstart");
+    const built = hiddenIframes()[0];
+    expect(built).toBeTruthy();
+    trigger.click();
+    expect(shownIframe()).toBe(built);
+  });
+
+  it("the first click shows the pre built frame, announcing navigatedToBooker and not bookerReopened", () => {
+    const navigated = calOn("navigatedToBooker");
+    const reopened = calOn("bookerReopened");
+    const ns = freshNs();
+    const trigger = hoverTrigger(ns);
+    const built = hiddenIframes()[0];
+
+    trigger.click();
+    expect(shownIframe()).toBe(built);
+    expect(document.querySelectorAll("iframe")).toHaveLength(1);
+    expect(navigated).toHaveBeenCalledTimes(1);
+    expect(reopened).not.toHaveBeenCalled();
+    expect(document.body.style.overflow).toBe("hidden");
+    expect(document.activeElement).toBe(shownOverlay()!.querySelector('button[aria-label="Close"]'));
+  });
+
+  it("holds the booker's lifecycle messages from a frame nobody has opened, and announces them on the first show, after navigatedToBooker", () => {
+    const all = calOn("*");
+    const ns = freshNs();
+    const trigger = hoverTrigger(ns);
+    const built = hiddenIframes()[0];
+
+    fromActiveFrame(built, { type: EMBED_MESSAGE.bookerViewed, data: { slotsLoaded: false } });
+    fromActiveFrame(built, { type: EMBED_MESSAGE.bookerReady, data: { slotsLoaded: true } });
+    expect(all).not.toHaveBeenCalled();
+
+    trigger.click();
+    expect(eventsOf(all)).toEqual([
+      { type: "navigatedToBooker", data: {} },
+      { type: "bookerViewed", data: { slotsLoaded: false } },
+      { type: "bookerReady", data: { slotsLoaded: true } },
+    ]);
+
+    // Shown once: a close and reopen announces nothing held a second time.
+    closeModal();
+    trigger.click();
+    expect(eventsOf(all).map((d) => d.type)).toEqual([
+      "navigatedToBooker",
+      "bookerViewed",
+      "bookerReady",
+      "navigatedToBooker",
+      "bookerReopened",
+    ]);
+  });
+
+  it("never announces what a pre built frame said when it is replaced before anyone opened it", () => {
+    const viewed = calOn("bookerViewed");
+    const ns = freshNs();
+    hoverTrigger(ns, "router?xbc=411");
+    const built = hiddenIframes()[0];
+    fromActiveFrame(built, { type: EMBED_MESSAGE.bookerViewed, data: { slotsLoaded: false } });
+
+    // A click on another link for the same namespace replaces the frame.
+    const other = document.createElement("button");
+    other.setAttribute("data-cal-link", "router?xbc=412");
+    other.setAttribute("data-cal-namespace", ns);
+    document.body.appendChild(other);
+    other.click();
+
+    expect(built.isConnected).toBe(false);
+    expect(shownIframe()!.getAttribute("src")).toMatch(/xbc=412/);
+    expect(viewed).not.toHaveBeenCalled();
+  });
+
+  it("does not replace a namespace's existing frame on the hover of a different link", () => {
+    const ns = freshNs();
+    const first = document.createElement("button");
+    first.setAttribute("data-cal-link", "router?xbc=411");
+    first.setAttribute("data-cal-namespace", ns);
+    document.body.appendChild(first);
+    first.click();
+    const kept = shownIframe()!;
+    closeModal();
+
+    hoverTrigger(ns, "router?xbc=412");
+    expect(kept.isConnected).toBe(true);
+    expect(document.querySelectorAll("iframe")).toHaveLength(1);
+
+    // Clicking the first link again still finds the frame it left.
+    first.click();
+    expect(shownIframe()).toBe(kept);
+  });
+
+  it("measures the load timeout from the pre build, and reports a frame that never loaded on the first open, not before", () => {
+    vi.useFakeTimers();
+    const failed = calOn("linkFailed");
+    const ns = freshNs();
+    const trigger = hoverTrigger(ns);
+    trigger.focus();
+
+    vi.advanceTimersByTime(12000);
+    // Nobody has opened it: nothing announced, and focus not pulled into a
+    // hidden retry button.
+    expect(failed).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(trigger);
+
+    trigger.click();
+    expect(failed).toHaveBeenCalledTimes(1);
+    expect(eventsOf(failed)[0]).toEqual({
+      type: "linkFailed",
+      data: { code: "load_timeout", msg: "The booking form did not load in time" },
+    });
+    expect(loaderEl()!.getAttribute("role")).toBe("alert");
+    expect(retryBtn()).toBeTruthy();
+  });
+
+  it("a click before the pre build's clock runs out keeps the same clock rather than starting a new one", () => {
+    vi.useFakeTimers();
+    const failed = calOn("linkFailed");
+    const ns = freshNs();
+    const trigger = hoverTrigger(ns);
+    vi.advanceTimersByTime(8000);
+    trigger.click();
+    vi.advanceTimersByTime(4000);
+    expect(failed).toHaveBeenCalledTimes(1);
+  });
+
+  it("a frame that loaded while hidden opens with no loader and no clock", () => {
+    vi.useFakeTimers();
+    const failed = calOn("linkFailed");
+    const reloaded = calOn("bookerReloaded");
+    const ns = freshNs();
+    const trigger = hoverTrigger(ns);
+    hiddenIframes()[0].dispatchEvent(new Event("load"));
+
+    trigger.click();
+    expect(loaderEl()).toBeNull();
+    vi.advanceTimersByTime(30000);
+    expect(failed).not.toHaveBeenCalled();
+    expect(reloaded).not.toHaveBeenCalled();
+  });
+
+  it("takes no key from the host page while the pre built frame is hidden", () => {
+    const ns = freshNs();
+    const trigger = hoverTrigger(ns);
+    trigger.focus();
+
+    const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    document.dispatchEvent(escape);
+    expect(escape.defaultPrevented).toBe(false);
+
+    trigger.blur();
+    const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    document.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("a pre build that throws leaves the click to build and open as before", () => {
+    const ns = freshNs();
+    const original = document.createElement.bind(document);
+    vi.spyOn(document, "createElement").mockImplementation(((tag: string) => {
+      if (tag === "iframe") throw new Error("iframe blocked by host CSP");
+      return original(tag);
+    }) as typeof document.createElement);
+    let trigger: HTMLButtonElement | null = null;
+    try {
+      expect(() => {
+        trigger = hoverTrigger(ns);
+      }).not.toThrow();
+    } finally {
+      vi.mocked(document.createElement).mockRestore();
+    }
+    expect(document.querySelectorAll(".slate-widget-overlay")).toHaveLength(0);
+    (trigger as HTMLButtonElement | null)!.click();
+    expect(shownIframe()).toBeTruthy();
+  });
+});
