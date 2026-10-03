@@ -3559,9 +3559,9 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // Cron CPU headroom, judged over the trailing day (#3141). The Worker records a tick whose
-    // wall time passed half the CPU ceiling (it has no reading of its own CPU, and the copy says
-    // so), and an hourly stamp that proves it is still recording; this reads both from one
+    // Cron WALL TIME headroom, judged over the trailing day (#3141). The Worker records a tick
+    // whose wall time passed a line at half the CPU ceiling (it has no reading of its own CPU, and
+    // wall time is no bound on it, so the copy claims nothing about CPU), and an hourly stamp that proves it is still recording; this reads both from one
     // query of lane_heartbeats, a table bounded by the number of lanes, on a lane whose
     // invocation is shared with every other lane on its schedule (#1246). A failed read, or a
     // stamp gone stale, clears nothing.

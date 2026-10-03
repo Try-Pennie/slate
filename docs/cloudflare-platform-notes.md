@@ -46,13 +46,14 @@ Current headroom for the every minute cron (7 days, 19,260 ticks):
 CPU is billed on **actual usage, not the limit**, so raising the ceiling costs
 nothing by itself. Raise it rather than let invocations get killed.
 
-**Watched daily since #3141, in wall time.** The table above is a hand reading. The
-monitor lane now pages (`cron_budget_headroom`) when any tick in the last day ran past
-half the ceiling, judged on the WALL time `worker/index.ts` already measures per tick,
-because the running Worker has no reading of its own CPU and the analytics that do need
-an account token the deployment does not hold. Wall time reads at or above CPU up to a
-lane's last I/O, so it warns early rather than late; the page says to read the real CPU
-(the `workersInvocationsScheduled` recipe below) before trimming anything. The line is
+**The CPU table above is still a hand reading, and nothing watches CPU automatically.**
+The running Worker has no reading of its own CPU, and the analytics that do need an
+account token the deployment does not hold. What #3141 added is a WALL time check: the
+monitor lane pages (`cron_budget_headroom`) when any tick in the last day took longer than
+half the ceiling in wall time, from what `worker/index.ts` already measures per tick. That
+is not a CPU bound in either direction (the clock advances only at I/O, so compute between
+waits can read as no time at all, which is how a load run tick spent 119s of CPU, below),
+so it catches a schedule growing slow and never vouches for CPU headroom. The line is
 `CRON_BUDGET_WARN_MS` in `src/lib/monitor/cron-budget.ts`, derived from
 `CRON_CPU_LIMIT_MS`, which `scripts/test-cron-budget.ts` holds equal to `limits.cpu_ms`.
 

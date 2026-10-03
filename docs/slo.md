@@ -95,18 +95,22 @@ the external uptime monitor on `/api/health` is for, below.
 | A booking can be made end to end | One full pass every 6 hours | The smoke canary, against live production on isolated SMOKE fixtures. It is the only automated proof a booking can be created, rescheduled and cancelled | `.github/workflows/smoke-canary.yml` |
 | Every scheduled lane is running | Each lane stamps a heartbeat; a lane quiet past its own bound pages | The lane watchdog, on bounds set per lane at about 3x its cadence so jitter cannot page | `LANE_STALE_BOUNDS_MS`, `src/lib/monitor/health.ts` |
 | The safety net itself is running | `smoke-canary` within 90 minutes, `smoke-canary-full` within 8 hours | The same watchdog, on separate stamps, because a 30-minute dry tick kept one shared stamp fresh while the 6-hourly full pass silently stopped (#982) | `CANARY_STALE_BOUNDS_MS` |
-| Cron CPU headroom | No tick past **60s** of wall time, half the **120s** `limits.cpu_ms`, in any **24 hours** | The monitor lane's `cron_budget` step, from what `worker/index.ts` records per tick | `src/lib/monitor/cron-budget.ts` |
+| Cron wall time headroom | No tick past **60s** of wall time, half the **120s** `limits.cpu_ms`, in any **24 hours** | The monitor lane's `cron_budget` step, from what `worker/index.ts` records per tick | `src/lib/monitor/cron-budget.ts` |
 
-**The cron headroom row is measured in wall time, not CPU**, and the page says so. A
-running Worker has no reading of its own CPU, and the analytics that hold it need an
-account token the deployment does not carry. Wall time reads at or above CPU up to each
-lane's last I/O (the Worker's clock advances only at I/O, and every wait is counted on
-top), so it warns early rather than late; the one thing it cannot see is CPU after a
-lane's last I/O. When it pages, read the real CPU for those ticks (`cpuTimeUs` in
-`workersInvocationsScheduled`, `docs/cloudflare-platform-notes.md`) before trimming
-anything. The Worker writes a row only for a tick past the line, and stamps
-`verdict:cron-budget` every hour so a writer that stopped writing pages as blind rather
-than reading as a quiet day.
+**The cron headroom row is wall time, and it says nothing about CPU.** A running Worker
+has no reading of its own CPU, and the analytics that hold it need an account token the
+deployment does not carry, so the check that #3141 asked for (cron CPU past half
+`limits.cpu_ms`) cannot be built inside the Worker. What can be measured is how long each
+tick takes, and that is not a bound on CPU in either direction: the Worker's clock advances
+only at I/O, so CPU spent computing between two waits can read as no time at all, and a
+compute heavy tick can sit under this line while its CPU is near the kill. A tick that
+mostly waits on the database or Google reads high while its CPU is small. So a page means a
+schedule has become slow (worth knowing on its own: a minute lane past a minute overlaps its
+own next tick), a quiet day means nothing about CPU, and the CPU headroom is still read by
+hand (`cpuTimeUs` in `workersInvocationsScheduled`, `docs/cloudflare-platform-notes.md`).
+The Worker writes a row only for a tick past the line, and stamps `verdict:cron-budget`
+every hour so a writer that stopped writing pages as blind rather than reading as a quiet
+day.
 
 ## Latency
 

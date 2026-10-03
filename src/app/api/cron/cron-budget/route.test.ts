@@ -66,6 +66,23 @@ describe("GET /api/cron/cron-budget (#3141)", () => {
     expect(res.status).toBe(500);
   });
 
+  it("still stamps the hourly proof of life when the breach write fails on the same tick", async () => {
+    // The two writes have separate jobs: a lost breach is a warning that never arrives,
+    // and a lost stamp makes a working recorder read as a dead one. One fault must not
+    // take both.
+    db.state.error = { message: "relation does not exist" };
+    const res = await GET(req("0 * * * *", CRON_BUDGET_WARN_MS + 1));
+    expect(res.status).toBe(500);
+    expect(verdicts.recordDetectorVerdict).toHaveBeenCalledWith("verdict:cron-budget", true);
+  });
+
+  it("answers the breach failure even when the stamp throws too", async () => {
+    db.state.error = { message: "relation does not exist" };
+    verdicts.recordDetectorVerdict.mockRejectedValueOnce(new Error("stamp down"));
+    const res = await GET(req("0 * * * *", CRON_BUDGET_WARN_MS + 1));
+    expect(res.status).toBe(500);
+  });
+
   it("refuses an unreadable measurement and writes nothing", async () => {
     for (const bad of [
       req("* * * * *", "abc"),

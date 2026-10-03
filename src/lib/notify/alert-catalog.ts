@@ -367,7 +367,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "cron_budget_headroom",
     kind: "condition",
-    why: "A cron schedule ran a tick past half its CPU ceiling inside the last day, which stays true for a day after the last such tick; the monitor lane re-reads it every tick, so a measured day with none is the healthy result that ends it (#3141).",
+    why: "A cron schedule had a tick take longer than its wall time line (half the CPU ceiling, but wall time, not CPU) inside the last day, which stays true for a day after the last such tick; the monitor lane re-reads it every tick, so a measured day with none is the healthy result that ends it (#3141).",
   },
   {
     key: "agents_on_unset_hours",

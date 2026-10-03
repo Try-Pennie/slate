@@ -111,7 +111,7 @@ export function expectedSloDocLines(): SloDocLine[] {
     {
       label: "cron headroom row",
       line:
-        `| Cron CPU headroom | No tick past **${s(CRON_BUDGET_WARN_MS)}** of wall time, half the ` +
+        `| Cron wall time headroom | No tick past **${s(CRON_BUDGET_WARN_MS)}** of wall time, half the ` +
         `**${s(CRON_CPU_LIMIT_MS)}** \`limits.cpu_ms\`, in any **${CRON_BUDGET_WINDOW_MS / 3_600_000} hours** ` +
         `| The monitor lane's \`cron_budget\` step, from what \`worker/index.ts\` records per tick ` +
         `| \`src/lib/monitor/cron-budget.ts\` |`,

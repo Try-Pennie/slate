@@ -1,25 +1,30 @@
 /**
- * Cron CPU headroom, watched every day instead of measured by hand (#3141).
+ * Cron WALL TIME headroom, watched every day (#3141). It does not measure CPU, and nothing in it
+ * may claim CPU safety.
  *
  * Every cron expression's invocation is killed at `limits.cpu_ms` in wrangler.jsonc, and the
  * every minute one shares that budget across four lanes. Until now the headroom was read by hand
  * from Cloudflare's analytics (docs/cloudflare-platform-notes.md), so a lane growing toward the
  * ceiling was found by whoever next thought to look, or by the kill.
  *
- * WHAT THIS MEASURES IS WALL TIME, NOT CPU, AND THE NAME SAYS SO (L11). The Workers runtime
- * gives a running invocation no reading of its own CPU, and the analytics that do hold it need
- * an account API token the deployment does not carry. So the Worker times each invocation's
- * lanes (`lane-timing.ts`, #1245) and judges the slowest against half the CPU ceiling. Two
- * properties make that an honest stand in rather than a guess:
+ * WHAT THIS MEASURES IS WALL TIME, NOT CPU (L11). The Workers runtime gives a running invocation
+ * no reading of its own CPU, and the analytics that do hold it need an account API token the
+ * deployment does not carry. So the Worker times each invocation's lanes (`lane-timing.ts`,
+ * #1245) and this judges the slowest tick of the day against a WALL TIME line, set at half the
+ * CPU ceiling so a schedule that has grown that slow is looked at.
  *
- *  - It reads HIGH, never low, over everything up to a lane's last I/O. The Worker's clock
- *    advances only at I/O, so CPU spent computing is counted at the next await, and every wait
- *    on PostgREST or Google is counted on top. A warning here can be wait rather than CPU; a
- *    tick under the line was under it in CPU too.
- *  - The one thing it cannot see is CPU spent AFTER a lane's last I/O. Every lane ends by
- *    answering its request, which is I/O, so that tail is the lane's response serialisation.
+ * What that can and cannot say, because the difference is the whole value of the check:
  *
- * So a page here means "check the CPU for these ticks", and the copy says where.
+ *  - It is NOT a bound on CPU in either direction. The Worker's clock advances only at I/O, so
+ *    CPU spent computing between two I/O events can read as little or no time at all (a load run
+ *    tick spent 119s of CPU while its clock barely moved, docs/cloudflare-platform-notes.md). A
+ *    compute heavy tick can sit under this line while its CPU is near the kill. And a tick that
+ *    mostly WAITS on PostgREST or Google reads high while its CPU is small.
+ *  - So a quiet day here says nothing about CPU headroom, and a page says only that a schedule
+ *    has become slow in wall time, which is worth knowing (a minute lane past a minute overlaps
+ *    its own next tick) and worth checking against the real CPU.
+ *
+ * The real CPU is read by hand in workersInvocationsScheduled, and every message here says so.
  *
  * HOW IT REACHES THE MONITOR LANE. The Worker writes a `lane_heartbeats` row named for the cron
  * expression only on a tick past the line, and so pays nothing on a healthy tick. The monitor
@@ -93,24 +98,23 @@ export interface CronBudgetBreach {
 }
 
 /**
- * `unreadable` names the schedules whose breach row exists and whose time cannot be read. They
- * are neither a breach nor a clear: an undated row can never age out of the window, so counting
- * it as a breach would page for ever and never let the all clear fire (L665), and counting it as
- * old would clear on a row that may be minutes old. The next breach on that schedule rewrites
- * the row with a real time, which is what ends it.
+ * `unreadable` names the schedules whose breach row exists and whose time cannot be read. Such a
+ * row is never counted as a breach: it can never age out of the window, so it would page for
+ * ever. Nor may it hold the all clear back, or an open alert would wait on a breach that may
+ * never come (L665). So the readable rows decide, and every message names the undated row as not
+ * judged. The next breach on that schedule rewrites the row with a real time.
  */
 export type CronBudgetHealth =
   | { status: "unmeasured"; why: string; unreadable: string[] }
   | { status: "over"; breaches: CronBudgetBreach[]; unreadable: string[] }
-  | { status: "within" };
+  | { status: "within"; unreadable: string[] };
 
 /**
  * The verdict over every stamp in `lane_heartbeats`.
  *
  * `stamps` null is a read that failed. A stored stamp that cannot be parsed arrives as 0 (the
- * heartbeat reader's sentinel, #1169). A breach row carrying it is UNMEASURED: it pages only
- * beside a real breach, where the page names it, and on its own it keeps the all clear back
- * without paging (see `CronBudgetHealth`).
+ * heartbeat reader's sentinel, #1169). A breach row carrying it is left out of the judgement
+ * and named in it (see `CronBudgetHealth`).
  */
 export function cronBudgetHealth(input: {
   stamps: Record<string, number | null> | null;
@@ -135,31 +139,23 @@ export function cronBudgetHealth(input: {
     breaches.sort((a, b) => a.cron.localeCompare(b.cron));
     return { status: "over", breaches, unreadable: unreadable.sort() };
   }
-  if (unreadable.length > 0) {
-    return {
-      status: "unmeasured",
-      why:
-        `the breach row for ${unreadable.sort().join(", ")} carries a time that cannot be read, so ` +
-        `this cannot tell whether it is inside the last day`,
-      unreadable,
-    };
-  }
+  unreadable.sort();
   const verdictMs = input.stamps[input.verdictLane];
   if (verdictMs === undefined || verdictMs === null) {
     return {
       status: "unmeasured",
       why: "the Worker has never recorded a cron timing, so a quiet day here proves nothing",
-      unreadable: [],
+      unreadable,
     };
   }
   if (input.nowMs - verdictMs > input.verdictBoundMs) {
     return {
       status: "unmeasured",
       why: "the Worker's hourly timing stamp is stale, so it may have stopped recording past the line ticks",
-      unreadable: [],
+      unreadable,
     };
   }
-  return { status: "within" };
+  return { status: "within", unreadable };
 }
 
 /** UTC, to the minute, with the date: the window is a day and spans two of them. */
@@ -171,32 +167,41 @@ function seconds(ms: number): string {
   return `${Math.round(ms / 1000)}s`;
 }
 
+/** The undated rows, named as not judged, or nothing. */
+function undatedNote(unreadable: string[]): string {
+  if (unreadable.length === 0) return "";
+  return (
+    `\nNot judged: the row for ${unreadable.map((c) => `\`${c}\``).join(", ")} in lane_heartbeats ` +
+    `carries a time that cannot be read, so whether it falls in the last day is unknown. Its next ` +
+    `tick past the line rewrites it.`
+  );
+}
+
+/** What every message says, so none of them can be read as a statement about CPU. */
+const NOT_CPU =
+  `This is wall time, which the Worker can measure, and it does not measure CPU: CPU spent between ` +
+  `I/O waits can read as no time at all. The real CPU is cpuTimeUs in workersInvocationsScheduled.`;
+
 /** The page. Names each schedule and its latest tick, and where the CPU for it is read. */
 export function formatCronBudgetAlert(health: Extract<CronBudgetHealth, { status: "over" }>): string {
   const one = health.breaches.length === 1;
   const lines = health.breaches.map((b) => `- \`${b.cron}\`, latest ${utcMinute(b.atMs)}`);
-  const undated = health.unreadable.length
-    ? `\nNot judged: the row for ${health.unreadable.map((c) => `\`${c}\``).join(", ")} in ` +
-      `lane_heartbeats carries a time that cannot be read, so whether it falls in the last day is ` +
-      `unknown. Its next tick past the line rewrites it.`
-    : "";
   return (
     `${health.breaches.length} cron ${one ? "schedule" : "schedules"} had a tick take longer than ` +
-    `${seconds(CRON_BUDGET_WARN_MS)} of wall time in the last day, half the ` +
+    `${seconds(CRON_BUDGET_WARN_MS)} of wall time in the last day. The line is half the ` +
     `${seconds(CRON_CPU_LIMIT_MS)} CPU ceiling Cloudflare kills an invocation at.\n` +
     lines.join("\n") +
-    undated +
-    `\nWall time runs at or above CPU, so read the real CPU for those ticks before trimming ` +
-    `anything: cpuTimeUs in workersInvocationsScheduled. Which lane took the time is under ` +
-    `tag=cron msg="lane timings".`
+    undatedNote(health.unreadable) +
+    `\n${NOT_CPU} Which lane took the time is under tag=cron msg="lane timings".`
   );
 }
 
-/** The all clear, on a measured day. */
-export function formatCronBudgetRecovery(): string {
+/** The all clear, on a measured day. It clears the wall time page and claims nothing about CPU. */
+export function formatCronBudgetRecovery(health: Extract<CronBudgetHealth, { status: "within" }>): string {
   return (
-    `No cron tick has run longer than ${seconds(CRON_BUDGET_WARN_MS)} in the last day, so every ` +
-    `schedule is back under half its ${seconds(CRON_CPU_LIMIT_MS)} CPU ceiling.`
+    `No cron tick has taken longer than ${seconds(CRON_BUDGET_WARN_MS)} of wall time in the last day.` +
+    undatedNote(health.unreadable) +
+    `\n${NOT_CPU}`
   );
 }
 
@@ -236,7 +241,7 @@ export async function runCronBudgetCheck(deps: {
     deps.log?.(`monitor cron-budget: OVER crons=${health.breaches.map((b) => b.cron).join("|")}`);
     return health;
   }
-  await deps.resolve(CRON_BUDGET_ALERT_KEY, formatCronBudgetRecovery()).catch(() => {});
-  deps.log?.("monitor cron-budget: within");
+  await deps.resolve(CRON_BUDGET_ALERT_KEY, formatCronBudgetRecovery(health)).catch(() => {});
+  deps.log?.(`monitor cron-budget: within undated=${health.unreadable.join("|") || "none"}`);
   return health;
 }

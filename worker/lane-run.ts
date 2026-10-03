@@ -166,9 +166,10 @@ export async function reportLaneFailures(
 }
 
 /**
- * Record what the daily cron headroom check reads (#3141). Wall time, because the runtime
- * gives an invocation no reading of its own CPU (see @/lib/monitor/cron-budget). Most ticks
- * record nothing and so spend nothing; one past half the ceiling, and the hourly tick that
+ * Record what the daily wall time headroom check reads (#3141). Wall time, because the runtime
+ * gives an invocation no reading of its own CPU, and wall time is no bound on CPU in either
+ * direction (see @/lib/monitor/cron-budget). Most ticks record nothing and so spend nothing;
+ * one past the wall time line, and the hourly tick that
  * proves this path still writes, hand the measurement to an in process route, built like
  * every other request this dispatcher makes so it carries the tick id. Never throws.
  */

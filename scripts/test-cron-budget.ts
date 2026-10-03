@@ -76,10 +76,10 @@ const breach = (cron: string) => `${CRON_BUDGET_BREACH_PREFIX}${cron}`;
   eq(judge(null).status, "unmeasured", "a failed read is unmeasured");
   eq(judge({ sync: NOW }).status, "unmeasured", "a writer that never stamped is unmeasured, not quiet");
   eq(judge({ [VERDICT]: NOW - BOUND - 1 }).status, "unmeasured", "a stale stamp is unmeasured");
-  eq(judge({ [VERDICT]: NOW - HOUR, sync: NOW }), { status: "within" }, "a fresh stamp and no breach is a measured quiet day");
+  eq(judge({ [VERDICT]: NOW - HOUR, sync: NOW }), { status: "within", unreadable: [] }, "a fresh stamp and no breach is a measured quiet day");
   eq(
     judge({ [VERDICT]: NOW - HOUR, [breach("* * * * *")]: NOW - CRON_BUDGET_WINDOW_MS - 1 }),
-    { status: "within" },
+    { status: "within", unreadable: [] },
     "a breach older than the window has aged out",
   );
 
@@ -93,10 +93,16 @@ const breach = (cron: string) => `${CRON_BUDGET_BREACH_PREFIX}${cron}`;
     "over",
     "a breach is a positive measurement and pages even while the stamp is stale",
   );
-  // An undated breach row can never age out, so it is neither a breach nor a clear (L665).
+  // An undated breach row can never age out, so it is never counted as a breach: that would
+  // page for ever (L665). Nor may it hold the all clear back, or an open alert waits on a
+  // breach that may never come. So the readable rows decide, and the undated one is named.
   const undated = judge({ [VERDICT]: NOW - HOUR, [breach("* * * * *")]: 0 });
-  eq(undated.status, "unmeasured", "an unreadable breach stamp alone is unmeasured, not a standing breach");
-  assert(undated.status === "unmeasured" && undated.unreadable[0] === "* * * * *", "and it names the row");
+  eq(undated, { status: "within", unreadable: ["* * * * *"] }, "an undated row alone does not stop a measured quiet day");
+  eq(
+    judge({ [VERDICT]: NOW - BOUND - 1, [breach("* * * * *")]: 0 }).status,
+    "unmeasured",
+    "but a stale stamp still measures nothing, undated row or not",
+  );
   const beside = judge({ [VERDICT]: NOW - HOUR, [breach("* * * * *")]: 0, [breach("*/5 * * * *")]: NOW - HOUR });
   eq(
     beside,
@@ -122,7 +128,14 @@ const breach = (cron: string) => `${CRON_BUDGET_BREACH_PREFIX}${cron}`;
   });
   assert(two.startsWith("2 cron schedules had"), "plural grammar");
   assert(/Not judged: the row for `0 \* \* \* \*`/.test(two), "an undated row is named in the page as not judged");
-  for (const text of [one, two, formatCronBudgetRecovery()]) {
+  const recovered = formatCronBudgetRecovery({ status: "within", unreadable: [] });
+  assert(!/not judged/i.test(recovered), "a clean all clear has no undated note");
+  // The page and the all clear must never claim CPU safety from wall time (#3141 review).
+  for (const text of [one, two, recovered]) {
+    assert(!/at or above CPU|under half its/i.test(text), "no copy claims wall time bounds CPU");
+    assert(/does not measure CPU|not CPU/i.test(text), "every message says it is not CPU");
+  }
+  for (const text of [one, two, recovered]) {
     assert(!/[\u2014\u2013]/.test(text), "no dashes in the copy");
   }
 }
@@ -155,11 +168,30 @@ async function run(readStamps: () => Promise<Record<string, number | null>>) {
   eq(within.notified, [], "a measured quiet day pages nothing");
   eq(within.resolved, [CRON_BUDGET_ALERT_KEY], "and is the all clear");
 
+  // An open alert must be able to clear with only an undated row left behind (L665): the
+  // readable rows are a measured quiet day, and the all clear names the row it did not judge.
+  const texts: string[] = [];
+  const undatedOnly = await runCronBudgetCheck({
+    nowMs: NOW,
+    read: async () => ({ [VERDICT]: NOW, [breach("* * * * *")]: 0 }),
+    verdictBoundMs: BOUND,
+    verdictLane: VERDICT,
+    notify: async () => {
+      throw new Error("must not page");
+    },
+    resolve: async (_key, text) => {
+      texts.push(text);
+      return true;
+    },
+  });
+  eq(undatedOnly.status, "within", "an undated row alone is a measured quiet day");
+  eq(texts.length, 1, "and it sends the all clear");
+  assert(/not judged/i.test(texts[0]) && texts[0].includes("`* * * * *`"), "which names the undated row as not judged");
+
   for (const [why, readStamps] of [
     ["a read that throws", async () => { throw new Error("db down"); }],
     ["a stamp gone stale", async () => ({ [VERDICT]: NOW - BOUND - 1 })],
     ["a writer that never stamped", async () => ({ monitor: NOW })],
-    ["an undated breach row on its own", async () => ({ [VERDICT]: NOW, [breach("* * * * *")]: 0 })],
   ] as const) {
     const r = await run(readStamps as () => Promise<Record<string, number | null>>);
     eq(r.health.status, "unmeasured", `${why} is unmeasured`);

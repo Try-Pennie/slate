@@ -177,10 +177,11 @@ drains it.
   lane, not a wobble, and the thing to read is #2022.
 - What is in the backlog? The alert names the table and the count.
 - `cron_budget_headroom` (#3141) is the invocation rather than one sweep: some tick in
-  the last day ran past half the CPU ceiling in WALL time, which is all the Worker can
-  measure of itself. Read the real CPU for those ticks first (`cpuTimeUs` in
-  `workersInvocationsScheduled`, see `docs/cloudflare-platform-notes.md`); wall time
-  well above CPU means the tick was waiting, not computing, and no budget is at risk.
+  the last day took longer than 60s of WALL time, which is all the Worker can measure of
+  itself. It is not a CPU reading in either direction, so read the real CPU for those
+  ticks (`cpuTimeUs` in `workersInvocationsScheduled`, see
+  `docs/cloudflare-platform-notes.md`) before deciding anything. Wall time well above CPU
+  means the tick was waiting, not computing. Its all clear says nothing about CPU either.
 - Is the work itself failing, so nothing ever leaves the queue? That is a different
   family (a side effect that did not complete, below).
 

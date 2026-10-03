@@ -462,7 +462,7 @@ const VERDICT_SUBJECT: Record<DetectorVerdictLane, VerdictSubject> = {
     look: 'the Worker logs for msg="tick" under tag=busy-drift, and whether it reports status="unreadable", which means the live freeBusy read or the busy_blocks read is failing',
   },
   [CRON_BUDGET_VERDICT_LANE]: {
-    what: "the Worker's hourly record that it is still timing its cron ticks against half the CPU ceiling",
+    what: "the Worker's hourly record that it is still timing its cron ticks in wall time",
     cost: "a schedule could grow toward the point Cloudflare kills it, and the warning meant to come first would never arrive",
     look: 'that the 0 * * * * cron is in wrangler.jsonc and firing, then the Worker logs for tag=cron-budget and tag=cron msg="lane timings"',
   },

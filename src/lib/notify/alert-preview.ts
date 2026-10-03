@@ -3051,7 +3051,13 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "cron_budget_headroom",
     state: "a whole day with every tick under the line",
     channel: "recovery",
-    text: formatCronBudgetRecovery(),
+    text: formatCronBudgetRecovery({ status: "within", unreadable: [] }),
+  },
+  {
+    key: "cron_budget_headroom",
+    state: "cleared with an undated row left behind, named as not judged",
+    channel: "recovery",
+    text: formatCronBudgetRecovery({ status: "within", unreadable: ["* * * * *"] }),
   },
   {
     key: "definer_grants_to_web_roles",
