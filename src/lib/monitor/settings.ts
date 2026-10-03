@@ -31,6 +31,7 @@ export const ALERT_KEYS = [
   "fallback_covered_availability",
   "low_booking_volume",
   "thin_tier_staffing",
+  "pool_nearly_full",
   "agents_without_schedule",
   "agents_without_routing",
   "migration_version_lag",
@@ -52,6 +53,7 @@ export const ALERT_KEYS = [
   "definer_grants_to_web_roles",
   "hydration_all_failing",
   "calendar_window_uncovered",
+  "busy_cache_drift",
   "schedule_parity_drift",
   "agents_on_unset_hours",
   "agents_awaiting_activation",
@@ -158,6 +160,12 @@ export const ALERT_FIELDS: {
     help: "A tier rests on 1 to 2 bookable agents.",
   },
   {
+    key: "pool_nearly_full",
+    urgency: "notice",
+    label: "Nearly full pool cooldown",
+    help: "Fewer than 10% of a pool's possible starts today are still open. A full calendar is good news; this is the nudge to add coverage before leads run out of times.",
+  },
+  {
     key: "agents_without_schedule",
     urgency: "whisper",
     label: "Schedule-less agent cooldown",
@@ -204,6 +212,12 @@ export const ALERT_FIELDS: {
     urgency: "page",
     label: "Calendar refresh not covering the booking window",
     help: "A bookable agent's calendar has not been refreshed far enough ahead to cover the days the booker offers, so a lead could book an hour that calendar already has taken.",
+  },
+  {
+    key: "busy_cache_drift",
+    urgency: "page",
+    label: "Calendar busy time missing from the cache",
+    help: "An agent's Google calendar has held busy time for at least 30 minutes that Slate's busy cache still does not have, so the booker can offer that agent a time they already have taken. The calendar sync repairs it; nothing here writes busy time.",
   },
   {
     key: "schedule_parity_drift",
@@ -415,6 +429,10 @@ export const MONITOR_DEFAULTS = {
     // Proactive staffing nudge (#569): a slow, once-a-day whisper. Staffing
     // changes over days, so a long cooldown keeps it from repeating every tick.
     thin_tier_staffing: 24 * 60 * 60_000,
+    // A nearly full pool (#1256): a whisper about today, so at most twice a working
+    // day. Daily would hide a second pool filling up that afternoon behind the
+    // morning's notice; hourly would repeat the same pools all day.
+    pool_nearly_full: 4 * 60 * 60_000,
     // Schedule-coverage gap (#838): the check self-heals first, so an alert means
     // the fill is broken and persists until a human acts. Once-a-day whisper, like
     // the thin-tier nudge; the settings screen can tighten it.
@@ -457,6 +475,10 @@ export const MONITOR_DEFAULTS = {
     // (#1262): stays wrong until the rotation reaches it or someone fixes the
     // account, so it repeats hourly like the coverage pages it sits beside.
     calendar_window_uncovered: 60 * 60_000,
+    // Busy time missing from the cache (#1591): it stays wrong until the sync
+    // reaches the calendar or someone fixes the account, so hourly, like the
+    // calendar window page it sits beside.
+    busy_cache_drift: 60 * 60_000,
     // Slate against cal.com drift (#2031). The sweep runs once a day, so anything
     // under a day cannot make it repeat and anything over it silences a day's
     // findings. A day means at most one page per sweep while drift sits unfixed,

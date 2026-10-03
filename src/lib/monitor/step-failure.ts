@@ -139,6 +139,7 @@ const GATE_NAMES: Record<keyof ReturnType<typeof monitorSetupGates>, string> = {
   rosterCoverage: "the roster coverage check",
   calendarWindow: "the calendar hydration check",
   busyDrift: "the busy drift sampler",
+  poolFullness: "the nearly full pool whisper",
   tierStaffing: "the debt tier staffing alarm",
   belowLeadTier: "the booking below the lead's Salesforce tier check",
   offsiteOrigin: "the real booking from an off site host page check",

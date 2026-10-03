@@ -119,6 +119,28 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
   }
 }
 
+// --- the nearly full pool whisper (#1256) --------------------------------------
+// It reads the supply report, whose maximum is derived from the org's week, whose
+// offered times are the cached slot rows, and whose day columns come from the
+// horizon. Each of those unreadable stands it down; the bucket list, the working
+// hours and the settings do not (the report degrades without the list, and a
+// cooldown alone is no reason to go dark). Both directions, per read.
+{
+  const needs: Record<string, boolean> = {
+    buckets: true,
+    slotHealth: false,
+    businessHours: false,
+    workingHours: true,
+    horizonDays: false,
+    settings: true,
+  };
+  for (const [read, runs] of Object.entries(needs)) {
+    const g = monitorSetupGates(with_({ [read]: false }));
+    eq(g.poolFullness.run, runs, `${read} unreadable: nearly full pool whisper runs = ${runs}`);
+  }
+  assert(monitorSetupGates(ALL_SETUP_READ).poolFullness.run, "a healthy tick runs the nearly full pool whisper");
+}
+
 // --- the readiness record must be exhaustive ----------------------------------
 // A read added to the handler and forgotten here would default to "readable" and
 // silently let a check judge with a guess, which is the exact defect being closed.
@@ -190,6 +212,8 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
     availabilityScan: true,
     calendarWindow: true,
     busyDrift: true,
+    // #1256: a whisper whose only setting is its cooldown.
+    poolFullness: true,
     tierStaffing: true,
     offsiteOrigin: true,
     // An armed switch (and, for the volume alarm, the floors) decides whether each

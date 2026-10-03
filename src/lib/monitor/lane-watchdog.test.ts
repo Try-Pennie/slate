@@ -144,6 +144,7 @@ const healthy = () => ({
   // every monitor tick its read works, so a healthy fleet has a stamp minutes old.
   "verdict:availability-scan": ago(5 * MIN),
   "verdict:calendar-window": ago(5 * MIN),
+  "verdict:busy-drift": ago(5 * MIN),
   "verdict:offsite-origin": ago(5 * MIN),
   "verdict:awaiting-activation": ago(5 * MIN),
   "verdict:stranded-hires": ago(5 * MIN),

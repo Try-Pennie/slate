@@ -626,6 +626,12 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // retry, 30 hours, and two hours of cron lateness on top makes 32. A whole day
   // with no verdict at either slot passes the bound and pages, which is the point.
   "verdict:advisor-photos": 32 * 60 * MIN,
+  // The busy drift sampler (#1591) concludes on every 5 minute tick whose live and
+  // cached reads both work for at least one agent: no time window, no traffic
+  // floor, and a clean sample is an answer. So, like the calendar window check it
+  // sits beside, its longest legitimate silence is a handful of ticks, and six
+  // hours is the same maintenance window over a failed read.
+  "verdict:busy-drift": 6 * 60 * MIN,
 };
 
 /**

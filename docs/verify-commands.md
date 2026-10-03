@@ -122,6 +122,11 @@ dead end or saw every bucket with none, never when every recompute came back nul
 Each bound is six hours, the same maintenance window as roster coverage, because
 each concludes on every tick its read works.
 
+`verdict:busy-drift` (#1591) joined when the busy drift sampler was armed, report
+only. It stamps on every tick that read both the live calendar and the cache for at
+least one agent, drift or not, and never on an unreadable side or a sample where
+every calendar errored. Its bound is six hours for the same reason as the five above.
+
 `verdict:regal-call-outcomes` (#2944) watches the call outcome ratio: outcome rows
 written to `regal_call_outcomes` against completed calls received, over two hours.
 It stamps on a judged ratio (healthy or short) and never on a window with no calls

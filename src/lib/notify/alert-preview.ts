@@ -167,6 +167,8 @@ import {
   type DatedCoverageGap,
 } from "@/lib/monitor/roster-coverage";
 import { formatThinTierNotice } from "@/lib/monitor/thin-tier";
+import { formatPoolNearlyFullNotice } from "@/lib/monitor/bucket-fullness";
+import { formatBusyDriftAlert, formatBusyDriftRecovery } from "@/lib/monitor/busy-drift-sampler";
 import { formatScheduleGapNotice } from "@/lib/monitor/schedule-coverage";
 import { formatAttributeGapNotice } from "@/lib/monitor/attribute-coverage";
 import {
@@ -1895,6 +1897,49 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: formatCalendarWindowRecovery(2),
   },
 
+  // --- busy time on a calendar the cache has not picked up (#1591) -------------
+  {
+    key: "busy_cache_drift",
+    state: "one agent's busy time missing for half an hour",
+    channel: "alert",
+    text: formatBusyDriftAlert([
+      {
+        email: "dana.ruiz@example.com",
+        userId: "u1",
+        gaps: 1,
+        gapMinutes: 20,
+        firstGapStartIso: "2026-10-02T18:30:00.000Z",
+      },
+    ]),
+  },
+  {
+    key: "busy_cache_drift",
+    state: "two agents, one with several stretches missing",
+    channel: "alert",
+    text: formatBusyDriftAlert([
+      {
+        email: "dana.ruiz@example.com",
+        userId: "u1",
+        gaps: 1,
+        gapMinutes: 20,
+        firstGapStartIso: "2026-10-02T18:30:00.000Z",
+      },
+      {
+        email: "sam.okafor@example.com",
+        userId: "u2",
+        gaps: 3,
+        gapMinutes: 95,
+        firstGapStartIso: "2026-10-03T14:00:00.000Z",
+      },
+    ]),
+  },
+  {
+    key: "busy_cache_drift",
+    state: "a full pass of the roster matches again",
+    channel: "recovery",
+    text: formatBusyDriftRecovery(),
+  },
+
   // --- an approved absence nobody has covered (#1238) -------------------------
   {
     key: "ooo_coverage_gap",
@@ -3000,6 +3045,24 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "recovery",
     text: formatEdgeLimiterRecovery(),
   },
+  // --- a pool nearly full for the day (#1256) -----------------------------------
+  {
+    key: "pool_nearly_full",
+    state: "one pool with two starts left",
+    channel: "info",
+    text: formatPoolNearlyFullNotice([
+      { label: "Low with Beyond", codes: ["121", "122"], open: 2, capacity: 21 },
+    ]),
+  },
+  {
+    key: "pool_nearly_full",
+    state: "two pools, one full and one without a name",
+    channel: "info",
+    text: formatPoolNearlyFullNotice([
+      { label: "Very High with Beyond", codes: ["421", "422"], open: 0, capacity: 18 },
+      { label: null, codes: ["999"], open: 1, capacity: 14 },
+    ]),
+  },
   {
     key: "thin_tier_staffing",
     state: "a tier is resting on one agent",
@@ -3385,6 +3448,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     [
       ["verdict:availability-scan", "the availability scan has stopped concluding"],
       ["verdict:calendar-window", "the calendar window check has stopped concluding"],
+      ["verdict:busy-drift", "the busy drift sampler has stopped concluding"],
       ["verdict:offsite-origin", "the off site origin check has stopped concluding"],
       ["verdict:awaiting-activation", "the waiting to become bookable check has stopped concluding"],
       ["verdict:regal-call-feed", "the Regal feed checks have stopped concluding"],

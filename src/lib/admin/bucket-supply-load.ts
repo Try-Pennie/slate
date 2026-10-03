@@ -32,6 +32,7 @@ import { unwrap } from "@/lib/db/result";
 import { loadBusinessHours } from "@/lib/booking/business-hours-load";
 import { readBookingHorizonDays } from "@/lib/booking/settings";
 import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
+import type { TierDepth } from "@/lib/routing/staffing-depth";
 import { log } from "@/lib/log";
 import { DateTime } from "luxon";
 import { selectAllPages } from "@/lib/supabase/paginate";
@@ -102,21 +103,7 @@ export async function loadBucketSupply(
   // disagree about who can take a bucket's bookings.
   let depthByCode: Map<string, SupplyDepth> | null = null;
   try {
-    const depths = await loadTierDepths(db, orgId, now);
-    depthByCode = new Map(
-      // The pool key and label are carried as staffing depth computed them, so
-      // the codes this page combines into one pool are exactly the codes the
-      // tiers page groups and the recompute lane computes once.
-      depths.map((d) => [
-        d.code,
-        {
-          depth: d.depth,
-          effectiveDepth: d.effectiveDepth,
-          poolKey: d.poolKey,
-          poolLabel: d.poolLabel,
-        },
-      ]),
-    );
+    depthByCode = supplyDepthMap(await loadTierDepths(db, orgId, now));
   } catch (err) {
     log.error("bucket-supply", { msg: "staffing depth unreadable" }, err);
     depthByCode = null;
@@ -162,6 +149,27 @@ export async function loadBucketSupply(
 }
 
 /**
+ * Staffing depth as the report wants it, keyed by code. The pool key and label are
+ * carried as staffing depth computed them, so the codes this page combines into
+ * one pool are exactly the codes the tiers page groups and the recompute lane
+ * computes once. Shared with the nearly full pool whisper (#1256), which builds
+ * the same report from the monitor's own reads.
+ */
+export function supplyDepthMap(depths: TierDepth[]): Map<string, SupplyDepth> {
+  return new Map(
+    depths.map((d) => [
+      d.code,
+      {
+        depth: d.depth,
+        effectiveDepth: d.effectiveDepth,
+        poolKey: d.poolKey,
+        poolLabel: d.poolLabel,
+      },
+    ]),
+  );
+}
+
+/**
  * The start times already booked, by bucket code and then by date.
  *
  * CANCELLED bookings are excluded, because a cancelled time is free again and
@@ -172,9 +180,10 @@ export async function loadBucketSupply(
  * Bounded to the window the page draws, which is what keeps this read small: a
  * fortnight of one org's bookings rather than the whole table.
  */
-async function loadBookedTimes(
+export async function loadBookedTimes(
   db: ReturnType<typeof supabaseAdmin>,
-  orgId: string,
+  /** Undefined reads every org, as the single org monitor lane does. */
+  orgId: string | undefined,
   hours: Awaited<ReturnType<typeof loadBusinessHours>>,
   horizonDays: number,
   now: Date,
@@ -190,15 +199,15 @@ async function loadBookedTimes(
   // no shares at all.
   const rows = await selectAllPages<{ starts_at: string; buckets: { code: string } | null }>(
     "bucket supply booked times",
-    (from, to) =>
-      db
+    (from, to) => {
+      const q = db
         .from("bookings")
         .select("starts_at, buckets!inner(code)")
-        .eq("org_id", orgId)
         // #2073: a share of a bucket's ROUTED demand. A booking through an agent's
         // own link sits in a bucket only because a booking needs one, so it is not
         // demand that bucket's pool served.
-        .eq("kind", "routed")
+        .eq("kind", "routed");
+      return (orgId === undefined ? q : q.eq("org_id", orgId))
         // A cancelled time is free again, so counting it would report a bucket
         // as busier than it is. `rescheduled` is NOT excluded: that marks a
         // booking that MOVED, and the row carries the time it moved to, so its
@@ -206,7 +215,8 @@ async function loadBookedTimes(
         .neq("status", "cancelled")
         .gte("starts_at", start.toISO() ?? "")
         .lt("starts_at", end.toISO() ?? "")
-        .range(from, to),
+        .range(from, to);
+    },
   );
 
   const out = new Map<string, Map<string, string[]>>();
