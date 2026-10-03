@@ -63,6 +63,7 @@ import {
   type BelowFinding,
 } from "@/lib/monitor/below-lead-tier";
 import { formatOffsiteOriginAlert, type OffsiteFinding } from "@/lib/monitor/offsite-origin";
+import { BUDGET_WARN_SHARE, judgeBudgets, sloBudgetClearText, sloBudgetPageText } from "@/lib/monitor/slo-budget";
 import {
   findCrossSystemBookings,
   formatCrossSystemBookingAlert,
@@ -756,6 +757,19 @@ function previewPhotoPlan(over: Partial<RefreshPlan>): RefreshPlan {
   };
 }
 
+/** A budget spend from the real judge, for the #3179 previews. Throws if the fixture
+ *  is not actually half spent, so a preview can never show a page the check would not send. */
+function previewBudgetSpend(
+  name: "success" | "availability",
+  counts: { requests: number; errors: number; serverFaults: number },
+) {
+  const v = judgeBudgets({ month: "2026-10", ...counts })[name];
+  if (v.kind !== "half-spent" || v.spend.share < BUDGET_WARN_SHARE) {
+    throw new Error(`preview fixture for booking_budget:${name} is not half spent`);
+  }
+  return v.spend;
+}
+
 export const ALERT_PREVIEWS: AlertPreview[] = [
   // --- calendar sync and push watches ---------------------------------------
   {
@@ -1242,6 +1256,26 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "bookings completing again",
     channel: "recovery",
     text: formatFailureRateAllClear({ attempts: 90, failures: 2, pct: 2, windowMinutes: 60 }),
+  },
+  // #3179. Spends judged by the real judge against the documented projection, so the
+  // budget figures in the copy are the ones docs/slo.md quotes.
+  {
+    key: "booking_budget:*",
+    state: "half the month's booking success budget spent on ordinary errors",
+    channel: "alert",
+    text: sloBudgetPageText(previewBudgetSpend("success", { requests: 6200, errors: 104, serverFaults: 0 }), "2026-10"),
+  },
+  {
+    key: "booking_budget:*",
+    state: "server faults have spent half the availability budget",
+    channel: "alert",
+    text: sloBudgetPageText(previewBudgetSpend("availability", { requests: 6200, errors: 41, serverFaults: 35 }), "2026-10"),
+  },
+  {
+    key: "booking_budget:*",
+    state: "a new month, back under half",
+    channel: "recovery",
+    text: sloBudgetClearText("success", "2026-11"),
   },
   // #2593. The 2026-09-21 incident's shape: an Ultra High lead (XBC 512) with a
   // Low only agent. One state per catch-all reading, because each sends the reader

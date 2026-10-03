@@ -139,6 +139,8 @@ import {
   CATCHALL_RATE_ALERT_KEY,
 } from "@/lib/monitor/catchall-rate";
 import { readCatchallWindow, CATCHALL_WINDOW_HOURS } from "@/lib/monitor/catchall-rate-store";
+import { runSloBudgetCheck } from "@/lib/monitor/slo-budget";
+import { readMonthToDate } from "@/lib/monitor/slo-budget-store";
 import {
   topTierCascadeVerdict,
   topTierCascadeNoticeText,
@@ -1523,6 +1525,30 @@ export async function GET(req: NextRequest) {
           onError: (context, err) =>
             log.error("monitor", { msg: "booking failure rate step failed", step: context }, err),
         }),
+    );
+
+    // --- Is half a month's booking error budget spent (#3179)? ---
+    //
+    // The same population as the hourly page above, judged over the calendar month
+    // against the targets in docs/slo.md. One aggregate read per tick. Its own
+    // failure boundary (L73): a read that fails throws here and clears nothing, and
+    // a reading that cannot be right is unmeasured and sends nothing either way.
+    await steps.run("booking_budget", null, () =>
+      runSloBudgetCheck({
+        read: () => readMonthToDate(now),
+        cooldownMs: cooldownMs.booking_budget,
+        notify: (key, ms, text) => {
+          // alert-key: booking_budget:*
+          // alert-text-ok: our own copy from slo-budget.ts, built from measured
+          // counts; no error text can reach it.
+          return sendThrottledAlert(key, ms, text);
+        },
+        // alert-key: booking_budget:*
+        // all-clear-proof: scripts/test-slo-budget.ts - pins that a failed read and an
+        // impossible reading each clear nothing.
+        resolveRecovered: (recovered) => resolveRecovered(recovered),
+        log: (fields) => log.info("monitor", { msg: "booking budget", ...fields }),
+      }),
     );
 
     // --- Are leads arriving with no usable routing code (#1908)? ---

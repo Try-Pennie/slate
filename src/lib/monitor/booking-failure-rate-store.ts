@@ -13,7 +13,7 @@
 import { DateTime } from "luxon";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
-import { normalizeMix, type RawMix } from "@/lib/monitor/booking-api-outcome";
+import { normalizeMix, type OutcomeMix, type RawMix } from "@/lib/monitor/booking-api-outcome";
 import type { OutcomeReading, RateWindowState } from "@/lib/monitor/booking-failure-rate";
 import type { BookingFailureRateState } from "@/lib/db/types";
 
@@ -72,6 +72,29 @@ export async function saveRateState(state: RateWindowState): Promise<void> {
   if (error) throw new Error(`booking_failure_rate_state write failed: ${error.message}`);
 }
 
+/** The tally day `nowMs` falls on, in the zone the tally is bucketed in. */
+export function outcomeDay(nowMs: number): string {
+  return DateTime.fromMillis(nowMs, { zone: ROSTER_ZONE }).toISODate() ?? "";
+}
+
+/**
+ * The counted booking outcomes from `sinceDay` to today, the ONE population both the
+ * hourly failure page and the monthly error budget (#3179) judge: non-test, and not
+ * from an off site host (the two exclusions are explained below). Throws on a failed
+ * read; an empty mix is a real answer only when the read succeeded.
+ */
+export async function readCountedOutcomeMix(sinceDay: string): Promise<OutcomeMix> {
+  const raw = unwrap(
+    await supabaseAdmin().rpc("booking_api_outcome_mix", {
+      p_since: sinceDay,
+      p_include_test: false,
+      p_include_offsite: false,
+    }),
+    "booking_api_outcome_mix",
+  ) as RawMix | null;
+  return normalizeMix(raw);
+}
+
 /**
  * Today's cumulative totals, via the existing aggregate RPC (#418), which returns
  * ONE jsonb row and so is cap-safe by construction. `attempts` is every outcome
@@ -92,16 +115,8 @@ export async function saveRateState(state: RateWindowState): Promise<void> {
  * with no host recorded (the booking API, the standalone page, admin) still count.
  */
 export async function readTodayOutcomes(nowMs: number): Promise<OutcomeReading> {
-  const day = DateTime.fromMillis(nowMs, { zone: ROSTER_ZONE }).toISODate() ?? "";
-  const raw = unwrap(
-    await supabaseAdmin().rpc("booking_api_outcome_mix", {
-      p_since: day,
-      p_include_test: false,
-      p_include_offsite: false,
-    }),
-    "booking_api_outcome_mix",
-  ) as RawMix | null;
-  const mix = normalizeMix(raw);
+  const day = outcomeDay(nowMs);
+  const mix = await readCountedOutcomeMix(day);
   const failures = mix.outcomes.find((o) => o.outcome === "error")?.count ?? 0;
   const byCode: Record<string, number> = {};
   for (const e of mix.errors) byCode[e.code] = e.count;

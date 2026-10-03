@@ -507,6 +507,15 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "Customers are being turned away right now; it ends when bookings start completing again, and the monitor re-measures the window every 5 minutes.",
   },
   {
+    // #3179. One key per budget (booking success, availability), so each clears on
+    // its own.
+    key: "booking_budget:*",
+    kind: "condition",
+    // The suffix is one of the two budget names in slo-budget.ts.
+    suffix: "bounded",
+    why: "Half of a month's booking error budget is spent, which stays true for the rest of the month unless traffic outgrows it; the monitor re-reads the month every 5 minutes, so a measured month back under half (in practice the first tick of the next one) ends it.",
+  },
+  {
     // #1908. A CONDITION: an upstream page has started building booking links
     // without a routing code, and it stays true until somebody fixes that page.
     // Whoever reads the page needs to know when it is over, and the monitor
