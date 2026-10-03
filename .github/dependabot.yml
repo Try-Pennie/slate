@@ -4,9 +4,10 @@
 # Advanced Security) must also be on for security-update PRs; this file drives
 # the scheduled version-update PRs and Action pinning.
 #
-# Cooldown (#3175): a version update is not proposed until the release has aged,
-# three days for a minor or patch release and seven for anything else (a major, or
-# a version with no semver to judge). A hijacked package is usually caught and
+# Cooldown (#3175): a version update is not proposed until the release has aged.
+# For npm that is three days for a minor or patch release and seven for anything
+# else (a major, or a version with no semver to judge). GitHub Actions wait a flat
+# seven, because Dependabot supports no semver cooldowns for that ecosystem. A hijacked package is usually caught and
 # yanked within a few days of publishing, and PRs here merge within seconds, so
 # the wait is what keeps such a release out of the tree. It holds back only
 # VERSION updates: a security update is raised at once, whatever its age. Three
