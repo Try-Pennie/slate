@@ -274,6 +274,15 @@ cannot drift into verifying different things: stamp the commit from `git rev-par
 HEAD`, deploy, then poll the live version and judge health. `APP_URL` targets
 something other than production.
 
+The version it deploys is tagged with that commit and carries the release message
+the gradual deploy writes (`slate-release-<commit>`, #3178), so the Rollback
+workflow can confirm a rollback to a hand deployed version without
+`expected_commit`. It still goes straight to 100%: the hand path is for when the
+pipeline is unavailable, and a canary stage needs that same pipeline's probe. A
+deploy made under `ALLOW_DIRTY_DEPLOY=1` is deliberately NOT tagged, because its
+stamp does not describe what shipped and a tag repeating it would let a rollback
+confirm a commit the version does not hold.
+
 Four things it refuses to do, each with its own exit code so a script can tell them
 apart:
 

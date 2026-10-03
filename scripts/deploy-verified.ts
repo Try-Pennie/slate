@@ -11,7 +11,8 @@
 // drift into verifying different things:
 //
 //   1. stamp the commit into the bundle (scripts/stamp-build-info.ts),
-//   2. `pnpm cf:deploy`,
+//   2. `pnpm cf:deploy`, with the version tagged by its commit (#3178) so the
+//      Rollback workflow can confirm it later without being told the commit,
 //   3. poll the live version and then judge health (scripts/post-deploy-probe.ts).
 //
 // It restores src/lib/build-info.ts afterwards, whatever happened. The stamp writes
@@ -66,7 +67,12 @@ if (process.env.ALLOW_DIRTY_DEPLOY === "1") {
     `\n  ALLOW_DIRTY_DEPLOY is set. The bundle will be stamped ${plan.commit}, and the` +
       `\n  working tree has changes that commit does not contain, so the version the live` +
       `\n  site reports will NOT describe what is running. Say so wherever this deploy is` +
-      `\n  recorded.\n`,
+      `\n  recorded.` +
+      (plan.deployArgs.includes("--tag")
+        ? ""
+        : `\n  The version is NOT tagged with the commit, so a later rollback to it cannot` +
+          `\n  confirm which commit serves without being told.`) +
+      `\n`,
   );
 }
 
@@ -89,7 +95,9 @@ try {
     "scripts/stamp-build-info.ts",
     plan.commit,
   ]);
-  step("build and deploy", "pnpm", ["run", "cf:deploy"]);
+  // pnpm appends these to the script's last command, `opennextjs-cloudflare deploy`,
+  // which hands unrecognised flags through to `wrangler deploy`.
+  step("build and deploy", "pnpm", ["run", "cf:deploy", ...plan.deployArgs]);
   step("post-deploy probe", "node", [
     "--experimental-strip-types",
     "scripts/post-deploy-probe.ts",

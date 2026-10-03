@@ -42,8 +42,43 @@ export interface DeployEnvironment {
 /** A refusal carries its own exit code so a shell caller can branch on which one it
  *  met, matching `pnpm verify:burst-counter`. */
 export type DeployPlan =
-  | { ok: true; commit: string; appUrl: string }
+  | {
+      ok: true;
+      commit: string;
+      appUrl: string;
+      /** Handed through `pnpm run cf:deploy` to `wrangler deploy` (#3178). */
+      deployArgs: string[];
+    }
   | { ok: false; code: number; reason: string };
+
+/**
+ * The version message a release carries, the same prefix the gradual deploy writes
+ * (#3165). The Rollback workflow refuses a version whose message marks it a canary,
+ * so a hand release says plainly that it is a release.
+ */
+export const HAND_RELEASE_MESSAGE_PREFIX = "slate-release-";
+
+/**
+ * The annotations a hand deploy gives its Worker version (#3178).
+ *
+ * The Rollback workflow (#3165) reads a version's tag to know which commit it should
+ * report once it serves, so an untagged hand deploy could only be confirmed by
+ * somebody typing the commit into the dispatch. The tag is the commit stamped into
+ * the bundle, and ONLY when the tree was seen clean: with a dirty or unreadable tree
+ * the stamp does not describe what shipped, and a tag repeating it would let the
+ * rollback confirm a commit the version does not hold. Untagged, the rollback says it
+ * could not confirm, which is the truth.
+ *
+ * No value carries a space or a quote: the adapter joins wrangler's arguments into
+ * one shell line, so anything that needed quoting would be split.
+ */
+function deployArgsFor(commit: string, cleanTree: boolean): string[] {
+  return [
+    ...(cleanTree ? ["--tag", commit] : []),
+    "--message",
+    `${HAND_RELEASE_MESSAGE_PREFIX}${commit}`,
+  ];
+}
 
 /** Production, when nothing says otherwise. */
 export const DEFAULT_APP_URL = "https://slate.trypennie.app";
@@ -118,5 +153,6 @@ export function planVerifiedDeploy(env: DeployEnvironment): DeployPlan {
       reason: `APP_URL must be an https origin; got "${appUrl}"`,
     };
   }
-  return { ok: true, commit: sha.slice(0, 12), appUrl };
+  const commit = sha.slice(0, 12);
+  return { ok: true, commit, appUrl, deployArgs: deployArgsFor(commit, env.dirty === false) };
 }
