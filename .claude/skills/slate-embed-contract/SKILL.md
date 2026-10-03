@@ -76,8 +76,9 @@ Do not refactor the `Cal` queue / param / message plumbing while restyling.
    - `Cal.ns["<ns>"]("ui", { theme, brandColor, layout, ... })`
    - `Cal.ns["<ns>"]("prerender", ...)` - accepted, no-op. Slate does NOT build
      the frame at page load the way cal.com's pre-render does; it warms the
-     availability read instead (#251), and the frame is built on the first click
-     and then KEPT (see "One frame per namespace" below).
+     availability read at render (#251), and builds the frame, hidden, on the
+     trigger's first hover, focus or touch (#2679), then KEEPS it (see "One
+     frame per namespace" and "Pre built on intent" below).
    - `Cal("on", { action: "bookingSuccessful", callback })`
    - `window.Cal.config.forwardQueryParams = true`
    - The loader stub queues commands before `widget.js` loads; keep draining
@@ -230,6 +231,26 @@ Do not refactor the `Cal` queue / param / message plumbing while restyling.
      against the frames the widget itself built; a message from any other window
      is dropped on every branch. `src/components/widget-embed.test.ts` pins all
      of it against the real file.
+
+     **Pre built on intent (#2679).** The trigger's first hover, focus or touch
+     (the same delegated listener that warms availability) builds that
+     namespace's frame hidden, so the first click only shows it: measured from a
+     local host page against production, the booker answered with times a
+     median 1ms after the click with a 1.5s hover, against 848ms before. Rules
+     that keep it invisible: until the first show the overlay is hidden with
+     `visibility:hidden` (a `display:none` frame gets a zero width viewport, so
+     the Booker would lay out at 0px), plus `aria-hidden` and `inert`; it takes
+     no focus, no key (the keydown listener exists only while shown) and no
+     scroll lock; and everything it says (`bookerViewed`, `bookerReady`,
+     `linkFailed`, `bookerReloaded`) is HELD and announced on the first show,
+     right after that click's `navigatedToBooker`, because a hover is not a
+     view. A frame replaced or never opened announces nothing. Its 12 second
+     load clock starts at the pre build, so a frame that never loads is reported
+     on the first open at once; a held timeout is dropped if the frame then
+     loads before anyone opens it. Intent never replaces an existing frame (only
+     a click does), render never pre builds (that would load a booker per button
+     on every page view), and a pre build that throws is swallowed, because the
+     click builds again on the path the error beacon watches.
 
 5. **`widget.js` stays vanilla / dependency-free.** Single IIFE served as plain
    `/widget.js`, no build step (~6KB). Do NOT import React, Tailwind, `globals.css`,
