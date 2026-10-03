@@ -12,16 +12,19 @@ import type { FramingObservation } from "@/lib/embed/frame-policy";
  * which way an unreadable one fails).
  */
 
+/** The stored switch, read once. THROWS on a failed read; each caller decides what that means. */
+async function readFrameLockColumn(): Promise<boolean> {
+  const row = unwrap(
+    await supabaseAdmin().from("booking_settings").select("frame_lock_enabled").eq("id", 1).maybeSingle(),
+    "booking_settings.frame_lock_enabled",
+  ) as Pick<BookingSettings, "frame_lock_enabled"> | null;
+  // An absent settings row is a real answer: nobody has ever turned the lock on.
+  return row?.frame_lock_enabled === true;
+}
+
 /** Is the frame lock on? One read per isolate per `FRAME_LOCK_TTL_MS`. */
 export const readFrameLock = makeFrameLockReader({
-  read: async () => {
-    const row = unwrap(
-      await supabaseAdmin().from("booking_settings").select("frame_lock_enabled").eq("id", 1).maybeSingle(),
-      "booking_settings.frame_lock_enabled",
-    ) as Pick<BookingSettings, "frame_lock_enabled"> | null;
-    // An absent settings row is a real answer: nobody has ever turned the lock on.
-    return row?.frame_lock_enabled === true;
-  },
+  read: readFrameLockColumn,
   now: () => Date.now(),
   onError: (err) => log.warn("frame-lock", { msg: "frame lock unreadable, keeping the last value read" }, err),
 });
@@ -33,11 +36,7 @@ export const readFrameLock = makeFrameLockReader({
  */
 export async function readFrameLockSetting(): Promise<boolean | null> {
   try {
-    const row = unwrap(
-      await supabaseAdmin().from("booking_settings").select("frame_lock_enabled").eq("id", 1).maybeSingle(),
-      "booking_settings.frame_lock_enabled",
-    ) as Pick<BookingSettings, "frame_lock_enabled"> | null;
-    return row?.frame_lock_enabled === true;
+    return await readFrameLockColumn();
   } catch (err) {
     log.error("frame-lock", { msg: "frame lock unreadable on the admin page" }, err);
     return null;
