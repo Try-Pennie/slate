@@ -81,6 +81,19 @@ assert(/async tail\(/.test(entry), "the tail worker exports a tail() handler");
     "and Slate's entry really exports that entrypoint as an RPC class",
   );
   assert(/async shipped\(/.test(slateEntry), "with the shipped() method the tail worker calls");
+  // Its forwarding writes a `fetch:` of its own, and the https redirect guard
+  // (scripts/test-https-redirect-wiring.ts) reads the FIRST `fetch:` in the file as the
+  // request handler. So the entrypoint sits after the default export.
+  assert(
+    slateEntry.indexOf("export class LogShippingReceipt") > slateEntry.indexOf("export default worker"),
+    "and is declared after the default export, so the request handler stays the first fetch",
+  );
+  assert(
+    !/binding\.shipped\(\)\.catch|call\.catch\(\(\) => \{\}\)/.test(
+      readFileSync(join(import.meta.dirname, "..", "src/lib/log-shipping/receipt.ts"), "utf8"),
+    ),
+    "the receipt call carries no bare catch: Promise.race already handles a late rejection",
+  );
   assert(
     /confirmReceipt\(env\.SLATE\)/.test(entry) && /SLATE\?: ReceiptBinding/.test(entry),
     "and the tail handler calls it through that binding",
