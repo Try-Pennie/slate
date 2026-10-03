@@ -72,7 +72,7 @@ assert(/pnpm audit --prod --audit-level=high/.test(daily), "it runs the producti
 assert(FULL_TREE.test(daily), "and the full tree audit at critical");
 assert(/pnpm audit --prod --audit-level=moderate/.test(daily), "and reports production moderates");
 {
-  const alertStep = daily.split(/^ {6}- /m).find((s) => /notify-dependency-audit\.ts/.test(s)) ?? "";
+  const alertStep = daily.split(/^ {6}- /m).find((s) => /run: node [^\n]*scripts\/notify-dependency-audit\.ts/.test(s)) ?? "";
   assert(alertStep.length > 0, "it runs the dependency audit alerter");
   assert(/if:\s*always\(\)/.test(alertStep), "whatever the audits exited with");
   assert(/PROD_AUDIT:\s*\$\{\{\s*steps\.prod\.outcome\s*\}\}/.test(alertStep), "handing it the production audit's outcome");

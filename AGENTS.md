@@ -137,20 +137,13 @@ for six minutes about a roster that did not exist.
 
 `cf:build` now runs `scripts/check-bundle-env.ts` after the build and fails on any
 name in that file that is not `NEXT_PUBLIC_*`, naming the offenders and the `.env`
-file they came from, never their values. It is wired to the BUILD because wrangler
-has no predeploy hook, so it stands in front of a deploy only when that deploy
-builds through `cf:build`. Until #3078 `cf:deploy` did not: it called the adapter's
-build directly, so the hand deploy this exists for skipped the check entirely while
-this section said every deploy was covered. `cf:deploy` is now
-`pnpm cf:build && opennextjs-cloudflare deploy`, and
-`scripts/test-bundle-env-guard.ts` fails any package.json script that deploys
-without running the check first. A bare `wrangler deploy` typed at a prompt is still
-outside its reach. CI and the pre-push gate build from the committed tree, which
-holds no `.env*` at all, so both are unaffected; **a build or deploy in your own
-checkout is the case this fails**, and that is the case it exists for. A hand deploy
-sets the `NEXT_PUBLIC_*` values in the shell environment instead (DEPLOY.md, 2a).
-`ALLOW_ENV_IN_BUNDLE=1` gets one local build through and says loudly that the
-result must not be deployed.
+file they came from, never their values. Wrangler has no predeploy hook, so it guards
+only a deploy that builds through `cf:build`; `cf:deploy` did not until #3078, and
+`scripts/test-bundle-env-guard.ts` now fails any package.json script that deploys
+without it. CI and the pre-push gate build from the committed tree, which holds no
+`.env*`; **a build in your own checkout is the case this fails**, so a hand deploy
+passes `NEXT_PUBLIC_*` in the shell environment (DEPLOY.md, 2a).
+`ALLOW_ENV_IN_BUNDLE=1` lets one local build through, never one to deploy.
 
 It asks a SECOND question in the same step: whether the CLIENT chunks NAME any
 deployment setting. That is not the same fault (a name is not a credential; what

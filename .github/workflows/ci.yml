@@ -440,8 +440,8 @@ jobs:
       # server action and route handler patterns. Both were clean on the tree
       # when added. p/owasp-top-ten was tried too and is NOT here: on 2026-10-03 it
       # reported three findings in workflow and Dependabot config (a shell
-      # interpolation in loadtest.yml, no update cooldown in dependabot.yml), each
-      # its own change to make before the pack can gate.
+      # interpolation in loadtest.yml, no update cooldown in dependabot.yml), so as a
+      # gate it would be red on every pull request.
       - name: Static analysis
         run: |
           semgrep scan --config p/typescript --config p/secrets \
