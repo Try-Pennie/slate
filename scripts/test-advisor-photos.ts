@@ -461,6 +461,20 @@ function deps(over: Partial<RefreshDeps> & { photos?: Record<string, { status: n
   eq(cutOut.status === "refused" && cutOut.why, "nothing-read", "a cut short run whose reads all failed is nothing read");
   eq(cutOut.status === "refused" && cutOut.deadlineReached, true, "and still says it hit its deadline");
   eq(cutOut.status === "refused" && cutOut.notReached, 1, "and how many it never reached");
+  // A permission refusal is never blamed on the clock, even when the deadline came.
+  let later2 = NOW;
+  const refusedCut = await runPhotoRefresh(
+    deps({
+      nowMs: () => later2,
+      deadlineMs: NOW + 1000,
+      getPhoto: async () => {
+        later2 += 1500;
+        return { status: 403, body: FORBIDDEN_403 };
+      },
+    }),
+  );
+  eq(refusedCut.status === "refused" && refusedCut.why, "subject-refused", "a cut short run of refusals is the subject refused");
+  eq(refusedCut.status === "refused" && refusedCut.deadlineReached, undefined, "and carries no deadline fact, since the clock is not its cause");
   const healthy = await runPhotoRefresh(deps({ deadlineMs: NOW + 10 * 60_000 }));
   eq(healthy.status === "measured" && healthy.deadlineReached, false, "a run inside its deadline does not claim one");
 }

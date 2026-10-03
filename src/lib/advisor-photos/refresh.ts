@@ -222,11 +222,14 @@ export async function runPhotoRefresh(deps: RefreshDeps, opts: RefreshOptions = 
   if (asked.length > 0 && learned.length === 0) {
     const allRefused = asked.every((r) => r.kind === "failed" && r.refused);
     const first = asked[0] as Extract<PhotoRead, { kind: "failed" }>;
+    const why: RefusedWhy = allRefused ? "subject-refused" : "nothing-read";
     return {
       status: "refused",
-      why: allRefused ? "subject-refused" : "nothing-read",
+      why,
       detail: `${asked.length} photo ${asked.length === 1 ? "read" : "reads"} failed, the first with: ${first.reason}`,
-      ...(notReached > 0 ? { deadlineReached: true, notReached } : {}),
+      // The deadline is kept only where the clock is plausibly part of the cause: a
+      // run of failed reads. A permission refusal is the subject's, never the clock's.
+      ...(why === "nothing-read" && notReached > 0 ? { deadlineReached: true, notReached } : {}),
     };
   }
 

@@ -118,6 +118,30 @@ describe("refreshAdvisorPhotosNow", () => {
     expect(text).toMatch(/40 people were not reached/);
   });
 
+  it("keeps a refusal's own reason when the run also hit its deadline, adding the time limit for nothing read", async () => {
+    lane.runAdvisorPhotoLane.mockResolvedValue({ status: "refused", why: "nothing-read", detail: "x", deadlineReached: true, notReached: 40 });
+    await expect(refreshAdvisorPhotosNow()).rejects.toThrow(/NEXT_REDIRECT:/);
+    const { outcome } = outcomeOf("photos");
+    expect(outcome!.code).toBe("nothing-read");
+    const { ok, text } = photoOutcomeText(outcome!);
+    expect(ok).toBe(false);
+    expect(text).toMatch(/Every photo read failed/);
+    expect(text).toMatch(/time limit/);
+    expect(text).toMatch(/40 people/);
+    expect(text).not.toMatch(/Read 0 people/);
+  });
+
+  it("never blames the time limit for a permission refusal", async () => {
+    lane.runAdvisorPhotoLane.mockResolvedValue({ status: "refused", why: "subject-refused", detail: "403", deadlineReached: true, notReached: 40 });
+    await expect(refreshAdvisorPhotosNow()).rejects.toThrow(/NEXT_REDIRECT:/);
+    const { outcome, raw } = outcomeOf("photos");
+    expect(outcome!.code).toBe("subject-refused");
+    expect(raw).not.toMatch(/pr=/);
+    const { text } = photoOutcomeText(outcome!);
+    expect(text).toMatch(/admin role|delegation/);
+    expect(text).not.toMatch(/time limit/);
+  });
+
   it("says why when the run was refused", async () => {
     lane.runAdvisorPhotoLane.mockResolvedValue({ status: "refused", why: "no-subject", detail: "x" });
     await expect(refreshAdvisorPhotosNow()).rejects.toThrow(/NEXT_REDIRECT:/);
@@ -180,6 +204,16 @@ describe("reading an outcome back from the address", () => {
     expect(photoOutcomeFromParams({ photo: "repeated", pn: "lots" }, "photo")).toBeNull();
   });
 
+  it("accepts cut-short only on the roster's parameter, never on one person's", () => {
+    const counts = { pa: "1", pg: "0", pc: "0", pl: "0", pu: "0", pf: "0", pm: "0", pd: "0", pr: "3" };
+    expect(photoOutcomeFromParams({ photos: "cut-short", ...counts }, "photos")?.code).toBe("cut-short");
+    expect(photoOutcomeFromParams({ photo: "cut-short", ...counts }, "photo")).toBeNull();
+    expect(photoOutcomeFromParams({ photo: "done", ...counts }, "photo")).toBeNull();
+    // The time limit clause rides only on nothing read.
+    expect(photoOutcomeFromParams({ photos: "subject-refused", pr: "3" }, "photos")).toBeNull();
+    expect(photoOutcomeFromParams({ photos: "nothing-read", pr: "3" }, "photos")?.notReached).toBe(3);
+  });
+
   it("round trips every code it can write", () => {
     for (const code of PHOTO_OUTCOME_CODES) {
       const o = code === "done"
@@ -187,7 +221,8 @@ describe("reading an outcome back from the address", () => {
         : code === "cut-short"
           ? { code, counts: { attempted: 1, gained: 1, changed: 0, lost: 0, unchanged: 0, failed: 0, notInDirectory: 0, deleted: 0 }, held: false, notReached: 4 }
           : code === "repeated" ? { code, holders: 3 } : { code };
-      const back = photoOutcomeFromParams(Object.fromEntries(new URLSearchParams(photoOutcomeQuery(o, "photo"))), "photo");
+      const param = code === "done" || code === "cut-short" ? "photos" : "photo";
+      const back = photoOutcomeFromParams(Object.fromEntries(new URLSearchParams(photoOutcomeQuery(o, param))), param);
       expect(back).toEqual(o);
       expect(photoOutcomeText(back!).text.length).toBeGreaterThan(10);
     }

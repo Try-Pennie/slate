@@ -163,6 +163,13 @@ describe("the advisor photo lane", () => {
     expect(h.sent[0]!.text).toMatch(/40 people/);
   });
 
+  it("never adds the time limit to a permission refusal's alert", async () => {
+    h.outcome = { status: "refused", why: "subject-refused", detail: "403", deadlineReached: true, notReached: 40 };
+    await runAdvisorPhotoLane("cron");
+    expect(h.sent[0]!.text).toMatch(/admin role|delegation/);
+    expect(h.sent[0]!.text).not.toMatch(/time limit/);
+  });
+
   it("keeps the lock longer than the run's own deadline", () => {
     expect(ADVISOR_PHOTOS_LOCK_TTL_MS).toBeGreaterThan(ADVISOR_PHOTOS_RUN_DEADLINE_MS + 2 * 60_000);
   });

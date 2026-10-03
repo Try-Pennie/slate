@@ -40,7 +40,7 @@ export function photosUnreadAlert(
   }
   // A run whose reads all failed AND that hit its time limit: both facts, because
   // a slow Google is the likelier cause of the pair than a broken one.
-  const cut = notReached > 0
+  const cut = why === "nothing-read" && notReached > 0
     ? ` The run also reached its time limit, so ${plural(notReached, "person was", "people were")} never asked at all.`
     : "";
   return `${head} ${REFUSED[why]}${cut}`;
@@ -141,9 +141,7 @@ const COUNT_PARAMS = {
 } as const;
 type CountName = keyof typeof COUNT_PARAMS;
 
-function emptyCounts(): Record<CountName, number> {
-  return Object.fromEntries((Object.keys(COUNT_PARAMS) as CountName[]).map((k) => [k, 0])) as Record<CountName, number>;
-}
+
 
 export interface PhotoOutcome {
   code: PhotoOutcomeCode;
@@ -152,7 +150,7 @@ export interface PhotoOutcome {
   held?: boolean;
   /** For "repeated": how many people hold the image. */
   holders?: number;
-  /** For "cut-short": how many people the run never reached. */
+  /** For "cut-short", and "nothing-read" that also hit the deadline: how many people the run never reached. */
   notReached?: number;
 }
 
@@ -164,10 +162,11 @@ export function photoOutcome(
   if (outcome.status === "skipped") return { code: "busy" };
   if (outcome.status === "failed") return { code: "save-failed" };
   if (outcome.status === "refused") {
-    // A refusal that was also cut short reads as cut short: the remedy is to run it
-    // again, and the alert carries the refusal itself.
-    if (scope === "all" && outcome.deadlineReached) {
-      return { code: "cut-short", counts: emptyCounts(), held: false, notReached: outcome.notReached ?? 0 };
+    // A refusal keeps its own outcome and reason. The time limit rides on it only
+    // for nothing read, where a slow Google is plausibly the cause; never on a
+    // permission refusal. `cut-short` is for a run that measured.
+    if (outcome.why === "nothing-read" && outcome.deadlineReached) {
+      return { code: "nothing-read", notReached: outcome.notReached ?? 0 };
     }
     return { code: outcome.why };
   }
@@ -214,6 +213,10 @@ export function photoOutcomeFromParams(
   const one = (k: string) => (typeof sp[k] === "string" ? (sp[k] as string) : undefined);
   const code = one(param);
   if (!code || !(PHOTO_OUTCOME_CODES as readonly string[]).includes(code)) return null;
+  // A whole roster run's outcomes belong to the roster's parameter only.
+  if ((code === "done" || code === "cut-short") && param !== "photos") return null;
+  // The not reached count belongs to cut-short and nothing-read alone.
+  if (one("pr") !== undefined && code !== "cut-short" && code !== "nothing-read") return null;
   const out: PhotoOutcome = { code: code as PhotoOutcomeCode };
   if (code === "done" || code === "cut-short") {
     const counts = {} as Record<CountName, number>;
@@ -225,7 +228,7 @@ export function photoOutcomeFromParams(
     out.counts = counts;
     out.held = one("ph") === "1";
   }
-  if (code === "cut-short") {
+  if (code === "cut-short" || (code === "nothing-read" && one("pr") !== undefined)) {
     const n = count(one("pr"));
     if (n === null) return null;
     out.notReached = n;
@@ -262,6 +265,12 @@ export function photoOutcomeText(o: PhotoOutcome): { ok: boolean; text: string }
     return {
       ok: false,
       text: `Google's photo for this person is the same image ${o.holders ?? 0} people hold, so it may be a placeholder and was not stored.`,
+    };
+  }
+  if (o.code === "nothing-read" && o.notReached !== undefined) {
+    return {
+      ok: false,
+      text: `${ONE_TEXT["nothing-read"].text} The run also reached its time limit, so ${plural(o.notReached, "person was", "people were")} never asked.`,
     };
   }
   if (o.code !== "done" && o.code !== "cut-short") return ONE_TEXT[o.code];
