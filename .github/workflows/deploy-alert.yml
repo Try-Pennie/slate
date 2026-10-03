@@ -18,6 +18,11 @@ jobs:
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
+    # Job level, so it replaces the repo default: checkout reads contents, and the
+    # step below reads which jobs of the failed run concluded failure.
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -40,8 +45,32 @@ jobs:
         with:
           node-version: 24
 
+      # #3087: WHICH jobs failed, because the remedies differ. A red security scan on
+      # main fails the run without holding back the deploy, so "deploy failed, the live
+      # site may not have updated" would be false while the commit the scan objected to
+      # is live. gh and jq are on the runner image, so this adds no download. A read
+      # that fails is recorded as `unknown`, never as an empty list: the notifier then
+      # sends the generic message, which claims nothing about which job it was.
+      - name: Read which jobs failed
+        id: jobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -uo pipefail
+          if failed="$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
+            --jq '[.jobs[] | select(.conclusion == "failure") | .name] | join(",")')"; then
+            echo "failed jobs: ${failed:-none reported}"
+          else
+            echo "::warning::could not read the failed run's jobs, so the alert will not name them"
+            failed=unknown
+          fi
+          echo "failed=$failed" >> "$GITHUB_OUTPUT"
+
       - name: Post Slack alert
         env:
+          FAILED_JOBS: ${{ steps.jobs.outputs.failed }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_ALERTS_CHANNEL: ${{ vars.SLACK_ALERTS_CHANNEL }}
           WORKFLOW_NAME: ${{ github.event.workflow_run.name }}

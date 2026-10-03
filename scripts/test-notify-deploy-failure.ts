@@ -45,6 +45,39 @@ assert(
   "the shared house-style check ran every one of its assertions",
 );
 
+// --- #3087: the copy says WHICH job failed, because the remedies differ ---
+// A red security scan on main fails the CI run without holding back the deploy, so
+// "deploy failed, the live site may not have updated" would send the reader to the
+// wrong problem while the commit the scan objected to is already live (L11).
+{
+  const scan = buildDeployFailureMessage({ ...ctx, failedJobs: ["security-scan"] });
+  assert(/security scan/i.test(scan), "a scan-only failure says the security scan failed");
+  assert(!/deploy failed/i.test(scan), "and does NOT say the deploy failed");
+  assert(/live/i.test(scan) && /rotate/i.test(scan), "it says the commit is live and to rotate anything found");
+  assert(scan.includes(ctx.runUrl) && scan.includes("abc1234"), "and still links the run and names the commit");
+  assert(
+    assertHouseStyle(assert, scan, "scan message") === HOUSE_STYLE_CHECKS,
+    "the scan message passes the house style too",
+  );
+
+  const both = buildDeployFailureMessage({ ...ctx, failedJobs: ["deploy", "security-scan"] });
+  assert(/deploy failed/i.test(both), "a failed deploy alongside the scan still leads with the deploy");
+  assert(/deploy, security-scan/.test(both), "and names every failed job");
+
+  const unknown = buildDeployFailureMessage({ ...ctx, failedJobs: null });
+  assert(unknown === text, "when the jobs could not be read the message is the generic one, claiming nothing more");
+  const none = buildDeployFailureMessage({ ...ctx, failedJobs: [] });
+  assert(none === text, "and an empty list is read the same way, not as a scan failure");
+
+  const env = readContextFromEnv({ FAILED_JOBS: "deploy,vitest (2)" });
+  assert(
+    JSON.stringify(env.failedJobs) === JSON.stringify(["deploy", "vitest (2)"]),
+    "FAILED_JOBS is split on commas, keeping a matrix job's name whole",
+  );
+  assert(readContextFromEnv({}).failedJobs === null, "an absent FAILED_JOBS is unknown, not empty");
+  assert(readContextFromEnv({ FAILED_JOBS: "unknown" }).failedJobs === null, "as is the workflow's own unknown marker");
+}
+
 // --- env reader maps every field ---
 const parsed = readContextFromEnv({
   WORKFLOW_NAME: "CI",

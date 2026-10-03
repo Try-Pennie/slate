@@ -11,7 +11,9 @@
 // a run on `main` is what DEPLOYS to production, so cancelling one could interrupt a
 // deploy mid-flight. Both are pinned here.
 // Run: node --experimental-strip-types scripts/test-ci-workflow.ts
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assert, finish } from "./lib/harness.ts";
 
@@ -249,7 +251,6 @@ assert(fanInNeeds.length > 0, "#1592: the `ci` job is a fan-in with a `needs` li
 const FAN_IN_EXEMPT: Record<string, string> = {
   ci: "the fan-in itself",
   deploy: "runs AFTER the gate (needs: [ci, migration-drift]), it is not one of its legs",
-  "security-scan": "detective by design (#1042): its rule packs are fetched at run time, so a newly published rule must not block a deploy",
 };
 
 for (const name of jobNames) {
@@ -290,11 +291,12 @@ assert(
   "#1592: the fan-in runs `if: always()`, so a failed leg produces a FAILED check rather than a skipped one",
 );
 // ...and `always()` alone passes green regardless, so the job must actually judge
-// the legs. Derived from `needs.*.result`, never a hand-listed set of job names,
-// or adding a leg would leave it unjudged (L41).
+// the legs. Derived from `needs` itself (`needs.*.result`, or `toJSON(needs)` since
+// #3087 named one leg), never a hand-listed set of job names, or adding a leg would
+// leave it unjudged (L41).
 assert(
-  /needs\.\*\.result/.test(fanIn),
-  "#1592: the fan-in judges its legs via `needs.*.result` (derived from the needs list, so a new leg is judged without editing the check)",
+  /needs\.\*\.result/.test(fanIn) || /toJSON\(needs\)/.test(fanIn),
+  "#1592: the fan-in judges its legs from `needs` itself (derived from the needs list, so a new leg is judged without editing the check)",
 );
 assert(
   /exit 1/.test(fanIn),
@@ -304,6 +306,65 @@ assert(
   /!=\s*"success"/.test(fanIn) || /!=\s*'success'/.test(fanIn),
   "#1592: the fan-in requires each leg to be exactly `success`, so a skipped or cancelled leg is not read as a pass",
 );
+
+// --- #3087: security-scan gates a pull request and never the deploy ------------
+// It is a leg of the fan-in, judged on a pull_request and warned about on any other
+// event, and it is not in deploy's needs: its rule packs are fetched at run time,
+// so a newly published rule must not hold back an emergency fix. The fan-in's
+// shell is EXTRACTED from this file and run against hand written `needs` payloads,
+// so what is proven is what ships (the same pattern as test-guard-unrun-alert.ts).
+{
+  assert(fanInNeeds.includes("security-scan"), "#3087: security-scan is a leg of the `ci` fan-in");
+  const deployNeeds = jobBlock("deploy").match(/^\s*needs:\s*\[([^\]]*)\]/m)?.[1] ?? "";
+  assert(deployNeeds.trim().length > 0, "#3087: the deploy job's needs are readable");
+  assert(!/security-scan/.test(deployNeeds), "#3087: deploy does NOT need security-scan directly");
+
+  const steps = jobSteps(fanIn);
+  const step = steps.find((st) => /name:\s*Every CI leg succeeded/.test(st)) ?? "";
+  const runAt = step.search(/^ {8}run: \|\n/m);
+  assert(runAt > 0, "#3087: the fan-in step has a `run: |` block to extract");
+  const body = step
+    .slice(runAt)
+    .split("\n")
+    .slice(1)
+    .filter((l) => l.startsWith("          ") || l.trim() === "")
+    .map((l) => l.slice(10))
+    .join("\n");
+  assert(/PR_ONLY_LEGS="security-scan"/.test(body) && body.split("\n").length > 15, "#3087: the extraction found the real script");
+
+  const dir = mkdtempSync(join(tmpdir(), "ci-fan-in-"));
+  const script = join(dir, "fan-in.sh");
+  writeFileSync(script, body);
+  const legs = (over: Record<string, string>) =>
+    JSON.stringify(
+      Object.fromEntries(
+        ["static-checks", "node-tests", "vitest", "build", "security-scan"].map((n) => [
+          n,
+          { result: over[n] ?? "success", outputs: {} },
+        ]),
+      ),
+    );
+  const fanInRun = (event: string, needs: string) =>
+    spawnSync("bash", [script], { env: { PATH: process.env.PATH ?? "", EVENT_NAME: event, NEEDS: needs }, encoding: "utf8" });
+
+  const green = fanInRun("pull_request", legs({}));
+  assert(green.status === 0, `#3087: every leg green passes on a pull request (exit ${green.status}, ${green.stderr})`);
+  const prRed = fanInRun("pull_request", legs({ "security-scan": "failure" }));
+  assert(prRed.status === 1, "#3087: a red security-scan FAILS the fan-in on a pull request");
+  assert(/security-scan=failure/.test(prRed.stdout), "#3087: and names it");
+  const mainRed = fanInRun("push", legs({ "security-scan": "failure" }));
+  assert(mainRed.status === 0, "#3087: on a push to main a red security-scan does not hold back the deploy");
+  assert(/::warning::security-scan/.test(mainRed.stdout), "#3087: and is warned about rather than passed in silence");
+  const mainBuildRed = fanInRun("push", legs({ build: "failure", "security-scan": "failure" }));
+  assert(mainBuildRed.status === 1, "#3087: the exemption covers security-scan ONLY, so a red build still fails on main");
+  const skipped = fanInRun("pull_request", legs({ vitest: "skipped" }));
+  assert(skipped.status === 1, "#1592: a skipped leg is not a pass");
+  const empty = fanInRun("pull_request", "{}");
+  assert(empty.status === 1, "#1592: reading no legs at all fails rather than passing green");
+  const garbled = fanInRun("pull_request", "not json");
+  assert(garbled.status === 1, "#3087: an unreadable needs payload fails rather than passing green");
+  rmSync(dir, { recursive: true, force: true });
+}
 
 // The deploy still hangs off the fan-in, so a broken leg cannot ship.
 assert(
