@@ -146,3 +146,49 @@ export function judgeBrowserPolicies(rows: readonly PolicyRow[]): { unexpected: 
   ).map((a) => `${a.table}: ${a.policy}`);
   return { unexpected, missing };
 }
+
+/**
+ * The public tables whose browser grant a migration deliberately takes back, each
+ * with its reason. Every OTHER table must still hold the platform's default INSERT
+ * for anon and authenticated, so a refused insert there is RLS refusing it; on these
+ * the refusal is the revoke, and RLS is not what is being measured.
+ */
+export const BROWSER_GRANT_EXEMPT: readonly { table: string; reason: string }[] = [
+  {
+    table: "advisor_photos",
+    reason: "0156 revokes all from anon and authenticated, because default privileges would otherwise grant the image table to the browser roles (L124).",
+  },
+];
+
+/**
+ * The tables that lack the browser INSERT grant must be EXACTLY the exempt list,
+ * in both directions: a table losing its grant without a recorded reason hides its
+ * RLS behind a missing grant, and an exemption whose revoke is gone is stale.
+ */
+export function judgeGrantExemptions(ungranted: readonly string[]): { unexplained: string[]; stale: string[] } {
+  const exempt = new Set(BROWSER_GRANT_EXEMPT.map((e) => e.table));
+  return {
+    unexplained: ungranted.filter((t) => !exempt.has(t)),
+    stale: [...exempt].filter((t) => !ungranted.includes(t)),
+  };
+}
+
+/**
+ * Whether one browser insert was refused for the right reason. On a table holding
+ * the grant only RLS counts: a "permission denied" there would mean the grant went
+ * missing, which is not RLS working. On an exempt table the revoke is the refusal.
+ */
+export function browserWriteRefused(table: string, outcome: WriteOutcome): boolean {
+  const exempt = BROWSER_GRANT_EXEMPT.some((e) => e.table === table);
+  return exempt ? outcome === "refused-by-grant" || outcome === "refused-by-rls" : outcome === "refused-by-rls";
+}
+
+/**
+ * Which of `names` the source never CALLS. Import declarations are blanked first, so
+ * a name that is imported and no longer used reads as missing. A name followed by
+ * `(` is a call; a constant counts when it is passed as an argument, `fn(NAME)`.
+ */
+export function missingCalls(src: string, names: readonly string[]): string[] {
+  const body = src.replace(/^import\b[\s\S]*?from\s*["'][^"']+["'];?/gm, "");
+  return names.filter((n) => !new RegExp(`\\b${n}\\s*\\(|\\(\\s*${n}\\s*[,)]`).test(body));
+}

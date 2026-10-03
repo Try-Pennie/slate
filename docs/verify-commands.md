@@ -1646,8 +1646,11 @@ table a backfill left behind) could merge unnoticed.
 It starts the `supabase/postgres` image in Docker, which carries the platform's roles
 and its DEFAULT GRANTS (every table `postgres` creates in `public` is granted to anon
 and authenticated the moment it exists, L714), and refuses to judge anything on an
-image without them, since a refusal measured there would be a missing grant rather
-than RLS. It creates the CLI's history table, applies every `NNNN_*.sql` as
+image without them (exit 2, UNMEASURED, like a missing Docker), since a refusal
+measured there would be a missing grant rather than RLS. Every public table must
+still hold the browser INSERT grant except those in `BROWSER_GRANT_EXEMPT`, each
+with its reason (today only `advisor_photos`, whose grant 0156 revokes), and on every
+other table only an RLS refusal counts. It creates the CLI's history table, applies every `NNNN_*.sql` as
 `postgres`, one transaction per file with the history row `db push` writes, and then
 checks: every version reads back through `applied_migration_versions()`; every public
 table has RLS on; the only policy a browser role can use is the allowlisted self read
@@ -1681,5 +1684,6 @@ As of 2026-10-03 all 157 migrations replay from empty in about 6 seconds and eve
 check passes. Seen failing on planted controls: a migration altering
 `availability_rules_backup_1255` (a table only production holds), a browser policy
 on bookings, RLS turned off on one table, a SECURITY DEFINER function granted to anon,
-and a plain `postgres:17-alpine` image with no default grants.
+a grant revoked from bookings with no recorded reason, and a plain
+`postgres:17-alpine` image with no default grants (exit 2).
 

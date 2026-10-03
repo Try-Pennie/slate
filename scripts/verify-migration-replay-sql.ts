@@ -40,8 +40,10 @@ import { join } from "node:path";
 import { startThrowawayPostgres } from "./lib/throwaway-postgres.ts";
 import {
   CLI_HISTORY_TABLE_SQL,
+  browserWriteRefused,
   classifyWriteOutcome,
   judgeBrowserPolicies,
+  judgeGrantExemptions,
   judgeDefaultGrants,
   migrationBatch,
   migrationPlan,
@@ -77,24 +79,31 @@ try {
   `)).map(([owner, schema, type, a]) => ({ owner: owner ?? "", schema: schema ?? "", type: type ?? "", acl: a ?? "" }));
   const missingGrants = judgeDefaultGrants(acl);
   if (missingGrants.length > 0) {
-    for (const m of missingGrants) console.error(`FAIL: ${m} (image ${IMAGE})`);
-    throw new Error("UNMEASURED: nothing below could tell RLS from a missing grant on this image");
+    // Not a failed check: nothing was measured, so it says UNMEASURED and exits 2
+    // like a missing Docker (L411). The workflow fails on any non-zero exit.
+    for (const m of missingGrants) console.error(`UNMEASURED: ${m} (image ${IMAGE})`);
+    console.error("UNMEASURED: nothing below could tell RLS from a missing grant on this image, so nothing was proved.");
+    pg.stop();
+    process.exit(2);
   }
-  assert(true, `${IMAGE} carries the platform's default grants to anon, authenticated and service_role`);
+  eq(missingGrants, [], `${IMAGE} carries the platform's default grants to anon, authenticated and service_role`);
 
   // --- the replay ------------------------------------------------------------------
   sql(CLI_HISTORY_TABLE_SQL);
   const started = Date.now();
+  let applied = 0;
   for (const m of plan.files) {
     try {
       sql(migrationBatch(m, readFileSync(join(DIR, m.file), "utf8")), undefined, { singleTransaction: true });
+      applied++;
     } catch (err) {
       const why = String((err as { stderr?: string }).stderr ?? err).trim().split("\n").slice(-4).join("\n  ");
       console.error(`FAIL: replay from empty stops at ${m.file}. Every migration before it applied.\n  ${why}`);
       throw new Error(`${m.file} does not apply to an empty database`);
     }
   }
-  assert(true, `all ${plan.files.length} migrations applied to an empty database in ${Math.round((Date.now() - started) / 1000)}s`);
+  eq(applied, plan.files.length,
+    `every migration applied to an empty database (${Math.round((Date.now() - started) / 1000)}s)`);
 
   const recorded = sql("select array_to_string(applied_migration_versions(), ',');", "service_role").split(",");
   const unrecorded = plan.files.map((f) => f.version).filter((v) => !recorded.includes(v));
@@ -113,12 +122,16 @@ try {
     "every public table has row level security enabled",
   );
   // The precondition, measured on the replayed tables rather than on the ACL alone:
-  // the browser roles really hold the grant, so the refusals below are RLS.
-  const granted = Number(sql(`select count(*) from pg_class
-    where relnamespace = 'public'::regnamespace and relkind in ('r', 'p')
-      and has_table_privilege('anon', oid, 'insert');`));
-  assert(granted >= tables.length - 2,
-    `anon holds INSERT on ${granted} of ${tables.length} tables, so a refused insert below is RLS refusing it rather than a missing grant`);
+  // each browser role holds INSERT on every table except the named exemptions, so a
+  // refused insert below is RLS refusing it rather than a missing grant.
+  for (const role of ["anon", "authenticated"]) {
+    const ungranted = sql(`select relname from pg_class
+      where relnamespace = 'public'::regnamespace and relkind in ('r', 'p')
+        and not has_table_privilege('${role}', oid, 'insert') order by 1;`).split("\n").filter(Boolean);
+    const exemptions = judgeGrantExemptions(ungranted);
+    eq(exemptions.unexplained, [], `${role} holds INSERT on every public table outside BROWSER_GRANT_EXEMPT, so RLS is what refuses it`);
+    eq(exemptions.stale, [], `every table in BROWSER_GRANT_EXEMPT really has its ${role} grant revoked`);
+  }
 
   const policies = rows(sql("select tablename, policyname, cmd, roles::text from pg_policies where schemaname = 'public';"))
     .map(([table, policy, cmd, roles]) => ({ table: table ?? "", policy: policy ?? "", cmd: cmd ?? "", roles: roles ?? "" }));
@@ -131,9 +144,9 @@ try {
     const through: string[] = [];
     for (const t of tables) {
       const outcome = classifyWriteOutcome(sqlError(`insert into public.${t} default values;`, role));
-      if (outcome !== "refused-by-rls" && outcome !== "refused-by-grant") through.push(`${t} (${outcome})`);
+      if (!browserWriteRefused(t, outcome)) through.push(`${t} (${outcome})`);
     }
-    eq(through, [], `as ${role}, an insert into each of the ${tables.length} public tables is refused`);
+    eq(through, [], `as ${role}, an insert into each of the ${tables.length} public tables is refused, by RLS on every table holding the grant`);
   }
 
   // --- the one browser read, both directions -----------------------------------------

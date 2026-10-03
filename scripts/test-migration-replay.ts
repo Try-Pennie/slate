@@ -8,11 +8,15 @@
 // from one that got past RLS, and which browser policies are allowed to exist.
 //
 // Run: node --experimental-strip-types scripts/test-migration-replay.ts
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  BROWSER_GRANT_EXEMPT,
   BROWSER_POLICY_ALLOWLIST,
+  browserWriteRefused,
   classifyWriteOutcome,
+  judgeGrantExemptions,
+  missingCalls,
   judgeBrowserPolicies,
   judgeDefaultGrants,
   migrationBatch,
@@ -105,16 +109,53 @@ import { assert, eq, finish } from "./lib/harness.ts";
 // docs/verify-commands.md). What this pins offline is the wiring: the precondition
 // is judged BEFORE any migration is applied, so an image without the default grants
 // is refused rather than measured, and every judge above is actually called.
+const JUDGES = [
+  "migrationPlan",
+  "migrationBatch",
+  "judgeDefaultGrants",
+  "classifyWriteOutcome",
+  "browserWriteRefused",
+  "judgeGrantExemptions",
+  "judgeBrowserPolicies",
+  "CLI_HISTORY_TABLE_SQL",
+];
 {
-  const src = (await import("node:fs")).readFileSync(join(import.meta.dirname, "verify-migration-replay-sql.ts"), "utf8");
-  const at = (s: string) => src.indexOf(s);
-  assert(at("judgeDefaultGrants(") > 0 && at("judgeDefaultGrants(") < at("migrationBatch("),
-    "the default grants are judged before the first migration is sent");
-  for (const fn of ["migrationPlan(", "migrationBatch(", "classifyWriteOutcome(", "judgeBrowserPolicies(", "CLI_HISTORY_TABLE_SQL"]) {
-    assert(at(fn) > 0, `the replay calls ${fn.replace("(", "")}`);
-  }
-  assert(/singleTransaction: true/.test(src), "each migration is applied as one transaction");
-  assert(/\["anon", "authenticated"\]/.test(src), "the write refusal is driven as both browser roles");
+  // Control first (L1): a call deleted while its import stays must read as missing,
+  // or this check is satisfied by the import line alone.
+  const fixture = [
+    'import { judgeBrowserPolicies, migrationBatch, CLI_HISTORY_TABLE_SQL } from "./lib/migration-replay.ts";',
+    "sql(CLI_HISTORY_TABLE_SQL);",
+    "sql(migrationBatch(m, text));",
+  ].join("\n");
+  eq(missingCalls(fixture, ["judgeBrowserPolicies", "migrationBatch", "CLI_HISTORY_TABLE_SQL"]), ["judgeBrowserPolicies"],
+    "control: an imported judge that is never called is reported missing");
+  const multiline = 'import {\n  judgeDefaultGrants,\n} from "./x.ts";\nconst a = 1;';
+  eq(missingCalls(multiline, ["judgeDefaultGrants"]), ["judgeDefaultGrants"], "control: a multi line import does not count as a call either");
+}
+{
+  const src = readFileSync(join(import.meta.dirname, "verify-migration-replay-sql.ts"), "utf8");
+  eq(missingCalls(src, JUDGES), [], "the replay calls every judge this suite pins");
+  const body = src.replace(/^import\b[\s\S]*?from\s*["'][^"']+["'];?/gm, "");
+  const grants = body.search(/\bjudgeDefaultGrants\s*\(/);
+  const firstBatch = body.search(/\bmigrationBatch\s*\(/);
+  assert(grants > 0 && grants < firstBatch, "the default grants are judged before the first migration is sent");
+  assert(/singleTransaction: true/.test(body), "each migration is applied as one transaction");
+  assert(/\["anon", "authenticated"\]/.test(body), "the write refusal is driven as both browser roles");
+  assert(/process\.exit\(2\)/.test(body), "an image without the default grants exits 2, UNMEASURED, rather than 1");
+}
+
+// --- grant exemptions: exactly the recorded list, and only RLS counts elsewhere ---------
+{
+  eq(judgeGrantExemptions(["advisor_photos"]), { unexplained: [], stale: [] }, "the one revoked table is the exempt list");
+  eq(judgeGrantExemptions(["advisor_photos", "bookings"]).unexplained, ["bookings"], "a table losing its grant without a reason is named");
+  eq(judgeGrantExemptions([]).stale, ["advisor_photos"], "an exemption whose revoke is gone is named as stale");
+  assert(BROWSER_GRANT_EXEMPT.every((e) => e.reason.length > 20), "every exemption carries its reason");
+
+  assert(browserWriteRefused("bookings", "refused-by-rls"), "on a granted table RLS refusing is a pass");
+  assert(!browserWriteRefused("bookings", "refused-by-grant"), "on a granted table a permission denial is NOT counted as RLS");
+  assert(!browserWriteRefused("bookings", "got-past-rls"), "and a row reaching the constraints fails");
+  assert(browserWriteRefused("advisor_photos", "refused-by-grant"), "on an exempt table the revoke is the refusal");
+  assert(!browserWriteRefused("advisor_photos", "written"), "and a write there still fails");
 }
 
 finish();
