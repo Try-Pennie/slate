@@ -22,6 +22,16 @@ const TIERS = [
   "High: no real booking yet, so not carried and not judged.",
 ];
 
+// #3193: from `pageBaselinesAtShare()`, the share the pages' floors are judged at.
+const SHARE_APPLIED = {
+  judged: true,
+  text: "Each page's floors are cal.com's for the whole page, thinned to the 44% of Low bookings Slate carried in the day to 2026-10-02.",
+};
+const SHARE_UNKNOWN = {
+  judged: false,
+  text: "The Low pages are not judged: the share of Low bookings Slate carries has not been measured yet, and each page's floors count every booking on that page, Slate's and cal.com's, so judging them whole would page on a normal hour. The daily refit measures it from the first day both systems take enough Low bookings.",
+};
+
 function renderIt(over: Partial<Parameters<typeof VolumeLearning>[0]> = {}) {
   return render(
     <VolumeLearning
@@ -31,6 +41,7 @@ function renderIt(over: Partial<Parameters<typeof VolumeLearning>[0]> = {}) {
       coverage={coverage}
       sourceNotice={null}
       sourceSetAside={null}
+      pageShare={SHARE_APPLIED}
       heldOff={HELD_OFF}
       action={action}
       earliest="2026-09-25"
@@ -133,5 +144,28 @@ describe("VolumeLearning", () => {
     const { container } = renderIt({ coverage: null });
     expect(container.querySelectorAll("[data-page-coverage]")).toHaveLength(0);
     expect(container.textContent).toContain("could not be read");
+  });
+
+  // #3193: the pages are judged at the share of Low Slate carries, and the table is
+  // computed at that share, so the section says which share it is.
+  it("says the share the pages' floors are judged at, beside their coverage", () => {
+    const { container } = renderIt();
+    expect(container.querySelector("[data-page-share]")!.textContent).toContain(SHARE_APPLIED.text);
+    expect(container.querySelectorAll("[data-page-coverage]")).toHaveLength(2);
+  });
+
+  it("says the pages' floors are scaled to Slate's share, never that they are cal.com's as they stand", () => {
+    const { container } = renderIt();
+    expect(container.textContent).toContain("scaled to the share of Low bookings Slate carries");
+    expect(container.textContent).not.toContain("keeps the cal.com floors");
+  });
+
+  it("says the pages are not judged, in place of their coverage, while the share is unknown", () => {
+    const { container } = renderIt({ pageShare: SHARE_UNKNOWN });
+    const shown = container.querySelector("[data-page-share]")!;
+    expect(shown.textContent).toBe(SHARE_UNKNOWN.text);
+    expect(shown.getAttribute("role")).toBe("status");
+    expect(container.querySelectorAll("[data-page-coverage]")).toHaveLength(0);
+    expect(container.textContent).not.toContain("Open hours judged");
   });
 });

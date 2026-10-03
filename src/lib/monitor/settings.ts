@@ -4,9 +4,9 @@ import { log } from "@/lib/log";
 import type { MonitorAlertConfig, MonitorSettings } from "@/lib/db/types";
 import type { FloorOverride, FloorPolicy, VolumeBaseline } from "./volume-floors.ts";
 import { MEASURED_VOLUME_BASELINE } from "./volume-baseline.ts";
-import { baselineInForce, tierJudgedBaseline } from "./volume-relearn.ts";
+import { baselineInForce, shareInForce, tierJudgedBaseline } from "./volume-relearn.ts";
 import { LOW_TIER, VOLUME_TIERS, type VolumeTier } from "./volume-tiers.ts";
-import { REAL_ANCHOR_SOURCE, type AnchorSource } from "./carried-share.ts";
+import { REAL_ANCHOR_SOURCE, type AnchorSource, type ShareInForce } from "./carried-share.ts";
 
 /**
  * UI-tunable monitor alert settings (#571). Cooldowns and low-volume floors are
@@ -1071,6 +1071,8 @@ export interface ResolvedMonitorSettings {
   floors: FloorPolicy;
   /** #2874: the floors of every tier judged beside Low, from `resolveTierBaselines`. */
   tierBaselines: Partial<Record<VolumeTier, VolumeBaseline>>;
+  /** #3193: the share of Low Slate carries, which the per page floors are thinned to. */
+  lowPageShare: ShareInForce;
   /** #575: is the low-booking-volume alert armed (store > env > disarmed)? */
   lowVolumeArmed: boolean;
   /** #1313: is the booking-failure-rate page armed (store > disarmed)? */
@@ -1155,6 +1157,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
     cooldownMs: resolveCooldownMs(rows),
     floors: resolveFloors(config, envFloors()),
     tierBaselines: resolveTierBaselines(config),
+    lowPageShare: shareInForce(config?.volume_learning ?? null, LOW_TIER),
     lowVolumeArmed: resolveLowVolumeArmed(config, envLowVolumeArmed()),
     failureRateArmed: resolveFailureRateArmed(config),
     availabilityDriftArmed: resolveAvailabilityDriftArmed(config),
