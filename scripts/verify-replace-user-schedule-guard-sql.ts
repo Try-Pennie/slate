@@ -15,7 +15,6 @@
 // needs Docker. No Docker is exit 2, never a pass (L98).
 //
 // Run: pnpm verify:replace-user-schedule-guard
-import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { startThrowawayPostgres } from "./lib/throwaway-postgres.ts";
@@ -32,7 +31,7 @@ const ADMIN = `'[{"weekday":2,"start_minute":540,"end_minute":900}]'::jsonb`;
 const IMPORT = `'[{"weekday":3,"start_minute":420,"end_minute":960},{"weekday":4,"start_minute":420,"end_minute":960}]'::jsonb`;
 
 const pg = startThrowawayPostgres(NAME, IMAGE);
-const { sql, sqlError } = pg;
+const { sql, sqlError, session } = pg;
 
 /** Put the agent back on a seeded week, stamped as given (null = unstamped). */
 function reset(source: string | null): void {
@@ -48,17 +47,6 @@ const state = () =>
   sql(`select s.timezone || '|' || coalesce(s.hours_source, 'null') || '|' ||
          (select string_agg(weekday::text, ',' order by weekday) from availability_rules r where r.schedule_id = s.id)
        from availability_schedules s;`);
-
-/** One psql session over stdin; resolves with its exit code and stderr. */
-function session(text: string): Promise<{ code: number; stderr: string }> {
-  return new Promise((resolve) => {
-    const p = spawn("docker", ["exec", "-i", NAME, "psql", "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-qtAX", "-f", "-"]);
-    let stderr = "";
-    p.stderr.on("data", (d) => (stderr += String(d)));
-    p.stdin.end(text);
-    p.on("close", (code) => resolve({ code: code ?? 1, stderr }));
-  });
-}
 
 const guarded = (expected: string | null) =>
   `select replace_user_schedule('${USER}', 'America/Los_Angeles', ${IMPORT}, 'calcom-import', 2, ${expected === null ? "null" : `'${expected}'`});`;
