@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { refuseCredential } from "@/lib/bearer-failure";
+import { refuseBearerAuth } from "@/lib/bearer-failure";
 import { authenticateBearer, CANARY_CALLERS } from "@/lib/booking/api-auth";
 import { configuredBookingApiKeys } from "@/lib/booking/api-keys";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
@@ -55,9 +55,7 @@ export async function POST(req: NextRequest) {
   const keys = configuredBookingApiKeys(CANARY_CALLERS);
   const auth = authenticateBearer(req.headers.get("authorization"), keys);
   if (!auth.ok) {
-    const refusal = () => NextResponse.json({ error: auth.error }, { status: auth.status });
-    // #3142: a refused credential is throttled; an unset key is our own deployment, not a caller.
-    return auth.status === 401 ? refuseCredential(req.headers, refusal) : refusal();
+    return refuseBearerAuth(req.headers, auth);
   }
 
   let body: unknown;

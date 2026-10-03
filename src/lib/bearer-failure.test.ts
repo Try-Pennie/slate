@@ -7,7 +7,7 @@ vi.mock("@/lib/rate-limit", async () => {
   return { clientIp: core.clientIp, bearerFailureWithinLimit };
 });
 
-import { refuseCredential } from "./bearer-failure";
+import { refuseCredential, refuseBearerAuth } from "./bearer-failure";
 
 const headers = new Headers({ "cf-connecting-ip": "203.0.113.9" });
 const unauthorized = () => new Response("unauthorized", { status: 401 });
@@ -31,5 +31,19 @@ describe("refuseCredential (#3142)", () => {
     expect(res.status).toBe(429);
     expect(res.headers.get("retry-after")).toBe("60");
     expect(refusal).not.toHaveBeenCalled();
+  });
+});
+
+describe("refuseBearerAuth (#3142)", () => {
+  it("throttles a refused credential", async () => {
+    bearerFailureWithinLimit.mockResolvedValue(false);
+    const res = await refuseBearerAuth(headers, { status: 401, error: "unauthorized" });
+    expect(res.status).toBe(429);
+  });
+
+  it("answers an unset key as is, since that is our deployment rather than a caller", async () => {
+    const res = await refuseBearerAuth(headers, { status: 503, error: "not configured" });
+    expect(res.status).toBe(503);
+    expect(bearerFailureWithinLimit).not.toHaveBeenCalled();
   });
 });

@@ -21,7 +21,7 @@ import { textHasOptOut } from "./lib/opt-out.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const CHECKS = /\b(?:bearerTokenMatches|authenticateBearer|timingSafeEqual)\(/;
-const THROTTLED = /\b(?:refuseCredential|bearerFailureWithinLimit)\(/;
+const THROTTLED = /\b(?:refuseCredential|refuseBearerAuth|bearerFailureWithinLimit)\(/;
 const HATCH = "credential-throttle-ok:";
 
 /** Whether one file checks a credential and then refuses without the throttle. */
