@@ -63,17 +63,50 @@ const io = {
   readFile: (p: string) => readFileSync(p, "utf8"),
   exists: (p: string) => existsSync(p) && statSync(p).isFile(),
 };
+/**
+ * What node actually loads: `--experimental-strip-types` erases a whole `import type`
+ * statement before anything is resolved, so an edge reached only through one is not a
+ * runtime edge. Every other import, a mixed `import { type A, b }` included, stays.
+ */
+const runtimeIo = (base: typeof io) => ({
+  ...base,
+  readFile: (p: string) => base.readFile(p).replace(/^[ \t]*import\s+type\b[\s\S]*?from\s*["'][^"']+["'];?/gm, ""),
+});
+
+/**
+ * Packages and aliases anywhere in the RUNTIME import graph: the job installs nothing
+ * and loads no alias hook, so any one of them fails the suite at load time, however
+ * deep in the graph it sits.
+ */
+const runtimeForeign = (entry: string, base: typeof io): string[] =>
+  walkImportGraph(join(ROOT, entry), { localRoots: [ROOT], io: runtimeIo(base) })
+    .foreign.filter((e) => e.reason === "package" || e.reason === "alias" || e.reason === "unresolved")
+    .map((e) => `${relative(ROOT, e.from)} -> ${e.specifier}`);
+
+// Control first (L1): a package import planted one module deep, in the src/ file the
+// replay reads the export's tables from, must be caught, and a type only import of a
+// package must not.
+{
+  const target = join(ROOT, "src/lib/snowflake/export-core.ts");
+  const overlay = (extra: string) => ({
+    ...io,
+    readFile: (p: string) => (p === target ? `${extra}\n${io.readFile(p)}` : io.readFile(p)),
+  });
+  const caught = runtimeForeign("scripts/verify-migration-replay-sql.ts", overlay('import { createClient } from "@supabase/supabase-js";'));
+  assert(caught.some((e) => e.includes("export-core.ts -> @supabase/supabase-js")),
+    `control: a runtime package import one module below the suite is caught (${JSON.stringify(caught)})`);
+  const typeOnly = runtimeForeign("scripts/verify-migration-replay-sql.ts", overlay('import type { SupabaseClient } from "@supabase/supabase-js";'));
+  eq(typeOnly, [], "control: a type only import, which node erases, is not a runtime edge");
+}
+
 const inputs = new Set<string>([WORKFLOW, "package.json"]);
 for (const m of readdirSync(join(ROOT, "supabase", "migrations"))) inputs.add(`supabase/migrations/${m}`);
 for (const entry of [...suites, ALERTER]) {
+  // The gate covers the FULL graph, type only edges included: a type change there can
+  // still change what the suite does, and running too often costs only minutes.
   const graph = walkImportGraph(join(ROOT, entry), { localRoots: [ROOT], io });
   for (const f of graph.files) inputs.add(relative(ROOT, f));
-  // The job installs nothing, so a package or alias edge would fail at load time.
-  // Type-only imports are erased before node resolves anything, so an edge reached
-  // only through one is not a runtime edge; the walker cannot tell, so packages
-  // are judged on the files the suites import DIRECTLY.
-  const direct = graph.foreign.filter((e) => e.from === join(ROOT, entry) && (e.reason === "package" || e.reason === "alias"));
-  eq(direct.map((e) => e.specifier), [], `${entry} imports no package and no alias, since the job installs nothing`);
+  eq(runtimeForeign(entry, io), [], `${entry} reaches no package and no alias anywhere in what node loads, since the job installs nothing`);
 }
 assert([...inputs].some((p) => p.startsWith("src/")), "the derived inputs reach src/ (the export's table list), which a gate written from scripts/ alone would miss");
 
@@ -110,10 +143,23 @@ if (job) {
   assert(!/\|\|\s*true/.test(runs) && !/continue-on-error/.test(job.body), "no suite failure is swallowed");
   assert(!/-eq 2|== *2|\$\? *-ne *2/.test(runs), "exit 2 (no Docker) is not singled out as a pass");
   assert(/if \[ "\$ran" -eq 0 \]/.test(runs), "running no suite at all fails rather than passing (L98)");
+  // A cancelled nightly run (the job timeout, or anything superseding it) proved
+  // nothing just as a failed one did, and `failure()` alone is false for it, so the
+  // alert must fire on both.
   assert(
-    new RegExp(`if: failure\\(\\) && github\\.event_name == 'schedule'[\\s\\S]*${ALERTER.replace(/\./g, "\\.")}`).test(job.body),
-    "a failed nightly run posts to Slack through the dependency free alerter",
+    new RegExp(`if: \\(failure\\(\\) \\|\\| cancelled\\(\\)\\) && github\\.event_name == 'schedule'[\\s\\S]*${ALERTER.replace(/\./g, "\\.")}`).test(job.body),
+    "a failed or cancelled nightly run posts to Slack through the dependency free alerter",
   );
+}
+
+// --- nothing cancels the nightly run ---------------------------------------------------
+//
+// The group is keyed on the ref, and a scheduled run and a manual one both run on
+// main, so cancel-in-progress: true would let a hand started run cancel the nightly
+// one. Only a superseded PULL REQUEST run may be cancelled.
+{
+  const cancel = source.match(/^concurrency:\s*\n(?: {2}.*\n)*? {2}cancel-in-progress:\s*(.+)$/m)?.[1]?.trim();
+  eq(cancel, "${{ github.event_name == 'pull_request' }}", "only a pull request run is cancelled by a newer one");
 }
 
 finish();

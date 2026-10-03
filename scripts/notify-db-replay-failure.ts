@@ -37,8 +37,8 @@ export function readContextFromEnv(env: Record<string, string | undefined>): DbR
  */
 export function buildDbReplayFailureMessage(ctx: DbReplayFailureContext): string {
   const lines = [
-    "The nightly real database run failed, so nothing has shown tonight that the migrations still build a working database from empty.",
-    "Either a migration no longer applies to an empty database, a row level security or grant check failed, a real database suite failed, or Docker was not available on the runner. The run names which.",
+    "The nightly real database run did not pass, so nothing has shown tonight that the migrations still build a working database from empty.",
+    "Either a migration no longer applies to an empty database, a row level security or grant check failed, a real database suite failed, Docker was not available on the runner, or the run was cancelled (usually by its time limit). The run names which.",
   ];
   // An absent RUN_URL is an unset workflow variable, not a link to nowhere.
   lines.push(ctx.runUrl.trim() || "Open the DB replay workflow in the Actions tab.");

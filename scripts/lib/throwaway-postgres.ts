@@ -59,6 +59,51 @@ export function initFinished(logs: string): boolean {
   return /PostgreSQL init process complete/.test(logs);
 }
 
+export interface ContainerProbe {
+  /** `docker logs` exit status. */
+  logsStatus: number | null;
+  /** What `docker logs` itself said on failure. */
+  logsError: string;
+  /** The container's log, stdout and stderr together. */
+  logs: string;
+  /** `.State.Running`, or null when it could not be read. */
+  running: boolean | null;
+  exitCode: number | null;
+}
+
+export type Readiness = { state: "initialising" } | { state: "initialised" } | { state: "dead"; reason: string };
+
+const lastLines = (text: string, n: number): string => text.trim().split("\n").slice(-n).join("\n  ");
+
+/**
+ * Where a starting container is. A container that exited, or one `docker logs` can no
+ * longer find, is DEAD, never still initialising: reading it as initialising would
+ * spin the whole readiness wait and then throw a message that names nothing. The
+ * reason carries the container's own last log lines, which is where the cause is.
+ */
+export function readiness(p: ContainerProbe): Readiness {
+  if (p.logsStatus !== 0) {
+    return { state: "dead", reason: `docker logs failed: ${p.logsError.trim() || `exit ${String(p.logsStatus)}`}` };
+  }
+  if (p.running === false) {
+    return { state: "dead", reason: `the container exited with code ${String(p.exitCode)}:\n  ${lastLines(p.logs, 5)}` };
+  }
+  return initFinished(p.logs) ? { state: "initialised" } : { state: "initialising" };
+}
+
+function probeContainer(name: string): ContainerProbe {
+  const logs = spawnSync("docker", ["logs", name], { encoding: "utf8" });
+  const inspect = spawnSync("docker", ["inspect", "-f", "{{.State.Running}} {{.State.ExitCode}}", name], { encoding: "utf8" });
+  const [running, exitCode] = (inspect.status === 0 ? inspect.stdout.trim() : "").split(" ");
+  return {
+    logsStatus: logs.status,
+    logsError: logs.status === 0 ? "" : String(logs.stderr ?? logs.error ?? ""),
+    logs: `${logs.stdout ?? ""}${logs.stderr ?? ""}`,
+    running: running === "true" ? true : running === "false" ? false : null,
+    exitCode: exitCode !== undefined && /^\d+$/.test(exitCode) ? Number(exitCode) : null,
+  };
+}
+
 export function startThrowawayPostgres(name: string, image: string): ThrowawayPostgres {
   try {
     docker(["version", "--format", "{{.Server.Version}}"]);
@@ -67,7 +112,9 @@ export function startThrowawayPostgres(name: string, image: string): ThrowawayPo
     process.exit(2);
   }
   try {
-    docker(["run", "-d", "--rm", "--name", name, "-e", "POSTGRES_PASSWORD=x", image]);
+    // No --rm: a container that dies during init must keep its logs for readiness()
+    // to read. stop() removes it on every path out.
+    docker(["run", "-d", "--name", name, "-e", "POSTGRES_PASSWORD=x", image]);
   } catch (err) {
     const why = err instanceof Error ? err.message.split("\n")[0] : String(err);
     console.error(`UNMEASURED: the ${image} container could not start (${why}), so nothing was proved.`);
@@ -104,19 +151,29 @@ export function startThrowawayPostgres(name: string, image: string): ThrowawayPo
       }
     },
   };
-  const initialised = (): boolean => {
-    const logs = spawnSync("docker", ["logs", name], { encoding: "utf8" });
-    return initFinished(`${logs.stdout ?? ""}${logs.stderr ?? ""}`);
-  };
+  let last: ContainerProbe | null = null;
   for (let i = 0; i < 90; i++) {
-    try {
-      if (!initialised()) throw new Error("still initialising");
-      sql("select 1;");
-      return pg;
-    } catch {
-      execFileSync("sleep", ["1"]);
+    last = probeContainer(name);
+    const r = readiness(last);
+    if (r.state === "dead") {
+      // Not a finding about any migration: the database never came up, so nothing
+      // was proved (exit 2), and the container's own words say why.
+      console.error(`UNMEASURED: the ${image} container died during startup, so nothing was proved. ${r.reason}`);
+      pg.stop();
+      process.exit(2);
     }
+    if (r.state === "initialised") {
+      try {
+        sql("select 1;");
+        return pg;
+      } catch {
+        // Not accepting connections yet.
+      }
+    }
+    execFileSync("sleep", ["1"]);
   }
   pg.stop();
-  throw new Error("the throwaway Postgres never accepted a connection");
+  throw new Error(
+    `the throwaway Postgres never accepted a connection in 90s; its last log lines:\n  ${lastLines(last?.logs ?? "", 5)}`,
+  );
 }

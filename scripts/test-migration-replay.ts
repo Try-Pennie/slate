@@ -15,6 +15,7 @@ import {
   BROWSER_POLICY_ALLOWLIST,
   browserWriteRefused,
   classifyWriteOutcome,
+  codeOnly,
   judgeGrantExemptions,
   missingCalls,
   judgeBrowserPolicies,
@@ -131,17 +132,33 @@ const JUDGES = [
     "control: an imported judge that is never called is reported missing");
   const multiline = 'import {\n  judgeDefaultGrants,\n} from "./x.ts";\nconst a = 1;';
   eq(missingCalls(multiline, ["judgeDefaultGrants"]), ["judgeDefaultGrants"], "control: a multi line import does not count as a call either");
+  const mentioned = [
+    "// judgeDefaultGrants(acl) used to run here",
+    "/* migrationBatch(m, text) */",
+    'console.log("judgeBrowserPolicies(rows) is next");',
+    "const msg = `sql(CLI_HISTORY_TABLE_SQL) ${String(1)}`;",
+  ].join("\n");
+  eq(missingCalls(mentioned, ["judgeDefaultGrants", "migrationBatch", "judgeBrowserPolicies", "CLI_HISTORY_TABLE_SQL"]),
+    ["judgeDefaultGrants", "migrationBatch", "judgeBrowserPolicies", "CLI_HISTORY_TABLE_SQL"],
+    "control: a call named only in a comment, a string or template text does not count");
+  eq(missingCalls("const s = `${judgeDefaultGrants(acl)}`;", ["judgeDefaultGrants"]), [],
+    "while a call inside a template interpolation is code and does count");
 }
 {
   const src = readFileSync(join(import.meta.dirname, "verify-migration-replay-sql.ts"), "utf8");
   eq(missingCalls(src, JUDGES), [], "the replay calls every judge this suite pins");
-  const body = src.replace(/^import\b[\s\S]*?from\s*["'][^"']+["'];?/gm, "");
+  // Code only: a comment or a message naming any of these must not satisfy them.
+  const body = codeOnly(src);
+  const withStrings = codeOnly(src, { blankStrings: false });
   const grants = body.search(/\bjudgeDefaultGrants\s*\(/);
   const firstBatch = body.search(/\bmigrationBatch\s*\(/);
   assert(grants > 0 && grants < firstBatch, "the default grants are judged before the first migration is sent");
   assert(/singleTransaction: true/.test(body), "each migration is applied as one transaction");
-  assert(/\["anon", "authenticated"\]/.test(body), "the write refusal is driven as both browser roles");
+  assert(/\["anon", "authenticated"\]/.test(withStrings), "the write refusal is driven as both browser roles");
   assert(/process\.exit\(2\)/.test(body), "an image without the default grants exits 2, UNMEASURED, rather than 1");
+  // Control: the role list in a comment is not the role list in code.
+  assert(!/\["anon", "authenticated"\]/.test(codeOnly('// for (const role of ["anon", "authenticated"])', { blankStrings: false })),
+    "control: the role list mentioned only in a comment does not count");
 }
 
 // --- grant exemptions: exactly the recorded list, and only RLS counts elsewhere ---------

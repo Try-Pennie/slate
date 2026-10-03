@@ -192,11 +192,90 @@ export function browserWriteRefused(table: string, outcome: WriteOutcome): boole
 }
 
 /**
- * Which of `names` the source never CALLS. Import declarations are blanked first, so
- * a name that is imported and no longer used reads as missing. A name followed by
- * `(` is a call; a constant counts when it is passed as an argument, `fn(NAME)`.
+ * The source with everything that is not CODE blanked: comments always, and the text
+ * of string and template literals unless `blankStrings` is false (a template's
+ * `${...}` interpolations are code and are kept). Delimiters stay, so positions and
+ * the shape of the code survive. Regex literals are not recognised; nothing this is
+ * used on carries one with a quote or a comment marker in it.
+ */
+export function codeOnly(src: string, opts: { blankStrings?: boolean } = {}): string {
+  const blankStrings = opts.blankStrings ?? true;
+  let out = "";
+  let i = 0;
+  // Each open template literal pushes the brace depth its interpolation started at.
+  const templates: number[] = [];
+  let depth = 0;
+  const blank = (s: string) => s.replace(/[^\n]/g, " ");
+  const readString = (quote: string): void => {
+    let j = i + 1;
+    while (j < src.length && src[j] !== quote && src[j] !== "\n") j += src[j] === "\\" ? 2 : 1;
+    const body = src.slice(i + 1, j);
+    out += quote + (blankStrings ? blank(body) : body) + (src[j] === quote ? quote : "");
+    i = src[j] === quote ? j + 1 : j;
+  };
+  const readTemplateText = (): void => {
+    // From just after a backtick or a closing interpolation brace, up to the end of
+    // the template or the start of the next interpolation.
+    let j = i;
+    while (j < src.length && src[j] !== "`" && !(src[j] === "$" && src[j + 1] === "{")) j += src[j] === "\\" ? 2 : 1;
+    const body = src.slice(i, j);
+    out += blankStrings ? blank(body) : body;
+    if (src[j] === "`") {
+      out += "`";
+      i = j + 1;
+    } else if (j < src.length) {
+      out += "${";
+      templates.push(depth);
+      depth++;
+      i = j + 2;
+    } else i = j;
+  };
+  while (i < src.length) {
+    const c = src[i] as string;
+    const next = src[i + 1];
+    if (c === "/" && next === "/") {
+      const end = src.indexOf("\n", i);
+      const stop = end < 0 ? src.length : end;
+      out += blank(src.slice(i, stop));
+      i = stop;
+    } else if (c === "/" && next === "*") {
+      const end = src.indexOf("*/", i + 2);
+      const stop = end < 0 ? src.length : end + 2;
+      out += blank(src.slice(i, stop));
+      i = stop;
+    } else if (c === '"' || c === "'") {
+      readString(c);
+    } else if (c === "`") {
+      out += "`";
+      i++;
+      readTemplateText();
+    } else if (c === "{") {
+      depth++;
+      out += c;
+      i++;
+    } else if (c === "}") {
+      depth--;
+      out += c;
+      i++;
+      if (templates.length > 0 && templates[templates.length - 1] === depth) {
+        templates.pop();
+        readTemplateText();
+      }
+    } else {
+      out += c;
+      i++;
+    }
+  }
+  return out;
+}
+
+/**
+ * Which of `names` the source never CALLS. Comments, string and template text, and
+ * import declarations are blanked first, so a name that is imported and no longer
+ * used, or only mentioned in a comment or a message, reads as missing. A name
+ * followed by `(` is a call; a constant counts when passed as an argument, `fn(NAME)`.
  */
 export function missingCalls(src: string, names: readonly string[]): string[] {
-  const body = src.replace(/^import\b[\s\S]*?from\s*["'][^"']+["'];?/gm, "");
+  const body = codeOnly(src).replace(/^import\b[\s\S]*?from\s*["'][^"']*["'];?/gm, "");
   return names.filter((n) => !new RegExp(`\\b${n}\\s*\\(|\\(\\s*${n}\\s*[,)]`).test(body));
 }

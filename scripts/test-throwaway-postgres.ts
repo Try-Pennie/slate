@@ -6,7 +6,7 @@
 // meet a server that is shutting down) and the psql call a batch is sent through.
 //
 // Run: node --experimental-strip-types scripts/test-throwaway-postgres.ts
-import { initFinished, psqlArgs } from "./lib/throwaway-postgres.ts";
+import { initFinished, psqlArgs, readiness } from "./lib/throwaway-postgres.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 // --- readiness: only after the entrypoint says initialisation is over ----------------
@@ -20,6 +20,34 @@ import { assert, eq, finish } from "./lib/harness.ts";
   assert(initFinished(`${shuttingDown}\n\nPostgreSQL init process complete; ready for start up.\n\nLOG:  database system is ready to accept connections`),
     "it is ready once the entrypoint has said init is complete");
   assert(!initFinished(""), "empty logs (a container that has not started logging) are not ready");
+}
+
+// --- a container that died during init is named as dead, with its own words -------------
+{
+  const alive = { logsStatus: 0, logsError: "", running: true, exitCode: 0 };
+  eq(readiness({ ...alive, logs: "running init scripts" }).state, "initialising", "a live container still in its init scripts is initialising");
+  eq(readiness({ ...alive, logs: "PostgreSQL init process complete; ready for start up." }).state, "initialised",
+    "a live container past init is ready to be asked");
+
+  const crashed = readiness({
+    logsStatus: 0,
+    logsError: "",
+    logs: "line one\nFATAL:  could not create shared memory segment: No space left on device\n",
+    running: false,
+    exitCode: 1,
+  });
+  assert(crashed.state === "dead", "a container that exited during init is dead, not still initialising");
+  if (crashed.state === "dead") {
+    assert(/exited with code 1/.test(crashed.reason), `the reason gives the exit code (${crashed.reason})`);
+    assert(/No space left on device/.test(crashed.reason), "and the container's own last log line, so the cause is named");
+  }
+  // Even a container that says init completed and then exited is dead, not ready.
+  eq(readiness({ logsStatus: 0, logsError: "", logs: "PostgreSQL init process complete", running: false, exitCode: 137 }).state, "dead",
+    "a container that finished init and then died is dead");
+
+  const gone = readiness({ logsStatus: 1, logsError: "Error response from daemon: No such container: c1", logs: "", running: null, exitCode: null });
+  assert(gone.state === "dead" && /No such container/.test(gone.reason),
+    "a docker logs call that fails is not read as still initialising, and its error is passed on");
 }
 
 // --- the psql call ----------------------------------------------------------------------

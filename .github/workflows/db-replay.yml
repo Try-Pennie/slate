@@ -77,10 +77,12 @@ permissions:
   contents: read
 
 # Read only against a throwaway container, so a superseded pull request run is safe
-# to cancel (L671).
+# to cancel (L671). ONLY a pull request run: a scheduled run and a hand started one
+# both run on main and share this group, and a manual run must never cancel the
+# nightly one, which would then prove nothing.
 concurrency:
   group: db-replay-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   replay:
@@ -116,8 +118,10 @@ jobs:
           fi
           echo "All $ran real database suites passed."
 
-      - name: Slack alert when the nightly run fails
-        if: failure() && github.event_name == 'schedule'
+      # Cancelled counts too: a nightly run stopped by the job timeout proved nothing,
+      # and failure() alone is false for it.
+      - name: Slack alert when the nightly run fails or is cancelled
+        if: (failure() || cancelled()) && github.event_name == 'schedule'
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_ALERTS_CHANNEL: ${{ vars.SLACK_ALERTS_CHANNEL }}

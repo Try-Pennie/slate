@@ -20,7 +20,9 @@ const RUN = "https://github.com/Try-Pennie/slate/actions/runs/9";
 // --- the copy --------------------------------------------------------------------
 {
   const text = buildDbReplayFailureMessage({ runUrl: RUN });
-  assert(/nightly real database run failed/.test(text), "it says the nightly run failed");
+  assert(/nightly real database run did not pass/.test(text),
+    "it says the nightly run did not pass, which is true of a failed run AND a cancelled one, the two cases it is sent for");
+  assert(/cancelled/.test(text), "and names cancellation (the job timeout) as one way that happens");
   assert(/from empty/.test(text), "and what that leaves unproved");
   assert(/Docker was not available/.test(text), "it names a missing Docker as one of the ways it fails, since that is a failure here and not a skip");
   assert(text.includes(RUN), "and links the run, which is where the cause is named");
