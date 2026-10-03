@@ -6,6 +6,7 @@
 // simulated agents without needing real Google accounts.
 import type { GoogleEvent, Interval } from "@/lib/google/calendar";
 import { parseStampMs } from "@/lib/date/stamp";
+import { keyHash, shouldInject, type FaultTarget } from "@/lib/loadtest-fault";
 
 export const LOADTEST = process.env.SLATE_LOADTEST === "true";
 
@@ -18,19 +19,23 @@ export const LOADTEST = process.env.SLATE_LOADTEST === "true";
  * failure-streak alerting and the verify-on-book re-route all exist for a Google that
  * fails, and none of them was exercised at scale.
  *
- * `SLATE_LOADTEST_FAULT_PCT` is the percentage of calendar READS that throw. Zero (the
- * default) is the previous behaviour exactly, so an existing soak run is unchanged.
+ * `SLATE_LOADTEST_FAULT_PCT` is the percentage of calls that throw, and calendar READS
+ * are the `google-read` target, which is what an unset `SLATE_LOADTEST_FAULT_TARGETS`
+ * means. Zero (the default) is the previous behaviour exactly, so an existing soak run
+ * is unchanged. The percentage, the hash and the gate live in `@/lib/loadtest-fault`,
+ * shared with the database, Salesforce and webhook injectors (#3104), and are
+ * re-exported here for the callers that already read them from this file.
  *
- * **The confirm path's WRITES are deliberately never faulted** (#2241), and that is a
- * decision rather than an omission. A failed calendar write on the confirm path is a
- * 500 by design: the event could not be created, so the lead is told to try again.
- * Injecting one would make a booking run's 5xx count a measurement of this percentage
- * rather than of the code, and the bar #2244 judges on ("no 5xx under fault") would be
- * unreachable for a reason nobody should fix. The fault pass still reaches the confirm
- * path hard, through `freeBusyMany`: verify-on-book is the branch that re-routes and
- * that answers a retriable 503, and it is faulted. What the load run therefore does
- * NOT exercise is a failing calendar WRITE at scale, which is named here rather than
- * left to be discovered.
+ * **Calendar WRITES are the `google-write` target, OFF unless named** (#2241, #3104).
+ * A failed calendar write on the confirm path is a 500 by design: the event could not
+ * be created, so the lead is told to try again. Faulting writes in the ordinary fault
+ * pass would make its 5xx count a measurement of the percentage rather than of the
+ * code, and the "no 5xx under fault" bar (#2244) would be unreachable for a reason
+ * nobody should fix. So writes fail only on a pass that names them, and the judge
+ * reads `FAULT_TARGET_CONTRACT`: with a `fails-loud` target faulted it reports the
+ * 5xx count rather than barring it, and judges the cron lanes instead. The ordinary
+ * pass still reaches the confirm path hard, through `freeBusyMany`: verify-on-book is
+ * the branch that re-routes and answers a retriable 503, and it is a read.
  *
  * DETERMINISTIC, not random, and that is the point. A random failure rate makes a soak
  * irreproducible: a run that passed and a run that failed differ by the dice, so
@@ -40,32 +45,7 @@ export const LOADTEST = process.env.SLATE_LOADTEST === "true";
  * on CONSECUTIVE failures for one agent, which a per-call coin flip would rarely
  * produce.
  */
-export const LOADTEST_FAULT_PCT = (() => {
-  const raw = process.env.SLATE_LOADTEST_FAULT_PCT;
-  if (raw === undefined) return 0;
-  const n = Number(raw);
-  // An unreadable value is 0, never NaN: NaN compares false against every threshold, so
-  // it would silently mean "no faults" while reading as configured (L50). Zero means the
-  // same thing, and says it.
-  return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : 0;
-})();
-
-/** A stable small hash, so a key's verdict is the same in every run and on every machine. */
-function keyHash(key: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < key.length; i++) {
-    h ^= key.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return Math.abs(h);
-}
-
-/** Whether this call should fail. Pure over the key and the configured percentage. */
-export function shouldFault(key: string, pct: number = LOADTEST_FAULT_PCT): boolean {
-  if (pct <= 0) return false;
-  if (pct >= 100) return true;
-  return keyHash(key) % 100 < pct;
-}
+export { LOADTEST_FAULT_PCT, shouldFault } from "@/lib/loadtest-fault";
 
 /**
  * The shape of failure a fault raises, chosen by the key so a run covers all three
@@ -85,9 +65,23 @@ export function loadtestFault(key: string): Error {
 }
 
 /** Throw for this key when the configured percentage says so. Called by each stubbed
- *  read, so a fault lands where a real Google failure would: inside the call. */
-export function faultIfDue(key: string): void {
-  if (shouldFault(key)) throw loadtestFault(key);
+ *  call, so a fault lands where a real Google failure would: inside the call. Reads
+ *  and writes are separate targets, and writes fail only when they are named. */
+export function faultIfDue(key: string, target: FaultTarget = "google-read"): void {
+  if (shouldInject(target, key)) throw loadtestFault(key);
+}
+
+/**
+ * A synthetic calendar write that changes nothing (#2241) and fails when the
+ * `google-write` target says so (#3104).
+ *
+ * Keyed on the operation and the event id, so the same event's move fails on every
+ * run and a retry of it meets the same answer, which is what makes the durable retry
+ * paths (`pending_event_deletions`, the outbox's resume) the thing under test rather
+ * than a lucky second attempt.
+ */
+export function stubEventWrite(op: string, eventId: string): void {
+  faultIfDue(`${op}:${eventId}`, "google-write");
 }
 
 // How many busy events a bootstrap sync returns per calendar (realistic batch
@@ -260,9 +254,12 @@ export function stubCreateEvent(
   input: { summary: string; start: string; end: string },
   clientId?: string,
 ): string {
-  if (clientId) return clientId;
   const key = `${input.summary}|${input.start}|${input.end}`;
-  return `lt-evt-${keyHash(key).toString(36)}-${key.length.toString(36)}`;
+  const id = clientId ?? `lt-evt-${keyHash(key).toString(36)}-${key.length.toString(36)}`;
+  // Keyed on the id it answers with, so one intent fails or lands the same way however
+  // many times it is retried, exactly as the 409 reuse above behaves.
+  faultIfDue(`create:${id}`, "google-write");
+  return id;
 }
 
 /**

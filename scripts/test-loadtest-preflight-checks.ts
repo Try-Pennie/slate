@@ -343,6 +343,45 @@ import { assert, eq, finish } from "./lib/harness.ts";
   );
 }
 
+// --- the deployment is faulting the SYSTEMS asked for (#3104) ------------------
+//
+// The percentage alone cannot say which systems fail. A pass that meant to fail the
+// database and is failing only Google would be judged against the database's bar
+// while having injected nothing there, so the targets are confirmed the same way the
+// percentage is: from the deployment, before a request is sent.
+{
+  const base = { loadtest: true, productionSecrets: [], faultPct: 10 };
+  const ok = faultModeVerdict(
+    200,
+    { ...base, faultTargets: ["google-read", "supabase"], faultTargetsUnknown: [] },
+    { faultPct: 10, faultTargets: ["supabase", "google-read"] },
+  );
+  assert(ok.ok, "a deployment faulting the systems asked for is accepted, whatever order they were named in");
+  eq(ok.ok ? ok.faultTargets : null, ["google-read", "supabase"], "and the deployment's own list is carried");
+
+  const short = faultModeVerdict(
+    200,
+    { ...base, faultTargets: ["google-read"], faultTargetsUnknown: [] },
+    { faultPct: 10, faultTargets: ["google-read", "supabase"] },
+  );
+  assert(!short.ok && short.retriable, "a deployment faulting fewer systems is refused, and waited out as propagation");
+  assert(!short.ok && short.why.includes("supabase"), "naming the system it is not faulting");
+
+  const typo = faultModeVerdict(
+    200,
+    { ...base, faultTargets: [], faultTargetsUnknown: ["supabse"] },
+    { faultPct: 10, faultTargets: ["supabase"] },
+  );
+  assert(!typo.ok && !typo.retriable, "a deployment reporting an unknown target is refused at once: it faults nothing");
+  assert(!typo.ok && typo.why.includes("supabse"), "naming the name it did not know");
+
+  const silent = faultModeVerdict(200, base, { faultPct: 10, faultTargets: ["google-read"] });
+  assert(!silent.ok && !silent.retriable, "a deployment that reports no targets is refused rather than assumed");
+
+  // The steady pass and the preflight ask about the percentage alone and are unchanged.
+  assert(faultModeVerdict(200, base, { faultPct: 10 }).ok, "with no targets asked about, only the percentage is checked");
+}
+
 // --- waiting out a redeploy, and knowing when to stop (#2261) -----------------
 //
 // A deploy does not take effect the instant wrangler exits. The fault leg asked

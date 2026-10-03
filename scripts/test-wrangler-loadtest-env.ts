@@ -13,7 +13,7 @@
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-wrangler-loadtest-env.ts
 import { unstable_readConfig } from "wrangler";
-import { loadtestEnvFaults, disabledLanesOf, type WranglerLike } from "./lib/scan-wrangler-loadtest-env.ts";
+import { loadtestEnvFaults, disabledLanesOf, FAULT_SWITCH_VARS, type WranglerLike } from "./lib/scan-wrangler-loadtest-env.ts";
 import { allLaneNames } from "../worker/lanes-disabled.ts";
 import { assert, eq, fail, finish } from "./lib/harness.ts";
 
@@ -178,6 +178,36 @@ control("a different CPU ceiling", "a different ceiling", (e) => {
     loadtestEnvFaults(brokenTop2, env).some((f) => f.includes("production would hold lanes back")),
     "a control catches SLATE_LANES_DISABLED set on production",
   );
+}
+
+// --- the fault switch can never be turned on in production (#3104) -------------
+//
+// Asserted against the PRODUCTION block as wrangler resolves it, not against the
+// file's text: the fault switch needs SLATE_LOADTEST AND a percentage, and neither
+// may exist there. The gate itself (a percentage with no flag faults nothing) is
+// driven in real processes by scripts/test-loadtest-fault-targets.ts; this is the
+// configuration half, so the two together are the structural claim.
+{
+  const prodVars = top.vars ?? {};
+  assert(!("SLATE_LOADTEST" in prodVars), "production resolves no SLATE_LOADTEST, so no injector can fire");
+  for (const key of FAULT_SWITCH_VARS) {
+    assert(!(key in prodVars), `production resolves no ${key}`);
+    assert(!(key in (env.vars ?? {})), `and env.loadtest does not commit ${key}: only the fault leg's deploy adds it`);
+  }
+  for (const key of FAULT_SWITCH_VARS) {
+    const brokenTop = clone(top);
+    brokenTop.vars![key] = "100";
+    assert(
+      loadtestEnvFaults(brokenTop, env).some((f) => f.includes(`the top level sets ${key}`)),
+      `a control catches ${key} set on production`,
+    );
+    const brokenEnv = clone(env);
+    brokenEnv.vars![key] = "10";
+    assert(
+      loadtestEnvFaults(top, brokenEnv).some((f) => f.includes(`env.loadtest commits ${key}`)),
+      `a control catches ${key} committed in env.loadtest`,
+    );
+  }
 }
 
 finish();

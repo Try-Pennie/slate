@@ -89,6 +89,8 @@ describe("GET /api/smoke/version", () => {
         commit: "abc1234",
         loadtest: true,
         faultPct: 0,
+        faultTargets: ["google-read"],
+        faultTargetsUnknown: [],
         productionSecrets: [],
       });
     } finally {
@@ -114,6 +116,32 @@ describe("GET /api/smoke/version", () => {
     canaryKey.primary.mockReturnValue("real-key");
     const res = await get("Bearer real-key");
     expect((await res.json()).faultPct).toBe(0);
+  });
+
+  it("reports WHICH systems a load test build faults, from the constant the injectors read", async () => {
+    // #3104. The fault leg's driver compares this against the targets it was asked
+    // for and refuses before driving on a mismatch, so a pass that meant to fail the
+    // database and is failing only Google can never be judged as if it had. Unset is
+    // the original read only switch, and it is reported as that rather than as
+    // nothing, because "nothing" would read as a deployment faulting no system.
+    const saved = process.env.SLATE_LOADTEST;
+    process.env.SLATE_LOADTEST = "true";
+    try {
+      canaryKey.primary.mockReturnValue("real-key");
+      const body = await (await get("Bearer real-key")).json();
+      expect(body.faultTargets).toEqual(["google-read"]);
+      expect(body.faultTargetsUnknown).toEqual([]);
+    } finally {
+      if (saved === undefined) delete process.env.SLATE_LOADTEST;
+      else process.env.SLATE_LOADTEST = saved;
+    }
+  });
+
+  it("says nothing about fault targets when it is not a load test", async () => {
+    canaryKey.primary.mockReturnValue("real-key");
+    const body = await (await get("Bearer real-key")).json();
+    expect(body).not.toHaveProperty("faultTargets");
+    expect(body).not.toHaveProperty("faultTargetsUnknown");
   });
 
   it("names the production settings a load test build is carrying, so the preflight can refuse", async () => {
