@@ -145,20 +145,51 @@ function confirmHost(raw: unknown): BookingOriginFacts {
  * lead's request at one moment, and a return added later carries the directive by
  * construction instead of by somebody remembering (L96).
  */
+/**
+ * What a request has spent and learned so far (#3102), written by the handler as
+ * it goes, so a deadline that escapes it is answered from what is actually true
+ * at that moment: the caps it really spent are handed back, the attempt is counted
+ * against the bucket once one is known, and an advisor link confirm stays out of
+ * the routed tally exactly as it does on every other path.
+ */
+interface ConfirmProgress {
+  /** Every rate limit hit this request took, in order, for the refund. */
+  spent: { caller: CallerKey; rules: typeof BOOKING_HOURLY_RATE_RULES }[];
+  /** Where the attempt is counted, once the body has named a bucket. */
+  source: { by: "bucket"; code: string; host: ReturnType<typeof confirmHost> } | null;
+  /** An advisor's own link, which is not a routed booking (#2073). */
+  agentLink: boolean;
+}
+
+/** Hand back every cap a request spent, under the cleanup allowance, because a
+ *  failure that is ours must not spend the lead's budget (#1033). */
+function refundSpent(progress: ConfirmProgress): Promise<void> {
+  return withinBookingCleanupBudget(async () => {
+    for (const { caller, rules } of progress.spent) await refundRequest(caller, rules);
+  });
+}
+
 export async function POST(req: NextRequest) {
   // #3102: the whole request under one budget, so its Supabase and Google calls
   // share one expiry and cannot add up past the booker's 20 second abort. A
   // deadline from a read made before the booking's own try (the limits, the paused
   // flag, an advisor link) is the same outage, answered the same way, rather than
-  // escaping as an unhandled 500. Nothing identifying has been read by then, so
-  // the attempt is counted as unidentifiable, and no rate limit hit is handed back
-  // because the caller it belongs to is not known here.
+  // escaping as an unhandled 500.
+  const progress: ConfirmProgress = { spent: [], source: null, agentLink: false };
   return noStore(
     await withinBookingRequest(
-      () => handlePost(req),
+      () => handlePost(req, progress),
       async (timeout) => {
+        await refundSpent(progress);
         await pageBookingFailure(timeout);
-        recordApiOutcome("error", "", "verify_unavailable", { by: "unidentifiable", why: "a dependency timed out before the request was read" });
+        if (!progress.agentLink) {
+          recordApiOutcome(
+            "error",
+            progress.source?.code ?? "",
+            "verify_unavailable",
+            progress.source ?? { by: "unidentifiable", why: "a dependency timed out before the body named a bucket" },
+          );
+        }
         // refusal: verify_unavailable
         return NextResponse.json({ error: timeout.message }, { status: 503 });
       },
@@ -166,7 +197,7 @@ export async function POST(req: NextRequest) {
   );
 }
 
-async function handlePost(req: NextRequest) {
+async function handlePost(req: NextRequest, progress: ConfirmProgress) {
   const ip = clientIp(req.headers);
   // #1557: the address ceilings on this endpoint SERVE a caller they cannot identify rather
   // than counting them into one shared bucket. Refusing one refuses a customer at the last
@@ -232,6 +263,7 @@ async function handlePost(req: NextRequest) {
   // Strict hourly anti-spam cap stays in the DB (a 1-hour window the native
   // binding can't express).
   if (!(await allowRequest(bookingCaller, BOOKING_HOURLY_RATE_RULES))) return tooMany("hourly");
+  progress.spent.push({ caller: bookingCaller, rules: BOOKING_HOURLY_RATE_RULES });
 
   // #3135: read under a byte cap rather than buffering whatever arrives.
   const read = await readJsonCapped(req, PUBLIC_JSON_MAX_BYTES);
@@ -279,6 +311,8 @@ async function handlePost(req: NextRequest) {
   const agentLinkKey = parsed.data.agentLink ?? parsed.data.agentLinkToken;
   const recordRoutedOutcome: typeof recordApiOutcome = agentLinkKey !== undefined ? () => {} : recordApiOutcome;
   const code = parsed.data.bucketCode ?? "";
+  progress.source = { by: "bucket", code, host };
+  progress.agentLink = agentLinkKey !== undefined;
 
   // #2666: the public test bucket is booked only with the pass `/book` handed a page
   // on an approved website. Checked before anything about the attendee, so a pass
@@ -321,6 +355,7 @@ async function handlePost(req: NextRequest) {
   for (const key of contactKeys) {
     if (!(await allowRequest({ kind: "opaque", key }, BOOKING_CONTACT_HOURLY_RATE_RULES)))
       return tooMany("contact");
+    progress.spent.push({ caller: { kind: "opaque", key }, rules: BOOKING_CONTACT_HOURLY_RATE_RULES });
   }
 
   // Give back the IP cap AND the per-contact caps for a failure that ISN'T the
@@ -329,13 +364,8 @@ async function handlePost(req: NextRequest) {
   // short burst that clears within a minute.
   // Under the cleanup allowance rather than the confirm budget (#3102): a confirm
   // that timed out has spent that budget, and the lead is still owed the refund.
-  const refundAll = () =>
-    withinBookingCleanupBudget(async () => {
-      await refundRequest(bookingCaller, BOOKING_HOURLY_RATE_RULES);
-      for (const key of contactKeys) {
-        await refundRequest({ kind: "opaque", key }, BOOKING_CONTACT_HOURLY_RATE_RULES);
-      }
-    });
+  // By here every cap has been spent, so the list is the IP cap and each contact.
+  const refundAll = () => refundSpent(progress);
 
   // #2660: whether this confirm is a TEST booking, decided by the one constant
   // that establishes the mode (L319). It is what lets the service book the public
@@ -417,17 +447,26 @@ async function handlePost(req: NextRequest) {
     // reach here, the lead is told about it (#626).
     // #2073: not through an agent's own link, where holding another call is the
     // expected case rather than a mistake to warn about.
-    const duplicateWarning = agentLink ? null : await findDuplicateBookingWarning({
-      excludeBookingId: booking.id,
-      salesforceId: parsed.data.salesforceId ?? null,
-      attendee: {
-        email: parsed.data.attendee.email?.trim(),
-        phone: parsed.data.attendee.phone?.trim(),
-      },
-      // The same world the booking was made in (#2660): a tester's confirmation
-      // never names a real lead's call, and a real lead's never names a test one.
-      isTest,
-    });
+    // #3102: the booking exists by now, so nothing read after it may turn it into
+    // a failure. The service already answers null on its own errors; this holds
+    // the line here too, so a deadline (the confirm's budget can be spent by now)
+    // or any later change to that function still returns the booking that was made.
+    const duplicateWarning = agentLink
+      ? null
+      : await findDuplicateBookingWarning({
+          excludeBookingId: booking.id,
+          salesforceId: parsed.data.salesforceId ?? null,
+          attendee: {
+            email: parsed.data.attendee.email?.trim(),
+            phone: parsed.data.attendee.phone?.trim(),
+          },
+          // The same world the booking was made in (#2660): a tester's confirmation
+          // never names a real lead's call, and a real lead's never names a test one.
+          isTest,
+        }).catch((err: unknown) => {
+          log.error("booking", { msg: "duplicate warning unreadable after the booking was made", booking_id: booking.id }, err);
+          return null;
+        });
 
     recordRoutedOutcome("created", code, null, { by: "bucket", code, host });
     // #2838: a booking made after its first advisor lost the overlap race is
