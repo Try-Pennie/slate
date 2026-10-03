@@ -130,26 +130,33 @@ assert(
 // A saved key and a missing one used to be the same empty input with a grey hint
 // under each, so the page looked identical in the state where every delivery is
 // failing.
+//
+// #3091: both credentials are Worker secrets now and the page has no field for
+// either, so each is a marker with four states, drawn by one row component.
 assert(
-  /variant="status-error">No key saved/.test(page),
-  "a missing Regal key is drawn as the failure it is",
+  /variant="status-error">Not set, deliveries are refused/.test(page),
+  "a missing credential is drawn as the failure it is",
 );
 assert(
-  /variant="status-ok">Key saved/.test(page),
-  "a saved key is visible as a state without reading the hint",
-);
-// The error may only be shown for the format that NEEDS a key. A generic
-// endpoint authenticates with the HMAC secret, so a red marker on one would
-// accuse a healthy endpoint over a field it does not use (L144: a monitor that
-// judges by a different predicate than the action fires exactly when the action
-// correctly declined).
-assert(
-  /webhook\.format !== "regal"/.test(page),
-  "the key's state is judged on the saved format, so a generic endpoint is not accused",
+  /variant="status-ok">Set</.test(page),
+  "a set credential is visible as a state without reading a hint",
 );
 assert(
-  /webhook == null \? null/.test(page),
-  "an endpoint that does not exist yet is not reported as one with a missing key",
+  /variant="status-pending">Still read from the database/.test(page),
+  "a credential still on the database column is its own state, not set and not missing",
+);
+// The error may only be shown for the format that USES the credential. A generic
+// endpoint authenticates with the HMAC secret, so a red key marker on one would
+// accuse a healthy endpoint over a credential it does not use (L144: a monitor
+// that judges by a different predicate than the action fires exactly when the
+// action correctly declined).
+assert(
+  /used=\{webhook\.format === "regal"\}/.test(page) && /used=\{webhook\.format === "generic"\}/.test(page),
+  "each credential's state is judged on the saved format, so the other format is not accused",
+);
+assert(
+  /\{webhook && credentialSources \? \(/.test(page),
+  "an endpoint that does not exist yet is not reported as one with a missing credential",
 );
 
 // The key's state is stated ONCE. Before the marker there was a muted "no API

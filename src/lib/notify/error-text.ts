@@ -95,6 +95,35 @@ export function shortFailureReason(
 }
 
 /**
+ * The text of a caught `unknown`, whatever shape was thrown.
+ *
+ * `String(err)` is right for an Error subclass only by accident and wrong for the
+ * commonest non-Error throw in this codebase: a supabase-js `PostgrestError` is a
+ * plain `{ message, code, details, hint }` object, and `String` renders it as
+ * "[object Object]", which is how a page lost the one fact it carried. So an
+ * object with a string `message` gives that message (plus its `code` when it has
+ * one, since a Postgres code like 23505 is the diagnosis), any other object gives
+ * its JSON, and nothing gives the empty string so the caller's fallback applies.
+ */
+export function errorText(err: unknown): string {
+  if (err === null || err === undefined) return "";
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  if (typeof err === "object") {
+    const { message, code } = err as { message?: unknown; code?: unknown };
+    if (typeof message === "string" && message) {
+      return typeof code === "string" && code ? `${message} (code ${code})` : message;
+    }
+    try {
+      return JSON.stringify(err) ?? "";
+    } catch {
+      return "";
+    }
+  }
+  return String(err);
+}
+
+/**
  * `shortFailureReason` for a caught `unknown`, with a stated fallback.
  *
  * Every catch block was independently deciding between `err.message`,
@@ -104,6 +133,5 @@ export function shortErrorReason(
   err: unknown,
   opts: { fallback?: string; maxChars?: number } = {},
 ): string {
-  const raw = err instanceof Error ? err.message : String(err);
-  return shortFailureReason(raw, opts.maxChars) ?? (opts.fallback ?? "no detail");
+  return shortFailureReason(errorText(err), opts.maxChars) ?? (opts.fallback ?? "no detail");
 }

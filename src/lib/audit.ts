@@ -5,6 +5,10 @@ import { auditWriteFailedAlert } from "@/lib/notify/misc-alert-copy";
 import { log } from "@/lib/log";
 
 /**
+ * The trail records CHANGES, never views (#3089, Dan 2026-10-03: "No, changes
+ * only"). Staff reads of lead data are deliberately not logged; docs/pii.md §7
+ * holds the decision and what would have to change to revisit it.
+ *
  * Every action the trail can record, as a runtime list so the type is DERIVED from
  * it rather than maintained beside it.
  *
@@ -62,6 +66,13 @@ export const AUDIT_ACTIONS = [
   // is where a privileged outbound fetch belongs, and it is the only record of
   // one, since a test send deliberately writes no webhook_deliveries row.
   "webhook.test_sent",
+  // #3089: where booking events (lead contact data) are POSTed. Host and format
+  // before and after, never the path, the query or a credential.
+  "webhook.endpoint_set",
+  // #3089: re-sending one stored delivery, and replaying the dead letters in a
+  // window, each with the count it actually sent or queued.
+  "webhook.resent",
+  "webhook.replayed",
   "monitor.settings",
   // #2739: declaring the ramp over changes which floors the low volume alarm
   // judges against, weeks later and with nobody watching, so the trail records the

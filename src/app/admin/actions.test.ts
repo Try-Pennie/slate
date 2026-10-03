@@ -759,22 +759,220 @@ describe("setWebhookEndpoint key handling (#600)", () => {
     expect(patch).not.toHaveProperty("auth_header");
   });
 
-  it("still updates the key when one is actually supplied", async () => {
+  // #3091: the key is a Worker secret now, so the form writes neither credential
+  // column, even when a request carries one. Changing the key is a deploy step.
+  it("never writes the key or the signing secret, even when a value is posted", async () => {
     auth.requireAdmin.mockResolvedValueOnce(admin);
-    dbState.single = { id: "ep1" };
+    dbState.single = { id: "ep1", url: "https://events.regalvoice.com/events", format: "regal" };
 
     await expect(
       setWebhookEndpoint(
         form({
           url: "https://events.regalvoice.com/events",
           format: "regal",
-          auth_header: "new-key",
+          auth_header: "fixture-posted-key",
+          secret: "fixture-posted-secret",
         }),
       ),
     ).rejects.toThrow(/NEXT_REDIRECT/);
 
     const patch = update.mock.calls[0][0] as Record<string, unknown>;
-    expect(patch.auth_header).toBe("new-key");
+    expect(patch).not.toHaveProperty("auth_header");
+    expect(patch).not.toHaveProperty("secret");
+  });
+
+  it("creates a new endpoint with no credential in the database", async () => {
+    auth.requireAdmin.mockResolvedValueOnce(admin);
+    dbState.single = null;
+
+    await expect(
+      setWebhookEndpoint(
+        form({ url: "https://events.regalvoice.com/events", format: "regal", auth_header: "fixture-posted-key" }),
+      ),
+    ).rejects.toThrow(/NEXT_REDIRECT/);
+
+    const row = insert.mock.calls[0][0] as Record<string, unknown>;
+    expect(row).not.toHaveProperty("auth_header");
+    // Empty, never a generated value: minting one would put a credential back in
+    // the table the move takes them out of.
+    expect(row.secret).toBe("");
+  });
+});
+
+// #3089: where lead contact data is POSTed changed with no trace in the trail.
+describe("webhook changes are audited after they happen (#3089)", () => {
+  it("records the endpoint host and format before and after, never the path, query or a key", async () => {
+    auth.requireAdmin.mockResolvedValueOnce(admin);
+    dbState.single = { id: "ep1", url: "https://old.example.com/hook?token=abc", format: "generic" };
+
+    await expect(
+      setWebhookEndpoint(form({ url: "https://events.regalvoice.com/events?key=zzz", format: "regal" })),
+    ).rejects.toThrow("NEXT_REDIRECT:/admin/webhooks?ok=webhook-endpoint");
+
+    const entry = recordAudit.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(entry.action).toBe("webhook.endpoint_set");
+    expect(entry.details).toEqual({
+      host: { from: "old.example.com", to: "events.regalvoice.com" },
+      format: { from: "generic", to: "regal" },
+      key_changed: false,
+    });
+    expect(JSON.stringify(entry)).not.toMatch(/token|abc|zzz|\/hook|\/events/);
+    // After the write, never before it.
+    expect(update.mock.invocationCallOrder[0]).toBeLessThan(recordAudit.mock.invocationCallOrder[0]);
+  });
+
+  it("records nothing when the write is refused", async () => {
+    auth.requireAdmin.mockResolvedValueOnce(admin);
+    dbState.single = { id: "ep1", url: "https://events.regalvoice.com/events", format: "regal" };
+    dbState.updateError = { message: "permission denied" };
+
+    await expect(
+      setWebhookEndpoint(form({ url: "https://events.regalvoice.com/events", format: "regal" })),
+    ).rejects.toThrow(/NEXT_REDIRECT/);
+    expect(recordAudit).not.toHaveBeenCalled();
+  });
+
+  it("records a new endpoint with no host before it", async () => {
+    auth.requireAdmin.mockResolvedValueOnce(admin);
+    dbState.single = null;
+    await expect(
+      setWebhookEndpoint(form({ url: "https://events.regalvoice.com/events", format: "regal" })),
+    ).rejects.toThrow(/NEXT_REDIRECT/);
+    const entry = recordAudit.mock.calls.at(-1)?.[0] as { details: { host: { from: unknown } } };
+    expect(entry.details.host.from).toBeNull();
+  });
+
+  it("records a resend with its outcome and the count sent", async () => {
+    auth.requireAdmin.mockResolvedValueOnce(admin);
+    emit.resendDelivery.mockResolvedValueOnce("payload-erased");
+    await expect(resendWebhookDelivery(form({ delivery_id: "d1" }))).rejects.toThrow(/NEXT_REDIRECT/);
+    expect(recordAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "webhook.resent",
+        details: { delivery_id: "d1", result: "payload-erased", sent: 0 },
+      }),
+    );
+  });
+
+  it("records nothing for a deduped resend, which did nothing", async () => {
+    auth.requireAdmin.mockResolvedValueOnce(admin);
+    locks.acquireLock.mockResolvedValueOnce(null);
+    await expect(resendWebhookDelivery(form({ delivery_id: "d1" }))).rejects.toThrow(/deduped/);
+    expect(recordAudit).not.toHaveBeenCalled();
+  });
+
+  it("records a replay with its window and how many it queued", async () => {
+    auth.requireAdmin.mockResolvedValueOnce(admin);
+    emit.replayDeadLetteredDeliveries.mockResolvedValueOnce(9);
+    await expect(replayFailedWebhooks(form({ hours: "48" }))).rejects.toThrow(/replay=9/);
+    expect(recordAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "webhook.replayed", details: { hours: 48, queued: 9 } }),
+    );
+  });
+});
+
+// #3089: the agent.* entries used to be written by the authorization guard, BEFORE
+// the change ran and with no details, so a refused save read as an edit that
+// happened. Each is now written after its change, with the value before and after.
+describe("agent audits follow the change and carry before and after (#3089)", () => {
+  beforeEach(() => {
+    auth.requireManager.mockResolvedValue(admin);
+  });
+
+  it("an applied bookable flip records the value it moved from and to, after the write", async () => {
+    dbState.single = { role: "agent" };
+    bookable.applyBookableByUserId.mockResolvedValueOnce({ status: "applied", userId: "u2", bookable: true });
+    await expect(setBookable(form({ user_id: "u2", bookable: "true" }))).rejects.toThrow(/bookable=on/);
+    expect(recordAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "agent.bookable",
+        targetUserId: "u2",
+        details: { bookable: { from: false, to: true } },
+      }),
+    );
+    expect(bookable.applyBookableByUserId.mock.invocationCallOrder[0]).toBeLessThan(
+      recordAudit.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("a refused or unchanged bookable flip records nothing", async () => {
+    dbState.single = { role: "agent" };
+    bookable.applyBookableByUserId.mockResolvedValueOnce({
+      status: "blocked",
+      userId: "u2",
+      reason: "google_unreachable",
+    });
+    await expect(setBookable(form({ user_id: "u2", bookable: "true" }))).rejects.toThrow(/blocked-gone/);
+    bookable.applyBookableByUserId.mockResolvedValueOnce({ status: "noop", userId: "u2", bookable: true });
+    await expect(setBookable(form({ user_id: "u2", bookable: "true" }))).rejects.toThrow(/bookable=on/);
+    expect(recordAudit).not.toHaveBeenCalled();
+  });
+
+  it("a deactivation records the state before and after, after the service ran", async () => {
+    dbState.single = { role: "agent" };
+    await setUserLifecycle(form({ user_id: "u2", action: "deactivate", coverage: "move" }));
+    expect(recordAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "agent.deactivate",
+        details: { deactivated: { from: false, to: true }, moved_upcoming_bookings: true },
+      }),
+    );
+    expect(offboarding.applyLifecycleByUserId.mock.invocationCallOrder[0]).toBeLessThan(
+      recordAudit.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("a lifecycle noop records nothing", async () => {
+    dbState.single = { role: "agent" };
+    offboarding.applyLifecycleByUserId.mockResolvedValueOnce({ status: "noop", userId: "u2" } as never);
+    await setUserLifecycle(form({ user_id: "u2", action: "deactivate" }));
+    expect(recordAudit).not.toHaveBeenCalled();
+  });
+
+  it("an hours save records the week before and the week after, once the write landed", async () => {
+    dbState.rowsByTable.users = { role: "agent" };
+    dbState.rowsByTable.availability_schedules = {
+      timezone: "America/Denver",
+      availability_rules: [{ weekday: 2, start_minute: 600, end_minute: 960, id: "r2" }],
+    };
+    await expect(
+      setWorkingHours(
+        form({ user_id: "u2", timezone: "America/New_York", day_1: "on", start_1: "09:00", end_1: "17:00" }),
+      ),
+    ).rejects.toThrow(/ok=working-hours/);
+    const entry = recordAudit.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(entry).toMatchObject({ action: "agent.hours", targetUserId: "u2" });
+    expect(entry.details).toEqual({
+      schedule: {
+        from: { timezone: "America/Denver", rules: [{ weekday: 2, start_minute: 600, end_minute: 960 }] },
+        to: { timezone: "America/New_York", rules: [{ weekday: 1, start_minute: 540, end_minute: 1020 }] },
+      },
+    });
+    expect(rpc.mock.invocationCallOrder[0]).toBeLessThan(recordAudit.mock.invocationCallOrder[0]);
+  });
+
+  it("an hours save the database refuses records nothing", async () => {
+    dbState.rowsByTable.users = { role: "agent" };
+    dbState.rowsByTable.availability_schedules = null;
+    dbState.rpcError = { message: "permission denied" };
+    await expect(
+      setWorkingHours(
+        form({ user_id: "u2", timezone: "America/New_York", day_1: "on", start_1: "09:00", end_1: "17:00" }),
+      ),
+    ).rejects.toThrow(/could not be saved/);
+    expect(recordAudit).not.toHaveBeenCalled();
+  });
+
+  it("an unreadable week before is recorded as unreadable, not as no hours, and the save still happens", async () => {
+    dbState.rowsByTable.users = { role: "agent" };
+    dbState.errorByTable.availability_schedules = { message: "deadlock detected" };
+    await expect(
+      setWorkingHours(
+        form({ user_id: "u2", timezone: "America/New_York", day_1: "on", start_1: "09:00", end_1: "17:00" }),
+      ),
+    ).rejects.toThrow(/ok=working-hours/);
+    const entry = recordAudit.mock.calls.at(-1)?.[0] as { details: { schedule: { from: unknown } } };
+    expect(entry.details.schedule.from).toBe("unreadable");
   });
 });
 

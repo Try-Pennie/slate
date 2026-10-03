@@ -273,3 +273,57 @@ describe("a browser error report is not a server fault (#2788)", () => {
     expect(cooldown).toBe(INTERNAL_ERROR_COOLDOWN_MS);
   });
 });
+
+// A plain object throw (a supabase-js PostgrestError is `{ message, code,
+// details, hint }`, not an Error) reached Slack as "[object Object]" through
+// `String(err)`, which threw away the one fact the page exists to carry.
+describe("the alert detail reads whatever shape was thrown", () => {
+  const alertText = () =>
+    (dispatch.sendThrottledAlert.mock.calls[0] as unknown as [string, number, string])[2];
+
+  it("an Error renders its message", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await reportInternalError(new Error("connection reset"), "book");
+    expect(alertText()).toContain("connection reset");
+  });
+
+  it("a PostgrestError shaped object renders its message and code, scrubbed", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await reportInternalError(
+      {
+        message: "duplicate key value violates unique constraint for jane.doe@example.com",
+        code: "23505",
+        details: "Key (attendee_email)=(jane.doe@example.com) already exists.",
+        hint: null,
+      },
+      "book",
+    );
+    const body = alertText();
+    expect(body).not.toContain("[object Object]");
+    expect(body).toContain("duplicate key value violates unique constraint");
+    expect(body).toContain("23505");
+    expect(body).not.toContain("jane.doe@example.com");
+  });
+
+  it("a string renders as itself", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await reportInternalError("raw string blow up", "book");
+    expect(alertText()).toContain("raw string blow up");
+  });
+
+  it("an object with no message never renders as [object Object]", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await reportInternalError({ status: 418 }, "book");
+    const body = alertText();
+    expect(body).not.toContain("[object Object]");
+    expect(body).toContain("418");
+  });
+
+  it("undefined says there was no detail rather than printing undefined", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await reportInternalError(undefined, "book");
+    const body = alertText();
+    expect(body).not.toContain("undefined");
+    expect(body).toContain("no detail");
+  });
+});

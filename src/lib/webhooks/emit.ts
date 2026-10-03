@@ -1,6 +1,8 @@
 import { reportWriteFailure } from "@/lib/db/result";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { buildRequest } from "@/lib/webhooks/wire";
+import { resolveWebhookCredentials } from "@/lib/webhooks/credentials";
+import { regalWebhookKey, webhookSigningSecret } from "@/lib/env";
 import { WEBHOOK_MAX_ATTEMPTS, isDeadLettered, isDueForRetry } from "@/lib/webhooks/retry";
 import { parseStampMs } from "@/lib/date/stamp";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
@@ -126,8 +128,23 @@ async function send(
     headers = {};
     configError = resolved.reason;
   } else {
+    // #3091: the key and the signing secret come from Worker secrets, falling back
+    // to the endpoint row's columns while the move is unfinished. The SOURCE is
+    // logged (never a value), so a tick of the log says which one each delivery
+    // used, and the monitor lane pages for as long as it is the column.
+    const credentials = resolveWebhookCredentials(endpoint, {
+      regalKey: regalWebhookKey(),
+      signingSecret: webhookSigningSecret(),
+    });
+    const used = endpoint.format === "regal" ? credentials.sources.key : credentials.sources.signing;
+    (used === "worker" ? log.info : log.warn)("webhook-credentials", {
+      msg: "delivery credential source",
+      endpoint_id: endpoint.id,
+      format: endpoint.format,
+      source: used,
+    });
     try {
-      ({ body, headers } = buildRequest(endpoint, deliveryId, event, payload));
+      ({ body, headers } = buildRequest(credentials.endpoint, deliveryId, event, payload));
     } catch (err) {
       body = "";
       headers = {};

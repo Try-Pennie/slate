@@ -152,6 +152,15 @@ export const bookableApiKey = (): string => process.env.BOOKABLE_API_KEY ?? "";
 // every post with a 503 naming this variable.
 export const regalInboundKey = (): string => process.env.REGAL_INBOUND_KEY ?? "";
 
+// The two OUTBOUND webhook credentials (#3091): the Regal API key sent as the
+// Authorization header, and the HMAC secret the generic format signs with. Worker
+// secrets so only the running Worker can read them; they used to live only in
+// `webhook_endpoints.auth_header` and `.secret`. Empty = the delivery falls back
+// to that column while it still holds a value (expand then contract,
+// `src/lib/webhooks/credentials.ts`) and the monitor lane pages until it is set.
+export const regalWebhookKey = (): string => process.env.REGAL_WEBHOOK_KEY ?? "";
+export const webhookSigningSecret = (): string => process.env.WEBHOOK_SIGNING_SECRET ?? "";
+
 // Bearer keys for the direct booking API (POST /api/bookings, #355). #2645: one
 // key per caller, each with TWO slots so it rotates with zero downtime: add the new
 // key as _2, point the caller at it, then retire the old primary. Every slot of

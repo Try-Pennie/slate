@@ -49,6 +49,7 @@ export const ALERT_KEYS = [
   "roster_coverage_upcoming_gap",
   "ooo_protection_lost",
   "webhook_event_no_subscriber",
+  "webhook_credentials_in_database",
   "edge_limiter_unusable",
   "definer_grants_to_web_roles",
   "auth_sign_in_beyond_google",
@@ -341,6 +342,12 @@ export const ALERT_FIELDS: {
     help: "A booking event Slate sends has no active webhook endpoint subscribed to it, so the delivery is recorded and reaches no downstream system.",
   },
   {
+    key: "webhook_credentials_in_database",
+    urgency: "alert",
+    label: "Webhook credentials still in the database",
+    help: "The Regal API key or the webhook signing secret is still read from the database because its Worker secret is not set. Deliveries work, but anyone who can read the database can read the credential.",
+  },
+  {
     key: "edge_limiter_unusable",
     urgency: "page",
     label: "Request rate limits not being enforced",
@@ -587,6 +594,10 @@ export const MONITOR_DEFAULTS = {
     // daily rather than hourly: the fix is not urgent to the minute, and the state
     // can legitimately last as long as the person who has to make that edit is away.
     webhook_event_no_subscriber: 24 * 60 * 60_000,
+    // A credential still read from the database (#3091) is an exposure, not an
+    // outage: every delivery works. It ends when somebody puts a Worker secret, so
+    // repeat daily, like the unsubscribed event beside it.
+    webhook_credentials_in_database: 24 * 60 * 60_000,
     // The request ceilings being off (#1529) persists until a deploy puts them back, and
     // nothing self-heals it, so repeat while it lasts. Hourly rather than daily: unlike an
     // unsubscribed webhook event, the state leaves a public endpoint unprotected, and

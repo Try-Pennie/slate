@@ -118,12 +118,17 @@ assert(
 // makes every green above mean something, because a scanner that read the wrong file and a
 // clean tree report the same empty list.
 
+// #3091: the page no longer has a key field at all (both credentials are Worker
+// secrets), so the plant goes beside the Save button, which every version of the
+// form keeps, and reads off `row`, the variable that still holds the columns.
+const ANCHOR = "<SubmitButton className={btnCls}";
+
 for (const declared of DECLARED_SURFACES) {
   const real = realIo.readFile(declared);
-  const planted = real.replace('defaultValue=""', "defaultValue={webhook?.auth_header}");
+  const planted = real.replace(ANCHOR, `<input defaultValue={row?.auth_header} />\n          ${ANCHOR}`);
   assert(
     planted !== real,
-    `positive control: the write only \`defaultValue=""\` is still in ${declared} to plant over`,
+    `positive control: the Save button anchor is still in ${declared} to plant beside`,
   );
 
   const caught = auditRenderedSecrets(overlayIo({ [declared]: planted }), {
@@ -146,10 +151,8 @@ for (const declared of DECLARED_SURFACES) {
   );
 
   // And the text render shape, which is the other way #600 shipped.
-  const printed = real.replace(
-    "{webhook?.auth_header ? (",
-    "{webhook?.auth_header}\n            {webhook?.auth_header ? (",
-  );
+  const printed = real.replace(ANCHOR, `{row?.auth_header}\n          ${ANCHOR}`);
+  assert(printed !== real, `positive control: the text render plant landed in ${declared}`);
   const caughtPrinted = auditRenderedSecrets(overlayIo({ [declared]: printed }), {
     roots: ROOTS,
     declared: DECLARED_SURFACES,
@@ -346,14 +349,29 @@ assert(
 // The write-only contract the page's silence rests on
 // ---------------------------------------------------------------------------
 //
-// The page not showing the key only holds if a blank field means "keep the current key". If
-// the action goes back to writing null on blank, the silence turns into a silent wipe: an
-// admin edits the URL, the blank key field nulls the credential, and every booking event to
-// Regal starts posting an empty Authorization header.
+// #600 needed a blank key field to mean "keep the current key". Since #3091 both
+// credentials are Worker secrets and the endpoint action writes NEITHER column at all, so
+// the rule is stronger and simpler: `setWebhookEndpoint` names neither field as a key in
+// anything it writes. Scoped to that function's body, because the test send beside it
+// legitimately builds a throwaway endpoint carrying placeholder values.
 const actions = readFileSync(resolve(repoRoot, "src/app/admin/actions.ts"), "utf8");
+const setStart = actions.indexOf("export async function setWebhookEndpoint(");
+const setEnd = actions.indexOf("\nexport ", setStart + 1);
+assert(setStart >= 0 && setEnd > setStart, "setWebhookEndpoint is found in actions.ts to check");
+const setBody = actions.slice(setStart, setEnd);
 assert(
-  !/update\(\{\s*url,\s*format,\s*auth_header:\s*authHeader\s*\}\)/.test(actions),
-  "setWebhookEndpoint does not unconditionally write auth_header (blank would wipe the key) (#600)",
+  !/\bauth_header\s*:/.test(setBody),
+  "setWebhookEndpoint writes no auth_header: the Regal key is a Worker secret (#3091)",
 );
+assert(
+  !/\bsecret\s*:(?!\s*"")/.test(setBody),
+  "setWebhookEndpoint writes no signing secret beyond the empty placeholder the NOT NULL column needs (#3091)",
+);
+// The positive control for the two assertions above, over the function as it used to be.
+assert(
+  /\bauth_header\s*:/.test('update(authHeader ? { url, format, auth_header: authHeader } : { url, format })'),
+  "positive control: the old write shape is caught by the auth_header pattern",
+);
+assert(/\bsecret\s*:(?!\s*"")/.test("secret: nanoid(32),"), "positive control: a minted secret is caught");
 
 finish();

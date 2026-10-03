@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
-import { shortFailureReason, DIAGNOSTIC_REASON_CHARS } from "@/lib/notify/error-text";
+import { errorText, shortFailureReason, DIAGNOSTIC_REASON_CHARS } from "@/lib/notify/error-text";
 import { scrubContactData } from "@/lib/api/client-error-scrub";
 import { log } from "@/lib/log";
 import { unexpectedFaultAlert } from "@/lib/notify/misc-alert-copy";
@@ -54,7 +54,10 @@ export async function reportInternalError(err: unknown, context: string): Promis
   // can never leave half an address the shapes no longer recognise. The log line
   // above keeps the full text. Names have no shape, so this narrows the residue
   // rather than closing it (client-error-scrub.ts states the limit).
-  const raw = err instanceof Error ? err.message : String(err);
+  //
+  // `errorText`, never `String(err)`: a supabase-js PostgrestError is a plain
+  // object, and `String` turned it into "[object Object]" on its way to Slack.
+  const raw = errorText(err);
   const detail = shortFailureReason(scrubContactData(raw), DIAGNOSTIC_REASON_CHARS) ?? "no detail";
   await sendThrottledAlert(
     `internal_error:${context}`,

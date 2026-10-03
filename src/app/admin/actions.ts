@@ -12,7 +12,6 @@ import {
 import { cookies } from "next/headers";
 import { refreshOnePhoto, runAdvisorPhotoLane } from "@/lib/advisor-photos/lane";
 import { photoOutcome, photoOutcomeQuery } from "@/lib/advisor-photos/copy";
-import { nanoid } from "nanoid";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
   currentUser,
@@ -82,9 +81,9 @@ import { applyLifecycleByUserId } from "@/lib/offboarding/service";
 import { runRosterSync } from "@/lib/salesforce/run-roster-sync";
 import type { TwilioSyncResult } from "@/lib/twilio/sync";
 import { replayDeadLetteredDeliveries, resendDelivery } from "@/lib/webhooks/emit";
-import { webhookUrlError } from "@/lib/webhooks/url";
+import { webhookEndpointAuditDetails, webhookUrlError } from "@/lib/webhooks/url";
 import { acquireLock } from "@/lib/locks";
-import { recordAudit, type AuditAction } from "@/lib/audit";
+import { recordAudit } from "@/lib/audit";
 import { CALCOM_RETIREMENT_FORM, loadCalcomRetired, __resetCalcomRetiredCache } from "@/lib/calcom/retirement";
 import { loadPutBackCounts, putBackQuery } from "@/lib/calcom/put-back";
 import { parseIgnoreAdd, personLabel, type IgnoreRosterUser } from "@/lib/admin/regal-call-ignores";
@@ -162,11 +161,15 @@ function writeRefused(what: string, error: { message: string; code?: string }): 
 /**
  * Asserts the signed-in user is a manager+ who may edit `userId` (escalation
  * guard: a manager can edit agents but not peers/admins). Returns the actor.
+ *
+ * #3089: it AUTHORIZES and nothing else. It used to write the `agent.*` audit row
+ * here too, before the mutation had run and with no details, so a save the
+ * database refused still read in the trail as an edit that happened, and an edit
+ * that did happen said nothing about what changed (the contract on `recordAudit`).
+ * Each caller now records its own entry after its write succeeds, with the value
+ * before and after.
  */
-async function requireManageAgent(
-  userId: string,
-  action: AuditAction,
-): Promise<User> {
+async function requireManageAgent(userId: string): Promise<User> {
   const actor = await requireManager();
   // #1629: this is an AUTHORIZATION read, and swallowing it failed OPEN. A null
   // `data` defaulted the target to "agent", which is the role a manager is allowed
@@ -186,8 +189,69 @@ async function requireManageAgent(
   if (!canManageUser(actor.role, targetRole, actor.id === userId)) {
     throw new Error("Not authorized");
   }
-  await recordAudit({ orgId: actor.org_id, actorId: actor.id, action, targetUserId: userId });
   return actor;
+}
+
+/** A user's week as the trail records it: the zone and each day's window. */
+type ScheduleSnapshot = {
+  timezone: string;
+  rules: { weekday: number; start_minute: number; end_minute: number }[];
+};
+
+/**
+ * The agent's week BEFORE an hours save, for the trail's "from" (#3089).
+ *
+ * Never throws and never blocks the save: an unreadable week is recorded as
+ * "unreadable" rather than as no schedule, because "they had no hours" and "we
+ * could not tell" are different facts about the past (L11), and refusing an hours
+ * change over a read the change does not need would trade a real edit for a
+ * better footnote. Null is a real answer: the agent had no schedule row yet.
+ */
+async function readScheduleForAudit(userId: string): Promise<ScheduleSnapshot | null | "unreadable"> {
+  const { data, error } = await supabaseAdmin()
+    .from("availability_schedules")
+    .select("timezone, availability_rules(weekday, start_minute, end_minute)")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) {
+    log.warn("admin-actions", { msg: "schedule before an hours save could not be read", user_id: userId }, error);
+    return "unreadable";
+  }
+  if (!data) return null;
+  const row = data as {
+    timezone: string;
+    availability_rules: ScheduleSnapshot["rules"] | null;
+  };
+  return { timezone: row.timezone, rules: sortRules(row.availability_rules ?? []) };
+}
+
+function sortRules(rules: ScheduleSnapshot["rules"]): ScheduleSnapshot["rules"] {
+  return [...rules]
+    .map((r) => ({ weekday: r.weekday, start_minute: r.start_minute, end_minute: r.end_minute }))
+    .sort((a, b) => a.weekday - b.weekday || a.start_minute - b.start_minute);
+}
+
+/** Records an hours save AFTER it landed, with the week before and after (#3089). */
+async function auditScheduleSave(
+  actor: User,
+  userId: string,
+  action: "agent.hours" | "agent.use_default_hours",
+  before: ScheduleSnapshot | null | "unreadable",
+  plan: ScheduleReplacementPlan,
+): Promise<void> {
+  if (!plan.ok) return;
+  await recordAudit({
+    orgId: actor.org_id,
+    actorId: actor.id,
+    action,
+    targetUserId: userId,
+    details: {
+      schedule: {
+        from: before,
+        to: { timezone: plan.timezone, rules: sortRules(plan.rules) },
+      },
+    },
+  });
 }
 
 /**
@@ -930,7 +994,7 @@ export async function updateBucket(form: FormData): Promise<void> {
 
 export async function setWorkingHours(form: FormData): Promise<void> {
   const userId = String(form.get("user_id") ?? "");
-  await requireManageAgent(userId, "agent.hours");
+  const actor = await requireManageAgent(userId);
   // #1989: a form that sent no zone used to save the week in Eastern and report
   // success, which is how a stored default came to read as a choice (#1739).
   const timezone = submittedTimezone(form);
@@ -944,7 +1008,9 @@ export async function setWorkingHours(form: FormData): Promise<void> {
   if (!plan.ok) {
     redirect(`/admin/agents/${userId}${refusedQuery(plan.error)}`);
   }
+  const before = await readScheduleForAudit(userId);
   await replaceUserSchedule(userId, "admin", plan);
+  await auditScheduleSave(actor, userId, "agent.hours", before, plan);
   // #1769: the form that calls this lives on the agent's own page, so that is the
   // route that has to be refreshed. Revalidating only /admin left the page the
   // person is looking at showing what it showed before they pressed the button.
@@ -1651,7 +1717,7 @@ export async function useDefaultHours(form: FormData): Promise<void> {
   const db = supabaseAdmin();
   const userId = String(form.get("user_id") ?? "");
   if (!userId) return;
-  const actor = await requireManageAgent(userId, "agent.use_default_hours");
+  const actor = await requireManageAgent(userId);
 
   // #1629: same pair as applyOrgDefaultToUser above, same reasoning. Both reads
   // decide what is written to the agent's schedule, so neither may be guessed.
@@ -1696,16 +1762,15 @@ export async function useDefaultHours(form: FormData): Promise<void> {
   // for agents with no availability_schedules ROW, which a row with no rules is
   // not. `planUniformSchedule`, whose own docstring says it is what this button
   // means, had no callers at all.
-  await replaceUserSchedule(
-    userId,
-    "admin",
-    planUniformSchedule(
-      o.default_weekdays,
-      o.default_start_minute,
-      o.default_end_minute,
-      tz,
-    ),
+  const plan = planUniformSchedule(
+    o.default_weekdays,
+    o.default_start_minute,
+    o.default_end_minute,
+    tz,
   );
+  const before = await readScheduleForAudit(userId);
+  await replaceUserSchedule(userId, "admin", plan);
+  await auditScheduleSave(actor, userId, "agent.use_default_hours", before, plan);
   // #1769: the form that calls this lives on the agent's own page, so that is the
   // route that has to be refreshed. Revalidating only /admin left the page the
   // person is looking at showing what it showed before they pressed the button.
@@ -1719,7 +1784,7 @@ export async function useDefaultHours(form: FormData): Promise<void> {
 export async function setBookable(form: FormData): Promise<void> {
   const userId = String(form.get("user_id") ?? "");
   if (!userId) return;
-  await requireManageAgent(userId, "agent.bookable");
+  const actor = await requireManageAgent(userId);
   const wantBookable = form.get("bookable") === "true";
   const back = `/admin/agents/${userId}`;
   // Same guarded path as the bookable-toggle API (#281/#912): making an agent
@@ -1785,6 +1850,18 @@ export async function setBookable(form: FormData): Promise<void> {
   if (result.status === "not_found") {
     redirect(`${back}?bookable=missing`);
     return;
+  }
+  // #3089: only a flip that HAPPENED is recorded, after it landed. `applied` means
+  // the row moved, so the value before is the opposite of the one it moved to; a
+  // noop changed nothing and records nothing.
+  if (result.status === "applied") {
+    await recordAudit({
+      orgId: actor.org_id,
+      actorId: actor.id,
+      action: "agent.bookable",
+      targetUserId: userId,
+      details: { bookable: { from: !result.bookable, to: result.bookable } },
+    });
   }
   redirect(`${back}?bookable=${wantBookable ? "on" : "off"}`);
 }
@@ -1899,13 +1976,29 @@ export async function setUserLifecycle(form: FormData): Promise<void> {
       `/admin/agents/${userId}${refusedQuery("You cannot deactivate your own account. Ask another admin to do it.")}`,
     );
   }
-  await requireManageAgent(userId, action === "deactivate" ? "agent.deactivate" : "agent.reactivate");
+  await requireManageAgent(userId);
   // The field and its values come from the component that writes them, so the
   // two cannot drift into disagreeing about a wire value (L263). A drift here is
   // silent in the worst direction: every press would fall to not sweeping while
   // the admin believed they had chosen to move.
   const sweepCoverage = readCoverageChoice(form.get(COVERAGE_CHOICE_FIELD));
-  await applyLifecycleByUserId(userId, action, { sweepCoverage });
+  const result = await applyLifecycleByUserId(userId, action, { sweepCoverage });
+  // #3089: after the change, and only when it changed something. `applied` is a
+  // transition, so the state before is the other one; a noop records nothing.
+  if (result.status === "applied") {
+    const deactivated = action === "deactivate";
+    await recordAudit({
+      orgId: actor.org_id,
+      actorId: actor.id,
+      action: deactivated ? "agent.deactivate" : "agent.reactivate",
+      targetUserId: userId,
+      details: {
+        deactivated: { from: !deactivated, to: deactivated },
+        moved_upcoming_bookings: sweepCoverage,
+        ...(result.clearedStaleBookable ? { cleared_stale_bookable: true } : {}),
+      },
+    });
+  }
   revalidatePath("/admin");
   revalidatePath(`/admin/agents/${userId}`);
 }
@@ -2384,6 +2477,16 @@ export async function resendWebhookDelivery(form: FormData): Promise<void> {
   if (result !== "sent") {
     log.warn("webhook-resend", { msg: "resend not sent", delivery_id: deliveryId, result });
   }
+  // #3089: a resend posts a lead's stored payload to the endpoint again, which is
+  // a privileged outbound action like the test send. Recorded with its outcome and
+  // the count actually re-sent, so a refusal reads as zero rather than as a send.
+  // A deduped press above did nothing and records nothing.
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "webhook.resent",
+    details: { delivery_id: deliveryId, result, sent: result === "sent" ? 1 : 0 },
+  });
   revalidatePath(WEBHOOKS_PAGE);
   redirect(`${WEBHOOKS_PAGE}?resend=${encodeURIComponent(result)}`);
 }
@@ -2411,6 +2514,13 @@ export async function replayFailedWebhooks(form: FormData): Promise<void> {
   }
   const sinceIso = new Date(Date.now() - hours * 3_600_000).toISOString();
   const queued = await replayDeadLetteredDeliveries(admin.org_id, sinceIso);
+  // #3089: the window and how many it queued, after the replay ran.
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "webhook.replayed",
+    details: { hours, queued },
+  });
   revalidatePath(WEBHOOKS_PAGE);
   // The COUNT, because zero and nine send a reader to two different places: zero
   // says the window held nothing dead lettered, and nine says nine are on their
@@ -2446,27 +2556,27 @@ export async function setWebhookEndpoint(form: FormData): Promise<void> {
   }
 
   const format = form.get("format") === "regal" ? "regal" : "generic";
-  // For Regal this is the API key sent as the Authorization header.
-  //
-  // #600: the form no longer round-trips the stored key to the browser, so a blank field
-  // means "leave it alone", NOT "clear it". Writing null on blank meant an admin editing
-  // the URL without retyping the key silently wiped it and took every booking event to
-  // Regal offline. Omit the column entirely unless a new key was actually typed.
-  const authHeader = String(form.get("auth_header") ?? "").trim() || null;
+  // #3091: the Regal API key and the signing secret are Worker secrets now, so this
+  // form writes neither column, whatever it is sent. Changing either is a deploy
+  // step (DEPLOY.md, section 2b), and the page shows only whether each is set.
+  // #600's rule that a blank field must never wipe the key holds trivially: there
+  // is no field.
 
   // #1629: this null decides UPDATE versus INSERT. On a read error it read as "no
   // endpoint exists" and took the insert branch, adding a SECOND endpoint row for
   // the org: every booking event then delivered twice, and the page's own
   // `.limit(1)` read would afterwards show whichever row came back first.
+  //
+  // #3089: the url and format are read too, as the "before" the trail records.
   const existing = unwrap(
     await db
       .from("webhook_endpoints")
-      .select("id")
+      .select("id, url, format")
       .eq("org_id", admin.org_id)
       .limit(1)
       .maybeSingle(),
     "webhook endpoint upsert lookup",
-  );
+  ) as { id: string; url: string; format: string } | null;
 
   // #2379: both branches are checked, and each refuses through the same `?error=`
   // the URL guard above already uses, so this form has ONE way of saying no. A
@@ -2481,8 +2591,8 @@ export async function setWebhookEndpoint(form: FormData): Promise<void> {
   if (existing) {
     const { error } = await db
       .from("webhook_endpoints")
-      .update(authHeader ? { url, format, auth_header: authHeader } : { url, format })
-      .eq("id", (existing as { id: string }).id);
+      .update({ url, format })
+      .eq("id", existing.id);
     if (error) {
       redirect(
         `${WEBHOOKS_PAGE}${refusedQuery(writeRefused("The webhook endpoint", error))}`,
@@ -2493,8 +2603,11 @@ export async function setWebhookEndpoint(form: FormData): Promise<void> {
       org_id: admin.org_id,
       url,
       format,
-      auth_header: authHeader,
-      secret: nanoid(32),
+      // #3091: an empty string, never a generated value. The column is still NOT
+      // NULL until the contract migration, and minting a secret here would put a
+      // new credential back in the database the move takes them out of. Empty
+      // counts as absent, so the delivery reads WEBHOOK_SIGNING_SECRET or refuses.
+      secret: "",
     });
     if (error) {
       redirect(
@@ -2502,6 +2615,15 @@ export async function setWebhookEndpoint(form: FormData): Promise<void> {
       );
     }
   }
+  // #3089: where lead contact data is POSTed is the most consequential setting on
+  // this page, and changing it left no trace. After the write, so the trail records
+  // what happened; host and format only, never the path, the query or a credential.
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "webhook.endpoint_set",
+    details: webhookEndpointAuditDetails(existing, { url, format }),
+  });
   // #2384: the form is on `/admin/webhooks`, so that is the route to refresh and
   // the route the confirmation lands on. Revalidating `/admin` and returning void
   // left the page the person was looking at redrawing exactly what it showed

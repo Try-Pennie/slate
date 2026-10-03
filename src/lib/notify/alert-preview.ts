@@ -461,6 +461,11 @@ import {
   formatUnsubscribedEventsRecovery,
 } from "@/lib/monitor/webhook-subscriber-coverage";
 import {
+  credentialSourceVerdict,
+  formatCredentialsInDatabaseAlert,
+  formatCredentialsInDatabaseRecovery,
+} from "@/lib/monitor/webhook-credential-source";
+import {
   formatEdgeLimiterUnusableAlert,
   formatEdgeLimiterRecovery,
 } from "@/lib/monitor/edge-limiter-health";
@@ -2797,6 +2802,36 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "every event has a subscriber again",
     channel: "recovery",
     text: formatUnsubscribedEventsRecovery(),
+  },
+  // #3091: the expand half of moving the webhook credentials into the Worker. One
+  // credential and both read differently (one secret to put, or two).
+  {
+    key: "webhook_credentials_in_database",
+    state: "both credentials still read from the database",
+    channel: "alert",
+    text: formatCredentialsInDatabaseAlert(
+      credentialSourceVerdict([{ hasDbKey: true, hasDbSigning: true }], {
+        regalKeySet: false,
+        signingSecretSet: false,
+      }),
+    ),
+  },
+  {
+    key: "webhook_credentials_in_database",
+    state: "only the signing secret is left on the database",
+    channel: "alert",
+    text: formatCredentialsInDatabaseAlert(
+      credentialSourceVerdict([{ hasDbKey: true, hasDbSigning: true }], {
+        regalKeySet: true,
+        signingSecretSet: false,
+      }),
+    ),
+  },
+  {
+    key: "webhook_credentials_in_database",
+    state: "both credentials read from Worker secrets",
+    channel: "recovery",
+    text: formatCredentialsInDatabaseRecovery(),
   },
   // #2476: main merged and not live. The three endings read differently on purpose:
   // one names a run to re-run, one sends the reader to a deploy job that reported

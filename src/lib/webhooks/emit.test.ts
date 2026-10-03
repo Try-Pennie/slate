@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { createHmac } from "node:crypto";
 
 // #623: the webhook retry sweep must (a) load endpoints in ONE query per sweep
 // instead of one-per-delivery (N+1), and (b) claim each delivery row via a
@@ -982,5 +983,54 @@ describe("agent bookable trait delivery (#2085)", () => {
     await emitWebhook("o1", "booking.created", payload, "bk1");
     expect(from.mock.calls.map((c) => c[0])).not.toContain("users");
     expect("payload" in statusWrite()).toBe(false);
+  });
+});
+
+// #3091: the two credentials move into Worker secrets, expand then contract. The
+// Worker secret wins when it is set, the endpoint row's column answers only while
+// it is not, and each delivery logs which one it used, never the value. Every key
+// below is a fixture.
+describe("outbound credentials come from the Worker first (#3091)", () => {
+  const regalEndpoint = { ...endpoint, format: "regal", auth_header: "fixture-db-key" };
+  const trait = { user_id: "u1", email: "agent@trypennie.com", slate_bookable: false };
+
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("sends the Worker key, not the column, and logs the source as worker", async () => {
+    vi.stubEnv("REGAL_WEBHOOK_KEY", "fixture-worker-key");
+    state.endpoints = [regalEndpoint];
+    state.user = { bookable: false, deactivated_at: null };
+    await emitWebhook("o1", "agent.bookable_changed", trait);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, { headers: Record<string, string> }];
+    expect(init.headers.authorization).toBe("fixture-worker-key");
+    const line = logged.info.mock.calls.find((c) => c[0] === "webhook-credentials");
+    expect(line?.[1]).toMatchObject({ source: "worker", format: "regal" });
+    expect(JSON.stringify(logged.info.mock.calls)).not.toContain("fixture-worker-key");
+  });
+
+  it("falls back to the column while the Worker secret is unset, and warns that it did", async () => {
+    vi.stubEnv("REGAL_WEBHOOK_KEY", "");
+    state.endpoints = [regalEndpoint];
+    state.user = { bookable: false, deactivated_at: null };
+    await emitWebhook("o1", "agent.bookable_changed", trait);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, { headers: Record<string, string> }];
+    expect(init.headers.authorization).toBe("fixture-db-key");
+    const line = logged.warn.mock.calls.find((c) => c[0] === "webhook-credentials");
+    expect(line?.[1]).toMatchObject({ source: "database" });
+    expect(JSON.stringify(logged.warn.mock.calls)).not.toContain("fixture-db-key");
+  });
+
+  it("signs a generic delivery with the Worker signing secret when it is set", async () => {
+    vi.stubEnv("WEBHOOK_SIGNING_SECRET", "fixture-worker-signing");
+    const payload = { booking_id: "bk1", bucket_code: "411" } as unknown as BookingEventPayload;
+    await emitWebhook("o1", "booking.created", payload, "bk1");
+
+    const [, init] = fetchMock.mock.calls[0] as [string, { body: string; headers: Record<string, string> }];
+    const ts = init.headers["x-slate-timestamp"];
+    const expected =
+      "sha256=" + createHmac("sha256", "fixture-worker-signing").update(`${ts}.${init.body}`).digest("hex");
+    expect(init.headers["x-slate-signature"]).toBe(expected);
   });
 });

@@ -244,7 +244,14 @@ import {
   runCiHealthCheck,
 } from "@/lib/monitor/github-ci-health";
 import { BUILD_COMMIT } from "@/lib/build-info";
-import { githubCanaryToken, appUrl, publicSupabaseUrl, publicSupabasePublishableKey } from "@/lib/env";
+import {
+  githubCanaryToken,
+  appUrl,
+  publicSupabaseUrl,
+  publicSupabasePublishableKey,
+  regalWebhookKey,
+  webhookSigningSecret,
+} from "@/lib/env";
 import {
   runMigrationDriftCheck,
   readAppliedMigrationVersions,
@@ -268,6 +275,8 @@ import {
 } from "@/lib/rate-limit-core";
 import { SHIPPED_MIGRATION_VERSION } from "@/lib/db/migration-version";
 import { runWebhookSubscriberCheck } from "@/lib/monitor/webhook-subscriber-coverage";
+import { runWebhookCredentialSourceCheck } from "@/lib/monitor/webhook-credential-source";
+import { hasStoredValue } from "@/lib/webhooks/credentials";
 import { runHandoffCheck } from "@/lib/handoffs/check";
 import {
   loadHandoffBookings,
@@ -3187,6 +3196,44 @@ export async function GET(req: NextRequest) {
       }),
     );
 
+    // The outbound webhook credentials still read from the database (#3091). The
+    // Regal key and the signing secret move into Worker secrets, expand then
+    // contract, and a delivery falling back to the column works exactly like one
+    // that did not, so only this says the move is unfinished. Presence only: each
+    // column becomes a boolean here and never travels further.
+    const webhookCredentials = await steps.run("webhook_credentials", null, () =>
+      runWebhookCredentialSourceCheck({
+        loadEndpoints: async () => {
+          // cap-safe: webhook_endpoints is roster-bounded config (one row in prod).
+          const { data, error } = await db
+            .from("webhook_endpoints")
+            .select("auth_header, secret")
+            .eq("active", true);
+          if (error) {
+            log.warn("webhook-credentials", { msg: "endpoints read failed" }, error);
+            return null;
+          }
+          return ((data ?? []) as { auth_header: string | null; secret: string | null }[]).map((row) => ({
+            hasDbKey: hasStoredValue(row.auth_header),
+            hasDbSigning: hasStoredValue(row.secret),
+          }));
+        },
+        worker: {
+          regalKeySet: regalWebhookKey().trim().length > 0,
+          signingSecretSet: webhookSigningSecret().trim().length > 0,
+        },
+        // alert-key: webhook_credentials_in_database
+        // alert-text-ok: our own copy from webhook-credential-source.ts, never a raw error.
+        notify: sendThrottledAlert,
+        // alert-key: webhook_credentials_in_database
+        // all-clear-proof: scripts/test-webhook-credential-source.ts - an unreadable
+        // or throwing endpoint read clears nothing, because it measured nothing.
+        resolve: resolveAlert,
+        cooldownMs: cooldownMs.webhook_credentials_in_database,
+        log: (msg) => log.info("webhook-credentials", { msg }),
+      }),
+    );
+
     // Booking handoffs: a booking waiting on a person in sales (#2367). Delivers each
     // open handoff to the handoff channel, resolves the ones whose booking has since
     // settled, and pages the alerts channel when handoffs are not getting through.
@@ -3746,6 +3793,9 @@ export async function GET(req: NextRequest) {
       // failed: "no event is unsubscribed" and "could not tell" must not render the
       // same, since the second is the state this check exists to notice (#1459).
       webhookSubscribers,
+      // null when the step failed, measured:false inside when the endpoint read failed,
+      // and otherwise which credentials are still read from the column (#3091).
+      webhookCredentials,
       // null when the step failed, and measured:false inside when the open handoffs
       // could not be read: "nothing waiting" and "could not look" must not read alike.
       handoffs,
