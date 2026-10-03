@@ -22,7 +22,7 @@ describe("bookerSlotIso", () => {
   });
 
   it("stays inside the calling window at any hour the suite runs, in the booker's zone", () => {
-    const zone = resolveZone(deviceTimeZone()).id;
+    const zone = resolveZone(deviceTimeZone());
     vi.useFakeTimers({ toFake: ["Date"] });
     // Late evening and early morning UTC, the hours at which "now plus N days"
     // fixtures fell outside 08:00 to 20:00 Eastern.

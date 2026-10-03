@@ -15,7 +15,7 @@ import { DateTime } from "luxon";
 import { deviceTimeZone, resolveZone } from "@/lib/booking/timezones";
 
 export function bookerSlotIso(daysAhead: number, hour = 12, zone?: string): string {
-  const z = zone ?? resolveZone(deviceTimeZone()).id;
+  const z = zone ?? resolveZone(deviceTimeZone());
   const iso = DateTime.now()
     .setZone(z)
     .plus({ days: daysAhead })

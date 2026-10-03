@@ -71,14 +71,21 @@ import { assert, eq, finish } from "./lib/harness.ts";
     beats("hours-differ", "no-calcom-user"),
     "a measured difference outranks an agent who could not be compared",
   );
-  assert(
-    beats("no-calcom-schedule", "timezone-name-differs"),
-    "and being unable to compare outranks a zone name that changes nothing",
-  );
   eq(
     OUTCOME_ORDER[OUTCOME_ORDER.length - 1],
-    "timezone-name-differs",
-    "the quietest outcome is the one that changes nothing a lead sees",
+    "hours-set-by-agent",
+    "the quietest outcome is a week the agent set, which no automatic run will clear",
+  );
+  // #2030 retired exit 9 (a zone name that keeps the same clock), which is now
+  // agreement. A retired code is never handed to a different outcome: a shell
+  // caller that branched on 9 would silently start reading it as something else.
+  assert(
+    !Object.values(EXIT_CODE).includes(9),
+    "exit 9 is retired with the zone alias verdict and is not reused",
+  );
+  assert(
+    !(OUTCOME_ORDER as readonly string[]).includes("timezone-name-differs"),
+    "and a zone alias is no longer an outcome a run can exit on",
   );
 }
 
@@ -91,11 +98,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
   );
   eq(worstOutcome(["agree", "staff-not-bookable"]), null, "nothing but agreement and expected staff is a pass");
   eq(worstOutcome([]), null, "and an empty run reports no outcome, which the caller must refuse (L98)");
-  eq(
-    worstOutcome(["timezone-name-differs", "agree"]),
-    "timezone-name-differs",
-    "a cosmetic finding is still an outcome, so it is reported rather than swallowed",
-  );
+
 }
 
 finish();

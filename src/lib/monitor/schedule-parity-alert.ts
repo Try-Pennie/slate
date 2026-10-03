@@ -74,9 +74,6 @@ export const PARITY_VERDICT_CLASS = {
   "no-slate-schedule": "standing",
   "no-calcom-schedule": "standing",
   "no-calcom-user": "standing",
-  // A zone NAME that keeps the same clock. Denver against Boise differs on 0 of
-  // 9,600 sampled hours, so it changes nothing a lead sees; reported so drift is
-  // knowable, and never allowed to bury something real.
   // A real difference on a week the AGENT set for themselves (#2092). The daily
   // lane corrects hours from cal.com automatically now and deliberately refuses to
   // overwrite these, so nothing automatic will ever clear it: paging daily would
@@ -84,7 +81,6 @@ export const PARITY_VERDICT_CLASS = {
   // from cutover onwards for everybody (#1454). Counted in the standing total, so
   // it is knowable rather than invisible.
   "hours-set-by-agent": "standing",
-  "timezone-name-differs": "standing",
   "calcom-unreadable": "unmeasured",
   "calcom-unreachable": "unmeasured",
 } as const satisfies Record<string, ParityVerdictClass>;

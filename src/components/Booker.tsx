@@ -379,7 +379,7 @@ export default function Booker({
   // Dan took knowingly. The "more zones" search went with it, since a way out of
   // a fixed list is not a smaller version of fixing the list.
   const detectedZone = useMemo(() => deviceTimeZone(), []);
-  const [zone, setZone] = useState(resolveZone(detectedZone).id);
+  const [zone, setZone] = useState(resolveZone(detectedZone));
   const selectOptions = useMemo(() => timezoneOptions(), []);
   const today = useMemo(() => DateTime.now().setZone(zone).startOf("day"), [zone]);
   const c = PALETTE[theme];

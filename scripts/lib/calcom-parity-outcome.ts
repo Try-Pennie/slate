@@ -43,9 +43,9 @@ export type ParityOutcome = Exclude<RosterVerdict | ScheduleVerdict, "agree" | Q
  * stronger statement of the same problem: cal.com holds this person and has decided
  * not to route to them, where the other means it simply does not list them.
  *
- * Last is a zone name that keeps the same clock, which changes nothing a lead
- * sees. It is reported so drift is knowable and ranked last so it can never bury
- * something real, which it did on the very first live sweep.
+ * A zone name that keeps the same clock is not here at all: it is agreement
+ * (#2030), and its old exit code 9 is retired rather than reused, so a shell
+ * caller that once branched on 9 never silently reads it as something else.
  *
  * One verdict is deliberately absent, and it is named in `DELIBERATELY_QUIET`
  * below rather than simply left out, so the exemption has a reviewer (L129).
@@ -65,14 +65,13 @@ export const OUTCOME_ORDER: readonly ParityOutcome[] = [
   "no-slate-schedule",
   "no-calcom-schedule",
   "no-calcom-user",
-  // Last, beside the zone alias, because no automatic run will ever clear it and a
-  // verdict that names a run every morning is one nobody reads by the second week
+  // Last, because no automatic run will ever clear it and a verdict that names a
+  // run every morning is one nobody reads by the second week
   // (L36). It is still an OUTCOME with its own code rather than a quiet verdict:
   // unlike the staff accounts, this one CAN change (the agent edits their week, or
   // somebody corrects cal.com), so a run that meets nothing else should still say
   // so rather than exit zero.
   "hours-set-by-agent",
-  "timezone-name-differs",
 ] as const;
 
 /**
@@ -103,10 +102,10 @@ export const DELIBERATELY_QUIET: readonly QuietVerdict[] = [
  * a run met without parsing prose. Stable: the roster codes were added at 20 and
  * up rather than renumbering the schedule codes that already shipped.
  *
- * Zero is reserved for agreement and appears nowhere here.
+ * Zero is reserved for agreement and appears nowhere here. 9 is RETIRED: it was a
+ * zone name that keeps the same clock, which is agreement since #2030.
  */
 export const EXIT_CODE: Record<ParityOutcome, number> = {
-  "timezone-name-differs": 9,
   "hours-set-by-agent": 27,
   "no-calcom-user": 10,
   "no-calcom-schedule": 11,

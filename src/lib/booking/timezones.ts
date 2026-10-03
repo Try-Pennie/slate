@@ -80,43 +80,50 @@ export function timezoneOptions(): TimezoneOption[] {
 }
 
 /**
- * Which option a stored or detected zone selects, and whether it had to fall
- * back (#1849).
+ * The listed zone a stored or detected zone IS, or null when it keeps no listed
+ * clock (#2128).
  *
- * A zone that keeps the same clock as a listed one under another name
- * (`America/Boise` keeps Denver's clock, `America/Indiana/Indianapolis` and
- * `America/Detroit` keep New York's, `America/Juneau` keeps Anchorage's) selects
- * that listed zone, and is NOT a fallback: every time it shows reads exactly as
- * it would in the person's own zone, so nothing about their day moved (#2687).
- * The mapping is derived by comparing the clocks hour by hour
- * (`sameClockListedZone`), never kept as a hand list, so a zone nobody thought
- * of is covered and a zone whose rules change stops mapping when they do.
+ * A listed zone is itself. A zone that keeps the same clock as a listed one under
+ * another name (`America/Boise` keeps Denver's clock, `America/Indiana/Indianapolis`
+ * and `America/Detroit` keep New York's, `America/Juneau` keeps Anchorage's) is
+ * that listed zone: every time it shows reads exactly as it would in the person's
+ * own zone, so nothing about their day moves (#2687). The mapping is derived by
+ * comparing the clocks hour by hour (`sameClockListedZone`), never kept as a hand
+ * list, so a zone nobody thought of is covered and a zone whose rules change stops
+ * mapping when they do.
  *
- * A value that keeps no listed clock is answered EXPLICITLY rather than by
- * leaving the control blank or letting it land on whatever happens to be first.
- * Both are real hazards: blank hides that a choice is needed, and silently
- * selecting the first option MOVES somebody's working hours without telling
- * them, which on the roster is somebody's real day.
- *
- * `wasOutsideList` exists so a caller can SAY so. It is false for an empty or
- * missing value, which is somebody who has simply not chosen yet rather than
- * somebody whose choice is no longer offered; telling those two apart is the
- * difference between a default and a silent overwrite.
+ * This is the ONE mapping, asked by both sides of the hours form: the picker
+ * (`resolveZone`, below) to choose what to show, and the save path
+ * (`planScheduleReplacement`) to choose what to store or refuse. The save path
+ * used to carry its own copy with a different window and memo, so the two could
+ * disagree about a zone with nothing comparing them (L107, L370).
  */
-export function resolveZone(
-  zone: string | undefined,
-  nowMs: number = Date.now(),
-): {
-  id: string;
-  wasOutsideList: boolean;
-} {
-  if (!zone) return { id: FALLBACK_ZONE, wasOutsideList: false };
-  if (CURATED_ZONES.some((z) => z.id === zone)) {
-    return { id: zone, wasOutsideList: false };
-  }
-  const sameClock = sameClockListedZone(zone, nowMs);
-  if (sameClock) return { id: sameClock, wasOutsideList: false };
-  return { id: FALLBACK_ZONE, wasOutsideList: true };
+export function listedZoneFor(zone: string, nowMs: number = Date.now()): string | null {
+  if (CURATED_ZONES.some((z) => z.id === zone)) return zone;
+  return sameClockListedZone(zone, nowMs);
+}
+
+/**
+ * Which option a stored or detected zone selects (#1849).
+ *
+ * Its listed zone where it has one (`listedZoneFor`); otherwise the documented
+ * fallback, answered EXPLICITLY rather than by leaving the control blank or
+ * letting it land on whatever happens to be first. Blank hides that a choice is
+ * needed, and an accidental first option would move somebody's hours with nothing
+ * deciding it.
+ *
+ * #2128 removed the `wasOutsideList` flag this used to return beside the id. No
+ * caller ever read it, and the case it was for cannot reach the hours form: the
+ * save path refuses a zone with no listed clock, and the roster was migrated onto
+ * the list before that refusal shipped. A lead whose device reports a zone outside
+ * the list is shown Eastern by decision (#1849), with no notice to drive. So a
+ * caller that ever needs to say "this was not your zone" asks
+ * `listedZoneFor(zone) === null`, which is the same question answered by the one
+ * mapping, rather than a flag nothing kept honest.
+ */
+export function resolveZone(zone: string | undefined, nowMs: number = Date.now()): string {
+  if (!zone) return FALLBACK_ZONE;
+  return listedZoneFor(zone, nowMs) ?? FALLBACK_ZONE;
 }
 
 /**
@@ -178,10 +185,20 @@ const sameClockCache = new Map<string, boolean>();
  * Whether two zone names keep the same clock at every hour of the next
  * `ZONE_SAMPLE_HOURS` from `nowMs` (#2687).
  *
- * This is the ONE judge of "the same clock under another name": the cal.com
- * parity check (`zonesAgree` in `scripts/lib/schedule-parity.ts`) asks it too,
- * so the booker and the parity report cannot disagree about whether Boise is
- * Denver.
+ * This is the ONE judge of "the same clock under another name", with ONE window
+ * and ONE memo rule. The picker, the hours save path (through `listedZoneFor`)
+ * and the cal.com parity check (`zonesAgree` in `scripts/lib/schedule-parity.ts`)
+ * all ask it, so none of them can disagree about whether Boise is Denver.
+ * `scripts/test-timezones.ts` fails on a second copy (#2128).
+ *
+ * The window runs forward from `nowMs`, never from January of the current year.
+ * The save path's old copy anchored on the year so that "two saves either side of
+ * midnight cannot differ", which held on every night but New Year's Eve, and a
+ * window that starts in January has already spent most of itself by December. A
+ * forward window always covers the next 400 days of rules, which is the period a
+ * stored zone is about to be used for; two calls on different days can differ
+ * only when a rules change sits exactly on the edge of one window, and then the
+ * later call is the one that is right.
  *
  * It asks the runtime's own zone data, which on a lead's device is the same
  * data that renders the times they read, so a device is judged by the rules it

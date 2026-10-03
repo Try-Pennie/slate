@@ -86,7 +86,7 @@ export function OooForm({
   // to a named default rather than being prepended. The searchable "more zones"
   // fallback (#1007) went with it: a way out of a fixed list is not a smaller
   // version of fixing the list.
-  const [timezone, setTimezone] = useState(resolveZone(defaultTz).id);
+  const [timezone, setTimezone] = useState(resolveZone(defaultTz));
   // Watchdog: a submit should take ~1s. If it's still in flight after this, a
   // request somewhere wedged (cold server, dropped connection), so stop looking
   // successful and tell the agent how to recover instead of spinning forever.

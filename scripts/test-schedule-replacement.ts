@@ -12,7 +12,7 @@ import {
   planUniformSchedule,
 } from "../src/lib/schedule-replacement.ts";
 import { assert, finish } from "./lib/harness.ts";
-import { CURATED_ZONES } from "../src/lib/booking/timezones.ts";
+import { CURATED_ZONES, listedZoneFor } from "../src/lib/booking/timezones.ts";
 
 /** A real zone, so the day rules are what these cases are testing (#1671). */
 const ZONE = "America/New_York";
@@ -385,5 +385,41 @@ const ZONE = "America/New_York";
   }
 }
 
+// --- the server and the picker map a stored zone the SAME way (#2128) ---------
+//
+// The save path once carried its own copy of "keeps the same clock": a different
+// window (two years from January of the save year) and a different memo from the
+// picker's (400 days from now). They agreed on every zone this roster holds and
+// nothing compared them, so a rules change landing inside one window and outside
+// the other would have had the picker select Denver for a zone the server refused,
+// or the server store a zone the picker could not show (L107, L370). Both now ask
+// `listedZoneFor`, and this holds them to it over every America zone the runtime
+// knows, which is where every alias of a listed clock lives.
+{
+  const america = Intl.supportedValuesOf("timeZone").filter((z) => z.startsWith("America/"));
+  for (const extra of ["America/Boise", "America/Indiana/Indianapolis"]) {
+    if (!america.includes(extra)) america.push(extra);
+  }
+  let stored = 0;
+  let refused = 0;
+  for (const zone of america) {
+    const listed = listedZoneFor(zone);
+    const plan = planUniformSchedule([1], 480, 1020, zone);
+    if (listed === null) {
+      assert(plan.ok === false, `#2128: ${zone} keeps no listed clock, so the server refuses it as the picker cannot show it`);
+      refused++;
+    } else {
+      assert(
+        plan.ok === true && plan.timezone === listed,
+        `#2128: ${zone} is stored as ${listed}, the zone the picker selects for it (got ${plan.ok === true ? plan.timezone : "refused"})`,
+      );
+      stored++;
+    }
+  }
+  // Both directions or it proves nothing: a server that refused everything, or
+  // stored everything verbatim, must not be able to pass (L1).
+  assert(stored > 20, `#2128: a real number of America zones are stored on a listed clock (${stored})`);
+  assert(refused > 20, `#2128: and a real number are refused (${refused})`);
+}
 
 finish();

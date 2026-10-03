@@ -21,9 +21,9 @@
  * Weekdays follow Luxon (1 = Monday .. 7 = Sunday), so 0 would silently match no day.
  */
 
-import { DateTime, IANAZone } from "luxon";
+import { IANAZone } from "luxon";
 import { WEEKDAY_NAMES, uniformRules } from "./schedule-core";
-import { CURATED_ZONES } from "./booking/timezones";
+import { listedZoneFor } from "./booking/timezones";
 
 export interface ScheduleRule {
   weekday: number;
@@ -37,73 +37,30 @@ export type ScheduleReplacementPlan =
 
 const DAY_END_MINUTE = 1440;
 
-/**
- * The offered zone a stored zone should be written as, or null if none matches
- * (#2126).
- *
- * The picker offers seven US zones (#1849) and the rule that anything outside it
- * is refused on the server was written down and enforced nowhere, so the cal.com
- * import (#1738) wrote each agent's zone through verbatim. Ten live agents ended
- * up on a zone the picker cannot show, nine of them bookable. Their hours page
- * then preselects Eastern, because that is the picker's fallback, so any save
- * moved a Boise agent's whole bookable day two hours while reporting success.
- *
- * REFUSING those zones would be the wrong repair. Boise is Mountain to the
- * minute, so a refusal would reject a correct week and leave nine people unable
- * to save anything at all, which is a control that cannot be satisfied (L109).
- * Resolving them to the offered zone they already agree with keeps every one of
- * those weeks and puts the stored value back inside the list.
- *
- * The match is MEASURED rather than listed. A hand written table would cover the
- * zones this roster happens to hold today and silently refuse the next one
- * (L96, L217), and it would have to be re-derived every time a jurisdiction
- * changes its rules. Two zones match only if they agree at EVERY hour of the
- * window, so a zone that merely shares today's offset does not qualify: Phoenix
- * and Denver agree all winter and are an hour apart all summer, which is exactly
- * the pair this must not merge.
- *
- * The window is two years from the start of the year the week is being saved in,
- * which covers a full pair of daylight transitions on both sides. It is
- * deliberately not "from now", so two saves on either side of midnight cannot
- * reach different answers.
- *
- * Memoised per zone and year: the scan is roughly 150ms, and it runs only for a
- * zone that is not already offered, which after the correction is none of them.
- */
-const equivalentZoneCache = new Map<string, string | null>();
-
-export function offeredEquivalentZone(timezone: string, year: number): string | null {
-  if (CURATED_ZONES.some((z) => z.id === timezone)) return timezone;
-
-  const key = `${timezone}@${year}`;
-  const cached = equivalentZoneCache.get(key);
-  if (cached !== undefined) return cached;
-
-  const start = DateTime.fromObject({ year, month: 1, day: 1 }, { zone: "utc" });
-  const HOURS = 2 * 365 * 24;
-  let match: string | null = null;
-  for (const candidate of CURATED_ZONES) {
-    let agrees = true;
-    for (let i = 0; i < HOURS; i++) {
-      const at = start.plus({ hours: i });
-      if (at.setZone(timezone).offset !== at.setZone(candidate.id).offset) {
-        agrees = false;
-        break;
-      }
-    }
-    if (!agrees) continue;
-    // Two offered zones that agree at every hour would make the answer depend on
-    // the order of the list, so refuse rather than pick one. Nothing in the
-    // current list does, and `scripts/test-schedule-replacement.ts` pins that.
-    if (match !== null) {
-      match = null;
-      break;
-    }
-    match = candidate.id;
-  }
-  equivalentZoneCache.set(key, match);
-  return match;
-}
+// WHY a save is resolved onto an offered zone rather than refused (#2126). The
+// mapping itself is `listedZoneFor` (`./booking/timezones`), the same one the
+// picker uses to choose what to show; this module kept its own copy, with its own
+// window and memo, until #2128.
+//
+// The picker offers seven US zones (#1849) and the rule that anything outside it
+// is refused on the server was written down and enforced nowhere, so the cal.com
+// import (#1738) wrote each agent's zone through verbatim. Ten live agents ended
+// up on a zone the picker cannot show, nine of them bookable. Their hours page
+// then preselected Eastern, because that is the picker's fallback, so any save
+// moved a Boise agent's whole bookable day two hours while reporting success.
+//
+// REFUSING those zones would be the wrong repair. Boise is Mountain to the
+// minute, so a refusal would reject a correct week and leave nine people unable
+// to save anything at all, which is a control that cannot be satisfied (L109).
+// Resolving them to the offered zone they already agree with keeps every one of
+// those weeks and puts the stored value back inside the list. A zone keeping no
+// offered clock (London, Tokyo, Regina) has nowhere to go and IS refused.
+//
+// The match is MEASURED rather than listed, at every hour of a window, so a zone
+// that merely shares today's offset does not qualify: Phoenix and Denver agree
+// all winter and are an hour apart all summer, which is exactly the pair this must
+// not merge. The window and its reasoning live with the one judge,
+// `zonesKeepSameClock`.
 
 
 const isWholeNumber = (n: number): boolean => Number.isInteger(n);
@@ -149,7 +106,7 @@ export function planScheduleReplacement(
   // #2126: and it must be a zone the picker can actually show, or one that keeps
   // the identical clock, so a stored value can never be a zone the form would
   // silently replace with its fallback.
-  const offered = offeredEquivalentZone(timezone, DateTime.now().year);
+  const offered = listedZoneFor(timezone);
   if (offered === null) {
     return {
       ok: false,
