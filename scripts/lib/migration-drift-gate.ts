@@ -145,3 +145,14 @@ export function changedFilesFromMergeCommit(git: (args: string[]) => string): st
     return null;
   }
 }
+
+/**
+ * A value made safe to print on a workflow command line (`::notice::`,
+ * `::error::`) or as a plain log line the runner scans for commands. File names
+ * reach the log, and a name may legally hold a line break (the diff is read with
+ * -z), so an unescaped one could start a workflow command of its own. Escaped the
+ * way the runner unescapes: `%` first, then CR and LF.
+ */
+export function workflowCommandText(value: string): string {
+  return value.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+}

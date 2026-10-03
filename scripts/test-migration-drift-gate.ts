@@ -4,6 +4,7 @@ import {
   changedFilesFromMergeCommit,
   decideMigrationDriftGate,
   type DriftGateInput,
+  workflowCommandText,
 } from "./lib/migration-drift-gate.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -174,5 +175,17 @@ eq(
   "refuse",
   "a Dependabot PR whose merge commit cannot be read refuses",
 );
+
+// A file name may legally hold a line break (the diff is read with -z), and the
+// step prints names inside ::notice:: / ::error:: lines and as plain log lines.
+// Unescaped, a name like "a\n::set-output name=decision::run" would be read by
+// the runner as a workflow command of its own.
+{
+  const hostile = "a\n::set-output name=decision::run\r%";
+  const out = workflowCommandText(hostile);
+  assert(!/[\r\n]/.test(out), "an escaped value holds no line break, so it cannot start a command of its own");
+  eq(out, "a%0A::set-output name=decision::run%0D%25", "escaped the way the runner unescapes: % first, then CR and LF");
+  eq(workflowCommandText("supabase/migrations/0200_x.sql"), "supabase/migrations/0200_x.sql", "an ordinary name is unchanged");
+}
 
 finish();

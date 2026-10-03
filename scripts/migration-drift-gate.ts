@@ -18,6 +18,7 @@ import {
   changedFilesFromMergeCommit,
   decideMigrationDriftGate,
   isDependabotPullRequest,
+  workflowCommandText,
 } from "./lib/migration-drift-gate.ts";
 
 const env = process.env;
@@ -38,10 +39,14 @@ const changedFiles =
 
 const decision = decideMigrationDriftGate({ eventName, headRef, actor, changedFiles, secretsPresent });
 
-console.log(`migration-drift gate: ${decision.action} (event ${eventName || "unknown"}, head ref ${headRef || "none"}, actor ${actor || "unknown"})`);
+console.log(
+  workflowCommandText(
+    `migration-drift gate: ${decision.action} (event ${eventName || "unknown"}, head ref ${headRef || "none"}, actor ${actor || "unknown"})`,
+  ),
+);
 if (changedFiles !== null) {
   console.log(`changed files (${changedFiles.length}):`);
-  for (const f of changedFiles) console.log(`  ${f}`);
+  for (const f of changedFiles) console.log(`  ${workflowCommandText(f)}`);
 }
 
 if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, `decision=${decision.action}\n`);
@@ -55,8 +60,8 @@ const heading =
 if (env.GITHUB_STEP_SUMMARY) appendFileSync(env.GITHUB_STEP_SUMMARY, `### ${heading}\n\n${decision.reason}\n`);
 
 if (decision.action === "refuse") {
-  console.log(`::error title=${heading}::${decision.reason}`);
+  console.log(`::error title=${heading}::${workflowCommandText(decision.reason)}`);
   process.exit(1);
 }
-if (decision.action === "skip") console.log(`::notice title=${heading}::${decision.reason}`);
-else console.log(decision.reason);
+if (decision.action === "skip") console.log(`::notice title=${heading}::${workflowCommandText(decision.reason)}`);
+else console.log(workflowCommandText(decision.reason));
