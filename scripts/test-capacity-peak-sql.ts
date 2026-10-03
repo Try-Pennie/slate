@@ -13,7 +13,7 @@
 import { readFileSync } from "node:fs";
 import { assert, finish } from "./lib/harness.ts";
 import { scanRunbookBlocks } from "./lib/scan-runbook-commands.ts";
-import { readOnlyProblems, sqlCode } from "./lib/runbook-sql-check.ts";
+import { readOnlyProblems, sqlCode, sqlWithoutComments } from "./lib/runbook-sql-check.ts";
 import { interfaceFields, tableTypeMap } from "./lib/scan-db-columns.ts";
 
 const RUNBOOK = "scripts/loadtest/RUNBOOK.md";
@@ -50,11 +50,14 @@ function problems(sql: string): string[] {
   if (!/\bwhere\s+not\s+k\.is_test\b/i.test(code)) out.push("it does not exclude test buckets");
   // The premise is about ROUTED bookings: an agent's own named link does not route
   // (0144), and every reader that reasons about routed bookings filters on kind (L418).
-  if (!/\band\s+b\.kind\s*=\s*'routed'/i.test(sql)) out.push("it does not keep to routed bookings");
-  if (!/b\.created_at\s*>=\s*now\(\)\s*-\s*interval\s*'30 days'/i.test(sql)) {
+  // Literal bearing clauses are judged on the SQL with its comments removed, so a
+  // comment that mentions a clause cannot stand in for it (L135).
+  const live = sqlWithoutComments(sql);
+  if (!/\band\s+b\.kind\s*=\s*'routed'/i.test(live)) out.push("it does not keep to routed bookings");
+  if (!/b\.created_at\s*>=\s*now\(\)\s*-\s*interval\s*'30 days'/i.test(live)) {
     out.push("it does not read a fixed 30 day window");
   }
-  if (!/date_trunc\('minute'/.test(sql)) out.push("it does not count per minute");
+  if (!/date_trunc\('minute'/.test(live)) out.push("it does not count per minute");
   return out;
 }
 
@@ -67,6 +70,14 @@ const controls: [string, string][] = [
   ["a column bookings lacks", query.replace("b.created_at\n", "b.booked_at\n")],
   ["a column on the wrong table", query.replace("not k.is_test", "not b.is_test")],
   ["agent link bookings counted", query.replace(/\s*and b\.kind = 'routed'/, "")],
+  [
+    "the routed filter only in a comment",
+    query.replace(/\s*and b\.kind = 'routed'/, "\n    -- and b.kind = 'routed'"),
+  ],
+  [
+    "the window only in a comment",
+    query.replace(/\s*and b\.created_at >= now\(\) - interval '30 days'/, "\n    -- and b.created_at >= now() - interval '30 days'"),
+  ],
   ["an open window", query.replace(/\s*and b\.created_at >= now\(\) - interval '30 days'/, "")],
   ["a write", query + "\nupdate bookings set status = 'cancelled';"],
 ];

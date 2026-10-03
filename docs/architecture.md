@@ -52,7 +52,7 @@ flowchart LR
   googleOAuth -->|"auth callback"| slate
   cfcron -->|"/api/cron lanes: CRON_SECRET"| slate
   gha -->|"smoke routes: BOOKING_API_KEY_CANARY"| slate
-  noodge -->|"/api/health: none"| slate
+  noodge -->|"/api/health checks: answered without a key; UPTIME_HEARTBEAT_KEY, optional, stamps the uptime heartbeat"| slate
   gcal -->|"push notifications: GOOGLE_CHANNEL_TOKEN"| slate
   slack -->|"approve buttons: Slack signing secret"| slate
 

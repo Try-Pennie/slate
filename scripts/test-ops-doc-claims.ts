@@ -160,6 +160,10 @@ function walk(dir: string, out: string[] = []): string[] {
   ]) {
     assert(ctx.includes(system), `the system context diagram shows ${system}`);
   }
+  // noodge sends a key on its health checks to stamp the uptime heartbeat (#1228), so
+  // its arrow names that key rather than reading as unauthenticated.
+  const noodge = /noodge -->\|"([^"]*)"\|/.exec(ctx)?.[1] ?? "";
+  assert(noodge.includes("UPTIME_HEARTBEAT_KEY"), `the noodge arrow names the key it sends (got "${noodge}")`);
   assert(ctx.includes("./api.md#credentials-and-auth-models"), "the diagram links the credentials table");
   assert(/^## Credentials and auth models$/m.test(read("docs/api.md")), "docs/api.md has the heading that anchor names");
 

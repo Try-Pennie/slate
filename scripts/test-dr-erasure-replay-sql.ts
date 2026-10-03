@@ -21,7 +21,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { assert, finish } from "./lib/harness.ts";
 import { scanRunbookBlocks } from "./lib/scan-runbook-commands.ts";
-import { namesColumn, readOnlyProblems, sqlCode } from "./lib/runbook-sql-check.ts";
+import { namesColumn, readOnlyProblems, sqlCode, sqlWithoutComments } from "./lib/runbook-sql-check.ts";
 import { interfaceFields, tableTypeMap } from "./lib/scan-db-columns.ts";
 
 const RUNBOOK = "docs/dr-runbook.md";
@@ -65,10 +65,24 @@ const fields = interfaceFields(readFileSync("src/lib/db/types.ts", "utf8"));
 const auditFields = fields.get(tableTypeMap(schema).get("audit_log") ?? "") ?? new Set<string>();
 assert(auditFields.size > 0, "the audit_log row type is readable");
 
+/**
+ * Whether Postgres refuses this text as a timestamptz input. It accepts a literal
+ * that opens with a digit (every date form) or is one of its special values, so
+ * text that is neither is an "invalid input syntax" error at run time.
+ */
+function isRefusedAsTimestamp(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  const special = ["epoch", "infinity", "-infinity", "+infinity", "now", "today", "tomorrow", "yesterday", "allballs"];
+  return !/^\d/.test(t) && !special.includes(t);
+}
+
 /** Every reason this query does not match the code, or none. */
 function problems(sql: string): string[] {
   const out = readOnlyProblems(sql, ["timestamptz"]);
-  if (!new RegExp(`action\\s*=\\s*'${(laneAction ?? "").replace(".", "\\.")}'`).test(sql)) {
+  // Literal bearing clauses are judged with comments removed, so a comment that
+  // mentions one cannot stand in for it (L135).
+  const live = sqlWithoutComments(sql);
+  if (!new RegExp(`action\\s*=\\s*'${(laneAction ?? "").replace(".", "\\.")}'`).test(live)) {
     out.push(`it does not filter on action = '${laneAction}'`);
   }
   for (const c of laneColumns) {
@@ -76,11 +90,17 @@ function problems(sql: string): string[] {
     if (!namesColumn(sql, c)) out.push(`it does not select "${c}", which the lane reads`);
   }
   for (const k of detailKeys) {
-    if (!new RegExp(`details\\s*->>?\\s*'${k}'`).test(sql)) out.push(`it does not read details '${k}'`);
+    if (!new RegExp(`details\\s*->>?\\s*'${k}'`).test(live)) out.push(`it does not read details '${k}'`);
     if (!new RegExp(`'${k}'`).test(fn)) out.push(`erase_booking_pii does not write details '${k}'`);
   }
-  if (!/created_at\s*>=\s*timestamptz\s*'RESTORE_TARGET_UTC'/.test(sql)) {
-    out.push("it is not bounded below by the RESTORE_TARGET_UTC placeholder");
+  // The lower bound is a timestamptz literal holding the placeholder, and the
+  // placeholder is no input Postgres reads as a timestamp, so a run that forgot to
+  // replace it is refused with a syntax error instead of reading the wrong window.
+  const bound = /created_at\s*>=\s*timestamptz\s*'([^']*)'/.exec(live)?.[1];
+  if (bound !== "RESTORE_TARGET_UTC") {
+    out.push("it is not bounded below by a timestamptz literal holding RESTORE_TARGET_UTC");
+  } else if (!isRefusedAsTimestamp(bound)) {
+    out.push("its placeholder is one Postgres would read as a real timestamp");
   }
   if (!/\bfrom\s+audit_log\b/i.test(sqlCode(sql))) out.push("it does not read audit_log");
   return out;
@@ -89,11 +109,12 @@ function problems(sql: string): string[] {
 const found = problems(query);
 assert(found.length === 0, `the runbook query matches the erasure code: ${found.join("; ") || "ok"}`);
 
-// The placeholder must be refused if left in, which needs it to be no timestamp.
-assert(
-  Number.isNaN(Date.parse("RESTORE_TARGET_UTC")),
-  "the placeholder is not a readable timestamp, so an unreplaced run is refused",
-);
+// The judge of a placeholder, checked both ways: a timestamptz literal is read only
+// when it opens with a digit (a date) or is one of Postgres's special input values.
+assert(isRefusedAsTimestamp("RESTORE_TARGET_UTC"), "control: the placeholder is refused as a timestamp");
+for (const real of ["2026-10-03 06:00:00+00", "epoch", "now", "Infinity", "-infinity", "today"]) {
+  assert(!isRefusedAsTimestamp(real), `control: "${real}" would be read as a timestamp`);
+}
 
 // Positive controls (L1): each check must fire on the defect it exists for.
 const controls: [string, string][] = [
@@ -103,6 +124,15 @@ const controls: [string, string][] = [
   ["a write", query + "\ndelete from audit_log;"],
   ["a data modifying CTE", "with gone as (delete from audit_log returning id) " + query],
   ["an unbounded window", query.replace(/\s*and created_at >= timestamptz 'RESTORE_TARGET_UTC'/, "")],
+  [
+    "the action filter only in a comment",
+    query.replace(`action = '${laneAction}'`, `true -- action = '${laneAction}'`),
+  ],
+  [
+    "the bound only in a comment",
+    query.replace("and created_at >= timestamptz 'RESTORE_TARGET_UTC'", "-- and created_at >= timestamptz 'RESTORE_TARGET_UTC'"),
+  ],
+  ["a placeholder Postgres would read", query.replace("'RESTORE_TARGET_UTC'", "'now'")],
   ["a function call", query.replace("now()", "erase_booking_pii('a@b.c')")],
 ];
 for (const [label, sql] of controls) {

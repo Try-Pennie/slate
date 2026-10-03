@@ -21,6 +21,26 @@ export function sqlCode(sql: string): string {
     .join("\n");
 }
 
+/**
+ * The SQL with `--` comments removed and literals KEPT, for checks whose subject is a
+ * literal (`kind = 'routed'`, a placeholder). A check run on the raw text is answered
+ * by a comment that merely mentions the clause (L135); one run on `sqlCode` cannot see
+ * the literal at all. A `--` inside a quoted literal is not a comment.
+ */
+export function sqlWithoutComments(sql: string): string {
+  return sql
+    .split("\n")
+    .map((l) => {
+      let quoted = false;
+      for (let i = 0; i < l.length; i++) {
+        if (l[i] === "'") quoted = !quoted;
+        else if (!quoted && l[i] === "-" && l[i + 1] === "-") return l.slice(0, i);
+      }
+      return l;
+    })
+    .join("\n");
+}
+
 const WRITES =
   /\b(insert|update|delete|merge|upsert|truncate|drop|alter|create|grant|revoke|copy|call|do|perform|vacuum|analyze|refresh|set|reset|lock|comment|listen|notify|execute)\b/i;
 
