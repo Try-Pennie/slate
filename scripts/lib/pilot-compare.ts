@@ -48,8 +48,8 @@
 //    window opening and the first application's span closing, a run reports the
 //    rates measured so far over applications whose span is still OPEN, so the trend
 //    can be watched. Every line is labelled partial, it says how much of the first
-//    full window it covers, it prints no difference, interval or verdict, and it exits
-//    on its own code. A show is judged only once its call can have happened and
+//    full window it covers, each rate carries an EARLY interval worded as biased low
+//    and not a result (#3073), it prints no verdict, and it exits on its own code. A show is judged only once its call can have happened and
 //    reached the store; the booking rate is biased low on both sides, and says so.
 
 import { DateTime } from "luxon";
@@ -720,6 +720,27 @@ function intervalText(d: { difference: number | null; low: number | null; high: 
   return `${points(d.difference)}, 95% interval ${points(d.low)} to ${points(d.high)}, ${p}: ${verdict}`;
 }
 
+/**
+ * The partial look's interval (#3073, Dan 2026-10-03): the same estimate, worded so it
+ * can never be read as the result. Every application here has had less than its span
+ * to book, so the booking rate and held per application are biased low on both sides,
+ * and a show rate is early; each line says which beside the numbers. It carries no verdict: "Slate higher" is a
+ * finding, and a partial look must not make one.
+ */
+function partialIntervalText(
+  readable: boolean,
+  d: { difference: number | null; low: number | null; high: number | null },
+  // Only a rate whose numerator can still grow for applications already counted is
+  // biased low: the booking rate and held per application. A show rate leaves calls
+  // still ahead out of both sides of its fraction, so it is early but not low.
+  caveat: "biased low, not a result" | "early, not a result",
+): string {
+  if (!readable) return "so far; too few to estimate an early interval";
+  if (d.difference === null) return "so far; no early interval: a side is empty";
+  if (d.low === null || d.high === null) return "so far; no early interval (no spread to estimate one from)";
+  return `so far; early 95% interval ${points(d.low)} to ${points(d.high)} around ${points(d.difference)} (${caveat})`;
+}
+
 export interface CallsRead {
   calls: RegalCall[];
   /** Every call the store received over the span read, for anyone: zero means the store is not filling. */
@@ -923,7 +944,11 @@ function judgeLines(input: CompareInput): { exit: number; lines: string[]; propo
     const readableBooking = !short(s.length, sb) && !short(k.length, kb);
     const readableShow = !short(show.slate.units, show.slate.outcomes) && !short(show.calcom.units, show.calcom.outcomes);
     // A partial look prints the rates so far and nothing that reads as a finding.
-    const judgedText = (readable: boolean, d: Parameters<typeof intervalText>[0]) => (partial ? "so far" : readable ? intervalText(d) : "not yet readable");
+    const judgedText = (
+      readable: boolean,
+      d: Parameters<typeof intervalText>[0],
+      caveat: "biased low, not a result" | "early, not a result" = "biased low, not a result",
+    ) => (partial ? partialIntervalText(readable, d, caveat) : readable ? intervalText(d) : "not yet readable");
     out.push(`${label}:`);
     out.push(
       `  applications  Slate ${s.length}, cal.com ${k.length}`,
@@ -933,7 +958,7 @@ function judgeLines(input: CompareInput): { exit: number; lines: string[]; propo
         judgedText(!short(sBase, sh) && !short(kBase, kh), heldPer),
       `  show rate (held over booked)  Slate ${show.slate.outcomes}/${show.slate.units} (${pct(show.slate.rate)}), ` +
         `cal.com ${show.calcom.outcomes}/${show.calcom.units} (${pct(show.calcom.rate)}), ${plural(show.clusters, "advisor")}; ` +
-        judgedText(readableShow, show),
+        judgedText(readableShow, show, "early, not a result"),
     );
     const perDay = (s.length + k.length) / Math.max(perDayDays, 1e-9);
     const dBook = daysNeeded({ leadsPerDay: perDay, percent: ASSUMED_PERCENT, baseRate: booking.calcomRate, lift: window.lift });
@@ -975,7 +1000,13 @@ function judgeLines(input: CompareInput): { exit: number; lines: string[]; propo
     "By the system that took the booking (NOT randomised: who books where is chosen by the lead and the page, so this row can differ from the headline for reasons that are not the booker):",
     `  booked applications  Slate ${booked.filter((j) => j.system === "slate").length}, cal.com ${booked.filter((j) => j.system === "calcom").length}`,
     `  show rate  Slate ${bySystem.slate.outcomes}/${bySystem.slate.units} (${pct(bySystem.slate.rate)}), cal.com ${bySystem.calcom.outcomes}/${bySystem.calcom.units} (${pct(bySystem.calcom.rate)}); ` +
-      (partial ? "so far" : intervalText(bySystem)),
+      (partial
+        ? partialIntervalText(
+            !short(bySystem.slate.units, bySystem.slate.outcomes) && !short(bySystem.calcom.units, bySystem.calcom.outcomes),
+            bySystem,
+            "early, not a result",
+          )
+        : intervalText(bySystem)),
   );
 
   // --- leakage by cause ----------------------------------------------------------------

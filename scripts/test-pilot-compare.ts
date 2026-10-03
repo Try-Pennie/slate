@@ -531,7 +531,27 @@ function run(
   assert(r.lines.some((l) => /call is still ahead/.test(l)), "and how the show rate treats calls not yet due");
   assert(r.lines.some((l) => /61\.5% of the way/.test(l) && /2026-10-10 03:00 ET/.test(l)), `says how much of the first full window is covered (${r.lines.filter((l) => /Coverage/.test(l))[0]})`);
   assert(r.lines.some((l) => /oldest application here has had 4\.96 of its 7 days/.test(l)), "and how long the oldest application has had");
-  assert(!r.lines.some((l) => /interval|days needed|READOUT|PROVISIONAL|Slate higher|Slate lower|cannot be told apart/.test(l)), "and never a difference, interval, verdict or readout");
+  // #3073 (Dan, 2026-10-03): the partial look shows an early interval, worded as biased
+  // low and never a result, so it carries no verdict, readout or days needed.
+  assert(
+    r.lines.some((l) => /booking rate/.test(l) && /early 95% interval/.test(l) && /biased low, not a result/.test(l)),
+    `the booking rate carries an early interval worded as not a result (${r.lines.find((l) => /booking rate/.test(l))})`,
+  );
+  assert(
+    r.lines.some((l) => /show rate \(held over booked\)/.test(l) && /early 95% interval|too few to estimate/.test(l)),
+    `the show rate carries one too, or says it is too few (${r.lines.find((l) => /show rate \(held over booked\)/.test(l))})`,
+  );
+  assert(!r.lines.some((l) => /days needed|READOUT|PROVISIONAL|Slate higher|Slate lower|cannot be told apart/.test(l)), "and never a verdict, readout or days needed");
+  // A show rate is not biased low (calls still ahead are left out, not counted as
+  // missed), so its early interval says early, not biased low. A cohort big enough
+  // that the show rate is readable proves the branch that prints one.
+  const big = cohort(1500, { slate: [0.4, 0.6], calcom: [0.3, 0.5] });
+  const bigSoFar = { ...big, calls: big.calls.filter((call) => Date.parse(call.startedAt) < now) };
+  const bigRun = run(bigSoFar, { window: partialWindow });
+  const showLine = bigRun.lines.find((l) => /show rate \(held over booked\)/.test(l)) ?? "";
+  assert(/early 95% interval/.test(showLine) && /early, not a result/.test(showLine) && !/biased low/.test(showLine), `the show rate's early interval is not called biased low (${showLine})`);
+  const bookLine = bigRun.lines.find((l) => /booking rate/.test(l)) ?? "";
+  assert(/biased low, not a result/.test(bookLine), `while the booking rate's still is (${bookLine})`);
   eq(r.proposedReadout, null, "and never proposes a readout date");
   assert(r.lines.some((l) => /ASSUMED, NOT CHECKED/.test(l)) && r.lines.some((l) => /Compared:/.test(l)), "still states the assumption and the count");
   assert(clean(r.lines), "nothing renders undefined or NaN");
