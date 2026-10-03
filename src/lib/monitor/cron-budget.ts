@@ -34,10 +34,12 @@
  * watchdog pages on it in its own words (#1394).
  *
  * PURE: every branch is driven offline by scripts/test-cron-budget.ts. Its one value import is
- * relative and logs only, so the node suite reads it without the alias hook.
+ * relative (the send failure loggers and the heartbeat sentinel), so the node suite reads it
+ * without the alias hook.
  */
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 import { logAlertSendFailure, logResolveFailure } from "../notify/send-failure.ts";
+import { isUnreadableStamp } from "./health.ts";
 
 /**
  * `limits.cpu_ms` in wrangler.jsonc. The Worker cannot read its own config at runtime, so the
@@ -133,7 +135,7 @@ export function cronBudgetHealth(input: {
   for (const [lane, ms] of Object.entries(input.stamps)) {
     if (!lane.startsWith(CRON_BUDGET_BREACH_PREFIX)) continue;
     const cron = lane.slice(CRON_BUDGET_BREACH_PREFIX.length);
-    if (ms === 0) unreadable.push(cron);
+    if (isUnreadableStamp(ms)) unreadable.push(cron);
     else if (ms !== null && input.nowMs - ms <= CRON_BUDGET_WINDOW_MS) breaches.push({ cron, atMs: ms });
   }
   // A breach is a positive measurement, so it is reported even while the verdict stamp is stale.

@@ -32,6 +32,7 @@ import {
   runCronBudgetCheck,
 } from "../src/lib/monitor/cron-budget.ts";
 import { CRON_ROUTES } from "../worker/cron-routes.ts";
+import { UNREADABLE_STAMP_MS } from "../src/lib/monitor/health.ts";
 import { recordCronBudget, TICK_ID_HEADER, type LaneRunDeps } from "../worker/lane-run.ts";
 import { WRANGLER_CRON_CPU_MS } from "./loadtest/platform-reading.ts";
 import { CRON_CPU_MARGIN_SHARE } from "./loadtest/judge-booking-run.ts";
@@ -96,14 +97,14 @@ const breach = (cron: string) => `${CRON_BUDGET_BREACH_PREFIX}${cron}`;
   // An undated breach row can never age out, so it is never counted as a breach: that would
   // page for ever (L665). Nor may it hold the all clear back, or an open alert waits on a
   // breach that may never come. So the readable rows decide, and the undated one is named.
-  const undated = judge({ [VERDICT]: NOW - HOUR, [breach("* * * * *")]: 0 });
+  const undated = judge({ [VERDICT]: NOW - HOUR, [breach("* * * * *")]: UNREADABLE_STAMP_MS });
   eq(undated, { status: "within", unreadable: ["* * * * *"] }, "an undated row alone does not stop a measured quiet day");
   eq(
-    judge({ [VERDICT]: NOW - BOUND - 1, [breach("* * * * *")]: 0 }).status,
+    judge({ [VERDICT]: NOW - BOUND - 1, [breach("* * * * *")]: UNREADABLE_STAMP_MS }).status,
     "unmeasured",
     "but a stale stamp still measures nothing, undated row or not",
   );
-  const beside = judge({ [VERDICT]: NOW - HOUR, [breach("* * * * *")]: 0, [breach("*/5 * * * *")]: NOW - HOUR });
+  const beside = judge({ [VERDICT]: NOW - HOUR, [breach("* * * * *")]: UNREADABLE_STAMP_MS, [breach("*/5 * * * *")]: NOW - HOUR });
   eq(
     beside,
     { status: "over", breaches: [{ cron: "*/5 * * * *", atMs: NOW - HOUR }], unreadable: ["* * * * *"] },
@@ -173,7 +174,7 @@ async function run(readStamps: () => Promise<Record<string, number | null>>) {
   const texts: string[] = [];
   const undatedOnly = await runCronBudgetCheck({
     nowMs: NOW,
-    read: async () => ({ [VERDICT]: NOW, [breach("* * * * *")]: 0 }),
+    read: async () => ({ [VERDICT]: NOW, [breach("* * * * *")]: UNREADABLE_STAMP_MS }),
     verdictBoundMs: BOUND,
     verdictLane: VERDICT,
     notify: async () => {
