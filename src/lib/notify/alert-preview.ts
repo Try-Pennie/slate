@@ -298,6 +298,7 @@ import {
   embedOriginMismatchAlert,
   testBucketClientErrorInfo,
   internalErrorAlert,
+  cspViolationAlert,
   unexpectedFaultAlert,
   misrouteAlert,
   oooApprovalsDigestAlert,
@@ -4076,6 +4077,21 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   // and nothing returned a 500 for it, so it reads as a report from a page.
   // Rendered through the dispatcher the chokepoint itself calls, so the preview
   // shows what ships rather than what one builder would say (L41).
+  // #2575: a refusal under the enforced content security policy. One state per
+  // shape of what was blocked, since each reads differently, plus a page Slate does
+  // not serve and a directive the report named in a way Slate does not recognise.
+  { key: "csp_violation:*", state: "a script from another site refused on the booker", channel: "alert",
+    text: cspViolationAlert({ directive: "script-src", surface: "book", blocked: { kind: "origin", origin: "https://cdn.example.com" } }) },
+  { key: "csp_violation:*", state: "inline code refused on an admin page", channel: "alert",
+    text: cspViolationAlert({ directive: "script-src", surface: "admin", blocked: { kind: "keyword", keyword: "inline" } }) },
+  { key: "csp_violation:*", state: "an image refused on the manage page", channel: "alert",
+    text: cspViolationAlert({ directive: "img-src", surface: "booking", blocked: { kind: "origin", origin: "https://lh4.googleusercontent.com" } }) },
+  { key: "csp_violation:*", state: "a data address refused on the home page", channel: "alert",
+    text: cspViolationAlert({ directive: "media-src", surface: "root", blocked: { kind: "scheme", scheme: "data" } }) },
+  { key: "csp_violation:*", state: "string evaluation refused on the sign in page", channel: "alert",
+    text: cspViolationAlert({ directive: "script-src", surface: "login", blocked: { kind: "keyword", keyword: "eval" } }) },
+  { key: "csp_violation:*", state: "an unreadable address under an unrecognised rule, from a page Slate does not serve", channel: "alert",
+    text: cspViolationAlert({ directive: "other", surface: "other", blocked: { kind: "unreadable" } }) },
   { key: "internal_error:*", state: "a browser reported an error on the booker", channel: "alert",
     text: unexpectedFaultAlert("client_error:book",
       "error on /book/411: TypeError: slots.map is not a function (booker.js:1:4821)") },

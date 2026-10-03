@@ -71,6 +71,7 @@ export const ALERT_KEYS = [
   "retired_booking_key",
   "advisor_photos_unread",
   "advisor_photos_held",
+  "csp_violation",
 ] as const;
 
 export type MonitorAlertKey = (typeof ALERT_KEYS)[number];
@@ -391,6 +392,12 @@ export const ALERT_FIELDS: {
     help: "A request presented a booking API key that has been retired, so it was refused. Whoever still holds it is being turned away on every call, which can leave a lead on a broken page. Repeats for each retired key and each kind of host the calls come from.",
   },
   {
+    key: "csp_violation",
+    urgency: "page",
+    label: "Something blocked on a page by the content security policy",
+    help: "A browser refused something on a Slate page because the content security policy does not allow it, so part of that page did not load for whoever had it open. Repeats for each kind of rule broken.",
+  },
+  {
     key: "ci_runs_refused",
     urgency: "page",
     label: "CI runs refused before they start",
@@ -599,6 +606,12 @@ export const MONITOR_DEFAULTS = {
     // morning's run ask again if the state still holds, and never twice in a day.
     advisor_photos_unread: 23 * 60 * 60_000,
     advisor_photos_held: 23 * 60 * 60_000,
+    // Something refused under the enforced content security policy (#2575). Each
+    // refusal is a page that did not fully load for a real person, and every lead
+    // on a broken page reports the same thing, so hourly per directive: a broken
+    // deploy pages once an hour rather than once a lead, and a second kind of
+    // refusal still pages on its own key.
+    csp_violation: 60 * 60_000,
   },
   // No coded low volume floors any more (#1956). They were 5 and 20, one pair for
   // every hour of the week, and nothing had measured either: replayed over two

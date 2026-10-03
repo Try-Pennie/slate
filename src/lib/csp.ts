@@ -27,18 +27,37 @@
  *   3. That a nonce needs DYNAMIC rendering, since Next applies it while serving
  *      a request. Every route this covers is already dynamic.
  *
- * Enforcement is deliberately a later change, gated on reading real violations.
- * See the issue that follows #2565.
+ * Enforced since #2575, after reading what production actually reported over the
+ * pilot (the seven days to 2026-10-03): 450 reports, every one `img-src` refusing
+ * an advisor's Google sign in photo on the manage page, which is why
+ * `SIGN_IN_PHOTO_ORIGIN` is allowed for images and nothing else. Cloudflare's
+ * analytics beacon, the one off origin script the live pages load, reported
+ * nothing: the edge copies this request's nonce onto it (measured on the live
+ * booker the same day, 17 of 19 script tags nonced with the beacon among them,
+ * and the other two are the theme scripts allowed by hash).
  */
 
 import { THEME_PREFERENCES, themeBootScript } from "@/lib/theme/boot";
-import { withoutUrlQuery } from "@/lib/api/client-error-scrub";
+import { clientErrorSurface, withoutUrlQuery, type ClientErrorSurface } from "@/lib/api/client-error-scrub";
 
 /** Where a violating browser posts its report. */
 export const CSP_REPORT_PATH = "/api/csp-report";
 
 /** The `report-to` group name, defined by the Reporting-Endpoints header. */
 export const CSP_REPORT_GROUP = "csp";
+
+/**
+ * Where Google serves the photo it hands Slate at sign in (`users.avatar_url`).
+ *
+ * Allowed for IMAGES only (#2575). The advisor photo resolver draws it for anybody
+ * the daily directory run has not reached yet, or when Slate cannot read its own
+ * photo table, and every one of the 450 reports measured before enforcing was this
+ * host refused on a lead's manage page. Enforced without it, that page draws a
+ * broken image where the advisor's face should be. Only `lh3` was ever reported,
+ * so the allowance names that host and not the whole of `googleusercontent.com`,
+ * which also serves files anybody can upload.
+ */
+export const SIGN_IN_PHOTO_ORIGIN = "https://lh3.googleusercontent.com";
 
 export interface CspOptions {
   /** This request's nonce. Next applies it to its own inline scripts. */
@@ -64,9 +83,20 @@ export interface CspOptions {
    * only error is in a console we never see.
    */
   frameable: boolean;
+  /**
+   * Origins this page's own code connects to beyond Slate itself. The staff sign
+   * in page builds a Supabase browser client, which talks to the project's origin;
+   * the booker has no such client and passes nothing.
+   */
+  connectSources?: string[];
 }
 
-export function buildContentSecurityPolicy({ nonce, frameable, scriptHashes = [] }: CspOptions): string {
+export function buildContentSecurityPolicy({
+  nonce,
+  frameable,
+  scriptHashes = [],
+  connectSources = [],
+}: CspOptions): string {
   const directives = [
     "default-src 'self'",
     // 'strict-dynamic' lets the nonced bootstrap load the page's own chunks
@@ -80,9 +110,9 @@ export function buildContentSecurityPolicy({ nonce, frameable, scriptHashes = []
     // violation is not the attack this policy is about. Tightening it is its own
     // change with its own evidence.
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob:",
+    `img-src 'self' data: blob: ${SIGN_IN_PHOTO_ORIGIN}`,
     "font-src 'self' data:",
-    "connect-src 'self'",
+    ["connect-src 'self'", ...connectSources].join(" "),
     "media-src 'self'",
     "worker-src 'self' blob:",
     "object-src 'none'",
@@ -143,6 +173,13 @@ export interface ViolationSummary {
   document: string;
   blocked: string;
   referrer: string;
+  /**
+   * What the browser did. `report` came from a report only policy and blocked
+   * nothing; `unstated` is a browser that does not say (Safari's legacy body).
+   */
+  disposition: "enforce" | "report" | "unstated";
+  /** Whether a browser extension, not a Slate page, caused the refusal. */
+  fromExtension: boolean;
 }
 
 /** What a report says, in one shape, with nothing sensitive left in it. */
@@ -156,6 +193,8 @@ export function summariseViolation(payload: unknown): ViolationSummary {
       document: "(none)",
       blocked: "(none)",
       referrer: "(none)",
+      disposition: "unstated",
+      fromExtension: false,
     };
   }
   return {
@@ -163,14 +202,21 @@ export function summariseViolation(payload: unknown): ViolationSummary {
     document: redactReportUri(body.document),
     blocked: redactReportUri(body.blocked),
     referrer: redactReportUri(body.referrer),
+    disposition: body.disposition === "enforce" || body.disposition === "report" ? body.disposition : "unstated",
+    fromExtension: [body.blocked, body.source].some((v) => v !== undefined && EXTENSION_SCHEME.test(v)),
   };
 }
+
+/** The schemes a browser extension's own resources load from. */
+const EXTENSION_SCHEME = /^(chrome|moz|safari|safari-web|ms-browser)-extension:/i;
 
 interface RawReport {
   directive?: string;
   document?: string;
   blocked?: string;
   referrer?: string;
+  disposition?: string;
+  source?: string;
 }
 
 /**
@@ -193,6 +239,8 @@ function readReportBody(payload: unknown): RawReport | null {
       document: str(l["document-uri"]),
       blocked: str(l["blocked-uri"]),
       referrer: str(l["referrer"]),
+      disposition: str(l["disposition"]),
+      source: str(l["source-file"]),
     };
   }
 
@@ -204,6 +252,8 @@ function readReportBody(payload: unknown): RawReport | null {
       document: str(m.documentURL),
       blocked: str(m.blockedURL),
       referrer: str(m.referrer),
+      disposition: str(m.disposition),
+      source: str(m.sourceFile),
     };
   }
   return null;
@@ -211,6 +261,118 @@ function readReportBody(payload: unknown): RawReport | null {
 
 function str(v: unknown): string | undefined {
   return typeof v === "string" ? v : undefined;
+}
+
+/** The alert key family a violation pages under (#2575). */
+export const CSP_VIOLATION_KEY_PREFIX = "csp_violation";
+
+/**
+ * Every directive a violation can page under: the policy's own, plus `other`.
+ *
+ * DERIVED by building the policy and reading its directive names back, so a
+ * directive added to the policy is a key by construction rather than a refusal
+ * that pages as `other` (L41). The report directives are left out because a
+ * browser never refuses anything under them.
+ */
+export const CSP_ALERT_DIRECTIVES: readonly string[] = [
+  ...buildContentSecurityPolicy({ nonce: "x", frameable: false })
+    .split(";")
+    .map((d) => d.trim().split(/\s+/)[0] ?? "")
+    .filter((name) => name && !name.startsWith("report-")),
+  "other",
+];
+
+/**
+ * A reported directive mapped onto that fixed list.
+ *
+ * The key a page is throttled on is built from this, so it must never carry text
+ * from the report: this endpoint is public, and a key per invented directive would
+ * be one throttle row and one page per invention. Browsers report the `-elem` and
+ * `-attr` variants, and older ones send the directive with its values, so both
+ * are folded onto the directive the policy actually declares.
+ */
+export function cspAlertDirective(raw: string): string {
+  const name = (raw.trim().split(/\s+/)[0] ?? "").toLowerCase().replace(/-(elem|attr)$/, "");
+  return name !== "other" && CSP_ALERT_DIRECTIVES.includes(name) ? name : "other";
+}
+
+/**
+ * What was blocked, reduced to something safe to put in Slack.
+ *
+ * Never the URL: an origin at most, rebuilt from a parse and checked to be a plain
+ * host, because whatever this returns is text a stranger chose. A keyword is one
+ * of the few the specification defines.
+ */
+export type BlockedResource =
+  | { kind: "keyword"; keyword: BlockedKeyword }
+  | { kind: "scheme"; scheme: "data" | "blob" }
+  | { kind: "origin"; origin: string }
+  | { kind: "unreadable" };
+
+const BLOCKED_KEYWORDS = ["inline", "eval", "wasm-eval", "trusted-types-policy", "trusted-types-sink"] as const;
+export type BlockedKeyword = (typeof BLOCKED_KEYWORDS)[number];
+
+export function blockedResource(blocked: string): BlockedResource {
+  const value = blocked.trim();
+  const keyword = BLOCKED_KEYWORDS.find((k) => k === value);
+  if (keyword) return { kind: "keyword", keyword };
+  // Chrome reports a data or blob refusal as the bare scheme.
+  if (value === "data" || value.startsWith("data:")) return { kind: "scheme", scheme: "data" };
+  if (value === "blob" || value.startsWith("blob:")) return { kind: "scheme", scheme: "blob" };
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return { kind: "unreadable" };
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return { kind: "unreadable" };
+  if (!/^[a-z0-9.-]+(:\d+)?$/.test(url.host)) return { kind: "unreadable" };
+  return { kind: "origin", origin: `${url.protocol}//${url.host}` };
+}
+
+/** The surface a reported page belongs to, from its path alone. */
+function reportedSurface(document: string): ClientErrorSurface {
+  try {
+    return clientErrorSurface(new URL(document).pathname);
+  } catch {
+    return "other";
+  }
+}
+
+export type CspPageDecision =
+  | { page: false; why: "report-only" | "extension" }
+  | {
+      page: true;
+      key: string;
+      directive: string;
+      surface: ClientErrorSurface;
+      blocked: BlockedResource;
+    };
+
+/**
+ * Whether a violation pages, and under which key (#2575, Dan 2026-10-02).
+ *
+ * Enforced, a violation means something was refused for a real person, so it
+ * pages. Two refusals are not Slate's: a report only report blocked nothing, and
+ * an extension's own resource is the person's browser rather than Slate's page.
+ * Both are still logged. A report that does not state its disposition pages,
+ * because the only policy Slate serves now enforces and Safari's legacy body never
+ * says.
+ *
+ * Keyed on the DIRECTIVE, not one key for the whole policy: a stray image refusal
+ * must not silence a script refusal behind it for the cooldown's length (L707).
+ */
+export function cspViolationPage(v: ViolationSummary): CspPageDecision {
+  if (v.disposition === "report") return { page: false, why: "report-only" };
+  if (v.fromExtension) return { page: false, why: "extension" };
+  const directive = cspAlertDirective(v.directive);
+  return {
+    page: true,
+    key: `${CSP_VIOLATION_KEY_PREFIX}:${directive}`,
+    directive,
+    surface: reportedSurface(v.document),
+    blocked: blockedResource(v.blocked),
+  };
 }
 
 

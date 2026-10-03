@@ -440,7 +440,7 @@ observe says the holder stopped: it simply goes quiet once nobody presents the k
 
 ## An unexpected fault was reported
 
-Keys: `internal_error:*`.
+Keys: `internal_error:*`, `boundary_error:*`, `csp_violation:*`.
 
 **What fired it.** A route threw something nobody predicted. The alert carries a short
 human reason; the full text, with the stack, is in the log (never in the alert, #1133).
@@ -449,6 +449,16 @@ human reason; the full text, with the stack, is in the log (never in the alert, 
 last few hours, or filter the logs on that `tag=`. One occurrence with a plausible
 cause (a Google blip, a lost race) may need nothing. A route failing every request is a
 deploy to revert.
+
+**`csp_violation:*` (#2575).** A browser refused something on a Slate page under the
+enforced content security policy, so part of that page did not load. The key is the
+violated directive. Read the redacted reports with `tag=csp-report`: the `blocked` and
+`document` fields say what and where. If it started with a deploy and the blocked thing
+is Slate's own (a new script, image host or connection), the policy in `src/lib/csp.ts`
+is missing it: add that one source to that one directive, never widen the directive to
+make the page quiet. If it is something Slate never loads, the policy did its job, and
+the question is how it got onto the page. A browser extension's own refusals and report
+only reports are logged and never page.
 
 ---
 

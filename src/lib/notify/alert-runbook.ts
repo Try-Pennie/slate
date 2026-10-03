@@ -297,6 +297,10 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // fault, and the procedure is the same one: find it by its digest in the
   // Worker logs and decide whether a deploy caused it.
   boundary_error: "an-unexpected-fault-was-reported",
+  // #2575: the same family. Something was refused on a page under the enforced
+  // content security policy; the procedure is to find the report in the logs and
+  // decide whether a deploy caused it or the policy did its job.
+  csp_violation: "an-unexpected-fault-was-reported",
 };
 
 /**

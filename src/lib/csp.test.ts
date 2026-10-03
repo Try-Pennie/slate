@@ -215,3 +215,156 @@ describe("our own inline theme scripts (#2565)", () => {
     for (const h of hashes) expect(policy).toContain(h);
   });
 });
+
+/**
+ * #2575: what enforcement needs from the policy, every rule taken from the
+ * violations production actually reported rather than from the policy looking
+ * right. Over the seven days to 2026-10-03 the Worker logged 450 reports and every
+ * one was the same thing: `img-src` refusing an advisor's Google sign in photo
+ * (`https://lh3.googleusercontent.com/a/...`) on the manage page.
+ */
+describe("the enforced policy (#2575)", () => {
+  it("allows the sign in photo host Google serves advisor faces from", async () => {
+    // Enforced without this, a lead's manage page draws a broken image where the
+    // advisor's face should be, for every advisor the directory run has not
+    // reached yet (the resolver's never-read and unreadable states).
+    const { SIGN_IN_PHOTO_ORIGIN } = await import("./csp");
+    const d = directives(buildContentSecurityPolicy({ nonce: NONCE, frameable: true }));
+    expect(SIGN_IN_PHOTO_ORIGIN).toBe("https://lh3.googleusercontent.com");
+    expect(d["img-src"].split(" ")).toContain(SIGN_IN_PHOTO_ORIGIN);
+  });
+
+  it("CONTROL: allows that host for images ONLY, never for scripts or connections", async () => {
+    const { SIGN_IN_PHOTO_ORIGIN } = await import("./csp");
+    const d = directives(buildContentSecurityPolicy({ nonce: NONCE, frameable: true }));
+    expect(d["script-src"]).not.toContain(SIGN_IN_PHOTO_ORIGIN);
+    expect(d["connect-src"]).toBe("'self'");
+    expect(d["default-src"]).toBe("'self'");
+  });
+
+  it("adds a connect source only where one is passed", () => {
+    // The staff sign in page builds a Supabase browser client, which talks to the
+    // project's own origin. The booker has no such client and gets none.
+    const staff = directives(
+      buildContentSecurityPolicy({ nonce: NONCE, frameable: false, connectSources: ["https://project.supabase.co"] }),
+    );
+    expect(staff["connect-src"]).toBe("'self' https://project.supabase.co");
+  });
+});
+
+describe("cspAlertDirective (#2575)", () => {
+  it("maps a reported directive onto the policy's own directive list", async () => {
+    const { cspAlertDirective } = await import("./csp");
+    expect(cspAlertDirective("script-src")).toBe("script-src");
+    // Browsers report the element and attribute variants; they page as the
+    // directive the policy actually declares.
+    expect(cspAlertDirective("script-src-elem")).toBe("script-src");
+    expect(cspAlertDirective("style-src-attr")).toBe("style-src");
+    // Older browsers put the whole directive, values included.
+    expect(cspAlertDirective("img-src 'self' data: blob:")).toBe("img-src");
+    expect(cspAlertDirective("frame-ancestors")).toBe("frame-ancestors");
+  });
+
+  it("maps anything else to other, so a caller can never mint a key", async () => {
+    const { cspAlertDirective } = await import("./csp");
+    expect(cspAlertDirective("totally-made-up")).toBe("other");
+    expect(cspAlertDirective("report-uri")).toBe("other");
+    expect(cspAlertDirective("(unreadable)")).toBe("other");
+    expect(cspAlertDirective("<!channel>")).toBe("other");
+  });
+
+  it("derives the list from the policy itself, so a new directive is covered by construction", async () => {
+    const { CSP_ALERT_DIRECTIVES } = await import("./csp");
+    const declared = Object.keys(directives(buildContentSecurityPolicy({ nonce: NONCE, frameable: false })))
+      .filter((d) => !d.startsWith("report-"));
+    expect([...CSP_ALERT_DIRECTIVES].sort()).toEqual([...declared, "other"].sort());
+  });
+});
+
+describe("cspViolationPage (#2575)", () => {
+  const enforced = (over: Record<string, unknown> = {}) => ({
+    "csp-report": {
+      "document-uri": "https://slate.trypennie.app/book?xbc=411&email=dana%40example.com",
+      "violated-directive": "script-src-elem",
+      "blocked-uri": "https://evil.example/x.js?lead=dana",
+      disposition: "enforce",
+      ...over,
+    },
+  });
+
+  it("pages an enforced refusal, keyed on the directive", async () => {
+    const { cspViolationPage } = await import("./csp");
+    const d = cspViolationPage(summariseViolation(enforced()));
+    expect(d).toEqual({
+      page: true,
+      key: "csp_violation:script-src",
+      directive: "script-src",
+      surface: "book",
+      blocked: { kind: "origin", origin: "https://evil.example" },
+    });
+  });
+
+  it("pages a report that does not say its disposition, since the only policy now enforces", async () => {
+    // Safari's legacy reports omit it. Reading a missing field as report only
+    // would silence a whole browser family on the one surface this pages about.
+    const { cspViolationPage } = await import("./csp");
+    const body = enforced();
+    delete (body["csp-report"] as Record<string, unknown>).disposition;
+    expect(cspViolationPage(summariseViolation(body)).page).toBe(true);
+  });
+
+  it("does not page a report only report, which blocked nothing", async () => {
+    const { cspViolationPage } = await import("./csp");
+    expect(cspViolationPage(summariseViolation(enforced({ disposition: "report" })))).toEqual({
+      page: false,
+      why: "report-only",
+    });
+  });
+
+  it("does not page a browser extension's own refusal, which is not Slate's page", async () => {
+    const { cspViolationPage } = await import("./csp");
+    expect(
+      cspViolationPage(summariseViolation(enforced({ "blocked-uri": "chrome-extension://abcdef/inject.js" }))),
+    ).toEqual({ page: false, why: "extension" });
+    expect(
+      cspViolationPage(summariseViolation(enforced({ "blocked-uri": "inline", "source-file": "moz-extension://x/c.js" }))),
+    ).toEqual({ page: false, why: "extension" });
+  });
+
+  it("reads the modern report's disposition too", async () => {
+    const { cspViolationPage } = await import("./csp");
+    const modern = (disposition: string) =>
+      summariseViolation([
+        {
+          type: "csp-violation",
+          body: { documentURL: "https://slate.trypennie.app/admin", effectiveDirective: "style-src-elem", blockedURL: "inline", disposition },
+        },
+      ]);
+    expect(cspViolationPage(modern("report"))).toEqual({ page: false, why: "report-only" });
+    expect(cspViolationPage(modern("enforce"))).toMatchObject({
+      page: true,
+      key: "csp_violation:style-src",
+      surface: "admin",
+      blocked: { kind: "keyword", keyword: "inline" },
+    });
+  });
+
+  it("describes what was blocked without any of the reported URL beyond its origin", async () => {
+    const { cspViolationPage } = await import("./csp");
+    const page = (blocked: string) => cspViolationPage(summariseViolation(enforced({ "blocked-uri": blocked })));
+    expect(page("eval")).toMatchObject({ blocked: { kind: "keyword", keyword: "eval" } });
+    expect(page("data")).toMatchObject({ blocked: { kind: "scheme", scheme: "data" } });
+    expect(page("blob:https://slate.trypennie.app/1234")).toMatchObject({ blocked: { kind: "scheme", scheme: "blob" } });
+    expect(page("javascript:alert(1)")).toMatchObject({ blocked: { kind: "unreadable" } });
+    expect(page("<!channel> look here")).toMatchObject({ blocked: { kind: "unreadable" } });
+  });
+
+  it("maps the page onto Slate's surface list, never the reported path", async () => {
+    const { cspViolationPage } = await import("./csp");
+    const on = (doc: string) => cspViolationPage(summariseViolation(enforced({ "document-uri": doc })));
+    expect(on("https://slate.trypennie.app/booking/manage/tok-secret")).toMatchObject({ surface: "booking" });
+    expect(on("https://slate.trypennie.app/")).toMatchObject({ surface: "root" });
+    expect(on("https://slate.trypennie.app/wp-admin/x")).toMatchObject({ surface: "other" });
+    expect(on("not a url")).toMatchObject({ surface: "other" });
+  });
+});

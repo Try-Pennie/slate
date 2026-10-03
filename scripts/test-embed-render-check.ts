@@ -277,11 +277,19 @@ eq(
 // shipped and stop being read (L36).
 eq(judgeEmbedRender(seen()).outcome, "rendered", "no refusals means no policy finding");
 
-assert(
-  judgeEmbedRender(seen({ cspViolations: ["Refused to load the script because it violates the following Content Security Policy directive"] }))
-    .reason.includes("report only"),
-  "the message says the policy is report only, so the reader is not sent to fix an outage that is not happening",
-);
+// #2575: the policy is ENFORCED now, so a refusal is a part of the embed that did
+// not load. The old wording ("report only, nothing is broken yet") would tell the
+// reader an outage is a warning.
+{
+  const reason = judgeEmbedRender(
+    seen({ cspViolations: ["Refused to load the script because it violates the following Content Security Policy directive"] }),
+  ).reason;
+  assert(reason.includes("enforced"), "the message says the policy is enforced, so the refusal really blocked something");
+  assert(
+    !reason.includes("report only") && !reason.includes("nothing is broken"),
+    "the message no longer calls a real refusal a warning",
+  );
+}
 
 // The predicate that routes a console line into that bucket, driven both ways.
 assert(

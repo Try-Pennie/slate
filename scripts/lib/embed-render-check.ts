@@ -195,8 +195,8 @@ export function judgeEmbedRender(o: EmbedObservation): EmbedVerdict {
       reason:
         `The embedded booker drew, and the browser refused ${o.cspViolations.length} ` +
         `thing${o.cspViolations.length === 1 ? "" : "s"} against the content security policy. ` +
-        "The policy is report only, so nothing is broken yet and this is the warning that " +
-        `enforcing it would break the embed. Read tag=csp-report in the Worker logs. ` +
+        "The policy is enforced, so whatever was refused did not load inside the embed. " +
+        `Read tag=csp-report in the Worker logs. ` +
         `First refusal: ${first}`,
     };
   }
