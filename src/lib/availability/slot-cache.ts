@@ -94,6 +94,10 @@ export async function getCachedBucketSlots(
     readRow: (c) => readBucketSlotsRow(c),
     compute: (c, from, to) => getBucketSlots(c, from, to),
     writeRow: (c, val, computedAtMs) => writeBucketSlotsRow(c, val, computedAtMs),
+    // #3119: the lead is still served what was computed; the row it could not store
+    // is said here, and the next request or the cron backstop computes it again.
+    writeFailed: (c, err) =>
+      log.warn("slot-cache", { msg: "self-heal slot row not stored", bucket: c }, err),
     // #1296: the CURRENT org hours, so a narrowing filters the cached slots on the
     // very next request rather than waiting for a recompute. One read per isolate
     // per SLOT_TTL_SECONDS; a failed refresh serves the last known week.
@@ -139,10 +143,16 @@ export async function recomputeBucketSlotsForToday(
   const { key } = slotCacheKey(code, nowIso, HORIZON_DAYS);
   // The horizon is a count of BOOKABLE days (#1326), so it is passed through as the
   // trim target rather than being implied by the window, which is deliberately wider.
-  await recomputeBucketSlots(code, fromIso, toIso, resolveEligible, horizon);
-  const cache = slotCache();
-  if (cache) {
-    try { await cache.delete(keyRequest(key)); } catch { /* ignore */ }
+  // A refused row now THROWS (#3119) and reaches the caller's failure path. The L1
+  // entry is still dropped first, as the pooled path does: a stale entry must never
+  // outlive the attempt, and the read behind it falls through to the stored row.
+  try {
+    await recomputeBucketSlots(code, fromIso, toIso, resolveEligible, horizon);
+  } finally {
+    const cache = slotCache();
+    if (cache) {
+      try { await cache.delete(keyRequest(key)); } catch { /* ignore */ }
+    }
   }
 }
 

@@ -10,7 +10,11 @@ import type { Attributes, Bucket, Criteria } from "@/lib/db/types";
 import type { PooledBucket } from "./pool-recompute";
 import type { InvalidationMarker } from "./precompute-cron";
 import { log } from "@/lib/log";
-import { writeSlotRow, type SlotRowWriteOutcome } from "@/lib/availability/slot-row-write";
+import {
+  writeSlotRow,
+  SlotRowRefused,
+  type SlotRowWriteOutcome,
+} from "@/lib/availability/slot-row-write";
 
 /**
  * IO for the precompute path (the `bucket_slots` table). The read orchestration
@@ -244,7 +248,12 @@ export async function writeBucketSlotsRow(
   val: BucketSlots,
   computedAtMs: number,
 ): Promise<string> {
-  await storeBucketSlotsRow(code, val, computedAtMs);
+  // #3119: a refusal comes back as an answer, not a throw, so returning the stamp
+  // regardless told every caller the row was stored. It throws instead, so a writer
+  // that only awaits this cannot count a refused write as a refresh.
+  if ((await storeBucketSlotsRow(code, val, computedAtMs)) === "failed") {
+    throw new SlotRowRefused(code);
+  }
   return new Date(computedAtMs).toISOString();
 }
 
@@ -274,6 +283,9 @@ export async function storeBucketSlotsRow(
  * refresh-on-change writers (booking / Google sync / OOO) and the cron backstop.
  * On compute failure we do NOT overwrite an existing good row with an empty one
  * — better to serve slightly-stale slots than a false "no times".
+ *
+ * A row the database REFUSES throws `SlotRowRefused` (#3119), so a caller never
+ * counts it as refreshed; the previous row stands, as on a compute failure.
  */
 export async function recomputeBucketSlots(
   code: string,

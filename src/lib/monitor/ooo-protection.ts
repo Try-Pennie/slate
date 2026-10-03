@@ -1,6 +1,6 @@
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
-import { logAlertSendFailure } from "@/lib/notify/send-failure";
+import { logAlertSendFailure, logResolveFailure } from "@/lib/notify/send-failure";
 import { parseStampMs } from "@/lib/date/stamp";
 import { formatWhenLine } from "@/lib/ooo/core";
 import { log } from "@/lib/log";
@@ -394,13 +394,13 @@ export async function runOooProtectionCheck(deps: {
   // on the fallback. Reached only on a MEASURED read, never on a failed one.
   if (fallbackOnlyTimeOff(requests, blocks, deps.nowMs).length === 0) {
     // alert-key: ooo_busy_block_fallback
-    await resolveAlert(OOO_FALLBACK_KEY, formatFallbackClearedRecovery()).catch(() => {});
+    await resolveAlert(OOO_FALLBACK_KEY, formatFallbackClearedRecovery()).catch(logResolveFailure(OOO_FALLBACK_KEY));
   }
 
   if (found.length === 0) {
     await clearFailureStreak(OOO_PROTECTION_KEY);
     // alert-key: ooo_protection_lost
-    await resolveAlert(OOO_PROTECTION_KEY, formatOooProtectionRecovery()).catch(() => {});
+    await resolveAlert(OOO_PROTECTION_KEY, formatOooProtectionRecovery()).catch(logResolveFailure(OOO_PROTECTION_KEY));
     deps.log?.({
       status: "clear",
       scanned: requests.length,

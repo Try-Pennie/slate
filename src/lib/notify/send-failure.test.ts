@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const logged = vi.hoisted(() => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock("../log.ts", () => logged);
 
-import { logAlertSendFailure, logAllClearFailure } from "./send-failure";
+import { logAlertSendFailure, logAllClearFailure, logResolveFailure } from "./send-failure";
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -33,6 +33,14 @@ describe("alert send failure handlers (#3098)", () => {
     );
     expect(cleared).toEqual([]);
     expect(logged.log.error.mock.calls[0]![1]).toMatchObject({ key: "a,b" });
+  });
+
+  it("answers false for a failed single all-clear, as resolveAlert does when it cleared nothing", async () => {
+    const cleared = await Promise.reject<boolean>(new Error("db down")).catch(
+      logResolveFailure("empty_tier:low"),
+    );
+    expect(cleared).toBe(false);
+    expect(logged.log.error.mock.calls[0]![1]).toMatchObject({ key: "empty_tier:low" });
   });
 
   it("logs nothing when the send succeeded", async () => {

@@ -1,5 +1,5 @@
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
-import { logAlertSendFailure } from "@/lib/notify/send-failure";
+import { logAlertSendFailure, logResolveFailure } from "@/lib/notify/send-failure";
 import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
 import { log } from "@/lib/log";
 
@@ -224,7 +224,7 @@ export async function runCoverageNeedsHumanCheck(deps: {
 
   if (holders.length === 0) {
     // alert-key: coverage_needs_human
-    await resolveAlert(COVERAGE_NEEDS_HUMAN_KEY, formatCoverageNeedsHumanRecovery()).catch(() => {});
+    await resolveAlert(COVERAGE_NEEDS_HUMAN_KEY, formatCoverageNeedsHumanRecovery()).catch(logResolveFailure(COVERAGE_NEEDS_HUMAN_KEY));
     deps.log?.({ status: "clear", agents: 0, appointments: 0 });
     return { status: "clear", agents: 0, appointments: 0 };
   }

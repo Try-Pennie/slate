@@ -1,3 +1,4 @@
+import { logAlertSendFailure } from "../notify/send-failure.ts";
 import {
   debtTierDepths,
   type DebtTierDepth,
@@ -95,7 +96,7 @@ export async function runThinTierStaffingCheck(deps: {
   if (thinTiers.length) {
     await deps
       .notify(THIN_TIER_STAFFING_KEY, deps.cooldownMs, formatThinTierNotice(thinTiers))
-      .catch(() => {});
+      .catch(logAlertSendFailure(THIN_TIER_STAFFING_KEY));
   }
   deps.log?.(`monitor thin-tier: ${thinTiers.length} thin debt tier(s) (depth<=2)`);
   return thinTiers.length;

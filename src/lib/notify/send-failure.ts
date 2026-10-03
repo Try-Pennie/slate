@@ -15,12 +15,24 @@ import { log } from "../log.ts";
  * does not also have to supply these: the handler is built eagerly at every call
  * site, and a missing export would throw there.
  *
- * A send ends in `.catch(logAlertSendFailure(key))`, and a batched all-clear in
- * `.catch(logAllClearFailure(keys))`.
+ * A send ends in `.catch(logAlertSendFailure(key))`, a single all-clear in
+ * `.catch(logResolveFailure(key))`, and a batched one in
+ * `.catch(logAllClearFailure(keys))`. Injected seams (`deps.notify`,
+ * `deps.resolve`) take the same handlers.
  */
 export function logAlertSendFailure(key: string): (err: unknown) => void {
   return (err) => {
     log.error("alert-dispatch", { msg: "alert send failed", key }, err);
+  };
+}
+
+/** A single all-clear's form (`resolveAlert`, or an injected `AlertResolve` seam).
+ *  Resolves to false, the answer `resolveAlert` gives when it cleared nothing,
+ *  which is what a failed clear did. */
+export function logResolveFailure(key: string): (err: unknown) => false {
+  return (err) => {
+    log.error("alert-dispatch", { msg: "all-clear send failed", key }, err);
+    return false;
   };
 }
 

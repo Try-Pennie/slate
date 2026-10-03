@@ -49,6 +49,55 @@ eq(
   1,
   "a batched all-clear whose arguments carry braces is refused (a statement walk-back stops inside them)",
 );
+// Every sender through the same cooldown gate, not only the two the issue named.
+eq(
+  scanAlertSendCatches(`await sendThrottledInfo("k", 1, "t").catch(() => {});`).length,
+  1,
+  "a whisper sent with a bare catch is refused",
+);
+eq(
+  scanAlertSendCatches(`await resolveAlert("k", "over").catch(() => false);`).length,
+  1,
+  "an all-clear with a bare catch is refused",
+);
+// The INJECTED seam, which a scan by callee name alone never saw (the review
+// found one live on src/lib/monitor/tier-volume.ts).
+eq(
+  scanAlertSendCatches(`
+      await deps.notify(tierCheckFailedKey(tier), deps.cooldownMs, copy(label)).catch(() => {});
+`).length,
+  1,
+  "a send through an injected notify seam is refused",
+);
+eq(
+  scanAlertSendCatches(`
+  await deps
+    .notifyCountUnreadable(KEY, deps.cooldownMs, text)
+    .catch(() => {});
+`).length,
+  1,
+  "a multi line send through a named notify seam is refused",
+);
+eq(
+  scanAlertSendCatches(`await deps.resolveCountUnreadable(KEY, text).catch(() => false);`).length,
+  1,
+  "an all-clear through an injected resolve seam is refused",
+);
+eq(
+  scanAlertSendCatches(`await Promise.resolve(x).catch(() => {});`).length,
+  0,
+  "Promise.resolve is not an alert seam",
+);
+eq(
+  scanAlertSendCatches(`await deps.resolverForAgent(id).catch(() => null);`).length,
+  0,
+  "a name that merely starts with resolve is not a seam",
+);
+eq(
+  scanAlertSendCatches(`await notify(KEY, 1, "t").catch(() => {});`).length,
+  0,
+  "a bare function named notify is not a seam (only a member of a deps object is)",
+);
 eq(
   scanAlertSendCatches(`await sendThrottledAlert("k", 1, "t").catch(logAlertSendFailure("k"));`)
     .length,
@@ -94,7 +143,9 @@ assert(files.length > 100, `walked the real tree (${files.length} files)`);
 let sends = 0;
 for (const file of files) {
   const source = readFileSync(file, "utf8");
-  sends += (source.match(/\b(?:sendThrottledAlert|resolveRecovered)\s*\(/g) ?? []).length;
+  sends += (
+    source.match(/\b(?:sendThrottledAlert|sendThrottledInfo|resolveAlert|resolveRecovered)\s*\(/g) ?? []
+  ).length;
   for (const f of scanAlertSendCatches(source)) {
     assert(
       false,

@@ -28,6 +28,21 @@ import type { supabaseAdmin } from "@/lib/supabase/admin";
 /** What the write did. `kept-newer` is a success: a fresher row already stands. */
 export type SlotRowWriteOutcome = "written" | "kept-newer" | "failed";
 
+/**
+ * Thrown by a writer that must not report a refused row as stored (#3119). The
+ * write answers "failed" rather than throwing, and every caller that only awaited it
+ * counted the refusal as a refresh; a caller that needs the answer as a value uses
+ * `storeBucketSlotsRow` instead.
+ */
+export class SlotRowRefused extends Error {
+  readonly bucketCode: string;
+  constructor(bucketCode: string) {
+    super(`the bucket_slots row for ${bucketCode} was refused, so it was not stored`);
+    this.name = "SlotRowRefused";
+    this.bucketCode = bucketCode;
+  }
+}
+
 /** Typed as the real client rather than a hand-written slice: a structural interface
  *  makes tsc walk the client's generics at the call site until it gives up (TS2589). */
 export type SlotRowDb = ReturnType<typeof supabaseAdmin>;

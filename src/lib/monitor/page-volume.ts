@@ -49,7 +49,7 @@ import {
 } from "./booking-volume.ts";
 import { floorsFor, judgedFloors, type VolumeBaseline } from "./volume-floors.ts";
 import type { ThrottledNotify } from "./alert-deps";
-import { logAllClearFailure } from "../notify/send-failure.ts";
+import { logAlertSendFailure, logAllClearFailure } from "../notify/send-failure.ts";
 
 /** One Low landing page: a cal.com routing form, and the Slate sources its links carry. */
 export interface LowPage {
@@ -559,7 +559,7 @@ export async function runPageVolumeCheck(deps: {
       seen === false
         ? formatPageUnseenAlert(page, breaches)
         : formatPageVolumeAlert(page, breaches, deps.tierLow === false);
-    await deps.notify(pageVolumeAlertKey(page.id), deps.cooldownMs, text).catch(() => {});
+    await deps.notify(pageVolumeAlertKey(page.id), deps.cooldownMs, text).catch(logAlertSendFailure(pageVolumeAlertKey(page.id)));
     pages.push({ id: page.id, verdict: "low", windows, breaches, action: seen === false ? "paged-unseen" : "paged" });
   }
 

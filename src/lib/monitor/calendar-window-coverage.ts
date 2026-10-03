@@ -2,7 +2,7 @@ import { parseStampMs } from "@/lib/date/stamp";
 import { HYDRATION_TICKS_PER_DAY } from "@/lib/google/hydration";
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
-import { logAlertSendFailure } from "@/lib/notify/send-failure";
+import { logAlertSendFailure, logResolveFailure } from "@/lib/notify/send-failure";
 import { log } from "@/lib/log";
 
 /**
@@ -307,7 +307,7 @@ export async function runCalendarWindowCheck(deps: {
     }
     await clearFailureStreak(CALENDAR_WINDOW_KEY);
     // alert-key: calendar_window_uncovered
-    await resolveAlert(CALENDAR_WINDOW_KEY, formatCalendarWindowRecovery(graced)).catch(() => {});
+    await resolveAlert(CALENDAR_WINDOW_KEY, formatCalendarWindowRecovery(graced)).catch(logResolveFailure(CALENDAR_WINDOW_KEY));
     deps.logTick?.({ status: "clear", calendars: rows.length, graced });
     return { status: "clear", uncovered: 0, graced, judged };
   }

@@ -46,6 +46,29 @@ describe("recomputeBucketSlotsForToday horizon window", () => {
   /** The bookable-day count handed down as the trim target. */
   const trimTarget = (call: unknown[]): number | undefined => call[4] as number | undefined;
 
+  // #3119: a refused row is not a refresh. The throw reaches the caller (the
+  // monitor's heal reports it through onHealError, the booking path logs it),
+  // rather than the recompute reading as done.
+  it("passes a refused row write up to its caller", async () => {
+    const refused = new Error("the bucket_slots row for 411 was refused");
+    recomputeBucketSlots.mockRejectedValueOnce(refused);
+    await expect(recomputeBucketSlotsForToday("411", true)).rejects.toBe(refused);
+  });
+
+  // And the L1 entry is dropped on that path too, as the pooled path does: a stale
+  // entry must never outlive the attempt.
+  it("drops the L1 cache entry even when the recompute throws", async () => {
+    const del = vi.fn(async () => true);
+    vi.stubGlobal("caches", { default: { match: vi.fn(), put: vi.fn(), delete: del } });
+    try {
+      recomputeBucketSlots.mockRejectedValueOnce(new Error("refused"));
+      await expect(recomputeBucketSlotsForToday("411", true)).rejects.toThrow("refused");
+      expect(del).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("computes over the SEARCH window for the loaded org-wide horizon", async () => {
     await recomputeBucketSlotsForToday("411", true);
     expect(windowDays(recomputeBucketSlots.mock.calls[0])).toBe(searchWindowDays(7));

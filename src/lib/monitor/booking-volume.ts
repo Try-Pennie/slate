@@ -9,7 +9,7 @@
 import { DateTime } from "luxon";
 import { windowOnDate, type BusinessHoursException } from "../booking/business-hours.ts";
 import type { ThrottledNotify } from "./alert-deps";
-import { logAllClearFailure } from "../notify/send-failure.ts";
+import { logAlertSendFailure, logAllClearFailure } from "../notify/send-failure.ts";
 
 /**
  * When the org is open, in the shape the org's own hours are stored in (#1298).
@@ -201,7 +201,7 @@ export async function runLowVolumeCheck(deps: {
         deps.cooldownMs,
         deps.tier ? formatTierVolumeCountUnreadableAlert(deps.tier.label) : formatVolumeCountUnreadableAlert(),
       )
-      .catch(() => {});
+      .catch(logAlertSendFailure(deps.tier?.countUnreadableKey ?? VOLUME_COUNT_UNREADABLE_KEY));
     return { status: "count-unreadable" };
   }
 
@@ -223,7 +223,7 @@ export async function runLowVolumeCheck(deps: {
   const alertKey = deps.tier?.key ?? VOLUME_ALERT_KEY;
   if (breaches.length && deps.armed) {
     const text = deps.tier ? formatTierVolumeAlert(deps.tier.label, breaches) : formatLowVolumeAlert(breaches);
-    await deps.notify(alertKey, deps.cooldownMs, text).catch(() => {});
+    await deps.notify(alertKey, deps.cooldownMs, text).catch(logAlertSendFailure(alertKey));
   }
   deps.log?.({
     count_30m: count30,

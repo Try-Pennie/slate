@@ -1,3 +1,4 @@
+import { logAlertSendFailure, logResolveFailure } from "../notify/send-failure.ts";
 import { parseStampMs } from "@/lib/date/stamp";
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 
@@ -264,7 +265,7 @@ export async function runSyncStalenessCheck(deps: {
   if (res.staleCount) {
     await deps
       .notify(SYNC_STALENESS_KEY, deps.cooldownMs, formatSyncStalenessAlert(res, thresholdMs))
-      .catch(() => {});
+      .catch(logAlertSendFailure(SYNC_STALENESS_KEY));
   } else if (agents.length > 0) {
     // The all-clear hangs off a rotation we actually MEASURED. `agents.length > 0`
     // is the part that is easy to leave out and impossible to notice afterwards:
@@ -277,7 +278,7 @@ export async function runSyncStalenessCheck(deps: {
     // runner records the tick as degraded, and nothing is claimed either way.
     await deps
       .resolve(SYNC_STALENESS_KEY, formatSyncStalenessRecovery(agents.length, res.gracedCount))
-      .catch(() => {});
+      .catch(logResolveFailure(SYNC_STALENESS_KEY));
   }
   deps.log?.(
     `monitor sync-staleness: ${res.staleCount} stale of the rotation` +

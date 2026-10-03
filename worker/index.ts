@@ -172,7 +172,8 @@ const worker = {
     // #3133: a lane that throws or answers non-ok is logged with its cause and
     // reported to the app, which pages `cron_lane_failed:<lane>` (worker/lane-run.ts).
     // #3139: one id per tick, sent to every lane as a header and stamped on every
-    // line this tick writes, so a lane's lines can be tied to the tick that drove it.
+    // line the dispatcher writes for the tick. No lane reads the header yet, so the
+    // lanes' own lines do not carry it.
     const tick: LaneTick = {
       tickId: mintTickId(() => crypto.randomUUID()),
       cronSecret: env.CRON_SECRET ?? "",

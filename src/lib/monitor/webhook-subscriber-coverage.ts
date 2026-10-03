@@ -22,6 +22,7 @@
  * is subscribed, which is the blindness the whole class is about (L11, L90).
  */
 
+import { logAlertSendFailure, logResolveFailure } from "../notify/send-failure.ts";
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 
 /** The columns this check needs off an ACTIVE endpoint row. */
@@ -171,11 +172,11 @@ export async function runWebhookSubscriberCheck(deps: {
   if (coverage.unsubscribed.length > 0) {
     await deps
       .notify(WEBHOOK_SUBSCRIBERS_KEY, deps.cooldownMs, formatUnsubscribedEventsAlert(coverage))
-      .catch(() => {});
+      .catch(logAlertSendFailure(WEBHOOK_SUBSCRIBERS_KEY));
   } else {
     await deps
       .resolve(WEBHOOK_SUBSCRIBERS_KEY, formatUnsubscribedEventsRecovery())
-      .catch(() => {});
+      .catch(logResolveFailure(WEBHOOK_SUBSCRIBERS_KEY));
   }
   deps.log?.(
     `monitor webhook-subscribers: ${coverage.unsubscribed.length} unsubscribed, ` +

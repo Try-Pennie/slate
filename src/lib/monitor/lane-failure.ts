@@ -88,9 +88,15 @@ export function formatLaneFailureAlert(
     report.status === null
       ? `threw before answering (${report.reason})`
       : `answered ${report.status}`;
+  // Says exactly what each search finds (L440): only the DISPATCHER's lines carry
+  // the tick id. The lane's own lines do not, so they are found by time.
+  const path = `/api/cron/${report.lane.replace(/_/g, "-")}`;
   const where = tickId
-    ? `Search the Worker logs for tick=${tickId} to see every line of that run.`
-    : `Search the Worker logs for tag=cron and path=/api/cron/${report.lane.replace(/_/g, "-")}.`;
+    ? `Searching the Worker logs for tick=${tickId} finds the dispatcher's lines for that ` +
+      `run (the failure with its error, and the lane timings); the lane's own lines do not ` +
+      `carry the id, so read them from the same minute.`
+    : `Search the Worker logs for tag=cron and path=${path}, and read the lane's own lines ` +
+      `from the same minute.`;
   return (
     `The ${report.lane} cron lane ${what} on a scheduled run, so whatever it does on that ` +
     `schedule did not finish. ${where} Its heartbeat can still read fresh if it was stamped ` +

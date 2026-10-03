@@ -1,3 +1,4 @@
+import { logAlertSendFailure } from "../notify/send-failure.ts";
 import { log } from "@/lib/log";
 import type { ThrottledNotify } from "./alert-deps";
 
@@ -117,7 +118,7 @@ export async function runScheduleCoverageCheck(deps: {
   if (after.length) {
     await deps
       .notify(AGENTS_WITHOUT_SCHEDULE_KEY, deps.cooldownMs, formatScheduleGapNotice(after))
-      .catch(() => {});
+      .catch(logAlertSendFailure(AGENTS_WITHOUT_SCHEDULE_KEY));
   }
   deps.log?.(
     `monitor schedule-coverage: ${before.length} missing, ${healed} self-healed, ${after.length} still missing`,

@@ -34,6 +34,7 @@ function deps(over: Partial<ReadDeps> & { calls: Record<string, number> }): Read
     readRow: async () => { bump("readRow"); return null; },
     compute: async () => { bump("compute"); return null; },
     writeRow: async () => { bump("writeRow"); return WROTE_AT; },
+    writeFailed: () => { bump("writeFailed"); },
     businessHours: async () => { bump("businessHours"); return OPEN_ALL_WEEK; },
     ...over,
   };
@@ -85,6 +86,28 @@ function deps(over: Partial<ReadDeps> & { calls: Record<string, number> }): Read
   eq(r!.slots, fresh.slots, "compute path returns the freshly computed slots");
   assert(calls.writeRow === 1, "fail-open self-heals by writing the row");
   assert(calls.cachePut === 1, "fail-open warms the cache");
+}
+
+// 3b) #3119: the self-heal write is REFUSED. The lead still gets the times that were
+// computed (this is the fail-open path, and a refused cache row must not become an
+// empty booker), and the refusal is handed to writeFailed rather than read as stored.
+{
+  const calls: Record<string, number> = {};
+  const fresh = sampleSlots();
+  const refusals: { code: string; err: unknown }[] = [];
+  const refused = new Error("row refused");
+  const d = deps({
+    calls,
+    compute: async () => fresh,
+    writeRow: async () => { throw refused; },
+    writeFailed: (code, err) => { refusals.push({ code, err }); },
+  });
+  const r = await resolveBucketSlots("411", "2026-06-19T12:00:00.000Z", 4, d);
+  eq(r!.source, "compute", "a refused self-heal write still serves the computed times");
+  eq(r!.slots, fresh.slots, "the same slots it would have stored");
+  eq(refusals.length, 1, "the refusal is reported once");
+  eq(refusals[0]!.err, refused, "with the error itself");
+  assert(r!.computedAt !== WROTE_AT && r!.computedAt !== null, "labelled with when the compute began, not a stamp nothing wrote");
 }
 
 // 4) Cache miss + no row + compute also yields nothing (unknown bucket): null.

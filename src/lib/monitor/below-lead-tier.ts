@@ -45,6 +45,7 @@
  * Pure apart from dependency free helpers, so scripts/test-below-lead-tier.ts
  * drives it directly.
  */
+import { logAlertSendFailure, logResolveFailure } from "../notify/send-failure.ts";
 import { DEBT_TIER, bucketSpecForXbc } from "@/lib/xbc";
 import { formatSlotDay, formatSlotTime } from "@/lib/booking/slot-label";
 import { isLeadId, leadIdKey } from "@/lib/salesforce/lead-xbc";
@@ -472,7 +473,7 @@ export async function runBelowLeadTierCheck(deps: BelowLeadTierDeps): Promise<Be
             deps.cooldownMs,
             formatBelowLeadTierAlert(f, context, deps.bookingUrl(f.booking.id)),
           )
-          .catch(() => {});
+          .catch(logAlertSendFailure(belowLeadTierKey(f.booking.id)));
       }
     }
 
@@ -489,7 +490,7 @@ export async function runBelowLeadTierCheck(deps: BelowLeadTierDeps): Promise<Be
         if (why === null) continue;
         const sent = await deps
           .resolve(belowLeadTierKey(id), formatBelowLeadTierRecovery(id, why, deps.bookingUrl(id)))
-          .catch(() => false);
+          .catch(logResolveFailure(belowLeadTierKey(id)));
         if (sent) cleared++;
       }
     }

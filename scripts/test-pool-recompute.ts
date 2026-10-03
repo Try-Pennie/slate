@@ -203,6 +203,7 @@ function harness(
     writeRow: async (code, val, computedAtMs) => {
       if (code === "102") throw new Error("write failed");
       rec.writes.push({ code, val, computedAtMs });
+      return "written";
     },
   });
   const outcome = await recomputePool(LOW_POOL, deps);

@@ -25,9 +25,10 @@
  * The TICK ID. A cron tick fans out to several lanes, each its own request, and
  * until now the only thing tying a lane's lines to the tick that drove it was the
  * time. Each tick mints one id, sends it on every lane request as
- * `TICK_ID_HEADER`, and stamps it on every line the dispatcher writes for that
- * tick, including the failure page, so a reader can go from the page to every
- * line of the tick that failed.
+ * `TICK_ID_HEADER`, and stamps it on every line the DISPATCHER writes for that
+ * tick and on the failure page. That is the extent of it: no lane reads the header
+ * yet, so a lane's own lines do not carry the id and are still found by time, and
+ * the page says so rather than promising more (L440).
  */
 import { laneFieldName, type LaneRun } from "@/lib/monitor/lane-timing";
 import { TICK_ID_HEADER, type LaneFailureReport } from "@/lib/monitor/lane-failure";

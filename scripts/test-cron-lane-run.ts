@@ -170,6 +170,12 @@ eq(
 {
   const thrownCopy = formatLaneFailureAlert({ lane: "outbox", status: null, reason: "fetch failed" }, "abc123");
   assert(thrownCopy.includes("tick=abc123"), "the page names the tick id to search for");
+  // L440: only the dispatcher's lines carry the id, so the page may claim no more.
+  assert(!/every line/.test(thrownCopy), "and does not claim the id finds every line of the run");
+  assert(
+    /dispatcher's lines/.test(thrownCopy) && /do not\s+carry the id/.test(thrownCopy),
+    "it says the search finds the dispatcher's lines, and that the lane's own do not carry the id",
+  );
   assert(thrownCopy.includes("fetch failed"), "and says why a thrown lane failed");
   const statusCopy = formatLaneFailureAlert({ lane: "sync", status: 500, reason: "answered 500" }, null);
   assert(statusCopy.includes("answered 500"), "a non-ok lane names its status");

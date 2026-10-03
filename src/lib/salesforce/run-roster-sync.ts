@@ -17,7 +17,7 @@ import { ensureDefaultOrg } from "@/lib/provision";
 import { ensureDefaultSchedules } from "@/lib/schedule";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
-import { logAlertSendFailure } from "@/lib/notify/send-failure";
+import { logAlertSendFailure, logResolveFailure } from "@/lib/notify/send-failure";
 import { clearFailureStreak, recordConsecutiveStreak } from "@/lib/notify/streak";
 import { log } from "@/lib/log";
 import {
@@ -216,7 +216,7 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
       // streak is cleared on the same footing (#2774), so a later isolated miss
       // starts counting from zero.
       await clearFailureStreak(TWILIO_READ_STREAK_KEY);
-      const cleared = await resolveAlert("twilio_sync_failures", twilioSyncRecovery()).catch(() => false);
+      const cleared = await resolveAlert("twilio_sync_failures", twilioSyncRecovery()).catch(logResolveFailure("twilio_sync_failures"));
       if (cleared) log.info("agents", { msg: "twilio sync failure alert cleared" });
       await reportTwilioWriteOutcome(result);
     } catch (err) {
@@ -319,7 +319,7 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
       const clearedIds = await resolveAlert(
         "salesforce_user_id_conflicts",
         salesforceUserIdConflictRecovery(),
-      ).catch(() => false);
+      ).catch(logResolveFailure("salesforce_user_id_conflicts"));
       if (clearedIds) log.info("agents", { msg: "salesforce user id conflict alert cleared" });
     }
 
@@ -344,7 +344,7 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
       const clearedManagers = await resolveAlert(
         "salesforce_manager_ambiguous",
         salesforceManagerAmbiguousRecovery(),
-      ).catch(() => false);
+      ).catch(logResolveFailure("salesforce_manager_ambiguous"));
       if (clearedManagers) log.info("agents", { msg: "salesforce manager ambiguity alert cleared" });
     }
 
@@ -377,7 +377,7 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
       const clearedDivergence = await resolveAlert(
         "salesforce_roster_divergence",
         salesforceRosterDivergenceRecovery(),
-      ).catch(() => false);
+      ).catch(logResolveFailure("salesforce_roster_divergence"));
       if (clearedDivergence) log.info("agents", { msg: "salesforce roster divergence alert cleared" });
     }
 
@@ -438,7 +438,7 @@ async function reportTwilioWriteOutcome(result: TwilioSyncResult): Promise<void>
     const cleared = await resolveAlert(
       "twilio_write_failures",
       twilioWriteFailureRecovery(),
-    ).catch(() => false);
+    ).catch(logResolveFailure("twilio_write_failures"));
     if (cleared) log.info("agents", { msg: "twilio write failure alert cleared" });
   }
 
@@ -455,7 +455,7 @@ async function reportTwilioWriteOutcome(result: TwilioSyncResult): Promise<void>
     const cleared = await resolveAlert(
       "twilio_marked_no_worker",
       twilioOrphanedMarkRecovery(),
-    ).catch(() => false);
+    ).catch(logResolveFailure("twilio_marked_no_worker"));
     if (cleared) log.info("agents", { msg: "twilio orphaned mark alert cleared" });
   }
 }

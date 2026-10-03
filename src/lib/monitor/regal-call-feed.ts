@@ -20,6 +20,7 @@
  *
  * Pure apart from the injected read and dispatcher (scripts/test-regal-call-feed.ts).
  */
+import { logAlertSendFailure, logResolveFailure } from "../notify/send-failure.ts";
 import { DateTime } from "luxon";
 import { formatClockTime, formatLongDate } from "@/lib/date/parse";
 import {
@@ -148,12 +149,12 @@ export async function runRegalFeedQuietCheck(deps: RegalFeedQuietDeps): Promise<
   const candidates = counts.candidate ?? 0;
   if (candidates === 0) {
     if (deps.armed) {
-      await deps.notify(REGAL_CALLS_QUIET_KEY, deps.cooldownMs, formatRegalFeedQuietAlert(day, counts)).catch(() => {});
+      await deps.notify(REGAL_CALLS_QUIET_KEY, deps.cooldownMs, formatRegalFeedQuietAlert(day, counts)).catch(logAlertSendFailure(REGAL_CALLS_QUIET_KEY));
     }
     return { status: "quiet", day, received: total(counts), paged: deps.armed };
   }
   if (deps.armed) {
-    await deps.resolve(REGAL_CALLS_QUIET_KEY, formatRegalFeedQuietRecovery(candidates)).catch(() => {});
+    await deps.resolve(REGAL_CALLS_QUIET_KEY, formatRegalFeedQuietRecovery(candidates)).catch(logResolveFailure(REGAL_CALLS_QUIET_KEY));
   }
   return { status: "flowing", day, candidates };
 }
@@ -204,12 +205,12 @@ export async function runRegalFeedUnreadableCheck(
     if (deps.armed) {
       await deps
         .notify(REGAL_CALLS_UNREADABLE_KEY, deps.cooldownMs, formatRegalFeedUnreadableAlert(counts))
-        .catch(() => {});
+        .catch(logAlertSendFailure(REGAL_CALLS_UNREADABLE_KEY));
     }
     return { status: "unreadable-events", counts, paged: deps.armed };
   }
   if (deps.armed) {
-    await deps.resolve(REGAL_CALLS_UNREADABLE_KEY, formatRegalFeedUnreadableRecovery()).catch(() => {});
+    await deps.resolve(REGAL_CALLS_UNREADABLE_KEY, formatRegalFeedUnreadableRecovery()).catch(logResolveFailure(REGAL_CALLS_UNREADABLE_KEY));
   }
   return { status: "clean", received: total(counts) };
 }

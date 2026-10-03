@@ -1,6 +1,6 @@
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
-import { logAlertSendFailure } from "@/lib/notify/send-failure";
+import { logAlertSendFailure, logResolveFailure } from "@/lib/notify/send-failure";
 import {
   MAX_COMPLETION_DRAIN_BATCHES,
   PAST_COMPLETION_BATCH_LIMIT,
@@ -125,7 +125,7 @@ async function pageOnSaturationStreak(
     // alert-key: reconcile_cancelled_saturated
     // alert-key: reconcile_missing_saturated
     // alert-key: deletion_drain_saturated
-    await resolveAlert(key, recoveryText).catch(() => {});
+    await resolveAlert(key, recoveryText).catch(logResolveFailure(key));
     return;
   }
   const sustained = await recordConsecutiveStreak(key, windowSeconds, alertAfter);

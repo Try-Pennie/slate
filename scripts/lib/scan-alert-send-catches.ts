@@ -27,8 +27,27 @@
 import { blankStringContents } from "./scan-bare-catches.ts";
 import { hasOptOut } from "./opt-out.ts";
 
-/** The sends a silent catch is refused on. */
-export const ALERT_SEND_CALLEES = ["sendThrottledAlert", "resolveRecovered"] as const;
+/**
+ * The sends a silent catch is refused on: every sender that goes through the
+ * `alert_state` cooldown gate in `@/lib/notify/dispatch`, by name.
+ */
+export const ALERT_SEND_CALLEES = [
+  "sendThrottledAlert",
+  "sendThrottledInfo",
+  "resolveAlert",
+  "resolveRecovered",
+] as const;
+
+/**
+ * The same senders reached through an INJECTED seam (`deps.notify(...)`, a
+ * `ThrottledNotify` or `AlertResolve`), which a scan by callee name alone cannot
+ * see (#3098 review, L247): the pure monitor checks are handed the dispatcher and
+ * call it by the dependency's own name. Matched by the naming convention every
+ * such seam already follows, the one `scan-bare-catches.ts` keys on, so the next
+ * seam is covered by construction. The suffix must start with a capital, so
+ * `resolverFor` is not a sender.
+ */
+export const INJECTED_SENDER = /^(?:notify|info|resolve|clearAlert|sendAlert)(?:[A-Z][A-Za-z]*)?$/;
 
 export const ALERT_SWALLOW_OPT_OUT = "alert-swallow-ok:";
 
@@ -45,7 +64,10 @@ export interface AlertSendCatchFinding {
  * The identifier called by the parenthesised argument list that closes at
  * `close`, or null when `close` is not a call's closing paren.
  */
-function calleeEndingAt(code: string, close: number): string | null {
+function calleeEndingAt(
+  code: string,
+  close: number,
+): { name: string; receiver: string | null } | null {
   if (code[close] !== ")") return null;
   let depth = 0;
   let i = close;
@@ -63,7 +85,21 @@ function calleeEndingAt(code: string, close: number): string | null {
   const end = j + 1;
   while (j >= 0 && /[\w$]/.test(code[j]!)) j--;
   const name = code.slice(j + 1, end);
-  return name.length > 0 ? name : null;
+  if (name.length === 0) return null;
+  // A member call: read the receiver, so `Promise.resolve(...)` is not a seam.
+  while (j >= 0 && /\s/.test(code[j]!)) j--;
+  if (code[j] !== ".") return { name, receiver: null };
+  j--;
+  while (j >= 0 && /\s/.test(code[j]!)) j--;
+  const rEnd = j + 1;
+  while (j >= 0 && /[\w$]/.test(code[j]!)) j--;
+  return { name, receiver: code.slice(j + 1, rEnd) || "?" };
+}
+
+/** Whether a call is an alert send, direct or through an injected seam. */
+export function isAlertSender(name: string, receiver: string | null): boolean {
+  if ((ALERT_SEND_CALLEES as readonly string[]).includes(name)) return true;
+  return receiver !== null && receiver !== "Promise" && INJECTED_SENDER.test(name);
 }
 
 export function scanAlertSendCatches(source: string): AlertSendCatchFinding[] {
@@ -74,8 +110,9 @@ export function scanAlertSendCatches(source: string): AlertSendCatchFinding[] {
     const at = m.index!;
     let k = at - 1;
     while (k >= 0 && /\s/.test(code[k]!)) k--;
-    const callee = calleeEndingAt(code, k);
-    if (!callee || !(ALERT_SEND_CALLEES as readonly string[]).includes(callee)) continue;
+    const call = calleeEndingAt(code, k);
+    if (!call || !isAlertSender(call.name, call.receiver)) continue;
+    const callee = call.receiver ? `${call.receiver}.${call.name}` : call.name;
     const lineIdx = code.slice(0, at).split("\n").length - 1;
     if (hasOptOut(lines, lineIdx, ALERT_SWALLOW_OPT_OUT)) continue;
     findings.push({ line: lineIdx + 1, callee });

@@ -52,6 +52,7 @@
  * Pure apart from the injected reads and the dispatcher, so the node suite drives
  * every branch (scripts/test-regal-call-detector.ts).
  */
+import { logAlertSendFailure, logResolveFailure } from "../notify/send-failure.ts";
 import { DateTime } from "luxon";
 import { normalizeEmail } from "@/lib/auth/email";
 import { formatClockTime } from "@/lib/date/parse";
@@ -421,7 +422,7 @@ export async function runRegalCallCheck(deps: RegalCallDeps): Promise<RegalCallR
   const settlements = settleRegalCallAlerts(firing, users, ignores);
   if (deps.armed) {
     for (const s of settlements) {
-      await deps.resolve(regalCallAlertKey(s.userId), s.text).catch(() => {});
+      await deps.resolve(regalCallAlertKey(s.userId), s.text).catch(logResolveFailure(regalCallAlertKey(s.userId)));
     }
   }
   const settled = settlements.map((s) => s.ending);
@@ -443,7 +444,7 @@ export async function runRegalCallCheck(deps: RegalCallDeps): Promise<RegalCallR
   if (deps.armed) {
     for (const v of flagged) {
       if (!v.user) continue;
-      await deps.notify(regalCallAlertKey(v.user.id), deps.cooldownMs, formatRegalCallAlert(v)).catch(() => {});
+      await deps.notify(regalCallAlertKey(v.user.id), deps.cooldownMs, formatRegalCallAlert(v)).catch(logAlertSendFailure(regalCallAlertKey(v.user.id)));
     }
   }
   return { status: "checked", callers: verdicts.length, flagged, exempt, paged: deps.armed, settled };
