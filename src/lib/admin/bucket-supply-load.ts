@@ -200,12 +200,14 @@ export async function loadBookedTimes(
   const rows = await selectAllPages<{ starts_at: string; buckets: { code: string } | null }>(
     "bucket supply booked times",
     (from, to) => {
-      const q = db.from("bookings").select("starts_at, buckets!inner(code)");
-      return (orgId === undefined ? q : q.eq("org_id", orgId))
+      const q = db
+        .from("bookings")
+        .select("starts_at, buckets!inner(code)")
         // #2073: a share of a bucket's ROUTED demand. A booking through an agent's
         // own link sits in a bucket only because a booking needs one, so it is not
         // demand that bucket's pool served.
-        .eq("kind", "routed")
+        .eq("kind", "routed");
+      return (orgId === undefined ? q : q.eq("org_id", orgId))
         // A cancelled time is free again, so counting it would report a bucket
         // as busier than it is. `rescheduled` is NOT excluded: that marks a
         // booking that MOVED, and the row carries the time it moved to, so its
