@@ -22,6 +22,14 @@ function section(doc: string, heading: string): string {
   return doc.slice(start, next === -1 ? undefined : next);
 }
 
+/** Every setting name DEFINED by .env.example (`NAME=`) or DEPLOY.md (`wrangler secret put NAME`). */
+function definedSettings(envExample: string, deploy: string): Set<string> {
+  const out = new Set<string>();
+  for (const m of envExample.matchAll(/^([A-Z][A-Z0-9_]*)=/gm)) out.add(m[1]);
+  for (const m of deploy.matchAll(/^#?\s*wrangler secret put ([A-Z][A-Z0-9_]*)\b/gm)) out.add(m[1]);
+  return out;
+}
+
 function walk(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
     const p = join(dir, name);
@@ -103,6 +111,36 @@ function walk(dir: string, out: string[] = []): string[] {
   assert(read("docs/review-process.md").includes("docs/adr/"), "review-process.md points at docs/adr");
 }
 
+// --- #3132: the erasure reply discloses every copy the positions memo keeps --------
+{
+  const runbook = read("docs/pii-erasure-runbook.md");
+  const reply = /<!-- runbook-reference: the text of a reply to a data subject[^>]*-->\s*```\n([\s\S]*?)```/.exec(runbook)?.[1] ?? "";
+  assert(reply.length > 0, "the erasure reply template is readable");
+  // Each residual the memo records, by the words the reply must use for it. Position 3
+  // keeps the Salesforce lead reference on the erased booking, so a reply that left it
+  // out would be an incomplete disclosure (L440).
+  for (const [residual, words] of [
+    ["backups", /backups/i],
+    ["the agent's calendar", /calendar/i],
+    ["Regal and Cadence", /Regal and Cadence/],
+    ["the Salesforce lead reference (position 3)", /reference/i],
+  ] as const) {
+    assert(words.test(reply), `the erasure reply names ${residual}`);
+  }
+  const memo = read("docs/pii-legal-positions.md");
+  assert(/Salesforce lead\s+reference stays/.test(memo), "position 3 still keeps the Salesforce reference");
+
+  // Positions 5 and 6 are engineering's proposal, not Dan's 2026-07-29 decision, and the
+  // memo must say so where it attributes decisions (L249).
+  const header = memo.slice(0, memo.indexOf("## What we need from you"));
+  assert(/Decided by:\*\* Dan Wright, 2026-07-29, positions 1 to 4/.test(header), "the memo scopes Dan's decision to positions 1 to 4");
+  assert(/Proposed by:\*\* Engineering \(Slate\), 2026-10-03, positions 5 and 6/.test(header), "the memo dates and attributes positions 5 and 6 as proposed");
+  for (const n of [5, 6]) {
+    const row = new RegExp(`^\\| ${n}\\. .*\\(proposed by engineering, 2026-10-03, not yet decided\\)`, "m");
+    assert(row.test(memo), `sign-off row ${n} is marked proposed, not decided`);
+  }
+}
+
 // --- #3131: the system context diagram, and the credential table it links -------
 {
   const arch = read("docs/architecture.md");
@@ -117,11 +155,22 @@ function walk(dir: string, out: string[] = []): string[] {
   assert(ctx.includes("./api.md#credentials-and-auth-models"), "the diagram links the credentials table");
   assert(/^## Credentials and auth models$/m.test(read("docs/api.md")), "docs/api.md has the heading that anchor names");
 
-  // Every secret the diagram names is a real configuration name.
-  const known = read(".env.example") + read("DEPLOY.md");
+  // Every secret the diagram names is a DEFINED setting, matched as a whole name: a
+  // `NAME=` line in .env.example, or a `wrangler secret put NAME` line in DEPLOY.md's
+  // secrets list. A substring test would pass a misspelling that happens to sit
+  // inside a longer real name, or any name merely mentioned in prose.
+  const defined = definedSettings(read(".env.example"), read("DEPLOY.md"));
+  assert(defined.size > 20, `the defined settings are readable (found ${defined.size})`);
   for (const m of ctx.matchAll(/\b([A-Z][A-Z0-9]*_[A-Z0-9_]+)\b/g)) {
-    assert(known.includes(m[1]), `the diagram's ${m[1]} is a documented setting`);
+    assert(defined.has(m[1]), `the diagram's ${m[1]} is a defined setting`);
   }
+  // Positive controls (L1): a misspelt name and a truncated real one are refused.
+  assert(!defined.has("SLACK_BOT_TOKN"), "control: a misspelt setting is not defined");
+  assert(!defined.has("BOOKING_API_KEY_TRYPEN"), "control: a truncation of a real setting is not itself defined");
+  assert(
+    definedSettings("FOO_BAR=1\n# BAZ_QUX=2\n", "wrangler secret put ZIP_ZAP  # x\n").size === 2,
+    "control: only NAME= lines and secret put lines define a setting",
+  );
 }
 
 finish();

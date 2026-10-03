@@ -423,12 +423,15 @@ within the backup retention window.
 ## Answering the requester (#3132)
 
 The reply to the person states what was NOT erased as well as what was, because
-three copies of their details sit outside anything this runbook reaches, and a reply
-that says only "deleted" is a claim the record contradicts. The three are recorded
-in `docs/pii-legal-positions.md`: the backups (above), the agent's Google Calendar
-event (item 2 of "What it deliberately does NOT do", and the legal positions memo's
-second residual), and the copies already sent to Regal and Cadence (position 4, which
-Slate does not tell about a deletion).
+three copies of their details sit outside anything this runbook reaches, and the
+erased booking itself keeps one identifier, so a reply that says only "deleted" is a
+claim the record contradicts. All four are recorded in `docs/pii-legal-positions.md`:
+the backups (above), the agent's Google Calendar event (item 2 of "What it
+deliberately does NOT do", and the legal positions memo's second residual), the
+copies already sent to Regal and Cadence (position 4, which Slate does not tell about
+a deletion), and the Salesforce lead reference the redacted booking keeps (item 1 of
+"What it deliberately does NOT do", and position 3, whose accepted risk is that it
+can re-identify the person).
 
 Send it only after step 4 returned all zeros. The wording below is engineering's
 draft of those positions and is listed for counsel's sign-off in
@@ -441,7 +444,7 @@ request.
 We have deleted your name, email address, phone number and any other contact
 details from our appointment booking system and from our reporting warehouse.
 
-Three copies are outside that deletion, and we want you to know about them:
+Four things are outside that deletion, and we want you to know about them:
 
 1. Our backups still hold the earlier data until they expire on their normal
    schedule. They are not used for anything unless we have to restore our
@@ -451,4 +454,7 @@ Three copies are outside that deletion, and we want you to know about them:
 3. Your booking details were also sent to two service providers we use to
    contact customers, Regal and Cadence. Deleting them from our system does not
    delete their copies.
+4. The record of your appointment still carries a reference number that points
+   to your record in our customer database, Salesforce. It holds none of your
+   contact details itself, but it links the appointment to that record.
 ```
