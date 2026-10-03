@@ -2,13 +2,13 @@ import { getBucketSlots, type EligibleResolver } from "./service";
 import { slotCacheKey } from "./cache-key";
 import {
   resolveBucketSlots,
+  SUPERSEDED_BY_SAVE,
   type ReadDeps,
   type CachedBucketSlots,
   type ResolvedBucketSlots,
 } from "./precompute-core";
 import {
   readBucketSlotsRow,
-  writeBucketSlotsRow,
   storeBucketSlotsRow,
   recomputeBucketSlots,
   computeBucketSlotsForWindow,
@@ -22,6 +22,7 @@ import {
   type TouchedPoolsOutcome,
   type PooledBucket,
 } from "./pool-recompute";
+import { SlotRowRefused } from "./slot-row-write";
 import { appUrl } from "@/lib/env";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadBusinessHoursCached } from "@/lib/booking/business-hours-load";
@@ -93,7 +94,15 @@ export async function getCachedBucketSlots(
     },
     readRow: (c) => readBucketSlotsRow(c),
     compute: (c, from, to) => getBucketSlots(c, from, to),
-    writeRow: (c, val, computedAtMs) => writeBucketSlotsRow(c, val, computedAtMs),
+    // #3118: a write a settings save superseded is answered as such, so the read
+    // redoes the compute rather than serving and caching slots from the old settings.
+    // A refused row still throws (#3119) and reaches writeFailed below.
+    writeRow: async (c, val, computedAtMs) => {
+      const outcome = await storeBucketSlotsRow(c, val, computedAtMs);
+      if (outcome === "failed") throw new SlotRowRefused(c);
+      if (outcome === "invalidated") return SUPERSEDED_BY_SAVE;
+      return new Date(computedAtMs).toISOString();
+    },
     // #3119: the lead is still served what was computed; the row it could not store
     // is said here, and the next request or the cron backstop computes it again.
     writeFailed: (c, err) =>
