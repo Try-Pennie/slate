@@ -1,11 +1,12 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
 	// The tail worker that ships Slate's logs to Better Stack (#3105, #3138). Slate
-	// names it in `tail_consumers` (wrangler.jsonc). Deployed BY HAND, never by CI:
+	// names it in `tail_consumers` (wrangler.jsonc). Deployed by CI on every production
+	// deploy, whole, before Slate's own upload (scripts/deploy-gradual.ts, #3165):
 	//
 	//   npx wrangler deploy -c wrangler.log-tail.jsonc
 	//
-	// DEPLOY.md ("Log shipping to Better Stack") has the order, which matters.
+	// DEPLOY.md ("Log shipping to Better Stack") has the first setup order, which matters.
 	"name": "slate-log-tail",
 	"main": "worker/log-tail/index.ts",
 	"account_id": "3e7f907a9c19e51417873e2cce4fbc5c",

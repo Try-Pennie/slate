@@ -96,6 +96,12 @@ assert(/runProbe\(/.test(gradualSrc) && /httpProbeDeps\(/.test(gradualSrc), "the
 assert(/confirmations:\s*CONFIRMATIONS/.test(gradualSrc), "with a run of confirmations, since both versions answer during the split");
 assert(/versionOverride:\s*stage === "canary"/.test(gradualSrc), "and pins the canary probe to the canary through the override header");
 
+// The log tail worker is deployed by the gradual deploy, from its own config (#3160).
+assert(
+  /"deploy",\s*"-c",\s*"wrangler\.log-tail\.jsonc"/.test(gradualSrc),
+  "the gradual deploy deploys the log tail worker from wrangler.log-tail.jsonc, so a change to its redaction ships with the merge",
+);
+
 // A deploy and a rollback are never queued behind each other. GitHub keeps one PENDING
 // run per concurrency group and cancels the older with no alert, so a shared group
 // would let either silently drop the other. The rollback's group is unique per run,

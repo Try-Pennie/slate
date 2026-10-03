@@ -157,6 +157,13 @@ export function workerNameFor(wranglerEnv: string | undefined): string {
   return e ? `${WORKER_NAME}-${e}` : WORKER_NAME;
 }
 
+/** Whether a run deploys the log tail worker. Only production has one: the load test
+ *  environment sets `tail_consumers: []`, and a rehearsal there must never redeploy the
+ *  production tail worker. */
+export function shouldDeployTailWorker(wranglerEnv: string | undefined): boolean {
+  return (wranglerEnv ?? "").trim() === "";
+}
+
 /** The override header's value, a structured-header dictionary: `slate="<id>"`. */
 export function overrideValue(versionId: string, workerName = WORKER_NAME): string {
   if (!UUID.test(versionId)) throw new Error(`not a version id: ${versionId}`);
@@ -281,7 +288,16 @@ export function isFrequentCron(expr: string): boolean {
   if (hour !== "*") return false;
   if (minute === "*") return true;
   const step = /^\*\/(\d+)$/.exec(minute ?? "");
-  return step !== null && Number(step[1]) <= FREQUENT_CRON_MAX_MINUTES;
+  // A step of 0 is not a schedule anybody can read, so it is protected, never frequent.
+  return step !== null && Number(step[1]) >= 1 && Number(step[1]) <= FREQUENT_CRON_MAX_MINUTES;
+}
+
+/** Whether every part of a cron field is a form `fieldMatches` understands. */
+export function fieldReadable(field: string): boolean {
+  return field.split(",").every((part) => {
+    const m = /^(\*|\d+|\d+-\d+)(?:\/(\d+))?$/.exec(part);
+    return m !== null && (m[2] === undefined || Number(m[2]) >= 1);
+  });
 }
 
 /**
@@ -291,14 +307,6 @@ export function isFrequentCron(expr: string): boolean {
  * open the split at all), while answering false would open the split across a rare
  * tick the canary then drops.
  */
-/** Whether every part of a cron field is a form `fieldMatches` understands. */
-export function fieldReadable(field: string): boolean {
-  return field.split(",").every((part) => {
-    const m = /^(\*|\d+|\d+-\d+)(?:\/(\d+))?$/.exec(part);
-    return m !== null && (m[2] === undefined || Number(m[2]) >= 1);
-  });
-}
-
 export function fieldMatches(field: string, value: number): boolean {
   return field.split(",").some((part) => {
     const m = /^(\*|\d+|\d+-\d+)(?:\/(\d+))?$/.exec(part);
@@ -418,11 +426,40 @@ export const EXIT = {
   /** Production was changed by something else mid-run (the Rollback workflow, a hand
    *  deploy). This run stopped and left it exactly as it found it. */
   interfered: 22,
+  /** The log tail worker (slate-log-tail) could not be deployed. Slate was not touched. */
+  tailWorkerFailed: 23,
+  /** The deploy script itself failed outside the run's own handling. What production
+   *  is serving is not known to it; the settle step reads what was recorded. */
+  scriptFailed: 24,
   /** A restore failed: production may still be split. */
   restoreFailed: 20,
 } as const;
 
 export type EndState = "new" | "old" | "unchanged" | "unknown";
+
+/**
+ * Where production ends for each exit code. One table, so a result can never pair an
+ * exit with the wrong end state, and DEPLOY.md's table is checked against it
+ * (scripts/test-gradual-deploy.ts).
+ */
+export const EXIT_END: Record<keyof typeof EXIT, EndState> = {
+  promoted: "new",
+  unreadable: "unchanged",
+  uploadFailed: "unchanged",
+  splitFailed: "old",
+  canaryFailed: "old",
+  promoteFailed: "old",
+  promotedFailed: "old",
+  promotedFleetCondition: "new",
+  triggersFailed: "new",
+  threw: "old",
+  threwBeforeSplit: "unchanged",
+  restoreFailed: "unknown",
+  healRefused: "unchanged",
+  interfered: "unknown",
+  tailWorkerFailed: "unchanged",
+  scriptFailed: "unknown",
+};
 
 export interface GradualResult {
   exit: number;
@@ -441,6 +478,12 @@ export interface GradualOps {
   probe(stage: "canary" | "promoted", canaryId: string | null): Promise<ProbeOutcome>;
   /** `wrangler triggers deploy`; true when it succeeded. */
   triggers(): Promise<boolean>;
+  /**
+   * Deploy the log tail worker (`wrangler deploy -c wrangler.log-tail.jsonc`) whole,
+   * before anything of Slate's is uploaded; true when it succeeded, or when this run
+   * targets an environment that has no tail worker (`shouldDeployTailWorker`).
+   */
+  tailWorker(): Promise<boolean>;
   /** Whether a version was uploaded in cron standby (a canary): read from its
    *  annotation. Null when it could not be read. */
   isCronStandby(versionId: string): Promise<boolean | null>;
@@ -471,8 +514,14 @@ async function restore(
   ours: VersionShare[][],
 ): Promise<RestoreOutcome> {
   for (let attempt = 1; attempt <= RESTORE_ATTEMPTS; attempt++) {
-    // Never undo somebody else's change: a rollback that landed mid-run wins.
-    const now = await ops.status();
+    // Never undo somebody else's change: a rollback that landed mid-run wins. A read
+    // that throws is a read that could not tell, the same as null: restore anyway.
+    let now: VersionShare[] | null = null;
+    try {
+      now = await ops.status();
+    } catch (err) {
+      ops.log(`reading the deployment before the restore threw: ${err instanceof Error ? err.message : String(err)}`);
+    }
     if (now !== null && sameDeployment(now, [{ versionId: stable, percentage: 100 }])) return "restored";
     if (now !== null && !ours.some((o) => sameDeployment(now, o))) return "interfered";
     ops.log(`restoring ${stable} at 100% (${why}), attempt ${attempt} of ${RESTORE_ATTEMPTS}`);
@@ -565,11 +614,27 @@ async function runUntilSplit(ops: GradualOps): Promise<GradualResult> {
     ops.record("split-attempted");
     const healed = await restore(ops, stable, "a previous run left production split", [start.from]);
     if (healed !== "restored") {
+      // Somebody else changed it while this run was healing: production is theirs, so
+      // the settle step is told to leave it, as it is for every interference.
+      if (healed === "interfered") ops.record("ended");
       return restored(healed, EXIT.restoreFailed, stable, "Production was already split when this run started.");
     }
     ops.record("ended");
   }
   ops.log(`production is serving ${stable} at 100%`);
+
+  // The log tail worker goes first and whole (Dan, 2026-10-03): it is not split, and a
+  // change to the redaction it runs (src/lib/log-shipping, client-error-scrub) reaches
+  // production with the merge rather than waiting for a hand redeploy. If it fails,
+  // nothing of Slate's has been touched.
+  if (!(await ops.tailWorker())) {
+    return {
+      exit: EXIT.tailWorkerFailed,
+      end: "unchanged",
+      message:
+        "Not deployed: the log tail worker (slate-log-tail) could not be deployed, so Slate was not touched and the previous version is still serving 100%. Read the run log; `pnpm exec wrangler deploy -c wrangler.log-tail.jsonc` is the step that failed.",
+    };
+  }
 
   // Both versions are uploaded BEFORE the split opens, so the split lasts only as long as
   // the probe, and a failed upload has changed nothing anybody is served.
@@ -717,13 +782,6 @@ async function afterSplit(ops: GradualOps, stable: string, canary: string, relea
 
 export type SplitRecord = "split-attempted" | "ended";
 
-/**
- * Whether the settle step has anything to look at, decided from what the run RECORDED
- * rather than from a deployment read. A run that never attempted the split (a ci gate
- * refusal, a failed build or upload) never touched production, and reading the
- * deployment then could only produce a false "production may be split" when the read
- * fails. Only an attempted split with no recorded end makes it read.
- */
 /** The events a run appended to its state file, one per line. Null when there is no
  *  file at all (the run never recorded anything). A line that is not a known event is
  *  dropped rather than guessed at; `settleDecision` then reads only what is certain. */
@@ -735,6 +793,13 @@ export function readSplitRecords(text: string | null): SplitRecord[] | null {
     .filter((l): l is SplitRecord => l === "split-attempted" || l === "ended");
 }
 
+/**
+ * Whether the settle step has anything to look at, decided from what the run RECORDED
+ * rather than from a deployment read. A run that never attempted the split (a ci gate
+ * refusal, a failed build or upload) never touched production, and reading the
+ * deployment then could only produce a false "production may be split" when the read
+ * fails. Only an attempted split with no recorded end makes it read.
+ */
 export function settleDecision(records: SplitRecord[] | null): { action: "none" } | { action: "read" } {
   // The LAST event decides: a run can heal a leftover split (attempted, ended) and then
   // open its own (attempted again), and only the latest says where it stands.

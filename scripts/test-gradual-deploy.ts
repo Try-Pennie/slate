@@ -14,6 +14,8 @@ import {
   CANARY_PERCENT,
   CRON_STANDBY_VAR,
   EXIT,
+  EXIT_END,
+  shouldDeployTailWorker,
   RESTORE_ATTEMPTS,
   SPLIT_BUDGET_MS,
   CRON_MARGIN_MS,
@@ -76,7 +78,11 @@ interface Scenario {
   /** The split call reports failure but Cloudflare applied it anyway. */
   splitAppliesAnyway?: boolean;
   /** Somebody else (a rollback) puts this version at 100% during that step. */
-  interfereDuring?: "upload" | "probe:canary";
+  interfereDuring?: "upload" | "probe:canary" | "heal";
+  /** The log tail worker deploy result (default true). */
+  tailWorker?: boolean;
+  /** Every status read after the first THROWS. */
+  statusThrowsLater?: boolean;
 }
 
 const HAPPY: Scenario = {
@@ -121,8 +127,17 @@ async function drive(s: Scenario): Promise<Run> {
   const ops: GradualOps = {
     status: async () => {
       // Recorded once, so the order assertions read the run's actions, not its re-reads.
-      if (!calls.includes("status")) calls.push("status");
+      const first = !calls.includes("status");
+      if (first) calls.push("status");
+      if (!first && s.statusThrowsLater) throw new Error("planted status throw");
+      if (!first && s.interfereDuring === "heal" && deployment.length === 2) {
+        deployment = [{ versionId: THEIRS, percentage: 100 }];
+      }
       return s.start === null ? null : deployment;
+    },
+    tailWorker: async () => {
+      calls.push("tail-worker");
+      return s.tailWorker ?? true;
     },
     upload: async (kind) => {
       calls.push(`upload:${kind}`);
@@ -194,6 +209,7 @@ async function drive(s: Scenario): Promise<Run> {
     r.calls.join(" | "),
     [
       "status",
+      "tail-worker",
       "upload:canary",
       "upload:release",
       "wait",
@@ -203,7 +219,7 @@ async function drive(s: Scenario): Promise<Run> {
       "probe:promoted",
       "triggers",
     ].join(" | "),
-    "the order: read what serves, upload both, wait out the cron window, split 10/90, probe the canary, promote, probe, apply triggers",
+    "the order: read what serves, deploy the log tail worker whole, upload both, wait out the cron window, split 10/90, probe the canary, promote, probe, apply triggers",
   );
   eq(r.probes[0].canaryId, CANARY, "the canary probe is pinned to the CANARY version, by its id");
   eq(r.probes[1].canaryId, null, "the promotion probe is not pinned: it asks production as a whole");
@@ -217,6 +233,53 @@ async function drive(s: Scenario): Promise<Run> {
     !r.calls.some((c) => c === `deploy:${CANARY}@100%`),
     "the canary (which runs no cron lane) is never put at 100%; the release build without cron standby is",
   );
+}
+
+// --- the log tail worker goes first and whole -------------------------------------
+{
+  const r = await drive({ ...HAPPY, tailWorker: false });
+  eq(r.result.exit, EXIT.tailWorkerFailed, "a failed tail worker deploy is its own ending");
+  eq(r.result.end, "unchanged", "and Slate was not touched");
+  assert(!r.calls.some((c) => c.startsWith("upload") || c.startsWith("deploy")), "nothing of Slate's was uploaded or deployed");
+  eq(shouldDeployTailWorker(undefined), true, "production deploys its tail worker");
+  eq(shouldDeployTailWorker(""), true, "an empty environment is production");
+  eq(shouldDeployTailWorker("loadtest"), false, "the load test rehearsal never redeploys production's tail worker (its env has no tail consumer)");
+}
+
+// --- a status read that throws before a restore is a read that could not tell ------
+{
+  const r = await drive({ ...HAPPY, canaryProbe: "release", statusThrowsLater: true });
+  // The pre-split and pre-promote re-reads throw too; the pre-split one is the first
+  // to fail, which is before the split, so the run ends there with nothing changed.
+  eq(r.result.exit, EXIT.threwBeforeSplit, "a throwing re-read before the split is caught as a throw before the split");
+}
+{
+  // After the split: the restore's own read throws, and it restores anyway.
+  let reads = 0;
+  const calls: string[] = [];
+  let deployment: VersionShare[] = [{ versionId: OLD, percentage: 100 }];
+  const r = await runGradualDeploy({
+    status: async () => {
+      reads++;
+      if (reads >= 3) throw new Error("planted status throw");
+      return deployment;
+    },
+    upload: async (kind) => (kind === "canary" ? CANARY : RELEASE),
+    deploy: async (specs) => {
+      calls.push(specs.join(" "));
+      deployment = parseSpecs(specs);
+      return true;
+    },
+    probe: async () => outcome("release"),
+    triggers: async () => true,
+    tailWorker: async () => true,
+    isCronStandby: async () => false,
+    record: () => {},
+    waitForCronWindow: async () => {},
+    log: () => {},
+  });
+  eq(r.exit, EXIT.canaryFailed, "a restore whose read throws still restores (the read could not tell, so it acts)");
+  eq(calls[calls.length - 1], `${OLD}@100%`, "and the old version was put back");
 }
 
 // --- refusals that change nothing --------------------------------------------------
@@ -344,6 +407,18 @@ for (const during of ["upload", "probe:canary"] as const) {
   eq(unknown.result.exit, EXIT.healRefused, "and so is one whose larger share cannot be read: it might be a canary");
 }
 
+{
+  // Somebody changes production while this run is healing a leftover split: production
+  // is theirs, and the run records `ended` so the settle step leaves it alone.
+  const r = await drive({
+    ...HAPPY,
+    start: [{ versionId: OLD, percentage: 90 }, { versionId: CANARY, percentage: 10 }],
+    interfereDuring: "heal",
+  });
+  eq(r.result.exit, EXIT.interfered, "a heal interrupted by somebody else's change stops");
+  eq(r.records.join(","), "split-attempted,ended", "and records ended, so settle does not undo their change");
+}
+
 // --- a THROW after the split opens is restored inside the run --------------------
 //
 // The settle step is a second line, not the first: a throw that escapes the run with
@@ -442,6 +517,8 @@ async function checkInvariant(runner: (s: Scenario) => Promise<Run>): Promise<st
                     if (r.result.end === "new" && !servingNew) problems.push(`says new, is not: ${tag}`);
                     if ((r.result.end === "old" || r.result.end === "unchanged") && servingNew) problems.push(`says old, serves new: ${tag}`);
                     if (r.result.exit === EXIT.promoted && (canaryProbe === "version" || canaryProbe === "release")) problems.push(`promoted past a failed canary: ${tag}`);
+                    const name = (Object.keys(EXIT) as (keyof typeof EXIT)[]).find((k) => EXIT[k] === r.result.exit);
+                    if (name === undefined || EXIT_END[name] !== r.result.end) problems.push(`exit ${r.result.exit} paired with end ${r.result.end}: ${tag}`);
                   }
   return problems;
 }
@@ -536,6 +613,7 @@ eq(
   "only the lanes that run at least every fifteen minutes may fall inside the split",
 );
 assert(!isFrequentCron("0 * * * *"), "the hourly roster sync is protected");
+assert(!isFrequentCron("*/0 * * * *"), "a step of 0 is not a schedule, so it is protected, never frequent");
 assert(!isFrequentCron("0 13 * * MON-FRI"), "a digest slot (exactly one of two fires) is protected");
 assert(cronFiresAt("0 */6 * * *", Date.UTC(2026, 9, 3, 12, 0)), "a stepped hour field matches");
 assert(!cronFiresAt("0 */6 * * *", Date.UTC(2026, 9, 3, 13, 0)), "and not off its step");
@@ -601,6 +679,14 @@ assert(worst > 0 && worst <= 20 * 60_000, `the longest wait any deploy can meet 
   eq(missing.join(", "), "", "every EXIT code has a row in DEPLOY.md's gradual deploy table");
   const extra = [...rows].filter((c) => !Object.values(EXIT).includes(c as never));
   eq(extra.join(", "), "", "and the table has no row for a code the deploy cannot exit with");
+  // The end column starts with the end state the code itself pairs with that exit.
+  const wrongEnd: string[] = [];
+  for (const m of section.matchAll(/^\| (\d+) \|[^\n]*\| ([a-z]+)[^|\n]* \|$/gm)) {
+    const name = (Object.keys(EXIT) as (keyof typeof EXIT)[]).find((k) => EXIT[k] === Number(m[1]));
+    if (name !== undefined && EXIT_END[name] !== m[2]) wrongEnd.push(`${m[1]} says ${m[2]}, code says ${EXIT_END[name]}`);
+  }
+  eq(wrongEnd.join("; "), "", "every row's end column agrees with EXIT_END");
+  eq([...section.matchAll(/^\| (\d+) \|[^\n]*\| ([a-z]+)[^|\n]* \|$/gm)].length, rows.size, "and every row's end column could be read");
 }
 
 // --- exit codes: one ending, one number --------------------------------------------

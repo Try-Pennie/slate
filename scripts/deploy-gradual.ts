@@ -1,7 +1,9 @@
 // The production deploy, gradually (#3095).
 //
 // Run by the CI deploy job after `pnpm cf:build` (which carries the bundle env guard,
-// #3078) and replaces `opennextjs-cloudflare deploy` there. It uploads the build twice,
+// #3078) and replaces `opennextjs-cloudflare deploy` there. It first deploys the log
+// tail worker (slate-log-tail, #3160) whole, so a change to its redaction ships with
+// the merge. It uploads the build twice,
 // as a canary in cron standby and as the release, opens a 10/90 split, probes the
 // canary through the version override header, then promotes the release to 100% and
 // probes again, or restores the version that was serving. Every decision is in
@@ -33,6 +35,7 @@ import {
   readDeploymentStatus,
   readSplitRecords,
   settleDecision,
+  shouldDeployTailWorker,
   runGradualDeploy,
   uploadArgs,
   versionIdFromUploadOutput,
@@ -180,6 +183,13 @@ const ops: GradualOps = {
     });
   },
   triggers: async () => runLoud("pnpm", ["exec", "wrangler", "triggers", "deploy", ...wranglerEnv]),
+  tailWorker: async () => {
+    if (!shouldDeployTailWorker(process.env.WRANGLER_ENV)) {
+      console.log("  not deploying the log tail worker: this environment has none");
+      return true;
+    }
+    return runLoud("pnpm", ["exec", "wrangler", "deploy", "-c", "wrangler.log-tail.jsonc"]);
+  },
   isCronStandby: async (id) => isCronStandby(id),
   record: (event) => {
     if (stateFile) appendFileSync(stateFile, `${event}\n`, "utf8");
@@ -203,7 +213,7 @@ try {
   // what the run recorded.
   const why = err instanceof Error ? err.message : String(err);
   result = {
-    exit: EXIT.threwBeforeSplit,
+    exit: EXIT.scriptFailed,
     end: "unknown" as const,
     message: `The deploy script itself failed (${why}). The settle step reads what this run recorded and ends any split it left.`,
   };
