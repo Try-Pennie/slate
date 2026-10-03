@@ -1041,7 +1041,7 @@ export function makeDeps(opts: FakeOpts) {
       calls.deletedReservations.push(id);
     },
     loadDrainableReservations: async () => opts.drainableReservations ?? [],
-    leaseReservation: async () => true,
+    leaseReservation: async () => "lease-1",
     releaseReservationLease: async () => {},
     bumpReservationAttempt: async (id: string, attempts: number, lastError: string) => {
       calls.reservationBumps.push({ id, attempts, lastError });

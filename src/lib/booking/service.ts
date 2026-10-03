@@ -6,6 +6,8 @@ import {
   saveOutboxStepsRow,
   markOutboxDeliveredRow,
   releaseOutboxLeaseRow,
+  leaseReservationRow,
+  releaseReservationLeaseRow,
 } from "@/lib/booking/outbox-lease";
 import { unwrap, isSlotClash, type DbResult } from "@/lib/db/result";
 import { gatedWriteApplied, gatedWriteRows } from "@/lib/booking/gated-write";
@@ -1583,29 +1585,13 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
       return (data ?? []) as BookingReservation[];
     },
 
-    leaseReservation: async (id) => {
-      const now = Date.now();
-      // #2373: false means another holder has the lease, which is the drain
-      // coalescing correctly. A refused statement is not that, and pretending it
-      // is leaves the reservation looking busy rather than unreachable.
-      return gatedWriteApplied(
-        "reservation_lease",
-        await supabaseAdmin()
-          .from("booking_reservations")
-          .update({ lease_until: new Date(now + RESERVATION_LEASE_TTL_MS).toISOString() })
-          .eq("id", id)
-          .or(`lease_until.is.null,lease_until.lt.${new Date(now).toISOString()}`)
-          .select("id"),
-      );
-    },
+    // #3169: the claim and the release share the outbox lease's compare and swap
+    // (`outbox-lease.ts`), so the release frees only the lease this holder took.
+    // #2373 still holds: a refused claim throws rather than reading as busy.
+    leaseReservation: (id) =>
+      leaseReservationRow(supabaseAdmin(), id, Date.now(), RESERVATION_LEASE_TTL_MS),
 
-    releaseReservationLease: async (id) => {
-      // write-ok: the lease expires on its own timeout, so a refused release costs the wait and never frees somebody else's lease.
-      await supabaseAdmin()
-        .from("booking_reservations")
-        .update({ lease_until: null })
-        .eq("id", id);
-    },
+    releaseReservationLease: (id, lease) => releaseReservationLeaseRow(supabaseAdmin(), id, lease),
 
     bumpReservationAttempt: async (id, attempts, lastError) => {
       // write-ok, and REPORTED (#2482): a refused update leaves the attempt count where

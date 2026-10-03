@@ -1,5 +1,7 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { claimWindow } from "@/lib/google/sync-coalesce";
+import { log } from "@/lib/log";
+import { makeSharedInFlight } from "@/lib/concurrency";
 
 /**
  * DB-backed cross-request locks (#30): Workers isolates share no memory, so
@@ -32,6 +34,94 @@ export async function acquireLock(
     .lt("claimed_at", staleBeforeIso)
     .select("key");
   return data?.length ? claimIso : null;
+}
+
+/**
+ * Renews our own claim (#3120): moves `claimed_at` forward only while the row still
+ * holds `claimIso`, so a claim another run has since stolen is never taken back.
+ * Returns the NEW token, or null when the claim is no longer ours (or the renewal
+ * could not run, which the caller must treat the same way: it cannot show the
+ * claim is still held, so it must stop writing).
+ */
+export async function renewLock(key: string, claimIso: string): Promise<string | null> {
+  const { claimIso: next } = claimWindow(Date.now(), 0);
+  const { data, error } = await supabaseAdmin()
+    .from("sync_locks")
+    .update({ claimed_at: next })
+    .eq("key", key)
+    .eq("claimed_at", claimIso)
+    .select("key");
+  if (error) {
+    log.warn("locks", { msg: "lock renewal could not run", key }, error);
+    return null;
+  }
+  return data?.length ? next : null;
+}
+
+/**
+ * A held lane lock that knows whether it is still held (#3120).
+ *
+ * `acquireLock` is a lease: after its TTL the next tick may take the key even
+ * while this run is still working, and then two runs write at once with the older
+ * one unaware. A lane that writes in a loop asks `stillHeld()` before each unit of
+ * work. That renews the claim, so a run that is making progress keeps its key and
+ * the next tick never takes over, and it answers false once the claim has been
+ * taken (or cannot be shown to be ours), which is the run's signal to stop.
+ *
+ * A renewal costs a subrequest on a budget several lanes share, so it is only sent
+ * once a third of the TTL has passed since the last one. Inside that window the
+ * claim cannot have been stolen: a steal needs `claimed_at` older than the TTL.
+ * Once lost it stays lost, so a run never resumes writing after another took over.
+ */
+export interface LockLease {
+  readonly key: string;
+  /** The current claim token, for `releaseLock`. Changes on each renewal. */
+  token(): string;
+  /** Renews when due; false once the claim is not provably ours. */
+  stillHeld(): Promise<boolean>;
+}
+
+export function makeLockLease(
+  key: string,
+  claimIso: string,
+  ttlMs: number,
+  deps: { now?: () => number; renew?: typeof renewLock } = {},
+): LockLease {
+  const now = deps.now ?? Date.now;
+  const renew = deps.renew ?? renewLock;
+  let token = claimIso;
+  let renewedAt = now();
+  let lost = false;
+  // A lane working concurrently asks from several tasks at once. Two renewals of
+  // the same token would race, and the loser would find the token already moved
+  // and report the claim lost while this very run holds it, so they share one.
+  const shared = makeSharedInFlight<"renew", boolean>();
+  const renewOnce = async (): Promise<boolean> => {
+    const next = await renew(key, token);
+    if (next === null) {
+      lost = true;
+      log.warn("locks", { msg: "lane lock lost, stopping this run", key });
+      return false;
+    }
+    token = next;
+    renewedAt = now();
+    return true;
+  };
+  return {
+    key,
+    token: () => token,
+    async stillHeld() {
+      if (lost) return false;
+      if (now() - renewedAt < ttlMs / 3) return true;
+      return shared("renew", renewOnce);
+    },
+  };
+}
+
+/** Takes the key and returns it as a lease, or null when another run holds it. */
+export async function acquireLease(key: string, ttlMs: number): Promise<LockLease | null> {
+  const claim = await acquireLock(key, ttlMs);
+  return claim === null ? null : makeLockLease(key, claim, ttlMs);
 }
 
 /** Releases only our own claim - a post-TTL thief's newer claim survives. */

@@ -15,7 +15,7 @@ import { syncSalesforceAgents, AGENTS_SYNC_STREAK_KEY, type SyncResult } from "@
 import { activationAllowance, ROSTER_RUN_LOCK_TTL_MS } from "@/lib/bookable/activation-allowance";
 import { ensureDefaultOrg } from "@/lib/provision";
 import { ensureDefaultSchedules } from "@/lib/schedule";
-import { acquireLock, releaseLock } from "@/lib/locks";
+import { acquireLock, makeLockLease, releaseLock } from "@/lib/locks";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 import { logAlertSendFailure, logResolveFailure } from "@/lib/notify/send-failure";
 import { clearFailureStreak, recordConsecutiveStreak } from "@/lib/notify/streak";
@@ -96,6 +96,28 @@ const TWILIO_READ_STREAK_WINDOW_S = 3 * 60 * 60;
 const TWILIO_READ_STREAK_ALERT_AT = 2;
 const SYNC_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
+/**
+ * Why a half did not run when this run lost its lock part way through (#3177).
+ *
+ * Its own sentence, and marked `leaseLost` on the outcome, because it is neither a
+ * failed read nor a refusal: a newer run holds the key and is doing this work
+ * itself. So it records no failure streak, pages nobody and stamps no verdict.
+ */
+export const ROSTER_LEASE_LOST_REASON =
+  "this run overran its lock and a newer roster sync took over, so it stopped and left the rest to that run";
+
+/** One half of the run: what it did, why it could not, or that the run lost its lock first. */
+type HalfOutcome<R> =
+  | { ok: true; result: R }
+  | { ok: false; reason: string; leaseLost?: undefined }
+  | { ok: false; reason: typeof ROSTER_LEASE_LOST_REASON; leaseLost: true };
+
+const LEASE_LOST_HALF = {
+  ok: false,
+  reason: ROSTER_LEASE_LOST_REASON,
+  leaseLost: true,
+} as const;
+
 export type RosterSyncOutcome =
   /** Another run holds the lock. Nothing was done, and the caller says so. */
   | { skipped: "overlapping-run" }
@@ -109,15 +131,20 @@ export type RosterSyncOutcome =
        * Twilio read that found nobody tagged are different facts, and a default
        * would let the caller report the second while the first happened (L214), so
        * this is a discriminated pair the banner and the cron response both have to
-       * branch on.
+       * branch on. A run that lost its lock before this half carries the
+       * lease-lost reason here (#3177), never a read failure.
        */
-      twilio: { ok: true; result: TwilioSyncResult } | { ok: false; reason: string };
-      hoursApplied: number;
+      twilio: HalfOutcome<TwilioSyncResult>;
+      /** Null when the run lost its lock before applying default hours (#3177):
+       *  it did not run, which a zero would report as having found nobody. */
+      hoursApplied: number | null;
       /**
        * #2459: what the departed session convergence did, or WHY it could not
        * read. A discriminated pair for the same reason `twilio` is one.
        */
-      sessions: { ok: true; result: SessionConvergenceResult } | { ok: false; reason: string };
+      sessions: HalfOutcome<SessionConvergenceResult>;
+      /** True when a newer run took the key and this one stopped part way (#3177). */
+      leaseLost: boolean;
     };
 
 /**
@@ -130,6 +157,14 @@ export type RosterSyncOutcome =
 export async function runRosterSync(): Promise<RosterSyncOutcome> {
   const lock = await acquireLock(AGENTS_LOCK_KEY, AGENTS_LOCK_TTL_MS);
   if (!lock) return { skipped: "overlapping-run" };
+  // #3177: the lock is a lease, so once its TTL passes the next hourly run may take
+  // the key while this one is still working, and a stale run writing after a newer
+  // one re-applies an old picture of who is bookable. So the run is FENCED: before
+  // each phase that writes, `stillHeld()` renews the claim (a run making progress
+  // keeps its key) and answers false once another run has taken it, at which point
+  // this run stops and says so. The token moves on each renewal, so the release
+  // below hands back the current one.
+  const lease = makeLockLease(AGENTS_LOCK_KEY, lock, AGENTS_LOCK_TTL_MS);
   try {
     // #2302: ONE allowance for the whole run, spent by both halves. Each attempt to
     // make somebody bookable now reads their Google calendar as part of the gate,
@@ -138,6 +173,9 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
     // here because this is the only place that knows a run is one run.
     const allowance = activationAllowance();
     const sync = await syncSalesforceAgents({ allowance });
+    if (!(await lease.stillHeld())) {
+      return { sync, sessions: LEASE_LOST_HALF, twilio: LEASE_LOST_HALF, hoursApplied: null, leaseLost: true };
+    }
 
     // #2459: the reap above departs people with a batch write that never came
     // through the offboarding path, so it never banned them in Supabase Auth.
@@ -182,6 +220,11 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
     });
 
     const org = await ensureDefaultOrg();
+    // The Twilio half is the other writer of who is bookable, so it is the one a
+    // stale run must never reach after a newer run has started (#3177).
+    if (!(await lease.stillHeld())) {
+      return { sync, sessions, twilio: LEASE_LOST_HALF, hoursApplied: null, leaseLost: true };
+    }
 
     // The Twilio half, after Salesforce and BEFORE the bucket coverage check
     // (#2097). Both orderings are load bearing:
@@ -257,6 +300,11 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
       log.warn("agents", { msg: "twilio roster verdict stamp failed" }, err),
     );
 
+    // The last fence: what follows writes default hours and settles this run's
+    // alerts, both of which the newer run now owns (#3177).
+    if (!(await lease.stillHeld())) {
+      return { sync, sessions, twilio, hoursApplied: null, leaseLost: true };
+    }
     const hoursApplied = await ensureDefaultSchedules(org.id);
     // The per bucket coverage sweep used to run here (#327). It was retired by
     // #2505: a bucket with nobody in it is not a customer problem while the rest
@@ -386,9 +434,10 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
       twilio,
       hoursApplied,
       sessions,
+      leaseLost: false,
     };
   } finally {
-    await releaseLock(AGENTS_LOCK_KEY, lock);
+    await releaseLock(AGENTS_LOCK_KEY, lease.token());
   }
 }
 

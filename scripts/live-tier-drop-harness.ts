@@ -440,7 +440,7 @@ function buildDeps(
     },
 
     loadDrainableReservations: async () => [],
-    leaseReservation: async () => false,
+    leaseReservation: async () => null,
     releaseReservationLease: async () => {},
     deleteExpiredReservations: async () => {},
 

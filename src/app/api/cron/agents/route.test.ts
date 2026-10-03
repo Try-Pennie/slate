@@ -8,6 +8,12 @@ const cron = vi.hoisted(() => ({ isAuthorizedCron: vi.fn(() => true) }));
 const locks = vi.hoisted(() => ({
   acquireLock: vi.fn(async () => "lease"),
   releaseLock: vi.fn(async () => {}),
+  // #3177: a lease that stays held. Losing it is driven in run-roster-sync-lease.test.ts.
+  makeLockLease: vi.fn((key: string, claim: string) => ({
+    key,
+    token: () => claim,
+    stillHeld: async () => true,
+  })),
 }));
 const sync = vi.hoisted(() => ({
   syncSalesforceAgents: vi.fn(),
@@ -158,6 +164,31 @@ describe("GET /api/cron/agents", () => {
     ]);
     expect(streak.recordFailureStreak).not.toHaveBeenCalled();
     expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  // #3177: a run a newer one took the key from says so in its response, as a 200
+  // rather than a failure, and the lost Twilio half carries its own reason.
+  it("reports a run that lost its lock part way, without counting it as a failure", async () => {
+    locks.makeLockLease.mockImplementationOnce((key: string, claim: string) => ({
+      key,
+      token: () => claim,
+      stillHeld: async () => false,
+    }));
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      leaseLost: true,
+      hoursApplied: null,
+      twilio: { ok: false, leaseLost: true },
+    });
+    expect(twilio.syncTwilioRedistribute).not.toHaveBeenCalled();
+    expect(streak.recordFailureStreak).not.toHaveBeenCalled();
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("says a clean run kept its lock", async () => {
+    const res = await GET(req());
+    expect(await res.json()).toMatchObject({ leaseLost: false, hoursApplied: 0 });
   });
 
   // #1151: a failing roster sync is a CONDITION, so a clean pass says it is over.

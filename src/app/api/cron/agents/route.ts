@@ -49,6 +49,8 @@ export async function GET(req: NextRequest) {
       // one that found nobody tagged, and those are opposite facts.
       twilio: outcome.twilio,
       hoursApplied: outcome.hoursApplied,
+      // #3177: a newer run took the key part way through, so this one stopped.
+      leaseLost: outcome.leaseLost,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

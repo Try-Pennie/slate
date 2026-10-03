@@ -9,6 +9,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const locks = vi.hoisted(() => ({
   acquireLock: vi.fn(async (): Promise<string | null> => "lease"),
   releaseLock: vi.fn(async () => {}),
+  // #3177: a lease that stays held. Losing it is driven in run-roster-sync-lease.test.ts.
+  makeLockLease: vi.fn((key: string, claim: string) => ({
+    key,
+    token: () => claim,
+    stillHeld: async () => true,
+  })),
 }));
 const sync = vi.hoisted(() => ({
   syncSalesforceAgents: vi.fn(),
