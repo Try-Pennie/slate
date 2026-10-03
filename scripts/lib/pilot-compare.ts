@@ -902,8 +902,14 @@ function judgeLines(input: CompareInput): { exit: number; lines: string[]; propo
     const kb = k.filter((j) => j.booked).length;
     const sh = s.filter((j) => j.held).length;
     const kh = k.filter((j) => j.held).length;
+    // In a partial look a booking whose call is still ahead cannot have been held yet,
+    // so it is left out of held per application rather than read as a no show, the
+    // same way the show rate leaves it out.
+    const heldBase = (set: Judged[]) => (partial ? set.filter((j) => !(j.booked && !j.judgeable)).length : set.length);
+    const sBase = heldBase(s);
+    const kBase = heldBase(k);
     const booking = compareHalves({ leads: s.length, bookings: sb }, { leads: k.length, bookings: kb });
-    const heldPer = compareHalves({ leads: s.length, bookings: sh }, { leads: k.length, bookings: kh });
+    const heldPer = compareHalves({ leads: sBase, bookings: sh }, { leads: kBase, bookings: kh });
     const show = clusteredDifference(set.filter((j) => j.judgeable).map((j) => ({ side: j.side, cluster: j.advisor, y: j.held })));
     const out: string[] = [];
     const readableBooking = !short(s.length, sb) && !short(k.length, kb);
@@ -915,8 +921,8 @@ function judgeLines(input: CompareInput): { exit: number; lines: string[]; propo
       `  applications  Slate ${s.length}, cal.com ${k.length}`,
       `  booking rate  Slate ${sb}/${s.length} (${pct(booking.slateRate)}), cal.com ${kb}/${k.length} (${pct(booking.calcomRate)}); ` +
         judgedText(readableBooking, booking),
-      `  held per application  Slate ${sh}/${s.length} (${pct(heldPer.slateRate)}), cal.com ${kh}/${k.length} (${pct(heldPer.calcomRate)}); ` +
-        judgedText(!short(s.length, sh) && !short(k.length, kh), heldPer),
+      `  held per application  Slate ${sh}/${sBase} (${pct(heldPer.slateRate)}), cal.com ${kh}/${kBase} (${pct(heldPer.calcomRate)}); ` +
+        judgedText(!short(sBase, sh) && !short(kBase, kh), heldPer),
       `  show rate (held over booked)  Slate ${show.slate.outcomes}/${show.slate.units} (${pct(show.slate.rate)}), ` +
         `cal.com ${show.calcom.outcomes}/${show.calcom.units} (${pct(show.calcom.rate)}), ${plural(show.clusters, "advisor")}; ` +
         judgedText(readableShow, show),
@@ -937,7 +943,7 @@ function judgeLines(input: CompareInput): { exit: number; lines: string[]; propo
   if (partial) {
     lines.push(
       `Read with care: the booking rate is biased low on both sides, because every application here has had less than its ${spanLabel(window.spanMs)}s to book. ` +
-        `The show rate counts only bookings whose call time has passed (plus ${JUDGE_GRACE_MS / 3_600_000} hours for the call to reach the store); a booking whose call is still ahead is left out ` +
+        `The show rate and held per application count only bookings whose call time has passed (plus ${JUDGE_GRACE_MS / 3_600_000} hours for the call to reach the store); a booking whose call is still ahead is left out ` +
         "rather than read as a no show, which favours bookings made for soon after applying.",
     );
   }

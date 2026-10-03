@@ -513,6 +513,12 @@ function run(
   assert(r.lines.some((l) => /booking rate  Slate 60\/150 \(40\.0%\), cal\.com 45\/150 \(30\.0%\)/.test(l)), "the booking rate so far per side");
   // Only bookings whose call is due count toward the show rate: days 0 to 2 (start two days on).
   assert(r.lines.some((l) => /show rate \(held over booked\)  Slate 23\/36 \(63\.9%\), cal\.com 15\/27 \(55\.6%\)/.test(l)), `the show rate over calls already due (${r.lines.filter((l) => /show rate/.test(l))[0]})`);
+  // Held per application leaves out a booking whose call is still ahead, as the show rate
+  // does: 60 booked less 36 due on the Slate side, 45 less 27 on the cal.com side.
+  assert(
+    r.lines.some((l) => /held per application  Slate 23\/126 \(18\.3%\), cal\.com 15\/132 \(11\.4%\)/.test(l)),
+    `held per application leaves out calls still ahead (${r.lines.filter((l) => /held per application/.test(l))[0]})`,
+  );
   assert(r.lines.some((l) => /biased low/.test(l) && /less than its 7 days/.test(l)), "says the booking rate is biased low beside the numbers");
   assert(r.lines.some((l) => /call is still ahead/.test(l)), "and how the show rate treats calls not yet due");
   assert(r.lines.some((l) => /61\.5% of the way/.test(l) && /2026-10-10 03:00 ET/.test(l)), `says how much of the first full window is covered (${r.lines.filter((l) => /Coverage/.test(l))[0]})`);
