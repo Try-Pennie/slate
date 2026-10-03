@@ -407,8 +407,10 @@ describe("default Google deadlines (#3102)", () => {
     return outcome;
   }
 
-  it("sizes the confirm deadline so verify and create both fit inside the booker's abort", () => {
-    expect(2 * GOOGLE_CONFIRM_TIMEOUT_MS).toBeLessThan(REQUEST_TIMEOUT_MS);
+  // The confirm path's WORST CASE, every call in a row, is pinned by
+  // `booking/confirm-budget.test.ts`; one call here only has to fit inside it.
+  it("keeps one confirm path call well inside the booker's abort", () => {
+    expect(GOOGLE_CONFIRM_TIMEOUT_MS).toBeLessThan(REQUEST_TIMEOUT_MS / 2);
   });
 
   it("sizes the sync deadline inside one sync tick's budget", () => {
@@ -423,6 +425,22 @@ describe("default Google deadlines (#3102)", () => {
     expect(outcome).toBeInstanceOf(DeadlineExceededError);
     expect((outcome as DeadlineExceededError).label).toBe("google events.insert");
     expect(dwd.getDelegatedToken).toHaveBeenCalledWith("a@b.com", undefined, GOOGLE_CONFIRM_TIMEOUT_MS);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("gives the token mint and the request ONE expiry, not a deadline each", async () => {
+    // A mint that takes 7.9 of the call's 8 seconds leaves the request 0.1. Two
+    // full deadlines would have let this one call run to 15.9 seconds.
+    dwd.getDelegatedToken.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve("tok"), 7_900)),
+    );
+    const outcome = await settlesAt(
+      createEvent("a@b.com", { ...event, attendeeEmail: "lead@x.com" }, "slateabc"),
+      GOOGLE_CONFIRM_TIMEOUT_MS,
+    );
+    expect(outcome).toBeInstanceOf(DeadlineExceededError);
+    expect((outcome as DeadlineExceededError).label).toBe("google events.insert");
+    expect((outcome as DeadlineExceededError).timeoutMs).toBe(GOOGLE_CONFIRM_TIMEOUT_MS);
     expect(vi.getTimerCount()).toBe(0);
   });
 

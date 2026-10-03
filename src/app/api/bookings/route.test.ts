@@ -72,6 +72,8 @@ vi.mock("@/lib/booking/service", () => service);
 vi.mock("@/lib/monitor/record-api-outcome", () => monitor);
 
 import { POST, GET } from "./route";
+import { deadlineWithinBudget } from "@/lib/call-budget";
+import { BOOKING_CONFIRM_BUDGET_MS } from "@/lib/booking/confirm-budget";
 import { PARTNER_KEYS } from "@/lib/booking/partner-keys";
 import { HIDDEN_TEST_BUCKET_CODES, PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
 const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
@@ -301,6 +303,18 @@ describe("POST /api/bookings (auth skeleton)", () => {
     const res = await post("Bearer real-secret", VALID_BODY);
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ outcome: "confirm_required" });
+  });
+
+  it("runs the API booking under the confirm budget (#3102)", async () => {
+    regalKey.primary.mockReturnValue("real-secret");
+    let wait: number | null = null;
+    service.bookViaApi.mockImplementationOnce(async () => {
+      wait = deadlineWithinBudget(60_000, "probe").waitMs;
+      return result("created");
+    });
+    await post("Bearer real-secret", VALID_BODY);
+    expect(wait).not.toBeNull();
+    expect(wait!).toBeLessThanOrEqual(BOOKING_CONFIRM_BUDGET_MS);
   });
 
   it("maps each booking error to a stable status + machine code", async () => {

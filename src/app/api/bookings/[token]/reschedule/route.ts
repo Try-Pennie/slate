@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { withinBookingConfirmBudget } from "@/lib/booking/confirm-budget";
 import { z } from "zod";
 import {
   rescheduleBooking,
@@ -79,7 +80,8 @@ export async function POST(
   req: NextRequest,
   ctx: { params: Promise<{ token: string }> },
 ) {
-  return noStore(await handlePost(req, ctx));
+  // #3102: one budget for the whole request; see `confirm-budget.ts`.
+  return noStore(await withinBookingConfirmBudget(() => handlePost(req, ctx)));
 }
 
 async function handlePost(

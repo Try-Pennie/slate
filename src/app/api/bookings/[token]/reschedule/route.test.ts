@@ -71,6 +71,8 @@ import { POST } from "./route";
 import { BookingWriteFailedError } from "@/lib/booking/gated-write";
 import { BOOKING_ERROR_COPY } from "@/lib/booking/booker-copy";
 import { PARTNER_KEYS } from "@/lib/booking/partner-keys";
+import { deadlineWithinBudget } from "@/lib/call-budget";
+import { BOOKING_CONFIRM_BUDGET_MS } from "@/lib/booking/confirm-budget";
 
 function req(body: unknown): Parameters<typeof POST>[0] {
   return {
@@ -83,6 +85,17 @@ const params = { params: Promise.resolve({ token: "tok1" }) };
 beforeEach(() => vi.clearAllMocks());
 
 describe("POST /bookings/[token]/reschedule", () => {
+  it("runs the lead's move under the confirm budget (#3102)", async () => {
+    let wait: number | null = null;
+    service.rescheduleBooking.mockImplementationOnce(async () => {
+      wait = deadlineWithinBudget(60_000, "probe").waitMs;
+      throw new service.RescheduleConflictError();
+    });
+    await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
+    expect(wait).not.toBeNull();
+    expect(wait!).toBeLessThanOrEqual(BOOKING_CONFIRM_BUDGET_MS);
+  });
+
   it("maps RescheduleConflictError to 409 with the conflict message", async () => {
     service.rescheduleBooking.mockRejectedValueOnce(new service.RescheduleConflictError());
     const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);

@@ -1,7 +1,8 @@
 import { googleSaClientEmail, googleSaPrivateKey } from "@/lib/env";
 import { GoogleHttpError } from "@/lib/google/http-error";
 import { parseGoogleErrorReason } from "@/lib/google/reachability-classify";
-import { fetchWithinDeadline, type Deadline } from "@/lib/fetch-within-deadline";
+import type { Deadline } from "@/lib/fetch-within-deadline";
+import { fetchWithinBudget } from "@/lib/call-budget";
 
 /**
  * Google domain-wide delegation: mint an access token that impersonates a
@@ -18,7 +19,8 @@ const TOKEN_URL = "https://oauth2.googleapis.com/token";
 /**
  * The deadline on minting a token when the caller names none (#3102): the Gmail
  * digest and the directory photo lane. A calendar call passes its OWN deadline
- * instead, so a mint on the confirm path is held to what the lead can wait.
+ * instead, and the mint also waits no longer than the enclosing call budget has
+ * left, so a mint on the confirm path is held to what the lead can wait.
  */
 export const DELEGATED_TOKEN_TIMEOUT_MS = 8000;
 
@@ -95,7 +97,7 @@ export async function getDelegatedToken(
   if (hit && hit.exp - Date.now() > 60_000) return hit.token;
 
   const assertion = await signJwt(email, scope);
-  const res = await fetchWithinDeadline(
+  const res = await fetchWithinBudget(
     fetch,
     TOKEN_URL,
     {

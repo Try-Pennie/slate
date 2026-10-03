@@ -12,6 +12,7 @@
  */
 
 import { refuseUnderLoadtest } from "@/lib/loadtest-guard";
+import { deadlineWithinBudget } from "@/lib/call-budget";
 
 /** Total attempts (initial try + retries) for a Salesforce request. */
 export const SF_MAX_ATTEMPTS = 3;
@@ -72,10 +73,15 @@ export async function fetchSfWithRetry(
 
   let lastErr: unknown;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    // #3102: each attempt also waits no longer than the enclosing call budget has
+    // left (a lead's confirm can read their routing code from here), and a spent
+    // budget throws BEFORE the try, so it is never retried: no backoff can bring
+    // the time back.
+    const { waitMs } = deadlineWithinBudget(timeoutMs, "salesforce");
     try {
       const res = await doFetch(url, {
         ...init,
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: AbortSignal.timeout(waitMs),
       });
       if (res.ok || !shouldRetrySf(res.status, attempt, maxAttempts)) return res;
       lastErr = new Error(`SF request failed: ${res.status}`);

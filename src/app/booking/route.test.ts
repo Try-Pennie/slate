@@ -111,6 +111,8 @@ const agentLinkStore = vi.hoisted(() => ({ resolveAgentLink: vi.fn() }));
 vi.mock("@/lib/agent-link/store", () => agentLinkStore);
 
 import { POST } from "./route";
+import { deadlineWithinBudget } from "@/lib/call-budget";
+import { BOOKING_CONFIRM_BUDGET_MS } from "@/lib/booking/confirm-budget";
 import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
 import { AGENT_LINK_COPY, BOOKING_ERROR_COPY, TEST_ACCESS_COPY } from "@/lib/booking/booker-copy";
 import { PARTNER_KEYS } from "@/lib/booking/partner-keys";
@@ -215,6 +217,27 @@ describe("POST /booking (embed) error mapping", () => {
     expect(keysRefunded).toContain("203.0.113.1");
     expect(keysRefunded).toContain("email:dana@example.com");
     expect(keysRefunded).toContain("phone:2155550100");
+  });
+
+  // #3102: the whole request runs under one budget, so a dozen slow calls cannot
+  // add up past the booker's 20 second abort; and the refunds a timed out confirm
+  // still owes the lead run under their own small allowance, not the spent budget.
+  it("runs the booking under the confirm budget and the refunds under the cleanup allowance (#3102)", async () => {
+    let bookingWait: number | null = null;
+    const refundLabels: string[] = [];
+    service.createBooking.mockImplementationOnce(async () => {
+      bookingWait = deadlineWithinBudget(60_000, "probe").waitMs;
+      throw new service.VerifyUnavailableError("outage");
+    });
+    rateLimit.refundRequest.mockImplementation(async () => {
+      refundLabels.push(deadlineWithinBudget(60_000, "probe").reportAs.label);
+    });
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(503);
+    expect(bookingWait).not.toBeNull();
+    expect(bookingWait!).toBeLessThanOrEqual(BOOKING_CONFIRM_BUDGET_MS);
+    expect(refundLabels).toEqual(["the booking cleanup", "the booking cleanup", "the booking cleanup"]);
+    rateLimit.refundRequest.mockReset();
   });
 
   it("answers a retriable 503 when the existing-call check could not be made (#1641)", async () => {

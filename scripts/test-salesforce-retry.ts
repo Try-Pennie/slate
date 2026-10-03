@@ -6,6 +6,8 @@ import {
   shouldRetrySf,
   fetchSfWithRetry,
 } from "../src/lib/salesforce/retry.ts";
+import { withinCallBudget } from "../src/lib/call-budget.ts";
+import { DeadlineExceededError } from "../src/lib/fetch-within-deadline.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 // --- sfBackoffMs: positive and strictly increasing across attempts ---
@@ -130,6 +132,32 @@ async function run() {
       (h.inits[0].headers as Record<string, string>)["content-type"] === "x",
       "preserves the caller's headers",
     );
+  }
+
+  // #3102: on the confirm path a lead's routing code can be read from Salesforce,
+  // and three attempts of 10 seconds each would hold the lead past the booker's
+  // abort on their own. Inside a call budget that is already spent, no attempt
+  // starts and nothing is retried: the deadline surfaces at once.
+  {
+    const h = harness([200]);
+    let caught: unknown = null;
+    await withinCallBudget(0, "the booking confirm", () =>
+      fetchSfWithRetry("https://sf/q", {}, { fetchImpl: h.fetchImpl, sleep: h.sleep }),
+    ).catch((e: unknown) => {
+      caught = e;
+    });
+    assert(caught instanceof DeadlineExceededError, "a spent call budget refuses a Salesforce attempt");
+    assert(h.inits.length === 0, "and sends nothing");
+    assert(h.sleeps.length === 0, "and does not back off to retry a budget that cannot come back");
+  }
+
+  // With budget to spare it behaves exactly as before.
+  {
+    const h = harness([503, 200]);
+    const res = await withinCallBudget(60_000, "the booking confirm", () =>
+      fetchSfWithRetry("https://sf/q", {}, { fetchImpl: h.fetchImpl, sleep: h.sleep }),
+    );
+    assert(res.status === 200, "inside a roomy budget a transient failure is still retried");
   }
 
   assert(SF_MAX_ATTEMPTS >= 2, "default allows at least one retry");

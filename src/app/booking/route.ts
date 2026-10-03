@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { withinBookingCleanupBudget, withinBookingConfirmBudget } from "@/lib/booking/confirm-budget";
 import { z } from "zod";
 import {
   createBooking,
@@ -142,7 +143,9 @@ function confirmHost(raw: unknown): BookingOriginFacts {
  * construction instead of by somebody remembering (L96).
  */
 export async function POST(req: NextRequest) {
-  return noStore(await handlePost(req));
+  // #3102: the whole request under one budget, so its Supabase and Google calls
+  // share one expiry and cannot add up past the booker's 20 second abort.
+  return noStore(await withinBookingConfirmBudget(() => handlePost(req)));
 }
 
 async function handlePost(req: NextRequest) {
@@ -299,12 +302,15 @@ async function handlePost(req: NextRequest) {
   // lead's doing, so a server outage or a lost slot race can't consume their
   // booking budget. The edge per-minute window has no refund path, but it's a
   // short burst that clears within a minute.
-  const refundAll = async () => {
-    await refundRequest(bookingCaller, BOOKING_HOURLY_RATE_RULES);
-    for (const key of contactKeys) {
-      await refundRequest({ kind: "opaque", key }, BOOKING_CONTACT_HOURLY_RATE_RULES);
-    }
-  };
+  // Under the cleanup allowance rather than the confirm budget (#3102): a confirm
+  // that timed out has spent that budget, and the lead is still owed the refund.
+  const refundAll = () =>
+    withinBookingCleanupBudget(async () => {
+      await refundRequest(bookingCaller, BOOKING_HOURLY_RATE_RULES);
+      for (const key of contactKeys) {
+        await refundRequest({ kind: "opaque", key }, BOOKING_CONTACT_HOURLY_RATE_RULES);
+      }
+    });
 
   // #2660: whether this confirm is a TEST booking, decided by the one constant
   // that establishes the mode (L319). It is what lets the service book the public

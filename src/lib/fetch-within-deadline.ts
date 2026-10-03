@@ -95,6 +95,10 @@ export async function fetchWithinDeadline(
   deadline: Deadline,
   label: string,
   timer: ScheduleTimer = realTimer,
+  /** What the error names when the wait was cut short by an enclosing budget
+   *  (`call-budget.ts`) rather than set by this call: that budget's label and
+   *  length, not the slice that was left. Defaults to this call's own. */
+  reportAs: { label: string; timeoutMs: number } | null = null,
 ): Promise<Response> {
   if (deadline === NO_DEADLINE) return fetchImpl(input, init);
   const controller = new AbortController();
@@ -106,7 +110,7 @@ export async function fetchWithinDeadline(
   let cancel = () => {};
   const expired = new Promise<never>((_resolve, reject) => {
     cancel = timer(deadline, () => {
-      const err = new DeadlineExceededError(label, deadline);
+      const err = new DeadlineExceededError(reportAs?.label ?? label, reportAs?.timeoutMs ?? deadline);
       // Rejected BEFORE the abort, so the race settles on this error. A fetch that
       // rejects on its signal's abort event would otherwise settle first, with a
       // bare AbortError that says nothing about which deadline it missed.

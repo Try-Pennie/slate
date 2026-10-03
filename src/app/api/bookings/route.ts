@@ -1,5 +1,6 @@
 import { stampSeenIp } from "@/lib/loadtest-echo";
 import { NextResponse, type NextRequest } from "next/server";
+import { withinBookingConfirmBudget } from "@/lib/booking/confirm-budget";
 import { authorizeBookingApi } from "@/lib/booking/route-auth";
 import { parseDirectBookingRequest, parseLookupQuery, parseCancelQuery, parseListQuery, LIST_ONLY_PARAMS } from "@/lib/booking/api-request";
 import { respondToDirectCancel, apiErrorBody, mapLookupError } from "@/lib/booking/direct-cancel-http";
@@ -50,7 +51,8 @@ export const dynamic = "force-dynamic";
  * flag unset `stampSeenIp` adds a header to nothing.
  */
 export async function POST(req: NextRequest) {
-  return stampSeenIp(await handlePost(req), req.headers);
+  // #3102: one budget for the whole request; see `confirm-budget.ts`.
+  return stampSeenIp(await withinBookingConfirmBudget(() => handlePost(req)), req.headers);
 }
 
 async function handlePost(req: NextRequest) {

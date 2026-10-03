@@ -9,7 +9,8 @@ import {
   type CalendarBusy,
 } from "@/lib/booking/core";
 import { log } from "@/lib/log";
-import { fetchWithinDeadline, type Deadline } from "@/lib/fetch-within-deadline";
+import { NO_DEADLINE, type Deadline } from "@/lib/fetch-within-deadline";
+import { fetchWithinBudget, withinCallBudget } from "@/lib/call-budget";
 import { googlePushUrl, googleChannelToken } from "@/lib/env";
 import {
   LOADTEST,
@@ -70,11 +71,13 @@ export const CALENDAR_WRITE_TIMEOUT_MS = 8000;
 
 /**
  * The deadline for a Google call a LEAD is waiting on (#3102): verify-on-book,
- * the event insert, and a lead's own move, cancel or correction. Twice this has
- * to fit inside the booker's 20 second `REQUEST_TIMEOUT_MS`, because a confirm
- * makes a verify read and then an insert, and a hung Google must reach the lead
- * as our retryable 503 rather than as the browser giving up. The same 8 seconds
- * the OOO writes above settled on, for the same reason: a person is watching.
+ * the event insert, and a lead's own move, cancel or correction. One expiry for
+ * the whole call, mint included (see `gfetch`). It bounds one call; what bounds a
+ * whole confirm, which makes a verify read and then an insert among its Supabase
+ * reads, is the confirm budget the booking routes run under
+ * (`BOOKING_CONFIRM_BUDGET_MS`), which every call here also respects. The same 8
+ * seconds the OOO writes above settled on, for the same reason: a person is
+ * watching.
  */
 export const GOOGLE_CONFIRM_TIMEOUT_MS = 8000;
 
@@ -93,8 +96,13 @@ export const GOOGLE_SYNC_TIMEOUT_MS = 15_000;
  *
  * The deadline is REQUIRED (#3102). It used to be optional and the hot paths left
  * it out, so the confirm path's insert could wait forever on a hung Google. Every
- * call now names one of the constants above, or `NO_DEADLINE` by name. The token
- * mint is held to the same deadline, since a lead waits on it just the same.
+ * call now names one of the constants above, or `NO_DEADLINE` by name.
+ *
+ * The deadline is ONE expiry for the whole call, token mint included. A call is
+ * two requests, and giving each a full deadline let one call run to twice its
+ * limit, so a confirm's verify plus insert could reach 32 seconds, past the
+ * booker's 20. The call opens its own budget, the mint and the request each wait
+ * only for what it has left, and inside a confirm's budget it can only be tighter.
  */
 async function gfetch(
   email: string,
@@ -103,22 +111,25 @@ async function gfetch(
   deadline: Deadline,
   label: string,
 ): Promise<Response> {
-  // `undefined` keeps the mint's default calendar scope.
-  const token = await getDelegatedToken(email, undefined, deadline);
-  return fetchWithinDeadline(
-    fetch,
-    url,
-    {
-      ...init,
-      headers: {
-        ...init.headers,
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
+  const call = async () => {
+    // `undefined` keeps the mint's default calendar scope.
+    const token = await getDelegatedToken(email, undefined, deadline);
+    return fetchWithinBudget(
+      fetch,
+      url,
+      {
+        ...init,
+        headers: {
+          ...init.headers,
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
       },
-    },
-    deadline,
-    `google ${label}`,
-  );
+      deadline,
+      `google ${label}`,
+    );
+  };
+  return deadline === NO_DEADLINE ? call() : withinCallBudget(deadline, `google ${label}`, call);
 }
 
 async function ok(res: Response, label: string): Promise<Response> {

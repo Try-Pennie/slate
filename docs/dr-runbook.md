@@ -321,18 +321,41 @@ handles that. One that accepts the request and never answers used to hold the
 caller until something outside Slate gave up: a lead's confirm until the browser
 aborted at 20 seconds, and a cron lane until its invocation ran out. Every call
 now carries a deadline instead, enforced in one wrapper
-(`src/lib/fetch-within-deadline.ts`):
+(`src/lib/fetch-within-deadline.ts`).
+
+**Per call.** Each request waits no longer than its own limit:
 
 | Call | Deadline | Where it is set |
 |---|---|---|
-| Every Supabase request (the secret key client, the cookie client, the middleware's session refresh) | 15 seconds | `SUPABASE_FETCH_TIMEOUT_MS`, `src/lib/supabase/fetch.ts` |
-| Google calls a lead waits on: verify on book, the event insert, a lead's move, cancel or correction | 8 seconds | `GOOGLE_CONFIRM_TIMEOUT_MS`, `src/lib/google/calendar.ts` |
+| Every Supabase request (the secret key client, the cookie client, the middleware's session refresh). The slowest statement measured on production is 7.9 seconds | 15 seconds | `SUPABASE_FETCH_TIMEOUT_MS`, `src/lib/supabase/fetch-deadline.ts` |
+| Google calls a lead waits on: verify on book, the event insert, a lead's move, cancel or correction. One expiry for the call, token mint included | 8 seconds | `GOOGLE_CONFIRM_TIMEOUT_MS`, `src/lib/google/calendar.ts` |
 | Google calls the sync lanes make: the event sync, the calendar list, push watches | 15 seconds | `GOOGLE_SYNC_TIMEOUT_MS`, same file |
 | The OOO calendar writes a manager waits on | 8 seconds | `CALENDAR_WRITE_TIMEOUT_MS`, same file |
-| The delegated token mint | the deadline of the call it is minting for; 8 seconds for the Gmail digest and the photo lane | `DELEGATED_TOKEN_TIMEOUT_MS`, `src/lib/google/dwd.ts` |
+| The delegated token mint | shares the expiry of the call it is minting for; 8 seconds for the Gmail digest and the photo lane | `DELEGATED_TOKEN_TIMEOUT_MS`, `src/lib/google/dwd.ts` |
+| Each Salesforce attempt | 10 seconds, three attempts | `SF_TIMEOUT_MS`, `src/lib/salesforce/retry.ts` |
 
 A Google call can only be sent without one by writing `NO_DEADLINE` at the call
 site, and today nothing does.
+
+**Per request a lead is waiting on.** A per call limit bounds one call, and a
+confirm makes a dozen Supabase reads and two or three Google calls in a row, so
+those limits alone still add up past the booker's 20 seconds. So the three lead
+facing booking routes (`/booking`, the key authed `POST /api/bookings`, and a
+lead's reschedule) run under one budget (`src/lib/booking/confirm-budget.ts`,
+carried through the async context by `src/lib/call-budget.ts`). Every Supabase,
+Google and Salesforce call inside it waits for the smaller of its own limit and
+what the budget has left, and once the budget is spent the next call fails at
+once instead of starting.
+
+| Part | Length |
+|---|---|
+| The confirm budget, for everything the request does | 12 seconds (`BOOKING_CONFIRM_BUDGET_MS`) |
+| The cleanup allowance after it, for handing back the lead's rate limit hit | 2 seconds (`BOOKING_CLEANUP_BUDGET_MS`) |
+| Worst case, against the booker's 20 | 14 seconds, leaving 6 for computation and the response |
+
+Work deferred past the response (webhook sends, recomputes) leaves the budget and
+gets the per call limits again, because the lead already has their answer. The
+cron lanes never run under a budget, so for them only the per call limits apply.
 
 **What a lead sees.** A confirm, an API booking or a lead's reschedule whose
 dependency times out answers **503** with the same sentence a verify outage
@@ -350,6 +373,10 @@ page asked them to try again. A retry that carries the same stable booking key
 resumes that reservation rather than making a second booking; an anonymous retry
 has no key to resume by, which is the existing posture for any confirm that
 failed after its reservation was written.
+
+**A budget miss.** When the budget runs out, the page names the budget ("the
+booking confirm did not answer within 12 seconds") rather than whichever call was
+running, because no single call was at fault: the dependencies were slow together.
 
 **What the lanes do.** A sync tick stops waiting on a hung calendar after 15
 seconds and records an ordinary failed sync for it; the next tick tries again.
