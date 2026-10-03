@@ -256,6 +256,7 @@ const EXPECTED_PINNED = [
   "agent_link_names_keep_reserved",
   "applied_migration_version",
   "applied_migration_versions",
+  "before_user_created_domain_gate",
   "booking_api_outcome_mix",
   // #2366: keeps booking_settings.public_booking_paused_at in step with the flag.
   "booking_settings_stamp_pause",

@@ -300,6 +300,7 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // A control that is supposed to bound something has stopped bounding it.
   edge_limiter_unusable: "a-limit-or-a-guard-is-not-working",
   definer_grants_to_web_roles: "a-limit-or-a-guard-is-not-working",
+  auth_sign_in_beyond_google: "a-limit-or-a-guard-is-not-working",
   rate_limit_broken: "a-limit-or-a-guard-is-not-working",
   rate_limit_refund_broken: "a-limit-or-a-guard-is-not-working",
   rate_limit_unidentified: "a-limit-or-a-guard-is-not-working",

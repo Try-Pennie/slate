@@ -242,7 +242,7 @@ import {
   runCiHealthCheck,
 } from "@/lib/monitor/github-ci-health";
 import { BUILD_COMMIT } from "@/lib/build-info";
-import { githubCanaryToken, appUrl } from "@/lib/env";
+import { githubCanaryToken, appUrl, publicSupabaseUrl, publicSupabasePublishableKey } from "@/lib/env";
 import {
   runMigrationDriftCheck,
   readAppliedMigrationVersions,
@@ -279,6 +279,7 @@ import { postSlack } from "@/lib/notify/slack";
 import { bookingDetailHref } from "@/lib/booking/detail";
 import { runEdgeLimiterCheck } from "@/lib/monitor/edge-limiter-health";
 import { runDefinerGrantsCheck, type DefinerFunctionRow } from "@/lib/monitor/definer-grants";
+import { runAuthSignInSurfaceCheck } from "@/lib/monitor/auth-sign-in-surface";
 import { EDGE_LIMITER_BINDINGS } from "@/lib/rate-limit-core";
 import { BURST_LIMITER_BINDING } from "@/lib/rate-limit-burst";
 import { isWorkersRuntime, workersRuntimeMarker } from "@/lib/platform/runtime";
@@ -3367,6 +3368,39 @@ export async function GET(req: NextRequest) {
       }),
     );
 
+    // Is Supabase Auth open beyond Google in production (#3082)? The Email provider and
+    // any other provider that can create an account are dashboard settings no deploy
+    // touches, and supabase/config.toml describes only the local stack, so the hosted
+    // project's own settings endpoint is the only witness. It answers with the public key.
+    //
+    // One subrequest per tick on the invocation this lane shares (#1246), a GET with no
+    // database behind it. A failed or unreadable read is unmeasured and clears nothing.
+    const authSignIn = await steps.run("auth_sign_in_surface", null, () =>
+      runAuthSignInSurfaceCheck({
+        read: async () => {
+          const res = await fetch(`${publicSupabaseUrl()}/auth/v1/settings`, {
+            headers: { apikey: publicSupabasePublishableKey() },
+          });
+          if (!res.ok) {
+            log.warn("auth-sign-in", { msg: "settings read refused", status: res.status });
+            return null;
+          }
+          return (await res.json()) as unknown;
+        },
+        // alert-key: auth_sign_in_beyond_google
+        // alert-text-ok: our own copy from auth-sign-in-surface.ts, never a raw error.
+        notify: sendThrottledAlert,
+        // A condition: it stays true until somebody turns the provider off in the
+        // dashboard, so it has to be able to end.
+        // alert-key: auth_sign_in_beyond_google
+        // all-clear-proof: scripts/test-auth-sign-in-surface.ts - a read that threw, or
+        // answered nothing readable, is unmeasured and clears nothing.
+        resolve: resolveAlert,
+        cooldownMs: cooldownMs.auth_sign_in_beyond_google,
+        log: (msg) => log.info("auth-sign-in", { msg }),
+      }),
+    );
+
     // Watch the other lanes (#803). The sync lane does this too; running it from
     // BOTH means the every-minute lanes and the 5-minute lanes watch each other,
     // so whichever survives a killed invocation reports the one that didn't. The
@@ -3722,6 +3756,9 @@ export async function GET(req: NextRequest) {
       // read and which were excused by name, so "nothing is exposed" can be told apart from
       // "nothing was read" by anybody looking at a tick (#2447).
       definerGrants,
+      // null when the step failed; status "unmeasured" inside when the settings could not
+      // be read. Carries every provider the hosted project reports on (#3082).
+      authSignIn,
       truncated,
       volume,
       pageVolume,
