@@ -331,15 +331,29 @@ export interface Database {
        *  resolves the schedule row by user, then goes through
        *  `replace_availability_rules`, so there is still one place that replaces a
        *  week. `p_expected` is checked inside the transaction, because a count
-       *  compared by the caller can only be compared once the write has committed. */
+       *  compared by the caller can only be compared once the write has committed.
+       *
+       *  Two forms (#2702, migration 0157). With `p_only_if_source` it first locks the
+       *  row and refuses with SQLSTATE SL409 unless `hours_source` still equals it
+       *  (null = still unstamped), so an import never overwrites a week somebody
+       *  edited while it ran. Without it, the unguarded form every save uses. */
       replace_user_schedule: {
-        Args: {
-          p_user_id: string;
-          p_timezone: string;
-          p_rules: { weekday: number; start_minute: number; end_minute: number }[];
-          p_source: "seed" | "agent" | "admin" | "calcom-import";
-          p_expected: number;
-        };
+        Args:
+          | {
+              p_user_id: string;
+              p_timezone: string;
+              p_rules: { weekday: number; start_minute: number; end_minute: number }[];
+              p_source: "seed" | "agent" | "admin" | "calcom-import";
+              p_expected: number;
+            }
+          | {
+              p_user_id: string;
+              p_timezone: string;
+              p_rules: { weekday: number; start_minute: number; end_minute: number }[];
+              p_source: "seed" | "agent" | "admin" | "calcom-import";
+              p_expected: number;
+              p_only_if_source: "seed" | "agent" | "admin" | "calcom-import" | null;
+            };
         Returns: number;
       };
       /** Every SECURITY DEFINER function in `public` with whether the two web roles hold

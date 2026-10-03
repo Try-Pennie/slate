@@ -15,6 +15,7 @@
 //   - the work is bounded by what is left of the activation budget.
 import { importHoursOnActivation, type ActivationHoursDeps, type StoredWeek } from "@/lib/bookable/activation-hours";
 import { planImportedWeek, type SlateRule } from "@/lib/calcom/schedule-import";
+import { HoursChangedDuringImportError } from "@/lib/calcom/import-write";
 import type { ScheduleForImportRead } from "@/lib/calcom/client";
 import type { OrgDefaults } from "@/lib/schedule-core";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -51,6 +52,8 @@ const CAL_LA = {
 interface Rig {
   deps: ActivationHoursDeps;
   writes: { userId: string; timezone: string; rules: SlateRule[] }[];
+  /** The source each write was told to expect (#2702). */
+  guards: (string | null)[];
   calcomCalls: { email: string; timeoutMs: number }[];
   orgReads: number;
   logs: { level: "info" | "warn"; fields: Record<string, unknown> }[];
@@ -61,11 +64,13 @@ function rig(opts: {
   cal?: ScheduleForImportRead;
   org?: OrgDefaults | null | "throw";
   writeThrows?: boolean;
+  /** #2702: the write is refused because the stored source changed under it. */
+  writeRaced?: boolean;
   remainingMs?: number[];
   /** #2875: the "cal.com retired" read. Default live, the parallel run. */
   retired?: boolean | null | "throw";
 } = {}): Rig {
-  const r: Rig = { deps: undefined as never, writes: [], calcomCalls: [], orgReads: 0, logs: [] };
+  const r: Rig = { deps: undefined as never, writes: [], guards: [], calcomCalls: [], orgReads: 0, logs: [] };
   const remaining = [...(opts.remainingMs ?? [30_000])];
   r.deps = {
     loadCalcomRetired: async () => {
@@ -85,7 +90,9 @@ function rig(opts: {
       r.calcomCalls.push({ email, timeoutMs });
       return opts.cal ?? { kind: "schedule", schedule: CAL_LA };
     },
-    writeWeek: async (userId, w) => {
+    writeWeek: async (userId, w, onlyIfSource) => {
+      r.guards.push(onlyIfSource);
+      if (opts.writeRaced) throw new HoursChangedDuringImportError("u1", "admin");
       if (opts.writeThrows) throw new Error("replace_user_schedule refused");
       r.writes.push({ userId, timezone: w.timezone, rules: w.rules });
     },
@@ -212,6 +219,45 @@ eq(seenReasons.size, failures.length, "no two cal.com failures share a reason");
   const r = rig({ writeThrows: true });
   const out = await importHoursOnActivation(AGENT, r.deps);
   eq(out.kind === "skipped" && out.reason, "write-failed", "a refused write is skipped with its own reason, not thrown");
+}
+
+// --- #2702: a week edited while the import ran is never overwritten ---
+// The check above and the write below are two steps, so an admin save landing
+// between them used to be overwritten with nothing said. The write now names the
+// source the check read, and the database refuses when it changed.
+{
+  const r = rig();
+  await importHoursOnActivation(AGENT, r.deps);
+  eq(r.guards, ["seed"], "the write is guarded on the source the check read");
+}
+{
+  const r = rig({ stored: week({ hours_source: null, hours_set_at: null }) });
+  await importHoursOnActivation(AGENT, r.deps);
+  eq(r.guards, [null], "an unstamped seed is guarded as still unstamped, never written unguarded");
+}
+{
+  const r = rig({ writeRaced: true });
+  let threw = false;
+  let out;
+  try {
+    out = await importHoursOnActivation(AGENT, r.deps);
+  } catch {
+    threw = true;
+  }
+  assert(!threw, "a week edited mid import never throws, so activation goes ahead");
+  eq(out?.kind === "skipped" && out.reason, "hours-changed-during-import",
+    "a week edited while the import ran is its own reason, not a failed write");
+  const line = r.logs.find((l) => l.fields.reason !== undefined);
+  eq(line?.fields.reason, "hours-changed-during-import", "the log line names it");
+  eq(line?.level, "info", "logged quietly: somebody set the week, so nothing is left wrong");
+}
+{
+  // Control: an ordinary refusal still reads as write-failed and warns.
+  const r = rig({ writeThrows: true });
+  await importHoursOnActivation(AGENT, r.deps);
+  const line = r.logs.find((l) => l.fields.reason !== undefined);
+  eq(line?.fields.reason, "write-failed", "control: a refused write is still write-failed");
+  eq(line?.level, "warn", "control: and still warns");
 }
 
 // --- bounded by what is left of the activation budget ---

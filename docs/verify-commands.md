@@ -1449,6 +1449,37 @@ failed check is exit 1.
 It does not touch production. That the app and the database agree on the name's shape is
 pinned offline by `scripts/test-agent-link.ts`, which reads the migration's CHECKs.
 
+# Proving the activation import's guard in a real database (`pnpm verify:replace-user-schedule-guard`)
+
+#2702: the activation gate imports an agent's cal.com week only when their stored week is
+still the seeded default, and it used to decide that with a read and then write
+separately, so an admin save landing between the two was overwritten with nothing said.
+Migration 0157 moves the condition into the write: `replace_user_schedule` gained a six
+argument form taking `p_only_if_source`, which locks the schedule row, compares its
+`hours_source` against the source the caller read (null meaning still unstamped), and
+raises SQLSTATE `SL409` before writing anything when they differ. The import reports that
+as its own reason, `hours-changed-during-import`, rather than as a failed write. Every
+part of that is decided by Postgres (the row lock, the null compare, the code, the
+rollback, which of two concurrent writers wins), and a fake agrees with whatever it is
+told (L52).
+
+`pnpm verify:replace-user-schedule-guard` starts a throwaway Postgres in Docker, lays down
+the slice of the schema the functions read, applies migrations 0117, 0129 and 0157
+verbatim, and checks: both forms exist with a pinned search_path; a matching source
+writes; every mismatch, a null in either direction and a missing row each refuse with
+`SL409` and leave the week untouched; the five argument form still overwrites any source;
+and two real concurrent sessions in both orders. An admin save committing while the import
+waits on the row makes the import refuse; an admin save arriving while the import holds
+the row waits and then wins. Removing the `for update` from the migration makes the first
+of those fail (checked 2026-10-02), so the race case is not satisfied by luck. It writes
+nothing outside the container and removes it on the way out. No Docker is exit 2, never a
+pass (L98); any failed check is exit 1.
+
+**Re-run it after any change to `replace_user_schedule` or `replace_availability_rules`.**
+It does not touch production. The client half, that the activation import passes the
+source it read and maps `SL409` to its own reason, is pinned offline by
+`scripts/test-import-write.ts` and `scripts/test-activation-hours.ts`.
+
 # Proving the advisor photo refresh (`pnpm verify:advisor-photos`)
 
 The daily `advisor-photos` lane (#3027) reads every active person's photo from the
