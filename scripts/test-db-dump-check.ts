@@ -56,6 +56,20 @@ eq(
   "a block that never reaches its terminator is a dump cut short, not a count",
 );
 
+// A block cut short and followed by ANOTHER table's block must not borrow that
+// table's terminator: the count would be plausible and wrong.
+{
+  const cut = `COPY "public"."users" ("id") FROM stdin;\nrow-a\nrow-b\n` + copy("public", "buckets", 3);
+  eq(copyRowCount(cut, "public", "users"), null, "a block that runs into the next COPY header is truncated, not counted");
+  eq(copyRowCount(cut, "public", "buckets"), 3, "and the complete block after it still counts");
+  const h = healthy();
+  const data = h["data.sql"].replace(copy("public", "users", 3), `COPY "public"."users" ("id") FROM stdin;\nrow\n`);
+  assert(
+    problemsOf({ ...h, "data.sql": data }).includes("no complete COPY block for public.users"),
+    "a dump whose users block was cut short before another table is refused",
+  );
+}
+
 // --- every file must be there and hold something ------------------------------
 for (const name of DUMP_FILES) {
   const files: Partial<Record<DumpFile, string | null>> = healthy();

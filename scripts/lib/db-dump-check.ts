@@ -52,9 +52,10 @@ export const REQUIRED_TABLES = [
 /**
  * Tables that are never empty on a working Slate, so zero rows in the dump means
  * the read went somewhere other than the database we think it did (an empty
- * project, the wrong ref), not that the roster is empty.
+ * project, the wrong ref), not that the roster is empty. Bookings joined the list
+ * once the pilot put real leads through Slate (hundreds a day since 2026-09-29).
  */
-export const NEVER_EMPTY_TABLES = ["organizations", "users", "buckets"] as const;
+export const NEVER_EMPTY_TABLES = ["organizations", "users", "buckets", "bookings"] as const;
 
 export interface DumpVerdict {
   ok: boolean;
@@ -68,7 +69,9 @@ const copyHeader = (schema: string, table: string) => `COPY "${schema}"."${table
 
 /**
  * Data rows in one table's COPY block, or null when the block is missing or never
- * reaches its `\.` terminator (a dump cut short).
+ * reaches its OWN `\.` terminator (a dump cut short). A block that runs into the
+ * next table's COPY header is truncated too: borrowing that table's terminator
+ * would count the next table's rows as this one's and read as a plausible number.
  */
 export function copyRowCount(data: string, schema: string, table: string): number | null {
   const lines = data.split("\n");
@@ -76,6 +79,7 @@ export function copyRowCount(data: string, schema: string, table: string): numbe
   if (start < 0) return null;
   for (let i = start + 1; i < lines.length; i++) {
     if (lines[i] === "\\.") return i - start - 1;
+    if (lines[i]!.startsWith('COPY "')) return null;
   }
   return null;
 }
