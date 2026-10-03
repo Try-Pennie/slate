@@ -25,7 +25,7 @@
 // |---|---|
 // | 0 | the readout: the fixed date is reached and the headline is readable |
 // | 1 | Salesforce, Supabase or cal.com credentials are missing here; nothing was read |
-// | 2 | no application's span has closed yet |
+// | 2 | the window has not opened yet: no application has been made in it |
 // | 3 | Salesforce could not be read |
 // | 4 | cal.com could not be read |
 // | 5 | Slate could not be read |
@@ -39,6 +39,14 @@
 // | 13 | a rehearsal over days outside the window |
 // | 14 | what Salesforce holds now contradicts the assumed split |
 // | 15 | an input could not be read, or a row carried a time that does not parse |
+// | 16 | partial: the window is open and no span has closed yet, so these are rates so far |
+//
+// PARTIAL (#2976): between the window opening and the first closed span (the first
+// whole day is judgeable from 2026-10-10 03:00 ET), the run reports the booking and
+// show rates over every application made so far, with every line labelled partial,
+// how much of the first full window it covers, and no difference, interval or
+// verdict. A show counts only once its call is due; the booking rate is biased low
+// and the report says so. It always exits 16 unless it refused, never 0, 11 or 12.
 //
 // Once a comparison is printed, the run exits on the first condition that holds of
 // 13, 14, 11, 12, 0, and prints every one that holds.

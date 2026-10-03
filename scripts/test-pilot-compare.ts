@@ -57,6 +57,7 @@ function windowAt(over: Partial<PilotWindow> = {}): PilotWindow {
     cohortEndMs: WINDOW_START + 14 * D,
     readEndMs: WINDOW_START + 22 * D,
     rehearsal: false,
+    partial: false,
     readout: { date: null, reached: false },
     lift: 0.02,
     ...over,
@@ -174,6 +175,20 @@ const clean = (lines: string[]) => !lines.some((l) => /undefined|NaN|\[object Ob
   }
   const badReh = planWindow(now, { PILOT_COMPARE_REHEARSAL_START: "yesterday" });
   assert(!badReh.ok && badReh.exit === PILOT_COMPARE_EXIT.inputUnreadable, "an unreadable rehearsal start is refused");
+
+  // #2976: after the window opens and before the first span closes, a PARTIAL look.
+  eq(w.ok && w.window.partial, false, "once a span has closed the run is never partial");
+  const midway = Date.parse("2026-10-05T16:00:00Z");
+  const part = planWindow(midway, {});
+  assert(part.ok && part.window.partial, "between the window opening and the first closed span the run is partial, not refused");
+  if (part.ok) {
+    eq(part.window.startMs, WINDOW_START, "a partial cohort starts at the window");
+    eq([part.window.cohortEndMs, part.window.readEndMs], [midway, midway], "and takes every application made up to now, with bookings and calls read to now");
+    eq(part.window.readout, { date: null, reached: false }, "and is never a readout, even with a date fixed");
+  }
+  const partFixed = planWindow(midway, {}, "2026-10-20");
+  eq(partFixed.ok && partFixed.window.readout.reached, false, "a fixed readout date does not make a partial run reached");
+  eq(reh.ok && reh.window.partial, false, "a rehearsal is never partial");
 }
 
 // --- 3. cal.com reschedule chains -------------------------------------------------------------
@@ -304,6 +319,13 @@ const clean = (lines: string[]) => !lines.some((l) => /undefined|NaN|\[object Ob
   eq([noLead.booked, noLead.judgeable, noLead.noLead], [true, false, true], "an application with no Lead cannot be tied to a call, and says so");
   eq(judge([]).advisor, "adv@pennie.test", "the show is clustered by the advisor of the booking");
   eq(judge([], [{ advisor: null }]).advisor, `unknown:${a.id.slice(0, 15)}`, "no advisor is its own cluster, never one pooled unknown");
+
+  // #2976: a partial run judges a show only once its call can have happened and reached the store.
+  const dueAt = (dueByMs: number) =>
+    judgeApplication(outcome([{}]), SPAN_DAYS * D, new Map([[(a.leadId as string).slice(0, 15), [] as RegalCall[]]]), dueByMs);
+  const notYet = dueAt(start + 60 * 60_000 - 1);
+  eq([notYet.booked, notYet.judgeable, notYet.held], [true, false, false], "a booking whose show window is still open is booked and not judged, never a no show");
+  eq(dueAt(start + 60 * 60_000).judgeable, true, "once its show window has closed it is judged");
 }
 
 // --- 6. the clustered interval -----------------------------------------------------------------
@@ -469,6 +491,41 @@ function run(
   assert(r.lines.some((l) => /1  Slate side booked on cal\.com review, carried this application's id/.test(l)), "by the id they carried");
   assert(r.lines.some((l) => /1  Slate side booked on cal\.com review, matched by email and phone/.test(l)), "or by a contact match");
   assert(r.lines.some((l) => /^By the system that took the booking \(NOT randomised/.test(l)), "and the by system row is labelled as not randomised");
+}
+
+// --- 7a. a partial look before the first full window (#2976) ------------------------------------
+{
+  const now = WINDOW_START + 5 * D;
+  const c = cohort(300, { slate: [0.4, 0.6], calcom: [0.3, 0.5] });
+  // Calls cannot have happened yet past now.
+  const sofar = { ...c, calls: c.calls.filter((call) => Date.parse(call.startedAt) < now) };
+  const partialWindow = { partial: true, cohortEndMs: now, readEndMs: now };
+  const r = run(sofar, { window: partialWindow });
+  eq(r.exit, PILOT_COMPARE_EXIT.partial, "a partial look exits on its own code");
+  assert(
+    ![PILOT_COMPARE_EXIT.compared, PILOT_COMPARE_EXIT.provisional, PILOT_COMPARE_EXIT.tooFewToRead].includes(r.exit as 0 | 11 | 12),
+    "never the readout, provisional or too few codes",
+  );
+  assert(r.lines.length > 0 && r.lines.every((l) => l.startsWith("[PARTIAL] ")), `every line is labelled partial (${r.lines.find((l) => !l.startsWith("[PARTIAL] "))})`);
+  // 150 applications a side were made by day 5; booked: Slate i < 120, cal.com i < 90, of i % 10 under 5.
+  assert(r.lines.some((l) => /booking rate  Slate 60\/150 \(40\.0%\), cal\.com 45\/150 \(30\.0%\)/.test(l)), "the booking rate so far per side");
+  // Only bookings whose call is due count toward the show rate: days 0 to 2 (start two days on).
+  assert(r.lines.some((l) => /show rate \(held over booked\)  Slate 23\/36 \(63\.9%\), cal\.com 15\/27 \(55\.6%\)/.test(l)), `the show rate over calls already due (${r.lines.filter((l) => /show rate/.test(l))[0]})`);
+  assert(r.lines.some((l) => /biased low/.test(l) && /less than its 7 days/.test(l)), "says the booking rate is biased low beside the numbers");
+  assert(r.lines.some((l) => /call is still ahead/.test(l)), "and how the show rate treats calls not yet due");
+  assert(r.lines.some((l) => /61\.5% of the way/.test(l) && /2026-10-10 03:00 ET/.test(l)), `says how much of the first full window is covered (${r.lines.filter((l) => /Coverage/.test(l))[0]})`);
+  assert(r.lines.some((l) => /oldest application here has had 4\.96 of its 7 days/.test(l)), "and how long the oldest application has had");
+  assert(!r.lines.some((l) => /interval|days needed|READOUT|PROVISIONAL|Slate higher|Slate lower|cannot be told apart/.test(l)), "and never a difference, interval, verdict or readout");
+  eq(r.proposedReadout, null, "and never proposes a readout date");
+  assert(r.lines.some((l) => /ASSUMED, NOT CHECKED/.test(l)) && r.lines.some((l) => /Compared:/.test(l)), "still states the assumption and the count");
+  assert(clean(r.lines), "nothing renders undefined or NaN");
+
+  const changed = run(sofar, { window: partialWindow, settings: { ...settingsOk, percent: 70 } });
+  eq(changed.exit, PILOT_COMPARE_EXIT.partial, "a partial look stays partial when the settings now differ");
+  assert(changed.lines.some((l) => /SETTINGS NOW DIFFER/.test(l)), "and the disagreement is still reported");
+
+  const empty = run({ apps: [], slate: [], cal: [], calls: [] }, { window: partialWindow });
+  eq(empty.exit, PILOT_COMPARE_EXIT.noApplications, "a partial look that found no application still refuses");
 }
 
 // --- 7b. an unreadable instant is refused, never compared (L50) ---------------------------------
