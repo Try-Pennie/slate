@@ -9,6 +9,8 @@ import {
   canHoldManagerOfRecord,
   canModerate,
   canModify,
+  inPendingQueueScope,
+  pendingQueueScope,
   managerCannotApproveNotice,
   canRetrySideEffects,
   canTransition,
@@ -24,7 +26,7 @@ import {
   UNNAMED_MANAGER_REVIEWER,
 } from "../src/lib/ooo/core.ts";
 import { canModerateAllOoo } from "../src/lib/auth/roles.ts";
-import { assert, finish } from "./lib/harness.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
 
 const agent = { id: "u-agent", role: "agent" as const };
 const manager = { id: "u-mgr", role: "manager" as const };
@@ -73,6 +75,55 @@ assert(
   }
   const leadOwn = { user_id: teamLead.id, manager_id: null, status: "pending" as const };
   assert(canModerate(teamLead, leadOwn), "a team lead can still moderate their own request (Dan, 2026-10-03)");
+}
+
+// --- #3114: the pending queue shows exactly what the viewer can decide ---
+//
+// The /admin/ooo queue and the header badge read pendingQueueScope; the approve
+// and decline actions read canModerate. If the two disagree, a row carries
+// controls that answer "Not authorized" (L109), or a request somebody could
+// decide is shown nowhere. So for every role, over requests covering every
+// relation to the viewer, the scope must hold a request exactly when canModerate
+// says the viewer may decide it.
+{
+  const roles = ["agent", "manager", "team_lead", "admin", "super_admin"] as const;
+  for (const role of roles) {
+    const viewer = { id: `u-viewer-${role}`, role };
+    const requests = [
+      { user_id: viewer.id, manager_id: null, label: "their own, no manager" },
+      { user_id: viewer.id, manager_id: "u-someone", label: "their own, with a manager" },
+      { user_id: viewer.id, manager_id: viewer.id, label: "their own, as their own manager" },
+      { user_id: "u-other-admin", manager_id: null, label: "another admin's" },
+      { user_id: "u-agent-x", manager_id: viewer.id, label: "a report's" },
+      { user_id: "u-agent-y", manager_id: "u-someone", label: "somebody else's report's" },
+      { user_id: "u-agent-z", manager_id: null, label: "an agent's with no manager" },
+    ];
+    const scope = pendingQueueScope(viewer);
+    for (const r of requests) {
+      const req2 = { ...r, status: "pending" as const };
+      eq(
+        inPendingQueueScope(scope, req2),
+        canModerate(viewer, req2),
+        `${role}: ${r.label} request is in the queue exactly when they can decide it`,
+      );
+    }
+  }
+  // Both directions named, so a scope that showed nothing (or everything) to an
+  // admin cannot hide behind agreement on the other rows.
+  const adminScope = pendingQueueScope(admin);
+  assert(
+    inPendingQueueScope(adminScope, { user_id: "u-other-admin", manager_id: null, status: "pending" }),
+    "an admin's queue shows ANOTHER admin's request",
+  );
+  assert(
+    !inPendingQueueScope(adminScope, { user_id: admin.id, manager_id: null, status: "pending" }),
+    "an admin's queue does not show their own request",
+  );
+  assert(
+    inPendingQueueScope(pendingQueueScope(teamLead), { user_id: admin.id, manager_id: null, status: "pending" }),
+    "a team lead's queue shows an admin's request",
+  );
+  eq(pendingQueueScope(agent), null, "an agent has no queue at all");
 }
 
 // --- #1475: the manager of record needs a manager ROLE before the link counts ---

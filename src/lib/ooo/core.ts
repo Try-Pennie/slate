@@ -62,6 +62,36 @@ export function isAdminDecidingOwn(actor: Actor, request: Pick<RequestLike, "use
 }
 
 /**
+ * Which pending requests a viewer's queue holds (#3114), as a query shape both
+ * the /admin/ooo page and the header badge apply, so the count and the rows
+ * agree (L16). It is canModerate restated as filters, and
+ * `scripts/test-ooo-core.ts` holds the two equal for every role over every
+ * relation a request can have to the viewer, so a row can never carry controls
+ * the action refuses (L109).
+ *
+ *   - null: the viewer can decide nothing (below the manager-of-record floor).
+ *   - managerId: only requests naming the viewer as manager of record.
+ *   - excludeUserId: the viewer's own requests are left out (an admin cannot
+ *     decide their own, so another admin or a team lead sees them instead).
+ */
+export type PendingQueueScope = { managerId: string | null; excludeUserId: string | null } | null;
+
+export function pendingQueueScope(viewer: Actor): PendingQueueScope {
+  const excludeUserId = isAdminDecidingOwn(viewer, { user_id: viewer.id }) ? viewer.id : null;
+  if (canModerateAllOoo(viewer.role)) return { managerId: null, excludeUserId };
+  if (canHoldManagerOfRecord(viewer.role)) return { managerId: viewer.id, excludeUserId };
+  return null;
+}
+
+/** Whether a request falls inside a `pendingQueueScope` (the JS twin of the query). */
+export function inPendingQueueScope(scope: PendingQueueScope, request: RequestLike): boolean {
+  if (!scope) return false;
+  if (scope.managerId !== null && request.manager_id !== scope.managerId) return false;
+  if (scope.excludeUserId !== null && request.user_id === scope.excludeUserId) return false;
+  return true;
+}
+
+/**
  * Whether a role can hold the manager-of-record power at all (#1475).
  *
  * The floor, named once, so the RULE in canModerate, the notification that decides
