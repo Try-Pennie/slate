@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { refuseCredential } from "@/lib/bearer-failure";
-import { duplicateCancelApiKey } from "@/lib/env";
+import { duplicateCancelApiKey, duplicateCancelApiKey2 } from "@/lib/env";
 import { bearerTokenMatches } from "@/lib/bearer-auth";
 import { cancelDuplicateBooking } from "@/lib/booking/service";
 import {
@@ -42,7 +42,7 @@ export async function POST(req: NextRequest) {
       { status: 503 },
     );
   }
-  if (!bearerTokenMatches(req.headers.get("authorization"), key)) {
+  if (!bearerTokenMatches(req.headers.get("authorization"), [key, duplicateCancelApiKey2()])) {
     return refuseCredential(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
 

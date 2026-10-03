@@ -37,7 +37,34 @@ CREATE WAREHOUSE IF NOT EXISTS SLATE_WH
   AUTO_SUSPEND = 60            -- seconds idle before suspend
   AUTO_RESUME = TRUE
   INITIALLY_SUSPENDED = TRUE
+  STATEMENT_TIMEOUT_IN_SECONDS = 600
   COMMENT = 'Slate archival mirror export lane (milestone #15).';
+
+-- ----------------------------------------------------------------------------
+-- Spend guard (#3125, decided by Dan 2026-10-03). Two parts:
+--
+--   1. A statement timeout of 600 seconds, so a query that runs away is cut off
+--      rather than billed by the minute. Nothing Slate runs comes near it: the
+--      Worker's own CPU limit ends every lane long before ten minutes. The ALTER
+--      is here as well as on the CREATE above because CREATE ... IF NOT EXISTS does
+--      nothing on a warehouse that already exists.
+--
+--   2. A monthly resource monitor that WARNS ONLY: notify at 80% and at 100%, and
+--      NEVER suspend. Suspending the warehouse would stop the 10 minute booking
+--      mirror, and that mirror is the booking backup (the prune lanes redact only
+--      what it has confirmed), so a spend cap must never be able to switch it off.
+--      NOTIFY emails the account administrators who have email notifications
+--      turned on in their Snowsight profile.
+--
+-- The quota is TWICE the measured monthly credits. It needs current usage, so it
+-- is not written here: run the read-only query in DEPLOY.md ("Spend and usage
+-- alerts", Snowflake) and put its monitor_quota in place of <quota> in the block
+-- marked "RUN IN SNOWSIGHT" at the END of this file. Until then that block does
+-- not parse, on purpose, and it is last so a whole file run provisions everything
+-- else before it stops there. To change the quota later:
+-- ALTER RESOURCE MONITOR SLATE_WH_MONITOR SET CREDIT_QUOTA = <quota>;
+-- ----------------------------------------------------------------------------
+ALTER WAREHOUSE IF EXISTS SLATE_WH SET STATEMENT_TIMEOUT_IN_SECONDS = 600;
 
 -- ----------------------------------------------------------------------------
 -- Database + schema.
@@ -297,3 +324,19 @@ GRANT ROLE SLATE_ROLE TO USER SLATE_SERVICE;
 --   SELECT COUNT(*) FROM bookings;                    -- should succeed (0 rows)
 --   DELETE FROM bookings WHERE id = 'nope';           -- should FAIL: no DELETE privilege
 -- ----------------------------------------------------------------------------
+
+-- ----------------------------------------------------------------------------
+-- Spend guard, part 2: the warn only resource monitor (#3125). Kept LAST because
+-- it carries a <quota> placeholder that does not parse until somebody measures
+-- usage (see the Spend guard note near the top, and DEPLOY.md). Never add a
+-- SUSPEND trigger: suspending the warehouse stops the booking mirror.
+-- ----------------------------------------------------------------------------
+-- RUN IN SNOWSIGHT, once <quota> is measured (#3125) ------------------------
+CREATE RESOURCE MONITOR IF NOT EXISTS SLATE_WH_MONITOR
+  WITH CREDIT_QUOTA = <quota>
+  FREQUENCY = MONTHLY
+  START_TIMESTAMP = IMMEDIATELY
+  TRIGGERS ON 80 PERCENT DO NOTIFY
+           ON 100 PERCENT DO NOTIFY;
+ALTER WAREHOUSE SLATE_WH SET RESOURCE_MONITOR = SLATE_WH_MONITOR;
+-- END RUN IN SNOWSIGHT --------------------------------------------------------

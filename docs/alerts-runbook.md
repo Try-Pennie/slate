@@ -551,6 +551,35 @@ check it by hand afterwards.
 
 ---
 
+## A dependency advisory was found
+
+Not a monitor lane key: this one is posted by the daily GitHub workflow
+`.github/workflows/dependency-audit.yml` (#3092, #3093), which audits the lockfile
+every day whether or not anybody pushed. Its wording is built in
+`scripts/lib/dependency-audit-report.ts`.
+
+**The patch target.** Decided by Dan on 2026-10-03: **a high or critical advisory is
+patched by the next working day after the daily audit flags it.** The alert states
+that target in every finding, so it arrives with the page. Moderate advisories in
+production dependencies are written to the run summary and do not page; they are
+picked up with the next ordinary dependency bump.
+
+**First checks.** Open the linked run. The production audit (`--prod
+--audit-level=high`) names what ships to the Worker; the full tree audit
+(`--audit-level=critical`) names the build and deploy toolchain, which runs with the
+Cloudflare deploy token. The package path in the advisory says which direct
+dependency pulls it in.
+
+**Fix or escalate.** Bump or replace the package on a fresh branch, and let the
+pre-push gate and CI run the same audits. Where no fixed version exists yet, record the
+advisory in `pnpm.auditConfig.ignoreGhsas` in `package.json`, with its reason and the
+issue that will remove it in the note above the audit step in `ci.yml`, rather than
+leaving the daily run red: a run that is red
+every day stops being read. A run that says it could not finish an audit found
+nothing either way; re-run it.
+
+---
+
 ## Something was measured and is only worth knowing
 
 Keys: `rate_limit_blocked:*`, `ooo_agent_dm`, `ooo_approvals_digest`,

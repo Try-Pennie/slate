@@ -1,5 +1,5 @@
 import { type NextRequest } from "next/server";
-import { cronSecret } from "@/lib/env";
+import { cronSecret, cronSecret2 } from "@/lib/env";
 import { bearerTokenMatches } from "@/lib/bearer-auth";
 
 /**
@@ -13,5 +13,5 @@ import { bearerTokenMatches } from "@/lib/bearer-auth";
  * uncounted; `scripts/test-bearer-failure-throttle.ts` holds every call site to it.
  */
 export function isAuthorizedCron(req: NextRequest): boolean {
-  return bearerTokenMatches(req.headers.get("authorization"), cronSecret());
+  return bearerTokenMatches(req.headers.get("authorization"), [cronSecret(), cronSecret2()]);
 }

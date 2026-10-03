@@ -23,7 +23,7 @@
  * coverage is the registration file in noodge alone (DEPLOY.md says so).
  */
 import { bearerTokenMatches } from "@/lib/bearer-auth";
-import { uptimeHeartbeatKey } from "@/lib/env";
+import { uptimeHeartbeatKey, uptimeHeartbeatKey2 } from "@/lib/env";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { log } from "@/lib/log";
 
@@ -49,7 +49,7 @@ export async function stampUptimeHeartbeat(
   try {
     // Constant time, and false when the deployment holds no key, so an
     // unconfigured deployment can never be stamped by anyone.
-    if (!bearerTokenMatches(authorization, uptimeHeartbeatKey())) return false;
+    if (!bearerTokenMatches(authorization, [uptimeHeartbeatKey(), uptimeHeartbeatKey2()])) return false;
     if (!UPTIME_HEARTBEAT_LANES.has(lane)) return false;
     await recordHeartbeat(lane);
     return true;

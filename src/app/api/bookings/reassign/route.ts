@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { refuseCredential } from "@/lib/bearer-failure";
-import { reassignApiKey } from "@/lib/env";
+import { reassignApiKey, reassignApiKey2 } from "@/lib/env";
 import { bearerTokenMatches } from "@/lib/bearer-auth";
 import { reassignBooking } from "@/lib/booking/service";
 import { mapReassignError } from "@/lib/booking/reassign-http";
@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
   if (!key) {
     return NextResponse.json({ error: "reassign api not configured" }, { status: 503 });
   }
-  if (!bearerTokenMatches(req.headers.get("authorization"), key)) {
+  if (!bearerTokenMatches(req.headers.get("authorization"), [key, reassignApiKey2()])) {
     return refuseCredential(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
 

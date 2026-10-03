@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { refuseCredential } from "@/lib/bearer-failure";
-import { bookableApiKey } from "@/lib/env";
+import { bookableApiKey, bookableApiKey2 } from "@/lib/env";
 import { bearerTokenMatches } from "@/lib/bearer-auth";
 import { applyBookableByEmail } from "@/lib/bookable/service";
 import { internalErrorResponse } from "@/lib/api/errors";
@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
   if (!key) {
     return NextResponse.json({ error: "bookable api not configured" }, { status: 503 });
   }
-  if (!bearerTokenMatches(req.headers.get("authorization"), key)) {
+  if (!bearerTokenMatches(req.headers.get("authorization"), [key, bookableApiKey2()])) {
     return refuseCredential(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
 

@@ -12,6 +12,15 @@
  * `scripts/test-dependency-audit-report.ts` drives every outcome.
  */
 
+/**
+ * The patch target for a finding (#3092), decided by Dan on 2026-10-03 and written
+ * down in docs/alerts-runbook.md ("A dependency advisory was found"). Said in every
+ * finding's message so the deadline arrives with the page rather than living only
+ * in a document nobody opens mid incident.
+ */
+export const PATCH_TARGET =
+  "High or critical advisories are patched by the next working day after this audit flags them.";
+
 /** A GitHub step outcome, or empty when the step never got that far. */
 export type StepOutcome = "success" | "failure" | "cancelled" | "skipped" | "";
 
@@ -69,7 +78,7 @@ export function decideAuditAlert(o: AuditOutcomes): AuditDecision {
   const found = prod === "failure" || full === "failure";
   lines.push(
     found
-      ? `Open the run to see the advisory and the package path, then bump or replace the package: ${link}`
+      ? `${PATCH_TARGET} Open the run to see the advisory and the package path, then bump or replace the package: ${link}`
       : `Re-run it to get today's reading: ${link}`,
   );
   return {

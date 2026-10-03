@@ -13,7 +13,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 //    most senders) and is still COUNTED, because a feed whose bodies stopped being
 //    readable must not look like a quiet one.
 
-const env = vi.hoisted(() => ({ regalInboundKey: vi.fn(() => "inbound-secret") }));
+const env = vi.hoisted(() => ({ regalInboundKey: vi.fn(() => "inbound-secret"), regalInboundKey2: vi.fn(() => "") }));
 vi.mock("@/lib/env", () => env);
 
 // #2944: one delivery writes two rows, each in its own failure boundary, and
