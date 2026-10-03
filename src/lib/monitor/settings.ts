@@ -42,6 +42,7 @@ export const ALERT_KEYS = [
   "ooo_calcom_unprotected",
   "empty_tier",
   "booking_failure_rate",
+  "booking_budget",
   "catchall_rate",
   "availability_drift",
   "booker_empty_reason",
@@ -305,6 +306,12 @@ export const ALERT_FIELDS: {
     help: "The share of booking attempts that fail over a rolling window crosses the threshold, so a wave of customers being turned away is caught as it happens rather than by complaints.",
   },
   {
+    key: "booking_budget",
+    urgency: "alert",
+    label: "Half a month's booking error budget spent",
+    help: "Errors or server faults have used half of what this month's booking success (98.5%) or availability (99.5%) target allows. Nothing is down because of it alone: it says the month is running worse than the pilot, while there is still time to find out why. It ends when the month is back under half, which in practice is the first day of the next month.",
+  },
+  {
     key: "catchall_rate",
     urgency: "page",
     label: "Leads booked with no routing code",
@@ -554,6 +561,10 @@ export const MONITOR_DEFAULTS = {
     // long enough not to spam a live incident, short enough that a page missed at
     // the start of a wave comes back while it is still happening.
     booking_failure_rate: 30 * 60_000,
+    // Half a month's error budget spent (#3179): a fact about the month rather
+    // than the minute, which stays true until the month turns over. Once a day
+    // keeps it present, with the share it has reached, without becoming noise.
+    booking_budget: 24 * 60 * 60_000,
     // A drifted cache (#1315) keeps mis-selling times until the sync lane
     // reconverges, and the probe re-measures that bucket only once per rotation
     // (a few hours), so a fast repeat would say nothing new. Hourly, matching the

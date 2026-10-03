@@ -229,21 +229,76 @@ const DB_RATE_LIMIT_RULE_SETS: readonly RateLimitRule[][] = [
 export const RATE_LIMIT_PRUNE_MARGIN_SECONDS = 3600;
 
 /**
- * What the `rate_limits` prune may delete (#3109): rows under a LIMITER prefix
- * whose window opened more than `olderThanSeconds` ago.
+ * A count kept in `rate_limits` under `${prefix}:${signature}` that decides nothing
+ * about a caller (#3176): the error boundary's catch count (#1974) and the count of
+ * reports from pages Slate does not serve (#2755). They borrow `rate_limit_hit`
+ * for its atomic rolling window, so they need pruning like a limiter row, but they
+ * are not limiter rules and their window is their own.
+ *
+ * Declared here rather than beside their writer (`src/lib/api/boundary-count.ts`)
+ * so the prune and the writer read one list: a prefix renamed in one place and not
+ * the other would leave the old key space growing with nothing to say so.
+ * scripts/test-rate-limit-prune.ts fails when any other file names one of these
+ * prefixes itself.
+ */
+export interface WindowCounter {
+  prefix: string;
+  windowSeconds: number;
+}
+
+/** The window the boundary counters count over: 30 minutes, equal to the
+ *  boundary alert's cooldown (see `BOUNDARY_WINDOW_MS`). */
+export const BOUNDARY_COUNT_WINDOW_SECONDS = 30 * 60;
+
+export const BOUNDARY_CATCH_COUNTER: WindowCounter = {
+  prefix: "boundary_count",
+  windowSeconds: BOUNDARY_COUNT_WINDOW_SECONDS,
+};
+
+export const UNRECOGNISED_PAGE_COUNTER: WindowCounter = {
+  prefix: "unrecognised_page_count",
+  windowSeconds: BOUNDARY_COUNT_WINDOW_SECONDS,
+};
+
+/** Every window counter, which is exactly what the counter group of the prune covers. */
+export const WINDOW_COUNTERS: readonly WindowCounter[] = [BOUNDARY_CATCH_COUNTER, UNRECOGNISED_PAGE_COUNTER];
+
+/** `prune_rate_limits` refuses an age under an hour, so no group is planned below it. */
+const PRUNE_FLOOR_SECONDS = 3600;
+
+export interface RateLimitPruneGroup {
+  name: "limiter" | "window-counter";
+  prefixes: string[];
+  olderThanSeconds: number;
+}
+
+/**
+ * What the `rate_limits` prune may delete (#3109, #3176): rows under a LIMITER
+ * prefix or a WINDOW COUNTER prefix whose window opened more than that group's
+ * `olderThanSeconds` ago.
  *
  * Scoped by prefix, never by age alone, because the same table holds the cron
- * lanes' streak counters (`recordConsecutiveStreak`) and the boundary counts,
- * whose windows run to hours and are not listed anywhere a prune could read.
- * Deleting one mid streak would reset the count and hold back a page. Limiter
- * keys are always `${prefix}:${key}`, which is the whole of what this relies on.
+ * lanes' streak counters (`recordConsecutiveStreak`), whose windows run to hours
+ * and are not listed anywhere a prune could read. Deleting one mid streak would
+ * reset the count and hold back a page. Every key here is `${prefix}:${key}`,
+ * which is the whole of what this relies on.
+ *
+ * Each group is aged from its OWN longest window, so the counters are not held for
+ * the limiters' hour and a limiter row is never judged on a counter's half hour.
  */
-export function rateLimitPrunePlan(): { prefixes: string[]; olderThanSeconds: number } {
-  const rules = DB_RATE_LIMIT_RULE_SETS.flat();
-  return {
-    prefixes: [...new Set(rules.map((r) => r.prefix))],
-    olderThanSeconds: Math.max(...rules.map((r) => r.windowSeconds)) + RATE_LIMIT_PRUNE_MARGIN_SECONDS,
-  };
+export function rateLimitPrunePlan(): RateLimitPruneGroup[] {
+  const group = (
+    name: RateLimitPruneGroup["name"],
+    windows: readonly { prefix: string; windowSeconds: number }[],
+  ): RateLimitPruneGroup => ({
+    name,
+    prefixes: [...new Set(windows.map((w) => w.prefix))],
+    olderThanSeconds: Math.max(
+      Math.max(...windows.map((w) => w.windowSeconds)) + RATE_LIMIT_PRUNE_MARGIN_SECONDS,
+      PRUNE_FLOOR_SECONDS,
+    ),
+  });
+  return [group("limiter", DB_RATE_LIMIT_RULE_SETS.flat()), group("window-counter", WINDOW_COUNTERS)];
 }
 
 export interface RateLimitPruneDeps {
@@ -252,13 +307,26 @@ export interface RateLimitPruneDeps {
   prune: (prefixes: string[], olderThanSeconds: number) => Promise<number>;
 }
 
-/** One delete statement for the whole table, sized by `rateLimitPrunePlan`. */
-export async function pruneRateLimits(
-  deps: RateLimitPruneDeps,
-): Promise<{ deleted: number; olderThanSeconds: number }> {
+/**
+ * One delete statement per group, sized by `rateLimitPrunePlan`. Each group runs
+ * whether or not the other failed, and any failure is thrown after both have had
+ * their turn, so one refused delete still fails the lane without costing the
+ * other group its night.
+ */
+export async function pruneRateLimits(deps: RateLimitPruneDeps): Promise<{
+  deleted: number;
+  groups: Array<{ name: RateLimitPruneGroup["name"]; deleted: number; olderThanSeconds: number }>;
+}> {
   const plan = rateLimitPrunePlan();
-  const deleted = await deps.prune(plan.prefixes, plan.olderThanSeconds);
-  return { deleted, olderThanSeconds: plan.olderThanSeconds };
+  const settled = await Promise.allSettled(plan.map((g) => deps.prune(g.prefixes, g.olderThanSeconds)));
+  const failed = settled.find((r): r is PromiseRejectedResult => r.status === "rejected");
+  if (failed) throw failed.reason;
+  const groups = plan.map((g, i) => ({
+    name: g.name,
+    deleted: (settled[i] as PromiseFulfilledResult<number>).value,
+    olderThanSeconds: g.olderThanSeconds,
+  }));
+  return { deleted: groups.reduce((sum, g) => sum + g.deleted, 0), groups };
 }
 
 // Availability (#56) no longer uses a DB rule: it's throttled at the edge by

@@ -12,9 +12,13 @@
 // problems never read the same (L11).
 //
 // Run: node --experimental-strip-types scripts/test-deploy-verified.ts
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { planVerifiedDeploy, DEFAULT_APP_URL } from "./lib/deploy-verified.ts";
+import {
+  planVerifiedDeploy,
+  DEFAULT_APP_URL,
+  HAND_RELEASE_MESSAGE_PREFIX,
+} from "./lib/deploy-verified.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const CLEAN = {
@@ -116,6 +120,67 @@ for (const [what, plan] of refusals) {
   assert(!plan.ok, "the dirty override does not waive the missing key");
 }
 
+// --- the version is tagged with its commit (#3178) ---------------------------
+// The Rollback workflow (#3165) reads a version's `workers/tag` annotation to know
+// which commit it should report once it serves. An untagged hand deploy left it
+// unable to confirm the rollback without somebody typing the commit in.
+{
+  const plan = planVerifiedDeploy(CLEAN);
+  assert(plan.ok, "a clean tree deploys");
+  if (plan.ok) {
+    eq(
+      plan.deployArgs,
+      ["--tag", "abcdef123456", "--message", `${HAND_RELEASE_MESSAGE_PREFIX}abcdef123456`],
+      "a clean deploy is tagged with the commit the bundle is stamped with",
+    );
+    assert(
+      plan.deployArgs.every((a) => !/[\s'"]/.test(a)),
+      "no value needs quoting: the adapter joins wrangler's arguments into one shell line",
+    );
+  }
+}
+{
+  // A dirty tree's stamp does not describe what shipped, so the tag must not vouch
+  // for it either: the rollback then reports it could not confirm the commit, which
+  // is the truth, rather than confirming a commit the version does not hold.
+  for (const dirty of [true, null]) {
+    const plan = planVerifiedDeploy({ ...CLEAN, dirty, allowDirty: true });
+    assert(plan.ok, `an overridden ${dirty === null ? "unreadable" : "dirty"} tree still deploys`);
+    if (plan.ok) {
+      assert(!plan.deployArgs.includes("--tag"), `and is NOT tagged (dirty: ${dirty})`);
+      assert(
+        plan.deployArgs.some((a) => a.startsWith(HAND_RELEASE_MESSAGE_PREFIX)),
+        "but still carries the release message, so it is never mistaken for a canary",
+      );
+    }
+  }
+}
+{
+  // CONTROL: the tag tracks the commit rather than being a constant.
+  const plan = planVerifiedDeploy({ ...CLEAN, headSha: "1234567890ab1234567890ab1234567890ab1234" });
+  assert(plan.ok && plan.deployArgs[1] === "1234567890ab", "a different commit gets a different tag");
+}
+// Composes with the gradual deploy (#3165): the release annotation the rollback reads
+// must be the one the gradual deploy writes. Before that change merges there is
+// nothing to compare against; the moment scripts/lib/gradual-deploy.ts exists this
+// requires the hand path to annotate exactly as a gradual release does.
+{
+  const gradualPath = join(import.meta.dirname, "lib", "gradual-deploy.ts");
+  if (existsSync(gradualPath)) {
+    const gradual = (await import(gradualPath)) as {
+      RELEASE_MESSAGE_PREFIX: string;
+      uploadArgs: (kind: "release", commit: string) => string[];
+    };
+    eq(HAND_RELEASE_MESSAGE_PREFIX, gradual.RELEASE_MESSAGE_PREFIX, "the hand release uses the gradual release prefix");
+    const plan = planVerifiedDeploy(CLEAN);
+    if (plan.ok) {
+      eq(plan.deployArgs, gradual.uploadArgs("release", plan.commit), "and the same annotation flags");
+    }
+  } else {
+    eq(HAND_RELEASE_MESSAGE_PREFIX, "slate-release-", "the release prefix #3165 writes and its rollback reads");
+  }
+}
+
 // --- the two paths must stay the same three steps ----------------------------
 // Built is not wired (L3). These pin that the runner drives the SAME scripts CI does,
 // in the same order, rather than a second implementation that could verify less.
@@ -135,6 +200,10 @@ for (const [what, plan] of refusals) {
       runner.includes("scripts/post-deploy-probe.ts") &&
       runner.includes('"cf:deploy"'),
     "and it drives CI's own scripts rather than a second implementation",
+  );
+  assert(
+    /step\("build and deploy",\s*"pnpm",\s*\["run",\s*"cf:deploy",\s*\.\.\.plan\.deployArgs\]\)/.test(runner),
+    "the deploy step hands the planned tag and message through to wrangler (#3178)",
   );
   assert(
     stampAt < deployAt && deployAt < probeAt,

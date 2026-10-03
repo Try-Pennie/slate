@@ -34,10 +34,11 @@ const LOCK_TTL_MS = 60_000;
  * with no retention of any kind: one row per caller IP, and per lead email and
  * phone, for ever. It rides this lane rather than a new one because it is the
  * same shape of work (one statement, no gate, a heartbeat) and costs this
- * invocation one more subrequest, where a lane of its own would add a lock, a
+ * invocation two more subrequests (one statement for the limiter rows, one for
+ * the boundary counters, #3176), where a lane of its own would add a lock, a
  * heartbeat bound and two more. Which rows go is decided in
- * `rateLimitPrunePlan`, which keeps every streak and boundary counter out of
- * reach.
+ * `rateLimitPrunePlan`, which keeps every streak counter and every open window
+ * out of reach.
  */
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) return new NextResponse("unauthorized", { status: 401 });
@@ -94,7 +95,7 @@ export async function GET(req: NextRequest) {
       outcomesDeleted: outcomes.value.deleted,
       outcomesCutoff: outcomes.value.cutoff,
       rateLimitsDeleted: rateLimits.value.deleted,
-      rateLimitsOlderThanSeconds: rateLimits.value.olderThanSeconds,
+      rateLimitsGroups: rateLimits.value.groups,
     };
     log.info("prune-regal-calls", {
       msg: "cycle",

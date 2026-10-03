@@ -130,6 +130,8 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // the kill switch.
   public_booking_stopped: "the-booker-is-offering-nothing-or-too-little",
   booking_failure_rate: "the-booker-is-offering-nothing-or-too-little",
+  // #3179. The same population as the hourly page, judged over the month.
+  booking_budget: "the-booker-is-offering-nothing-or-too-little",
 
   // Slate is turning its own integration away (#1442, #1450, #1709). Its own
   // family rather than folded into the limiter one next door, because that

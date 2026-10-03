@@ -72,7 +72,7 @@ starve its neighbours (`docs/cloudflare-platform-notes.md`).
 Keys: `empty_tier:*`, `bucket_slots_stale`, `availability_booked_solid`,
 `availability_data_anomaly`, `availability_drift:*`, `fallback_covered_availability`,
 `thin_tier_staffing`, `tier_fallback_deep:*`, `no_eligible_agents:*`,
-`low_booking_volume`, `booking_failure_rate`, `calendar_window_uncovered`,
+`low_booking_volume`, `booking_failure_rate`, `booking_budget:*`, `calendar_window_uncovered`,
 `booker_unstaffed:*`, `public_booking_stopped`, `booking_race_contention`,
 `booking_race_bound_hit`, `pool_nearly_full`, `busy_cache_drift`.
 
@@ -122,6 +122,13 @@ reports the same silence as a drought and sends a reader after a funnel problem 
 not there, so **check the switch before anything else here**. The Overview and the admin
 business hours page both show it, and starting booking again is what ends the notice; if
 it is still meant to be off, nothing needs doing and the notice repeats while it stands.
+
+**`booking_budget:*` is the month, not the minute** (#3179). Half of what the booking
+success (98.5%) or availability (99.5%) target in `docs/slo.md` allows this month has been
+spent. Nothing is necessarily failing now: read `/admin/booking-outcomes` over the month
+for which error codes spent it. Ordinary contention (`slot_unavailable`) spends only the
+success budget; a server fault spends both, and is the one to chase first. It clears on
+its own when the month turns over.
 
 **First checks.**
 - Is public booking stopped? The admin Overview says so in a row of its own, and

@@ -58,15 +58,20 @@ beforeEach(() => {
 });
 
 describe("GET /api/cron/prune-regal-calls: the rate_limits sweep (#3109)", () => {
-  it("prunes rate_limits with the planned prefixes and age, and reports the count", async () => {
+  it("prunes rate_limits once per planned group, with its prefixes and age, and reports the count", async () => {
     const res = await GET(req());
     expect(res.status).toBe(200);
     const plan = rateLimitPrunePlan();
-    expect(db.state.rpcCalls).toEqual([
-      ["prune_rate_limits", { p_prefixes: plan.prefixes, p_older_than_seconds: plan.olderThanSeconds }],
-    ]);
+    expect(plan.map((g) => g.name)).toEqual(["limiter", "window-counter"]);
+    expect(db.state.rpcCalls).toEqual(
+      plan.map((g) => ["prune_rate_limits", { p_prefixes: g.prefixes, p_older_than_seconds: g.olderThanSeconds }]),
+    );
     const body = await res.json();
-    expect(body.rateLimitsDeleted).toBe(7);
+    expect(body.rateLimitsDeleted).toBe(14);
+    expect(body.rateLimitsGroups.map((g: { name: string; deleted: number }) => [g.name, g.deleted])).toEqual([
+      ["limiter", 7],
+      ["window-counter", 7],
+    ]);
     expect(hb.recordHeartbeat).toHaveBeenCalled();
   });
 

@@ -17,6 +17,10 @@
 //      the only way a streak or boundary key could fall inside the prune's scope.
 //   4. The SQL function deletes by prefix plus a colon and by the database's own
 //      clock, under the pinned search_path every Slate function carries.
+//   5. The window counters (`boundary_count`, `unrecognised_page_count`, #3176)
+//      are pruned as a group of their own, aged from THEIR window rather than the
+//      limiters', and their key space is named in one place so the prune and the
+//      writer cannot drift apart.
 //
 // The route wiring is driven in src/app/api/cron/prune-regal-calls/route.test.ts.
 // Run: node --experimental-strip-types scripts/test-rate-limit-prune.ts
@@ -27,6 +31,8 @@ import {
   pruneRateLimits,
   rateLimitPrunePlan,
   RATE_LIMIT_PRUNE_MARGIN_SECONDS,
+  WINDOW_COUNTERS,
+  type RateLimitPruneGroup,
   type RateLimitRule,
 } from "../src/lib/rate-limit-core.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -42,7 +48,8 @@ function isRuleSet(value: unknown): value is RateLimitRule[] {
         r !== null &&
         typeof r === "object" &&
         typeof (r as RateLimitRule).prefix === "string" &&
-        typeof (r as RateLimitRule).windowSeconds === "number",
+        typeof (r as RateLimitRule).windowSeconds === "number" &&
+        typeof (r as RateLimitRule).max === "number",
     )
   );
 }
@@ -50,7 +57,10 @@ function isRuleSet(value: unknown): value is RateLimitRule[] {
 // 1. Derived from every exported rule set, read off the module itself.
 const exportedRules = Object.values(core).filter(isRuleSet).flat();
 assert(exportedRules.length >= 10, `found the exported limiter rules (${exportedRules.length})`);
-const plan = rateLimitPrunePlan();
+const groups = rateLimitPrunePlan();
+eq(groups.map((g) => g.name), ["limiter", "window-counter"], "two groups, each aged from its own windows");
+const plan = groups.find((g) => g.name === "limiter")!;
+const counterPlan = groups.find((g) => g.name === "window-counter")!;
 eq(
   [...plan.prefixes].sort(),
   [...new Set(exportedRules.map((r) => r.prefix))].sort(),
@@ -106,10 +116,11 @@ function collidingLiterals(text: string, prefixes: string[]): string[] {
   }
   return hits;
 }
+const everyPrunedPrefix = groups.flatMap((g) => g.prefixes);
 const collisions = srcFiles.flatMap((f) =>
-  collidingLiterals(readFileSync(f, "utf8"), plan.prefixes).map((hit) => `${relative(root, f)}: ${hit}`),
+  collidingLiterals(readFileSync(f, "utf8"), everyPrunedPrefix).map((hit) => `${relative(root, f)}: ${hit}`),
 );
-eq(collisions, [], "no streak, boundary or other literal key falls inside a limiter prefix");
+eq(collisions, [], "no streak or other literal key falls inside a pruned prefix");
 eq(
   collidingLiterals(`const STREAK = "book:h:monitor_streak";`, plan.prefixes),
   ["book:h:monitor_streak"],
@@ -121,20 +132,71 @@ eq(
   "CONTROL: an ordinary streak key is not",
 );
 
-// The orchestration: the plan reaches the delete, and a failed delete is a
+// 5. The window counters (#3176): their own group, aged from their own window.
+eq(
+  [...counterPlan.prefixes].sort(),
+  ["boundary_count", "unrecognised_page_count"],
+  "the boundary catch and unrecognised page counters are pruned",
+);
+eq(
+  [...counterPlan.prefixes].sort(),
+  [...new Set(WINDOW_COUNTERS.map((c) => c.prefix))].sort(),
+  "the counter group covers exactly the declared window counters",
+);
+const longestCounter = Math.max(...WINDOW_COUNTERS.map((c) => c.windowSeconds));
+eq(
+  counterPlan.olderThanSeconds,
+  Math.max(longestCounter + RATE_LIMIT_PRUNE_MARGIN_SECONDS, 3600),
+  "aged from the counters' own window plus the margin, not from the limiters'",
+);
+for (const counter of WINDOW_COUNTERS) {
+  assert(
+    counterPlan.olderThanSeconds >= counter.windowSeconds + RATE_LIMIT_PRUNE_MARGIN_SECONDS,
+    `${counter.prefix}: a row inside its ${counter.windowSeconds}s window is never old enough to prune`,
+  );
+}
+assert(counterPlan.olderThanSeconds >= 3600, "never below the floor prune_rate_limits refuses under");
+assert(
+  counterPlan.prefixes.every((p) => !plan.prefixes.includes(p)),
+  "no prefix is pruned by both groups",
+);
+// The writer takes its prefixes from the same list, so a renamed key cannot leave
+// the old one growing unpruned: no other src file names a counter prefix as a
+// literal of its own.
+const counterLiterals = srcFiles.flatMap((f) => {
+  const text = readFileSync(f, "utf8");
+  return counterPlan.prefixes
+    .filter((p) => new RegExp(`["'\`]${p}["'\`:]`).test(text))
+    .map((p) => `${relative(root, f)}: ${p}`);
+});
+eq(counterLiterals, [], "the window counter prefixes are named only in rate-limit-core.ts");
+assert(
+  new RegExp(`["'\`]boundary_count["'\`:]`).test(`const COUNT_PREFIX = "boundary_count";`),
+  "CONTROL: a writer naming its own counter prefix is caught",
+);
+
+// The orchestration: each group reaches its own delete, and a failed delete is a
 // failure rather than a quiet zero (#1165).
 {
   const seen: Array<[string[], number]> = [];
   const result = await pruneRateLimits({
     prune: async (prefixes, olderThanSeconds) => {
       seen.push([prefixes, olderThanSeconds]);
-      return 42;
+      return prefixes.includes("boundary_count") ? 5 : 42;
     },
   });
-  eq(result.deleted, 42, "reports what the delete removed");
-  eq(seen.length, 1, "one delete statement per run");
-  eq(seen[0]?.[1], plan.olderThanSeconds, "the delete is given the planned age bound");
-  eq([...(seen[0]?.[0] ?? [])].sort(), [...plan.prefixes].sort(), "the delete is given the planned prefixes");
+  eq(result.deleted, 47, "reports what every delete removed");
+  eq(
+    result.groups.map((g: { name: RateLimitPruneGroup["name"]; deleted: number }) => [g.name, g.deleted]),
+    [["limiter", 42], ["window-counter", 5]],
+    "and what each group's delete removed",
+  );
+  eq(seen.length, 2, "one delete statement per group");
+  eq(
+    seen.map(([p, s]) => [[...p].sort(), s]),
+    groups.map((g) => [[...g.prefixes].sort(), g.olderThanSeconds]),
+    "each delete is given its group's prefixes and age bound",
+  );
 
   let threw = "";
   try {
@@ -147,6 +209,23 @@ eq(
     threw = err instanceof Error ? err.message : String(err);
   }
   assert(/permission denied/.test(threw), "a refused delete propagates rather than reading as zero deleted");
+
+  // One group's failure must not stop the other's night of work.
+  const attempted: string[][] = [];
+  let partial = "";
+  try {
+    await pruneRateLimits({
+      prune: async (prefixes) => {
+        attempted.push(prefixes);
+        if (prefixes.includes("boundary_count")) throw new Error("counter prune refused");
+        return 1;
+      },
+    });
+  } catch (err) {
+    partial = err instanceof Error ? err.message : String(err);
+  }
+  eq(attempted.length, 2, "the limiter prune still runs when the counter prune fails");
+  assert(/counter prune refused/.test(partial), "and the run still fails");
 }
 
 // 4. The SQL function.
