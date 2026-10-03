@@ -272,7 +272,7 @@ export function loadtestSupabaseFetch(
  * SLOW one: the booking path's Salesforce reads race a deadline
  * (`CALLING_NUMBER_DEADLINE_MS`, 2.5 seconds) and the branch that answers when the
  * deadline wins had never run at scale. So a faulted call waits past that deadline and
- * then fails as a timeout. `scripts/test-loadtest-fault-injection.ts` holds this above
+ * then fails as a timeout. `scripts/test-loadtest-fault-targets.ts` holds this above
  * the deadline, so a deadline raised later cannot quietly turn this back into a fast
  * failure.
  */
