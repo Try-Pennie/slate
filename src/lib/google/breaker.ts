@@ -34,6 +34,13 @@ export const GOOGLE_BREAKER_THRESHOLD = 5;
 export const GOOGLE_BREAKER_OPEN_MS = 30_000;
 
 /**
+ * How long one probe may hold the half open slot. Longer than any deadline a
+ * Calendar call is given (the 15 second sync deadline), so a live probe is never
+ * overtaken, and bounded, so one that never settles cannot wedge the breaker.
+ */
+export const GOOGLE_BREAKER_PROBE_EXPIRY_MS = 60_000;
+
+/**
  * Thrown in place of a Google call while the breaker is open. Not a
  * `GoogleHttpError`, so `reachabilityFromError` classifies it as transient, which
  * is what it is: retrying shortly can work.
@@ -118,6 +125,8 @@ export interface CircuitBreaker {
 export function createCircuitBreaker(opts: {
   threshold: number;
   openMs: number;
+  /** How long a probe may hold the slot before a new one is admitted. */
+  probeExpiryMs?: number;
   now?: () => number;
   onTransition?: (t: BreakerTransition) => void;
 }): CircuitBreaker {
@@ -125,7 +134,13 @@ export function createCircuitBreaker(opts: {
   let failures = 0;
   let openedAt: number | null = null;
   let retryAt = 0;
-  let probing = false;
+  // The probe in flight, by identity, and when it was let through. A probe that
+  // never settles (a call sent with NO_DEADLINE, or a caller's long deadline)
+  // gives the slot up after `probeExpiryMs`, or the breaker would refuse every
+  // call for ever with no way back to closed.
+  let probe: BreakerTicket | null = null;
+  let probeSince = 0;
+  const probeExpiryMs = opts.probeExpiryMs ?? GOOGLE_BREAKER_PROBE_EXPIRY_MS;
 
   const announce = (t: BreakerTransition) => {
     // The listener pages. A page that cannot be sent must never take the call
@@ -148,16 +163,20 @@ export function createCircuitBreaker(opts: {
       const t = now();
       if (t < retryAt) throw new GoogleBreakerOpenError(retryAt - t);
       // Half open: exactly one call in flight as the probe.
-      if (probing) throw new GoogleBreakerOpenError(opts.openMs);
-      probing = true;
-      return { probe: true };
+      if (probe && t - probeSince < probeExpiryMs) {
+        throw new GoogleBreakerOpenError(probeSince + probeExpiryMs - t);
+      }
+      probe = { probe: true };
+      probeSince = t;
+      return probe;
     },
     record(ticket, verdict, failure) {
       if (openedAt !== null) {
         // Only the probe speaks for an open breaker. A call admitted before it
-        // opened says nothing about whether the outage is over.
-        if (!ticket.probe) return;
-        probing = false;
+        // opened, or a probe whose slot expired, says nothing about whether the
+        // outage is over.
+        if (ticket !== probe) return;
+        probe = null;
         if (verdict === "answered") {
           const openForMs = now() - openedAt;
           openedAt = null;
@@ -183,7 +202,7 @@ export function createCircuitBreaker(opts: {
       failures = 0;
       openedAt = null;
       retryAt = 0;
-      probing = false;
+      probe = null;
     },
   };
 }

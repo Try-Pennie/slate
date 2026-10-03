@@ -12,8 +12,22 @@ vi.mock("@/lib/google/dwd", () => dwd);
 const alerts = vi.hoisted(() => ({ announceGoogleBreaker: vi.fn() }));
 vi.mock("@/lib/google/breaker-alert", () => alerts);
 
-import { freeBusy, freeBusyMany, isFree, createEvent, googleBreaker } from "./calendar";
-import { GoogleBreakerOpenError, GOOGLE_BREAKER_THRESHOLD } from "./breaker";
+import {
+  freeBusy,
+  freeBusyMany,
+  isFree,
+  createEvent,
+  listCalendars,
+  googleBreaker,
+  GOOGLE_SYNC_TIMEOUT_MS,
+} from "./calendar";
+import {
+  GoogleBreakerOpenError,
+  GOOGLE_BREAKER_OPEN_MS,
+  GOOGLE_BREAKER_PROBE_EXPIRY_MS,
+  GOOGLE_BREAKER_THRESHOLD,
+} from "./breaker";
+import { NO_DEADLINE } from "@/lib/fetch-within-deadline";
 import { GoogleHttpError } from "./http-error";
 
 const WINDOW = ["2026-10-05T14:00:00.000Z", "2026-10-05T14:30:00.000Z"] as const;
@@ -95,6 +109,33 @@ describe("the Google breaker in gfetch (#3134)", () => {
     }
     expect(calls).toHaveLength(0);
     expect(alerts.announceGoogleBreaker).not.toHaveBeenCalled();
+  });
+
+  it("sizes the probe's slot past the longest deadline a Calendar call is given", () => {
+    expect(GOOGLE_BREAKER_PROBE_EXPIRY_MS).toBeGreaterThan(GOOGLE_SYNC_TIMEOUT_MS);
+  });
+
+  it("recovers when a probe sent with no deadline never settles", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      stubGoogle(503);
+      await failTimes(GOOGLE_BREAKER_THRESHOLD);
+      vi.setSystemTime(Date.now() + GOOGLE_BREAKER_OPEN_MS);
+      // The probe: a calendar list with NO_DEADLINE against a Google that never answers.
+      vi.stubGlobal("fetch", () => new Promise<Response>(() => {}));
+      void listCalendars("a@trypennie.com", NO_DEADLINE).catch(() => {});
+      await Promise.resolve();
+      await expect(isFree("a@trypennie.com", WINDOW[0], WINDOW[1], ["primary"])).rejects.toBeInstanceOf(
+        GoogleBreakerOpenError,
+      );
+      vi.setSystemTime(Date.now() + GOOGLE_BREAKER_PROBE_EXPIRY_MS);
+      const calls = stubGoogle(200);
+      await expect(isFree("a@trypennie.com", WINDOW[0], WINDOW[1], ["primary"])).resolves.toBe(true);
+      expect(calls).toHaveLength(1);
+      expect(googleBreaker.state()).toBe("closed");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("closes and announces it when a probe after the window is answered", async () => {

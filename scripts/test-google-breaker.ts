@@ -118,6 +118,32 @@ function refuses(fn: () => unknown): GoogleBreakerOpenError | null {
   assert(refuses(() => breaker.admit()) === null, "and calls flow again");
 }
 
+// --- a probe that never settles cannot hold the breaker open for ever --------
+{
+  let t = 0;
+  const breaker = createCircuitBreaker({ threshold: 1, openMs: 1000, probeExpiryMs: 5000, now: () => t });
+  breaker.record(breaker.admit(), "failure", "x");
+  t += 1000;
+  const hung = breaker.admit();
+  assert(hung.probe, "the first call after the window is the probe");
+  t += 4999;
+  assert(refuses(() => breaker.admit()) !== null, "a probe still inside its expiry holds the slot");
+  t += 1;
+  const fresh = refuses(() => breaker.admit()) === null;
+  assert(fresh, "a probe that never settled gives the slot up once its expiry passes");
+  // Again from the top, this time holding both tickets, to see whose answer counts.
+  breaker.reset();
+  breaker.record(breaker.admit(), "failure", "x");
+  t += 1000;
+  const stale = breaker.admit();
+  t += 5000;
+  const next = breaker.admit();
+  breaker.record(stale, "answered");
+  assert(breaker.state() !== "closed", "the expired probe answering late does not speak for the outage");
+  breaker.record(next, "answered");
+  assert(breaker.state() === "closed", "the live probe answering closes it");
+}
+
 // --- a late answer from a call admitted before the open cannot close it ------
 {
   const { breaker, transitions } = rig(2);
