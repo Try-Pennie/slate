@@ -101,6 +101,34 @@ eq(
     "CONTROL: a created and an added PII shaped column are found, dropped ones are not",
   );
   assert(!liveColumns(fixture).has("leads.unique"), "CONTROL: a table constraint is not read as a column");
+
+  // A rename moves a column or a whole table to a new name. Missed, the old name
+  // stays "live" (so the doc could keep naming a column that no longer exists)
+  // and the new one is invisible to the inventory check (L96).
+  const renamedColumn = liveColumns([
+    { name: "0001_a.sql", sql: "create table leads (\n  id uuid primary key,\n  note text\n);\n" },
+    { name: "0002_b.sql", sql: "alter table leads rename column note to attendee_phone;\n" },
+  ]);
+  assert(
+    renamedColumn.has("leads.attendee_phone") && !renamedColumn.has("leads.note"),
+    "CONTROL: a renamed column is live under its new name only",
+  );
+  eq(
+    piiShapedColumns([
+      { name: "0001_a.sql", sql: "create table leads (\n  id uuid primary key,\n  note text\n);\n" },
+      { name: "0002_b.sql", sql: "alter table if exists public.leads rename note to contact_email;\n" },
+    ]),
+    ["leads.contact_email"],
+    "CONTROL: a column renamed without the COLUMN keyword into a PII shape is found",
+  );
+  const renamedTable = liveColumns([
+    { name: "0001_a.sql", sql: "create table leads (\n  id uuid primary key,\n  attendee_name text\n);\n" },
+    { name: "0002_b.sql", sql: "alter table leads rename to prospects;\n" },
+  ]);
+  assert(
+    renamedTable.has("prospects.attendee_name") && renamedTable.has("prospects.id") && !renamedTable.has("leads.attendee_name"),
+    "CONTROL: a renamed table carries every column to its new name and leaves none behind",
+  );
   const withNew = [...migrations, { name: "9999_planted.sql", sql: "alter table bookings add column attendee_middle_name text;\n" }];
   assert(
     piiShapedColumns(withNew).some((c) => c === "bookings.attendee_middle_name" && !named.has(c)),

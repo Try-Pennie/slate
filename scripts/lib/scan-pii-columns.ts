@@ -3,8 +3,8 @@
 //
 // The inventory there was hand maintained and drifted: booking_reservations.payload
 // held the whole attendee record and the manage token, and appeared nowhere. This
-// module replays the migrations in apply order (create table, add column, drop
-// column, drop table) to get the live columns, then picks the ones whose NAME has
+// module replays the migrations in apply order (create table, add column, rename,
+// drop column, drop table) to get the live columns, then picks the ones whose NAME has
 // the shape of lead data. scripts/test-pii-inventory.ts does the comparison.
 //
 // THE LIMIT, stated so nobody reads more into a green run: this matches NAMES. A
@@ -50,6 +50,26 @@ export function liveColumns(migrations: MigrationText[]): Set<string> {
       const alter = new RegExp(String.raw`^\s*alter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?${IDENT}([\s\S]*)$`, "i").exec(statement);
       if (alter) {
         const table = alter[1]!.toLowerCase();
+        // A table rename moves every column to the new name. Postgres allows it
+        // only as the statement's sole action, so it ends the statement here.
+        const renameTable = /^\s*rename\s+to\s+(?:public\.)?"?(\w+)"?\s*$/i.exec(alter[2]!);
+        if (renameTable) {
+          const to = renameTable[1]!.toLowerCase();
+          for (const c of [...live]) {
+            if (!c.startsWith(`${table}.`)) continue;
+            live.delete(c);
+            live.add(`${to}.${c.slice(table.length + 1)}`);
+          }
+          continue;
+        }
+        // A column rename, with or without the optional COLUMN keyword. Not a
+        // constraint rename, which names no column.
+        const renameColumn = /^\s*rename\s+(?:column\s+)?(?!constraint\b)"?(\w+)"?\s+to\s+"?(\w+)"?\s*$/i.exec(alter[2]!);
+        if (renameColumn) {
+          const from = `${table}.${renameColumn[1]!.toLowerCase()}`;
+          if (live.delete(from)) live.add(`${table}.${renameColumn[2]!.toLowerCase()}`);
+          continue;
+        }
         for (const clause of splitTopLevel(alter[2]!)) {
           const add = /^\s*add\s+column\s+(?:if\s+not\s+exists\s+)?"?(\w+)"?/i.exec(clause);
           if (add) live.add(`${table}.${add[1]!.toLowerCase()}`);

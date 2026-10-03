@@ -46,9 +46,10 @@ export async function GET(req: NextRequest) {
   try {
     const db = supabaseAdmin();
     const nowMs = Date.now();
-    // Two sweeps, each one DELETE (#2944 added the second), run independently so a
-    // failure in one still lets the other do its night's work; either failing
-    // fails the lane, so it stops stamping and the watchdog pages.
+    // Three sweeps, each one statement (#2944 added the second, #3109 the third),
+    // run independently so a failure in one still lets the others do their night's
+    // work; any of them failing fails the lane, so it stops stamping and the
+    // watchdog pages.
     const [events, outcomes, rateLimits] = await Promise.allSettled([
       pruneRegalCalls({
         nowMs,
