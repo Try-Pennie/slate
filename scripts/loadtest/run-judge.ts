@@ -52,11 +52,10 @@ import {
 } from "./book-plan.ts";
 import type { SoakSample } from "./invariants.ts";
 import { PRODUCTION_SUPABASE_REF } from "../../src/lib/loadtest-guard.ts";
-import { unstable_readConfig } from "wrangler";
-import { disabledLanesOf, type WranglerLike } from "../lib/scan-wrangler-loadtest-env.ts";
+import { allLaneNames } from "../../worker/lanes-disabled.ts";
 import { LANE_STALE_BOUNDS_MS } from "../../src/lib/monitor/health.ts";
 import { parseFaultTargets } from "../../src/lib/loadtest-fault.ts";
-import { shortestBoundLanes, type FaultLaneEvidence } from "./fault-lanes.ts";
+import { lanesRunByDeployment, shortestBoundLanes, type FaultLaneEvidence } from "./fault-lanes.ts";
 
 // ONE constant, shared with the app's own load test refusals (#2242). A second
 // spelling beside each script is how one of them ends up naming a project that
@@ -450,10 +449,19 @@ if (expectedFaultTargets.unknown.length > 0) {
  * and what the lanes are held to.
  *
  * The lanes are every lane the watchdog bounds, MINUS the ones the load test
- * environment holds back, read from wrangler.jsonc as wrangler resolves it, so the
- * list is derived from the two places that decide it rather than kept beside them
- * (L41). The window opens when the fault driver started, which is after the
- * deployment confirmed it was faulting.
+ * environment holds back. Which those are arrives as a setting, like the judge's
+ * other expectations, and NOT by reading wrangler.jsonc here: that read needed
+ * wrangler installed and the repo root as the working directory, and threw after
+ * every driver had run, leaving the run with no verdict. A setting that is missing
+ * or names no lane is an incomplete verdict (`lanesRunByDeployment`), and
+ * `scripts/test-fault-lanes.ts` holds the workflow's value equal to wrangler's, so
+ * the copy cannot drift from the deployment it describes (L41, L422). The window
+ * opens when the fault driver started, which is after the deployment confirmed it
+ * was faulting.
+ *
+ * env-ok: EXPECT_LANES_DISABLED (optional; the load test environment's
+ * SLATE_LANES_DISABLED, and unset for a hand run, which makes a fault pass
+ * incomplete rather than guessed)
  */
 let faultLanes: JudgeInput["faultLanes"];
 if (faultDrivers.length > 0) {
@@ -465,19 +473,18 @@ if (faultDrivers.length > 0) {
   } catch (err) {
     console.error(`note: no lane sampler file could be read (${(err as Error).message})`);
   }
-  const held = new Set(
-    disabledLanesOf(unstable_readConfig({ config: "wrangler.jsonc", env: "loadtest" }) as unknown as WranglerLike),
-  );
-  const lanes: Record<string, number> = {};
-  for (const [lane, bound] of Object.entries(LANE_STALE_BOUNDS_MS)) if (!held.has(lane)) lanes[lane] = bound;
+  const run = lanesRunByDeployment(process.env.EXPECT_LANES_DISABLED, LANE_STALE_BOUNDS_MS, allLaneNames());
   faultLanes = {
     evidence,
-    expectations: {
-      windowStartMs: Math.min(...faultDrivers.map((d) => d.startedAtMs)),
-      lanes,
-      mustRunInWindow: shortestBoundLanes(lanes),
-      syncPageExpected: (faultPass?.faultTargets ?? []).includes("google-read"),
-    },
+    expectations:
+      "why" in run
+        ? { why: run.why }
+        : {
+            windowStartMs: Math.min(...faultDrivers.map((d) => d.startedAtMs)),
+            lanes: run.lanes,
+            mustRunInWindow: shortestBoundLanes(run.lanes),
+            syncPageExpected: (faultPass?.faultTargets ?? []).includes("google-read"),
+          },
   };
 }
 
@@ -638,12 +645,13 @@ if (m) {
           : "(reported, not barred: a failure of one of these systems is a 5xx by design)"),
     );
   }
-  if (faultLanes?.evidence) {
+  const laneX = faultLanes?.expectations;
+  if (faultLanes?.evidence && laneX && !("why" in laneX)) {
     const e = faultLanes.evidence;
     lines.push(
       `- cron lanes under fault: ${e.samples.length} readings over ` +
-        `${((e.finishedAtMs - faultLanes.expectations.windowStartMs) / 60_000).toFixed(1)} min ` +
-        `(${e.failedReads} failed), ${Object.keys(faultLanes.expectations.lanes).length} lanes judged`,
+        `${((e.finishedAtMs - laneX.windowStartMs) / 60_000).toFixed(1)} min ` +
+        `(${e.failedReads} failed), ${Object.keys(laneX.lanes).length} lanes judged`,
     );
   }
   // The two halves of a confirm's wall time, reported APART (#2340). The platform

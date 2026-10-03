@@ -181,9 +181,14 @@ export interface JudgeInput {
    * What the cron lanes did while the deployment was faulted (#3104): the lane
    * sampler's file, or null when it never arrived, and what the lanes are held to.
    * Present whenever the fault pass is; a fault pass without it is incomplete,
-   * because the lanes are half of what the leg exists to show.
+   * because the lanes are half of what the leg exists to show. `expectations` is a
+   * `why` when what the lanes are held to could not be established (which lanes the
+   * deployment runs), and that is incomplete too, never a crash or a pass.
    */
-  faultLanes?: { evidence: FaultLaneEvidence | null; expectations: FaultLaneExpectations };
+  faultLanes?: {
+    evidence: FaultLaneEvidence | null;
+    expectations: FaultLaneExpectations | { why: string };
+  };
   /**
    * Which legs this run was CONFIGURED to have, so a leg that was asked for and
    * never arrived is incomplete rather than silently skipped (#2262).
@@ -376,6 +381,8 @@ export function incompleteness(input: JudgeInput): string[] {
         "the fault pass ran and no lane sampler file arrived, so what the cron lanes did while " +
           "faults were injected was never measured",
       );
+    } else if ("why" in input.faultLanes.expectations) {
+      why.push(input.faultLanes.expectations.why);
     } else {
       for (const w of faultLaneIncompleteness(input.faultLanes.evidence, input.faultLanes.expectations)) {
         why.push(w);
@@ -891,8 +898,9 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
     }
     // The cron lanes, judged rather than read by a person (#3104). Incompleteness
     // above has already refused a run whose lane evidence is missing or has holes.
-    if (input.faultLanes?.evidence) {
-      for (const f of judgeFaultLanes(input.faultLanes.evidence, input.faultLanes.expectations)) {
+    const x = input.faultLanes?.expectations;
+    if (input.faultLanes?.evidence && x && !("why" in x)) {
+      for (const f of judgeFaultLanes(input.faultLanes.evidence, x)) {
         fail(f.bar, f.detail);
       }
     }

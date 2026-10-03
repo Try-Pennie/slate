@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import {
   faultLaneIncompleteness,
   judgeFaultLanes,
+  lanesRunByDeployment,
   shortestBoundLanes,
   LANE_SAMPLER_MAX_MS,
   STALE_LANE_ALERT_PREFIX,
@@ -19,6 +20,8 @@ import {
 } from "./loadtest/fault-lanes.ts";
 import { healthyFaultLanes, fixtureLaneExpectations } from "./lib/fault-lanes-fixture.ts";
 import { scanAlertSites } from "./lib/scan-alert-keys.ts";
+import { unstable_readConfig } from "wrangler";
+import { disabledLanesOf, type WranglerLike } from "./lib/scan-wrangler-loadtest-env.ts";
 import { LANE_STALE_BOUNDS_MS } from "../src/lib/monitor/health.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -152,6 +155,36 @@ function findingsOf(e: FaultLaneEvidence, x: FaultLaneExpectations = EXPECT): st
   assert(faultLaneIncompleteness(e, EXPECT).some((w) => w.includes("before the fault driver started")), "a sampler that ended first saw nothing");
   const empty = { ...healthy(), samples: [] };
   assert(faultLaneIncompleteness(empty, EXPECT).some((w) => w.includes("0 readings")), "an empty series is incomplete");
+}
+
+// --- which lanes the deployment runs, as handed to the judge --------------------------
+//
+// The judge used to read wrangler.jsonc itself, which needed wrangler installed and the
+// repo root as cwd, and threw after every driver had run, leaving no verdict. It is now
+// a setting, and every way of not knowing is a reason the judge reports as incomplete.
+{
+  const bounds = { sync: 10 * MIN, monitor: 20 * MIN, complete: 20 * MIN };
+  const known = ["sync", "monitor", "complete", "agents"];
+  const ok = lanesRunByDeployment("monitor, agents", bounds, known);
+  eq("lanes" in ok ? ok.lanes : null, { sync: 10 * MIN, complete: 20 * MIN }, "held back lanes are removed from what is judged");
+  for (const missing of [undefined, "", " , "]) {
+    const r = lanesRunByDeployment(missing, bounds, known);
+    assert("why" in r && r.why.includes("EXPECT_LANES_DISABLED"), `an unset or blank setting (${JSON.stringify(missing)}) is a reason, not an empty list`);
+  }
+  const typo = lanesRunByDeployment("monitr", bounds, known);
+  assert("why" in typo && typo.why.includes("monitr"), "a name that is no lane is a reason, naming it");
+}
+{
+  // The workflow carries a COPY of env.loadtest's setting; it must be the same one.
+  const yml = readFileSync(new URL("../.github/workflows/loadtest.yml", import.meta.url), "utf8");
+  const m = /^\s*EXPECT_LANES_DISABLED:\s*(\S+)\s*$/m.exec(yml);
+  assert(m !== null, "the load test workflow hands the judge EXPECT_LANES_DISABLED");
+  const env = unstable_readConfig({ config: "wrangler.jsonc", env: "loadtest" }) as unknown as WranglerLike;
+  eq(
+    (m?.[1] ?? "").split(",").map((s) => s.trim()).sort(),
+    disabledLanesOf(env).slice().sort(),
+    "and it is exactly the lanes wrangler resolves env.loadtest as holding back",
+  );
 }
 
 // --- the derived lists ---------------------------------------------------------------

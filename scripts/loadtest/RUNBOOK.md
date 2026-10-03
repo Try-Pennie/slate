@@ -1289,8 +1289,11 @@ branch's `lane_heartbeats` and `alert_state` every 15 seconds beside the driver 
 It reads the branch directly, never through the Worker under test. The judge then
 requires, through `scripts/loadtest/fault-lanes.ts`:
 
-- every lane the deployment runs (the watchdog's bounded lanes minus `SLATE_LANES_DISABLED`,
-  read from wrangler.jsonc) inside its stale bound at every reading, and never missing;
+- every lane the deployment runs (the watchdog's bounded lanes minus the held back ones,
+  handed to the judge as `EXPECT_LANES_DISABLED`, a copy of `env.loadtest`'s
+  `SLATE_LANES_DISABLED` that `scripts/test-fault-lanes.ts` holds equal to wrangler's
+  value; missing or naming no lane makes the run incomplete) inside its stale bound at
+  every reading, and never missing;
 - every one minute lane to have stamped INSIDE the window, since its ten minute bound
   would otherwise be satisfied by a stamp from before the faults began;
 - no `cron_lane_stale:<lane>` page recorded in the window, the watchdog's own verdict;

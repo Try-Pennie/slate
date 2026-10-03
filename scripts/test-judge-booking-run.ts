@@ -828,6 +828,21 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   delete absent.faultLanes;
   assert(incompleteness(absent).some((w) => w.includes("no lane sampler file")), "nor when the field is absent");
 
+  // The judge could not establish which lanes the deployment runs (the setting was
+  // missing or named no lane): incomplete, with that reason, and nothing thrown.
+  const unknownLanes = passing();
+  unknownLanes.faultLanes = {
+    evidence: healthyFaultLanes(LANES_T0, RUN),
+    expectations: { why: "EXPECT_LANES_DISABLED is unset or empty" },
+  };
+  assert(
+    incompleteness(unknownLanes).includes("EXPECT_LANES_DISABLED is unset or empty"),
+    "lanes the judge cannot establish make the run incomplete",
+  );
+  const unknownVerdict = judgeBookingRun(unknownLanes);
+  eq(unknownVerdict.verdict, "incomplete", "a verdict, not a crash");
+  eq(unknownVerdict.exit, JUDGE_EXIT.incomplete, "on the incomplete exit code");
+
   const holed = passing();
   const ev = healthyFaultLanes(LANES_T0, RUN);
   ev.samples = ev.samples.filter((s) => s.atMs < LANES_T0 + 60_000 || s.atMs > LANES_T0 + 4 * 60_000);

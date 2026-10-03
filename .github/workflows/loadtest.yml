@@ -521,6 +521,10 @@ jobs:
           EXPECT_BURST_DRIVERS: ${{ needs.setup-burst.outputs.driver_count }}
           EXPECT_FAULT_PCT: ${{ inputs.fault_pct }}
           EXPECT_FAULT_TARGETS: ${{ inputs.fault_targets }}
+          # The lanes env.loadtest holds back, so the judge knows which lanes should
+          # have kept running under fault without reading wrangler.jsonc itself (#3104).
+          # A copy, held equal to wrangler's resolved value by scripts/test-fault-lanes.ts.
+          EXPECT_LANES_DISABLED: advisor-photos,agents,bulk-reassign,erasure-audit,monitor,ooo-approvals,ooo-digest,prune-bookings-pii,prune-warehouse-pii,snowflake-export,snowflake-reconcile
           # What the burst control was actually worth (#2278): the code it fired at
           # and how deep that pool measured. The depth is EMPTY when the setup could
           # not measure it, and the report says unmeasured rather than printing a

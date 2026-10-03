@@ -270,6 +270,54 @@ export function judgeFaultLanes(e: FaultLaneEvidence, x: FaultLaneExpectations):
   return findings;
 }
 
+/**
+ * The lanes the load test deployment RUNS, with their bounds, from the deployment's
+ * `SLATE_LANES_DISABLED` as the workflow hands it to the judge, or why it cannot say.
+ *
+ * Handed in as a setting, like the judge's other expectations, rather than read out of
+ * wrangler.jsonc by the judge: that read needed wrangler installed and the repo root as
+ * the working directory, and when either was missing it threw after every driver had
+ * run, so the run got no verdict at all. Every way of not knowing is a REASON here,
+ * which the judge reports as incomplete:
+ *
+ *   unset or blank, which is indistinguishable from a workflow that never wired it,
+ *   because GitHub interpolates a missing setting as the empty string; and the load
+ *   test environment always holds some lanes back, so blank is never its real value;
+ *   a name that is no cron lane, because the lane somebody meant to hold back would
+ *   then be judged as a lane that never ran, a failure nobody should chase (L100).
+ */
+export function lanesRunByDeployment(
+  rawDisabled: string | undefined,
+  bounds: Readonly<Record<string, number>>,
+  knownLanes: readonly string[],
+): { lanes: Record<string, number> } | { why: string } {
+  const names = (rawDisabled ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s !== "");
+  if (names.length === 0) {
+    return {
+      why:
+        "the judge was not told which lanes the load test deployment holds back " +
+        "(EXPECT_LANES_DISABLED is unset or empty), so which lanes should have kept running " +
+        "under fault cannot be said",
+    };
+  }
+  const known = new Set(knownLanes);
+  const unknown = [...new Set(names.filter((n) => !known.has(n)))].sort();
+  if (unknown.length > 0) {
+    return {
+      why:
+        `EXPECT_LANES_DISABLED names ${unknown.join(", ")}, which is no cron lane, so the ` +
+        "lanes held back cannot be told apart from lanes that never ran",
+    };
+  }
+  const held = new Set(names);
+  const lanes: Record<string, number> = {};
+  for (const [lane, bound] of Object.entries(bounds)) if (!held.has(lane)) lanes[lane] = bound;
+  return { lanes };
+}
+
 /** The every minute lanes, the ones whose bound a short window cannot vouch for.
  *  Derived from the bounds rather than listed: the four every minute lanes share the
  *  shortest bound (`LANE_STALE_BOUNDS_MS`), so a lane added at that cadence is
