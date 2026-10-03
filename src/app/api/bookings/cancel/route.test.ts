@@ -22,6 +22,7 @@ const rateLimit = vi.hoisted(() => ({
   bookingApiWriteWithinLimit: vi.fn(async (_keyId: string) => true),
   bookingApiReadWithinLimit: vi.fn(async (_keyId: string) => true),
   bookingApiIpWithinLimit: vi.fn(async (_ip: string) => true),
+  bearerFailureWithinLimit: vi.fn(async (_ip: string) => true),
   clientIp: (headers: Headers) => headers.get("cf-connecting-ip")?.trim() ?? "unknown",
 }));
 const service = vi.hoisted(() => {

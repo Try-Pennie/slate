@@ -107,6 +107,8 @@ async function handle(req: NextRequest) {
   // a real one, and the hidden buckets' single resolve timing is unchanged. A
   // refused pass answers 403 with its own code, never the 404: the public bucket's
   // existence is no secret, and the Booker has to tell an expired pass apart.
+  // credential-throttle-ok: a failed key here refuses nothing, it only leaves the test
+  // buckets hidden, and the availability ceiling above already counts every request (#3142).
   const keys = configuredBookingApiKeys(CANARY_CALLERS);
   let authorizedForTest = authenticateBearer(req.headers.get("authorization"), keys).ok;
   if (!authorizedForTest && isPublicTestBucket(code)) {

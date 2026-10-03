@@ -7,6 +7,7 @@ import {
   ROUTING_HOURLY_RATE_RULES,
 } from "@/lib/rate-limit";
 import { ROUTING_LIMITER } from "@/lib/rate-limit-core";
+import { readJsonCapped, PUBLIC_JSON_MAX_BYTES } from "@/lib/http/read-json-capped";
 
 export const dynamic = "force-dynamic";
 
@@ -38,7 +39,10 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const body = (await req.json().catch(() => ({}))) as { xbc?: string };
+  // #3135: read under a byte cap rather than buffering whatever arrives.
+  const read = await readJsonCapped(req, PUBLIC_JSON_MAX_BYTES);
+  if (read.tooLarge) return NextResponse.json({ error: "Request too large" }, { status: 413 });
+  const body = (read.value ?? {}) as { xbc?: string };
   const xbc = String(body.xbc ?? "").trim();
   if (!xbc) {
     return NextResponse.json({ error: "xbc is required" }, { status: 400 });

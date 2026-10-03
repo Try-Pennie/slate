@@ -82,6 +82,8 @@ export default async function RebookPage({
   const testPass = entry ? currentTestPassFor(bucketCode) : null;
   const horizonDays = await loadBookingHorizonDays();
   const reasonOptions = await loadReasonOptions();
+  // landing-identity-ok: the id here is read off the booking an unguessable manage token
+  // names, never taken from the link, so it cannot be walked like a landing page's (#3106).
   const landingCall = salesforceId
     ? await existingCallForLanding({ salesforceId }, { isTest })
     : null;

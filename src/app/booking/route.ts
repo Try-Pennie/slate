@@ -54,6 +54,7 @@ import { partnerKeysFrom } from "@/lib/booking/partner-keys";
 import { bookingIdentityFrom } from "@/lib/booking/booking-identity";
 import { REFERRER_ORIGIN_MAX_CHARS, readReferrerOrigin } from "@/lib/embed/referrer-origin";
 import type { BookingOriginFacts } from "@/lib/monitor/offsite-origin";
+import { readJsonCapped, PUBLIC_JSON_MAX_BYTES } from "@/lib/http/read-json-capped";
 
 export const dynamic = "force-dynamic";
 
@@ -212,7 +213,14 @@ async function handlePost(req: NextRequest) {
   // binding can't express).
   if (!(await allowRequest(bookingCaller, BOOKING_HOURLY_RATE_RULES))) return tooMany("hourly");
 
-  const raw = await req.json().catch(() => null);
+  // #3135: read under a byte cap rather than buffering whatever arrives.
+  const read = await readJsonCapped(req, PUBLIC_JSON_MAX_BYTES);
+  if (read.tooLarge) {
+    // refusal: body_too_large
+    // Deliberately uncounted: no booker sends one, the reasoning is in refusal-catalog.ts.
+    return NextResponse.json({ error: "Request too large" }, { status: 413 });
+  }
+  const raw = read.value;
   const host = confirmHost(raw);
 
   // Honeypot (#1033): a hidden decoy field a real user never sees or fills, so a

@@ -1,4 +1,5 @@
 import { NextResponse, after, type NextRequest } from "next/server";
+import { refuseCredential } from "@/lib/bearer-failure";
 import { log } from "@/lib/log";
 import { timingSafeEqual } from "@/lib/bearer-auth";
 import { googleChannelToken } from "@/lib/env";
@@ -19,7 +20,7 @@ export async function POST(req: NextRequest) {
   // TypeError would answer 500, which Google reads as retriable.
   const token = req.headers.get("x-goog-channel-token");
   if (!token || !timingSafeEqual(token, googleChannelToken())) {
-    return new NextResponse("forbidden", { status: 403 });
+    return refuseCredential(req.headers, () => new NextResponse("forbidden", { status: 403 }));
   }
 
   // The first ping after watch() just confirms the channel — nothing to sync.
