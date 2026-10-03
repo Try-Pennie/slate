@@ -21,8 +21,12 @@ const db = vi.hoisted(() => {
   return { state, from };
 });
 const verdicts = vi.hoisted(() => ({ recordDetectorVerdict: vi.fn(async () => {}) }));
+const throttle = vi.hoisted(() => ({
+  refuseCronSecret: vi.fn(async (_headers: Headers, refusal: () => Response) => refusal()),
+}));
 
 vi.mock("@/lib/cron", () => cron);
+vi.mock("@/lib/bearer-failure", () => throttle);
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from: db.from }) }));
 vi.mock("@/lib/monitor/verdict-store", () => verdicts);
 vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
@@ -35,6 +39,7 @@ const req = (cronExpr: string, wallMs: number | string | null) =>
     url:
       `https://slate.trypennie.app/api/cron/cron-budget?cron=${encodeURIComponent(cronExpr)}` +
       (wallMs === null ? "" : `&wall_ms=${wallMs}`),
+    headers: new Headers(),
   }) as unknown as Parameters<typeof GET>[0];
 
 beforeEach(() => {
@@ -105,5 +110,8 @@ describe("GET /api/cron/cron-budget (#3141)", () => {
     const res = await GET(req("* * * * *", CRON_BUDGET_WARN_MS + 1));
     expect(res.status).toBe(401);
     expect(db.state.upserts).toHaveLength(0);
+    // #3142, #3174: through the failed credential throttle, which leaves the Worker's own
+    // in process ticks uncounted.
+    expect(throttle.refuseCronSecret).toHaveBeenCalledTimes(1);
   });
 });

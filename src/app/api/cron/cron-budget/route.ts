@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
+import { refuseCronSecret } from "@/lib/bearer-failure";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { recordDetectorVerdict } from "@/lib/monitor/verdict-store";
 import { CRON_BUDGET_VERDICT_LANE } from "@/lib/monitor/verdict-freshness";
@@ -31,7 +32,9 @@ const CRON_SHAPE = /^[0-9A-Z*/,\- ]{9,64}$/;
  * carry nothing sensitive.
  */
 export async function GET(req: NextRequest) {
-  if (!isAuthorizedCron(req)) return new NextResponse("unauthorized", { status: 401 });
+  if (!isAuthorizedCron(req)) {
+    return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
+  }
   const params = new URL(req.url).searchParams;
   const cron = params.get("cron") ?? "";
   // Refused by name when missing or blank, never parsed: `Number(null)` and `Number("")` are
