@@ -7,6 +7,7 @@
 import {
   FRAME_DAY_ZONE,
   FRAME_OBSERVE_FLUSH_MS,
+  FRAME_OBSERVE_RETRY_MIN_MS,
   FRAME_OBSERVE_MAX_KEYS,
   makeFramingRecorder,
   type FramingBatchRow,
@@ -133,18 +134,47 @@ async function main() {
     eq(s.writes.length, 1, "the same Eastern day is not a new first sighting, though the UTC day changed");
   }
 
-  // A failed FIRST sighting is not marked seen: the next load of anything retries it at
-  // once, rather than waiting a whole window, and the rare partner is not lost.
+  // A failed FIRST sighting is not marked seen, so the rare partner is not lost: it is
+  // retried after a short backoff rather than a whole flush window, and never back to
+  // back on every load while the database is down.
   {
+    assert(FRAME_OBSERVE_RETRY_MIN_MS < FRAME_OBSERVE_FLUSH_MS, "the first retry comes sooner than a flush window");
     const r = rig();
     r.failNext();
     r.record({ origin: "https://rare.example", surface: "book" });
     await r.settle();
     eq(r.writes.length, 0, "the first sighting's write failed");
-    r.tick(1_000);
+    r.tick(FRAME_OBSERVE_RETRY_MIN_MS - 1);
     r.record({ origin: "https://www.trypennie.com", surface: "book" });
     await r.settle();
-    eq(total(r.writes, "https://rare.example"), 1, "the next load, a second later, carries the rare host's first sighting");
+    eq(r.writes.length, 0, "inside the backoff, a new load does not retry");
+    r.tick(1);
+    r.record({ origin: "https://www.trypennie.com", surface: "book" });
+    await r.settle();
+    eq(total(r.writes, "https://rare.example"), 1, "at the backoff, the next load carries the rare host's first sighting");
+  }
+
+  // During an outage the backoff grows, so failed writes cannot chain on every load.
+  {
+    let now = 0;
+    let attempts = 0;
+    const deferred: Promise<unknown>[] = [];
+    const recorder = makeFramingRecorder({
+      write: async () => {
+        attempts++;
+        throw new Error("db down");
+      },
+      now: () => now,
+      onError: () => {},
+    });
+    // A new host on every load for ten minutes, one load a second.
+    for (let i = 0; i < 600; i++) {
+      recorder({ origin: `https://h${i % 40}.example`, surface: "book" }, (p) => deferred.push(p));
+      await Promise.all(deferred.splice(0));
+      now += 1_000;
+    }
+    assert(attempts <= 40, `600 loads over ten minutes of outage cost ${attempts} writes, not one per load`);
+    assert(attempts >= 10, `and it does keep retrying (${attempts})`);
   }
 
   // Only one write is in flight per isolate, so a failing database is not hit once per load.

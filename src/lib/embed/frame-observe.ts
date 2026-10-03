@@ -21,7 +21,8 @@
  * an isolate is evicted are lost, so the loads column is a lower bound; first sightings,
  * the fact the allow list decision rests on, are not.
  *
- * A failed write puts its counts back, so the next flush carries them (L368).
+ * A failed write puts its counts back, so the next flush carries them (L368), and starts
+ * a backoff (`FRAME_OBSERVE_RETRY_MIN_MS`, doubling) so an outage is not hit once per load.
  *
  * Pure apart from its injected write, scheduler and clock: scripts/test-frame-observe.ts.
  */
@@ -38,6 +39,14 @@ export const FRAME_DAY_ZONE = "America/New_York";
 
 /** How often an isolate writes its batched counts. */
 export const FRAME_OBSERVE_FLUSH_MS = 30_000;
+
+/**
+ * After a failed write, no write is attempted for this long, doubling on each further
+ * failure up to `FRAME_OBSERVE_FLUSH_MS` and reset by a success. Without it, a pending
+ * first sighting would send a failing write on every framed load while the database is
+ * down.
+ */
+export const FRAME_OBSERVE_RETRY_MIN_MS = 2_000;
 
 /** Hosts outside the exact allow list one isolate names per day before folding. */
 export const FRAME_OBSERVE_MAX_KEYS = 50;
@@ -85,6 +94,9 @@ export function makeFramingRecorder(deps: {
   let pending = new Map<string, FramingBatchRow>();
   let lastFlushMs = -Infinity;
   let inFlight = false;
+  // Backoff after a failed write: no write before `retryAtMs`, and the next wait.
+  let retryAtMs = -Infinity;
+  let backoffMs = FRAME_OBSERVE_RETRY_MIN_MS;
   let day = "";
   // (host, page) keys whose first sighting today has been WRITTEN. Marked only after
   // the write succeeds, so a failed one is retried at the next flush, not lost (L368).
@@ -103,7 +115,7 @@ export function makeFramingRecorder(deps: {
 
   const flush = (defer: Defer) => {
     // One write in flight per isolate, so a failing database is not hit once per load.
-    if (inFlight || pending.size === 0) return;
+    if (inFlight || pending.size === 0 || deps.now() < retryAtMs) return;
     const batch = [...pending.values()];
     pending = new Map();
     lastFlushMs = deps.now();
@@ -114,11 +126,14 @@ export function makeFramingRecorder(deps: {
         .write(batch)
         .then(
           () => {
+            backoffMs = FRAME_OBSERVE_RETRY_MIN_MS;
             if (batchDay === day) for (const row of batch) written.add(keyOf(row));
           },
           (err) => {
             deps.onError(err);
             for (const row of batch) add(row);
+            retryAtMs = deps.now() + backoffMs;
+            backoffMs = Math.min(backoffMs * 2, FRAME_OBSERVE_FLUSH_MS);
           },
         )
         .finally(() => {

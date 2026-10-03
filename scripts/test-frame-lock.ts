@@ -2,7 +2,7 @@
 // per isolate reader with an injected read and clock (L524): how long a flip takes to
 // land, what an unreadable switch does, and that concurrent requests share one read.
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-frame-lock.ts
-import { FRAME_LOCK_TTL_MS, makeFrameLockReader } from "../src/lib/embed/frame-lock.ts";
+import { FRAME_LOCK_READ_DEADLINE_MS, FRAME_LOCK_TTL_MS, makeFrameLockReader } from "../src/lib/embed/frame-lock.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 async function main() {
@@ -72,6 +72,42 @@ async function main() {
     fail = true;
     now = 4 * FRAME_LOCK_TTL_MS;
     eq(await read(), false, "and a failed read after it keeps it off");
+  }
+
+  // A read that never answers is cut at a short deadline and treated as a failed read,
+  // because the middleware awaits it before every booker page: a hung database must not
+  // stall the booker. The timer is injected, so nothing here waits for real (L524).
+  {
+    assert(FRAME_LOCK_READ_DEADLINE_MS <= 1_000, "the deadline is short enough not to be felt on a page load");
+    let now = 0;
+    let fire: () => void = () => {};
+    let armedMs = -1;
+    let stored: boolean | "hang" = "hang";
+    const errors: unknown[] = [];
+    const read = makeFrameLockReader({
+      read: () => (stored === "hang" ? new Promise<boolean>(() => {}) : Promise.resolve(stored)),
+      now: () => now,
+      onError: (e) => errors.push(e),
+      timer: (ms, f) => {
+        armedMs = ms;
+        fire = f;
+        return () => {};
+      },
+    });
+    const cold = read();
+    eq(armedMs, FRAME_LOCK_READ_DEADLINE_MS, "the read is armed with the deadline");
+    fire();
+    eq(await cold, false, "a hung read on a cold isolate answers the cold default, unlocked");
+    eq(errors.length, 1, "and is reported");
+
+    stored = true;
+    now = FRAME_LOCK_TTL_MS;
+    eq(await read(), true, "a read that answers in time lands");
+    stored = "hang";
+    now = 2 * FRAME_LOCK_TTL_MS;
+    const warm = read();
+    fire();
+    eq(await warm, true, "a hung read after that keeps the last value read");
   }
 
   // Concurrent requests on a cold isolate share one read.

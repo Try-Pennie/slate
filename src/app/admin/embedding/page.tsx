@@ -120,7 +120,12 @@ export default async function EmbeddingPage({
 
       <section className={cardCls}>
         <h2 className="mb-3 text-sm font-semibold">Framing lock</h2>
-        <FrameLockSwitch locked={locked} refusedSites={refusedSites} windowDays={WINDOW_DAYS} />
+        <FrameLockSwitch
+          locked={locked}
+          refusedSites={refusedSites}
+          foldedSites={cappedDays > 0}
+          windowDays={WINDOW_DAYS}
+        />
         <p className={`mt-4 ${proseCls} text-xs text-fg-muted`}>
           Allow list: {FRAME_ANCESTOR_ALLOW_LIST.join(", ")}.
         </p>

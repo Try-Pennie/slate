@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 
 // #3137: the admin page that shows who frames the booker and holds the lock. Pinned: the
 // access gates, the refused sites listed first with the lock's consequence counted from
@@ -93,6 +93,20 @@ describe("EmbeddingPage", () => {
     });
     const again = render(await page());
     expect(again.container.querySelector("[data-notice='capped']")).toBeNull();
+  });
+
+  it("counts sites folded into other sites in the lock's question, rather than saying none framed it", async () => {
+    range.mockResolvedValueOnce({
+      data: [{ day: "2026-10-03", origin: "(other)", surface: "book", loads: 30, last_seen: "2026-10-03T15:00:00Z" }],
+      error: null,
+    });
+    const { container } = render(await page());
+    // The question appears once the opener is pressed, as a person meets it.
+    fireEvent.click(screen.getByRole("button", { name: "Lock framing" }));
+    const confirm = container.querySelector("[data-state='unlocked']")?.textContent ?? "";
+    expect(confirm).toMatch(/allow list will be able to show the booker/);
+    expect(confirm).not.toMatch(/No site outside the allow list/);
+    expect(confirm).toMatch(/counted together/);
   });
 
   it("says so when the record cannot be read, rather than showing nobody framing the booker", async () => {

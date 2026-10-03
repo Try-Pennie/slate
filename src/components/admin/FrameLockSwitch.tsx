@@ -5,6 +5,7 @@ import { ConfirmAction } from "@/components/ui/ConfirmAction";
 import { SaveForm, holdsAView } from "@/components/ui/SaveForm";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { btnCls, btnDangerCls } from "@/components/ui/styles";
+import { FRAME_LOCK_TTL_SECONDS } from "@/lib/embed/frame-lock";
 
 /**
  * Lock and unlock who may frame the booker (#3137), built like `PublicBookingSwitch`.
@@ -19,12 +20,16 @@ import { btnCls, btnDangerCls } from "@/components/ui/styles";
 export function FrameLockSwitch({
   locked,
   refusedSites,
+  foldedSites,
   windowDays,
 }: {
   locked: boolean | null;
   /** Sites seen framing the booker in the window that are not on the allow list, or
    *  null when the record could not be read. */
   refusedSites: number | null;
+  /** Whether more such sites were counted together as other sites past the daily
+   *  limit. They are off the allow list too, so the question must not say none. */
+  foldedSites: boolean;
   windowDays: number;
 }) {
   if (locked === null) {
@@ -60,12 +65,16 @@ export function FrameLockSwitch({
     );
   }
 
+  const named =
+    refusedSites === null || refusedSites === 0
+      ? null
+      : `${refusedSites} ${refusedSites === 1 ? "site" : "sites"} outside the allow list`;
   const consequence =
     refusedSites === null
       ? "Any site not on the allow list will show an empty frame where the booker was. Who frames it now could not be read."
-      : refusedSites === 0
+      : !named && !foldedSites
         ? `No site outside the allow list framed the booker in the last ${windowDays} days.`
-        : `${refusedSites} ${refusedSites === 1 ? "site" : "sites"} outside the allow list framed the booker in the last ${windowDays} days, and will show an empty frame where the booker was.`;
+        : `${named ? `${named}${foldedSites ? ", and more counted together as other sites," : ""}` : "Sites outside the allow list, counted together as other sites,"} framed the booker in the last ${windowDays} days, and will show an empty frame where the booker was.`;
 
   return (
     <div data-state="unlocked">
@@ -84,8 +93,8 @@ export function FrameLockSwitch({
           pendingLabel="Locking"
           message={
             <>
-              Only Slate and the sites on the allow list will be able to show the booker, within 15
-              seconds. {consequence} You can unlock it again on this screen.
+              Only Slate and the sites on the allow list will be able to show the booker, within{" "}
+              {FRAME_LOCK_TTL_SECONDS} seconds. {consequence} You can unlock it again on this screen.
             </>
           }
         />
