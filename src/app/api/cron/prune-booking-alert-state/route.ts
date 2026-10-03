@@ -38,6 +38,8 @@ export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
+  // lock-overlap: idempotent deletes of cooldown keys for past bookings on a daily
+  // cadence; a second run deletes nothing new.
   const lock = await acquireLock("cron_prune_booking_alert_state", LOCK_TTL_MS);
   if (!lock) return NextResponse.json({ skipped: "overlapping-run" });
   try {

@@ -55,6 +55,9 @@ export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
+  // lock-overlap: each calendar is claimed (sync_claimed_at) and its sync token written
+  // by compare and swap on the token the pass started from, so a stale overlapping pass
+  // writes nothing.
   const lock = await acquireLock("cron_hydrate_calendars", LOCK_TTL_MS);
   if (!lock) return NextResponse.json({ skipped: "overlapping-run" });
   try {

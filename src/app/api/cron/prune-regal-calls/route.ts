@@ -46,6 +46,8 @@ export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
+  // lock-overlap: idempotent deletes before a fixed cutoff; a second run deletes
+  // nothing new.
   const lock = await acquireLock("cron_prune_regal_calls", LOCK_TTL_MS);
   if (!lock) return NextResponse.json({ skipped: "overlapping-run" });
   try {

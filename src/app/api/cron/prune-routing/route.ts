@@ -19,6 +19,8 @@ export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
+  // lock-overlap: deletes by id after a warehouse verify, and the repair re-merges by
+  // id; both are idempotent, so a second run repeats nothing harmful.
   const lock = await acquireLock("cron_prune_routing", LOCK_TTL_MS);
   if (!lock) return NextResponse.json({ skipped: "overlapping-run" });
   try {

@@ -156,4 +156,39 @@ function fakeClock(steps: number[]) {
   eq(r.outcomes()[0].ok, false, "the step is still recorded as failed");
 }
 
+// --- #3120: a lost lane lock stops the remaining steps -------------------------
+// A tick that outlives its TTL lets the next one take the key, and two monitor runs
+// then post the same handoff and overwrite each other's learned settings. The lease
+// is asked before each step; once it is gone the rest are skipped, NOT failed (a
+// failure would feed the step failure streak and page about a lock), and named.
+{
+  let held = true;
+  let ran = 0;
+  const errors: string[] = [];
+  const r = createStepRunner({
+    now: () => 0,
+    onError: (name) => errors.push(name),
+    stillHeld: async () => held,
+  });
+  eq(await r.run("first", "fb", async () => (ran++, "v")), "v", "a held lease runs the step");
+  held = false;
+  eq(await r.run("second", "fb", async () => (ran++, "v")), "fb", "a lost lease yields the fallback");
+  eq(await r.run("third", "fb", async () => (ran++, "v")), "fb", "and keeps skipping");
+  eq(ran, 1, "neither skipped step body ran");
+  eq(errors.length, 0, "a skip is not reported as a step failure");
+  eq(r.fields().skipped_lease_lost, "second,third", "the skipped steps are named on the cycle line");
+}
+{
+  // A fence that throws must not take the tick down: it cannot show the lease is
+  // held, so the step is skipped.
+  const r = createStepRunner({
+    now: () => 0,
+    onError: () => {},
+    stillHeld: async () => {
+      throw new Error("renewal blew up");
+    },
+  });
+  eq(await r.run("a", "fb", async () => "v"), "fb", "a throwing fence skips the step rather than throwing");
+}
+
 finish();
