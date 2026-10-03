@@ -1,0 +1,281 @@
+// The decisions behind `pnpm verify:migration-replay-sql` (#3099), kept pure so
+// scripts/test-migration-replay.ts can pin them with no database.
+//
+// The replay applies every migration to an EMPTY Supabase Postgres in Docker, the
+// way `supabase db push` applies them to production, and then asks the database
+// who can read and write what. Until this existed the 157 files had been replayed
+// from empty once, on a preview branch on 2026-09-02, so a migration leaning on
+// state production already holds could merge unnoticed.
+//
+// Imports nothing: the workflow runs this on bare node with no install.
+
+export interface MigrationFile {
+  file: string;
+  /** The four digit prefix, which is what `db push` records as the version. */
+  version: string;
+  /** What follows the prefix, without `.sql`. */
+  name: string;
+}
+
+export type MigrationPlan = { ok: true; files: MigrationFile[] } | { ok: false; error: string };
+
+const MIGRATION_NAME = /^(\d{4})_(.+)\.sql$/;
+
+/**
+ * Every `NNNN_name.sql` in the directory, in version order. A `.sql` file of any
+ * other shape is REFUSED rather than skipped, because a skipped migration is the
+ * defect this exists to catch; non-SQL files (the applied content lock) are left out.
+ */
+export function migrationPlan(names: readonly string[]): MigrationPlan {
+  const files: MigrationFile[] = [];
+  const bad: string[] = [];
+  for (const file of names) {
+    if (!file.endsWith(".sql")) continue;
+    const m = file.match(MIGRATION_NAME);
+    if (!m) bad.push(file);
+    else files.push({ file, version: m[1] as string, name: m[2] as string });
+  }
+  if (bad.length > 0) return { ok: false, error: `not named NNNN_name.sql, so not replayable in a known order: ${bad.join(", ")}` };
+  if (files.length === 0) return { ok: false, error: "no migrations found, so there is nothing to replay" };
+  files.sort((a, b) => a.version.localeCompare(b.version));
+  const dupes = files.filter((f, i) => i > 0 && files[i - 1]?.version === f.version).map((f) => f.version);
+  if (dupes.length > 0) return { ok: false, error: `more than one migration shares a version: ${[...new Set(dupes)].join(", ")}` };
+  return { ok: true, files };
+}
+
+/** The history table as the Supabase CLI creates it before its first push. */
+export const CLI_HISTORY_TABLE_SQL = `
+  create schema if not exists supabase_migrations;
+  create table if not exists supabase_migrations.schema_migrations (
+    version text not null primary key,
+    statements text[],
+    name text
+  );
+`;
+
+const lit = (s: string) => `'${s.replace(/'/g, "''")}'`;
+
+/**
+ * One migration as the batch the replay sends: the file verbatim, then the history
+ * row `db push` writes for it. The row goes on its own line after a newline, so a
+ * file ending in a `--` comment cannot swallow it. The caller runs the batch in a
+ * single transaction, as `db push` does per file.
+ */
+export function migrationBatch(m: MigrationFile, text: string): string {
+  return `${text}\n;\ninsert into supabase_migrations.schema_migrations (version, name) values (${lit(m.version)}, ${lit(m.name)});\n`;
+}
+
+export interface DefaultAclRow {
+  owner: string;
+  schema: string;
+  /** `r` tables, `f` functions, `S` sequences. */
+  type: string;
+  acl: string;
+}
+
+/** The roles the platform grants on every new table, and the privileges it grants them. */
+const PLATFORM_TABLE_GRANTEES = ["anon", "authenticated", "service_role"] as const;
+
+/**
+ * The precondition (L714): the platform's DEFAULT table grants to the API roles must
+ * be present for tables `postgres` creates in `public`, or every refusal measured
+ * afterwards is a missing GRANT rather than RLS doing its job, and the checks pass on
+ * the very mistake they exist to catch. Returns what is missing; empty means present.
+ * INSERT and SELECT are both required, since the checks drive both.
+ */
+export function judgeDefaultGrants(rows: readonly DefaultAclRow[]): string[] {
+  const tables = rows.find((r) => r.owner === "postgres" && r.schema === "public" && r.type === "r");
+  const entries = (tables?.acl ?? "").replace(/^\{|\}$/g, "").split(",");
+  const missing: string[] = [];
+  for (const role of PLATFORM_TABLE_GRANTEES) {
+    const privs = entries.find((e) => e.startsWith(`${role}=`))?.split("=")[1]?.split("/")[0] ?? "";
+    if (!privs.includes("a") || !privs.includes("r")) {
+      missing.push(`${role} holds no default INSERT and SELECT on new public tables, so this image does not reproduce the platform's default grants`);
+    }
+  }
+  return missing;
+}
+
+export type WriteOutcome = "refused-by-rls" | "refused-by-grant" | "got-past-rls" | "written";
+
+/**
+ * What an INSERT as a browser role did. Postgres runs the RLS check BEFORE the
+ * constraints, so a constraint error means the row got past RLS: that is a finding,
+ * not a refusal. Anything not recognisably a refusal is read the same way, so an
+ * error this does not know can never pass for one (L11).
+ */
+export function classifyWriteOutcome(error: string | null): WriteOutcome {
+  if (error === null) return "written";
+  if (/new row violates row-level security policy/.test(error)) return "refused-by-rls";
+  if (/permission denied for (table|relation|schema)/.test(error)) return "refused-by-grant";
+  return "got-past-rls";
+}
+
+export interface PolicyRow {
+  table: string;
+  policy: string;
+  cmd: string;
+  /** pg_policies.roles as text, for example `{public}` or `{anon,authenticated}`. */
+  roles: string;
+}
+
+/**
+ * The policies a browser role (anon or authenticated, or PUBLIC, which both belong
+ * to) is allowed to have, each with the reason. Everything else in Slate is read by
+ * the server through the secret key, which bypasses RLS, so any other policy a
+ * browser role can use is a new way into the data and must be a decision made here.
+ */
+export const BROWSER_POLICY_ALLOWLIST: readonly { table: string; policy: string; cmd: string; reason: string }[] = [
+  {
+    table: "users",
+    policy: "self can read own user row",
+    cmd: "SELECT",
+    reason: "A signed in user reads their own row through Supabase Auth (0001_init.sql); the replay drives it both ways.",
+  },
+];
+
+const BROWSER_ROLES = /(^|[{,])(public|anon|authenticated)([,}]|$)/;
+
+export function judgeBrowserPolicies(rows: readonly PolicyRow[]): { unexpected: string[]; missing: string[] } {
+  const browser = rows.filter((r) => BROWSER_ROLES.test(r.roles));
+  const allowed = (r: PolicyRow) =>
+    BROWSER_POLICY_ALLOWLIST.some((a) => a.table === r.table && a.policy === r.policy && a.cmd === r.cmd);
+  const unexpected = browser.filter((r) => !allowed(r)).map((r) => `${r.table}: ${r.policy} (${r.cmd} for ${r.roles})`);
+  const missing = BROWSER_POLICY_ALLOWLIST.filter(
+    (a) => !browser.some((r) => r.table === a.table && r.policy === a.policy && r.cmd === a.cmd),
+  ).map((a) => `${a.table}: ${a.policy}`);
+  return { unexpected, missing };
+}
+
+/**
+ * The public tables whose browser grant a migration deliberately takes back, each
+ * with its reason. Every OTHER table must still hold the platform's default INSERT
+ * for anon and authenticated, so a refused insert there is RLS refusing it; on these
+ * the refusal is the revoke, and RLS is not what is being measured.
+ */
+export const BROWSER_GRANT_EXEMPT: readonly { table: string; reason: string }[] = [
+  {
+    table: "advisor_photos",
+    reason: "0156 revokes all from anon and authenticated, because default privileges would otherwise grant the image table to the browser roles (L124).",
+  },
+  {
+    table: "audit_log_chain_head",
+    reason: "0160 revokes all from anon and authenticated: only the SECURITY DEFINER chain trigger moves the head of the audit log hash chain (#3090).",
+  },
+  {
+    table: "audit_log_chain_verify",
+    reason: "0160 revokes all from anon and authenticated: it holds where the monitor lane's audit chain verifier has got to, which only the server reads and moves (#3090).",
+  },
+];
+
+/**
+ * The tables that lack the browser INSERT grant must be EXACTLY the exempt list,
+ * in both directions: a table losing its grant without a recorded reason hides its
+ * RLS behind a missing grant, and an exemption whose revoke is gone is stale.
+ */
+export function judgeGrantExemptions(ungranted: readonly string[]): { unexplained: string[]; stale: string[] } {
+  const exempt = new Set(BROWSER_GRANT_EXEMPT.map((e) => e.table));
+  return {
+    unexplained: ungranted.filter((t) => !exempt.has(t)),
+    stale: [...exempt].filter((t) => !ungranted.includes(t)),
+  };
+}
+
+/**
+ * Whether one browser insert was refused for the right reason. On a table holding
+ * the grant only RLS counts: a "permission denied" there would mean the grant went
+ * missing, which is not RLS working. On an exempt table the revoke is the refusal.
+ */
+export function browserWriteRefused(table: string, outcome: WriteOutcome): boolean {
+  const exempt = BROWSER_GRANT_EXEMPT.some((e) => e.table === table);
+  return exempt ? outcome === "refused-by-grant" || outcome === "refused-by-rls" : outcome === "refused-by-rls";
+}
+
+/**
+ * The source with everything that is not CODE blanked: comments always, and the text
+ * of string and template literals unless `blankStrings` is false (a template's
+ * `${...}` interpolations are code and are kept). Delimiters stay, so positions and
+ * the shape of the code survive. Regex literals are not recognised; nothing this is
+ * used on carries one with a quote or a comment marker in it.
+ */
+export function codeOnly(src: string, opts: { blankStrings?: boolean } = {}): string {
+  const blankStrings = opts.blankStrings ?? true;
+  let out = "";
+  let i = 0;
+  // Each open template literal pushes the brace depth its interpolation started at.
+  const templates: number[] = [];
+  let depth = 0;
+  const blank = (s: string) => s.replace(/[^\n]/g, " ");
+  const readString = (quote: string): void => {
+    let j = i + 1;
+    while (j < src.length && src[j] !== quote && src[j] !== "\n") j += src[j] === "\\" ? 2 : 1;
+    const body = src.slice(i + 1, j);
+    out += quote + (blankStrings ? blank(body) : body) + (src[j] === quote ? quote : "");
+    i = src[j] === quote ? j + 1 : j;
+  };
+  const readTemplateText = (): void => {
+    // From just after a backtick or a closing interpolation brace, up to the end of
+    // the template or the start of the next interpolation.
+    let j = i;
+    while (j < src.length && src[j] !== "`" && !(src[j] === "$" && src[j + 1] === "{")) j += src[j] === "\\" ? 2 : 1;
+    const body = src.slice(i, j);
+    out += blankStrings ? blank(body) : body;
+    if (src[j] === "`") {
+      out += "`";
+      i = j + 1;
+    } else if (j < src.length) {
+      out += "${";
+      templates.push(depth);
+      depth++;
+      i = j + 2;
+    } else i = j;
+  };
+  while (i < src.length) {
+    const c = src[i] as string;
+    const next = src[i + 1];
+    if (c === "/" && next === "/") {
+      const end = src.indexOf("\n", i);
+      const stop = end < 0 ? src.length : end;
+      out += blank(src.slice(i, stop));
+      i = stop;
+    } else if (c === "/" && next === "*") {
+      const end = src.indexOf("*/", i + 2);
+      const stop = end < 0 ? src.length : end + 2;
+      out += blank(src.slice(i, stop));
+      i = stop;
+    } else if (c === '"' || c === "'") {
+      readString(c);
+    } else if (c === "`") {
+      out += "`";
+      i++;
+      readTemplateText();
+    } else if (c === "{") {
+      depth++;
+      out += c;
+      i++;
+    } else if (c === "}") {
+      depth--;
+      out += c;
+      i++;
+      if (templates.length > 0 && templates[templates.length - 1] === depth) {
+        templates.pop();
+        readTemplateText();
+      }
+    } else {
+      out += c;
+      i++;
+    }
+  }
+  return out;
+}
+
+/**
+ * Which of `names` the source never CALLS. Comments, string and template text, and
+ * import declarations are blanked first, so a name that is imported and no longer
+ * used, or only mentioned in a comment or a message, reads as missing. A name
+ * followed by `(` is a call; a constant counts when passed as an argument, `fn(NAME)`.
+ */
+export function missingCalls(src: string, names: readonly string[]): string[] {
+  const body = codeOnly(src).replace(/^import\b[\s\S]*?from\s*["'][^"']*["'];?/gm, "");
+  return names.filter((n) => !new RegExp(`\\b${n}\\s*\\(|\\(\\s*${n}\\s*[,)]`).test(body));
+}
