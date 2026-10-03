@@ -111,6 +111,18 @@ jobs:
       - name: Audit production dependencies
         run: pnpm audit --prod --audit-level=high
 
+      # #3093: the build and deploy toolchain, which `--prod` leaves out. wrangler and
+      # the OpenNext adapter build the shipped bundle and run with the Cloudflare
+      # deploy token in their environment, so an advisory in them, or in anything
+      # they pull in, passed every gate. Critical only: the dev tree carried seven
+      # high advisories and no critical one on 2026-10-03, in test and lint tooling
+      # that never sees a credential, and a level that fails on all of them would be
+      # red from the day it shipped. The daily audit (dependency-audit.yml) runs the
+      # same command, so an advisory published against an unchanged tree is seen too.
+      - name: Audit the whole tree, build and deploy toolchain included
+        if: ${{ !cancelled() }}
+        run: pnpm audit --audit-level=critical
+
       - name: Typecheck
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: pnpm exec tsc --noEmit
