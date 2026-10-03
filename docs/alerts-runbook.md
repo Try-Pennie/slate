@@ -182,7 +182,7 @@ that the budget is small.
 
 Keys: `sync_failures`, `watch_lapse`, `bookable_blocked:*`, `bookable_unverified:*`,
 `verify_on_book_outage`, `verify_on_book_calendars_read`, `hydration_all_failing`,
-`pending_event_deletions_refused`.
+`pending_event_deletions_refused`, `google_calendar_breaker_open`.
 
 **What fired it.** A calendar read failed, repeatedly, for one agent or for many. Or,
 for `pending_event_deletions_refused` (#2577), a queued calendar event DELETE was
@@ -204,6 +204,11 @@ carries it (`gone`, `not-provisioned`, `transient`):
 - **`transient`** (5xx, timeout, rate limit): usually self-heals. If EVERY agent is
   failing, it is not the agents: check domain-wide delegation and the service account,
   because `hydration_all_failing` is the shape that means the credential itself broke.
+- **`google_calendar_breaker_open`** (#3134): Google itself stopped answering (five
+  transient failures in a row), so Slate is holding Calendar calls back and trying one
+  every 30 seconds. Check Google's status page before anything in Slate. Bookings answer
+  "try again in a moment" until it closes, and the all-clear arrives on its own when a
+  probe call is answered.
 
 **Fix or escalate.** One agent, `gone` or `not-provisioned`: a person action, and
 `bookable` should go false until it is done, or the rotation spends its budget retrying

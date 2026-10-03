@@ -13,6 +13,15 @@ import { NO_DEADLINE, type Deadline } from "@/lib/fetch-within-deadline";
 import { fetchWithinBudget, withinCallBudget } from "@/lib/call-budget";
 import { googlePushUrl, googleChannelToken } from "@/lib/env";
 import {
+  createCircuitBreaker,
+  googleBreakerVerdictFromError,
+  googleBreakerVerdictFromStatus,
+  GOOGLE_BREAKER_OPEN_MS,
+  GOOGLE_BREAKER_THRESHOLD,
+} from "@/lib/google/breaker";
+import { announceGoogleBreaker } from "@/lib/google/breaker-alert";
+import { shortErrorReason } from "@/lib/notify/error-text";
+import {
   LOADTEST,
   stubCalendarList,
   stubSyncEvents,
@@ -106,6 +115,37 @@ export const GOOGLE_SYNC_TIMEOUT_MS = 15_000;
  * only for what it has left, and inside a confirm's budget it can only be tighter.
  */
 async function gfetch(
+  email: string,
+  url: string,
+  init: RequestInit,
+  deadline: Deadline,
+  label: string,
+): Promise<Response> {
+  // #3134: refused here, before a mint or a request, while Google is down. The
+  // refusal throws, so every caller's existing failure path handles it.
+  const ticket = googleBreaker.admit();
+  let res: Response;
+  try {
+    res = await sendGoogleCall(email, url, init, deadline, label);
+  } catch (err) {
+    googleBreaker.record(ticket, googleBreakerVerdictFromError(err, label), shortErrorReason(err));
+    throw err;
+  }
+  googleBreaker.record(ticket, googleBreakerVerdictFromStatus(res.status), `${res.status} from google ${label}`);
+  return res;
+}
+
+/**
+ * The Google Calendar breaker (#3134), one per isolate. Exported so a test can
+ * reset it between cases; nothing else should reach for it.
+ */
+export const googleBreaker = createCircuitBreaker({
+  threshold: GOOGLE_BREAKER_THRESHOLD,
+  openMs: GOOGLE_BREAKER_OPEN_MS,
+  onTransition: announceGoogleBreaker,
+});
+
+async function sendGoogleCall(
   email: string,
   url: string,
   init: RequestInit,

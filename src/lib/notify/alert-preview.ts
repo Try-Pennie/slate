@@ -311,6 +311,8 @@ import {
   unknownReasonCodeNotice,
   unrecognisedPageReports,
   watchLapseRecovery,
+  googleBreakerClosedAlert,
+  googleBreakerOpenAlert,
 } from "@/lib/notify/misc-alert-copy";
 import {
   friendlyRateArea,
@@ -4358,6 +4360,14 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
 
   // --- the rest ----------------------------------------------------------------
   { key: "watch_lapse", state: "renewal healthy again", channel: "recovery", text: watchLapseRecovery() },
+  { key: "google_calendar_breaker_open", state: "Google stopped answering", channel: "alert",
+    text: googleBreakerOpenAlert(5, "503 from google freeBusy", 30_000) },
+  { key: "google_calendar_breaker_open", state: "the last failure carried no detail", channel: "alert",
+    text: googleBreakerOpenAlert(5, null, 30_000) },
+  { key: "google_calendar_breaker_open", state: "answering again after a short outage", channel: "recovery",
+    text: googleBreakerClosedAlert(40_000) },
+  { key: "google_calendar_breaker_open", state: "answering again after a long outage", channel: "recovery",
+    text: googleBreakerClosedAlert(47 * 60_000) },
   { key: "retention_skipped:*", state: "deleting again", channel: "recovery",
     text: retentionResumedText("prune-bookings-pii") },
   { key: "bookable_trait_unrecorded:*", state: "an agent taken out of the pool and Regal not told", channel: "alert",

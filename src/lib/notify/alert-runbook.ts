@@ -170,6 +170,8 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   pending_event_deletions_refused: "google-cannot-be-reached-for-an-agent",
   verify_on_book_outage: "google-cannot-be-reached-for-an-agent",
   verify_on_book_calendars_read: "google-cannot-be-reached-for-an-agent",
+  // #3134. The transient branch at its widest: Google is not answering anybody.
+  google_calendar_breaker_open: "google-cannot-be-reached-for-an-agent",
 
   // A booking exists and one of its side effects did not land.
   // #2359. The reminder is a side effect of a booking like the invite and the

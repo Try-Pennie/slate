@@ -85,6 +85,7 @@ import { shortErrorReason } from "../notify/error-text.ts";
 import { callingNumberWithinDeadline } from "../salesforce/lead-calling-number.ts";
 import type { ScheduleTimer } from "../read-within-deadline.ts";
 import { findDeadlineExceeded, type DeadlineFound } from "../fetch-within-deadline.ts";
+import { GoogleBreakerOpenError } from "../google/breaker.ts";
 import { log } from "@/lib/log";
 import { readBookingSource } from "./booking-source.ts";
 import type { FullApiCaller } from "./api-callers.ts";
@@ -304,6 +305,13 @@ export class DependencyTimeoutError extends VerifyUnavailableError {
  */
 export function timeoutAsRetryable(err: unknown): unknown {
   if (err instanceof VerifyUnavailableError) return err;
+  // #3134: the Google breaker refusing a call is the same outage seen sooner, so
+  // the lead gets the same retryable answer, and it can never become a booking.
+  if (err instanceof GoogleBreakerOpenError) {
+    const refused = new VerifyUnavailableError();
+    refused.cause = err;
+    return refused;
+  }
   const found = findDeadlineExceeded(err);
   return found ? new DependencyTimeoutError(found, err) : err;
 }
