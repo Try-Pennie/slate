@@ -51,6 +51,14 @@ all, so start at `worker/cron-routes.ts` and `wrangler.jsonc`. A page on
 is not finishing, so start at the tail. The approvals report catches up its own gap
 from a watermark when it next runs, so the missed mornings are still recoverable.
 
+`cron_lane_stale:log-shipping` (#3182) is not a lane: it is the receipt the tail worker
+hands Slate each time Better Stack accepts a cron tick's records, and it means log
+history has stopped reaching Better Stack. Nothing about the site is wrong. Start at
+`npx wrangler tail slate-log-tail`, which logs every dropped batch by reason and every
+receipt that did not land; DEPLOY.md, "When records stop arriving", maps each reason to
+its fix. If the page says shipping was NEVER confirmed, the usual cause is a tail worker
+not redeployed since the receipt shipped (`npx wrangler deploy -c wrangler.log-tail.jsonc`).
+
 **First checks.**
 - The Cloudflare dashboard's cron triggers: did the schedule fire at all?
 - `npx wrangler tail`, attach, and wait one cadence. A lane that is running logs a

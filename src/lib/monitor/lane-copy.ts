@@ -279,6 +279,56 @@ export function backupRecoveryText(_lane: string): string {
   );
 }
 
+/**
+ * Slate's logs have stopped being confirmed in Better Stack (#3182).
+ *
+ * Its own voice, because the reader's question is what is being lost and where the
+ * cause is written down. Nothing about the site is wrong, and Cloudflare still holds
+ * every line for 7 days, so the stake is history rather than service. The cause is
+ * never knowable from here: every way the pipe breaks ends the receipts identically,
+ * and only the tail worker's own log says which one it was.
+ */
+export function logShippingAlertText(lane: StaleLane): string {
+  const bound = describeGap(lane.maxStaleMs);
+  const stake =
+    `Bookings and the site are unaffected, and Cloudflare still keeps every line for 7 days, ` +
+    `but nothing older than that will survive unless shipping resumes.`;
+  const look =
+    `The tail worker logs why it sent nothing: run npx wrangler tail slate-log-tail. A ` +
+    `refused 401 or 403 is a revoked or wrong BETTERSTACK_SOURCE_TOKEN, no-token is that ` +
+    `secret missing, timeout or unreachable is Better Stack itself, and receipt no-binding ` +
+    `is a tail worker deployed without its SLATE binding.`;
+  if (lane.unreadable) {
+    return (
+      `The record of the last log shipping receipt cannot be read, so whether Slate's logs ` +
+      `are reaching Better Stack is unknown and it is being treated as stopped (expected one ` +
+      `at least every ${bound}). Look at the ${lane.lane} row in lane_heartbeats. ${look}`
+    );
+  }
+  if (!Number.isFinite(lane.ageMs)) {
+    return (
+      `Log shipping has NEVER once been confirmed: no receipt has said Slate's logs reach ` +
+      `Better Stack (expected one at least every ${bound}). ${stake} If the tail worker has not been redeployed since this ` +
+      `check shipped, that is the cause: run npx wrangler deploy -c wrangler.log-tail.jsonc. ` +
+      `${look}`
+    );
+  }
+  return (
+    `Logs have not been confirmed reaching Better Stack for ${describeGap(lane.ageMs)} ` +
+    `(expected a receipt at least every ${bound}). ${stake} ${look}`
+  );
+}
+
+/** All-clear for log shipping (#3182). It says where the gap's lines still are,
+ *  because the page was about history, and a gap is not filled in afterwards. */
+export function logShippingRecoveryText(_lane: string): string {
+  return (
+    `Logs are reaching Better Stack again, so the earlier page is cleared. Lines ` +
+    `from the gap are only in Cloudflare, for 7 days from when they were written. No ` +
+    `action is needed.`
+  );
+}
+
 /** All-clear for a daily retention lane (#1102). These destroy customer data, so
  *  the notice says plainly that the deletion work has resumed. */
 export function retentionRecoveryText(lane: string): string {

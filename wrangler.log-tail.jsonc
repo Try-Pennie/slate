@@ -22,6 +22,13 @@
 	// Deliberately NO `tail_consumers` here: a tail worker tailed by itself would
 	// invoke itself once per invocation, for ever. scripts/test-log-tail-config.ts
 	// refuses one.
+	// The log shipping receipt (#3182): each time Better Stack accepts a cron tick's
+	// records, this Worker calls Slate's `LogShippingReceipt` entrypoint, which stamps
+	// the heartbeat the lane watchdog pages on when shipping stops. A NAMED
+	// entrypoint, never Slate's fetch handler: it is reachable only through this
+	// binding, so the receipt needs no key. Slate must already export it when this
+	// Worker is deployed (DEPLOY.md has the order).
+	"services": [{ "binding": "SLATE", "service": "slate", "entrypoint": "LogShippingReceipt" }],
 	"vars": {
 		// The Better Stack source's ingesting host, a bare hostname (no https://, no
 		// path), from the source's page (US region, created 2026-10-03). Not a secret:

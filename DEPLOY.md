@@ -535,6 +535,31 @@ inside 5 seconds, abandoned so the invocation is not held), `over-budget` (a log
 1 MB requests in one invocation) and `too-large` (a single record over 1 MB). Read
 them live with `npx wrangler tail slate-log-tail`.
 
+**Nobody has to be reading those for a stop to be noticed (#3182).** Each time Better
+Stack accepts every record of a cron tick (the invocation carrying the `lane timings`
+line, once a minute), the tail worker calls Slate's `LogShippingReceipt` entrypoint
+over its `SLATE` service binding (`wrangler.log-tail.jsonc`), and Slate stamps the
+`log-shipping` heartbeat. The lane watchdog pages `cron_lane_stale:log-shipping` when
+no receipt has arrived for 15 minutes, and all-clears when one does. Detection is by
+absence, so a revoked token, a Better Stack outage, a missing secret, a tail worker
+Cloudflare stopped invoking and a binding that is gone all page the same way; the
+tail worker's own log above says which it was, and a receipt that did not land is
+logged there as `log shipping receipt did not land` with its reason (`no-binding`,
+`refused`, `failed`, `timeout`). The named entrypoint is reachable only through a
+binding in this account, never over HTTP, so the receipt carries no key.
+
+What it cannot see: Better Stack answering 2xx and then not keeping what it took (a
+plan quota, for instance). Only an alert inside Better Stack can see that.
+
+**Order when the receipt first ships, or the binding changes.** Slate must export
+`LogShippingReceipt` before the tail worker that binds to it is deployed, so: merge
+the change (CI deploys Slate), confirm the deploy landed (`GET /api/smoke/version`),
+then redeploy the tail worker (step 3 above). Until that redeploy the old tail worker
+sends no receipts, and about 15 minutes after Slate's deploy (the grace window a
+heartbeat that has never stamped is owed) the watchdog pages that shipping has never
+been confirmed. That page
+is true, and the redeploy is what clears it.
+
 ### Volume, and measuring it
 
 Estimated from the code paths, not measured: one `invocation` record (about 400

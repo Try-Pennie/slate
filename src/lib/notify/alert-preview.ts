@@ -44,6 +44,8 @@ import {
   retentionAlertText,
   BACKUP_STALE_BOUNDS_MS,
   LANE_STALE_BOUNDS_MS,
+  LOG_SHIPPING_LANE,
+  LOG_SHIPPING_STALE_BOUNDS_MS,
   TIME_OFF_STALE_BOUNDS_MS,
   UPTIME_STALE_BOUNDS_MS,
   VERDICT_STALE_BOUNDS_MS,
@@ -372,6 +374,8 @@ import {
   canaryRecoveryText,
   calcomLaneRetiredText,
   laneRecoveryText,
+  logShippingAlertText,
+  logShippingRecoveryText,
   mirrorAlertText,
   mirrorRecoveryText,
   retentionRecoveryText,
@@ -3591,6 +3595,49 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "a fresh database backup landed again",
     channel: "recovery",
     text: backupRecoveryText("db-backup"),
+  },
+  // #3182: the same key again, for the log shipping receipt. Three pages, because a
+  // pipe that stopped, one that never started (which is also what a tail worker not
+  // redeployed with its binding looks like) and an unreadable record each send the
+  // reader somewhere different.
+  {
+    key: "cron_lane_stale:*",
+    state: "logs have stopped being confirmed in Better Stack",
+    channel: "alert",
+    text: logShippingAlertText({
+      lane: LOG_SHIPPING_LANE,
+      ageMs: 40 * 60_000,
+      maxStaleMs: LOG_SHIPPING_STALE_BOUNDS_MS[LOG_SHIPPING_LANE]!,
+      unreadable: false,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "logs have never been confirmed in Better Stack",
+    channel: "alert",
+    text: logShippingAlertText({
+      lane: LOG_SHIPPING_LANE,
+      ageMs: Infinity,
+      maxStaleMs: LOG_SHIPPING_STALE_BOUNDS_MS[LOG_SHIPPING_LANE]!,
+      unreadable: false,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "the log shipping receipt's record cannot be read",
+    channel: "alert",
+    text: logShippingAlertText({
+      lane: LOG_SHIPPING_LANE,
+      ageMs: NOW_MS,
+      maxStaleMs: LOG_SHIPPING_STALE_BOUNDS_MS[LOG_SHIPPING_LANE]!,
+      unreadable: true,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "logs are reaching Better Stack again",
+    channel: "recovery",
+    text: logShippingRecoveryText(LOG_SHIPPING_LANE),
   },
   // #1394: the same key, a different fault. These lanes are NOT quiet; they run
   // faithfully and conclude nothing, which every other message here would

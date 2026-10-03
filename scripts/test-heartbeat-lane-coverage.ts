@@ -27,6 +27,7 @@ import {
   BACKUP_STALE_BOUNDS_MS,
   LANE_STALE_BOUNDS_MS,
   CANARY_STALE_BOUNDS_MS,
+  LOG_SHIPPING_STALE_BOUNDS_MS,
   MIRROR_STALE_BOUNDS_MS,
   RETENTION_STALE_BOUNDS_MS,
   TIME_OFF_STALE_BOUNDS_MS,
@@ -55,6 +56,8 @@ const BOUNDS: Record<string, Record<string, number>> = {
   UPTIME_STALE_BOUNDS_MS,
   // #3076: the daily off platform database dump, stamped by db-backup.yml.
   BACKUP_STALE_BOUNDS_MS,
+  // #3182: the log shipping receipt, stamped through the tail worker's binding.
+  LOG_SHIPPING_STALE_BOUNDS_MS,
 };
 
 // A lane that deliberately stamps with NO bound watching it. Empty on purpose: an
