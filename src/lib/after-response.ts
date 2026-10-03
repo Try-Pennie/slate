@@ -1,6 +1,7 @@
 import { after } from "next/server";
 import { log } from "@/lib/log";
 import { isLoadtest } from "@/lib/loadtest-guard";
+import { outsideCallBudget } from "@/lib/call-budget";
 
 /**
  * Schedule best-effort background work that must OUTLIVE the response.
@@ -67,7 +68,10 @@ export function afterResponse(
       });
     };
     return Promise.resolve()
-      .then(work)
+      // #3102: outside any call budget. The work runs after the lead has their
+      // answer, and a confirm's budget may be spent by then, which would fail
+      // every Supabase and Google call in it at once for no reason of its own.
+      .then(() => outsideCallBudget(work))
       .then(
         () => report(false),
         (err) => {

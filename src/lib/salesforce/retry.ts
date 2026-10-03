@@ -12,6 +12,8 @@
  */
 
 import { refuseUnderLoadtest } from "@/lib/loadtest-guard";
+import { deadlineWithinBudget } from "@/lib/call-budget";
+import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
 import { salesforceLoadtestFault } from "@/lib/loadtest-fault";
 
 /** Total attempts (initial try + retries) for a Salesforce request. */
@@ -77,14 +79,28 @@ export async function fetchSfWithRetry(
 
   let lastErr: unknown;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    // #3102: each attempt also waits no longer than the enclosing call budget has
+    // left (a lead's confirm can read their routing code from here), and a spent
+    // budget throws BEFORE the try, so it is never retried: no backoff can bring
+    // the time back.
+    const { waitMs, reportAs } = deadlineWithinBudget(timeoutMs, "salesforce");
     try {
       const res = await doFetch(url, {
         ...init,
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: AbortSignal.timeout(waitMs),
       });
       if (res.ok || !shouldRetrySf(res.status, attempt, maxAttempts)) return res;
       lastErr = new Error(`SF request failed: ${res.status}`);
     } catch (err) {
+      // When the BUDGET is what shortened this attempt, its timeout is the
+      // budget running out, not a Salesforce blip: the platform's TimeoutError
+      // says neither, so it is surfaced as the deadline (which the confirm path
+      // answers with its retryable 503 and pages on) and never retried, since the
+      // time it ran out of cannot come back. A timeout on Salesforce's own limit
+      // stays the transient failure it always was.
+      if (reportAs.budget && (err as { name?: unknown } | null)?.name === "TimeoutError") {
+        throw new DeadlineExceededError(reportAs.label, reportAs.timeoutMs, reportAs.budget);
+      }
       lastErr = err;
       if (!shouldRetrySf(null, attempt, maxAttempts)) throw err;
     }

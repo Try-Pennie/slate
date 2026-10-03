@@ -111,6 +111,8 @@ const agentLinkStore = vi.hoisted(() => ({ resolveAgentLink: vi.fn() }));
 vi.mock("@/lib/agent-link/store", () => agentLinkStore);
 
 import { POST } from "./route";
+import { deadlineWithinBudget } from "@/lib/call-budget";
+import { BOOKING_CONFIRM_BUDGET_MS } from "@/lib/booking/confirm-budget";
 import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
 import { AGENT_LINK_COPY, BOOKING_ERROR_COPY, TEST_ACCESS_COPY } from "@/lib/booking/booker-copy";
 import { PARTNER_KEYS } from "@/lib/booking/partner-keys";
@@ -215,6 +217,43 @@ describe("POST /booking (embed) error mapping", () => {
     expect(keysRefunded).toContain("203.0.113.1");
     expect(keysRefunded).toContain("email:dana@example.com");
     expect(keysRefunded).toContain("phone:2155550100");
+  });
+
+  // #3102: the whole request runs under one budget, so a dozen slow calls cannot
+  // add up past the booker's 20 second abort; and the refunds a timed out confirm
+  // still owes the lead run under their own small allowance, not the spent budget.
+  it("runs the booking under the confirm budget and the refunds under the cleanup allowance (#3102)", async () => {
+    let bookingWait: number | null = null;
+    const refundLabels: string[] = [];
+    service.createBooking.mockImplementationOnce(async () => {
+      bookingWait = deadlineWithinBudget(60_000, "probe").waitMs;
+      throw new service.VerifyUnavailableError("outage");
+    });
+    rateLimit.refundRequest.mockImplementation(async () => {
+      refundLabels.push(deadlineWithinBudget(60_000, "probe").reportAs.budget?.label ?? "none");
+    });
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(503);
+    expect(bookingWait).not.toBeNull();
+    expect(bookingWait!).toBeLessThanOrEqual(BOOKING_CONFIRM_BUDGET_MS);
+    expect(refundLabels).toEqual(["the booking cleanup", "the booking cleanup", "the booking cleanup"]);
+    rateLimit.refundRequest.mockReset();
+  });
+
+  // The rest of the failure path, the outcome it records included, runs under the
+  // same allowance: after a timeout the confirm budget is spent, and work left
+  // under it would fail at once and lose the record of the failure.
+  it("records the failure outcome under the cleanup allowance, not the spent confirm budget (#3102)", async () => {
+    const labels: (string | undefined)[] = [];
+    recordApiOutcome.mockImplementation(() => {
+      labels.push(deadlineWithinBudget(60_000, "probe").reportAs.budget?.label);
+    });
+    service.createBooking.mockRejectedValueOnce(new Error("boom"));
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(500);
+    expect(labels.length).toBeGreaterThan(0);
+    expect(new Set(labels)).toEqual(new Set(["the booking cleanup"]));
+    recordApiOutcome.mockReset();
   });
 
   it("answers a retriable 503 when the existing-call check could not be made (#1641)", async () => {

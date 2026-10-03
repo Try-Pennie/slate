@@ -14,6 +14,7 @@ vi.mock("next/server", () => ({ after: afterMock }));
 vi.mock("@/lib/log", () => ({ log: logMock }));
 
 import { afterResponse } from "./after-response";
+import { deadlineWithinBudget, withinCallBudget } from "./call-budget";
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -132,5 +133,23 @@ describe("the deferred span reports each job's own time (#2353)", () => {
     // Every production confirm takes this branch, so it pays nothing rather than
     // paying a little and discarding it.
     expect(logMock.info.mock.calls.find((c) => c[0] === "after-response-profile")).toBeUndefined();
+  });
+
+  // #3102: deferred work runs after the lead has their answer, so it must not
+  // inherit the confirm's budget, which by then may be spent: a webhook send would
+  // fail at once for no reason of its own.
+  it("runs the deferred work outside any call budget it was scheduled from", async () => {
+    let seen: number | null = null;
+    await withinCallBudget(1_000, "the booking confirm", async () => {
+      afterResponse("webhook-send", async () => {
+        seen = deadlineWithinBudget(15_000, "supabase").waitMs;
+      });
+    });
+    const scheduled = afterMock.mock.calls[0][0] as () => unknown;
+    await withinCallBudget(1, "a budget the runner happens to sit in", async () => {
+      scheduled();
+    });
+    await flush();
+    expect(seen).toBe(15_000);
   });
 });

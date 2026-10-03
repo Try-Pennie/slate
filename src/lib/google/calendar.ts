@@ -9,6 +9,8 @@ import {
   type CalendarBusy,
 } from "@/lib/booking/core";
 import { log } from "@/lib/log";
+import { NO_DEADLINE, type Deadline } from "@/lib/fetch-within-deadline";
+import { fetchWithinBudget, withinCallBudget } from "@/lib/call-budget";
 import { googlePushUrl, googleChannelToken } from "@/lib/env";
 import {
   LOADTEST,
@@ -64,39 +66,71 @@ export class SyncTokenExpired extends Error {
 
 // The OOO approval/undo path waits synchronously on the calendar writes before
 // returning to the manager, so those calls are bounded (same posture as the
-// Slack and webhook calls). A timeout surfaces as an AbortError — the caller
-// records it as a failed side effect and the approval still completes.
+// Slack and webhook calls). A timeout surfaces as a DeadlineExceededError: the
+// caller records it as a failed side effect and the approval still completes.
 export const CALENDAR_WRITE_TIMEOUT_MS = 8000;
 
 /**
+ * The deadline for a Google call a LEAD is waiting on (#3102): verify-on-book,
+ * the event insert, and a lead's own move, cancel or correction. One expiry for
+ * the whole call, mint included (see `gfetch`). It bounds one call; what bounds a
+ * whole confirm, which makes a verify read and then an insert among its Supabase
+ * reads, is the confirm budget the booking routes run under
+ * (`BOOKING_CONFIRM_BUDGET_MS`), which every call here also respects. The same 8
+ * seconds the OOO writes above settled on, for the same reason: a person is
+ * watching.
+ */
+export const GOOGLE_CONFIRM_TIMEOUT_MS = 8000;
+
+/**
+ * The deadline for a Google call a cron LANE makes (#3102): the incremental sync,
+ * the calendar list, and the push watch registrations. Longer than the confirm
+ * deadline, because a bootstrap page is up to 2,500 events and nobody is waiting
+ * on it, and shorter than the 25 second `SYNC_TICK_BUDGET_MS` the sync tick
+ * stops starting new calendars at, so one hung calendar cannot spend a tick on
+ * its own. Pinned against that budget by `calendar.test.ts`.
+ */
+export const GOOGLE_SYNC_TIMEOUT_MS = 15_000;
+
+/**
  * Authenticated fetch against an agent's calendar via domain-wide delegation.
- * Pass `timeoutMs` to abort a slow/unreachable Google (used by the OOO write
- * calls); the read/sync hot paths leave it unbounded as before.
+ *
+ * The deadline is REQUIRED (#3102). It used to be optional and the hot paths left
+ * it out, so the confirm path's insert could wait forever on a hung Google. Every
+ * call now names one of the constants above, or `NO_DEADLINE` by name.
+ *
+ * The deadline is ONE expiry for the whole call, token mint included. A call is
+ * two requests, and giving each a full deadline let one call run to twice its
+ * limit, so a confirm's verify plus insert could reach 32 seconds, past the
+ * booker's 20. The call opens its own budget, the mint and the request each wait
+ * only for what it has left, and inside a confirm's budget it can only be tighter.
  */
 async function gfetch(
   email: string,
   url: string,
-  init: RequestInit = {},
-  timeoutMs?: number,
+  init: RequestInit,
+  deadline: Deadline,
+  label: string,
 ): Promise<Response> {
-  const token = await getDelegatedToken(email);
-  const controller = timeoutMs ? new AbortController() : undefined;
-  const timer = controller
-    ? setTimeout(() => controller.abort(), timeoutMs)
-    : undefined;
-  try {
-    return await fetch(url, {
-      ...init,
-      signal: controller?.signal,
-      headers: {
-        ...init.headers,
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
+  const call = async () => {
+    // `undefined` keeps the mint's default calendar scope.
+    const token = await getDelegatedToken(email, undefined, deadline);
+    return fetchWithinBudget(
+      fetch,
+      url,
+      {
+        ...init,
+        headers: {
+          ...init.headers,
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
       },
-    });
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
+      deadline,
+      `google ${label}`,
+    );
+  };
+  return deadline === NO_DEADLINE ? call() : withinCallBudget(deadline, `google ${label}`, call);
 }
 
 async function ok(res: Response, label: string): Promise<Response> {
@@ -151,13 +185,13 @@ export class CalendarListTruncated extends Error {
 
 /**
  * Lists the calendars the impersonated agent can see (for busy aggregation).
- * Pass `timeoutMs` to bound each page fetch (#922, used by the bookable
- * reachability probe so a hanging Google can't stall activation); the read/sync
- * hot paths leave it unbounded as before.
+ * Each page fetch is bounded by `timeoutMs`: the sync deadline by default, and a
+ * shorter one from the bookable reachability probe so a hanging Google can't
+ * stall activation (#922).
  */
 export async function listCalendars(
   email: string,
-  timeoutMs?: number,
+  timeoutMs: Deadline = GOOGLE_SYNC_TIMEOUT_MS,
 ): Promise<CalendarListEntry[]> {
   if (LOADTEST) return stubCalendarList(email);
   const entries: CalendarListEntry[] = [];
@@ -166,7 +200,13 @@ export async function listCalendars(
     const params = new URLSearchParams({ maxResults: "250", showHidden: "true" });
     if (pageToken) params.set("pageToken", pageToken);
     const res = await ok(
-      await gfetch(email, `${BASE}/users/me/calendarList?${params.toString()}`, {}, timeoutMs),
+      await gfetch(
+        email,
+        `${BASE}/users/me/calendarList?${params.toString()}`,
+        {},
+        timeoutMs,
+        "calendarList.list",
+      ),
       "calendarList.list",
     );
     const data = (await res.json()) as {
@@ -218,14 +258,20 @@ export async function freeBusy(
   const out: Interval[] = [];
   for (const chunk of chunkCalendarIds(calendarIds)) {
     const res = await ok(
-      await gfetch(email, `${BASE}/freeBusy`, {
-        method: "POST",
-        body: JSON.stringify({
-          timeMin,
-          timeMax,
-          items: chunk.map((id) => ({ id })),
-        }),
-      }),
+      await gfetch(
+        email,
+        `${BASE}/freeBusy`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            timeMin,
+            timeMax,
+            items: chunk.map((id) => ({ id })),
+          }),
+        },
+        GOOGLE_CONFIRM_TIMEOUT_MS,
+        "freeBusy",
+      ),
       "freeBusy",
     );
     const data = (await res.json()) as {
@@ -293,14 +339,20 @@ export async function freeBusyMany(
     return new Map(calendarIds.map((id) => [id, { busy: [], error: false }]));
   }
   const res = await ok(
-    await gfetch(subject, `${BASE}/freeBusy`, {
-      method: "POST",
-      body: JSON.stringify({
-        timeMin,
-        timeMax,
-        items: calendarIds.map((id) => ({ id })),
-      }),
-    }),
+    await gfetch(
+      subject,
+      `${BASE}/freeBusy`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          timeMin,
+          timeMax,
+          items: calendarIds.map((id) => ({ id })),
+        }),
+      },
+      GOOGLE_CONFIRM_TIMEOUT_MS,
+      "freeBusy.many",
+    ),
     "freeBusy.many",
   );
   const data = (await res.json()) as {
@@ -330,21 +382,29 @@ export async function createEvent(
   // #2241: the confirm path's first Google call. Ungated, a booking path load run
   // could not complete one booking.
   if (LOADTEST) return stubCreateEvent(input, clientId);
-  const res = await gfetch(email, `${BASE}/calendars/${CAL}/events?sendUpdates=all`, {
-    method: "POST",
-    body: JSON.stringify({
-      // P4 (#439): a deterministic client-supplied id makes the create
-      // idempotent — a retry sends the same id and Google 409s the duplicate.
-      ...(clientId ? { id: clientId } : {}),
-      summary: input.summary,
-      description: input.description,
-      start: { dateTime: input.start, timeZone: input.timezone },
-      end: { dateTime: input.end, timeZone: input.timezone },
-      attendees: input.attendeeEmail
-        ? [{ email: input.attendeeEmail, displayName: input.attendeeName }]
-        : undefined,
-    }),
-  });
+  const res = await gfetch(
+    email,
+    `${BASE}/calendars/${CAL}/events?sendUpdates=all`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        // P4 (#439): a deterministic client-supplied id makes the create
+        // idempotent: a retry sends the same id and Google 409s the duplicate.
+        // That is also what makes the deadline safe here (#3102): an insert that
+        // timed out may still have landed, and the resume sends this same id.
+        ...(clientId ? { id: clientId } : {}),
+        summary: input.summary,
+        description: input.description,
+        start: { dateTime: input.start, timeZone: input.timezone },
+        end: { dateTime: input.end, timeZone: input.timezone },
+        attendees: input.attendeeEmail
+          ? [{ email: input.attendeeEmail, displayName: input.attendeeName }]
+          : undefined,
+      }),
+    },
+    GOOGLE_CONFIRM_TIMEOUT_MS,
+    "events.insert",
+  );
 
   // 409-as-success: a duplicate client id means THIS event already exists (a
   // retry of the same intent on the same agent). GET it and return it — no
@@ -352,7 +412,13 @@ export async function createEvent(
   // shared ok() (which would throw); ok() is left untouched for all other calls.
   if (clientId && res.status === 409) {
     const existing = await ok(
-      await gfetch(email, `${BASE}/calendars/${CAL}/events/${encodeURIComponent(clientId)}`),
+      await gfetch(
+        email,
+        `${BASE}/calendars/${CAL}/events/${encodeURIComponent(clientId)}`,
+        {},
+        GOOGLE_CONFIRM_TIMEOUT_MS,
+        "events.get",
+      ),
       "events.get (409 reuse)",
     );
     const reused = (await existing.json()) as { id?: string };
@@ -425,6 +491,7 @@ export async function createEventOnCalendar(
       }),
     },
     CALENDAR_WRITE_TIMEOUT_MS,
+    "events.insert",
   );
 
   // 409-as-success, but ONLY when we supplied the id: then the duplicate is
@@ -438,6 +505,7 @@ export async function createEventOnCalendar(
         `${BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(clientId)}`,
         {},
         CALENDAR_WRITE_TIMEOUT_MS,
+        "events.get",
       ),
       "events.get (409 reuse)",
     );
@@ -482,6 +550,7 @@ export async function updateEventTimeOnCalendar(
       }),
     },
     CALENDAR_WRITE_TIMEOUT_MS,
+    "events.patch",
   );
   if (res.status === 404 || res.status === 410) throw new EventGone("events.patch");
   await ok(res, "events.patch");
@@ -500,6 +569,7 @@ export async function deleteEventOnCalendar(
     `${BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
     { method: "DELETE" },
     CALENDAR_WRITE_TIMEOUT_MS,
+    "events.delete",
   );
   if (!res.ok && res.status !== 404 && res.status !== 410) {
     // A typed error, not a plain one (#2371). `reachabilityFromError` reads the status
@@ -538,6 +608,8 @@ export async function updateEventTime(
         end: { dateTime: end, timeZone: timezone },
       }),
     },
+    GOOGLE_CONFIRM_TIMEOUT_MS,
+    "events.patch",
   );
   // #617: a PATCH on a deleted event 404/410s. Surface it as a typed EventGone
   // so the reschedule recreates the event instead of committing a phantom move
@@ -572,6 +644,7 @@ export async function getEventOnPrimary(
     `${BASE}/calendars/${CAL}/events/${encodeURIComponent(eventId)}`,
     {},
     CALENDAR_WRITE_TIMEOUT_MS,
+    "events.get",
   );
   if (res.status === 404 || res.status === 410) return null;
   await ok(res, "events.get");
@@ -604,6 +677,8 @@ export async function deleteEvent(
     email,
     `${BASE}/calendars/${CAL}/events/${encodeURIComponent(eventId)}?sendUpdates=${sendUpdates}`,
     { method: "DELETE" },
+    GOOGLE_CONFIRM_TIMEOUT_MS,
+    "events.delete",
   );
   if (!res.ok && res.status !== 404 && res.status !== 410) {
     // A typed error, not a plain one (#2561), for the same reason the sibling
@@ -629,15 +704,21 @@ export async function watchCalendar(
 ): Promise<{ resourceId: string | null; expiration: string | null }> {
   if (LOADTEST) return stubWatch(channelId, Date.now());
   const res = await ok(
-    await gfetch(email, `${BASE}/calendars/${encodeURIComponent(calendarId)}/events/watch`, {
-      method: "POST",
-      body: JSON.stringify({
-        id: channelId,
-        type: "web_hook",
-        address: googlePushUrl(),
-        token: googleChannelToken(),
-      }),
-    }),
+    await gfetch(
+      email,
+      `${BASE}/calendars/${encodeURIComponent(calendarId)}/events/watch`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          id: channelId,
+          type: "web_hook",
+          address: googlePushUrl(),
+          token: googleChannelToken(),
+        }),
+      },
+      GOOGLE_SYNC_TIMEOUT_MS,
+      "events.watch",
+    ),
     "events.watch",
   );
   const data = (await res.json()) as { resourceId?: string; expiration?: string };
@@ -655,10 +736,13 @@ export async function stopChannel(
   resourceId: string,
 ): Promise<void> {
   if (LOADTEST) return;
-  await gfetch(email, `${BASE}/channels/stop`, {
-    method: "POST",
-    body: JSON.stringify({ id: channelId, resourceId }),
-  });
+  await gfetch(
+    email,
+    `${BASE}/channels/stop`,
+    { method: "POST", body: JSON.stringify({ id: channelId, resourceId }) },
+    GOOGLE_SYNC_TIMEOUT_MS,
+    "channels.stop",
+  );
 }
 
 export interface SyncResult {
@@ -730,6 +814,9 @@ export async function syncEvents(
     const res = await gfetch(
       email,
       `${BASE}/calendars/${encodeURIComponent(calendarId)}/events?${params.toString()}`,
+      {},
+      GOOGLE_SYNC_TIMEOUT_MS,
+      "events.list",
     );
     if (res.status === 410) throw new SyncTokenExpired();
     await ok(res, "events.list");
@@ -815,6 +902,8 @@ export async function updateEventContact(
     email,
     `${BASE}/calendars/${CAL}/events/${encodeURIComponent(eventId)}?sendUpdates=${sendUpdates}`,
     { method: "PATCH", body: JSON.stringify(body) },
+    GOOGLE_CONFIRM_TIMEOUT_MS,
+    "events.patch",
   );
   if (res.status === 404 || res.status === 410) throw new EventGone("events.patch.description");
   await ok(res, "events.patch.description");

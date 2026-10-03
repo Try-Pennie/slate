@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { publicSupabasePublishableKey, publicSupabaseUrl } from "@/lib/env";
 import { SECURITY_HEADERS } from "@/lib/security-headers";
+import { supabaseEdgeFetch } from "@/lib/supabase/fetch-deadline";
 import { hardenAuthCookie, serverAuthCookieOptions } from "@/lib/supabase/cookie-options";
 import {
   buildContentSecurityPolicy,
@@ -96,6 +97,8 @@ export async function middleware(request: NextRequest) {
       publicSupabaseUrl(),
       publicSupabasePublishableKey(),
       {
+        // #3102: a hung auth server must not hold every staff page open.
+        global: { fetch: supabaseEdgeFetch },
         // #3112: httpOnly, Secure in production, clamped to the idle limit.
         cookieOptions: serverAuthCookieOptions(),
         cookies: {

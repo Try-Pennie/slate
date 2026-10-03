@@ -84,6 +84,7 @@ import { leadCallingZone, withinLeadCallingWindow } from "./lead-calling-window.
 import { shortErrorReason } from "../notify/error-text.ts";
 import { callingNumberWithinDeadline } from "../salesforce/lead-calling-number.ts";
 import type { ScheduleTimer } from "../read-within-deadline.ts";
+import { findDeadlineExceeded, type DeadlineFound } from "../fetch-within-deadline.ts";
 import { log } from "@/lib/log";
 import { readBookingSource } from "./booking-source.ts";
 import type { FullApiCaller } from "./api-callers.ts";
@@ -266,6 +267,45 @@ export class VerifyUnavailableError extends Error {
     super("We hit a temporary issue confirming this time. Please try again in a moment.");
     this.name = "VerifyUnavailableError";
   }
+}
+
+/**
+ * A dependency on the booking path did not answer inside its deadline (#3102):
+ * Google or Supabase accepted the request and never replied.
+ *
+ * A subclass of `VerifyUnavailableError` on purpose, so it reaches every booking
+ * route as the outage they already answer with a retryable 503 and the sentence
+ * the booker already shows, refunds the lead's rate limit hit the same way, and
+ * is counted under the same refusal. Before this it escaped as an unexpected
+ * error, a generic 500 that told the lead nothing and paged nobody as an outage.
+ * It carries WHAT did not answer, for the page.
+ */
+export class DependencyTimeoutError extends VerifyUnavailableError {
+  /** The call that was in flight: the dependency somebody has to look at. */
+  readonly dependency: string;
+  readonly timeoutMs: number;
+  /** The request's budget, when that is what cut the call short. */
+  readonly budget: { label: string; totalMs: number } | null;
+  constructor(found: DeadlineFound, cause: unknown) {
+    super();
+    this.name = "DependencyTimeoutError";
+    this.dependency = found.label;
+    this.timeoutMs = found.timeoutMs;
+    this.budget = found.budget;
+    this.cause = cause;
+  }
+}
+
+/**
+ * The one place a deadline becomes the booking outage (#3102). Applied where the
+ * booking entry points already decide what to page about, so every route that
+ * calls them gets the 503 without learning what a deadline is. Anything else,
+ * including an outage already classified, is returned untouched.
+ */
+export function timeoutAsRetryable(err: unknown): unknown {
+  if (err instanceof VerifyUnavailableError) return err;
+  const found = findDeadlineExceeded(err);
+  return found ? new DependencyTimeoutError(found, err) : err;
 }
 
 /**

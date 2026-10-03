@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { withinBookingCleanupBudget, withinBookingConfirmBudget } from "@/lib/booking/confirm-budget";
 import { z } from "zod";
 import {
   rescheduleBooking,
@@ -80,7 +81,8 @@ export async function POST(
   req: NextRequest,
   ctx: { params: Promise<{ token: string }> },
 ) {
-  return noStore(await handlePost(req, ctx));
+  // #3102: one budget for the whole request; see `confirm-budget.ts`.
+  return noStore(await withinBookingConfirmBudget(() => handlePost(req, ctx)));
 }
 
 async function handlePost(
@@ -180,92 +182,97 @@ async function handlePost(
       ...partnerKeysFrom(booking.prefill),
     });
   } catch (err) {
-    // #2164: the details they typed were refused, and nothing moved. A 400 with
-    // the sentence about the value itself, because that is what the reader has to
-    // act on; the time they picked is still there and still theirs to take.
-    if (err instanceof ContactRefusedError) {
-      recordApiOutcome("error", "", "reschedule_contact_refused", { by: "manageToken", token });
-      // refusal: reschedule_contact_refused
-      return NextResponse.json({ error: err.message }, { status: 400 });
-    }
-    // #2310: the new time starts outside the lead's calling window. Not a 409:
-    // nothing is taken and the booking did not move under them, so neither of
-    // those answers (or the alternatives panel a 409 opens) would be true. The
-    // page only offers times inside the window, so a wave of these means the
-    // page and the rule disagree, which is why it is counted.
-    if (err instanceof OutsideCallingWindowError) {
-      recordApiOutcome("error", "", "reschedule_outside_calling_window", { by: "manageToken", token });
-      // refusal: reschedule_outside_calling_window
-      return NextResponse.json(
-        { error: BOOKING_ERROR_COPY.outsideCallingHours, reason: "reschedule_outside_calling_window" },
-        { status: 422 },
-      );
-    }
-    // Outage (couldn't verify), not a full slot — retryable (#319).
-    if (err instanceof VerifyUnavailableError) {
-      recordApiOutcome("error", "", "reschedule_verify_unavailable", { by: "manageToken", token });
-      // refusal: reschedule_verify_unavailable
-      return NextResponse.json({ error: err.message }, { status: 503 });
-    }
-    // #2373: the gated commit did not RUN, so the call has not moved. Kept ABOVE
-    // the conflict branch below because it used to be answered BY it: a refused
-    // statement made `commitReschedule` report zero rows, which reads as a
-    // concurrent change, so the lead was told to refresh and pick again by a write
-    // that never happened. Refreshing repairs a lost race and does nothing at all
-    // for this, so it gets its own retriable status and a sentence that says
-    // nothing changed. Reported through the same chokepoint an unexpected fault
-    // goes through, so somebody is paged rather than only counted.
-    if (isBookingWriteFailure(err)) {
-      recordApiOutcome("error", "", "reschedule_write_failed", { by: "manageToken", token });
-      await reportInternalError(err, "bookings/[token]/reschedule");
-      // refusal: reschedule_write_failed
-      return NextResponse.json({ error: err.message }, { status: 503 });
-    }
-    // Fail-closed lock claim on a transient DB error (#479): safe to retry, so a
-    // 503 like a verify outage, not a hard 500.
-    if (err instanceof RescheduleLockUnavailableError) {
-      recordApiOutcome("error", "", "reschedule_lock_unavailable", { by: "manageToken", token });
-      // refusal: reschedule_lock_unavailable
-      return NextResponse.json({ error: err.message }, { status: 503 });
-    }
-    // A concurrent reschedule moved this booking under us (#439). 409 like a slot
-    // conflict; the distinct message tells the actor to refresh.
-    // Every 409 names its reason (#1549). Three of them share this status and the
-    // lead-facing surfaces answer two of them one way and one the other: a time that
-    // went gets the soonest times still open beneath it, a booking that moved under
-    // the reader must not, because the page is showing a time that is no longer the
-    // booking's. Branching on the message would make the copy load-bearing (L35), so
-    // the reason travels as its own field. `rescheduleOffersAlternatives` is the only
-    // judge of it; these ids are the refusal-catalog ids already recorded above.
-    if (err instanceof RescheduleConflictError) {
-      recordApiOutcome("error", "", "reschedule_conflict", { by: "manageToken", token });
-      // refusal: reschedule_conflict
-      return NextResponse.json(
-        { error: err.message, reason: "reschedule_conflict" },
-        { status: 409 },
-      );
-    }
-    if (err instanceof SlotUnavailableError) {
-      recordApiOutcome("error", "", "reschedule_slot_taken", { by: "manageToken", token });
-      // refusal: reschedule_slot_taken
-      return NextResponse.json(
-        { error: err.message, reason: "reschedule_slot_taken" },
-        { status: 409 },
-      );
-    }
-    // The target time has no free agent in the bucket (#484): a legitimately
-    // full slot, not a crash. 409 like the other unavailable cases so the caller
-    // can offer another time instead of seeing a generic error.
-    if (err instanceof NoEligibleAgentsError) {
-      recordApiOutcome("error", "", "reschedule_no_eligible_agents", { by: "manageToken", token });
-      // refusal: reschedule_no_eligible_agents
-      return NextResponse.json(
-        { error: err.message, reason: "reschedule_no_eligible_agents" },
-        { status: 409 },
-      );
-    }
-    recordApiOutcome("error", "", "reschedule_internal", { by: "manageToken", token });
-    // refusal: reschedule_internal
-    return internalErrorResponse(err, "bookings/[token]/reschedule");
+    // #3102: the failure path runs under the cleanup allowance, not the confirm
+    // budget, which a timeout has already spent; its outcome and report would
+    // otherwise fail at once and the failure would go unrecorded.
+    return withinBookingCleanupBudget(async () => {
+      // #2164: the details they typed were refused, and nothing moved. A 400 with
+      // the sentence about the value itself, because that is what the reader has to
+      // act on; the time they picked is still there and still theirs to take.
+      if (err instanceof ContactRefusedError) {
+        recordApiOutcome("error", "", "reschedule_contact_refused", { by: "manageToken", token });
+        // refusal: reschedule_contact_refused
+        return NextResponse.json({ error: err.message }, { status: 400 });
+      }
+      // #2310: the new time starts outside the lead's calling window. Not a 409:
+      // nothing is taken and the booking did not move under them, so neither of
+      // those answers (or the alternatives panel a 409 opens) would be true. The
+      // page only offers times inside the window, so a wave of these means the
+      // page and the rule disagree, which is why it is counted.
+      if (err instanceof OutsideCallingWindowError) {
+        recordApiOutcome("error", "", "reschedule_outside_calling_window", { by: "manageToken", token });
+        // refusal: reschedule_outside_calling_window
+        return NextResponse.json(
+          { error: BOOKING_ERROR_COPY.outsideCallingHours, reason: "reschedule_outside_calling_window" },
+          { status: 422 },
+        );
+      }
+      // Outage (couldn't verify), not a full slot: retryable (#319).
+      if (err instanceof VerifyUnavailableError) {
+        recordApiOutcome("error", "", "reschedule_verify_unavailable", { by: "manageToken", token });
+        // refusal: reschedule_verify_unavailable
+        return NextResponse.json({ error: err.message }, { status: 503 });
+      }
+      // #2373: the gated commit did not RUN, so the call has not moved. Kept ABOVE
+      // the conflict branch below because it used to be answered BY it: a refused
+      // statement made `commitReschedule` report zero rows, which reads as a
+      // concurrent change, so the lead was told to refresh and pick again by a write
+      // that never happened. Refreshing repairs a lost race and does nothing at all
+      // for this, so it gets its own retriable status and a sentence that says
+      // nothing changed. Reported through the same chokepoint an unexpected fault
+      // goes through, so somebody is paged rather than only counted.
+      if (isBookingWriteFailure(err)) {
+        recordApiOutcome("error", "", "reschedule_write_failed", { by: "manageToken", token });
+        await reportInternalError(err, "bookings/[token]/reschedule");
+        // refusal: reschedule_write_failed
+        return NextResponse.json({ error: err.message }, { status: 503 });
+      }
+      // Fail-closed lock claim on a transient DB error (#479): safe to retry, so a
+      // 503 like a verify outage, not a hard 500.
+      if (err instanceof RescheduleLockUnavailableError) {
+        recordApiOutcome("error", "", "reschedule_lock_unavailable", { by: "manageToken", token });
+        // refusal: reschedule_lock_unavailable
+        return NextResponse.json({ error: err.message }, { status: 503 });
+      }
+      // A concurrent reschedule moved this booking under us (#439). 409 like a slot
+      // conflict; the distinct message tells the actor to refresh.
+      // Every 409 names its reason (#1549). Three of them share this status and the
+      // lead-facing surfaces answer two of them one way and one the other: a time that
+      // went gets the soonest times still open beneath it, a booking that moved under
+      // the reader must not, because the page is showing a time that is no longer the
+      // booking's. Branching on the message would make the copy load-bearing (L35), so
+      // the reason travels as its own field. `rescheduleOffersAlternatives` is the only
+      // judge of it; these ids are the refusal-catalog ids already recorded above.
+      if (err instanceof RescheduleConflictError) {
+        recordApiOutcome("error", "", "reschedule_conflict", { by: "manageToken", token });
+        // refusal: reschedule_conflict
+        return NextResponse.json(
+          { error: err.message, reason: "reschedule_conflict" },
+          { status: 409 },
+        );
+      }
+      if (err instanceof SlotUnavailableError) {
+        recordApiOutcome("error", "", "reschedule_slot_taken", { by: "manageToken", token });
+        // refusal: reschedule_slot_taken
+        return NextResponse.json(
+          { error: err.message, reason: "reschedule_slot_taken" },
+          { status: 409 },
+        );
+      }
+      // The target time has no free agent in the bucket (#484): a legitimately
+      // full slot, not a crash. 409 like the other unavailable cases so the caller
+      // can offer another time instead of seeing a generic error.
+      if (err instanceof NoEligibleAgentsError) {
+        recordApiOutcome("error", "", "reschedule_no_eligible_agents", { by: "manageToken", token });
+        // refusal: reschedule_no_eligible_agents
+        return NextResponse.json(
+          { error: err.message, reason: "reschedule_no_eligible_agents" },
+          { status: 409 },
+        );
+      }
+      recordApiOutcome("error", "", "reschedule_internal", { by: "manageToken", token });
+      // refusal: reschedule_internal
+      return internalErrorResponse(err, "bookings/[token]/reschedule");
+    });
   }
 }

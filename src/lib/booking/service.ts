@@ -132,6 +132,7 @@ import { escapeLike } from "@/lib/sql-like";
 import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
 import { emitWebhook, type WebhookSendScheduler } from "@/lib/webhooks/emit";
 import { afterResponse, deferWebhookSend } from "@/lib/after-response";
+import { withinBookingCleanupBudget } from "@/lib/booking/confirm-budget";
 import { sendThrottledAlert, resolveRecovered } from "@/lib/notify/dispatch";
 import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import {
@@ -152,6 +153,7 @@ import {
   reschedulePinDroppedAlert,
   rescheduleLockOutageAlert,
   verifyOutageAlert,
+  dependencyTimeoutAlert,
   reservationDrainRecovery,
   reservationDrainStuckAlert,
   verifyReadFailedAlert,
@@ -2069,6 +2071,15 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
 export function bookingFailureAlert(
   err: unknown,
 ): { key: string; cooldownMs: number; message: string } | null {
+  // #3102: the same incident as the verify outage from the lead's side, so the
+  // same key and cooldown, with words that name what did not answer.
+  if (err instanceof orchestration.DependencyTimeoutError) {
+    return {
+      key: VERIFY_OUTAGE_ALERT_KEY,
+      cooldownMs: VERIFY_OUTAGE_ALERT_COOLDOWN_MS,
+      message: dependencyTimeoutAlert(err),
+    };
+  }
   if (err instanceof orchestration.VerifyUnavailableError) {
     return {
       key: VERIFY_OUTAGE_ALERT_KEY,
@@ -2100,19 +2111,28 @@ export function bookingFailureAlert(
 async function alertOnBookingFailure<T>(op: () => Promise<T>): Promise<T> {
   try {
     return await op();
-  } catch (err) {
+  } catch (caught) {
+    // #3102: a dependency that did not answer becomes the retryable outage here,
+    // before the alert is chosen, so it pages as one and every route answers 503.
+    const err = orchestration.timeoutAsRetryable(caught);
+    if (err !== caught) {
+      log.warn("booking", { msg: "a dependency timed out on the booking path; answering retryable" }, caught);
+    }
     const spec = bookingFailureAlert(err);
     if (spec) {
-      // alert-text-ok: `spec.message` is the alert's own copy, built by
-      // bookingFailureAlert from the pure builders in booking/alert-copy.ts. The
-      // name ends in `.message` and is not an error; the widened #2418 scan reads
-      // arguments as well as templates, so it reaches this shape now.
-      // alert-key: verify_on_book_outage
-      // alert-key: reschedule_lock_outage
-      // alert-key: no_eligible_agents:*
-      await sendThrottledAlert(spec.key, spec.cooldownMs, spec.message).catch(
-        logAlertSendFailure(spec.key),
-      );
+      // #3102: under the cleanup allowance. A timeout page is sent after the
+      // request's budget may already be spent, and its alert_state read would
+      // otherwise fail at once and lose the page about the outage itself.
+      await withinBookingCleanupBudget(() =>
+        // alert-text-ok: `spec.message` is the alert's own copy, built by
+        // bookingFailureAlert from the pure builders in booking/alert-copy.ts. The
+        // name ends in `.message` and is not an error; the widened #2418 scan reads
+        // arguments as well as templates, so it reaches this shape now.
+        // alert-key: verify_on_book_outage
+        // alert-key: reschedule_lock_outage
+        // alert-key: no_eligible_agents:*
+        sendThrottledAlert(spec.key, spec.cooldownMs, spec.message),
+      ).catch(logAlertSendFailure(spec.key));
     }
     throw err;
   }
