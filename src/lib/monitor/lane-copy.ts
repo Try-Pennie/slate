@@ -5,7 +5,7 @@
  * calling these, instead of holding a second copy that would drift the first time
  * someone edited one and not the other (L41). The watchdog imports them back.
  *
- * Eight lane families, eight voices, deliberately: these lanes fail for different
+ * Nine lane families, nine voices, deliberately: these lanes fail for different
  * reasons and are recovered by different people doing different things, and
  * #1123 already had to unpick one shared message that pointed responders at the
  * wrong lane and lock.

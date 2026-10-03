@@ -9,7 +9,11 @@
  *
  * Its own configuration is `wrangler.log-tail.jsonc`, deployed by hand with
  * `npx wrangler deploy -c wrangler.log-tail.jsonc`; DEPLOY.md has the order, which
- * matters: this Worker and its secret first, Slate's reference to it second.
+ * matters and runs BOTH ways now. Slate names this Worker in `tail_consumers`, so
+ * this Worker had to exist first (done 2026-10-03). This Worker binds Slate's
+ * `LogShippingReceipt` entrypoint (#3182), so a Slate that exports it must be live
+ * before this Worker is deployed with the binding: Slate first, this Worker second,
+ * for the change that adds the entrypoint and for any that renames or removes it.
  *
  * It can never affect a Slate request: it runs in its own invocation, after
  * Slate's has finished. It still never throws, because a throw would lose the

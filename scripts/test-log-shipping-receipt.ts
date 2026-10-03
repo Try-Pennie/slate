@@ -144,6 +144,20 @@ const ALL_SENT = (n: number): ShipOutcome => ({ sent: n, dropped: {} });
   );
   const hung: ReceiptBinding = { shipped: () => new Promise(() => {}) };
   eq(await confirmReceipt(hung, 5), "timeout", "a call that never answers is abandoned at its deadline (L110)");
+
+  // A call that loses the race and rejects AFTER the deadline must not become an
+  // unhandled rejection, which the runtime reports as a fault of its own.
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => void unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  const late: ReceiptBinding = {
+    shipped: () => new Promise((_, reject) => setTimeout(() => reject(new Error("late")), 20)),
+  };
+  eq(await confirmReceipt(late, 5), "timeout", "a call slower than its deadline is a timeout");
+  await new Promise((r) => setTimeout(r, 60));
+  process.off("unhandledRejection", onUnhandled);
+  eq(unhandled.length, 0, "and its late rejection is handled, never left unhandled");
+
   assert(RECEIPT_TIMEOUT_MS > 0 && RECEIPT_TIMEOUT_MS <= 10_000, "the default deadline is bounded");
 }
 

@@ -84,7 +84,13 @@ export async function confirmReceipt(
     timer = setTimeout(() => resolve("timeout"), timeoutMs);
   });
   try {
-    const answer = await Promise.race([binding.shipped(), deadline]);
+    const call = binding.shipped();
+    // A call that loses the race to the deadline and rejects later is already
+    // reported as a timeout. Promise.race subscribes to it, so the late rejection is
+    // handled either way (scripts/test-log-shipping-receipt.ts pins that); this says
+    // so explicitly rather than leaving it to the reader to know.
+    call.catch(() => {});
+    const answer = await Promise.race([call, deadline]);
     if (answer === "timeout") return "timeout";
     return answer?.stamped === true ? "stamped" : "refused";
   } catch {

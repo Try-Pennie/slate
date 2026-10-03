@@ -525,6 +525,17 @@ CI deploys Slate only, never the tail worker. So a change to the redaction
 (`src/lib/log-shipping/`, or `src/lib/api/client-error-scrub.ts`, which it imports) is
 not live until somebody re-runs step 3. The secret survives a redeploy.
 
+**Since #3182 the dependency runs both ways.** The tail worker binds Slate's
+`LogShippingReceipt` entrypoint, so for any change that ADDS, renames or removes that
+entrypoint, **Slate deploys first and the tail worker second**: the reverse of first
+setup. For every other change either order works, because both Workers already exist
+and the entrypoint name is unchanged. Whether Cloudflare refuses a deploy whose
+binding names an entrypoint the target does not yet export, or accepts it and fails
+each call, was not measured (it means deploying production); in the second case the
+receipts fail, are logged as `receipt=failed`, and the watchdog pages until Slate
+catches up, so nothing is lost but a page. Any automated deploy that ships the tail
+worker beside Slate must follow the same order for those changes.
+
 ### When records stop arriving
 
 The tail worker never throws. Every record it could not send is counted and written
