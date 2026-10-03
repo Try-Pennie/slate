@@ -258,6 +258,62 @@ describe("sendThrottledAlert delivery-aware cooldown (#1035)", () => {
   }
 });
 
+// #3104: the load run's fault pass is judged on whether a page WOULD have gone out,
+// once per cooldown. Slack refuses every load test post (#2335) and the deployment
+// holds no bot token, so before this nothing about a page left any trace the judge
+// could read. Under the flag the throttle runs and the page is recorded instead.
+describe("sendThrottledAlert under a load test (#3104)", () => {
+  const COOLDOWN = 30 * 60 * 1000;
+
+  it("records the page in alert_state and posts nothing, with no bot token", async () => {
+    process.env.SLATE_LOADTEST = "true";
+    slack.slackConfigured.mockReturnValue(false);
+    await sendThrottledAlert("sync_failures", COOLDOWN, "broken");
+    expect(slack.postSlack).not.toHaveBeenCalled();
+    expect(rows.has("sync_failures")).toBe(true);
+    // Nobody was told, so no all clear is owed (#1133).
+    expect(rows.has(firingKey("sync_failures"))).toBe(false);
+  });
+
+  it("is THROTTLED: a second page inside the cooldown records nothing new", async () => {
+    process.env.SLATE_LOADTEST = "true";
+    slack.slackConfigured.mockReturnValue(false);
+    await sendThrottledAlert("sync_failures", COOLDOWN, "broken");
+    const first = rows.get("sync_failures");
+    await sendThrottledAlert("sync_failures", COOLDOWN, "broken again");
+    expect(upsert).toHaveBeenCalledTimes(1);
+    expect(rows.get("sync_failures")).toBe(first);
+  });
+
+  it("stamps the full cooldown, so the record reads as a page that went out", async () => {
+    process.env.SLATE_LOADTEST = "true";
+    slack.slackConfigured.mockReturnValue(false);
+    const before = Date.now();
+    await sendThrottledAlert("sync_failures", COOLDOWN, "broken");
+    const stamped = Date.parse(rows.get("sync_failures")!);
+    expect(stamped).toBeGreaterThanOrEqual(before - 1000);
+    expect(stamped).toBeLessThanOrEqual(Date.now() + 1000);
+  });
+
+  it("off the flag, an unconfigured Slack still records nothing (production is unchanged)", async () => {
+    delete process.env.SLATE_LOADTEST;
+    slack.slackConfigured.mockReturnValue(false);
+    await sendThrottledAlert("sync_failures", COOLDOWN, "broken");
+    expect(upsert).not.toHaveBeenCalled();
+    expect(slack.postSlack).not.toHaveBeenCalled();
+    slack.slackConfigured.mockReturnValue(true);
+  });
+
+  it("never records from off the Workers runtime, flag or not", async () => {
+    process.env.SLATE_LOADTEST = "true";
+    slack.slackConfigured.mockReturnValue(false);
+    isWorkersRuntime.mockReturnValue(false);
+    await sendThrottledAlert("sync_failures", COOLDOWN, "broken");
+    expect(upsert).not.toHaveBeenCalled();
+    slack.slackConfigured.mockReturnValue(true);
+  });
+});
+
 // #1133: an actionable page must say when it clears. Silence is indistinguishable
 // from the cooldown still running, so a cleared condition sends a recovery notice
 // exactly once, and only when a page was actually DELIVERED.

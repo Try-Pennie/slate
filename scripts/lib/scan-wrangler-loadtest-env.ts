@@ -15,6 +15,10 @@
  */
 import { allLaneNames } from "../../worker/lanes-disabled.ts";
 
+/** The fault switch's two settings (#3104), which the fault leg adds with --var and
+ *  nothing commits. */
+export const FAULT_SWITCH_VARS = ["SLATE_LOADTEST_FAULT_PCT", "SLATE_LOADTEST_FAULT_TARGETS"] as const;
+
 export interface RateLimit {
   name?: string;
   namespace_id?: string;
@@ -200,6 +204,28 @@ export function loadtestEnvFaults(top: WranglerLike, env: WranglerLike): string[
   }
   if ("SLATE_LANES_DISABLED" in topVars) {
     faults.push(`the top level sets SLATE_LANES_DISABLED, so production would hold lanes back.`);
+  }
+
+  // --- the fault switch is committed NOWHERE (#3104) -------------------------
+  // It is added at deploy time by the fault leg (`wrangler deploy --var`) and taken
+  // away by the restore step, which deploys the vars block as written. On the top
+  // level it is production's own setting, which the injectors' SLATE_LOADTEST gate
+  // makes inert but which has no business existing; in the committed env.loadtest
+  // block it would fault EVERY leg of every run, so the steady pass's "no 5xx" bar
+  // would be measuring faults the run injected on purpose.
+  for (const key of FAULT_SWITCH_VARS) {
+    if (key in topVars) {
+      faults.push(
+        `the top level sets ${key}, the load run's fault switch. It belongs to the fault leg's ` +
+          `deploy alone and never to production.`,
+      );
+    }
+    if (key in envVars) {
+      faults.push(
+        `env.loadtest commits ${key}, so every leg of every run would inject faults and the ` +
+          `steady pass would count them as the path's own 5xx. The fault leg sets it with --var.`,
+      );
+    }
   }
   const known = new Set(allLaneNames());
   for (const name of disabled) {

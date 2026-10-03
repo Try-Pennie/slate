@@ -18,6 +18,13 @@ import { CEILING_CONCLUSION, type CeilingVerdict } from "./preflight-checks.ts";
 // the reader in at runtime and the two stay one direction apart.
 import type { ConfirmStartupReading } from "./confirm-startup.ts";
 import type { SoakSample } from "./invariants.ts";
+import {
+  faultLaneIncompleteness,
+  judgeFaultLanes,
+  type FaultLaneEvidence,
+  type FaultLaneExpectations,
+} from "./fault-lanes.ts";
+import { everyTargetDegrades, parseFaultTargets } from "../../src/lib/loadtest-fault.ts";
 
 /** A booking row the run created, as the judge needs it. */
 export interface JudgedBooking {
@@ -162,8 +169,21 @@ export interface JudgeInput {
    */
   confirmStartup: ConfirmStartupReading | null;
   platform: PlatformReading;
-  /** The fault pass, when one ran. */
-  faultPass?: { attempts: number; fiveXx: number; faultPct: number };
+  /**
+   * The fault pass, when one ran. `faultTargets` is the list the DEPLOYMENT reported
+   * failing (#3104), and decides which bar the pass is held to: with only systems
+   * the request path degrades around it must not 5xx, and with one that fails loud
+   * by design the 5xx count is a measurement of the percentage and is reported
+   * instead. Empty means the driver never recorded it, which is incomplete.
+   */
+  faultPass?: { attempts: number; fiveXx: number; faultPct: number; faultTargets: string[] };
+  /**
+   * What the cron lanes did while the deployment was faulted (#3104): the lane
+   * sampler's file, or null when it never arrived, and what the lanes are held to.
+   * Present whenever the fault pass is; a fault pass without it is incomplete,
+   * because the lanes are half of what the leg exists to show.
+   */
+  faultLanes?: { evidence: FaultLaneEvidence | null; expectations: FaultLaneExpectations };
   /**
    * Which legs this run was CONFIGURED to have, so a leg that was asked for and
    * never arrived is incomplete rather than silently skipped (#2262).
@@ -175,7 +195,7 @@ export interface JudgeInput {
    * quietly absent (L98, L11). A hand run with no burst passes zeroes and the bars
    * are skipped exactly as before.
    */
-  expectedLegs: { burstDrivers: number; faultPct: number };
+  expectedLegs: { burstDrivers: number; faultPct: number; faultTargets?: readonly string[] };
   /**
    * The two CPU ceilings, which are different numbers about different things.
    * `cpuMsP99` is the REQUEST path budget (`REQUEST_CPU_P99_MS`, a share of the
@@ -329,6 +349,37 @@ export function incompleteness(input: JudgeInput): string[] {
         `the fault pass ran against a deployment reporting ${input.faultPass.faultPct} percent, ` +
           `not the ${wantFault} it was configured for`,
       );
+    }
+  }
+  // WHICH systems failed (#3104). The bar the pass is held to depends on it, so a
+  // pass whose deployment faulted different systems from the ones asked for would be
+  // judged against the wrong bar, and one that never recorded them cannot be judged
+  // against any.
+  if (input.faultPass) {
+    const got = [...new Set(input.faultPass.faultTargets)].sort();
+    if (got.length === 0) {
+      why.push(
+        "the fault driver did not record which systems the deployment was failing, so which bar " +
+          "the pass is held to cannot be decided",
+      );
+    } else if (wantFault > 0) {
+      const want = [...new Set(input.expectedLegs.faultTargets ?? parseFaultTargets(undefined).targets)].sort();
+      if (want.join(",") !== got.join(",")) {
+        why.push(
+          `the fault pass ran against a deployment failing ${got.join(", ")}, not the ` +
+            `${want.join(", ")} it was configured for`,
+        );
+      }
+    }
+    if (!input.faultLanes || input.faultLanes.evidence === null) {
+      why.push(
+        "the fault pass ran and no lane sampler file arrived, so what the cron lanes did while " +
+          "faults were injected was never measured",
+      );
+    } else {
+      for (const w of faultLaneIncompleteness(input.faultLanes.evidence, input.faultLanes.expectations)) {
+        why.push(w);
+      }
     }
   }
   return why;
@@ -579,6 +630,23 @@ export interface JudgeResult {
   incomplete: string[];
 }
 
+/**
+ * Whether a fault pass is held to "no 5xx" (#3104).
+ *
+ * Only when every system it failed is one the request path degrades around
+ * (`FAULT_TARGET_CONTRACT`). With a database fault or a failing calendar write in
+ * the mix, a 5xx is the designed answer (the booking could not be written, the event
+ * does not exist), so the count measures the percentage rather than the code and
+ * barring it would make the bar unreachable for a reason nobody should fix (#2241).
+ * The count is still reported; what is judged on such a pass is the cron lanes.
+ * A name the shared vocabulary does not know keeps the bar, the strict direction.
+ */
+export function faultPassKeepsFiveXxBar(targets: readonly string[]): boolean {
+  const parsed = parseFaultTargets(targets.join(","));
+  if (parsed.unknown.length > 0) return true;
+  return everyTargetDegrades(parsed.targets);
+}
+
 export function judgeBookingRun(input: JudgeInput): JudgeResult {
   const incomplete = incompleteness(input);
   if (incomplete.length > 0) {
@@ -813,12 +881,20 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
         `it was configured at ${input.faultPass.faultPct} percent and made no requests, so it ` +
           "proved nothing",
       );
-    } else if (input.faultPass.fiveXx > 0) {
+    } else if (input.faultPass.fiveXx > 0 && faultPassKeepsFiveXxBar(input.faultPass.faultTargets)) {
       fail(
         "the fault pass",
-        `${input.faultPass.fiveXx} of ${input.faultPass.attempts} requests were 5xx with Google ` +
-          `failing ${input.faultPass.faultPct} percent of reads; the path must degrade, not error`,
+        `${input.faultPass.fiveXx} of ${input.faultPass.attempts} requests were 5xx with ` +
+          `${input.faultPass.faultTargets.join(", ")} failing ${input.faultPass.faultPct} percent of ` +
+          "calls; the path must degrade, not error",
       );
+    }
+    // The cron lanes, judged rather than read by a person (#3104). Incompleteness
+    // above has already refused a run whose lane evidence is missing or has holes.
+    if (input.faultLanes?.evidence) {
+      for (const f of judgeFaultLanes(input.faultLanes.evidence, input.faultLanes.expectations)) {
+        fail(f.bar, f.detail);
+      }
     }
   }
 

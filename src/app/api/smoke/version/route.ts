@@ -4,7 +4,11 @@ import { configuredBookingApiKeys } from "@/lib/booking/api-keys";
 import { BUILD_COMMIT } from "@/lib/build-info";
 import { isLoadtest } from "@/lib/loadtest-guard";
 import { productionSecretsPresent } from "@/lib/loadtest-secrets";
-import { LOADTEST_FAULT_PCT } from "@/lib/google/loadtest-stub";
+import {
+  LOADTEST_FAULT_PCT,
+  LOADTEST_FAULT_TARGETS,
+  LOADTEST_FAULT_TARGETS_UNKNOWN,
+} from "@/lib/loadtest-fault";
 
 export const dynamic = "force-dynamic";
 
@@ -64,6 +68,16 @@ export async function GET(req: NextRequest) {
     commit: BUILD_COMMIT,
     loadtest,
     faultPct: LOADTEST_FAULT_PCT,
-    ...(loadtest ? { productionSecrets: productionSecretsPresent(process.env) } : {}),
+    // `faultTargets` (#3104) is which systems the fault switch fails, from the SAME
+    // constants the injectors read, and `faultTargetsUnknown` the names in the
+    // setting that matched none (which fault nothing). Load test only, like the
+    // secrets list: production never faults anything and has nothing to say here.
+    ...(loadtest
+      ? {
+          faultTargets: LOADTEST_FAULT_TARGETS,
+          faultTargetsUnknown: LOADTEST_FAULT_TARGETS_UNKNOWN,
+          productionSecrets: productionSecretsPresent(process.env),
+        }
+      : {}),
   });
 }

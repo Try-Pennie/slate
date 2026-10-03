@@ -8,6 +8,7 @@ import { parseStampMs } from "@/lib/date/stamp";
 import { defaultInfoChannel } from "@/lib/notify/channels";
 import { log } from "@/lib/log";
 import { isWorkersRuntime, workersRuntimeMarker } from "@/lib/platform/runtime";
+import { isLoadtest } from "@/lib/loadtest-guard";
 import type { AlertResolve, ThrottledNotify } from "@/lib/monitor/alert-deps";
 
 /**
@@ -118,10 +119,32 @@ export async function sendThrottledAlert(
     throw new Error(`${key} has no usable cooldown (${String(cooldownMs)}), so it was not sent`);
   }
   if (!mayWriteAlerts(key, "page")) return;
-  if (!slackConfigured()) return;
+  // #3104: a load run never posts (Slack refuses it, #2335), but its fault pass is
+  // judged on whether the page WOULD have gone out, once, on its cooldown. So under
+  // SLATE_LOADTEST the throttle runs exactly as it does in production and the page
+  // is recorded in `alert_state` instead of sent, which is the only trace the load
+  // run's judge can read. Production never reaches the branch: the flag is set on
+  // `env.loadtest` alone.
+  const loadtest = isLoadtest();
+  if (!slackConfigured() && !loadtest) return;
   const db = supabaseAdmin();
   const nowMs = Date.now();
   if (!(await isAlertDue(key, cooldownMs, nowMs))) return;
+
+  if (loadtest) {
+    log.warn("slack-alert", { msg: "load test page recorded, not sent", key });
+    // write-ok: a refused stamp leaves no cooldown, so the page is recorded again next
+    // tick, and the load run's judge reads a second send as an unthrottled alert,
+    // which is the loud direction. No firing marker: nobody was told, so no all
+    // clear is owed (#1133).
+    await db
+      .from("alert_state")
+      .upsert(
+        { key, last_sent_at: new Date(alertStampMs(true, nowMs, cooldownMs)).toISOString() },
+        { onConflict: "key" },
+      );
+    return;
+  }
 
   const result = await postSlack({ text, ...(channel ? { channel } : {}) });
   // Fail loud (#1035): a not-ok send used to be invisible AND burned the full

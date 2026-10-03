@@ -32,12 +32,16 @@ name: Booking path load run
 #   archive     `wrangler tail` for the window, because observability's own
 #               pipeline has been measured three hours behind and a run's logs are
 #               worth having while somebody is still looking at the run.
-#   fault       redeploys with Google failing a percentage of its calendar reads
-#               and drives a short second pass, which is the only leg that says
-#               whether the path DEGRADES rather than 5xxing. It comes last and
-#               alone, because the fault percentage is a deployment wide setting:
-#               overlapping it with the steady pass would make that pass's own 5xx
-#               bar a measurement of the faults this run injected on purpose.
+#   fault       redeploys with a percentage of calls failing on the systems named
+#               in fault_targets (calendar reads by default) and drives a short
+#               second pass, which is the only leg that says whether the path
+#               DEGRADES rather than 5xxing. Beside it the lane sampler reads the
+#               branch's heartbeats and alert state for the whole faulted window,
+#               so the judge scores the cron lanes rather than a person reading a
+#               log (#3104). It comes last and alone, because the fault settings
+#               are deployment wide: overlapping them with the steady pass would
+#               make that pass's own 5xx bar a measurement of the faults this run
+#               injected on purpose.
 #   judge       reads all of it and writes ONE dated report.
 #   teardown    runs only after the judge, so the evidence outlives the branch.
 #
@@ -65,9 +69,17 @@ on:
   workflow_dispatch:
     inputs:
       fault_pct:
-        description: Percentage of Google reads the stub fails during the fault pass
+        description: Percentage of calls the fault pass fails, on the systems named in fault_targets
         type: string
         default: "10"
+      fault_targets:
+        description: >-
+          Which systems the fault pass fails, comma separated: google-read,
+          google-write, supabase, salesforce, webhook. The default is calendar reads
+          alone, which keeps the no 5xx bar; naming google-write or supabase drops it,
+          because a failure there is a 5xx by design (#3104).
+        type: string
+        default: "google-read"
       teardown:
         description: >-
           Delete the Worker deployment, and the Supabase branch named in
@@ -391,22 +403,49 @@ jobs:
         run: pnpm cf:build
       # `--var` MERGES with the vars block rather than replacing it, so the load
       # test flag, the disabled lanes and every other setting in env.loadtest
-      # survive this deploy. Only the fault percentage is added.
-      - name: Deploy with Google failing a share of its reads
+      # survive this deploy. Only the two fault settings are added, and nothing
+      # commits either (scripts/test-wrangler-loadtest-env.ts refuses that).
+      - name: Deploy with a share of calls failing
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx wrangler deploy --env loadtest --var SLATE_LOADTEST_FAULT_PCT:"${{ inputs.fault_pct }}"
-      - name: Drive a short pass against it
+          FAULT_PCT: ${{ inputs.fault_pct }}
+          FAULT_TARGETS: ${{ inputs.fault_targets }}
+        run: >-
+          npx wrangler deploy --env loadtest
+          --var "SLATE_LOADTEST_FAULT_PCT:$FAULT_PCT"
+          --var "SLATE_LOADTEST_FAULT_TARGETS:$FAULT_TARGETS"
+      # The lane sampler runs BESIDE the driver, from before the driver's first
+      # request to a tail of minutes after its last (#3104). The deployment stays
+      # faulted until the restore below, so the tail is still faulted time, and it
+      # is what gives the sync page its two consecutive failing ticks. The sampler
+      # is told the driver is done by a file rather than killed, so it always
+      # writes what it saw; it stops on its own ceiling regardless. Both exit codes
+      # are kept, the driver's first, so a refusing driver still fails the step.
+      - name: Drive a short pass against it, sampling the cron lanes
         env:
           SLATE_BASE: ${{ vars.LOADTEST_BASE_URL }}
           BOOKING_API_KEY: ${{ secrets.LOADTEST_BOOKING_API_KEY }}
+          SUPABASE_URL: ${{ secrets.LOADTEST_SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.LOADTEST_SUPABASE_SECRET_KEY }}
           MODE: fault
           DRIVER: 0
           FAULT_PCT: ${{ inputs.fault_pct }}
+          FAULT_TARGETS: ${{ inputs.fault_targets }}
           FAULT_COMMIT: ${{ github.sha }}
           OUT: results/fault-0.json
-        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/book.ts
+        run: |
+          mkdir -p results
+          STOP_FILE=results/.fault-driver-done OUT=results/fault-lanes.json \
+            node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/fault-lane-sampler.ts &
+          sampler=$!
+          driver_rc=0
+          node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/book.ts || driver_rc=$?
+          touch results/.fault-driver-done
+          sampler_rc=0
+          wait "$sampler" || sampler_rc=$?
+          if [ "$driver_rc" -ne 0 ]; then exit "$driver_rc"; fi
+          exit "$sampler_rc"
       # ALWAYS, and before the artifact, because a deployment left injecting faults
       # is the one thing this leg can leave behind that outlives the run: a later
       # run dispatched with teardown off would have its steady pass count those
@@ -481,6 +520,7 @@ jobs:
           # constant, so it can never disagree with the matrix that fired.
           EXPECT_BURST_DRIVERS: ${{ needs.setup-burst.outputs.driver_count }}
           EXPECT_FAULT_PCT: ${{ inputs.fault_pct }}
+          EXPECT_FAULT_TARGETS: ${{ inputs.fault_targets }}
           # What the burst control was actually worth (#2278): the code it fired at
           # and how deep that pool measured. The depth is EMPTY when the setup could
           # not measure it, and the report says unmeasured rather than printing a

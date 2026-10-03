@@ -31,6 +31,12 @@ import {
 import { DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES } from "../src/lib/rate-limit-core.ts";
 import { readConfirmStartup } from "./loadtest/confirm-startup.ts";
 import { formatLine } from "../src/lib/log.ts";
+import { healthyFaultLanes, fixtureLaneExpectations } from "./lib/fault-lanes-fixture.ts";
+import { SYNC_FAILURE_ALERT_KEY } from "./loadtest/fault-lanes.ts";
+
+/** When the fixture's fault window opens. Any instant: the lane judge reads only the
+ *  series' own times. */
+const LANES_T0 = Date.parse("2026-10-03T12:00:00Z");
 
 /**
  * A confirm startup reading built by the REAL reader from REAL shaped tail lines,
@@ -202,7 +208,9 @@ function passing(): JudgeInput {
       cron: { invocations: 0, worstCpuMs: 0, byCron: {} },
       cronSource: "agreed-empty" as const,
     },
-    faultPass: { attempts: 100, fiveXx: 0, faultPct: 10 },
+    faultPass: { attempts: 100, fiveXx: 0, faultPct: 10, faultTargets: ["google-read"] },
+    // #3104: the lanes kept running and the sync page fired once while faulted.
+    faultLanes: { evidence: healthyFaultLanes(LANES_T0, RUN), expectations: fixtureLaneExpectations(LANES_T0) },
     expectedLegs: { burstDrivers: burstResults.length, faultPct: 10 },
     budgets: { cpuMsP99: REQUEST_CPU_P99_MS, cronCpuMs: 120_000 },
   };
@@ -746,7 +754,7 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
 
 {
   const errored = broken((i) => {
-    i.faultPass = { attempts: 100, fiveXx: 4, faultPct: 10 };
+    i.faultPass = { attempts: 100, fiveXx: 4, faultPct: 10, faultTargets: ["google-read"] };
   });
   assert(
     bars(errored).includes("the fault pass"),
@@ -754,7 +762,7 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   );
 
   const empty = broken((i) => {
-    i.faultPass = { attempts: 0, fiveXx: 0, faultPct: 10 };
+    i.faultPass = { attempts: 0, fiveXx: 0, faultPct: 10, faultTargets: ["google-read"] };
   });
   assert(
     bars(empty).includes("the fault pass"),
@@ -765,6 +773,80 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
     delete i.faultPass;
   });
   assert(!bars(none).includes("the fault pass"), "a run with no fault pass is judged on the rest");
+}
+
+// --- which systems failed decides the bar (#3104) ----------------------------------------
+
+{
+  // A database fault or a failing calendar write is a 5xx BY DESIGN, so with one in the
+  // mix the 5xx count measures the percentage, not the code. It is not barred.
+  for (const loud of [["google-read", "supabase"], ["google-write"]]) {
+    const r = broken((i) => {
+      i.faultPass = { attempts: 100, fiveXx: 7, faultPct: 10, faultTargets: loud };
+      i.expectedLegs = { ...i.expectedLegs, faultTargets: loud };
+    });
+    assert(!bars(r).includes("the fault pass"), `5xx with ${loud.join(", ")} failing is not barred`);
+  }
+  // Control (L159): the same count with only degrading systems failing IS a finding.
+  for (const soft of [["google-read", "webhook", "salesforce"]]) {
+    const r = broken((i) => {
+      i.faultPass = { attempts: 100, fiveXx: 7, faultPct: 10, faultTargets: soft };
+      i.expectedLegs = { ...i.expectedLegs, faultTargets: soft };
+    });
+    assert(bars(r).includes("the fault pass"), `5xx with ${soft.join(", ")} failing is still a finding`);
+  }
+}
+{
+  const i = passing();
+  i.faultPass = { attempts: 100, fiveXx: 0, faultPct: 10, faultTargets: ["google-read"] };
+  i.expectedLegs = { ...i.expectedLegs, faultTargets: ["google-read", "supabase"] };
+  assert(
+    incompleteness(i).some((w) => w.includes("not the google-read, supabase it was configured for")),
+    "a pass whose deployment failed different systems from the ones asked for is incomplete",
+  );
+  const j = passing();
+  j.faultPass = { attempts: 100, fiveXx: 0, faultPct: 10, faultTargets: [] };
+  assert(
+    incompleteness(j).some((w) => w.includes("did not record which systems")),
+    "and so is one whose driver never recorded them",
+  );
+  const k = passing();
+  k.expectedLegs = { ...k.expectedLegs, faultTargets: undefined };
+  eq(incompleteness(k), [], "an unstated expectation is the default list, so an existing run is unchanged");
+}
+
+// --- the cron lanes under fault, scored (#3104) -------------------------------------------
+
+{
+  const missing = passing();
+  missing.faultLanes = { evidence: null, expectations: fixtureLaneExpectations(LANES_T0) };
+  assert(
+    incompleteness(missing).some((w) => w.includes("no lane sampler file arrived")),
+    "a fault pass with no lane evidence is incomplete, never a pass",
+  );
+  const absent = passing();
+  delete absent.faultLanes;
+  assert(incompleteness(absent).some((w) => w.includes("no lane sampler file")), "nor when the field is absent");
+
+  const holed = passing();
+  const ev = healthyFaultLanes(LANES_T0, RUN);
+  ev.samples = ev.samples.filter((s) => s.atMs < LANES_T0 + 60_000 || s.atMs > LANES_T0 + 4 * 60_000);
+  holed.faultLanes = { evidence: ev, expectations: fixtureLaneExpectations(LANES_T0) };
+  assert(incompleteness(holed).some((w) => w.includes("hole")), "and so is a lane series with a hole in it");
+
+  const silent = broken((i) => {
+    const e = healthyFaultLanes(LANES_T0, RUN);
+    for (const s of e.samples) delete s.alerts[SYNC_FAILURE_ALERT_KEY];
+    i.faultLanes = { evidence: e, expectations: fixtureLaneExpectations(LANES_T0) };
+  });
+  assert(bars(silent).includes("the calendar failure page under fault"), "no page under fault fails the run");
+
+  const stalled = broken((i) => {
+    const e = healthyFaultLanes(LANES_T0, RUN);
+    for (const s of e.samples) s.heartbeats.outbox = new Date(LANES_T0 - 20 * 60_000).toISOString();
+    i.faultLanes = { evidence: e, expectations: fixtureLaneExpectations(LANES_T0) };
+  });
+  assert(bars(stalled).includes("lane heartbeats under fault"), "a lane gone stale under fault fails the run");
 }
 
 // --- the small pure pieces ---------------------------------------------------------------
@@ -884,7 +966,7 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   // answers every request perfectly, so `fiveXx: 0` would PASS the bar having
   // injected nothing at all.
   const i = passing();
-  i.faultPass = { attempts: 120, fiveXx: 0, faultPct: 0 };
+  i.faultPass = { attempts: 120, fiveXx: 0, faultPct: 0, faultTargets: ["google-read"] };
   const why = incompleteness(i);
   assert(
     why.some((r) => r.includes("reporting 0 percent")),
@@ -893,7 +975,7 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   // The other direction (L159): the same pass at the configured percentage is
   // complete, so this is about the percentage rather than about the shape.
   const ok = passing();
-  ok.faultPass = { attempts: 120, fiveXx: 0, faultPct: 10 };
+  ok.faultPass = { attempts: 120, fiveXx: 0, faultPct: 10, faultTargets: ["google-read"] };
   eq(incompleteness(ok).length, 0, "and the same pass at ten percent is complete");
 }
 
@@ -904,7 +986,7 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   // percentage it chose.
   const i = passing();
   i.expectedLegs = { burstDrivers: i.burstResults.length, faultPct: 0 };
-  i.faultPass = { attempts: 50, fiveXx: 0, faultPct: 25 };
+  i.faultPass = { attempts: 50, fiveXx: 0, faultPct: 25, faultTargets: ["google-read"] };
   eq(incompleteness(i).length, 0, "an unasked-for fault pass does not make a run incomplete");
 }
 
@@ -917,7 +999,7 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   // real, and the report said nothing but "the analytics API did not report".
   const r = broken((i) => {
     i.platform = { invocations: null, cpuMsP99: null, subrequests: null, statuses: null, cron: null };
-    i.faultPass = { attempts: 30, fiveXx: 3, faultPct: 10 };
+    i.faultPass = { attempts: 30, fiveXx: 3, faultPct: 10, faultTargets: ["google-read"] };
   });
   assert(
     r.findings.some((f) => f.bar === "the fault pass"),
@@ -950,7 +1032,7 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   // measured failure either.
   const r = broken((i) => {
     i.platform = { invocations: 1, cpuMsP99: 10, subrequests: 8, statuses: { success: 1 }, cron: { invocations: 0, worstCpuMs: 0, byCron: {} }, cronSource: "agreed-empty" };
-    i.faultPass = { attempts: 30, fiveXx: 3, faultPct: 10 };
+    i.faultPass = { attempts: 30, fiveXx: 3, faultPct: 10, faultTargets: ["google-read"] };
   });
   assert(
     r.findings.some((f) => f.bar === "the fault pass"),

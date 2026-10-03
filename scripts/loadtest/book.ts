@@ -34,6 +34,7 @@ import {
   type DriverResult,
 } from "./book-plan.ts";
 import { faultModeVerdict, faultPollStep, FAULT_PROPAGATION_DEADLINE_MS } from "./preflight-checks.ts";
+import { parseFaultTargets } from "../../src/lib/loadtest-fault.ts";
 
 const PROD_HOSTS = ["slate.trypennie.app", "drukfvgaynzrralbzkzj.supabase.co"];
 
@@ -67,6 +68,9 @@ const BURST_GRACE_MS = Number(process.env.BURST_GRACE_MS ?? "2000");
 // was redeployed with, which the driver then CONFIRMS with the deployment itself)
 // env-ok: FAULT_MINUTES (optional; defaults to 2, long enough for the bar to have
 // a real sample and short enough that a faulted deployment is not live for long)
+// env-ok: FAULT_TARGETS (optional; the systems the fault leg asked the deployment
+// to fail, defaulting to google-read like the deployment's own setting, and
+// CONFIRMED with the deployment exactly as the percentage is, #3104)
 // env-ok: FAULT_COMMIT (optional; the commit the fault leg deployed, checked
 // against what the deployment reports so a redeploy that did not take is caught)
 // env-ok: TZ_NAME (optional; defaults to America/New_York, the zone the seeded
@@ -246,13 +250,15 @@ async function steady(mode: "steady" | "fault" = "steady", minutes = RUN_MINUTES
     planned: plan.length,
     startedAtMs,
     finishedAtMs: Date.now(),
-    ...(mode === "fault" ? { faultPct: faultPctConfirmed } : {}),
+    ...(mode === "fault" ? { faultPct: faultPctConfirmed, faultTargets: faultTargetsConfirmed } : {}),
     attempts,
   });
 }
 
 /** The percentage the DEPLOYMENT reported, set by `fault()` before anything is driven. */
 let faultPctConfirmed = 0;
+/** The systems the DEPLOYMENT reported failing, set beside the percentage (#3104). */
+let faultTargetsConfirmed: string[] = [];
 
 /**
  * The fault pass: the same steady drive, against a deployment redeployed with
@@ -278,6 +284,16 @@ async function fault(): Promise<void> {
     console.error("FAILED: FAULT_PCT is 0, so this would drive no faults and pass the bar anyway.");
     process.exit(1);
   }
+  // Read through the deployment's own parser, so the driver and the deployment
+  // cannot disagree about what a list means, and a typo stops here rather than after
+  // a three minute wait for a deployment that will never report it (L41).
+  const wantedTargets = parseFaultTargets(process.env.FAULT_TARGETS);
+  if (wantedTargets.unknown.length > 0) {
+    console.error(
+      `FAILED: FAULT_TARGETS names ${wantedTargets.unknown.join(", ")}, which is no fault target.`,
+    );
+    process.exit(1);
+  }
   const commit = (process.env.FAULT_COMMIT ?? "").trim();
   // POLLED, not asked once. A deploy does not take effect the instant wrangler
   // exits: this asked two seconds after its own deploy and was answered by the
@@ -292,10 +308,12 @@ async function fault(): Promise<void> {
     const verdict = faultModeVerdict(res.status, await res.json().catch(() => ({})), {
       faultPct: wantedPct,
       commit: commit === "" ? undefined : commit,
+      faultTargets: wantedTargets.targets,
     });
     const step = faultPollStep(verdict, Date.now() - startedWaitingMs);
     if (step.action === "accept") {
       faultPctConfirmed = step.faultPct;
+      faultTargetsConfirmed = step.faultTargets ?? [];
       break;
     }
     if (step.action === "give-up") {
@@ -313,7 +331,10 @@ async function fault(): Promise<void> {
     console.error(`FAILED: FAULT_MINUTES is not a positive number of minutes.`);
     process.exit(1);
   }
-  console.log(`driver ${DRIVER}: the deployment reports faultPct=${faultPctConfirmed}; driving ${minutes}m`);
+  console.log(
+    `driver ${DRIVER}: the deployment reports faultPct=${faultPctConfirmed} on ` +
+      `${faultTargetsConfirmed.join(",")}; driving ${minutes}m`,
+  );
   await steady("fault", minutes);
 }
 
