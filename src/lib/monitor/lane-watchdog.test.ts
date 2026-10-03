@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // #803: a cron invocation killed mid-run (exceededCpu) cannot report its own
 // death, so the lanes that never finished are detected by ABSENCE: they stop
@@ -151,7 +151,7 @@ const healthy = () => ({
   "verdict:stranded-hires": ago(5 * MIN),
   // #3090: the audit chain walk judges every tick the trail reads.
   "verdict:audit-chain": ago(5 * MIN),
-  // #3141: the Worker's cron timing, stamped on every hourly tick.
+  // #3141: the hourly cron CPU check, stamped on every measured day.
   "verdict:cron-budget": ago(40 * MIN),
   "verdict:regal-call-feed": ago(5 * MIN),
   // #2944: the call outcome ratio judges every tick with calls flowing.
@@ -369,6 +369,39 @@ describe("alertOnStaleLanes (#803)", () => {
           (c) => c[0] === laneKey("verdict:ooo-protection"),
         ),
       ).toBeDefined();
+    });
+
+    // #3141: the cron CPU check needs CF_ANALYTICS_TOKEN, which is optional. Unset, it says
+    // so on the info channel and cannot conclude, so its verdict lane is not called blind
+    // too; set, a token that stops working goes stale and pages like any detector.
+    describe("a detector whose optional secret is unset (#3141)", () => {
+      const staleCronBudget = () => ({ ...healthy(), "verdict:cron-budget": ago(30 * 60 * MIN) });
+      const paged = () =>
+        dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === laneKey("verdict:cron-budget"));
+      afterEach(() => vi.unstubAllEnvs());
+
+      it("does not page the cron CPU verdict lane while CF_ANALYTICS_TOKEN is unset", async () => {
+        vi.stubEnv("CF_ANALYTICS_TOKEN", "");
+        heartbeat.readAllHeartbeatMs.mockResolvedValue(staleCronBudget());
+        await alertOnStaleLanes();
+        expect(paged()).toBeUndefined();
+      });
+
+      it("pages it once the token is set and it stops concluding", async () => {
+        vi.stubEnv("CF_ANALYTICS_TOKEN", "tok");
+        heartbeat.readAllHeartbeatMs.mockResolvedValue(staleCronBudget());
+        await alertOnStaleLanes();
+        expect(paged()).toBeDefined();
+      });
+
+      it("excuses nothing else while it is unset", async () => {
+        vi.stubEnv("CF_ANALYTICS_TOKEN", "");
+        heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...staleCronBudget(), "verdict:ooo-protection": ago(30 * 60 * MIN) });
+        await alertOnStaleLanes();
+        expect(
+          dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === laneKey("verdict:ooo-protection")),
+        ).toBeDefined();
+      });
     });
 
     // #1831: the safety net this change actually switches on. While the truth

@@ -105,6 +105,10 @@ export const PRODUCTION_ONLY_SECRETS = [
   // never to Slate, so ANY Slate deployment holding it was handed it by mistake,
   // and a load test one would be shipping synthetic traffic into production's logs.
   "BETTERSTACK_SOURCE_TOKEN",
+  // #3141: reads production's own cron CPU from Cloudflare's analytics. The query is
+  // pinned to the production Worker's name, so on a load test Worker it would measure
+  // production, and a load test deployment holding it was handed production's token.
+  "CF_ANALYTICS_TOKEN",
   // #3110: the rotation slots. Set on production only while a rotation is under
   // way; the load run never rotates, so one on a load test Worker came from there.
   // Derived from their primaries rather than written out: a list of `"..._KEY_2"`

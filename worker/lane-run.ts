@@ -38,7 +38,7 @@ import {
 } from "@/lib/monitor/lane-failure";
 import { shortErrorReason } from "@/lib/notify/error-text";
 import type { LogFields } from "@/lib/log";
-import { CRON_BUDGET_ROUTE, cronBudgetWrites } from "@/lib/monitor/cron-budget";
+import { CRON_BUDGET_ROUTE, cronBudgetCallsApp, wallPastLine } from "@/lib/monitor/cron-budget";
 
 export { TICK_ID_HEADER };
 
@@ -57,6 +57,7 @@ export interface LaneRunDeps {
   now(): number;
   log: {
     error(tag: string, fields: LogFields, err?: unknown): void;
+    warn(tag: string, fields: LogFields, err?: unknown): void;
   };
 }
 
@@ -166,12 +167,12 @@ export async function reportLaneFailures(
 }
 
 /**
- * Record what the daily wall time headroom check reads (#3141). Wall time, because the runtime
- * gives an invocation no reading of its own CPU, and wall time is no bound on CPU in either
- * direction (see @/lib/monitor/cron-budget). Most ticks record nothing and so spend nothing;
- * one past the wall time line, and the hourly tick that
- * proves this path still writes, hand the measurement to an in process route, built like
- * every other request this dispatcher makes so it carries the tick id. Never throws.
+ * The cron budget's share of a tick (#3141). Wall time is a LOG LINE only: the runtime gives an
+ * invocation no reading of its own CPU, wall time is no bound on CPU in either direction, and
+ * the page that judged it was switched off on 2026-10-03 (see @/lib/monitor/cron-budget). The
+ * hourly tick asks the app to read the real CPU from Cloudflare's analytics, through a request
+ * built like every other one this dispatcher makes so it carries the tick id. Every other tick
+ * spends nothing. Never throws.
  */
 export async function recordCronBudget(
   cron: string,
@@ -179,15 +180,21 @@ export async function recordCronBudget(
   tick: LaneTick,
   deps: LaneRunDeps,
 ): Promise<void> {
-  const writes = cronBudgetWrites(cron, totalMs);
-  if (!writes.breach && !writes.verdict) return;
-  const query = new URLSearchParams({ cron, wall_ms: String(Math.round(totalMs)) });
+  if (wallPastLine(totalMs)) {
+    deps.log.warn("cron-budget", {
+      msg: "tick past the wall time line, which is not CPU",
+      cron,
+      wall_ms: Math.round(totalMs),
+      tick: tick.tickId,
+    });
+  }
+  if (!cronBudgetCallsApp(cron)) return;
   try {
-    const res = await deps.fetch(laneRequest(`${CRON_BUDGET_ROUTE}?${query}`, tick));
+    const res = await deps.fetch(laneRequest(CRON_BUDGET_ROUTE, tick));
     if (!res.ok) {
-      deps.log.error("cron-budget", { msg: "recording the tick failed", cron, status: res.status, tick: tick.tickId });
+      deps.log.error("cron-budget", { msg: "the cron budget check failed", cron, status: res.status, tick: tick.tickId });
     }
   } catch (err) {
-    deps.log.error("cron-budget", { msg: "recording the tick threw", cron, tick: tick.tickId }, err);
+    deps.log.error("cron-budget", { msg: "the cron budget check threw", cron, tick: tick.tickId }, err);
   }
 }

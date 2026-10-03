@@ -1,117 +1,131 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-// #3141: the recorder the Worker hands each notable tick to. What is pinned here is the
-// write: a tick past half the CPU ceiling lands as its own lane_heartbeats row, the hourly
-// tick stamps the verdict lane, a failed breach write fails the request rather than reading
-// as recorded, and nothing unauthenticated or unreadable writes anything. The decision itself
-// is pinned in scripts/test-cron-budget.ts.
+// #3141: the hourly cron CPU check the Worker calls in process. What is pinned here is the
+// wiring the pure suite cannot see: the token comes from the Worker's environment and goes out
+// as a bearer on ONE POST to the analytics endpoint, a measured day stamps the verdict lane and
+// nothing else does, an unset token spends no subrequest, a failed stamp fails the request, and
+// nothing unauthenticated reaches the API. The decisions are pinned in scripts/test-cron-budget.ts.
 
 const cron = vi.hoisted(() => ({ isAuthorizedCron: vi.fn(() => true) }));
-const db = vi.hoisted(() => {
-  const state = {
-    upserts: [] as Array<Record<string, unknown>>,
-    error: null as { message: string } | null,
-  };
-  const from = vi.fn((table: string) => ({
-    upsert: async (row: Record<string, unknown>) => {
-      state.upserts.push({ table, ...row });
-      return { error: state.error };
-    },
-  }));
-  return { state, from };
-});
 const verdicts = vi.hoisted(() => ({ recordDetectorVerdict: vi.fn(async () => {}) }));
 const throttle = vi.hoisted(() => ({
   refuseCronSecret: vi.fn(async (_headers: Headers, refusal: () => Response) => refusal()),
 }));
+const dispatch = vi.hoisted(() => ({
+  sendThrottledAlert: vi.fn(async () => {}),
+  sendThrottledInfo: vi.fn(async () => {}),
+  resolveAlert: vi.fn(async () => true),
+}));
 
 vi.mock("@/lib/cron", () => cron);
 vi.mock("@/lib/bearer-failure", () => throttle);
-vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from: db.from }) }));
 vi.mock("@/lib/monitor/verdict-store", () => verdicts);
+vi.mock("@/lib/notify/dispatch", () => dispatch);
 vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
 import { GET } from "./route";
-import { CRON_BUDGET_WARN_MS } from "@/lib/monitor/cron-budget";
+import { CF_GRAPHQL_URL, CRON_BUDGET_ALERT_KEY, CRON_CPU_NOT_CONFIGURED_KEY } from "@/lib/monitor/cron-budget";
 
-const req = (cronExpr: string, wallMs: number | string | null) =>
+const req = () =>
   ({
-    url:
-      `https://slate.trypennie.app/api/cron/cron-budget?cron=${encodeURIComponent(cronExpr)}` +
-      (wallMs === null ? "" : `&wall_ms=${wallMs}`),
+    url: "https://slate.trypennie.app/api/cron/cron-budget",
     headers: new Headers(),
   }) as unknown as Parameters<typeof GET>[0];
+
+const day = (worstUs: number) => ({
+  data: {
+    viewer: {
+      accounts: [
+        {
+          workersInvocationsScheduled: [
+            { cron: "* * * * *", cpuTimeUs: worstUs, status: "success" },
+            { cron: "*/5 * * * *", cpuTimeUs: 2_000_000, status: "success" },
+          ],
+        },
+      ],
+    },
+  },
+});
+
+const fetchMock = vi.fn();
 
 beforeEach(() => {
   vi.clearAllMocks();
   cron.isAuthorizedCron.mockReturnValue(true);
-  db.state.upserts = [];
-  db.state.error = null;
+  vi.stubGlobal("fetch", fetchMock);
+  vi.stubEnv("CF_ANALYTICS_TOKEN", "tok-123");
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe("GET /api/cron/cron-budget (#3141)", () => {
-  it("records a tick past the line under its own cron expression", async () => {
-    const res = await GET(req("* * * * *", CRON_BUDGET_WARN_MS + 500));
+  it("reads the day with one bearer POST and clears on a measured day under the line", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(day(40_000_000)), { status: 200 }));
+    const res = await GET(req());
     expect(res.status).toBe(200);
-    expect(db.state.upserts).toHaveLength(1);
-    expect(db.state.upserts[0]).toMatchObject({ table: "lane_heartbeats", lane: "cron-over-budget:* * * * *" });
+    expect(await res.json()).toEqual({ status: "within" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(CF_GRAPHQL_URL);
+    expect(init.method).toBe("POST");
+    expect((init.headers as Record<string, string>).authorization).toBe("Bearer tok-123");
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(dispatch.resolveAlert).toHaveBeenCalledWith(CRON_BUDGET_ALERT_KEY, expect.any(String));
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+    expect(verdicts.recordDetectorVerdict).toHaveBeenCalledWith("verdict:cron-budget", true);
+  });
+
+  it("pages a day past the line, and that is a verdict too", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(day(90_000_000)), { status: 200 }));
+    const res = await GET(req());
+    expect(await res.json()).toEqual({ status: "over" });
+    expect(dispatch.sendThrottledAlert).toHaveBeenCalledWith(CRON_BUDGET_ALERT_KEY, expect.any(Number), expect.stringContaining("90s"));
+    expect(dispatch.resolveAlert).not.toHaveBeenCalled();
+    expect(verdicts.recordDetectorVerdict).toHaveBeenCalledWith("verdict:cron-budget", true);
+  });
+
+  it("with no token spends no subrequest, whispers once and stamps nothing", async () => {
+    vi.stubEnv("CF_ANALYTICS_TOKEN", "");
+    const res = await GET(req());
+    expect(await res.json()).toEqual({ status: "not-configured" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(dispatch.sendThrottledInfo).toHaveBeenCalledWith(CRON_CPU_NOT_CONFIGURED_KEY, expect.any(Number), expect.any(String));
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+    expect(dispatch.resolveAlert).not.toHaveBeenCalled();
     expect(verdicts.recordDetectorVerdict).toHaveBeenCalledWith("verdict:cron-budget", false);
   });
 
-  it("stamps the verdict on the hourly tick and writes no breach under the line", async () => {
-    const res = await GET(req("0 * * * *", 4_000));
+  it("an answer that is not JSON is unmeasured: no page, no clear, no stamp", async () => {
+    fetchMock.mockResolvedValueOnce(new Response("<html>bad gateway</html>", { status: 200 }));
+    const res = await GET(req());
+    expect(await res.json()).toEqual({ status: "unmeasured" });
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+    expect(dispatch.resolveAlert).not.toHaveBeenCalled();
+    expect(verdicts.recordDetectorVerdict).toHaveBeenCalledWith("verdict:cron-budget", false);
+  });
+
+  it("a fetch that throws is unmeasured, not a crash", async () => {
+    fetchMock.mockRejectedValueOnce(new Error("timed out"));
+    const res = await GET(req());
     expect(res.status).toBe(200);
-    expect(db.state.upserts).toHaveLength(0);
-    expect(verdicts.recordDetectorVerdict).toHaveBeenCalledWith("verdict:cron-budget", true);
+    expect(await res.json()).toEqual({ status: "unmeasured" });
   });
 
-  it("fails the request when the breach write fails, so it is not read as recorded", async () => {
-    db.state.error = { message: "relation does not exist" };
-    const res = await GET(req("* * * * *", CRON_BUDGET_WARN_MS + 1));
+  it("a failed verdict stamp fails the request rather than reading as recorded", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(day(1_000_000)), { status: 200 }));
+    verdicts.recordDetectorVerdict.mockRejectedValueOnce(new Error("db down"));
+    const res = await GET(req());
     expect(res.status).toBe(500);
   });
 
-  it("still stamps the hourly proof of life when the breach write fails on the same tick", async () => {
-    // The two writes have separate jobs: a lost breach is a warning that never arrives,
-    // and a lost stamp makes a working recorder read as a dead one. One fault must not
-    // take both.
-    db.state.error = { message: "relation does not exist" };
-    const res = await GET(req("0 * * * *", CRON_BUDGET_WARN_MS + 1));
-    expect(res.status).toBe(500);
-    expect(verdicts.recordDetectorVerdict).toHaveBeenCalledWith("verdict:cron-budget", true);
-  });
-
-  it("answers the breach failure even when the stamp throws too", async () => {
-    db.state.error = { message: "relation does not exist" };
-    verdicts.recordDetectorVerdict.mockRejectedValueOnce(new Error("stamp down"));
-    const res = await GET(req("0 * * * *", CRON_BUDGET_WARN_MS + 1));
-    expect(res.status).toBe(500);
-  });
-
-  it("refuses an unreadable measurement and writes nothing", async () => {
-    for (const bad of [
-      req("* * * * *", "abc"),
-      req("not a cron'; drop", 70_000),
-      req("* * * * *", -1),
-      // Missing and blank both coerce to 0 under Number(), which would read as a healthy tick.
-      req("0 * * * *", null),
-      req("0 * * * *", ""),
-      req("0 * * * *", "%20"),
-    ]) {
-      const res = await GET(bad);
-      expect(res.status).toBe(400);
-    }
-    expect(db.state.upserts).toHaveLength(0);
-    expect(verdicts.recordDetectorVerdict).not.toHaveBeenCalled();
-  });
-
-  it("refuses a caller without the cron secret", async () => {
+  it("refuses without the cron secret and reads nothing", async () => {
     cron.isAuthorizedCron.mockReturnValue(false);
-    const res = await GET(req("* * * * *", CRON_BUDGET_WARN_MS + 1));
+    const res = await GET(req());
     expect(res.status).toBe(401);
-    expect(db.state.upserts).toHaveLength(0);
-    // #3142, #3174: through the failed credential throttle, which leaves the Worker's own
-    // in process ticks uncounted.
-    expect(throttle.refuseCronSecret).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(verdicts.recordDetectorVerdict).not.toHaveBeenCalled();
   });
 });

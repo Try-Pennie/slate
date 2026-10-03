@@ -1,89 +1,77 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
 import { refuseCronSecret } from "@/lib/bearer-failure";
-import { supabaseAdmin } from "@/lib/supabase/admin";
 import { recordDetectorVerdict } from "@/lib/monitor/verdict-store";
 import { CRON_BUDGET_VERDICT_LANE } from "@/lib/monitor/verdict-freshness";
-import { CRON_BUDGET_BREACH_PREFIX, cronBudgetWrites } from "@/lib/monitor/cron-budget";
+import { cronCpuReachedVerdict, runCronCpuCheck } from "@/lib/monitor/cron-budget";
+import { resolveAlert, sendThrottledAlert, sendThrottledInfo } from "@/lib/notify/dispatch";
 import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
-/** A cron expression as wrangler.jsonc writes one: digits, fields, and weekday names. Nothing
- *  else may name a row, so the set of rows stays the set of schedules. */
-const CRON_SHAPE = /^[0-9A-Z*/,\- ]{9,64}$/;
+/**
+ * How long the one analytics call may take. Generous for a query that answers in about a second,
+ * and well inside the hourly invocation, so a hung API cannot hold the tick (L110).
+ */
+const ANALYTICS_TIMEOUT_MS = 20_000;
 
 /**
- * CRON BUDGET recorder (#3141). Not a scheduled lane: `worker/index.ts` calls it in process
- * after a tick's lanes have settled, and only when that tick has something to record, so a
- * healthy tick never reaches it.
+ * CRON CPU check (#3141). Not a scheduled lane: `worker/index.ts` calls it in process on the
+ * hourly tick, after that tick's lanes have settled.
  *
- * It exists so the WRITE lives in the app, where the database client already does: the Worker
- * entry stays free of it, and the decision about what to record is re-made here from the same
- * pure function rather than trusted from the caller. What it writes:
+ * It reads a day of Cloudflare's own CPU figures for every scheduled invocation of the
+ * production Worker (`runCronCpuCheck`), pages `cron_budget_headroom` when a schedule's worst
+ * tick passed half `limits.cpu_ms`, and clears it on a measured day under the line. One
+ * GraphQL call, which is the only subrequest it spends. With `CF_ANALYTICS_TOKEN` unset it
+ * spends nothing and says so on the info channel, once a day.
  *
- *  - a tick past the wall time line: `cron-over-budget:<cron>` in `lane_heartbeats`, which the
- *    monitor lane's daily judgement reads. A failed write fails the request and is logged,
- *    because a lost breach is a warning that never arrives.
- *  - the hourly tick: the `verdict:cron-budget` stamp, which proves this path is still writing.
- *    It has its own failure boundary, so a failed breach write never skips it.
+ * The `verdict:cron-budget` stamp is written only on a measured day, so a token that stops
+ * working, or an answer this cannot read, goes stale and the lane watchdog says so.
  *
- * Same Bearer secret as every cron lane. Takes `cron` and `wall_ms` as query parameters, which
- * carry nothing sensitive.
+ * Same Bearer secret as every cron lane. Takes nothing in the query.
  */
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
-  const params = new URL(req.url).searchParams;
-  const cron = params.get("cron") ?? "";
-  // Refused by name when missing or blank, never parsed: `Number(null)` and `Number("")` are
-  // both 0, which would read an absent measurement as a perfectly healthy tick (L50).
-  const rawWallMs = (params.get("wall_ms") ?? "").trim();
-  const wallMs = rawWallMs === "" ? Number.NaN : Number(rawWallMs);
-  if (!CRON_SHAPE.test(cron) || !Number.isFinite(wallMs) || wallMs < 0) {
-    log.error("cron-budget", { msg: "refused an unreadable measurement", cron, wall_ms: params.get("wall_ms") ?? "" });
-    return NextResponse.json({ error: "cron and wall_ms are required" }, { status: 400 });
-  }
-  const writes = cronBudgetWrites(cron, wallMs);
-  // Two writes with separate jobs, each in its own boundary: a lost breach is a warning that
-  // never arrives, and a lost stamp makes a working recorder read as a dead one. A fault in
-  // one must not take the other, so the stamp is written whatever the breach write did, and
-  // the request fails afterwards if either did.
-  const breachWritten = writes.breach ? await writeBreach(cron, wallMs) : true;
+  const health = await runCronCpuCheck({
+    // Read by its literal name, the way every Worker secret is read here.
+    token: process.env.CF_ANALYTICS_TOKEN,
+    nowMs: Date.now(),
+    post: async (url, authorization, body) => {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { authorization, "content-type": "application/json" },
+        body,
+        signal: AbortSignal.timeout(ANALYTICS_TIMEOUT_MS),
+      });
+      // A body that is not JSON is passed on as null, which the reader refuses by name.
+      const parsed: unknown = await res.json().catch(() => null);
+      return { status: res.status, body: parsed };
+    },
+    // alert-key: cron_budget_headroom
+    // alert-text-ok: our own copy from cron-budget.ts, never a raw error.
+    notify: sendThrottledAlert,
+    // alert-key: cron_cpu_not_configured
+    // alert-text-ok: fixed copy from cron-budget.ts.
+    info: sendThrottledInfo,
+    // A condition: it holds while a schedule's worst tick in the day was past the line, and ends
+    // on a measured day with none.
+    // alert-key: cron_budget_headroom
+    // all-clear-proof: scripts/test-cron-budget.ts - an unset token, a refused or thrown call,
+    // a schema error, an empty or truncated day and an unreadable row each clear nothing.
+    resolve: resolveAlert,
+    log: (msg) => log.info("cron-budget", { msg }),
+  });
   let stamped = true;
   try {
-    await recordDetectorVerdict(CRON_BUDGET_VERDICT_LANE, writes.verdict);
+    await recordDetectorVerdict(CRON_BUDGET_VERDICT_LANE, cronCpuReachedVerdict(health));
   } catch (err) {
     stamped = false;
-    log.error("cron-budget", { msg: "verdict stamp threw", cron }, err);
+    log.error("cron-budget", { msg: "verdict stamp threw", status: health.status }, err);
   }
-  if (!breachWritten || !stamped) {
-    return NextResponse.json(
-      { error: breachWritten ? "verdict stamp failed" : "breach write failed", breach: writes.breach, verdict: writes.verdict },
-      { status: 500 },
-    );
+  if (!stamped) {
+    return NextResponse.json({ error: "verdict stamp failed", status: health.status }, { status: 500 });
   }
-  return NextResponse.json({ breach: writes.breach, verdict: writes.verdict });
-}
-
-/** True when the breach row landed. Never throws: a throw is logged and reported as false. */
-async function writeBreach(cron: string, wallMs: number): Promise<boolean> {
-  try {
-    const { error } = await supabaseAdmin()
-      .from("lane_heartbeats")
-      .upsert(
-        { lane: `${CRON_BUDGET_BREACH_PREFIX}${cron}`, last_ran_at: new Date().toISOString() },
-        { onConflict: "lane" },
-      );
-    if (error) {
-      log.error("cron-budget", { msg: "breach write failed", cron, wall_ms: Math.round(wallMs) }, error);
-      return false;
-    }
-  } catch (err) {
-    log.error("cron-budget", { msg: "breach write threw", cron, wall_ms: Math.round(wallMs) }, err);
-    return false;
-  }
-  log.warn("cron-budget", { msg: "tick past the wall time line", cron, wall_ms: Math.round(wallMs) });
-  return true;
+  return NextResponse.json({ status: health.status });
 }

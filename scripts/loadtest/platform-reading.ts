@@ -27,6 +27,7 @@
 
 import { tailObjects } from "./confirm-startup.ts";
 import { CRON_CPU_LIMIT_MS } from "../../src/lib/monitor/cron-budget.ts";
+import { graphqlAccountRows, graphqlEnvelopeRefusal } from "../../src/lib/cloudflare/graphql-envelope.ts";
 
 /**
  * The `status` value that means the invocation finished normally.
@@ -109,33 +110,11 @@ export interface ScheduledReading {
 
 export type ReadResult<T> = { ok: true; reading: T } | { ok: false; why: string };
 
-/** The GraphQL envelope, read defensively because every field here is optional. */
-function envelopeRefusal(httpStatus: number, body: unknown, dataset: string): string | null {
-  if (httpStatus !== 200) {
-    return `the analytics API answered HTTP ${httpStatus}, so ${dataset} was not read`;
-  }
-  const b = body as { errors?: unknown } | null;
-  const errors = b && typeof b === "object" ? b.errors : undefined;
-  if (Array.isArray(errors) && errors.length > 0) {
-    // QUOTED, not summarised. This is the branch the `outcome` fault lived in for
-    // the whole life of the bar, and the one thing that would have named it in one
-    // reading is the API's own sentence.
-    const said = errors
-      .map((e) => (e && typeof e === "object" ? String((e as { message?: unknown }).message ?? e) : String(e)))
-      .join("; ");
-    return `the analytics API refused the ${dataset} query: ${said}`;
-  }
-  return null;
-}
-
-function rowsOf(body: unknown, field: string): unknown[] | null {
-  const rows = (
-    body as {
-      data?: { viewer?: { accounts?: Record<string, unknown>[] } };
-    } | null
-  )?.data?.viewer?.accounts?.[0]?.[field];
-  return Array.isArray(rows) ? (rows as unknown[]) : null;
-}
+// The envelope is read by the shared reader in src/lib/cloudflare/graphql-envelope.ts, which the
+// hourly cron CPU check uses too, so the `errors` on a 200 that blinded this judge (above) is
+// looked for in one place.
+const envelopeRefusal = graphqlEnvelopeRefusal;
+const rowsOf = graphqlAccountRows;
 
 function num(v: unknown): number {
   return typeof v === "number" && Number.isFinite(v) ? v : 0;

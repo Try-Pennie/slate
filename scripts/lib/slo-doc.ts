@@ -16,6 +16,8 @@ import {
   sloArithmetic,
 } from "../../src/lib/monitor/slo-targets.ts";
 import {
+  CF_ANALYTICS_TOKEN_ENV,
+  CRON_BUDGET_ROUTE,
   CRON_BUDGET_WARN_MS,
   CRON_BUDGET_WINDOW_MS,
   CRON_CPU_LIMIT_MS,
@@ -111,10 +113,10 @@ export function expectedSloDocLines(): SloDocLine[] {
     {
       label: "cron headroom row",
       line:
-        `| Cron wall time headroom | No tick past **${s(CRON_BUDGET_WARN_MS)}** of wall time, half the ` +
+        `| Cron CPU headroom | No scheduled tick past **${s(CRON_BUDGET_WARN_MS)}** of CPU, half the ` +
         `**${s(CRON_CPU_LIMIT_MS)}** \`limits.cpu_ms\`, in any **${CRON_BUDGET_WINDOW_MS / 3_600_000} hours** ` +
-        `| The monitor lane's \`cron_budget\` step, from what \`worker/index.ts\` records per tick ` +
-        `| \`src/lib/monitor/cron-budget.ts\` |`,
+        `| The hourly check at \`${CRON_BUDGET_ROUTE}\`, reading Cloudflare's \`cpuTimeUs\` for every ` +
+        `scheduled invocation (needs \`${CF_ANALYTICS_TOKEN_ENV}\`) | \`src/lib/monitor/cron-budget.ts\` |`,
     },
     {
       label: "failure rate row",

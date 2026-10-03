@@ -229,6 +229,8 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   top_tier_cascade_rate: "something-was-measured-and-is-only-worth-knowing",
   // #2641: a host misconfiguration Slate cannot fix, worth passing on and never
   // worth waking for, because bookings still complete inside the embed.
+  // #3141: the cron CPU check cannot run without its optional token.
+  cron_cpu_not_configured: "a-limit-or-a-guard-is-not-working",
   embed_origin_mismatch: "something-was-measured-and-is-only-worth-knowing",
   // #2660: a partner's own page throwing while on the public test bucket. Theirs
   // to fix, and the booking it stopped was a test one.

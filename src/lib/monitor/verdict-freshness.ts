@@ -237,12 +237,37 @@ export const ADVISOR_PHOTOS_VERDICT_LANE = "verdict:advisor-photos";
 export const BUSY_DRIFT_VERDICT_LANE = "verdict:busy-drift";
 
 /**
- * The Worker's own cron timing (#3141). It writes a row only for a tick past its wall time
- * line, so a day with nothing past the line and a writer that has stopped writing are the
- * same silence. The hourly tick stamps this whatever it measured, which is what tells them
- * apart, and `src/lib/monitor/cron-budget.ts` refuses to clear on a stale one.
+ * The hourly cron CPU check (#3141), stamped by `/api/cron/cron-budget` only when it read a
+ * whole day of Cloudflare's CPU figures (`cronCpuReachedVerdict`). A refused token, a schema
+ * error and an empty answer all page nothing, so without this stamp a check that can no longer
+ * read would look exactly like a day under the line.
  */
 export const CRON_BUDGET_VERDICT_LANE = "verdict:cron-budget";
+
+/**
+ * Verdict lanes whose detector needs an OPTIONAL secret to run at all, by the secret's name.
+ *
+ * Unset, such a detector cannot conclude by construction, and it says so in its own quiet state
+ * (for the cron CPU check, a daily info line). Calling it blind as well would page every day
+ * about a decision nobody has made yet, which is how a page stops being read (L36). So the
+ * watchdog stands down on these lanes while, and ONLY while, the named secret is unset: once it
+ * is set the lane is judged like any other, and a token that stops working goes stale and pages.
+ * The stand down is no broader than its reason (L324).
+ */
+export const DETECTOR_REQUIRED_SETTING: Partial<Record<string, string>> = {
+  [CRON_BUDGET_VERDICT_LANE]: "CF_ANALYTICS_TOKEN",
+};
+
+/** The secret `lane` needs and this deployment lacks, or null when the lane is watched as usual. */
+export function unconfiguredDetector(
+  lane: string,
+  env: Record<string, string | undefined>,
+  registry: Partial<Record<string, string>> = DETECTOR_REQUIRED_SETTING,
+): string | null {
+  const setting = registry[lane];
+  if (!setting) return null;
+  return (env[setting] ?? "").trim() === "" ? setting : null;
+}
 
 export type DetectorVerdictLane =
   | typeof TIER_STAFFING_VERDICT_LANE

@@ -1,45 +1,49 @@
 /**
- * Cron WALL TIME headroom, watched every day (#3141). It does not measure CPU, and nothing in it
- * may claim CPU safety.
+ * Cron CPU headroom, measured hourly from Cloudflare's own numbers (#3141).
  *
  * Every cron expression's invocation is killed at `limits.cpu_ms` in wrangler.jsonc, and the
- * every minute one shares that budget across four lanes. Until now the headroom was read by hand
- * from Cloudflare's analytics (docs/cloudflare-platform-notes.md), so a lane growing toward the
- * ceiling was found by whoever next thought to look, or by the kill.
+ * every minute one shares that budget across four lanes. Cloudflare kills on CPU, not wall time.
  *
- * WHAT THIS MEASURES IS WALL TIME, NOT CPU (L11). The Workers runtime gives a running invocation
- * no reading of its own CPU, and the analytics that do hold it need an account API token the
- * deployment does not carry. So the Worker times each invocation's lanes (`lane-timing.ts`,
- * #1245) and this judges the slowest tick of the day against a WALL TIME line, set at half the
- * CPU ceiling so a schedule that has grown that slow is looked at.
+ * THE FIRST VERSION JUDGED WALL TIME, AND THAT IS SWITCHED OFF. The Workers runtime gives a
+ * running invocation no reading of its own CPU, so #3168 timed each tick and paged when its WALL
+ * time passed half the CPU ceiling. It fired on 2026-10-03 for the five minute tick at about 84s,
+ * nearly all of it waiting on PostgREST and Google, which says nothing about the kill: the clock
+ * advances only at I/O, so wall time is no bound on CPU in either direction (a load run tick
+ * spent 119s of CPU while its clock barely moved, docs/cloudflare-platform-notes.md). Dan's
+ * decision the same day: measure the real CPU, and stop the wall time page until that works.
+ * Wall time is now a log line the Worker writes for a slow tick (`wallPastLine`), and nothing
+ * pages on it or stores it.
  *
- * What that can and cannot say, because the difference is the whole value of the check:
+ * WHAT IS MEASURED NOW. On the hourly tick the Worker asks `/api/cron/cron-budget` to read
+ * Cloudflare's GraphQL Analytics API: the raw `workersInvocationsScheduled` dataset, one row per
+ * scheduled invocation of the production Worker over the trailing day, each carrying its own
+ * `cpuTimeUs` and the `cron` that fired it. The dataset and its fields were measured against the
+ * live schema on 2026-09-13 (`scripts/loadtest/platform-reading.ts`, which reads the same
+ * dataset); Cloudflare's docs describe only `workersInvocationsAdaptive`, which mixes requests
+ * and crons with no dimension to separate them, so it cannot answer this. Per schedule this keeps
+ * the max and the p99, and pages when any schedule's max passes half the ceiling. One GraphQL
+ * call an hour, on the hourly invocation, which is the only subrequest this spends.
  *
- *  - It is NOT a bound on CPU in either direction. The Worker's clock advances only at I/O, so
- *    CPU spent computing between two I/O events can read as little or no time at all (a load run
- *    tick spent 119s of CPU while its clock barely moved, docs/cloudflare-platform-notes.md). A
- *    compute heavy tick can sit under this line while its CPU is near the kill. And a tick that
- *    mostly WAITS on PostgREST or Google reads high while its CPU is small.
- *  - So a quiet day here says nothing about CPU headroom, and a page says only that a schedule
- *    has become slow in wall time, which is worth knowing (a minute lane past a minute overlaps
- *    its own next tick) and worth checking against the real CPU.
+ * WHAT IS NOT A READING (L98, L215). A refused token, an HTTP failure, a 200 carrying GraphQL
+ * errors, an empty day (a Worker with a minute cron cannot have one), a full page (it may be
+ * truncated) and a row with no readable CPU are all unmeasured or held short of a clean day,
+ * never zero. Unmeasured pages nothing and clears nothing, and the `verdict:cron-budget` stamp
+ * is written only on a measured day, so a check that keeps failing to read goes stale and the
+ * lane watchdog says so (#1394).
  *
- * The real CPU is read by hand in workersInvocationsScheduled, and every message here says so.
+ * NOT CONFIGURED. The read needs `CF_ANALYTICS_TOKEN`, an account token with Account Analytics
+ * Read and nothing else. It is OPTIONAL: unset, the check says so once a day on the info channel
+ * (`cron_cpu_not_configured`), pages nothing, claims nothing, spends no subrequest, and the
+ * watchdog does not call its verdict lane blind (`unconfiguredDetector` in verdict-freshness.ts).
+ * An open `cron_budget_headroom` page stays open until a measured day clears it, which needs the
+ * token: there is no all clear without a measurement.
  *
- * HOW IT REACHES THE MONITOR LANE. The Worker writes a `lane_heartbeats` row named for the cron
- * expression only on a tick past the line, and so pays nothing on a healthy tick. The monitor
- * lane reads those rows and judges the trailing day. Because a writer that has stopped writing
- * looks exactly like a day with nothing past the line, the hourly tick also stamps
- * `verdict:cron-budget`, and this check refuses to clear on a stale stamp, while the lane
- * watchdog pages on it in its own words (#1394).
- *
- * PURE: every branch is driven offline by scripts/test-cron-budget.ts. Its one value import is
- * relative (the send failure loggers and the heartbeat sentinel), so the node suite reads it
- * without the alias hook.
+ * PURE: every branch is driven offline by scripts/test-cron-budget.ts. Its value imports are
+ * relative, so the node suite reads it without the alias hook.
  */
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 import { logAlertSendFailure, logResolveFailure } from "../notify/send-failure.ts";
-import { isUnreadableStamp } from "./health.ts";
+import { graphqlAccountRows, graphqlEnvelopeRefusal } from "../cloudflare/graphql-envelope.ts";
 
 /**
  * `limits.cpu_ms` in wrangler.jsonc. The Worker cannot read its own config at runtime, so the
@@ -48,20 +52,24 @@ import { isUnreadableStamp } from "./health.ts";
 export const CRON_CPU_LIMIT_MS = 120_000;
 
 /**
- * The share of the ceiling past which a tick is worth a warning. Half, the same margin the load
+ * The share of the ceiling past which a schedule is worth a page. Half, the same margin the load
  * run's cron bar fails at (`CRON_CPU_MARGIN_SHARE` is this constant): the measured worst tick
  * reached 37 percent in July, and a lane that doubles from there should be found while there is
  * still room to trim it on purpose.
  */
 export const CRON_BUDGET_WARN_SHARE = 0.5;
 
-/** The line itself, derived rather than restated. */
+/** The line itself, derived rather than restated. CPU for the page, wall time for the log line. */
 export const CRON_BUDGET_WARN_MS = CRON_CPU_LIMIT_MS * CRON_BUDGET_WARN_SHARE;
 
-/** "The peak of the day": the trailing window the monitor lane judges. */
+/** "The peak of the day": the trailing window each hourly read covers. */
 export const CRON_BUDGET_WINDOW_MS = 24 * 60 * 60_000;
 
-/** alert_state key for the condition. */
+/**
+ * alert_state key for the condition. The same key the wall time page used, deliberately: the
+ * condition is still "a cron schedule is too close to its ceiling", and keeping the key is what
+ * lets the first measured day clear the wall time page that was left open on 2026-10-03.
+ */
 export const CRON_BUDGET_ALERT_KEY = "cron_budget_headroom";
 
 /**
@@ -70,184 +78,265 @@ export const CRON_BUDGET_ALERT_KEY = "cron_budget_headroom";
  */
 export const CRON_BUDGET_COOLDOWN_MS = CRON_BUDGET_WINDOW_MS;
 
-/** The `lane_heartbeats` row a past the line tick writes is this prefix plus the cron expression. */
-export const CRON_BUDGET_BREACH_PREFIX = "cron-over-budget:";
+/** The info line an unset token sends, and how often. */
+export const CRON_CPU_NOT_CONFIGURED_KEY = "cron_cpu_not_configured";
+export const CRON_CPU_NOT_CONFIGURED_COOLDOWN_MS = CRON_BUDGET_WINDOW_MS;
 
 /**
- * The cron expression whose tick stamps the verdict lane: hourly, so proving the writer alive
- * costs twenty four writes a day, and `scripts/test-cron-budget.ts` holds it to a trigger
- * wrangler.jsonc really fires.
+ * The cron expression whose tick runs the check: hourly, so a day's reading is at most an hour
+ * old, and `scripts/test-cron-budget.ts` holds it to a trigger wrangler.jsonc really fires.
  */
 export const CRON_BUDGET_VERDICT_CRON = "0 * * * *";
 
-/** The in process route the Worker hands a measurement to. */
+/** The in process route the Worker calls on that tick. */
 export const CRON_BUDGET_ROUTE = "/api/cron/cron-budget";
 
+/** The Worker secret holding the analytics token. Read by its literal name in the route. */
+export const CF_ANALYTICS_TOKEN_ENV = "CF_ANALYTICS_TOKEN";
+
+/** Cloudflare's GraphQL Analytics endpoint. */
+export const CF_GRAPHQL_URL = "https://api.cloudflare.com/client/v4/graphql";
+
+/** wrangler.jsonc's `account_id` and `name`, held equal to the file by the suite. */
+export const SLATE_ACCOUNT_ID = "3e7f907a9c19e51417873e2cce4fbc5c";
+export const SLATE_SCRIPT_NAME = "slate";
+
 /**
- * What one invocation's measurement must record, decided in the Worker before it spends an in
- * process request on it. Most ticks record nothing.
+ * The page size asked for. A day of every trigger is about 2,000 rows, so a page that comes back
+ * FULL is read as possibly truncated rather than as a day, because the worst tick may be past it.
  */
-export function cronBudgetWrites(cron: string, wallMs: number): { breach: boolean; verdict: boolean } {
+export const SCHEDULED_ROW_LIMIT = 10_000;
+
+/** The raw dataset, one row per invocation. It has no `sum` or `quantiles`, so they are computed here. */
+export const SCHEDULED_CPU_QUERY = `query($account:String!,$script:String!,$from:Time!,$to:Time!){
+  viewer { accounts(filter:{accountTag:$account}) {
+    workersInvocationsScheduled(limit:${SCHEDULED_ROW_LIMIT}, filter:{scriptName:$script, datetime_geq:$from, datetime_leq:$to}) {
+      cpuTimeUs cron status
+    } } }
+}`;
+
+/** RFC 3339 to the second, which the API's `Time` scalar takes. */
+function rfc3339(ms: number): string {
+  return `${new Date(ms).toISOString().slice(0, 19)}Z`;
+}
+
+export function cronCpuQueryVariables(nowMs: number): { account: string; script: string; from: string; to: string } {
   return {
-    // Strictly past the line. A NaN is not past it, and cannot arise from performance.now().
-    breach: wallMs > CRON_BUDGET_WARN_MS,
-    verdict: cron === CRON_BUDGET_VERDICT_CRON,
+    account: SLATE_ACCOUNT_ID,
+    script: SLATE_SCRIPT_NAME,
+    from: rfc3339(nowMs - CRON_BUDGET_WINDOW_MS),
+    to: rfc3339(nowMs),
   };
 }
 
-/** One cron expression with a tick past the line inside the window. */
-export interface CronBudgetBreach {
+/** Whether the Worker asks the app to run the check on this tick. Only the hourly one does. */
+export function cronBudgetCallsApp(cron: string): boolean {
+  return cron === CRON_BUDGET_VERDICT_CRON;
+}
+
+/** Whether a tick's WALL time is worth a log line. Strictly past the line; never a page. */
+export function wallPastLine(wallMs: number): boolean {
+  return wallMs > CRON_BUDGET_WARN_MS;
+}
+
+/** One schedule's day. Milliseconds, converted once from the API's microseconds. */
+export interface CronCpu {
   cron: string;
-  atMs: number;
+  invocations: number;
+  maxCpuMs: number;
+  p99CpuMs: number;
 }
 
-/**
- * `unreadable` names the schedules whose breach row exists and whose time cannot be read. Such a
- * row is never counted as a breach: it can never age out of the window, so it would page for
- * ever. Nor may it hold the all clear back, or an open alert would wait on a breach that may
- * never come (L665). So the readable rows decide, and every message names the undated row as not
- * judged. The next breach on that schedule rewrites the row with a real time.
- */
-export type CronBudgetHealth =
-  | { status: "unmeasured"; why: string; unreadable: string[] }
-  | { status: "over"; breaches: CronBudgetBreach[]; unreadable: string[] }
-  | { status: "within"; unreadable: string[] };
+export type CronCpuReading =
+  | {
+      ok: true;
+      /** Worst max first. */
+      crons: CronCpu[];
+      invocations: number;
+      /** Rows with no readable CPU or no cron: counted, never scored zero (L50). */
+      unreadable: number;
+    }
+  | { ok: false; why: string };
 
-/**
- * The verdict over every stamp in `lane_heartbeats`.
- *
- * `stamps` null is a read that failed. A stored stamp that cannot be parsed arrives as 0 (the
- * heartbeat reader's sentinel, #1169). A breach row carrying it is left out of the judgement
- * and named in it (see `CronBudgetHealth`).
- */
-export function cronBudgetHealth(input: {
-  stamps: Record<string, number | null> | null;
-  nowMs: number;
-  /** How old the hourly verdict stamp may be before the writer is presumed not to be writing. */
-  verdictBoundMs: number;
-  verdictLane: string;
-}): CronBudgetHealth {
-  if (input.stamps === null) {
-    return { status: "unmeasured", why: "lane_heartbeats could not be read this tick", unreadable: [] };
+/** Nearest rank, over values sorted ascending. */
+function percentile(sorted: number[], p: number): number {
+  return sorted[Math.max(0, Math.ceil((p / 100) * sorted.length) - 1)];
+}
+
+/** Read one answer. Every way it is not a reading carries its own sentence. */
+export function readScheduledCpu(httpStatus: number, body: unknown): CronCpuReading {
+  const refused = graphqlEnvelopeRefusal(httpStatus, body, "scheduled invocations");
+  if (refused) return { ok: false, why: refused };
+  const rows = graphqlAccountRows(body, "workersInvocationsScheduled");
+  if (rows === null) {
+    return { ok: false, why: "the analytics API answered with something that is not a scheduled invocation listing" };
   }
-  const breaches: CronBudgetBreach[] = [];
-  const unreadable: string[] = [];
-  for (const [lane, ms] of Object.entries(input.stamps)) {
-    if (!lane.startsWith(CRON_BUDGET_BREACH_PREFIX)) continue;
-    const cron = lane.slice(CRON_BUDGET_BREACH_PREFIX.length);
-    if (isUnreadableStamp(ms)) unreadable.push(cron);
-    else if (ms !== null && input.nowMs - ms <= CRON_BUDGET_WINDOW_MS) breaches.push({ cron, atMs: ms });
-  }
-  // A breach is a positive measurement, so it is reported even while the verdict stamp is stale.
-  if (breaches.length > 0) {
-    breaches.sort((a, b) => a.cron.localeCompare(b.cron));
-    return { status: "over", breaches, unreadable: unreadable.sort() };
-  }
-  unreadable.sort();
-  const verdictMs = input.stamps[input.verdictLane];
-  if (verdictMs === undefined || verdictMs === null) {
+  if (rows.length === 0) {
     return {
-      status: "unmeasured",
-      why: "the Worker has never recorded a cron timing, so a quiet day here proves nothing",
-      unreadable,
+      ok: false,
+      why: "the analytics API returned no scheduled invocations for the day, which a Worker with a minute cron cannot have, so the read is blind",
     };
   }
-  if (input.nowMs - verdictMs > input.verdictBoundMs) {
-    return {
-      status: "unmeasured",
-      why: "the Worker's hourly timing stamp is stale, so it may have stopped recording past the line ticks",
-      unreadable,
-    };
+  if (rows.length >= SCHEDULED_ROW_LIMIT) {
+    return { ok: false, why: `the analytics API returned a full page of ${rows.length} rows, so the day may be truncated` };
   }
-  return { status: "within", unreadable };
+  const byCron = new Map<string, number[]>();
+  let unreadable = 0;
+  for (const r of rows as { cpuTimeUs?: unknown; cron?: unknown }[]) {
+    const us = r?.cpuTimeUs;
+    const cron = r?.cron;
+    if (typeof cron !== "string" || cron.trim() === "" || typeof us !== "number" || !Number.isFinite(us) || us < 0) {
+      unreadable += 1;
+      continue;
+    }
+    const list = byCron.get(cron) ?? [];
+    // MICROSECONDS to milliseconds. A reading a thousand times too small passes every bar.
+    list.push(us / 1000);
+    byCron.set(cron, list);
+  }
+  const crons: CronCpu[] = [...byCron.entries()].map(([cron, values]) => {
+    const sorted = [...values].sort((a, b) => a - b);
+    return { cron, invocations: sorted.length, maxCpuMs: sorted[sorted.length - 1], p99CpuMs: percentile(sorted, 99) };
+  });
+  crons.sort((a, b) => b.maxCpuMs - a.maxCpuMs || a.cron.localeCompare(b.cron));
+  return { ok: true, crons, invocations: rows.length, unreadable };
 }
 
-/** UTC, to the minute, with the date: the window is a day and spans two of them. */
-function utcMinute(ms: number): string {
-  return `${new Date(ms).toISOString().slice(0, 16).replace("T", " ")} UTC`;
-}
-
-function seconds(ms: number): string {
-  return `${Math.round(ms / 1000)}s`;
-}
-
-/** The undated rows, named as not judged, or nothing. */
-function undatedNote(unreadable: string[]): string {
-  if (unreadable.length === 0) return "";
-  return (
-    `\nNot judged: the row for ${unreadable.map((c) => `\`${c}\``).join(", ")} in lane_heartbeats ` +
-    `carries a time that cannot be read, so whether it falls in the last day is unknown. Its next ` +
-    `tick past the line rewrites it.`
-  );
-}
-
-/** What every message says, so none of them can be read as a statement about CPU. */
-const NOT_CPU =
-  `This is wall time, which the Worker can measure, and it does not measure CPU: CPU spent between ` +
-  `I/O waits can read as no time at all. The real CPU is cpuTimeUs in workersInvocationsScheduled.`;
-
-/** The page. Names each schedule and its latest tick, and where the CPU for it is read. */
-export function formatCronBudgetAlert(health: Extract<CronBudgetHealth, { status: "over" }>): string {
-  const one = health.breaches.length === 1;
-  const lines = health.breaches.map((b) => `- \`${b.cron}\`, latest ${utcMinute(b.atMs)}`);
-  return (
-    `${health.breaches.length} cron ${one ? "schedule" : "schedules"} had a tick take longer than ` +
-    `${seconds(CRON_BUDGET_WARN_MS)} of wall time in the last day. The line is half the ` +
-    `${seconds(CRON_CPU_LIMIT_MS)} CPU ceiling Cloudflare kills an invocation at.\n` +
-    lines.join("\n") +
-    undatedNote(health.unreadable) +
-    `\n${NOT_CPU} Which lane took the time is under tag=cron msg="lane timings".`
-  );
-}
-
-/** The all clear, on a measured day. It clears the wall time page and claims nothing about CPU. */
-export function formatCronBudgetRecovery(health: Extract<CronBudgetHealth, { status: "within" }>): string {
-  return (
-    `No cron tick has taken longer than ${seconds(CRON_BUDGET_WARN_MS)} of wall time in the last day.` +
-    undatedNote(health.unreadable) +
-    `\n${NOT_CPU}`
-  );
-}
+export type CronCpuHealth =
+  | { status: "not-configured" }
+  | { status: "unmeasured"; why: string }
+  | { status: "over"; over: CronCpu[]; crons: CronCpu[]; invocations: number; unreadable: number }
+  | { status: "within"; crons: CronCpu[]; invocations: number };
 
 /**
- * The monitor lane's step. A throwing read is caught here so the check returns a typed verdict,
- * and an unmeasured tick returns before it can notify or resolve anything (#1134, #1152).
+ * The verdict over one reading. A breach is a positive measurement and pages even beside rows
+ * that could not be read; a clean day needs every row read, because the unread one may be the
+ * heavy tick.
  */
-export async function runCronBudgetCheck(deps: {
+export function judgeCronCpu(reading: CronCpuReading): Exclude<CronCpuHealth, { status: "not-configured" }> {
+  if (!reading.ok) return { status: "unmeasured", why: reading.why };
+  const over = reading.crons.filter((c) => c.maxCpuMs > CRON_BUDGET_WARN_MS);
+  if (over.length > 0) {
+    return { status: "over", over, crons: reading.crons, invocations: reading.invocations, unreadable: reading.unreadable };
+  }
+  if (reading.unreadable > 0) {
+    return {
+      status: "unmeasured",
+      why: `${reading.unreadable} of ${reading.invocations} scheduled invocations carried no readable CPU, so the day cannot be called under the line`,
+    };
+  }
+  return { status: "within", crons: reading.crons, invocations: reading.invocations };
+}
+
+/** Did this check measure a day? The `verdict:cron-budget` stamp hangs off this alone. */
+export function cronCpuReachedVerdict(health: CronCpuHealth): boolean {
+  return health.status === "over" || health.status === "within";
+}
+
+function secs(ms: number): string {
+  return `${Math.round(ms / 100) / 10}s`;
+}
+
+function cronLine(c: CronCpu): string {
+  return `- \`${c.cron}\`, max ${secs(c.maxCpuMs)}, p99 ${secs(c.p99CpuMs)} over ${c.invocations.toLocaleString("en-US")} ${c.invocations === 1 ? "tick" : "ticks"}`;
+}
+
+const SOURCE = `Read from Cloudflare's \`cpuTimeUs\` for each scheduled invocation (workersInvocationsScheduled).`;
+
+/** The page. Names each schedule past the line with its max and p99. */
+export function formatCronCpuAlert(health: Extract<CronCpuHealth, { status: "over" }>): string {
+  const one = health.over.length === 1;
+  const unread =
+    health.unreadable > 0
+      ? `\n${health.unreadable} ${health.unreadable === 1 ? "invocation" : "invocations"} in the day had no readable CPU and ${health.unreadable === 1 ? "is" : "are"} not counted.`
+      : "";
+  return (
+    `${health.over.length} cron ${one ? "schedule" : "schedules"} used more than ${secs(CRON_BUDGET_WARN_MS)} of CPU ` +
+    `in one tick in the last day. That is half the ${secs(CRON_CPU_LIMIT_MS)} ceiling Cloudflare kills an invocation at.\n` +
+    health.over.map(cronLine).join("\n") +
+    unread +
+    `\n${SOURCE} Which lane took the time is under tag=cron msg="lane timings".`
+  );
+}
+
+/** The all clear, on a measured day. Says what was measured, over how many ticks. */
+export function formatCronCpuRecovery(health: Extract<CronCpuHealth, { status: "within" }>): string {
+  const worst = health.crons[0];
+  return (
+    `No cron schedule used more than ${secs(CRON_BUDGET_WARN_MS)} of CPU in one tick in the last day, ` +
+    `across ${health.invocations.toLocaleString("en-US")} scheduled invocations.` +
+    (worst ? ` The worst was \`${worst.cron}\` at ${secs(worst.maxCpuMs)}.` : "") +
+    `\n${SOURCE}`
+  );
+}
+
+/** The daily info line while the token is unset. It claims nothing about headroom. */
+export function formatCronCpuNotConfigured(): string {
+  return (
+    `Cron CPU headroom is not measured: the Worker has no ${CF_ANALYTICS_TOKEN_ENV} secret, so nothing reads ` +
+    `Cloudflare's CPU figures for the scheduled invocations. Nothing will page about cron CPU until it is set, ` +
+    `and an open cron_budget_headroom page stays open until a measured day clears it. ` +
+    `DEPLOY.md says how to create the token.`
+  );
+}
+
+/** What the check needs. `post` is the one network call; it is handed the bearer header whole. */
+export interface CronCpuDeps {
+  /** The secret's value as read; undefined or blank is not configured. */
+  token: string | undefined;
   nowMs: number;
-  read: () => Promise<Record<string, number | null>>;
-  verdictBoundMs: number;
-  verdictLane: string;
+  /** POST a JSON body. Answers the status and the parsed body (null when it was not JSON). */
+  post: (url: string, authorization: string, body: string) => Promise<{ status: number; body: unknown }>;
   notify: ThrottledNotify;
+  info: ThrottledNotify;
   resolve: AlertResolve<unknown>;
   log?: (msg: string) => void;
-}): Promise<CronBudgetHealth> {
-  let stamps: Record<string, number | null> | null;
-  try {
-    stamps = await deps.read();
-  } catch {
-    stamps = null;
+}
+
+/** Remove the token from any text before it is logged, in case an answer echoes it. */
+function scrub(text: string, token: string): string {
+  return token.length > 0 ? text.split(token).join("[token]") : text;
+}
+
+/**
+ * The hourly check. A throwing call is caught so it returns a typed verdict, and an unmeasured or
+ * unset day returns before it can page or clear anything (#1134, #1152).
+ */
+export async function runCronCpuCheck(deps: CronCpuDeps): Promise<CronCpuHealth> {
+  const token = (deps.token ?? "").trim();
+  if (token === "") {
+    await deps
+      .info(CRON_CPU_NOT_CONFIGURED_KEY, CRON_CPU_NOT_CONFIGURED_COOLDOWN_MS, formatCronCpuNotConfigured())
+      .catch(logAlertSendFailure(CRON_CPU_NOT_CONFIGURED_KEY));
+    deps.log?.(`cron cpu: not configured, ${CF_ANALYTICS_TOKEN_ENV} is unset`);
+    return { status: "not-configured" };
   }
-  const health = cronBudgetHealth({
-    stamps,
-    nowMs: deps.nowMs,
-    verdictBoundMs: deps.verdictBoundMs,
-    verdictLane: deps.verdictLane,
-  });
+  let reading: CronCpuReading;
+  try {
+    const answer = await deps.post(
+      CF_GRAPHQL_URL,
+      `Bearer ${token}`,
+      JSON.stringify({ query: SCHEDULED_CPU_QUERY, variables: cronCpuQueryVariables(deps.nowMs) }),
+    );
+    reading = readScheduledCpu(answer.status, answer.body);
+  } catch (err) {
+    reading = { ok: false, why: `the analytics API call threw: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  const health = judgeCronCpu(reading);
   if (health.status === "unmeasured") {
-    deps.log?.(`monitor cron-budget: unmeasured, ${health.why}`);
+    deps.log?.(scrub(`cron cpu: unmeasured, ${health.why}`, token));
     return health;
   }
   if (health.status === "over") {
     await deps
-      .notify(CRON_BUDGET_ALERT_KEY, CRON_BUDGET_COOLDOWN_MS, formatCronBudgetAlert(health))
+      .notify(CRON_BUDGET_ALERT_KEY, CRON_BUDGET_COOLDOWN_MS, formatCronCpuAlert(health))
       .catch(logAlertSendFailure(CRON_BUDGET_ALERT_KEY));
-    deps.log?.(`monitor cron-budget: OVER crons=${health.breaches.map((b) => b.cron).join("|")}`);
+    deps.log?.(`cron cpu: OVER ${health.over.map((c) => `${c.cron}=${Math.round(c.maxCpuMs)}ms`).join("|")}`);
     return health;
   }
   await deps
-    .resolve(CRON_BUDGET_ALERT_KEY, formatCronBudgetRecovery(health))
+    .resolve(CRON_BUDGET_ALERT_KEY, formatCronCpuRecovery(health))
     .catch(logResolveFailure(CRON_BUDGET_ALERT_KEY));
-  deps.log?.(`monitor cron-budget: within undated=${health.unreadable.join("|") || "none"}`);
+  deps.log?.(`cron cpu: within ${health.crons.map((c) => `${c.cron}=${Math.round(c.maxCpuMs)}ms`).join("|")}`);
   return health;
 }

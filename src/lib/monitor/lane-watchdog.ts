@@ -40,7 +40,7 @@ import {
   type LaneWatchdogOutcome,
   type StaleLane,
 } from "@/lib/monitor/health";
-import { detectorParkState, parkedDetector } from "@/lib/monitor/verdict-freshness";
+import { detectorParkState, parkedDetector, unconfiguredDetector } from "@/lib/monitor/verdict-freshness";
 import {
   sendThrottledAlert,
   sendThrottledInfo,
@@ -229,7 +229,12 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
   // A parked lane is excluded from the blind page, and ONLY from that: it is
   // still judged, still logged, and still all-cleared by the recovery pass below
   // if it starts stamping.
-  const armedVerdictStale = verdictStale.filter((l) => !parkedDetector(l.lane));
+  //
+  // #3141: a detector whose optional secret is unset is excused the same way, and only while it
+  // is unset (`unconfiguredDetector`); it reports its own unset state on its own channel.
+  const armedVerdictStale = verdictStale.filter(
+    (l) => !parkedDetector(l.lane) && unconfiguredDetector(l.lane, process.env) === null,
+  );
 
   // #1134: NO early return on the all-healthy tick. There used to be one here, and
   // it would have made the recovery notice below unreachable on the single path

@@ -199,7 +199,8 @@ const worker = {
     });
     const failures = outcomes.flatMap((o) => (o.failure ? [o.failure] : []));
     if (failures.length > 0) await reportLaneFailures(failures, tick, deps);
-    // #3141: the daily cron headroom check reads what this records (worker/lane-run.ts).
+    // #3141: a slow tick's wall time is logged, and the hourly tick asks the app to read the
+    // real cron CPU from Cloudflare's analytics (worker/lane-run.ts).
     await recordCronBudget(controller.cron, totalMs, tick, deps);
   },
 };

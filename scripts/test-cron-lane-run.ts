@@ -54,6 +54,7 @@ function harness(answer: (req: Request) => Promise<Response>): { deps: LaneRunDe
       error: (tag, fields, err) => {
         seen.errors.push({ tag, fields: fields as Record<string, unknown>, err });
       },
+      warn: () => {},
     },
   };
   return { deps, seen };
