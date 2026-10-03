@@ -52,6 +52,8 @@ import {
 } from "../src/lib/monitor/cron-budget.ts";
 import { DETECTOR_REQUIRED_SETTING, unconfiguredDetector } from "../src/lib/monitor/verdict-freshness.ts";
 import { CRON_ROUTES } from "../worker/cron-routes.ts";
+import { alertEntry } from "../src/lib/notify/alert-catalog.ts";
+import { alertFamily } from "../src/lib/notify/alert-runbook.ts";
 import { recordCronBudget, TICK_ID_HEADER, type LaneRunDeps } from "../worker/lane-run.ts";
 import { WRANGLER_CRON_CPU_MS } from "./loadtest/platform-reading.ts";
 import { CRON_CPU_MARGIN_SHARE } from "./loadtest/judge-booking-run.ts";
@@ -310,6 +312,16 @@ const day = (worstMs: number) => async () => ({
     resolve: async () => true,
   });
   eq(failingInfo.status, "not-configured", "an info line that fails to send still returns its state");
+}
+
+// --- the two keys are filed where their kind says -------------------------------------
+{
+  // The unset line is info, so it belongs with the other things only worth knowing, never
+  // beside the pages for a guard that has stopped working.
+  eq(alertEntry(CRON_CPU_NOT_CONFIGURED_KEY)?.kind, "info", "the unset line is classified info");
+  eq(alertFamily(CRON_CPU_NOT_CONFIGURED_KEY), "something-was-measured-and-is-only-worth-knowing", "and filed in the info family");
+  eq(alertEntry(CRON_BUDGET_ALERT_KEY)?.kind, "condition", "the headroom page is a condition");
+  eq(alertFamily(CRON_BUDGET_ALERT_KEY), "a-sweep-cannot-keep-up", "filed with the other headroom pages");
 }
 
 // --- the watchdog stands down on the verdict lane ONLY while the secret is unset ------

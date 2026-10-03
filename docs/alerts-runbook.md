@@ -394,16 +394,11 @@ backfill is fixed by rewinding that table's cursor, in the same change as the wr
 ## A limit or a guard is not working
 
 Keys: `edge_limiter_unusable`, `rate_limit_broken:*`, `rate_limit_refund_broken:*`,
-`rate_limit_unidentified:*`, `cron_cpu_not_configured`.
+`rate_limit_unidentified:*`.
 
 **What fired it.** A control that is supposed to bound something has stopped bounding
 it. Every limiter here fails OPEN, so the page means requests are being served
 UNMETERED, not that anybody is being turned away.
-
-`cron_cpu_not_configured` is the quiet one: an info line, once a day, saying the Worker
-has no `CF_ANALYTICS_TOKEN`, so nothing is reading cron CPU and nothing will page about it
-(#3141). It is a decision waiting to be made rather than a fault. DEPLOY.md's secrets table
-says how to create the token; the line stops on the first hourly tick after it is set.
 
 **First checks.**
 - Is the binding there? A deploy without the `ratelimits` block or the
@@ -596,7 +591,12 @@ nothing either way; re-run it.
 
 Keys: `rate_limit_blocked:*`, `ooo_agent_dm`, `ooo_approvals_digest`,
 `ooo-digest-unreachable:*`, `ooo-digest-unrouted-unreachable`, `ooo_undo`,
-`embed_origin_mismatch`.
+`embed_origin_mismatch`, `cron_cpu_not_configured`.
+
+**`cron_cpu_not_configured`** (#3141) says, once a day, that the Worker has no
+`CF_ANALYTICS_TOKEN`, so nothing is reading cron CPU and nothing will page about it. It
+is a decision waiting to be made rather than a fault. DEPLOY.md's secrets block says how
+to create the token; the line stops on the first hourly tick after it is set.
 
 **`embed_origin_mismatch` is the one here with a job attached, and the job is not
 ours** (#2641). A page embedding the booker told it to report to one address while
