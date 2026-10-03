@@ -45,7 +45,8 @@
     "verify:ooo-protection": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-ooo-protection-live.ts",
     "verify:pool-entry": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-pool-entry-live.ts",
     "verify:router-replay": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-router-replay-live.ts",
-    "verify:advisor-photos-sql": "node --experimental-strip-types scripts/verify-advisor-photos-sql.ts",
+    "verify:audit-chain-sql": "node --experimental-strip-types scripts/verify-audit-chain-sql.ts",
+    "verify:advisor-photos-sql":"node --experimental-strip-types scripts/verify-advisor-photos-sql.ts",
     "verify:advisor-photos": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-advisor-photos-live.ts",
     "loadtest:export-shape": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/export-roster-shape.ts"
   },

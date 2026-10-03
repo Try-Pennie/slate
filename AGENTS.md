@@ -808,7 +808,7 @@ one's bound, are in `docs/verify-commands.md`.
 | `verify:pool-slot-parity` | the bucket codes sharing one availability pool really offer the same times |
 | `verify:table-drift` | production holds no table that no migration created |
 | `verify:advisor-photos`, `verify:advisor-photos-sql` | the photo refresh (#3027) against live Google with no writes, and migration 0156 in a real Postgres; why every face goes through `resolveAdvisorPhoto` |
-| `verify:agent-link-names`, `verify:replace-user-schedule-guard`, `verify:auth-domain-hook` | in Docker: 0155's link names (from the email username, lowest free variant even under concurrency, never reused, never token shaped); 0157's import refusing a week edited mid run; auth hook |
+| `verify:agent-link-names`, `verify:replace-user-schedule-guard`, `verify:auth-domain-hook`, `verify:audit-chain-sql` | in Docker: 0155's link names (lowest free variant under concurrency, never reused, never token shaped); 0157's import refusing a mid run edit; auth hook; audit chain |
 
 **The detail for every one of them, each exit code table, what it writes, which
 credentials it needs, what its last live run measured and the decisions behind
@@ -983,7 +983,7 @@ never flagged. The allowlist (`SAFE_TABLES` in `scan-src-capped-reads.ts`) holds
 `monitor_alert_config`, `business_hours`, `bucket_slots`,
 `sync_locks`, `reschedule_locks`, `lane_heartbeats`,
 `selfheal_scan_cursor`, `booking_failure_rate_state`, `export_cursor`,
-`reason_options`, `booking_settings`, and `advisor_photos` (#3027, one row per user). **Every other table defaults to a
+`reason_options`, `booking_settings`, `advisor_photos`, and `audit_log_chain_verify`. **Every other table defaults to a
 growth table (flagged): a new table must be justified, not silently
 unguarded.** When you add a table whose row count is bounded by the roster
 rather than by booking volume or time, add it to `SAFE_TABLES` (the constant

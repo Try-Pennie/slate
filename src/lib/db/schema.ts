@@ -37,6 +37,7 @@ import type {
   EventType,
   LaneHeartbeat,
   SelfhealScanCursor,
+  AuditLogChainVerify,
   BookingFailureRateState,
   ExportCursor,
   MonitorAlertConfig,
@@ -183,6 +184,7 @@ export interface Database {
       api_caller_seen: Table<ApiCallerSeen>;
       pilot_offer_samples: Table<PilotOfferSample>;
       selfheal_scan_cursor: Table<SelfhealScanCursor>;
+      audit_log_chain_verify: Table<AuditLogChainVerify>;
       export_cursor: Table<ExportCursor>;
       bulk_reassign_jobs: Table<BulkReassignJob>;
       bulk_reassign_items: Table<

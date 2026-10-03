@@ -32,6 +32,7 @@ import {
   AUTH_SIGN_IN_VERDICT_LANE,
   AWAITING_ACTIVATION_VERDICT_LANE,
   STRANDED_HIRES_VERDICT_LANE,
+  AUDIT_CHAIN_VERDICT_LANE,
   REGAL_CALL_FEED_VERDICT_LANE,
   REGAL_CALL_OUTCOMES_VERDICT_LANE,
   ADVISOR_PHOTOS_VERDICT_LANE,
@@ -334,6 +335,11 @@ const VERDICT_SUBJECT: Record<DetectorVerdictLane, VerdictSubject> = {
     what: "the check asking whether any signed in Sales hire is outside the booking pool with nothing pending and no hold recorded",
     cost: "a hire whose pending activation was lost would stay out of every pool for good, reading exactly like somebody held back on purpose",
     look: 'the Worker logs for msg="stranded hires" under tag=monitor, and whether the users, agent_calendars and audit_log tables can be read',
+  },
+  [AUDIT_CHAIN_VERDICT_LANE]: {
+    what: "the check walking the audit log's hash chain to find any entry changed after it was written",
+    cost: "an audit log edited by somebody able to switch off its append only guard would read as untouched",
+    look: 'the Worker logs for msg="audit chain" under tag=monitor, and whether audit_log and audit_log_chain_verify can be read at all',
   },
   [REGAL_CALL_FEED_VERDICT_LANE]: {
     what: "the pair of checks asking whether calls from Regal are reaching Slate and whether Slate can read them",

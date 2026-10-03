@@ -40,10 +40,12 @@ import {
   AUTH_SIGN_IN_VERDICT_LANE,
   AWAITING_ACTIVATION_VERDICT_LANE,
   STRANDED_HIRES_VERDICT_LANE,
+  AUDIT_CHAIN_VERDICT_LANE,
   REGAL_CALL_FEED_VERDICT_LANE,
   REGAL_CALL_OUTCOMES_VERDICT_LANE,
   ADVISOR_PHOTOS_VERDICT_LANE,
   AVAILABILITY_LATENCY_VERDICT_LANE,
+  auditChainReachedVerdict,
   laneWatchdogReachedVerdict,
   twilioRosterReachedVerdict,
   truthReachedVerdict,
@@ -212,6 +214,7 @@ const HOUR = 60 * 60_000;
         AUTH_SIGN_IN_VERDICT_LANE,
         AWAITING_ACTIVATION_VERDICT_LANE,
         STRANDED_HIRES_VERDICT_LANE,
+        AUDIT_CHAIN_VERDICT_LANE,
         REGAL_CALL_FEED_VERDICT_LANE,
         REGAL_CALL_OUTCOMES_VERDICT_LANE,
         ADVISOR_PHOTOS_VERDICT_LANE,
@@ -504,5 +507,16 @@ assert(
   assert(!/undefined/.test(text), "and renders no undefined");
   assert(/verdict:nobody-declared/.test(verdictRecoveryText("verdict:nobody-declared")), "its all clear names the lane too");
 }
+// --- the audit chain walk (#3090) ------------------------------------------------
+// Every tick that read and judged rows concludes, including one part way through a
+// walk; only an unmeasured tick or a thrown step does not.
+assert(auditChainReachedVerdict({ status: "progressing", checked: 500, passSeq: 500 }), "an audit chain tick part way through a walk has concluded");
+assert(auditChainReachedVerdict({ status: "intact", checked: 12, throughSeq: 4012 }), "a complete walk has concluded");
+assert(
+  auditChainReachedVerdict({ status: "broken", break: { kind: "altered", seq: 3, id: "x" }, checked: 2 }),
+  "a walk that met a break has concluded",
+);
+assert(!auditChainReachedVerdict({ status: "unmeasured", why: "read refused" }), "an unmeasured audit chain tick has NOT concluded");
+assert(!auditChainReachedVerdict(null), "nor has an audit chain step that threw");
 
 finish();

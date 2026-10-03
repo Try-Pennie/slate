@@ -149,6 +149,8 @@ const healthy = () => ({
   "verdict:auth-sign-in": ago(5 * MIN),
   "verdict:awaiting-activation": ago(5 * MIN),
   "verdict:stranded-hires": ago(5 * MIN),
+  // #3090: the audit chain walk judges every tick the trail reads.
+  "verdict:audit-chain": ago(5 * MIN),
   "verdict:regal-call-feed": ago(5 * MIN),
   // #2944: the call outcome ratio judges every tick with calls flowing.
   "verdict:regal-call-outcomes": ago(10 * MIN),

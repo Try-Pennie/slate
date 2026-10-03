@@ -15,13 +15,9 @@
 // needs Docker. No Docker is exit 2, never a pass (L98).
 //
 // Run: pnpm verify:replace-user-schedule-guard
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { startThrowawayPostgres } from "./lib/throwaway-postgres.ts";
+import { readMigration as migration, startThrowawayPostgres } from "./lib/throwaway-postgres.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
-const ROOT = join(import.meta.dirname, "..");
-const migration = (file: string) => readFileSync(join(ROOT, "supabase", "migrations", file), "utf8");
 const IMAGE = process.env.REPLACE_USER_SCHEDULE_PG_IMAGE ?? "postgres:17-alpine";
 const NAME = `slate-replace-user-schedule-${process.pid}`;
 

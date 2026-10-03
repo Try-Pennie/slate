@@ -256,6 +256,12 @@ const EXPECTED_PINNED = [
   "agent_link_names_keep_reserved",
   "applied_migration_version",
   "applied_migration_versions",
+  // #3090: the audit_log hash chain. The field encoder and the link are Security
+  // INVOKER; the trigger is DEFINER so it can move the chain head whoever inserts.
+  // All three reach only pg_catalog built ins (sha256, convert_to, encode).
+  "audit_log_chain_append",
+  "audit_log_chain_field",
+  "audit_log_chain_link",
   "before_user_created_domain_gate",
   "booking_api_outcome_mix",
   // #2366: keeps booking_settings.public_booking_paused_at in step with the flag.
