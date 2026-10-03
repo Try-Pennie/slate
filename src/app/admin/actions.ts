@@ -208,11 +208,19 @@ type ScheduleSnapshot = {
  * better footnote. Null is a real answer: the agent had no schedule row yet.
  */
 async function readScheduleForAudit(userId: string): Promise<ScheduleSnapshot | null | "unreadable"> {
-  const { data, error } = await supabaseAdmin()
-    .from("availability_schedules")
-    .select("timezone, availability_rules(weekday, start_minute, end_minute)")
-    .eq("user_id", userId)
-    .maybeSingle();
+  let data: unknown;
+  let error: unknown;
+  // Both failure shapes: a returned `{ error }`, and a call that REJECTS (a
+  // network fault), which would otherwise escape and abort the save it decorates.
+  try {
+    ({ data, error } = await supabaseAdmin()
+      .from("availability_schedules")
+      .select("timezone, availability_rules(weekday, start_minute, end_minute)")
+      .eq("user_id", userId)
+      .maybeSingle());
+  } catch (err) {
+    error = err;
+  }
   if (error) {
     log.warn("admin-actions", { msg: "schedule before an hours save could not be read", user_id: userId }, error);
     return "unreadable";

@@ -18,8 +18,10 @@
  * docs/cloudflare-platform-notes.md), so nothing is lost by keeping the body out
  * of Slack, and `log.error(tag, fields, err)` is how you get it back.
  *
- * Pure and dependency free, so it is node-testable (scripts/test-alerts.ts).
+ * Pure, and its one import is the pure contact data scrub, so it is node-testable
+ * (scripts/test-alerts.ts, scripts/test-error-text.ts).
  */
+import { scrubContactData } from "../api/client-error-scrub.ts";
 
 /** Longest reason a routine alert carries. Its copy already names the condition,
  *  so the error is a supporting detail and one clause is enough. */
@@ -102,23 +104,41 @@ export function shortFailureReason(
  * plain `{ message, code, details, hint }` object, and `String` renders it as
  * "[object Object]", which is how a page lost the one fact it carried. So an
  * object with a string `message` gives that message (plus its `code` when it has
- * one, since a Postgres code like 23505 is the diagnosis), any other object gives
- * its JSON, and nothing gives the empty string so the caller's fallback applies.
+ * one, since a Postgres code like 23505 is the diagnosis), and nothing gives the
+ * empty string so the caller's fallback applies.
+ *
+ * An object with NO message is never serialized. A thrown row or payload carries
+ * a lead's contact data, and `shortErrorReason` reaches Slack from call sites that
+ * do no scrubbing of their own, so a JSON dump here would page with somebody's
+ * address in it. It is named by its code, its numeric status, or its type, which
+ * is the diagnosis and not the data.
+ *
+ * And whatever this produces is scrubbed of contact data HERE (the shapes in
+ * `client-error-scrub.ts`), so every caller is covered rather than the ones that
+ * remembered to. A name has no shape and is not caught; that residue is stated in
+ * the scrub module.
  */
 export function errorText(err: unknown): string {
+  return scrubContactData(rawErrorText(err));
+}
+
+function rawErrorText(err: unknown): string {
   if (err === null || err === undefined) return "";
   if (err instanceof Error) return err.message;
   if (typeof err === "string") return err;
   if (typeof err === "object") {
-    const { message, code } = err as { message?: unknown; code?: unknown };
+    const { message, code, status } = err as { message?: unknown; code?: unknown; status?: unknown };
+    const codeText =
+      (typeof code === "string" && code) || typeof code === "number" ? String(code) : null;
     if (typeof message === "string" && message) {
-      return typeof code === "string" && code ? `${message} (code ${code})` : message;
+      return codeText ? `${message} (code ${codeText})` : message;
     }
-    try {
-      return JSON.stringify(err) ?? "";
-    } catch {
-      return "";
-    }
+    if (codeText) return `an error object with code ${codeText} and no message`;
+    if (typeof status === "number") return `an error object with status ${status} and no message`;
+    const type = (err as { constructor?: { name?: unknown } }).constructor?.name;
+    return typeof type === "string" && type && type !== "Object"
+      ? `a thrown ${type} with no message`
+      : "a thrown object with no message";
   }
   return String(err);
 }

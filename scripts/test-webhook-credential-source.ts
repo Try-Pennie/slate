@@ -11,25 +11,38 @@ import {
   formatCredentialsInDatabaseRecovery,
   runWebhookCredentialSourceCheck,
   WEBHOOK_CREDENTIALS_KEY,
+  type StoredCredentialPresence,
 } from "@/lib/monitor/webhook-credential-source";
 
-const stored = { hasDbKey: true, hasDbSigning: true };
+// Both columns hold a value, as the live Regal row does: it carries an old minted
+// signing secret it never sends.
+const regal = { format: "regal" as const, hasDbKey: true, hasDbSigning: true };
+const generic = { format: "generic" as const, hasDbKey: true, hasDbSigning: true };
+const stored = regal;
 const noWorker = { regalKeySet: false, signingSecretSet: false };
 const allWorker = { regalKeySet: true, signingSecretSet: true };
 
+// Judged on what each endpoint's FORMAT sends, never on what its columns hold.
+eq(credentialSourceVerdict([regal], noWorker).onDatabase, ["key"], "a Regal row on the column reports its key only");
 eq(
-  credentialSourceVerdict([stored], noWorker).onDatabase,
+  credentialSourceVerdict([regal], { regalKeySet: true, signingSecretSet: false }).onDatabase,
+  [],
+  "a Regal row clears once the key is in the Worker, whatever signing secret its column still holds",
+);
+eq(credentialSourceVerdict([generic], noWorker).onDatabase, ["signing"], "a generic row reports its signing secret only");
+eq(
+  credentialSourceVerdict([generic], { regalKeySet: false, signingSecretSet: true }).onDatabase,
+  [],
+  "a generic row clears once the signing secret is in the Worker, whatever key its column holds",
+);
+eq(
+  credentialSourceVerdict([regal, generic], noWorker).onDatabase,
   ["key", "signing"],
-  "both credentials on the column with no Worker secret are both reported",
+  "one row of each format on the column reports both",
 );
+eq(credentialSourceVerdict([regal, generic], allWorker).onDatabase, [], "both in the Worker reports nothing");
 eq(
-  credentialSourceVerdict([stored], { regalKeySet: true, signingSecretSet: false }).onDatabase,
-  ["signing"],
-  "a key moved and a signing secret not moved reports only the signing secret",
-);
-eq(credentialSourceVerdict([stored], allWorker).onDatabase, [], "both in the Worker reports nothing");
-eq(
-  credentialSourceVerdict([{ hasDbKey: false, hasDbSigning: false }], noWorker).onDatabase,
+  credentialSourceVerdict([{ format: "regal", hasDbKey: false, hasDbSigning: false }], noWorker).onDatabase,
   [],
   "a nulled column with no Worker secret is missing, not on the database (the wire refuses that)",
 );
@@ -37,11 +50,11 @@ eq(credentialSourceVerdict(null, noWorker).measured, false, "an unreadable read 
 
 // Copy: names each secret to put, never a value, one line, no raw shapes.
 {
-  const both = formatCredentialsInDatabaseAlert(credentialSourceVerdict([stored], noWorker));
+  const both = formatCredentialsInDatabaseAlert(credentialSourceVerdict([regal, generic], noWorker));
   assert(both.includes("REGAL_WEBHOOK_KEY") && both.includes("WEBHOOK_SIGNING_SECRET"), "the page names both secrets to put");
   assert(!both.includes("\n"), "the page is one line");
   const one = formatCredentialsInDatabaseAlert(
-    credentialSourceVerdict([stored], { regalKeySet: true, signingSecretSet: false }),
+    credentialSourceVerdict([regal, generic], { regalKeySet: true, signingSecretSet: false }),
   );
   assert(one.includes("WEBHOOK_SIGNING_SECRET") && !one.includes("REGAL_WEBHOOK_KEY"), "one credential names only its own secret");
   assert(/the Worker secret WEBHOOK_SIGNING_SECRET is not set/.test(one), "the singular reads as singular");
@@ -49,7 +62,7 @@ eq(credentialSourceVerdict(null, noWorker).measured, false, "an unreadable read 
 }
 
 async function run(
-  endpoints: (() => Promise<{ hasDbKey: boolean; hasDbSigning: boolean }[] | null>),
+  endpoints: () => Promise<StoredCredentialPresence[] | null>,
   worker: { regalKeySet: boolean; signingSecretSet: boolean },
 ) {
   const notified: [string, string][] = [];

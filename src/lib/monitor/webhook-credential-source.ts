@@ -23,12 +23,27 @@
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 import { logAlertSendFailure, logResolveFailure } from "../notify/send-failure.ts";
 import { credentialSourcesFor, type CredentialSources } from "../webhooks/credentials.ts";
+import type { WebhookFormat } from "@/lib/db/types";
 
-/** One active endpoint, reduced to whether each column holds a value. */
+/** One active endpoint: its format, and whether each column holds a value. */
 export interface StoredCredentialPresence {
+  format: WebhookFormat;
   hasDbKey: boolean;
   hasDbSigning: boolean;
 }
+
+/**
+ * The one credential each format actually SENDS (`src/lib/webhooks/wire.ts`): a
+ * Regal request carries the key and is never signed, a generic one is signed and
+ * carries no key. Judging a row on a credential its format never sends paged for
+ * ever over the old minted secret every Regal row still holds, so the page could
+ * not clear once the real secret was moved. A Record over the union, so a third
+ * format cannot be added without saying what it sends.
+ */
+const SENDS: Record<WebhookFormat, "key" | "signing"> = {
+  regal: "key",
+  generic: "signing",
+};
 
 export interface WorkerCredentialPresence {
   regalKeySet: boolean;
@@ -56,9 +71,9 @@ export function credentialSourceVerdict(
   if (endpoints === null) return { measured: false, onDatabase: [], endpointCount: 0 };
   const onDatabase = new Set<"key" | "signing">();
   for (const stored of endpoints) {
-    const sources = credentialSourcesFor(stored, worker);
-    if (sources.key === "database") onDatabase.add("key");
-    if (sources.signing === "database") onDatabase.add("signing");
+    const sent = SENDS[stored.format];
+    if (!sent) continue;
+    if (credentialSourcesFor(stored, worker)[sent] === "database") onDatabase.add(sent);
   }
   return {
     measured: true,

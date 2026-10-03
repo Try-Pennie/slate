@@ -361,7 +361,7 @@ import { ACTIVE_BOOKING_STATUSES } from "@/lib/booking/bulk-reassign-store";
 import { loadOooCoverageBookings, loadSnapshottedBookingIds } from "@/lib/monitor/ooo-coverage-bookings";
 import { inIdChunks } from "@/lib/db/id-batch";
 import { selectAllPages } from "@/lib/supabase/paginate";
-import type { Attributes, Bucket } from "@/lib/db/types";
+import type { Attributes, Bucket, WebhookFormat } from "@/lib/db/types";
 import { log } from "@/lib/log";
 import { groupRulesBySchedule, runUnsetHoursCheck, type UnsetHoursAgent, type HoursSource } from "@/lib/monitor/unset-hours";
 import {
@@ -3207,13 +3207,14 @@ export async function GET(req: NextRequest) {
           // cap-safe: webhook_endpoints is roster-bounded config (one row in prod).
           const { data, error } = await db
             .from("webhook_endpoints")
-            .select("auth_header, secret")
+            .select("format, auth_header, secret")
             .eq("active", true);
           if (error) {
             log.warn("webhook-credentials", { msg: "endpoints read failed" }, error);
             return null;
           }
-          return ((data ?? []) as { auth_header: string | null; secret: string | null }[]).map((row) => ({
+          return ((data ?? []) as { format: WebhookFormat; auth_header: string | null; secret: string | null }[]).map((row) => ({
+            format: row.format,
             hasDbKey: hasStoredValue(row.auth_header),
             hasDbSigning: hasStoredValue(row.secret),
           }));

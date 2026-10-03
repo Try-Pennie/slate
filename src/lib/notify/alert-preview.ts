@@ -465,6 +465,20 @@ import {
   formatCredentialsInDatabaseAlert,
   formatCredentialsInDatabaseRecovery,
 } from "@/lib/monitor/webhook-credential-source";
+
+/** #3091: one endpoint of each format, both columns still holding a value, with
+ *  the given Worker secrets set, rendered as the page that ships. */
+function credentialsPreview(worker: { regalKeySet: boolean; signingSecretSet: boolean }): string {
+  return formatCredentialsInDatabaseAlert(
+    credentialSourceVerdict(
+      [
+        { format: "regal", hasDbKey: true, hasDbSigning: true },
+        { format: "generic", hasDbKey: true, hasDbSigning: true },
+      ],
+      worker,
+    ),
+  );
+}
 import {
   formatEdgeLimiterUnusableAlert,
   formatEdgeLimiterRecovery,
@@ -2809,23 +2823,13 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "webhook_credentials_in_database",
     state: "both credentials still read from the database",
     channel: "alert",
-    text: formatCredentialsInDatabaseAlert(
-      credentialSourceVerdict([{ hasDbKey: true, hasDbSigning: true }], {
-        regalKeySet: false,
-        signingSecretSet: false,
-      }),
-    ),
+    text: credentialsPreview({ regalKeySet: false, signingSecretSet: false }),
   },
   {
     key: "webhook_credentials_in_database",
     state: "only the signing secret is left on the database",
     channel: "alert",
-    text: formatCredentialsInDatabaseAlert(
-      credentialSourceVerdict([{ hasDbKey: true, hasDbSigning: true }], {
-        regalKeySet: true,
-        signingSecretSet: false,
-      }),
-    ),
+    text: credentialsPreview({ regalKeySet: true, signingSecretSet: false }),
   },
   {
     key: "webhook_credentials_in_database",

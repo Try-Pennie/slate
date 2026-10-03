@@ -974,6 +974,38 @@ describe("agent audits follow the change and carry before and after (#3089)", ()
     const entry = recordAudit.mock.calls.at(-1)?.[0] as { details: { schedule: { from: unknown } } };
     expect(entry.details.schedule.from).toBe("unreadable");
   });
+
+  // A client call that REJECTS (a network fault, rather than a returned error) must
+  // not escape either: the read exists for the trail, never to gate the save.
+  it("a before read that rejects still saves, and records the week before as unreadable", async () => {
+    dbState.rowsByTable.users = { role: "agent" };
+    const real = from.getMockImplementation()!;
+    from.mockImplementation((table: string) =>
+      table === "availability_schedules"
+        ? ({
+            select: () => ({
+              eq: () => ({
+                maybeSingle: async () => {
+                  throw new Error("fetch failed");
+                },
+              }),
+            }),
+          } as unknown as ReturnType<typeof real>)
+        : real(table),
+    );
+    try {
+      await expect(
+        setWorkingHours(
+          form({ user_id: "u2", timezone: "America/New_York", day_1: "on", start_1: "09:00", end_1: "17:00" }),
+        ),
+      ).rejects.toThrow(/ok=working-hours/);
+    } finally {
+      from.mockImplementation(real);
+    }
+    expect(rpc).toHaveBeenCalledTimes(1);
+    const entry = recordAudit.mock.calls.at(-1)?.[0] as { details: { schedule: { from: unknown } } };
+    expect(entry.details.schedule.from).toBe("unreadable");
+  });
 });
 
 // #1032: the endpoint URL receives every booking event (lead name, email, phone)
