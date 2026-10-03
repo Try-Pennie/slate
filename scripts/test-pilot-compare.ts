@@ -26,6 +26,7 @@ import {
   type PilotWindow,
   type AppOutcome,
   type Chain,
+  JUDGED_EXITS,
 } from "./lib/pilot-compare.ts";
 import { slateBucket, compareHalves } from "./lib/pilot-split.ts";
 import type { CalcomListedBooking } from "../src/lib/calcom/upcoming-bookings.ts";
@@ -142,6 +143,7 @@ const clean = (lines: string[]) => !lines.some((l) => /undefined|NaN|\[object Ob
   if (!early.ok) {
     assert(hasAssumption(early.lines) && hasCompared(early.lines), "and still says what it assumed and that it compared nothing");
     assert(early.lines.some((l) => /judgeable from 2026-10-10/.test(l)), "and names when the first day becomes judgeable");
+    assert(early.lines.some((l) => /the window opens at/.test(l)), "and says the window has not opened, not that a span has not closed");
   }
 
   // Ten days in: applications made on 10-02 and 10-03 have closed their 7 day span plus grace.
@@ -526,6 +528,13 @@ function run(
 
   const empty = run({ apps: [], slate: [], cal: [], calls: [] }, { window: partialWindow });
   eq(empty.exit, PILOT_COMPARE_EXIT.noApplications, "a partial look that found no application still refuses");
+  // The refusal is decided on the exit code, so it holds whatever the wording says.
+  for (const code of [PILOT_COMPARE_EXIT.compared, PILOT_COMPARE_EXIT.partial, PILOT_COMPARE_EXIT.provisional, PILOT_COMPARE_EXIT.tooFewToRead]) {
+    eq(JUDGED_EXITS.has(code), true, `exit ${code} is a judgement, so a partial look relabels it partial`);
+  }
+  for (const code of [PILOT_COMPARE_EXIT.noApplications, PILOT_COMPARE_EXIT.emptyHalf, PILOT_COMPARE_EXIT.tooManyUnmatched, PILOT_COMPARE_EXIT.noCallsStored, PILOT_COMPARE_EXIT.inputUnreadable]) {
+    eq(JUDGED_EXITS.has(code), false, `exit ${code} is a refusal, so a partial look keeps it`);
+  }
 }
 
 // --- 7b. an unreadable instant is refused, never compared (L50) ---------------------------------

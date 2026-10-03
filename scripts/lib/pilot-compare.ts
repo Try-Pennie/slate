@@ -62,7 +62,11 @@ export const PILOT_COMPARE_EXIT = {
   compared: 0,
   /** Credentials for a source are missing here; nothing was read. */
   notConfigured: 1,
-  /** No application's span has closed yet, so nothing can be judged. */
+  /**
+   * Nothing to judge yet: the window has not opened, or a rehearsal's span has
+   * not closed. Once the window opens a real run looks at what is there so far
+   * and exits `partial` instead.
+   */
   windowNotOpen: 2,
   salesforceUnreadable: 3,
   calcomUnreadable: 4,
@@ -292,11 +296,10 @@ export function planWindow(nowMs: number, env: Record<string, string | undefined
   }
   if (cohortEndMs <= startMs) {
     const firstMs = firstJudgeableMs(startMs, spanMs);
-    return refuse(
-      PILOT_COMPARE_EXIT.windowNotOpen,
-      `no application made since ${etLabel(startMs)} has had its ${spanLabel(spanMs)} span close yet, so nothing can be judged. ` +
-        `The first whole day is judgeable from ${etLabel(firstMs)}.`,
-    );
+    const why = rehearsal
+      ? `no application made since ${etLabel(startMs)} has had its ${spanLabel(spanMs)} span close yet, so nothing can be judged.`
+      : `the window opens at ${etLabel(startMs)}, so no application has been made in it yet.`;
+    return refuse(PILOT_COMPARE_EXIT.windowNotOpen, `${why} The first whole day is judgeable from ${etLabel(firstMs)}.`);
   }
   return { ok: true, window: { startMs, spanMs, cohortEndMs, readEndMs: nowMs, rehearsal, partial: false, readout: { date: rehearsal ? null : readoutDate, reached }, lift } };
 }
@@ -743,12 +746,24 @@ export function settingsDisagreement(s: PilotSettings): string | null {
   return problems.length === 0 ? null : problems.join(", ");
 }
 
+/** The exits `judgeLines` gives when it judged something; every other exit is a refusal. */
+export const JUDGED_EXITS: ReadonlySet<number> = new Set([
+  PILOT_COMPARE_EXIT.compared,
+  PILOT_COMPARE_EXIT.partial,
+  PILOT_COMPARE_EXIT.rehearsal,
+  PILOT_COMPARE_EXIT.provisional,
+  PILOT_COMPARE_EXIT.settingsNowDiffer,
+  PILOT_COMPARE_EXIT.tooFewToRead,
+]);
+
 export function judgePilotCompare(input: CompareInput): { exit: number; lines: string[]; proposedReadout: string | null } {
   const result = judgeLines(input);
   if (!input.window.partial) return result;
   // Rule 9: a partial look is labelled on every line, and exits on its own code
   // unless it refused, so it can never be read or scripted as a result.
-  const refused = result.lines[0]?.startsWith("FAILED") ?? false;
+  // Decided on the exit code, never the wording: anything that is not a judgement
+  // is a refusal and keeps its own code, so a new refusal is covered by default.
+  const refused = !JUDGED_EXITS.has(result.exit);
   return {
     exit: refused ? result.exit : PILOT_COMPARE_EXIT.partial,
     lines: result.lines.map((l) => `[PARTIAL] ${l}`),
