@@ -84,7 +84,7 @@ import { leadCallingZone, withinLeadCallingWindow } from "./lead-calling-window.
 import { shortErrorReason } from "../notify/error-text.ts";
 import { callingNumberWithinDeadline } from "../salesforce/lead-calling-number.ts";
 import type { ScheduleTimer } from "../read-within-deadline.ts";
-import { findDeadlineExceeded } from "../fetch-within-deadline.ts";
+import { findDeadlineExceeded, type DeadlineFound } from "../fetch-within-deadline.ts";
 import { log } from "@/lib/log";
 import { readBookingSource } from "./booking-source.ts";
 import type { FullApiCaller } from "./api-callers.ts";
@@ -280,13 +280,17 @@ export class VerifyUnavailableError extends Error {
  * It carries WHAT did not answer, for the page.
  */
 export class DependencyTimeoutError extends VerifyUnavailableError {
+  /** The call that was in flight: the dependency somebody has to look at. */
   readonly dependency: string;
   readonly timeoutMs: number;
-  constructor(found: { label: string; timeoutMs: number }, cause: unknown) {
+  /** The request's budget, when that is what cut the call short. */
+  readonly budget: { label: string; totalMs: number } | null;
+  constructor(found: DeadlineFound, cause: unknown) {
     super();
     this.name = "DependencyTimeoutError";
     this.dependency = found.label;
     this.timeoutMs = found.timeoutMs;
+    this.budget = found.budget;
     this.cause = cause;
   }
 }

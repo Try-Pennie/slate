@@ -24,6 +24,7 @@ import {
   timeoutAsRetryable,
 } from "./orchestration";
 import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
+import { deadlineWithinBudget } from "@/lib/call-budget";
 import type { CreateBookingInput } from "./service";
 
 const input = {} as CreateBookingInput;
@@ -55,6 +56,54 @@ describe("a timeout on the confirm path (#3102)", () => {
     expect(mapped).toBeInstanceOf(DependencyTimeoutError);
     expect((mapped as DependencyTimeoutError).dependency).toBe("supabase");
     expect(bookingFailureAlert(mapped)?.message).toContain("supabase");
+  });
+
+  // When the request's budget is what cut a call short, the page still names the
+  // dependency that was running, and says the budget ran out, rather than naming
+  // only "the booking confirm", which tells on call nobody which system to open.
+  it("names the call in flight when the confirm's budget cut it short", async () => {
+    createBooking.mockRejectedValue(
+      new DeadlineExceededError("supabase", 3000, { label: "the booking confirm", totalMs: 12_000 }),
+    );
+    await serviceCreateBooking(input).catch(() => {});
+    const page = String(alert.mock.calls[0][2]);
+    expect(page).toContain("supabase");
+    expect(page).toContain("the booking confirm");
+    expect(page).toContain("12 seconds");
+  });
+
+  it("names the call it refused when the budget was already spent", () => {
+    const fromUnwrap = new Error(
+      "read failed [pool]: DeadlineExceededError: supabase did not answer within 0ms, when the booking confirm ran out of its 12000ms",
+    );
+    const mapped = timeoutAsRetryable(fromUnwrap) as DependencyTimeoutError;
+    expect(mapped.dependency).toBe("supabase");
+    expect(mapped.budget).toEqual({ label: "the booking confirm", totalMs: 12_000 });
+    const page = bookingFailureAlert(mapped)?.message ?? "";
+    expect(page).toContain("supabase");
+    expect(page).not.toContain("within 0 seconds");
+  });
+
+  // L11: the page may claim only what was measured. Nothing at the moment of the
+  // page knows whether the reservation was written or whether the drain will
+  // finish it, so it must not promise either.
+  it("does not promise the drain will finish the booking", () => {
+    const page =
+      bookingFailureAlert(timeoutAsRetryable(new DeadlineExceededError("google events.insert", 8000)))?.message ?? "";
+    expect(page).not.toMatch(/finishes|will finish|can still receive/i);
+  });
+
+  // The page is sent AFTER the confirm's budget may already be spent, so it has to
+  // run under the cleanup allowance, or the alert about the timeout would itself
+  // fail at once on its alert_state read.
+  it("sends the page under the cleanup allowance", async () => {
+    let label: string | undefined;
+    alert.mockImplementationOnce(async () => {
+      label = deadlineWithinBudget(60_000, "probe").reportAs.budget?.label;
+    });
+    createBooking.mockRejectedValue(new DeadlineExceededError("google events.insert", 8000));
+    await serviceCreateBooking(input).catch(() => {});
+    expect(label).toBe("the booking cleanup");
   });
 
   it("leaves every other failure exactly as it was", async () => {

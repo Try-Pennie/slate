@@ -334,8 +334,13 @@ async function handlePost(req: NextRequest) {
     try {
       judged = await resolveAgentLink(agentLinkKey);
     } catch (err) {
-      // refusal: agent_link_unreadable
-      return internalErrorResponse(err, "booking");
+      // #3102: the failure path runs under the cleanup allowance, not the confirm
+      // budget, which a timeout has already spent; its outcome and report would
+      // otherwise fail at once and the failure would go unrecorded.
+      return withinBookingCleanupBudget(async () => {
+        // refusal: agent_link_unreadable
+        return internalErrorResponse(err, "booking");
+      });
     }
     if (!judged.ok) {
       log.info("agent-link", { msg: "confirm refused, the link books nobody", why: judged.why });
@@ -433,110 +438,115 @@ async function handlePost(req: NextRequest) {
       ...partnerKeysFrom(booking.prefill),
     });
   } catch (err) {
-    // The lead already has an active call, so nothing was created (#1337). Refund
-    // the rate-limit hit: being declined is not an attempt they should pay for,
-    // and the Move they are about to make is a separate request.
-    if (err instanceof ExistingCallError) {
-      await refundAll();
-      recordRoutedOutcome("deduped", code, "existing_call", { by: "bucket", code, host });
-      // refusal: existing_call
-      return NextResponse.json({ existingCall: err.existingCall }, { status: 409 });
-    }
-    // The one-call-per-person check could not be MADE (#1641), so nothing is
-    // known about what this lead already holds and nothing was created. Treated
-    // like the other transient server faults: a retriable 503 carrying one short
-    // sentence (the detail is already in the log), and the rate-limit hit handed
-    // back, because a failed read on our side is not an attempt the lead should
-    // pay for. Refusing is the deliberate reversal of the old fail-open; see
-    // ExistingCallCheckUnavailableError for why the confirmation-screen backstop
-    // could never cover this case.
-    if (err instanceof ExistingCallCheckUnavailableError) {
-      await refundAll();
-      recordRoutedOutcome("error", code, "existing_call_unavailable", { by: "bucket", code, host });
-      // refusal: existing_call_unavailable
-      return NextResponse.json({ error: err.message }, { status: 503 });
-    }
-    // #2638: the link carried no routable code, it names a lead, and the lead's
-    // XBC could not be read from Salesforce. Nothing was created. Refused rather
-    // than sent to the catch-all, because routing a lead whose score we could not
-    // read to the Low pool is the misroute this read exists to prevent. Retriable,
-    // and refunded like the other faults on our side.
-    if (err instanceof LeadCodeUnavailableError) {
-      await refundAll();
-      log.error("booking", { msg: "lead routing code unreadable; refusing rather than routing to the catch-all" }, err.cause);
-      recordRoutedOutcome("error", code, "lead_code_unavailable", { by: "bucket", code, host });
-      // refusal: lead_code_unavailable
-      return NextResponse.json({ error: err.message }, { status: 503 });
-    }
-    // Couldn't verify any candidate (likely a Google/DB outage), not a full
-    // slot — tell the lead it's temporary and let them retry (#319). Refund the
-    // rate-limit hit: a server-side outage must not burn their booking budget.
-    if (err instanceof VerifyUnavailableError) {
-      // Couldn't verify any candidate (a Google/DB outage), not the lead's fault.
-      await refundAll();
-      recordRoutedOutcome("error", code, "verify_unavailable", { by: "bucket", code, host });
-      // refusal: verify_unavailable
-      return NextResponse.json({ error: err.message }, { status: 503 });
-    }
-    // A genuinely-full slot: someone else took it a moment earlier. Not the lead's
-    // fault, and a retry against another slot may well succeed, so hand the budget
-    // back (#1089) before surfacing "no times" (409).
-    if (err instanceof SlotUnavailableError) {
-      await refundAll();
-      // The headline case (#1313 / #1315): a customer refused at confirm on a slot
-      // WE ADVERTISED. One lost race is ordinary contention, which is why this
-      // does not page on its own; fifty in two hours is the cal.com failure of
-      // 2026-08-06, and it is indistinguishable from the one without a count.
-      recordRoutedOutcome("error", code, "slot_unavailable", { by: "bucket", code, host });
-      // #2838: refused AFTER a lost overlap race, counted apart from a time already
-      // taken at the free check, and apart again at the reassign bound. A second
-      // row outside the failure share, so the share above reads exactly as before.
-      if (err instanceof RaceLostRefusalError) {
-        recordRoutedOutcome(raceOutcomeForRefusal(err), code, null, { by: "bucket", code, host });
+    // #3102: the failure path runs under the cleanup allowance, not the confirm
+    // budget, which a timeout has already spent; its outcome and report would
+    // otherwise fail at once and the failure would go unrecorded.
+    return withinBookingCleanupBudget(async () => {
+      // The lead already has an active call, so nothing was created (#1337). Refund
+      // the rate-limit hit: being declined is not an attempt they should pay for,
+      // and the Move they are about to make is a separate request.
+      if (err instanceof ExistingCallError) {
+        await refundAll();
+        recordRoutedOutcome("deduped", code, "existing_call", { by: "bucket", code, host });
+        // refusal: existing_call
+        return NextResponse.json({ existingCall: err.existingCall }, { status: 409 });
       }
-      // refusal: slot_unavailable
-      return NextResponse.json({ error: err.message }, { status: 409 });
-    }
-    // #2310: the start is outside the lead's calling window (08:00 to 20:00 in
-    // the zone the booker sent). The booker only offers times inside it, so this
-    // is a page left open across a zone change, a stale embed, or a hand made
-    // request. Its own code and sentence, never the slot-taken 409: the time is
-    // not taken, and "that time was just taken" would send the lead to retry the
-    // same refusal. Refunded, because another time books, the way a lost race is.
-    // Counted: a wave means the client filter and the server rule disagree.
-    if (err instanceof OutsideCallingWindowError) {
-      await refundAll();
-      recordRoutedOutcome("error", code, "outside_calling_window", { by: "bucket", code, host });
-      // refusal: outside_calling_window
-      return NextResponse.json(
-        { error: BOOKING_ERROR_COPY.outsideCallingHours, code: "OUTSIDE_CALLING_WINDOW" },
-        { status: 422 },
-      );
-    }
-    // An empty/misconfigured pool ALSO surfaces as "no times" (409) to the consumer
-    // (the API route #358 distinguishes them), but it is a config problem, not a
-    // slot race: a retry won't help, so we deliberately do NOT refund here.
-    if (err instanceof NoEligibleAgentsError) {
-      recordRoutedOutcome("error", code, "no_eligible_agents", { by: "bucket", code, host });
-      // refusal: no_eligible_agents
-      return NextResponse.json({ error: err.message }, { status: 409 });
-    }
-    // The code names no bucket, or names a HIDDEN test bucket (#2667). A client
-    // refusal, not a fault of ours: the same 422 UNKNOWN_BUCKET the key authed API
-    // answers, with the booker's own sentence, and ONE body for both causes so the
-    // response can never say a hidden bucket exists (#601). Counted like
-    // invalid_request, because a wave of these is an embed sending a code Slate
-    // does not serve; not refunded, because a retry cannot help.
-    if (err instanceof UnknownBucketError) {
-      recordRoutedOutcome("error", code, "unknown_bucket", { by: "bucket", code, host });
-      // refusal: unknown_bucket
-      return NextResponse.json(
-        { error: BOOKING_ERROR_COPY.unknownBucket, code: "UNKNOWN_BUCKET" },
-        { status: 422 },
-      );
-    }
-    recordRoutedOutcome("error", code, "internal", { by: "bucket", code, host });
-    // refusal: internal
-    return internalErrorResponse(err, "booking");
+      // The one-call-per-person check could not be MADE (#1641), so nothing is
+      // known about what this lead already holds and nothing was created. Treated
+      // like the other transient server faults: a retriable 503 carrying one short
+      // sentence (the detail is already in the log), and the rate-limit hit handed
+      // back, because a failed read on our side is not an attempt the lead should
+      // pay for. Refusing is the deliberate reversal of the old fail-open; see
+      // ExistingCallCheckUnavailableError for why the confirmation-screen backstop
+      // could never cover this case.
+      if (err instanceof ExistingCallCheckUnavailableError) {
+        await refundAll();
+        recordRoutedOutcome("error", code, "existing_call_unavailable", { by: "bucket", code, host });
+        // refusal: existing_call_unavailable
+        return NextResponse.json({ error: err.message }, { status: 503 });
+      }
+      // #2638: the link carried no routable code, it names a lead, and the lead's
+      // XBC could not be read from Salesforce. Nothing was created. Refused rather
+      // than sent to the catch-all, because routing a lead whose score we could not
+      // read to the Low pool is the misroute this read exists to prevent. Retriable,
+      // and refunded like the other faults on our side.
+      if (err instanceof LeadCodeUnavailableError) {
+        await refundAll();
+        log.error("booking", { msg: "lead routing code unreadable; refusing rather than routing to the catch-all" }, err.cause);
+        recordRoutedOutcome("error", code, "lead_code_unavailable", { by: "bucket", code, host });
+        // refusal: lead_code_unavailable
+        return NextResponse.json({ error: err.message }, { status: 503 });
+      }
+      // Couldn't verify any candidate (likely a Google/DB outage), not a full
+      // slot. Tell the lead it's temporary and let them retry (#319). Refund the
+      // rate-limit hit: a server-side outage must not burn their booking budget.
+      if (err instanceof VerifyUnavailableError) {
+        // Couldn't verify any candidate (a Google/DB outage), not the lead's fault.
+        await refundAll();
+        recordRoutedOutcome("error", code, "verify_unavailable", { by: "bucket", code, host });
+        // refusal: verify_unavailable
+        return NextResponse.json({ error: err.message }, { status: 503 });
+      }
+      // A genuinely-full slot: someone else took it a moment earlier. Not the lead's
+      // fault, and a retry against another slot may well succeed, so hand the budget
+      // back (#1089) before surfacing "no times" (409).
+      if (err instanceof SlotUnavailableError) {
+        await refundAll();
+        // The headline case (#1313 / #1315): a customer refused at confirm on a slot
+        // WE ADVERTISED. One lost race is ordinary contention, which is why this
+        // does not page on its own; fifty in two hours is the cal.com failure of
+        // 2026-08-06, and it is indistinguishable from the one without a count.
+        recordRoutedOutcome("error", code, "slot_unavailable", { by: "bucket", code, host });
+        // #2838: refused AFTER a lost overlap race, counted apart from a time already
+        // taken at the free check, and apart again at the reassign bound. A second
+        // row outside the failure share, so the share above reads exactly as before.
+        if (err instanceof RaceLostRefusalError) {
+          recordRoutedOutcome(raceOutcomeForRefusal(err), code, null, { by: "bucket", code, host });
+        }
+        // refusal: slot_unavailable
+        return NextResponse.json({ error: err.message }, { status: 409 });
+      }
+      // #2310: the start is outside the lead's calling window (08:00 to 20:00 in
+      // the zone the booker sent). The booker only offers times inside it, so this
+      // is a page left open across a zone change, a stale embed, or a hand made
+      // request. Its own code and sentence, never the slot-taken 409: the time is
+      // not taken, and "that time was just taken" would send the lead to retry the
+      // same refusal. Refunded, because another time books, the way a lost race is.
+      // Counted: a wave means the client filter and the server rule disagree.
+      if (err instanceof OutsideCallingWindowError) {
+        await refundAll();
+        recordRoutedOutcome("error", code, "outside_calling_window", { by: "bucket", code, host });
+        // refusal: outside_calling_window
+        return NextResponse.json(
+          { error: BOOKING_ERROR_COPY.outsideCallingHours, code: "OUTSIDE_CALLING_WINDOW" },
+          { status: 422 },
+        );
+      }
+      // An empty/misconfigured pool ALSO surfaces as "no times" (409) to the consumer
+      // (the API route #358 distinguishes them), but it is a config problem, not a
+      // slot race: a retry won't help, so we deliberately do NOT refund here.
+      if (err instanceof NoEligibleAgentsError) {
+        recordRoutedOutcome("error", code, "no_eligible_agents", { by: "bucket", code, host });
+        // refusal: no_eligible_agents
+        return NextResponse.json({ error: err.message }, { status: 409 });
+      }
+      // The code names no bucket, or names a HIDDEN test bucket (#2667). A client
+      // refusal, not a fault of ours: the same 422 UNKNOWN_BUCKET the key authed API
+      // answers, with the booker's own sentence, and ONE body for both causes so the
+      // response can never say a hidden bucket exists (#601). Counted like
+      // invalid_request, because a wave of these is an embed sending a code Slate
+      // does not serve; not refunded, because a retry cannot help.
+      if (err instanceof UnknownBucketError) {
+        recordRoutedOutcome("error", code, "unknown_bucket", { by: "bucket", code, host });
+        // refusal: unknown_bucket
+        return NextResponse.json(
+          { error: BOOKING_ERROR_COPY.unknownBucket, code: "UNKNOWN_BUCKET" },
+          { status: 422 },
+        );
+      }
+      recordRoutedOutcome("error", code, "internal", { by: "bucket", code, host });
+      // refusal: internal
+      return internalErrorResponse(err, "booking");
+    });
   }
 }

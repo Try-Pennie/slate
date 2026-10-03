@@ -11,17 +11,19 @@
  *
  *  - the CONFIRM budget, 12 seconds, for everything the request does;
  *  - a CLEANUP allowance, 2 seconds, that ignores the spent confirm budget, for
- *    what a request still owes the lead after it timed out: handing back their
- *    rate limit hit. Without it the refund would fail at once, the lead would pay
- *    for our outage, and the refund failure would page about a refund path that
- *    is not broken.
+ *    the whole failure path a request still owes after it timed out: handing
+ *    back the lead's rate limit hit, recording the outcome, reporting the error
+ *    and sending the page. Without it each of those would fail at once, the lead
+ *    would pay for our outage, and the outage itself would go unrecorded. One
+ *    allowance per request: the route's failure path and the service's page
+ *    beneath it share it rather than each adding 2 seconds.
  *
  * That is 14 seconds against the booker's 20, which leaves 6 for what no budget
  * can see: computation, which a Worker's clock does not advance across, and the
  * response's trip back. Pinned by `confirm-budget.test.ts`, which drives the real
  * clients against a dependency that answers just inside every limit.
  */
-import { withinCallBudget, withinFreshCallBudget } from "@/lib/call-budget";
+import { withinCallBudget, withinCleanupBudget } from "@/lib/call-budget";
 
 export const BOOKING_CONFIRM_BUDGET_MS = 12_000;
 export const BOOKING_CLEANUP_BUDGET_MS = 2_000;
@@ -34,5 +36,5 @@ export function withinBookingConfirmBudget<T>(work: () => Promise<T>): Promise<T
 
 /** Run the cleanup a request owes the lead, under its own small allowance. */
 export function withinBookingCleanupBudget<T>(work: () => Promise<T>): Promise<T> {
-  return withinFreshCallBudget(BOOKING_CLEANUP_BUDGET_MS, "the booking cleanup", work);
+  return withinCleanupBudget(BOOKING_CLEANUP_BUDGET_MS, "the booking cleanup", work);
 }

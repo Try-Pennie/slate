@@ -132,6 +132,7 @@ import { escapeLike } from "@/lib/sql-like";
 import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
 import { emitWebhook, type WebhookSendScheduler } from "@/lib/webhooks/emit";
 import { afterResponse, deferWebhookSend } from "@/lib/after-response";
+import { withinBookingCleanupBudget } from "@/lib/booking/confirm-budget";
 import { sendThrottledAlert, resolveRecovered } from "@/lib/notify/dispatch";
 import {
   bookingEventInsertAlert,
@@ -2075,7 +2076,7 @@ export function bookingFailureAlert(
     return {
       key: VERIFY_OUTAGE_ALERT_KEY,
       cooldownMs: VERIFY_OUTAGE_ALERT_COOLDOWN_MS,
-      message: dependencyTimeoutAlert(err.dependency, err.timeoutMs),
+      message: dependencyTimeoutAlert(err),
     };
   }
   if (err instanceof orchestration.VerifyUnavailableError) {
@@ -2125,7 +2126,10 @@ async function alertOnBookingFailure<T>(op: () => Promise<T>): Promise<T> {
       // alert-key: verify_on_book_outage
       // alert-key: reschedule_lock_outage
       // alert-key: no_eligible_agents:*
-      await sendThrottledAlert(spec.key, spec.cooldownMs, spec.message).catch(() => {});
+      // #3102: under the cleanup allowance. A timeout page is sent after the
+      // request's budget may already be spent, and its alert_state read would
+      // otherwise fail at once and lose the page about the outage itself.
+      await withinBookingCleanupBudget(() => sendThrottledAlert(spec.key, spec.cooldownMs, spec.message)).catch(() => {});
     }
     throw err;
   }

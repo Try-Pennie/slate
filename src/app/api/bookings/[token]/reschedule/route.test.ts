@@ -96,6 +96,20 @@ describe("POST /bookings/[token]/reschedule", () => {
     expect(wait!).toBeLessThanOrEqual(BOOKING_CONFIRM_BUDGET_MS);
   });
 
+  // After a timeout the confirm budget is spent, so the failure path (the outcome
+  // it records and the error it reports) runs under the cleanup allowance, or both
+  // would fail at once and the failure would go unrecorded.
+  it("records the failure under the cleanup allowance, not the spent confirm budget (#3102)", async () => {
+    const labels: (string | undefined)[] = [];
+    recordApiOutcome.mockImplementation(() => {
+      labels.push(deadlineWithinBudget(60_000, "probe").reportAs.budget?.label);
+    });
+    service.rescheduleBooking.mockRejectedValueOnce(new service.RescheduleConflictError());
+    await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
+    expect(labels).toEqual(["the booking cleanup"]);
+    recordApiOutcome.mockReset();
+  });
+
   it("maps RescheduleConflictError to 409 with the conflict message", async () => {
     service.rescheduleBooking.mockRejectedValueOnce(new service.RescheduleConflictError());
     const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);

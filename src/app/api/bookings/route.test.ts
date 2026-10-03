@@ -317,6 +317,20 @@ describe("POST /api/bookings (auth skeleton)", () => {
     expect(wait!).toBeLessThanOrEqual(BOOKING_CONFIRM_BUDGET_MS);
   });
 
+  it("records a failed API booking under the cleanup allowance (#3102)", async () => {
+    regalKey.primary.mockReturnValue("real-secret");
+    const labels: (string | undefined)[] = [];
+    monitor.recordApiOutcome.mockImplementation(() => {
+      labels.push(deadlineWithinBudget(60_000, "probe").reportAs.budget?.label);
+    });
+    service.bookViaApi.mockRejectedValueOnce(new service.VerifyUnavailableError("outage"));
+    const res = await post("Bearer real-secret", VALID_BODY);
+    expect(res.status).toBe(503);
+    expect(labels).toEqual(["the booking cleanup"]);
+    monitor.recordApiOutcome.mockReset();
+  });
+
+
   it("maps each booking error to a stable status + machine code", async () => {
     regalKey.primary.mockReturnValue("real-secret");
     const cases: [Error, number, string][] = [

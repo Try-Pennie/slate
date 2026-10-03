@@ -34,11 +34,18 @@ export class DeadlineExceededError extends Error {
   readonly code = "ABORT_ERR";
   readonly label: string;
   readonly timeoutMs: number;
-  constructor(label: string, timeoutMs: number) {
-    super(`${label} did not answer within ${timeoutMs}ms`);
+  /** The enclosing budget that cut the call short, when one did (`call-budget.ts`). */
+  readonly budget: { label: string; totalMs: number } | null;
+  constructor(label: string, timeoutMs: number, budget: { label: string; totalMs: number } | null = null) {
+    super(
+      budget
+        ? `${label} did not answer within ${timeoutMs}ms, when ${budget.label} ran out of its ${budget.totalMs}ms`
+        : `${label} did not answer within ${timeoutMs}ms`,
+    );
     this.name = "DeadlineExceededError";
     this.label = label;
     this.timeoutMs = timeoutMs;
+    this.budget = budget;
   }
 }
 
@@ -63,13 +70,30 @@ export type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promis
  * sentence this module writes, which nothing else produces, rather than on any
  * wording a person might also write.
  */
-export function findDeadlineExceeded(err: unknown): { label: string; timeoutMs: number } | null {
+/** What a deadline error says, wherever it was found. */
+export interface DeadlineFound {
+  label: string;
+  timeoutMs: number;
+  budget: { label: string; totalMs: number } | null;
+}
+
+export function findDeadlineExceeded(err: unknown): DeadlineFound | null {
   for (let e: unknown = err, depth = 0; e && depth < 5; depth++) {
-    if (e instanceof DeadlineExceededError) return { label: e.label, timeoutMs: e.timeoutMs };
+    if (e instanceof DeadlineExceededError) {
+      return { label: e.label, timeoutMs: e.timeoutMs, budget: e.budget };
+    }
     const message = (e as { message?: unknown }).message;
     if (typeof message === "string") {
-      const quoted = /DeadlineExceededError: (.+) did not answer within (\d+)ms/.exec(message);
-      if (quoted) return { label: quoted[1], timeoutMs: Number(quoted[2]) };
+      const quoted = /DeadlineExceededError: (.+?) did not answer within (\d+)ms(?:, when (.+) ran out of its (\d+)ms)?/.exec(
+        message,
+      );
+      if (quoted) {
+        return {
+          label: quoted[1],
+          timeoutMs: Number(quoted[2]),
+          budget: quoted[3] ? { label: quoted[3], totalMs: Number(quoted[4]) } : null,
+        };
+      }
     }
     e = (e as { cause?: unknown }).cause;
   }
@@ -98,7 +122,7 @@ export async function fetchWithinDeadline(
   /** What the error names when the wait was cut short by an enclosing budget
    *  (`call-budget.ts`) rather than set by this call: that budget's label and
    *  length, not the slice that was left. Defaults to this call's own. */
-  reportAs: { label: string; timeoutMs: number } | null = null,
+  reportAs: { label: string; timeoutMs: number; budget: { label: string; totalMs: number } | null } | null = null,
 ): Promise<Response> {
   if (deadline === NO_DEADLINE) return fetchImpl(input, init);
   const controller = new AbortController();
@@ -110,7 +134,9 @@ export async function fetchWithinDeadline(
   let cancel = () => {};
   const expired = new Promise<never>((_resolve, reject) => {
     cancel = timer(deadline, () => {
-      const err = new DeadlineExceededError(reportAs?.label ?? label, reportAs?.timeoutMs ?? deadline);
+      const err = reportAs
+        ? new DeadlineExceededError(reportAs.label, reportAs.timeoutMs, reportAs.budget)
+        : new DeadlineExceededError(label, deadline);
       // Rejected BEFORE the abort, so the race settles on this error. A fetch that
       // rejects on its signal's abort event would otherwise settle first, with a
       // bare AbortError that says nothing about which deadline it missed.

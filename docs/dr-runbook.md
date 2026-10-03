@@ -369,7 +369,9 @@ now carries a deadline instead, enforced in one wrapper
 | Each Salesforce attempt | 10 seconds, three attempts | `SF_TIMEOUT_MS`, `src/lib/salesforce/retry.ts` |
 
 A Google call can only be sent without one by writing `NO_DEADLINE` at the call
-site, and today nothing does.
+site, and today nothing does. `NO_DEADLINE` opts out of the per call limit only:
+inside a request budget (below) such a call is still held to what the budget has
+left, and refused once it is spent.
 
 **Per request a lead is waiting on.** A per call limit bounds one call, and a
 confirm makes a dozen Supabase reads and two or three Google calls in a row, so
@@ -384,7 +386,7 @@ once instead of starting.
 | Part | Length |
 |---|---|
 | The confirm budget, for everything the request does | 12 seconds (`BOOKING_CONFIRM_BUDGET_MS`) |
-| The cleanup allowance after it, for handing back the lead's rate limit hit | 2 seconds (`BOOKING_CLEANUP_BUDGET_MS`) |
+| The cleanup allowance after it, for the whole failure path: handing back the lead's rate limit hit, recording the outcome, reporting the error and sending the page. One allowance per request, however many layers open it | 2 seconds (`BOOKING_CLEANUP_BUDGET_MS`) |
 | Worst case, against the booker's 20 | 14 seconds, leaving 6 for computation and the response |
 
 Work deferred past the response (webhook sends, recomputes) leaves the budget and
@@ -400,17 +402,21 @@ back. It is counted as `verify_unavailable` and pages under
 
 **What can still happen after that 503.** If the timeout came after the booking's
 reservation was written (the Google insert is the usual one), the reservation
-stays pending and the reservation drain finishes it on a later tick. The event
-insert carries a fixed client id, so the finish reuses an event that landed
-rather than writing a second. So the lead can receive an invite even though the
-page asked them to try again. A retry that carries the same stable booking key
+stays pending and the reservation drain retries it on later ticks. The event
+insert carries a fixed client id, so a retry reuses an event that landed rather
+than writing a second. So the lead can receive an invite even though the page
+asked them to try again; the page does not say whether that happened, because
+nothing knows at that moment, and points at `booking_reservations` instead. A retry that carries the same stable booking key
 resumes that reservation rather than making a second booking; an anonymous retry
 has no key to resume by, which is the existing posture for any confirm that
 failed after its reservation was written.
 
-**A budget miss.** When the budget runs out, the page names the budget ("the
-booking confirm did not answer within 12 seconds") rather than whichever call was
-running, because no single call was at fault: the dependencies were slow together.
+**A budget miss.** When the budget runs out, the page names the call that was in
+flight AND the budget that cut it short ("supabase was still running when the
+booking confirm ran out of its 12 seconds"), so it says which dependency to look
+at and that it was slow on top of others. A call refused because the budget was
+already spent says so ("was not started, because the booking confirm had already
+used its 12 seconds").
 
 **What the lanes do.** A sync tick stops waiting on a hung calendar after 15
 seconds and records an ordinary failed sync for it; the next tick tries again.

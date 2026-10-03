@@ -230,7 +230,7 @@ describe("POST /booking (embed) error mapping", () => {
       throw new service.VerifyUnavailableError("outage");
     });
     rateLimit.refundRequest.mockImplementation(async () => {
-      refundLabels.push(deadlineWithinBudget(60_000, "probe").reportAs.label);
+      refundLabels.push(deadlineWithinBudget(60_000, "probe").reportAs.budget?.label ?? "none");
     });
     const res = await post(VALID_BODY);
     expect(res.status).toBe(503);
@@ -238,6 +238,22 @@ describe("POST /booking (embed) error mapping", () => {
     expect(bookingWait!).toBeLessThanOrEqual(BOOKING_CONFIRM_BUDGET_MS);
     expect(refundLabels).toEqual(["the booking cleanup", "the booking cleanup", "the booking cleanup"]);
     rateLimit.refundRequest.mockReset();
+  });
+
+  // The rest of the failure path, the outcome it records included, runs under the
+  // same allowance: after a timeout the confirm budget is spent, and work left
+  // under it would fail at once and lose the record of the failure.
+  it("records the failure outcome under the cleanup allowance, not the spent confirm budget (#3102)", async () => {
+    const labels: (string | undefined)[] = [];
+    recordApiOutcome.mockImplementation(() => {
+      labels.push(deadlineWithinBudget(60_000, "probe").reportAs.budget?.label);
+    });
+    service.createBooking.mockRejectedValueOnce(new Error("boom"));
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(500);
+    expect(labels.length).toBeGreaterThan(0);
+    expect(new Set(labels)).toEqual(new Set(["the booking cleanup"]));
+    recordApiOutcome.mockReset();
   });
 
   it("answers a retriable 503 when the existing-call check could not be made (#1641)", async () => {

@@ -38,6 +38,8 @@ interface Budget {
   /** What the budget is for and how long it was, for the error that names it. */
   readonly label: string;
   readonly totalMs: number;
+  /** The allowance for a failure path, which nested cleanups share. */
+  readonly cleanup?: boolean;
 }
 
 /** The two methods of Node's AsyncLocalStorage this module uses. */
@@ -110,17 +112,22 @@ export function withinCallBudget<T>(
 
 /**
  * Run `work` under a budget of its own that IGNORES the enclosing one: the small
- * fixed allowance for cleanup that has to happen after the main budget is spent
- * (handing a lead's rate limit hit back once their confirm timed out). Bounded,
- * so the path's worst case is still the sum of the two, never open ended.
+ * fixed allowance for a failure path that has to run after the main budget is
+ * spent (handing back a lead's rate limit hit, recording the outcome, paging).
+ * ONE allowance per request: a cleanup opened inside a cleanup shares it rather
+ * than restarting it, so a route's failure path and the service's alert beneath
+ * it add 2 seconds between them, not 2 each, and the worst case stays the sum
+ * of the two budgets.
  */
-export function withinFreshCallBudget<T>(
+export function withinCleanupBudget<T>(
   ms: number,
   label: string,
   work: () => Promise<T>,
   now: () => number = () => Date.now(),
 ): Promise<T> {
-  return store().run({ expiresAt: now() + ms, label, totalMs: ms }, work);
+  const outer = store().getStore();
+  if (outer?.cleanup) return store().run(outer, work);
+  return store().run({ expiresAt: now() + ms, label, totalMs: ms, cleanup: true }, work);
 }
 
 /** Run `work` with no budget at all: the work deferred past a response. */
@@ -128,24 +135,54 @@ export function outsideCallBudget<T>(work: () => T): T {
   return store().run(undefined, work);
 }
 
+/** What a missed deadline reports: the call, how long it waited, and the budget
+ *  that cut it short, when one did. */
+export interface DeadlineReport {
+  label: string;
+  timeoutMs: number;
+  budget: { label: string; totalMs: number } | null;
+}
+
 /**
  * How long one request may wait: the smaller of its own limit and what the
- * budget has left, with the label and length the error should carry if it is
- * missed. A missed budget names the BUDGET ("google events.insert did not answer
- * within 8000ms"), not the slice that happened to be left when the request began.
+ * budget has left, and what the error should say if it is missed.
+ *
+ * The error always names the CALL that was in flight, because that is the
+ * dependency somebody has to look at. When the enclosing budget is what cut it
+ * short, it also names that budget, so "supabase did not answer within 4000ms,
+ * when the booking confirm ran out of its 12000ms" says both which dependency was
+ * slow and that it was slow on top of others. A request inside its own call's
+ * budget (a Google call's request under the call's 8 seconds) is reported as the
+ * call against the call's whole limit, once, rather than as a budget miss.
+ *
+ * `NO_DEADLINE` opts out of the per call default only, never out of an enclosing
+ * budget: inside one it waits for what the budget has left like any other call.
  * Throws when the budget is already spent, so nothing starts that cannot finish.
  */
 export function deadlineWithinBudget(
   ownMs: number,
   label: string,
+  now?: () => number,
+): { waitMs: number; reportAs: DeadlineReport };
+export function deadlineWithinBudget(
+  ownMs: Deadline,
+  label: string,
+  now?: () => number,
+): { waitMs: Deadline; reportAs: DeadlineReport };
+export function deadlineWithinBudget(
+  ownMs: Deadline,
+  label: string,
   now: () => number = () => Date.now(),
-): { waitMs: number; reportAs: { label: string; timeoutMs: number } } {
+): { waitMs: Deadline; reportAs: DeadlineReport } {
   const budget = store().getStore();
-  if (!budget) return { waitMs: ownMs, reportAs: { label, timeoutMs: ownMs } };
+  const own = ownMs === NO_DEADLINE ? Infinity : ownMs;
+  if (!budget) return { waitMs: ownMs, reportAs: { label, timeoutMs: own, budget: null } };
   const left = budget.expiresAt - now();
-  if (left <= 0) throw new DeadlineExceededError(budget.label, budget.totalMs);
-  if (left >= ownMs) return { waitMs: ownMs, reportAs: { label, timeoutMs: ownMs } };
-  return { waitMs: left, reportAs: { label: budget.label, timeoutMs: budget.totalMs } };
+  const cutBy = { label: budget.label, totalMs: budget.totalMs };
+  if (left <= 0) throw new DeadlineExceededError(label, 0, cutBy);
+  if (left >= own) return { waitMs: own, reportAs: { label, timeoutMs: own, budget: null } };
+  if (budget.label === label) return { waitMs: left, reportAs: { label, timeoutMs: budget.totalMs, budget: null } };
+  return { waitMs: left, reportAs: { label, timeoutMs: left, budget: cutBy } };
 }
 
 /** `fetchWithinDeadline`, held to the enclosing budget as well as its own limit. */
@@ -158,7 +195,6 @@ export async function fetchWithinBudget(
   timer: ScheduleTimer = realTimer,
   now: () => number = () => Date.now(),
 ): Promise<Response> {
-  if (deadline === NO_DEADLINE) return fetchImpl(input, init);
   const { waitMs, reportAs } = deadlineWithinBudget(deadline, label, now);
   return fetchWithinDeadline(fetchImpl, input, init, waitMs, label, timer, reportAs);
 }

@@ -3770,7 +3770,27 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "verify_on_book_outage",
     state: "a dependency did not answer inside its deadline",
     channel: "alert",
-    text: dependencyTimeoutAlert("google events.insert", 8000),
+    text: dependencyTimeoutAlert({ dependency: "google events.insert", timeoutMs: 8000, budget: null }),
+  },
+  {
+    key: "verify_on_book_outage",
+    state: "the request's budget ran out while a dependency was running",
+    channel: "alert",
+    text: dependencyTimeoutAlert({
+      dependency: "supabase",
+      timeoutMs: 3000,
+      budget: { label: "the booking confirm", totalMs: 12_000 },
+    }),
+  },
+  {
+    key: "verify_on_book_outage",
+    state: "the request's budget was spent before a dependency could start",
+    channel: "alert",
+    text: dependencyTimeoutAlert({
+      dependency: "supabase",
+      timeoutMs: 0,
+      budget: { label: "the booking confirm", totalMs: 12_000 },
+    }),
   },
   {
     key: "reschedule_lock_outage",
