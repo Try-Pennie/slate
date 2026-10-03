@@ -24,8 +24,9 @@
 // Run: node --experimental-strip-types scripts/test-eslint-ignores.ts
 import { ESLint } from "eslint";
 import { assert, finish } from "./lib/harness.ts";
+import { fileURLToPath } from "node:url";
 
-const ROOT = new URL("..", import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 /**
  * Paths that MUST be ignored. The nested ones are the point of this guard: a

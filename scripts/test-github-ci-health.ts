@@ -36,8 +36,9 @@ import {
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { fileURLToPath } from "node:url";
 
-const repoRoot = new URL("..", import.meta.url).pathname;
+const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
 const NOW = Date.UTC(2026, 8, 16, 12, 0, 0);
 const TIP = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";

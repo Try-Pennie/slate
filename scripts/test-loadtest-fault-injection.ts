@@ -22,6 +22,7 @@ import {
   LOADTEST_FAULT_PCT,
 } from "../src/lib/google/loadtest-stub.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { fileURLToPath } from "node:url";
 
 // --- off by default -----------------------------------------------------------
 {
@@ -126,7 +127,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
   // time, so this needs its own process rather than a mutated env var.
   const probe = `
     import { stubFreeBusy, stubCalendarList, stubSyncEvents, LOADTEST_FAULT_PCT }
-      from "${new URL("../src/lib/google/loadtest-stub.ts", import.meta.url).pathname}";
+      from "${new URL("../src/lib/google/loadtest-stub.ts", import.meta.url).href}";
     const out = { pct: LOADTEST_FAULT_PCT, freeBusy: "ok", calendarList: "ok", sync: "ok" };
     try { stubFreeBusy("agent@trypennie.com"); } catch (e) { out.freeBusy = String(e.message); }
     try { stubCalendarList("agent@trypennie.com"); } catch (e) { out.calendarList = String(e.message); }
@@ -143,7 +144,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
     ["--experimental-strip-types", "--import", "./scripts/register-paths.mjs", "--input-type=module", "-e", probe],
     {
       encoding: "utf8",
-      cwd: new URL("..", import.meta.url).pathname,
+      cwd: fileURLToPath(new URL("..", import.meta.url)),
       env: { ...process.env, SLATE_LOADTEST_FAULT_PCT: "100" },
     },
   );

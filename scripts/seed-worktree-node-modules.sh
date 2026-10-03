@@ -31,7 +31,9 @@ source="${2:-}"
 # one was given explicitly. Only touch git when we have to, so the helper is usable
 # (and testable) outside a repo when both dirs are passed.
 if [ -z "$source" ]; then
-  source="$(git -C "$target" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')"
+  # The path is the WHOLE rest of the line, not its first word: Slate lives under
+  # `Documents - Dan’s MacBook Pro`, and `print $2` kept only `.../Documents` (#3050).
+  source="$(git -C "$target" worktree list --porcelain 2>/dev/null | awk '/^worktree /{sub(/^worktree /, ""); print; exit}')"
   if [ -z "$source" ]; then
     echo "seed-worktree: could not resolve the source checkout (not a git worktree?); pass SOURCE_DIR." >&2
     exit 2

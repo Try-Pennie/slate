@@ -10,6 +10,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { scrubbedGitEnv } from "./lib/git-env.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 const SCRIPT = join(import.meta.dirname, "seed-worktree-node-modules.sh");
@@ -88,6 +89,32 @@ async function main() {
     const r = seed(both, both);
     assert(r.code === 0, `self: exits 0 when target equals source (got ${r.code}: ${r.out})`);
     assert(existsSync(join(both, "node_modules", "MARKER")), "self: leaves the existing node_modules intact");
+  }
+
+  // 6. A PATH WITH SPACES AND A CURLY APOSTROPHE (#3050): the source is resolved from
+  //    `git worktree list`, not passed in. Slate lives under
+  //    `Documents - Dan’s MacBook Pro`, and reading that listing a word at a time kept
+  //    only `.../Documents`, so the clone never ran and every worktree paid an install.
+  {
+    const parent = mkdtempSync(join(tmpdir(), "seed spaced Dan’s MacBook Pro "));
+    created.push(parent);
+    const main = join(parent, "main checkout");
+    const wt = join(parent, "agent worktree");
+    mkdirSync(main);
+    // A hook run exports GIT_DIR and friends; the throwaway repo must not inherit them.
+    const env = scrubbedGitEnv();
+    const git = (cwd: string, ...args: string[]) =>
+      spawnSync("git", ["-c", "user.name=seed", "-c", "user.email=seed@example.invalid", ...args], { cwd, env, encoding: "utf8" });
+    writeFileSync(join(main, "pnpm-lock.yaml"), LOCK);
+    mkdirSync(join(main, "node_modules"));
+    writeFileSync(join(main, "node_modules", "MARKER"), "seeded-from-source");
+    const setup = [git(main, "init", "-q"), git(main, "add", "pnpm-lock.yaml"), git(main, "commit", "-q", "-m", "seed"), git(main, "worktree", "add", "-q", "--detach", wt)];
+    const broken = setup.find((r) => r.status !== 0);
+    assert(broken === undefined, `spaced: the throwaway repo and worktree were set up (${broken?.stderr ?? "ok"})`);
+    const r = spawnSync("bash", [SCRIPT, wt], { encoding: "utf8", env });
+    const out = `${r.stdout}${r.stderr}`;
+    assert(r.status === 0, `spaced: seeds a worktree under a path with spaces and a curly apostrophe (got ${r.status}: ${out})`);
+    assert(existsSync(join(wt, "node_modules", "MARKER")), "spaced: the clone came from the main checkout git resolved");
   }
 
   // tree-write-ok: `created` only ever holds makeCheckout's mkdtempSync(tmpdir()) dirs
