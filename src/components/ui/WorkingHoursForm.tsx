@@ -4,6 +4,7 @@ import { labelCls } from "@/components/ui/styles";
 import { SelectField } from "@/components/ui/SelectField";
 import type { WorkingHoursDay } from "@/lib/schedule-week";
 import { timezoneOptions, resolveZone } from "@/lib/booking/timezones";
+import { LOADED_VERSION_FIELD, loadedVersionValue } from "@/lib/admin/edit-version";
 
 /**
  * An agent's working hours: a week of typed times, several windows a day (#1764).
@@ -43,6 +44,7 @@ export function WorkingHoursForm({
   saveLabel = "Save",
   defaultsAction,
   companyDefaultDays,
+  loadedUpdatedAt,
 }: {
   action: (form: FormData) => Promise<void>;
   days: WorkingHoursDay[];
@@ -56,6 +58,10 @@ export function WorkingHoursForm({
   defaultsAction?: (form: FormData) => Promise<void>;
   /** The week that action would write, so the confirm names what it replaces. */
   companyDefaultDays?: WorkingHoursDay[];
+  /** The schedule row's `updated_at` this week was drawn from, or null when the
+   *  agent has no row yet (#3122). Required, so every screen drawing the form says
+   *  which version it showed, and a save over a newer week is refused. */
+  loadedUpdatedAt: string | null;
 }) {
   return (
     // #1994: through SaveForm, so a deploy landing under this page while
@@ -72,6 +78,7 @@ export function WorkingHoursForm({
       className="space-y-4"
     >
       {userId && <input type="hidden" name="user_id" value={userId} />}
+      <input type="hidden" name={LOADED_VERSION_FIELD} value={loadedVersionValue(loadedUpdatedAt)} />
 
       <WorkingHoursWeek
         days={days}

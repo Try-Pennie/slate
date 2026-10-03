@@ -228,7 +228,7 @@ export default async function AgentProfilePage({
   const [schedRes, usersRes, orgRes] = await Promise.all([
     db
       .from("availability_schedules")
-      .select("id, timezone")
+      .select("id, timezone, updated_at")
       .eq("user_id", agent.id)
       .maybeSingle(),
     // Hide the synthetic smoke-test agent (#396) from the manager picker.
@@ -240,7 +240,11 @@ export default async function AgentProfilePage({
   // and saving that writes an empty week (the #1308 lossy-projection shape); an
   // unreadable roster renders the manager of record as unassigned. None of these
   // may be guessed, so each throws rather than drawing a blank the admin acts on.
-  const sched = unwrap(schedRes, "agent schedule") as { id: string; timezone: string } | null;
+  const sched = unwrap(schedRes, "agent schedule") as {
+    id: string;
+    timezone: string;
+    updated_at: string;
+  } | null;
   const rulesData = sched
     ? unwrap(
         await db
@@ -665,6 +669,7 @@ export default async function AgentProfilePage({
                   saveLabel="Save hours"
                   defaultsAction={useDefaultHours}
                   companyDefaultDays={orgDefaultWeek(org)}
+                  loadedUpdatedAt={sched?.updated_at ?? null}
                 />
               </div>
             </>

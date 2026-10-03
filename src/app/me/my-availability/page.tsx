@@ -67,7 +67,7 @@ export default async function MePage({
   const db = supabaseAdmin();
   const { data: schedule, error: schedErr } = await db
     .from("availability_schedules")
-    .select("id, timezone, hours_source")
+    .select("id, timezone, hours_source, updated_at")
     .eq("user_id", me.id)
     .maybeSingle();
   const sched = schedErr
@@ -76,6 +76,7 @@ export default async function MePage({
         id: string;
         timezone: string;
         hours_source: AvailabilitySchedule["hours_source"];
+        updated_at: string;
       } | null);
 
   const { data: rulesData, error: rulesErr } = sched
@@ -228,6 +229,7 @@ export default async function MePage({
               days={hoursDays}
               timezone={sched?.timezone ?? "America/New_York"}
               timezoneLabel="Your timezone"
+              loadedUpdatedAt={sched?.updated_at ?? null}
             />
           </>
         )}

@@ -118,6 +118,9 @@ export async function GET(req: NextRequest) {
 
   // Overlapping invocations would recompute the same buckets for nothing; the
   // lock referees both the every-minute cadence and the duplicate cron worker.
+  // lock-overlap: every slot write is a compare and swap on when its compute started
+  // (slot-row-write.ts), so an overlapping run can never put older slots over newer
+  // ones; the residual is a duplicate streak count or alert.
   const lock = await acquireLock("cron_recompute", RECOMPUTE_LOCK_TTL_MS);
   if (!lock) {
     return NextResponse.json({ skipped: "overlapping-run" });

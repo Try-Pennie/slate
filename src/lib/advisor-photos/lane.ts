@@ -94,6 +94,9 @@ export async function runAdvisorPhotoLane(trigger: "cron" | "manual"): Promise<L
   if (trigger === "cron" && (await alreadyMeasuredToday(Date.now()))) {
     return { status: "skipped", why: "already-measured-today" };
   }
+  // lock-overlap: the run deadline plus the slowest read in flight fits inside the TTL
+  // by construction (see ADVISOR_PHOTOS_RUN_DEADLINE_MS), so the key is released before
+  // another run can take it.
   const lock = await acquireLock(ADVISOR_PHOTOS_LOCK, LOCK_TTL_MS);
   if (!lock) return { status: "skipped", why: "overlapping-run" };
   try {
@@ -189,6 +192,8 @@ async function report(outcome: RefreshOutcome): Promise<void> {
 
 /** Refresh one person, for the agent page's "Refresh from Google". */
 export async function refreshOnePhoto(userId: string): Promise<LaneResult> {
+  // lock-overlap: the single person refresh shares the lane key and is bounded by one
+  // read's timeout, far inside the TTL, so no lane run can take the key while it works.
   const lock = await acquireLock(ADVISOR_PHOTOS_LOCK, LOCK_TTL_MS);
   if (!lock) return { status: "skipped", why: "overlapping-run" };
   try {

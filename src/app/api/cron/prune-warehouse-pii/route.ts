@@ -51,6 +51,8 @@ export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
+  // lock-overlap: the warehouse redaction nulls contact columns, which is idempotent; a
+  // second run nulls the same values again.
   const lock = await acquireLock("cron_prune_warehouse_pii", LOCK_TTL_MS);
   if (!lock) return NextResponse.json({ skipped: "overlapping-run" });
   try {

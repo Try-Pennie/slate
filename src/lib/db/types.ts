@@ -189,6 +189,9 @@ export interface EventType {
   daily_cap: number | null;
   slot_interval_min: number;
   created_at: string;
+  /** The row's version (#3122, migration 0161): an editor sends back the value it
+   *  loaded and the write lands only while the row still holds it. */
+  updated_at: string;
 }
 
 export interface Bucket {
@@ -247,6 +250,8 @@ export interface AvailabilitySchedule {
   /** Who last wrote this week (#1753, migration 0117); null = before the stamp existed. */
   hours_source: "seed" | "agent" | "admin" | "calcom-import" | null;
   hours_set_at: string | null;
+  /** The week's version (#3122, migration 0161), moved by every write of the week. */
+  updated_at: string;
 }
 
 /** weekday: 1=Mon .. 7=Sun (Luxon). Minutes are local to the schedule timezone. */
@@ -858,6 +863,8 @@ export interface BucketSlotsRow {
   bucket_code: string;
   payload: unknown;
   computed_at: string;
+  /** When a settings save last marked this row stale (#3118, migration 0161). */
+  invalidated_at: string | null;
 }
 
 export interface PendingEventDeletion {

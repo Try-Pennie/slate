@@ -23,13 +23,14 @@ const rule = (weekday: number, start: number, end: number) => ({
 
 const noop = vi.fn(async () => {});
 
-const form = (days = workingHoursDays([]), userId?: string) => (
+const form = (days = workingHoursDays([]), userId?: string, loadedUpdatedAt: string | null = null) => (
   <WorkingHoursForm
     action={noop}
     days={days}
     timezone="America/New_York"
     timezoneLabel="Your timezone"
     userId={userId}
+    loadedUpdatedAt={loadedUpdatedAt}
   />
 );
 
@@ -40,6 +41,19 @@ const values = (name: string) =>
 const theForm = () => document.querySelector("form") as HTMLFormElement;
 
 describe("WorkingHoursForm (#1764)", () => {
+  // #3122: the save is refused when the week moved since the page was drawn, so
+  // the form must carry the version it showed, exactly, and an empty value (never
+  // no field) when the agent had no schedule row.
+  it("submits the version of the week it was drawn from", () => {
+    render(form(workingHoursDays([]), undefined, "2026-10-03T10:00:00.123456+00:00"));
+    expect(values("loaded_updated_at")).toEqual(["2026-10-03T10:00:00.123456+00:00"]);
+  });
+
+  it("submits an empty version, not a missing one, when there was no schedule row", () => {
+    render(form(workingHoursDays([]), undefined, null));
+    expect(values("loaded_updated_at")).toEqual([""]);
+  });
+
   it("submits a checkbox and one pair of typed times per weekday", () => {
     render(form(workingHoursDays([rule(1, 540, 1020), rule(5, 480, 960)])));
 
@@ -240,6 +254,7 @@ describe("WorkingHoursForm (#1764)", () => {
         days={workingHoursDays([])}
         timezone="America/Puerto_Rico"
         timezoneLabel="Timezone"
+        loadedUpdatedAt={null}
       />,
     );
     const posted = document.querySelector('input[name="timezone"]') as HTMLInputElement;
@@ -284,6 +299,7 @@ describe("the three controls under the week are told apart (#1873)", () => {
       userId="u1"
       defaultsAction={defaults}
       companyDefaultDays={companyWeek}
+      loadedUpdatedAt="2026-10-03T10:00:00.123456+00:00"
     />
   );
 

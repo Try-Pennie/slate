@@ -32,6 +32,8 @@
  * No `@/` imports, so the node suite drives it directly with a fake clock.
  */
 
+import { makeSharedInFlight } from "../concurrency.ts";
+
 /** The org's hours as the loader returns them. Structural, so this module does not
  *  depend on the DB layer that produces it. */
 export interface BusinessHours {
@@ -62,15 +64,20 @@ export interface CachedHoursDeps {
 
 export function makeCachedHoursReader(deps: CachedHoursDeps): () => Promise<BusinessHours> {
   let entry: { value: BusinessHours; readAt: number } | null = null;
+  // One load at a time (#3123): a burst arriving on a cold or expired entry awaits
+  // the leader's read rather than each starting its own round trip.
+  const shared = makeSharedInFlight<"hours", BusinessHours>();
 
   return async function readHours(): Promise<BusinessHours> {
     const now = deps.now();
     if (entry && now - entry.readAt < deps.ttlMs) return entry.value;
 
     try {
-      const fresh = await deps.load();
-      entry = { value: fresh, readAt: now };
-      return fresh;
+      return await shared("hours", async () => {
+        const fresh = await deps.load();
+        entry = { value: fresh, readAt: now };
+        return fresh;
+      });
     } catch (err) {
       // Deliberately do NOT cache the failure: the next request retries straight
       // away, so recovery is immediate rather than one TTL away.

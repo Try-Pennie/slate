@@ -336,6 +336,10 @@ const admin = { id: "admin1", role: "admin", org_id: "o1" };
  */
 function form(entries: Record<string, string | string[]>): FormData {
   const fd = new FormData();
+  // #3122: every guarded edit form carries the version it was drawn from. Present by
+  // default so these cases stay about what they test; the refusals are pinned in the
+  // per action suites.
+  fd.set("loaded_updated_at", "2026-10-03T10:00:00.123456+00:00");
   for (const [k, v] of Object.entries(entries)) {
     if (Array.isArray(v)) for (const item of v) fd.append(k, item);
     else fd.set(k, v);

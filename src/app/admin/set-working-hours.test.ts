@@ -98,6 +98,10 @@ vi.mock("@/lib/notify/streak", () => ({ clearFailureStreak: vi.fn(), recordFailu
 import { ME_TABS } from "@/lib/me/nav";
 import { refusedQuery } from "@/lib/admin/save-outcomes";
 import { MISSING_TIMEZONE_HOURS } from "@/lib/submitted-timezone";
+import { CHANGED_SINCE_OPENED, PAGE_OUT_OF_DATE } from "@/lib/admin/edit-version";
+
+/** The schedule version the form was drawn from (#3122). */
+const LOADED = "2026-10-03T10:00:00.123456+00:00";
 import {
   setWorkingHours,
   setOrgDefaultHours,
@@ -113,6 +117,7 @@ import {
  */
 function hoursForm(over: Record<string, string> = {}): FormData {
   const fd = new FormData();
+  fd.set("loaded_updated_at", LOADED);
   fd.set("user_id", "u1");
   fd.set("timezone", "America/New_York");
   const start = over.start ?? "08:00";
@@ -142,7 +147,7 @@ describe("setWorkingHours", () => {
     // #2002: one call carrying the zone as well as the week, so neither can land
     // without the other.
     const [fn, args] = rpc.mock.calls[0] as [string, { p_user_id: string; p_rules: unknown[] }];
-    expect(fn).toBe("replace_user_schedule");
+    expect(fn).toBe("replace_user_schedule_if_unchanged");
     expect(args.p_user_id).toBe("u1");
     expect(args.p_rules).toEqual([1, 2, 3, 4, 5].map((weekday) => ({
       weekday,
@@ -292,6 +297,7 @@ describe("saving working hours confirms it saved (#1988)", () => {
 describe("setWorkingHours, a window per day", () => {
   it("writes each day's OWN window rather than the first day's applied to all", async () => {
     const fd = new FormData();
+    fd.set("loaded_updated_at", LOADED);
     fd.set("user_id", "u1");
     fd.set("timezone", "America/New_York");
     for (const d of [1, 2, 3, 4]) {
@@ -322,6 +328,7 @@ describe("setWorkingHours, a window per day", () => {
 
   it("ignores the times on a day that is not ticked", async () => {
     const fd = new FormData();
+    fd.set("loaded_updated_at", LOADED);
     fd.set("user_id", "u1");
     fd.set("timezone", "America/New_York");
     fd.set("day_1", "on");
@@ -340,6 +347,7 @@ describe("setWorkingHours, a window per day", () => {
 
   it("names the day when one row cannot be read, and writes nothing", async () => {
     const fd = new FormData();
+    fd.set("loaded_updated_at", LOADED);
     fd.set("user_id", "u1");
     fd.set("timezone", "America/New_York");
     for (const d of [1, 5]) fd.set(`day_${d}`, "on");
@@ -364,6 +372,7 @@ describe("setWorkingHours, a window per day", () => {
 describe("setOrgDefaultHours", () => {
   const orgForm = (over: Record<string, string> = {}): FormData => {
     const fd = new FormData();
+    fd.set("loaded_updated_at", LOADED);
     fd.set("default_timezone", "America/New_York");
     fd.set("default_start", "08:00");
     fd.set("default_end", "20:00");
@@ -460,6 +469,7 @@ describe("the timezone on a working-hours save (#1671)", () => {
 
   it("refuses an unreadable org default zone, so no new agent adopts it", async () => {
     const fd = new FormData();
+    fd.set("loaded_updated_at", LOADED);
     fd.set("default_timezone", "Eastern");
     fd.set("default_start", "08:00");
     fd.set("default_end", "20:00");
@@ -479,6 +489,7 @@ describe("the timezone on a working-hours save (#1671)", () => {
 describe("useDefaultHours (#1670)", () => {
   const form = () => {
     const fd = new FormData();
+    fd.set("loaded_updated_at", LOADED);
     fd.set("user_id", "u1");
     return fd;
   };
@@ -487,7 +498,7 @@ describe("useDefaultHours (#1670)", () => {
     await expect(useDefaultHours(form())).rejects.toThrow(/ok=working-hours/);
     expect(rpc).toHaveBeenCalledTimes(1);
     const [fn, args] = rpc.mock.calls[0] as [string, { p_rules: unknown[] }];
-    expect(fn).toBe("replace_user_schedule");
+    expect(fn).toBe("replace_user_schedule_if_unchanged");
     expect(args.p_rules).toHaveLength(5);
     // A direct touch of the rules table is the defect itself.
     expect(fromTable).not.toHaveBeenCalledWith("availability_rules");
@@ -514,6 +525,7 @@ describe("setWorkingHours, several windows a day (#1764)", () => {
   /** A form with repeated window fields, the way the rebuilt editor submits. */
   function splitForm(windows: Record<number, [string, string][]>): FormData {
     const fd = new FormData();
+    fd.set("loaded_updated_at", LOADED);
     fd.set("user_id", "u1");
     fd.set("timezone", "America/New_York");
     for (const [day, list] of Object.entries(windows)) {
@@ -605,6 +617,7 @@ describe("the hours actions refresh the page their form is on (#1769)", () => {
   it("useDefaultHours refreshes the agent page", async () => {
     rpc.mockResolvedValue({ data: 5, error: null });
     const fd = new FormData();
+    fd.set("loaded_updated_at", LOADED);
     fd.set("user_id", "u1");
     await useDefaultHours(fd).catch(() => {});
     expect(revalidatePath).toHaveBeenCalledWith("/admin/agents/u1");
@@ -642,9 +655,66 @@ describe("a failed hours write leaves the timezone exactly as it was (#2002)", (
     await expect(setWorkingHours(fd)).rejects.toThrow(/ok=working-hours/);
     expect(rpc).toHaveBeenCalledTimes(1);
     const [fn, args] = rpc.mock.calls[0] as [string, Record<string, unknown>];
-    expect(fn).toBe("replace_user_schedule");
+    expect(fn).toBe("replace_user_schedule_if_unchanged");
     expect(args.p_user_id).toBe("u1");
     expect(args.p_timezone).toBe("America/Los_Angeles");
     expect(args.p_expected).toBe(5);
+  });
+});
+
+// #3122: two people editing one week. The write is guarded on the version the form
+// was drawn from, inside the same transaction as the write (SQLSTATE SL409 when the
+// row moved), and that refusal is a sentence for the person, never a thrown fault.
+describe("a week saved by somebody else since the form was opened (#3122)", () => {
+  const moved = { data: null, error: { message: "saved by somebody else", code: "SL409" } as { message: string } };
+
+  it("sends the version the form loaded with the write", async () => {
+    await setWorkingHours(hoursForm()).catch(() => {});
+    const [, args] = rpc.mock.calls[0] as [string, { p_loaded_updated_at: string | null }];
+    expect(args.p_loaded_updated_at).toBe(LOADED);
+  });
+
+  it("sends null when the form was drawn with no schedule row", async () => {
+    const fd = hoursForm();
+    fd.set("loaded_updated_at", "");
+    await setWorkingHours(fd).catch(() => {});
+    const [, args] = rpc.mock.calls[0] as [string, { p_loaded_updated_at: string | null }];
+    expect(args.p_loaded_updated_at).toBeNull();
+  });
+
+  it("refuses with the changed sentence on the admin's page when the row moved", async () => {
+    rpc.mockResolvedValue(moved);
+    await expect(setWorkingHours(hoursForm())).rejects.toThrow(
+      `NEXT_REDIRECT:/admin/agents/u1${refusedQuery(CHANGED_SINCE_OPENED)}`,
+    );
+    expect(revalidatePath).not.toHaveBeenCalled();
+  });
+
+  it("refuses an agent's own save the same way, on their own page", async () => {
+    rpc.mockResolvedValue(moved);
+    await expect(setMyWorkingHours(hoursForm())).rejects.toThrow(
+      `NEXT_REDIRECT:${ME_TABS[0].href}${refusedQuery(CHANGED_SINCE_OPENED)}`,
+    );
+  });
+
+  it("refuses the company default button too, since its confirm named the week it saw", async () => {
+    rpc.mockResolvedValue(moved);
+    await expect(useDefaultHours(hoursForm())).rejects.toThrow(
+      `NEXT_REDIRECT:/admin/agents/u1${refusedQuery(CHANGED_SINCE_OPENED)}`,
+    );
+  });
+
+  it("refuses a form that carried no version at all, before writing anything", async () => {
+    const fd = hoursForm();
+    fd.delete("loaded_updated_at");
+    await expect(setWorkingHours(fd)).rejects.toThrow(
+      `NEXT_REDIRECT:/admin/agents/u1${refusedQuery(PAGE_OUT_OF_DATE)}`,
+    );
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("CONTROL: any other database error is still a fault, not the changed sentence", async () => {
+    rpc.mockResolvedValue({ data: null, error: { message: "deadlock detected", code: "40P01" } as { message: string } });
+    await expect(setWorkingHours(hoursForm())).rejects.toThrow(/could not be saved/i);
   });
 });
