@@ -23,7 +23,6 @@
  * `Date.now()` in a Worker advances at I/O, not during computation, so this
  * measures time spent WAITING on dependencies, which is what it exists to bound.
  */
-import { AsyncLocalStorage } from "node:async_hooks";
 import {
   DeadlineExceededError,
   NO_DEADLINE,
@@ -32,6 +31,7 @@ import {
   type FetchLike,
 } from "./fetch-within-deadline.ts";
 import { realTimer, type ScheduleTimer } from "./read-within-deadline.ts";
+import { log } from "@/lib/log";
 
 interface Budget {
   readonly expiresAt: number;
@@ -40,7 +40,53 @@ interface Budget {
   readonly totalMs: number;
 }
 
-const current = new AsyncLocalStorage<Budget | undefined>();
+/** The two methods of Node's AsyncLocalStorage this module uses. */
+interface ContextStore<T> {
+  getStore(): T | undefined;
+  run<R>(store: T, work: () => R): R;
+}
+
+/**
+ * The async context store, found at runtime rather than imported. A static
+ * `node:async_hooks` import breaks the build: Turbopack refuses it in any client
+ * chunk that reaches this module through a shared import, and the edge
+ * middleware cannot take it either. Next's server runtime installs the class on
+ * `globalThis` (its own request storage needs it, on Cloudflare too), and plain
+ * Node, where the tests run, hands it out through `process.getBuiltinModule`.
+ *
+ * Where neither exists, which is only a browser bundle that never sends these
+ * requests, there is no store: budgets are inert and each call keeps its own
+ * limit, the posture the cron lanes have anyway.
+ */
+type StoreClass = new <T>() => ContextStore<T>;
+function findStoreClass(): StoreClass | null {
+  const fromGlobal = (globalThis as { AsyncLocalStorage?: StoreClass }).AsyncLocalStorage;
+  if (typeof fromGlobal === "function") return fromGlobal;
+  const proc = (globalThis as {
+    process?: { getBuiltinModule?: (id: string) => { AsyncLocalStorage?: StoreClass } | undefined };
+  }).process;
+  return proc?.getBuiltinModule?.("node:async_hooks")?.AsyncLocalStorage ?? null;
+}
+
+const inert: ContextStore<Budget | undefined> = {
+  getStore: () => undefined,
+  run: (_store, work) => work(),
+};
+
+let found: ContextStore<Budget | undefined> | null = null;
+/** Resolved on first use, so the server runtime has installed its class by then. */
+function store(): ContextStore<Budget | undefined> {
+  if (!found) {
+    const StoreClass = findStoreClass();
+    found = StoreClass ? new StoreClass<Budget | undefined>() : inert;
+    // On a server this would silently switch every budget off, so it is said out
+    // loud. In a browser bundle it is expected and nothing here runs there.
+    if (!StoreClass && typeof window === "undefined") {
+      log.warn("call-budget", { msg: "no AsyncLocalStorage in this runtime; call budgets are inert" });
+    }
+  }
+  return found;
+}
 
 // Every clock default below is `() => Date.now()`, never `Date.now` itself. A
 // fetch built once at module load (the Supabase clients' `supabaseFetch`) would
@@ -57,9 +103,9 @@ export function withinCallBudget<T>(
   work: () => Promise<T>,
   now: () => number = () => Date.now(),
 ): Promise<T> {
-  const outer = current.getStore();
+  const outer = store().getStore();
   const own: Budget = { expiresAt: now() + ms, label, totalMs: ms };
-  return current.run(outer && outer.expiresAt <= own.expiresAt ? outer : own, work);
+  return store().run(outer && outer.expiresAt <= own.expiresAt ? outer : own, work);
 }
 
 /**
@@ -74,12 +120,12 @@ export function withinFreshCallBudget<T>(
   work: () => Promise<T>,
   now: () => number = () => Date.now(),
 ): Promise<T> {
-  return current.run({ expiresAt: now() + ms, label, totalMs: ms }, work);
+  return store().run({ expiresAt: now() + ms, label, totalMs: ms }, work);
 }
 
 /** Run `work` with no budget at all: the work deferred past a response. */
 export function outsideCallBudget<T>(work: () => T): T {
-  return current.run(undefined, work);
+  return store().run(undefined, work);
 }
 
 /**
@@ -94,7 +140,7 @@ export function deadlineWithinBudget(
   label: string,
   now: () => number = () => Date.now(),
 ): { waitMs: number; reportAs: { label: string; timeoutMs: number } } {
-  const budget = current.getStore();
+  const budget = store().getStore();
   if (!budget) return { waitMs: ownMs, reportAs: { label, timeoutMs: ownMs } };
   const left = budget.expiresAt - now();
   if (left <= 0) throw new DeadlineExceededError(budget.label, budget.totalMs);
