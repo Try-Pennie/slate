@@ -425,8 +425,26 @@ jobs:
     needs: [ci, static-checks]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # Job level, so it REPLACES the repo default for this job only: checkout needs
+    # contents, and the ci gate below reads the commit's check runs.
+    permissions:
+      contents: read
+      checks: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # #3088: refuse unless the `ci` fan-in passed on THIS exact sha, read back from
+      # GitHub rather than trusted from `needs` above. `needs` is one line of YAML: an
+      # edit to it, or an always() on this job, would ship with nothing checking. This
+      # is the second, independent half, and it runs before the install so a refusal
+      # spends nothing. Bare node, no dependencies (scripts/check-ci-before-deploy.ts).
+      # It does NOT stop a direct push to main whose own ci is green; that half stays
+      # with the main push guard, which detects it after the fact.
+      - name: Refuse unless ci passed on this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.sha }}
+        run: node --experimental-strip-types scripts/check-ci-before-deploy.ts
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
