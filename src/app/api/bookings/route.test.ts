@@ -24,6 +24,7 @@ const rateLimit = vi.hoisted(() => ({
   bookingApiWriteWithinLimit: vi.fn(async (_keyId: string) => true),
   bookingApiReadWithinLimit: vi.fn(async (_keyId: string) => true),
   bookingApiIpWithinLimit: vi.fn(async (_ip: string) => true),
+  bearerFailureWithinLimit: vi.fn(async (_ip: string) => true),
   // Real derivation, not a stub: the per-IP ceiling (#597) is only as good as the IP it
   // keys on, and a faked clientIp would let a broken header order pass unnoticed.
   clientIp: (headers: Headers) =>

@@ -42,6 +42,46 @@ assert(
 );
 assert(clientIp(h({})) === "unknown", "no headers -> a stable fallback key");
 
+// #3107: an IPv6 caller is keyed on its /64, because one ordinary allocation is a whole
+// /64 and a counter on the full /128 is a fresh counter per address the caller rotates to.
+{
+  const ip6 = (v: string) => clientIp(h({ "cf-connecting-ip": v }));
+  eq(
+    ip6("2001:db8:1234:5678::1"),
+    ip6("2001:db8:1234:5678:ffff:eeee:dddd:cccc"),
+    "two addresses in one /64 share a counter",
+  );
+  assert(
+    ip6("2001:db8:1234:5678::1") !== ip6("2001:db8:1234:5679::1"),
+    "addresses in neighbouring /64s keep separate counters",
+  );
+  eq(ip6("2001:db8:1234:5678::1"), "2001:db8:1234:5678::/64", "the key names the /64");
+  eq(
+    ip6("2001:0DB8:1234:5678:0:0:0:1"),
+    ip6("2001:db8:1234:5678::9"),
+    "case, leading zeros and the compressed form all read as one /64",
+  );
+  eq(ip6("2001:db8::1"), "2001:db8:0:0::/64", "a :: inside the first four groups expands");
+  eq(ip6("::1"), "0:0:0:0::/64", "a leading :: expands");
+  eq(ip6("fe80::1%eth0"), "fe80:0:0:0::/64", "a zone id is dropped");
+  eq(ip6("[2001:db8::1]"), "2001:db8:0:0::/64", "brackets are dropped");
+  eq(ip6("::ffff:203.0.113.7"), "203.0.113.7", "an IPv4 mapped address keys as its IPv4");
+  eq(ip6("0:0:0:0:0:ffff:203.0.113.7"), "203.0.113.7", "so does its long form");
+  eq(ip6("::ffff:cb00:7107"), "203.0.113.7", "and its hex form, rather than collapsing into ::/64");
+  eq(ip6("0:0:0:0:0:FFFF:CB00:0007"), "203.0.0.7", "and the long hex form, any case");
+  assert(
+    ip6("::ffff:cb00:7107") !== ip6("::ffff:c633:6401"),
+    "two unrelated mapped callers never share a counter",
+  );
+  eq(
+    clientIp(h({ "x-forwarded-for": "2001:db8:1:2::3, 10.0.0.1" })),
+    "2001:db8:1:2::/64",
+    "the forwarded-for fallback is normalized too",
+  );
+  eq(ip6("not-an-address"), "not-an-address", "something unreadable is passed through as is");
+  eq(ip6("203.0.113.7"), "203.0.113.7", "IPv4 is untouched");
+}
+
 // Policy shape (#237): the per-minute burst window moved to the edge limiter
 // (BOOKING_RATE_LIMITER, wrangler.jsonc); only the strict hourly anti-spam cap
 // remains a DB rule here.

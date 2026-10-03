@@ -427,7 +427,11 @@ jobs:
     # Pinned against the probe's own constant by scripts/test-workflow-timeouts.ts.
     timeout-minutes: 20  # measured max 103s, of which the probe may poll 240s
     needs: [ci, static-checks]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Each need is judged by result, explicitly. A bare if: gets an implicit
+    # success(), which GitHub fails whenever ANY job above this one was skipped,
+    # and security-scan (under ci) is skipped on every push to main, so a bare
+    # condition here skipped every deploy with ci green and nothing paging.
+    if: ${{ !cancelled() && needs.ci.result == 'success' && needs.static-checks.result == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     # Job level, so it REPLACES the repo default for this job only: checkout needs
     # contents, and the ci gate below reads the commit's check runs.

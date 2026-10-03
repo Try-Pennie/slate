@@ -7,6 +7,7 @@ import { manageWithinLimit } from "@/lib/rate-limit";
 // From the pure core rather than the re-export, so a test can stub the limiter without
 // also having to hand back a working clientIp.
 import { clientIp } from "@/lib/rate-limit-core";
+import { readJsonCapped, PUBLIC_JSON_MAX_BYTES } from "@/lib/http/read-json-capped";
 
 export const dynamic = "force-dynamic";
 
@@ -43,7 +44,10 @@ export async function POST(
   }
 
   const { token } = await params;
-  const parsed = schema.safeParse(await req.json().catch(() => null));
+  // #3135: read under a byte cap rather than buffering whatever arrives.
+  const read = await readJsonCapped(req, PUBLIC_JSON_MAX_BYTES);
+  if (read.tooLarge) return NextResponse.json({ error: "Request too large" }, { status: 413 });
+  const parsed = schema.safeParse(read.value);
   if (!parsed.success) {
     // refusal: manage_phone_invalid_request
     return NextResponse.json({ error: "Invalid request" }, { status: 400 });

@@ -208,6 +208,18 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
       "on the share and names the code rather than a second mechanism being built.",
   },
   {
+    id: "body_too_large",
+    surface: "embed booker",
+    outcome: "413, told the request was too large",
+    counting: { kind: "none" },
+    rateSignal: { kind: "none" },
+    why:
+      "The booker sends a confirm of well under two kilobytes, so a body past the 16 KB cap " +
+      "(#3135) is never a lead using the product: it is somebody making the Worker buffer a " +
+      "payload. Counting it would put that volume in the failure share's denominator and let it " +
+      "dilute a real outage, the reason the honeypot is not counted either.",
+  },
+  {
     id: "invalid_contact",
     surface: "embed booker",
     outcome: "400, with the field errors so the lead can fix them",
@@ -577,6 +589,17 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
       "minutes, so a second count here would say nothing new.",
   },
   {
+    id: "reschedule_body_too_large",
+    surface: "manage page",
+    outcome: "413, told the request was too large",
+    counting: { kind: "none" },
+    rateSignal: { kind: "none" },
+    why:
+      "The manage page sends a few hundred bytes, so a body past the 16 KB cap (#3135) is a " +
+      "hand-made request meant to make the Worker buffer it, never a lead moving a call. The " +
+      "reschedule failures below would report the page itself breaking, so nothing is lost.",
+  },
+  {
     id: "reschedule_slot_taken",
     surface: "manage page",
     outcome: "409, told the time has gone",
@@ -717,6 +740,17 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
       "hand-made request rather than a lead using the product. If either page ever sent the " +
       "wrong shape, EVERY cancel would fail, which cancel_internal below would report as a " +
       "share within minutes, so a second count here would say nothing new.",
+  },
+  {
+    id: "cancel_body_too_large",
+    surface: "manage page",
+    outcome: "413, told the request was too large",
+    counting: { kind: "none" },
+    rateSignal: { kind: "none" },
+    why:
+      "Both surfaces that reach this route send a few hundred bytes, so a body past the 16 KB " +
+      "cap (#3135) is a hand-made request meant to make the Worker buffer it, never a lead " +
+      "cancelling. cancel_internal below would report the pages themselves breaking.",
   },
   {
     id: "cancel_invalid_reason",

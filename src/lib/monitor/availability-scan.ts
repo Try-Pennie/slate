@@ -10,6 +10,7 @@
  * drives every paging decision node-natively. No `@/` imports for the same
  * reason (relative `.ts` imports only, matching routing/tiers.ts).
  */
+import { logAlertSendFailure, logResolveFailure } from "../notify/send-failure.ts";
 import {
   anyOnShift,
   classifyEmptyBuckets,
@@ -241,11 +242,11 @@ export async function runAvailabilityScan(deps: AvailabilityScanDeps): Promise<A
         deps.cooldownMs.bookedSolid,
         formatBookedSolidAlert(cause.bookedSolid),
       )
-      .catch(() => {});
+      .catch(logAlertSendFailure(BOOKED_SOLID_ALERT_KEY));
   } else if (!truncated) {
     await deps
       .resolve(BOOKED_SOLID_ALERT_KEY, formatBookedSolidRecovery())
-      .catch(() => {});
+      .catch(logResolveFailure(BOOKED_SOLID_ALERT_KEY));
   }
   if (covered.length) {
     // Enrich each covered tier with its human name and the eligible-agent depth
@@ -266,7 +267,7 @@ export async function runAvailabilityScan(deps: AvailabilityScanDeps): Promise<A
         deps.cooldownMs.fallbackCovered,
         formatFallbackCoveredNotice(coveredDetail),
       )
-      .catch(() => {});
+      .catch(logAlertSendFailure(FALLBACK_COVERED_INFO_KEY));
   }
 
   deps.log({

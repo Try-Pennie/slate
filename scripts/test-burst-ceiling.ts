@@ -125,8 +125,8 @@ function tracker(answers: { count: number }[] | ((bump: number) => { count: numb
   eq(burstEscalateAt(BOOKING_API_READ_LIMITER), 600, "the read path escalates at its 600 a minute");
   eq(
     EDGE_LIMITERS.filter((l) => l.audience === "machine").map((l) => l.area).sort(),
-    ["booking-api", "booking-api-ip", "booking-api-read"],
-    "the three booking API limiters are the machine to machine ones",
+    ["bearer-failure", "booking-api", "booking-api-ip", "booking-api-read"],
+    "the three booking API limiters, and the failed credential one beside them on the key authed routes (#3142), are the machine to machine ones",
   );
 
   // Two limiters sharing an area would share ONE burst counter, so the tighter endpoint's
@@ -134,8 +134,26 @@ function tracker(answers: { count: number }[] | ((bump: number) => { count: numb
   // namespace_id check catches for the native bindings.
   const areas = EDGE_LIMITERS.map((l) => l.area);
   eq(new Set(areas).size, areas.length, "every limiter has its own burst key space");
-  const bindings = EDGE_LIMITERS.map((l) => l.binding);
-  eq(new Set(bindings).size, bindings.length, "and its own binding");
+  // The same holds for the NATIVE counter, which is keyed per binding (#3106): two limiters
+  // may share a binding only when one counts under its own key prefix, so the pair that
+  // must be unique is the binding and the prefix together.
+  const nativeSpaces = EDGE_LIMITERS.map(
+    (l) => `${l.binding}|${"nativeKeyPrefix" in l ? l.nativeKeyPrefix : ""}`,
+  );
+  eq(new Set(nativeSpaces).size, nativeSpaces.length, "and its own native key space");
+  // Positive control: two limiters on one binding with no prefix collapse to one space.
+  const collided = [EDGE_LIMITERS[0], { ...EDGE_LIMITERS[0], area: "copy" }].map(
+    (l) => `${l.binding}|${"nativeKeyPrefix" in l ? l.nativeKeyPrefix : ""}`,
+  );
+  eq(new Set(collided).size, 1, "a shared binding with no prefix is caught as one key space");
+  for (const spec of EDGE_LIMITERS) {
+    if (!("nativeKeyPrefix" in spec)) continue;
+    const owner = EDGE_LIMITERS.find((l) => l.binding === spec.binding && !("nativeKeyPrefix" in l));
+    assert(
+      owner !== undefined && owner.perMinute === spec.perMinute,
+      `${spec.area} shares ${spec.binding} and states the per minute number that binding enforces`,
+    );
+  }
 
   // The key kind decides whether an unidentifiable-caller rule can even apply: a per-key
   // limiter's key is an API key id from auth, which is never the unidentified-address

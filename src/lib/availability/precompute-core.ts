@@ -40,6 +40,10 @@ export interface ReadDeps {
    *  over stale slots and the overwrite is invisible on the header that exists to
    *  show it. Required rather than defaulted, so every call site has to say. */
   writeRow(code: string, val: BucketSlots, computedAtMs: number): Promise<string>;
+  /** The self-heal write threw (a refused row is `SlotRowRefused`, #3119). The read
+   *  still serves what it computed, so this is where the refusal is recorded.
+   *  Required, so every construction site has to say what it does with one. */
+  writeFailed(code: string, err: unknown): void;
   /**
    * The org's CURRENT opening hours (#1296), read through a short per-isolate
    * cache. Gate 1 runs at compute time, which leaves one hole: a slot computed
@@ -118,7 +122,16 @@ export async function resolveBucketSlots(
   const fresh: BucketSlots = mapSlotLists(computed, (list) =>
     trimToBookableDays(list, zone, horizonDays),
   );
-  const computedAt = await deps.writeRow(code, fresh, computeStartedMs);
+  // A refused or failed write must not take the lead's times with it: this is the
+  // fail-open path, and the computed answer is correct whether or not it was stored.
+  // It is labelled with when the compute began, the stamp the row would have had.
+  let computedAt: string;
+  try {
+    computedAt = await deps.writeRow(code, fresh, computeStartedMs);
+  } catch (err) {
+    deps.writeFailed(code, err);
+    computedAt = new Date(computeStartedMs).toISOString();
+  }
   const cached: CachedBucketSlots = { ...fresh, computedAt };
   await deps.cachePut(key, cached);
   return served(cached, "compute");

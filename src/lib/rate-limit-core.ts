@@ -190,6 +190,17 @@ export const WEBHOOK_TEST_SEND_RATE_RULES: RateLimitRule[] = [
 ];
 
 /**
+ * The exact hourly cap on landing identity lookups per address (#3106), behind the per minute
+ * edge window (`LANDING_LIMITER`, below). It counts LOOKUPS rather than distinct ids: that
+ * bounds distinct ids at the same number, needs no new table, and the only cost of counting a
+ * lead's own reloads is that a lead past thirty in an hour types their details in, since over
+ * the cap is a page with no prefill rather than a refusal.
+ */
+export const LANDING_IDENTITY_HOURLY_RATE_RULES: RateLimitRule[] = [
+  { prefix: "landing:h", windowSeconds: 3600, max: 30 },
+];
+
+/**
  * Every DB limiter rule above, in one list, so the prune below covers each one by
  * construction (#3109). scripts/test-rate-limit-prune.ts reads this module's
  * exports and fails when a rule set exists that this list leaves out.
@@ -205,6 +216,7 @@ const DB_RATE_LIMIT_RULE_SETS: readonly RateLimitRule[][] = [
   CSP_REPORT_RATE_RULES,
   ROUTING_HOURLY_RATE_RULES,
   WEBHOOK_TEST_SEND_RATE_RULES,
+  LANDING_IDENTITY_HOURLY_RATE_RULES,
 ];
 
 /**
@@ -258,13 +270,55 @@ export async function pruneRateLimits(
 /**
  * The client IP for rate-limit keying. Cloudflare sets cf-connecting-ip on
  * every request; x-forwarded-for's FIRST hop is the client elsewhere (dev).
+ *
+ * An IPv6 address comes back as its /64 (#3107): see `rateLimitAddress`.
  */
 export function clientIp(headers: Headers): string {
   const cf = headers.get("cf-connecting-ip");
-  if (cf) return cf.trim();
+  if (cf) return rateLimitAddress(cf.trim());
   const xff = headers.get("x-forwarded-for");
-  if (xff) return xff.split(",")[0]!.trim();
+  if (xff) return rateLimitAddress(xff.split(",")[0]!.trim());
   return UNIDENTIFIED_IP;
+}
+
+/**
+ * The address a per address ceiling counts under (#3107).
+ *
+ * IPv4 is returned as is. IPv6 is reduced to its /64 (`2001:db8:1:2::/64`), because an
+ * ordinary allocation to one subscriber is a whole /64, so a counter on the full /128 handed
+ * any caller 2^64 fresh counters for the price of changing the address on each request. An
+ * IPv4 mapped address (`::ffff:a.b.c.d`) is its IPv4. Anything that does not parse is
+ * returned unchanged: it is still one stable key for whoever sent it, which is what the
+ * counter needs, and dropping it to the shared fallback would merge unrelated callers.
+ */
+export function rateLimitAddress(raw: string): string {
+  let addr = raw.trim().toLowerCase();
+  if (!addr.includes(":")) return raw.trim();
+  if (addr.startsWith("[") && addr.endsWith("]")) addr = addr.slice(1, -1);
+  const zone = addr.indexOf("%");
+  if (zone >= 0) addr = addr.slice(0, zone);
+  const mapped = /^(?:::|(?:0{1,4}:){5})ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(addr);
+  if (mapped) return mapped[1]!;
+  // The same address written in hex (`::ffff:cb00:7107`). Its top 64 bits are all zero, so
+  // left to the /64 reduction below it would put every mapped caller in ONE counter.
+  const mappedHex = /^(?:::|(?:0{1,4}:){5})ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(addr);
+  if (mappedHex) {
+    const hi = parseInt(mappedHex[1]!, 16);
+    const lo = parseInt(mappedHex[2]!, 16);
+    return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+  }
+  const halves = addr.split("::");
+  if (halves.length > 2) return raw.trim();
+  const head = halves[0] ? halves[0].split(":") : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  // A trailing embedded IPv4 counts as two groups; it can only ever sit in the low 64 bits.
+  const groupsIn = (gs: string[]) => gs.reduce((n, g) => n + (g.includes(".") ? 2 : 1), 0);
+  const missing = 8 - groupsIn(head) - groupsIn(tail);
+  if (halves.length === 1 ? missing !== 0 : missing < 1) return raw.trim();
+  const groups = [...head, ...Array<string>(halves.length === 2 ? missing : 0).fill("0"), ...tail];
+  const prefix = groups.slice(0, 4);
+  if (!prefix.every((g) => /^[0-9a-f]{1,4}$/.test(g))) return raw.trim();
+  return `${prefix.map((g) => g.replace(/^0+(?=.)/, "")).join(":")}::/64`;
 }
 
 /**
@@ -294,6 +348,7 @@ export function friendlyRateArea(prefix: string): string {
   if (prefix.startsWith("bookapi")) return "booking API";
   if (prefix.startsWith("book")) return "public booking";
   if (prefix.startsWith("routing")) return "routing lookup";
+  if (prefix.startsWith("landing")) return "lead landing pages";
   return "a Slate endpoint";
 }
 
@@ -373,6 +428,12 @@ interface EdgeLimiterBase {
   friendly: string;
   /** The sustained ceiling `wrangler.jsonc` configures, per minute, per datacenter. */
   perMinute: number;
+  /**
+   * Set only on a limiter that SHARES its binding with another (#3106). The native counter is
+   * keyed per binding, so a second endpoint on one binding counts under this prefix and never
+   * spends the first endpoint's allowance. Its burst count is already separate, by `area`.
+   */
+  nativeKeyPrefix?: string;
   /**
    * Who calls this endpoint (#1565): a lead's browser, or a machine (an integrator, or our own
    * bot). It decides where the burst ceiling starts counting precisely: a lead facing limiter
@@ -658,6 +719,61 @@ export const MANAGE_LIMITER = {
   burstCeilingPerMinute: 200,
 } as const satisfies EdgeLimiterSpec;
 
+/**
+ * The lead landing pages' identity lookup (#3106): `/book?external_id=` and `/booking/{id}`.
+ *
+ * Those pages read the stored name, email and phone for the Salesforce id in the link and
+ * prefill the form with them, and a lead id has a fixed `00Q` prefix and is not a secret, so
+ * an unthrottled page is an enumeration oracle for contact details, and every guess bought
+ * several database reads. This ceiling never refuses a lead: a caller over it gets the
+ * ordinary booker with nothing prefilled and no existing call named, which a real lead can
+ * still book through and an enumerator learns nothing from.
+ *
+ * It shares `MANAGE_RATE_LIMITER` rather than adding a binding, because a binding is a deploy
+ * time change and the two endpoints want the same per minute number; `nativeKeyPrefix` keeps
+ * the two counts apart. The exact hourly cap is `LANDING_IDENTITY_HOURLY_RATE_RULES` (above).
+ */
+export const LANDING_LIMITER = {
+  binding: "MANAGE_RATE_LIMITER",
+  nativeKeyPrefix: "landing:",
+  area: "landing",
+  friendly: "lead landing pages",
+  keyKind: "ip",
+  audience: "lead",
+  onUnidentified: "refuse",
+  unidentifiedWhy:
+    "a refusal here costs the lead only the prefill, never the booker, so a caller we cannot identify is shown the ordinary form rather than counted into a bucket every such caller shares",
+  perMinute: 20,
+  burstCeilingPerMinute: 200,
+} as const satisfies EdgeLimiterSpec;
+
+/**
+ * Failed credentials on the key authenticated routes (#3142), keyed per address and counted
+ * only on the failure path, so a caller holding a good key never spends it.
+ *
+ * Guessing a key is not the concern; the cost of a flood is. A refused booking API request
+ * still schedules the retired key watch and records an outcome, and every refusal writes a
+ * log line, so a stream of garbage tokens bought unmetered work. Past this ceiling the
+ * caller is answered 429 and none of that work runs.
+ *
+ * It shares `BOOKINGAPI_IP_RATE_LIMITER` under its own key prefix rather than adding a
+ * binding (a deploy time change), and does not alert on a block: a flood of bad tokens is
+ * the thing being shaped, not news about our own bot.
+ */
+export const BEARER_FAILURE_LIMITER = {
+  binding: "BOOKINGAPI_IP_RATE_LIMITER",
+  nativeKeyPrefix: "authfail:",
+  area: "bearer-failure",
+  friendly: "failed API credentials",
+  keyKind: "ip",
+  audience: "machine",
+  onUnidentified: "serve",
+  unidentifiedWhy:
+    "the request is refused for its credential either way, so declining to count a caller we cannot identify changes nothing it is told and only skips a throttle on work that is already a refusal",
+  perMinute: 60,
+  burstCeilingPerMinute: 600,
+} as const satisfies EdgeLimiterSpec;
+
 /** Every edge limiter, in the one list the tests and the monitor lane walk. */
 export const EDGE_LIMITERS = [
   AVAILABILITY_LIMITER,
@@ -667,11 +783,14 @@ export const EDGE_LIMITERS = [
   BOOKING_API_IP_LIMITER,
   BOOKING_API_READ_LIMITER,
   MANAGE_LIMITER,
+  LANDING_LIMITER,
+  BEARER_FAILURE_LIMITER,
 ] as const;
 
 export type EdgeLimiterBinding = (typeof EDGE_LIMITERS)[number]["binding"];
 
-/** The binding names alone, which is what the monitor lane's health check walks (#1525). */
-export const EDGE_LIMITER_BINDINGS: readonly EdgeLimiterBinding[] = EDGE_LIMITERS.map(
-  (l) => l.binding,
-);
+/** The binding names alone, once each, which is what the monitor lane's health check walks
+ *  (#1525). Deduplicated because a limiter may share a binding (`nativeKeyPrefix`). */
+export const EDGE_LIMITER_BINDINGS: readonly EdgeLimiterBinding[] = [
+  ...new Set<EdgeLimiterBinding>(EDGE_LIMITERS.map((l) => l.binding)),
+];

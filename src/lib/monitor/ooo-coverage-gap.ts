@@ -3,6 +3,7 @@ import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
 import { parseStampMs } from "@/lib/date/stamp";
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { sendThrottledAlert, sendThrottledInfo, resolveAlert } from "@/lib/notify/dispatch";
+import { logAlertSendFailure, logResolveFailure } from "@/lib/notify/send-failure";
 import { log } from "@/lib/log";
 
 /**
@@ -351,13 +352,13 @@ export async function runOooCoverageGapCheck(deps: {
       OOO_COVERAGE_GAP_LATER_KEY,
       OOO_GAP_WHISPER_COOLDOWN_MS,
       formatOooCoverageGapWhisper(holders),
-    ).catch(() => {});
+    ).catch(logAlertSendFailure(OOO_COVERAGE_GAP_LATER_KEY));
   }
 
   if (imminent === 0) {
     await clearFailureStreak(OOO_COVERAGE_GAP_KEY);
     // alert-key: ooo_coverage_gap
-    await resolveAlert(OOO_COVERAGE_GAP_KEY, formatOooCoverageGapRecovery()).catch(() => {});
+    await resolveAlert(OOO_COVERAGE_GAP_KEY, formatOooCoverageGapRecovery()).catch(logResolveFailure(OOO_COVERAGE_GAP_KEY));
     deps.log?.({ status: "clear", agents: holders.length, imminent: 0, later });
     return { status: "clear", agents: holders.length, imminent: 0, later };
   }
@@ -373,7 +374,7 @@ export async function runOooCoverageGapCheck(deps: {
       OOO_COVERAGE_GAP_KEY,
       deps.cooldownMs,
       formatOooCoverageGapAlert(holders),
-    ).catch(() => {});
+    ).catch(logAlertSendFailure(OOO_COVERAGE_GAP_KEY));
   }
   const agents = holders.filter((h) => h.imminent > 0).length;
   deps.log?.({ status: "holding", agents, imminent, later, sustained });

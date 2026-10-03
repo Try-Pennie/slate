@@ -1,5 +1,6 @@
 import { isMisroute } from "./explain.ts";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { Attributes, Criteria, RoutingExclusion, RoutingDecision } from "@/lib/db/types";
 import { log } from "@/lib/log";
@@ -78,6 +79,6 @@ export async function recordRoutingDecision(input: RecordRoutingDecisionInput): 
       `misroute:${input.bucketCode}`,
       MISROUTE_ALERT_COOLDOWN_MS,
       misrouteAlert(input.bookingId ?? "(none)", input.bucketCode, input.chosenUserId ?? "(none)"),
-    ).catch(() => {});
+    ).catch(logAlertSendFailure(`misroute:${input.bucketCode}`));
   }
 }

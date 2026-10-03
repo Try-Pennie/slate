@@ -49,6 +49,7 @@ import {
   clientErrorSurface,
   isHarmlessBrowserMessage,
 } from "@/lib/api/client-error-scrub";
+import { readJsonCapped, PUBLIC_JSON_MAX_BYTES } from "@/lib/http/read-json-capped";
 
 export const dynamic = "force-dynamic";
 
@@ -96,7 +97,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   ).catch(() => false);
   if (!allowed) return done();
 
-  const body = await req.json().catch(() => null);
+  // #3135: read under a byte cap. An oversized report is dropped like any other
+  // unreadable one, on the same 204, so refusal and success still look alike.
+  const read = await readJsonCapped(req, PUBLIC_JSON_MAX_BYTES);
+  if (read.tooLarge) return done();
+  const body = read.value;
   const report = normalizeClientError(body);
   if (!report) return done();
 

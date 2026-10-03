@@ -1,3 +1,4 @@
+import { logAlertSendFailure, logResolveFailure } from "../notify/send-failure.ts";
 import { explainEmptyWindow, type EmptyWindowInputs } from "@/lib/availability/empty-reason";
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 
@@ -127,7 +128,7 @@ export async function runEmptyReasonCheck(deps: {
     if (persistent) {
       await deps
         .notify(BOOKER_EMPTY_REASON_KEY, deps.cooldownMs, formatEmptyReasonAlert(outcome.blockedBy))
-        .catch(() => {});
+        .catch(logAlertSendFailure(BOOKER_EMPTY_REASON_KEY));
     }
     deps.log?.(
       `monitor empty-reason: the booker cannot explain an empty week (${outcome.blockedBy})` +
@@ -139,6 +140,6 @@ export async function runEmptyReasonCheck(deps: {
   // config on this tick. Not "we did not alert this run", which is the thing #1134
   // and #1152 were both filed about.
   await deps.clearStreak();
-  await deps.resolve(BOOKER_EMPTY_REASON_KEY, formatEmptyReasonRecovery()).catch(() => {});
+  await deps.resolve(BOOKER_EMPTY_REASON_KEY, formatEmptyReasonRecovery()).catch(logResolveFailure(BOOKER_EMPTY_REASON_KEY));
   return { status: "explains" };
 }

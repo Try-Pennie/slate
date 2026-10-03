@@ -49,6 +49,7 @@
  * Pure: no `@/` imports and no clock of its own, so the node suite drives every
  * branch directly.
  */
+import { logAlertSendFailure, logResolveFailure } from "../notify/send-failure.ts";
 import { describeGap } from "./health.ts";
 import { LOW_VOLUME_WINDOW_MINUTES } from "./booking-volume.ts";
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
@@ -233,7 +234,7 @@ export async function runBookingPauseCheck(deps: {
   if (action.act === "clear") {
     await deps
       .resolve(PUBLIC_BOOKING_STOPPED_KEY, formatPublicBookingRunningRecovery())
-      .catch(() => {});
+      .catch(logResolveFailure(PUBLIC_BOOKING_STOPPED_KEY));
     return { status: "running" };
   }
 
@@ -244,7 +245,7 @@ export async function runBookingPauseCheck(deps: {
         deps.cooldownMs,
         formatPublicBookingStoppedAlert(action.elapsedMs),
       )
-      .catch(() => {});
+      .catch(logAlertSendFailure(PUBLIC_BOOKING_STOPPED_KEY));
     const why =
       action.elapsedMs === null
         ? "stopped, with nothing recording when"

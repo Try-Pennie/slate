@@ -68,11 +68,14 @@ import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
 
 const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
 
+// A real Request: the route reads its body through the capped reader (#3135).
 const post = (body: unknown) =>
-  POST({
-    headers: new Headers(),
-    json: async () => body,
-  } as unknown as Parameters<typeof POST>[0]);
+  POST(
+    new Request("https://slate.test/api/client-errors", {
+      method: "POST",
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }) as unknown as Parameters<typeof POST>[0],
+  );
 
 const REPORT = {
   kind: "error",
@@ -300,12 +303,12 @@ describe("POST /api/client-errors", () => {
   });
 
   it("drops a body that is not JSON at all", async () => {
-    const res = await POST({
-      headers: new Headers(),
-      json: async () => {
-        throw new SyntaxError("Unexpected token");
-      },
-    } as unknown as Parameters<typeof POST>[0]);
+    const res = await POST(
+      new Request("https://slate.test/api/client-errors", {
+        method: "POST",
+        body: "{not json",
+      }) as unknown as Parameters<typeof POST>[0],
+    );
     expect(res.status).toBe(204);
     expect(reportInternalError).not.toHaveBeenCalled();
   });

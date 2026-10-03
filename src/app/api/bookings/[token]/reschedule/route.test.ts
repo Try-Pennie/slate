@@ -75,10 +75,13 @@ import { deadlineWithinBudget } from "@/lib/call-budget";
 import { BOOKING_CONFIRM_BUDGET_MS } from "@/lib/booking/confirm-budget";
 
 function req(body: unknown): Parameters<typeof POST>[0] {
-  return {
-    json: async () => body,
-    headers: new Headers({ "cf-connecting-ip": "203.0.113.9" }),
-  } as unknown as Parameters<typeof POST>[0];
+  // A real Request: the route reads its body through the capped reader (#3135),
+  // which reads the stream rather than calling json().
+  return new Request("https://slate.test/api/bookings/tok1", {
+    method: "POST",
+    headers: { "cf-connecting-ip": "203.0.113.9" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  }) as unknown as Parameters<typeof POST>[0];
 }
 const params = { params: Promise.resolve({ token: "tok1" }) };
 

@@ -24,6 +24,9 @@ import {
   BOOKING_API_IP_LIMITER,
   BOOKING_API_READ_LIMITER,
   MANAGE_LIMITER,
+  LANDING_LIMITER,
+  LANDING_IDENTITY_HOURLY_RATE_RULES,
+  BEARER_FAILURE_LIMITER,
 } from "@/lib/rate-limit-core";
 
 export {
@@ -243,6 +246,28 @@ export async function manageWithinLimit(ip: string): Promise<boolean> {
   return edgeWithinLimit(ip, MANAGE_LIMITER);
 }
 
+/**
+ * Whether a lead landing page may look up the identity in its link (#3106): the per minute
+ * edge window, then the exact hourly cap. A false answer is never a refusal of the page; the
+ * caller draws the ordinary booker with nothing prefilled and no existing call named.
+ */
+export async function landingIdentityAllowed(ip: string): Promise<boolean> {
+  if (!(await edgeWithinLimit(ip, LANDING_LIMITER))) return false;
+  return allowRequest(
+    { kind: "address", ip, policy: LANDING_LIMITER },
+    LANDING_IDENTITY_HOURLY_RATE_RULES,
+  );
+}
+
+/**
+ * Failed credentials on the key authenticated routes (#3142), per address. Asked ONLY once a
+ * credential has been refused, so a caller with a good key never spends it. Fails OPEN + LOUD
+ * like the rest; the request it judges is refused either way.
+ */
+export async function bearerFailureWithinLimit(ip: string): Promise<boolean> {
+  return edgeWithinLimit(ip, BEARER_FAILURE_LIMITER);
+}
+
 /** The Cloudflare edge rate-limit binding shape (`.limit({ key }) -> { success }`). */
 interface EdgeLimiter {
   limit(opts: { key: string }): Promise<{ success: boolean }>;
@@ -308,7 +333,7 @@ async function nativeWithinLimit(
       );
       return true;
     }
-    const { success } = await limiter.limit({ key });
+    const { success } = await limiter.limit({ key: `${spec.nativeKeyPrefix ?? ""}${key}` });
     if (!success && spec.alertOnBlock) {
       // Best-effort, like the DB path: the alert writes to alert_state, so a
       // failed alert must never turn a block into a thrown error for the caller.

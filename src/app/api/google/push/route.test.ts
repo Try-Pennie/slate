@@ -41,6 +41,14 @@ vi.mock("@/lib/bearer-auth", async (importOriginal) => {
 
 vi.mock("@/lib/env", () => env);
 vi.mock("@/lib/google/sync", () => sync);
+// #3154: Google's push senders share a small address pool, so a per address failed
+// credential throttle here would 429 valid pushes behind a pile of stale channel ones.
+// The limiter is mocked as REFUSING, so a route that still consulted it would answer 429.
+const bearerFailureWithinLimit = vi.hoisted(() => vi.fn(async () => false));
+vi.mock("@/lib/rate-limit", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/rate-limit")>()),
+  bearerFailureWithinLimit,
+}));
 vi.mock("next/server", async (importOriginal) => {
   const actual = await importOriginal<typeof import("next/server")>();
   return { ...actual, after: server.after };
@@ -96,6 +104,14 @@ describe("Google push handler", () => {
     expect(res.status).toBe(200);
     expect(server.after).not.toHaveBeenCalled();
     expect(sync.syncByChannel).not.toHaveBeenCalled();
+  });
+
+  it("#3154 answers a stale channel token 403, never the failed credential 429, so valid pushes from the same senders are not throttled", async () => {
+    const res = await POST(
+      push({ "x-goog-channel-token": "stale-token", "x-goog-resource-state": "exists", "cf-connecting-ip": "203.0.113.4" }),
+    );
+    expect(res.status).toBe(403);
+    expect(bearerFailureWithinLimit).not.toHaveBeenCalled();
   });
 
   it("rejects a bad channel token before scheduling any work", async () => {
