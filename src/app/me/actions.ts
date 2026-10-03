@@ -17,6 +17,7 @@ import {
 import { cancelOoo, modifyOoo, submitOoo } from "@/lib/ooo/service";
 import type { SubmitOooInput } from "@/lib/ooo/service";
 import type { OooRequest } from "@/lib/db/types";
+import { MISSING_TIMEZONE_TIME_OFF, submittedTimezone } from "@/lib/submitted-timezone";
 
 /**
  * Agent self-service time off actions. Void server actions have no return
@@ -90,7 +91,10 @@ async function confirmationMessage(
 
 /** Builds the UTC window + display tz from the form's local date/time fields. */
 function windowFrom(form: FormData): SubmitOooInput | { error: string } {
-  const tz = String(form.get("timezone") ?? "America/New_York");
+  // #1989: no zone is refused, never read as Eastern, which would move the whole
+  // window by the agent's offset and still report the request as sent.
+  const tz = submittedTimezone(form);
+  if (!tz) return { error: MISSING_TIMEZONE_TIME_OFF };
   const allDay = form.get("all_day") === "on";
   const startDate = String(form.get("start_date") ?? "");
   const endDate = String(form.get("end_date") ?? "");

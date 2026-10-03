@@ -96,6 +96,8 @@ vi.mock("@/lib/salesforce/sync", () => ({ syncSalesforceAgents: vi.fn(), AGENTS_
 vi.mock("@/lib/notify/streak", () => ({ clearFailureStreak: vi.fn(), recordFailureStreak: vi.fn(), recordConsecutiveStreak: vi.fn() }));
 
 import { ME_TABS } from "@/lib/me/nav";
+import { refusedQuery } from "@/lib/admin/save-outcomes";
+import { MISSING_TIMEZONE_HOURS } from "@/lib/submitted-timezone";
 import {
   setWorkingHours,
   setOrgDefaultHours,
@@ -422,6 +424,25 @@ describe("the timezone on a working-hours save (#1671)", () => {
     const fd = hoursForm();
     fd.set("timezone", "   ");
     await expect(setWorkingHours(fd)).rejects.toThrow(/time ?zone/i);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  // #1989: a form that sent NO timezone field used to save the week in Eastern
+  // and report success, which is exactly how 74 of 103 agents came to hold a zone
+  // nobody chose (#1739). Refused, on both hours actions, with a message the page
+  // draws, and nothing written.
+  it("refuses a missing zone on the admin save instead of saving it as Eastern", async () => {
+    const fd = hoursForm({ timezone: "" });
+    expect(fd.has("timezone")).toBe(false);
+    await expect(setWorkingHours(fd)).rejects.toThrow(`NEXT_REDIRECT:/admin/agents/u1${refusedQuery(MISSING_TIMEZONE_HOURS)}`);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("refuses a missing zone on the agent's own save instead of saving it as Eastern", async () => {
+    const fd = hoursForm({ timezone: "" });
+    await expect(setMyWorkingHours(fd)).rejects.toThrow(
+      `NEXT_REDIRECT:${ME_TABS[0].href}${refusedQuery(MISSING_TIMEZONE_HOURS)}`,
+    );
     expect(rpc).not.toHaveBeenCalled();
   });
 
