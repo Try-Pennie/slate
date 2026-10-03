@@ -149,8 +149,16 @@ export function DateTimeField({
    * page and a scroll is not a click at all, so a date somebody had just chosen was
    * erased with nothing said and no way back. Destroying input on a gesture that
    * was never a decision about the input is data loss, not a tidy-up (L628).
+   *
+   * Focus goes back to the calendar button only when it was inside the popup, which
+   * a scroll leaves it: otherwise it would go to the body with the removed panel. An
+   * outside click then moves focus on to whatever was clicked, as it should.
    */
-  const dismiss = () => setOpen(false);
+  const dismiss = () => {
+    const panel = document.getElementById(dialogId);
+    if (panel?.contains(document.activeElement)) toggleRef.current?.focus();
+    setOpen(false);
+  };
 
   // #1843: the popup is portalled now, so it is no longer inside `rootRef` and an
   // outside-click test written against that alone would dismiss the calendar the
