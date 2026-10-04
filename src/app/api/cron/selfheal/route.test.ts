@@ -130,6 +130,18 @@ describe("GET /api/cron/selfheal", () => {
     expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("selfheal");
   });
 
+  it("contains a throw while wiring the sweep's deps to the sweep alone (L73)", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    holdDeps.rerouteHoldStoreDeps.mockImplementationOnce(() => {
+      throw new Error("SUPABASE_SECRET_KEY is not set");
+    });
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect((await res.json()).rerouteHoldBlocksFreed).toBe("error");
+    expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("selfheal");
+    expect(heartbeat.recordHeartbeat).not.toHaveBeenCalledWith("reroute-hold-sweep");
+  });
+
   // #830: the creation-orphan check runs on this lane and its confirmed count
   // surfaces in the response.
   it("runs the creation-orphan check and surfaces its confirmed count", async () => {

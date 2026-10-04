@@ -9,18 +9,21 @@ import type { RerouteHoldStoreDeps } from "./reroute-hold-store.ts";
  * fails is caught up by the recompute lane.
  */
 export function rerouteHoldStoreDeps(label: string): RerouteHoldStoreDeps {
-  const db = supabaseAdmin();
+  // The client is made at CALL time, never here, so building the deps cannot throw
+  // outside the caller's failure boundary (the self heal lane wraps each sweep in
+  // its own catch, L73).
+  const db = () => supabaseAdmin();
   return {
-    placeRpc: (args) => db.rpc("place_reroute_hold", args),
+    placeRpc: (args) => db().rpc("place_reroute_hold", args),
     deleteUnconsumed: (bookingId) =>
-      db
+      db()
         // cap-safe: booking_id is unique on reroute_holds, so this deletes at most one row.
         .from("reroute_holds")
         .delete()
         .eq("booking_id", bookingId)
         .is("consumed_at", null)
         .select("agent_user_id"),
-    pruneRpc: () => db.rpc("prune_expired_reroute_hold_blocks"),
+    pruneRpc: () => db().rpc("prune_expired_reroute_hold_blocks"),
     refreshPools: async (userIds) => {
       await refreshPoolsForAgents(userIds, label);
     },

@@ -148,7 +148,11 @@ export async function GET(req: NextRequest) {
     // the database already ignore an expired hold the instant it expires; this is
     // what puts the time back on the offer. Its OWN heartbeat, stamped only when it
     // succeeded, because the lane's stamp below proves only that the lane ran.
-    const holdSweep = await sweepExpiredRerouteHoldBlocks(rerouteHoldStoreDeps("reroute-hold-sweep")).catch(
+    // Built inside the promise chain, so even a throw while wiring the deps lands in
+    // this sweep's own catch rather than ending the tick (L73).
+    const holdSweep = await Promise.resolve()
+      .then(() => sweepExpiredRerouteHoldBlocks(rerouteHoldStoreDeps("reroute-hold-sweep")))
+      .catch(
       (err) => {
         log.error("selfheal", { msg: "reroute hold sweep failed" }, err);
         return null;
