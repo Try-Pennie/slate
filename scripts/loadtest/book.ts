@@ -25,6 +25,7 @@ import {
   loadtestPhone,
   idPrefix,
   burstReadiness,
+  waitForBurstMoment,
   externalIdFor,
   pickSlot,
   DRIVERS,
@@ -361,8 +362,9 @@ async function burst(): Promise<void> {
   // SLOT_TAKEN indistinguishable from the contention the control is counting, so
   // the judge would be handed a staggered burst wearing a simultaneous one's
   // clothes.
-  const wait = startAtMs - Date.now();
-  if (wait > 0) await sleep(wait);
+  // Looped, not one sleep: a timer can return a millisecond before the wall clock
+  // reaches the moment, and that alone cost run 37162784607 its burst (#3103).
+  await waitForBurstMoment(startAtMs, { now: Date.now, sleep });
   const readiness = burstReadiness({ startAtMs, nowMs: Date.now(), graceMs: BURST_GRACE_MS });
   if (readiness !== "ready") {
     console.error(`driver ${DRIVER}: burst-missed (${readiness}), firing nothing`);
