@@ -1165,6 +1165,110 @@ The platform half is reported `unmeasured` on every run so far: the analytics AP
 returns no rows for a window minutes old, which is the lag this repo already
 documents (#1533). That is the judge's control working as designed, not a pass.
 
+## The post confirm recompute arms (#3258)
+
+Every booking on a user facing path schedules a recompute of the booked bucket's
+slots after its response (`invalidateSlots`, `post-confirm-recompute` in the per job
+line). Run 37229344882 measured the confirm's "assign and verify" stage about 1.7s
+slower at the median than a same day control on the 2026-09-15 code, while that
+stage's own reads had not changed, so the recompute running beside the next confirms
+is the suspect. To measure it rather than infer it, the deployment can run one of
+three ARMS, set by `SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE`:
+
+| arm | what a booking schedules after its response | per job line name |
+|---|---|---|
+| `on` (default) | the full recompute, exactly as production | `post-confirm-recompute` |
+| `off` | nothing; the recompute lane keeps slots fresh | none |
+| `reads-only` | the recompute's reads (`loadBucketSlotInputs`), no compute, no row write | `post-confirm-recompute-reads-only` |
+
+`off` against `on` says whether the recompute is what the confirms wait on;
+`reads-only` against both says whether its cost is the database reads or the CPU of
+the compute, which decides the fix. Expect `off` to report a worse "worst recompute
+age", since freshness falls back to the lane: that is the arm, not a defect.
+
+**Production cannot reach it.** It is read only when `SLATE_LOADTEST` is "true"
+(`src/lib/booking/post-confirm-recompute.ts`); otherwise every value, a typo
+included, is `on`. It is committed nowhere: `scripts/test-wrangler-loadtest-env.ts`
+fails the build if production or env.loadtest carries it.
+
+**An unknown value fails loud.** The Worker logs it at error once per isolate and
+runs `on`, `/api/smoke/version` reports it as `postConfirmRecomputeUnknown`, and the
+preflight refuses before anything is driven.
+
+**Setting it.** Dispatch the workflow with the `post_confirm_recompute` input. For
+`on` nothing changes. For `off` or `reads-only` the workflow's `arm` job rebuilds
+and redeploys the Worker with `--var "SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE:<arm>"`,
+exactly as the fault leg adds its own settings, and the preflight then asks
+`/api/smoke/version` which arm the deployment runs and refuses on any mismatch. The
+report's header names the arm. The fault leg carries the same arm; its restore step
+deploys with no `--var`, which puts the deployment back to `on`.
+
+For a fair comparison, run the three arms back to back on one day, from the same
+commit, and compare "assign and verify" from the confirm profile line.
+
+### Three arms on one branch and one deployment
+
+A fresh environment per arm costs a secrets set up and the wait for the first cron
+delivery (27 minutes on 2026-10-04). The arms can share one instead, provided each
+starts where the first did, which is what `scripts/loadtest/reset.ts` is for. Run it
+against the BRANCH between arms:
+
+```
+RESET_BRANCH_REF=<branch-ref> \
+SUPABASE_URL=https://<branch-ref>.supabase.co \
+SUPABASE_SECRET_KEY=<branch secret key> \
+node --experimental-strip-types scripts/loadtest/reset.ts
+```
+
+**It acts only on a target it can positively prove is a seeded load test branch.**
+"Anything but production" would be a blocklist, and pointed at staging or a dev
+project it would empty real data. So, before a single row is deleted, both of these
+must hold, and each failure is refused in its own words:
+
+- the address's project ref EQUALS `RESET_BRANCH_REF`, the ref recorded for this
+  run (an unset value, an address that only contains the ref, or one with no ref at
+  all refuses);
+- the database carries the seed's own marker: the `Loadtest Org` organization
+  (`SEED_ORG_ID`) as its ONLY organization, with agents at
+  `loadtest-agent-<n>@loadtest.local`. A real project holds its own org, and a
+  project the seed was once run into still does. The constants live in
+  `seed-guards.ts` and are what `seed.ts` and `generate.ts` write.
+
+It deletes, in order, `bookings`, `booking_outbox`, `booking_reservations`,
+`pending_event_deletions`, `routing_decisions` and `rate_limits`, and prints how
+many rows each lost. Why each matters to the next arm: the previous arm's bookings
+make agents busier (their busy blocks, the daily cap count) and widen every candidate
+read; outbox rows and reservations would be drained by the lanes during the next
+arm's window; rate limit rows can refuse drivers that run at the per address ceiling.
+
+- **DELETE, never TRUNCATE.** Deleting bookings cascades only to the busy blocks a
+  booking wrote. `TRUNCATE bookings CASCADE` would empty `busy_blocks` entirely,
+  seeded calendar time included, and reseeding does not undo a booking's rows either
+  (the seed only merges, it never deletes).
+- **It refuses production first** through the same guard the seed uses
+  (`productionRefusal` in `seed-guards.ts`), with no FORCE escape, even if
+  somebody recorded production's ref as the branch.
+- **It refuses on any bulk reassign row**, naming it, before deleting anything:
+  `bulk_reassign_items` references bookings with no delete rule, and the lane is off
+  here, so such a row is unexpected and worth looking at first.
+
+What it leaves alone, deliberately: `bucket_slots` and the slot cache (the preflight
+recomputes by hand and waits for fresh rows), the burst counter (a 60 second window
+that clears itself), alert cooldowns (Slack is off under load test), lane heartbeats,
+and `audit_log` (append only, and its insert cost does not grow with its size).
+
+The sequence, every dispatch from the same commit the deployment was built from:
+
+1. Build, deploy and seed once, as above.
+2. Dispatch with `post_confirm_recompute` = `on` and `teardown` off.
+3. Run `reset.ts`. Before dispatching again, confirm the calendar sync lanes have
+   recovered from the fault leg's injected read failures.
+4. Dispatch with `post_confirm_recompute` = `off` and `teardown` off. The `arm` job
+   redeploys the existing Worker, so there is no new wait for cron delivery.
+5. Run `reset.ts` again, and check the sync lanes again.
+6. Dispatch with `post_confirm_recompute` = `reads-only`, `teardown` on and
+   `branch_name` set, so the environment goes when the last arm is judged.
+
 ## Tearing down (#2322)
 
 `teardown` deletes **two** things now, and for months it said so while deleting one.

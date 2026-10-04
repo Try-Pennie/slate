@@ -10,6 +10,7 @@ import {
   LOADTEST_FAULT_TARGETS,
   LOADTEST_FAULT_TARGETS_UNKNOWN,
 } from "@/lib/loadtest-fault";
+import { postConfirmRecomputeSetting } from "@/lib/booking/post-confirm-recompute";
 
 export const dynamic = "force-dynamic";
 
@@ -65,6 +66,7 @@ export async function GET(req: NextRequest) {
   // answers without reading the database, which is why it can still say so once the
   // rest of the deployment has started refusing itself.
   const loadtest = isLoadtest();
+  const recompute = postConfirmRecomputeSetting();
   return NextResponse.json({
     commit: BUILD_COMMIT,
     loadtest,
@@ -78,6 +80,12 @@ export async function GET(req: NextRequest) {
           faultTargets: LOADTEST_FAULT_TARGETS,
           faultTargetsUnknown: LOADTEST_FAULT_TARGETS_UNKNOWN,
           productionSecrets: productionSecretsPresent(process.env),
+          // #3258: which arm of the post confirm recompute this deployment runs, and
+          // the raw value when it named no mode, from the SAME reader the booking
+          // path acts on (L70), so the preflight can refuse a run whose report would
+          // describe an arm nobody drove.
+          postConfirmRecompute: recompute.mode,
+          postConfirmRecomputeUnknown: recompute.unknown,
         }
       : {}),
   });

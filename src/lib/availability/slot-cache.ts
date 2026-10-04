@@ -1,4 +1,4 @@
-import { getBucketSlots, type EligibleResolver } from "./service";
+import { getBucketSlots, loadBucketSlotInputs, type EligibleResolver } from "./service";
 import { slotCacheKey } from "./cache-key";
 import {
   resolveBucketSlots,
@@ -163,6 +163,23 @@ export async function recomputeBucketSlotsForToday(
       try { await cache.delete(keyRequest(key)); } catch { /* ignore */ }
     }
   }
+}
+
+/**
+ * The load run's `reads-only` arm of the post confirm recompute (#3258): the reads
+ * `recomputeBucketSlotsForToday` makes, over the same window and through the same
+ * code, with no compute, no row write and no L1 delete. It exists only to separate
+ * the database half of the recompute's cost from the CPU half, and is reached only
+ * under load test (`postConfirmRecomputeMode`). It shares the per code debounce, so
+ * the arm schedules the reads exactly as often as the real arm schedules recomputes.
+ */
+export async function readBucketSlotInputsForToday(code: string): Promise<void> {
+  const now = Date.now();
+  if (now - (lastRecomputeAt.get(code) ?? 0) < RECOMPUTE_SKIP_MS) return;
+  lastRecomputeAt.set(code, now);
+  const horizon = await loadBookingHorizonDays();
+  const { fromIso, toIso } = slotCacheKey(code, new Date().toISOString(), horizon);
+  await loadBucketSlotInputs(code, fromIso, toIso);
 }
 
 /**

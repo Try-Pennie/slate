@@ -36,6 +36,9 @@ import {
   resolveAgentCount,
   migrationReadRefusal,
   appliedVersionsFrom,
+  productionRefusal,
+  SEED_ORG_ID,
+  SEED_ORG_NAME,
 } from "./seed-guards.ts";
 import { PRODUCTION_SUPABASE_REF } from "../../src/lib/loadtest-guard.ts";
 
@@ -43,7 +46,8 @@ import { PRODUCTION_SUPABASE_REF } from "../../src/lib/loadtest-guard.ts";
 // spelling beside each script is how one of them ends up naming a project that
 // is not production (L2, L41).
 const PROD_REF = PRODUCTION_SUPABASE_REF;
-const ORG_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+// The seed's marker, shared with the between arms reset (#3258).
+const ORG_ID = SEED_ORG_ID;
 const EVENT_TYPE_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
 
@@ -59,11 +63,9 @@ function loadEnv(): Record<string, string> {
   const url = process.env.SUPABASE_URL ?? fromFile.NEXT_PUBLIC_SUPABASE_URL ?? "";
   const key = process.env.SUPABASE_SECRET_KEY ?? fromFile.SUPABASE_SECRET_KEY ?? "";
   if (!url || !key) throw new Error("Set SUPABASE_URL and SUPABASE_SECRET_KEY (the BRANCH).");
-  if (url.includes(PROD_REF) && process.env.FORCE !== "1") {
-    throw new Error(
-      `Refusing to seed the production project (${PROD_REF}). Point SUPABASE_URL at a branch, or set FORCE=1 if you really mean it.`,
-    );
-  }
+  // The same guard the between arms reset uses (#3258), with the seed's FORCE=1.
+  const refusal = productionRefusal(url, PROD_REF, { force: process.env.FORCE === "1", action: "seed" });
+  if (refusal) throw new Error(`${refusal} Or set FORCE=1 if you really mean it.`);
   return { url: `${url}/rest/v1`, key };
 }
 
@@ -183,7 +185,7 @@ async function main() {
   console.log(`Seeding ${AGENT_COUNT} agents into ${BASE} ...`);
   await assertMigrationsMatch();
 
-  await insert("organizations", [{ id: ORG_ID, name: "Loadtest Org" }]);
+  await insert("organizations", [{ id: SEED_ORG_ID, name: SEED_ORG_NAME }]);
   // Production's own event type, measured 2026-09-11: 20 minutes on a 10 minute
   // grid with 120 minutes notice and no buffers. The grid is what decides how many
   // slots a day offers, so it decides how much four drivers contend; a 30-on-15

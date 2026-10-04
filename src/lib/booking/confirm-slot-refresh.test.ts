@@ -21,6 +21,7 @@ vi.mock("@/lib/after-response", () => after);
 
 const slotCache = vi.hoisted(() => ({
   recomputeBucketSlotsForToday: vi.fn(async (_code: string) => {}),
+  readBucketSlotInputsForToday: vi.fn(async (_code: string) => {}),
   getBucketSlotsWithFallback: vi.fn(),
   refreshPoolsForAgents: vi.fn(),
 }));
@@ -71,5 +72,61 @@ describe("a cron drain's slot refresh keeps the #503 float", () => {
     slotCache.recomputeBucketSlotsForToday.mockRejectedValueOnce(new Error("refused"));
 
     await expect(realDeps().invalidateSlots("411")).resolves.toBeUndefined();
+  });
+});
+
+// #3258: the load test switch, driven through the real deps so the wiring is what
+// is proved, not a helper beside it.
+describe("the post confirm recompute arm (#3258)", () => {
+  const VAR = "SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE";
+  const withEnv = async (vars: Record<string, string | undefined>, run: () => Promise<void>) => {
+    const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+    for (const [k, v] of Object.entries(vars)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    try {
+      await run();
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  };
+
+  it("off schedules nothing after a load test booking", async () => {
+    await withEnv({ SLATE_LOADTEST: "true", [VAR]: "off" }, async () => {
+      await realDeps(after.deferWebhookSend).invalidateSlots("212");
+      expect(after.afterResponse).not.toHaveBeenCalled();
+      expect(slotCache.recomputeBucketSlotsForToday).not.toHaveBeenCalled();
+    });
+  });
+
+  it("reads-only schedules the reads under their own name, and never the recompute", async () => {
+    await withEnv({ SLATE_LOADTEST: "true", [VAR]: "reads-only" }, async () => {
+      await realDeps(after.deferWebhookSend).invalidateSlots("212");
+      expect(after.afterResponse).toHaveBeenCalledTimes(1);
+      expect(after.afterResponse.mock.calls[0][0]).toBe("post-confirm-recompute-reads-only");
+      await after.afterResponse.mock.calls[0][1]();
+      expect(slotCache.readBucketSlotInputsForToday).toHaveBeenCalledWith("212");
+      expect(slotCache.recomputeBucketSlotsForToday).not.toHaveBeenCalled();
+    });
+  });
+
+  it("production ignores the switch, even set to off", async () => {
+    await withEnv({ SLATE_LOADTEST: undefined, [VAR]: "off" }, async () => {
+      await realDeps(after.deferWebhookSend).invalidateSlots("212");
+      expect(after.afterResponse.mock.calls[0][0]).toBe("post-confirm-recompute");
+      await after.afterResponse.mock.calls[0][1]();
+      expect(slotCache.recomputeBucketSlotsForToday).toHaveBeenCalledWith("212");
+    });
+  });
+
+  it("the cron drain's float is not switched", async () => {
+    await withEnv({ SLATE_LOADTEST: "true", [VAR]: "off" }, async () => {
+      await realDeps().invalidateSlots("212");
+      expect(slotCache.recomputeBucketSlotsForToday).toHaveBeenCalledWith("212");
+    });
   });
 });

@@ -343,16 +343,32 @@ export interface BucketSlots {
   slotsWithoutLow?: string[];
 }
 
-/** Cached slot list for a bucket code — the read path for the embed modal. */
-export async function getBucketSlots(
+/** What `loadBucketSlotInputs` reads for one bucket code (#3258). */
+export interface BucketSlotInputs {
+  resolved: ResolvedBucket;
+  /** The org name read. Its error is tolerated by the one reader (see getBucketSlots). */
+  orgRes: { data: { name: string } | null; error: unknown };
+  membersResult: Awaited<ReturnType<typeof loadMembersAvailability>>;
+  businessHours: Awaited<ReturnType<typeof loadBusinessHours>>;
+}
+
+/**
+ * Every read a bucket's slot compute needs, with no compute (#3258).
+ *
+ * Split out of `getBucketSlots` so the load run's `reads-only` arm of the post
+ * confirm recompute makes EXACTLY the reads a recompute makes, through the same
+ * code, rather than a copy that could drift from it (L41). Null when the code
+ * names no bucket.
+ */
+export async function loadBucketSlotInputs(
   code: string,
   from: string,
   to: string,
   resolveEligible: EligibleResolver = eligibleAgentIds,
-): Promise<BucketSlots | null> {
+): Promise<BucketSlotInputs | null> {
   const resolved = await resolveBucketByCode(code);
   if (!resolved) return null;
-  const { bucket, eventType } = resolved;
+  const { bucket } = resolved;
 
   // Neither the org name nor the business hours depend on member availability, so
   // overlap all three instead of running them as sequential hops. `loadBusinessHours`
@@ -370,6 +386,20 @@ export async function getBucketSlots(
     loadMembersAvailability(bucket, from, to, resolveEligible),
     loadBusinessHours(),
   ]);
+  return { resolved, orgRes, membersResult, businessHours };
+}
+
+/** Cached slot list for a bucket code: the read path for the embed modal. */
+export async function getBucketSlots(
+  code: string,
+  from: string,
+  to: string,
+  resolveEligible: EligibleResolver = eligibleAgentIds,
+): Promise<BucketSlots | null> {
+  const inputs = await loadBucketSlotInputs(code, from, to, resolveEligible);
+  if (!inputs) return null;
+  const { resolved, orgRes, membersResult, businessHours } = inputs;
+  const { bucket, eventType } = resolved;
   const members = membersResult.members;
   // error-ok: the org NAME's only consumer is the accessible name of the Booker's
   // logo mark (#2629), so an unreadable read degrades to a mark drawn as

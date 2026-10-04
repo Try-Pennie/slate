@@ -19,6 +19,7 @@ import { overlaps, type JudgedBooking } from "./judge-booking-run.ts";
 import {
   stubShapedEventId,
   faultModeVerdict,
+  awaitRecomputeArm,
   overlappingProbeWindow,
   warmupStep,
   WARMUP_HYDRATE_PAUSE_MS,
@@ -105,6 +106,36 @@ function fail(why: string): never {
   const verdict = faultModeVerdict(res.status, await res.json().catch(() => ({})), { faultPct: 0 });
   if (!verdict.ok) fail(verdict.why);
   console.log("ok: the deployment reports load test mode and is injecting no faults");
+}
+
+// --- the post confirm recompute arm (#3258) ------------------------------------
+//
+// A run dispatched for one arm and driven against another would publish the other
+// arm's numbers under this one's name, and the comparison the arms exist for would
+// read as an answer. The workflow redeploys a non default arm just before this, so
+// a deployment still reporting `on` is waited out for a short while (the version
+// being replaced answers first); every other mismatch refuses at once.
+//
+// env-ok: EXPECT_POST_CONFIRM_RECOMPUTE (optional; the workflow's
+// post_confirm_recompute input. Unset, as on a hand run, means on, the only arm a
+// deployment without the --var runs.)
+{
+  const wanted = process.env.EXPECT_POST_CONFIRM_RECOMPUTE;
+  const verdict = await awaitRecomputeArm({
+    wanted,
+    fetchVersion: async () => {
+      const res = await fetch(`${SLATE_BASE}/api/smoke/version`, {
+        headers: { Authorization: `Bearer ${API_KEY}` },
+      });
+      return { status: res.status, body: await res.json().catch(() => ({})) };
+    },
+    sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
+    now: () => Date.now(),
+    waitMs: 120_000,
+    pauseMs: 5_000,
+  });
+  if (!verdict.ok) fail(verdict.why);
+  console.log(`ok: the deployment runs the post confirm recompute arm "${wanted?.trim() || "on"}"`);
 }
 
 // --- half half: the deployment is WARM before anything is measured (#2347) -----

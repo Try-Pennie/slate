@@ -19,6 +19,7 @@ import {
 } from "@/lib/availability/service";
 import {
   recomputeBucketSlotsForToday,
+  readBucketSlotInputsForToday,
   getBucketSlotsWithFallback,
   refreshPoolsForAgents,
 } from "@/lib/availability/slot-cache";
@@ -31,6 +32,7 @@ import {
   type LinkAttendee,
 } from "@/lib/booking/known-lead";
 import { loadBusinessHours } from "@/lib/booking/business-hours-load";
+import { postConfirmRecomputeMode, postConfirmRefresh } from "@/lib/booking/post-confirm-recompute";
 import { recordRoutingDecision } from "@/lib/routing/record";
 import {
   createEvent,
@@ -1170,9 +1172,19 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     // The cron drains (no `deferSend`) keep the float, as #503 decided: there,
     // waitUntil would hold the shared minute invocation open for the recompute,
     // a lane budget regression, and the recompute lane backstops a dropped one.
+    //
+    // #3258: under load test only, `SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE` can turn
+    // the user facing recompute off, or into its reads alone, so a load run can
+    // measure what it costs the confirms beside it. Production always reads `on`
+    // (`postConfirmRecomputeMode`). The cron drains' float is not switched: the
+    // question is the cost a booking's own refresh puts on the next confirms.
     invalidateSlots: (bucketCode) => {
       if (deferSend) {
-        afterResponse("post-confirm-recompute", () => recomputeBucketSlotsForToday(bucketCode));
+        const refresh = postConfirmRefresh(postConfirmRecomputeMode(), bucketCode, {
+          recompute: (code) => recomputeBucketSlotsForToday(code),
+          readsOnly: readBucketSlotInputsForToday,
+        });
+        if (refresh) afterResponse(refresh.context, refresh.work);
       } else {
         void recomputeBucketSlotsForToday(bucketCode).catch((err) =>
           // Best-effort freshness nudge; the recompute lane reconverges this bucket

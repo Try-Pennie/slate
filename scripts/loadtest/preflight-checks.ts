@@ -1,4 +1,9 @@
 import { normalizeCommit } from "../stamp-build-info.ts";
+import {
+  POST_CONFIRM_RECOMPUTE_MODES,
+  POST_CONFIRM_RECOMPUTE_VAR,
+  parsePostConfirmRecompute,
+} from "../../src/lib/booking/post-confirm-recompute-modes.ts";
 import { hydrationBatchSize, HYDRATION_ONBOARDING_MAX } from "../../src/lib/google/hydration.ts";
 
 /**
@@ -1118,4 +1123,150 @@ export function warmupStep(r: WarmupReading, p: WarmupProgress): WarmupStep {
       `${p.hydrationDrives > 0 ? `, ${p.hydrationDrives} hydration drives` : ""}` +
       `${p.recomputeDrives > 0 ? `, ${p.recomputeDrives} recomputes` : ""}`,
   };
+}
+
+/** What `/api/smoke/version` said about the post confirm recompute arm (#3258). */
+export type RecomputeModeVerdict = { ok: true } | { ok: false; why: string; retriable: boolean };
+
+/**
+ * Whether the deployment is running the post confirm recompute arm this run was
+ * dispatched for (#3258).
+ *
+ * The whole value of the three arms is that each report measures the arm it names.
+ * A run dispatched as `off` against a deployment still recomputing would report the
+ * slow numbers as the fast arm's, and the comparison would exonerate the suspect
+ * with no change having been made (L98). So the preflight asks the deployment, the
+ * way the fault leg asks about its percentage.
+ *
+ * Retriable only where waiting can change the answer: the workflow redeploys a
+ * non default arm moments before this runs, and the version being replaced reports
+ * `on`. Anything else (an `on` arm against a deployment left off, an unknown value,
+ * a deployment too old to say) is a state that waiting never fixes.
+ */
+export function recomputeModeVerdict(body: unknown, wanted: string | undefined): RecomputeModeVerdict {
+  const parsedWanted = parsePostConfirmRecompute(wanted);
+  if (parsedWanted.unknown !== null) {
+    return {
+      ok: false,
+      why:
+        `the post_confirm_recompute input is "${parsedWanted.unknown}", which is not one of ` +
+        `${POST_CONFIRM_RECOMPUTE_MODES.join(", ")}. Nothing was driven.`,
+      retriable: false,
+    };
+  }
+  const b = (typeof body === "object" && body !== null ? body : {}) as {
+    postConfirmRecompute?: unknown;
+    postConfirmRecomputeUnknown?: unknown;
+  };
+  if (typeof b.postConfirmRecomputeUnknown === "string" && b.postConfirmRecomputeUnknown !== "") {
+    return {
+      ok: false,
+      why:
+        `this deployment's ${POST_CONFIRM_RECOMPUTE_VAR} is "${b.postConfirmRecomputeUnknown}", which ` +
+        `is not one of ${POST_CONFIRM_RECOMPUTE_MODES.join(", ")}, so the Worker ignores it and ` +
+        `runs the on arm whatever this run was dispatched for. Redeploy with a valid value and re-run.`,
+      retriable: false,
+    };
+  }
+  if (typeof b.postConfirmRecompute !== "string") {
+    return {
+      ok: false,
+      why:
+        "/api/smoke/version reports no postConfirmRecompute field, so this deployment predates the " +
+        "switch and which arm it runs could not be established. Deploy the current commit with " +
+        "--env loadtest and re-run.",
+      retriable: false,
+    };
+  }
+  const got = b.postConfirmRecompute;
+  if (got === parsedWanted.mode) return { ok: true };
+  return {
+    ok: false,
+    why:
+      `this deployment's post confirm recompute is ${got} and the run was dispatched for ` +
+      `${parsedWanted.mode}, so its report would describe an arm nobody drove.` +
+      (parsedWanted.mode === "on"
+        ? ` It was left ${got} by an earlier arm; redeploy with --env loadtest and no --var, then re-run.`
+        : ""),
+    // A redeploy to a non default arm lands a little after wrangler exits, and the
+    // version being replaced reports on. An on arm meeting a leftover never resolves.
+    retriable: parsedWanted.mode !== "on" && got === "on",
+  };
+}
+
+/**
+ * Ask the deployment which recompute arm it runs until it answers the one wanted,
+ * a refusal waiting cannot change, or the deadline (#3258). Injected I/O and clock,
+ * so every exit is driven offline (L524).
+ *
+ * Three answers are waited out, because the arm job's redeploy produces each of
+ * them while it lands: a 5xx, a fetch that throws (a reset as the version swaps),
+ * and the previous version still reporting `on`. A 4xx is refused at once and by
+ * its status (#3269 review): a wrong key or a missing route never resolves, and its
+ * error body would otherwise read as a deployment that predates the switch (L11).
+ */
+export async function awaitRecomputeArm(opts: {
+  wanted: string | undefined;
+  fetchVersion: () => Promise<{ status: number; body: unknown }>;
+  sleep: (ms: number) => Promise<void>;
+  now: () => number;
+  waitMs: number;
+  pauseMs: number;
+}): Promise<RecomputeModeVerdict> {
+  const deadline = opts.now() + opts.waitMs;
+  for (;;) {
+    const verdict = await askRecomputeArm(opts);
+    if (verdict.ok || !verdict.retriable) return verdict;
+    if (opts.now() >= deadline) {
+      // One sentence whatever `why` ended with: its own full stop is dropped and
+      // the wait is a sentence of its own (#3269 review).
+      const why = verdict.why.replace(/[.\s]+$/, "");
+      return {
+        ok: false,
+        retriable: false,
+        why: `${why}. Waited ${Math.round(opts.waitMs / 1000)}s for that to change and it did not.`,
+      };
+    }
+    await opts.sleep(opts.pauseMs);
+  }
+}
+
+/** One ask, classified: thrown and 5xx are retriable, 4xx refuses by status. */
+async function askRecomputeArm(opts: {
+  wanted: string | undefined;
+  fetchVersion: () => Promise<{ status: number; body: unknown }>;
+}): Promise<RecomputeModeVerdict> {
+  let answer: { status: number; body: unknown };
+  try {
+    answer = await opts.fetchVersion();
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return { ok: false, why: `/api/smoke/version could not be reached (${detail})`, retriable: true };
+  }
+  const { status, body } = answer;
+  // The route's own "no key configured" 503 is a missing secret, which waiting can
+  // never supply (#3269 review), judged by the same predicate the fault leg uses.
+  if (isNoKeyConfigured(status, body)) {
+    return {
+      ok: false,
+      why:
+        "/api/smoke/version answered 503 because this deployment holds no booking API key, so " +
+        "which arm it runs could not be asked. Put the canary's key on the deployment and re-run.",
+      retriable: false,
+    };
+  }
+  // A 5xx, a request timeout and a rate limit all pass on their own (#3269 review).
+  if (status >= 500 || status === 408 || status === 429) {
+    return { ok: false, why: `/api/smoke/version answered ${status}`, retriable: true };
+  }
+  if (status >= 400) {
+    return {
+      ok: false,
+      why:
+        `/api/smoke/version answered ${status}, so which arm this deployment runs could not be ` +
+        `asked. ${status === 401 || status === 403 ? "The booking key was refused; check LOADTEST_BOOKING_API_KEY." : "Check LOADTEST_BASE_URL and that the deployment serves the route."}`,
+      retriable: false,
+    };
+  }
+  return recomputeModeVerdict(body, opts.wanted);
 }

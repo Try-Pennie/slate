@@ -96,6 +96,19 @@ on:
           the branch is left standing, and the job says so.
         type: string
         default: ""
+      post_confirm_recompute:
+        description: >-
+          Which arm of the post confirm slot recompute the deployment runs (#3258):
+          on (production's behaviour), off (nothing scheduled after a booking), or
+          reads-only (its reads with no compute and no write). Anything but on
+          redeploys the Worker with that setting before the preflight, and the
+          preflight refuses a deployment running another arm.
+        type: choice
+        options:
+          - "on"
+          - "off"
+          - reads-only
+        default: "on"
       burst_lead_seconds:
         description: >-
           How long the burst drivers have to be queued, checked out and installed
@@ -118,7 +131,57 @@ env:
   RUN_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
+  # The post confirm recompute arm (#3258). The steady pass runs against the
+  # deployment the dispatcher made, which carries no arm and so runs on; any other
+  # arm is a deployment wide setting, so it is added here with `--var` exactly the
+  # way the fault leg adds its own, before the preflight asks the deployment which
+  # arm it really runs. Its own job rather than steps in the preflight, because the
+  # preflight's timeout is already spent on its warm up deadline
+  # (test-loadtest-warmup.ts). The job always runs and skips its steps for on, so
+  # the preflight's `needs` is never a skipped job.
+  arm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: inputs.post_confirm_recompute != 'on'
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: inputs.post_confirm_recompute != 'on'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: inputs.post_confirm_recompute != 'on'
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        if: inputs.post_confirm_recompute != 'on'
+      - name: Stamp the commit this arm is deploying
+        if: inputs.post_confirm_recompute != 'on'
+        run: node --experimental-strip-types scripts/stamp-build-info.ts "$GITHUB_SHA"
+      # The same build inputs the fault leg uses, for the same reason: they are
+      # inlined at build time.
+      - name: Build against the branch
+        if: inputs.post_confirm_recompute != 'on'
+        env:
+          NEXT_PUBLIC_APP_URL: ${{ vars.LOADTEST_BASE_URL }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.LOADTEST_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.LOADTEST_SUPABASE_PUBLISHABLE_KEY }}
+          NEXT_PUBLIC_GOOGLE_HOSTED_DOMAIN: trypennie.com
+        run: pnpm cf:build
+      # `--var` MERGES with the vars block, so everything in env.loadtest survives
+      # and only the arm is added. Nothing commits it
+      # (scripts/test-wrangler-loadtest-env.ts refuses that).
+      - name: Deploy with the post confirm recompute arm
+        if: inputs.post_confirm_recompute != 'on'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          RECOMPUTE_ARM: ${{ inputs.post_confirm_recompute }}
+        run: >-
+          npx wrangler deploy --env loadtest
+          --var "SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE:$RECOMPUTE_ARM"
+
   preflight:
+    needs: arm
     runs-on: ubuntu-latest
     # Sixty (#2347, raised in #3229): the preflight WAITS for the scheduled
     # invocation to start reaching a freshly created Worker, then drives the
@@ -152,6 +215,9 @@ jobs:
           CRON_SECRET: ${{ secrets.LOADTEST_CRON_SECRET }}
           SUPABASE_URL: ${{ secrets.LOADTEST_SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.LOADTEST_SUPABASE_SECRET_KEY }}
+          # The arm this run was dispatched for (#3258); the preflight refuses a
+          # deployment running any other.
+          EXPECT_POST_CONFIRM_RECOMPUTE: ${{ inputs.post_confirm_recompute }}
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/preflight.ts
       # The judge reads this to learn whether the unique index really enforces, so
       # it has to reach the judge like every other driver file.
@@ -466,10 +532,13 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           FAULT_PCT: ${{ inputs.fault_pct }}
           FAULT_TARGETS: ${{ inputs.fault_targets }}
+          # The run's own arm (#3258), carried so the fault pass runs the same one.
+          RECOMPUTE_ARM: ${{ inputs.post_confirm_recompute }}
         run: >-
           npx wrangler deploy --env loadtest
           --var "SLATE_LOADTEST_FAULT_PCT:$FAULT_PCT"
           --var "SLATE_LOADTEST_FAULT_TARGETS:$FAULT_TARGETS"
+          --var "SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE:$RECOMPUTE_ARM"
       # The lane sampler runs BESIDE the driver, from before the driver's first
       # request to a tail of minutes after its last (#3104). The deployment stays
       # faulted until the restore below, so the tail is still faulted time, and it
@@ -576,6 +645,8 @@ jobs:
           EXPECT_BURST_DRIVERS: ${{ needs.setup-burst.outputs.driver_count }}
           EXPECT_FAULT_PCT: ${{ inputs.fault_pct }}
           EXPECT_FAULT_TARGETS: ${{ inputs.fault_targets }}
+          # The post confirm recompute arm, named in the report's header (#3258).
+          EXPECT_POST_CONFIRM_RECOMPUTE: ${{ inputs.post_confirm_recompute }}
           # The lanes env.loadtest holds back, so the judge knows which lanes should
           # have kept running under fault without reading wrangler.jsonc itself (#3104).
           # A copy, held equal to wrangler's resolved value by scripts/test-fault-lanes.ts.

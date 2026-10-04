@@ -29,6 +29,7 @@ const IGNORE = new Set([
   "SLATE_LOADTEST",
   "SLATE_LOADTEST_FAULT_PCT",
   "SLATE_LOADTEST_FAULT_TARGETS",
+  "SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE",
 ]);
 
 // How the code reads a named env var. `process.env[dynamic]` is intentionally
