@@ -4,6 +4,11 @@
  * are optional). Replace with `supabase gen types typescript` once linked.
  */
 import type {
+  ClaimRerouteHoldRefusal,
+  PlaceRerouteHoldRefusal,
+  RerouteSwapRefusal,
+} from "./reroute-hold-refusals";
+import type {
   CalcomOverrideRemoval,
   AgentCalendar,
   AgentLink,
@@ -51,6 +56,7 @@ import type {
   ReassignIntent,
   RescheduleLock,
   RoutingDecision,
+  RerouteHold,
   RoutingTrace,
   SyncLock,
   User,
@@ -142,6 +148,9 @@ export interface Database {
       rate_limits: Table<RateLimit>;
       reschedule_locks: Table<RescheduleLock>;
       reassign_intents: Table<ReassignIntent>;
+      /** #3247 (migration 0166): an advisor held at a booking's window while an
+       *  admin confirms a bucket correction. Server only, default deny. */
+      reroute_holds: Table<RerouteHold>;
       booking_handoffs: Table<BookingHandoff>;
       owner_alert_events: Table<OwnerAlertEvent>;
       regal_call_events: Table<RegalCallEvent>;
@@ -318,15 +327,61 @@ export interface Database {
           p_agent_name: string | null;
           p_agent_email: string;
           p_gcal_event_id: string;
-          p_routing_trace: RoutingTrace;
+          p_routing_trace: RoutingTrace | null;
           /** Which reassign_intents row the swap stamps with the replaced event +
            *  swapped_at, in its own transaction (#759, migration 0069). */
-          p_gcal_client_id: string;
+          p_gcal_client_id: string | null;
+          /*
+           * The bucket aware form (#3247, migration 0166) takes the seven below as
+           * well, and it is ALL SEVEN OR NONE: the two overloads are told apart by
+           * their argument names, so a call naming only some of these matches
+           * neither and fails at the database. None is defaulted in SQL, on
+           * purpose, so a seven argument call never collides with the new form.
+           * `p_bucket_id` null is the plain reassign; a move needs a claimed live
+           * hold in `p_hold_id`; a keep passes the current agent and no hold.
+           */
+          p_bucket_id?: string | null;
+          p_requested_bucket_id?: string | null;
+          p_requested_tier?: string | null;
+          p_booked_tier?: string | null;
+          p_rungs_dropped?: number | null;
+          p_hold_id?: string | null;
+          /** Merged into the consumed hold's stored result. */
+          p_result?: Record<string, unknown> | null;
         };
         Returns: {
           prev_gcal_event_id: string | null;
           prev_agent_email: string | null;
           updated: boolean;
+          /** Only the bucket aware form returns it: null on success, else a word. */
+          refused?: RerouteSwapRefusal | null;
+        }[];
+      };
+      /** Holds an advisor at a booking's buffered window for five minutes (#3247,
+       *  migration 0166). Returns a refusal word instead of raising. */
+      place_reroute_hold: {
+        Args: {
+          p_org_id: string;
+          p_booking_id: string;
+          p_agent_user_id: string;
+          p_requested_bucket_id: string;
+          p_target_bucket_id: string;
+          p_rungs_dropped: number;
+          p_created_by: string | null;
+        };
+        Returns: { hold_id: string | null; expires_at: string | null; refused: PlaceRerouteHoldRefusal | null }[];
+      };
+      /** The first step of a reroute confirm (#3247): checks the hold and extends it
+       *  to a two minute confirm lease. A consumed hold returns its stored result. */
+      claim_reroute_hold: {
+        Args: { p_org_id: string; p_booking_id: string; p_hold_id: string };
+        Returns: {
+          hold_id: string | null;
+          agent_user_id: string | null;
+          target_bucket_id: string | null;
+          expires_at: string | null;
+          refused: ClaimRerouteHoldRefusal | null;
+          result: Record<string, unknown> | null;
         }[];
       };
       /** Replaces a schedule's weekly rules in ONE transaction (#1293, migration

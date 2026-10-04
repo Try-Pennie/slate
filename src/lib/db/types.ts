@@ -763,6 +763,51 @@ export interface RoutingTrace {
    *  race (#2274), in the order tried, before `chosen_user_id` took the booking.
    *  All from the same rung's candidates. Absent when the first choice won. */
   race_lost?: string[];
+  /** #3247: one entry per bucket correction, holding the values the top level
+   *  carried BEFORE it, so the original routing is never lost when the trace is
+   *  rewritten to name the corrected bucket. Written only by reassign_booking_swap. */
+  reroutes?: RoutingReroute[];
+}
+
+/** The routing a bucket correction replaced (#3247), plus where it went. */
+export interface RoutingReroute {
+  bucket_code: string | null;
+  bucket_id: string | null;
+  requested_tier: string | null;
+  booked_tier: string | null;
+  tier_fallback: boolean | null;
+  rungs_dropped: number | null;
+  to_bucket_code: string;
+  requested_code: string;
+  /** True when the agent did not change (only the bucket was corrected). */
+  kept: boolean;
+  at: string;
+}
+
+/**
+ * A reroute hold (#3247, migration 0166): an advisor held at a booking's own
+ * buffered window for five minutes while an admin confirms a bucket correction.
+ * Its own table, never a bookings row, so no booking reader ever sees one.
+ */
+export interface RerouteHold {
+  id: string;
+  org_id: string;
+  booking_id: string;
+  agent_user_id: string;
+  buffered_starts_at: string;
+  buffered_ends_at: string;
+  booking_starts_at: string;
+  booking_ends_at: string;
+  reschedule_seq: number;
+  requested_bucket_id: string;
+  target_bucket_id: string;
+  rungs_dropped: number;
+  created_by: string | null;
+  created_at: string;
+  expires_at: string;
+  claimed_at: string | null;
+  consumed_at: string | null;
+  result: Record<string, unknown> | null;
 }
 
 /** One routing decision, including attempts that produced no booking. */
@@ -788,12 +833,15 @@ export interface RoutingDecision {
   catchall_applied: boolean;
   tier_fallback: boolean;
   rungs_dropped: number;
-  outcome: "booked" | "no_availability" | "no_eligible_agents" | "error";
+  /** `rerouted` (#3247, migration 0166) is an admin correcting a booking's bucket:
+   *  its own outcome, so the monitors counting `booked` as bookings never count one
+   *  booking twice. */
+  outcome: "booked" | "no_availability" | "no_eligible_agents" | "error" | "rerouted";
   created_at: string;
 }
 
 /** What a booking_events row records. */
-export type BookingEventAction = "rescheduled" | "cancelled" | "reassigned";
+export type BookingEventAction = "rescheduled" | "cancelled" | "reassigned" | "bucket_corrected";
 /** Who drove a booking_events row. */
 export type BookingEventInitiator = "customer" | "agent" | "admin" | "system";
 
@@ -828,6 +876,11 @@ export interface BookingEvent {
    *  oscillation back to a previously-used time isn't swallowed. Null for
    *  historical rows and for cancel/reassign events (they don't version by seq). */
   reschedule_seq: number | null;
+  /** A bucket correction (#3247, migration 0166): the bucket the booking left and
+   *  the one it landed in. Null on every other action. No foreign key, because the
+   *  table is append only and a SET NULL on bucket delete would raise. */
+  from_bucket_id?: string | null;
+  to_bucket_id?: string | null;
   created_at: string;
 }
 

@@ -65,6 +65,31 @@ export function migrationBatch(m: MigrationFile, text: string): string {
   return `${text}\n;\ninsert into supabase_migrations.schema_migrations (version, name) values (${lit(m.version)}, ${lit(m.name)});\n`;
 }
 
+/**
+ * Apply every planned migration in order, each as its own single transaction batch,
+ * as `db push` does. One copy for every suite that replays from empty (#3099,
+ * #3247). Throws on the first file that does not apply, naming it and the
+ * database's last lines, so a stop is never read as a short but complete replay.
+ * Returns how many applied, which on success is every file.
+ */
+export function replayMigrations(
+  files: readonly MigrationFile[],
+  read: (file: string) => string,
+  run: (batch: string) => void,
+): number {
+  let applied = 0;
+  for (const m of files) {
+    try {
+      run(migrationBatch(m, read(m.file)));
+      applied++;
+    } catch (err) {
+      const why = String((err as { stderr?: string }).stderr ?? err).trim().split("\n").slice(-4).join("\n  ");
+      throw new Error(`replay from empty stops at ${m.file}; every migration before it applied.\n  ${why}`);
+    }
+  }
+  return applied;
+}
+
 export interface DefaultAclRow {
   owner: string;
   schema: string;

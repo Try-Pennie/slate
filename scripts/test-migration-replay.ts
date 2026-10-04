@@ -22,6 +22,7 @@ import {
   judgeDefaultGrants,
   migrationBatch,
   migrationPlan,
+  replayMigrations,
 } from "./lib/migration-replay.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -112,7 +113,8 @@ import { assert, eq, finish } from "./lib/harness.ts";
 // is refused rather than measured, and every judge above is actually called.
 const JUDGES = [
   "migrationPlan",
-  "migrationBatch",
+  // The loop that sends each migrationBatch (#3247), itself pinned below.
+  "replayMigrations",
   "judgeDefaultGrants",
   "classifyWriteOutcome",
   "browserWriteRefused",
@@ -151,7 +153,7 @@ const JUDGES = [
   const body = codeOnly(src);
   const withStrings = codeOnly(src, { blankStrings: false });
   const grants = body.search(/\bjudgeDefaultGrants\s*\(/);
-  const firstBatch = body.search(/\bmigrationBatch\s*\(/);
+  const firstBatch = body.search(/\breplayMigrations\s*\(/);
   assert(grants > 0 && grants < firstBatch, "the default grants are judged before the first migration is sent");
   assert(/singleTransaction: true/.test(body), "each migration is applied as one transaction");
   assert(/\["anon", "authenticated"\]/.test(withStrings), "the write refusal is driven as both browser roles");
@@ -215,6 +217,30 @@ function revokedTables(sql: string): string[] {
   assert(revoked.size >= 4, `the migrations' browser revokes were read (${revoked.size})`);
   const exempt = new Set(BROWSER_GRANT_EXEMPT.map((e) => e.table));
   eq([...revoked].filter((t) => !exempt.has(t)).sort(), [], "every table a migration revokes from the browser roles is on BROWSER_GRANT_EXEMPT, with its reason");
+}
+
+// --- the replay loop: in order, every file, and a stop names the file (#3247) --------
+{
+  const plan = migrationPlan(["0001_a.sql", "0002_b.sql", "0003_c.sql"]);
+  if (!plan.ok) throw new Error(plan.error);
+  const ran: string[] = [];
+  const applied = replayMigrations(plan.files, (f) => `-- ${f}`, (batch) => void ran.push(batch.split("\n")[0] ?? ""));
+  eq(applied, 3, "every planned file is applied and counted");
+  eq(ran, ["-- 0001_a.sql", "-- 0002_b.sql", "-- 0003_c.sql"], "in version order, each as its own batch");
+
+  const tried: string[] = [];
+  let message = "";
+  try {
+    replayMigrations(plan.files, (f) => f, (batch) => {
+      tried.push(batch.split("\n")[0] ?? "");
+      if (batch.startsWith("0002")) throw Object.assign(new Error("boom"), { stderr: "ERROR:  relation x does not exist" });
+    });
+  } catch (err) {
+    message = err instanceof Error ? err.message : String(err);
+  }
+  assert(/stops at 0002_b\.sql/.test(message), `a failing file stops the replay and is named (got ${message})`);
+  assert(/relation x does not exist/.test(message), "with the database's own words");
+  eq(tried, ["0001_a.sql", "0002_b.sql"], "and nothing after it is attempted, so a stop is never read as a short replay");
 }
 
 finish();
