@@ -1113,7 +1113,7 @@ export function makeDeps(opts: FakeOpts) {
     displayedTier: async () => null,
     loadPendingEventDeletions: async (_limit) => opts.pending ?? [],
     // #3215: nobody holds a queued event unless a suite says so.
-    loadBookingsHoldingEvent: async () => [],
+    liveBookingHoldingEvent: async () => null,
     reservationPinsEvent: async () => false,
     removePendingEventDeletion: async (id) => { calls.removePendingEventDeletion.push(id); },
     bumpPendingEventDeletion: async (id, attempts) => { calls.bumpPendingEventDeletion.push({ id, attempts }); },

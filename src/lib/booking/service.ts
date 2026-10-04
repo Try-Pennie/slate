@@ -1021,8 +1021,12 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
           .from("pending_event_deletions")
           .select("*")
           .lt("attempts", orchestration.PENDING_DELETION_GIVE_UP_AT)
-          .order("attempts", { ascending: true })
-          .order("created_at", { ascending: true })
+          // #3215: least recently touched first. Every pass touches each row it
+          // loads and keeps (a failed delete, or one a pending reservation holds),
+          // so the queue rotates and no set of kept rows can occupy every page.
+          // Ordering by attempts first would let held rows, which never gain an
+          // attempt, sit in front of every row that has ever failed once.
+          .order("updated_at", { ascending: true })
           .limit(limit),
         "loadPendingEventDeletions",
       );
@@ -1035,24 +1039,27 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
         .from("pending_event_deletions")
         .select("*")
         .is("booking_id", null)
-        .order("created_at", { ascending: true })
+        // #3215: least recently touched first, like the drain, so the held rows it
+        // skips (and the drain touches each pass) cannot fill every page.
+        .order("updated_at", { ascending: true })
         .limit(limit);
       return (data ?? []) as orchestration.PendingEventDeletion[];
     },
     // #3215 (L744): who holds an event a deletion was queued for. Both THROW on a
     // failed read, because an empty answer here is permission to delete a
-    // confirmed booking's calendar hold. Bounded by `limit`: an event id is derived
-    // from one request, so a handful of rows (a booking and its cancelled
-    // predecessors) is the most that can ever name it.
-    loadBookingsHoldingEvent: async (gcalEventId) =>
-      (unwrap(
+    // confirmed booking's calendar hold. Asked as a FILTERED existence question:
+    // the statuses are in the query, so every row it can return is a holder and
+    // `limit(1)` can never page a live holder out of view.
+    liveBookingHoldingEvent: async (gcalEventId, statuses) =>
+      ((unwrap(
         await supabaseAdmin()
           .from("bookings")
-          .select("id, status")
+          .select("id")
           .eq("gcal_event_id", gcalEventId)
-          .limit(10),
-        "bookings holding a queued event",
-      ) ?? []) as { id: string; status: BookingStatus }[],
+          .in("status", [...statuses])
+          .limit(1),
+        "live booking holding a queued event",
+      ) ?? []) as { id: string }[])[0]?.id ?? null,
     reservationPinsEvent: async (gcalEventId) =>
       ((unwrap(
         await supabaseAdmin()

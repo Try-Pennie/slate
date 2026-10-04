@@ -136,7 +136,7 @@ function makeDeps(): BookingDeps {
     enqueueEventDeletion: noop,
     loadPendingEventDeletions: async () => [],
     loadCreationOrphans: async () => [],
-    loadBookingsHoldingEvent: async () => [],
+    liveBookingHoldingEvent: async () => null,
     reservationPinsEvent: async () => false,
     removePendingEventDeletion: noop,
     bumpPendingEventDeletion: noop,

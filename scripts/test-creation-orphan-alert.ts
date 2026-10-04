@@ -29,7 +29,7 @@ function deps(existsBy: Record<string, boolean | "throw">): O.BookingDeps {
   const eventExistsCalls: string[] = [];
   const d = {
     // #3215: nobody holds these events, so each is judged on existence alone.
-    loadBookingsHoldingEvent: async () => [],
+    liveBookingHoldingEvent: async () => null,
     reservationPinsEvent: async () => false,
     loadCreationOrphans: async (_limit: number) => [
       orphan("A", "evt-A"),

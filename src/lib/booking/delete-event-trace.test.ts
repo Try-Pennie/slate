@@ -27,7 +27,7 @@ function deps(over: {
     deleteEvent: over.deleteEvent ?? (async () => {}),
     enqueueEventDeletion: over.enqueueEventDeletion ?? (async () => {}),
     // #3215: the enqueue asks who holds the event first; nobody does here.
-    loadBookingsHoldingEvent: async () => [],
+    liveBookingHoldingEvent: async () => null,
   } as unknown as Deps;
 }
 

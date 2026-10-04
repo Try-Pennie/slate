@@ -25,6 +25,7 @@ import {
   deleteEventBestEffort,
   processPendingEventDeletions,
   checkCreationOrphans,
+  PENDING_DELETION_GIVE_UP_AT,
   timeoutAsRetryable,
   DependencyTimeoutError,
   SlotUnavailableError,
@@ -79,6 +80,55 @@ function queueRow(id: string, eventId: string, bookingId: string | null = null):
     created_at: "2026-10-04T15:05:12.000Z",
     updated_at: "2026-10-04T15:05:12.000Z",
   };
+}
+
+/**
+ * The pending_event_deletions table as the real queries treat it: one row per
+ * (calendar, event) because the enqueue is an upsert that ignores a duplicate on
+ * that unique index, a loader that skips given up rows and takes the LEAST
+ * RECENTLY TOUCHED first (`updated_at`, which every bump moves), and a bump that
+ * touches the row. The deletes Google was asked for are recorded.
+ */
+function table(seed: PendingEventDeletion[] = []) {
+  let clock = 0;
+  const rows = new Map<string, PendingEventDeletion>();
+  for (const r of seed) rows.set(r.id, { ...r, updated_at: String(clock++).padStart(6, "0") });
+  const deleted: string[] = [];
+  const deps: Partial<BookingDeps> = {
+    enqueueEventDeletion: async (email, eventId, bookingId) => {
+      const dup = [...rows.values()].some((r) => r.calendar_email === email && r.gcal_event_id === eventId);
+      if (dup) return;
+      const id = `q-${rows.size + 1}`;
+      rows.set(id, { ...queueRow(id, eventId, bookingId), calendar_email: email, updated_at: String(clock++).padStart(6, "0") });
+    },
+    loadPendingEventDeletions: async (limit) =>
+      [...rows.values()]
+        .filter((r) => r.attempts < PENDING_DELETION_GIVE_UP_AT)
+        .sort((a, b) => a.updated_at.localeCompare(b.updated_at))
+        .slice(0, limit)
+        .map((r) => ({ ...r })),
+    removePendingEventDeletion: async (id) => {
+      rows.delete(id);
+    },
+    bumpPendingEventDeletion: async (id, attempts, error) => {
+      const r = rows.get(id);
+      if (!r) throw new Error(`bump on a row the table does not hold: ${id}`);
+      r.attempts = attempts;
+      r.last_error = error;
+      r.updated_at = String(clock++).padStart(6, "0");
+    },
+    deleteEvent: async (_email, id) => {
+      deleted.push(id);
+    },
+  };
+  return { rows, deleted, deps };
+}
+
+/** The holder question as the real query asks it: a FILTERED existence check over
+ *  the statuses it is given, never a page of whatever rows name the event. */
+function holderFrom(bookings: Booking[]) {
+  return async (eventId: string, statuses: readonly BookingStatus[]): Promise<string | null> =>
+    bookings.find((b) => b.gcal_event_id === eventId && statuses.includes(b.status))?.id ?? null;
 }
 
 async function run() {
@@ -174,119 +224,133 @@ async function run() {
   // event, and the lane must NOT delete it -------------------------------------
   {
     const bookings: Booking[] = [];
-    const queue: PendingEventDeletion[] = [];
-    const deleted: string[] = [];
+    const t = table();
     let attempt = 0;
     const { deps } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
     const d: BookingDeps = {
       ...deps,
+      ...t.deps,
       insertBooking: async (row) => {
         attempt++;
-        if (attempt === 1) return { ok: false, conflict: false, error: deadlineResult() };
+        if (attempt <= 2) return { ok: false, conflict: false, error: deadlineResult() };
         const booking = { ...row, id: "bk-retry" } as unknown as Booking;
         bookings.push(booking);
         return { ok: true, booking };
       },
-      enqueueEventDeletion: async (email, eventId, bookingId) => {
-        queue.push({ ...queueRow(`q-${queue.length + 1}`, eventId, bookingId), calendar_email: email });
-      },
-      loadPendingEventDeletions: async () => [...queue],
-      removePendingEventDeletion: async (id) => {
-        const i = queue.findIndex((r) => r.id === id);
-        if (i >= 0) queue.splice(i, 1);
-      },
-      deleteEvent: async (_email, id) => {
-        deleted.push(id);
-      },
-      loadBookingsHoldingEvent: async (eventId) =>
-        bookings.filter((b) => b.gcal_event_id === eventId).map((b) => ({ id: b.id, status: b.status })),
+      liveBookingHoldingEvent: holderFrom(bookings),
       // The retry completed the reservation, so nothing pins the event any more.
       reservationPinsEvent: async () => false,
     };
     await caught(() => underSpentConfirmBudget(() => createBooking(input, d)));
-    assert(queue.length === 1 && queue[0].gcal_event_id === "gcal-1", "race: the failed attempt queued its event");
+    await caught(() => underSpentConfirmBudget(() => createBooking(input, d)));
+    assert(
+      t.rows.size === 1 && [...t.rows.values()][0].gcal_event_id === "gcal-1",
+      "race: two failed attempts on one event leave ONE queue row (the enqueue is idempotent per event)",
+    );
     const retried = await createBooking(input, d);
     assert(
       retried.booking.gcal_event_id === "gcal-1",
       "race: the retry adopted the same event id (the precondition the lane must respect)",
     );
     const lane = await processPendingEventDeletions(d, 50);
-    assert(!deleted.includes("gcal-1"), "race: the lane does NOT delete the event the confirmed booking holds");
-    assert(queue.length === 0, "race: the lane drops the row a live booking made obsolete");
+    assert(!t.deleted.includes("gcal-1"), "race: the lane does NOT delete the event the confirmed booking holds");
+    assert(t.rows.size === 0, "race: the lane drops the row a live booking made obsolete");
     assert(lane.held === 1 && lane.deleted === 0 && lane.failed === 0, "race: the dropped row is counted as held");
   }
-  // Control (L159): the same queue with NO booking holding the event is deleted,
-  // so the refusal above is the holder check and not a lane that deletes nothing.
+  // Control (L159): the same queue with NO live booking holding the event is
+  // deleted, so the refusal above is the holder check and not a lane that deletes
+  // nothing. Several CANCELLED bookings name the event, which the holder question
+  // must filter out rather than page through.
   {
-    const deleted: string[] = [];
-    const queue = [queueRow("q-1", "gcal-1")];
+    const t = table([queueRow("q-1", "gcal-1")]);
+    const cancelled = Array.from({ length: 12 }, (_, i) =>
+      ({ id: `bk-gone-${i}`, gcal_event_id: "gcal-1", status: "cancelled" }) as unknown as Booking,
+    );
     const { deps } = makeDeps({});
     const d: BookingDeps = {
       ...deps,
-      loadPendingEventDeletions: async () => [...queue],
-      removePendingEventDeletion: async (id) => {
-        queue.splice(queue.findIndex((r) => r.id === id), 1);
-      },
-      deleteEvent: async (_email, id) => {
-        deleted.push(id);
-      },
-      loadBookingsHoldingEvent: async () => [{ id: "bk-gone", status: "cancelled" as BookingStatus }],
+      ...t.deps,
+      liveBookingHoldingEvent: holderFrom(cancelled),
       reservationPinsEvent: async () => false,
     };
     const lane = await processPendingEventDeletions(d, 50);
     assert(
-      deleted.includes("gcal-1") && lane.deleted === 1 && queue.length === 0,
-      "control: an event only a CANCELLED booking names is deleted",
+      t.deleted.includes("gcal-1") && lane.deleted === 1 && t.rows.size === 0,
+      "control: an event only CANCELLED bookings name is deleted",
     );
   }
-  // A pending reservation still pins the event: a resume may adopt it, so the
-  // lane leaves the row for a later pass rather than deleting under it.
+  // The holder question asks about EVERY status that keeps a slot busy, and only
+  // those, so a live holder behind any number of cancelled rows is still found.
   {
-    const deleted: string[] = [];
-    const bumps: string[] = [];
-    const queue = [queueRow("q-1", "gcal-1")];
+    const t = table([queueRow("q-1", "gcal-1")]);
+    const rows = [
+      ...Array.from({ length: 12 }, (_, i) =>
+        ({ id: `bk-gone-${i}`, gcal_event_id: "gcal-1", status: "cancelled" }) as unknown as Booking,
+      ),
+      { id: "bk-live", gcal_event_id: "gcal-1", status: "rescheduled" } as unknown as Booking,
+    ];
+    let askedFor: readonly BookingStatus[] = [];
+    const holder = holderFrom(rows);
     const { deps } = makeDeps({});
     const d: BookingDeps = {
       ...deps,
-      loadPendingEventDeletions: async () => [...queue],
-      deleteEvent: async (_email, id) => {
-        deleted.push(id);
-      },
-      bumpPendingEventDeletion: async (id) => {
-        bumps.push(id);
-      },
-      loadBookingsHoldingEvent: async () => [],
-      reservationPinsEvent: async () => true,
+      ...t.deps,
+      liveBookingHoldingEvent: (eventId, statuses) => ((askedFor = statuses), holder(eventId, statuses)),
+      reservationPinsEvent: async () => false,
     };
-    const lane = await processPendingEventDeletions(d, 50);
-    assert(deleted.length === 0, "pinned: the lane does not delete an event a pending reservation pins");
-    assert(queue.length === 1 && bumps.length === 0, "pinned: the row is left untouched for a later pass");
-    assert(lane.held === 1, "pinned: counted as held, so saturation still sees the page it loaded");
+    await processPendingEventDeletions(d, 50);
+    assert(
+      [...askedFor].sort().join(",") === "completed,confirmed,rescheduled",
+      "holder: asked for exactly the statuses that keep a slot busy",
+    );
+    assert(!t.deleted.includes("gcal-1"), "holder: a live booking behind twelve cancelled ones still keeps its event");
+  }
+  // A pending reservation still pins the event, so a resume may adopt it. The
+  // row is kept but rotated to the back of the queue, so held rows can never fill
+  // every page and starve a deletable row behind them.
+  {
+    const pinned = Array.from({ length: 5 }, (_, i) => queueRow(`p-${i}`, `pinned-${i}`));
+    const t = table([...pinned, queueRow("free", "gcal-free")]);
+    const { deps } = makeDeps({});
+    const d: BookingDeps = {
+      ...deps,
+      ...t.deps,
+      liveBookingHoldingEvent: async () => null,
+      reservationPinsEvent: async (eventId) => eventId.startsWith("pinned-"),
+    };
+    const first = await processPendingEventDeletions(d, 5);
+    assert(
+      first.held === 5 && first.deleted === 0 && t.deleted.length === 0,
+      "pinned: a page full of pinned rows deletes nothing",
+    );
+    assert(
+      pinned.every((p) => t.rows.get(p.id)?.attempts === 0),
+      "pinned: a held row's attempts are untouched (holding is not failing)",
+    );
+    const second = await processPendingEventDeletions(d, 5);
+    assert(
+      t.deleted.includes("gcal-free") && second.deleted === 1,
+      "pinned: the next pass reaches the deletable row the held page was in front of",
+    );
+    assert(t.rows.size === 5, "pinned: every pinned row is still queued for when its reservation ends");
   }
   // The holder read failing must not become a delete (fail safe), and must not
   // be classified as a Google refusal either.
   {
-    const deleted: string[] = [];
-    const bumps: { attempts: number; error: string }[] = [];
+    const t = table([queueRow("q-1", "gcal-1")]);
     const { deps } = makeDeps({});
     const d: BookingDeps = {
       ...deps,
-      loadPendingEventDeletions: async () => [queueRow("q-1", "gcal-1")],
-      deleteEvent: async (_email, id) => {
-        deleted.push(id);
-      },
-      bumpPendingEventDeletion: async (_id, attempts, error) => {
-        bumps.push({ attempts, error });
-      },
-      loadBookingsHoldingEvent: async () => {
+      ...t.deps,
+      liveBookingHoldingEvent: async () => {
         throw new Error("bookings read timed out");
       },
       reservationPinsEvent: async () => false,
     };
     const lane = await processPendingEventDeletions(d, 50);
-    assert(deleted.length === 0, "holder unreadable: nothing is deleted");
+    assert(t.deleted.length === 0, "holder unreadable: nothing is deleted");
     assert(
-      lane.failed === 1 && lane.refused.length === 0 && bumps.length === 1 && bumps[0].attempts === 1,
+      lane.failed === 1 && lane.refused.length === 0 && t.rows.get("q-1")?.attempts === 1,
       "holder unreadable: a transient failure, retried next pass, never ended as refused",
     );
   }
@@ -300,7 +364,7 @@ async function run() {
       enqueueEventDeletion: async (_email, eventId) => {
         queued.push(eventId);
       },
-      loadBookingsHoldingEvent: async () => [{ id: "bk-live", status: "confirmed" as BookingStatus }],
+      liveBookingHoldingEvent: async () => "bk-live",
     };
     await deleteEventBestEffort(d, "a@x.com", "gcal-1", null);
     assert(queued.length === 0, "enqueue: skipped when a live booking already holds the event");
@@ -313,7 +377,7 @@ async function run() {
       enqueueEventDeletion: async (_email, eventId) => {
         queued.push(eventId);
       },
-      loadBookingsHoldingEvent: async () => {
+      liveBookingHoldingEvent: async () => {
         throw new Error("bookings read timed out");
       },
     };
@@ -321,9 +385,10 @@ async function run() {
     assert(queued.length === 1, "enqueue: an unreadable holder still queues (the lane checks again)");
   }
 
-  // --- a reschedule that fails with the budget spent still hands its lock back --
-  // Otherwise the release is refused at 0ms too, and the lead's retry meets its
-  // own reschedule lock until the lease expires.
+  // --- a reschedule hands its lock back under the cleanup allowance only when it
+  // FAILED. Otherwise a release refused at 0ms leaves the lead's retry meeting its
+  // own lock until the lease expires; but a successful reschedule must not open
+  // the request's one shared allowance, which a later failure in the route needs.
   {
     const ctx = { booking: makeBooking({}), bucket, eventType };
     const { deps } = makeDeps({ existing: ctx, freeEmails: new Set(["a@x.com"]) });
@@ -344,6 +409,30 @@ async function run() {
     assert(err instanceof Error, "reschedule, spent budget: the failure still reaches the caller");
     assert(released.length === 1 && released[0] === "bk1", "reschedule, spent budget: the lock is released under the cleanup allowance");
   }
+  {
+    const ctx = { booking: makeBooking({}), bucket, eventType };
+    const rescheduled = {
+      booking: { ...ctx.booking, starts_at: "2026-06-09T14:00:00.000Z", ends_at: "2026-06-09T14:30:00.000Z", status: "rescheduled" as const },
+      bucket,
+      eventType,
+    };
+    const { deps } = makeDeps({ existing: ctx, bookingById: rescheduled, freeEmails: new Set(["a@x.com"]) });
+    const releasedUnder: (string | null)[] = [];
+    const d: BookingDeps = {
+      ...deps,
+      releaseReschedule: async () => {
+        // A wait longer than either budget reports which budget cut it short.
+        releasedUnder.push(deadlineWithinBudget(60_000, "supabase").reportAs.budget?.label ?? null);
+      },
+    };
+    await withinCallBudget(12_000, "the booking confirm", () =>
+      rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", d, NOW),
+    );
+    assert(
+      releasedUnder.length === 1 && releasedUnder[0] === "the booking confirm",
+      "reschedule succeeded: the lock is released under the confirm budget, leaving the cleanup allowance unopened",
+    );
+  }
 
   // --- the creation orphan alert does not page about an adopted event ----------
   {
@@ -352,8 +441,7 @@ async function run() {
       ...deps,
       loadCreationOrphans: async () => [queueRow("q-1", "gcal-1"), queueRow("q-2", "gcal-2")],
       eventExists: async () => true,
-      loadBookingsHoldingEvent: async (eventId) =>
-        eventId === "gcal-1" ? [{ id: "bk-retry", status: "confirmed" as BookingStatus }] : [],
+      liveBookingHoldingEvent: async (eventId) => (eventId === "gcal-1" ? "bk-retry" : null),
       reservationPinsEvent: async () => false,
     };
     const res = await checkCreationOrphans(d, 10);

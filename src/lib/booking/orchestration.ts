@@ -648,8 +648,7 @@ export async function deleteEventBestEffort(
  * when the read fails.
  */
 async function liveEventHolder(deps: BookingDeps, eventId: string): Promise<string | null> {
-  const rows = await deps.loadBookingsHoldingEvent(eventId);
-  return rows.find((b) => ACTIVE_BUSY_STATUSES.has(b.status))?.id ?? null;
+  return deps.liveBookingHoldingEvent(eventId, [...ACTIVE_BUSY_STATUSES]);
 }
 
 /**
@@ -1118,13 +1117,15 @@ export interface BookingDeps {
   /** #401: load pending event deletions for the retry drain. */
   loadPendingEventDeletions(limit: number): Promise<PendingEventDeletion[]>;
   /**
-   * #3215 (L744): the bookings, of any status, whose row names this Google event
-   * id. An event id is derived from the request, so a retry adopts the event a
-   * failed attempt queued for deletion, and this is how a deletion learns the
-   * event now belongs to somebody. THROWS on a failed read: an empty answer would
-   * let the event be deleted from under a confirmed booking.
+   * #3215 (L744): the id of a booking in one of `statuses` whose row names this
+   * Google event id, or null when none does. An event id is derived from the
+   * request, so a retry adopts the event a failed attempt queued for deletion, and
+   * this is how a deletion learns the event now belongs to somebody. It must be a
+   * FILTERED existence question, never a capped page of every row naming the
+   * event: a live holder outside the page would read as no holder at all. THROWS
+   * on a failed read, for the same reason.
    */
-  loadBookingsHoldingEvent(gcalEventId: string): Promise<{ id: string; status: BookingStatus }[]>;
+  liveBookingHoldingEvent(gcalEventId: string, statuses: readonly BookingStatus[]): Promise<string | null>;
   /**
    * #3215: whether a PENDING create reservation still pins this event id, so a
    * resume (the drain, or the lead's retry) may yet adopt it. THROWS on a failed
@@ -1607,8 +1608,18 @@ export async function processPendingEventDeletions(
     }
     if (holder?.kind === "reservation") {
       // A pending create reservation still pins it, so a resume may yet adopt it.
-      // Left untouched for a later pass: once the reservation completes the row is
-      // dropped above, and once it expires the event is deleted below.
+      // Kept for a later pass: once the reservation completes the row is dropped
+      // above, and once it expires the event is deleted below. Touched rather than
+      // left alone, because the loader takes the least recently touched rows
+      // first: an untouched held row would sit at the front of every page, and
+      // enough of them would starve every deletable row behind them. Attempts are
+      // unchanged, since holding is not failing and must not walk the row toward
+      // the stuck alert or the give up.
+      await deps.bumpPendingEventDeletion(
+        row.id,
+        row.attempts,
+        "held: a pending booking reservation still pins this event, so a resume may adopt it",
+      );
       held++;
       continue;
     }
@@ -4664,16 +4675,21 @@ export async function rescheduleBooking(
     throw new RescheduleConflictError();
   }
 
+  let applied = false;
   try {
     const result = await applyReschedule(
       deps, token, ctx, startIso, endIso, reason, initiator, claim, nowMs, actor,
     );
+    applied = true;
     return { ...result, contactChanged, isTest: ctx.bucket.is_test };
   } finally {
-    // #3215: under the cleanup allowance. A reschedule that failed because the
-    // confirm budget ran out would otherwise have its release refused at 0ms too,
-    // and the lead's retry would meet its own lock until the lease expired.
-    await withinOwedCleanup(() => deps.releaseReschedule(booking.id));
+    // #3215: after a FAILURE, under the cleanup allowance. A reschedule that failed
+    // because the confirm budget ran out would otherwise have its release refused
+    // at 0ms too, and the lead's retry would meet its own lock until the lease
+    // expired. Only then: the allowance is opened once per request and shared, so
+    // a release after a success must not spend it before the route needs it.
+    if (applied) await deps.releaseReschedule(booking.id);
+    else await withinOwedCleanup(() => deps.releaseReschedule(booking.id));
   }
 }
 

@@ -311,7 +311,7 @@ function buildDeps(
 
     enqueueEventDeletion: async () => {},
     loadPendingEventDeletions: async () => [],
-    loadBookingsHoldingEvent: async () => [],
+    liveBookingHoldingEvent: async () => null,
     reservationPinsEvent: async () => false,
     removePendingEventDeletion: async () => {},
     bumpPendingEventDeletion: async () => {},
@@ -360,7 +360,9 @@ function buildDeps(
       const res = await db().from("bookings").insert(row).select("*").single();
       if (res.error || !res.data) {
         const conflict = res.error?.code === "23505";
-        return conflict ? { ok: false, conflict: true } : { ok: false, conflict: false, error: res.error };
+        return conflict
+          ? { ok: false, conflict: true }
+          : { ok: false, conflict: false, error: res.error ?? new Error("insert returned no row") };
       }
       return { ok: true, booking: res.data as Booking };
     },
