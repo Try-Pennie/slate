@@ -21,6 +21,7 @@ import {
 } from "../src/lib/advisor-photos/core.ts";
 import {
   DirectoryReadError,
+  PHOTO_READ_CONCURRENCY,
   PHOTO_RETRY,
   needsAttention,
   runPhotoRefresh,
@@ -483,6 +484,45 @@ function deps(over: Partial<RefreshDeps> & { photos?: Record<string, { status: n
   eq(refusedCut.status === "refused" && refusedCut.deadlineReached, undefined, "and carries no deadline fact, since the clock is not its cause");
   const healthy = await runPhotoRefresh(deps({ deadlineMs: NOW + 10 * 60_000 }));
   eq(healthy.status === "measured" && healthy.deadlineReached, false, "a run inside its deadline does not claim one");
+}
+
+{
+  // #3163 (L743): the reads run several at a time, so a Google answering every read
+  // slowly but inside its timeout still finishes a full roster inside the run's
+  // deadline (the lane test holds the arithmetic). Driven on held promises rather
+  // than a clock: every read waits until released, so the count in flight is
+  // exactly what the run chose to start.
+  const people = Array.from({ length: PHOTO_READ_CONCURRENCY * 3 + 1 }, (_, i) => user(`p${i}`));
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const waiting: (() => void)[] = [];
+  const d = deps({
+    listUsers: async () => people,
+    listRows: async () => [],
+    listDirectory: async () => people.map((u) => ({ primaryEmail: u.email })),
+    getPhoto: async (_s, email) => {
+      d.asked.push(email);
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise<void>((release) => waiting.push(release));
+      inFlight -= 1;
+      return { status: 404, body: NO_PHOTO_404 };
+    },
+  });
+  const run = runPhotoRefresh(d);
+  // Release reads as they arrive until the run settles.
+  let settled = false;
+  void run.then(() => (settled = true));
+  while (!settled) {
+    await new Promise((r) => setImmediate(r));
+    waiting.splice(0).forEach((release) => release());
+  }
+  const out = await run;
+  assert(PHOTO_READ_CONCURRENCY > 1, "the reads are not run one at a time");
+  eq(maxInFlight, PHOTO_READ_CONCURRENCY, "and never more than the concurrency at once");
+  eq(new Set(d.asked).size, people.length, "every person is still read exactly once");
+  eq(d.asked.length, people.length, "and nobody twice");
+  eq(out.status === "measured" && out.plan.counts.attempted, people.length, "and every read is counted");
 }
 
 {

@@ -31,7 +31,9 @@ export const ADVISOR_PHOTOS_LOCK = "cron_advisor_photos";
  * takes well under a minute on a good day; a slow Google (every read timing out
  * and retrying) could otherwise run for far longer than the lock, letting a second
  * run start beside it. At the deadline the run writes what it finished, reports
- * how many it never reached, and stamps no verdict.
+ * how many it never reached, and stamps no verdict. A slow Google that still
+ * answers every read inside its timeout must finish well before it, which is why
+ * the reads run `PHOTO_READ_CONCURRENCY` at a time (#3163, held by lane.test.ts).
  */
 export const ADVISOR_PHOTOS_RUN_DEADLINE_MS = 10 * 60_000;
 /**

@@ -70,6 +70,7 @@ vi.mock("@/lib/advisor-photos/refresh", async (importOriginal) => ({
 }));
 
 import { ADVISOR_PHOTOS_LOCK_TTL_MS, ADVISOR_PHOTOS_RUN_DEADLINE_MS, runAdvisorPhotoLane, startOfUtcDay } from "@/lib/advisor-photos/lane";
+import { PHOTO_READ_CONCURRENCY, PHOTO_REFRESH_MAX_TARGETS } from "@/lib/advisor-photos/refresh";
 
 const plan = (over: Partial<RefreshPlan> = {}): RefreshPlan => ({
   full: [],
@@ -222,6 +223,22 @@ describe("the advisor photo lane", () => {
 
   it("keeps the lock longer than the run's own deadline", () => {
     expect(ADVISOR_PHOTOS_LOCK_TTL_MS).toBeGreaterThan(ADVISOR_PHOTOS_RUN_DEADLINE_MS + 2 * 60_000);
+  });
+
+  // #3163 (L743): a run that meets its deadline pages ("only partly refreshed"), so
+  // the deadline must sit well clear of the slowest run that still PASSES: the
+  // directory listing and every photo read answering just inside the per request
+  // timeout, at the roster's design ceiling. Run one read at a time, that was
+  // 200 x 15s, five times the ten minute deadline, so a Google that was slow but
+  // answering every read was paged about as a partial refresh.
+  it("keeps the slowest passing run inside three quarters of the deadline", async () => {
+    const { DIRECTORY_REQUEST_TIMEOUT_MS } = await vi.importActual<typeof import("@/lib/advisor-photos/google")>(
+      "@/lib/advisor-photos/google",
+    );
+    const waves = Math.ceil(PHOTO_REFRESH_MAX_TARGETS / PHOTO_READ_CONCURRENCY);
+    const slowestPassingMs = DIRECTORY_REQUEST_TIMEOUT_MS + waves * DIRECTORY_REQUEST_TIMEOUT_MS;
+    expect(PHOTO_REFRESH_MAX_TARGETS).toBeGreaterThanOrEqual(200);
+    expect(slowestPassingMs).toBeLessThanOrEqual(ADVISOR_PHOTOS_RUN_DEADLINE_MS * 0.75);
   });
 
   it("the scheduled retry stands down once today has a verdict, and the manual trigger never does", async () => {

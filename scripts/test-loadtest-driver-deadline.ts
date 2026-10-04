@@ -44,7 +44,8 @@ import {
   REQUEST_OVERRUN_MS,
   DRIVE_JOB_SETUP_MINUTES,
   DRIVE_DEADLINE_GRACE_MINUTES,
-  PER_REQUEST_OVERHEAD_MS,
+  PER_REQUEST_OVERHEAD_MAX_MS,
+  DEADLINE_WORST_CASE_SHARE,
   PER_DRIVER_PER_MINUTE,
   RUN_MINUTES,
   type DriverResult,
@@ -60,16 +61,23 @@ const PLAN = { total: TOTAL, perMinute: PER_DRIVER_PER_MINUTE };
 {
   const deadline = driverDeadlineMs(PLAN);
   assert(deadline >= RUN_MINUTES * 60_000, "the deadline never cuts a run that is keeping to its plan");
-  eq(
-    deadline,
-    TOTAL * (OK_P95_MS + PER_REQUEST_OVERHEAD_MS),
-    "and it is the time a driver takes when every request sits AT the latency bar",
+  // #3163 (L743): a driver cut short by its deadline is FAILED by the judge as an
+  // incomplete plan, so the deadline must sit well clear of the slowest run that
+  // still PASSES: every request at the latency bar, with the slowest overhead
+  // measured between one reply and the next request. Sized at exactly that time
+  // (#3222), a passing run with a few slow gaps was failed for being slow, which
+  // is the verdict the latency bar exists to give, not the deadline.
+  const slowestPassingMs = TOTAL * (OK_P95_MS + PER_REQUEST_OVERHEAD_MAX_MS);
+  assert(
+    slowestPassingMs <= deadline * DEADLINE_WORST_CASE_SHARE,
+    `the slowest passing driver (${Math.round(slowestPassingMs / 1000)}s: every request at the ${OK_P95_MS}ms bar plus the ${PER_REQUEST_OVERHEAD_MAX_MS}ms measured worst overhead) uses at most ${DEADLINE_WORST_CASE_SHARE * 100}% of the ${Math.round(deadline / 1000)}s deadline`,
   );
-  // The 2026-10-04 run, as measured: its drivers took 14.2 to 16.1 minutes with a
-  // p95 near 8s. A driver at the bar is inside the deadline; one at that run's
-  // pace is not, which is exactly the run that must be graded rather than lost.
+  assert(DEADLINE_WORST_CASE_SHARE <= 0.75, "and the share it may use leaves at least a quarter of the deadline spare");
+  assert(PER_REQUEST_OVERHEAD_MAX_MS >= 1_650, "the overhead is the measured max (1.65s on run 37215457763), never the median");
+  // A driver a little under the bar finishes; one at twice the bar does not, and is
+  // stopped and graded rather than left for the job's timeout to kill.
   assert(TOTAL * (4_500 + 500) < deadline, "a driver a little under the bar finishes");
-  assert(TOTAL * (8_000 + 500) > deadline, "a driver at the slow run's pace is stopped and graded");
+  assert(TOTAL * (2 * OK_P95_MS + PER_REQUEST_OVERHEAD_MAX_MS) > deadline, "a driver at twice the bar is stopped and graded");
   // A tiny plan is still bounded by its own schedule, never by zero.
   assert(
     driverDeadlineMs({ total: 2, perMinute: 1 }) >= 60_000,

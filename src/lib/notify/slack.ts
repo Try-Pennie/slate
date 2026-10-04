@@ -2,14 +2,18 @@ import { slackBotToken } from "@/lib/env";
 import { log } from "@/lib/log";
 import { isLoadtest, loadtestRefusal } from "@/lib/loadtest-guard";
 import { defaultAlertsChannel } from "@/lib/notify/channels";
+import { fetchWithinBudget } from "@/lib/call-budget";
 
 // Slack normally answers in well under a second; cap every call so a slow or
 // unreachable Slack can never wedge the flow awaiting it (a booking/OOO submit,
-// an approval). On timeout the AbortError is caught like any other failure and
-// the call returns not-ok/null, honouring the never-throws contract. Uses the
-// AbortController pattern (same as src/lib/webhooks/emit.ts) rather than
-// AbortSignal.timeout, to stay on the fetch-timeout shape already proven on the
-// Cloudflare runtime.
+// an approval). On timeout the deadline error is caught like any other failure
+// and the call returns not-ok/null, honouring the never-throws contract.
+//
+// The cap is also held to any enclosing call budget (#3163). A booking that has
+// spent its confirm budget pages under the 2 second cleanup allowance, and a Slack
+// answering just inside these 8 seconds used to wait on them alone, so the lead was
+// held 12 + 8 seconds against the booker's 20 second abort. Inside a budget a post
+// now waits only for what the budget has left; outside one it keeps its 8 seconds.
 const SLACK_TIMEOUT_MS = 8000;
 
 function fetchWithTimeout(
@@ -28,11 +32,8 @@ function fetchWithTimeout(
     log.warn("loadtest-guard", { msg: "slack call refused", url });
     throw new Error(loadtestRefusal("Slack"));
   }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), SLACK_TIMEOUT_MS);
-  return fetch(url, { ...init, signal: controller.signal }).finally(() =>
-    clearTimeout(timer),
-  );
+  // The global fetch is read at call time, never captured, so a test's stub applies.
+  return fetchWithinBudget((input, req) => fetch(input, req), url, init, SLACK_TIMEOUT_MS, "slack");
 }
 
 /**
