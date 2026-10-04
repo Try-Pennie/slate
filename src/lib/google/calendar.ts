@@ -1,4 +1,5 @@
 import { getDelegatedToken } from "@/lib/google/dwd";
+import { sendWithTokenRetry } from "@/lib/google/token-retry";
 import { GoogleHttpError } from "@/lib/google/http-error";
 import { parseGoogleErrorReason } from "@/lib/google/reachability-classify";
 import {
@@ -154,24 +155,28 @@ async function sendGoogleCall(
   deadline: Deadline,
   label: string,
 ): Promise<Response> {
-  const call = async () => {
-    // `undefined` keeps the mint's default calendar scope.
-    const token = await getDelegatedToken(email, undefined, deadline);
-    return fetchWithinBudget(
-      fetch,
-      url,
-      {
-        ...init,
-        headers: {
-          ...init.headers,
-          authorization: `Bearer ${token}`,
-          "content-type": "application/json",
-        },
-      },
-      deadline,
-      `google ${label}`,
+  // #3144: a cached token Google refuses is replaced and the call resent once,
+  // inside the same budget, so the refusal costs a round trip rather than the call.
+  const call = () =>
+    sendWithTokenRetry(
+      // `undefined` keeps the mint's default calendar scope.
+      (refused) => getDelegatedToken(email, undefined, deadline, refused),
+      (token) =>
+        fetchWithinBudget(
+          fetch,
+          url,
+          {
+            ...init,
+            headers: {
+              ...init.headers,
+              authorization: `Bearer ${token}`,
+              "content-type": "application/json",
+            },
+          },
+          deadline,
+          `google ${label}`,
+        ),
     );
-  };
   return deadline === NO_DEADLINE ? call() : withinCallBudget(deadline, `google ${label}`, call);
 }
 

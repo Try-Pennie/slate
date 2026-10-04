@@ -7,6 +7,7 @@
  * has to hold an admin role in Google Workspace.
  */
 import { getDelegatedToken } from "@/lib/google/dwd";
+import { sendWithTokenRetry } from "@/lib/google/token-retry";
 import { GoogleHttpError } from "@/lib/google/http-error";
 import { DirectoryReadError, type DirectoryAccount } from "@/lib/advisor-photos/refresh";
 
@@ -28,9 +29,9 @@ const MAX_PAGES = 20;
  */
 const REFUSING_TOKEN_REASONS = new Set(["invalid_grant", "unauthorized_client", "access_denied"]);
 
-async function tokenFor(subject: string): Promise<string> {
+async function tokenFor(subject: string, refused?: string): Promise<string> {
   try {
-    return await getDelegatedToken(subject, DIRECTORY_SCOPE);
+    return await getDelegatedToken(subject, DIRECTORY_SCOPE, undefined, refused);
   } catch (err) {
     if (err instanceof GoogleHttpError) {
       const refused =
@@ -45,9 +46,24 @@ async function tokenFor(subject: string): Promise<string> {
   }
 }
 
+/**
+ * One directory GET as `subject`. #3144: a cached token Google refuses is replaced
+ * and the request resent once, so only a SECOND 401 reaches the callers below,
+ * which class it as refused.
+ */
+function directoryGet(subject: string, url: URL | string): Promise<Response> {
+  return sendWithTokenRetry(
+    (refused) => tokenFor(subject, refused),
+    (token) =>
+      fetch(url, {
+        headers: { authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(DIRECTORY_REQUEST_TIMEOUT_MS),
+      }),
+  );
+}
+
 /** Every account in the directory, all domains, with the addresses each one holds. */
 export async function listDirectoryAccounts(subject: string): Promise<DirectoryAccount[]> {
-  const token = await tokenFor(subject);
   const out: DirectoryAccount[] = [];
   let pageToken: string | undefined;
   for (let page = 0; page < MAX_PAGES; page++) {
@@ -57,10 +73,7 @@ export async function listDirectoryAccounts(subject: string): Promise<DirectoryA
     url.searchParams.set("projection", "basic");
     url.searchParams.set("fields", "nextPageToken,users(primaryEmail,emails)");
     if (pageToken) url.searchParams.set("pageToken", pageToken);
-    const res = await fetch(url, {
-      headers: { authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(DIRECTORY_REQUEST_TIMEOUT_MS),
-    });
+    const res = await directoryGet(subject, url);
     if (!res.ok) {
       // swallow-ok: this only releases a body after a refusal that is already
       // being thrown with its status; a cancel that fails changes nothing about it.
@@ -77,10 +90,6 @@ export async function listDirectoryAccounts(subject: string): Promise<DirectoryA
 
 /** One `photos.get`, returned raw so the classification stays pure. */
 export async function getDirectoryPhoto(subject: string, email: string): Promise<{ status: number; body: string }> {
-  const token = await tokenFor(subject);
-  const res = await fetch(`${API}/users/${encodeURIComponent(email)}/photos/thumbnail`, {
-    headers: { authorization: `Bearer ${token}` },
-    signal: AbortSignal.timeout(DIRECTORY_REQUEST_TIMEOUT_MS),
-  });
+  const res = await directoryGet(subject, `${API}/users/${encodeURIComponent(email)}/photos/thumbnail`);
   return { status: res.status, body: await res.text() };
 }

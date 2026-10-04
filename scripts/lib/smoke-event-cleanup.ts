@@ -12,6 +12,7 @@
 // from the I/O so it is unit-testable without any Google access.
 
 import { getDelegatedToken } from "@/lib/google/dwd";
+import { sendWithTokenRetry } from "@/lib/google/token-retry";
 import { PUBLIC_TEST_EVENT_TYPE_NAME } from "../smoke-seed.ts";
 
 /** Minimal shape of a Google Calendar event, with the fields the filter needs. */
@@ -91,7 +92,8 @@ export interface CalendarClient {
 }
 
 type FetchFn = typeof fetch;
-type TokenFn = (email: string) => Promise<string>;
+/** `refused` names a token Google just refused, so the source replaces it (#3144). */
+type TokenFn = (email: string, refused?: string) => Promise<string>;
 
 /** The real DWD-backed client. `fetch`/`getToken` are injectable so the HTTP
  *  error handling (non-ok list, tolerated 404/410 delete) can be tested too. */
@@ -99,10 +101,14 @@ export function makeGoogleCalendarClient(
   deps: { fetch?: FetchFn; getToken?: TokenFn } = {},
 ): CalendarClient {
   const doFetch = deps.fetch ?? fetch;
-  const getToken = deps.getToken ?? getDelegatedToken;
-  async function gfetch(email: string, url: string, init?: RequestInit): Promise<Response> {
-    const token = await getToken(email);
-    return doFetch(url, { ...init, headers: { ...init?.headers, authorization: `Bearer ${token}` } });
+  const getToken: TokenFn =
+    deps.getToken ?? ((email, refused) => getDelegatedToken(email, undefined, undefined, refused));
+  // #3144: a cached token Google refuses is replaced and the call resent once.
+  function gfetch(email: string, url: string, init?: RequestInit): Promise<Response> {
+    return sendWithTokenRetry(
+      (refused) => getToken(email, refused),
+      (token) => doFetch(url, { ...init, headers: { ...init?.headers, authorization: `Bearer ${token}` } }),
+    );
   }
   return {
     // Paginated events.list over a window, projecting just the filtered fields.

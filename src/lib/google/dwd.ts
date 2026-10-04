@@ -90,13 +90,20 @@ async function signJwt(subject: string, scope: string): Promise<string> {
  * Defaults to the calendar scopes; pass GMAIL_SEND_SCOPE for the digest mailer.
  * The cache is keyed by scope too, so calendar and Gmail tokens never collide.
  * A cached token answers at once; only a real mint can wait, up to `deadline`.
+ *
+ * `refused` is a token Google just answered 401 to (#3144, via
+ * `sendWithTokenRetry`). It is dropped from the cache only while it is still the
+ * one held, so a caller reporting it late gets the replacement another caller
+ * already minted rather than forcing another mint.
  */
 export async function getDelegatedToken(
   email: string,
   scope: string = SCOPE,
   deadline: Deadline = DELEGATED_TOKEN_TIMEOUT_MS,
+  refused?: string,
 ): Promise<string> {
   const cacheKey = `${scope}\n${email}`;
+  if (refused !== undefined && cache.get(cacheKey)?.token === refused) cache.delete(cacheKey);
   const hit = cache.get(cacheKey);
   if (hit && hit.exp - Date.now() > 60_000) return hit.token;
 

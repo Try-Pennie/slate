@@ -241,5 +241,34 @@ const token = async () => "tok";
   const client = makeGoogleCalendarClient({ fetch: (async () => resp("nope", 500)) as unknown as typeof fetch, getToken: token });
   await rejects(client.del("a@x", "id"), "events.delete failed", "delete throws on a real (non-404/410) error");
 }
+{
+  // #3144 (L742): a cached token Google refuses is replaced and the call resent
+  // once, so a stale token cannot fail the sweep; a second refusal still throws.
+  const refusedSeen: (string | undefined)[] = [];
+  const rotating = async (_email: string, refused?: string) => {
+    refusedSeen.push(refused);
+    return refused ? "fresh" : "stale";
+  };
+  const auths: string[] = [];
+  const fetchFn = (async (_url: string, init: RequestInit) => {
+    const auth = new Headers(init.headers).get("authorization") ?? "";
+    auths.push(auth);
+    return auth === "Bearer stale" ? resp("Invalid Credentials", 401) : resp({ items: [{ id: "p1" }] });
+  }) as unknown as typeof fetch;
+  const client = makeGoogleCalendarClient({ fetch: fetchFn, getToken: rotating });
+  const out = await client.list("a@x", "t0", "t1");
+  eq(out.map((e) => e.id).join(","), "p1", "list survives a refused cached token by resending on a fresh one");
+  eq(auths.join(","), "Bearer stale,Bearer fresh", "the resend carries the fresh token, once");
+  eq(refusedSeen.join(","), ",stale", "the refresh names the refused token");
+
+  let sends = 0;
+  const alwaysRefused = (async () => {
+    sends++;
+    return resp("unauthorized", 401);
+  }) as unknown as typeof fetch;
+  const refusing = makeGoogleCalendarClient({ fetch: alwaysRefused, getToken: rotating });
+  await rejects(refusing.list("a@x", "t0", "t1"), "events.list failed", "a second refusal still throws");
+  eq(sends, 2, "a second refusal is not resent again");
+}
 
 finish();
