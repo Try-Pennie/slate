@@ -75,7 +75,8 @@ export default async function RebookPage({
   const salesforceId = entry?.externalId ?? null;
   // The resolver `/book` uses, so a rebook lands on the pool a fresh link would.
   // landing-identity-ok: the id comes off the token's own booking, not the link
-  const bucketCode = (await resolveLandingCode(requestedCode, salesforceId)).code;
+  // No submission: a rebook carries the booking's own lead id, or nothing (#3246).
+  const bucketCode = (await resolveLandingCode(requestedCode, salesforceId, null)).code;
   const isTest = await loadLandingBucketIsTest(bucketCode);
   // #2666: the token authorises this viewer exactly as it does on the manage page,
   // so a test booking's rebook mints the pass its booker needs. A failed lookup

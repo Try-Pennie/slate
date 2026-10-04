@@ -23,10 +23,15 @@ import { CATCHALL_CODE } from "@/lib/routing/catchall";
 const admin = vi.hoisted(() => ({ supabaseAdmin: vi.fn() }));
 // #2638: the Salesforce read behind a link with no routable code. Only the live
 // reader is replaced; `isLeadId` and the decoding stay real.
-const leadXbc = vi.hoisted(() => ({ readLeadXbcLive: vi.fn(async (_id: string): Promise<string | null | undefined> => undefined) }));
+const leadXbc = vi.hoisted(() => ({
+  readLeadXbcLive: vi.fn(async (_id: string): Promise<string | null | undefined> => undefined),
+  // #3246: the submission's Lead, read when the link carried no code and no lead id.
+  readSubmissionLeadIdLive: vi.fn(async (_id: string): Promise<string | null | undefined> => undefined),
+}));
 vi.mock("@/lib/salesforce/lead-xbc", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/salesforce/lead-xbc")>()),
   readLeadXbcLive: leadXbc.readLeadXbcLive,
+  readSubmissionLeadIdLive: leadXbc.readSubmissionLeadIdLive,
 }));
 
 vi.mock("@/lib/supabase/admin", () => admin);
@@ -347,5 +352,65 @@ describe("/book with no code on the link and a Lead id (#2638)", () => {
 
     expect(landingIdentityAllowed).toHaveBeenCalledTimes(1);
     expect(leadXbc.readLeadXbcLive).toHaveBeenCalledWith(LEAD);
+  });
+});
+
+// #3246: on iPhone Safari the widget could build the booker before the page's query
+// was forwarded, so the link carried only the submission id. The page finds the lead
+// through the submission and shows that lead's pool, as the confirm books it.
+describe("/book with no code and no Lead id, but a submission id (#3246)", () => {
+  const SUB = "a04Ui00000NNZ7uIAH";
+  const LEAD = "00QUi000010Sab8MAC";
+
+  it("shows the pool of the lead the submission names", async () => {
+    leadXbc.readSubmissionLeadIdLive.mockResolvedValueOnce(LEAD);
+    leadXbc.readLeadXbcLive.mockResolvedValueOnce("512");
+    const asked: string[] = [];
+    admin.supabaseAdmin.mockReturnValue(dbByCode({ "512": { org_id: "o1", is_test: false } }, asked));
+
+    const el = await BookEntry({ searchParams: Promise.resolve({ form: "f", submissionId: SUB, embed: "1" }) });
+
+    expect(leadXbc.readSubmissionLeadIdLive).toHaveBeenCalledWith(SUB);
+    expect(leadXbc.readLeadXbcLive).toHaveBeenCalledWith(LEAD);
+    expect(asked).toEqual(["512"]);
+    expect(bookerElement(el)).toMatchObject({ bucketCode: "512" });
+  });
+
+  it("CONTROL: a routable code never reads the submission and spends nothing", async () => {
+    admin.supabaseAdmin.mockReturnValue(dbByCode({ "111": { org_id: "o1", is_test: false } }, []));
+
+    await BookEntry({ searchParams: Promise.resolve({ xbc: "111", submissionId: SUB }) });
+
+    expect(leadXbc.readSubmissionLeadIdLive).not.toHaveBeenCalled();
+    expect(landingIdentityAllowed).not.toHaveBeenCalled();
+  });
+
+  it("CONTROL: a lead id on the link wins and the submission is never read", async () => {
+    leadXbc.readLeadXbcLive.mockResolvedValueOnce("312");
+    admin.supabaseAdmin.mockReturnValue(dbByCode({ "312": { org_id: "o1", is_test: false } }, []));
+
+    await BookEntry({ searchParams: Promise.resolve({ external_id: LEAD, submissionId: SUB }) });
+
+    expect(leadXbc.readSubmissionLeadIdLive).not.toHaveBeenCalled();
+    expect(landingIdentityAllowed).toHaveBeenCalledTimes(1);
+  });
+
+  it("over the landing ceiling, shows the default route without asking Salesforce", async () => {
+    landingIdentityAllowed.mockResolvedValueOnce(false);
+    const asked: string[] = [];
+    admin.supabaseAdmin.mockReturnValue(dbByCode({ [CATCHALL_CODE]: { org_id: "o1", is_test: false } }, asked));
+
+    const el = await BookEntry({ searchParams: Promise.resolve({ submissionId: SUB }) });
+
+    expect(leadXbc.readSubmissionLeadIdLive).not.toHaveBeenCalled();
+    expect(asked).toEqual([CATCHALL_CODE]);
+    expect(bookerElement(el)).toMatchObject({ bucketCode: CATCHALL_CODE });
+  });
+
+  it("throws to the error boundary when the submission read fails, never showing the catch-all", async () => {
+    leadXbc.readSubmissionLeadIdLive.mockRejectedValueOnce(new Error("SF query failed: 503"));
+    admin.supabaseAdmin.mockReturnValue(dbByCode({ [CATCHALL_CODE]: { org_id: "o1", is_test: false } }, []));
+
+    await expect(BookEntry({ searchParams: Promise.resolve({ submissionId: SUB }) })).rejects.toThrow(/temporary issue/);
   });
 });

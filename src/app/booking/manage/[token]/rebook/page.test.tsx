@@ -83,7 +83,7 @@ describe("/booking/manage/[token]/rebook (#2982)", () => {
     // The lead is recognised by the same Lead id the confirm will send.
     expect(service.existingCallForLanding.mock.calls.at(-1)?.[0]).toEqual({ salesforceId: "00QUi00000ABCdeMAH" });
     // Routed by the resolver /book uses, on the booking's OWN bucket, not the query's.
-    expect(routing.resolveLandingCode).toHaveBeenCalledWith("100", "00QUi00000ABCdeMAH");
+    expect(routing.resolveLandingCode).toHaveBeenCalledWith("100", "00QUi00000ABCdeMAH", null);
   });
 
   it("uses the booking's bucket even when the link's xbc says otherwise", async () => {

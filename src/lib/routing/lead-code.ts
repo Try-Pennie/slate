@@ -16,12 +16,19 @@
  *     network call to every booking and a way for the two to disagree.
  *  2. Otherwise, a Lead id on the link means Salesforce is asked, and a code it
  *     holds that `bucketSpecForXbc` decodes is routed on.
- *  3. Otherwise the catch-all applies, and the RECORD says why: no lead id, a
+ *  3. Otherwise, a Salesforce Submission id (the `submissionId` trypennie's trigger
+ *     always carries) is resolved to the Lead it names (`Submission__c.Lead__c`),
+ *     and that lead is routed through step 2's read exactly (#3246). On iPhone
+ *     Safari the widget could build the booker before the page's query was
+ *     forwarded, so the link arrived with no code and no Lead id but still named
+ *     the submission; four leads (512, 312, 112, 112) went to the catch-all that
+ *     way. The record says the lead was found through the submission.
+ *  4. Otherwise the catch-all applies, and the RECORD says why: no lead id, a
  *     lead Salesforce did not return, a lead with the field empty, or a value
  *     Slate cannot route (about 45 percent of leads carry a tier 0 code such as
  *     `012`, measured 2026-09-24; guessing what tier 0 means would be a second
  *     decoder).
- *  4. A Salesforce read that FAILS refuses, with `LeadCodeUnavailableError`.
+ *  5. A Salesforce read that FAILS (the lead's or the submission's) refuses, with `LeadCodeUnavailableError`.
  *     Falling through to the catch-all on a failed read is exactly the misroute
  *     this exists to stop, and it would look like a lead with no score.
  *
@@ -32,7 +39,7 @@
  * drives every branch with no network.
  */
 import { bucketSpecForXbc } from "@/lib/xbc";
-import { isLeadId } from "@/lib/salesforce/lead-xbc";
+import { isLeadId, isSubmissionId } from "@/lib/salesforce/lead-xbc";
 import { CATCHALL_CODE, resolveRequestedCode, type CatchallReason } from "./catchall.ts";
 
 /**
@@ -42,8 +49,33 @@ import { CATCHALL_CODE, resolveRequestedCode, type CatchallReason } from "./catc
  */
 export type LeadXbcReader = (leadId: string) => Promise<string | null | undefined>;
 
+/**
+ * The Lead a Submission names (#3246): a Lead id, null for a submission naming no
+ * lead, undefined for a submission Salesforce did not return. THROWS when the read
+ * fails, like `LeadXbcReader`.
+ */
+export type SubmissionLeadReader = (submissionId: string) => Promise<string | null | undefined>;
+
+/**
+ * The submission a link named, and how to find its lead. REQUIRED of every caller,
+ * so a new one has to say what it knows; a caller with no submission passes
+ * `id: null`.
+ */
+export interface SubmissionLookup {
+  id: string | null | undefined;
+  readLeadId: SubmissionLeadReader;
+}
+
 /** Why Salesforce could not supply a routable code, when it was the fallback. */
-export type SalesforceCodeMiss = "no-lead-id" | "not-found" | "absent" | "unreadable";
+export type SalesforceCodeMiss =
+  | "no-lead-id"
+  | "not-found"
+  | "absent"
+  | "unreadable"
+  /** #3246: the link's submission id names no submission Salesforce returned. */
+  | "submission-not-found"
+  /** #3246: the submission exists and names no lead. */
+  | "submission-without-lead";
 
 /**
  * Where the routed code came from, as recorded on the booking's `routing_trace`
@@ -52,7 +84,14 @@ export type SalesforceCodeMiss = "no-lead-id" | "not-found" | "absent" | "unread
  */
 export type RoutingCodeRecord =
   | { source: "link"; requested: string }
-  | { source: "salesforce"; requested: string; salesforce_xbc: string }
+  | {
+      source: "salesforce";
+      requested: string;
+      salesforce_xbc: string;
+      /** #3246: present when the lead was found through the link's submission. */
+      via?: "submission";
+      submission_id?: string;
+    }
   | {
       source: "catchall";
       requested: string;
@@ -82,6 +121,7 @@ export async function resolveRoutingCode(
   requested: string | null | undefined,
   leadId: string | null | undefined,
   readLeadXbc: LeadXbcReader,
+  submission: SubmissionLookup,
 ): Promise<RoutingCodeResolution> {
   const raw = requested ?? "";
   const fromLink = resolveRequestedCode(raw);
@@ -101,8 +141,22 @@ export async function resolveRoutingCode(
     },
   });
 
-  const id = (leadId ?? "").trim();
-  if (!isLeadId(id)) return catchall("no-lead-id", null);
+  let id = (leadId ?? "").trim();
+  let viaSubmission: string | null = null;
+  if (!isLeadId(id)) {
+    const sub = (submission.id ?? "").trim();
+    if (!isSubmissionId(sub)) return catchall("no-lead-id", null);
+    let named: string | null | undefined;
+    try {
+      named = await submission.readLeadId(sub);
+    } catch (err) {
+      throw new LeadCodeUnavailableError(err);
+    }
+    if (named === undefined) return catchall("submission-not-found", null);
+    if (named === null || !isLeadId(named.trim())) return catchall("submission-without-lead", null);
+    id = named.trim();
+    viaSubmission = sub;
+  }
 
   let held: string | null | undefined;
   try {
@@ -117,6 +171,8 @@ export async function resolveRoutingCode(
   return {
     code: value,
     source: "salesforce",
-    record: { source: "salesforce", requested: raw, salesforce_xbc: value },
+    record: viaSubmission
+      ? { source: "salesforce", requested: raw, salesforce_xbc: value, via: "submission", submission_id: viaSubmission }
+      : { source: "salesforce", requested: raw, salesforce_xbc: value },
   };
 }

@@ -4,7 +4,7 @@ import { ClientErrorBeacon } from "@/components/ClientErrorBeacon";
 import { loadLandingBucketIsTest } from "@/lib/booking/landing-bucket";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
-import { resolveLandingCode } from "@/lib/routing/landing-code";
+import { codeNeedsLookup, resolveLandingCode } from "@/lib/routing/landing-code";
 import { existingCallForLanding, landingAttendee } from "@/lib/booking/service";
 import { DEFAULT_BRAND_COLOR } from "@/lib/brand-label";
 import { headers } from "next/headers";
@@ -67,7 +67,12 @@ export default async function BookEntry({
   const requestedCode = entry.requestedCode;
   const externalId = entry.externalId;
   const lookupId = await landingLookupId(externalId ?? "", headers);
-  const resolved = await resolveLandingCode(requestedCode, lookupId);
+  // #3246: with no routable code and no lead id, the submission id the trigger
+  // carried is the only way to the lead's own code. It spends the same per address
+  // allowance, and ONLY in that case, so an ordinary page view spends nothing on it.
+  const needsSubmission = codeNeedsLookup(requestedCode) && !externalId;
+  const lookupSubmission = needsSubmission ? await landingLookupId(entry.submissionId ?? "", headers) : "";
+  const resolved = await resolveLandingCode(requestedCode, lookupId, lookupSubmission || null);
   const bucketCode = resolved.code;
   const embedded = first(sp, "embed") === "1";
   const theme = first(sp, "theme") === "dark" ? ("dark" as const) : ("light" as const);

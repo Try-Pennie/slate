@@ -115,7 +115,12 @@ import { routingMetaFromTrace } from "@/lib/webhooks/types";
 // emit module's runtime deps into the node-tested domain code.
 import type { WebhookSendScheduler } from "@/lib/webhooks/emit";
 import { catchallRecord, resolveRequestedCode } from "@/lib/routing/catchall";
-import { resolveRoutingCode, type LeadXbcReader, type RoutingCodeRecord } from "@/lib/routing/lead-code";
+import {
+  resolveRoutingCode,
+  type LeadXbcReader,
+  type RoutingCodeRecord,
+  type SubmissionLeadReader,
+} from "@/lib/routing/lead-code";
 import type {
   Booking,
   BookingEventAction,
@@ -982,6 +987,11 @@ export interface BookingDeps {
    * is the misroute the read exists to prevent. See `src/lib/routing/lead-code.ts`.
    */
   readLeadXbc: LeadXbcReader;
+  /**
+   * The Lead a Salesforce Submission names (#3246), for a confirm whose link carried
+   * no code and no Lead id but did carry the submission id. THROWS on a failed read.
+   */
+  readSubmissionLead: SubmissionLeadReader;
   /**
    * The number a lead's call will come FROM (#1334), from Salesforce Lead
    * `AssignedRegalPhone__c`: E.164, or null when not known. THROWS on a refused
@@ -3026,7 +3036,10 @@ async function routeOnLeadCode(
   deps: BookingDeps,
 ): Promise<{ input: CreateBookingInput; codeSource: RoutingCodeRecord | undefined }> {
   if (input.requestedCode === undefined) return { input, codeSource: undefined };
-  const routed = await resolveRoutingCode(input.requestedCode, input.salesforceId ?? null, deps.readLeadXbc);
+  const routed = await resolveRoutingCode(input.requestedCode, input.salesforceId ?? null, deps.readLeadXbc, {
+    id: partnerKeysFrom(input.prefill).submissionId,
+    readLeadId: deps.readSubmissionLead,
+  });
   if (routed.source === "link") return { input, codeSource: routed.record };
   return { input: { ...input, bucketCode: routed.code }, codeSource: routed.record };
 }

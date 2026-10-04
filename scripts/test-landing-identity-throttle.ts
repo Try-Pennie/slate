@@ -20,6 +20,9 @@ const READERS = ["landingAttendee", "existingCallForLanding"];
 // Salesforce read per guessed id. It takes the id POSITIONALLY, second, so it is judged
 // on that argument rather than on a `{ salesforceId }` object.
 const POSITIONAL_READERS = ["resolveLandingCode"];
+// #3246: its THIRD argument is the submission id, which reaches Salesforce the same
+// way, so it must be the literal `null` or `lookupSubmission` derived from
+// `landingLookupId` earlier in the file (optionally `lookupSubmission || null`).
 
 /**
  * The violations in one file's source, judged per CALL SITE (L135): each reader call must
@@ -38,8 +41,20 @@ export function ungatedLandingReads(src: string): string[] {
       const at = m.index ?? 0;
       if (hasOptOutAtOffset(src, at, "landing-identity-ok:")) continue;
       const rest = code.slice(at + reader.length);
+      const positional = /^\(\s*[^,()]+,\s*([A-Za-z_$][\w$]*)\s*(?:,\s*([^()]*?)\s*)?\)/.exec(rest);
+      if (POSITIONAL_READERS.includes(reader) && positional) {
+        const third = (positional[2] ?? "").trim();
+        const line = code.slice(0, at).split("\n").length;
+        const subDerived = /\blookupSubmission\s*=[^;]*\blandingLookupId\(/.exec(code);
+        if (third === "") out.push(`line ${line}: ${reader} does not say which submission it was handed`);
+        else if (third !== "null" && !/^lookupSubmission(?:\s*\|\|\s*null)?$/.test(third)) {
+          out.push(`line ${line}: ${reader} is asked about submission ${third}`);
+        } else if (third !== "null" && (!subDerived || subDerived.index > at)) {
+          out.push(`line ${line}: ${reader} reads before lookupSubmission is derived from landingLookupId`);
+        }
+      }
       const asked = POSITIONAL_READERS.includes(reader)
-        ? (/^\(\s*[^,()]+,\s*([A-Za-z_$][\w$]*)\s*\)/.exec(rest)?.[1] ?? "an identity this scan cannot read")
+        ? (positional?.[1] ?? "an identity this scan cannot read")
         : (() => {
             const arg = /^\(\s*\{\s*salesforceId(?:\s*:\s*([A-Za-z_$][\w$]*))?/.exec(rest);
             return arg ? (arg[1] ?? "salesforceId") : "an identity this scan cannot read";
@@ -131,16 +146,45 @@ for (const p of callers) {
     "the routing read handed the raw id from the link is caught",
   );
   eq(
-    ungatedLandingReads("const resolved = await resolveLandingCode(requestedCode, id);").length,
+    ungatedLandingReads("const resolved = await resolveLandingCode(requestedCode, id, null);").length,
     1,
     "the routing read handed the path id is caught",
   );
   eq(
     ungatedLandingReads(
-      "const lookupId = await landingLookupId(id, h);\nconst resolved = await resolveLandingCode(requestedCode, lookupId);",
+      "const lookupId = await landingLookupId(id, h);\nconst resolved = await resolveLandingCode(requestedCode, lookupId, null);",
     ).length,
     0,
     "the routing read handed the gated id passes",
+  );
+  // #3246: the submission argument is judged too.
+  eq(
+    ungatedLandingReads(
+      "const lookupId = await landingLookupId(id, h);\nconst resolved = await resolveLandingCode(requestedCode, lookupId, entry.submissionId);",
+    ).length,
+    1,
+    "the routing read handed the raw submission id from the link is caught",
+  );
+  eq(
+    ungatedLandingReads(
+      "const lookupId = await landingLookupId(id, h);\nconst resolved = await resolveLandingCode(requestedCode, lookupId);",
+    ).length,
+    1,
+    "the routing read that does not say which submission it was handed is caught",
+  );
+  eq(
+    ungatedLandingReads(
+      "const lookupId = await landingLookupId(id, h);\nconst lookupSubmission = needs ? await landingLookupId(sub, h) : \"\";\nconst resolved = await resolveLandingCode(requestedCode, lookupId, lookupSubmission || null);",
+    ).length,
+    0,
+    "the routing read handed the gated submission passes",
+  );
+  eq(
+    ungatedLandingReads(
+      "const lookupId = await landingLookupId(id, h);\nconst resolved = await resolveLandingCode(requestedCode, lookupId, lookupSubmission || null);\nconst lookupSubmission = await landingLookupId(sub, h);",
+    ).length,
+    1,
+    "the routing read before the submission is gated is caught",
   );
 }
 

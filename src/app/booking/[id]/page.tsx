@@ -52,7 +52,8 @@ export default async function BookingPage({
   // call notice; the id still reaches the confirm, which routes on the lead's own code.
   const requestedCode = first(sp, "xbc");
   const lookupId = await landingLookupId(id, headers);
-  const resolved = await resolveLandingCode(requestedCode, lookupId);
+  // No submission: the path names the lead itself (#3246).
+  const resolved = await resolveLandingCode(requestedCode, lookupId, null);
   const bucketCode = resolved.code;
 
   // #2660: the same question `/book` asks of the same helper, so a test booking

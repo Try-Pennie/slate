@@ -15,6 +15,7 @@
 import { BOOKING_SOURCE_PARAM, PAGE_SOURCES } from "./booking-source.ts";
 import { readWithinDeadline, type ScheduleTimer } from "../read-within-deadline.ts";
 import { bookingLeadId } from "./lookup-identity.ts";
+import { partnerKeysFrom } from "./partner-keys.ts";
 
 type SP = Readonly<Record<string, string | string[] | undefined>>;
 
@@ -28,6 +29,8 @@ export interface BookEntryQuery {
   requestedCode: string;
   /** The Salesforce Lead id (`external_id`), or null when the link named nobody. */
   externalId: string | null;
+  /** The Salesforce Submission id the trigger carried (#3246), or null. */
+  submissionId: string | null;
   /** The lead's details as the link carried them, "" for anything it did not. */
   link: { name: string; email: string; phone: string };
   /** Every query value, first value per key: the booking records it as `prefill`. */
@@ -43,6 +46,7 @@ export function readBookEntryQuery(sp: SP): BookEntryQuery {
   return {
     requestedCode: first(sp, "xbc"),
     externalId: first(sp, "external_id") || null,
+    submissionId: partnerKeysFrom(prefill).submissionId,
     link: {
       name: first(sp, "name"),
       email: first(sp, "email"),
@@ -194,6 +198,8 @@ export function rebookEntry(row: RebookRow): BookEntryQuery {
   return {
     requestedCode: row.bucketCode,
     externalId: row.leadId?.trim() || null,
+    // A rebook names the lead by the booking's own id, never a submission (#3246).
+    submissionId: null,
     link: {
       name: row.attendeeName?.trim() ?? "",
       email: row.attendeeEmail?.trim() ?? "",
