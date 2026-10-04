@@ -100,7 +100,7 @@ on:
         description: >-
           How long the burst drivers have to be queued, checked out and installed
           before the shared moment. A driver that wakes late fires nothing and the
-          judge calls the run incomplete, so raise this rather than re-running.
+          judge fails the burst, so raise this rather than re-running.
         type: string
         default: "300"
 
@@ -201,7 +201,7 @@ jobs:
     timeout-minutes: 20
     strategy:
       # Never cancel a sibling. Four drivers firing together IS the burst, and a
-      # burst missing one is judged as incomplete rather than as a smaller burst.
+      # burst missing one fails the burst bar rather than passing as a smaller burst.
       fail-fast: false
       matrix:
         driver: ${{ fromJSON(needs.setup-burst.outputs.drivers) }}
@@ -239,8 +239,23 @@ jobs:
           path: results/
 
   drive:
-    needs: burst
+    needs: [preflight, setup-burst, burst]
+    # Runs whatever the BURST concluded (#3222). A job with `needs:` and no `if:` is
+    # skipped when any ancestor did not succeed, and a burst driver that wakes late
+    # exits 3 by design, so one late driver used to skip the steady pass, freshness
+    # and the archive, and with them the ceiling and the fault pass: the run was
+    # INCOMPLETE with nothing driven. The judge fails the burst with its reason
+    # instead. The preflight and the burst setup must still have succeeded, named
+    # explicitly because `!cancelled()` replaces the implicit success check.
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.setup-burst.result == 'success' }}
     runs-on: ubuntu-latest
+    # DERIVED, not chosen (#3222): `driveJobTimeoutMinutes` in book-plan.ts, the
+    # driver's own deadline (the plan with every request at the latency bar, fifteen
+    # minutes) plus the runner's setup and one in flight request's grace.
+    # scripts/test-loadtest-driver-deadline.ts holds this number equal to it. A slow
+    # driver stops at its deadline, writes what it ran and exits zero, so the judge
+    # FAILS the run with figures and the ceiling and fault legs still run; only a
+    # genuinely hung driver ever meets this timeout, and its missing file says so.
     timeout-minutes: 20
     strategy:
       # Never cancel a sibling: four drivers at fifteen a minute IS the load, and a
@@ -269,7 +284,15 @@ jobs:
           path: results/
 
   freshness:
-    needs: burst
+    needs: [preflight, setup-burst, burst]
+    # Runs whatever the BURST concluded (#3222). A job with `needs:` and no `if:` is
+    # skipped when any ancestor did not succeed, and a burst driver that wakes late
+    # exits 3 by design, so one late driver used to skip the steady pass, freshness
+    # and the archive, and with them the ceiling and the fault pass: the run was
+    # INCOMPLETE with nothing driven. The judge fails the burst with its reason
+    # instead. The preflight and the burst setup must still have succeeded, named
+    # explicitly because `!cancelled()` replaces the implicit success check.
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.setup-burst.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -301,6 +324,10 @@ jobs:
   # ceiling it exists to prove, and the drivers would be throttled by it.
   ceiling:
     needs: drive
+    # On the drive job's OWN success (#3222). Without an `if:` this is skipped
+    # whenever any ancestor failed, a late burst driver included, even though the
+    # drive itself ran.
+    if: ${{ !cancelled() && needs.drive.result == 'success' }}
     runs-on: ubuntu-latest
     # Long enough for the whole budget at the paced rate. The ordinary case stops at
     # the first per address refusal and takes a couple of minutes; a deployment
@@ -330,9 +357,20 @@ jobs:
           path: results/
 
   archive:
-    needs: burst
+    needs: [preflight, setup-burst, burst]
+    # Runs whatever the BURST concluded (#3222). A job with `needs:` and no `if:` is
+    # skipped when any ancestor did not succeed, and a burst driver that wakes late
+    # exits 3 by design, so one late driver used to skip the steady pass, freshness
+    # and the archive, and with them the ceiling and the fault pass: the run was
+    # INCOMPLETE with nothing driven. The judge fails the burst with its reason
+    # instead. The preflight and the burst setup must still have succeeded, named
+    # explicitly because `!cancelled()` replaces the implicit success check.
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.setup-burst.result == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # DERIVED (#3222): `archiveJobTimeoutMinutes` in book-plan.ts, the tail
+    # window below plus the runner's setup, held equal by
+    # scripts/test-loadtest-driver-deadline.ts.
+    timeout-minutes: 24
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -344,6 +382,10 @@ jobs:
       # Streamed live rather than queried afterwards: the observability pipeline has
       # been measured three hours behind (#1533), so a run's own logs would not be
       # readable while anybody is still looking at the run.
+      #
+      # The window is `archiveTailMinutes` (#3222): one minute past the longest a
+      # drive job can run, since a slow drive now legitimately takes its whole
+      # deadline. A fixed fifteen minutes lost a slow run's last lines.
       - name: Archive the Worker's logs for the window
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -351,7 +393,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p results
-          timeout 15m npx wrangler tail --env loadtest --format json > results/tail.jsonl || true
+          timeout 21m npx wrangler tail --env loadtest --format json > results/tail.jsonl || true
           wc -l results/tail.jsonl
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -374,6 +416,9 @@ jobs:
   # with no fault having happened (L98).
   fault:
     needs: [drive, burst, freshness, ceiling]
+    # Whatever the burst concluded, for the same reason as the drive job (#3222);
+    # the legs it really follows must each have succeeded.
+    if: ${{ !cancelled() && needs.drive.result == 'success' && needs.freshness.result == 'success' && needs.ceiling.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:

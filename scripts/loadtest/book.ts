@@ -28,13 +28,23 @@ import {
   waitForBurstMoment,
   externalIdFor,
   pickSlot,
+  driverDeadlineMs,
+  effectiveDeadlineMs,
+  deadlineReached,
+  requestAbortMs,
+  faultMinutesFrom,
   DRIVERS,
   PER_DRIVER_PER_MINUTE,
   RUN_MINUTES,
   type BookingAttempt,
   type DriverResult,
 } from "./book-plan.ts";
-import { faultModeVerdict, faultPollStep, FAULT_PROPAGATION_DEADLINE_MS } from "./preflight-checks.ts";
+import {
+  faultModeVerdict,
+  faultPollStep,
+  FAULT_PROPAGATION_DEADLINE_MS,
+  type FaultModeVerdict,
+} from "./preflight-checks.ts";
 import { parseFaultTargets } from "../../src/lib/loadtest-fault.ts";
 
 const PROD_HOSTS = ["slate.trypennie.app", "drukfvgaynzrralbzkzj.supabase.co"];
@@ -77,6 +87,29 @@ const BURST_GRACE_MS = Number(process.env.BURST_GRACE_MS ?? "2000");
 // env-ok: TZ_NAME (optional; defaults to America/New_York, the zone the seeded
 // roster's largest group keeps)
 const TIMEZONE = process.env.TZ_NAME ?? "America/New_York";
+// env-ok: DRIVE_DEADLINE_MS (optional; a test seam that can only SHORTEN the
+// deadline derived from the plan, never lengthen it past the job's timeout)
+const DEADLINE_OVERRIDE = process.env.DRIVE_DEADLINE_MS;
+// env-ok: DRIVE_REQUEST_TIMEOUT_MS (optional; a test seam that can only SHORTEN one
+// request's abort bound, so a test can watch a hung request time out in milliseconds)
+const REQUEST_TIMEOUT_OVERRIDE = process.env.DRIVE_REQUEST_TIMEOUT_MS;
+
+/**
+ * The abort signal for one request (#3222). Bounded by its own timeout and by the
+ * driver's deadline plus the overrun, so a request that never answers cannot keep
+ * the driver from writing its file before the job's timeout kills it.
+ */
+function requestSignal(deadlineAtMs: number): AbortSignal {
+  return AbortSignal.timeout(
+    effectiveDeadlineMs(requestAbortMs({ nowMs: Date.now(), deadlineAtMs }), REQUEST_TIMEOUT_OVERRIDE),
+  );
+}
+
+/** Whether a fetch failed because its own abort bound fired. */
+function timedOut(err: unknown): boolean {
+  const name = (err as { name?: string } | null)?.name;
+  return name === "TimeoutError" || name === "AbortError";
+}
 
 // A load run points at an isolated deployment and an isolated branch. Refusing
 // production by NAME rather than by a flag, because the flag would be the thing
@@ -109,7 +142,7 @@ const REFRESH_MS = availabilityRefreshMs(DRIVERS);
  * budget and the run would be measuring the limiter. The cache is refreshed on a
  * pace derived from that same ceiling.
  */
-async function slotsFor(code: string, nowMs: number): Promise<string[]> {
+async function slotsFor(code: string, nowMs: number, deadlineAtMs: number): Promise<string[]> {
   const cached = slotCache.get(code);
   if (cached && nowMs - cached.fetchedAtMs < REFRESH_MS) return cached.slots;
   let slots: string[] = cached?.slots ?? [];
@@ -120,7 +153,9 @@ async function slotsFor(code: string, nowMs: number): Promise<string[]> {
   // for the whole run (#2261).
   let payload: unknown = null;
   try {
-    const res = await fetch(`${SLATE_BASE}/api/availability?bucket=${encodeURIComponent(code)}`);
+    const res = await fetch(`${SLATE_BASE}/api/availability?bucket=${encodeURIComponent(code)}`, {
+      signal: requestSignal(deadlineAtMs),
+    });
     if (res.ok) payload = await res.json();
     // A refused or unreadable read KEEPS the previous view rather than emptying it.
     // An empty list means "this bucket offers nothing", which is a real state the
@@ -142,6 +177,8 @@ async function book(req: {
   startIso: string;
   externalId: string;
   n: number;
+  /** The driver's own deadline, or Infinity for the burst, which has none. */
+  deadlineAtMs: number;
 }): Promise<BookingAttempt> {
   const sentAtMs = Date.now();
   const t0 = performance.now();
@@ -150,6 +187,7 @@ async function book(req: {
   let seenIp: string | null = null;
   try {
     const res = await fetch(`${SLATE_BASE}/api/bookings`, {
+      signal: requestSignal(req.deadlineAtMs),
       method: "POST",
       headers: { Authorization: `Bearer ${API_KEY}`, "content-type": "application/json" },
       body: JSON.stringify({
@@ -173,15 +211,25 @@ async function book(req: {
     // believes it has: a CI runner behind egress NAT shares an address with
     // everything else on it.
     seenIp = res.headers.get("x-loadtest-seen-ip");
-    const body = (await res.json().catch(() => null)) as
-      | { outcome?: string; code?: string }
-      | null;
+    // An unreadable body is null, but an ABORT while reading it is not: the headers
+    // arrived and the body never did, which is a timeout, never a 200 with no
+    // outcome (#3222). Rethrown to the catch below, which records it as one.
+    const body = (await res.json().catch((err: unknown) => {
+      if (timedOut(err)) throw err;
+      return null;
+    })) as { outcome?: string; code?: string } | null;
     outcome = body?.outcome ?? body?.code ?? null;
   } catch (err) {
     // status stays 0, which the judge reads as "no reply at all" and keeps apart
     // from a 5xx: a driver that could not reach the deployment and one the
     // deployment answered badly are two different findings (L11).
-    outcome = `transport: ${(err as Error).name}`;
+    // A request the driver gave up on at its own bound is `timed-out`, its own
+    // outcome, so the judge reports it apart from a reply that never came for any
+    // other reason (#3222).
+    outcome = timedOut(err) ? "timed-out" : `transport: ${(err as Error).name}`;
+    // A body that stalled after its headers leaves the header status behind; the
+    // request was not answered, so it carries no status either.
+    status = 0;
   }
   return {
     driver: DRIVER,
@@ -210,12 +258,30 @@ async function steady(mode: "steady" | "fault" = "steady", minutes = RUN_MINUTES
     perMinute: PER_DRIVER_PER_MINUTE,
     startAtMs: startedAtMs,
   });
+  // Its OWN deadline, derived from the plan (#3222). The drivers send one request
+  // at a time, so a slow deployment stretches the run; without this the job's
+  // timeout killed the driver mid run, it wrote nothing, and a run that should have
+  // FAILED on latency could only be called incomplete.
+  const deadlineMs = effectiveDeadlineMs(
+    driverDeadlineMs({ total: plan.length, perMinute: PER_DRIVER_PER_MINUTE }),
+    DEADLINE_OVERRIDE,
+  );
+  const deadlineAtMs = startedAtMs + deadlineMs;
+  let cutShort = false;
   const attempts: BookingAttempt[] = [];
   for (const req of plan) {
+    if (deadlineReached({ nowMs: Date.now(), nextAtMs: req.atMs, deadlineAtMs })) {
+      cutShort = true;
+      console.error(
+        `driver ${DRIVER}: stopped at its ${(deadlineMs / 60_000).toFixed(1)} minute deadline after ` +
+          `${attempts.length} of ${plan.length} requests; writing what it ran for the judge`,
+      );
+      break;
+    }
     const wait = req.atMs - Date.now();
     if (wait > 0) await sleep(wait);
     const now = Date.now();
-    const slots = await slotsFor(req.code, now);
+    const slots = await slotsFor(req.code, now, deadlineAtMs);
     const startIso = pickSlot(slots);
     if (startIso === null) {
       // A bucket offering nothing is RECORDED rather than skipped in silence, with a
@@ -241,6 +307,7 @@ async function steady(mode: "steady" | "fault" = "steady", minutes = RUN_MINUTES
         startIso,
         externalId: externalIdFor(idPrefix(RUN_ID, mode), DRIVER, req.n),
         n: req.n,
+        deadlineAtMs,
       }),
     );
   }
@@ -252,6 +319,10 @@ async function steady(mode: "steady" | "fault" = "steady", minutes = RUN_MINUTES
     startedAtMs,
     finishedAtMs: Date.now(),
     ...(mode === "fault" ? { faultPct: faultPctConfirmed, faultTargets: faultTargetsConfirmed } : {}),
+    // Exit zero all the same: the judge grades a cut short run as a FAIL with its
+    // figures, and a non-zero exit here would fail the drive job and skip the
+    // ceiling check and the fault pass that wait on it.
+    ...(cutShort ? { cutShort: { deadlineMs, attemptsMade: attempts.length } } : {}),
     attempts,
   });
 }
@@ -302,15 +373,34 @@ async function fault(): Promise<void> {
   // catch it because both builds come from the same commit. The ladder is pure and
   // lives in `preflight-checks.ts`; this is the clock and the request.
   const startedWaitingMs = Date.now();
+  // Each check carries the same abort every driver request does (#3222), bounded by
+  // the propagation deadline, so a version check that never answers is one more
+  // reading to wait out rather than a driver hung until the job's timeout kills it.
+  const pollDeadlineAtMs = startedWaitingMs + FAULT_PROPAGATION_DEADLINE_MS;
   for (;;) {
-    const res = await fetch(`${SLATE_BASE}/api/smoke/version`, {
-      headers: { Authorization: `Bearer ${API_KEY}` },
-    });
-    const verdict = faultModeVerdict(res.status, await res.json().catch(() => ({})), {
-      faultPct: wantedPct,
-      commit: commit === "" ? undefined : commit,
-      faultTargets: wantedTargets.targets,
-    });
+    let verdict: FaultModeVerdict;
+    try {
+      const res = await fetch(`${SLATE_BASE}/api/smoke/version`, {
+        headers: { Authorization: `Bearer ${API_KEY}` },
+        signal: requestSignal(pollDeadlineAtMs),
+      });
+      const body = await res.json().catch((err: unknown) => {
+        if (timedOut(err)) throw err;
+        return {};
+      });
+      verdict = faultModeVerdict(res.status, body, {
+        faultPct: wantedPct,
+        commit: commit === "" ? undefined : commit,
+        faultTargets: wantedTargets.targets,
+      });
+    } catch (err) {
+      if (!timedOut(err)) throw err;
+      verdict = {
+        ok: false,
+        why: "/api/smoke/version did not answer inside the driver's per request bound.",
+        retriable: true,
+      };
+    }
     const step = faultPollStep(verdict, Date.now() - startedWaitingMs);
     if (step.action === "accept") {
       faultPctConfirmed = step.faultPct;
@@ -327,8 +417,10 @@ async function fault(): Promise<void> {
     );
     await sleep(step.waitMs);
   }
-  const minutes = Number((process.env.FAULT_MINUTES ?? "2").trim());
-  if (!Number.isFinite(minutes) || minutes <= 0) {
+  // Read through the judge's own reader, so the plan the judge checks the file
+  // against is the plan this ran (#3222).
+  const minutes = faultMinutesFrom(process.env.FAULT_MINUTES);
+  if (minutes === null) {
     console.error(`FAILED: FAULT_MINUTES is not a positive number of minutes.`);
     process.exit(1);
   }
@@ -387,7 +479,13 @@ async function burst(): Promise<void> {
   // control is that exactly one of them wins.
   const attempts = await Promise.all(
     Array.from({ length: BURST_REQUESTS }, (_, i) =>
-      book({ code, startIso, externalId: externalIdFor(idPrefix(RUN_ID, "burst"), DRIVER, i), n: i }),
+      book({
+        code,
+        startIso,
+        externalId: externalIdFor(idPrefix(RUN_ID, "burst"), DRIVER, i),
+        n: i,
+        deadlineAtMs: Number.POSITIVE_INFINITY,
+      }),
     ),
   );
   write({

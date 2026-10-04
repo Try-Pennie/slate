@@ -46,6 +46,7 @@ import {
   BOOKING_WRITES_PER_MINUTE,
   DRIVERS,
   PER_DRIVER_PER_MINUTE,
+  faultMinutesFrom,
   RUN_MINUTES,
   type DriverMode,
   type DriverResult,
@@ -125,6 +126,13 @@ function readJson<T>(path: string): T {
   return JSON.parse(readFileSync(path, "utf8")) as T;
 }
 
+/**
+ * Files that could not be used as a steady driver's result (#3222): unparsable, or a
+ * `driver-N.json` that says another mode. Handed to the judge so a driver with no
+ * steady file is named by its real cause rather than as one that hung.
+ */
+const unreadableDriverFiles: { file: string; why: string }[] = [];
+
 /** Driver files, by mode. A file this cannot read is REPORTED as missing rather
  *  than skipped, so the judge sees an incomplete run instead of a short one. */
 function loadDrivers(mode: DriverMode): DriverResult[] {
@@ -139,8 +147,14 @@ function loadDrivers(mode: DriverMode): DriverResult[] {
     try {
       const r = readJson<DriverResult>(join(RESULTS, name));
       if (r.mode === mode) out.push(r);
+      else if (mode === "steady" && /^driver-\d+\.json$/.test(name)) {
+        unreadableDriverFiles.push({ file: name, why: `it says mode ${String(r.mode)}, not steady` });
+      }
     } catch (err) {
       console.error(`note: ${name} could not be read (${(err as Error).message}); counted as missing`);
+      if (mode === "steady" && /^driver-\d+\.json$/.test(name)) {
+        unreadableDriverFiles.push({ file: name, why: (err as Error).message });
+      }
     }
   }
   return out.sort((a, b) => a.driver - b.driver);
@@ -399,6 +413,12 @@ try {
  * asked for is `expectedLegs.faultPct`, and the judge calls a configured leg that
  * never arrived incomplete.
  */
+// env-ok: FAULT_MINUTES (optional; the fault pass's length, unset in the workflow,
+// read through the same reader the driver uses so the two agree on the plan)
+const FAULT_MINUTES = faultMinutesFrom(process.env.FAULT_MINUTES) ?? (() => {
+  console.error(`FAILED: FAULT_MINUTES is not a positive number of minutes: ${JSON.stringify(process.env.FAULT_MINUTES)}.`);
+  process.exit(1);
+})();
 const faultDrivers = loadDrivers("fault");
 let faultPass: JudgeInput["faultPass"];
 if (faultDrivers.length > 0) {
@@ -424,6 +444,12 @@ if (faultDrivers.length > 0) {
     fiveXx: attempts.filter((a) => a.status >= 500 && a.status <= 599).length,
     faultPct: Math.min(...reported),
     faultTargets: targetLists.length === 1 && targetLists[0] !== "" ? targetLists[0]!.split(",") : [],
+    // The files themselves, and the plan each was meant to run, so the judge gives
+    // them the steady drivers' checks and fails a pass cut short at its deadline
+    // with its figures (#3222). The length is read from FAULT_MINUTES through the
+    // driver's own reader, so a hand run that set it is judged against its plan.
+    drivers: faultDrivers,
+    expectedPerDriver: Math.round(PER_DRIVER_PER_MINUTE * FAULT_MINUTES),
   };
 }
 
@@ -567,6 +593,7 @@ const input: JudgeInput = {
     faultPct: wholeNumber(process.env.EXPECT_FAULT_PCT, "EXPECT_FAULT_PCT"),
     faultTargets: expectedFaultTargets.targets,
   },
+  unreadableDriverFiles,
   budgets: { cpuMsP99: cpuBudgetMs(), cronCpuMs: cronCpuBudgetMs() },
 };
 
@@ -616,13 +643,20 @@ const m = result.measurements;
 if (m) {
   lines.push("## What the run measured");
   lines.push("");
-  lines.push(`- attempts: ${m.attempts}, confirmed: ${m.confirmed}`);
+  lines.push(`- attempts: ${m.attempts} of ${m.planned} planned, confirmed: ${m.confirmed}`);
+  // #3222: a driver that stopped at its own deadline, named with how far it got.
+  for (const c of m.cutShort) {
+    lines.push(
+      `- driver ${c.driver} cut short at its ${(c.deadlineMs / 60_000).toFixed(1)} minute deadline ` +
+        `after ${c.made} of ${c.planned} requests`,
+    );
+  }
   lines.push(
     `- confirmed a minute: ${m.confirmedPerMinute.toFixed(1)} against a target of ${m.targetPerMinute}`,
   );
   lines.push(`- all responses: p50 ${m.all?.p50 ?? "n/a"}ms, p95 ${m.all?.p95 ?? "n/a"}ms, max ${m.all?.max ?? "n/a"}ms`);
   lines.push(`- successful only: p50 ${m.ok?.p50 ?? "n/a"}ms, p95 ${m.ok?.p95 ?? "n/a"}ms, max ${m.ok?.max ?? "n/a"}ms`);
-  lines.push(`- 5xx: ${m.fiveXx}, no reply at all: ${m.noReply}, write refusals: ${m.writeRefusals}`);
+  lines.push(`- 5xx: ${m.fiveXx}, no reply at all: ${m.noReply}, timed out at the driver's bound: ${m.timedOut}, write refusals: ${m.writeRefusals}`);
   lines.push(`- refusals by the address Slate saw: ${JSON.stringify(m.refusalsByIp)}`);
   // The number the run exists to produce after #2274, on EVERY run rather than
   // only when it is not zero (#2323). A measured zero and a check that never ran

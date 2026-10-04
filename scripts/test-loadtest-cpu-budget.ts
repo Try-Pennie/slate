@@ -212,6 +212,7 @@ function healthy() {
       cronSource: "agreed-empty" as const,
     },
     expectedLegs: { burstDrivers: 0, faultPct: 0 },
+    unreadableDriverFiles: [],
     budgets: { cpuMsP99: REQUEST_CPU_P99_MS, cronCpuMs: WRANGLER_CRON_CPU_MS },
   };
 }
