@@ -1165,6 +1165,48 @@ The platform half is reported `unmeasured` on every run so far: the analytics AP
 returns no rows for a window minutes old, which is the lag this repo already
 documents (#1533). That is the judge's control working as designed, not a pass.
 
+## The post confirm recompute arms (#3258)
+
+Every booking on a user facing path schedules a recompute of the booked bucket's
+slots after its response (`invalidateSlots`, `post-confirm-recompute` in the per job
+line). Run 37229344882 measured the confirm's "assign and verify" stage about 1.7s
+slower at the median than a same day control on the 2026-09-15 code, while that
+stage's own reads had not changed, so the recompute running beside the next confirms
+is the suspect. To measure it rather than infer it, the deployment can run one of
+three ARMS, set by `SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE`:
+
+| arm | what a booking schedules after its response | per job line name |
+|---|---|---|
+| `on` (default) | the full recompute, exactly as production | `post-confirm-recompute` |
+| `off` | nothing; the recompute lane keeps slots fresh | none |
+| `reads-only` | the recompute's reads (`loadBucketSlotInputs`), no compute, no row write | `post-confirm-recompute-reads-only` |
+
+`off` against `on` says whether the recompute is what the confirms wait on;
+`reads-only` against both says whether its cost is the database reads or the CPU of
+the compute, which decides the fix. Expect `off` to report a worse "worst recompute
+age", since freshness falls back to the lane: that is the arm, not a defect.
+
+**Production cannot reach it.** It is read only when `SLATE_LOADTEST` is "true"
+(`src/lib/booking/post-confirm-recompute.ts`); otherwise every value, a typo
+included, is `on`. It is committed nowhere: `scripts/test-wrangler-loadtest-env.ts`
+fails the build if production or env.loadtest carries it.
+
+**An unknown value fails loud.** The Worker logs it at error once per isolate and
+runs `on`, `/api/smoke/version` reports it as `postConfirmRecomputeUnknown`, and the
+preflight refuses before anything is driven.
+
+**Setting it.** Dispatch the workflow with the `post_confirm_recompute` input. For
+`on` nothing changes. For `off` or `reads-only` the workflow's `arm` job rebuilds
+and redeploys the Worker with `--var "SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE:<arm>"`,
+exactly as the fault leg adds its own settings, and the preflight then asks
+`/api/smoke/version` which arm the deployment runs and refuses on any mismatch. The
+report's header names the arm. The fault leg carries the same arm; its restore step
+deploys with no `--var`, which puts the deployment back to `on`.
+
+For a fair comparison, run the three arms back to back on one day, from the same
+commit, each against its own freshly seeded branch and deployment, and compare
+"assign and verify" from the confirm profile line.
+
 ## Tearing down (#2322)
 
 `teardown` deletes **two** things now, and for months it said so while deleting one.

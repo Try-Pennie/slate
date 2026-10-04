@@ -28,6 +28,7 @@ import {
 } from "./confirm-startup.ts";
 import { DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES } from "../../src/lib/rate-limit-core.ts";
 import { burstControlStrength, type BurstDepthReading } from "./burst-target.ts";
+import { recomputeArmLine } from "../../src/lib/booking/post-confirm-recompute-modes.ts";
 import { REQUEST_CPU_P99_MS, cronCpuShareText, faultPassKeepsFiveXxBar } from "./judge-booking-run.ts";
 import {
   INVOCATIONS_QUERY,
@@ -628,6 +629,13 @@ const lines: string[] = [];
 lines.push(`# Booking path load run ${RUN_ID}`);
 lines.push("");
 lines.push(`Judged ${new Date().toISOString()}. Verdict: **${result.verdict.toUpperCase()}**.`);
+lines.push("");
+// #3258: which arm of the post confirm recompute this run was dispatched for, so
+// three back to back reports cannot be read against the wrong arm. The preflight
+// refuses a deployment running any other arm, which is why the dispatch is enough.
+// env-ok: EXPECT_POST_CONFIRM_RECOMPUTE (optional; the workflow's input, unset on a
+// hand run, which is the on arm)
+lines.push(recomputeArmLine(process.env.EXPECT_POST_CONFIRM_RECOMPUTE));
 lines.push("");
 if (result.incomplete.length > 0) {
   lines.push("## This run was not judged");

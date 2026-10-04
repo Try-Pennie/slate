@@ -1,4 +1,9 @@
 import { normalizeCommit } from "../stamp-build-info.ts";
+import {
+  POST_CONFIRM_RECOMPUTE_MODES,
+  POST_CONFIRM_RECOMPUTE_VAR,
+  parsePostConfirmRecompute,
+} from "../../src/lib/booking/post-confirm-recompute-modes.ts";
 import { hydrationBatchSize, HYDRATION_ONBOARDING_MAX } from "../../src/lib/google/hydration.ts";
 
 /**
@@ -1118,4 +1123,103 @@ export function warmupStep(r: WarmupReading, p: WarmupProgress): WarmupStep {
       `${p.hydrationDrives > 0 ? `, ${p.hydrationDrives} hydration drives` : ""}` +
       `${p.recomputeDrives > 0 ? `, ${p.recomputeDrives} recomputes` : ""}`,
   };
+}
+
+/** What `/api/smoke/version` said about the post confirm recompute arm (#3258). */
+export type RecomputeModeVerdict = { ok: true } | { ok: false; why: string; retriable: boolean };
+
+/**
+ * Whether the deployment is running the post confirm recompute arm this run was
+ * dispatched for (#3258).
+ *
+ * The whole value of the three arms is that each report measures the arm it names.
+ * A run dispatched as `off` against a deployment still recomputing would report the
+ * slow numbers as the fast arm's, and the comparison would exonerate the suspect
+ * with no change having been made (L98). So the preflight asks the deployment, the
+ * way the fault leg asks about its percentage.
+ *
+ * Retriable only where waiting can change the answer: the workflow redeploys a
+ * non default arm moments before this runs, and the version being replaced reports
+ * `on`. Anything else (an `on` arm against a deployment left off, an unknown value,
+ * a deployment too old to say) is a state that waiting never fixes.
+ */
+export function recomputeModeVerdict(body: unknown, wanted: string | undefined): RecomputeModeVerdict {
+  const parsedWanted = parsePostConfirmRecompute(wanted);
+  if (parsedWanted.unknown !== null) {
+    return {
+      ok: false,
+      why:
+        `the post_confirm_recompute input is "${parsedWanted.unknown}", which is not one of ` +
+        `${POST_CONFIRM_RECOMPUTE_MODES.join(", ")}. Nothing was driven.`,
+      retriable: false,
+    };
+  }
+  const b = (typeof body === "object" && body !== null ? body : {}) as {
+    postConfirmRecompute?: unknown;
+    postConfirmRecomputeUnknown?: unknown;
+  };
+  if (typeof b.postConfirmRecomputeUnknown === "string" && b.postConfirmRecomputeUnknown !== "") {
+    return {
+      ok: false,
+      why:
+        `this deployment's ${POST_CONFIRM_RECOMPUTE_VAR} is "${b.postConfirmRecomputeUnknown}", which ` +
+        `is no mode, so it recomputes as if on whatever arm was asked for. Redeploy with one of ` +
+        `${POST_CONFIRM_RECOMPUTE_MODES.join(", ")}.`,
+      retriable: false,
+    };
+  }
+  if (typeof b.postConfirmRecompute !== "string") {
+    return {
+      ok: false,
+      why:
+        "/api/smoke/version reports no postConfirmRecompute field, so this deployment predates the " +
+        "switch and which arm it runs could not be established. Deploy the current commit with " +
+        "--env loadtest and re-run.",
+      retriable: false,
+    };
+  }
+  const got = b.postConfirmRecompute;
+  if (got === parsedWanted.mode) return { ok: true };
+  return {
+    ok: false,
+    why:
+      `this deployment's post confirm recompute is ${got} and the run was dispatched for ` +
+      `${parsedWanted.mode}, so its report would describe an arm nobody drove.` +
+      (parsedWanted.mode === "on"
+        ? ` It was left ${got} by an earlier arm; redeploy with --env loadtest and no --var, then re-run.`
+        : ""),
+    // A redeploy to a non default arm lands a little after wrangler exits, and the
+    // version being replaced reports on. An on arm meeting a leftover never resolves.
+    retriable: parsedWanted.mode !== "on" && got === "on",
+  };
+}
+
+/**
+ * Ask the deployment which recompute arm it runs until it answers the one wanted,
+ * a refusal waiting cannot change, or the deadline (#3258). A 5xx says nothing about
+ * the arm and is a deployment momentarily unwell after the arm job's redeploy, so it
+ * is waited out rather than judged. Injected I/O and clock, so every exit is driven
+ * offline (L524).
+ */
+export async function awaitRecomputeArm(opts: {
+  wanted: string | undefined;
+  fetchVersion: () => Promise<{ status: number; body: unknown }>;
+  sleep: (ms: number) => Promise<void>;
+  now: () => number;
+  waitMs: number;
+  pauseMs: number;
+}): Promise<RecomputeModeVerdict> {
+  const deadline = opts.now() + opts.waitMs;
+  for (;;) {
+    const { status, body } = await opts.fetchVersion();
+    const verdict: RecomputeModeVerdict =
+      status >= 500
+        ? { ok: false, why: `/api/smoke/version answered ${status}`, retriable: true }
+        : recomputeModeVerdict(body, opts.wanted);
+    if (verdict.ok || !verdict.retriable) return verdict;
+    if (opts.now() >= deadline) {
+      return { ok: false, retriable: false, why: `${verdict.why}, and still did after waiting ${Math.round(opts.waitMs / 1000)}s` };
+    }
+    await opts.sleep(opts.pauseMs);
+  }
 }

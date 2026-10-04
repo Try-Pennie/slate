@@ -15,9 +15,14 @@
  */
 import { allLaneNames } from "../../worker/lanes-disabled.ts";
 
-/** The fault switch's two settings (#3104), which the fault leg adds with --var and
- *  nothing commits. */
-export const FAULT_SWITCH_VARS = ["SLATE_LOADTEST_FAULT_PCT", "SLATE_LOADTEST_FAULT_TARGETS"] as const;
+/** The per run switches, which a leg adds with --var and nothing commits: the fault
+ *  switch's two settings (#3104), and the post confirm recompute arm (#3258), which
+ *  production must never carry. */
+export const FAULT_SWITCH_VARS = [
+  "SLATE_LOADTEST_FAULT_PCT",
+  "SLATE_LOADTEST_FAULT_TARGETS",
+  "SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE",
+] as const;
 
 export interface RateLimit {
   name?: string;

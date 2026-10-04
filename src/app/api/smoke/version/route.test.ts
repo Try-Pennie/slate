@@ -92,6 +92,9 @@ describe("GET /api/smoke/version", () => {
         faultTargets: ["google-read"],
         faultTargetsUnknown: [],
         productionSecrets: [],
+        // #3258: the post confirm recompute arm, on when nothing set it.
+        postConfirmRecompute: "on",
+        postConfirmRecomputeUnknown: null,
       });
     } finally {
       if (saved === undefined) delete process.env.SLATE_LOADTEST;
@@ -189,5 +192,53 @@ describe("GET /api/smoke/version", () => {
     canaryKey.primary.mockReturnValue("real-key");
     const res = await get("Bearer real-key");
     expect(Object.keys(await res.json()).sort()).toEqual(["commit", "faultPct", "loadtest"]);
+  });
+
+  // #3258: which post confirm recompute arm the deployment runs, so the load run's
+  // preflight can refuse a deployment running an arm nobody dispatched.
+  describe("the post confirm recompute arm", () => {
+    const withEnv = async (vars: Record<string, string | undefined>, run: () => Promise<void>) => {
+      const keys = Object.keys(vars);
+      const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+      for (const k of keys) {
+        if (vars[k] === undefined) delete process.env[k];
+        else process.env[k] = vars[k];
+      }
+      try {
+        await run();
+      } finally {
+        for (const k of keys) {
+          if (saved[k] === undefined) delete process.env[k];
+          else process.env[k] = saved[k];
+        }
+      }
+    };
+
+    it("reports the arm the booking path acts on", async () => {
+      await withEnv({ SLATE_LOADTEST: "true", SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE: "reads-only" }, async () => {
+        canaryKey.primary.mockReturnValue("real-key");
+        const body = await (await get("Bearer real-key")).json();
+        expect(body.postConfirmRecompute).toBe("reads-only");
+        expect(body.postConfirmRecomputeUnknown).toBeNull();
+      });
+    });
+
+    it("reports a value that names no arm, and the on it runs instead", async () => {
+      await withEnv({ SLATE_LOADTEST: "true", SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE: "of" }, async () => {
+        canaryKey.primary.mockReturnValue("real-key");
+        const body = await (await get("Bearer real-key")).json();
+        expect(body.postConfirmRecompute).toBe("on");
+        expect(body.postConfirmRecomputeUnknown).toBe("of");
+      });
+    });
+
+    it("says nothing about it when it is not a load test, even with the variable set", async () => {
+      await withEnv({ SLATE_LOADTEST: undefined, SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE: "off" }, async () => {
+        canaryKey.primary.mockReturnValue("real-key");
+        const body = await (await get("Bearer real-key")).json();
+        expect(body).not.toHaveProperty("postConfirmRecompute");
+        expect(body).not.toHaveProperty("postConfirmRecomputeUnknown");
+      });
+    });
   });
 });

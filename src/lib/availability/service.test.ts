@@ -18,7 +18,7 @@ import type { Bucket } from "@/lib/db/types";
 const dbHolder = vi.hoisted(() => ({ db: null as unknown as ReturnType<typeof supabaseAdmin> }));
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => dbHolder.db }));
 
-import { loadMembersAvailability, getBucketSlots } from "./service";
+import { loadMembersAvailability, getBucketSlots, loadBucketSlotInputs } from "./service";
 
 type Rows = Record<string, unknown[]>;
 interface RpcResult {
@@ -198,5 +198,46 @@ describe("eligible-resolver threading (#508)", () => {
     expect(resolver.mock.calls[0][0].code).toBe("311");
     // Empty pool -> no members -> no slots (the resolver's [] drove it).
     expect(result?.slots).toEqual([]);
+  });
+});
+
+// #3258: the load run's reads-only arm reaches the recompute's reads through
+// loadBucketSlotInputs, the function getBucketSlots itself reads through, so the two
+// can never make different reads.
+describe("loadBucketSlotInputs (#3258)", () => {
+  const BUCKET_ROW = {
+    id: "b1",
+    org_id: "org1",
+    code: "311",
+    name: "High",
+    criteria: {},
+    fallback_user_id: null,
+    is_test: false,
+    event_type_id: "e1",
+    event_types: {
+      id: "e1",
+      duration_min: 30,
+      buffer_before_min: 0,
+      buffer_after_min: 0,
+      min_notice_min: 0,
+      daily_cap: null,
+      slot_interval_min: 15,
+    },
+  };
+
+  it("makes the reads a compute needs, with the resolver threaded, and computes nothing", async () => {
+    dbHolder.db = fakeDb({ buckets: [BUCKET_ROW], organizations: [{ name: "Org" }], ...POOL_TABLES() });
+    const resolver = vi.fn((_b: Bucket) => Promise.resolve({ ids: [] as string[], fallbackApplied: false }));
+    const inputs = await loadBucketSlotInputs("311", FROM, TO, resolver);
+    expect(inputs?.resolved.bucket.code).toBe("311");
+    expect(inputs?.membersResult.members).toEqual([]);
+    expect(inputs).not.toHaveProperty("slots");
+    expect(resolver).toHaveBeenCalledTimes(1);
+  });
+
+  it("answers null for a code that names no bucket, exactly as getBucketSlots does", async () => {
+    dbHolder.db = fakeDb({ buckets: [], organizations: [], ...POOL_TABLES() });
+    expect(await loadBucketSlotInputs("999", FROM, TO)).toBeNull();
+    expect(await getBucketSlots("999", FROM, TO)).toBeNull();
   });
 });
