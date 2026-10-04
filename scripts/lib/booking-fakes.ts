@@ -1040,6 +1040,7 @@ export function makeDeps(opts: FakeOpts) {
     deleteReservation: async (id) => {
       calls.deletedReservations.push(id);
     },
+    repinReservationEvent: async () => {},
     loadDrainableReservations: async () => opts.drainableReservations ?? [],
     leaseReservation: async () => "lease-1",
     releaseReservationLease: async () => {},

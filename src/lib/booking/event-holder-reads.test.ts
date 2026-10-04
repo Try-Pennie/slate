@@ -15,13 +15,17 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const state = vi.hoisted(() => ({
   rows: {} as Record<string, Record<string, unknown>[]>,
   orders: [] as { table: string; column: string }[],
+  updates: [] as { table: string; patch: Record<string, unknown>; ids: unknown[] }[],
 }));
 
 vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: () => ({
     from: (table: string) => {
       let rows = [...(state.rows[table] ?? [])];
+      let patch: Record<string, unknown> | null = null;
       const b: Record<string, unknown> = {
+        // An update applies its patch to the rows its filters leave, when awaited.
+        update: (p: Record<string, unknown>) => ((patch = p), b),
         select: () => b,
         eq: (col: string, v: unknown) => ((rows = rows.filter((r) => r[col] === v)), b),
         in: (col: string, vs: unknown[]) => ((rows = rows.filter((r) => vs.includes(r[col]))), b),
@@ -30,7 +34,13 @@ vi.mock("@/lib/supabase/admin", () => ({
         gte: () => b,
         order: (column: string) => (state.orders.push({ table, column }), b),
         limit: (n: number) => ((rows = rows.slice(0, n)), b),
-        then: (resolve: (v: unknown) => unknown) => Promise.resolve({ data: rows, error: null }).then(resolve),
+        then: (resolve: (v: unknown) => unknown) => {
+          if (patch) {
+            for (const r of rows) Object.assign(r, patch);
+            state.updates.push({ table, patch, ids: rows.map((r) => r.id) });
+          }
+          return Promise.resolve({ data: rows, error: null }).then(resolve);
+        },
       };
       return b;
     },
@@ -44,6 +54,30 @@ const ACTIVE = ["confirmed", "rescheduled", "completed"] as const;
 beforeEach(() => {
   state.rows = {};
   state.orders = [];
+  state.updates = [];
+});
+
+// #3217: past a tombstone the create path repoints its reservation at the fresh
+// id before writing it, so the drain holds that event. The write is guarded, and
+// a guard that matched nothing must refuse, or the insert would go ahead unpinned.
+describe("repointing a reservation at a fresh event id (#3217)", () => {
+  it("moves a pending reservation that still names the old id", async () => {
+    state.rows.booking_reservations = [{ id: "r", gcal_client_id: "evt", status: "pending" }];
+    await realDeps().repinReservationEvent("r", "evt", "evtv1");
+    expect(state.rows.booking_reservations[0].gcal_client_id).toBe("evtv1");
+  });
+
+  it("refuses when the reservation no longer names the old id", async () => {
+    state.rows.booking_reservations = [{ id: "r", gcal_client_id: "evtv1", status: "pending" }];
+    await expect(realDeps().repinReservationEvent("r", "evt", "evtv2")).rejects.toThrow(/no longer names evt/);
+    expect(state.updates.flatMap((u) => u.ids)).toEqual([]);
+  });
+
+  it("refuses a reservation that is no longer pending", async () => {
+    state.rows.booking_reservations = [{ id: "r", gcal_client_id: "evt", status: "delivered" }];
+    await expect(realDeps().repinReservationEvent("r", "evt", "evtv1")).rejects.toThrow(/no longer names evt/);
+    expect(state.rows.booking_reservations[0].gcal_client_id).toBe("evt");
+  });
 });
 
 describe("the live holder question (#3215)", () => {

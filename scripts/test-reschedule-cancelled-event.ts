@@ -32,7 +32,7 @@ import {
   EventCancelledOnReuse,
   EventGone,
 } from "../src/lib/booking/core.ts";
-import type { Booking, User } from "../src/lib/db/types.ts";
+import type { Booking, BookingReservation, User } from "../src/lib/db/types.ts";
 import { createAsserter, makeDeps, makeBooking, input, bucket, eventType, RR, SYS, NOW } from "./lib/booking-fakes.ts";
 
 const { assert, finish } = createAsserter();
@@ -621,6 +621,89 @@ async function run() {
       "sweep: an abandoned in place pin's RECREATED event is queued, and only that one",
     );
     assert(res.enqueued === 1 && res.swept === 3, "sweep: it is counted as enqueued");
+  }
+
+  // --- 17. the CREATE path race past a tombstone: the reservation must name the
+  // fresh id BEFORE it is written, so a drain pass between the failed attempt and
+  // the retry holds the fresh event and the retry adopts it (one invite, not two)
+  {
+    const google = fakeGoogle();
+    const q = queue(google);
+    const bookings: Booking[] = [];
+    let reservation: BookingReservation | null = null;
+    const repins: { from: string; to: string; googleHeldTo: boolean }[] = [];
+    let inserts = 0;
+    const { deps } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
+    const d: BookingDeps = {
+      ...deps,
+      ...google.deps,
+      ...q.deps,
+      createEvent: async (email, args, clientId, opts) => {
+        // The reserved id is a tombstone: an earlier attempt's event the drain deleted.
+        if (clientId && !google.events.has(clientId) && clientId === reservation?.gcal_client_id && repins.length === 0) {
+          google.events.set(clientId, "cancelled");
+        }
+        return google.deps.createEvent!(email, args, clientId, opts);
+      },
+      insertReservation: async (row) => {
+        reservation ??= {
+          ...row,
+          id: "resv-1",
+          status: "pending",
+          lease_until: null,
+          attempts: 0,
+          last_error: null,
+          next_attempt_at: null,
+          created_at: "",
+          updated_at: "",
+        } as BookingReservation;
+        return reservation;
+      },
+      loadReservationByKey: async () => (reservation?.status === "pending" ? reservation : null),
+      deleteReservation: async () => {
+        if (reservation) reservation.status = "delivered";
+      },
+      repinReservationEvent: async (id, from, to) => {
+        if (!reservation || reservation.id !== id || reservation.gcal_client_id !== from) {
+          throw new Error("reservation repin matched no row");
+        }
+        repins.push({ from, to, googleHeldTo: google.events.has(to) });
+        reservation.gcal_client_id = to;
+      },
+      insertBooking: async (row) => {
+        if (++inserts === 1) return { ok: false, conflict: false, error: { message: "DeadlineExceededError: supabase", details: "", hint: "", code: "" } };
+        const booking = { ...row, id: "bk-new", status: "confirmed" } as unknown as Booking;
+        bookings.push(booking);
+        return { ok: true, booking };
+      },
+      findBookingByIdempotencyKey: async () => bookings[0] ?? null,
+      liveBookingHoldingEvent: async (eventId) => bookings.find((b) => b.gcal_event_id === eventId)?.id ?? null,
+      pendingWritePinsEvent: async (eventId) =>
+        reservation?.status === "pending" && reservation.gcal_client_id === eventId,
+    };
+    await caught(() => createBooking({ ...input, idempotencyKey: "lead-key-1" }, d));
+    const fresh = reservation ? (reservation as BookingReservation).gcal_client_id : "";
+    assert(
+      repins.length === 1 && !repins[0].googleHeldTo && repins[0].to === fresh,
+      "create race: the reservation names the fresh id BEFORE Google holds it",
+    );
+    assert(
+      google.events.get(fresh) === "confirmed" && [...q.rows.values()].some((r) => r.gcal_event_id === fresh),
+      "create race: the failed insert queues the fresh event, which is live",
+    );
+    const held = await processPendingEventDeletions(d, 50);
+    assert(
+      held.held === 1 && held.deleted === 0 && google.events.get(fresh) === "confirmed",
+      "create race: the drain HOLDS the fresh event while the reservation pins it",
+    );
+    const created = [...google.events.keys()].length;
+    const res = await createBooking({ ...input, idempotencyKey: "lead-key-1" }, d);
+    assert(
+      res.booking.gcal_event_id === fresh && [...google.events.keys()].length === created,
+      "create race: the retry adopts the fresh event, so the lead gets one invite, not two",
+    );
+    await processPendingEventDeletions(d, 50);
+    assert(google.events.get(fresh) === "confirmed", "create race: once booked, the drain leaves it alone");
   }
 
   // --- 11. every id in the chain is a tombstone: the reassign fails loudly and

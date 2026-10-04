@@ -1604,6 +1604,23 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
       await supabaseAdmin().from("booking_reservations").delete().eq("id", id);
     },
 
+    repinReservationEvent: async (id, fromClientId, toClientId) => {
+      // THROWS (#3217): the repoint must land before the fresh event is written,
+      // or the drain cannot see that the reservation pins it. Guarded on the id it
+      // still names and on pending, so a row another holder moved is never touched.
+      const { data, error } = await supabaseAdmin()
+        .from("booking_reservations")
+        .update({ gcal_client_id: toClientId })
+        .eq("id", id)
+        .eq("gcal_client_id", fromClientId)
+        .eq("status", "pending")
+        .select("id");
+      if (error) throw new Error(`reservation ${id} could not be repinned: ${error.message}`);
+      if (!data || data.length === 0) {
+        throw new Error(`reservation ${id} no longer names ${fromClientId}, so it was not repinned`);
+      }
+    },
+
     loadDrainableReservations: async (limit) => {
       const nowIso = new Date().toISOString();
       // Same drainability gate as the outbox (#445): pending, lease free, retry

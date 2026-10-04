@@ -1366,6 +1366,14 @@ export interface BookingDeps {
   loadReservationByKey(idempotencyKey: string): Promise<BookingReservation | null>;
   /** Delete a reservation (delete-on-deliver, once the booking is persisted). */
   deleteReservation(id: string): Promise<void>;
+  /**
+   * #3217: point a PENDING reservation at the fresh event id its create is about
+   * to write past a cancelled tombstone, BEFORE the write, so the deletion drain
+   * holds that event and a resume adopts it. Guarded on the id it still names, so
+   * it can never repoint a reservation another holder already moved or finished.
+   * THROWS when the write fails or matches no row, which stops the insert.
+   */
+  repinReservationEvent(id: string, fromClientId: string, toClientId: string): Promise<void>;
   /** Pending reservations whose lease is free/expired, for the drain. */
   loadDrainableReservations(limit: number): Promise<BookingReservation[]>;
   /** Gated lease claim: the token if THIS call took it, null when another holder
@@ -3578,7 +3586,10 @@ async function completeReservation(
     }
   }
 
-  // Create OR reuse the calendar event with the pinned client id.
+  // Create OR reuse the calendar event with the pinned client id. Past a cancelled
+  // tombstone the create walks to a fresh id (#3217), and the reservation is
+  // repointed at it first, so the drain holds the fresh event while the
+  // reservation is pending and a resume adopts it rather than writing another.
   const gcalEventId = await deps.createEvent(
     reservation.pinned_agent_email,
     {
@@ -3591,6 +3602,12 @@ async function completeReservation(
       attendeeName: event.attendeeName ?? undefined,
     },
     reservation.gcal_client_id,
+    {
+      onFreshId: async (fresh) => {
+        await deps.repinReservationEvent(reservation.id, reservation.gcal_client_id, fresh);
+        reservation.gcal_client_id = fresh;
+      },
+    },
   );
 
   const inserted = await deps.insertBooking({ ...bookingInsert, gcal_event_id: gcalEventId });
