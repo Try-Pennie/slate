@@ -540,6 +540,40 @@ export function freeMembersForSlot(
     .map((m) => m.userId);
 }
 
+/**
+ * Which members can take EXACTLY this window, judged by the same predicate as
+ * `freeMembersForSlot` but without requiring the start to sit on the member's own
+ * offering grid (#3248, red team 9).
+ *
+ * The grid exists only to GENERATE offers. A reroute moves a booking that already
+ * has a time, which the lead chose from another advisor's grid, so an advisor whose
+ * shift begins at :05 is never offered a :00 start and would be wrongly read as
+ * unable to take it. Every other gate (the org's hours, the advisor's hours, the
+ * daily cap, the buffers against busy time, and minimum notice as the caller sets
+ * it) is the same `bookableSlotReason` call the grid walk makes.
+ */
+export function freeMembersAtExactWindow(
+  members: MemberAvailability[],
+  input: Omit<SlotComputeInput, "from" | "to" | "members" | "slotIntervalMin">,
+  startMs: number,
+): string[] {
+  const rules: SlotRules = {
+    durationMin: input.durationMin,
+    bufferBeforeMin: input.bufferBeforeMin,
+    bufferAfterMin: input.bufferAfterMin,
+    minNoticeMin: input.minNoticeMin,
+    dailyCap: input.dailyCap,
+    businessHours: input.businessHours,
+  };
+  const businessOpen = new Map<number, boolean>();
+  return members
+    .filter((m) => {
+      const dayCounts = m.dayCounts ?? bookingsPerLocalDay(m.bookingStartsMs, m.timezone);
+      return isBookableSlotForAgent(m, rules, startMs, input.nowMs, { dayCounts, businessOpen });
+    })
+    .map((m) => m.userId);
+}
+
 const DAY_MS = 24 * 60 * MIN;
 
 /**

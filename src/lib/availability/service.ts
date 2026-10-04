@@ -3,6 +3,7 @@ import { selectAllPages } from "@/lib/supabase/paginate";
 import { unwrap } from "@/lib/db/result";
 import {
   computeBucketSlots,
+  freeMembersAtExactWindow,
   freeMembersForSlot,
   assembleMemberAvailability,
   capCountWindow,
@@ -22,7 +23,10 @@ import {
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import { unfairOrderingAlert } from "@/lib/booking/alert-copy";
-import type { Attributes, Bucket, Criteria, EventType } from "@/lib/db/types";
+import type { Attributes, Booking, Bucket, Criteria, EventType } from "@/lib/db/types";
+import { dropHeldAgents, parseLiveHolds, type LiveHold, type LiveHoldRow } from "@/lib/booking/reroute-hold";
+import { userIdsOnApprovedTimeOff } from "@/lib/ooo/approved-overlap";
+import type { CurrentAgentPicture, RoundRobinOpts } from "@/lib/booking/orchestration";
 import { log } from "@/lib/log";
 
 export { agentIdsFromPool } from "@/lib/availability/pool";
@@ -213,6 +217,14 @@ export async function loadMembersAvailability(
   from: string,
   to: string,
   resolveEligible: EligibleResolver = eligibleAgentIds,
+  /**
+   * #3248: leave out the busy blocks a reroute hold wrote. The candidate read and
+   * the reroute search judge holds from `reroute_holds` itself, which ignores an
+   * expired hold the instant it expires, rather than from its cached block, which
+   * the self heal lane only clears within a minute. The slot cache keeps them, so it
+   * stops offering a time only the held advisor could serve.
+   */
+  opts?: { excludeHoldBlocks?: boolean },
 ): Promise<{ members: MemberAvailability[]; lowIds: string[] | undefined }> {
   const db = supabaseAdmin();
 
@@ -243,12 +255,12 @@ export async function loadMembersAvailability(
   // PostgREST's 1,000-row cap, so page past it (#828) or a silent truncation drops busy
   // blocks and an agent looks free and gets overbooked (#35 / #166). selectAllPages
   // throws on a read error (fail-loud).
-  const busyP = selectAllPages<{ user_id: string; starts_at: string; ends_at: string }>(
+  const busyP = selectAllPages<{ user_id: string; starts_at: string; ends_at: string; source: string }>(
     "busy_blocks",
     (pageFrom, pageTo) =>
       db
         .from("busy_blocks")
-        .select("user_id, starts_at, ends_at")
+        .select("user_id, starts_at, ends_at, source")
         .in("user_id", userIds)
         .lt("starts_at", to)
         .gt("ends_at", from)
@@ -266,7 +278,7 @@ export async function loadMembersAvailability(
   const tzByUser: Record<string, string> = {};
   for (const s of schedules) tzByUser[s.user_id] = s.timezone;
 
-  const [busy, countRes] = await Promise.all([
+  const [busyRows, countRes] = await Promise.all([
     busyP,
     db.rpc("count_bookings_per_local_day", {
       p_user_ids: userIds,
@@ -281,6 +293,7 @@ export async function loadMembersAvailability(
     throw new Error(`loadMembersAvailability: daily-cap count failed: ${countRes.error.message}`);
   }
   const dayCountsByUser = parseDayCounts(countRes.data);
+  const busy = opts?.excludeHoldBlocks ? busyRows.filter((b) => b.source !== "hold") : busyRows;
 
   const rules = schedules.flatMap((s) => s.availability_rules ?? []);
   return {
@@ -435,6 +448,7 @@ export async function roundRobinCandidates(
    * pool made entirely of Low carriers reads as having nobody for this lead.
    */
   excludeLow = false,
+  opts: RoundRobinOpts = {},
 ): Promise<{ candidates: string[]; memberCount: number }> {
   const endIso = new Date(
     startMs + eventType.duration_min * 60_000,
@@ -452,25 +466,44 @@ export async function roundRobinCandidates(
         : onlyUserId !== undefined
           ? namedAgentResolver(onlyUserId)
           : eligibleAgentIds,
+      { excludeHoldBlocks: true },
     ),
     loadBusinessHours(),
   ]);
   const members = pool.members;
 
-  const free = freeMembersForSlot(
-    members,
-    {
-      durationMin: eventType.duration_min,
-      bufferBeforeMin: eventType.buffer_before_min,
-      bufferAfterMin: eventType.buffer_after_min,
-      minNoticeMin: eventType.min_notice_min,
-      dailyCap: eventType.daily_cap,
-      slotIntervalMin: eventType.slot_interval_min,
-      businessHours,
-      nowMs: Date.now(),
-    },
-    startMs,
-  );
+  const judgeInput = {
+    durationMin: eventType.duration_min,
+    bufferBeforeMin: eventType.buffer_before_min,
+    bufferAfterMin: eventType.buffer_after_min,
+    // #3248: a reroute's time is already chosen, so minimum notice (a rule for a
+    // lead choosing) does not apply, and the exact window is judged rather than
+    // the advisor's offering grid (red team 9).
+    minNoticeMin: opts.fixedTime ? 0 : eventType.min_notice_min,
+    dailyCap: eventType.daily_cap,
+    slotIntervalMin: eventType.slot_interval_min,
+    businessHours,
+    nowMs: Date.now(),
+  };
+  const judged = opts.fixedTime
+    ? freeMembersAtExactWindow(members, judgeInput, startMs)
+    : freeMembersForSlot(members, judgeInput, startMs);
+  // #3248: an advisor held for a bucket correction is skipped BEFORE verify, so a
+  // lead picking that time is routed elsewhere rather than invited and then
+  // cancelled. One read for the whole pool; a failed read throws, never "no holds".
+  const free = judged.length === 0
+    ? judged
+    : dropHeldAgents(
+        judged,
+        await loadLiveHolds(judged, startMs, startMs + eventType.duration_min * 60_000, eventType),
+        {
+          startMs,
+          endMs: startMs + eventType.duration_min * 60_000,
+          bufferBeforeMin: eventType.buffer_before_min,
+          bufferAfterMin: eventType.buffer_after_min,
+        },
+        opts.forBookingId,
+      );
   // #1300: the POOL SIZE travels with the free list. Zero free has two causes that
   // need opposite handling (an empty bucket pages, an out of hours moment must not),
   // and the free list alone cannot tell them apart. The members are already loaded
@@ -492,6 +525,69 @@ export async function roundRobinCandidates(
       preview,
     ),
     memberCount,
+  };
+}
+
+/**
+ * The unexpired, unconsumed reroute holds on `userIds` whose buffered window comes
+ * near this call (#3248), parsed. A superset of the clashing ones; `dropHeldAgents`
+ * applies the exact rule. THROWS on a read error or an unreadable row, because an
+ * empty answer would read as "nobody is held" and route a lead onto an advisor an
+ * admin is holding (audit 12).
+ */
+export async function loadLiveHolds(
+  userIds: string[],
+  startMs: number,
+  endMs: number,
+  eventType: Pick<EventType, "buffer_before_min" | "buffer_after_min">,
+): Promise<LiveHold[]> {
+  if (userIds.length === 0) return [];
+  const fromIso = new Date(startMs - eventType.buffer_before_min * 60_000).toISOString();
+  const toIso = new Date(endMs + eventType.buffer_after_min * 60_000).toISOString();
+  const rows = await selectAllPages<LiveHoldRow>("reroute holds", (from, to) =>
+    supabaseAdmin()
+      .from("reroute_holds")
+      .select("agent_user_id, booking_id, booking_starts_at, booking_ends_at, buffered_starts_at, buffered_ends_at")
+      .in("agent_user_id", userIds)
+      .is("consumed_at", null)
+      .gt("expires_at", new Date().toISOString())
+      .lt("buffered_starts_at", toIso)
+      .gt("buffered_ends_at", fromIso)
+      .order("id")
+      .range(from, to),
+  );
+  return parseLiveHolds(rows);
+}
+
+/**
+ * What a reroute needs to know about the booking's CURRENT advisor on one rung
+ * (#3248): the rung's pool through the REAL resolver (so a fallback stand in and
+ * the Low carriers are visible, red team 4), their cached availability over the
+ * booking's stored window with hold blocks left out, and whether they have
+ * approved time off over it. Every read throws on failure (audit 12), so the
+ * caller's answer is the retriable error rather than a keep.
+ */
+export async function loadCurrentAgentPicture(
+  bucket: Bucket,
+  _eventType: EventType,
+  booking: Pick<Booking, "assigned_user_id" | "starts_at" | "ends_at">,
+): Promise<CurrentAgentPicture> {
+  const agentId = booking.assigned_user_id;
+  const [pool, availability, businessHours, away] = await Promise.all([
+    eligibleAgentIds(bucket),
+    agentId
+      ? loadMembersAvailability(bucket, booking.starts_at, booking.ends_at, namedAgentResolver(agentId), {
+          excludeHoldBlocks: true,
+        })
+      : Promise.resolve({ members: [], lowIds: undefined }),
+    loadBusinessHours(),
+    agentId ? userIdsOnApprovedTimeOff([agentId], booking.starts_at, booking.ends_at) : Promise.resolve(new Set<string>()),
+  ]);
+  return {
+    pool,
+    member: availability.members[0] ?? null,
+    onTimeOff: agentId !== null && away.has(agentId),
+    businessHours,
   };
 }
 

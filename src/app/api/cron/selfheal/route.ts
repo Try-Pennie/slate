@@ -15,6 +15,8 @@ import {
   reconcileMissingBusyBlocks,
 } from "@/lib/booking/service";
 import { reconcileOrphanedPoolExits } from "@/lib/google/sync";
+import { sweepExpiredRerouteHoldBlocks } from "@/lib/booking/reroute-hold-store";
+import { rerouteHoldStoreDeps } from "@/lib/booking/reroute-hold-store-live";
 import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
@@ -141,6 +143,19 @@ export async function GET(req: NextRequest) {
       },
     );
 
+    // #3248: remove the slot cache block of every reroute hold that expired
+    // unconfirmed, and refresh the buckets of the advisors it frees. The booker and
+    // the database already ignore an expired hold the instant it expires; this is
+    // what puts the time back on the offer. Its OWN heartbeat, stamped only when it
+    // succeeded, because the lane's stamp below proves only that the lane ran.
+    const holdSweep = await sweepExpiredRerouteHoldBlocks(rerouteHoldStoreDeps("reroute-hold-sweep")).catch(
+      (err) => {
+        log.error("selfheal", { msg: "reroute hold sweep failed" }, err);
+        return null;
+      },
+    );
+    if (holdSweep) await recordHeartbeat("reroute-hold-sweep").catch(() => {});
+
     // Dead-man's switch (#420/#685): prove this lane ran this tick. Best-effort.
     // Stamped even when a sub-sweep returned its "error" marker (those are
     // logged/alerted separately); the heartbeat only proves the lane executed.
@@ -159,6 +174,8 @@ export async function GET(req: NextRequest) {
       poolExitBlocksDeleted: poolExit?.blocksDeleted ?? "error",
       // #830: creation orphans confirmed present on Google this tick.
       creationOrphans: creationOrphans ? creationOrphans.confirmed.length : "error",
+      // #3248: expired reroute hold blocks removed this tick.
+      rerouteHoldBlocksFreed: holdSweep?.freed ?? "error",
     });
   } finally {
     await releaseLock("cron_selfheal", lock);

@@ -288,6 +288,8 @@ const EXPECTED_PINNED = [
   // #3247: holds an advisor at a booking's buffered window for a bucket correction.
   "place_reroute_hold",
   // #3109: the daily rate_limits prune.
+  // #3248: removes expired reroute holds' busy blocks, on the self heal lane.
+  "prune_expired_reroute_hold_blocks",
   "prune_rate_limits",
   "rate_limit_hit",
   "rate_limit_refund",
@@ -308,6 +310,8 @@ const EXPECTED_PINNED = [
   "replace_user_schedule",
   "replace_user_schedule_if_unchanged",
   // #3247: the one clash rule the hold trigger and placement share. Security INVOKER.
+  // #3248: writes and removes a reroute hold's busy block.
+  "reroute_hold_write_block",
   "reroute_window_clash",
   "reserve_agent_link_name",
   // #2369: the digit rule two stored phone numbers are compared by. Deliberately not

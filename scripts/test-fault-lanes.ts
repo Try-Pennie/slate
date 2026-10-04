@@ -212,7 +212,9 @@ function findingsOf(e: FaultLaneEvidence, x: FaultLaneExpectations = EXPECT): st
 {
   eq(
     shortestBoundLanes(LANE_STALE_BOUNDS_MS),
-    ["outbox", "recompute", "selfheal", "sync"],
+    // #3248: the reroute hold expiry sweep runs every minute inside the self heal
+    // lane and stamps its own heartbeat, so it is required to run too.
+    ["outbox", "recompute", "reroute-hold-sweep", "selfheal", "sync"],
     "the lanes required to run in the window are the every minute lanes, derived from the bounds",
   );
 }

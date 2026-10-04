@@ -373,6 +373,12 @@ export interface Database {
       };
       /** The first step of a reroute confirm (#3247): checks the hold and extends it
        *  to a two minute confirm lease. A consumed hold returns its stored result. */
+      /** Removes expired holds' busy blocks and names the advisors freed (#3248,
+       *  migration 0167). The hold rows are kept. */
+      prune_expired_reroute_hold_blocks: {
+        Args: Record<string, never>;
+        Returns: { user_id: string }[];
+      };
       claim_reroute_hold: {
         Args: { p_org_id: string; p_booking_id: string; p_hold_id: string };
         Returns: {
