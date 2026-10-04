@@ -593,7 +593,12 @@ async function run() {
       await del(bookingId, id);
     };
     const err = await caught(() => reassignBooking("bk1", "b@x.com", SYS, d));
-    assert(err instanceof Error, "hook refused: the reassign fails");
+    assert(
+      err instanceof Error &&
+        !(err instanceof EventCancelledOnReuse) &&
+        err.message === "reassign_intents delete: supabase 503",
+      "hook refused: the reassign fails with the refused delete's own error, not a tombstone refusal",
+    );
     assert(intents.size === 0, "hook refused: both the tombstone's intent and the fresh one are cleared");
   }
 
