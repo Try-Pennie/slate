@@ -78,8 +78,11 @@ trigger for the Durable-Objects fallback (a paid, escalated decision).
    SUPABASE_SECRET_KEY=<branch secret key> \
    node --experimental-strip-types scripts/loadtest/seed.ts
    ```
-   Tunables: `BLOCKS_PER_DAY=12`, `CALS_PER_AGENT=1`, and `ROSTER_SHAPE_FILE` to point
-   at a fresher export from `pnpm loadtest:export-shape`.
+   Tunables: `BLOCKS_PER_DAY=12` and `ROSTER_SHAPE_FILE` to point at a fresher
+   export from `pnpm loadtest:export-shape`. `CALS_PER_AGENT` is refused at anything
+   but 1: each agent's one calendar is seeded under the agent's EMAIL, the id the
+   Google stub's calendar list gives it, because any calendar the stub does not list
+   is deleted with its busy blocks by the watch lane's first reconcile (#3103).
 
    **The roster SIZE comes from the shape, not from you** (#2320). `AGENTS` used to
    default to 200 while the shape carried the measured count (90 baked in, 94 on the
