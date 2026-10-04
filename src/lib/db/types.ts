@@ -996,6 +996,10 @@ export interface OutboxPayload {
   actorUserId?: string | null;
   /** The user an admin acted AS via impersonation (#549). */
   actingAsUserId?: string | null;
+  /** A reroute move's bucket before and after (#3249), for the history row. Absent
+   *  on a plain reassign, which changes no bucket. */
+  fromBucketId?: string | null;
+  toBucketId?: string | null;
 }
 
 /**

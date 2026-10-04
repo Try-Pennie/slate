@@ -65,6 +65,7 @@ vi.mock("@/lib/auth", () => auth);
 vi.mock("@/lib/booking/service", () => service);
 
 import { POST } from "./route";
+import { AgentHeldError } from "@/lib/booking/reroute";
 import { NotAuthorizedError } from "@/lib/auth/http";
 
 /** Same-origin headers, which is what Slate's own UI sends. The route refuses a
@@ -127,6 +128,18 @@ describe("POST /admin/bookings/[id]/reassign", () => {
     const body = await res.json();
     expect(body.code).toBe("DAILY_CAP_EXCEEDED");
     expect(body.agentEmail).toBe("b@x.com");
+  });
+
+  // #3249: an advisor held for another booking's bucket correction is a conflict
+  // that ends by itself, said with the time it ends.
+  it("maps a held advisor to a 409 HELD naming when the hold ends", async () => {
+    service.adminReassignBooking.mockRejectedValueOnce(new AgentHeldError("2026-10-05T19:04:00Z"));
+    const res = await POST(req({ agentEmail: "b@x.com", reason: "owner_reassignment" }), params);
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe("HELD");
+    expect(body.error).toBe("This advisor is held for a bucket correction until 3:04pm ET.");
+    expect(body.heldUntil).toBe("2026-10-05T19:04:00Z");
   });
 
   // #2660: the refusal is a genuine conflict (retrying changes nothing), so it is

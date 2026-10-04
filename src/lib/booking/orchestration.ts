@@ -1,6 +1,8 @@
 // Relative (not "@/") for the VALUE imports so this module is runnable
 // under `node --experimental-strip-types` in tests — node doesn't resolve
 // tsconfig path aliases, and type-only "@/" imports below are erased anyway.
+import { RerouteRefusedError, type RerouteSwapArgs } from "./reroute.ts";
+import type { RerouteSwapRefusal } from "../db/reroute-hold-refusals.ts";
 import { toE164 } from "../phone.ts";
 import { mapWithConcurrency } from "../concurrency.ts";
 import { DateTime } from "luxon";
@@ -1311,10 +1313,15 @@ export interface BookingDeps {
     // row's own current history server-side under the lock (#519), so this array
     // is NOT the authoritative source of the reassignments list.
     routingTrace: RoutingTrace;
+    /** #3249: a reroute move. Present, the bucket aware swap runs and consumes the
+     *  claimed hold in the same transaction; absent, the plain reassign. */
+    reroute?: RerouteSwapArgs;
   }): Promise<{
     prevGcalEventId: string | null;
     prevAgentEmail: string | null;
     updated: boolean;
+    /** Only the bucket aware form answers it: null on success, else why it wrote nothing. */
+    refused?: RerouteSwapRefusal | null;
   }>;
   deleteBusyBlocksForBooking(bookingId: string): Promise<void>;
   /**
@@ -2958,6 +2965,8 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
         toAgentUserId: booking.assigned_user_id,
         actorUserId: p.actorUserId,
         actingAsUserId: p.actingAsUserId,
+        fromBucketId: p.fromBucketId ?? null,
+        toBucketId: p.toBucketId ?? null,
         nowMs: Date.now(),
       }),
     );
@@ -6032,6 +6041,9 @@ export interface ReassignOptions {
   /** Allow a target OUTSIDE the bookable pool — manager coverage/escalation
    *  (#546). Default false keeps the machine path bookable-only. */
   allowNonBookable?: boolean;
+  /** #3249: this reassign is a reroute move into a corrected bucket, carrying the
+   *  hold the confirm claimed. The swap consumes it; see `reroute.ts`. */
+  reroute?: RerouteSwapArgs;
 }
 
 export async function reassignBooking(
@@ -6041,7 +6053,7 @@ export async function reassignBooking(
   deps: BookingDeps,
   opts: ReassignOptions = {},
 ): Promise<BookingResult & { overCap: boolean }> {
-  const { overrideCap = false, actor, initiator = "system", allowNonBookable = false } = opts;
+  const { overrideCap = false, actor, initiator = "system", allowNonBookable = false, reroute } = opts;
   const ctx = await deps.loadBookingById(bookingId);
   if (!ctx) throw new BookingNotFoundError();
   const { booking, bucket, eventType } = ctx;
@@ -6188,6 +6200,7 @@ export async function reassignBooking(
     prevGcalEventId: string | null;
     prevAgentEmail: string | null;
     updated: boolean;
+    refused?: RerouteSwapRefusal | null;
   };
   try {
     swap = await deps.reassignSwap({
@@ -6198,6 +6211,7 @@ export async function reassignBooking(
       gcalEventId: newEventId,
       gcalClientId,
       routingTrace: baseTrace,
+      ...(reroute ? { reroute } : {}),
     });
   } catch (err) {
     // The swap (durable anchor) failed: queue the event we optimistically created
@@ -6209,6 +6223,16 @@ export async function reassignBooking(
     // the abandoned intent sweep clears it once its lease has passed.
     await queueOwedEventDeletion(deps, agent.email, newEventId, booking.id);
     throw err;
+  }
+
+  if (swap.refused) {
+    // #3249: the bucket aware swap wrote nothing (the hold ran out, was replaced,
+    // or the booking moved). Nothing points at the event created above, so it goes
+    // and its intent with it, exactly as for a booking gone terminal below, and the
+    // refusal is surfaced in the swap's own word rather than as "not changeable".
+    await compensateEvent(deps, agent.email, newEventId, booking.id);
+    await deps.deleteReassignIntent(booking.id, gcalClientId);
+    throw new RerouteRefusedError(swap.refused);
   }
 
   if (!swap.updated) {
@@ -6301,6 +6325,7 @@ export async function reassignBooking(
     fromAgentEmail: swap.prevAgentEmail,
     actorUserId: actor?.userId,
     actingAsUserId: actor?.actingAsUserId,
+    ...(reroute ? { fromBucketId: reroute.fromBucketId, toBucketId: reroute.bucketId } : {}),
   };
   const outboxId = await deps.enqueueOutbox({
     booking_id: booking.id,

@@ -7,6 +7,7 @@ import {
   ReassignAcrossWorldsError,
 } from "@/lib/booking/service";
 import { internalErrorResponse, reportInternalError } from "@/lib/api/errors";
+import { AgentHeldError } from "@/lib/booking/reroute";
 import {
   OWNER_REFUSAL_CODE,
   OWNER_REFUSAL_STATUS,
@@ -77,6 +78,15 @@ export async function mapReassignError(
         stage: err.stage,
       },
       { status: 503 },
+    );
+  }
+  // The target advisor is held for another booking's bucket correction (#3249). A
+  // conflict that ends by itself, with its own code and the time it ends, so the
+  // manager knows to wait or pick somebody else rather than reading a failure.
+  if (err instanceof AgentHeldError) {
+    return NextResponse.json(
+      { error: err.message, code: "HELD", heldUntil: err.heldUntilIso },
+      { status: 409 },
     );
   }
   // Genuine not-found (bad/stale booking id or target agent): do not retry.
