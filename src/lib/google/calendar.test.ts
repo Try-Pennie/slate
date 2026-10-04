@@ -58,7 +58,8 @@ describe("listCalendars timeout (#922)", () => {
     );
     await expect(listCalendars("a@b.com", 20)).rejects.toBeInstanceOf(DeadlineExceededError);
     // The token mint is held to the same deadline as the call it is for (#3102).
-    expect(dwd.getDelegatedToken).toHaveBeenCalledWith("a@b.com", undefined, 20);
+    // The trailing undefined: a first mint names no refused token (#3144).
+    expect(dwd.getDelegatedToken).toHaveBeenCalledWith("a@b.com", undefined, 20, undefined);
   });
 
   it("does not abort a calendarList fetch that responds before timeoutMs", async () => {
@@ -66,6 +67,49 @@ describe("listCalendars timeout (#922)", () => {
       new Response(JSON.stringify({ items: [{ id: "primary" }] }), { status: 200 }),
     );
     await expect(listCalendars("a@b.com", 20000)).resolves.toEqual([{ id: "primary" }]);
+  });
+});
+
+// #3144 (L742): a cached delegated token Google refuses must not lose the call
+// it was carrying. The call is resent once on a fresh token; a second refusal
+// still throws, classified exactly as before.
+describe("a refused delegated token (#3144)", () => {
+  beforeEach(() => {
+    dwd.getDelegatedToken.mockReset();
+    dwd.getDelegatedToken.mockImplementation(async (_e: string, _s?: string, _d?: unknown, rejected?: string) =>
+      rejected ? "fresh" : "stale",
+    );
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("resends the same insert on a fresh token and returns its event", async () => {
+    const sent: { auth: string | null; body: unknown }[] = [];
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      const auth = new Headers(init.headers).get("authorization");
+      sent.push({ auth, body: init.body });
+      return auth === "Bearer stale"
+        ? new Response("Invalid Credentials", { status: 401 })
+        : new Response(JSON.stringify({ id: "evt-1" }), { status: 200 });
+    });
+    await expect(createEventOnCalendar("a@b.com", "primary", event)).resolves.toBe("evt-1");
+    expect(sent.map((s) => s.auth)).toEqual(["Bearer stale", "Bearer fresh"]);
+    // The same request both times, so the work is the work that was asked for.
+    expect(sent[1].body).toEqual(sent[0].body);
+    expect(dwd.getDelegatedToken).toHaveBeenLastCalledWith("a@b.com", undefined, expect.anything(), "stale");
+  });
+
+  it("throws on a second refusal after one resend, still classified definitive", async () => {
+    let sends = 0;
+    vi.stubGlobal("fetch", async () => {
+      sends += 1;
+      return new Response("unauthorized", { status: 401 });
+    });
+    const err = await deleteEvent("a@b.com", "evt-1").then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(sends).toBe(2);
+    expect(reachabilityFromError(err)).toBe("gone");
   });
 });
 
@@ -401,6 +445,7 @@ describe("updateEventDescription (#1341)", () => {
       "agent@trypennie.com",
       undefined,
       GOOGLE_CONFIRM_TIMEOUT_MS,
+      undefined,
     );
   });
 
@@ -509,7 +554,7 @@ describe("default Google deadlines (#3102)", () => {
     );
     expect(outcome).toBeInstanceOf(DeadlineExceededError);
     expect((outcome as DeadlineExceededError).label).toBe("google events.insert");
-    expect(dwd.getDelegatedToken).toHaveBeenCalledWith("a@b.com", undefined, GOOGLE_CONFIRM_TIMEOUT_MS);
+    expect(dwd.getDelegatedToken).toHaveBeenCalledWith("a@b.com", undefined, GOOGLE_CONFIRM_TIMEOUT_MS, undefined);
     expect(vi.getTimerCount()).toBe(0);
   });
 

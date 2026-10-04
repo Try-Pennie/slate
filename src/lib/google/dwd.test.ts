@@ -74,3 +74,49 @@ describe("getDelegatedToken deadline (#3102)", () => {
     expect((after as DeadlineExceededError).timeoutMs).toBe(500);
   });
 });
+
+// #3144 (L742): a caller told its cached token was refused names that token, and
+// the cache drops it and mints afresh. Only THAT token: a concurrent caller that
+// already replaced it must get the replacement, not force a needless third mint.
+describe("getDelegatedToken after a refused token (#3144)", () => {
+  let mints: number;
+  beforeEach(() => {
+    mints = 0;
+    vi.stubGlobal("fetch", async () => {
+      mints += 1;
+      return new Response(JSON.stringify({ access_token: `tok-${mints}`, expires_in: 3600 }), { status: 200 });
+    });
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("answers from the cache until told the token was refused, then mints a new one", async () => {
+    const who = "refused-once@x.com";
+    expect(await getDelegatedToken(who)).toBe("tok-1");
+    expect(await getDelegatedToken(who)).toBe("tok-1");
+    expect(mints).toBe(1);
+    expect(await getDelegatedToken(who, undefined, undefined, "tok-1")).toBe("tok-2");
+    expect(mints).toBe(2);
+    // The new token is what the cache now holds for everybody else.
+    expect(await getDelegatedToken(who)).toBe("tok-2");
+    expect(mints).toBe(2);
+  });
+
+  it("keeps a replacement another caller already minted", async () => {
+    const who = "refused-twice@x.com";
+    await getDelegatedToken(who);
+    await getDelegatedToken(who, undefined, undefined, "tok-1");
+    // A second caller whose request also went out on tok-1 reports it late.
+    expect(await getDelegatedToken(who, undefined, undefined, "tok-1")).toBe("tok-2");
+    expect(mints).toBe(2);
+  });
+
+  it("drops only the scope that was refused", async () => {
+    const who = "refused-scope@x.com";
+    await getDelegatedToken(who);
+    await getDelegatedToken(who, GMAIL_SEND_SCOPE);
+    expect(mints).toBe(2);
+    await getDelegatedToken(who, GMAIL_SEND_SCOPE, undefined, "tok-2");
+    expect(await getDelegatedToken(who)).toBe("tok-1");
+    expect(mints).toBe(3);
+  });
+});
