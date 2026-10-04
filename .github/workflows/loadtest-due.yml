@@ -1,0 +1,76 @@
+name: Load run due
+
+# The re-run rule for the booking path load run (#3103).
+#
+# `loadtest.yml` can only be dispatched by hand, and between 2026-09-15 and 2026-10-03
+# the confirm path and the minute tick both changed with no run recorded, because the
+# rule to re-run it lived in nobody's head (L27). This is the rule: a push to main that
+# changes the confirm path or a cron lane opens ONE issue saying a run is due, or adds a
+# comment naming the push to the one already open. Nothing here runs the load test; a
+# run needs a throwaway Supabase branch and a deployment somebody has to provision
+# (scripts/loadtest/RUNBOOK.md). Close the issue in the PR that records the run.
+#
+# The path list is `LOADTEST_DUE_PATHS` in scripts/lib/loadtest-due-paths.ts, and
+# scripts/test-loadtest-due-paths.ts holds the block below equal to it and checks that
+# every cron route and the confirm route fall under it, so a lane added somewhere new
+# cannot be exempt by accident (L96).
+#
+# Cost: one short job per qualifying push, on the free GITHUB_TOKEN; no repo secret.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/app/api/bookings/**"
+      - "src/lib/booking/**"
+      - "src/lib/availability/**"
+      - "src/lib/google/**"
+      - "src/lib/rate-limit.ts"
+      - "src/lib/rate-limit-core.ts"
+      - "src/lib/rate-limit-burst.ts"
+      - "src/app/api/cron/**"
+      - "worker/**"
+      - "wrangler.jsonc"
+
+# Serialised, so two pushes landing together cannot each find no open issue and open two.
+concurrency:
+  group: loadtest-due
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  nag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Open or update the load run due issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          title="Load run due: the confirm path or a cron lane changed"
+          link="https://github.com/$REPO/compare/$BEFORE...$SHA"
+          existing=$(gh issue list -R "$REPO" --state open --search "\"$title\" in:title" --json number,title \
+            --jq ".[] | select(.title == \"$title\") | .number" | head -1)
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" -R "$REPO" --body "Another push changed the confirm path or a cron lane: $SHA ($link). The next run covers it too."
+            echo "commented on #$existing"
+            exit 0
+          fi
+          body_file=$(mktemp)
+          {
+            echo "A push to main changed the booking confirm path or a cron lane, so the booking path load run's last recorded figures no longer describe what is deployed."
+            echo
+            echo "Push: $SHA ($link)"
+            echo
+            echo "Dispatch \`loadtest.yml\` on main against a fresh throwaway branch, following scripts/loadtest/RUNBOOK.md, and record the run id and its figures in the runbook's run record. Close this issue from that PR."
+            echo
+            echo "Opened by .github/workflows/loadtest-due.yml (#3103)."
+          } > "$body_file"
+          gh issue create -R "$REPO" --title "$title" --body-file "$body_file" \
+            --label load-chaos --label priority-p2 --milestone Ungrouped
