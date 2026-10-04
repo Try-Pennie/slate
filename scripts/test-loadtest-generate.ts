@@ -7,6 +7,8 @@ import { DateTime } from "luxon";
 import { generateSeed } from "./loadtest/generate.ts";
 import { agentIdsFromPool } from "../src/lib/availability/pool.ts";
 import { allXbcCodes, bucketSpecForXbc } from "../src/lib/xbc.ts";
+import { stubCalendarList } from "../src/lib/google/loadtest-stub.ts";
+import { selectableCalendarIds } from "../src/lib/google/calendar-select.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 // A Monday, so the four day horizon covers Mon to Thu and no weekday is skipped.
@@ -236,5 +238,41 @@ assert(
   new Set(seed.users.map((u) => u.email)).size === 200,
   "agent emails are unique",
 );
+
+// --- the seeded calendar ids are the ones the stub lists (#3103) ----------------
+// The seed stored every primary calendar as the literal "primary" while the stub's
+// calendar list (since #2380, matching Google) names it by the agent's EMAIL. The
+// watch lane's reconcile compares the two, judges "primary" gone, and deletes the
+// row and its seeded busy blocks, re-inserting an unhydrated one. Run 37164364760's
+// preflight met exactly that: 88 of 90 calendars recreated mid warm up. So the ids
+// are tied here to the stub's own answer, through the same selection the reconcile
+// uses, rather than to a literal either side could change.
+{
+  const byUser = new Map<string, string[]>();
+  for (const c of seed.agentCalendars) byUser.set(c.user_id, [...(byUser.get(c.user_id) ?? []), c.calendar_id]);
+  let mismatched = 0;
+  let strayBlocks = 0;
+  for (const u of seed.users) {
+    const listed = selectableCalendarIds(stubCalendarList(u.email));
+    const seeded = byUser.get(u.id) ?? [];
+    if (JSON.stringify([...seeded].sort()) !== JSON.stringify([...listed].sort())) mismatched++;
+  }
+  for (const b of seed.busyBlocks) {
+    if (!(byUser.get(b.user_id) ?? []).includes(b.calendar_id)) strayBlocks++;
+  }
+  eq(mismatched, 0, "every agent's seeded calendar ids are exactly what the stub's calendar list selects for them");
+  eq(strayBlocks, 0, "every seeded busy block belongs to one of its agent's seeded calendars");
+  assert(!seed.agentCalendars.some((c) => c.calendar_id === "primary"), "no calendar is seeded under the literal alias \"primary\"");
+
+  // A second calendar per agent is something the stub never lists, so the
+  // reconcile would delete it on the first watch tick. Refused by name.
+  let refused = "";
+  try {
+    generateSeed({ ...p, calendarsPerAgent: 2 });
+  } catch (err) {
+    refused = String((err as Error).message);
+  }
+  assert(/calendarsPerAgent/.test(refused) && /stub/.test(refused), `more than one calendar per agent is refused, naming why (${refused.slice(0, 80)})`);
+}
 
 finish();

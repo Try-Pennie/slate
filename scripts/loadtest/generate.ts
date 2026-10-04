@@ -112,6 +112,18 @@ function profileForIndex(profiles: { agents: number }[], index: number): number 
 
 export function generateSeed(p: SeedParams): GeneratedSeed {
   const calsPerAgent = p.calendarsPerAgent ?? 1;
+  // One calendar per agent, named by the agent's EMAIL, because that is the only
+  // calendar the Google stub's list returns and the id it gives it (#2380, as real
+  // Google does). Anything else is deleted by the watch lane's reconcile on its
+  // first tick, with the busy blocks seeded under it, which is what stalled run
+  // 37164364760's warm up (#3103). scripts/test-loadtest-generate.ts ties the two.
+  if (calsPerAgent !== 1) {
+    throw new Error(
+      `calendarsPerAgent is ${calsPerAgent}, and the Google stub lists exactly one calendar per agent: ` +
+        "any other seeded calendar is reconciled away (with its busy blocks) on the first watch tick. " +
+        "Leave CALS_PER_AGENT unset.",
+    );
+  }
   const shape = p.shape ?? PRODUCTION_SHAPE;
   const users: SeedUser[] = [];
   const schedules: SeedSchedule[] = [];
@@ -133,10 +145,11 @@ export function generateSeed(p: SeedParams): GeneratedSeed {
     if (profile.debtTeam.length > 0) attrs.debt_team = [...profile.debtTeam];
     if (profile.backendService.length > 0) attrs.backend_service = [...profile.backendService];
 
+    const email = `loadtest-agent-${i}@loadtest.local`;
     users.push({
       id: userId,
       org_id: p.orgId,
-      email: `loadtest-agent-${i}@loadtest.local`,
+      email,
       name: `Loadtest Agent ${i}`,
       role: "agent",
       attributes: attrs,
@@ -153,9 +166,9 @@ export function generateSeed(p: SeedParams): GeneratedSeed {
         end_minute: WORK_END_MIN,
       });
     }
-    for (let c = 0; c < calsPerAgent; c++) {
-      agentCalendars.push({ user_id: userId, calendar_id: c === 0 ? "primary" : `cal-${c}` });
-    }
+    // The stub's primary calendar id IS the agent's address (see above).
+    const calendarId = email;
+    agentCalendars.push({ user_id: userId, calendar_id: calendarId });
 
     // Busy blocks inside the agent's OWN LOCAL working day, every day of the
     // horizon. Day ALIGNED rather than offset from the seed instant: the roster
@@ -180,7 +193,7 @@ export function generateSeed(p: SeedParams): GeneratedSeed {
           starts_at: start.toUTC().toISO()!,
           ends_at: start.plus({ minutes: 30 }).toUTC().toISO()!,
           source: (i + d + k) % 5 === 0 ? "slate" : "gcal",
-          calendar_id: "primary",
+          calendar_id: calendarId,
         });
       }
     }
