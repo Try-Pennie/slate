@@ -19,6 +19,7 @@ import {
   type StoredPhotoState,
 } from "./core.ts";
 import { photoRefreshCovers } from "./resolve.ts";
+import { mapWithConcurrency } from "../concurrency.ts";
 
 /** The directory's answer for one account, as `users.list` returns it. */
 export interface DirectoryAccount {
@@ -74,6 +75,26 @@ export interface RefreshOptions {
   /** Refresh one person only, by user id. */
   only?: string;
 }
+
+/**
+ * The most people one full run reads: the roster's design ceiling of 200 agents
+ * (about 130 reads today). The run's deadline is checked against this, not
+ * against today's count, so the roster growing cannot walk it into the limit.
+ */
+export const PHOTO_REFRESH_MAX_TARGETS = 200;
+/**
+ * How many photo reads one run keeps in flight at once (#3163, L743).
+ *
+ * One at a time, the slowest run that still passes (every read answering just
+ * inside its 15 second timeout) was 200 x 15s, about fifty minutes, against a ten
+ * minute deadline, so a Google that was slow but answering was paged about as a
+ * partial refresh. Eight at a time it is 25 waves, about six and a half minutes
+ * with the listing, inside three quarters of the deadline (held by
+ * `lane.test.ts`). Eight also keeps a fast run, at roughly half a second a read,
+ * near a thousand requests a minute, well under the directory API's per minute
+ * quota, so speeding up a healthy run cannot trade the timeout for a 429.
+ */
+export const PHOTO_READ_CONCURRENCY = 8;
 
 /** How a rate limit or a server error is retried (finite, L110). */
 export const PHOTO_RETRY = { attempts: 3, backoffMs: 2_000 } as const;
@@ -205,19 +226,19 @@ export async function runPhotoRefresh(deps: RefreshDeps, opts: RefreshOptions = 
 
   const reads = new Map<string, PhotoRead>();
   let notReached = 0;
-  for (const u of targets) {
+  await mapWithConcurrency(targets, PHOTO_READ_CONCURRENCY, async (u) => {
     // Checked before each read, so a read in flight finishes and is kept, and the
     // run ends cleanly well inside the lock that guards it.
     if (deps.deadlineMs !== undefined && deps.nowMs() >= deps.deadlineMs) {
       notReached += 1;
-      continue;
+      return;
     }
     if (inDirectory && !inDirectory.has(normEmail(u.email))) {
       reads.set(u.id, { kind: "not-in-directory" });
-      continue;
+      return;
     }
     reads.set(u.id, await readOne(deps, subject, u.email));
-  }
+  });
 
   const asked = [...reads.values()].filter((r) => r.kind !== "not-in-directory");
   const learned = asked.filter((r) => r.kind === "photo" || r.kind === "none");
