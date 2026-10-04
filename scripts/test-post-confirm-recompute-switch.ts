@@ -128,12 +128,18 @@ for (const raw of ["off", "reads-only", "garbage"]) {
 
 // --- the preflight's wait for a redeployed arm --------------------------------------------
 {
-  const run = async (answers: { status: number; body: unknown }[], wanted: string, waitMs = 60_000) => {
+  // An answer of "throw" is a fetch that rejected (a reset mid redeploy).
+  type Answer = { status: number; body: unknown } | "throw";
+  const run = async (answers: Answer[], wanted: string, waitMs = 60_000) => {
     let t = 0;
     let asked = 0;
     const verdict = await awaitRecomputeArm({
       wanted,
-      fetchVersion: async () => answers[Math.min(asked++, answers.length - 1)]!,
+      fetchVersion: async () => {
+        const a = answers[Math.min(asked++, answers.length - 1)]!;
+        if (a === "throw") throw new TypeError("fetch failed: connection reset");
+        return a;
+      },
       sleep: async (ms) => void (t += ms),
       now: () => t,
       waitMs,
@@ -150,7 +156,31 @@ for (const raw of ["off", "reads-only", "garbage"]) {
   eq(landed.asked, 3, "and asked until it landed, no more");
 
   const never = await run([on], "off", 20_000);
-  assert(!never.verdict.ok && never.verdict.why.includes("waiting 20s"), "a redeploy that never lands refuses at the deadline, saying it waited");
+  assert(!never.verdict.ok && never.verdict.why.includes("20s"), "a redeploy that never lands refuses at the deadline, saying how long it waited");
+
+  // #3269 review: a thrown fetch is not ready yet, never a crash.
+  const reset = await run(["throw", "throw", off], "off");
+  assert(reset.verdict.ok, "a fetch that throws during the redeploy is waited out like a 5xx");
+  eq(reset.asked, 3, "and asked again until the deployment answered");
+  const unreachable = await run(["throw"], "on", 10_000);
+  assert(
+    !unreachable.verdict.ok && unreachable.verdict.why.includes("connection reset"),
+    "a fetch that never stops throwing refuses at the deadline, naming the error",
+  );
+
+  // #3269 review: a 4xx is its own refusal, named, at once.
+  const refused = await run([{ status: 401, body: { error: "unauthorized" } }], "off");
+  assert(!refused.verdict.ok && refused.verdict.why.includes("401"), "a 401 refuses naming the status");
+  assert(!refused.verdict.ok && !refused.verdict.why.includes("predates"), "and is not read as a deployment that predates the switch");
+  eq(refused.asked, 1, "at once, since waiting cannot change a refused key");
+  const missing = await run([{ status: 404, body: {} }], "on");
+  assert(!missing.verdict.ok && missing.verdict.why.includes("404"), "a 404 refuses naming the status too");
+
+  // #3269 review: every deadline refusal reads as whole sentences, never ".,".
+  for (const v of [never.verdict, unreachable.verdict, (await run([blip], "on", 10_000)).verdict]) {
+    assert(!v.ok && !/[.,]\s*[.,]/.test(v.why), `no doubled punctuation: ${v.ok ? "" : v.why}`);
+    assert(!v.ok && /[^.]\.$/.test(v.why), `ends in exactly one full stop: ${v.ok ? "" : v.why}`);
+  }
 
   const leftover = await run([off], "on");
   assert(!leftover.verdict.ok, "an on run against a leftover arm refuses");

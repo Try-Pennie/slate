@@ -1196,10 +1196,14 @@ export function recomputeModeVerdict(body: unknown, wanted: string | undefined):
 
 /**
  * Ask the deployment which recompute arm it runs until it answers the one wanted,
- * a refusal waiting cannot change, or the deadline (#3258). A 5xx says nothing about
- * the arm and is a deployment momentarily unwell after the arm job's redeploy, so it
- * is waited out rather than judged. Injected I/O and clock, so every exit is driven
- * offline (L524).
+ * a refusal waiting cannot change, or the deadline (#3258). Injected I/O and clock,
+ * so every exit is driven offline (L524).
+ *
+ * Three answers are waited out, because the arm job's redeploy produces each of
+ * them while it lands: a 5xx, a fetch that throws (a reset as the version swaps),
+ * and the previous version still reporting `on`. A 4xx is refused at once and by
+ * its status (#3269 review): a wrong key or a missing route never resolves, and its
+ * error body would otherwise read as a deployment that predates the switch (L11).
  */
 export async function awaitRecomputeArm(opts: {
   wanted: string | undefined;
@@ -1211,15 +1215,44 @@ export async function awaitRecomputeArm(opts: {
 }): Promise<RecomputeModeVerdict> {
   const deadline = opts.now() + opts.waitMs;
   for (;;) {
-    const { status, body } = await opts.fetchVersion();
-    const verdict: RecomputeModeVerdict =
-      status >= 500
-        ? { ok: false, why: `/api/smoke/version answered ${status}`, retriable: true }
-        : recomputeModeVerdict(body, opts.wanted);
+    const verdict = await askRecomputeArm(opts);
     if (verdict.ok || !verdict.retriable) return verdict;
     if (opts.now() >= deadline) {
-      return { ok: false, retriable: false, why: `${verdict.why}, and still did after waiting ${Math.round(opts.waitMs / 1000)}s` };
+      // One sentence whatever `why` ended with: its own full stop is dropped and
+      // the wait is a sentence of its own (#3269 review).
+      const why = verdict.why.replace(/[.\s]+$/, "");
+      return {
+        ok: false,
+        retriable: false,
+        why: `${why}. Waited ${Math.round(opts.waitMs / 1000)}s for that to change and it did not.`,
+      };
     }
     await opts.sleep(opts.pauseMs);
   }
+}
+
+/** One ask, classified: thrown and 5xx are retriable, 4xx refuses by status. */
+async function askRecomputeArm(opts: {
+  wanted: string | undefined;
+  fetchVersion: () => Promise<{ status: number; body: unknown }>;
+}): Promise<RecomputeModeVerdict> {
+  let answer: { status: number; body: unknown };
+  try {
+    answer = await opts.fetchVersion();
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return { ok: false, why: `/api/smoke/version could not be reached (${detail})`, retriable: true };
+  }
+  const { status, body } = answer;
+  if (status >= 500) return { ok: false, why: `/api/smoke/version answered ${status}`, retriable: true };
+  if (status >= 400) {
+    return {
+      ok: false,
+      why:
+        `/api/smoke/version answered ${status}, so which arm this deployment runs could not be ` +
+        `asked. ${status === 401 || status === 403 ? "The booking key was refused; check LOADTEST_BOOKING_API_KEY." : "Check LOADTEST_BASE_URL and that the deployment serves the route."}`,
+      retriable: false,
+    };
+  }
+  return recomputeModeVerdict(body, opts.wanted);
 }
