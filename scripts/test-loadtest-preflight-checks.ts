@@ -18,6 +18,13 @@ import {
 import { stubCreateEvent } from "../src/lib/google/loadtest-stub.ts";
 import { deterministicEventId } from "../src/lib/booking/core.ts";
 import { authenticateBearer } from "../src/lib/booking/api-auth.ts";
+import {
+  needsPostWarmupRefresh,
+  refreshAfterWarmup,
+  readOfferedSlots,
+  bookControlSlot,
+  type FetchLike,
+} from "./loadtest/preflight-control.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 // --- an id the stub really produced is recognised -----------------------------
@@ -602,6 +609,162 @@ import { assert, eq, finish } from "./lib/harness.ts";
   // refusal would stop every run there is.
   const v = loadtestModeVerdict(200, { commit: "abc1234", loadtest: true, productionSecrets: [] });
   assert(v.ok, "a load test deployment carrying none of them is accepted");
+}
+
+// --- the control booking reads times fresh and survives one lost slot (#3236) --
+//
+// Load run 37225186978 declared itself warm three seconds after a hydration drive
+// gave the last free agent a stub meeting at the first offered time, then booked
+// that time from a slot cache computed BEFORE the drive. The confirm path correctly
+// answered SLOT_TAKEN and the whole run was lost to the preflight's own stale list.
+
+/** A fake network: availability answers each list in turn, bookings each reply in turn. */
+function fakeNetwork(availability: string[][], bookings: { status: number; body: unknown }[]) {
+  const calls: { method: string; url: string; start?: string }[] = [];
+  let a = 0;
+  let b = 0;
+  const fetch: FetchLike = async (url, init) => {
+    const method = init?.method ?? "GET";
+    if (url.includes("/api/availability")) {
+      calls.push({ method, url });
+      const slots = availability[Math.min(a++, availability.length - 1)] ?? [];
+      return new Response(JSON.stringify({ slots }), { status: 200 });
+    }
+    if (url.endsWith("/api/bookings") && method === "POST") {
+      const start = String((JSON.parse(String(init?.body)) as { start?: unknown }).start);
+      calls.push({ method, url, start });
+      const reply = bookings[b++];
+      if (!reply) throw new Error("the fake was asked for more bookings than the test planned");
+      return new Response(JSON.stringify(reply.body), { status: reply.status });
+    }
+    throw new Error(`unexpected request ${method} ${url}`);
+  };
+  return { fetch, calls };
+}
+
+const NINE = "2026-10-05T13:00:00.000Z";
+const NINE_TWENTY = "2026-10-05T13:20:00.000Z";
+const NINE_FORTY = "2026-10-05T13:40:00.000Z";
+const TAKEN = { status: 409, body: { error: "That time was just taken", code: "SLOT_TAKEN" } };
+const BOOKED = { status: 200, body: { id: "b1" } };
+
+function bookingDeps(fetch: FetchLike, log: string[]) {
+  return {
+    fetch,
+    baseUrl: "https://loadtest.example",
+    apiKey: "k",
+    bucketCode: "112",
+    bodyFor: (start: string) => ({ bucketCode: "112", start }),
+    log: (line: string) => log.push(line),
+  };
+}
+
+{
+  // A ready warm up that drove hydration recomputes once and reads times AGAIN.
+  const { fetch, calls } = fakeNetwork([[NINE_TWENTY]], []);
+  let drives = 0;
+  const progress = { hydrationDrives: 7 };
+  assert(needsPostWarmupRefresh(progress), "a warm up that drove hydration needs the refresh");
+  const out = await refreshAfterWarmup(progress, [NINE, NINE_TWENTY], {
+    driveRecompute: async () => {
+      drives++;
+      return "{}";
+    },
+    readSlots: () => readOfferedSlots(fetch, "https://loadtest.example", "112"),
+  });
+  eq(drives, 1, "the refresh drives the recompute lane exactly once");
+  eq(calls.filter((c) => c.url.includes("/api/availability")).length, 1, "and reads availability again");
+  assert(out.refreshed, "and says it refreshed");
+  eq(out.slots, [NINE_TWENTY], "and the control chooses from the FRESH list, not the stale one");
+}
+
+{
+  // The quiet direction: no hydration drive means the list was computed over the
+  // calendars as they stand, so nothing is driven and nothing is re-read.
+  const { fetch, calls } = fakeNetwork([[NINE_TWENTY]], []);
+  let drives = 0;
+  const progress = { hydrationDrives: 0 };
+  assert(!needsPostWarmupRefresh(progress), "a warm up that drove no hydration needs no refresh");
+  const out = await refreshAfterWarmup(progress, [NINE], {
+    driveRecompute: async () => {
+      drives++;
+      return "{}";
+    },
+    readSlots: () => readOfferedSlots(fetch, "https://loadtest.example", "112"),
+  });
+  eq(drives, 0, "no recompute is driven");
+  eq(calls.length, 0, "and availability is not read again");
+  assert(!out.refreshed, "and it says it did not refresh");
+  eq(out.slots, [NINE], "so the warm up's own list stands");
+}
+
+{
+  // One SLOT_TAKEN, then a fresh read, then the next offered time books.
+  const { fetch, calls } = fakeNetwork([[NINE, NINE_TWENTY, NINE_FORTY]], [TAKEN, BOOKED]);
+  const log: string[] = [];
+  const out = await bookControlSlot([NINE, NINE_TWENTY], bookingDeps(fetch, log));
+  assert(out.ok, "a single lost slot is retried and the control books");
+  eq(out.ok ? out.start : null, NINE_TWENTY, "on the next offered time after the refused one");
+  eq(out.ok ? out.attempts : null, 2, "on the second attempt");
+  eq(
+    calls.map((c) => c.method),
+    ["POST", "GET", "POST"],
+    "availability is read again BETWEEN the refusal and the retry",
+  );
+  assert(
+    log.some((l) => l.includes("112") && l.includes(NINE)) &&
+      log.some((l) => l.includes("112") && l.includes(NINE_TWENTY)),
+    "and every attempt logs the bucket and the start it chose",
+  );
+}
+
+{
+  // A second refusal is still a failed preflight, and says which two times it tried.
+  const { fetch, calls } = fakeNetwork([[NINE_TWENTY, NINE_FORTY]], [TAKEN, TAKEN]);
+  const out = await bookControlSlot([NINE], bookingDeps(fetch, []));
+  assert(!out.ok, "SLOT_TAKEN twice fails the preflight");
+  const why = out.ok ? "" : out.why;
+  assert(why.includes(NINE) && why.includes(NINE_TWENTY), "naming both times it tried");
+  assert(why.includes("SLOT_TAKEN"), "and the refusal it met");
+  eq(calls.filter((c) => c.method === "POST").length, 2, "and it tries exactly twice, never a third time");
+}
+
+{
+  // A refusal that is NOT a lost slot is not retried: a 500 says something a second
+  // time cannot fix, and retrying it would hide it (L11).
+  const { fetch, calls } = fakeNetwork([[NINE_TWENTY]], [{ status: 500, body: { error: "boom" } }]);
+  const out = await bookControlSlot([NINE], bookingDeps(fetch, []));
+  assert(!out.ok, "a 500 fails at once");
+  eq(calls.length, 1, "without a re-read or a retry");
+  assert(!out.ok && out.why.includes("500"), "and names the status");
+}
+
+{
+  // A 409 for any other reason is not a lost slot either.
+  const { fetch, calls } = fakeNetwork(
+    [[NINE_TWENTY]],
+    [{ status: 409, body: { code: "CONFIRM_REQUIRED" } }],
+  );
+  const out = await bookControlSlot([NINE], bookingDeps(fetch, []));
+  assert(!out.ok, "a 409 that is not SLOT_TAKEN fails at once");
+  eq(calls.length, 1, "without a re-read or a retry");
+}
+
+{
+  // No times offered at all is its own refusal rather than a booking at `undefined`.
+  const { fetch, calls } = fakeNetwork([[]], []);
+  const out = await bookControlSlot([], bookingDeps(fetch, []));
+  assert(!out.ok, "an empty list cannot book a control");
+  eq(calls.length, 0, "and nothing is posted");
+}
+
+{
+  // A retry whose fresh read offers nothing but the refused time fails, rather than
+  // posting the same refused time again.
+  const { fetch, calls } = fakeNetwork([[NINE]], [TAKEN]);
+  const out = await bookControlSlot([NINE], bookingDeps(fetch, []));
+  assert(!out.ok, "a fresh list holding only the refused time fails");
+  eq(calls.filter((c) => c.method === "POST").length, 1, "without posting that time twice");
 }
 
 finish();

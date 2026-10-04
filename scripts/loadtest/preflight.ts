@@ -27,6 +27,7 @@ import {
   type WarmupProgress,
 } from "./preflight-checks.ts";
 import { offeredSlots, loadtestPhone } from "./book-plan.ts";
+import { refreshAfterWarmup, readOfferedSlots, bookControlSlot } from "./preflight-control.ts";
 import { PRODUCTION_SUPABASE_REF, PRODUCTION_HOST } from "../../src/lib/loadtest-guard.ts";
 
 // ONE constant, shared with the app's own load test refusals (#2242). A second
@@ -271,30 +272,53 @@ for (;;) {
 
 // --- half one: one real booking leaves the rows the judge looks for ------------
 
+// The list the warm up ended on can predate its own last hydration drive, which may
+// have given the only free agent a stub meeting at the first offered time (#3236).
+// So when any drive ran, recompute once and choose from a fresh read. The decision
+// and the one SLOT_TAKEN retry live in `preflight-control.ts`, driven offline.
+const readSlots = () => readOfferedSlots(fetch, SLATE_BASE, CODE);
+try {
+  ({ slots } = await refreshAfterWarmup(progress, slots, {
+    driveRecompute: () => driveLane("recompute"),
+    readSlots,
+    log: (line) => console.log(line),
+  }));
+} catch (err) {
+  fail(err instanceof Error ? err.message : String(err));
+}
+
 const externalId = `${RUN_ID}-preflight`;
 
-const res = await fetch(`${SLATE_BASE}/api/bookings`, {
-  method: "POST",
-  headers: { Authorization: `Bearer ${API_KEY}`, "content-type": "application/json" },
-  body: JSON.stringify({
+let control: Awaited<ReturnType<typeof bookControlSlot>>;
+try {
+  control = await bookControlSlot(slots, {
+    fetch,
+    baseUrl: SLATE_BASE,
+    apiKey: API_KEY,
     bucketCode: CODE,
-    start: slots[0]!,
-    timezone: "America/New_York",
-    externalId,
-    attendee: {
-      name: "Loadtest Preflight",
-      email: `${externalId}@loadtest.local`,
-      // Its OWN number, so the preflight can run more than once against one branch
-      // (#2261). A weak dedupe match is email OR phone, and a fixed number made
-      // the second preflight ever a `confirm_required` refusal naming the first
-      // one's booking. A run gets retried; the branch outlives the attempt.
-      phone: loadtestPhone(externalId),
-    },
-  }),
-});
-if (res.status !== 200) {
-  fail(`the control booking was answered ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    bodyFor: (start) => ({
+      bucketCode: CODE,
+      start,
+      timezone: "America/New_York",
+      externalId,
+      attendee: {
+        name: "Loadtest Preflight",
+        email: `${externalId}@loadtest.local`,
+        // Its OWN number, so the preflight can run more than once against one branch
+        // (#2261). A weak dedupe match is email OR phone, and a fixed number made
+        // the second preflight ever a `confirm_required` refusal naming the first
+        // one's booking. A run gets retried; the branch outlives the attempt.
+        phone: loadtestPhone(externalId),
+      },
+    }),
+    log: (line) => console.log(line),
+  });
+} catch (err) {
+  fail(err instanceof Error ? err.message : String(err));
 }
+const booking = control!;
+if (!booking.ok) fail(booking.why);
+console.log(`ok: control booked in bucket ${CODE} at ${booking.start} (attempt ${booking.attempts})`);
 
 // cap-safe: external_id is this control's own unique id, so this returns at most one row
 const booked = await rows(
