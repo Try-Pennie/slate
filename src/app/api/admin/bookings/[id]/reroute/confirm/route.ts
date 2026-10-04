@@ -3,7 +3,7 @@ import { z } from "zod";
 import { requireBookingActor } from "@/lib/auth";
 import { forbiddenResponse } from "@/lib/auth/http";
 import { adminConfirmReroute } from "@/lib/booking/service";
-import { mapRerouteError } from "@/lib/booking/reroute-http";
+import { mapRerouteError, readRerouteBody } from "@/lib/booking/reroute-http";
 import { crossOriginRefusal } from "@/lib/api/same-origin";
 
 export const dynamic = "force-dynamic";
@@ -25,8 +25,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return forbiddenResponse(err);
   }
   const { id } = await params;
-  const parsed = schema.safeParse(await req.json().catch(() => null));
-  if (!parsed.success) return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+  const parsed = await readRerouteBody(req, schema);
+  if (!parsed.ok) return parsed.response;
   const body = parsed.data;
   try {
     const outcome = await adminConfirmReroute(

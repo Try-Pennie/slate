@@ -26,8 +26,10 @@ eq(agentHeldFrom({ code: "23P01", message: "conflicting key value violates exclu
   "an ordinary overlap is NOT a hold: it stays the lost race it is");
 eq(agentHeldFrom({ code: "23505", message: "duplicate key", details: null }), null, "a unique violation is not a hold");
 eq(agentHeldFrom(null), null, "no error is no hold");
+eq(agentHeldFrom({ ...raised, details: null }), null,
+  "the decision rests on the structured detail, never the message's wording (L35)");
 {
-  const held = agentHeldFrom({ ...raised, details: null });
+  const held = agentHeldFrom({ ...raised, details: "held_until=not a time" });
   assert(held instanceof AgentHeldError && held.heldUntilIso === null, "a hold whose end cannot be read is still a hold");
 }
 

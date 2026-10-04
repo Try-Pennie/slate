@@ -71,11 +71,12 @@ export class AgentHeldError extends Error {
 export function agentHeldFrom(
   error: { code?: string; message?: string; details?: string | null } | null | undefined,
 ): AgentHeldError | null {
+  // Keyed on the SQLSTATE and the trigger's structured detail, never the message
+  // text (L35): the message is prose for a person and can be reworded freely.
   if (!error || error.code !== "23P01") return null;
   const details = error.details ?? "";
-  const isHold = details.startsWith("held_until=") || /held for a bucket correction/.test(error.message ?? "");
-  if (!isHold) return null;
-  const until = details.startsWith("held_until=") ? details.slice("held_until=".length).trim() : "";
+  if (!details.startsWith("held_until=")) return null;
+  const until = details.slice("held_until=".length).trim();
   return new AgentHeldError(until && Number.isFinite(Date.parse(until)) ? until : null);
 }
 

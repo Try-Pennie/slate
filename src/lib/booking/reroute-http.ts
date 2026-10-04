@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import type { z } from "zod";
 import { RerouteRefusedError, type RerouteRefusal } from "@/lib/booking/reroute";
 import { VerifyUnavailableError } from "@/lib/booking/orchestration";
 import { mapReassignError } from "@/lib/booking/reassign-http";
@@ -58,4 +59,17 @@ export async function mapRerouteError(err: unknown, context: string): Promise<Ne
     );
   }
   return mapReassignError(err, context);
+}
+
+/**
+ * Read and check a reroute route's JSON body: the parsed value, or the 400 to
+ * answer. One place, so the reroute routes refuse a bad body the same way.
+ */
+export async function readRerouteBody<T extends z.ZodTypeAny>(
+  req: { json(): Promise<unknown> },
+  schema: T,
+): Promise<{ ok: true; data: z.infer<T> } | { ok: false; response: NextResponse }> {
+  const parsed = schema.safeParse(await req.json().catch(() => null));
+  if (!parsed.success) return { ok: false, response: NextResponse.json({ error: "Invalid request" }, { status: 400 }) };
+  return { ok: true, data: parsed.data };
 }
