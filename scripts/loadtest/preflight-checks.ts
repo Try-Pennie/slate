@@ -922,17 +922,19 @@ export function hydrationPerDrive(calendarCount: number): number {
 /**
  * How long to wait for the first scheduled invocation before calling it a fault.
  *
- * Forty five minutes. The first reading (2026-09-15) was about six minutes, and
+ * Thirty eight minutes. The first reading (2026-09-15) was about six minutes, and
  * twelve was set as twice that. On 2026-10-04 (#3229) a fresh Worker had all 13
  * schedules listed at deploy time (17:41 UTC) and its first lane stamp landed at
  * 18:07 UTC, 27 minutes later, on a deployment that was healthy: run 37221540890
  * refused at twelve and measured nothing, and the re-dispatch found every lane
- * ticking. So the delay is not a fixed number, and this leaves two thirds again
- * over the slowest delivery seen. Bounded, because a wait with no deadline cannot
+ * ticking. So the delay is not a fixed number, and this leaves four tenths again
+ * over the slowest delivery seen. It cannot sit higher: the preflight job must
+ * also hold two stored slot row waits (#3236) and stay inside the sixty minute
+ * ceiling every job carries (scripts/test-workflow-timeouts.ts). Bounded, because a wait with no deadline cannot
  * fail, only hang (L110); the preflight job's `timeout-minutes` in
  * `.github/workflows/loadtest.yml` sits above it, pinned by test-loadtest-warmup.ts.
  */
-export const WARMUP_CRON_DELIVERY_DEADLINE_MS = 45 * 60_000;
+export const WARMUP_CRON_DELIVERY_DEADLINE_MS = 38 * 60_000;
 
 /**
  * How fresh a lane stamp has to be to count as "the crons are being delivered".
