@@ -627,6 +627,42 @@ export async function findActiveBookingsForPerson(
   return [...byId.values()];
 }
 
+/**
+ * The most active bookings one instant can hold and still be read whole (#3257).
+ * The bookings unique index allows one active booking per advisor per start, so
+ * this is a roster bound (100 to 200 advisors by design) with room to spare.
+ */
+const SEATED_AT_LIMIT = 500;
+
+/**
+ * Every active booking that starts at `startIso`, in any bucket and either world
+ * (#3257). Read once by a confirm whose verdict settles its slot, so a waiting
+ * confirm from a lead who already holds the time is not told it is taken. Both
+ * worlds and every bucket on purpose: a lead re-tiered into this pool still holds
+ * the time in their old one (#1465), and a match here only makes that confirm run
+ * its own person check, which is world scoped as always (#2660).
+ *
+ * Served by `bookings_starts_at_id_idx`. THROWS on a read error, and on a full
+ * page, which would mean the list may be missing the very booking it is read to
+ * find; the caller then settles nothing rather than refusing anybody on it.
+ */
+export async function findActiveBookingsStartingAt(startIso: string): Promise<Booking[]> {
+  const rows = unwrap(
+    await supabaseAdmin()
+      .from("bookings")
+      .select("*")
+      .eq("starts_at", startIso)
+      .in("status", ["confirmed", "rescheduled"])
+      .limit(SEATED_AT_LIMIT),
+    "bookings seated at an instant",
+  ) as Booking[] | null;
+  const seated = rows ?? [];
+  if (seated.length >= SEATED_AT_LIMIT) {
+    throw new Error(`bookings seated at an instant: ${seated.length} rows reached the ${SEATED_AT_LIMIT} row bound, so the list may be incomplete`);
+  }
+  return seated;
+}
+
 /** The joined bucket did its work in the world filter; the callers grade a
  *  Booking, so it does not ride along (#2660). */
 function withoutJoinedBucket(row: Booking): Booking {
@@ -888,7 +924,7 @@ async function fetchAgentWorkingHours(
  * state on purpose: every request this isolate serves has to find the same line,
  * and `realDeps` is built per request.
  */
-const ISOLATE_CONFIRM_QUEUE = makeConfirmQueue<orchestration.ConfirmTaker>();
+const ISOLATE_CONFIRM_QUEUE = makeConfirmQueue<orchestration.SlotSettlement>();
 
 export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
   return {
@@ -2053,6 +2089,7 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     },
 
     findActiveBookingsForPerson,
+    findActiveBookingsStartingAt,
     findActiveBookingsByStrongIds,
 
     loadBookingById: async (bookingId) => {

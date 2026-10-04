@@ -1067,6 +1067,9 @@ export function makeDeps(opts: FakeOpts) {
       if (opts.personBookingsThrows) throw new Error("bookings read down");
       return opts.personBookings ?? [];
     },
+    // #3257: who already holds an instant, from the same fixture bookings.
+    findActiveBookingsStartingAt: async (startIso: string) =>
+      (opts.personBookings ?? []).filter((b) => Date.parse(b.starts_at) === Date.parse(startIso)),
     // Hands back the same candidate pile UNFILTERED, so a suite proves the lookup
     // judges what it was given rather than trusting the fetch (#2657).
     findActiveBookingsByStrongIds: async (ids) => {

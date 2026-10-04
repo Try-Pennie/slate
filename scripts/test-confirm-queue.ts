@@ -3,11 +3,18 @@
 // One confirm leads; the rest wait for it rather than running the same work at
 // the same time. When the leader's own confirm shows the slot is full, everybody
 // waiting is answered at once with no work of their own. Otherwise the next one
-// leads. A follower waits at most `waitMs`, then runs on its own as it would have
-// without the queue, so the queue can delay a confirm but never strand one.
+// leads. A follower waits at most `waitMs` (its own, or the queue's), then is told
+// it waited it out and its caller answers it, so the queue can delay a confirm but
+// never strand one.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-confirm-queue.ts
-import { makeConfirmQueue, CONFIRM_QUEUE_WAIT_MS, type QueueTurn } from "../src/lib/booking/confirm-queue.ts";
+import {
+  makeConfirmQueue,
+  confirmLineWaitMs,
+  CONFIRM_QUEUE_WAIT_MS,
+  CONFIRM_QUEUE_RESERVE_MS,
+  type QueueTurn,
+} from "../src/lib/booking/confirm-queue.ts";
 import { BOOKING_CONFIRM_BUDGET_MS } from "../src/lib/booking/confirm-budget.ts";
 import { createAsserter } from "./lib/booking-fakes.ts";
 
@@ -33,11 +40,31 @@ function manualTimer() {
 const tick = () => new Promise((r) => setImmediate(r));
 
 async function main() {
-  // --- the budget relation the wait is sized against --------------------------
+  // --- the budget relation the wait is sized against (#3257) ------------------
+  //
+  // A production confirm answers at 7.4 to 8.0s at the median (#3221), so a wait
+  // shorter than that sends every follower off on its own while the leader is
+  // still working: the stampede the line exists to stop. A follower that waited
+  // that long cannot also run a chain of its own inside the 12s budget, so the two
+  // constraints cannot both hold; the wait is the budget less a reserve, and a
+  // follower that waits it out answers from the reserve instead of starting work.
+  const LEADER_ANSWER_P50_MS = 8_000;
   assert(
-    CONFIRM_QUEUE_WAIT_MS > 0 && CONFIRM_QUEUE_WAIT_MS * 2 <= BOOKING_CONFIRM_BUDGET_MS,
-    `a follower that gives up waiting keeps at least half the confirm budget (wait ${CONFIRM_QUEUE_WAIT_MS}ms of ${BOOKING_CONFIRM_BUDGET_MS}ms)`,
+    CONFIRM_QUEUE_WAIT_MS + CONFIRM_QUEUE_RESERVE_MS === BOOKING_CONFIRM_BUDGET_MS,
+    `the wait is the confirm budget less the reserve (${CONFIRM_QUEUE_WAIT_MS} + ${CONFIRM_QUEUE_RESERVE_MS} vs ${BOOKING_CONFIRM_BUDGET_MS})`,
   );
+  assert(
+    CONFIRM_QUEUE_WAIT_MS > LEADER_ANSWER_P50_MS,
+    `a follower outwaits a production leader at the median (${CONFIRM_QUEUE_WAIT_MS}ms vs ${LEADER_ANSWER_P50_MS}ms)`,
+  );
+  assert(CONFIRM_QUEUE_RESERVE_MS >= 1_000, "the reserve leaves room for a holder's short chain and the answer");
+  assert(confirmLineWaitMs(null) === CONFIRM_QUEUE_WAIT_MS, "outside a budget the follower waits the full bound");
+  assert(confirmLineWaitMs(BOOKING_CONFIRM_BUDGET_MS) === CONFIRM_QUEUE_WAIT_MS, "a fresh budget waits the full bound");
+  assert(
+    confirmLineWaitMs(7_000) === 7_000 - CONFIRM_QUEUE_RESERVE_MS,
+    "a budget the route's own reads already spent part of keeps the reserve whole",
+  );
+  assert(confirmLineWaitMs(1_500) === 0, "a budget already inside the reserve does not wait at all");
 
   // --- the first in leads at once, without waiting ----------------------------
   {
@@ -61,11 +88,11 @@ async function main() {
     await tick();
     assert(followers.length === 0, "full: followers wait while the leader runs");
     assert(other.kind === "lead", "full: a different slot has its own leader and never waits");
-    if (lead.kind === "lead") lead.done({ full: true, refusal: "race", taker: "the leader's booking" });
+    if (lead.kind === "lead") lead.done({ full: true, refusal: "race", settled: "the leader's booking" });
     await tick();
     assert(followers.length === 3, `full: every follower is answered (got ${followers.length})`);
     assert(
-      followers.every((t) => t.kind === "refused" && t.refusal === "race" && t.taker === "the leader's booking"),
+      followers.every((t) => t.kind === "refused" && t.refusal === "race" && t.settled === "the leader's booking"),
       `full: each is refused with what took the slot (got ${JSON.stringify(followers)})`,
     );
     assert(live() === 0, `full: the followers' wait timers are cancelled once they are answered (live ${live()})`);
@@ -89,9 +116,9 @@ async function main() {
     await tick();
     assert(JSON.stringify(seen) === JSON.stringify(["second:lead"]), `open: only the next follower leads (got ${JSON.stringify(seen)})`);
     const t2 = await second;
-    if (t2.kind === "lead") t2.done({ full: true, refusal: "race", taker: "second" });
+    if (t2.kind === "lead") t2.done({ full: true, refusal: "race", settled: "second" });
     const t3 = await third;
-    assert(t3.kind === "refused" && t3.taker === "second", "open: the second leader's verdict answers the third");
+    assert(t3.kind === "refused" && t3.settled === "second", "open: the second leader's verdict answers the third");
   }
 
   // --- a leader that reports twice changes nothing the second time ------------
@@ -102,7 +129,7 @@ async function main() {
     const follower = q.enter("slot");
     if (lead.kind === "lead") {
       lead.done({ full: false });
-      lead.done({ full: true, refusal: "taken", taker: null });
+      lead.done({ full: true, refusal: "taken", settled: null });
     }
     const t = await follower;
     assert(t.kind === "lead", "twice: the first report stands, so the follower leads rather than being refused");
@@ -121,7 +148,7 @@ async function main() {
     const t = await follower;
     assert(t.kind === "unqueued", "patience: past the bound the follower runs unqueued");
     // The leader finishing afterwards must not answer a follower that already left.
-    if (lead.kind === "lead") lead.done({ full: true, refusal: "race", taker: "late" });
+    if (lead.kind === "lead") lead.done({ full: true, refusal: "race", settled: "late" });
     await tick();
     assert(t.kind === "unqueued", "patience: a follower that left is never answered by the leader afterwards");
   }

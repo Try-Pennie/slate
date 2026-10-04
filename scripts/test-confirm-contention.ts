@@ -38,6 +38,7 @@ import {
   DependencyTimeoutError,
   SlotUnavailableError,
   RaceLostRefusalError,
+  ExistingCallError,
   confirmQueueKey,
   queueKeyBeforeRouting,
   type BookingDeps,
@@ -45,9 +46,9 @@ import {
   type BookingResult,
 } from "../src/lib/booking/orchestration.ts";
 import { withinBookingConfirmBudget, BOOKING_CONFIRM_BUDGET_MS } from "../src/lib/booking/confirm-budget.ts";
-import { makeConfirmQueue, type ConfirmQueue } from "../src/lib/booking/confirm-queue.ts";
+import { makeConfirmQueue, CONFIRM_QUEUE_WAIT_MS, type ConfirmQueue } from "../src/lib/booking/confirm-queue.ts";
 import type { Booking } from "../src/lib/db/types.ts";
-import { createAsserter, makeDeps, input, users } from "./lib/booking-fakes.ts";
+import { createAsserter, makeDeps, makeBooking, input, users } from "./lib/booking-fakes.ts";
 import { VirtualClock, SharedResource, onSharedCapacity, type CallRecord } from "./lib/confirm-contention-sim.ts";
 
 const { assert, finish } = createAsserter();
@@ -68,8 +69,11 @@ interface Run {
   calls: CallRecord[];
 }
 
-/** A queue that never queues: the behaviour before #3221, for the control. */
-const NO_QUEUE: ConfirmQueue<never> = { enter: async () => ({ kind: "unqueued" }) };
+/** A queue that never queues: the behaviour before #3221, for the control. Every
+ *  confirm leads at once with nobody behind it, so each runs the whole path. */
+const NO_QUEUE: ConfirmQueue<never> = {
+  enter: async () => ({ kind: "lead", done: () => {}, waiting: () => 0 }),
+};
 
 function lead(i: number, over: Partial<CreateBookingInput> = {}): CreateBookingInput {
   return {
@@ -96,6 +100,13 @@ async function burst(opts: {
   serviceMs?: number;
   /** #3257: the FIRST person read fails, as a leader meeting an outage would. */
   failFirstPersonRead?: boolean;
+  /** #3257: bookings that already exist before the burst (a lead holding the time). */
+  held?: Booking[];
+  /** #3257: the FIRST read of who already sits at the instant fails. */
+  failFirstSeatedRead?: boolean;
+  /** #3257: how long Google takes to say whether an advisor is free, the slow
+   *  part of a production confirm (7.4 to 8.0s at the median, #3221). */
+  slowGoogleMs?: number;
 }) {
   const clock = new VirtualClock(Date.parse("2026-06-01T00:00:00.000Z"));
   const realNow = Date.now;
@@ -110,15 +121,34 @@ async function burst(opts: {
     // on the idempotency key a double submit collapses onto.
     const bySlot = new Map<string, Booking>();
     const byKey = new Map<string, Booking>();
+    for (const b of opts.held ?? []) bySlot.set(`${b.assigned_user_id}|${b.starts_at}`, b);
+    const seatedReads: string[] = [];
     const queue: ConfirmQueue<unknown> =
       opts.queue === "off" ? NO_QUEUE : makeConfirmQueue({ timer: (ms, fire) => clock.at(clock.now + ms, fire) });
     let personReads = 0;
     const shared: BookingDeps = {
       ...base,
-      findActiveBookingsForPerson: async (identity, world) => {
+      // The database's own per column fetch: equality on each signal, the grading
+      // left to `findPersonMatch`, exactly as the real read does.
+      findActiveBookingsForPerson: async (identity) => {
         personReads++;
         if (opts.failFirstPersonRead && personReads === 1) throw new Error("bookings read failed");
-        return base.findActiveBookingsForPerson(identity, world);
+        return [...bySlot.values()].filter(
+          (b) =>
+            (identity.externalId && (b.external_id === identity.externalId || b.salesforce_id === identity.externalId)) ||
+            (identity.salesforceId && (b.external_id === identity.salesforceId || b.salesforce_id === identity.salesforceId)) ||
+            (identity.email && b.attendee_email?.toLowerCase() === identity.email.toLowerCase()) ||
+            (identity.phone && b.attendee_phone === identity.phone),
+        );
+      },
+      findActiveBookingsStartingAt: async (startIso) => {
+        seatedReads.push(startIso);
+        if (opts.failFirstSeatedRead && seatedReads.length === 1) throw new Error("seated read failed");
+        return [...bySlot.values()].filter((b) => Date.parse(b.starts_at) === Date.parse(startIso));
+      },
+      verifyFree: async (...args) => {
+        if (opts.slowGoogleMs) await clock.sleep(opts.slowGoogleMs);
+        return base.verifyFree(...args);
       },
       confirmQueue: queue as BookingDeps["confirmQueue"],
       roundRobinCandidates: async (_b, _e, startMs) => {
@@ -144,7 +174,7 @@ async function burst(opts: {
       const work = opts.viaApi === false ? () => createBooking(one, deps) : () => bookViaApi(one, deps);
       void withinBookingConfirmBudget(work as () => Promise<unknown>).then(
         (res) => {
-          run.outcome = "created";
+          run.outcome = (res as { outcome?: string }).outcome ?? "created";
           run.result = res as BookingResult;
           run.answeredMs = clock.now - startedAt;
         },
@@ -155,7 +185,9 @@ async function burst(opts: {
               ? "503"
               : err instanceof SlotUnavailableError
                 ? "SLOT_TAKEN"
-                : `unexpected ${(err as Error)?.name}: ${(err as Error)?.message}`;
+                : err instanceof ExistingCallError
+                  ? "EXISTING_CALL"
+                  : `unexpected ${(err as Error)?.name}: ${(err as Error)?.message}`;
           run.answeredMs = clock.now - startedAt;
         },
       );
@@ -163,7 +195,7 @@ async function burst(opts: {
     await clock.runUntil(() => runs.every((r) => r.outcome !== undefined));
     const tally: Record<string, number> = {};
     for (const r of runs) tally[r.outcome!] = (tally[r.outcome!] ?? 0) + 1;
-    return { runs, tally, bySlot, calls };
+    return { runs, tally, bySlot, calls, seatedReads };
   } finally {
     Date.now = realNow;
   }
@@ -367,7 +399,7 @@ async function main() {
       `api double submit: both submits get the booking (got ${runs.map((r) => r.outcome).join(",")})`,
     );
     assert(bySlot.size === 1, "api double submit: one booking row");
-    assert(runs[0].result && runs[1].result, "api double submit: both answered with a booking");
+    assert(Boolean(runs[0].result && runs[1].result), "api double submit: both answered with a booking");
   }
 
   // --- #3257: where the line can be entered before any read ---------------------
@@ -389,6 +421,152 @@ async function main() {
     assert(
       queueKeyBeforeRouting({ bucketCode: "000", startIso: input.startIso, requestedCode: "not-a-code" }) === null,
       "early key: a link Salesforce routes is NOT keyed before routing, since the code it books is not yet known",
+    );
+  }
+
+  // --- #3257 review: a lead who ALREADY holds the time is told so -------------
+  //
+  // Lead 50 already holds 13:00 with the pool's only advisor and submits it again
+  // in the crowd. The person decision answers that `deduped` (or, for the booker,
+  // "you already have a call"), never SLOT_TAKEN. The leader reads who sits at the
+  // instant once and hands it down; only a follower that matches it runs its own
+  // chain, so the crowd still reads nothing.
+  const HOLDER = 50;
+  const holding = (over: Partial<Booking> = {}) =>
+    makeBooking({
+      id: "held-50",
+      assigned_user_id: "a",
+      starts_at: input.startIso,
+      external_id: `burst-${HOLDER}`,
+      salesforce_id: `sf-${HOLDER}`,
+      attendee_email: `lead${HOLDER}@example.com`,
+      attendee_phone: `+1203555${1000 + HOLDER}`,
+      manage_token: "tok-held",
+      ...over,
+    } as Partial<Booking>);
+  for (const viaApi of [true, false]) {
+    const label = viaApi ? "holder, booking API" : "holder, booker confirm";
+    const { runs, tally, bySlot, seatedReads } = await burst({
+      inputs: Array.from({ length: BURST }, (_, i) => lead(i, viaApi ? {} : { refuseIfPersonHasCall: true })),
+      pool: ["a"],
+      queue: "real",
+      viaApi,
+      serviceMs: SLOW_MS,
+      held: [holding()],
+    });
+    const want = viaApi ? "deduped" : "EXISTING_CALL";
+    assert(runs[HOLDER].outcome === want, `${label}: the lead holding the time is answered ${want} (got ${runs[HOLDER].outcome})`);
+    if (viaApi) {
+      assert(runs[HOLDER].result?.booking.id === "held-50", `${label}: and is handed the call they hold`);
+    }
+    const others = runs.filter((_, i) => i !== HOLDER);
+    assert(
+      others.every((r) => r.outcome === "SLOT_TAKEN"),
+      `${label}: everybody else is told SLOT_TAKEN (got ${JSON.stringify(tally)})`,
+    );
+    assert(bySlot.size === 1, `${label}: nothing new is booked`);
+    assert(seatedReads.length === 1, `${label}: who sits at the instant is read once, by the leader (got ${seatedReads.length})`);
+    assert(
+      others.slice(1).every((r) => r.calls.length === 0),
+      `${label}: no follower but the holder makes a dependency call`,
+    );
+    assert(!tally["503"], `${label}: none is answered 503`);
+  }
+
+  // --- #3257 review: the #1465 re-tier, a lead holding the time in ANOTHER pool ---
+  //
+  // Lead 50 holds 13:00 in an old bucket with another advisor, is re-tiered, and
+  // confirms 13:00 in the new pool, which the leader fills. The real answer is the
+  // #1465 one: they keep the call they hold, and the response says the bucket
+  // change was declined because the time is taken. Never a bare SLOT_TAKEN.
+  {
+    const { runs, bySlot } = await burst({
+      inputs: Array.from({ length: BURST }, (_, i) => lead(i)),
+      pool: ["a"],
+      queue: "real",
+      serviceMs: SLOW_MS,
+      held: [holding({ bucket_id: "bkt-old", assigned_user_id: "z", agent_name: "Agent Z", agent_email: "z@x.com" } as Partial<Booking>)],
+    });
+    const held = runs[HOLDER];
+    const res = held.result as unknown as { outcome?: string; bucketChangeDeclined?: string; booking: Booking } | undefined;
+    assert(
+      held.outcome === "deduped" && res?.bucketChangeDeclined === "slot_taken" && res.booking.id === "held-50",
+      `re-tier: the holder keeps their call and is told the move was declined (got ${held.outcome}, ${res?.bucketChangeDeclined})`,
+    );
+    assert(runs[0].outcome === "created", "re-tier: the first in is booked into the new pool");
+    assert(bySlot.size === 2, "re-tier: the holder's call and the new booking, nothing else");
+    assert(
+      runs.filter((_, i) => i !== 0 && i !== HOLDER).every((r) => r.outcome === "SLOT_TAKEN" && r.calls.length === 0),
+      "re-tier: the rest are told SLOT_TAKEN without a read",
+    );
+  }
+
+  // --- #3257 review: an unreadable seat list never answers a holder SLOT_TAKEN ---
+  //
+  // The leader books and its read of who sits at the instant fails. Without it no
+  // follower can be told the time is taken for sure, so the leader hands on rather
+  // than settling the slot: the next in line runs for itself, and its own read
+  // settles the rest. The holder still hears that it holds the time.
+  {
+    const { runs, tally, bySlot, seatedReads } = await burst({
+      inputs: Array.from({ length: BURST }, (_, i) => lead(i)),
+      pool: ["a", "b"],
+      queue: "real",
+      serviceMs: SLOW_MS,
+      held: [holding({ assigned_user_id: "b", agent_name: "Agent B", agent_email: "b@x.com" } as Partial<Booking>)],
+      failFirstSeatedRead: true,
+    });
+    assert(runs[0].outcome === "created", `failed seat read: the leader is booked (got ${runs[0].outcome})`);
+    assert(runs[HOLDER].outcome === "deduped", `failed seat read: the holder is answered deduped (got ${runs[HOLDER].outcome})`);
+    assert(bySlot.size === 2, "failed seat read: the holder's call and one new booking");
+    assert(!tally["503"], `failed seat read: none is answered 503 (got ${JSON.stringify(tally)})`);
+    assert(seatedReads.length === 2, `failed seat read: the next leader reads the seats again (got ${seatedReads.length})`);
+    assert(
+      runs.filter((r, i) => i > 1 && i !== HOLDER && r.outcome === "SLOT_TAKEN").every((r) => r.calls.length === 0),
+      "failed seat read: the rest are answered without a read",
+    );
+  }
+
+  // --- #3257 review: a leader as slow as production (Google takes 8s) -----------
+  //
+  // A production confirm answers at 7.4 to 8.0s at the median (#3221). With a
+  // fixed 6 second wait every follower gave up first and ran its own chain, which
+  // is the stampede again. Followers now wait for the verdict up to their budget
+  // less the reserve, so they are answered from it.
+  {
+    const { runs, tally, bySlot } = await burst({
+      inputs: Array.from({ length: BURST }, (_, i) => lead(i)),
+      pool: ["a"],
+      queue: "real",
+      slowGoogleMs: 8_000,
+    });
+    assert(runs[0].outcome === "created" && bySlot.size === 1, `slow leader: the first in is booked (got ${runs[0].outcome})`);
+    assert(tally.SLOT_TAKEN === BURST - 1, `slow leader: every other one is told SLOT_TAKEN (got ${JSON.stringify(tally)})`);
+    assert(runs.slice(1).every((r) => r.calls.length === 0), "slow leader: no follower runs a chain of its own");
+    assert(
+      runs.slice(1).every((r) => r.answeredMs! < BOOKING_CONFIRM_BUDGET_MS),
+      "slow leader: every follower is answered inside its budget",
+    );
+  }
+
+  // --- #3257 review: a leader slower than the wait --------------------------
+  //
+  // Google takes 10.5s, so the leader answers after the followers' wait runs out.
+  // A follower then has only the reserve left, too little for a chain of its own,
+  // so it answers the retryable 503 at once and reads nothing: never a stampede.
+  {
+    const { runs, tally, bySlot } = await burst({
+      inputs: Array.from({ length: BURST }, (_, i) => lead(i)),
+      pool: ["a"],
+      queue: "real",
+      slowGoogleMs: 10_500,
+    });
+    assert(runs[0].outcome === "created" && bySlot.size === 1, `slower leader: the first in is still booked (got ${runs[0].outcome})`);
+    assert(tally["503"] === BURST - 1, `slower leader: the rest are answered the retryable 503 (got ${JSON.stringify(tally)})`);
+    assert(runs.slice(1).every((r) => r.calls.length === 0), "slower leader: no follower reads anything");
+    assert(
+      runs.slice(1).every((r) => r.answeredMs === CONFIRM_QUEUE_WAIT_MS),
+      `slower leader: each is answered when its wait ends (got ${[...new Set(runs.slice(1).map((r) => r.answeredMs))].join(",")})`,
     );
   }
 

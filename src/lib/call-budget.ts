@@ -184,6 +184,16 @@ export function outsideCallBudget<T>(work: () => T): T {
 
 /** What a missed deadline reports: the call, how long it waited, and the budget
  *  that cut it short, when one did. */
+/**
+ * What the budget in force here has left, in milliseconds (never negative), or
+ * null outside any budget. For a wait that must leave room behind it, such as a
+ * confirm waiting in line for the one ahead (#3257, `confirmLineWaitMs`).
+ */
+export function budgetLeftMs(now: () => number = () => Date.now()): number | null {
+  const budget = current();
+  return budget ? Math.max(0, budget.expiresAt - now()) : null;
+}
+
 export interface DeadlineReport {
   label: string;
   timeoutMs: number;

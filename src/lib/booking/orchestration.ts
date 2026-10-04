@@ -88,7 +88,8 @@ import type { ScheduleTimer } from "../read-within-deadline.ts";
 import { findDeadlineExceeded, type DeadlineFound } from "../fetch-within-deadline.ts";
 import { GoogleBreakerOpenError } from "../google/breaker.ts";
 import { withinOwedCleanup } from "./cleanup-allowance.ts";
-import type { ConfirmQueue, LeaderVerdict } from "./confirm-queue.ts";
+import { confirmLineWaitMs, type ConfirmQueue, type LeaderVerdict } from "./confirm-queue.ts";
+import { budgetLeftMs } from "../call-budget.ts";
 import { log } from "@/lib/log";
 import { readBookingSource } from "./booking-source.ts";
 import type { FullApiCaller } from "./api-callers.ts";
@@ -1177,7 +1178,15 @@ export interface BookingDeps {
    * request the isolate's one line (`ISOLATE_CONFIRM_QUEUE`); a suite hands its
    * own, so no two suites ever share a turn.
    */
-  confirmQueue: ConfirmQueue<ConfirmTaker>;
+  confirmQueue: ConfirmQueue<SlotSettlement>;
+  /**
+   * #3257: every ACTIVE booking that starts at this instant, in any bucket and
+   * either world. Read once by a confirm whose verdict settles its slot, so the
+   * confirms waiting behind it can tell whether one of them already holds the
+   * time. Bounded by the roster, since one advisor holds at most one active
+   * booking per start; throws on a read error or a result too large to be whole.
+   */
+  findActiveBookingsStartingAt(startIso: string): Promise<Booking[]>;
   /** #401: record a Google event deletion that failed, for the retry drain. */
   enqueueEventDeletion(calendarEmail: string, gcalEventId: string, bookingId: string | null): Promise<void>;
   /** #401: load pending event deletions for the retry drain. */
@@ -2990,16 +2999,7 @@ async function findExistingCall(
   deps: BookingDeps,
   world: PersonWorld,
 ): Promise<ExistingCall | null> {
-  return findExistingCallForIdentity(
-    {
-      externalId: input.externalId ?? null,
-      salesforceId: input.salesforceId ?? null,
-      email: input.attendee.email ?? null,
-      phone: input.attendee.phone ?? null,
-    },
-    deps,
-    world,
-  );
+  return findExistingCallForIdentity(personIdentityOf(input), deps, world);
 }
 
 /**
@@ -3180,32 +3180,87 @@ export function queueKeyBeforeRouting(
 }
 
 /**
+ * Who a confirm is about, as every person check reads it: the direct booking
+ * API's person decision, the booker's one call per person gate, and the confirm
+ * line's check for a lead who already holds the time (#3257). One builder, so the
+ * three can never key a person three ways (L41).
+ */
+export function personIdentityOf(input: CreateBookingInput): PersonIdentity {
+  return {
+    externalId: input.externalId ?? null,
+    salesforceId: input.salesforceId ?? null,
+    email: input.attendee.email ?? null,
+    phone: input.attendee.phone ?? null,
+  };
+}
+
+/**
+ * What a leader that settled its slot hands the confirms waiting behind it.
+ *
+ * `booked` is its own booking, for a double submit of it. `seated` is every active
+ * booking at the instant (#3257), so a follower that already holds the time is
+ * not told it is taken. Null when nobody was waiting when the leader reported, so
+ * the read was not worth making; a follower arriving in that moment then cannot
+ * rule itself out and runs its own person check.
+ */
+export interface SlotSettlement {
+  booked: ConfirmTaker | null;
+  seated: Booking[] | null;
+}
+
+/** Where a confirm stands in its slot's line. */
+interface ConfirmLine {
+  key: string;
+  stableKey: string | null;
+  bucketCode: string;
+  startIso: string;
+  person: PersonIdentity;
+}
+
+/**
  * One turn in the confirm line (#3221), shared by the create and the direct
  * booking API so the two cannot answer a waiting confirm two different ways.
  *
  * The leader runs `work` and reports its verdict, a failure included. A follower
- * whose leader settled the slot is answered from that verdict without running
- * anything: its own booking back when it is a double submit of the leader, else
- * the slot is taken. A follower that waited the whole bound runs on its own.
+ * whose leader settled the slot is answered from that verdict without a read of
+ * its own: its own booking back when it is a double submit of the leader, else
+ * the slot is taken, UNLESS it already holds the time (#3257).
+ *
+ * A follower that already holds it, by the same grader the person decision uses
+ * (`findPersonMatch`) over who sits at the instant, runs its own chain rather than
+ * being answered, so the answer it gets IS the person decision's: deduped, the
+ * #1465 bucket move or its refusal, confirm required, or the booker's "you already
+ * have a call". Matching here only decides who asks; it never discloses anything,
+ * so it may be loose, while what is shown stays with the real decision (#1340).
+ * At most the pool's own advisors can hold the instant, so this never becomes a
+ * crowd reading the database.
+ *
+ * A follower whose wait runs out (`confirmLineWaitMs`) is answered retryably at
+ * once: it has only the reserve left, too little to run a chain of its own.
  */
 async function inConfirmTurn<R>(
   deps: BookingDeps,
-  line: { key: string; stableKey: string | null; bucketCode: string },
+  line: ConfirmLine,
   work: () => Promise<{ result: R; verdict: LeaderVerdict<ConfirmTaker> }>,
   fromTaker: (taker: ConfirmTaker) => R,
 ): Promise<{ result: R; verdict: LeaderVerdict<ConfirmTaker> }> {
-  const turn = await deps.confirmQueue.enter(line.key);
+  const waitMs = confirmLineWaitMs(budgetLeftMs());
+  const turn = await deps.confirmQueue.enter(line.key, waitMs);
   if (turn.kind === "refused") {
+    const settled = turn.settled;
     // A double submit queued behind its own first submit gets that booking back,
     // as it would from the idempotency key had the two not been in line.
-    if (line.stableKey && turn.taker?.idempotencyKey === line.stableKey) {
-      return { result: fromTaker(turn.taker), verdict: { full: false } };
+    if (line.stableKey && settled?.booked && settled.booked.idempotencyKey === line.stableKey) {
+      return { result: fromTaker(settled.booked), verdict: { full: false } };
     }
-    // #3257: answered without a single read. A person who already holds this very
-    // time and submits it again while somebody else's confirm for it is in flight
-    // is told it is taken rather than deduped; their booking is untouched and a
-    // retry once the crowd is answered dedupes as before. Telling the two apart
-    // needs the bookings read that a crowd of these cannot afford.
+    if (!settled?.seated || findPersonMatch(line.person, settled.seated)) {
+      log.info("booking", {
+        msg: "confirm waited behind one that settled the slot and may already hold the time, so it runs its own person check",
+        bucket_code: line.bucketCode,
+        seated_known: Boolean(settled?.seated),
+      });
+      return work();
+    }
     log.info("booking", {
       msg: "confirm waited behind one that settled the slot, refused without running",
       bucket_code: line.bucketCode,
@@ -3213,15 +3268,58 @@ async function inConfirmTurn<R>(
     });
     throw turn.refusal === "race" ? new RaceLostRefusalError(1, false) : new SlotUnavailableError();
   }
-  if (turn.kind === "unqueued") return work();
+  if (turn.kind === "unqueued") {
+    log.warn("booking", {
+      msg: "confirm waited out the one ahead of it in line; answering retryably rather than starting work it has no time to finish",
+      bucket_code: line.bucketCode,
+      wait_ms: waitMs,
+    });
+    throw new DependencyTimeoutError(
+      { label: "the confirm ahead of it in line", timeoutMs: waitMs, budget: null },
+      null,
+    );
+  }
+  let done: { result: R; verdict: LeaderVerdict<ConfirmTaker> };
   try {
-    const done = await work();
-    turn.done(done.verdict);
-    return done;
+    done = await work();
   } catch (err) {
-    turn.done(verdictForRefusal(err));
+    turn.done(await settleSlot(deps, line, verdictForRefusal(err), turn.waiting()));
     throw err;
   }
+  turn.done(await settleSlot(deps, line, done.verdict, turn.waiting()));
+  return done;
+}
+
+/**
+ * The verdict a leader reports, with who sits at the instant when it settles the
+ * slot and somebody is waiting (#3257). A read that fails settles nothing: no
+ * follower could then be told for sure that the time is not theirs, so the next
+ * one in line runs for itself, and its own read settles the rest.
+ */
+async function settleSlot(
+  deps: BookingDeps,
+  line: ConfirmLine,
+  verdict: LeaderVerdict<ConfirmTaker>,
+  waiting: number,
+): Promise<LeaderVerdict<SlotSettlement>> {
+  if (!verdict.full) return verdict;
+  if (waiting === 0) return { ...verdict, settled: { booked: verdict.settled, seated: null } };
+  let seated: Booking[];
+  try {
+    seated = await deps.findActiveBookingsStartingAt(line.startIso);
+  } catch (err) {
+    log.warn(
+      "booking",
+      {
+        msg: "could not read who holds the instant, so the next confirm in line runs for itself",
+        bucket_code: line.bucketCode,
+        waiting,
+      },
+      err,
+    );
+    return { full: false };
+  }
+  return { ...verdict, settled: { booked: verdict.settled, seated } };
 }
 
 /** A booking a waiting double submit is handed back, as the create returns it. */
@@ -3248,7 +3346,13 @@ async function createBookingWithVerdict(
   if (early === null) return createChecked(requestedInput, deps, opts, stableKey, true);
   return inConfirmTurn(
     deps,
-    { key: early, stableKey, bucketCode: requestedInput.bucketCode },
+    {
+      key: early,
+      stableKey,
+      bucketCode: requestedInput.bucketCode,
+      startIso: requestedInput.startIso,
+      person: personIdentityOf(requestedInput),
+    },
     () => createChecked(requestedInput, deps, opts, stableKey, false),
     bookingFromTaker,
   );
@@ -3352,7 +3456,13 @@ async function createChecked(
   if (!lateQueue) return createHeld(ctx, deps);
   return inConfirmTurn(
     deps,
-    { key: confirmQueueKey(input.bucketCode, input.startIso, agentLinkUserId), stableKey, bucketCode: input.bucketCode },
+    {
+      key: confirmQueueKey(input.bucketCode, input.startIso, agentLinkUserId),
+      stableKey,
+      bucketCode: input.bucketCode,
+      startIso: input.startIso,
+      person: personIdentityOf(input),
+    },
     () => createHeld(ctx, deps),
     bookingFromTaker,
   );
@@ -3393,8 +3503,8 @@ export function confirmQueueKey(bucketCode: string, startIso: string, agentLinkU
  * runs.
  */
 function verdictForRefusal(err: unknown): LeaderVerdict<ConfirmTaker> {
-  if (err instanceof RaceLostRefusalError) return { full: true, refusal: "race", taker: null };
-  if (err instanceof SlotUnavailableError) return { full: true, refusal: "taken", taker: null };
+  if (err instanceof RaceLostRefusalError) return { full: true, refusal: "race", settled: null };
+  if (err instanceof SlotUnavailableError) return { full: true, refusal: "taken", settled: null };
   return { full: false };
 }
 
@@ -3743,7 +3853,7 @@ async function createHeld(
   const full = at >= 0 && at === candidates.length - 1;
   return {
     result,
-    verdict: full ? { full: true, refusal: "race", taker: { idempotencyKey, result } } : { full: false },
+    verdict: full ? { full: true, refusal: "race", settled: { idempotencyKey, result } } : { full: false },
   };
 }
 
@@ -4195,12 +4305,7 @@ async function resolvePersonDecision(
   input: ApiBookingInput,
   deps: BookingDeps,
 ) {
-  const identity: PersonIdentity = {
-    externalId: input.externalId,
-    salesforceId: input.salesforceId ?? null,
-    email: input.attendee.email ?? null,
-    phone: input.attendee.phone ?? null,
-  };
+  const identity = personIdentityOf(input);
   // The decision is graded in the WORLD of the bucket being booked (#2660), so
   // the bucket has to resolve first. The canary's SMOKE booking then dedupes
   // against its SMOKE2 one (both test) and never against a real lead's, and a
@@ -4498,7 +4603,7 @@ export async function bookViaApi(
   if (key === null) return (await bookViaApiDecided(input, deps, false)).result;
   const { result } = await inConfirmTurn(
     deps,
-    { key, stableKey: stableKeyFor(input), bucketCode: input.bucketCode },
+    { key, stableKey: stableKeyFor(input), bucketCode: input.bucketCode, startIso: input.startIso, person: personIdentityOf(input) },
     () => bookViaApiDecided(input, deps, true),
     // A double submit waiting behind its own first call gets that booking, as a
     // replay: no race row, since the call that made it already counted one.

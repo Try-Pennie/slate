@@ -21,9 +21,12 @@
  * line sat behind the bucket, person and idempotency reads, and those timed out on
  * every one of a hundred confirms before any of them reached it.
  *
- * A follower waits at most `CONFIRM_QUEUE_WAIT_MS` and then runs on its own,
- * exactly as it would have without the line. The line can delay a confirm, never
- * strand one, and a slow leader cannot make its followers miss their budget.
+ * A follower waits for the leader's verdict at most `confirmLineWaitMs`: what its
+ * own confirm budget has left, less `CONFIRM_QUEUE_RESERVE_MS`, and never more
+ * than `CONFIRM_QUEUE_WAIT_MS`. One whose wait runs out is told so by the caller
+ * with a retryable answer, rather than starting a chain it has no time to finish
+ * (#3257). The line can delay a confirm, never strand one, and a slow leader
+ * cannot make its followers miss their budget.
  *
  * The line is per ISOLATE, held in module state, because the contention measured
  * was capacity inside one: a confirm that lost a race on its own cost about 250ms
@@ -33,12 +36,40 @@
 import { realTimer, type ScheduleTimer } from "../read-within-deadline.ts";
 
 /**
- * How long a follower waits for the confirm ahead of it before running on its own.
- * Half the confirm budget (12 seconds, `confirm-budget.ts`), so one that gives up
- * still has half its budget for a confirm of its own. Pinned by
- * `scripts/test-confirm-queue.ts`.
+ * What a follower keeps back from its confirm budget while it waits (#3257): room
+ * for the short chain of a lead who already holds the time (their own person
+ * check and the answer it gives) and for the answer itself.
  */
-export const CONFIRM_QUEUE_WAIT_MS = 6_000;
+export const CONFIRM_QUEUE_RESERVE_MS = 2_000;
+
+/**
+ * The longest a follower waits for the confirm ahead of it (#3257).
+ *
+ * Sized from two numbers that cannot both be met. A production confirm answers at
+ * 7.4 to 8.0 seconds at the median (#3221, invocation wall time for POST /booking,
+ * live Google), so a wait shorter than that sends every follower off on its own
+ * while the leader is still working, which is the stampede the line exists to stop;
+ * the first version waited 6 seconds and did exactly that. And the confirm budget is
+ * 12 seconds (`BOOKING_CONFIRM_BUDGET_MS`), so a follower that waited 8 seconds has
+ * no room left to run an 8 second chain of its own. So the wait is the budget less
+ * the reserve, 10 seconds, and a follower whose wait runs out answers retryably from
+ * the reserve instead of starting work it cannot finish. Kept as a literal because
+ * `confirm-budget.ts` imports the orchestration that imports this module; the
+ * relation is pinned by `scripts/test-confirm-queue.ts`.
+ */
+export const CONFIRM_QUEUE_WAIT_MS = 10_000;
+
+/**
+ * How long THIS follower waits: what its budget has left less the reserve, capped
+ * at `CONFIRM_QUEUE_WAIT_MS`, and never negative. `budgetLeftMs` is null outside
+ * any budget, where the cap alone applies. The route's own reads (the key and the
+ * rate limits) spend part of the budget before the line is reached, which is why
+ * this is measured rather than assumed.
+ */
+export function confirmLineWaitMs(budgetLeftMs: number | null): number {
+  if (budgetLeftMs === null) return CONFIRM_QUEUE_WAIT_MS;
+  return Math.max(0, Math.min(CONFIRM_QUEUE_WAIT_MS, budgetLeftMs - CONFIRM_QUEUE_RESERVE_MS));
+}
 
 /** What the leader's confirm showed about the slot when it finished. */
 export type LeaderVerdict<T> =
@@ -47,21 +78,25 @@ export type LeaderVerdict<T> =
   /**
    * The slot is full for everybody in line. `refusal` says how the leader learnt
    * it: `race` when it booked the last free advisor (the followers lost a race to
-   * it), `taken` when it was itself refused as taken. `taker` is what the follower
-   * needs to recognise its OWN booking, a double submit that must get it back.
+   * it), `taken` when it was itself refused as taken. `settled` is what the leader
+   * hands its followers so each can tell whether the verdict really is about them:
+   * its own booking for a double submit, who already sits at the instant for a lead
+   * who holds the time (#3257).
    */
-  | { full: true; refusal: "race" | "taken"; taker: T | null };
+  | { full: true; refusal: "race" | "taken"; settled: T | null };
 
 export type QueueTurn<T> =
-  /** Run the confirm, then report what it showed, exactly once. */
-  | { kind: "lead"; done(verdict: LeaderVerdict<T>): void }
+  /** Run the confirm, then report what it showed, exactly once. `waiting` is how
+   *  many are in line behind it right now, so a leader reads only for a crowd. */
+  | { kind: "lead"; done(verdict: LeaderVerdict<T>): void; waiting(): number }
   /** The confirm ahead settled the slot: answer without doing the work. */
-  | { kind: "refused"; refusal: "race" | "taken"; taker: T | null }
-  /** Waited the whole bound: run on its own, outside the line. */
+  | { kind: "refused"; refusal: "race" | "taken"; settled: T | null }
+  /** Waited the whole bound without a verdict: the caller decides what it answers. */
   | { kind: "unqueued" };
 
 export interface ConfirmQueue<T> {
-  enter(key: string): Promise<QueueTurn<T>>;
+  /** `waitMs` overrides the queue's own bound for this one follower. */
+  enter(key: string, waitMs?: number): Promise<QueueTurn<T>>;
 }
 
 interface Waiter<T> {
@@ -80,12 +115,13 @@ export function makeConfirmQueue<T>(
     let reported = false;
     return {
       kind: "lead",
+      waiting: () => waiting.length,
       done(verdict) {
         if (reported) return;
         reported = true;
         if (verdict.full) {
           lines.delete(key);
-          for (const w of waiting.splice(0)) w.answer({ kind: "refused", refusal: verdict.refusal, taker: verdict.taker });
+          for (const w of waiting.splice(0)) w.answer({ kind: "refused", refusal: verdict.refusal, settled: verdict.settled });
           return;
         }
         const next = waiting.shift();
@@ -99,7 +135,7 @@ export function makeConfirmQueue<T>(
   };
 
   return {
-    enter(key) {
+    enter(key, ownWaitMs) {
       const waiting = lines.get(key);
       if (!waiting) {
         const fresh: Waiter<T>[] = [];
@@ -116,7 +152,7 @@ export function makeConfirmQueue<T>(
             resolve(turn);
           },
         };
-        const cancel = timer(waitMs, () => {
+        const cancel = timer(ownWaitMs ?? waitMs, () => {
           if (settled) return;
           settled = true;
           const i = waiting.indexOf(waiter);
