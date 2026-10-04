@@ -87,6 +87,7 @@ import type { ScheduleTimer } from "../read-within-deadline.ts";
 import { findDeadlineExceeded, type DeadlineFound } from "../fetch-within-deadline.ts";
 import { GoogleBreakerOpenError } from "../google/breaker.ts";
 import { withinOwedCleanup } from "./cleanup-allowance.ts";
+import type { ConfirmQueue, LeaderVerdict } from "./confirm-queue.ts";
 import { log } from "@/lib/log";
 import { readBookingSource } from "./booking-source.ts";
 import type { FullApiCaller } from "./api-callers.ts";
@@ -1112,6 +1113,12 @@ export interface BookingDeps {
    * direct send so no suite driving that refusal can reach alert_state or Slack.
    */
   pageRaceBoundHit(page: { key: string; cooldownMs: number; text: string }): void;
+  /**
+   * #3221: the line confirms for one slot take turns in. Production hands every
+   * request the isolate's one line (`ISOLATE_CONFIRM_QUEUE`); a suite hands its
+   * own, so no two suites ever share a turn.
+   */
+  confirmQueue: ConfirmQueue<ConfirmTaker>;
   /** #401: record a Google event deletion that failed, for the retry drain. */
   enqueueEventDeletion(calendarEmail: string, gcalEventId: string, bookingId: string | null): Promise<void>;
   /** #401: load pending event deletions for the retry drain. */
@@ -3131,6 +3138,86 @@ export async function createBooking(
   // unknown code, no hint that a hidden bucket is there).
   if (bucket.is_test && !input.allowTestBuckets) throw new UnknownBucketError();
 
+  // #3221: confirms for one slot take turns within this isolate. Before this a
+  // hundred at once each ran the whole path below with a hundredth of the
+  // isolate, all ran out of budget together, and nobody was booked. The leader
+  // runs; when its confirm shows the slot is full, everybody waiting is answered
+  // from that without doing the work, so the first in wins and the rest are told
+  // the time is taken in moments. See `confirm-queue.ts`.
+  const ctx: HeldCreate = { input, stableKey, agentLinkUserId, codeSource, bucket, eventType, profile };
+  const turn = await deps.confirmQueue.enter(
+    confirmQueueKey(input.bucketCode, input.startIso, agentLinkUserId),
+  );
+  if (turn.kind === "refused") {
+    // A double submit queued behind its own first submit gets that booking back,
+    // as it would from the idempotency key had the two not been in line.
+    if (stableKey && turn.taker?.idempotencyKey === stableKey) {
+      return { booking: turn.taker.result.booking, manageUrl: turn.taker.result.manageUrl };
+    }
+    log.info("booking", {
+      msg: "confirm waited behind one that settled the slot, refused without running",
+      bucket_code: input.bucketCode,
+      refusal: turn.refusal,
+    });
+    throw turn.refusal === "race" ? new RaceLostRefusalError(1, false) : new SlotUnavailableError();
+  }
+  if (turn.kind === "unqueued") return (await createHeld(ctx, deps)).result;
+  try {
+    const held = await createHeld(ctx, deps);
+    turn.done(held.verdict);
+    return held.result;
+  } catch (err) {
+    turn.done(verdictForRefusal(err));
+    throw err;
+  }
+}
+
+/** What `createBooking` hands the part of the confirm that runs in turn. */
+interface HeldCreate {
+  input: CreateBookingInput;
+  stableKey: string | null;
+  agentLinkUserId: string | undefined;
+  codeSource: RoutingCodeRecord | undefined;
+  bucket: Bucket;
+  eventType: EventType;
+  profile: ReturnType<typeof makeConfirmProfile>;
+}
+
+/** What a waiting double submit needs to recognise its own booking (#3221). */
+export interface ConfirmTaker {
+  idempotencyKey: string;
+  result: BookingResult;
+}
+
+/**
+ * The line a confirm joins: one bucket, one instant, and for a named link the
+ * advisor it names, since two links to different advisors never contend. The
+ * instant is parsed, so two spellings of one moment share a line.
+ */
+export function confirmQueueKey(bucketCode: string, startIso: string, agentLinkUserId: string | undefined): string {
+  return `${bucketCode}|${Date.parse(startIso)}|${agentLinkUserId ?? ""}`;
+}
+
+/**
+ * What a confirm that FAILED shows the confirms waiting behind it. Only a refusal
+ * as taken settles the slot for them, because they asked the same question of the
+ * same slot: a plain refusal means nobody in any rung was free, a lost race that
+ * nobody else in the rung was. Anything else (an outage, a person already holding
+ * a call, the lead's own calling window) says nothing about them, so the next one
+ * runs.
+ */
+function verdictForRefusal(err: unknown): LeaderVerdict<ConfirmTaker> {
+  if (err instanceof RaceLostRefusalError) return { full: true, refusal: "race", taker: null };
+  if (err instanceof SlotUnavailableError) return { full: true, refusal: "taken", taker: null };
+  return { full: false };
+}
+
+async function createHeld(
+  ctx: HeldCreate,
+  deps: BookingDeps,
+): Promise<{ result: BookingResult; verdict: LeaderVerdict<ConfirmTaker> }> {
+  const { input, stableKey, agentLinkUserId, codeSource, bucket, eventType, profile } = ctx;
+
   // One call per person, ENFORCED (#1337), not reported after the fact. Runs
   // AFTER the idempotency fast path above on purpose: a double-click's second
   // request would otherwise find the booking its own first request just made and
@@ -3159,7 +3246,9 @@ export async function createBooking(
   // stable key can name a prior in-flight reservation.
   if (stableKey) {
     const inFlight = await deps.loadReservationByKey(stableKey);
-    if (inFlight) return completeReservation(deps, inFlight);
+    // A resumed reservation was pinned by an earlier request, so it says nothing
+    // about who else the slot has room for: the next confirm in line runs.
+    if (inFlight) return { result: await completeReservation(deps, inFlight), verdict: { full: false } };
   }
 
   // The tier the availability cache shows for the requested bucket RIGHT NOW,
@@ -3460,7 +3549,16 @@ export async function createBooking(
   } catch {
     // never let the measure affect a successful booking
   }
-  return result;
+  // #3221: the slot is full for everybody waiting behind this confirm when the
+  // rung it booked from has nobody left after the advisor it took. The ones before
+  // that advisor were already found busy, or lost to a race; the ones after were
+  // never asked, so with any of them left the next confirm runs and asks.
+  const at = candidates.indexOf(result.booking.assigned_user_id ?? chosen.userId);
+  const full = at >= 0 && at === candidates.length - 1;
+  return {
+    result,
+    verdict: full ? { full: true, refusal: "race", taker: { idempotencyKey, result } } : { full: false },
+  };
 }
 
 /**

@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { withinBookingCleanupBudget, withinBookingRequest } from "@/lib/booking/confirm-budget";
+import { answerTimed } from "@/lib/booking/confirm-latency";
 import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import { z } from "zod";
 import {
@@ -176,23 +177,27 @@ export async function POST(req: NextRequest) {
   // flag, an advisor link) is the same outage, answered the same way, rather than
   // escaping as an unhandled 500.
   const progress: ConfirmProgress = { spent: [], source: null, agentLink: false };
+  // #3221: one line per confirm with how long the lead waited for the answer,
+  // kept apart from the work deferred past the response.
   return noStore(
-    await withinBookingRequest(
-      () => handlePost(req, progress),
-      async (timeout) => {
-        await refundSpent(progress);
-        await pageBookingFailure(timeout);
-        if (!progress.agentLink) {
-          recordApiOutcome(
-            "error",
-            progress.source?.code ?? "",
-            "verify_unavailable",
-            progress.source ?? { by: "unidentifiable", why: "a dependency timed out before the body named a bucket" },
-          );
-        }
-        // refusal: verify_unavailable
-        return NextResponse.json({ error: timeout.message }, { status: 503 });
-      },
+    await answerTimed("booking", () =>
+      withinBookingRequest(
+        () => handlePost(req, progress),
+        async (timeout) => {
+          await refundSpent(progress);
+          await pageBookingFailure(timeout);
+          if (!progress.agentLink) {
+            recordApiOutcome(
+              "error",
+              progress.source?.code ?? "",
+              "verify_unavailable",
+              progress.source ?? { by: "unidentifiable", why: "a dependency timed out before the body named a bucket" },
+            );
+          }
+          // refusal: verify_unavailable
+          return NextResponse.json({ error: timeout.message }, { status: 503 });
+        },
+      ),
     ),
   );
 }

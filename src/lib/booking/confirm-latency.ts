@@ -1,0 +1,47 @@
+/**
+ * How long a lead waited for a confirm's answer, one line per confirm (#3221).
+ *
+ * The invocation's wall time is not that number: it runs on through the work
+ * deferred past the response (the post confirm recompute, the outcome tally),
+ * which takes seconds and which no lead waits for. And the confirm profile that
+ * splits the time by stage is written under SLATE_LOADTEST only. So outside a
+ * load test there was no way to read what a lead actually waits, and the
+ * 2026-10-04 burst could only be judged from the client's side.
+ *
+ * This is the time from the handler starting to the response being handed back,
+ * under the route's own tag, with the status. It carries nothing about the lead.
+ * A Worker's clock moves at I/O, so it measures the waiting the confirm did, and
+ * a response is always handed back after I/O, so the end is never early.
+ */
+import { log } from "@/lib/log";
+
+/** What a route learns while handling the request that the line should say. */
+export interface ConfirmLineFacts {
+  /** A direct booking API dry run, which books nothing and answers fast. */
+  dryRun?: boolean;
+}
+
+export async function answerTimed(
+  tag: string,
+  handle: () => Promise<Response>,
+  opts: { now?: () => number; facts?: ConfirmLineFacts } = {},
+): Promise<Response> {
+  const now = opts.now ?? (() => Date.now());
+  const startedAt = now();
+  const line = (status: number) =>
+    log.info(tag, {
+      msg: "confirm answered",
+      response_ms: Math.max(0, now() - startedAt),
+      status,
+      ...(opts.facts?.dryRun ? { dry_run: true } : {}),
+    });
+  try {
+    const res = await handle();
+    line(res.status);
+    return res;
+  } catch (err) {
+    // Unhandled here means the runtime answers 500, so that is what the lead got.
+    line(500);
+    throw err;
+  }
+}

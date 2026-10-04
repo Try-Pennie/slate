@@ -459,6 +459,7 @@ import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak
 import { resolveAdvisorName, type AdvisorNameReader } from "@/lib/booking/advisor-name";
 import { resolveBookingAdvisorPhoto } from "@/lib/booking/advisor-photo";
 import { loadPhotoRecords, loadUserSignInPhoto } from "@/lib/advisor-photos/store";
+import { makeConfirmQueue } from "@/lib/booking/confirm-queue";
 export type { BookingResult, CreateBookingInput };
 export type { ExistingCall } from "@/lib/booking/orchestration";
 export type { BookingActor } from "@/lib/booking/core";
@@ -882,6 +883,13 @@ async function fetchAgentWorkingHours(
  * to be tested: `scripts/../service-deps.test.ts` hands it a client that refuses
  * and asserts the writes that must not carry on regardless really refuse.
  */
+/**
+ * #3221: the line confirms for one slot take turns in, one per isolate. Module
+ * state on purpose: every request this isolate serves has to find the same line,
+ * and `realDeps` is built per request.
+ */
+const ISOLATE_CONFIRM_QUEUE = makeConfirmQueue<orchestration.ConfirmTaker>();
+
 export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
   return {
     deferSend,
@@ -990,6 +998,7 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     postHandoffNotice: (channel, text) => postSlack({ channel, text }),
     advisorTimezone: (userId) => loadAdvisorTimezone(supabaseAdmin(), userId),
     pageRaceBoundHit: pageRaceBoundHitAfterResponse,
+    confirmQueue: ISOLATE_CONFIRM_QUEUE,
     enqueueEventDeletion: async (calendarEmail, gcalEventId, bookingId) => {
       // THROWS (#2482). This row IS the record that a Google event still has to be
       // deleted, and nothing else holds that fact: a refused upsert leaves the event

@@ -406,6 +406,22 @@ describe("POST /booking (embed) error mapping", () => {
     expect(service.createBooking).toHaveBeenLastCalledWith(expect.objectContaining({ allowTestBuckets: true }));
   });
 
+  // #3221: what the lead waited, measurable outside a load test. One line per
+  // confirm, under the route's own tag, carrying the wait and the status only.
+  it("logs one line per confirm with the time the lead waited for the answer (#3221)", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    service.createBooking.mockRejectedValueOnce(new service.SlotUnavailableError("taken"));
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(409);
+    const lines = info.mock.calls.map(String).filter((l) => l.includes('msg="confirm answered"'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("tag=booking ");
+    expect(lines[0]).toMatch(/response_ms=\d+/);
+    expect(lines[0]).toContain("status=409");
+    expect(lines[0]).not.toContain("dana");
+    expect(lines[0]).not.toContain("2155550100");
+  });
+
   it("refunds the IP cap AND both contact keys on a taken-slot 409, which isn't the lead's fault (#1089)", async () => {
     service.createBooking.mockRejectedValueOnce(new service.SlotUnavailableError("taken"));
     const res = await post(VALID_BODY);

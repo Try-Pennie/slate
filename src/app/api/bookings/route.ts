@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { withinBookingCleanupBudget, withinBookingRequest } from "@/lib/booking/confirm-budget";
 import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import { authorizeBookingApi } from "@/lib/booking/route-auth";
+import { answerTimed, type ConfirmLineFacts } from "@/lib/booking/confirm-latency";
 import { parseDirectBookingRequest, parseLookupQuery, parseCancelQuery, parseListQuery, LIST_ONLY_PARAMS } from "@/lib/booking/api-request";
 import { respondToDirectCancel, apiErrorBody, mapLookupError } from "@/lib/booking/direct-cancel-http";
 import {
@@ -53,27 +54,35 @@ export const dynamic = "force-dynamic";
  * flag unset `stampSeenIp` adds a header to nothing.
  */
 export async function POST(req: NextRequest) {
+  // #3221: one line per call with how long the caller waited for the answer, kept
+  // apart from the work deferred past the response; a dry run says so on it.
+  const facts: ConfirmLineFacts = {};
   // #3102: one budget for the whole request; see `confirm-budget.ts`. A deadline
   // from a read before the booking's own try (the key ceilings, the hourly cap) is
   // the same outage the booking path answers with VERIFY_UNAVAILABLE, rather than
   // escaping as an unhandled 500.
   return stampSeenIp(
-    await withinBookingRequest(
-      () => handlePost(req),
-      async (timeout) => {
-        await pageBookingFailure(timeout);
-        recordApiOutcome("error", "", "VERIFY_UNAVAILABLE", { by: "unidentifiable", why: "a dependency timed out before the request was read" });
-        // refusal: api_verify_unavailable
-        return NextResponse.json(await apiErrorBody(timeout, "VERIFY_UNAVAILABLE", "book", "Booking failed"), {
-          status: 503,
-        });
-      },
+    await answerTimed(
+      "booking-api",
+      () =>
+        withinBookingRequest(
+          () => handlePost(req, facts),
+          async (timeout) => {
+            await pageBookingFailure(timeout);
+            recordApiOutcome("error", "", "VERIFY_UNAVAILABLE", { by: "unidentifiable", why: "a dependency timed out before the request was read" });
+            // refusal: api_verify_unavailable
+            return NextResponse.json(await apiErrorBody(timeout, "VERIFY_UNAVAILABLE", "book", "Booking failed"), {
+              status: 503,
+            });
+          },
+        ),
+      { facts },
     ),
     req.headers,
   );
 }
 
-async function handlePost(req: NextRequest) {
+async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
   // Three refusals, decided apart (#1429). The authorizer reports WHICH one it was
   // and records it according to the catalog, so a rotated key and a noisy caller no
   // longer raise the same number:
@@ -113,6 +122,7 @@ async function handlePost(req: NextRequest) {
 
   // Dry run (#380): report what WOULD happen, no calendar event / booking / webhook.
   if (v.dryRun) {
+    facts.dryRun = true;
     try {
       const preview = await previewBooking({
         bucketCode: v.bucketCode,
