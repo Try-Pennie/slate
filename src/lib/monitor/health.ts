@@ -59,6 +59,7 @@ export const LANE_NAMES = [
   "bulk-reassign",
   "hydrate-calendars",
   "booking-reminders",
+  "reroute-hold-sweep",
 ] as const;
 
 export type LaneName = (typeof LANE_NAMES)[number];
@@ -85,6 +86,12 @@ export const LANE_STALE_BOUNDS_MS: Record<LaneName, number> = {
   // NORMAL state on a quiet hour, so silence and a broken read look identical
   // (L98), and the lead who is not reminded never tells anybody.
   "booking-reminders": 20 * MIN,
+  // #3248: the expiry sweep for reroute hold blocks, every minute on the self heal
+  // lane, stamped only when the sweep itself succeeded. Ten minutes like its lane.
+  // It needs its own bound because a sweep failing every tick leaves the self heal
+  // stamp fresh while a held advisor's expired time stays off the offer, and a
+  // quiet sweep (nothing expired) and a broken one would otherwise look the same.
+  "reroute-hold-sweep": 10 * MIN,
 };
 
 /**
@@ -114,6 +121,7 @@ export const LANE_NOTES: Record<LaneName, { does: string; cadence: string }> = {
   "bulk-reassign": { does: "moves the bookings a coverage sweep queued onto their new advisor", cadence: "every 5 minutes" },
   "booking-reminders": { does: "emails each lead a reminder 24 hours before their call", cadence: "every 5 minutes" },
   "hydrate-calendars": { does: "fills in cached busy time for agents whose window is running out", cadence: "every 15 minutes" },
+  "reroute-hold-sweep": { does: "puts an advisor's time back on offer once a bucket correction hold expires", cadence: "every minute" },
 };
 
 /**

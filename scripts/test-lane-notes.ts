@@ -21,7 +21,7 @@ import {
 } from "../src/lib/monitor/health.ts";
 import { assert, finish } from "./lib/harness.ts";
 
-assert(LANE_NAMES.length === 10, `ten watched lanes (saw ${LANE_NAMES.length})`);
+assert(LANE_NAMES.length === 11, `eleven watched lanes, the reroute hold sweep (#3248) the newest (saw ${LANE_NAMES.length})`);
 
 for (const lane of LANE_NAMES) {
   const note = laneNote(lane);
@@ -64,10 +64,10 @@ assert(
   "two lanes at the same age are told apart by their own bounds",
 );
 
-// The tenth job. "All 9 lanes ran on time" is true and leaves a reader no way to
-// know the cron system is bigger than this page.
+// The jobs this page does NOT watch. "All N lanes ran on time" is true and leaves a
+// reader no way to know the cron system is bigger than this page.
 const covers = cronLanesNote();
-assert(covers.includes("10 lanes"), "the count is derived, so it cannot claim nine of ten");
+assert(covers.includes("11 lanes"), "the count is derived, so it cannot claim ten of eleven");
 for (const said of [/roster sync/i, /time off/i, /Snowflake/i]) {
   assert(said.test(covers), `names what is NOT covered here: ${said}`);
 }

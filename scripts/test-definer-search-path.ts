@@ -284,9 +284,13 @@ const EXPECTED_PINNED = [
   // itself, deliberately, so it adds no row to the list it reports on.
   "definer_function_web_grants",
   "erase_booking_pii",
+  // #3248: the live reroute holds the booker skips, judged on the database clock.
+  "live_reroute_holds",
   "move_busy_block",
   // #3247: holds an advisor at a booking's buffered window for a bucket correction.
   "place_reroute_hold",
+  // #3248: removes expired reroute holds' busy blocks, on the self heal lane.
+  "prune_expired_reroute_hold_blocks",
   // #3109: the daily rate_limits prune.
   "prune_rate_limits",
   "rate_limit_hit",
@@ -307,6 +311,8 @@ const EXPECTED_PINNED = [
   // failed rules write cannot leave the new zone sitting over the old hours.
   "replace_user_schedule",
   "replace_user_schedule_if_unchanged",
+  // #3248: writes and removes a reroute hold's busy block.
+  "reroute_hold_write_block",
   // #3247: the one clash rule the hold trigger and placement share. Security INVOKER.
   "reroute_window_clash",
   "reserve_agent_link_name",

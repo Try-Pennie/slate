@@ -45,6 +45,15 @@ vi.mock("@/lib/booking/selfheal-cursor", () => cursor);
 vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
 vi.mock("@/lib/google/sync", () => google);
 vi.mock("@/lib/monitor/sweep-saturation", () => saturation);
+// #3248: the reroute hold expiry sweep. Its logic has its own suite
+// (scripts/test-reroute-hold-store.ts); here it is mocked so the lane wiring and
+// its own heartbeat can be asserted.
+const holds = vi.hoisted(() => ({
+  sweepExpiredRerouteHoldBlocks: vi.fn(async () => ({ freed: 2 })),
+}));
+const holdDeps = vi.hoisted(() => ({ rerouteHoldStoreDeps: vi.fn(() => ({})) }));
+vi.mock("@/lib/booking/reroute-hold-store", () => holds);
+vi.mock("@/lib/booking/reroute-hold-store-live", () => holdDeps);
 
 import { GET } from "./route";
 
@@ -98,6 +107,39 @@ describe("GET /api/cron/selfheal", () => {
     const body = await res.json();
     expect(body.poolExitCleaned).toBe("error");
     expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("selfheal");
+  });
+
+  // #3248: the expiry sweep for reroute hold blocks runs here every minute, with a
+  // heartbeat of its OWN, stamped only when the sweep itself succeeded (L13): the
+  // lane's heartbeat proves only that the lane ran.
+  it("runs the reroute hold expiry sweep and stamps its own heartbeat", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    const res = await GET(req());
+    expect(holds.sweepExpiredRerouteHoldBlocks).toHaveBeenCalledTimes(1);
+    expect((await res.json()).rerouteHoldBlocksFreed).toBe(2);
+    expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("reroute-hold-sweep");
+  });
+
+  it("does not stamp the sweep's heartbeat when the sweep throws, and the lane still runs", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    holds.sweepExpiredRerouteHoldBlocks.mockRejectedValueOnce(new Error("timeout"));
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect((await res.json()).rerouteHoldBlocksFreed).toBe("error");
+    expect(heartbeat.recordHeartbeat).not.toHaveBeenCalledWith("reroute-hold-sweep");
+    expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("selfheal");
+  });
+
+  it("contains a throw while wiring the sweep's deps to the sweep alone (L73)", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    holdDeps.rerouteHoldStoreDeps.mockImplementationOnce(() => {
+      throw new Error("SUPABASE_SECRET_KEY is not set");
+    });
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect((await res.json()).rerouteHoldBlocksFreed).toBe("error");
+    expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("selfheal");
+    expect(heartbeat.recordHeartbeat).not.toHaveBeenCalledWith("reroute-hold-sweep");
   });
 
   // #830: the creation-orphan check runs on this lane and its confirmed count

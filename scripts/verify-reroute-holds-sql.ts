@@ -433,6 +433,76 @@ try {
     cancel(K14);
   }
 
+  // --- 0167: a hold writes a busy block, and every way it ends removes it (#3248) ------
+  {
+    const blocks = (hold: string) => sql(`select count(*) from busy_blocks where hold_id = '${hold}';`);
+    const K20 = book(A, "09:00", "09:20");
+    const h = place(K20, B).holdId;
+    eq(
+      sql(`select user_id::text || '|' || source || '|' || to_char(starts_at at time zone 'UTC', 'HH24:MI') || '-'
+             || to_char(ends_at at time zone 'UTC', 'HH24:MI') || '|' || (booking_id is null)::text
+           from busy_blocks where hold_id = '${h}';`),
+      `${B}|hold|09:00-09:20|true`,
+      "placing a hold writes one block for the held advisor at the call's raw window, naming no booking",
+    );
+    const h2 = place(K20, C).holdId;
+    eq(blocks(h), "0", "replacing the hold removes the old block with the old hold row");
+    eq(blocks(h2), "1", "and writes the new one");
+
+    // Expiry: the block stays until the sweep, which returns who it freed.
+    expire(h2);
+    eq(blocks(h2), "1", "an expired hold's block waits for the sweep (a trigger cannot see time pass)");
+    eq(sql("select string_agg(user_id::text, ',') from prune_expired_reroute_hold_blocks();"), C,
+      "the sweep removes it and names the advisor it freed");
+    eq(blocks(h2), "0", "the block is gone");
+    eq(holdCount(K20), "1", "and the hold row is kept, so a late confirm reads expired rather than not found");
+    eq(sql("select count(*) from prune_expired_reroute_hold_blocks();"), "0", "a second sweep finds nothing");
+
+    // A live hold is never swept; consuming removes the block in the same transaction.
+    const h3 = place(K20, D).holdId;
+    eq(sql("select count(*) from prune_expired_reroute_hold_blocks();"), "0", "control: a live hold's block is not swept");
+    claim(K20, h3);
+    eq(swap(K20, D, { hold: h3 }).refused, "", "the hold is consumed by the swap");
+    eq(blocks(h3), "0", "and its block went with it");
+
+    // Cancelling the booking deletes the hold, and the block with it.
+    const K21 = book(A, "08:00", "08:20");
+    const h4 = place(K21, B).holdId;
+    cancel(K21);
+    eq(blocks(h4), "0", "cancelling the held booking removes the block");
+
+    // The live holds read, on the DATABASE clock (L736).
+    {
+      const K22 = book(A, "07:00", "07:20");
+      const h5 = place(K22, B).holdId;
+      const live = (users: string, from: string, to: string) =>
+        sql(`select coalesce(string_agg(booking_id::text, ','), '') from live_reroute_holds(array[${users}]::uuid[], ${at(from)}, ${at(to)});`);
+      eq(live(`'${B}'`, "07:25", "07:45"), K22, "a live hold whose buffered window reaches the asked window is returned");
+      eq(live(`'${B}'`, "07:31", "07:50"), "", "one wholly past its buffered end is not");
+      eq(live(`'${C}'`, "07:00", "07:20"), "", "another advisor's question does not see it");
+      sql(`update reroute_holds set expires_at = now() - interval '1 second' where id = '${h5}';`);
+      eq(live(`'${B}'`, "07:00", "07:20"), "", "the moment it expires by the database's own clock, it is not live");
+      cancel(K22);
+      for (const role of ["anon", "authenticated"]) {
+        const err = sqlError(`select * from live_reroute_holds(array['${B}']::uuid[], now(), now());`, role);
+        assert(err !== null && /permission denied/.test(err), `${role} cannot read live holds`);
+      }
+    }
+
+    // The shape: a hold block names a hold and nothing else, and nothing else is a hold.
+    assert(sqlError(`insert into busy_blocks (user_id, starts_at, ends_at, source) values ('${B}', ${at("07:00")}, ${at("07:20")}, 'hold');`) !== null,
+      "a hold block with no hold is refused");
+    assert(sqlError(`insert into busy_blocks (user_id, starts_at, ends_at, source) values ('${B}', ${at("07:00")}, ${at("07:20")}, 'nonsense');`) !== null,
+      "an unknown source is still refused");
+    eq(sql(`insert into busy_blocks (user_id, starts_at, ends_at, source) values ('${B}', ${at("07:00")}, ${at("07:20")}, 'gcal') returning source;`),
+      "gcal", "control: an ordinary block still inserts");
+    cancel(K20);
+    for (const role of ["anon", "authenticated"]) {
+      const err = sqlError("select * from prune_expired_reroute_hold_blocks();", role);
+      assert(err !== null && /permission denied/.test(err), `${role} cannot run the expiry sweep`);
+    }
+  }
+
   // --- no browser role can call any of it (L714) ---------------------------------------------
   for (const role of ["anon", "authenticated"]) {
     for (const call of [

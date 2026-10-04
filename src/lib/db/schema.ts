@@ -371,6 +371,24 @@ export interface Database {
         };
         Returns: { hold_id: string | null; expires_at: string | null; refused: PlaceRerouteHoldRefusal | null }[];
       };
+      /** Live reroute holds near a window, expiry judged on the database clock (#3248). */
+      live_reroute_holds: {
+        Args: { p_user_ids: string[]; p_from: string; p_to: string };
+        Returns: {
+          agent_user_id: string;
+          booking_id: string;
+          booking_starts_at: string;
+          booking_ends_at: string;
+          buffered_starts_at: string;
+          buffered_ends_at: string;
+        }[];
+      };
+      /** Removes expired holds' busy blocks and names the advisors freed (#3248,
+       *  migration 0167). The hold rows are kept. */
+      prune_expired_reroute_hold_blocks: {
+        Args: Record<string, never>;
+        Returns: { user_id: string }[];
+      };
       /** The first step of a reroute confirm (#3247): checks the hold and extends it
        *  to a two minute confirm lease. A consumed hold returns its stored result. */
       claim_reroute_hold: {

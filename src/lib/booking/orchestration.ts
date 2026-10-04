@@ -6,6 +6,7 @@ import { mapWithConcurrency } from "../concurrency.ts";
 import { DateTime } from "luxon";
 import {
   bookableSlotReason,
+  freeMembersAtExactWindow,
   isUnderDailyCap,
   isOrgOpen,
   isWithinWorkingHours,
@@ -13,7 +14,10 @@ import {
   type SlotRules,
   type WorkingRule,
   type UnbookableReason,
+  type MemberAvailability,
 } from "../availability/compute.ts";
+import type { EligibleAgents } from "../availability/service.ts";
+import { withoutOwnBooking } from "./reroute-hold.ts";
 import {
   bookingWindow,
   bufferedWindow,
@@ -1039,6 +1043,13 @@ export interface BookingDeps {
      * own tier (`rungExcludesLow`). The pool size is then the filtered pool's.
      */
     excludeLow?: boolean,
+    /**
+     * #3248: a reroute asks at a time that is already chosen. `fixedTime` judges
+     * the exact window (never the advisor's offering grid) with no minimum notice;
+     * `forBookingId` is the booking being rerouted, whose own hold excludes nobody.
+     * Absent for every booker call.
+     */
+    opts?: RoundRobinOpts,
   ): Promise<{ candidates: string[]; memberCount: number }>;
   /**
    * The ORG's opening hours (#1295, gate 1). Used by the two paths in this module
@@ -2057,7 +2068,7 @@ async function nextAdvisorAfterLostRace(
  * core is `selectAgent` (pure/tested); this wires it to DB + Google.
  */
 async function assignAgent(
-  deps: BookingDeps,
+  deps: Pick<BookingDeps, "roundRobinCandidates" | "loadEmails" | "verifyFree">,
   bucket: Bucket,
   eventType: EventType,
   startIso: string,
@@ -2067,15 +2078,23 @@ async function assignAgent(
   excludeLow = false,
   /** #3257: this confirm's claim in its slot's line; see `claimFromLine`. */
   seat: LineSeat | null = null,
+  /**
+   * #3248: a reroute. The booking's current advisor is taken out of the candidates
+   * BEFORE verify, because their own call makes them busy in Google and they are
+   * judged separately; the round robin is asked at the fixed time.
+   */
+  reroute?: { excludeUserId: string; forBookingId: string },
 ): Promise<AssignResult & { candidates: string[]; read: string[] }> {
-  const { candidates: read, memberCount } = await deps.roundRobinCandidates(
+  const { candidates: ranked, memberCount } = await deps.roundRobinCandidates(
     bucket,
     eventType,
     Date.parse(startIso),
     preview,
     onlyUserId,
     excludeLow,
+    reroute ? { fixedTime: true, forBookingId: reroute.forBookingId } : undefined,
   );
+  const read = reroute ? ranked.filter((id) => id !== reroute.excludeUserId) : ranked;
   const candidates = claimFromLine(seat, read);
 
   const { assignment, anyUnverified } = await selectAgent(
@@ -2172,6 +2191,177 @@ function unclaimedFirst(seat: LineSeat | null, candidates: string[]): { pool: st
   const others = seat.claimedByOthers();
   const unclaimed = candidates.filter((id) => !others.has(id));
   return { pool: unclaimed.length > 0 ? unclaimed : candidates, unclaimed: unclaimed.length };
+}
+
+/** #3248: how a round robin read is asked when the time is already chosen. */
+export interface RoundRobinOpts {
+  fixedTime?: boolean;
+  forBookingId?: string;
+}
+
+/**
+ * What a reroute needs to know about the booking's CURRENT advisor on one rung
+ * (#3248). Read through the bucket's REAL resolver (no named agent shortcut, which
+ * skips the pool check, red team 4), with their cached busy time and daily count,
+ * and whether they have approved time off over the call. Every read inside throws
+ * on failure: an unreadable answer is the retriable error, never a keep (audit 12).
+ */
+export interface CurrentAgentPicture {
+  /** The rung's pool as `eligibleAgentIds` resolves it, fallback flag and Low carriers included. */
+  pool: EligibleAgents;
+  /** Their availability over the booking's window, or null when they have no schedule row. */
+  member: MemberAvailability | null;
+  onTimeOff: boolean;
+  businessHours: BusinessHoursRules;
+}
+
+/** The side effects `findRerouteTarget` needs; the routes wire the real ones (#3249). */
+export interface RerouteTargetDeps
+  extends Pick<BookingDeps, "resolveBucketByCode" | "roundRobinCandidates" | "loadEmails" | "verifyFree"> {
+  loadCurrentAgentPicture(bucket: Bucket, eventType: EventType, booking: Booking): Promise<CurrentAgentPicture>;
+  now(): number;
+}
+
+/**
+ * Where a reroute would put a booking (#3244). The names say whether the advisor
+ * changes and whether the ladder was walked; `rungsDropped` and `bucket` say how
+ * far and where. `keep-last-resort` corrects the bucket to the REQUESTED one while
+ * keeping the advisor, because nobody else anywhere could take the time.
+ */
+export type RerouteTarget =
+  | { outcome: "keep-in-requested" | "keep-cascaded" | "keep-last-resort"; bucket: Bucket; eventType: EventType; rungsDropped: number }
+  | {
+      outcome: "move-in-requested" | "move-cascaded";
+      bucket: Bucket;
+      eventType: EventType;
+      rungsDropped: number;
+      userId: string;
+      email: string;
+      candidates: string[];
+    };
+
+/**
+ * Whether the current advisor can keep the booking on this rung: a real member of
+ * the pool (a fallback stand in is not membership), not a Low carrier on a rung
+ * that excludes Low (an unknown answer there fails closed), not on approved time
+ * off, and free for the booking's EXACT window by the same predicate the booker
+ * uses, with the booking itself taken out of their busy time and cap count. No
+ * minimum notice: that rule is for a lead choosing a time, and this one is chosen.
+ */
+export function currentAgentFitsRung(
+  picture: CurrentAgentPicture,
+  agentId: string,
+  eventType: EventType,
+  booking: Pick<Booking, "starts_at" | "ends_at">,
+  excludeLow: boolean,
+  nowMs: number,
+): boolean {
+  const { pool, member } = picture;
+  if (pool.fallbackApplied || !pool.ids.includes(agentId)) return false;
+  if (excludeLow && (pool.lowIds === undefined || pool.lowIds.includes(agentId))) return false;
+  if (picture.onTimeOff || member === null) return false;
+  const startMs = Date.parse(booking.starts_at);
+  const endMs = Date.parse(booking.ends_at);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return false;
+  const adjusted = withoutOwnBooking(member, { startMs, endMs });
+  return (
+    freeMembersAtExactWindow(
+      [adjusted],
+      {
+        durationMin: Math.round((endMs - startMs) / 60_000),
+        bufferBeforeMin: eventType.buffer_before_min,
+        bufferAfterMin: eventType.buffer_after_min,
+        minNoticeMin: 0,
+        dailyCap: eventType.daily_cap,
+        businessHours: picture.businessHours,
+        nowMs,
+      },
+      startMs,
+    ).length === 1
+  );
+}
+
+/**
+ * Route a booking AS IF it were new into `requested`, at its existing time (#3244,
+ * phase 2 #3248), through the booker's own `roundRobinCandidates`, `assignAgent` and
+ * `walkTierLadder`, in Dan's order: at each rung, keep the current advisor if they
+ * fit, otherwise the first advisor in round robin order verified free; nobody on
+ * any rung keeps the current advisor as the last resort.
+ *
+ * The window is the booking's STORED start and end, never recomputed. A verify
+ * outage throws `VerifyUnavailableError` (retriable) rather than cascading past an
+ * advisor it could not check or falling back to a keep, and so does any failed read
+ * behind the current advisor's picture.
+ */
+export async function findRerouteTarget(
+  deps: RerouteTargetDeps,
+  booking: Booking,
+  requested: { bucket: Bucket; eventType: EventType },
+): Promise<RerouteTarget> {
+  const current = booking.assigned_user_id;
+  const startIso = new Date(booking.starts_at).toISOString();
+  const endIso = new Date(booking.ends_at).toISOString();
+  const allowTest = requested.bucket.is_test;
+
+  type Hit =
+    | { keep: true; bucket: Bucket; eventType: EventType }
+    | { keep: false; bucket: Bucket; eventType: EventType; userId: string; email: string; candidates: string[] };
+  const winner = await walkTierLadder<Hit>(requested.bucket.code, async (rungCode, i) => {
+    const resolved = i === 0 ? requested : await deps.resolveBucketByCode(rungCode);
+    if (!resolved) return { hit: false };
+    if (resolved.bucket.is_test !== allowTest) return { hit: false };
+    const excludeLow = rungExcludesLow(requested.bucket.code, rungCode);
+
+    if (current) {
+      const picture = await deps.loadCurrentAgentPicture(resolved.bucket, resolved.eventType, booking);
+      if (currentAgentFitsRung(picture, current, resolved.eventType, booking, excludeLow, deps.now())) {
+        return { hit: true, value: { keep: true, bucket: resolved.bucket, eventType: resolved.eventType } };
+      }
+    }
+    try {
+      const { userId, email, candidates } = await assignAgent(
+        deps,
+        resolved.bucket,
+        resolved.eventType,
+        startIso,
+        endIso,
+        false,
+        undefined,
+        excludeLow,
+        null,
+        { excludeUserId: current ?? "", forBookingId: booking.id },
+      );
+      return {
+        hit: true,
+        value: { keep: false, bucket: resolved.bucket, eventType: resolved.eventType, userId, email, candidates },
+      };
+    } catch (err) {
+      if (err instanceof SlotUnavailableError || err instanceof NoEligibleAgentsError) return { hit: false };
+      throw err;
+    }
+  });
+
+  if (!winner) {
+    return { outcome: "keep-last-resort", bucket: requested.bucket, eventType: requested.eventType, rungsDropped: 0 };
+  }
+  const { value, rungsDropped } = winner;
+  if (value.keep) {
+    return {
+      outcome: rungsDropped === 0 ? "keep-in-requested" : "keep-cascaded",
+      bucket: value.bucket,
+      eventType: value.eventType,
+      rungsDropped,
+    };
+  }
+  return {
+    outcome: rungsDropped === 0 ? "move-in-requested" : "move-cascaded",
+    bucket: value.bucket,
+    eventType: value.eventType,
+    rungsDropped,
+    userId: value.userId,
+    email: value.email,
+    candidates: value.candidates,
+  };
 }
 
 interface TierAssignResult {

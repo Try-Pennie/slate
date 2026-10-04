@@ -7,7 +7,9 @@ import type { BookingSource } from "../booking/booking-source.ts";
 import type { RoutingCodeRecord } from "../routing/lead-code.ts";
 
 export type Role = "super_admin" | "admin" | "team_lead" | "manager" | "agent";
-export type BusySource = "slate" | "gcal";
+/** `hold` (#3248, migration 0167): written by a reroute hold's trigger, carrying
+ *  `hold_id`, so the slot cache keeps a held advisor's time off the offer. */
+export type BusySource = "slate" | "gcal" | "hold";
 export type OooStatus = "pending" | "approved" | "rejected" | "cancelled";
 export type ThemePreference = "system" | "light" | "dark";
 export type BookingStatus =
@@ -597,6 +599,8 @@ export interface BusyBlock {
    * reconcile sweep and the pool-exit prune can see.
    */
   ooo_request_id: string | null;
+  /** The reroute hold a `hold` block was written for (#3248); null on every other row. */
+  hold_id?: string | null;
   created_at: string;
 }
 

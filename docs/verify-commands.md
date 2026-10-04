@@ -1558,7 +1558,13 @@ a claim with two seconds left extends to the two minute confirm lease; a lead re
 during the hold refuses the confirm; a move needs a claimed hold, consumes it, keeps
 `allow_double_book` false and stays under the overlap constraint; a second confirm returns
 the first result; a keep corrects only the bucket and trace; the seven argument swap is
-still the plain reassign; and no browser role can execute any of the functions. It writes
+still the plain reassign; and no browser role can execute any of the functions. Since
+#3248 (migration 0167) it also proves the hold's busy block: placing a hold writes one
+`hold` block for the held advisor at the call's window, replacing, consuming or
+cancelling removes it in the same transaction, and an expired hold's block waits for
+`prune_expired_reroute_hold_blocks` (the self heal lane's every minute sweep, watched by
+the `reroute-hold-sweep` heartbeat), which names the advisors it freed and keeps the
+hold row. It writes
 nothing outside the container. No Docker is exit 2, never a pass (L98); any failed check
 is exit 1. It runs in the DB replay workflow with the other `verify-*-sql.ts` suites.
 
