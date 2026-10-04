@@ -1163,8 +1163,8 @@ export function recomputeModeVerdict(body: unknown, wanted: string | undefined):
       ok: false,
       why:
         `this deployment's ${POST_CONFIRM_RECOMPUTE_VAR} is "${b.postConfirmRecomputeUnknown}", which ` +
-        `is not one of ${POST_CONFIRM_RECOMPUTE_MODES.join(", ")}, so the Worker runs the on arm ` +
-        `rather than the one this run was dispatched for. Redeploy with a valid value and re-run.`,
+        `is not one of ${POST_CONFIRM_RECOMPUTE_MODES.join(", ")}, so the Worker ignores it and ` +
+        `runs the on arm whatever this run was dispatched for. Redeploy with a valid value and re-run.`,
       retriable: false,
     };
   }

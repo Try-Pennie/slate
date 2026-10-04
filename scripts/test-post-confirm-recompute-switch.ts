@@ -121,7 +121,7 @@ for (const raw of ["off", "reads-only", "garbage"]) {
   const typo = recomputeModeVerdict({ loadtest: true, postConfirmRecompute: "on", postConfirmRecomputeUnknown: "of" }, "on");
   const typoOff = recomputeModeVerdict({ loadtest: true, postConfirmRecompute: "on", postConfirmRecomputeUnknown: "of" }, "off");
   assert(
-    !typoOff.ok && typoOff.why.includes("runs the on arm rather than the one this run was dispatched for"),
+    !typoOff.ok && typoOff.why.includes("ignores it and runs the on arm whatever this run was dispatched for"),
     "an unknown deployment value says the Worker runs on, not the arm asked for",
   );
   assert(!typo.ok && !typo.retriable && typo.why.includes("of"), "a deployment holding an unknown value refuses, even for the on arm");
