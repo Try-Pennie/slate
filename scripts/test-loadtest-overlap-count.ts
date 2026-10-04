@@ -44,6 +44,7 @@ function input(bookings: ReturnType<typeof booking>[]) {
     ipCeilingControl: {} as never,
     platform: {} as never,
     expectedLegs: { burstDrivers: 0, faultPct: 0 },
+    unreadableDriverFiles: [],
     budgets: { cpuMsP99: 2500, cronCpuMs: 120_000 },
   };
 }

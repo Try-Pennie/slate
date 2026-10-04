@@ -10,6 +10,7 @@
 import {
   judgeBookingRun,
   incompleteness,
+  burstShortfall,
   percentiles,
   overlaps,
   JUDGE_EXIT,
@@ -212,6 +213,7 @@ function passing(): JudgeInput {
     // #3104: the lanes kept running and the sync page fired once while faulted.
     faultLanes: { evidence: healthyFaultLanes(LANES_T0, RUN), expectations: fixtureLaneExpectations(LANES_T0) },
     expectedLegs: { burstDrivers: burstResults.length, faultPct: 10 },
+    unreadableDriverFiles: [],
     budgets: { cpuMsP99: REQUEST_CPU_P99_MS, cronCpuMs: 120_000 },
   };
 }
@@ -275,14 +277,23 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
     "and a sampler that stopped early, because a short window never reaches the age a full one does",
   );
 
-  // A burst driver that missed its moment is INCOMPLETE rather than failed: it
-  // recorded nothing, so there is no contention to judge and "exactly one 200"
-  // would be answered by however many drivers happened to arrive.
+  // A burst driver that missed its moment FAILS the burst (#3222). It used to make
+  // the run incomplete, and the workflow skipped the whole steady pass behind the
+  // failed burst job, so one late driver cost the run every figure it had. The
+  // contention bar is not asked of a burst that was not simultaneous ("exactly one
+  // 200" would be answered by however many drivers arrived); the burst fails with
+  // its reason and the steady figures are judged beside it.
   const missed = broken((i) => {
     i.burstResults[0]!.burstSkipped = "missed";
     i.burstResults[0]!.attempts = [];
   });
-  eq(missed.verdict, "incomplete", "a burst driver that did not fire makes the burst unjudgeable");
+  eq(missed.verdict, "fail", "a burst driver that did not fire fails the burst");
+  eq(bars(missed), ["the burst"], "and nothing else: the steady pass is judged and passes");
+  assert(
+    missed.findings[0]!.detail.includes("did not fire (missed)"),
+    `with its reason (got: ${missed.findings[0]?.detail})`,
+  );
+  assert(missed.measurements !== null, "and the steady figures are measured beside it");
 }
 
 // --- a slow run is judged, a silent driver is not (#3222) -------------------------
@@ -293,6 +304,27 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
  * Its file is the well formed partial one the driver writes, and the bookings it
  * never got to are absent from the database exactly as they would be.
  */
+/** One fault driver's file, cut short after `made` of a thirty request plan, or not. */
+function faultFiles(made: number, cutShort = true): { drivers: DriverResult[]; expectedPerDriver: number } {
+  return {
+    expectedPerDriver: 30,
+    drivers: [
+      {
+        runId: RUN,
+        driver: 0,
+        mode: "fault",
+        planned: 30,
+        startedAtMs: T0,
+        finishedAtMs: T0 + 180_000,
+        faultPct: 10,
+        faultTargets: ["google-read"],
+        ...(cutShort ? { cutShort: { deadlineMs: 180_000, attemptsMade: made } } : {}),
+        attempts: Array.from({ length: made }, (_, n) => attempt(0, n, { externalId: `${RUN}-f-0-${n}` })),
+      },
+    ],
+  };
+}
+
 function slowRun(made = 100): JudgeInput {
   const input = passing();
   for (const r of input.driverResults) for (const a of r.attempts) a.wallMs = 8_000;
@@ -370,11 +402,85 @@ function slowRun(made = 100): JudgeInput {
   // requests than the bar was sized for, so it fails with its figures rather
   // than reading as a clean, smaller pass.
   const r = broken((i) => {
-    i.faultPass = { ...i.faultPass!, cutShort: { made: 20, planned: 30 } };
+    i.faultPass = { ...i.faultPass!, ...faultFiles(20) };
   });
   const f = r.findings.find((x) => x.bar === "fault pass completed");
   assert(f?.detail.includes("20 of 30") === true, `a cut short fault pass fails with its figures (got: ${f?.detail})`);
   eq(r.verdict, "fail", "and the run fails");
+  eq(judgeBookingRun({ ...passing(), faultPass: { ...passing().faultPass!, ...faultFiles(30, false) } }).verdict, "pass", "control: a whole fault file passes");
+}
+
+{
+  // The SAME file checks the steady drivers get, applied to the fault driver: a
+  // cut short file that disagrees with itself, and a file short of its plan with
+  // no word of why, are not a partial run anybody can read.
+  const mismatched = faultFiles(20);
+  mismatched.drivers[0]!.cutShort!.attemptsMade = 25;
+  assert(
+    incompleteness({ ...passing(), faultPass: { ...passing().faultPass!, ...mismatched } }).some((w) =>
+      w.includes("fault driver 0 says it was cut short"),
+    ),
+    "a fault file whose cut short count disagrees is incomplete",
+  );
+  const silentShort = faultFiles(20, false);
+  assert(
+    incompleteness({ ...passing(), faultPass: { ...passing().faultPass!, ...silentShort } }).some((w) =>
+      w.includes("fault driver 0 recorded 20 attempts, expected 30"),
+    ),
+    "and so is a fault file short of its plan that does not say it was cut short",
+  );
+  const otherPlan = faultFiles(20);
+  otherPlan.drivers[0]!.planned = 40;
+  assert(
+    incompleteness({ ...passing(), faultPass: { ...passing().faultPass!, ...otherPlan } }).some((w) =>
+      w.includes("fault driver 0 was cut short against a plan of 40"),
+    ),
+    "and one cut short against a different plan from the run's",
+  );
+}
+
+{
+  // A driver with no steady file is named by its CAUSE (#3222). A file that could
+  // not be read and a file in the wrong mode are not a driver that hung, and each
+  // sends a reader somewhere different (L11).
+  const unreadable = broken((i) => {
+    i.driverResults.splice(1, 1);
+    i.unreadableDriverFiles = [{ file: "driver-1.json", why: "Unexpected end of JSON input" }];
+  });
+  assert(
+    unreadable.incomplete.some((w) => w.includes("driver-1.json could not be read") && w.includes("Unexpected end")),
+    `an unreadable file is named as unreadable (got: ${unreadable.incomplete.join(" | ")})`,
+  );
+  assert(!unreadable.incomplete.some((w) => w.includes("hung")), "and not as a driver that hung");
+  const wrongMode = broken((i) => {
+    i.driverResults.splice(3, 1);
+    i.unreadableDriverFiles = [{ file: "driver-3.json", why: "it says mode burst, not steady" }];
+  });
+  assert(
+    wrongMode.incomplete.some((w) => w.includes("driver-3.json") && w.includes("mode burst")),
+    "a file in the wrong mode is named as that",
+  );
+  const absent = broken((i) => {
+    i.driverResults.splice(0, 1);
+  });
+  assert(
+    absent.incomplete.some((w) => w.includes("driver 0 wrote no result file")),
+    "and only a file that never arrived at all is the silent driver",
+  );
+}
+
+{
+  // A request the driver gave up on at its own bound is its own finding, apart
+  // from one the deployment never answered for another reason (L11).
+  const r = broken((i) => {
+    const a = i.driverResults[0]!.attempts[3]!;
+    a.status = 0;
+    a.outcome = "timed-out";
+  });
+  const f = r.findings.find((x) => x.bar === "timed out requests");
+  assert(f?.detail.includes("1 request") === true, `a timed out request is its own bar (got: ${f?.detail})`);
+  assert(!bars(r).includes("unanswered requests"), "and is not also counted as unanswered");
+  eq(r.measurements!.timedOut, 1, "and is measured");
 }
 
 // --- throughput ----------------------------------------------------------------
@@ -562,9 +668,14 @@ function slowRun(made = 100): JudgeInput {
       "that was really the rate limiter",
   );
 
+  // A run with no burst leg CONFIGURED. This used to leave the expectation at one
+  // driver, which made the run incomplete and the assertion pass over no findings
+  // at all; a configured leg that never arrived now fails the burst (#3222).
   const noBurst = broken((i) => {
     i.burstResults = [];
+    i.expectedLegs = { ...i.expectedLegs, burstDrivers: 0 };
   });
+  eq(noBurst.verdict, "pass", "a run with no burst leg configured passes on everything else");
   assert(
     !bars(noBurst).some((b) => b.startsWith("the burst")),
     "a run with no burst leg is judged on everything else rather than failing for its absence",
@@ -1012,28 +1123,34 @@ function slowRun(made = 100): JudgeInput {
   eq(incompleteness(i).length, 0, "a run configured with neither leg is complete without them");
 }
 
+// A configured burst leg that did not arrive whole FAILS the burst with its reason
+// (#3222), rather than making the whole run unjudgeable or reading as absent.
+
 {
   const i = passing();
   const want = i.burstResults.length;
   i.burstResults = i.burstResults.slice(0, want - 1);
-  const why = incompleteness(i);
+  const why = burstShortfall(i);
   assert(
     why.some((r) => r.includes("burst driver files")),
-    "a burst leg missing a driver file is incomplete",
+    "a burst leg missing a driver file is a burst shortfall",
   );
   assert(
     why.some((r) => r.includes(String(want))),
     "and the reason says how many were expected",
   );
+  const r = judgeBookingRun(i);
+  eq(r.verdict, "fail", "which fails the run");
+  eq(incompleteness(i), [], "rather than making it incomplete");
 }
 
 {
   const i = passing();
   i.burstResults = [];
-  const why = incompleteness(i);
+  const r = judgeBookingRun(i);
   assert(
-    why.some((r) => r.includes("burst driver files")),
-    "a burst leg that produced NOTHING is incomplete rather than treated as absent",
+    r.findings.some((f) => f.bar === "the burst" && f.detail.includes("burst driver files")),
+    "a burst leg that produced NOTHING fails rather than being treated as absent",
   );
 }
 
@@ -1044,9 +1161,10 @@ function slowRun(made = 100): JudgeInput {
   const i = passing();
   i.burstResults[0]!.attempts = i.burstResults[0]!.attempts.slice(0, 1);
   assert(
-    incompleteness(i).some((r) => r.includes("of") && r.includes("planned requests")),
-    "a burst driver that fired a fraction of its plan is incomplete",
+    burstShortfall(i).some((r) => r.includes("of") && r.includes("planned requests")),
+    "a burst driver that fired a fraction of its plan is a burst shortfall",
   );
+  eq(judgeBookingRun(i).verdict, "fail", "and fails the run");
 }
 
 {

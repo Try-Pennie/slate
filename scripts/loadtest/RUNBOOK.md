@@ -811,9 +811,18 @@ sampler that stopped after two minutes, is computable and every rate looks
 plausible: the p95 of a short run is lower and the confirmed-per-minute of a
 missing driver is a quarter down, and nothing in the numbers says which. So
 `incomplete` is its own verdict on its own exit code and **nothing is measured at
-all** (L288). A burst driver that missed its moment counts as incomplete too: it
-recorded nothing, so "exactly one 200" would be answered by however many drivers
-happened to arrive.
+all** (L288).
+
+**A burst that did not happen as configured FAILS the burst instead (#3222).** A
+burst driver that missed its moment, a burst file that never arrived, or a driver
+that fired part of its plan is a `the burst` finding with its reason, and the
+contention question is not asked of it ("exactly one 200" would be answered by
+however many drivers happened to arrive). It used to be incompleteness, and since a
+late burst driver exits non-zero by design, the burst job failed and the steady
+pass, freshness and the archive (and the ceiling and fault legs behind them) were
+skipped: one late driver cost the run every figure. Those jobs now run on an
+explicit `if: ${{ !cancelled() && ... }}` that requires the preflight and the burst
+setup but not the burst, held by `scripts/test-loadtest-driver-deadline.ts`.
 
 **A slow run is not an incomplete one (#3222).** The drivers send one request at a
 time, so a slow deployment stretches the run: on 2026-10-04 (run 37215457763) a ten
@@ -823,13 +832,19 @@ verdict on the latency bar it should have failed. Each steady and fault driver n
 keeps a deadline of its own (`driverDeadlineMs` in `book-plan.ts`: the time the plan
 takes when every request sits at the 5,000ms bar, fifteen minutes for the steady
 plan), stops there, writes a whole file marked `cutShort` with the count it made,
-and exits zero so the ceiling check and the fault pass still run. The judge scores
+and exits zero so the ceiling check and the fault pass still run. Every request also
+carries its own abort (`requestAbortMs`: thirty seconds, and never more than a minute
+past the deadline, inside the grace before the job's timeout), so a request that never
+answers is recorded as `timed-out` and fails its own **timed out requests** bar rather
+than keeping the driver from writing its file. The judge scores
 that file: the latency bar on what ran, and a failing **planned bookings completed**
 bar naming the driver, how far it got and the share of the run that completed. The
 drive job's `timeout-minutes` is derived from the same deadline plus setup and grace
 (`driveJobTimeoutMinutes`), and `scripts/test-loadtest-driver-deadline.ts` holds the
-workflow's number equal to it. So a driver with NO file hung or crashed, and that
-stays incomplete, naming the driver.
+workflow's number equal to it. A steady driver with NO usable file stays incomplete,
+named by its cause: a `driver-N.json` that could not be parsed, one in another mode,
+or no file at all (it hung or crashed before writing one, or its artifact never
+arrived). The fault drivers' files get the same file checks as the steady ones.
 
 ### The bars
 
@@ -841,7 +856,7 @@ stays incomplete, naming the driver.
 | 5xx and no reply | counted **separately** and both fail: a request answered badly and one never answered send two different people to two different places |
 | double bookings | no two run-scoped ACTIVE bookings overlap on one agent in `[starts_at, ends_at)`, read through a **paginating** list, and the preflight must have seen `bookings_active_slot_uniq` actually REFUSE a planted duplicate (without that, an absence of overlaps proves nothing). The count is printed in the measured section on EVERY run, with its denominator and the same-slot count beside it, because a measured zero and a check that never ran read the same when neither prints (#2323) |
 | every 200 left a row | a booking row carrying the request's external id, an idempotency key, and a `busy_blocks` row |
-| the burst | one winner **per agent** (#2273), every other answer `SLOT_TAKEN`, and each winner really exists. A leg that was configured and produced fewer driver files than fired is **incomplete**, never a skipped bar. The report states the measured depth the control ran at, since one deep and three deep prove different amounts (#2278) |
+| the burst | one winner **per agent** (#2273), every other answer `SLOT_TAKEN`, and each winner really exists. A leg that was configured and produced fewer driver files than fired, a driver that missed its moment, or one that fired part of its plan **fails** this bar with its reason (#3222), never a skipped bar. The report states the measured depth the control ran at, since one deep and three deep prove different amounts (#2278) |
 | freshness | the worst oldest-bucket age across the window under 6 minutes |
 | the per address ceiling | its own step, run AFTER the steady pass so it has the API key's budget to itself, sends from one address until the deployment CREDITS a refusal to the per address ceiling, up to past the exact 1,200 an hour cap. It reads back both echoes: the address it was keyed on (unidentified, several, or unechoed each get their own conclusion) and WHICH ceiling refused, so a per key refusal is never counted as proof of the per address one (#2339) |
 | confirm startup | what a lead waits BEFORE the confirm begins, read from the run's own archived log and judged only on the confirms that were the FIRST on their isolate, under `REQUEST_STARTUP_P95_MS` (what is left of the latency bar once the confirm's own CPU share is taken out). Three ways it FAILS without a slow start: no archive at all, an archive holding nothing readable (the stream is written under a `wrangler tail` timeout, so its last line is routinely half written), and a reading in which nothing was ever the first on its isolate. Each has its own sentence, because nothing to check is never a pass (#2340, L98) |

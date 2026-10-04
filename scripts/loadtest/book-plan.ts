@@ -110,6 +110,32 @@ export function deadlineReached(opts: { nowMs: number; nextAtMs: number; deadlin
   return opts.nowMs >= opts.deadlineAtMs || opts.nextAtMs >= opts.deadlineAtMs;
 }
 
+/**
+ * How long one request may take before the driver gives up on it (#3222). Well past
+ * the slowest confirm seen (12s on run 37215457763), so it records a hang rather
+ * than a slow answer.
+ */
+export const REQUEST_TIMEOUT_MS = 30_000;
+/**
+ * How far a request already in flight may run past the driver's deadline. Inside
+ * the grace before the job's timeout, with room left to write the file, so a request
+ * that never answers can no longer keep the driver from writing it.
+ */
+export const REQUEST_OVERRUN_MS = 60_000;
+
+/**
+ * The abort bound for a request sent now: its own timeout, or the time left until
+ * the deadline plus the overrun, whichever is sooner. Never below one millisecond,
+ * because a zero or negative bound would abort before the request was sent and
+ * record a timeout nobody waited for.
+ */
+export function requestAbortMs(opts: { nowMs: number; deadlineAtMs: number }): number {
+  return Math.max(1, Math.min(REQUEST_TIMEOUT_MS, opts.deadlineAtMs + REQUEST_OVERRUN_MS - opts.nowMs));
+}
+
+/** The fault pass's length when FAULT_MINUTES is unset, which is how the workflow runs it. */
+export const FAULT_MINUTES_DEFAULT = 2;
+
 /** One request the driver will make. */
 export interface PlannedRequest {
   /** 0-based, unique within the driver. */
@@ -366,7 +392,7 @@ export function chooseBurstSlot(slots: readonly string[]): string | null {
  *
  * The lead has to cover a runner being queued, checked out and installed, which is
  * the slowest part of the whole leg. Too short and drivers wake late, fire
- * nothing, and the judge calls the run incomplete: the burst is cheap to re-run
+ * nothing, and the judge fails the burst: the burst is cheap to re-run
  * and a ten minute run judged without its control is not.
  */
 export function burstStartAt(nowMs: number, leadSeconds: number): number {

@@ -182,8 +182,13 @@ export interface JudgeInput {
     fiveXx: number;
     faultPct: number;
     faultTargets: string[];
-    /** Present when the fault driver stopped at its own deadline (#3222). */
-    cutShort?: { made: number; planned: number };
+    /**
+     * The fault drivers' own files and the plan each was meant to run (#3222), so
+     * they get exactly the file checks a steady driver gets and a pass cut short at
+     * its deadline fails with its figures. Absent on a hand built input.
+     */
+    drivers?: DriverResult[];
+    expectedPerDriver?: number;
   };
   /**
    * What the cron lanes did while the deployment was faulted (#3104): the lane
@@ -209,6 +214,14 @@ export interface JudgeInput {
    * are skipped exactly as before.
    */
   expectedLegs: { burstDrivers: number; faultPct: number; faultTargets?: readonly string[] };
+  /**
+   * Result files the gatherer found and could not use as a steady driver's (#3222):
+   * unparsable, or a `driver-N.json` in another mode. Required, so `tsc` names every
+   * construction site. A driver with no steady file is named by THIS cause when one
+   * matches its file name, because "hung or crashed" claims something a corrupt or
+   * mislabelled file never measured (L11).
+   */
+  unreadableDriverFiles: { file: string; why: string }[];
   /**
    * The two CPU ceilings, which are different numbers about different things.
    * `cpuMsP99` is the REQUEST path budget (`REQUEST_CPU_P99_MS`, a share of the
@@ -275,6 +288,67 @@ function attemptsOf(results: DriverResult[]): BookingAttempt[] {
 }
 
 /**
+ * What is wrong with one driver's FILE, steady or fault alike (#3222).
+ *
+ * A driver that stopped at its own deadline wrote a whole partial file, and that is
+ * a run that happened slowly: it is judged, and the share it completed fails a bar
+ * of its own. Only a file that disagrees with itself (a count that does not match
+ * what it holds, a plan that is not the run's) or one short of its plan with no word
+ * of why is unreadable as a run.
+ */
+export function driverFileProblems(r: DriverResult, expectedPlanned: number, label: string): string[] {
+  const why: string[] = [];
+  if (r.cutShort) {
+    if (r.planned !== expectedPlanned) {
+      why.push(`${label} was cut short against a plan of ${r.planned}, not the run's ${expectedPlanned}`);
+    }
+    if (r.cutShort.attemptsMade !== r.attempts.length || r.attempts.length >= expectedPlanned) {
+      why.push(
+        `${label} says it was cut short after ${r.cutShort.attemptsMade} requests and its file ` +
+          `holds ${r.attempts.length} of ${expectedPlanned}, so the file is not a whole partial run`,
+      );
+    }
+  } else if (r.attempts.length !== expectedPlanned) {
+    why.push(`${label} recorded ${r.attempts.length} attempts, expected ${expectedPlanned}`);
+  }
+  return why;
+}
+
+/**
+ * Why the burst leg did not happen as it was configured, or nothing (#3222).
+ *
+ * Each reason FAILS the burst bar rather than making the run incomplete. It used to
+ * be incompleteness, and a late burst driver exits non-zero by design, which failed
+ * the burst job and skipped the steady pass behind it: one late driver cost the run
+ * every figure it had. The contention question ("one winner per agent") is still
+ * never asked of a burst that was not whole, because it would be answered by however
+ * many drivers happened to arrive (L11).
+ */
+export function burstShortfall(input: JudgeInput): string[] {
+  const why: string[] = [];
+  for (const b of input.burstResults) {
+    if (b.burstSkipped) {
+      why.push(`burst driver ${b.driver} did not fire (${b.burstSkipped}), so the burst was not simultaneous`);
+    } else if (b.attempts.length !== b.planned) {
+      why.push(
+        `burst driver ${b.driver} fired ${b.attempts.length} of ${b.planned} planned requests, so ` +
+          "the burst was smaller than the one configured",
+      );
+    }
+  }
+  // A leg the run was configured to have and did not get. Answering the winners
+  // question over nothing is how a missing control reads as a passing one.
+  const want = input.expectedLegs.burstDrivers;
+  if (want > 0 && input.burstResults.length !== want) {
+    why.push(
+      `${input.burstResults.length} burst driver files, expected ${want}. A burst judged on ` +
+        "fewer drivers than fired is not the contention the control counts.",
+    );
+  }
+  return why;
+}
+
+/**
  * Why this run cannot be judged, or null.
  *
  * Checked BEFORE anything is computed, because every rate below is computable from
@@ -295,9 +369,12 @@ export function incompleteness(input: JudgeInput): string[] {
     const present = new Set(input.driverResults.map((r) => r.driver));
     for (let d = 0; d < input.target.drivers; d++) {
       if (present.has(d)) continue;
+      const bad = input.unreadableDriverFiles.find((f) => f.file === `driver-${d}.json`);
       why.push(
-        `driver ${d} wrote no result file, so it hung or crashed: a slow driver stops at its own ` +
-          "deadline and writes what it ran",
+        bad
+          ? `driver ${d}'s file ${bad.file} could not be read as its steady result: ${bad.why}`
+          : `driver ${d} wrote no result file: it hung or crashed before writing one, or its ` +
+              "artifact never arrived. A slow driver stops at its own deadline and writes what it ran",
       );
     }
   }
@@ -309,26 +386,7 @@ export function incompleteness(input: JudgeInput): string[] {
     if (r.runId !== input.runId) {
       why.push(`driver ${r.driver}'s file is from run ${r.runId}, not ${input.runId}`);
     }
-    if (r.cutShort) {
-      // A driver that stopped at its own deadline (#3222) is a run that HAPPENED,
-      // slowly, and is judged: the share it completed is a failing bar of its own.
-      // Only a file that disagrees with itself is unreadable as one.
-      if (r.planned !== expectedPerDriver) {
-        why.push(
-          `driver ${r.driver} was cut short against a plan of ${r.planned}, not the run's ${expectedPerDriver}`,
-        );
-      }
-      if (r.cutShort.attemptsMade !== r.attempts.length || r.attempts.length >= expectedPerDriver) {
-        why.push(
-          `driver ${r.driver} says it was cut short after ${r.cutShort.attemptsMade} requests and ` +
-            `its file holds ${r.attempts.length} of ${expectedPerDriver}, so the file is not a whole partial run`,
-        );
-      }
-    } else if (r.attempts.length !== expectedPerDriver) {
-      why.push(
-        `driver ${r.driver} recorded ${r.attempts.length} attempts, expected ${expectedPerDriver}`,
-      );
-    }
+    why.push(...driverFileProblems(r, expectedPerDriver, `driver ${r.driver}`));
   }
   if (input.freshnessSamples.length !== input.target.minutes) {
     why.push(
@@ -336,27 +394,10 @@ export function incompleteness(input: JudgeInput): string[] {
         `${input.target.minutes} minutes. A short sample never reaches the age a full window does.`,
     );
   }
-  // A burst driver that missed its moment is incomplete rather than failed: it
-  // recorded nothing, so there is no contention to judge and "exactly one 200"
-  // would be answered by however many drivers happened to arrive (L11).
-  for (const b of input.burstResults) {
-    if (b.burstSkipped) {
-      why.push(
-        `burst driver ${b.driver} did not fire (${b.burstSkipped}), so the burst was not simultaneous`,
-      );
-    }
-  }
-  // A leg the run was configured to have and did not get. Counted here rather than
-  // left to the bar below, because the bar's own question ("was there exactly one
-  // winner") cannot be asked of a leg whose file never arrived, and answering it
-  // over nothing is how a missing control reads as a passing one.
-  const wantBurst = input.expectedLegs.burstDrivers;
-  if (wantBurst > 0 && input.burstResults.length !== wantBurst) {
-    why.push(
-      `${input.burstResults.length} burst driver files, expected ${wantBurst}. A burst judged on ` +
-        `fewer drivers than fired is not the contention the control counts.`,
-    );
-  }
+  // A burst that did not happen as configured (a driver that missed its moment, a
+  // file that never arrived, a driver that fired part of its plan) is NOT here: it
+  // FAILS the burst bar with its reason (`burstShortfall`, #3222), so a late burst
+  // driver no longer costs the run its steady figures.
   const seenBurst = new Set(input.burstResults.map((b) => b.driver));
   if (seenBurst.size !== input.burstResults.length) {
     why.push("two burst driver files claim the same driver number, so one driver's burst is missing");
@@ -364,12 +405,6 @@ export function incompleteness(input: JudgeInput): string[] {
   for (const b of input.burstResults) {
     if (b.runId !== input.runId) {
       why.push(`burst driver ${b.driver}'s file is from run ${b.runId}, not ${input.runId}`);
-    }
-    if (!b.burstSkipped && b.attempts.length !== b.planned) {
-      why.push(
-        `burst driver ${b.driver} fired ${b.attempts.length} of ${b.planned} planned requests, so ` +
-          `the burst was smaller than the one being judged`,
-      );
     }
   }
   const wantFault = input.expectedLegs.faultPct;
@@ -394,6 +429,12 @@ export function incompleteness(input: JudgeInput): string[] {
   // pass whose deployment faulted different systems from the ones asked for would be
   // judged against the wrong bar, and one that never recorded them cannot be judged
   // against any.
+  // The fault drivers' files get the steady drivers' checks (#3222).
+  if (input.faultPass?.drivers && input.faultPass.expectedPerDriver !== undefined) {
+    for (const r of input.faultPass.drivers) {
+      why.push(...driverFileProblems(r, input.faultPass.expectedPerDriver, `fault driver ${r.driver}`));
+    }
+  }
   if (input.faultPass) {
     const got = [...new Set(input.faultPass.faultTargets)].sort();
     if (got.length === 0) {
@@ -447,6 +488,12 @@ export interface RunMeasurements {
   fiveXx: number;
   /** Requests that never got a reply at all, kept apart from a 5xx. */
   noReply: number;
+  /**
+   * Requests the driver gave up on at its own abort bound (#3222), kept apart from
+   * `noReply`: a deployment that answered nothing in thirty seconds and a transport
+   * that failed are two different findings (L11).
+   */
+  timedOut: number;
   writeRefusals: number;
   /** Write refusals grouped by the address Slate said it saw. */
   refusalsByIp: Record<string, number>;
@@ -579,7 +626,10 @@ export function measure(input: JudgeInput): RunMeasurements {
     all: percentiles(attempts.map((a) => a.wallMs)),
     ok: percentiles(attempts.filter((a) => a.status === 200).map((a) => a.wallMs)),
     fiveXx: attempts.filter((a) => a.status >= 500).length,
-    noReply: attempts.filter((a) => a.status === 0 && a.outcome !== "no-slots-offered").length,
+    noReply: attempts.filter(
+      (a) => a.status === 0 && a.outcome !== "no-slots-offered" && a.outcome !== "timed-out",
+    ).length,
+    timedOut: attempts.filter((a) => a.status === 0 && a.outcome === "timed-out").length,
     writeRefusals: attempts.filter((a) => a.status === 429).length,
     refusalsByIp,
     freshnessMaxSec: Math.max(0, ...input.freshnessSamples.map((s) => s.maxAgeSec)),
@@ -769,6 +819,13 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
   // to two different places (L11).
   if (m.fiveXx > 0) fail("server errors", `${m.fiveXx} responses were 5xx`);
   if (m.noReply > 0) fail("unanswered requests", `${m.noReply} requests got no reply at all`);
+  if (m.timedOut > 0) {
+    fail(
+      "timed out requests",
+      `${m.timedOut} request${m.timedOut === 1 ? "" : "s"} got no answer inside the driver's own ` +
+        "per request bound and were given up on",
+    );
+  }
 
   // --- the invariant the whole run exists to protect --------------------------
   // BOTH guards, reported separately: they send a reader to two different
@@ -826,7 +883,9 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
   }
 
   // --- the burst --------------------------------------------------------------
-  if (input.burstResults.length > 0) {
+  const shortfall = burstShortfall(input);
+  for (const w of shortfall) fail("the burst", w);
+  if (shortfall.length === 0 && input.burstResults.length > 0) {
     const burst = attemptsOf(input.burstResults);
     const won = burst.filter((a) => a.status === 200);
     // The invariant is ONE WINNER PER AGENT, not one winner (#2261).
@@ -973,11 +1032,12 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
     }
     // Cut short at the fault driver's own deadline (#3222): fewer requests than the
     // bar was sized for, so a clean count would read as a smaller clean pass.
-    if (input.faultPass.cutShort) {
+    for (const d of input.faultPass.drivers ?? []) {
+      if (!d.cutShort) continue;
       fail(
         "fault pass completed",
-        `the fault driver stopped at its deadline after ${input.faultPass.cutShort.made} of ` +
-          `${input.faultPass.cutShort.planned} planned requests`,
+        `fault driver ${d.driver} stopped at its ${(d.cutShort.deadlineMs / 60_000).toFixed(1)} minute ` +
+          `deadline after ${d.attempts.length} of ${d.planned} planned requests`,
       );
     }
     // The cron lanes, judged rather than read by a person (#3104). Incompleteness
