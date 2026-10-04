@@ -37,6 +37,8 @@ import {
   migrationReadRefusal,
   appliedVersionsFrom,
   productionRefusal,
+  SEED_ORG_ID,
+  SEED_ORG_NAME,
 } from "./seed-guards.ts";
 import { PRODUCTION_SUPABASE_REF } from "../../src/lib/loadtest-guard.ts";
 
@@ -44,7 +46,8 @@ import { PRODUCTION_SUPABASE_REF } from "../../src/lib/loadtest-guard.ts";
 // spelling beside each script is how one of them ends up naming a project that
 // is not production (L2, L41).
 const PROD_REF = PRODUCTION_SUPABASE_REF;
-const ORG_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+// The seed's marker, shared with the between arms reset (#3258).
+const ORG_ID = SEED_ORG_ID;
 const EVENT_TYPE_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
 
@@ -182,7 +185,7 @@ async function main() {
   console.log(`Seeding ${AGENT_COUNT} agents into ${BASE} ...`);
   await assertMigrationsMatch();
 
-  await insert("organizations", [{ id: ORG_ID, name: "Loadtest Org" }]);
+  await insert("organizations", [{ id: SEED_ORG_ID, name: SEED_ORG_NAME }]);
   // Production's own event type, measured 2026-09-11: 20 minutes on a 10 minute
   // grid with 120 minutes notice and no buffers. The grid is what decides how many
   // slots a day offers, so it decides how much four drivers contend; a 30-on-15

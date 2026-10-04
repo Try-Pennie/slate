@@ -3,21 +3,28 @@
 // next arm starts where the first did. The plan, its order and its refusals live in
 // `reset-plan.ts` and are driven by scripts/test-loadtest-reset.ts.
 //
-// Never production: refused by the guard the seed uses, and unlike the seed there
-// is no FORCE, because deleting every booking is not something to do to production
-// on purpose either. Never TRUNCATE (see reset-plan.ts for why).
+// It acts only on a target it can POSITIVELY prove is a seeded load test branch:
+// the address's ref must equal RESET_BRANCH_REF, the ref recorded for this run, and
+// the database must carry the seed's own marker (the load test org as its only org,
+// with the seed's agents). Production is refused first by the guard the seed uses,
+// with no FORCE. Never TRUNCATE (see reset-plan.ts for why).
 //
 // Run (against the branch):
+//   RESET_BRANCH_REF=<branch-ref> \
 //   SUPABASE_URL=https://<branch-ref>.supabase.co \
 //   SUPABASE_SECRET_KEY=<branch secret key> \
 //   node --experimental-strip-types scripts/loadtest/reset.ts
 import { PRODUCTION_SUPABASE_REF } from "../../src/lib/loadtest-guard.ts";
-import { productionRefusal } from "./seed-guards.ts";
-import { resetBranch, type ResetClient, type ResetTable } from "./reset-plan.ts";
+import { SEED_AGENT_EMAIL_DOMAIN } from "./seed-guards.ts";
+import { resetBranch, targetRefusal, type ResetClient, type ResetTable, type ResetTarget } from "./reset-plan.ts";
 
+// env-ok: RESET_BRANCH_REF (required; the ref of the branch recorded for this run,
+// which the target's address must equal. Absent refuses.)
 const url = (process.env.SUPABASE_URL ?? "").replace(/\/$/, "");
 const key = process.env.SUPABASE_SECRET_KEY ?? "";
-const refusal = productionRefusal(url, PRODUCTION_SUPABASE_REF, { force: false, action: "reset" });
+const target: ResetTarget = { url, expectedRef: process.env.RESET_BRANCH_REF, productionRef: PRODUCTION_SUPABASE_REF };
+// Asked before the key is even used, so a refused address costs no request.
+const refusal = targetRefusal(target);
 if (refusal) {
   console.error(`RESET REFUSED: ${refusal}`);
   process.exit(1);
@@ -50,7 +57,25 @@ function countFrom(res: Response): number {
   return n;
 }
 
+async function readJson(path: string): Promise<unknown> {
+  const res = await fetch(`${REST}/${path}`, { headers: H });
+  if (!res.ok) throw new Error(`read ${path} -> ${res.status} ${(await res.text()).slice(0, 300)}`);
+  return res.json();
+}
+
 const client: ResetClient = {
+  async readSeedMarker() {
+    // cap-safe: limit 50. A seeded branch holds one org; anything beyond the first
+    // few already refuses, so a larger page would only lengthen the refusal.
+    const orgs = (await readJson("organizations?select=id,name&limit=50")) as { id: string; name: string }[];
+    // An exact count from the header, never a row array, so it cannot be capped.
+    const res = await fetch(
+      `${REST}/users?select=id&email=like.*%40${encodeURIComponent(SEED_AGENT_EMAIL_DOMAIN)}`,
+      { method: "HEAD", headers: { ...H, Prefer: "count=exact" } },
+    );
+    if (!res.ok) throw new Error(`count seeded agents -> ${res.status}`);
+    return { orgs, seedAgents: countFrom(res) };
+  },
   async firstBulkReassignRow() {
     for (const table of ["bulk_reassign_items", "bulk_reassign_jobs"]) {
       const res = await fetch(`${REST}/${table}?select=id&limit=1`, { headers: H });
@@ -71,7 +96,7 @@ const client: ResetClient = {
   },
 };
 
-const result = await resetBranch(client);
+const result = await resetBranch(client, target);
 if (!result.ok) {
   console.error(`RESET REFUSED: ${result.why}`);
   process.exit(2);

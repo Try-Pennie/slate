@@ -1214,10 +1214,25 @@ starts where the first did, which is what `scripts/loadtest/reset.ts` is for. Ru
 against the BRANCH between arms:
 
 ```
+RESET_BRANCH_REF=<branch-ref> \
 SUPABASE_URL=https://<branch-ref>.supabase.co \
 SUPABASE_SECRET_KEY=<branch secret key> \
 node --experimental-strip-types scripts/loadtest/reset.ts
 ```
+
+**It acts only on a target it can positively prove is a seeded load test branch.**
+"Anything but production" would be a blocklist, and pointed at staging or a dev
+project it would empty real data. So, before a single row is deleted, both of these
+must hold, and each failure is refused in its own words:
+
+- the address's project ref EQUALS `RESET_BRANCH_REF`, the ref recorded for this
+  run (an unset value, an address that only contains the ref, or one with no ref at
+  all refuses);
+- the database carries the seed's own marker: the `Loadtest Org` organization
+  (`SEED_ORG_ID`) as its ONLY organization, with agents at
+  `loadtest-agent-<n>@loadtest.local`. A real project holds its own org, and a
+  project the seed was once run into still does. The constants live in
+  `seed-guards.ts` and are what `seed.ts` and `generate.ts` write.
 
 It deletes, in order, `bookings`, `booking_outbox`, `booking_reservations`,
 `pending_event_deletions`, `routing_decisions` and `rate_limits`, and prints how
@@ -1230,8 +1245,9 @@ arm's window; rate limit rows can refuse drivers that run at the per address cei
   booking wrote. `TRUNCATE bookings CASCADE` would empty `busy_blocks` entirely,
   seeded calendar time included, and reseeding does not undo a booking's rows either
   (the seed only merges, it never deletes).
-- **It refuses production** through the same guard the seed uses
-  (`productionRefusal` in `seed-guards.ts`), with no FORCE escape.
+- **It refuses production first** through the same guard the seed uses
+  (`productionRefusal` in `seed-guards.ts`), with no FORCE escape, even if
+  somebody recorded production's ref as the branch.
 - **It refuses on any bulk reassign row**, naming it, before deleting anything:
   `bulk_reassign_items` references bookings with no delete rule, and the lane is off
   here, so such a row is unexpected and worth looking at first.

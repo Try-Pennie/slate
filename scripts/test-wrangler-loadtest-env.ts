@@ -13,7 +13,13 @@
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-wrangler-loadtest-env.ts
 import { unstable_readConfig } from "wrangler";
-import { loadtestEnvFaults, disabledLanesOf, FAULT_SWITCH_VARS, type WranglerLike } from "./lib/scan-wrangler-loadtest-env.ts";
+import {
+  loadtestEnvFaults,
+  disabledLanesOf,
+  FAULT_SWITCH_VARS,
+  PER_RUN_SWITCH_VARS,
+  type WranglerLike,
+} from "./lib/scan-wrangler-loadtest-env.ts";
 import { allLaneNames } from "../worker/lanes-disabled.ts";
 import { assert, eq, fail, finish } from "./lib/harness.ts";
 
@@ -190,11 +196,11 @@ control("a different CPU ceiling", "a different ceiling", (e) => {
 {
   const prodVars = top.vars ?? {};
   assert(!("SLATE_LOADTEST" in prodVars), "production resolves no SLATE_LOADTEST, so no injector can fire");
-  for (const key of FAULT_SWITCH_VARS) {
+  for (const key of PER_RUN_SWITCH_VARS) {
     assert(!(key in prodVars), `production resolves no ${key}`);
-    assert(!(key in (env.vars ?? {})), `and env.loadtest does not commit ${key}: only the fault leg's deploy adds it`);
+    assert(!(key in (env.vars ?? {})), `and env.loadtest does not commit ${key}: only a leg's --var deploy adds it`);
   }
-  for (const key of FAULT_SWITCH_VARS) {
+  for (const key of PER_RUN_SWITCH_VARS) {
     const brokenTop = clone(top);
     brokenTop.vars![key] = "100";
     assert(
@@ -207,6 +213,33 @@ control("a different CPU ceiling", "a different ceiling", (e) => {
       loadtestEnvFaults(top, brokenEnv).some((f) => f.includes(`env.loadtest commits ${key}`)),
       `a control catches ${key} committed in env.loadtest`,
     );
+  }
+}
+
+// #3269 review: each per run switch is refused in its OWN words. The recompute arm
+// is not fault injection, and a refusal calling it that would send somebody hunting
+// for faults a committed arm never injects (L11).
+{
+  const recompute = "SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE";
+  assert((PER_RUN_SWITCH_VARS as readonly string[]).includes(recompute), "the recompute arm is a per run switch");
+  for (const key of PER_RUN_SWITCH_VARS) {
+    const brokenTop = clone(top);
+    brokenTop.vars![key] = "off";
+    const brokenEnv = clone(env);
+    brokenEnv.vars![key] = "off";
+    const said = [
+      ...loadtestEnvFaults(brokenTop, env).filter((f) => f.startsWith(`the top level sets ${key}`)),
+      ...loadtestEnvFaults(top, brokenEnv).filter((f) => f.startsWith(`env.loadtest commits ${key}`)),
+    ];
+    eq(said.length, 2, `${key} is refused at the top level and in env.loadtest`);
+    const isFault = (FAULT_SWITCH_VARS as readonly string[]).includes(key);
+    for (const f of said) {
+      if (isFault) assert(/fault/.test(f), `${key}'s refusal speaks of faults: ${f}`);
+      else {
+        assert(!/fault/i.test(f), `${key}'s refusal does not call it fault injection: ${f}`);
+        assert(/post confirm recompute/.test(f), `${key}'s refusal names the post confirm recompute: ${f}`);
+      }
+    }
   }
 }
 

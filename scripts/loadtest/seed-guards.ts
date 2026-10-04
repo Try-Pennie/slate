@@ -236,3 +236,13 @@ export function productionRefusal(
   }
   return null;
 }
+
+/**
+ * The seed's own marker (#3258): what `seed.ts` writes that no real project holds.
+ * The between arms reset deletes only where it finds these, so they live here, beside
+ * the guard both scripts share, rather than as literals in each (L41).
+ */
+export const SEED_ORG_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+export const SEED_ORG_NAME = "Loadtest Org";
+/** Every seeded agent's address is `loadtest-agent-<n>@` this domain, which is not routable. */
+export const SEED_AGENT_EMAIL_DOMAIN = "loadtest.local";

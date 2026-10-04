@@ -18,6 +18,7 @@
 //   and an agent whose blocks all fall outside their own hours is simply free all
 //   day: the seed would understate contention exactly where the booking path is
 //   meant to meet it.
+import { SEED_AGENT_EMAIL_DOMAIN } from "./seed-guards.ts";
 import { DateTime } from "luxon";
 import { PRODUCTION_SHAPE, scaleShape, zoneForIndex, type RosterShape } from "./roster-shape.ts";
 export interface SeedParams {
@@ -145,7 +146,8 @@ export function generateSeed(p: SeedParams): GeneratedSeed {
     if (profile.debtTeam.length > 0) attrs.debt_team = [...profile.debtTeam];
     if (profile.backendService.length > 0) attrs.backend_service = [...profile.backendService];
 
-    const email = `loadtest-agent-${i}@loadtest.local`;
+    // The domain is the seed's marker, which the between arms reset checks (#3258).
+    const email = `loadtest-agent-${i}@${SEED_AGENT_EMAIL_DOMAIN}`;
     users.push({
       id: userId,
       org_id: p.orgId,

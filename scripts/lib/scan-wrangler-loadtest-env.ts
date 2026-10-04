@@ -15,14 +15,43 @@
  */
 import { allLaneNames } from "../../worker/lanes-disabled.ts";
 
-/** The per run switches, which a leg adds with --var and nothing commits: the fault
- *  switch's two settings (#3104), and the post confirm recompute arm (#3258), which
- *  production must never carry. */
-export const FAULT_SWITCH_VARS = [
-  "SLATE_LOADTEST_FAULT_PCT",
-  "SLATE_LOADTEST_FAULT_TARGETS",
-  "SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE",
-] as const;
+/** The fault switch's two settings (#3104), which the fault leg adds with --var and
+ *  nothing commits. */
+export const FAULT_SWITCH_VARS = ["SLATE_LOADTEST_FAULT_PCT", "SLATE_LOADTEST_FAULT_TARGETS"] as const;
+
+/**
+ * Every per run switch a leg adds with --var and nothing commits, each with its OWN
+ * refusal (#3269 review): the two fault settings, and the post confirm recompute arm
+ * (#3258), which is not fault injection and must not be described as it (L11).
+ */
+const PER_RUN_SWITCH_REASONS: Record<string, { topLevel: string; committed: string }> = {
+  SLATE_LOADTEST_FAULT_PCT: faultReasons("SLATE_LOADTEST_FAULT_PCT"),
+  SLATE_LOADTEST_FAULT_TARGETS: faultReasons("SLATE_LOADTEST_FAULT_TARGETS"),
+  SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE: {
+    topLevel:
+      "the top level sets SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE, the load run's post confirm " +
+      "recompute arm. Production ignores it, and it has no business existing there: it belongs " +
+      "to the load workflow's arm job alone.",
+    committed:
+      "env.loadtest commits SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE, so every run would measure " +
+      "that post confirm recompute arm whatever it was dispatched for, and a run dispatched for " +
+      "another arm would be refused at preflight. The arm job sets it with --var.",
+  },
+};
+
+/** The switches whose refusals `loadtestEnvFaults` words one by one. */
+export const PER_RUN_SWITCH_VARS = Object.keys(PER_RUN_SWITCH_REASONS);
+
+function faultReasons(key: string): { topLevel: string; committed: string } {
+  return {
+    topLevel:
+      `the top level sets ${key}, the load run's fault switch. It belongs to the fault leg's ` +
+      `deploy alone and never to production.`,
+    committed:
+      `env.loadtest commits ${key}, so every leg of every run would inject faults and the ` +
+      `steady pass would count them as the path's own 5xx. The fault leg sets it with --var.`,
+  };
+}
 
 export interface RateLimit {
   name?: string;
@@ -218,19 +247,11 @@ export function loadtestEnvFaults(top: WranglerLike, env: WranglerLike): string[
   // makes inert but which has no business existing; in the committed env.loadtest
   // block it would fault EVERY leg of every run, so the steady pass's "no 5xx" bar
   // would be measuring faults the run injected on purpose.
-  for (const key of FAULT_SWITCH_VARS) {
-    if (key in topVars) {
-      faults.push(
-        `the top level sets ${key}, the load run's fault switch. It belongs to the fault leg's ` +
-          `deploy alone and never to production.`,
-      );
-    }
-    if (key in envVars) {
-      faults.push(
-        `env.loadtest commits ${key}, so every leg of every run would inject faults and the ` +
-          `steady pass would count them as the path's own 5xx. The fault leg sets it with --var.`,
-      );
-    }
+  // The post confirm recompute arm (#3258) is held to the same rule for its own
+  // reason, worded beside it above.
+  for (const [key, reason] of Object.entries(PER_RUN_SWITCH_REASONS)) {
+    if (key in topVars) faults.push(reason.topLevel);
+    if (key in envVars) faults.push(reason.committed);
   }
   const known = new Set(allLaneNames());
   for (const name of disabled) {
