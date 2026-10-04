@@ -370,6 +370,7 @@ vi.mock("@/lib/google/calendar", async () => {
 });
 
 import { hydrateCalendar, syncByChannel, runIncrementalSync } from "@/lib/google/sync";
+import { calendarsDueForHydration, type HydrationCandidate } from "@/lib/google/hydration";
 import { recomputeBucketsForAgent } from "@/lib/availability/slot-cache";
 import type { AgentCalendar } from "@/lib/db/types";
 
@@ -648,6 +649,120 @@ describe("hydrateCalendar will not write over a token that moved (#2411)", () =>
     expect(res.skipped).toBe("token-unreadable");
     // A purge it could not vouch for must not run: the block stays.
     expect(blockFor("evt-gone")).toBeTruthy();
+  });
+});
+
+// #3211: a FIRST load abandoned with token-moved used to leave its rotation stamp
+// behind, so a calendar that had never been hydrated dropped out of the onboarding
+// lane into a day long queue (measured: 8 of 90 calendars, up to about 11 hours).
+// These drive the race through the real pass and then ask the real selection what
+// the next tick would pick, because the stamp and the selection are only wrong
+// together.
+describe("a hydration pass that loses the token race keeps its rotation place (#3211)", () => {
+  /** Two calendars the rotation has already refreshed, oldest first. */
+  const OLDER = "2026-01-01T00:00:00.000Z";
+  const NEWER = "2026-01-02T00:00:00.000Z";
+  function seedNeighbours(): void {
+    const store = db.current as FakeDb;
+    for (const [id, stamp] of [
+      ["cal-older", OLDER],
+      ["cal-newer", NEWER],
+    ] as const) {
+      store.rows("agent_calendars").push(
+        calendarRow({
+          id,
+          user_id: `user-${id}`,
+          calendar_id: `${id}@trypennie.com`,
+          watch_channel_id: `chan-${id}`,
+          sync_token: "t-other",
+          last_bootstrap_attempt_at: stamp,
+          sync_window_to: at(21 * DAY),
+        }),
+      );
+    }
+  }
+  function nextTick(batchSize: number): string[] {
+    const rows = (db.current as FakeDb).rows("agent_calendars") as unknown as HydrationCandidate[];
+    return calendarsDueForHydration(rows, Date.now(), batchSize).map((c) => c.id);
+  }
+  /** What the minute lane's own bootstrap does when it lands mid-fetch: it loads the
+   *  same window into the cache and stores the token Google gave it. */
+  function minuteLaneBootstrapsMidFetch(): void {
+    const g = google.current as FakeGoogle;
+    g.midFetch = async () => {
+      const row = (db.current as FakeDb).rows("agent_calendars").find((r) => r.id === CAL_ID);
+      if (!row) throw new Error("calendar row missing");
+      // A change lands first, so the token it stores differs from any token this
+      // calendar held before, the way a real later point in its history does.
+      g.put("evt-mid", at(DAY + 5), at(DAY + 6));
+      row.sync_token = `t${g.version}`;
+    };
+  }
+
+  it("puts a never hydrated calendar first on the next tick after a token-moved first load", async () => {
+    const g = google.current as FakeGoogle;
+    g.put("evt-E", at(DAY + 2), at(DAY + 3));
+    (db.current as FakeDb).seed("agent_calendars", [calendarRow()]);
+    seedNeighbours();
+
+    minuteLaneBootstrapsMidFetch();
+    const res = await hydrateCalendar(cal());
+
+    expect(res.skipped).toBe("token-moved");
+    // The abandonment itself is unchanged: no coverage is claimed for a snapshot
+    // this pass could no longer vouch for.
+    expect(cal().sync_window_to).toBeNull();
+    // A batch of ONE: the onboarding lane takes it in addition to the batch, so the
+    // single maintenance place still goes to the oldest neighbour.
+    expect(nextTick(1)).toEqual([CAL_ID, "cal-older"]);
+    expect(cal().last_bootstrap_attempt_at).toBeNull();
+  });
+
+  it("returns an already hydrated calendar to the place it held when it loses the race", async () => {
+    const g = google.current as FakeGoogle;
+    g.put("evt-E", at(DAY + 2), at(DAY + 3));
+    await bootstrap();
+    const stamp = "2025-12-31T00:00:00.000Z";
+    (db.current as FakeDb).rows("agent_calendars")[0].last_bootstrap_attempt_at = stamp;
+    seedNeighbours();
+
+    minuteLaneBootstrapsMidFetch();
+    const res = await hydrateCalendar(cal());
+
+    expect(res.skipped).toBe("token-moved");
+    expect(cal().last_bootstrap_attempt_at).toBe(stamp);
+    expect(nextTick(3)).toEqual([CAL_ID, "cal-older", "cal-newer"]);
+  });
+
+  it("control: a calendar whose pass completes goes to the back of the rotation", async () => {
+    const g = google.current as FakeGoogle;
+    g.put("evt-E", at(DAY + 2), at(DAY + 3));
+    (db.current as FakeDb).seed("agent_calendars", [calendarRow()]);
+    seedNeighbours();
+
+    const res = await hydrateCalendar(cal());
+
+    expect(res.ok).toBe(true);
+    expect(cal().sync_window_to).not.toBeNull();
+    expect(cal().last_bootstrap_attempt_at).not.toBeNull();
+    expect(nextTick(3)).toEqual(["cal-older", "cal-newer", CAL_ID]);
+  });
+
+  it("control: a calendar whose fetch FAILS still moves back, so it cannot hold the head", async () => {
+    const g = google.current as FakeGoogle;
+    (db.current as FakeDb).seed("agent_calendars", [
+      calendarRow({ sync_token: "t-own", last_bootstrap_attempt_at: "2025-12-31T00:00:00.000Z" }),
+    ]);
+    seedNeighbours();
+    g.midFetch = async () => {
+      throw new Error("503 backendError");
+    };
+
+    const res = await hydrateCalendar(cal());
+
+    expect(res.ok).toBe(false);
+    expect(res.skipped).toBeUndefined();
+    expect(nextTick(3)).toEqual(["cal-older", "cal-newer", CAL_ID]);
   });
 });
 

@@ -133,7 +133,9 @@ export function calendarsDueForHydration<T extends HydrationCandidate>(
   // Because the stamp is written BEFORE the fetch, a calendar whose bootstrap failed is no
   // longer null and drops back into the ordinary rotation. That is what stops a permanently
   // failing calendar taking an onboarding slot on all 96 ticks of the day, and it is the
-  // property worth not breaking if this is ever refactored.
+  // property worth not breaking if this is ever refactored. A first load abandoned because
+  // the sync token moved under it is NOT a failure: `hydrateCalendar` puts the stamp back,
+  // so that calendar stays here and is taken on the next tick (#3211).
   const onboarding = eligible
     .filter((c) => c.last_bootstrap_attempt_at === null)
     .slice(0, HYDRATION_ONBOARDING_MAX);

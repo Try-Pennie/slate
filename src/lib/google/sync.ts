@@ -607,7 +607,9 @@ async function syncCalendar(
  * 1. `last_bootstrap_attempt_at` is stamped BEFORE the fetch, so it moves whether or not the
  *    fetch works. It drives rotation fairness only, and a stamp that advanced solely on
  *    success would let a calendar whose delegation is revoked stay the oldest forever and be
- *    selected first on every tick, starving every healthy calendar behind it.
+ *    selected first on every tick, starving every healthy calendar behind it. The one
+ *    exception is a pass abandoned because the token moved (5 below), which puts the stamp
+ *    back: it attempted nothing on this calendar's behalf, like a `claimed` skip (#3211).
  *
  * 2. `sync_window_to` is written ONLY on success, and in its OWN write, never coupled to the
  *    token. Coupling them means every token write fails while code is deployed ahead of its
@@ -705,10 +707,12 @@ export async function hydrateCalendar(cal: AgentCalendar): Promise<HydrateResult
   try {
     // Before the fetch, deliberately (see 1 above). Best effort: a failed stamp costs
     // fairness on one tick, and must not stop the hydration it precedes.
+    // Kept, so a pass abandoned on a moved token can put back exactly what it wrote (#3211).
+    const attemptIso = new Date().toISOString();
     // write-ok: a refused stamp costs fairness on one tick, which is why it is taken before the fetch rather than after.
     await db
       .from("agent_calendars")
-      .update({ last_bootstrap_attempt_at: new Date().toISOString() })
+      .update({ last_bootstrap_attempt_at: attemptIso })
       .eq("id", cal.id);
 
     const email = await loadAgentEmail(cal.user_id);
@@ -766,6 +770,25 @@ export async function hydrateCalendar(cal: AgentCalendar): Promise<HydrateResult
         // Health is deliberately NOT recorded either way. The fetch succeeded, so a failure
         // would back off a perfectly reachable calendar, and a success would report a
         // refresh that never landed.
+        //
+        // The rotation stamp IS put back (#3211). This pass established nothing, so it is
+        // the same fact as a `claimed` skip and keeps the same place: the head of the
+        // rotation, or, for a calendar never hydrated, the onboarding lane, whose test is
+        // a null stamp. Leaving the stamp here dropped a brand new calendar into the
+        // day long maintenance queue with no coverage recorded, which paged the coverage
+        // monitor for hours (8 of 90 calendars in the #3103 load run). Only the token race
+        // is put back: a failed fetch still moves the stamp, which is what stops a
+        // permanently failing calendar holding the head, and a missing mailbox still
+        // moves it for the same reason. Conditional on our own value, so a pass that took
+        // the calendar over after the claim TTL keeps the stamp it wrote. Repeats are
+        // bounded: the next pass starts from the token that beat this one, and loses
+        // again only if another writer lands inside that fetch too.
+        // write-ok: a refused restore leaves the stamp this pass wrote, which is the rotation before #3211, so the calendar is still reached within a day.
+        await db
+          .from("agent_calendars")
+          .update({ last_bootstrap_attempt_at: cal.last_bootstrap_attempt_at })
+          .eq("id", cal.id)
+          .eq("last_bootstrap_attempt_at", attemptIso);
         return { ok: false, events: 0, skipped: "token-moved" };
       }
 
