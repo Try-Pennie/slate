@@ -30,7 +30,7 @@ function deps(existsBy: Record<string, boolean | "throw">): O.BookingDeps {
   const d = {
     // #3215: nobody holds these events, so each is judged on existence alone.
     liveBookingHoldingEvent: async () => null,
-    reservationPinsEvent: async () => false,
+    pendingWritePinsEvent: async () => false,
     loadCreationOrphans: async (_limit: number) => [
       orphan("A", "evt-A"),
       orphan("B", "evt-B"),

@@ -493,8 +493,12 @@ async function run() {
       msg = e instanceof Error ? e.message : String(e);
     }
     assert(msg === "rpc down", "reassign: a swap RPC error surfaces the original error (not a masked message)");
+    // #3217: QUEUED for the drain, never deleted live. The reassign ordinal has not
+    // moved, so a retry derives the same event id, and a deleted event would come
+    // back cancelled. A terminal booking (above) is still deleted live: nothing can
+    // retry a reassign of it.
     assert(
-      calls.createEvent.length === 1 && calls.deleteEvent.length === 1,
+      calls.createEvent.length === 1 && calls.deleteEvent.length === 0 && calls.enqueueEventDeletion.length === 1,
       "reassign: a swap RPC error still cleans up the optimistically-created event (no orphan)",
     );
   }

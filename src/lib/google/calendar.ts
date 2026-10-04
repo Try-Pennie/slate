@@ -6,6 +6,7 @@ import {
   chunkCalendarIds,
   hasBlockingBusy,
   EventGone,
+  adoptableEventId,
   type CalendarBusy,
 } from "@/lib/booking/core";
 import { log } from "@/lib/log";
@@ -450,6 +451,14 @@ export async function createEvent(
   // retry of the same intent on the same agent). GET it and return it — no
   // second insert, so no second attendee invite. Inspect the raw 409 BEFORE the
   // shared ok() (which would throw); ok() is left untouched for all other calls.
+  //
+  // #3217: never a CANCELLED one. Google keeps a deleted event's id, so this 409
+  // also answers an id whose event was deleted, and adopting it would confirm a
+  // booking with nothing on the agent's calendar. Restoring it is not attempted:
+  // Google documents only that an organizer's cancelled event "can be restored
+  // (undeleted)", not the call that does it or what an attendee is told, and that
+  // has not been measured live. So the typed `EventCancelledOnReuse` is thrown,
+  // and a caller that can derive a fresh id answers it with one.
   if (clientId && res.status === 409) {
     const existing = await ok(
       await gfetch(
@@ -461,9 +470,7 @@ export async function createEvent(
       ),
       "events.get (409 reuse)",
     );
-    const reused = (await existing.json()) as { id?: string };
-    if (!reused.id) throw new Error("Google did not return an event id on reuse");
-    return reused.id;
+    return adoptableEventId(clientId, (await existing.json()) as { id?: string; status?: string });
   }
 
   await ok(res, "events.insert");

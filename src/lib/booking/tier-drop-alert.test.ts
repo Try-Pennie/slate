@@ -142,7 +142,7 @@ function makeTierDropDeps(requested = "511", lower = "411"): BookingDeps {
     loadPendingEventDeletions: async () => [],
     loadCreationOrphans: async () => [],
     liveBookingHoldingEvent: async () => null,
-    reservationPinsEvent: async () => false,
+    pendingWritePinsEvent: async () => false,
     removePendingEventDeletion: noop,
     bumpPendingEventDeletion: noop,
     updateEventTime: noop,

@@ -312,7 +312,7 @@ function buildDeps(
     enqueueEventDeletion: async () => {},
     loadPendingEventDeletions: async () => [],
     liveBookingHoldingEvent: async () => null,
-    reservationPinsEvent: async () => false,
+    pendingWritePinsEvent: async () => false,
     removePendingEventDeletion: async () => {},
     bumpPendingEventDeletion: async () => {},
 

@@ -25,6 +25,34 @@ export class EventGone extends Error {
   }
 }
 
+/**
+ * Thrown when an insert with our own client id 409s and the event Google holds
+ * under that id is CANCELLED (#3217). Google keeps a deleted event's id, so a
+ * deterministic id whose event was deleted answers the next insert with a 409,
+ * and adopting that id would confirm a booking with nothing on the agent's
+ * calendar. A caller that can derive a fresh id answers this with one; every
+ * other caller fails loudly, which is the honest outcome (L12).
+ */
+export class EventCancelledOnReuse extends Error {
+  readonly eventId: string;
+  constructor(eventId: string) {
+    super(`events.insert: the event already holding id ${eventId} is cancelled on Google`);
+    this.name = "EventCancelledOnReuse";
+    this.eventId = eventId;
+  }
+}
+
+/**
+ * The id to adopt from the event Google returned for a client id that 409ed
+ * (#3217): its id when it is live, and a refusal when it is cancelled. The one
+ * judge, shared by the real client and the fakes that stand in for it.
+ */
+export function adoptableEventId(clientId: string, existing: { id?: string; status?: string }): string {
+  if (!existing.id) throw new Error("Google did not return an event id on reuse");
+  if (existing.status === "cancelled") throw new EventCancelledOnReuse(clientId);
+  return existing.id;
+}
+
 // ---------------------------------------------------------------------------
 // Reschedule/cancel reason capture + history events (#326 / #300, ADR 0001).
 // ---------------------------------------------------------------------------

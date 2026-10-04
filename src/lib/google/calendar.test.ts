@@ -32,7 +32,7 @@ import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
 import { REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
 import { isDefinitiveFailure, reachabilityFromError } from "@/lib/google/reachability-classify";
-import { EventGone } from "@/lib/booking/core";
+import { EventGone, EventCancelledOnReuse } from "@/lib/booking/core";
 
 const event = {
   summary: "Dana Ruiz - OOO",
@@ -122,6 +122,38 @@ describe("createEventOnCalendar idempotency (#1469)", () => {
     await expect(
       createEventOnCalendar("a@b.com", "primary", event, "slateabc"),
     ).rejects.toThrow(/503/);
+  });
+});
+
+// #3217: Google keeps a deleted event's id, so a deterministic id whose event was
+// deleted 409s on the next insert and the event the GET then returns is CANCELLED.
+// Adopting it confirms a booking with nothing on the agent's calendar.
+describe("createEvent never adopts a cancelled event on a 409 (#3217)", () => {
+  beforeEach(() => dwd.getDelegatedToken.mockResolvedValue("tok"));
+  afterEach(() => vi.unstubAllGlobals());
+
+  function googleHolding(status: string) {
+    const calls: { url: string; method: string }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      calls.push({ url, method: init.method ?? "GET" });
+      return url.includes("/events/slateabc")
+        ? new Response(JSON.stringify({ id: "slateabc", status }), { status: 200 })
+        : new Response("duplicate", { status: 409 });
+    });
+    return calls;
+  }
+
+  it("refuses a cancelled event with the typed error, and writes nothing to it", async () => {
+    const calls = googleHolding("cancelled");
+    await expect(createEvent("a@b.com", event, "slateabc")).rejects.toBeInstanceOf(EventCancelledOnReuse);
+    // The insert and the GET, and no restoring PATCH: undeleting is not a write
+    // this path makes without measuring it against live Google first.
+    expect(calls.map((c) => c.method)).toEqual(["POST", "GET"]);
+  });
+
+  it("still adopts a LIVE event, so the resume a deterministic id exists for keeps working", async () => {
+    googleHolding("confirmed");
+    await expect(createEvent("a@b.com", event, "slateabc")).resolves.toBe("slateabc");
   });
 });
 

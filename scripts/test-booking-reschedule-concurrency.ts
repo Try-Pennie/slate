@@ -197,9 +197,13 @@ async function run() {
       // ("gcal-old", owned by the concurrent reassign's own lifecycle) are both
       // left intact (strictly better than the old delete-first, which clobbered
       // gcal-old before even knowing about the conflict).
-      calls.deleteEvent.length === 1 &&
-        !calls.deleteEvent.some((d) => d.id === "ev-reassign") &&
-        !calls.deleteEvent.some((d) => d.id === "gcal-old"),
+      //
+      // #3217: that rollback is QUEUED for the drain, never deleted live. The lost
+      // commit leaves the reschedule ordinal where it was, so the lead's retry
+      // derives the same event id, and Google hands a deleted event back cancelled.
+      calls.deleteEvent.length === 0 &&
+        calls.enqueueEventDeletion.length === 1 &&
+        !calls.enqueueEventDeletion.some((d) => d.eventId === "ev-reassign" || d.eventId === "gcal-old"),
       "#615 reassign-during-reschedule: rolls back its own created event, leaves the reassign's + the old event intact",
     );
   }

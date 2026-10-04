@@ -66,6 +66,36 @@ describe("the live holder question (#3215)", () => {
   });
 });
 
+// #3217: a reschedule or reassign that failed after writing its event queues the
+// deletion, and a resume of that write derives the same id. So the drain holds the
+// row while ANY write still in flight pins the event, not only a create.
+describe("a write still in flight pins its event (#3215, #3217)", () => {
+  it("a pending create reservation pins it", async () => {
+    state.rows.booking_reservations = [{ id: "r", gcal_client_id: "evt", status: "pending" }];
+    await expect(realDeps().pendingWritePinsEvent("evt")).resolves.toBe(true);
+  });
+
+  it("a standing reschedule lock pins it", async () => {
+    state.rows.reschedule_locks = [{ booking_id: "bk", gcal_client_id: "evt" }];
+    await expect(realDeps().pendingWritePinsEvent("evt")).resolves.toBe(true);
+  });
+
+  it("a reassign intent pins it", async () => {
+    state.rows.reassign_intents = [{ booking_id: "bk", gcal_client_id: "evt" }];
+    await expect(realDeps().pendingWritePinsEvent("evt")).resolves.toBe(true);
+  });
+
+  it("nothing pins it when every write names another event or is no longer pending", async () => {
+    state.rows.booking_reservations = [
+      { id: "r1", gcal_client_id: "evt", status: "completed" },
+      { id: "r2", gcal_client_id: "evt-2", status: "pending" },
+    ];
+    state.rows.reschedule_locks = [{ booking_id: "bk", gcal_client_id: "evt-2" }];
+    state.rows.reassign_intents = [{ booking_id: "bk", gcal_client_id: "evt-3" }];
+    await expect(realDeps().pendingWritePinsEvent("evt")).resolves.toBe(false);
+  });
+});
+
 describe("the deletion queue rotates (#3215)", () => {
   it("loads the least recently touched rows first, so held rows cannot fill every page", async () => {
     state.rows.pending_event_deletions = [];
