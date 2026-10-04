@@ -187,6 +187,10 @@ export interface ViolationSummary {
   document: string;
   blocked: string;
   referrer: string;
+  /** The script that tried the refused thing, `url:line:column`, or `(none)`. */
+  source: string;
+  /** Whether the report named that source at all. The one place `(none)` is decided. */
+  sourceNamed: boolean;
   /**
    * What the browser did. `report` came from a report only policy and blocked
    * nothing; `unstated` is a browser that does not say (Safari's legacy body).
@@ -207,6 +211,8 @@ export function summariseViolation(payload: unknown): ViolationSummary {
       document: "(none)",
       blocked: "(none)",
       referrer: "(none)",
+      source: "(none)",
+      sourceNamed: false,
       disposition: "unstated",
       fromExtension: false,
     };
@@ -216,6 +222,8 @@ export function summariseViolation(payload: unknown): ViolationSummary {
     document: redactReportUri(body.document),
     blocked: redactReportUri(body.blocked),
     referrer: redactReportUri(body.referrer),
+    source: reportSource(body),
+    sourceNamed: sourceNamed(body),
     disposition: body.disposition === "enforce" || body.disposition === "report" ? body.disposition : "unstated",
     fromExtension: [body.blocked, body.source].some((v) => v !== undefined && EXTENSION_SCHEME.test(v)),
   };
@@ -231,6 +239,8 @@ interface RawReport {
   referrer?: string;
   disposition?: string;
   source?: string;
+  line?: number;
+  column?: number;
 }
 
 /**
@@ -255,6 +265,8 @@ function readReportBody(payload: unknown): RawReport | null {
       referrer: str(l["referrer"]),
       disposition: str(l["disposition"]),
       source: str(l["source-file"]),
+      line: num(l["line-number"]),
+      column: num(l["column-number"]),
     };
   }
 
@@ -268,6 +280,8 @@ function readReportBody(payload: unknown): RawReport | null {
       referrer: str(m.referrer),
       disposition: str(m.disposition),
       source: str(m.sourceFile),
+      line: num(m.lineNumber),
+      column: num(m.columnNumber),
     };
   }
   return null;
@@ -275,6 +289,33 @@ function readReportBody(payload: unknown): RawReport | null {
 
 function str(v: unknown): string | undefined {
   return typeof v === "string" ? v : undefined;
+}
+
+/** A line or column number, and only a plain non negative integer: the body is a stranger's. */
+function num(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : undefined;
+}
+
+/** Whether the report says where the refused thing came from. */
+function sourceNamed(body: RawReport): boolean {
+  return body.source !== undefined && body.source !== "";
+}
+
+/**
+ * Where the refused thing was tried from, as `url:line:column`, redacted the same
+ * way as every other URL in a report.
+ *
+ * For a refused `eval` or inline script this is the only field that names the code
+ * responsible: `blocked` just says `eval`. On 2026-10-04 one such refusal on the
+ * manage page could be traced only by joining the report against the Worker's
+ * invocation records by hand (it came from a Windows Edge browser, and no script
+ * that page loads builds code from a string), so it goes in the log line.
+ */
+function reportSource(body: RawReport): string {
+  if (!sourceNamed(body) || body.source === undefined) return "(none)";
+  const where = redactReportUri(body.source);
+  if (body.line === undefined) return where;
+  return body.column === undefined ? `${where}:${body.line}` : `${where}:${body.line}:${body.column}`;
 }
 
 /** The alert key family a violation pages under (#2575). */
