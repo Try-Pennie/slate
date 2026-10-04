@@ -282,12 +282,12 @@ eq(
 // --- the page carries the tier's first offered time ---------------------------
 {
   const v = judgeTier(
-    { tier: "5", label: "Ultra High", agents: { measured: true, count: 10 }, slots: { measured: true, firstSlotMs: FIRST_SLOT } },
+    { tier: "5", label: "Ultra High", agents: { measured: true, count: 10 }, slots: { measured: true, firstSlotMs: FIRST_SLOT, offeredMs: [FIRST_SLOT] } },
     WINDOW_END,
   );
   assert(v.kind === "no-slots" && v.firstSlotMs === FIRST_SLOT, "the no-slots verdict carries the first offered time");
   const plan = planTierAlerts(
-    [{ tier: "5", label: "Ultra High", agents: { measured: true, count: 10 }, slots: { measured: true, firstSlotMs: FIRST_SLOT } }],
+    [{ tier: "5", label: "Ultra High", agents: { measured: true, count: 10 }, slots: { measured: true, firstSlotMs: FIRST_SLOT, offeredMs: [FIRST_SLOT] } }],
     WINDOW_END,
   );
   eq(plan.page[0].firstSlotMs, FIRST_SLOT, "and so does the page");

@@ -1,4 +1,4 @@
-import { Suspense } from "react";
+import { Fragment, Suspense } from "react";
 import { redirect } from "next/navigation";
 import { SaveForm } from "@/components/ui/SaveForm";
 import { currentUser } from "@/lib/auth";
@@ -21,6 +21,7 @@ import {
   ALERT_URGENCY_ORDER,
   ALERT_URGENCY_COPY,
   MONITOR_DEFAULTS,
+  TIER_RECOVERY_BOUNDS,
   quietedAlarms,
   formatMinutes,
   resolveLowVolumeArmed,
@@ -108,6 +109,27 @@ async function loadPutBack(): Promise<PutBackCounts> {
 const LEARNING_OUTCOMES = new Set(["volume-ramp-end-set", "volume-ramp-end-cleared"]);
 /** #2875: the two outcomes the cal.com switch confirms beside itself. */
 const CALCOM_OUTCOMES = new Set(["calcom-retired", "calcom-live"]);
+
+
+/** #3227: the two settings that decide when a debt tier page ends, shown under its
+ *  cooldown. The column names are the form field names, so the save action and
+ *  this list cannot drift onto different spellings. */
+const TIER_RECOVERY_FIELDS = [
+  {
+    name: "empty_tier_recovery_min_times",
+    label: "Open times before it ends",
+    help: "How many booking times a paged debt tier must offer before the end of the next working day for its page to end. The page itself still starts only when the tier offers none.",
+    bounds: TIER_RECOVERY_BOUNDS.minOpenTimes,
+    defaultValue: MONITOR_DEFAULTS.tierRecovery.minOpenTimes,
+  },
+  {
+    name: "empty_tier_recovery_hold_min",
+    label: "Minutes held before it ends",
+    help: "How long the tier must keep offering that many times before the all clear is sent. Dropping below that number starts the wait again. Zero sends the all clear on the first check that finds enough.",
+    bounds: TIER_RECOVERY_BOUNDS.holdMin,
+    defaultValue: MONITOR_DEFAULTS.tierRecovery.holdMin,
+  },
+] as const;
 
 export default async function AlertSettingsPage({
   searchParams,
@@ -426,8 +448,8 @@ export default async function AlertSettingsPage({
                       const stored = storedByKey.get(f.key);
                       const defMin = MONITOR_DEFAULTS.cooldownMs[f.key] / 60_000;
                       return (
+                        <Fragment key={f.key}>
                         <li
-                          key={f.key}
                           className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border py-1.5 first:border-t-0"
                         >
                           <label
@@ -485,6 +507,39 @@ export default async function AlertSettingsPage({
                             default {defMin}
                           </span>
                         </li>
+                        {/* #3227: the two settings that decide when this page
+                            ENDS sit directly under it, in the same row shape,
+                            because they are part of the same alert. */}
+                        {f.key === "empty_tier" &&
+                          TIER_RECOVERY_FIELDS.map((r) => (
+                            <li
+                              key={r.name}
+                              className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border py-1.5"
+                            >
+                              <label className="min-w-0 flex-1 pl-4 text-xs text-fg" htmlFor={r.name} title={r.help}>
+                                {r.label}
+                                <span className="sr-only">{`. ${r.help}`}</span>
+                              </label>
+                              <span className="block w-24 shrink-0">
+                                <input
+                                  id={r.name}
+                                  name={r.name}
+                                  type="number"
+                                  min={r.bounds.min}
+                                  max={r.bounds.max}
+                                  step={1}
+                                  inputMode="numeric"
+                                  defaultValue={config?.[r.name] ?? ""}
+                                  aria-describedby={`${r.name}_default`}
+                                  className={`${inputCls} mt-0 text-right tabular-nums`}
+                                />
+                              </span>
+                              <span id={`${r.name}_default`} className="w-28 text-xs text-fg-muted tabular-nums">
+                                default {r.defaultValue}
+                              </span>
+                            </li>
+                          ))}
+                        </Fragment>
                       );
                     })}
                   </ul>

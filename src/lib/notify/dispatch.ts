@@ -62,7 +62,7 @@ const OFFPLATFORM_OPT_IN = "SLATE_ALLOW_OFFPLATFORM_ALERTS";
  * from GitHub Actions: those post through `postSlack` directly and never reach this module.
  * That was checked rather than assumed before this gate was added.
  */
-function mayWriteAlerts(key: string, what: string): boolean {
+export function mayWriteAlerts(key: string, what: string): boolean {
   if (isWorkersRuntime()) return true;
   if ((process.env[OFFPLATFORM_OPT_IN] ?? "") !== "") return true;
   // Never silent, and it names the key so a developer can see WHICH alert their local run
