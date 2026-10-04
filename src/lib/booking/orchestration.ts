@@ -3119,8 +3119,153 @@ export async function createBooking(
    * code (a booker confirm rerouted on the lead's Salesforce code) is resolved as
    * before. The test bucket check below still runs on it either way.
    */
-  opts: { requested?: KnownBucket } = {},
+  opts: {
+    requested?: KnownBucket;
+    /**
+     * #3257: the caller already holds this slot's turn in the confirm line and will
+     * report the verdict itself (the direct booking API, which enters the line
+     * before its person decision). Entering again would wait behind itself.
+     */
+    inTurn?: boolean;
+  } = {},
 ): Promise<BookingResult> {
+  return (await createBookingWithVerdict(requestedInput, deps, opts)).result;
+}
+
+/**
+ * The idempotency key a confirm collapses onto (#2638), from the request alone.
+ *
+ * A STABLE key (caller supplied, or derived from the lead's contact identity) is
+ * what lets a re-submit collapse onto the same booking. Anonymous bookings have
+ * none (idempotencyKeyFor returns null). Built from what a retry sends again
+ * unchanged, never from the pool Salesforce resolves (`idempotencyCodeFor`), so a
+ * retry of a confirm that already booked matches it without a second Salesforce
+ * call: an outage on the retry, or a score that moved between the two, would
+ * otherwise refuse the retry or miss the original and book a second call.
+ *
+ * Pure, so the confirm line can recognise a double submit before any read
+ * (#3257), and shared so the API entry and the create cannot key it differently.
+ */
+export function stableKeyFor(input: CreateBookingInput): string | null {
+  return (
+    input.idempotencyKey ??
+    idempotencyKeyFor({
+      bucketCode: idempotencyCodeFor(input),
+      startIso: input.startIso,
+      email: input.attendee.email,
+      phone: input.attendee.phone,
+      salesforceId: input.salesforceId,
+    })
+  );
+}
+
+/**
+ * The confirm line a request joins, when it is known before any read (#3257).
+ *
+ * The line is one bucket, one instant and, for a named link, one advisor, and all
+ * three are in the request, so almost every confirm can join it before reading
+ * anything. The exception is a booker link carrying NO routable code: Salesforce
+ * decides its bucket (`routeOnLeadCode`), so the code it names is not the code it
+ * books, and a "full" verdict from a confirm in one bucket would refuse a confirm
+ * that is really in another. That one returns null and joins after routing.
+ */
+export function queueKeyBeforeRouting(
+  input: Pick<CreateBookingInput, "bucketCode" | "startIso" | "requestedCode" | "agentLinkUserId">,
+): string | null {
+  const known =
+    input.agentLinkUserId !== undefined ||
+    input.requestedCode === undefined ||
+    resolveRequestedCode(input.requestedCode).kind === "valid";
+  return known ? confirmQueueKey(input.bucketCode, input.startIso, input.agentLinkUserId) : null;
+}
+
+/**
+ * One turn in the confirm line (#3221), shared by the create and the direct
+ * booking API so the two cannot answer a waiting confirm two different ways.
+ *
+ * The leader runs `work` and reports its verdict, a failure included. A follower
+ * whose leader settled the slot is answered from that verdict without running
+ * anything: its own booking back when it is a double submit of the leader, else
+ * the slot is taken. A follower that waited the whole bound runs on its own.
+ */
+async function inConfirmTurn<R>(
+  deps: BookingDeps,
+  line: { key: string; stableKey: string | null; bucketCode: string },
+  work: () => Promise<{ result: R; verdict: LeaderVerdict<ConfirmTaker> }>,
+  fromTaker: (taker: ConfirmTaker) => R,
+): Promise<{ result: R; verdict: LeaderVerdict<ConfirmTaker> }> {
+  const turn = await deps.confirmQueue.enter(line.key);
+  if (turn.kind === "refused") {
+    // A double submit queued behind its own first submit gets that booking back,
+    // as it would from the idempotency key had the two not been in line.
+    if (line.stableKey && turn.taker?.idempotencyKey === line.stableKey) {
+      return { result: fromTaker(turn.taker), verdict: { full: false } };
+    }
+    // #3257: answered without a single read. A person who already holds this very
+    // time and submits it again while somebody else's confirm for it is in flight
+    // is told it is taken rather than deduped; their booking is untouched and a
+    // retry once the crowd is answered dedupes as before. Telling the two apart
+    // needs the bookings read that a crowd of these cannot afford.
+    log.info("booking", {
+      msg: "confirm waited behind one that settled the slot, refused without running",
+      bucket_code: line.bucketCode,
+      refusal: turn.refusal,
+    });
+    throw turn.refusal === "race" ? new RaceLostRefusalError(1, false) : new SlotUnavailableError();
+  }
+  if (turn.kind === "unqueued") return work();
+  try {
+    const done = await work();
+    turn.done(done.verdict);
+    return done;
+  } catch (err) {
+    turn.done(verdictForRefusal(err));
+    throw err;
+  }
+}
+
+/** A booking a waiting double submit is handed back, as the create returns it. */
+function bookingFromTaker(taker: ConfirmTaker): BookingResult {
+  return { booking: taker.result.booking, manageUrl: taker.result.manageUrl };
+}
+
+/**
+ * `createBooking`, with the verdict its confirm showed about the slot, so a caller
+ * holding the turn itself (the direct booking API) can report it.
+ */
+async function createBookingWithVerdict(
+  requestedInput: CreateBookingInput,
+  deps: BookingDeps,
+  opts: { requested?: KnownBucket; inTurn?: boolean },
+): Promise<{ result: BookingResult; verdict: LeaderVerdict<ConfirmTaker> }> {
+  const stableKey = stableKeyFor(requestedInput);
+  // #3257: join the line BEFORE any read when the line is known from the request,
+  // so a crowd for one slot waits for its leader rather than each doing the
+  // idempotency read, the routing and the bucket read first. Those reads are what
+  // timed out on 2026-10-04 (run 37229344882) with the #3221 line behind them.
+  if (opts.inTurn) return createChecked(requestedInput, deps, opts, stableKey, false);
+  const early = queueKeyBeforeRouting(requestedInput);
+  if (early === null) return createChecked(requestedInput, deps, opts, stableKey, true);
+  return inConfirmTurn(
+    deps,
+    { key: early, stableKey, bucketCode: requestedInput.bucketCode },
+    () => createChecked(requestedInput, deps, opts, stableKey, false),
+    bookingFromTaker,
+  );
+}
+
+/**
+ * Everything a confirm checks and reads before the create proper. `lateQueue` is
+ * set only for a confirm that could not join the line before routing (a booker
+ * link Salesforce routes), which joins it here once its bucket is known.
+ */
+async function createChecked(
+  requestedInput: CreateBookingInput,
+  deps: BookingDeps,
+  opts: { requested?: KnownBucket },
+  stableKey: string | null,
+  lateQueue: boolean,
+): Promise<{ result: BookingResult; verdict: LeaderVerdict<ConfirmTaker> }> {
   /**
    * Where this confirm's time went (#2321), under SLATE_LOADTEST only.
    *
@@ -3139,25 +3284,6 @@ export async function createBooking(
     isolateReadyAtMs: ISOLATE_READY_AT_MS,
   });
 
-  // A STABLE key (caller-supplied, or derived from the lead's contact identity)
-  // is what lets a re-submit collapse onto the same booking. Anonymous bookings
-  // have none (idempotencyKeyFor returns null).
-  //
-  // #2638: built from what a retry sends again unchanged, never from the pool
-  // Salesforce resolves (`idempotencyCodeFor`), so a retry of a confirm that
-  // already booked matches it without a second Salesforce call: an outage on the
-  // retry, or a score that moved between the two, would otherwise refuse the
-  // retry or miss the original and book a second call.
-  const stableKey =
-    requestedInput.idempotencyKey ??
-    idempotencyKeyFor({
-      bucketCode: idempotencyCodeFor(requestedInput),
-      startIso: requestedInput.startIso,
-      email: requestedInput.attendee.email,
-      phone: requestedInput.attendee.phone,
-      salesforceId: requestedInput.salesforceId,
-    });
-
   // Fast path: a double-click / retry of the same submit returns the existing
   // active booking instead of creating a second one (+ a second gcal event).
   // Only a stable key can match a prior booking; a synthetic key (below) is fresh
@@ -3168,7 +3294,8 @@ export async function createBooking(
       deps.findBookingByIdempotencyKey(stableKey),
     );
     if (existing) {
-      return { booking: existing, manageUrl: manageUrl(deps, existing.manage_token) };
+      // A replay settles nothing about the slot for anybody else in line.
+      return { result: { booking: existing, manageUrl: manageUrl(deps, existing.manage_token) }, verdict: { full: false } };
     }
   }
 
@@ -3217,32 +3344,18 @@ export async function createBooking(
   // runs; when its confirm shows the slot is full, everybody waiting is answered
   // from that without doing the work, so the first in wins and the rest are told
   // the time is taken in moments. See `confirm-queue.ts`.
+  //
+  // #3257: most confirms joined the line before any of the reads above
+  // (`createBookingWithVerdict`) and already hold their turn here. Only a booker
+  // link Salesforce routed joins now, once its bucket is known.
   const ctx: HeldCreate = { input, stableKey, agentLinkUserId, codeSource, bucket, eventType, profile };
-  const turn = await deps.confirmQueue.enter(
-    confirmQueueKey(input.bucketCode, input.startIso, agentLinkUserId),
+  if (!lateQueue) return createHeld(ctx, deps);
+  return inConfirmTurn(
+    deps,
+    { key: confirmQueueKey(input.bucketCode, input.startIso, agentLinkUserId), stableKey, bucketCode: input.bucketCode },
+    () => createHeld(ctx, deps),
+    bookingFromTaker,
   );
-  if (turn.kind === "refused") {
-    // A double submit queued behind its own first submit gets that booking back,
-    // as it would from the idempotency key had the two not been in line.
-    if (stableKey && turn.taker?.idempotencyKey === stableKey) {
-      return { booking: turn.taker.result.booking, manageUrl: turn.taker.result.manageUrl };
-    }
-    log.info("booking", {
-      msg: "confirm waited behind one that settled the slot, refused without running",
-      bucket_code: input.bucketCode,
-      refusal: turn.refusal,
-    });
-    throw turn.refusal === "race" ? new RaceLostRefusalError(1, false) : new SlotUnavailableError();
-  }
-  if (turn.kind === "unqueued") return (await createHeld(ctx, deps)).result;
-  try {
-    const held = await createHeld(ctx, deps);
-    turn.done(held.verdict);
-    return held.result;
-  } catch (err) {
-    turn.done(verdictForRefusal(err));
-    throw err;
-  }
 }
 
 /** What `createBooking` hands the part of the confirm that runs in turn. */
@@ -4328,13 +4441,14 @@ async function moveToRequestedBucket(
   deps: BookingDeps,
   /** #2670: the bucket the person decision already resolved, so it is read once. */
   requested: KnownBucket,
-  opts: { tolerateRefusal?: boolean } = {},
+  /** `inTurn`: the caller holds this slot's confirm line turn (#3257). */
+  opts: { tolerateRefusal?: boolean; inTurn?: boolean } = {},
 ): Promise<BucketMove> {
   if (requested.resolved.bucket.id === existing.bucket_id) return { outcome: "unchanged" };
 
   let created: Awaited<ReturnType<typeof createBooking>>;
   try {
-    created = await createBooking(input, deps, { requested });
+    created = await createBooking(input, deps, { requested, inTurn: opts.inTurn });
   } catch (err) {
     if (opts.tolerateRefusal === false) throw err;
     // Only the two ordinary "no" answers are tolerated. A transient verify
@@ -4373,25 +4487,69 @@ export async function bookViaApi(
   input: ApiBookingInput,
   deps: BookingDeps,
 ): Promise<ApiBookingResult> {
-  const { decision, requested } = await resolvePersonDecision(input, deps);
+  // #3257: join the slot's confirm line BEFORE the person decision. With the line
+  // behind it, a hundred calls for one slot each read the bucket and the person's
+  // bookings first, and on 2026-10-04 (run 37229344882) those reads timed out on
+  // every one of them, so nobody was booked. Now the first call leads and runs the
+  // whole decision; the rest wait, read nothing, and are answered from what it
+  // showed. Whoever books has run the person decision itself (#357, #1641), as
+  // leader or after waiting out the bound, so dedupe for one person is unchanged.
+  const key = queueKeyBeforeRouting(input);
+  if (key === null) return (await bookViaApiDecided(input, deps, false)).result;
+  const { result } = await inConfirmTurn(
+    deps,
+    { key, stableKey: stableKeyFor(input), bucketCode: input.bucketCode },
+    () => bookViaApiDecided(input, deps, true),
+    // A double submit waiting behind its own first call gets that booking, as a
+    // replay: no race row, since the call that made it already counted one.
+    (taker): ApiBookingResult => ({ outcome: "created", booking: taker.result.booking, manageUrl: taker.result.manageUrl }),
+  );
+  return result;
+}
 
-  switch (decision.action) {
-    case "create": {
-      const res = await createBooking(input, deps, { requested });
-      return {
+/**
+ * The direct booking API's person decision and the arm it chose, with what that
+ * showed about the slot for the calls waiting behind it (#3257). Only the create
+ * arm can settle the slot for them; a dedupe, a move or a reschedule is about this
+ * one person, so the next call in line runs for itself.
+ */
+async function bookViaApiDecided(
+  input: ApiBookingInput,
+  deps: BookingDeps,
+  /** This call holds the slot's turn, so a create or a move must not join again. */
+  inTurn: boolean,
+): Promise<{ result: ApiBookingResult; verdict: LeaderVerdict<ConfirmTaker> }> {
+  const { decision, requested } = await resolvePersonDecision(input, deps);
+  if (decision.action === "create") {
+    const { result: res, verdict } = await createBookingWithVerdict(input, deps, { requested, inTurn });
+    return {
+      result: {
         outcome: "created",
         booking: res.booking,
         manageUrl: res.manageUrl,
         ...raceField(raceOutcomeForConfirm(res)),
-      };
-    }
+      },
+      verdict,
+    };
+  }
+  return { result: await bookViaApiArm(input, deps, decision, requested, inTurn), verdict: { full: false } };
+}
+
+async function bookViaApiArm(
+  input: ApiBookingInput,
+  deps: BookingDeps,
+  decision: Exclude<Awaited<ReturnType<typeof resolvePersonDecision>>["decision"], { action: "create" }>,
+  requested: KnownBucket,
+  inTurn: boolean,
+): Promise<ApiBookingResult> {
+  switch (decision.action) {
     case "dedupe": {
       // #1465: the decision is made on the INSTANT alone, which is right for its
       // own rule (the same instant is the same booking intent) but leaves the
       // bucket with nowhere to be noticed. A re-tiered lead confirming the time
       // they already hold is the ordinary call, and answering 200 deduped left
       // them with the old pool and the old agent while the response said nothing.
-      const moved = await moveToRequestedBucket(input, decision.booking, deps, requested);
+      const moved = await moveToRequestedBucket(input, decision.booking, deps, requested, { inTurn });
       if (moved.outcome === "moved") {
         return {
           outcome: "rescheduled",
@@ -4423,6 +4581,7 @@ export async function bookViaApi(
       // propagates. That asymmetry with the dedupe arm is the point.
       const moved = await moveToRequestedBucket(input, decision.booking, deps, requested, {
         tolerateRefusal: false,
+        inTurn,
       });
       if (moved.outcome === "moved") {
         return {

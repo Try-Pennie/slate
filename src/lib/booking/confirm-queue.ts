@@ -15,6 +15,12 @@
  * does none of the work. Otherwise the next one leads with what the leader left,
  * so a pool of two books two and then answers the rest.
  *
+ * A confirm joins the line BEFORE its first read whenever the line is known from
+ * the request (#3257, `queueKeyBeforeRouting`), so a follower answered from the
+ * leader's verdict has read nothing at all. On 2026-10-04 (run 37229344882) the
+ * line sat behind the bucket, person and idempotency reads, and those timed out on
+ * every one of a hundred confirms before any of them reached it.
+ *
  * A follower waits at most `CONFIRM_QUEUE_WAIT_MS` and then runs on its own,
  * exactly as it would have without the line. The line can delay a confirm, never
  * strand one, and a slow leader cannot make its followers miss their budget.

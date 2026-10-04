@@ -38,6 +38,8 @@ import {
   DependencyTimeoutError,
   SlotUnavailableError,
   RaceLostRefusalError,
+  confirmQueueKey,
+  queueKeyBeforeRouting,
   type BookingDeps,
   type CreateBookingInput,
   type BookingResult,
@@ -90,12 +92,16 @@ async function burst(opts: {
   pool: string[];
   queue: "real" | "off";
   viaApi?: boolean;
+  /** #3257: how long one dependency call takes on the shared capacity. */
+  serviceMs?: number;
+  /** #3257: the FIRST person read fails, as a leader meeting an outage would. */
+  failFirstPersonRead?: boolean;
 }) {
   const clock = new VirtualClock(Date.parse("2026-06-01T00:00:00.000Z"));
   const realNow = Date.now;
   Date.now = () => clock.now;
   try {
-    const resource = new SharedResource(clock, CAPACITY, SERVICE_MS);
+    const resource = new SharedResource(clock, CAPACITY, opts.serviceMs ?? SERVICE_MS);
     const { deps: base, calls } = makeDeps({
       candidates: opts.pool,
       freeEmails: new Set(opts.pool.map((id) => users[id].email)),
@@ -106,8 +112,14 @@ async function burst(opts: {
     const byKey = new Map<string, Booking>();
     const queue: ConfirmQueue<unknown> =
       opts.queue === "off" ? NO_QUEUE : makeConfirmQueue({ timer: (ms, fire) => clock.at(clock.now + ms, fire) });
+    let personReads = 0;
     const shared: BookingDeps = {
       ...base,
+      findActiveBookingsForPerson: async (identity, world) => {
+        personReads++;
+        if (opts.failFirstPersonRead && personReads === 1) throw new Error("bookings read failed");
+        return base.findActiveBookingsForPerson(identity, world);
+      },
       confirmQueue: queue as BookingDeps["confirmQueue"],
       roundRobinCandidates: async (_b, _e, startMs) => {
         const taken = (id: string) => bySlot.has(`${id}|${new Date(startMs).toISOString()}`);
@@ -263,6 +275,120 @@ async function main() {
     assert(
       err instanceof RaceLostRefusalError && err.lostRaces === 1 && err.boundHit === false,
       `refusal: the follower is refused as one lost race, bound not hit (got ${String(err)})`,
+    );
+  }
+
+  // --- #3257: a slow database, so the reads BEFORE the line are what time out ---
+  //
+  // Run 37229344882 (2026-10-04) met the burst with the #3221 line in place and
+  // still booked nobody: every request timed out on the bucket read, the person
+  // read and the idempotency read, which all ran before the line. At 50ms a call
+  // on a capacity of one, those three reads alone for a hundred confirms are 15
+  // seconds of serial work against a 12 second budget. The line has to be entered
+  // before any of them, so a follower does no read at all while the leader runs.
+  const PRE_LINE_READS = new Set(["resolveBucketByCode", "findActiveBookingsForPerson", "findBookingByIdempotencyKey"]);
+  const SLOW_MS = 50;
+  for (const viaApi of [true, false]) {
+    const label = viaApi ? "slow db, booking API" : "slow db, booker confirm";
+    const { runs, tally, bySlot } = await burst({
+      inputs: Array.from({ length: BURST }, (_, i) => lead(i)),
+      pool: ["a"],
+      queue: "real",
+      viaApi,
+      serviceMs: SLOW_MS,
+    });
+    assert(tally.created === 1, `${label}: exactly one confirm is booked (got ${JSON.stringify(tally)})`);
+    assert(tally.SLOT_TAKEN === BURST - 1, `${label}: every other one is told SLOT_TAKEN (got ${JSON.stringify(tally)})`);
+    assert(!tally["503"], `${label}: none is answered 503 (got ${tally["503"] ?? 0})`);
+    assert(bySlot.size === 1, `${label}: one booking row`);
+    assert(runs[0].outcome === "created", `${label}: the first confirm in is the one booked`);
+    const followers = runs.slice(1);
+    const readers = followers.filter((r) => r.calls.some((c) => PRE_LINE_READS.has(c.name)));
+    assert(
+      readers.length === 0,
+      `${label}: no follower reads the bucket, the person or the idempotency key while the leader runs (got ${readers.length})`,
+    );
+    assert(
+      followers.every((r) => r.calls.length === 0),
+      `${label}: a refused follower makes no dependency call at all (most made ${maxOf(followers.map((r) => r.calls.length))})`,
+    );
+    const loserTimes = followers.map((r) => r.answeredMs!);
+    assert(
+      maxOf(loserTimes) < BOOKING_CONFIRM_BUDGET_MS / 2,
+      `${label}: every loser is answered inside half the budget (slowest ${maxOf(loserTimes)}ms)`,
+    );
+  }
+
+  // --- #3257: a pool of two on the slow database: two booked, none 503 ---------
+  {
+    const { tally, bySlot } = await burst({
+      inputs: Array.from({ length: BURST }, (_, i) => lead(i)),
+      pool: ["a", "b"],
+      queue: "real",
+      serviceMs: SLOW_MS,
+    });
+    assert(tally.created === 2 && tally.SLOT_TAKEN === BURST - 2, `slow pool of two: two booked, the rest taken (got ${JSON.stringify(tally)})`);
+    assert(bySlot.size === 2, "slow pool of two: two booking rows");
+  }
+
+  // --- #3257: a leader that ERRORS does not take the crowd down with it ---------
+  //
+  // The first confirm's person read fails. It answers with that failure (the
+  // route maps it), it settles nothing about the slot, so the second in line leads
+  // with a full chain of its own and books, and the other 98 are told SLOT_TAKEN.
+  {
+    const { runs, tally, bySlot } = await burst({
+      inputs: Array.from({ length: BURST }, (_, i) => lead(i)),
+      pool: ["a"],
+      queue: "real",
+      serviceMs: SLOW_MS,
+      failFirstPersonRead: true,
+    });
+    assert(
+      runs[0].outcome !== "created" && runs[0].outcome !== "SLOT_TAKEN",
+      `failed leader: the first confirm answers with its own failure (got ${runs[0].outcome})`,
+    );
+    assert(runs[1].outcome === "created", `failed leader: the next in line leads and is booked (got ${runs[1].outcome})`);
+    assert(tally.created === 1 && bySlot.size === 1, `failed leader: exactly one booking (got ${JSON.stringify(tally)})`);
+    assert(tally.SLOT_TAKEN === BURST - 2, `failed leader: the rest are told SLOT_TAKEN (got ${JSON.stringify(tally)})`);
+    assert(!tally["503"], `failed leader: none is answered 503 (got ${tally["503"] ?? 0})`);
+    assert(
+      runs.slice(2).every((r) => r.calls.length === 0),
+      "failed leader: the followers answered from the new leader made no dependency call",
+    );
+  }
+
+  // --- #3257: a double submit through the booking API still gets its booking ---
+  {
+    const same = lead(7);
+    const { runs, bySlot } = await burst({ inputs: [same, same], pool: ["a"], queue: "real", serviceMs: SLOW_MS });
+    assert(
+      runs.every((r) => r.outcome === "created"),
+      `api double submit: both submits get the booking (got ${runs.map((r) => r.outcome).join(",")})`,
+    );
+    assert(bySlot.size === 1, "api double submit: one booking row");
+    assert(runs[0].result && runs[1].result, "api double submit: both answered with a booking");
+  }
+
+  // --- #3257: where the line can be entered before any read ---------------------
+  {
+    assert(
+      queueKeyBeforeRouting({ bucketCode: "120", startIso: input.startIso }) === confirmQueueKey("120", input.startIso, undefined),
+      "early key: a request naming its bucket outright is keyed before any read",
+    );
+    assert(
+      queueKeyBeforeRouting({ bucketCode: "120", startIso: input.startIso, requestedCode: "120" }) ===
+        confirmQueueKey("120", input.startIso, undefined),
+      "early key: a booker link carrying a routable code is keyed before any read",
+    );
+    assert(
+      queueKeyBeforeRouting({ bucketCode: "120", startIso: input.startIso, agentLinkUserId: "u1" }) ===
+        confirmQueueKey("120", input.startIso, "u1"),
+      "early key: a named link is keyed on its advisor before any read",
+    );
+    assert(
+      queueKeyBeforeRouting({ bucketCode: "000", startIso: input.startIso, requestedCode: "not-a-code" }) === null,
+      "early key: a link Salesforce routes is NOT keyed before routing, since the code it books is not yet known",
     );
   }
 
