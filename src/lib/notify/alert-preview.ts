@@ -472,6 +472,7 @@ import {
   verifyReadFailedAlert,
   stalePhoneInviteAlert,
 } from "@/lib/booking/alert-copy";
+import { shortFailureReason } from "@/lib/notify/error-text";
 import {
   formatUnsubscribedEventsAlert,
   formatUnsubscribedEventsRecovery,
@@ -3959,6 +3960,18 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "a move that did not land",
     channel: "alert",
     text: busyBlockWriteThroughAlert("move", "bk_8f21c4", "permission denied for table busy_blocks"),
+  },
+  {
+    key: "busy_block_write_through",
+    state: "a move refused because the confirm's budget was already spent",
+    channel: "alert",
+    text: busyBlockWriteThroughAlert(
+      "move",
+      "bk_8f21c4",
+      shortFailureReason(
+        "DeadlineExceededError: supabase did not answer within 0ms, when the booking confirm ran out of its 12000ms",
+      ) ?? "no detail",
+    ),
   },
   {
     key: "busy_block_write_through",

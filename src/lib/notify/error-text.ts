@@ -18,10 +18,12 @@
  * docs/cloudflare-platform-notes.md), so nothing is lost by keeping the body out
  * of Slack, and `log.error(tag, fields, err)` is how you get it back.
  *
- * Pure, and its one import is the pure contact data scrub, so it is node-testable
+ * Pure, and its imports are the pure contact data scrub and the pure deadline
+ * reader, so it is node-testable
  * (scripts/test-alerts.ts, scripts/test-error-text.ts).
  */
 import { scrubContactData } from "../api/client-error-scrub.ts";
+import { findDeadlineExceeded, type DeadlineFound } from "../fetch-within-deadline.ts";
 
 /** Longest reason a routine alert carries. Its copy already names the condition,
  *  so the error is a supporting detail and one clause is enough. */
@@ -61,6 +63,10 @@ export function shortFailureReason(
   maxChars: number = MAX_REASON_CHARS,
 ): string | null {
   if (!raw) return null;
+  // #3263: a missed deadline says what happened in words, whole, because the
+  // words are ours and the dependency they name is the one fact worth having.
+  const deadline = findDeadlineExceeded({ message: raw }) ?? bareDeadline(raw);
+  if (deadline) return deadlineReason(deadline);
   const status = /\bfailed: (\d{3})\b/.exec(raw)?.[1];
   if (status) {
     // Google's structured `reason` ("backendError", "rateLimitExceeded") is the
@@ -94,6 +100,49 @@ export function shortFailureReason(
   const cut = oneLine.slice(0, maxChars);
   const lastSpace = cut.lastIndexOf(" ");
   return `${(lastSpace > maxChars / 2 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
+
+/**
+ * A missed deadline as a person reads it (#3263), for every alert that carries
+ * one, the booking failure page included (`dependencyTimeoutAlert`).
+ *
+ * The error's own sentence, "supabase did not answer within 0ms", is right for a
+ * log and misleading on a page: a call refused because the request's budget was
+ * ALREADY spent never reached the dependency at all, so it reads as supabase
+ * being slow when the time went somewhere before it. So the three cases say three
+ * different things:
+ *
+ *  - refused before it started: the budget was used up before Slate asked;
+ *  - cut short by the budget: the call was still running when the budget ran out;
+ *  - out of its own limit: the call did not answer within that limit.
+ */
+export function deadlineReason(found: DeadlineFound): string {
+  const { label, timeoutMs, budget } = found;
+  if (!budget) return `${label} did not answer within ${span(timeoutMs)}`;
+  if (timeoutMs === 0) return `${budget.label} had used up its ${span(budget.totalMs)} before Slate asked ${label}`;
+  return `${label} was still running when ${budget.label} ran out of its ${span(budget.totalMs)}`;
+}
+
+/** A duration in the unit a person would say it in. */
+function span(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const secs = Math.round(ms / 1000);
+  return secs === 1 ? "1 second" : `${secs} seconds`;
+}
+
+/**
+ * The deadline sentence on its own, as an Error's own message stores it (a
+ * reservation's last_error, say), with nothing either side. Anchored at both ends,
+ * so prose that merely contains the words is never rewritten.
+ */
+function bareDeadline(raw: string): DeadlineFound | null {
+  const m = /^(\S.*?) did not answer within (\d+)ms(?:, when (.+) ran out of its (\d+)ms)?$/.exec(raw.trim());
+  if (!m) return null;
+  return {
+    label: m[1],
+    timeoutMs: Number(m[2]),
+    budget: m[3] ? { label: m[3], totalMs: Number(m[4]) } : null,
+  };
 }
 
 /**
@@ -153,5 +202,8 @@ export function shortErrorReason(
   err: unknown,
   opts: { fallback?: string; maxChars?: number } = {},
 ): string {
+  // #3263: a deadline anywhere in the cause chain is the reason, said in words.
+  const deadline = findDeadlineExceeded(err);
+  if (deadline) return deadlineReason(deadline);
   return shortFailureReason(errorText(err), opts.maxChars) ?? (opts.fallback ?? "no detail");
 }

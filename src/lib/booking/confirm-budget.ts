@@ -18,6 +18,11 @@
  *    allowance per request: the route's failure path and the service's page
  *    beneath it share it rather than each adding 2 seconds.
  *
+ * A budget that runs out AFTER the booking row has committed is not a failure
+ * (#3263): the confirm answers the booking, and the reservation drain finishes
+ * the side effects the budget cut off (`completeReservation`). Only a deadline
+ * before or at the insert answers the retryable 503.
+ *
  * That is 14 seconds against the booker's 20, which leaves 6 for what no budget
  * can see: computation, which a Worker's clock does not advance across, and the
  * response's trip back. Pinned by `confirm-budget.test.ts`, which drives the real

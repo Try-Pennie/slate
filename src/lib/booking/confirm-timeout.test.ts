@@ -83,6 +83,10 @@ describe("a timeout on the confirm path (#3102)", () => {
     const page = bookingFailureAlert(mapped)?.message ?? "";
     expect(page).toContain("supabase");
     expect(page).not.toContain("within 0 seconds");
+    // #3263: plainly, the budget was used up before Slate asked supabase; "was
+    // not started" read as though supabase had failed to start.
+    expect(page).toContain("the booking confirm had used up its 12 seconds before Slate asked supabase");
+    expect(page).not.toContain("was not started");
   });
 
   // L11: the page may claim only what was measured. Nothing at the moment of the
