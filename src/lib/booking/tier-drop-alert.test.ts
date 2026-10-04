@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { makeConfirmQueue } from "@/lib/booking/confirm-queue";
 
 // Asserts which tier-drop bookings dispatch a throttled Slack alert via
 // sendThrottledAlert: only a drop of two or more debt tiers does
@@ -255,6 +256,8 @@ function makeTierDropDeps(requested = "511", lower = "411"): BookingDeps {
     pageRaceBoundHit: () => {
       throw new Error("race bound hit page not exercised by this suite");
     },
+    // #3221: a line of this fake's own, never the isolate's.
+    confirmQueue: makeConfirmQueue(),
   };
 }
 

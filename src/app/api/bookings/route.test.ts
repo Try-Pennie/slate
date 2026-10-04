@@ -451,6 +451,29 @@ describe("POST /api/bookings (auth skeleton)", () => {
     expect(outcome).toContain("status=409");
   });
 
+  // #3221: what the caller waited, measurable outside a load test, kept apart
+  // from the work deferred past the response.
+  it("logs one line per confirm with the time to the answer, and flags a dry run (#3221)", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    regalKey.primary.mockReturnValue("real-secret");
+    service.bookViaApi.mockResolvedValueOnce(result("created"));
+
+    await post("Bearer real-secret", VALID_BODY);
+
+    const lines = info.mock.calls.map(String).filter((l) => l.includes('msg="confirm answered"'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("tag=booking-api");
+    expect(lines[0]).toMatch(/response_ms=\d+/);
+    expect(lines[0]).toContain("status=200");
+    expect(lines[0]).not.toContain("dry_run");
+
+    info.mockClear();
+    await post("Bearer real-secret", { ...VALID_BODY, dryRun: true });
+    const dry = info.mock.calls.map(String).filter((l) => l.includes('msg="confirm answered"'));
+    expect(dry).toHaveLength(1);
+    expect(dry[0]).toContain("dry_run=true");
+  });
+
   it("carries the machine error code on the outcome line when the call fails", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
