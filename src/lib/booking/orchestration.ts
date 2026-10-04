@@ -4185,7 +4185,7 @@ async function completeReservation(
   // the confirm budget running out in the work below, is returned as unfinished
   // rather than thrown, so the lead is answered with the booking that exists and
   // the reservation is left for the drain to finish.
-  const unfinished = await finishCommitted(() => afterCreateCommitted(deps, booking, reservation));
+  const unfinished = await finishCommitted(() => afterCreateCommitted(deps, booking, reservation, gcalEventId));
   // #2838: the one return where THIS call's own insert made the booking. Every
   // other return hands back a booking an earlier or racing confirm made.
   return { result: { booking, manageUrl: manageUrl(deps, booking.manage_token), newlyInserted: true }, unfinished };
@@ -4201,9 +4201,11 @@ async function afterCreateCommitted(
   deps: BookingDeps,
   booking: Booking,
   reservation: BookingReservation,
+  /** The event this create wrote or adopted, as before #3263, never re-read off
+   *  the returned row, so the #586 mirror cleanup keys on the id actually used. */
+  gcalEventId: string,
 ): Promise<void> {
   const { booking: bookingInsert, bucketCode, requestedCode } = reservation.payload;
-  const gcalEventId = booking.gcal_event_id;
 
   // #586: the booking now owns this event id, so any source=gcal block for it is a
   // stray mirror a push-sync cached while racing the create (before the booking

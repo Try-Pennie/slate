@@ -307,6 +307,25 @@ async function run() {
     assert(!/went through/.test(del), "control: a delete is a cancel's write through and claims nothing about a booking");
   }
 
+  // --- 7. the #586 mirror cleanup keys on the event this create used ---------
+  // Not on a re-read of the returned row: a row handed back without the column
+  // must not silently skip the cleanup.
+  {
+    const { deps, calls } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
+    const d: BookingDeps = {
+      ...deps,
+      insertBooking: async (row) => {
+        const res = await deps.insertBooking(row);
+        return res.ok ? { ...res, booking: { ...res.booking, gcal_event_id: null } } : res;
+      },
+    };
+    await createBooking(input, d);
+    assert(
+      calls.deleteGcalMirror.length === 1 && calls.deleteGcalMirror[0].gcalEventId === "gcal-1",
+      "mirror cleanup: runs for the event this create wrote, even when the returned row omits it",
+    );
+  }
+
   finish();
 }
 

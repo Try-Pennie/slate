@@ -22,7 +22,12 @@ export function busyBlockWriteThroughAlert(
 ): string {
   // #3263: a move or an insert runs only after the booking change itself has
   // committed, so the page says the booking went through: the miss is in the
-  // slot cache, and a reader must not take it for a failed booking.
+  // slot cache, and a reader must not take it for a failed booking. That holds
+  // for every caller, each of which writes a block for a booking row already
+  // stored: the create's post commit work, the reschedule and reassign outbox
+  // steps (which re-read the stored booking), and the reconcile sweep (over
+  // loadActiveUpcomingBookings). A caller writing a block for anything else
+  // would need its own wording here.
   if (operation === "move") {
     return (
       `A busy_blocks move (move_busy_block) failed for booking ${subject} (${reason}). ` +
