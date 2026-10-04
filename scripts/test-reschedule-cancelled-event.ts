@@ -19,6 +19,7 @@ import {
   createBooking,
   reassignBooking,
   processPendingEventDeletions,
+  processAbandonedReschedulePins,
   PENDING_DELETION_GIVE_UP_AT,
   type BookingDeps,
   type PendingEventDeletion,
@@ -563,6 +564,58 @@ async function run() {
       google.events.get(res.booking.gcal_event_id!) === "confirmed",
       "create: a booking whose reserved id is a tombstone confirms on a live event",
     );
+  }
+
+  // --- 15. a reassign whose fresh id hook fails part way (the old intent's delete
+  // is refused) leaves NO intent behind for an event that was never created ------
+  {
+    const { d, google, intents, intentWrites } = reassignWorld();
+    const swap = d.reassignSwap;
+    let failSwap = true;
+    d.reassignSwap = async (args) => {
+      if (failSwap) {
+        failSwap = false;
+        throw new Error("rpc down");
+      }
+      return swap(args);
+    };
+    await caught(() => reassignBooking("bk1", "b@x.com", SYS, d));
+    const base = intentWrites[0];
+    google.events.set(base, "cancelled");
+    for (let n = 1; n <= TOMBSTONE_FRESH_IDS; n++) google.events.set(freshEventId(base, n), "cancelled");
+    const del = d.deleteReassignIntent;
+    let refused = false;
+    d.deleteReassignIntent = async (bookingId, id) => {
+      if (!refused && id === base) {
+        refused = true;
+        throw new Error("reassign_intents delete: supabase 503");
+      }
+      await del(bookingId, id);
+    };
+    const err = await caught(() => reassignBooking("bk1", "b@x.com", SYS, d));
+    assert(err instanceof Error, "hook refused: the reassign fails");
+    assert(intents.size === 0, "hook refused: both the tombstone's intent and the fresh one are cleared");
+  }
+
+  // --- 16. the abandoned pin sweep: an IN PLACE pin that names a recreated event
+  // (not the booking's own) owns that event, so the sweep queues it -------------
+  {
+    const { deps, calls } = makeDeps({
+      abandonedPins: [
+        // crashed between the recreate and the commit: the pin names the recreated event
+        { booking_id: "bk1", pinned_agent_email: "a@x.com", gcal_client_id: "slaterecreated", branch: "in_place", booking_gcal_event_id: "gcal-old", target_starts_at: TARGET, booking_starts_at: "2026-06-08T13:00:00.000Z" },
+        // control: an ordinary in place pin names the booking's own event
+        { booking_id: "bk2", pinned_agent_email: "a@x.com", gcal_client_id: "gcal-own", branch: "in_place", booking_gcal_event_id: "gcal-own", target_starts_at: TARGET, booking_starts_at: "2026-06-08T13:00:00.000Z" },
+        // control: the booking read came back empty, so nothing says the event is not its own
+        { booking_id: "bk3", pinned_agent_email: "a@x.com", gcal_client_id: "gcal-unknown", branch: "in_place", booking_gcal_event_id: null, target_starts_at: TARGET, booking_starts_at: null },
+      ],
+    });
+    const res = await processAbandonedReschedulePins(deps, 0);
+    assert(
+      calls.enqueueEventDeletion.length === 1 && calls.enqueueEventDeletion[0].eventId === "slaterecreated",
+      "sweep: an abandoned in place pin's RECREATED event is queued, and only that one",
+    );
+    assert(res.enqueued === 1 && res.swept === 3, "sweep: it is counted as enqueued");
   }
 
   // --- 11. every id in the chain is a tombstone: the reassign fails loudly and

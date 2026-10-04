@@ -3797,10 +3797,16 @@ export async function processAbandonedReschedulePins(
   let enqueued = 0;
   let dropped = 0;
   for (const row of rows) {
+    // A reroute's pin always names an event of its own. An in place pin names the
+    // booking's own event, unless the move RECREATED a deleted one (#617, #3217),
+    // when it names that recreated event, which a crash before the commit leaves
+    // on the calendar. So an in place pin owns its event only when it is not the
+    // booking's, and only when the booking's event was actually read: a null there
+    // says nothing. The drain asks who holds the event before deleting it.
     if (
-      row.branch === "reassign" &&
       row.gcal_client_id &&
-      row.gcal_client_id !== row.booking_gcal_event_id
+      row.gcal_client_id !== row.booking_gcal_event_id &&
+      (row.branch === "reassign" || row.booking_gcal_event_id !== null)
     ) {
       await deps.enqueueEventDeletion(row.pinned_agent_email, row.gcal_client_id, row.booking_id);
       enqueued += 1;
@@ -5256,6 +5262,11 @@ export async function reassignBooking(
     pinnedAgentEmail: agent.email,
     gcalClientId,
   });
+  // The intents this call wrote for ids that may have NO event behind them (a
+  // tombstone, or a fresh id not yet inserted). Cleared together if the create
+  // ends without an event, so none is left standing for the drain to hold.
+  const unbacked = new Set<string>([gcalClientId]);
+  let hookFailed = false;
   let newEventId: string;
   try {
     newEventId = await deps.createEvent(
@@ -5279,16 +5290,32 @@ export async function reassignBooking(
         // written first, the same rule as above, and the tombstone's goes, since
         // there is nothing left on Google for it to clean up.
         onFreshId: async (fresh) => {
-          await deps.writeReassignIntent({ bookingId: booking.id, pinnedAgentEmail: agent.email, gcalClientId: fresh });
-          await deps.deleteReassignIntent(booking.id, gcalClientId);
-          gcalClientId = fresh;
+          try {
+            await deps.writeReassignIntent({ bookingId: booking.id, pinnedAgentEmail: agent.email, gcalClientId: fresh });
+            unbacked.add(fresh);
+            const tombstoned = gcalClientId;
+            gcalClientId = fresh;
+            await deps.deleteReassignIntent(booking.id, tombstoned);
+            unbacked.delete(tombstoned);
+          } catch (hookErr) {
+            hookFailed = true;
+            throw hookErr;
+          }
         },
       },
     );
   } catch (err) {
-    // Every id in the chain a tombstone: nothing was created, so no intent may be
-    // left standing for the drain to hold.
-    if (err instanceof EventCancelledOnReuse) await deps.deleteReassignIntent(booking.id, gcalClientId);
+    // Every id in the chain a tombstone, or the hook refused before a fresh id was
+    // inserted: nothing was created, so no intent may be left standing for the
+    // drain to hold. Each delete is tried on its own; one the store refuses is
+    // left to the abandoned intent sweep, which clears it once its lease passes.
+    if (err instanceof EventCancelledOnReuse || hookFailed) {
+      for (const id of unbacked) {
+        await deps.deleteReassignIntent(booking.id, id).catch((delErr) =>
+          log.warn("reassign", { msg: "could not clear an intent with no event behind it", booking_id: booking.id, gcal_event_id: id }, delErr),
+        );
+      }
+    }
     throw err;
   }
 
