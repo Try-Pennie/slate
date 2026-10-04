@@ -64,8 +64,8 @@ assert(
   "two lanes at the same age are told apart by their own bounds",
 );
 
-// The tenth job. "All 9 lanes ran on time" is true and leaves a reader no way to
-// know the cron system is bigger than this page.
+// The jobs this page does NOT watch. "All N lanes ran on time" is true and leaves a
+// reader no way to know the cron system is bigger than this page.
 const covers = cronLanesNote();
 assert(covers.includes("11 lanes"), "the count is derived, so it cannot claim ten of eleven");
 for (const said of [/roster sync/i, /time off/i, /Snowflake/i]) {

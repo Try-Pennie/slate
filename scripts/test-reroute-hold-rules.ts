@@ -13,6 +13,7 @@ import {
   holdClashes,
   parseLiveHolds,
   withoutOwnBooking,
+  bufferedReadWindow,
   type LiveHold,
 } from "../src/lib/booking/reroute-hold.ts";
 import { freeMembersAtExactWindow, freeMembersForSlot, type MemberAvailability } from "../src/lib/availability/compute.ts";
@@ -109,6 +110,18 @@ eq(freeMembersAtExactWindow([{ ...fiveAgent, dayCounts: new Map([["2031-03-04", 
     "an advisor over their cap with other calls is still capped once this one is taken off");
   const legacy = withoutOwnBooking({ ...current, dayCounts: undefined, bookingStartsMs: [own.startMs, T("12:00")] }, own);
   eq(legacy.bookingStartsMs, [T("12:00")], "without a server count, the booking's own start is removed from the starts");
+}
+
+// --- the current advisor's busy time is READ over the buffered window (review) --------
+{
+  eq(
+    bufferedReadWindow({ starts_at: "2031-03-04T10:00:00Z", ends_at: "2031-03-04T10:20:00Z" }, { buffer_before_min: 10, buffer_after_min: 15 }),
+    { fromIso: "2031-03-04T09:50:00.000Z", toIso: "2031-03-04T10:35:00.000Z" },
+    "a 10:00 to 10:20 call with 10 and 15 minute buffers is read from 09:50 to 10:35, so a meeting inside a buffer is seen",
+  );
+  let threw = false;
+  try { bufferedReadWindow({ starts_at: "nope", ends_at: "2031-03-04T10:20:00Z" }, { buffer_before_min: 0, buffer_after_min: 0 }); } catch { threw = true; }
+  assert(threw, "an unreadable booking window throws rather than reading nothing");
 }
 
 finish();

@@ -471,6 +471,24 @@ try {
     cancel(K21);
     eq(blocks(h4), "0", "cancelling the held booking removes the block");
 
+    // The live holds read, on the DATABASE clock (L736).
+    {
+      const K22 = book(A, "07:00", "07:20");
+      const h5 = place(K22, B).holdId;
+      const live = (users: string, from: string, to: string) =>
+        sql(`select coalesce(string_agg(booking_id::text, ','), '') from live_reroute_holds(array[${users}]::uuid[], ${at(from)}, ${at(to)});`);
+      eq(live(`'${B}'`, "07:25", "07:45"), K22, "a live hold whose buffered window reaches the asked window is returned");
+      eq(live(`'${B}'`, "07:31", "07:50"), "", "one wholly past its buffered end is not");
+      eq(live(`'${C}'`, "07:00", "07:20"), "", "another advisor's question does not see it");
+      sql(`update reroute_holds set expires_at = now() - interval '1 second' where id = '${h5}';`);
+      eq(live(`'${B}'`, "07:00", "07:20"), "", "the moment it expires by the database's own clock, it is not live");
+      cancel(K22);
+      for (const role of ["anon", "authenticated"]) {
+        const err = sqlError(`select * from live_reroute_holds(array['${B}']::uuid[], now(), now());`, role);
+        assert(err !== null && /permission denied/.test(err), `${role} cannot read live holds`);
+      }
+    }
+
     // The shape: a hold block names a hold and nothing else, and nothing else is a hold.
     assert(sqlError(`insert into busy_blocks (user_id, starts_at, ends_at, source) values ('${B}', ${at("07:00")}, ${at("07:20")}, 'hold');`) !== null,
       "a hold block with no hold is refused");

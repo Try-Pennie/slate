@@ -126,3 +126,24 @@ export function withoutOwnBooking(
   }
   return { ...m, busy, bookingStartsMs: m.bookingStartsMs.filter((s) => s !== own.startMs) };
 }
+
+/**
+ * The window to read the current advisor's busy time over: the booking's stored
+ * window widened by the event type's buffers. The keep check judges those buffers
+ * against the busy list, so a meeting inside a buffer that was never READ would let
+ * the advisor be kept with no gap (#3248 review). Epoch ms in, ISO out.
+ */
+export function bufferedReadWindow(
+  booking: { starts_at: string; ends_at: string },
+  buffers: { buffer_before_min: number; buffer_after_min: number },
+): { fromIso: string; toIso: string } {
+  const startMs = Date.parse(booking.starts_at);
+  const endMs = Date.parse(booking.ends_at);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+    throw new Error("booking window is unreadable");
+  }
+  return {
+    fromIso: new Date(startMs - buffers.buffer_before_min * MIN).toISOString(),
+    toIso: new Date(endMs + buffers.buffer_after_min * MIN).toISOString(),
+  };
+}

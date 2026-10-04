@@ -24,7 +24,7 @@ import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import { unfairOrderingAlert } from "@/lib/booking/alert-copy";
 import type { Attributes, Booking, Bucket, Criteria, EventType } from "@/lib/db/types";
-import { dropHeldAgents, parseLiveHolds, type LiveHold, type LiveHoldRow } from "@/lib/booking/reroute-hold";
+import { bufferedReadWindow, dropHeldAgents, parseLiveHolds, type LiveHold } from "@/lib/booking/reroute-hold";
 import { userIdsOnApprovedTimeOff } from "@/lib/ooo/approved-overlap";
 import type { CurrentAgentPicture, RoundRobinOpts } from "@/lib/booking/orchestration";
 import { log } from "@/lib/log";
@@ -542,20 +542,17 @@ export async function loadLiveHolds(
   eventType: Pick<EventType, "buffer_before_min" | "buffer_after_min">,
 ): Promise<LiveHold[]> {
   if (userIds.length === 0) return [];
-  const fromIso = new Date(startMs - eventType.buffer_before_min * 60_000).toISOString();
-  const toIso = new Date(endMs + eventType.buffer_after_min * 60_000).toISOString();
-  const rows = await selectAllPages<LiveHoldRow>("reroute holds", (from, to) =>
-    supabaseAdmin()
-      .from("reroute_holds")
-      .select("agent_user_id, booking_id, booking_starts_at, booking_ends_at, buffered_starts_at, buffered_ends_at")
-      .in("agent_user_id", userIds)
-      .is("consumed_at", null)
-      .gt("expires_at", new Date().toISOString())
-      .lt("buffered_starts_at", toIso)
-      .gt("buffered_ends_at", fromIso)
-      .order("id")
-      .range(from, to),
-  );
+  // Expiry is judged by the DATABASE clock inside the function, the clock the
+  // trigger and the sweep use, so the three can never disagree about a hold in its
+  // last seconds (L736). The function also owns the window superset.
+  const rows = unwrap(
+    await supabaseAdmin().rpc("live_reroute_holds", {
+      p_user_ids: userIds,
+      p_from: new Date(startMs - eventType.buffer_before_min * 60_000).toISOString(),
+      p_to: new Date(endMs + eventType.buffer_after_min * 60_000).toISOString(),
+    }),
+    "live reroute holds",
+  ) ?? [];
   return parseLiveHolds(rows);
 }
 
@@ -569,14 +566,18 @@ export async function loadLiveHolds(
  */
 export async function loadCurrentAgentPicture(
   bucket: Bucket,
-  _eventType: EventType,
+  eventType: EventType,
   booking: Pick<Booking, "assigned_user_id" | "starts_at" | "ends_at">,
 ): Promise<CurrentAgentPicture> {
   const agentId = booking.assigned_user_id;
+  // Busy time is read over the BUFFERED window, because the keep check judges the
+  // buffers against it: a meeting inside a buffer that was never read would let the
+  // advisor be kept with no gap.
+  const read = bufferedReadWindow(booking, eventType);
   const [pool, availability, businessHours, away] = await Promise.all([
     eligibleAgentIds(bucket),
     agentId
-      ? loadMembersAvailability(bucket, booking.starts_at, booking.ends_at, namedAgentResolver(agentId), {
+      ? loadMembersAvailability(bucket, read.fromIso, read.toIso, namedAgentResolver(agentId), {
           excludeHoldBlocks: true,
         })
       : Promise.resolve({ members: [], lowIds: undefined }),

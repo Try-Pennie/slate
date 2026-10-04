@@ -86,3 +86,39 @@ end
 $$;
 
 revoke execute on function prune_expired_reroute_hold_blocks() from public, anon, authenticated;
+
+-- The live holds the booker's candidate read skips, judged on the DATABASE clock,
+-- the same clock the trigger and the sweep use (L736): asking with the Worker's
+-- clock would let the two disagree about a hold in its last seconds. A superset of
+-- the clashing holds (any whose buffered window comes near the call); the caller
+-- applies the exact rule. Live holds are at most one per booking under an admin's
+-- confirm, so the result is far below any page cap.
+create or replace function live_reroute_holds(
+  p_user_ids uuid[],
+  p_from     timestamptz,
+  p_to       timestamptz
+) returns table (
+  agent_user_id      uuid,
+  booking_id         uuid,
+  booking_starts_at  timestamptz,
+  booking_ends_at    timestamptz,
+  buffered_starts_at timestamptz,
+  buffered_ends_at   timestamptz
+)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select h.agent_user_id, h.booking_id, h.booking_starts_at, h.booking_ends_at,
+         h.buffered_starts_at, h.buffered_ends_at
+    from reroute_holds h
+   where h.agent_user_id = any(p_user_ids)
+     and h.consumed_at is null
+     and h.expires_at > now()
+     and h.buffered_starts_at < p_to
+     and h.buffered_ends_at > p_from
+   order by h.id;
+$$;
+
+revoke execute on function live_reroute_holds(uuid[], timestamptz, timestamptz) from public, anon, authenticated;
