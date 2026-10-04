@@ -88,7 +88,7 @@ import type { ScheduleTimer } from "../read-within-deadline.ts";
 import { findDeadlineExceeded, type DeadlineFound } from "../fetch-within-deadline.ts";
 import { GoogleBreakerOpenError } from "../google/breaker.ts";
 import { withinOwedCleanup } from "./cleanup-allowance.ts";
-import { confirmLineWaitMs, type ConfirmQueue, type LeaderVerdict } from "./confirm-queue.ts";
+import { confirmLineWaitMs, type ConfirmQueue, type LeaderVerdict, type LineSeat } from "./confirm-queue.ts";
 import { budgetLeftMs } from "../call-budget.ts";
 import { log } from "@/lib/log";
 import { readBookingSource } from "./booking-source.ts";
@@ -2062,8 +2062,10 @@ async function assignAgent(
   preview = false,
   onlyUserId?: string,
   excludeLow = false,
+  /** #3257: this confirm's claim in its slot's line; see `claimFromLine`. */
+  seat: LineSeat | null = null,
 ): Promise<AssignResult & { candidates: string[] }> {
-  const { candidates, memberCount } = await deps.roundRobinCandidates(
+  const { candidates: read, memberCount } = await deps.roundRobinCandidates(
     bucket,
     eventType,
     Date.parse(startIso),
@@ -2071,6 +2073,7 @@ async function assignAgent(
     onlyUserId,
     excludeLow,
   );
+  const candidates = claimFromLine(seat, read);
 
   const { assignment, anyUnverified } = await selectAgent(
     candidates,
@@ -2099,7 +2102,35 @@ async function assignAgent(
     if (anyUnverified) throw new VerifyUnavailableError();
     throw new SlotUnavailableError();
   }
+  // Google may have found the advisor it first claimed busy: claim the one it took.
+  if (seat && assignment.userId !== candidates[0]) seat.claim(assignment.userId, false);
   return { ...assignment, candidates };
+}
+
+/**
+ * The candidates a confirm in a slot's line books from, and its claim among them
+ * (#3257).
+ *
+ * Confirms running side by side for one time would otherwise all take the same
+ * top advisor, since the round robin orders every one of them alike, and all but
+ * one would lose the insert race and pay a second free check and calendar event to
+ * be reassigned, which at production speed outruns the budget. So the advisors
+ * other confirms in flight have claimed are left out, and this confirm claims the
+ * first of the rest before the slow live check. When another unclaimed advisor is
+ * left after it, the line is handed on now, so the next confirm starts at once.
+ *
+ * When every candidate is claimed by somebody in flight, none is left out: one of
+ * those may yet fail and free its advisor, and the insert's race handling decides,
+ * exactly as before the line existed. Dropping a rung for advisors that are merely
+ * claimed would send a lead to a lower tier for a reason that is not true.
+ */
+function claimFromLine(seat: LineSeat | null, candidates: string[]): string[] {
+  if (!seat) return candidates;
+  const others = seat.claimedByOthers();
+  const unclaimed = candidates.filter((id) => !others.has(id));
+  const pool = unclaimed.length > 0 ? unclaimed : candidates;
+  if (pool.length > 0) seat.claim(pool[0], unclaimed.length > 1);
+  return pool;
 }
 
 interface TierAssignResult {
@@ -2133,6 +2164,8 @@ async function assignAgentWithTierFallback(
   // true so the cascade routes WITHOUT the #321 shadow-study log / unfair-ordering
   // alert. The real book leaves it false.
   preview = false,
+  /** #3257: the real book's claim in its slot's line; read only paths pass none. */
+  seat: LineSeat | null = null,
 ): Promise<TierAssignResult> {
   // Shares walkTierLadder with the availability display cascade (#499), so the two
   // can never drift on the ladder or the rungs-dropped accounting; only the per-rung
@@ -2149,7 +2182,7 @@ async function assignAgentWithTierFallback(
       const excludeLow = rungExcludesLow(requested.bucket.code, rungCode);
       try {
         const { userId, email, candidates } = await assignAgent(
-          deps, resolved.bucket, resolved.eventType, startIso, endIso, preview, undefined, excludeLow,
+          deps, resolved.bucket, resolved.eventType, startIso, endIso, preview, undefined, excludeLow, seat,
         );
         return {
           hit: true,
@@ -3126,7 +3159,7 @@ export async function createBooking(
      * report the verdict itself (the direct booking API, which enters the line
      * before its person decision). Entering again would wait behind itself.
      */
-    inTurn?: boolean;
+    held?: HeldTurn;
   } = {},
 ): Promise<BookingResult> {
   return (await createBookingWithVerdict(requestedInput, deps, opts)).result;
@@ -3241,7 +3274,7 @@ interface ConfirmLine {
 async function inConfirmTurn<R>(
   deps: BookingDeps,
   line: ConfirmLine,
-  work: () => Promise<{ result: R; verdict: LeaderVerdict<ConfirmTaker> }>,
+  work: (held: HeldTurn) => Promise<{ result: R; verdict: LeaderVerdict<ConfirmTaker> }>,
   fromTaker: (taker: ConfirmTaker) => R,
 ): Promise<{ result: R; verdict: LeaderVerdict<ConfirmTaker> }> {
   const waitMs = confirmLineWaitMs(budgetLeftMs());
@@ -3259,7 +3292,7 @@ async function inConfirmTurn<R>(
         bucket_code: line.bucketCode,
         seated_known: Boolean(settled?.seated),
       });
-      return work();
+      return work({ seat: null });
     }
     log.info("booking", {
       msg: "confirm waited behind one that settled the slot, refused without running",
@@ -3281,7 +3314,7 @@ async function inConfirmTurn<R>(
   }
   let done: { result: R; verdict: LeaderVerdict<ConfirmTaker> };
   try {
-    done = await work();
+    done = await work({ seat: turn.seat });
   } catch (err) {
     turn.done(await settleSlot(deps, line, verdictForRefusal(err), turn.waiting()));
     throw err;
@@ -3322,6 +3355,15 @@ async function settleSlot(
   return { ...verdict, settled: { booked: verdict.settled, seated } };
 }
 
+/**
+ * A turn in the confirm line that a caller already holds (#3257): `seat` is its
+ * claim on an advisor, or null when it is running outside the line (a lead who
+ * already holds the time, answered by its own chain).
+ */
+export interface HeldTurn {
+  seat: LineSeat | null;
+}
+
 /** A booking a waiting double submit is handed back, as the create returns it. */
 function bookingFromTaker(taker: ConfirmTaker): BookingResult {
   return { booking: taker.result.booking, manageUrl: taker.result.manageUrl };
@@ -3334,16 +3376,16 @@ function bookingFromTaker(taker: ConfirmTaker): BookingResult {
 async function createBookingWithVerdict(
   requestedInput: CreateBookingInput,
   deps: BookingDeps,
-  opts: { requested?: KnownBucket; inTurn?: boolean },
+  opts: { requested?: KnownBucket; held?: HeldTurn },
 ): Promise<{ result: BookingResult; verdict: LeaderVerdict<ConfirmTaker> }> {
   const stableKey = stableKeyFor(requestedInput);
   // #3257: join the line BEFORE any read when the line is known from the request,
   // so a crowd for one slot waits for its leader rather than each doing the
   // idempotency read, the routing and the bucket read first. Those reads are what
   // timed out on 2026-10-04 (run 37229344882) with the #3221 line behind them.
-  if (opts.inTurn) return createChecked(requestedInput, deps, opts, stableKey, false);
+  if (opts.held) return createChecked(requestedInput, deps, opts, stableKey, opts.held);
   const early = queueKeyBeforeRouting(requestedInput);
-  if (early === null) return createChecked(requestedInput, deps, opts, stableKey, true);
+  if (early === null) return createChecked(requestedInput, deps, opts, stableKey, "late");
   return inConfirmTurn(
     deps,
     {
@@ -3353,22 +3395,23 @@ async function createBookingWithVerdict(
       startIso: requestedInput.startIso,
       person: personIdentityOf(requestedInput),
     },
-    () => createChecked(requestedInput, deps, opts, stableKey, false),
+    (held) => createChecked(requestedInput, deps, opts, stableKey, held),
     bookingFromTaker,
   );
 }
 
 /**
- * Everything a confirm checks and reads before the create proper. `lateQueue` is
- * set only for a confirm that could not join the line before routing (a booker
- * link Salesforce routes), which joins it here once its bucket is known.
+ * Everything a confirm checks and reads before the create proper. `held` is the
+ * turn it already holds, or "late" for a confirm that could not join the line
+ * before routing (a booker link Salesforce routes), which joins it here once its
+ * bucket is known.
  */
 async function createChecked(
   requestedInput: CreateBookingInput,
   deps: BookingDeps,
   opts: { requested?: KnownBucket },
   stableKey: string | null,
-  lateQueue: boolean,
+  held: HeldTurn | "late",
 ): Promise<{ result: BookingResult; verdict: LeaderVerdict<ConfirmTaker> }> {
   /**
    * Where this confirm's time went (#2321), under SLATE_LOADTEST only.
@@ -3452,8 +3495,8 @@ async function createChecked(
   // #3257: most confirms joined the line before any of the reads above
   // (`createBookingWithVerdict`) and already hold their turn here. Only a booker
   // link Salesforce routed joins now, once its bucket is known.
-  const ctx: HeldCreate = { input, stableKey, agentLinkUserId, codeSource, bucket, eventType, profile };
-  if (!lateQueue) return createHeld(ctx, deps);
+  const ctx: HeldCreate = { input, stableKey, agentLinkUserId, codeSource, bucket, eventType, profile, seat: null };
+  if (held !== "late") return createHeld({ ...ctx, seat: held.seat }, deps);
   return inConfirmTurn(
     deps,
     {
@@ -3463,7 +3506,7 @@ async function createChecked(
       startIso: input.startIso,
       person: personIdentityOf(input),
     },
-    () => createHeld(ctx, deps),
+    (turn) => createHeld({ ...ctx, seat: turn.seat }, deps),
     bookingFromTaker,
   );
 }
@@ -3477,6 +3520,8 @@ interface HeldCreate {
   bucket: Bucket;
   eventType: EventType;
   profile: ReturnType<typeof makeConfirmProfile>;
+  /** #3257: this confirm's claim on an advisor in its slot's line, or none. */
+  seat: LineSeat | null;
 }
 
 /** What a waiting double submit needs to recognise its own booking (#3221). */
@@ -3512,7 +3557,7 @@ async function createHeld(
   ctx: HeldCreate,
   deps: BookingDeps,
 ): Promise<{ result: BookingResult; verdict: LeaderVerdict<ConfirmTaker> }> {
-  const { input, stableKey, agentLinkUserId, codeSource, bucket, eventType, profile } = ctx;
+  const { input, stableKey, agentLinkUserId, codeSource, bucket, eventType, profile, seat } = ctx;
 
   // One call per person, ENFORCED (#1337), not reported after the fact. Runs
   // AFTER the idempotency fast path above on purpose: a double-click's second
@@ -3566,7 +3611,7 @@ async function createHeld(
     tier = await profile.time("assign-and-verify", () =>
       agentLinkUserId !== undefined
         ? assignNamedAgent(deps, { bucket, eventType }, input.startIso, agentLinkUserId)
-        : assignAgentWithTierFallback(deps, { bucket, eventType }, input.startIso, input.allowTestBuckets ?? false),
+        : assignAgentWithTierFallback(deps, { bucket, eventType }, input.startIso, input.allowTestBuckets ?? false, false, seat),
     );
   } catch (err) {
     // #2073: a named link records no routing decision, refused or not: the
@@ -3803,6 +3848,8 @@ async function createHeld(
       });
       raceLost.push(userId);
       chosen = next;
+      // #3257: the confirms beside it in line must not pick this one next.
+      seat?.claim(next.userId, false);
     }
   }
 
@@ -4546,14 +4593,14 @@ async function moveToRequestedBucket(
   deps: BookingDeps,
   /** #2670: the bucket the person decision already resolved, so it is read once. */
   requested: KnownBucket,
-  /** `inTurn`: the caller holds this slot's confirm line turn (#3257). */
-  opts: { tolerateRefusal?: boolean; inTurn?: boolean } = {},
+  /** `held`: the caller holds this slot's confirm line turn (#3257). */
+  opts: { tolerateRefusal?: boolean; held?: HeldTurn } = {},
 ): Promise<BucketMove> {
   if (requested.resolved.bucket.id === existing.bucket_id) return { outcome: "unchanged" };
 
   let created: Awaited<ReturnType<typeof createBooking>>;
   try {
-    created = await createBooking(input, deps, { requested, inTurn: opts.inTurn });
+    created = await createBooking(input, deps, { requested, held: opts.held });
   } catch (err) {
     if (opts.tolerateRefusal === false) throw err;
     // Only the two ordinary "no" answers are tolerated. A transient verify
@@ -4600,11 +4647,11 @@ export async function bookViaApi(
   // showed. Whoever books has run the person decision itself (#357, #1641), as
   // leader or after waiting out the bound, so dedupe for one person is unchanged.
   const key = queueKeyBeforeRouting(input);
-  if (key === null) return (await bookViaApiDecided(input, deps, false)).result;
+  if (key === null) return (await bookViaApiDecided(input, deps, undefined)).result;
   const { result } = await inConfirmTurn(
     deps,
     { key, stableKey: stableKeyFor(input), bucketCode: input.bucketCode, startIso: input.startIso, person: personIdentityOf(input) },
-    () => bookViaApiDecided(input, deps, true),
+    (held) => bookViaApiDecided(input, deps, held),
     // A double submit waiting behind its own first call gets that booking, as a
     // replay: no race row, since the call that made it already counted one.
     (taker): ApiBookingResult => ({ outcome: "created", booking: taker.result.booking, manageUrl: taker.result.manageUrl }),
@@ -4621,12 +4668,13 @@ export async function bookViaApi(
 async function bookViaApiDecided(
   input: ApiBookingInput,
   deps: BookingDeps,
-  /** This call holds the slot's turn, so a create or a move must not join again. */
-  inTurn: boolean,
+  /** The slot's turn this call holds, so a create or a move must not join again;
+   *  undefined when it is outside the line (a link whose bucket is not known yet). */
+  held: HeldTurn | undefined,
 ): Promise<{ result: ApiBookingResult; verdict: LeaderVerdict<ConfirmTaker> }> {
   const { decision, requested } = await resolvePersonDecision(input, deps);
   if (decision.action === "create") {
-    const { result: res, verdict } = await createBookingWithVerdict(input, deps, { requested, inTurn });
+    const { result: res, verdict } = await createBookingWithVerdict(input, deps, { requested, held });
     return {
       result: {
         outcome: "created",
@@ -4637,7 +4685,7 @@ async function bookViaApiDecided(
       verdict,
     };
   }
-  return { result: await bookViaApiArm(input, deps, decision, requested, inTurn), verdict: { full: false } };
+  return { result: await bookViaApiArm(input, deps, decision, requested, held), verdict: { full: false } };
 }
 
 async function bookViaApiArm(
@@ -4645,7 +4693,7 @@ async function bookViaApiArm(
   deps: BookingDeps,
   decision: Exclude<Awaited<ReturnType<typeof resolvePersonDecision>>["decision"], { action: "create" }>,
   requested: KnownBucket,
-  inTurn: boolean,
+  held: HeldTurn | undefined,
 ): Promise<ApiBookingResult> {
   switch (decision.action) {
     case "dedupe": {
@@ -4654,7 +4702,7 @@ async function bookViaApiArm(
       // bucket with nowhere to be noticed. A re-tiered lead confirming the time
       // they already hold is the ordinary call, and answering 200 deduped left
       // them with the old pool and the old agent while the response said nothing.
-      const moved = await moveToRequestedBucket(input, decision.booking, deps, requested, { inTurn });
+      const moved = await moveToRequestedBucket(input, decision.booking, deps, requested, { held });
       if (moved.outcome === "moved") {
         return {
           outcome: "rescheduled",
@@ -4686,7 +4734,7 @@ async function bookViaApiArm(
       // propagates. That asymmetry with the dedupe arm is the point.
       const moved = await moveToRequestedBucket(input, decision.booking, deps, requested, {
         tolerateRefusal: false,
-        inTurn,
+        held,
       });
       if (moved.outcome === "moved") {
         return {

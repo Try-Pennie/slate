@@ -136,7 +136,10 @@ async function main() {
     if (t.kind === "lead") t.done({ full: false });
   }
 
-  // --- a follower that waits too long runs on its own --------------------------
+  // --- a follower that waits too long is told it waited it out ---------------
+  //
+  // The queue only says so ("unqueued"); the confirm then answers the retryable
+  // 503 at once rather than starting a chain its budget cannot finish (#3257).
   {
     const { timer, fireAll, pending } = manualTimer();
     const q = makeConfirmQueue<string>({ timer });
@@ -146,11 +149,75 @@ async function main() {
     assert(pending.length === 1 && pending[0].ms === CONFIRM_QUEUE_WAIT_MS, "patience: the follower waits the configured bound");
     fireAll();
     const t = await follower;
-    assert(t.kind === "unqueued", "patience: past the bound the follower runs unqueued");
+    assert(t.kind === "unqueued", "patience: past the bound the follower is told it waited the line out");
     // The leader finishing afterwards must not answer a follower that already left.
     if (lead.kind === "lead") lead.done({ full: true, refusal: "race", settled: "late" });
     await tick();
     assert(t.kind === "unqueued", "patience: a follower that left is never answered by the leader afterwards");
+  }
+
+  // --- #3257: a leader that claimed an advisor with others left hands on ------
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = await q.enter("slot");
+    const seen: string[] = [];
+    const second = q.enter("slot").then((t) => (seen.push(`second:${t.kind}`), t));
+    const third = q.enter("slot").then((t) => (seen.push(`third:${t.kind}`), t));
+    await tick();
+    assert(seen.length === 0, "hand on: followers wait until the leader has claimed an advisor");
+    if (first.kind === "lead") first.seat.claim("p0", true);
+    await tick();
+    assert(JSON.stringify(seen) === JSON.stringify(["second:lead"]), `hand on: the next leads at once (got ${JSON.stringify(seen)})`);
+    const t2 = await second;
+    if (t2.kind === "lead") {
+      assert(
+        JSON.stringify([...t2.seat.claimedByOthers()]) === JSON.stringify(["p0"]),
+        "hand on: the new leader sees the advisor the first one claimed",
+      );
+      // The second takes the LAST unclaimed advisor, so it holds the line.
+      t2.seat.claim("p1", false);
+    }
+    await tick();
+    assert(seen.length === 1, "hand on: a leader on the last advisor keeps the rest waiting");
+    // The second books the last advisor while the first is still in flight: the
+    // first could yet fail and free p0, so the third is not refused; it leads.
+    if (t2.kind === "lead") t2.done({ full: true, refusal: "race", settled: "second" });
+    const t3 = await third;
+    assert(t3.kind === "lead", `hand on: a full verdict with another claim in flight lets the next ask for itself (got ${t3.kind})`);
+    if (first.kind === "lead") first.done({ full: false });
+    if (t3.kind === "lead") t3.done({ full: false });
+  }
+
+  // --- #3257: once every leader has handed on, a newcomer leads at once --------
+  {
+    const { timer, live } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = await q.enter("slot");
+    if (first.kind === "lead") first.seat.claim("p0", true);
+    const second = await q.enter("slot");
+    assert(second.kind === "lead", "newcomer: leads at once when nobody holds the line");
+    assert(live() === 0, "newcomer: starts no wait timer");
+    if (second.kind === "lead") {
+      assert(second.seat.claimedByOthers().has("p0"), "newcomer: sees the claim in flight");
+      second.done({ full: false });
+    }
+    if (first.kind === "lead") first.done({ full: false });
+    const fresh = await q.enter("slot");
+    assert(fresh.kind === "lead" && fresh.seat.claimedByOthers().size === 0, "newcomer: a finished line keeps no stale claims");
+    if (fresh.kind === "lead") fresh.done({ full: false });
+  }
+
+  // --- #3257: a full verdict with no other claim in flight refuses the waiting -
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = await q.enter("slot");
+    if (first.kind === "lead") first.seat.claim("a", false);
+    const follower = q.enter("slot");
+    if (first.kind === "lead") first.done({ full: true, refusal: "race", settled: "first" });
+    const t = await follower;
+    assert(t.kind === "refused" && t.settled === "first", "last advisor: the follower is refused from the verdict");
   }
 
   finish();

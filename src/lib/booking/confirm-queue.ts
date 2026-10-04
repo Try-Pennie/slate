@@ -15,6 +15,10 @@
  * does none of the work. Otherwise the next one leads with what the leader left,
  * so a pool of two books two and then answers the rest.
  *
+ * A leader that has claimed an advisor while another unclaimed one remains hands
+ * the line on at once (#3257, `LineSeat`), so concurrent confirms for a time in a
+ * big pool run side by side on different advisors rather than one after another.
+ *
  * A confirm joins the line BEFORE its first read whenever the line is known from
  * the request (#3257, `queueKeyBeforeRouting`), so a follower answered from the
  * leader's verdict has read nothing at all. On 2026-10-04 (run 37229344882) the
@@ -85,10 +89,37 @@ export type LeaderVerdict<T> =
    */
   | { full: true; refusal: "race" | "taken"; settled: T | null };
 
+/**
+ * A leader's place among the confirms in flight for its slot (#3257).
+ *
+ * Ordinary traffic for a popular time in a big pool must not wait in line: two
+ * leads booking 9:00 in a pool of twenty can both be served at once, and on the
+ * 2026-10-04 measurements a confirm that waited for one ahead of it at production
+ * speed (7.4 to 8.0s) ran out of budget, while one that ran beside it picked the
+ * same top advisor, lost the insert race and ran out of budget reassigning. So a
+ * leader CLAIMS the advisor it is about to book, and as soon as it has claimed one
+ * while another unclaimed advisor remains, it hands the line on: the next confirm
+ * leads at once and books from the advisors nobody in flight has claimed. A crowd
+ * for the LAST advisor never hands on, so it still has exactly one winner.
+ */
+export interface LineSeat {
+  /** Advisors other confirms in this line have claimed and not yet finished with. */
+  claimedByOthers(): ReadonlySet<string>;
+  /**
+   * This confirm is booking `userId` (a later call replaces the claim). When
+   * `othersRemain`, an advisor nobody has claimed is still there for the next
+   * confirm, so the line is handed on now rather than when this one finishes.
+   */
+  claim(userId: string, othersRemain: boolean): void;
+}
+
 export type QueueTurn<T> =
-  /** Run the confirm, then report what it showed, exactly once. `waiting` is how
-   *  many are in line behind it right now, so a leader reads only for a crowd. */
-  | { kind: "lead"; done(verdict: LeaderVerdict<T>): void; waiting(): number }
+  /**
+   * Run the confirm, then report what it showed, exactly once. `waiting` is how
+   * many are in line behind it right now, so a leader reads only for a crowd.
+   * `seat` is its claim on an advisor (see `LineSeat`).
+   */
+  | { kind: "lead"; done(verdict: LeaderVerdict<T>): void; waiting(): number; seat: LineSeat }
   /** The confirm ahead settled the slot: answer without doing the work. */
   | { kind: "refused"; refusal: "race" | "taken"; settled: T | null }
   /** Waited the whole bound without a verdict: the caller decides what it answers. */
@@ -103,45 +134,94 @@ interface Waiter<T> {
   answer(turn: QueueTurn<T>): void;
 }
 
+/**
+ * One slot's line. `holder` is the leader that has NOT handed on, whom the
+ * waiting are behind; null when every leader in flight has handed on, so the
+ * next to arrive leads at once. `claims` is the advisor each leader in flight is
+ * booking.
+ */
+interface Line<T> {
+  waiting: Waiter<T>[];
+  holder: object | null;
+  claims: Map<object, string | null>;
+}
+
 export function makeConfirmQueue<T>(
   opts: { waitMs?: number; timer?: ScheduleTimer } = {},
 ): ConfirmQueue<T> {
   const waitMs = opts.waitMs ?? CONFIRM_QUEUE_WAIT_MS;
   const timer = opts.timer ?? realTimer;
-  // A key is present while somebody leads it; its array is who is waiting.
-  const lines = new Map<string, Waiter<T>[]>();
+  // A key is present while somebody leads it or waits in it.
+  const lines = new Map<string, Line<T>>();
 
-  const leadTurn = (key: string, waiting: Waiter<T>[]): QueueTurn<T> => {
+  const promoteNext = (key: string, line: Line<T>): void => {
+    if (line.holder !== null) return;
+    const next = line.waiting.shift();
+    if (next) {
+      next.answer(leadTurn(key, line));
+      return;
+    }
+    if (line.claims.size === 0) lines.delete(key);
+  };
+
+  const leadTurn = (key: string, line: Line<T>): QueueTurn<T> => {
+    const me = {};
     let reported = false;
+    line.holder = me;
+    line.claims.set(me, null);
+    const handOn = () => {
+      if (line.holder !== me) return;
+      line.holder = null;
+      promoteNext(key, line);
+    };
     return {
       kind: "lead",
-      waiting: () => waiting.length,
+      waiting: () => line.waiting.length,
+      seat: {
+        claimedByOthers() {
+          const others = new Set<string>();
+          for (const [who, userId] of line.claims) if (who !== me && userId !== null) others.add(userId);
+          return others;
+        },
+        claim(userId, othersRemain) {
+          if (reported) return;
+          line.claims.set(me, userId);
+          if (othersRemain) handOn();
+        },
+      },
       done(verdict) {
         if (reported) return;
         reported = true;
-        if (verdict.full) {
+        line.claims.delete(me);
+        if (line.holder === me) line.holder = null;
+        // A full verdict settles the slot for the waiting only when no other
+        // confirm is still booking in it: one in flight may yet fail and leave its
+        // advisor free, so then the next in line asks for itself.
+        if (verdict.full && line.claims.size === 0) {
           lines.delete(key);
-          for (const w of waiting.splice(0)) w.answer({ kind: "refused", refusal: verdict.refusal, settled: verdict.settled });
+          for (const w of line.waiting.splice(0)) {
+            w.answer({ kind: "refused", refusal: verdict.refusal, settled: verdict.settled });
+          }
           return;
         }
-        const next = waiting.shift();
-        if (!next) {
-          lines.delete(key);
-          return;
-        }
-        next.answer(leadTurn(key, waiting));
+        promoteNext(key, line);
       },
     };
   };
 
   return {
     enter(key, ownWaitMs) {
-      const waiting = lines.get(key);
-      if (!waiting) {
-        const fresh: Waiter<T>[] = [];
-        lines.set(key, fresh);
-        return Promise.resolve(leadTurn(key, fresh));
+      const existing = lines.get(key);
+      if (!existing) {
+        const line: Line<T> = { waiting: [], holder: null, claims: new Map() };
+        lines.set(key, line);
+        return Promise.resolve(leadTurn(key, line));
       }
+      // Every leader in flight has handed on: nobody to wait behind.
+      if (existing.holder === null && existing.waiting.length === 0) {
+        return Promise.resolve(leadTurn(key, existing));
+      }
+      const line = existing;
       return new Promise<QueueTurn<T>>((resolve) => {
         let settled = false;
         const waiter: Waiter<T> = {
@@ -155,11 +235,12 @@ export function makeConfirmQueue<T>(
         const cancel = timer(ownWaitMs ?? waitMs, () => {
           if (settled) return;
           settled = true;
-          const i = waiting.indexOf(waiter);
-          if (i >= 0) waiting.splice(i, 1);
+          const i = line.waiting.indexOf(waiter);
+          if (i >= 0) line.waiting.splice(i, 1);
+          if (line.holder === null && line.waiting.length === 0 && line.claims.size === 0) lines.delete(key);
           resolve({ kind: "unqueued" });
         });
-        waiting.push(waiter);
+        line.waiting.push(waiter);
       });
     },
   };

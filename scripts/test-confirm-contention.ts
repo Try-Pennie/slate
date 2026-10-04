@@ -47,11 +47,15 @@ import {
 } from "../src/lib/booking/orchestration.ts";
 import { withinBookingConfirmBudget, BOOKING_CONFIRM_BUDGET_MS } from "../src/lib/booking/confirm-budget.ts";
 import { makeConfirmQueue, CONFIRM_QUEUE_WAIT_MS, type ConfirmQueue } from "../src/lib/booking/confirm-queue.ts";
-import type { Booking } from "../src/lib/db/types.ts";
+import type { Booking, User } from "../src/lib/db/types.ts";
 import { createAsserter, makeDeps, makeBooking, input, users } from "./lib/booking-fakes.ts";
 import { VirtualClock, SharedResource, onSharedCapacity, type CallRecord } from "./lib/confirm-contention-sim.ts";
 
 const { assert, finish } = createAsserter();
+
+/** #3257: a pool of twenty, the size of a popular bucket. */
+const BIG_POOL = Array.from({ length: 20 }, (_, i) => `p${i}`);
+for (const id of BIG_POOL) (users as Record<string, User>)[id] = { id, name: `Agent ${id}`, email: `${id}@x.com` } as unknown as User;
 
 /** One isolate's share: one unit of work at a time, 12ms each (see the header). */
 const CAPACITY = 1;
@@ -72,7 +76,12 @@ interface Run {
 /** A queue that never queues: the behaviour before #3221, for the control. Every
  *  confirm leads at once with nobody behind it, so each runs the whole path. */
 const NO_QUEUE: ConfirmQueue<never> = {
-  enter: async () => ({ kind: "lead", done: () => {}, waiting: () => 0 }),
+  enter: async () => ({
+    kind: "lead",
+    done: () => {},
+    waiting: () => 0,
+    seat: { claimedByOthers: () => new Set<string>(), claim: () => {} },
+  }),
 };
 
 function lead(i: number, over: Partial<CreateBookingInput> = {}): CreateBookingInput {
@@ -107,6 +116,11 @@ async function burst(opts: {
   /** #3257: how long Google takes to say whether an advisor is free, the slow
    *  part of a production confirm (7.4 to 8.0s at the median, #3221). */
   slowGoogleMs?: number;
+  /** How long Google takes to write the advisor's calendar event, the other slow
+   *  part, which runs after the advisor is chosen. */
+  slowEventMs?: number;
+  /** When each confirm arrives, from the first; absent means all at once. */
+  arriveAtMs?: number[];
 }) {
   const clock = new VirtualClock(Date.parse("2026-06-01T00:00:00.000Z"));
   const realNow = Date.now;
@@ -123,6 +137,7 @@ async function burst(opts: {
     const byKey = new Map<string, Booking>();
     for (const b of opts.held ?? []) bySlot.set(`${b.assigned_user_id}|${b.starts_at}`, b);
     const seatedReads: string[] = [];
+    let raceLosses = 0;
     const queue: ConfirmQueue<unknown> =
       opts.queue === "off" ? NO_QUEUE : makeConfirmQueue({ timer: (ms, fire) => clock.at(clock.now + ms, fire) });
     let personReads = 0;
@@ -150,6 +165,10 @@ async function burst(opts: {
         if (opts.slowGoogleMs) await clock.sleep(opts.slowGoogleMs);
         return base.verifyFree(...args);
       },
+      createEvent: async (...args) => {
+        if (opts.slowEventMs) await clock.sleep(opts.slowEventMs);
+        return base.createEvent(...args);
+      },
       confirmQueue: queue as BookingDeps["confirmQueue"],
       roundRobinCandidates: async (_b, _e, startMs) => {
         const taken = (id: string) => bySlot.has(`${id}|${new Date(startMs).toISOString()}`);
@@ -159,7 +178,10 @@ async function burst(opts: {
       insertBooking: async (row) => {
         calls.insertBooking.push(row as unknown as Record<string, unknown>);
         const slot = `${row.assigned_user_id}|${row.starts_at}`;
-        if (bySlot.has(slot) || byKey.has(String(row.idempotency_key))) return { ok: false, conflict: true };
+        if (bySlot.has(slot) || byKey.has(String(row.idempotency_key))) {
+          raceLosses++;
+          return { ok: false, conflict: true };
+        }
         const booking = { ...row, id: `bk-${bySlot.size + 1}` } as unknown as Booking;
         bySlot.set(slot, booking);
         byKey.set(String(row.idempotency_key), booking);
@@ -167,7 +189,8 @@ async function burst(opts: {
       },
     };
     const runs: Run[] = opts.inputs.map(() => ({ calls: [] }));
-    opts.inputs.forEach((one, i) => {
+    const t0 = clock.now;
+    opts.inputs.forEach((one, i) => clock.at(t0 + (opts.arriveAtMs?.[i] ?? 0), () => {
       const run = runs[i];
       const deps = onSharedCapacity(shared, resource, clock, run.calls, SYNCHRONOUS);
       const startedAt = clock.now;
@@ -191,11 +214,11 @@ async function burst(opts: {
           run.answeredMs = clock.now - startedAt;
         },
       );
-    });
+    }));
     await clock.runUntil(() => runs.every((r) => r.outcome !== undefined));
     const tally: Record<string, number> = {};
     for (const r of runs) tally[r.outcome!] = (tally[r.outcome!] ?? 0) + 1;
-    return { runs, tally, bySlot, calls, seatedReads };
+    return { runs, tally, bySlot, calls, seatedReads, raceLosses };
   } finally {
     Date.now = realNow;
   }
@@ -568,6 +591,96 @@ async function main() {
       runs.slice(1).every((r) => r.answeredMs === CONFIRM_QUEUE_WAIT_MS),
       `slower leader: each is answered when its wait ends (got ${[...new Set(runs.slice(1).map((r) => r.answeredMs))].join(",")})`,
     );
+  }
+
+  // --- #3257 review: ORDINARY traffic for a popular time is not serialised -----
+  //
+  // Five leads pick 9:00 in a pool of twenty, arriving 1, 2 or 3 seconds apart, at
+  // production speed (a 3s live check and a 5s calendar write, 8s in all). Each
+  // must be booked as fast as the first, on its own advisor, with no insert race
+  // lost. Measured before this (the scratch measurement in the PR): on main, and on
+  // this branch before the hand on, only the FIRST was booked and the other four
+  // were answered 503, because the line held each one behind the 8s confirm ahead
+  // of it; with the line switched off they all took the same top advisor and lost
+  // the insert race, which at this speed also ran out of budget.
+  for (const gapMs of [1_000, 2_000, 3_000]) {
+    const label = `ordinary traffic, ${gapMs / 1000}s apart`;
+    const { runs, bySlot, raceLosses } = await burst({
+      inputs: Array.from({ length: 5 }, (_, i) => lead(i)),
+      pool: BIG_POOL,
+      queue: "real",
+      slowGoogleMs: 3_000,
+      slowEventMs: 5_000,
+      arriveAtMs: Array.from({ length: 5 }, (_, i) => i * gapMs),
+    });
+    assert(runs.every((r) => r.outcome === "created"), `${label}: all five are booked (got ${runs.map((r) => r.outcome).join(",")})`);
+    const agents = new Set([...bySlot.values()].map((b) => b.assigned_user_id));
+    assert(agents.size === 5, `${label}: on five different advisors (got ${agents.size})`);
+    assert(raceLosses === 0, `${label}: no confirm lost an insert race to another (got ${raceLosses})`);
+    assert(
+      runs.every((r) => r.answeredMs! <= runs[0].answeredMs! + 100),
+      `${label}: none waited behind another (answered at ${runs.map((r) => r.answeredMs).join(",")}ms)`,
+    );
+  }
+
+  // --- #3257 review: five at the SAME moment in a big pool, the same answer ----
+  {
+    const { runs, bySlot, raceLosses } = await burst({
+      inputs: Array.from({ length: 5 }, (_, i) => lead(i)),
+      pool: BIG_POOL,
+      queue: "real",
+      slowGoogleMs: 3_000,
+      slowEventMs: 5_000,
+    });
+    assert(runs.every((r) => r.outcome === "created"), `ordinary, together: all five are booked (got ${runs.map((r) => r.outcome).join(",")})`);
+    assert(bySlot.size === 5 && raceLosses === 0, `ordinary, together: five advisors, no race lost (got ${bySlot.size}, ${raceLosses})`);
+  }
+
+  // --- #3257 review: a crowd at production speed still yields the right winners -
+  //
+  // A hundred at once for the time, at 8 seconds a confirm (a 3s live check and a
+  // 5s calendar write). A pool of two books two and refuses the other 98.
+  {
+    const { runs, tally, bySlot } = await burst({
+      inputs: Array.from({ length: BURST }, (_, i) => lead(i)),
+      pool: ["a", "b"],
+      queue: "real",
+      slowGoogleMs: 3_000,
+      slowEventMs: 5_000,
+    });
+    assert(
+      tally.created === 2 && tally.SLOT_TAKEN === BURST - 2,
+      `production crowd, pool of 2: two booked, the rest told SLOT_TAKEN (got ${JSON.stringify(tally)})`,
+    );
+    assert(bySlot.size === 2, "production crowd, pool of 2: one booking per advisor, never a double");
+    assert(
+      runs.filter((r) => r.outcome !== "created").every((r) => r.calls.length === 0),
+      "production crowd, pool of 2: no refused confirm reads anything",
+    );
+  }
+
+  // A pool of twenty books all twenty. The line hands on once per advisor, each
+  // hand on costing one leader's reads up to its candidate read, so the twentieth
+  // starts a couple of seconds in and the last booking lands past the 10 second
+  // wait. The other 80 cannot honestly be told the time is taken while twenty
+  // claims are still in flight (any of them may fail and free its advisor), so they
+  // are answered with the retryable 503 when their wait ends, reading nothing.
+  {
+    const { runs, tally, bySlot, raceLosses } = await burst({
+      inputs: Array.from({ length: BURST }, (_, i) => lead(i)),
+      pool: BIG_POOL,
+      queue: "real",
+      slowGoogleMs: 3_000,
+      slowEventMs: 5_000,
+    });
+    assert(tally.created === 20, `production crowd, pool of 20: all twenty advisors are booked (got ${JSON.stringify(tally)})`);
+    assert(bySlot.size === 20 && raceLosses === 0, `production crowd, pool of 20: one booking each, no race lost (got ${bySlot.size}, ${raceLosses})`);
+    const others = runs.filter((r) => r.outcome !== "created");
+    assert(
+      others.every((r) => r.outcome === "SLOT_TAKEN" || r.outcome === "503"),
+      `production crowd, pool of 20: the rest are told taken or to retry, nothing else (got ${JSON.stringify(tally)})`,
+    );
+    assert(others.every((r) => r.calls.length === 0), "production crowd, pool of 20: none of the rest reads anything");
   }
 
   finish();
