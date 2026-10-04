@@ -220,6 +220,7 @@ function makeTierDropDeps(requested = "511", lower = "411"): BookingDeps {
     loadBookingContext: async () => null,
     loadBookingById: async () => null,
     findActiveBookingsForPerson: async () => [] as Booking[],
+    findActiveBookingsStartingAt: async () => [] as Booking[],
     findActiveBookingsByStrongIds: async () => [],
     loadAgentDisplayName: async () => null,
     queryBookings: async () => ({ rows: [] as Booking[], buckets: [] as Bucket[] }),
