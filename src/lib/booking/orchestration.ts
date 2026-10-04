@@ -86,6 +86,7 @@ import { callingNumberWithinDeadline } from "../salesforce/lead-calling-number.t
 import type { ScheduleTimer } from "../read-within-deadline.ts";
 import { findDeadlineExceeded, type DeadlineFound } from "../fetch-within-deadline.ts";
 import { GoogleBreakerOpenError } from "../google/breaker.ts";
+import { withinOwedCleanup } from "./cleanup-allowance.ts";
 import { log } from "@/lib/log";
 import { readBookingSource } from "./booking-source.ts";
 import type { FullApiCaller } from "./api-callers.ts";
@@ -634,19 +635,103 @@ export async function deleteEventBestEffort(
   try {
     await deps.deleteEvent(email, eventId, opts);
   } catch {
-    await deps
-      .enqueueEventDeletion(email, eventId, bookingId)
-      // Last line of defence: the live delete already failed, so if the retry
-      // queue write is lost too, the Google event is orphaned on the agent's
-      // calendar with nothing left to find it.
-      .catch((err) =>
-        log.error(
-          "booking",
-          { msg: "event-deletion enqueue failed", booking_id: bookingId, gcal_event_id: eventId },
-          err,
-        ),
-      );
+    await enqueueEventDeletionUnlessHeld(deps, email, eventId, bookingId);
   }
+}
+
+/**
+ * The live booking that now holds a Google event, or null (#3215, L744). An event
+ * id is derived from the request, so the lead's retry of a failed confirm adopts
+ * the very event that attempt asked to delete, and a deletion that does not ask
+ * first removes the calendar hold of a confirmed booking. Live means any status
+ * that keeps a slot busy, so only a cancelled booking lets its event go. THROWS
+ * when the read fails.
+ */
+async function liveEventHolder(deps: BookingDeps, eventId: string): Promise<string | null> {
+  const rows = await deps.loadBookingsHoldingEvent(eventId);
+  return rows.find((b) => ACTIVE_BUSY_STATUSES.has(b.status))?.id ?? null;
+}
+
+/**
+ * Queue an event's deletion for the drain (#401), unless a live booking already
+ * holds the event (#3215), when there is nothing to delete. An unreadable holder
+ * still queues: the drain asks again before it deletes anything, so a failed read
+ * can leave a queue row behind but never deletes a held event. Never throws: if
+ * the queue write is lost too, the event is orphaned on the agent's calendar with
+ * nothing left to find it, which is logged as the last line of defence.
+ */
+async function enqueueEventDeletionUnlessHeld(
+  deps: BookingDeps,
+  email: string,
+  eventId: string,
+  bookingId: string | null,
+): Promise<void> {
+  let holder: string | null = null;
+  try {
+    holder = await liveEventHolder(deps, eventId);
+  } catch (err) {
+    log.warn(
+      "booking",
+      { msg: "could not read who holds an event; queueing its deletion anyway", gcal_event_id: eventId },
+      err,
+    );
+  }
+  if (holder) {
+    log.info("booking", {
+      msg: "event deletion not queued: a live booking holds the event",
+      booking_id: bookingId,
+      holder_booking_id: holder,
+      gcal_event_id: eventId,
+    });
+    return;
+  }
+  await deps
+    .enqueueEventDeletion(email, eventId, bookingId)
+    .catch((err) =>
+      log.error(
+        "booking",
+        { msg: "event-deletion enqueue failed", booking_id: bookingId, gcal_event_id: eventId },
+        err,
+      ),
+    );
+}
+
+/**
+ * Undo a Google event a failed booking path wrote (#3215). Two things set it
+ * apart from an ordinary delete:
+ *
+ *  - it runs under the request's cleanup allowance, because the failure it
+ *    answers is often the confirm budget running out, and under that spent
+ *    budget the delete and its queue write were both refused at 0ms;
+ *  - it asks first whether a live booking holds the event, since a deterministic
+ *    event id can already belong to a racing request with the same key. An
+ *    unreadable answer does not delete live: it queues, and the drain asks again.
+ */
+export async function compensateEvent(
+  deps: BookingDeps,
+  email: string,
+  eventId: string,
+  bookingId: string | null,
+): Promise<void> {
+  await withinOwedCleanup(async () => {
+    let holder: string | null;
+    try {
+      holder = await liveEventHolder(deps, eventId);
+    } catch {
+      await enqueueEventDeletionUnlessHeld(deps, email, eventId, bookingId);
+      return;
+    }
+    if (holder) {
+      log.info("booking", {
+        msg: "compensation skipped: a live booking holds the event",
+        booking_id: bookingId,
+        holder_booking_id: holder,
+        gcal_event_id: eventId,
+      });
+      return;
+    }
+    await deleteEventBestEffort(deps, email, eventId, bookingId);
+  });
 }
 
 export interface CreateBookingInput {
@@ -812,7 +897,10 @@ export interface CreateEventArgs {
  */
 export type InsertBookingResult =
   | { ok: true; booking: Booking }
-  | { ok: false; conflict: boolean };
+  | { ok: false; conflict: true }
+  /** `error` is what the store said, carried so a deadline in it still reaches
+   *  the route as the retryable outage rather than a generic 500 (#3215). */
+  | { ok: false; conflict: false; error: unknown };
 
 export type BookingUpdate = {
   starts_at?: string;
@@ -1029,6 +1117,20 @@ export interface BookingDeps {
   enqueueEventDeletion(calendarEmail: string, gcalEventId: string, bookingId: string | null): Promise<void>;
   /** #401: load pending event deletions for the retry drain. */
   loadPendingEventDeletions(limit: number): Promise<PendingEventDeletion[]>;
+  /**
+   * #3215 (L744): the bookings, of any status, whose row names this Google event
+   * id. An event id is derived from the request, so a retry adopts the event a
+   * failed attempt queued for deletion, and this is how a deletion learns the
+   * event now belongs to somebody. THROWS on a failed read: an empty answer would
+   * let the event be deleted from under a confirmed booking.
+   */
+  loadBookingsHoldingEvent(gcalEventId: string): Promise<{ id: string; status: BookingStatus }[]>;
+  /**
+   * #3215: whether a PENDING create reservation still pins this event id, so a
+   * resume (the drain, or the lead's retry) may yet adopt it. THROWS on a failed
+   * read, for the same reason.
+   */
+  reservationPinsEvent(gcalEventId: string): Promise<boolean>;
   /** #830: load creation-orphan rows (booking_id IS NULL) for the early alert. */
   loadCreationOrphans(limit: number): Promise<PendingEventDeletion[]>;
   /** #401: remove a successfully-deleted pending event deletion row. */
@@ -1450,7 +1552,11 @@ export interface RefusedEventDeletion {
  * not `stuck`, because that alert's copy sends the reader to check Google API
  * health, and no amount of health fixes an account that was never given Calendar.
  * A refused row still counts in `failed`: the saturation reporter reads
- * deleted + failed as the size of the page this pass loaded (#888).
+ * deleted + failed + held as the size of the page this pass loaded (#888).
+ *
+ * `held` counts the rows whose event somebody now holds (#3215, L744), which are
+ * never deleted: one a live booking holds is dropped as obsolete, and one a
+ * pending create reservation still pins is left for a later pass.
  */
 export async function processPendingEventDeletions(
   deps: BookingDeps,
@@ -1458,15 +1564,54 @@ export async function processPendingEventDeletions(
 ): Promise<{
   deleted: number;
   failed: number;
+  held: number;
   stuck: PendingEventDeletion[];
   refused: RefusedEventDeletion[];
 }> {
   const rows = await deps.loadPendingEventDeletions(limit);
   let deleted = 0;
   let failed = 0;
+  let held = 0;
   const stuck: PendingEventDeletion[] = [];
   const refused: RefusedEventDeletion[] = [];
   for (const row of rows) {
+    // #3215 (L744): ask who holds the event BEFORE deleting it. The id is derived
+    // from the request, so a lead's retry adopts the event the failed attempt
+    // queued here, and deleting it leaves a confirmed booking with nothing on the
+    // agent's calendar. A failed read is a transient failure of this row, never a
+    // delete, and never a Google refusal (it is not Google's answer).
+    let holder: Awaited<ReturnType<typeof queuedEventHolder>>;
+    try {
+      holder = await queuedEventHolder(deps, row.gcal_event_id);
+    } catch (err) {
+      const attempts = row.attempts + 1;
+      const message = err instanceof Error ? err.message : String(err);
+      await deps.bumpPendingEventDeletion(row.id, attempts, `could not read who holds the event: ${message}`);
+      failed++;
+      if (attempts >= PENDING_DELETION_ALERT_AFTER) stuck.push(row);
+      continue;
+    }
+    if (holder?.kind === "booking") {
+      // The deletion is obsolete, not failed: the row goes, and the log line is
+      // the record of why an event it asked to delete is still there.
+      log.info("booking", {
+        msg: "queued event deletion dropped: a live booking holds the event",
+        pending_deletion_id: row.id,
+        booking_id: row.booking_id,
+        holder_booking_id: holder.bookingId,
+        gcal_event_id: row.gcal_event_id,
+      });
+      await deps.removePendingEventDeletion(row.id);
+      held++;
+      continue;
+    }
+    if (holder?.kind === "reservation") {
+      // A pending create reservation still pins it, so a resume may yet adopt it.
+      // Left untouched for a later pass: once the reservation completes the row is
+      // dropped above, and once it expires the event is deleted below.
+      held++;
+      continue;
+    }
     try {
       await deps.deleteEvent(row.calendar_email, row.gcal_event_id);
       await deps.removePendingEventDeletion(row.id);
@@ -1486,7 +1631,21 @@ export async function processPendingEventDeletions(
       if (attempts >= PENDING_DELETION_ALERT_AFTER) stuck.push(row);
     }
   }
-  return { deleted, failed, stuck, refused };
+  return { deleted, failed, held, stuck, refused };
+}
+
+/**
+ * Who holds a queued event now (#3215): a live booking (the deletion is obsolete),
+ * a pending create reservation (a resume may yet adopt it), or nobody. THROWS when
+ * either read fails, so no caller can read a failure as nobody.
+ */
+async function queuedEventHolder(
+  deps: BookingDeps,
+  eventId: string,
+): Promise<{ kind: "booking"; bookingId: string } | { kind: "reservation" } | null> {
+  const bookingId = await liveEventHolder(deps, eventId);
+  if (bookingId) return { kind: "booking", bookingId };
+  return (await deps.reservationPinsEvent(eventId)) ? { kind: "reservation" } : null;
 }
 
 /**
@@ -1513,6 +1672,10 @@ export async function checkCreationOrphans(
   for (const row of rows) {
     let exists: boolean;
     try {
+      // #3215: an event a retry adopted, or that a pending reservation may yet
+      // adopt, is not an orphan, however much it exists. Unreadable is skipped
+      // like an unreadable existence check below.
+      if (await queuedEventHolder(deps, row.gcal_event_id)) continue;
       exists = await deps.eventExists(row.calendar_email, row.gcal_event_id);
     } catch {
       // Couldn't confirm the event this tick; don't risk a false alert.
@@ -3378,16 +3541,31 @@ async function completeReservation(
           return { booking: winner, manageUrl: manageUrl(deps, winner.manage_token) };
         }
       }
-      // Genuinely unavailable: roll back the event + reservation.
-      await deleteEventBestEffort(deps, reservation.pinned_agent_email, gcalEventId, null);
-      await deps.deleteReservation(reservation.id);
+      // Genuinely unavailable: roll back the event + reservation, under the
+      // cleanup allowance, since this failure can arrive with the confirm budget
+      // spent (#3215).
+      await withinOwedCleanup(async () => {
+        await compensateEvent(deps, reservation.pinned_agent_email, gcalEventId, null);
+        await deps.deleteReservation(reservation.id);
+      });
       throw new SlotUnavailableError();
     }
-    // Generic (likely transient) failure: roll back the event (a resume
-    // re-creates it via the same deterministic id), but LEAVE the reservation
-    // pending so the drain retries the insert.
-    await deleteEventBestEffort(deps, reservation.pinned_agent_email, gcalEventId, null);
-    throw new Error("Failed to persist booking");
+    // Generic (likely transient) failure. The reservation stays PENDING, so the
+    // drain, or the lead's own retry, resumes it and adopts THIS event through
+    // its deterministic id (#3215). The event is therefore NOT deleted live: a
+    // deleted event keeps its id, so the resume would be handed a cancelled
+    // event and confirm a booking with nothing on the agent's calendar. Its
+    // deletion is queued instead, and the drain holds it while the reservation
+    // is pending, drops it once a booking adopts the event, and deletes it only
+    // once neither does. Queued under the cleanup allowance, because the commonest
+    // cause is the confirm budget running out, which refused this write at 0ms.
+    await withinOwedCleanup(() =>
+      enqueueEventDeletionUnlessHeld(deps, reservation.pinned_agent_email, gcalEventId, null),
+    );
+    // The store's own error rides along as the cause, so a deadline in it still
+    // reaches the route as the retryable outage (`timeoutAsRetryable`) rather than
+    // the generic 500 this used to be.
+    throw new Error("Failed to persist booking", { cause: inserted.error });
   }
   const booking = inserted.booking;
 
@@ -4492,7 +4670,10 @@ export async function rescheduleBooking(
     );
     return { ...result, contactChanged, isTest: ctx.bucket.is_test };
   } finally {
-    await deps.releaseReschedule(booking.id);
+    // #3215: under the cleanup allowance. A reschedule that failed because the
+    // confirm budget ran out would otherwise have its release refused at 0ms too,
+    // and the lead's retry would meet its own lock until the lease expired.
+    await withinOwedCleanup(() => deps.releaseReschedule(booking.id));
   }
 }
 
@@ -4706,7 +4887,7 @@ async function applyReschedule(
     try {
       newGcalEventId = await deps.createEvent(pin.pinned_agent_email, movedEvent, pin.gcal_client_id);
     } catch (err) {
-      await deleteEventBestEffort(deps, pin.pinned_agent_email, pin.gcal_client_id, booking.id);
+      await compensateEvent(deps, pin.pinned_agent_email, pin.gcal_client_id, booking.id);
       throw err;
     }
   }
@@ -4768,7 +4949,7 @@ async function applyReschedule(
       // in_place branch re-PATCHed a pre-existing event that the winner owns, so
       // deleting it here could remove a live event — leave it to the winner).
       if (pin.branch === "reassign") {
-        await deleteEventBestEffort(deps, pin.pinned_agent_email, pin.gcal_client_id, booking.id);
+        await compensateEvent(deps, pin.pinned_agent_email, pin.gcal_client_id, booking.id);
       }
       throw new RescheduleConflictError();
     }
@@ -5020,7 +5201,7 @@ export async function reassignBooking(
     // The swap (durable anchor) failed: clean up the event we optimistically
     // created so it isn't orphaned + drop the intent (handled inline), then
     // surface the failure.
-    await deleteEventBestEffort(deps, agent.email, newEventId, booking.id);
+    await compensateEvent(deps, agent.email, newEventId, booking.id);
     await deps.deleteReassignIntent(booking.id, gcalClientId);
     throw err;
   }
@@ -5029,7 +5210,7 @@ export async function reassignBooking(
     // The booking went terminal (cancelled/completed) concurrently. Clean up the
     // event we optimistically created so it isn't orphaned + drop the intent,
     // then surface it.
-    await deleteEventBestEffort(deps, agent.email, newEventId, booking.id);
+    await compensateEvent(deps, agent.email, newEventId, booking.id);
     await deps.deleteReassignIntent(booking.id, gcalClientId);
     throw new BookingNotChangeableError();
   }

@@ -258,18 +258,22 @@ export function formatDeletionSaturationAlert(ticks: number, limit: number): str
  * See `pageOnSaturationStreak` for the null/false/true rules.
  *
  * Takes the drain's whole result rather than a count because the saturation signal
- * is the size of the page it LOADED: `deleted + failed`. The delete count alone is
- * NOT the signal, and the reporter owns that sum so no call site can get it wrong.
+ * is the size of the page it LOADED: `deleted + failed + held`. The delete count
+ * alone is NOT the signal, and the reporter owns that sum so no call site can get it
+ * wrong. `held` (#3215) is a row whose event a booking or a pending reservation now
+ * holds, which the drain loads and never deletes: leaving it out would read a page
+ * full of them as a short one.
  * A full page that failed every row is the worst case (the backlog cannot drain at
  * all), yet its `deleted` is 0, which a naive count check would read as a healthy,
  * under-cap tick and use to CLEAR the streak.
  */
 export async function reportDeletionSaturation(
   key: string,
-  drain: { deleted: number; failed: number } | null,
+  drain: { deleted: number; failed: number; held: number } | null,
   limit: number,
 ): Promise<void> {
-  const saturated = drain === null ? null : isSweepSaturated(drain.deleted + drain.failed, limit);
+  const saturated =
+    drain === null ? null : isSweepSaturated(drain.deleted + drain.failed + drain.held, limit);
   await pageOnSaturationStreak(
     key,
     saturated,

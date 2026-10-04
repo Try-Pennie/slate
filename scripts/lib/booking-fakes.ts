@@ -796,7 +796,7 @@ export function makeDeps(opts: FakeOpts) {
       if (opts.insertBookingConflictFor?.has(String(row.assigned_user_id))) {
         return { ok: false, conflict: true };
       }
-      if (opts.insertBookingFails) return { ok: false, conflict: false };
+      if (opts.insertBookingFails) return { ok: false, conflict: false, error: new Error("insert failed") };
       return { ok: true, booking: { ...row, id: "bk-new" } as unknown as Booking };
     },
     insertBusyBlocks: async (blocks) => {
@@ -1112,6 +1112,9 @@ export function makeDeps(opts: FakeOpts) {
     // it can override deps.displayedTier after building the deps.
     displayedTier: async () => null,
     loadPendingEventDeletions: async (_limit) => opts.pending ?? [],
+    // #3215: nobody holds a queued event unless a suite says so.
+    loadBookingsHoldingEvent: async () => [],
+    reservationPinsEvent: async () => false,
     removePendingEventDeletion: async (id) => { calls.removePendingEventDeletion.push(id); },
     bumpPendingEventDeletion: async (id, attempts) => { calls.bumpPendingEventDeletion.push({ id, attempts }); },
   };

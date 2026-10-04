@@ -166,13 +166,13 @@ describe("GET /api/cron/selfheal", () => {
       cron.isAuthorizedCron.mockReturnValueOnce(true);
       service.reconcileCancelledBusyBlocks.mockResolvedValueOnce({ freed: 4, scanned: 4 });
       service.reconcileMissingBusyBlocks.mockResolvedValueOnce({ recreated: 2, scanned: 2 });
-      service.processPendingEventDeletions.mockResolvedValueOnce({ deleted: 3, failed: 1 });
+      service.processPendingEventDeletions.mockResolvedValueOnce({ deleted: 3, failed: 1, held: 0 });
 
       await GET(req());
 
       expect(sweepVerdict("cancelled-block reconcile")).toBe(4);
       expect(sweepVerdict("missing-block reconcile")).toBe(2);
-      expect(deletionVerdict()).toEqual({ deleted: 3, failed: 1 });
+      expect(deletionVerdict()).toEqual({ deleted: 3, failed: 1, held: 0 });
     });
   });
 });

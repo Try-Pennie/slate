@@ -23,21 +23,20 @@
  * response's trip back. Pinned by `confirm-budget.test.ts`, which drives the real
  * clients against a dependency that answers just inside every limit.
  */
-import { withinCallBudget, withinCleanupBudget } from "@/lib/call-budget";
+import { withinCallBudget } from "@/lib/call-budget";
 import { DependencyTimeoutError, timeoutAsRetryable } from "@/lib/booking/orchestration";
+import { BOOKING_CLEANUP_BUDGET_MS, withinBookingCleanupBudget } from "@/lib/booking/cleanup-allowance";
+
+// The allowance lives in its own module so the orchestration can open it too
+// (#3215); re-exported so every route keeps importing the pair from here.
+export { BOOKING_CLEANUP_BUDGET_MS, withinBookingCleanupBudget };
 
 export const BOOKING_CONFIRM_BUDGET_MS = 12_000;
-export const BOOKING_CLEANUP_BUDGET_MS = 2_000;
 export const BOOKING_CONFIRM_WORST_CASE_MS = BOOKING_CONFIRM_BUDGET_MS + BOOKING_CLEANUP_BUDGET_MS;
 
 /** Run a lead facing booking request under the confirm budget. */
 export function withinBookingConfirmBudget<T>(work: () => Promise<T>): Promise<T> {
   return withinCallBudget(BOOKING_CONFIRM_BUDGET_MS, "the booking confirm", work);
-}
-
-/** Run the cleanup a request owes the lead, under its own small allowance. */
-export function withinBookingCleanupBudget<T>(work: () => Promise<T>): Promise<T> {
-  return withinCleanupBudget(BOOKING_CLEANUP_BUDGET_MS, "the booking cleanup", work);
 }
 
 /**

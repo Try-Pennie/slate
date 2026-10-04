@@ -1039,6 +1039,30 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
         .limit(limit);
       return (data ?? []) as orchestration.PendingEventDeletion[];
     },
+    // #3215 (L744): who holds an event a deletion was queued for. Both THROW on a
+    // failed read, because an empty answer here is permission to delete a
+    // confirmed booking's calendar hold. Bounded by `limit`: an event id is derived
+    // from one request, so a handful of rows (a booking and its cancelled
+    // predecessors) is the most that can ever name it.
+    loadBookingsHoldingEvent: async (gcalEventId) =>
+      (unwrap(
+        await supabaseAdmin()
+          .from("bookings")
+          .select("id, status")
+          .eq("gcal_event_id", gcalEventId)
+          .limit(10),
+        "bookings holding a queued event",
+      ) ?? []) as { id: string; status: BookingStatus }[],
+    reservationPinsEvent: async (gcalEventId) =>
+      ((unwrap(
+        await supabaseAdmin()
+          .from("booking_reservations")
+          .select("id")
+          .eq("gcal_client_id", gcalEventId)
+          .eq("status", "pending")
+          .limit(1),
+        "reservation pinning a queued event",
+      ) ?? []) as { id: string }[]).length > 0,
     removePendingEventDeletion: async (id) => {
       // write-ok: a refused delete leaves the row, so the drain retries a deletion Google has already accepted, which is idempotent. It can never drop a deletion that has not happened.
       await supabaseAdmin().from("pending_event_deletions").delete().eq("id", id);
@@ -1199,14 +1223,16 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
         // which is what ties this line to the confirm that produced it and to the
         // busy_blocks and calendar work around it. Never the attendee: contact data
         // does not go in logs (docs/pii.md).
-        if (!conflict) {
-          log.error(
-            "booking",
-            { msg: "insertBooking failed", ...insertFailureLogFields(row) },
-            error,
-          );
-        }
-        return { ok: false, conflict };
+        if (conflict) return { ok: false, conflict: true };
+        log.error(
+          "booking",
+          { msg: "insertBooking failed", ...insertFailureLogFields(row) },
+          error,
+        );
+        // #3215: the error goes back with the refusal, so a deadline in it (the
+        // confirm budget running out at the insert) still reaches the route as
+        // the retryable outage rather than a generic 500.
+        return { ok: false, conflict: false, error: error ?? new Error("insert returned no row") };
       }
       return { ok: true, booking: data as Booking };
     },

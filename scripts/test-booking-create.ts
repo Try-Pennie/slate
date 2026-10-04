@@ -370,9 +370,16 @@ async function run() {
     }
     assert(threw, "create: throws when persist fails");
     assert(calls.createEvent.length === 1, "create-fail: calendar event was created");
+    // #3215 reversed the live rollback here: the reservation stays pending and a
+    // resume adopts this event by its deterministic id, so deleting it would hand
+    // the resume a cancelled event. Its deletion is queued for the drain instead,
+    // which holds it until nothing can adopt it (scripts/test-booking-insert-deadline.ts).
+    assert(calls.deleteEvent.length === 0, "create-fail: the event a pending reservation pins is not deleted live");
     assert(
-      calls.deleteEvent.length === 1 && calls.deleteEvent[0].id === "gcal-1",
-      "create-fail: rolls back the created calendar event",
+      calls.enqueueEventDeletion.length === 1 &&
+        calls.enqueueEventDeletion[0].eventId === "gcal-1" &&
+        calls.enqueueEventDeletion[0].bookingId === null,
+      "create-fail: the created calendar event's deletion is queued for the drain",
     );
     assert(calls.moveBusyBlock.length === 0, "create-fail: no busy block written");
     assert(calls.webhooks.length === 0, "create-fail: no webhook fired");

@@ -177,11 +177,11 @@ describe("reportCompletionSaturation (#883)", () => {
 describe("reportDeletionSaturation (#888)", () => {
   const DKEY = "deletion_drain_saturated";
   const DLIMIT = 20;
-  const drun = (drain: { deleted: number; failed: number } | null) =>
+  const drun = (drain: { deleted: number; failed: number; held: number } | null) =>
     reportDeletionSaturation(DKEY, drain, DLIMIT);
 
   it("clears the streak when a tick drains a partial page", async () => {
-    await drun({ deleted: 3, failed: 1 });
+    await drun({ deleted: 3, failed: 1, held: 0 });
     expect(clearFailureStreak).toHaveBeenCalledWith(DKEY);
     expect(recordConsecutiveStreak).not.toHaveBeenCalled();
     expect(sendThrottledAlert).not.toHaveBeenCalled();
@@ -189,7 +189,7 @@ describe("reportDeletionSaturation (#888)", () => {
 
   it("counts a full page toward the streak without paging yet", async () => {
     recordConsecutiveStreak.mockResolvedValueOnce(false);
-    await drun({ deleted: DLIMIT, failed: 0 });
+    await drun({ deleted: DLIMIT, failed: 0, held: 0 });
     expect(recordConsecutiveStreak).toHaveBeenCalledWith(
       DKEY,
       SATURATION_WINDOW_SECONDS,
@@ -201,7 +201,7 @@ describe("reportDeletionSaturation (#888)", () => {
 
   it("pages once the saturated streak is sustained", async () => {
     recordConsecutiveStreak.mockResolvedValueOnce(true);
-    await drun({ deleted: DLIMIT, failed: 0 });
+    await drun({ deleted: DLIMIT, failed: 0, held: 0 });
     expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
     const body = sendThrottledAlert.mock.calls[0][2];
     expect(body).toContain("deletion");
@@ -214,7 +214,7 @@ describe("reportDeletionSaturation (#888)", () => {
   // streak on exactly the ticks where the queue is most stuck.
   it("counts a full page of failures as saturated, not as a drained backlog", async () => {
     recordConsecutiveStreak.mockResolvedValueOnce(true);
-    await drun({ deleted: 0, failed: DLIMIT });
+    await drun({ deleted: 0, failed: DLIMIT, held: 0 });
     expect(clearFailureStreak).not.toHaveBeenCalled();
     expect(recordConsecutiveStreak).toHaveBeenCalledWith(
       DKEY,
@@ -227,7 +227,17 @@ describe("reportDeletionSaturation (#888)", () => {
   // A mixed full page is still a full page: the loader had at least `limit` rows.
   it("counts a mixed full page as saturated", async () => {
     recordConsecutiveStreak.mockResolvedValueOnce(false);
-    await drun({ deleted: 12, failed: 8 });
+    await drun({ deleted: 12, failed: 8, held: 0 });
+    expect(recordConsecutiveStreak).toHaveBeenCalledTimes(1);
+    expect(clearFailureStreak).not.toHaveBeenCalled();
+  });
+
+  // #3215: a row whose event a booking or a pending reservation now holds is
+  // loaded and never deleted. It is still part of the page, so a full page of
+  // held rows is a full page, never a drained backlog.
+  it("counts held rows toward the page it loaded", async () => {
+    recordConsecutiveStreak.mockResolvedValueOnce(false);
+    await drun({ deleted: 5, failed: 0, held: DLIMIT - 5 });
     expect(recordConsecutiveStreak).toHaveBeenCalledTimes(1);
     expect(clearFailureStreak).not.toHaveBeenCalled();
   });
@@ -243,11 +253,11 @@ describe("reportDeletionSaturation (#888)", () => {
   it("does not throw when the alert dispatch fails", async () => {
     recordConsecutiveStreak.mockResolvedValueOnce(true);
     sendThrottledAlert.mockRejectedValueOnce(new Error("slack down"));
-    await expect(drun({ deleted: DLIMIT, failed: 0 })).resolves.toBeUndefined();
+    await expect(drun({ deleted: DLIMIT, failed: 0, held: 0 })).resolves.toBeUndefined();
   });
 
   it("says the queue cleared when a tick drains a partial page", async () => {
-    await drun({ deleted: 3, failed: 1 });
+    await drun({ deleted: 3, failed: 1, held: 0 });
     expect(resolveAlert).toHaveBeenCalledTimes(1);
     const [key, text] = resolveAlert.mock.calls[0];
     expect(key).toBe(DKEY);
@@ -258,7 +268,7 @@ describe("reportDeletionSaturation (#888)", () => {
   // the same trap as the streak: deleted=0 looks like a quiet tick.
   it("never announces recovery on a full page that failed every row", async () => {
     recordConsecutiveStreak.mockResolvedValueOnce(true);
-    await drun({ deleted: 0, failed: DLIMIT });
+    await drun({ deleted: 0, failed: DLIMIT, held: 0 });
     expect(resolveAlert).not.toHaveBeenCalled();
   });
 
