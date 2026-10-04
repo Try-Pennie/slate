@@ -13,6 +13,7 @@ import {
   BOOKING_API_IP_LIMITER,
 } from "../../src/lib/rate-limit-core.ts";
 import { codeSequence, MEASURED_CODE_MIX, type CodeWeight } from "./code-mix.ts";
+import { OK_P95_MS } from "./judge-booking-run.ts";
 
 /** Availability reads a single address may make in a minute (30, from the app). */
 export const AVAILABILITY_PER_MINUTE = AVAILABILITY_LIMITER.perMinute;
@@ -31,6 +32,83 @@ export const BOOKING_WRITES_PER_MINUTE = BOOKING_API_IP_LIMITER.perMinute;
 export const DRIVERS = 4;
 export const PER_DRIVER_PER_MINUTE = 15;
 export const RUN_MINUTES = 10;
+
+/**
+ * What one request costs a driver beside the booking's own wall time: the
+ * availability read before it and the loop around it. Measured on run 37215457763
+ * (2026-10-04) at a p50 of about 0.5s and a max of 1.65s between one booking's
+ * reply and the next one being sent.
+ */
+export const PER_REQUEST_OVERHEAD_MS = 1_000;
+/**
+ * How long a drive runner spends being checked out and installed before the driver
+ * starts its clock. Measured at about 30s on run 37215457763; the rest is headroom
+ * for a slow install, which the driver's own deadline cannot see.
+ */
+export const DRIVE_JOB_SETUP_MINUTES = 3;
+/**
+ * Between the driver's deadline and the job's timeout: the one request already in
+ * flight when the deadline passes (12s was the slowest seen) and writing the file.
+ */
+export const DRIVE_DEADLINE_GRACE_MINUTES = 2;
+
+/**
+ * When a driver stops on its own, measured from its first request (#3222).
+ *
+ * The drivers send one request at a time, so a slow deployment stretches the run
+ * rather than overlapping requests. Run 37215457763 took fourteen to sixteen minutes
+ * for a ten minute plan, and one driver met the job's timeout: it was killed, wrote
+ * nothing, and the judge could only call the run incomplete. So the driver keeps its
+ * own deadline and writes what it ran when it meets it.
+ *
+ * Sized as the time a driver takes when EVERY request sits at the latency bar, never
+ * less than the plan's own span. A run inside the bar always finishes; a driver that
+ * cannot finish by then was slower than the bar on average, which is the run the
+ * judge must FAIL with figures rather than lose. The bar is the judge's own constant,
+ * so moving it moves the deadline with it (L41).
+ */
+export function driverDeadlineMs(plan: { total: number; perMinute: number }): number {
+  const span = plan.perMinute > 0 ? plan.total * (60_000 / plan.perMinute) : 0;
+  return Math.max(span, plan.total * (OK_P95_MS + PER_REQUEST_OVERHEAD_MS));
+}
+
+/**
+ * The drive job's `timeout-minutes`, derived from the deadline (#3222).
+ *
+ * Longer than the deadline by the runner's setup and one request's grace, so the
+ * platform only ever kills a driver that is genuinely hung: a slow one has already
+ * stopped itself and written its file. `scripts/test-loadtest-driver-deadline.ts`
+ * holds the workflow's number equal to this one, so the two cannot drift.
+ */
+export function driveJobTimeoutMinutes(plan: { total: number; perMinute: number }): number {
+  return Math.ceil(
+    driverDeadlineMs(plan) / 60_000 + DRIVE_JOB_SETUP_MINUTES + DRIVE_DEADLINE_GRACE_MINUTES,
+  );
+}
+
+/**
+ * The deadline a driver actually keeps: the derived one, or a SHORTER override.
+ *
+ * The override exists so a test can watch the real driver stop in milliseconds. It
+ * can only shorten, because a longer deadline would let the job's timeout fire first
+ * and turn a slow run back into a silent one; an unreadable value is ignored rather
+ * than becoming a NaN every comparison reads as "not yet" (L50).
+ */
+export function effectiveDeadlineMs(derivedMs: number, raw: string | undefined): number {
+  const v = Number((raw ?? "").trim());
+  if ((raw ?? "").trim() === "" || !Number.isFinite(v) || v <= 0) return derivedMs;
+  return Math.min(derivedMs, v);
+}
+
+/**
+ * Whether the driver should stop rather than send its next request.
+ *
+ * Also when the next request is SCHEDULED after the deadline, so a driver never
+ * sleeps toward a request it is not going to send.
+ */
+export function deadlineReached(opts: { nowMs: number; nextAtMs: number; deadlineAtMs: number }): boolean {
+  return opts.nowMs >= opts.deadlineAtMs || opts.nextAtMs >= opts.deadlineAtMs;
+}
 
 /** One request the driver will make. */
 export interface PlannedRequest {
@@ -240,6 +318,14 @@ export interface DriverResult {
    * which bar the pass is held to, so it is the deployment's word, never the job's.
    */
   faultTargets?: string[];
+  /**
+   * Set only when the driver stopped at its own deadline before its plan was done
+   * (#3222). The file is still whole: `attempts` is everything it sent, and
+   * `attemptsMade` says how many that was, so the judge can tell a well formed
+   * partial run from a file that lost entries. A driver that wrote no file at all
+   * hung or crashed, which is a different finding.
+   */
+  cutShort?: { deadlineMs: number; attemptsMade: number };
   attempts: BookingAttempt[];
 }
 

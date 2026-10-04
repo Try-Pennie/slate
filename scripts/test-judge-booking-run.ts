@@ -285,6 +285,98 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   eq(missed.verdict, "incomplete", "a burst driver that did not fire makes the burst unjudgeable");
 }
 
+// --- a slow run is judged, a silent driver is not (#3222) -------------------------
+
+/**
+ * Driver 2 stopped at its own deadline after `made` requests, every one of them
+ * slow, the way run 37215457763's drivers were: p95 about 8s against a 5s bar.
+ * Its file is the well formed partial one the driver writes, and the bookings it
+ * never got to are absent from the database exactly as they would be.
+ */
+function slowRun(made = 100): JudgeInput {
+  const input = passing();
+  for (const r of input.driverResults) for (const a of r.attempts) a.wallMs = 8_000;
+  const d2 = input.driverResults[2]!;
+  d2.attempts = d2.attempts.slice(0, made);
+  d2.cutShort = { deadlineMs: 15 * 60_000, attemptsMade: made };
+  const kept = new Set(input.driverResults.flatMap((r) => r.attempts.map((a) => a.externalId)));
+  input.bookings = input.bookings.filter(
+    (b) => !b.external_id?.startsWith(`${RUN}-2-`) || kept.has(b.external_id),
+  );
+  return input;
+}
+
+{
+  const r = judgeBookingRun(slowRun());
+  eq(r.verdict, "fail", "a driver cut short by its own deadline is a FAIL, not an incomplete run");
+  eq(r.exit, JUDGE_EXIT.fail, "on the failure exit code");
+  eq(r.incomplete, [], "with nothing reported as incomplete");
+  assert(r.measurements !== null, "and the run IS measured, so the figures reach the report");
+  const share = r.findings.find((f) => f.bar === "planned bookings completed");
+  assert(share !== undefined, "the share of the plan that ran is its own finding");
+  assert(
+    share?.detail.includes("driver 2") === true && share.detail.includes("100 of 150"),
+    `it names the driver and how far it got (got: ${share?.detail})`,
+  );
+  assert(
+    share?.detail.includes("550 of 600") === true && share.detail.includes("91.7%"),
+    `and the share of the whole run that completed (got: ${share?.detail})`,
+  );
+  const latency = r.findings.find((f) => f.bar === "latency of successful bookings");
+  assert(
+    latency?.detail.includes("p95 8000ms") === true,
+    `the latency bar is scored on what ran (got: ${latency?.detail})`,
+  );
+  eq(r.measurements!.planned, 4 * PER_DRIVER, "the measurements carry what was planned");
+  eq(r.measurements!.attempts, 3 * PER_DRIVER + 100, "beside what was made");
+  eq(r.measurements!.cutShort, [{ driver: 2, made: 100, planned: PER_DRIVER, deadlineMs: 15 * 60_000 }], "and which driver stopped");
+}
+
+{
+  // The control the FAIL above rests on: the same run with no driver cut short
+  // fails only its latency bar, so the share finding is caused by the cut short.
+  const input = passing();
+  for (const r of input.driverResults) for (const a of r.attempts) a.wallMs = 8_000;
+  const r = judgeBookingRun(input);
+  eq(bars(r), ["latency of successful bookings"], "a slow run that finished fails latency alone");
+}
+
+{
+  // A driver that wrote NOTHING hung or crashed: a slow one stops itself and
+  // writes what it ran. Still incomplete, and the reason names which driver.
+  const r = broken((i) => {
+    i.driverResults.splice(2, 1);
+  });
+  eq(r.verdict, "incomplete", "a missing driver file is still incomplete");
+  assert(
+    r.incomplete.some((w) => w.includes("driver 2 wrote no result file")),
+    `and the reason names the driver that wrote nothing (got: ${r.incomplete.join(" | ")})`,
+  );
+}
+
+{
+  // A cut short file that does not agree with itself is not a partial run, it is
+  // a file nobody can read, and it stays incomplete.
+  const mismatched = slowRun();
+  mismatched.driverResults[2]!.cutShort!.attemptsMade = 120;
+  eq(judgeBookingRun(mismatched).verdict, "incomplete", "a cut short file whose count disagrees is incomplete");
+  const overPlan = slowRun();
+  overPlan.driverResults[2]!.planned = 90;
+  eq(judgeBookingRun(overPlan).verdict, "incomplete", "and so is one claiming a different plan from the run's");
+}
+
+{
+  // The fault driver keeps the same deadline. A pass it cut short sent fewer
+  // requests than the bar was sized for, so it fails with its figures rather
+  // than reading as a clean, smaller pass.
+  const r = broken((i) => {
+    i.faultPass = { ...i.faultPass!, cutShort: { made: 20, planned: 30 } };
+  });
+  const f = r.findings.find((x) => x.bar === "fault pass completed");
+  assert(f?.detail.includes("20 of 30") === true, `a cut short fault pass fails with its figures (got: ${f?.detail})`);
+  eq(r.verdict, "fail", "and the run fails");
+}
+
 // --- throughput ----------------------------------------------------------------
 
 {

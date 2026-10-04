@@ -241,6 +241,13 @@ jobs:
   drive:
     needs: burst
     runs-on: ubuntu-latest
+    # DERIVED, not chosen (#3222): `driveJobTimeoutMinutes` in book-plan.ts, the
+    # driver's own deadline (the plan with every request at the latency bar, fifteen
+    # minutes) plus the runner's setup and one in flight request's grace.
+    # scripts/test-loadtest-driver-deadline.ts holds this number equal to it. A slow
+    # driver stops at its deadline, writes what it ran and exits zero, so the judge
+    # FAILS the run with figures and the ceiling and fault legs still run; only a
+    # genuinely hung driver ever meets this timeout, and its missing file says so.
     timeout-minutes: 20
     strategy:
       # Never cancel a sibling: four drivers at fifteen a minute IS the load, and a

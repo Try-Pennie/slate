@@ -177,7 +177,14 @@ export interface JudgeInput {
    * by design the 5xx count is a measurement of the percentage and is reported
    * instead. Empty means the driver never recorded it, which is incomplete.
    */
-  faultPass?: { attempts: number; fiveXx: number; faultPct: number; faultTargets: string[] };
+  faultPass?: {
+    attempts: number;
+    fiveXx: number;
+    faultPct: number;
+    faultTargets: string[];
+    /** Present when the fault driver stopped at its own deadline (#3222). */
+    cutShort?: { made: number; planned: number };
+  };
   /**
    * What the cron lanes did while the deployment was faulted (#3104): the lane
    * sampler's file, or null when it never arrived, and what the lanes are held to.
@@ -282,6 +289,17 @@ export function incompleteness(input: JudgeInput): string[] {
       `${input.driverResults.length} driver result files, expected ${input.target.drivers}. ` +
         "A missing driver lowers every rate by a quarter and nothing in the numbers says so.",
     );
+    // WHICH one, and what its silence means (#3222). A slow driver stops at its own
+    // deadline and writes what it ran, so a driver with no file at all hung or
+    // crashed, and that is a different place to look from a slow deployment.
+    const present = new Set(input.driverResults.map((r) => r.driver));
+    for (let d = 0; d < input.target.drivers; d++) {
+      if (present.has(d)) continue;
+      why.push(
+        `driver ${d} wrote no result file, so it hung or crashed: a slow driver stops at its own ` +
+          "deadline and writes what it ran",
+      );
+    }
   }
   const seen = new Set(input.driverResults.map((r) => r.driver));
   if (seen.size !== input.driverResults.length) {
@@ -291,7 +309,22 @@ export function incompleteness(input: JudgeInput): string[] {
     if (r.runId !== input.runId) {
       why.push(`driver ${r.driver}'s file is from run ${r.runId}, not ${input.runId}`);
     }
-    if (r.attempts.length !== expectedPerDriver) {
+    if (r.cutShort) {
+      // A driver that stopped at its own deadline (#3222) is a run that HAPPENED,
+      // slowly, and is judged: the share it completed is a failing bar of its own.
+      // Only a file that disagrees with itself is unreadable as one.
+      if (r.planned !== expectedPerDriver) {
+        why.push(
+          `driver ${r.driver} was cut short against a plan of ${r.planned}, not the run's ${expectedPerDriver}`,
+        );
+      }
+      if (r.cutShort.attemptsMade !== r.attempts.length || r.attempts.length >= expectedPerDriver) {
+        why.push(
+          `driver ${r.driver} says it was cut short after ${r.cutShort.attemptsMade} requests and ` +
+            `its file holds ${r.attempts.length} of ${expectedPerDriver}, so the file is not a whole partial run`,
+        );
+      }
+    } else if (r.attempts.length !== expectedPerDriver) {
       why.push(
         `driver ${r.driver} recorded ${r.attempts.length} attempts, expected ${expectedPerDriver}`,
       );
@@ -395,7 +428,14 @@ export function incompleteness(input: JudgeInput): string[] {
 
 /** What the run measured, once it is known to be complete. */
 export interface RunMeasurements {
+  /** What the plan held across every steady driver, so `attempts` reads against it. */
+  planned: number;
   attempts: number;
+  /**
+   * The drivers that stopped at their own deadline before the plan was done (#3222),
+   * empty on a run that finished.
+   */
+  cutShort: { driver: number; made: number; planned: number; deadlineMs: number }[];
   confirmed: number;
   confirmedPerMinute: number;
   targetPerMinute: number;
@@ -522,7 +562,16 @@ export function measure(input: JudgeInput): RunMeasurements {
   }
   const confirmed = attempts.filter((a) => a.status === 200).length;
   return {
+    planned: input.target.drivers * input.target.perDriverPerMinute * input.target.minutes,
     attempts: attempts.length,
+    cutShort: input.driverResults
+      .filter((r) => r.cutShort)
+      .map((r) => ({
+        driver: r.driver,
+        made: r.attempts.length,
+        planned: r.planned,
+        deadlineMs: r.cutShort!.deadlineMs,
+      })),
     confirmed,
     confirmedPerMinute: input.target.minutes === 0 ? 0 : confirmed / input.target.minutes,
     targetPerMinute: input.target.drivers * input.target.perDriverPerMinute,
@@ -681,6 +730,28 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
       "confirmed bookings per minute",
       `${m.confirmedPerMinute.toFixed(1)} a minute against a target of ${m.targetPerMinute} ` +
         `(floor ${floor.toFixed(1)}). Outcome mix: ${JSON.stringify(m.outcomes)}`,
+    );
+  }
+
+  // --- the plan ran to the end (#3222) ------------------------------------------
+  // A driver sends one request at a time, so a slow deployment stretches the run
+  // until a driver meets its own deadline. That is a FAILED run, with the figures
+  // that show how far it got, never an unjudged one: the latency bar below is
+  // still scored on what ran.
+  if (m.cutShort.length > 0) {
+    const who = m.cutShort
+      .map(
+        (c) =>
+          `driver ${c.driver} stopped at its ${(c.deadlineMs / 60_000).toFixed(1)} minute deadline ` +
+          `after ${c.made} of ${c.planned}`,
+      )
+      .join("; ");
+    const share = m.planned === 0 ? 0 : (m.attempts / m.planned) * 100;
+    fail(
+      "planned bookings completed",
+      `${who}. The run made ${m.attempts} of ${m.planned} planned requests (${share.toFixed(1)}%). ` +
+        "The drivers send one request at a time, so slow answers are what push a driver past " +
+        "its deadline",
     );
   }
 
@@ -898,6 +969,15 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
         `${input.faultPass.fiveXx} of ${input.faultPass.attempts} requests were 5xx with ` +
           `${input.faultPass.faultTargets.join(", ")} failing ${input.faultPass.faultPct} percent of ` +
           "calls; the path must degrade, not error",
+      );
+    }
+    // Cut short at the fault driver's own deadline (#3222): fewer requests than the
+    // bar was sized for, so a clean count would read as a smaller clean pass.
+    if (input.faultPass.cutShort) {
+      fail(
+        "fault pass completed",
+        `the fault driver stopped at its deadline after ${input.faultPass.cutShort.made} of ` +
+          `${input.faultPass.cutShort.planned} planned requests`,
       );
     }
     // The cron lanes, judged rather than read by a person (#3104). Incompleteness

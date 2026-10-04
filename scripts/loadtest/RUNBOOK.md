@@ -815,10 +815,27 @@ all** (L288). A burst driver that missed its moment counts as incomplete too: it
 recorded nothing, so "exactly one 200" would be answered by however many drivers
 happened to arrive.
 
+**A slow run is not an incomplete one (#3222).** The drivers send one request at a
+time, so a slow deployment stretches the run: on 2026-10-04 (run 37215457763) a ten
+minute plan took fourteen to sixteen, one driver met the job's timeout, wrote
+nothing, and the judge could only call the run incomplete, so the run produced no
+verdict on the latency bar it should have failed. Each steady and fault driver now
+keeps a deadline of its own (`driverDeadlineMs` in `book-plan.ts`: the time the plan
+takes when every request sits at the 5,000ms bar, fifteen minutes for the steady
+plan), stops there, writes a whole file marked `cutShort` with the count it made,
+and exits zero so the ceiling check and the fault pass still run. The judge scores
+that file: the latency bar on what ran, and a failing **planned bookings completed**
+bar naming the driver, how far it got and the share of the run that completed. The
+drive job's `timeout-minutes` is derived from the same deadline plus setup and grace
+(`driveJobTimeoutMinutes`), and `scripts/test-loadtest-driver-deadline.ts` holds the
+workflow's number equal to it. So a driver with NO file hung or crashed, and that
+stays incomplete, naming the driver.
+
 ### The bars
 
 | bar | what it is |
 |---|---|
+| planned bookings completed | every steady driver ran its whole plan. A driver that stopped at its own deadline FAILS this with the driver, how far it got and the run's completed share (#3222); every other bar is still scored on what ran |
 | confirmed a minute | at or above 80 percent of target, with the full outcome mix printed so a short run says WHY |
 | latency | p50, p95 and max over ALL responses, and the p95 of the **200s** under 5,000ms |
 | 5xx and no reply | counted **separately** and both fail: a request answered badly and one never answered send two different people to two different places |

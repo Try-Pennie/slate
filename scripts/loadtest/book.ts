@@ -28,6 +28,9 @@ import {
   waitForBurstMoment,
   externalIdFor,
   pickSlot,
+  driverDeadlineMs,
+  effectiveDeadlineMs,
+  deadlineReached,
   DRIVERS,
   PER_DRIVER_PER_MINUTE,
   RUN_MINUTES,
@@ -77,6 +80,9 @@ const BURST_GRACE_MS = Number(process.env.BURST_GRACE_MS ?? "2000");
 // env-ok: TZ_NAME (optional; defaults to America/New_York, the zone the seeded
 // roster's largest group keeps)
 const TIMEZONE = process.env.TZ_NAME ?? "America/New_York";
+// env-ok: DRIVE_DEADLINE_MS (optional; a test seam that can only SHORTEN the
+// deadline derived from the plan, never lengthen it past the job's timeout)
+const DEADLINE_OVERRIDE = process.env.DRIVE_DEADLINE_MS;
 
 // A load run points at an isolated deployment and an isolated branch. Refusing
 // production by NAME rather than by a flag, because the flag would be the thing
@@ -210,8 +216,26 @@ async function steady(mode: "steady" | "fault" = "steady", minutes = RUN_MINUTES
     perMinute: PER_DRIVER_PER_MINUTE,
     startAtMs: startedAtMs,
   });
+  // Its OWN deadline, derived from the plan (#3222). The drivers send one request
+  // at a time, so a slow deployment stretches the run; without this the job's
+  // timeout killed the driver mid run, it wrote nothing, and a run that should have
+  // FAILED on latency could only be called incomplete.
+  const deadlineMs = effectiveDeadlineMs(
+    driverDeadlineMs({ total: plan.length, perMinute: PER_DRIVER_PER_MINUTE }),
+    DEADLINE_OVERRIDE,
+  );
+  const deadlineAtMs = startedAtMs + deadlineMs;
+  let cutShort = false;
   const attempts: BookingAttempt[] = [];
   for (const req of plan) {
+    if (deadlineReached({ nowMs: Date.now(), nextAtMs: req.atMs, deadlineAtMs })) {
+      cutShort = true;
+      console.error(
+        `driver ${DRIVER}: stopped at its ${(deadlineMs / 60_000).toFixed(1)} minute deadline after ` +
+          `${attempts.length} of ${plan.length} requests; writing what it ran for the judge`,
+      );
+      break;
+    }
     const wait = req.atMs - Date.now();
     if (wait > 0) await sleep(wait);
     const now = Date.now();
@@ -252,6 +276,10 @@ async function steady(mode: "steady" | "fault" = "steady", minutes = RUN_MINUTES
     startedAtMs,
     finishedAtMs: Date.now(),
     ...(mode === "fault" ? { faultPct: faultPctConfirmed, faultTargets: faultTargetsConfirmed } : {}),
+    // Exit zero all the same: the judge grades a cut short run as a FAIL with its
+    // figures, and a non-zero exit here would fail the drive job and skip the
+    // ceiling check and the fault pass that wait on it.
+    ...(cutShort ? { cutShort: { deadlineMs, attemptsMade: attempts.length } } : {}),
     attempts,
   });
 }

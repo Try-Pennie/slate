@@ -424,6 +424,16 @@ if (faultDrivers.length > 0) {
     fiveXx: attempts.filter((a) => a.status >= 500 && a.status <= 599).length,
     faultPct: Math.min(...reported),
     faultTargets: targetLists.length === 1 && targetLists[0] !== "" ? targetLists[0]!.split(",") : [],
+    // A fault driver that stopped at its own deadline (#3222) is carried to the
+    // judge, which fails the pass with its figures rather than reading it as whole.
+    ...(faultDrivers.some((d) => d.cutShort)
+      ? {
+          cutShort: {
+            made: attempts.length,
+            planned: faultDrivers.reduce((sum, d) => sum + d.planned, 0),
+          },
+        }
+      : {}),
   };
 }
 
@@ -616,7 +626,14 @@ const m = result.measurements;
 if (m) {
   lines.push("## What the run measured");
   lines.push("");
-  lines.push(`- attempts: ${m.attempts}, confirmed: ${m.confirmed}`);
+  lines.push(`- attempts: ${m.attempts} of ${m.planned} planned, confirmed: ${m.confirmed}`);
+  // #3222: a driver that stopped at its own deadline, named with how far it got.
+  for (const c of m.cutShort) {
+    lines.push(
+      `- driver ${c.driver} cut short at its ${(c.deadlineMs / 60_000).toFixed(1)} minute deadline ` +
+        `after ${c.made} of ${c.planned} requests`,
+    );
+  }
   lines.push(
     `- confirmed a minute: ${m.confirmedPerMinute.toFixed(1)} against a target of ${m.targetPerMinute}`,
   );
