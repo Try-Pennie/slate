@@ -1163,8 +1163,8 @@ export function recomputeModeVerdict(body: unknown, wanted: string | undefined):
       ok: false,
       why:
         `this deployment's ${POST_CONFIRM_RECOMPUTE_VAR} is "${b.postConfirmRecomputeUnknown}", which ` +
-        `is no mode, so it recomputes as if on whatever arm was asked for. Redeploy with one of ` +
-        `${POST_CONFIRM_RECOMPUTE_MODES.join(", ")}.`,
+        `is not one of ${POST_CONFIRM_RECOMPUTE_MODES.join(", ")}, so the Worker runs the on arm ` +
+        `rather than the one this run was dispatched for. Redeploy with a valid value and re-run.`,
       retriable: false,
     };
   }
@@ -1244,7 +1244,21 @@ async function askRecomputeArm(opts: {
     return { ok: false, why: `/api/smoke/version could not be reached (${detail})`, retriable: true };
   }
   const { status, body } = answer;
-  if (status >= 500) return { ok: false, why: `/api/smoke/version answered ${status}`, retriable: true };
+  // The route's own "no key configured" 503 is a missing secret, which waiting can
+  // never supply (#3269 review), judged by the same predicate the fault leg uses.
+  if (isNoKeyConfigured(status, body)) {
+    return {
+      ok: false,
+      why:
+        "/api/smoke/version answered 503 because this deployment holds no booking API key, so " +
+        "which arm it runs could not be asked. Put the canary's key on the deployment and re-run.",
+      retriable: false,
+    };
+  }
+  // A 5xx, a request timeout and a rate limit all pass on their own (#3269 review).
+  if (status >= 500 || status === 408 || status === 429) {
+    return { ok: false, why: `/api/smoke/version answered ${status}`, retriable: true };
+  }
   if (status >= 400) {
     return {
       ok: false,

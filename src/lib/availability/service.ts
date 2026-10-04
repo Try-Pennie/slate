@@ -330,6 +330,15 @@ export interface BucketSlots {
   slotsWithoutLow?: string[];
 }
 
+/** What `loadBucketSlotInputs` reads for one bucket code (#3258). */
+export interface BucketSlotInputs {
+  resolved: ResolvedBucket;
+  /** The org name read. Its error is tolerated by the one reader (see getBucketSlots). */
+  orgRes: { data: { name: string } | null; error: unknown };
+  membersResult: Awaited<ReturnType<typeof loadMembersAvailability>>;
+  businessHours: Awaited<ReturnType<typeof loadBusinessHours>>;
+}
+
 /**
  * Every read a bucket's slot compute needs, with no compute (#3258).
  *
@@ -343,7 +352,7 @@ export async function loadBucketSlotInputs(
   from: string,
   to: string,
   resolveEligible: EligibleResolver = eligibleAgentIds,
-) {
+): Promise<BucketSlotInputs | null> {
   const resolved = await resolveBucketByCode(code);
   if (!resolved) return null;
   const { bucket } = resolved;

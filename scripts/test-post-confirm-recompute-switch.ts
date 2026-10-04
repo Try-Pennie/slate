@@ -119,6 +119,11 @@ for (const raw of ["off", "reads-only", "garbage"]) {
   const leftover = recomputeModeVerdict({ loadtest: true, postConfirmRecompute: "off", postConfirmRecomputeUnknown: null }, "on");
   assert(!leftover.ok && !leftover.retriable && leftover.why.includes("off"), "an on arm against a deployment left off refuses, naming it");
   const typo = recomputeModeVerdict({ loadtest: true, postConfirmRecompute: "on", postConfirmRecomputeUnknown: "of" }, "on");
+  const typoOff = recomputeModeVerdict({ loadtest: true, postConfirmRecompute: "on", postConfirmRecomputeUnknown: "of" }, "off");
+  assert(
+    !typoOff.ok && typoOff.why.includes("runs the on arm rather than the one this run was dispatched for"),
+    "an unknown deployment value says the Worker runs on, not the arm asked for",
+  );
   assert(!typo.ok && !typo.retriable && typo.why.includes("of"), "a deployment holding an unknown value refuses, even for the on arm");
   const old = recomputeModeVerdict({ loadtest: true }, "on");
   assert(!old.ok && !old.retriable, "a deployment that predates the switch cannot say which arm it is, so it refuses");
@@ -175,6 +180,22 @@ for (const raw of ["off", "reads-only", "garbage"]) {
   eq(refused.asked, 1, "at once, since waiting cannot change a refused key");
   const missing = await run([{ status: 404, body: {} }], "on");
   assert(!missing.verdict.ok && missing.verdict.why.includes("404"), "a 404 refuses naming the status too");
+
+  // #3269 review: a 503 saying no booking key is configured is a missing secret,
+  // which waiting can never supply, so it refuses at once.
+  const noKey = await run([{ status: 503, body: { error: "booking api not configured" } }], "off");
+  assert(!noKey.verdict.ok && !noKey.verdict.retriable, "a 503 with no booking key configured refuses");
+  eq(noKey.asked, 1, "at once, not after the deadline");
+  assert(!noKey.verdict.ok && noKey.verdict.why.includes("key"), "and says it is the key");
+
+  // #3269 review: 408 and 429 are transient, waited out like a 5xx.
+  for (const status of [408, 429]) {
+    const passing = await run([{ status, body: {} }, off], "off");
+    assert(passing.verdict.ok, `a ${status} is waited out`);
+    eq(passing.asked, 2, `and the ${status} was asked again`);
+  }
+  const stillRefused = await run([{ status: 404, body: {} }], "on");
+  assert(!stillRefused.verdict.ok && stillRefused.verdict.why.includes("LOADTEST_BASE_URL"), "any other 4xx keeps the base URL remedy");
 
   // #3269 review: every deadline refusal reads as whole sentences, never ".,".
   for (const v of [never.verdict, unreachable.verdict, (await run([blip], "on", 10_000)).verdict]) {

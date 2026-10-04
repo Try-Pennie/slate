@@ -36,6 +36,7 @@ import {
   resolveAgentCount,
   migrationReadRefusal,
   appliedVersionsFrom,
+  productionRefusal,
 } from "./seed-guards.ts";
 import { PRODUCTION_SUPABASE_REF } from "../../src/lib/loadtest-guard.ts";
 
@@ -59,11 +60,9 @@ function loadEnv(): Record<string, string> {
   const url = process.env.SUPABASE_URL ?? fromFile.NEXT_PUBLIC_SUPABASE_URL ?? "";
   const key = process.env.SUPABASE_SECRET_KEY ?? fromFile.SUPABASE_SECRET_KEY ?? "";
   if (!url || !key) throw new Error("Set SUPABASE_URL and SUPABASE_SECRET_KEY (the BRANCH).");
-  if (url.includes(PROD_REF) && process.env.FORCE !== "1") {
-    throw new Error(
-      `Refusing to seed the production project (${PROD_REF}). Point SUPABASE_URL at a branch, or set FORCE=1 if you really mean it.`,
-    );
-  }
+  // The same guard the between arms reset uses (#3258), with the seed's FORCE=1.
+  const refusal = productionRefusal(url, PROD_REF, { force: process.env.FORCE === "1", action: "seed" });
+  if (refusal) throw new Error(`${refusal} Or set FORCE=1 if you really mean it.`);
   return { url: `${url}/rest/v1`, key };
 }
 

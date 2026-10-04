@@ -214,3 +214,25 @@ export function appliedVersionsFrom(body: unknown): { versions: string[] } | { w
   }
   return { versions: body.map((v) => String(v)) };
 }
+
+/**
+ * Why a script must not write to this Supabase address, or null when it may
+ * (#3258). Shared by the seed and the between arms reset, so the two can never
+ * disagree about what production is (L41). The production ref is passed in rather
+ * than imported, which keeps this file free of imports.
+ *
+ * An empty address refuses rather than passing: whether it is production cannot
+ * be established. `force` is the seed's own FORCE=1 escape hatch; the reset always
+ * passes false.
+ */
+export function productionRefusal(
+  url: string,
+  productionRef: string,
+  opts: { force: boolean; action: string },
+): string | null {
+  if (url.trim() === "") return `No SUPABASE_URL is set, so whether this would ${opts.action} production cannot be established.`;
+  if (url.includes(productionRef) && !opts.force) {
+    return `Refusing to ${opts.action} the production project (${productionRef}). Point SUPABASE_URL at a branch.`;
+  }
+  return null;
+}

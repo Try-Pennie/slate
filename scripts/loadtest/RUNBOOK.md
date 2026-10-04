@@ -1204,8 +1204,54 @@ report's header names the arm. The fault leg carries the same arm; its restore s
 deploys with no `--var`, which puts the deployment back to `on`.
 
 For a fair comparison, run the three arms back to back on one day, from the same
-commit, each against its own freshly seeded branch and deployment, and compare
-"assign and verify" from the confirm profile line.
+commit, and compare "assign and verify" from the confirm profile line.
+
+### Three arms on one branch and one deployment
+
+A fresh environment per arm costs a secrets set up and the wait for the first cron
+delivery (27 minutes on 2026-10-04). The arms can share one instead, provided each
+starts where the first did, which is what `scripts/loadtest/reset.ts` is for. Run it
+against the BRANCH between arms:
+
+```
+SUPABASE_URL=https://<branch-ref>.supabase.co \
+SUPABASE_SECRET_KEY=<branch secret key> \
+node --experimental-strip-types scripts/loadtest/reset.ts
+```
+
+It deletes, in order, `bookings`, `booking_outbox`, `booking_reservations`,
+`pending_event_deletions`, `routing_decisions` and `rate_limits`, and prints how
+many rows each lost. Why each matters to the next arm: the previous arm's bookings
+make agents busier (their busy blocks, the daily cap count) and widen every candidate
+read; outbox rows and reservations would be drained by the lanes during the next
+arm's window; rate limit rows can refuse drivers that run at the per address ceiling.
+
+- **DELETE, never TRUNCATE.** Deleting bookings cascades only to the busy blocks a
+  booking wrote. `TRUNCATE bookings CASCADE` would empty `busy_blocks` entirely,
+  seeded calendar time included, and reseeding does not undo a booking's rows either
+  (the seed only merges, it never deletes).
+- **It refuses production** through the same guard the seed uses
+  (`productionRefusal` in `seed-guards.ts`), with no FORCE escape.
+- **It refuses on any bulk reassign row**, naming it, before deleting anything:
+  `bulk_reassign_items` references bookings with no delete rule, and the lane is off
+  here, so such a row is unexpected and worth looking at first.
+
+What it leaves alone, deliberately: `bucket_slots` and the slot cache (the preflight
+recomputes by hand and waits for fresh rows), the burst counter (a 60 second window
+that clears itself), alert cooldowns (Slack is off under load test), lane heartbeats,
+and `audit_log` (append only, and its insert cost does not grow with its size).
+
+The sequence, every dispatch from the same commit the deployment was built from:
+
+1. Build, deploy and seed once, as above.
+2. Dispatch with `post_confirm_recompute` = `on` and `teardown` off.
+3. Run `reset.ts`. Before dispatching again, confirm the calendar sync lanes have
+   recovered from the fault leg's injected read failures.
+4. Dispatch with `post_confirm_recompute` = `off` and `teardown` off. The `arm` job
+   redeploys the existing Worker, so there is no new wait for cron delivery.
+5. Run `reset.ts` again, and check the sync lanes again.
+6. Dispatch with `post_confirm_recompute` = `reads-only`, `teardown` on and
+   `branch_name` set, so the environment goes when the last arm is judged.
 
 ## Tearing down (#2322)
 

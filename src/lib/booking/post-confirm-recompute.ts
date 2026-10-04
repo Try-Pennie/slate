@@ -21,8 +21,10 @@
  * **Production cannot reach it.** The setting is read only when `isLoadtest()` is
  * true; otherwise every value, a typo included, is `on` and goes unreported. The
  * variable is committed nowhere (`scripts/test-wrangler-loadtest-env.ts` refuses it
- * at the top level and in env.loadtest); the load run's preflight adds it with
- * `wrangler deploy --var` for the arm it was dispatched with.
+ * at the top level and in env.loadtest). The load workflow's `arm` job, and the
+ * fault leg after it, deploy it with `wrangler deploy --var` for the arm the run
+ * was dispatched with; the preflight only asks `/api/smoke/version` which arm the
+ * deployment runs, and refuses a mismatch.
  *
  * **An unknown value fails loud**, the way an unknown fault target does: it is
  * logged at error once per isolate, treated as `on`, and reported by
