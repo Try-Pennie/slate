@@ -23,6 +23,7 @@ import {
   type WarmupProgress,
 } from "./loadtest/preflight-checks.ts";
 import { hydrationBatchSize, HYDRATION_ONBOARDING_MAX } from "../src/lib/google/hydration.ts";
+import { readFileSync } from "node:fs";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 /** A branch that is entirely warm: every gate satisfied, times on offer. */
@@ -114,6 +115,46 @@ function giveUpWhy(r: WarmupReading, p: WarmupProgress, label: string): string {
   assert(
     warmupStep({ ...cold, laneStampAgeMs: WARMUP_CRON_FRESH_MS - 1 }, START).action !== "wait-for-cron",
     "a stamp inside the bound passes the gate",
+  );
+}
+
+{
+  // Measured on 2026-10-04 (#3229): Cloudflare listed all 13 schedules at deploy
+  // time (17:41 UTC) and the first lane stamp landed at 18:07 UTC, 27 minutes
+  // later, on a deployment that was healthy (the re-dispatch found every lane
+  // ticking). Run 37221540890 refused at 12 minutes and measured nothing. A cold
+  // Worker still silent at 27 minutes must be waited for, not given up on.
+  const cold: WarmupReading = { ...WARM, laneStampAgeMs: null, agentsFullyHydrated: 0, offeredSlots: 0 };
+  const measuredFirstTickMs = 27 * 60_000;
+  eq(
+    warmupStep(cold, { ...START, elapsedMs: measuredFirstTickMs }).action,
+    "wait-for-cron",
+    "a Worker with no stamp at the measured 27 minute delivery is still waited for",
+  );
+  // Headroom over the one slow reading, not a deadline that just clears it: the
+  // delay is evidently not a fixed number, so the bound sits well past it.
+  assert(
+    WARMUP_CRON_DELIVERY_DEADLINE_MS >= measuredFirstTickMs * 1.5,
+    "the delivery deadline leaves at least half again the measured 27 minutes",
+  );
+  // And the wait stays bounded (L110): an hour is the ceiling, because the job
+  // holding it has a timeout of its own and a run waiting longer is a dead Worker.
+  assert(WARMUP_CRON_DELIVERY_DEADLINE_MS <= 60 * 60_000, "the delivery deadline is still bounded");
+}
+
+{
+  // The preflight job's own timeout must outlast the delivery deadline plus the
+  // rest of its work (install, the hydration and recompute drives, one booking),
+  // or GitHub kills the job mid wait and the reader gets a cancellation instead of
+  // the give up wording that says the deployment is still standing (L11).
+  const yml = readFileSync(new URL("../.github/workflows/loadtest.yml", import.meta.url), "utf8");
+  const job = /^ {2}preflight:\n([\s\S]*?)(?=^ {2}[a-z-]+:\n)/m.exec(yml)?.[1] ?? "";
+  const minutes = Number(/^ {4}timeout-minutes:\s*(\d+)/m.exec(job)?.[1] ?? NaN);
+  assert(Number.isFinite(minutes), "the preflight job declares a timeout-minutes this can read");
+  const deadlineMinutes = WARMUP_CRON_DELIVERY_DEADLINE_MS / 60_000;
+  assert(
+    minutes >= deadlineMinutes + 10,
+    `the preflight job's ${minutes} minute timeout leaves at least ten minutes past the ${deadlineMinutes} minute delivery deadline`,
   );
 }
 

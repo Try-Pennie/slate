@@ -673,7 +673,9 @@ Two things about a brand new Worker, both measured on 2026-09-15:
 
 - **Cron delivery is not immediate and is not a fixed delay.** One Worker received
   its first scheduled invocation about six minutes after it was created; the one
-  before it never received one in the seventeen minutes it lived. Until then
+  before it never received one in the seventeen minutes it lived. On 2026-10-04
+  (#3229) a healthy Worker had all 13 schedules listed at deploy time (17:41 UTC)
+  and stamped its first lane at 18:07 UTC, **27 minutes later**. Until then
   `lane_heartbeats` is empty and every bucket answers `emptyBecause: busy`, which
   reads like a roster problem and is not one.
 - **Hydration is far slower than one recompute cycle.** `hydrate-calendars` runs
@@ -691,8 +693,13 @@ holds `LOADTEST_CRON_SECRET`:
    stamp a heartbeat inside `WARMUP_CRON_FRESH_MS`. Waited for and never driven, or
    a stamp the preflight wrote itself would answer the question with its own work
    (L58). Deliberately not `recompute`, which step three drives. The deadline is
-   `WARMUP_CRON_DELIVERY_DEADLINE_MS` (twelve minutes, twice the longest delivery
-   measured);
+   `WARMUP_CRON_DELIVERY_DEADLINE_MS`, **45 minutes**. It was twelve until run
+   37221540890 refused a healthy deployment whose first tick arrived at 27
+   minutes (#3229), so it now sits well past the slowest delivery measured and
+   stays bounded (L110). The preflight job's `timeout-minutes` is 60, and
+   `scripts/test-loadtest-warmup.ts` fails if it drops below the deadline plus ten,
+   so a slow delivery ends in the preflight's own wording rather than a job
+   cancellation;
 2. **drive** `/api/cron/hydrate-calendars` until `agent_calendars.sync_window_to`
    is set on EVERY calendar of every bookable agent. About eight passes at the
    seeded roster, a few seconds each. Drives that cover nothing more three times
@@ -704,6 +711,19 @@ preflight can drive would change them: a branch with no bookable agents (the see
 did not run) and a bookable agent with no `agent_calendars` row (the seed is
 incomplete). Each carries its own wording; one message answering for another is how
 somebody spends an afternoon on a cache that was never the problem (L11).
+
+**Before dispatching, confirm the lanes are stamping.** After the `loadtest`
+Worker is created or redeployed, read the branch's `lane_heartbeats` (read only)
+and wait until at least one of `sync`, `outbox` and `selfheal` has a `last_ran_at`
+under two and a half minutes old, the same test the preflight applies:
+
+```
+lane_heartbeats?select=lane,last_ran_at&lane=in.(sync,outbox,selfheal)
+```
+
+A dispatch onto a Worker that is not yet ticking spends its preflight waiting, and
+if the delivery outruns even the 45 minute deadline the run refuses and measures
+nothing. Waiting outside the run costs no Actions minutes; waiting inside it does.
 
 The ladder is pure (`warmupStep` in `preflight-checks.ts`) and pinned offline by
 `scripts/test-loadtest-warmup.ts`, so every rung and every refusal is driven with
