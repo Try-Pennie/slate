@@ -15,6 +15,7 @@ vi.mock("@/lib/env", async (importOriginal) => ({
   supabaseSecretKey: () => "sb_secret_test",
   googlePushUrl: () => "https://x.test/push",
   googleChannelToken: () => "t",
+  slackBotToken: () => "xoxb-test",
 }));
 const dwd = vi.hoisted(() => ({ getDelegatedToken: vi.fn() }));
 vi.mock("@/lib/google/dwd", () => dwd);
@@ -51,6 +52,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { createEvent, freeBusyMany } from "@/lib/google/calendar";
 import { REQUEST_TIMEOUT_MS } from "@/lib/http";
+import { postSlack } from "@/lib/notify/slack";
 import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import { createBooking, VerifyUnavailableError, type CreateBookingInput } from "@/lib/booking/service";
 
@@ -133,6 +135,32 @@ describe("the confirm path's worst case (#3102)", () => {
       }),
     );
     expect(heldMs).toBeLessThanOrEqual(BOOKING_CONFIRM_WORST_CASE_MS);
+  });
+
+  // #3163 (L743): the outage page's own Slack post is part of the cleanup, and a
+  // Slack answering just inside its own 8 second limit is a post that PASSES. It
+  // used to wait on that limit alone, outside the allowance, so a confirm that
+  // spent its budget and then paged through a slow but answering Slack held the
+  // lead 12 + 8 seconds and the booker gave up at 20, showing the browser's
+  // failure instead of our retryable answer.
+  it("a Slack post in the cleanup is held to the allowance, so a slow but answering Slack cannot outlast the worst case", async () => {
+    let posted: { ok: boolean; error?: string } | null = null;
+    const { heldMs } = await measure(() =>
+      withinBookingConfirmBudget(async () => {
+        await confirmShapedWork().catch(() => {});
+        posted = await withinBookingCleanupBudget(() => postSlack({ text: "page", channel: "C1" }));
+      }),
+    );
+    expect(heldMs).toBeLessThanOrEqual(BOOKING_CONFIRM_WORST_CASE_MS);
+    // Cut short, it still answers not posted rather than throwing (its contract).
+    expect(posted).toMatchObject({ ok: false });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("outside any budget a Slack post keeps its own limit, so a slow but answering Slack still lands", async () => {
+    const { heldMs, outcome } = await measure(() => postSlack({ text: "page", channel: "C1" }));
+    expect(outcome).toBe("resolved");
+    expect(heldMs).toBe(SLOW_MS);
   });
 
   // The path a timed out /booking really takes: the service sends the outage page
