@@ -7,6 +7,7 @@ import { MEASURED_VOLUME_BASELINE } from "./volume-baseline.ts";
 import { baselineInForce, shareInForce, tierJudgedBaseline } from "./volume-relearn.ts";
 import { LOW_TIER, VOLUME_TIERS, type VolumeTier } from "./volume-tiers.ts";
 import { REAL_ANCHOR_SOURCE, type AnchorSource, type ShareInForce } from "./carried-share.ts";
+import type { TierRecoveryPolicy } from "./tier-staffing.ts";
 
 /**
  * UI-tunable monitor alert settings (#571). Cooldowns and low-volume floors are
@@ -394,7 +395,7 @@ export const ALERT_FIELDS: {
     key: "empty_tier",
     urgency: "alert",
     label: "Debt tier offering no times",
-    help: "A whole debt tier (Low, Medium, High, Very High or Ultra High) is offering no booking time before the end of the next working day, either because nobody is assigned to it or because every agent on it is full. Leads asking for that tier are served by a lower tier meanwhile. A bucket or backend inside a tier that is still offering times is not reported.",
+    help: "A whole debt tier (Low, Medium, High, Very High or Ultra High) is offering no booking time before the end of the next working day, either because nobody is assigned to it or because every agent on it is full. Leads asking for that tier are served by a lower tier meanwhile. A bucket or backend inside a tier that is still offering times is not reported. It ends only once the tier offers the minimum number of open times and has kept offering them for the hold, so one cancelled call that is booked again minutes later does not end it.",
   },
   {
     key: "main_not_deployed",
@@ -668,6 +669,13 @@ export const MONITOR_DEFAULTS = {
     // refusal still pages on its own key.
     csp_violation: 60 * 60_000,
   },
+  // When a debt tier's page may end (#3227): it must offer at least this many
+  // times inside its window, and hold there this long. Three times rather than
+  // one, because one is exactly the single cancelled call that cleared Low on
+  // 2026-10-04 and was booked again minutes later; thirty minutes, because a
+  // freed time on a full day is usually taken inside that, while a tier that has
+  // genuinely recovered is still recovered half an hour on.
+  tierRecovery: { minOpenTimes: 3, holdMin: 30 },
   // No coded low volume floors any more (#1956). They were 5 and 20, one pair for
   // every hour of the week, and nothing had measured either: replayed over two
   // real weeks they would have paged 258 times. The floors now come from
@@ -939,6 +947,30 @@ export function resolveRegalCallsArmed(config: Pick<MonitorAlertConfig, "regal_c
   return resolveArmed(config?.regal_calls_armed);
 }
 
+/** The bounds the settings form accepts for the tier recovery settings (#3227).
+ *  The resolver holds a stored value to the same ones, so a row written some
+ *  other way cannot make a page impossible to clear or clear it on any time. */
+export const TIER_RECOVERY_BOUNDS = {
+  minOpenTimes: { min: 1, max: 50 },
+  holdMin: { min: 0, max: 240 },
+} as const;
+
+const within = (n: number | null | undefined, b: { min: number; max: number }): n is number =>
+  typeof n === "number" && Number.isInteger(n) && n >= b.min && n <= b.max;
+
+/** When a debt tier page may end (#3227): store if valid, else the coded default. */
+export function resolveTierRecovery(
+  config: Pick<MonitorAlertConfig, "empty_tier_recovery_min_times" | "empty_tier_recovery_hold_min"> | null,
+): TierRecoveryPolicy {
+  const d = MONITOR_DEFAULTS.tierRecovery;
+  const times = config?.empty_tier_recovery_min_times;
+  const hold = config?.empty_tier_recovery_hold_min;
+  return {
+    minOpenTimes: within(times, TIER_RECOVERY_BOUNDS.minOpenTimes) ? times : d.minOpenTimes,
+    holdMs: (within(hold, TIER_RECOVERY_BOUNDS.holdMin) ? hold : d.holdMin) * 60_000,
+  };
+}
+
 // Sane bounds so a fat-finger can't silently mute an alert for a week.
 const COOLDOWN_MIN_MIN = 1;
 const COOLDOWN_MIN_MAX = 7 * 24 * 60; // one week in minutes
@@ -966,6 +998,10 @@ export interface MonitorSettingsFormInput {
   belowLeadTierArmed: string;
   /** Raw value of the arm-Regal-calls checkbox (#2090), same encoding. */
   regalCallsArmed: string;
+  /** #3227: open times a paged tier needs to count as recovered. Blank is unset. */
+  tierRecoveryMinTimes: string;
+  /** #3227: minutes it must hold that before the all clear. Blank is unset. */
+  tierRecoveryHoldMin: string;
 }
 
 export interface MonitorSettingsPayload {
@@ -983,6 +1019,8 @@ export interface MonitorSettingsPayload {
     awaiting_activation_armed: boolean;
     below_lead_tier_armed: boolean;
     regal_calls_armed: boolean;
+    empty_tier_recovery_min_times: number | null;
+    empty_tier_recovery_hold_min: number | null;
   };
   errors: string[];
 }
@@ -1043,6 +1081,18 @@ export function parseMonitorSettingsForm(input: MonitorSettingsFormInput): Monit
       awaiting_activation_armed: checked(input.awaitingActivationArmed),
       below_lead_tier_armed: checked(input.belowLeadTierArmed),
       regal_calls_armed: checked(input.regalCallsArmed),
+      empty_tier_recovery_min_times: parseBounded(
+        input.tierRecoveryMinTimes,
+        "Open times to end a tier page",
+        TIER_RECOVERY_BOUNDS.minOpenTimes.min,
+        TIER_RECOVERY_BOUNDS.minOpenTimes.max,
+      ),
+      empty_tier_recovery_hold_min: parseBounded(
+        input.tierRecoveryHoldMin,
+        "Minutes held to end a tier page",
+        TIER_RECOVERY_BOUNDS.holdMin.min,
+        TIER_RECOVERY_BOUNDS.holdMin.max,
+      ),
     },
     errors,
   };
@@ -1076,6 +1126,8 @@ export interface ResolvedMonitorSettings {
   belowLeadTierArmed: boolean;
   /** #2090: are the three Regal call alerts armed (store > disarmed)? */
   regalCallsArmed: boolean;
+  /** #3227: when a debt tier page may end (store > coded default). */
+  tierRecovery: TierRecoveryPolicy;
 }
 
 type AlertConfigRow = Pick<
@@ -1091,6 +1143,8 @@ type AlertConfigRow = Pick<
   | "awaiting_activation_armed"
   | "below_lead_tier_armed"
   | "regal_calls_armed"
+  | "empty_tier_recovery_min_times"
+  | "empty_tier_recovery_hold_min"
 >;
 
 /**
@@ -1132,7 +1186,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
     db
       .from("monitor_alert_config")
       .select(
-        "floor_30, floor_120, volume_ramp_end_on, volume_learning, low_volume_armed, failure_rate_armed, availability_drift_armed, roster_coverage_armed, awaiting_activation_armed, below_lead_tier_armed, regal_calls_armed",
+        "floor_30, floor_120, volume_ramp_end_on, volume_learning, low_volume_armed, failure_rate_armed, availability_drift_armed, roster_coverage_armed, awaiting_activation_armed, below_lead_tier_armed, regal_calls_armed, empty_tier_recovery_min_times, empty_tier_recovery_hold_min",
       )
       .eq("id", 1)
       .maybeSingle(),
@@ -1154,6 +1208,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
     awaitingActivationArmed: resolveAwaitingActivationArmed(config),
     belowLeadTierArmed: resolveBelowLeadTierArmed(config),
     regalCallsArmed: resolveRegalCallsArmed(config),
+    tierRecovery: resolveTierRecovery(config),
   };
   lastKnown = resolved;
   return resolved;
@@ -1162,6 +1217,13 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
 /** The last settings this isolate read successfully, or null if it never has. */
 export function lastKnownMonitorSettings(): ResolvedMonitorSettings | null {
   return lastKnown;
+}
+
+/** The coded tier recovery settings, for a caller with no settings reading at all.
+ *  Like a cooldown, these only pace a page that has already fired, so no value of
+ *  them can disarm anything. */
+export function codedTierRecovery(): TierRecoveryPolicy {
+  return resolveTierRecovery(null);
 }
 
 /** The coded cooldowns, for a caller with no settings reading at all. */

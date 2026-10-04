@@ -13,7 +13,7 @@ import {
   firingFamilyMembers,
   existingAlertStateKeys,
 } from "@/lib/notify/dispatch";
-import { logAlertSendFailure, logAllClearFailure } from "@/lib/notify/send-failure";
+import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import {
   runRegalCallCheck,
   REGAL_CALL_ALERT_PREFIX,
@@ -78,13 +78,18 @@ import {
 import { readPublicBookingPauseState } from "@/lib/booking/settings";
 import {
   planTierAlerts,
+  planTierRecovery,
   tierStaffingKey,
   tierUnstaffedMessage,
   tierRecoveredMessage,
 } from "@/lib/monitor/tier-staffing";
 import {
+  clearTierHolds,
+  DEBT_TIERS,
   loadTierAgentIds,
+  loadTierAlertState,
   loadTierCauseReads,
+  startTierHolds,
   tierAgentCounts,
   tierReadings,
 } from "@/lib/monitor/tier-staffing-load";
@@ -296,6 +301,7 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { WEBHOOK_EVENTS, deliberatelyUnsubscribedReason } from "@/lib/webhooks/events";
 import {
   codedCooldownMs,
+  codedTierRecovery,
   lastKnownMonitorSettings,
   loadMonitorSettings,
   type ResolvedMonitorSettings,
@@ -1151,20 +1157,49 @@ export async function GET(req: NextRequest) {
         // alert-key: empty_tier:*
         await sendThrottledAlert(key, cooldownMs.empty_tier, text).catch(logAlertSendFailure(key));
       }
-      // Driven by the MEASURED healthy tiers, never by "we did not page this one":
-      // a tier whose reads failed is in neither list, so a recovery is never
-      // announced off a tick that did not look (#1134, #1152).
+      // When a page may END (#3227). A tier offering one time is not recovered: on
+      // 2026-10-04 one cancelled Low call cleared the page, and since an all clear
+      // resets the cooldown, the next booking of that time paged again at once.
+      // So the all clear waits until the tier offers the recovered count inside
+      // the window AND has held it for the hold, both set on /admin/alerts.
       //
-      const tierAllClears = plan.recovered.map((t) => ({
-        key: tierStaffingKey(t.tier),
-        text: tierRecoveredMessage(t),
-      }));
-      // alert-key: empty_tier:*
-      // all-clear-proof: scripts/test-tier-staffing.ts drives planTierAlerts with
-      // each read failed in turn and pins that the clear list stays empty.
-      await resolveRecovered(tierAllClears).catch(
-        logAllClearFailure(tierAllClears.map((r) => r.key)),
-      );
+      // Driven by the MEASURED healthy tiers, never by "we did not page this one":
+      // a tier whose reads failed is in no list, and an unreadable alert state
+      // concludes nothing for any tier, so a recovery is never announced, and a
+      // hold never started or reset, off a tick that did not look (#1134, #1152).
+      const recoveryPolicy = settings?.tierRecovery ?? codedTierRecovery();
+      const alertState =
+        plan.recovered.length + plan.page.length === 0
+          ? ({ readable: false } as const)
+          : await loadTierAlertState(DEBT_TIERS).catch((err) => {
+              log.warn("monitor", { msg: "tier alert state unreadable; recovery deferred" }, err);
+              return { readable: false } as const;
+            });
+      const recovery = planTierRecovery(plan, alertState, recoveryPolicy, now);
+      log.info("monitor", {
+        msg: "tier recovery",
+        holding: recovery.holding.map((h) => `${h.tier}:${h.openTimes}:${Math.round(h.heldMs / 60_000)}m`).join(",") || null,
+        short: recovery.short.map((h) => `${h.tier}:${h.openTimes}`).join(",") || null,
+        all_clear: recovery.allClear.map((t) => t.tier).join(",") || null,
+        min_open_times: recoveryPolicy.minOpenTimes,
+        hold_min: recoveryPolicy.holdMs / 60_000,
+      });
+      await startTierHolds(recovery.startHold, now);
+      await clearTierHolds(recovery.clearHold);
+      const cleared: string[] = [];
+      for (const t of recovery.allClear) {
+        const key = tierStaffingKey(t.tier);
+        // alert-key: empty_tier:*
+        // all-clear-proof: scripts/test-tier-staffing.ts drives planTierAlerts and
+        // planTierRecovery with each read failed in turn and pins that nothing clears.
+        const sent = await resolveAlert(key, tierRecoveredMessage(t)).catch((err) => {
+          log.error("slack-alert", { msg: "recovery notice failed", key }, err);
+          return false;
+        });
+        // A notice that did not go out keeps its hold, so the next tick retries it.
+        if (sent) cleared.push(t.tier);
+      }
+      await clearTierHolds(cleared);
       return plan;
     });
     if (!gates.tierStaffing.run) {

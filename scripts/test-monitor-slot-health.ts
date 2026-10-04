@@ -145,4 +145,23 @@ for (const bad of ["", "not-a-date", "2026-13-45T99:99:99Z"]) {
   eq(shut.get("311")?.slotCountWithoutLow, 0, "the org's hours filter the second list too");
 }
 
+// --- #3227: the offered instants, which the tier all clear counts ------------
+//
+// Taken from the SAME served list as the count and the first time, so the alarm
+// can never count times the booker is not serving. Distinct, sorted, and an
+// unreadable stamp is dropped rather than counted.
+{
+  const m = slotHealthByCode([
+    { bucket_code: "111", payload: { slots: [...THREE, THREE[0], "not a time"], eventType: ET }, computed_at: FRESH_ISO },
+    { bucket_code: "112", payload: { slots: THREE }, computed_at: FRESH_ISO },
+    { bucket_code: "113", payload: null, computed_at: FRESH_ISO },
+  ], OPEN);
+  const offered = m.get("111")?.offeredMs ?? null;
+  eq(offered?.length, 3, "each offered time is counted once, and an unreadable one not at all");
+  assert(offered !== null && offered.every((ms, i) => i === 0 || ms > offered[i - 1]), "in time order");
+  eq(offered?.[0], m.get("111")?.firstSlotMs, "the first of them is the first offered time");
+  eq(m.get("112")?.offeredMs, null, "a row that cannot be judged has no list, never an empty one");
+  eq(JSON.stringify(m.get("113")?.offeredMs), "[]", "a row offering nothing has an empty list");
+}
+
 finish();

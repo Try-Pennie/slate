@@ -57,6 +57,17 @@ export interface SlotHealth {
    */
   firstSlotMs: number | null;
   /**
+   * Every distinct time this bucket is offering, epoch ms in time order, after the
+   * same org hours filter (#3227). The debt tier all clear counts how many fall
+   * inside its window, so it is taken from the SAME served list as `firstSlotMs`
+   * rather than from a second read (L107). An unreadable stamp is dropped, as it
+   * is for `firstSlotMs`.
+   *
+   * `null` exactly when `slotCount` is null: the row could not be judged, which is
+   * not the same as an empty list (a row offering nothing).
+   */
+  offeredMs: number[] | null;
+  /**
    * #2842: how many of those times an advisor WITHOUT Low is offering, through the
    * same hours filter. It is what a rung below a top tier lead's own tier is judged
    * on. `null` when the row carries no second list (a pool no top tier lead can
@@ -82,6 +93,16 @@ function earliestSlotMs(served: string[] | null): number | null {
     if (earliest === null || ms < earliest) earliest = ms;
   }
   return earliest;
+}
+
+/** The distinct readable instants in a served slot list, in time order. */
+function offeredInstants(served: string[]): number[] {
+  const out = new Set<number>();
+  for (const iso of served) {
+    const ms = parseStampMs(iso);
+    if (ms !== null) out.add(ms);
+  }
+  return [...out].sort((a, b) => a - b);
 }
 
 /**
@@ -123,6 +144,7 @@ export function slotHealthByCode(
               : null,
           computedAtMs: parseStampMs(r.computed_at) ?? 0,
           firstSlotMs: earliestSlotMs(served),
+          offeredMs: measurable ? offeredInstants(served!) : slots === undefined ? [] : null,
           slotCountWithoutLow: servedWithoutLow === null ? null : servedWithoutLow.length,
         },
       ];

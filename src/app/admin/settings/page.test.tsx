@@ -296,7 +296,31 @@ describe("AlertSettings quieted-alarm notice (#1289)", () => {
     expect(document.getElementById(describedBy!)?.textContent).toMatch(/default 30/i);
     // And every field has one, not just the overridden one.
     const defaults = [...document.querySelectorAll('[id$="_default"]')];
-    expect(defaults.length).toBe(ALERT_FIELDS.length);
+    // Plus the two that decide when a debt tier page ends (#3227).
+    expect(defaults.length).toBe(ALERT_FIELDS.length + 2);
+  });
+
+  // #3227: when a debt tier page ends, set under that alert's own cooldown, with
+  // the stored value, its default and the range the save accepts.
+  it("shows the tier recovery settings under the debt tier alert", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    db.results.monitor_alert_config = {
+      data: { id: 1, empty_tier_recovery_min_times: 5, empty_tier_recovery_hold_min: null },
+      error: null,
+    };
+    render(await AlertSettingsPage(props));
+    const times = screen.getByLabelText(/Open times before it ends/) as HTMLInputElement;
+    expect(times.name).toBe("empty_tier_recovery_min_times");
+    expect(times.value).toBe("5");
+    expect(times.min).toBe("1");
+    expect(times.max).toBe("50");
+    expect(document.getElementById(times.getAttribute("aria-describedby")!)?.textContent).toMatch(/default 3$/);
+    const hold = screen.getByLabelText(/Minutes held before it ends/) as HTMLInputElement;
+    expect(hold.name).toBe("empty_tier_recovery_hold_min");
+    expect(hold.value).toBe("");
+    expect(hold.min).toBe("0");
+    expect(hold.max).toBe("240");
+    expect(document.getElementById(hold.getAttribute("aria-describedby")!)?.textContent).toMatch(/default 30$/);
   });
 
   // #1955: the one interesting fact on the section was buried in a grey sentence

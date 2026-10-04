@@ -282,6 +282,8 @@ describe("parseMonitorSettingsForm low_volume_armed", () => {
     awaitingActivationArmed: "",
     belowLeadTierArmed: "",
     regalCallsArmed: "",
+    tierRecoveryMinTimes: "",
+    tierRecoveryHoldMin: "",
   };
 
   it("parses a checked toggle as armed=true", () => {

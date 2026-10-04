@@ -324,6 +324,12 @@ export interface MonitorAlertConfig {
   below_lead_tier_armed: boolean | null;
   /** #2090: are the Regal call alerts armed? Null = disarmed (set on /admin/alerts, #2695). */
   regal_calls_armed: boolean | null;
+  /** #3227: open times inside the window a paged debt tier needs before its page
+   *  may end. Null = unset (the coded 3). */
+  empty_tier_recovery_min_times: number | null;
+  /** #3227: minutes the tier must hold that many before the all clear. Null =
+   *  unset (the coded 30). */
+  empty_tier_recovery_hold_min: number | null;
   /** #1454: UI arm/disarm for the roster-coverage page. Null = unset (fall
    *  through to the disarmed default, which here is about the roster being dark
    *  before cutover rather than about calibration: see migration 0102). */

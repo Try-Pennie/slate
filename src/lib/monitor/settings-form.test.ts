@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { ALERT_KEYS, parseMonitorSettingsForm, type MonitorAlertKey } from "./settings";
+import { ALERT_KEYS, parseMonitorSettingsForm, resolveTierRecovery, type MonitorAlertKey } from "./settings";
 
 // #571 red-team S1: a blank field must revert to fallback by storing an explicit
 // NULL, never the number 0 (a blanked floor of 0 would permanently mute the
@@ -25,6 +25,8 @@ const blank = {
   awaitingActivationArmed: "",
   belowLeadTierArmed: "",
   regalCallsArmed: "",
+  tierRecoveryMinTimes: "",
+  tierRecoveryHoldMin: "",
 };
 
 describe("parseMonitorSettingsForm", () => {
@@ -46,6 +48,8 @@ describe("parseMonitorSettingsForm", () => {
       awaiting_activation_armed: false,
       below_lead_tier_armed: false,
       regal_calls_armed: false,
+      empty_tier_recovery_min_times: null,
+      empty_tier_recovery_hold_min: null,
     });
   });
 
@@ -120,5 +124,36 @@ describe("parseMonitorSettingsForm", () => {
     expect(onlyDrift.config.availability_drift_armed).toBe(true);
     expect(onlyDrift.config.low_volume_armed).toBe(false);
     expect(onlyDrift.config.failure_rate_armed).toBe(false);
+  });
+
+  // #3227: how many open times a paged tier needs, and for how long, before its
+  // all clear goes out. Outside the range is refused rather than coerced, and a
+  // zero minute hold is a real choice (clear on the first good tick).
+  it("stores the tier recovery settings and refuses them outside their range", () => {
+    const ok = parseMonitorSettingsForm({ ...blank, tierRecoveryMinTimes: "5", tierRecoveryHoldMin: "0" });
+    expect(ok.errors).toEqual([]);
+    expect(ok.config.empty_tier_recovery_min_times).toBe(5);
+    expect(ok.config.empty_tier_recovery_hold_min).toBe(0);
+    for (const bad of ["0", "51", "2.5", "three"]) {
+      const out = parseMonitorSettingsForm({ ...blank, tierRecoveryMinTimes: bad });
+      expect(out.errors.length, `open times ${bad}`).toBeGreaterThan(0);
+      expect(out.config.empty_tier_recovery_min_times).toBeNull();
+    }
+    for (const bad of ["-1", "241", "1.5"]) {
+      const out = parseMonitorSettingsForm({ ...blank, tierRecoveryHoldMin: bad });
+      expect(out.errors.length, `hold ${bad}`).toBeGreaterThan(0);
+      expect(out.config.empty_tier_recovery_hold_min).toBeNull();
+    }
+  });
+
+  it("resolves the tier recovery settings, falling back to 3 times and 30 minutes", () => {
+    expect(resolveTierRecovery(null)).toEqual({ minOpenTimes: 3, holdMs: 30 * 60_000 });
+    expect(
+      resolveTierRecovery({ empty_tier_recovery_min_times: 6, empty_tier_recovery_hold_min: 0 }),
+    ).toEqual({ minOpenTimes: 6, holdMs: 0 });
+    // A stored value outside the range the form accepts is not trusted.
+    expect(
+      resolveTierRecovery({ empty_tier_recovery_min_times: 0, empty_tier_recovery_hold_min: 9999 }),
+    ).toEqual({ minOpenTimes: 3, holdMs: 30 * 60_000 });
   });
 });

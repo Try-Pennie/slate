@@ -77,7 +77,16 @@ export type AgentReading = { measured: false } | { measured: true; count: number
  * which is a finding. `measured: false` means the slot rows could not be read,
  * which is not.
  */
-export type SlotReading = { measured: false } | { measured: true; firstSlotMs: number | null };
+export type SlotReading =
+  | { measured: false }
+  | {
+      measured: true;
+      firstSlotMs: number | null;
+      /** Every distinct time the tier is offering, in time order (#3227), from the
+       *  same served list as `firstSlotMs`. The all clear counts the ones inside
+       *  the window. */
+      offeredMs: number[];
+    };
 
 export interface TierReading {
   /** The first XBC digit, "1" to "5". */
@@ -89,8 +98,10 @@ export interface TierReading {
 }
 
 export type TierVerdict =
-  /** A lead in this tier can get a time inside the window. Nothing to say. */
-  | { kind: "serving" }
+  /** A lead in this tier can get a time inside the window. Nothing to page.
+   *  `openTimes` is how many distinct times it offers inside the window, which
+   *  decides whether an open page may be cleared (#3227). */
+  | { kind: "serving"; openTimes: number }
   /** Nobody is assigned to the tier at all. */
   | { kind: "unstaffed" }
   /** The tier has agents and is offering no time inside the window. */
@@ -118,9 +129,11 @@ export function judgeTier(r: TierReading, windowEndMs: number): TierVerdict {
     return { kind: "unmeasured", why: `could not read ${unread.join(" or ")}` };
   }
   // Narrowed by the guard above; restated so the compiler can see it.
-  const slots = r.slots as { measured: true; firstSlotMs: number | null };
+  const slots = r.slots as { measured: true; firstSlotMs: number | null; offeredMs: number[] };
   const agents = r.agents as { measured: true; count: number };
-  if (slots.firstSlotMs !== null && slots.firstSlotMs <= windowEndMs) return { kind: "serving" };
+  if (slots.firstSlotMs !== null && slots.firstSlotMs <= windowEndMs) {
+    return { kind: "serving", openTimes: slots.offeredMs.filter((ms) => ms <= windowEndMs).length };
+  }
   // `<= 0` rather than `=== 0`: a nonsense negative count is not evidence that
   // somebody is staffed, and it is the reading that would otherwise fall through
   // to the softer of the two findings.
@@ -147,7 +160,7 @@ export interface TierAlertPlan {
    *  rather than `clear` because that is what the list IS: the tiers this tick
    *  will announce a recovery for, and the vocabulary the monitor lane already
    *  uses for the same thing (`stepVerdict.recovered`). */
-  recovered: { tier: string; label: string }[];
+  recovered: { tier: string; label: string; openTimes: number }[];
   /** Tiers a read failed for, named in the log and excluded from both lists. */
   unmeasured: string[];
   /**
@@ -171,17 +184,115 @@ export interface TierAlertPlan {
  */
 export function planTierAlerts(readings: TierReading[], windowEndMs: number): TierAlertPlan {
   const page: TierPage[] = [];
-  const recovered: { tier: string; label: string }[] = [];
+  const recovered: { tier: string; label: string; openTimes: number }[] = [];
   const unmeasured: string[] = [];
   for (const r of readings) {
     const v = judgeTier(r, windowEndMs);
     if (v.kind === "unmeasured") unmeasured.push(r.tier);
-    else if (v.kind === "serving") recovered.push({ tier: r.tier, label: r.label });
+    else if (v.kind === "serving") recovered.push({ tier: r.tier, label: r.label, openTimes: v.openTimes });
     else if (v.kind === "unstaffed")
       page.push({ tier: r.tier, label: r.label, kind: "unstaffed", agents: 0, firstSlotMs: null });
     else page.push({ tier: r.tier, label: r.label, kind: "no-slots", agents: v.agents, firstSlotMs: v.firstSlotMs });
   }
   return { page, recovered, unmeasured, measuredAny: page.length + recovered.length > 0 };
+}
+
+// --------------------------------------------------------- when a page may end
+
+/**
+ * When an open page may be cleared (#3227). Both are set on the monitor settings
+ * screen beside the `empty_tier` cooldown.
+ *
+ * Paging still happens only at ZERO offered times, so these change when a page
+ * ENDS, never when it starts. On 2026-10-04 Low paged, one cancelled call opened a
+ * single Monday time, and the all clear went out. Because an all clear also resets
+ * the cooldown (`resolveAlert`, so a genuinely new incident pages at once), the
+ * next booking of that one time paged again at once: page, all clear, page, all
+ * clear, on a day when nothing was wrong. L160: a condition is over only after a
+ * re-arm window of health, never on the first good sample.
+ */
+export interface TierRecoveryPolicy {
+  /** How many distinct times inside the window a tier must offer to count as recovered. */
+  minOpenTimes: number;
+  /** How long it must stay at that many before the all clear goes out. */
+  holdMs: number;
+}
+
+/**
+ * The `alert_state` row that holds WHEN a paged tier first measured at the
+ * recovered count. Its own prefix, so it can never be read as the page's cooldown
+ * (`empty_tier:<digit>`) or its firing marker (`alert_firing:empty_tier:<digit>`).
+ */
+export function tierHoldKey(tier: string): string {
+  return `${TIER_STAFFING_ALERT_KEY}_healthy_since:${tier}`;
+}
+
+/**
+ * What the lane knows about each tier's open page and its hold, or that it could
+ * not read it. Unreadable concludes nothing for any tier: it starts no hold,
+ * resets none, and clears nothing (#1134, #1152).
+ */
+export type TierAlertState =
+  | { readable: false }
+  | {
+      readable: true;
+      /** Tiers with a delivered page still open. */
+      firing: Set<string>;
+      /** Tier to the moment its hold began. A tier with no entry is not holding. */
+      holdSinceMs: Map<string, number>;
+    };
+
+export interface TierRecoveryPlan {
+  /** Tiers whose all clear goes out now. Their hold is cleared once it is delivered. */
+  allClear: { tier: string; label: string }[];
+  /** Tiers whose hold begins now. */
+  startHold: string[];
+  /** Tiers whose hold is dropped now: below the count, back at zero, or no page open. */
+  clearHold: string[];
+  /** Tiers holding, for the log: how many times they offer and how long they have held. */
+  holding: { tier: string; openTimes: number; heldMs: number }[];
+  /** Tiers with a page open and fewer than the recovered count, for the log. */
+  short: { tier: string; openTimes: number }[];
+}
+
+/**
+ * What one tick does about ENDING each tier's page.
+ *
+ * A tier whose reads failed is in no list of the plan, so nothing here touches it,
+ * which is the whole rule: an unmeasured tick neither advances a hold, nor resets
+ * it, nor clears a page. The hold is a moment rather than a count of ticks, so a
+ * blind tick in the middle neither adds to it nor takes from it; what the all
+ * clear requires is that THIS tick measured the count and the moment is old enough.
+ */
+export function planTierRecovery(
+  plan: TierAlertPlan,
+  state: TierAlertState,
+  policy: TierRecoveryPolicy,
+  nowMs: number,
+): TierRecoveryPlan {
+  const out: TierRecoveryPlan = { allClear: [], startHold: [], clearHold: [], holding: [], short: [] };
+  if (!state.readable) return out;
+  // Back at zero: the page is open (or about to be), so any hold is over.
+  for (const p of plan.page) if (state.holdSinceMs.has(p.tier)) out.clearHold.push(p.tier);
+  for (const r of plan.recovered) {
+    const since = state.holdSinceMs.get(r.tier);
+    if (!state.firing.has(r.tier)) {
+      // No page open: nothing to clear, and a hold left behind is stale.
+      if (since !== undefined) out.clearHold.push(r.tier);
+      continue;
+    }
+    if (r.openTimes < policy.minOpenTimes) {
+      out.short.push({ tier: r.tier, openTimes: r.openTimes });
+      if (since !== undefined) out.clearHold.push(r.tier);
+      continue;
+    }
+    const start = since ?? nowMs;
+    if (since === undefined) out.startHold.push(r.tier);
+    const heldMs = nowMs - start;
+    if (heldMs >= policy.holdMs) out.allClear.push({ tier: r.tier, label: r.label });
+    else out.holding.push({ tier: r.tier, openTimes: r.openTimes, heldMs });
+  }
+  return out;
 }
 
 // ------------------------------------------------------------------ the copy

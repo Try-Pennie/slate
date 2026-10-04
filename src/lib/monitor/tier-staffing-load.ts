@@ -39,7 +39,15 @@ import { wholeTierPoolCode } from "@/lib/routing/tiers";
 import type { Attributes, Bucket, EventType } from "@/lib/db/types";
 import type { CauseCalendar } from "@/lib/monitor/tier-cause";
 import type { SlotHealth } from "@/lib/monitor/slot-health";
-import type { TierReading } from "@/lib/monitor/tier-staffing";
+import {
+  tierHoldKey,
+  tierStaffingKey,
+  type TierAlertState,
+  type TierReading,
+} from "@/lib/monitor/tier-staffing";
+import { firingKey, mayWriteAlerts } from "@/lib/notify/dispatch";
+import { parseStampMs } from "@/lib/date/stamp";
+import { log } from "@/lib/log";
 
 /** Every debt tier digit, from the shared vocabulary rather than typed out, so a
  *  sixth tier is covered by construction rather than silently unwatched (L96). */
@@ -198,7 +206,69 @@ export function tierReadings(input: {
       slots:
         input.slotByCode === null || health === undefined || health.slotCount === null
           ? { measured: false }
-          : { measured: true, firstSlotMs: health.firstSlotMs },
+          : { measured: true, firstSlotMs: health.firstSlotMs, offeredMs: health.offeredMs ?? [] },
     };
   });
+}
+
+/**
+ * Which tiers have an open page, and since when each has held at the recovered
+ * count (#3227), in ONE read of `alert_state`. It stands in for the read
+ * `resolveRecovered` used to make on every tick that had a healthy tier, so the
+ * hold costs no extra subrequest on the budget four cron lanes share.
+ *
+ * THROWS on a refused read, never an empty answer: no firing markers would read
+ * as no page open, and no holds as every hold reset (L215). The lane maps the
+ * throw to an unreadable state, which concludes nothing for any tier.
+ *
+ * A hold whose stamp cannot be read is treated as not holding, so the next good
+ * tick starts it again: the all clear comes later, never sooner (L50).
+ */
+export async function loadTierAlertState(tiers: string[]): Promise<TierAlertState> {
+  const markers = new Map(tiers.map((t) => [firingKey(tierStaffingKey(t)), t]));
+  const holds = new Map(tiers.map((t) => [tierHoldKey(t), t]));
+  // cap-safe: a primary key lookup, at most two rows per debt tier (five tiers).
+  const { data, error } = await supabaseAdmin()
+    .from("alert_state")
+    .select("key, last_sent_at")
+    .in("key", [...markers.keys(), ...holds.keys()]);
+  if (error) throw new Error(`tier alert state read failed: ${error.message}`);
+  const firing = new Set<string>();
+  const holdSinceMs = new Map<string, number>();
+  for (const row of (data ?? []) as { key: string; last_sent_at: string }[]) {
+    const marked = markers.get(row.key);
+    if (marked !== undefined) firing.add(marked);
+    const held = holds.get(row.key);
+    const ms = held === undefined ? null : parseStampMs(row.last_sent_at);
+    if (held !== undefined && ms !== null) holdSinceMs.set(held, ms);
+  }
+  return { readable: true, firing, holdSinceMs };
+}
+
+/**
+ * Begin each tier's hold at `nowMs`. A write that fails is logged and costs only
+ * time: the next tick finds no hold and starts it again, so the all clear comes
+ * later, never sooner.
+ */
+export async function startTierHolds(tiers: string[], nowMs: number): Promise<void> {
+  if (tiers.length === 0 || !mayWriteAlerts(tierHoldKey(tiers[0]), "tier recovery hold")) return;
+  const at = new Date(nowMs).toISOString();
+  const { error } = await supabaseAdmin()
+    .from("alert_state")
+    .upsert(tiers.map((t) => ({ key: tierHoldKey(t), last_sent_at: at })), { onConflict: "key" });
+  if (error) log.warn("monitor", { msg: "tier recovery hold write failed", tiers: tiers.join(","), error: error.message });
+}
+
+/**
+ * Drop each tier's hold. A delete that fails is logged by name, because a hold
+ * left behind is older than it should be and could let the next all clear out
+ * before the tier has really held the count for the whole hold.
+ */
+export async function clearTierHolds(tiers: string[]): Promise<void> {
+  if (tiers.length === 0 || !mayWriteAlerts(tierHoldKey(tiers[0]), "tier recovery hold clear")) return;
+  const { error } = await supabaseAdmin()
+    .from("alert_state")
+    .delete()
+    .in("key", tiers.map(tierHoldKey));
+  if (error) log.error("monitor", { msg: "tier recovery hold clear failed", tiers: tiers.join(","), error: error.message });
 }
