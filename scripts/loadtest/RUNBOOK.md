@@ -714,16 +714,25 @@ somebody spends an afternoon on a cache that was never the problem (L11).
 
 **Before dispatching, confirm the lanes are stamping.** After the `loadtest`
 Worker is created or redeployed, read the branch's `lane_heartbeats` (read only)
-and wait until at least one of `sync`, `outbox` and `selfheal` has a `last_ran_at`
-under two and a half minutes old, the same test the preflight applies:
+and wait until at least one lane in `DELIVERY_LANES` (`scripts/loadtest/preflight.ts`)
+has a `last_ran_at` no older than `WARMUP_CRON_FRESH_MS`
+(`scripts/loadtest/preflight-checks.ts`). That is the same test the preflight
+applies, so read the lane list and the bound from those two constants rather than
+from this page. The read is the preflight's own, with `<DELIVERY_LANES>` standing for
+that list joined with commas:
 
+<!-- runbook-reference: a PostgREST path template, not a command; `<DELIVERY_LANES>` is
+     a placeholder for the constant in scripts/loadtest/preflight.ts, which builds the
+     same path and reads `lane` and `last_ran_at` (columns from
+     supabase/migrations/0055_lane_heartbeats.sql). Read only, against the loadtest
+     branch, never production. -->
 ```
-lane_heartbeats?select=lane,last_ran_at&lane=in.(sync,outbox,selfheal)
+lane_heartbeats?select=lane,last_ran_at&lane=in.(<DELIVERY_LANES>)
 ```
 
 A dispatch onto a Worker that is not yet ticking spends its preflight waiting, and
-if the delivery outruns even the 45 minute deadline the run refuses and measures
-nothing. Waiting outside the run costs no Actions minutes; waiting inside it does.
+if the delivery outruns even `WARMUP_CRON_DELIVERY_DEADLINE_MS` the run refuses and
+measures nothing. Waiting outside the run costs no Actions minutes; waiting inside it does.
 
 The ladder is pure (`warmupStep` in `preflight-checks.ts`) and pinned offline by
 `scripts/test-loadtest-warmup.ts`, so every rung and every refusal is driven with

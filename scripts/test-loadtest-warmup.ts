@@ -148,9 +148,19 @@ function giveUpWhy(r: WarmupReading, p: WarmupProgress, label: string): string {
   // or GitHub kills the job mid wait and the reader gets a cancellation instead of
   // the give up wording that says the deployment is still standing (L11).
   const yml = readFileSync(new URL("../.github/workflows/loadtest.yml", import.meta.url), "utf8");
-  const job = /^ {2}preflight:\n([\s\S]*?)(?=^ {2}[a-z-]+:\n)/m.exec(yml)?.[1] ?? "";
-  const minutes = Number(/^ {4}timeout-minutes:\s*(\d+)/m.exec(job)?.[1] ?? NaN);
-  assert(Number.isFinite(minutes), "the preflight job declares a timeout-minutes this can read");
+  // The block ends at the next line indented exactly two spaces that starts a key
+  // of ANY spelling (underscores, digits, quotes), or at the end of the file. A
+  // narrower boundary would run on into the next job, and a preflight with no
+  // timeout of its own would then be answered by that job's.
+  const match = /^ {2}preflight:[^\n]*\n([\s\S]*?)(?=^ {2}[^\s#][^\n]*:|(?![\s\S]))/m.exec(yml);
+  assert(match !== null, "the workflow has a preflight job this can find");
+  const job = match?.[1] ?? "";
+  // Job level keys sit at four spaces; a step's own timeout sits deeper and must
+  // not answer for the job.
+  const own = /^ {4}timeout-minutes:\s*(\d+)\s*$/m.exec(job);
+  assert(own !== null, "the preflight job declares a timeout-minutes of its own");
+  const minutes = Number(own?.[1] ?? NaN);
+  assert(Number.isFinite(minutes), "and it is a number");
   const deadlineMinutes = WARMUP_CRON_DELIVERY_DEADLINE_MS / 60_000;
   assert(
     minutes >= deadlineMinutes + 10,
