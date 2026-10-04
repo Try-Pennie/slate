@@ -20,6 +20,23 @@
 //   refusal still fails the preflight, naming both times, because two lost slots in
 //   a row is no longer a race with our own drive and says something about the run.
 import { offeredSlots } from "./book-plan.ts";
+import { SLOT_TTL_SECONDS } from "../../src/lib/availability/slot-cache.ts";
+
+/**
+ * How long to wait before any re-read of the offered times.
+ *
+ * /api/availability answers first from the edge cache (`caches.default`) for
+ * SLOT_TTL_SECONDS. A recompute drive deletes that entry only for the pools it
+ * judges due (`poolsDueForRecompute`), and a SLOT_TAKEN deletes nothing, so a read
+ * straight afterwards can be served the very list the refresh exists to replace.
+ * Waiting out the cache lifetime, plus a margin for clock and delivery slack, means
+ * the re-read reaches the stored row. Derived from the shipped TTL so raising it
+ * raises this rather than leaving the wait short.
+ */
+const SLOT_CACHE_SETTLE_MARGIN_MS = 1_500;
+export const SLOT_CACHE_SETTLE_MS = SLOT_TTL_SECONDS * 1000 + SLOT_CACHE_SETTLE_MARGIN_MS;
+
+export type Sleep = (ms: number) => Promise<void>;
 
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
@@ -53,11 +70,13 @@ export async function refreshAfterWarmup(
   deps: {
     driveRecompute: () => Promise<string>;
     readSlots: () => Promise<string[]>;
+    sleep: Sleep;
     log?: (line: string) => void;
   },
 ): Promise<{ refreshed: boolean; slots: string[] }> {
   if (!needsPostWarmupRefresh(p)) return { refreshed: false, slots };
   const answered = await deps.driveRecompute();
+  await deps.sleep(SLOT_CACHE_SETTLE_MS);
   const fresh = await deps.readSlots();
   deps.log?.(
     `recompute after ${p.hydrationDrives} hydration drive(s), before choosing the control slot: ` +
@@ -73,6 +92,8 @@ export interface ControlBookingDeps {
   bucketCode: string;
   /** The booking body for a given start; the caller owns the attendee and ids. */
   bodyFor: (start: string) => Record<string, unknown>;
+  /** Waits out the edge slot cache before the retry's re-read. */
+  sleep: Sleep;
   log?: (line: string) => void;
 }
 
@@ -119,8 +140,10 @@ export async function bookControlSlot(
   }
 
   // Read again rather than take the next entry of the stale list: the list that
-  // offered a taken time is the thing in doubt.
-  const fresh = await readOfferedSlots(deps.fetch, deps.baseUrl, deps.bucketCode);
+  // offered a taken time is the thing in doubt. And wait out the edge cache first,
+  // or the "fresh" read can be that same cached list.
+  await deps.sleep(SLOT_CACHE_SETTLE_MS);
+  const fresh =await readOfferedSlots(deps.fetch, deps.baseUrl, deps.bucketCode);
   const next = fresh.find((s) => s !== first);
   if (next === undefined) {
     return {

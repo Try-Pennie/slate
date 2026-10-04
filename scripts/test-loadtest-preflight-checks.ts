@@ -23,8 +23,10 @@ import {
   refreshAfterWarmup,
   readOfferedSlots,
   bookControlSlot,
+  SLOT_CACHE_SETTLE_MS,
   type FetchLike,
 } from "./loadtest/preflight-control.ts";
+import { SLOT_TTL_SECONDS } from "../src/lib/availability/slot-cache.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 // --- an id the stub really produced is recognised -----------------------------
@@ -648,6 +650,9 @@ const NINE_FORTY = "2026-10-05T13:40:00.000Z";
 const TAKEN = { status: 409, body: { error: "That time was just taken", code: "SLOT_TAKEN" } };
 const BOOKED = { status: 200, body: { id: "b1" } };
 
+/** A sleep that returns at once, for the cases that are not about the wait. */
+const noSleep = async (_ms: number): Promise<void> => {};
+
 function bookingDeps(fetch: FetchLike, log: string[]) {
   return {
     fetch,
@@ -656,6 +661,7 @@ function bookingDeps(fetch: FetchLike, log: string[]) {
     bucketCode: "112",
     bodyFor: (start: string) => ({ bucketCode: "112", start }),
     log: (line: string) => log.push(line),
+    sleep: noSleep,
   };
 }
 
@@ -671,6 +677,7 @@ function bookingDeps(fetch: FetchLike, log: string[]) {
       return "{}";
     },
     readSlots: () => readOfferedSlots(fetch, "https://loadtest.example", "112"),
+    sleep: noSleep,
   });
   eq(drives, 1, "the refresh drives the recompute lane exactly once");
   eq(calls.filter((c) => c.url.includes("/api/availability")).length, 1, "and reads availability again");
@@ -691,6 +698,7 @@ function bookingDeps(fetch: FetchLike, log: string[]) {
       return "{}";
     },
     readSlots: () => readOfferedSlots(fetch, "https://loadtest.example", "112"),
+    sleep: noSleep,
   });
   eq(drives, 0, "no recompute is driven");
   eq(calls.length, 0, "and availability is not read again");
@@ -765,6 +773,93 @@ function bookingDeps(fetch: FetchLike, log: string[]) {
   const out = await bookControlSlot([NINE], bookingDeps(fetch, []));
   assert(!out.ok, "a fresh list holding only the refused time fails");
   eq(calls.filter((c) => c.method === "POST").length, 1, "without posting that time twice");
+}
+
+// --- every re-read waits out the edge slot cache first -------------------------
+//
+// /api/availability answers first from `caches.default` for SLOT_TTL_SECONDS. A
+// recompute drive deletes that entry only for the pools it decides are due, so a
+// read straight after the drive (or straight after a SLOT_TAKEN) can be served the
+// very list the refresh exists to replace. Each re-read therefore waits longer than
+// the cache lifetime, through an injected sleep so nothing here waits for real.
+
+/** Records requests and sleeps in ONE order, so "slept before it read" is checkable. */
+function orderedNetwork(availability: string[][], bookings: { status: number; body: unknown }[]) {
+  const events: string[] = [];
+  const net = fakeNetwork(availability, bookings);
+  const fetch: FetchLike = async (url, init) => {
+    events.push(url.includes("/api/availability") ? "read" : "book");
+    return net.fetch(url, init);
+  };
+  const sleep = async (ms: number) => {
+    events.push(`sleep:${ms}`);
+  };
+  return { fetch, sleep, events };
+}
+
+function sleptLongEnoughBeforeEachRead(events: string[]): boolean {
+  return events.every((e, i) => {
+    if (e !== "read") return true;
+    const before = events[i - 1] ?? "";
+    return before.startsWith("sleep:") && Number(before.slice(6)) >= SLOT_TTL_SECONDS * 1000;
+  });
+}
+
+{
+  // The post warm up refresh: drive, then wait out the cache, then read.
+  const { fetch, sleep, events } = orderedNetwork([[NINE_TWENTY]], []);
+  await refreshAfterWarmup({ hydrationDrives: 3 }, [NINE], {
+    driveRecompute: async () => {
+      events.push("recompute");
+      return "{}";
+    },
+    readSlots: () => readOfferedSlots(fetch, "https://loadtest.example", "112"),
+    sleep,
+  });
+  eq(events[0], "recompute", "the refresh drives the recompute lane first");
+  assert(
+    events.includes("read") && sleptLongEnoughBeforeEachRead(events),
+    `and sleeps at least SLOT_TTL_SECONDS (${SLOT_TTL_SECONDS}s) between the drive and the re-read: ${events.join(", ")}`,
+  );
+}
+
+{
+  // The quiet direction spends no wait: nothing is re-read.
+  const { fetch, sleep, events } = orderedNetwork([[NINE_TWENTY]], []);
+  await refreshAfterWarmup({ hydrationDrives: 0 }, [NINE], {
+    driveRecompute: async () => "{}",
+    readSlots: () => readOfferedSlots(fetch, "https://loadtest.example", "112"),
+    sleep,
+  });
+  eq(events, [], "a warm up with no hydration drive neither sleeps nor reads");
+}
+
+{
+  // The SLOT_TAKEN retry: refused, then wait out the cache, then read, then book.
+  const { fetch, sleep, events } = orderedNetwork([[NINE, NINE_TWENTY]], [TAKEN, BOOKED]);
+  const out = await bookControlSlot([NINE], { ...bookingDeps(fetch, []), sleep });
+  assert(out.ok, "the retry still books after its wait");
+  eq(events.filter((e) => e.startsWith("sleep:")).length, 1, "with exactly one wait, before the one re-read");
+  assert(
+    events[0] === "book" && events.includes("read") && sleptLongEnoughBeforeEachRead(events),
+    `the retry sleeps at least SLOT_TTL_SECONDS (${SLOT_TTL_SECONDS}s) before re-reading: ${events.join(", ")}`,
+  );
+}
+
+{
+  // A first time success never waits.
+  const { fetch, sleep, events } = orderedNetwork([[NINE]], [BOOKED]);
+  await bookControlSlot([NINE], { ...bookingDeps(fetch, []), sleep });
+  eq(events, ["book"], "a control that books first time neither sleeps nor re-reads");
+}
+
+{
+  // The wait is DERIVED from the cache lifetime, with room to spare, so raising the
+  // TTL raises the wait rather than leaving it short.
+  assert(
+    SLOT_CACHE_SETTLE_MS > SLOT_TTL_SECONDS * 1000,
+    `the settle wait (${SLOT_CACHE_SETTLE_MS}ms) is longer than the cache lifetime`,
+  );
 }
 
 finish();

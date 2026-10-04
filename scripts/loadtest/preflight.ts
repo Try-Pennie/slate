@@ -281,6 +281,7 @@ try {
   ({ slots } = await refreshAfterWarmup(progress, slots, {
     driveRecompute: () => driveLane("recompute"),
     readSlots,
+    sleep,
     log: (line) => console.log(line),
   }));
 } catch (err) {
@@ -311,6 +312,7 @@ try {
         phone: loadtestPhone(externalId),
       },
     }),
+    sleep,
     log: (line) => console.log(line),
   });
 } catch (err) {
