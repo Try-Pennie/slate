@@ -340,25 +340,30 @@ export function cspViolationAlert(v: {
  * What the refusal did to the page, which depends on what was refused.
  *
  * A refused file or address never arrived, so part of the page did not load. A
- * refused keyword (`eval`, `inline`) is different, and what it means depends on the
- * rule: under `script-src` some code was stopped from running, under `style-src`
- * some inline styling was not applied, and under anything else nothing ran or
- * loaded that this can name. On 2026-10-04 the old sentence told the alert channel
- * part of the manage page had not loaded, about an eval measured to come from code
- * that page does not ship.
+ * refused `eval` or `inline` is different, and what it means depends on the rule:
+ * under `script-src` some code was stopped from running, and under `style-src` some
+ * styling was not applied. Anything else, the Trusted Types keywords included, gets
+ * a neutral sentence, because no code was necessarily stopped. On 2026-10-04 the old
+ * sentence told the alert channel part of the manage page had not loaded, about an
+ * eval measured to come from code that page does not ship.
  *
- * It points at `source=` only when the report named a script: a refusal can come
- * from a browser's own features or an extension, and many reports carry no source,
- * where the field reads `(none)` and sending somebody to it finds nothing.
+ * It points at `source=` only when the report named one: a refusal can come from a
+ * browser's own features or an extension, and many reports carry none, where
+ * sending somebody to the field finds nothing. Under `script-src` the source is the
+ * script that tried it; elsewhere it is usually the page, so the pointer is neutral.
  */
 function refusalConsequence(directive: string, b: BlockedResource, sourceNamed: boolean): string {
   if (b.kind !== "keyword") return "Part of that page did not load for whoever had it open.";
-  const pointer = sourceNamed ? " source= on the log line names the script that tried it." : "";
-  if (directive === "script-src") {
-    return `Some code on that page was stopped from running for whoever had it open.${pointer}`;
-  }
-  if (directive === "style-src") {
-    return `So some of that page's styling was not applied for whoever had it open.${pointer}`;
+  const codeOrStyle = b.keyword === "eval" || b.keyword === "inline";
+  const scripted = codeOrStyle && directive === "script-src";
+  const pointer = !sourceNamed
+    ? ""
+    : scripted
+      ? " source= on the log line names the script that tried it."
+      : " source= on the log line names where it came from.";
+  if (scripted) return `Some code on that page was stopped from running for whoever had it open.${pointer}`;
+  if (codeOrStyle && directive === "style-src") {
+    return `Some of that page's styling was not applied for whoever had it open.${pointer}`;
   }
   return `Something on that page was refused for whoever had it open.${pointer}`;
 }

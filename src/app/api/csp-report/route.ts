@@ -84,7 +84,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         directive: decision.directive,
         surface: decision.surface,
         blocked: decision.blocked,
-        sourceNamed: violation.source !== "(none)",
+        sourceNamed: violation.sourceNamed,
       }),
     );
   } catch (err) {

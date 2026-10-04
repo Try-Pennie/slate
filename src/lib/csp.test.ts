@@ -167,6 +167,19 @@ describe("summariseViolation", () => {
     expect(s.document).toContain("[redacted]");
   });
 
+  it("says whether the report named where the refusal came from, so no caller compares the sentinel", () => {
+    const named = summariseViolation({
+      "csp-report": { "violated-directive": "script-src", "blocked-uri": "eval", "source-file": "https://slate.trypennie.app/x.js" },
+    });
+    const unnamed = summariseViolation({ "csp-report": { "violated-directive": "script-src", "blocked-uri": "eval" } });
+    const empty = summariseViolation({ "csp-report": { "violated-directive": "script-src", "blocked-uri": "eval", "source-file": "" } });
+
+    expect(named.sourceNamed).toBe(true);
+    expect(unnamed.sourceNamed).toBe(false);
+    expect(empty.sourceNamed).toBe(false);
+    expect(summariseViolation(null).sourceNamed).toBe(false);
+  });
+
   it("says the directive is unknown rather than inventing one, for an unreadable body", () => {
     // A report that cannot be read must not be counted as a violation of something
     // in particular: that would send somebody to fix a directive nothing reported.

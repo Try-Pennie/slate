@@ -282,6 +282,22 @@ describe("the page an enforced violation sends (#2575)", () => {
     expect(text).not.toContain("did not load");
     expect(text).toContain("styling");
     expect(text).not.toContain("inline code");
+    // Its own sentence, not one opening on "So" after a full stop.
+    expect(text).not.toMatch(/\. So /);
+    // The source of a style refusal is the page, not a script.
+    expect(text).toContain("source=");
+    expect(text).not.toContain("script that tried it");
+  });
+
+  it("never says code was stopped for a Trusted Types refusal", async () => {
+    for (const blocked of ["trusted-types-policy", "trusted-types-sink"]) {
+      dispatch.sendThrottledAlert.mockClear();
+      await POST(req({ "csp-report": { ...ENFORCED["csp-report"], "violated-directive": "script-src", "blocked-uri": blocked } }));
+
+      const text = dispatch.sendThrottledAlert.mock.calls[0][2];
+      expect(text).not.toContain("stopped from running");
+      expect(text).not.toContain("did not load");
+    }
   });
 
   it("still says part of the page did not load when what was refused is a file", async () => {
