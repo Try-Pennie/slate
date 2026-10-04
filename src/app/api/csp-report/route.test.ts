@@ -54,6 +54,56 @@ describe("POST /api/csp-report (#2565)", () => {
     );
   });
 
+  it("logs the script that tried the refused thing, in both report shapes", async () => {
+    // 2026-10-04: an eval refusal on the manage page could only be traced by joining
+    // the report against the Worker's invocation records by hand, because nothing
+    // here said which script had tried it. The report carries it, so the log does.
+    await POST(
+      req({
+        "csp-report": {
+          "document-uri": "https://slate.trypennie.app/booking/manage/tok-secret",
+          "violated-directive": "script-src",
+          "blocked-uri": "eval",
+          "source-file": "https://slate.trypennie.app/booking/manage/tok-secret?x=1",
+          "line-number": 3,
+          "column-number": 19,
+          disposition: "enforce",
+        },
+      }),
+    );
+    await POST(
+      req(
+        [
+          {
+            type: "csp-violation",
+            body: {
+              documentURL: "https://slate.trypennie.app/book",
+              effectiveDirective: "script-src",
+              blockedURL: "eval",
+              sourceFile: "https://slate.trypennie.app/_next/static/chunks/abc.js",
+              lineNumber: 1,
+              columnNumber: 2345,
+              disposition: "enforce",
+            },
+          },
+        ],
+        "application/reports+json",
+      ),
+    );
+
+    const sources = logged.warn.mock.calls.map((c) => (c[1] as { source?: string }).source);
+    expect(sources).toEqual([
+      "https://slate.trypennie.app/booking/manage/[redacted]:3:19",
+      "https://slate.trypennie.app/_next/static/chunks/abc.js:1:2345",
+    ]);
+  });
+
+  it("says so when the report names no script, rather than leaving the field out", async () => {
+    await POST(req(LEGACY));
+
+    expect(logged.warn).toHaveBeenCalledWith("csp-report", expect.objectContaining({ source: "(none)" }));
+  });
+
   it("never logs a booking manage token out of a reported URL", async () => {
     // The manage page's URL IS a credential. #2564 took it out of the warehouse;
     // an endpoint the whole internet can post to must not put it in the logs.
@@ -182,6 +232,24 @@ describe("the page an enforced violation sends (#2575)", () => {
     for (const leak of ["tok-secret", "Dana", "dana", "example.com", "2155550100", "00Q123", "?", "steal.js", "trypennie.com/my-offers"]) {
       expect(text).not.toContain(leak);
     }
+  });
+
+  it("says code was STOPPED FROM RUNNING for a refused eval, never that part of the page did not load", async () => {
+    // An eval refusal stops a script that is already running from building more
+    // code; nothing failed to load. On 2026-10-04 the page said it had, about a
+    // refusal measured to come from code Slate does not ship.
+    await POST(req({ "csp-report": { ...ENFORCED["csp-report"], "violated-directive": "script-src", "blocked-uri": "eval" } }));
+
+    const text = dispatch.sendThrottledAlert.mock.calls[0][2];
+    expect(text).toContain("stopped from running");
+    expect(text).not.toContain("did not load");
+    expect(text).toContain("source=");
+  });
+
+  it("still says part of the page did not load when what was refused is a file", async () => {
+    await POST(req(ENFORCED));
+
+    expect(dispatch.sendThrottledAlert.mock.calls[0][2]).toContain("did not load");
   });
 
   it("never keys on text a caller invented", async () => {

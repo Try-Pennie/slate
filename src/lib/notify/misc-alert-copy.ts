@@ -322,9 +322,27 @@ export function cspViolationAlert(v: { directive: string; surface: string; block
   const rule = v.directive === "other" ? "under a rule Slate's policy does not name" : `under its ${v.directive} rule`;
   return (
     `A browser refused ${what} on ${where}, because the enforced content security policy does not allow it (${rule}). ` +
-    "Part of that page did not load for whoever had it open. Either the policy is missing something the page needs, " +
+    `${refusalConsequence(v.blocked)} Either the policy is missing something the page needs, ` +
     "or it stopped something that should never have run. Every report is in the Worker logs under tag=csp-report."
   );
+}
+
+/**
+ * What the refusal did to the page, which depends on what was refused.
+ *
+ * A refused file or address never arrived, so part of the page did not load. A
+ * refused `eval` or inline script is different: some code was stopped from running,
+ * and nothing failed to load. It is not necessarily Slate's code either, since a
+ * browser's own features and extensions run code on the page too, so it points at
+ * the `source=` field, which names the script that tried it. On 2026-10-04 the old
+ * sentence told the alert channel part of the manage page had not loaded, about an
+ * eval measured to come from code that page does not ship.
+ */
+function refusalConsequence(b: BlockedResource): string {
+  if (b.kind === "keyword") {
+    return "Some code on that page was stopped from running for whoever had it open; source= on the log line names the script that tried it.";
+  }
+  return "Part of that page did not load for whoever had it open.";
 }
 
 function describeBlocked(b: BlockedResource): string {

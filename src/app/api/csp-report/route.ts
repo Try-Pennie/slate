@@ -67,6 +67,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     blocked: violation.blocked,
     document: violation.document,
     referrer: violation.referrer,
+    source: violation.source,
     disposition: violation.disposition,
     paged: decision.page,
     ...(decision.page ? {} : { not_paged: decision.why }),
