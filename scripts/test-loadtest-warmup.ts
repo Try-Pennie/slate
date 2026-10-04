@@ -133,10 +133,12 @@ function giveUpWhy(r: WarmupReading, p: WarmupProgress, label: string): string {
     "a Worker with no stamp at the measured 27 minute delivery is still waited for",
   );
   // Headroom over the one slow reading, not a deadline that just clears it: the
-  // delay is evidently not a fixed number, so the bound sits well past it.
+  // delay is evidently not a fixed number, so the bound sits well past it. Four
+  // tenths rather than more, because the job also holds two stored row waits under
+  // the sixty minute ceiling every job carries.
   assert(
-    WARMUP_CRON_DELIVERY_DEADLINE_MS >= measuredFirstTickMs * 1.5,
-    "the delivery deadline leaves at least half again the measured 27 minutes",
+    WARMUP_CRON_DELIVERY_DEADLINE_MS >= measuredFirstTickMs * 1.4,
+    "the delivery deadline leaves at least four tenths again the measured 27 minutes",
   );
   // And the wait stays bounded (L110): an hour is the ceiling, because the job
   // holding it has a timeout of its own and a run waiting longer is a dead Worker.

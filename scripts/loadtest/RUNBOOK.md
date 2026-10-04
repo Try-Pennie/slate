@@ -693,11 +693,12 @@ holds `LOADTEST_CRON_SECRET`:
    stamp a heartbeat inside `WARMUP_CRON_FRESH_MS`. Waited for and never driven, or
    a stamp the preflight wrote itself would answer the question with its own work
    (L58). Deliberately not `recompute`, which step three drives. The deadline is
-   `WARMUP_CRON_DELIVERY_DEADLINE_MS`, **45 minutes**. It was twelve until run
+   `WARMUP_CRON_DELIVERY_DEADLINE_MS`, **38 minutes**. It was twelve until run
    37221540890 refused a healthy deployment whose first tick arrived at 27
    minutes (#3229), so it now sits well past the slowest delivery measured and
-   stays bounded (L110). The preflight job's `timeout-minutes` is 60, and
-   `scripts/test-loadtest-warmup.ts` fails if it drops below the deadline plus ten,
+   stays bounded (L110). The preflight job's `timeout-minutes` is 60, the ceiling
+   every job carries, and `scripts/test-loadtest-warmup.ts` fails if it drops
+   below the deadline plus two stored row waits (#3236) plus ten,
    so a slow delivery ends in the preflight's own wording rather than a job
    cancellation;
 2. **drive** `/api/cron/hydrate-calendars` until `agent_calendars.sync_window_to`
