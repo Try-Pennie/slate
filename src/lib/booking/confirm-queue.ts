@@ -113,7 +113,22 @@ export interface LineSeat {
    * is handed on now rather than when this one finishes.
    */
   claim(userId: string, othersRemain: boolean): void;
+  /**
+   * This confirm will take NO advisor at this time (#3257): the direct booking
+   * API found the lead already holds it, or must ask them before moving. The line
+   * is handed on at once, so its arm never holds up a lead booking for real.
+   */
+  pass(): void;
 }
+
+/**
+ * How many confirms arriving at a BUSY line may each make one cheap read of their
+ * own before joining it (#3257), so a replay of a booking that already exists is
+ * answered at once rather than waiting behind a confirm that is still booking.
+ * Bounded per line, because a hundred such reads at once are the crowd the line
+ * exists to hold back; the rest join the line and are answered from its verdict.
+ */
+export const CONFIRM_LINE_LOOKAHEAD = 2;
 
 export type QueueTurn<T> =
   /**
@@ -130,6 +145,13 @@ export type QueueTurn<T> =
 export interface ConfirmQueue<T> {
   /** `waitMs` overrides the queue's own bound for this one follower. */
   enter(key: string, waitMs?: number): Promise<QueueTurn<T>>;
+  /**
+   * Permission to make one cheap read before joining a BUSY line, as a function
+   * that gives the permission back (call it exactly once), or null: the line is
+   * idle, so just enter and lead, or `CONFIRM_LINE_LOOKAHEAD` reads are already in
+   * flight on it, so wait in line like the rest.
+   */
+  lookahead(key: string): (() => void) | null;
 }
 
 interface Waiter<T> {
@@ -146,6 +168,8 @@ interface Line<T> {
   waiting: Waiter<T>[];
   holder: object | null;
   claims: Map<object, string | null>;
+  /** Cheap reads in flight ahead of joining this line (`lookahead`). */
+  looking: number;
 }
 
 export function makeConfirmQueue<T>(
@@ -155,6 +179,18 @@ export function makeConfirmQueue<T>(
   const timer = opts.timer ?? realTimer;
   // A key is present while somebody leads it or waits in it.
   const lines = new Map<string, Line<T>>();
+  // Removes THIS line only: a lookahead returned after its line settled must not
+  // delete a newer line that has since been opened under the same key.
+  const drop = (key: string, line: Line<T>) => {
+    if (lines.get(key) === line) lines.delete(key);
+  };
+  // The one test for a line nobody needs any more: nobody leading it without
+  // having handed on, nobody waiting, no claim in flight, no lookahead out.
+  const dropIfIdle = (key: string, line: Line<T>) => {
+    if (line.holder === null && line.waiting.length === 0 && line.claims.size === 0 && line.looking === 0) {
+      drop(key, line);
+    }
+  };
 
   const promoteNext = (key: string, line: Line<T>): void => {
     if (line.holder !== null) return;
@@ -163,7 +199,7 @@ export function makeConfirmQueue<T>(
       next.answer(leadTurn(key, line));
       return;
     }
-    if (line.claims.size === 0) lines.delete(key);
+    dropIfIdle(key, line);
   };
 
   const leadTurn = (key: string, line: Line<T>): QueueTurn<T> => {
@@ -190,6 +226,11 @@ export function makeConfirmQueue<T>(
           line.claims.set(me, userId);
           if (othersRemain) handOn();
         },
+        pass() {
+          if (reported) return;
+          line.claims.set(me, null);
+          handOn();
+        },
       },
       done(verdict) {
         if (reported) return;
@@ -200,7 +241,7 @@ export function makeConfirmQueue<T>(
         // confirm is still booking in it: one in flight may yet fail and leave its
         // advisor free, so then the next in line asks for itself.
         if (verdict.full && line.claims.size === 0) {
-          lines.delete(key);
+          drop(key, line);
           for (const w of line.waiting.splice(0)) {
             w.answer({ kind: "refused", refusal: verdict.refusal, settled: verdict.settled });
           }
@@ -215,7 +256,7 @@ export function makeConfirmQueue<T>(
     enter(key, ownWaitMs) {
       const existing = lines.get(key);
       if (!existing) {
-        const line: Line<T> = { waiting: [], holder: null, claims: new Map() };
+        const line: Line<T> = { waiting: [], holder: null, claims: new Map(), looking: 0 };
         lines.set(key, line);
         return Promise.resolve(leadTurn(key, line));
       }
@@ -239,11 +280,26 @@ export function makeConfirmQueue<T>(
           settled = true;
           const i = line.waiting.indexOf(waiter);
           if (i >= 0) line.waiting.splice(i, 1);
-          if (line.holder === null && line.waiting.length === 0 && line.claims.size === 0) lines.delete(key);
+          dropIfIdle(key, line);
           resolve({ kind: "unqueued" });
         });
         line.waiting.push(waiter);
       });
+    },
+    lookahead(key) {
+      const line = lines.get(key);
+      // An idle line, or one whose leaders have all handed on: entering leads at
+      // once, so there is nothing to look ahead of.
+      if (!line || (line.holder === null && line.waiting.length === 0)) return null;
+      if (line.looking >= CONFIRM_LINE_LOOKAHEAD) return null;
+      line.looking++;
+      let returned = false;
+      return () => {
+        if (returned) return;
+        returned = true;
+        line.looking--;
+        dropIfIdle(key, line);
+      };
     },
   };
 }

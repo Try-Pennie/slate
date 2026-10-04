@@ -13,6 +13,7 @@ import {
   confirmLineWaitMs,
   CONFIRM_QUEUE_WAIT_MS,
   CONFIRM_QUEUE_RESERVE_MS,
+  CONFIRM_LINE_LOOKAHEAD,
   type QueueTurn,
 } from "../src/lib/booking/confirm-queue.ts";
 import { BOOKING_CONFIRM_BUDGET_MS } from "../src/lib/booking/confirm-budget.ts";
@@ -218,6 +219,71 @@ async function main() {
     if (first.kind === "lead") first.done({ full: true, refusal: "race", settled: "first" });
     const t = await follower;
     assert(t.kind === "refused" && t.settled === "first", "last advisor: the follower is refused from the verdict");
+  }
+
+  // --- #3257: a leader that takes no advisor here hands on at once -----------
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = await q.enter("slot");
+    const seen: string[] = [];
+    const second = q.enter("slot").then((t) => (seen.push(t.kind), t));
+    await tick();
+    assert(seen.length === 0, "pass: the follower waits while the leader decides");
+    if (first.kind === "lead") first.seat.pass();
+    await tick();
+    assert(JSON.stringify(seen) === JSON.stringify(["lead"]), `pass: the next leads at once (got ${JSON.stringify(seen)})`);
+    const t2 = await second;
+    if (t2.kind === "lead") assert(t2.seat.claimedByOthers().size === 0, "pass: a leader that passed claims nobody");
+    if (first.kind === "lead") first.done({ full: false });
+    if (t2.kind === "lead") t2.done({ full: false });
+  }
+
+  // --- #3257: the lookahead is offered only at a busy line, and is bounded ----
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    assert(q.lookahead("slot") === null, "lookahead: an idle line offers none, the confirm just leads");
+    const first = await q.enter("slot");
+    const gives = Array.from({ length: CONFIRM_LINE_LOOKAHEAD + 1 }, () => q.lookahead("slot"));
+    assert(
+      gives.filter((g) => g !== null).length === CONFIRM_LINE_LOOKAHEAD,
+      `lookahead: a busy line offers exactly ${CONFIRM_LINE_LOOKAHEAD} at once`,
+    );
+    gives[0]?.();
+    gives[0]?.(); // giving it back twice frees only one place
+    const again = [q.lookahead("slot"), q.lookahead("slot")];
+    assert(again.filter((g) => g !== null).length === 1, "lookahead: a returned place is offered again, once");
+    for (const g of [...gives, ...again]) g?.();
+    if (first.kind === "lead") first.done({ full: false });
+    const fresh = await q.enter("slot");
+    assert(fresh.kind === "lead", "lookahead: the line is released once its leader and lookaheads are done");
+    if (fresh.kind === "lead") fresh.done({ full: false });
+  }
+
+  // --- #3257: a lookahead returned after its line settled leaves a newer one ---
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = await q.enter("slot");
+    const give = q.lookahead("slot");
+    if (first.kind === "lead") first.done({ full: true, refusal: "race", settled: null });
+    const newer = await q.enter("slot");
+    const follower = q.enter("slot");
+    give?.();
+    // A confirm arriving after the stale give back must still find the newer line
+    // busy and wait, rather than open a second line and lead beside it.
+    const later = q.enter("slot");
+    let laterAnswered = false;
+    void later.then(() => (laterAnswered = true));
+    await tick();
+    assert(!laterAnswered, "stale lookahead: a later arrival still waits in the newer line");
+    if (newer.kind === "lead") newer.done({ full: false });
+    const t = await follower;
+    assert(t.kind === "lead", "stale lookahead: the newer line hands on normally");
+    if (t.kind === "lead") t.done({ full: false });
+    const t2 = await later;
+    if (t2.kind === "lead") t2.done({ full: false });
   }
 
   finish();

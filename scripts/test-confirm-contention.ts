@@ -41,14 +41,16 @@ import {
   ExistingCallError,
   confirmQueueKey,
   queueKeyBeforeRouting,
+  stableKeyFor,
   type BookingDeps,
   type CreateBookingInput,
   type BookingResult,
 } from "../src/lib/booking/orchestration.ts";
 import { withinBookingConfirmBudget, BOOKING_CONFIRM_BUDGET_MS } from "../src/lib/booking/confirm-budget.ts";
-import { makeConfirmQueue, CONFIRM_QUEUE_WAIT_MS, type ConfirmQueue } from "../src/lib/booking/confirm-queue.ts";
+import { makeConfirmQueue, CONFIRM_QUEUE_WAIT_MS, CONFIRM_LINE_LOOKAHEAD, type ConfirmQueue } from "../src/lib/booking/confirm-queue.ts";
 import type { Booking, User } from "../src/lib/db/types.ts";
-import { createAsserter, makeDeps, makeBooking, input, users } from "./lib/booking-fakes.ts";
+import type { BookingContext } from "../src/lib/booking/orchestration.ts";
+import { createAsserter, makeDeps, makeBooking, input, users, bucket as fakeBucket, eventType as fakeEventType } from "./lib/booking-fakes.ts";
 import { VirtualClock, SharedResource, onSharedCapacity, type CallRecord } from "./lib/confirm-contention-sim.ts";
 
 const { assert, finish } = createAsserter();
@@ -80,8 +82,9 @@ const NO_QUEUE: ConfirmQueue<never> = {
     kind: "lead",
     done: () => {},
     waiting: () => 0,
-    seat: { claimedByOthers: () => new Set<string>(), claim: () => {} },
+    seat: { claimedByOthers: () => new Set<string>(), claim: () => {}, pass: () => {} },
   }),
+  lookahead: () => null,
 };
 
 function lead(i: number, over: Partial<CreateBookingInput> = {}): CreateBookingInput {
@@ -127,6 +130,10 @@ async function burst(opts: {
   /** The FIRST calendar write for this advisor's email fails at once, an outage
    *  that ends that confirm and frees the advisor it claimed. */
   failFirstEventFor?: string;
+  /** The booking a reschedule loads by its token, for a lead moving their call. */
+  existingContext?: BookingContext;
+  /** How long Google takes on a reschedule: the live busy read and the event move. */
+  slowRescheduleMs?: number;
 }) {
   const clock = new VirtualClock(Date.parse("2026-06-01T00:00:00.000Z"));
   const realNow = Date.now;
@@ -136,12 +143,16 @@ async function burst(opts: {
     const { deps: base, calls } = makeDeps({
       candidates: opts.pool,
       freeEmails: new Set(opts.pool.map((id) => users[id].email)),
+      existing: opts.existingContext,
     });
     // The bookings table: the active unique index on (agent, start), and the one
     // on the idempotency key a double submit collapses onto.
     const bySlot = new Map<string, Booking>();
     const byKey = new Map<string, Booking>();
-    for (const b of opts.held ?? []) bySlot.set(`${b.assigned_user_id}|${b.starts_at}`, b);
+    for (const b of opts.held ?? []) {
+      bySlot.set(`${b.assigned_user_id}|${b.starts_at}`, b);
+      if (b.idempotency_key) byKey.set(b.idempotency_key, b);
+    }
     const unseen = new Set<string>();
     for (const b of opts.heldElsewhere ?? []) {
       bySlot.set(`${b.assigned_user_id}|${b.starts_at}`, b);
@@ -176,6 +187,14 @@ async function burst(opts: {
       verifyFree: async (...args) => {
         if (opts.slowGoogleMs) await clock.sleep(opts.slowGoogleMs);
         return base.verifyFree(...args);
+      },
+      busyIntervalsForAgent: async (...args) => {
+        if (opts.slowRescheduleMs) await clock.sleep(opts.slowRescheduleMs / 2);
+        return base.busyIntervalsForAgent(...args);
+      },
+      updateEventTime: async (...args) => {
+        if (opts.slowRescheduleMs) await clock.sleep(opts.slowRescheduleMs / 2);
+        return base.updateEventTime(...args);
       },
       createEvent: async (...args) => {
         if (opts.failFirstEventFor && args[0] === opts.failFirstEventFor && !eventFailed) {
@@ -247,6 +266,25 @@ async function burst(opts: {
 }
 
 const maxOf = (xs: number[]) => xs.reduce((a, b) => Math.max(a, b), 0);
+
+/**
+ * #3257: the reads a confirm may make AHEAD of a busy line (the replay check):
+ * the idempotency read on the booker, the person decision on the booking API.
+ */
+const LOOKAHEAD_READS = new Set(["findBookingByIdempotencyKey", "resolveBucketByCode", "findActiveBookingsForPerson"]);
+
+/**
+ * Followers that did no work of their own: at most `CONFIRM_LINE_LOOKAHEAD` of
+ * them made their one lookahead read, and nobody made any other call. This is the
+ * whole bound on what a crowd behind a leader costs the database.
+ */
+function quiet(followers: Run[]): boolean {
+  const readers = followers.filter((r) => r.calls.length > 0);
+  return (
+    readers.length <= CONFIRM_LINE_LOOKAHEAD &&
+    readers.every((r) => r.calls.every((c) => LOOKAHEAD_READS.has(c.name)))
+  );
+}
 
 async function main() {
   // --- CONTROL: the incident, reproduced with the queue switched off ----------
@@ -326,7 +364,9 @@ async function main() {
     assert(!tally["503"], "pool of two: none is answered 503");
     const agents = [...bySlot.values()].map((b) => b.assigned_user_id).sort();
     assert(JSON.stringify(agents) === JSON.stringify(["a", "b"]), `pool of two: one booking per advisor (got ${JSON.stringify(agents)})`);
-    assert(runs[0].outcome === "created" && runs[1].outcome === "created", "pool of two: the first two in are the two booked");
+    // The first in leads; the second may have looked ahead (#3257) and rejoined
+    // behind, so which confirm takes the second advisor is not pinned.
+    assert(runs[0].outcome === "created", "pool of two: the first in is booked");
   }
 
   // --- a double submit collapses onto one booking, never told it is taken -----
@@ -382,12 +422,12 @@ async function main() {
     const followers = runs.slice(1);
     const readers = followers.filter((r) => r.calls.some((c) => PRE_LINE_READS.has(c.name)));
     assert(
-      readers.length === 0,
+      readers.length <= CONFIRM_LINE_LOOKAHEAD,
       `${label}: no follower reads the bucket, the person or the idempotency key while the leader runs (got ${readers.length})`,
     );
     assert(
-      followers.every((r) => r.calls.length === 0),
-      `${label}: a refused follower makes no dependency call at all (most made ${maxOf(followers.map((r) => r.calls.length))})`,
+      quiet(followers),
+      `${label}: no follower does work of its own beyond the bounded lookahead (most made ${maxOf(followers.map((r) => r.calls.length))})`,
     );
     const loserTimes = followers.map((r) => r.answeredMs!);
     assert(
@@ -425,12 +465,15 @@ async function main() {
       runs[0].outcome !== "created" && runs[0].outcome !== "SLOT_TAKEN",
       `failed leader: the first confirm answers with its own failure (got ${runs[0].outcome})`,
     );
-    assert(runs[1].outcome === "created", `failed leader: the next in line leads and is booked (got ${runs[1].outcome})`);
+    assert(
+      runs.slice(1).filter((r) => r.outcome === "created").length === 1,
+      `failed leader: one of those waiting leads and is booked (got ${JSON.stringify(tally)})`,
+    );
     assert(tally.created === 1 && bySlot.size === 1, `failed leader: exactly one booking (got ${JSON.stringify(tally)})`);
     assert(tally.SLOT_TAKEN === BURST - 2, `failed leader: the rest are told SLOT_TAKEN (got ${JSON.stringify(tally)})`);
     assert(!tally["503"], `failed leader: none is answered 503 (got ${tally["503"] ?? 0})`);
     assert(
-      runs.slice(2).every((r) => r.calls.length === 0),
+      quiet(runs.slice(1).filter((r) => r.outcome === "SLOT_TAKEN")),
       "failed leader: the followers answered from the new leader made no dependency call",
     );
   }
@@ -512,7 +555,7 @@ async function main() {
     assert(bySlot.size === 1, `${label}: nothing new is booked`);
     assert(seatedReads.length === 1, `${label}: who sits at the instant is read once, by the leader (got ${seatedReads.length})`);
     assert(
-      others.slice(1).every((r) => r.calls.length === 0),
+      quiet(others.slice(1)),
       `${label}: no follower but the holder makes a dependency call`,
     );
     assert(!tally["503"], `${label}: none is answered 503`);
@@ -541,7 +584,8 @@ async function main() {
     assert(runs[0].outcome === "created", "re-tier: the first in is booked into the new pool");
     assert(bySlot.size === 2, "re-tier: the holder's call and the new booking, nothing else");
     assert(
-      runs.filter((_, i) => i !== 0 && i !== HOLDER).every((r) => r.outcome === "SLOT_TAKEN" && r.calls.length === 0),
+      runs.filter((_, i) => i !== 0 && i !== HOLDER).every((r) => r.outcome === "SLOT_TAKEN") &&
+        quiet(runs.filter((_, i) => i !== 0 && i !== HOLDER)),
       "re-tier: the rest are told SLOT_TAKEN without a read",
     );
   }
@@ -566,9 +610,14 @@ async function main() {
     assert(bySlot.size === 2, "failed seat read: the holder's call and one new booking");
     assert(!tally["503"], `failed seat read: none is answered 503 (got ${JSON.stringify(tally)})`);
     assert(seatedReads.length === 2, `failed seat read: the next leader reads the seats again (got ${seatedReads.length})`);
+    // The next leader runs its own chain and is refused by its own read; which
+    // confirm that is depends on who looked ahead (#3257), so it is found, not named.
+    const taken = runs.filter((r, i) => i !== HOLDER && r.outcome === "SLOT_TAKEN");
+    const nextLeader = taken.filter((r) => r.calls.some((c) => !LOOKAHEAD_READS.has(c.name)));
+    assert(nextLeader.length === 1, `failed seat read: exactly one refused confirm led again (got ${nextLeader.length})`);
     assert(
-      runs.filter((r, i) => i > 1 && i !== HOLDER && r.outcome === "SLOT_TAKEN").every((r) => r.calls.length === 0),
-      "failed seat read: the rest are answered without a read",
+      quiet(taken.filter((r) => !nextLeader.includes(r))),
+      "failed seat read: the rest are answered without a read beyond the bounded lookahead",
     );
   }
 
@@ -587,7 +636,7 @@ async function main() {
     });
     assert(runs[0].outcome === "created" && bySlot.size === 1, `slow leader: the first in is booked (got ${runs[0].outcome})`);
     assert(tally.SLOT_TAKEN === BURST - 1, `slow leader: every other one is told SLOT_TAKEN (got ${JSON.stringify(tally)})`);
-    assert(runs.slice(1).every((r) => r.calls.length === 0), "slow leader: no follower runs a chain of its own");
+    assert(quiet(runs.slice(1)), "slow leader: no follower runs a chain of its own");
     assert(
       runs.slice(1).every((r) => r.answeredMs! < BOOKING_CONFIRM_BUDGET_MS),
       "slow leader: every follower is answered inside its budget",
@@ -608,7 +657,7 @@ async function main() {
     });
     assert(runs[0].outcome === "created" && bySlot.size === 1, `slower leader: the first in is still booked (got ${runs[0].outcome})`);
     assert(tally["503"] === BURST - 1, `slower leader: the rest are answered the retryable 503 (got ${JSON.stringify(tally)})`);
-    assert(runs.slice(1).every((r) => r.calls.length === 0), "slower leader: no follower reads anything");
+    assert(quiet(runs.slice(1)), "slower leader: no follower reads beyond the bounded lookahead");
     assert(
       runs.slice(1).every((r) => r.answeredMs === CONFIRM_QUEUE_WAIT_MS),
       `slower leader: each is answered when its wait ends (got ${[...new Set(runs.slice(1).map((r) => r.answeredMs))].join(",")})`,
@@ -679,8 +728,9 @@ async function main() {
     // so it cannot call the slot full (the first might have failed). Exactly one
     // confirm then leads and reads for itself, finds nobody left without asking
     // Google, and its own verdict answers the other 97 without a read.
-    const readers = runs.filter((r) => r.outcome !== "created" && r.calls.length > 0);
-    assert(readers.length === 1, `production crowd, pool of 2: one refused confirm reads, the rest read nothing (got ${readers.length})`);
+    const readers = runs.filter((r) => r.outcome !== "created" && r.calls.some((c) => !LOOKAHEAD_READS.has(c.name)));
+    assert(readers.length === 1, `production crowd, pool of 2: one refused confirm leads and reads, the rest only look ahead (got ${readers.length})`);
+    assert(quiet(runs.filter((r) => r.outcome !== "created" && !readers.includes(r))), "production crowd, pool of 2: the rest stay inside the lookahead bound");
     assert(
       readers.every((r) => r.calls.every((c) => c.name !== "verifyFree" && c.name !== "createEvent")),
       "production crowd, pool of 2: that one never asks Google",
@@ -708,7 +758,7 @@ async function main() {
       others.every((r) => r.outcome === "SLOT_TAKEN" || r.outcome === "503"),
       `production crowd, pool of 20: the rest are told taken or to retry, nothing else (got ${JSON.stringify(tally)})`,
     );
-    assert(others.every((r) => r.calls.length === 0), "production crowd, pool of 20: none of the rest reads anything");
+    assert(quiet(others), "production crowd, pool of 20: none of the rest reads beyond the bounded lookahead");
   }
 
   // --- #3257 review: two confirms that lose a race at once move apart ---------
@@ -771,6 +821,101 @@ async function main() {
     );
     assert(tally.created === 2, `failed claim: two booked (got ${JSON.stringify(tally)})`);
     assert(!tally["503"], `failed claim: none is answered 503 (got ${JSON.stringify(tally)})`);
+  }
+
+  // --- #3257 review: a REPLAY is answered at once, not behind a slow leader ----
+  //
+  // Lead 7 booked this time on a a moment ago and their client retries the
+  // submit. Meanwhile lead 0 is booking the last free advisor, b, at production
+  // speed. On main the retry was answered from its idempotency key straight away;
+  // queued behind lead 0 it waited about eight seconds. It must be answered at
+  // once with the booking it already has, on both paths: the booker by its
+  // idempotency key, the booking API by its person decision (a same instant
+  // resubmit dedupes).
+  for (const viaApi of [false, true]) {
+    const label = viaApi ? "replay, booking API" : "replay, booker confirm";
+    const replayed = lead(7);
+    const theirs = makeBooking({
+      id: "booked-7",
+      assigned_user_id: "a",
+      starts_at: input.startIso,
+      external_id: "burst-7",
+      salesforce_id: "sf-7",
+      attendee_email: "lead7@example.com",
+      attendee_phone: `+1203555${1007}`,
+      idempotency_key: stableKeyFor(replayed) ?? undefined,
+      manage_token: "tok-7",
+    } as Partial<Booking>);
+    const { runs } = await burst({
+      inputs: [lead(0), replayed],
+      pool: ["a", "b"],
+      queue: "real",
+      viaApi,
+      slowGoogleMs: 3_000,
+      slowEventMs: 5_000,
+      held: [theirs],
+      arriveAtMs: [0, 1_000],
+    });
+    const want = viaApi ? "deduped" : "created";
+    assert(runs[1].outcome === want, `${label}: answered ${want} (got ${runs[1].outcome})`);
+    assert(runs[1].result?.booking.id === "booked-7", `${label}: with the booking it already has`);
+    assert(runs[1].answeredMs! < 1_000, `${label}: at once, not behind the confirm booking b (answered at ${runs[1].answeredMs}ms)`);
+    assert(runs[0].outcome === "created", `${label}: the confirm booking b is booked (got ${runs[0].outcome})`);
+  }
+
+  // --- #3257 review: a crowd of replays still cannot stampede ------------------
+  {
+    const { runs, calls } = await burst({
+      inputs: Array.from({ length: BURST }, (_, i) => lead(i)),
+      pool: ["a"],
+      queue: "real",
+      viaApi: false,
+      serviceMs: SLOW_MS,
+    });
+    const lookups = runs.filter((r) => r.calls.some((c) => c.name === "findBookingByIdempotencyKey")).length;
+    assert(lookups <= 1 + CONFIRM_LINE_LOOKAHEAD, `replay crowd: at most the leader and ${CONFIRM_LINE_LOOKAHEAD} others read their key (got ${lookups})`);
+    assert(calls.createEvent.length === 1, "replay crowd: still one winner");
+  }
+
+  // --- #3257 review: a lead MOVING their call does not hold up a new booking ----
+  //
+  // Lead 9 holds 14:00 with p5 and asks the booking API for 13:00, which moves
+  // their call in place (a live busy read and an event move, 8s at production
+  // speed). Lead 0, unrelated, wants 13:00 in the same pool of twenty and arrives
+  // half a second later. Lead 9's move takes one advisor at 13:00, so it claims
+  // p5 and hands the line on rather than holding it for the whole move: lead 0 is
+  // booked on another advisor as fast as it would be alone.
+  {
+    const moving = lead(9);
+    const theirs = makeBooking({
+      id: "booked-9",
+      assigned_user_id: "p5",
+      agent_email: "p5@x.com",
+      starts_at: "2026-06-08T14:00:00.000Z",
+      ends_at: "2026-06-08T14:30:00.000Z",
+      external_id: "burst-9",
+      salesforce_id: "sf-9",
+      attendee_email: "lead9@example.com",
+      attendee_phone: `+1203555${1009}`,
+      manage_token: "tok-9",
+      gcal_event_id: "gcal-9",
+    } as Partial<Booking>);
+    const { runs, bySlot } = await burst({
+      inputs: [moving, lead(0)],
+      pool: BIG_POOL,
+      queue: "real",
+      slowGoogleMs: 3_000,
+      slowEventMs: 5_000,
+      slowRescheduleMs: 8_000,
+      held: [theirs],
+      existingContext: { booking: theirs, bucket: fakeBucket, eventType: fakeEventType } as BookingContext,
+      arriveAtMs: [0, 500],
+    });
+    assert(runs[0].outcome === "rescheduled", `moving lead: their call is moved (got ${runs[0].outcome})`);
+    assert(runs[1].outcome === "created", `moving lead: the unrelated lead is booked (got ${runs[1].outcome})`);
+    assert(runs[1].answeredMs! <= 8_400, `moving lead: as fast as alone, not behind the move (answered at ${runs[1].answeredMs}ms)`);
+    const newOne = [...bySlot.values()].find((b) => b.id !== "booked-9" && Date.parse(b.starts_at) === Date.parse(input.startIso));
+    assert(newOne !== undefined && newOne.assigned_user_id !== "p5", `moving lead: on an advisor other than the one moving in (got ${newOne?.assigned_user_id})`);
   }
 
   finish();

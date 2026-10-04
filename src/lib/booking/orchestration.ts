@@ -3299,7 +3299,25 @@ async function inConfirmTurn<R>(
   line: ConfirmLine,
   work: (held: HeldTurn) => Promise<{ result: R; verdict: LeaderVerdict<ConfirmTaker> }>,
   fromTaker: (taker: ConfirmTaker) => R,
+  /**
+   * #3257: one cheap read that may answer this confirm without the line at all
+   * (a replay of a booking that already exists), or null to join it. Made only
+   * when the line is BUSY and a lookahead is free (`ConfirmQueue.lookahead`), so a
+   * replay is never kept waiting behind a confirm still booking, while a crowd
+   * still sends at most `CONFIRM_LINE_LOOKAHEAD` such reads past the line.
+   */
+  ahead?: () => Promise<R | null>,
 ): Promise<{ result: R; verdict: LeaderVerdict<ConfirmTaker> }> {
+  const giveBack = ahead ? deps.confirmQueue.lookahead(line.key) : null;
+  if (giveBack && ahead) {
+    try {
+      const early = await ahead();
+      // Answered without the line, so it settles nothing for anybody in it.
+      if (early !== null) return { result: early, verdict: { full: false } };
+    } finally {
+      giveBack();
+    }
+  }
   const waitMs = confirmLineWaitMs(budgetLeftMs());
   const turn = await deps.confirmQueue.enter(line.key, waitMs);
   if (turn.kind === "refused") {
@@ -3387,6 +3405,16 @@ export interface HeldTurn {
   seat: LineSeat | null;
 }
 
+/**
+ * The booking an earlier submit with this idempotency key already made, as the
+ * create returns it, or null. The one replay read, made inside the line by a
+ * leader and ahead of it by a confirm arriving at a busy line (#3257).
+ */
+async function replayOf(deps: BookingDeps, stableKey: string): Promise<BookingResult | null> {
+  const existing = await deps.findBookingByIdempotencyKey(stableKey);
+  return existing ? { booking: existing, manageUrl: manageUrl(deps, existing.manage_token) } : null;
+}
+
 /** A booking a waiting double submit is handed back, as the create returns it. */
 function bookingFromTaker(taker: ConfirmTaker): BookingResult {
   return { booking: taker.result.booking, manageUrl: taker.result.manageUrl };
@@ -3420,6 +3448,7 @@ async function createBookingWithVerdict(
     },
     (held) => createChecked(requestedInput, deps, opts, stableKey, held),
     bookingFromTaker,
+    stableKey ? () => replayOf(deps, stableKey) : undefined,
   );
 }
 
@@ -3460,13 +3489,9 @@ async function createChecked(
   // per request, so there's nothing to look up. It runs BEFORE the Salesforce
   // read below, so a retry of a booking that exists never depends on it.
   if (stableKey) {
-    const existing = await profile.time("idempotency-lookup", () =>
-      deps.findBookingByIdempotencyKey(stableKey),
-    );
-    if (existing) {
-      // A replay settles nothing about the slot for anybody else in line.
-      return { result: { booking: existing, manageUrl: manageUrl(deps, existing.manage_token) }, verdict: { full: false } };
-    }
+    const existing = await profile.time("idempotency-lookup", () => replayOf(deps, stableKey));
+    // A replay settles nothing about the slot for anybody else in line.
+    if (existing) return { result: existing, verdict: { full: false } };
   }
 
   // #2638: a booker confirm whose link carried no routable code is routed on the
@@ -4686,8 +4711,31 @@ export async function bookViaApi(
     // A double submit waiting behind its own first call gets that booking, as a
     // replay: no race row, since the call that made it already counted one.
     (taker): ApiBookingResult => ({ outcome: "created", booking: taker.result.booking, manageUrl: taker.result.manageUrl }),
+    // #3257: a resubmit of a call the lead already holds (a retry, a double send)
+    // is answered from the person decision without waiting behind a confirm that
+    // is still booking, as it was before the line existed.
+    async () => {
+      const { decision, requested } = await resolvePersonDecision(input, deps);
+      if (decision.action === "create" || !takesNoAdvisorHere(decision, requested)) return null;
+      return bookViaApiArm(input, deps, decision, requested, undefined);
+    },
   );
   return result;
+}
+
+/**
+ * Whether the person decision's arm leaves this time's advisors alone (#3257):
+ * asking the lead first, or a same instant resubmit in the bucket they already
+ * hold, which hands back the call they have. A move into another bucket or a
+ * reschedule into this time DOES take an advisor here, and claims one like any
+ * new booking.
+ */
+function takesNoAdvisorHere(
+  decision: Exclude<Awaited<ReturnType<typeof resolvePersonDecision>>["decision"], { action: "create" }>,
+  requested: KnownBucket,
+): boolean {
+  if (decision.action === "confirm_required") return true;
+  return decision.action === "dedupe" && requested.resolved.bucket.id === decision.booking.bucket_id;
 }
 
 /**
@@ -4716,6 +4764,9 @@ async function bookViaApiDecided(
       verdict,
     };
   }
+  // #3257: an arm that takes no advisor at this time hands the line on now, so it
+  // never holds up a lead booking here for the length of its own work.
+  if (takesNoAdvisorHere(decision, requested)) held?.seat?.pass();
   return { result: await bookViaApiArm(input, deps, decision, requested, held), verdict: { full: false } };
 }
 
@@ -4786,7 +4837,8 @@ async function bookViaApiArm(
         undefined,
         // #2310: judged in the zone the caller sent with this request, the
         // same zone its create arm is judged in.
-        { leadZone: input.timezone },
+        // #3257: a move into this time takes an advisor here, so it claims one.
+        { leadZone: input.timezone, seat: held?.seat ?? null },
       );
       return {
         outcome: "rescheduled",
@@ -5101,7 +5153,11 @@ export async function rescheduleBooking(
    * an admin move, where the screen's zone is the ADMIN's, so the booking's own
    * zone (the one the lead booked in) is the lead's clock instead.
    */
-  opts?: { leadZone?: string | null },
+  opts?: {
+    leadZone?: string | null;
+    /** #3257: the direct booking API's claim in this time's confirm line. */
+    seat?: LineSeat | null;
+  },
 ): Promise<BookingResult> {
   // #2310: a zone the caller supplied is judged BEFORE the contact write below,
   // so a refused move never leaves the lead's details rewritten behind it. One
@@ -5205,7 +5261,7 @@ export async function rescheduleBooking(
   let applied = false;
   try {
     const result = await applyReschedule(
-      deps, token, ctx, startIso, endIso, reason, initiator, claim, nowMs, actor,
+      deps, token, ctx, startIso, endIso, reason, initiator, claim, nowMs, actor, opts?.seat ?? null,
     );
     applied = true;
     return { ...result, contactChanged, isTest: ctx.bucket.is_test };
@@ -5231,6 +5287,8 @@ async function applyReschedule(
   claim: Extract<RescheduleClaim, { outcome: "won" | "resume" | "fresh-after-abandon" }>,
   nowMs: number,
   actor?: BookingActor,
+  /** #3257: this move's claim in the new time's confirm line, or none. */
+  seat: LineSeat | null = null,
 ): Promise<BookingResult> {
   const { booking, bucket, eventType } = ctx;
   const currentEmail = booking.agent_email;
@@ -5305,6 +5363,10 @@ async function applyReschedule(
     // min_notice | buffer. daily_cap can't fire on a keep-same-agent move
     // (enforceDailyCap is off). null while there was no in-place candidate.
     if (currentEmail && booking.assigned_user_id && booking.gcal_event_id) {
+      // #3257: claimed before the live read, so a lead booking this time beside the
+      // move is given another advisor at once. If the advisor is declined below,
+      // the reroute's own pick replaces the claim.
+      seat?.claim(booking.assigned_user_id, true);
       // Folded into the context load (#538); the fallback covers a context loaded
       // without the fold (it re-reads rather than crash on a missing schedule).
       const wh = ctx.agentWorkingHours ?? (await deps.agentWorkingHours(booking.assigned_user_id));
@@ -5366,7 +5428,7 @@ async function applyReschedule(
     } else {
       let next;
       try {
-        next = await assignAgent(deps, bucket, eventType, startIso, endIso);
+        next = await assignAgent(deps, bucket, eventType, startIso, endIso, false, undefined, false, seat);
       } catch (err) {
         // The reschedule ultimately failed: the in-place agent was declined and
         // the reroute found nobody. Tag the error with the in-place decline reason
