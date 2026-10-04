@@ -238,12 +238,50 @@ describe("the page an enforced violation sends (#2575)", () => {
     // An eval refusal stops a script that is already running from building more
     // code; nothing failed to load. On 2026-10-04 the page said it had, about a
     // refusal measured to come from code Slate does not ship.
-    await POST(req({ "csp-report": { ...ENFORCED["csp-report"], "violated-directive": "script-src", "blocked-uri": "eval" } }));
+    await POST(
+      req({
+        "csp-report": {
+          ...ENFORCED["csp-report"],
+          "violated-directive": "script-src",
+          "blocked-uri": "eval",
+          "source-file": "https://slate.trypennie.app/_next/static/chunks/abc.js",
+        },
+      }),
+    );
 
     const text = dispatch.sendThrottledAlert.mock.calls[0][2];
     expect(text).toContain("stopped from running");
     expect(text).not.toContain("did not load");
     expect(text).toContain("source=");
+    // The pointer, never the reported URL itself: the body is a stranger's text.
+    expect(text).not.toContain("abc.js");
+  });
+
+  it("points at source= only when the report named a script", async () => {
+    await POST(req({ "csp-report": { ...ENFORCED["csp-report"], "violated-directive": "script-src", "blocked-uri": "eval" } }));
+
+    const text = dispatch.sendThrottledAlert.mock.calls[0][2];
+    expect(text).toContain("stopped from running");
+    expect(text).not.toContain("source=");
+  });
+
+  it("never says code was stopped for an inline STYLE refusal, where no code ran", async () => {
+    await POST(
+      req({
+        "csp-report": {
+          ...ENFORCED["csp-report"],
+          "violated-directive": "style-src-attr",
+          "blocked-uri": "inline",
+          "source-file": "https://slate.trypennie.app/book",
+        },
+      }),
+    );
+
+    const text = dispatch.sendThrottledAlert.mock.calls[0][2];
+    expect(text).not.toContain("stopped from running");
+    expect(text).not.toContain("did not load");
+    expect(text).toContain("styling");
+    expect(text).not.toContain("inline code");
   });
 
   it("still says part of the page did not load when what was refused is a file", async () => {

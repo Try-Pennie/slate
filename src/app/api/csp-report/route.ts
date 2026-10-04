@@ -80,7 +80,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     await sendThrottledAlert(
       decision.key,
       cooldowns.csp_violation,
-      cspViolationAlert({ directive: decision.directive, surface: decision.surface, blocked: decision.blocked }),
+      cspViolationAlert({
+        directive: decision.directive,
+        surface: decision.surface,
+        blocked: decision.blocked,
+        sourceNamed: violation.source !== "(none)",
+      }),
     );
   } catch (err) {
     // Said, never silent: the log line above is then the only trace that a

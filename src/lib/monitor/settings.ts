@@ -430,7 +430,7 @@ export const ALERT_FIELDS: {
     key: "csp_violation",
     urgency: "page",
     label: "Something blocked on a page by the content security policy",
-    help: "A browser refused something on a Slate page because the content security policy does not allow it, so part of that page did not load, or some code on it was stopped from running, for whoever had it open. Repeats for each kind of rule broken.",
+    help: "A browser refused something on a Slate page because the content security policy does not allow it, so part of that page did not load or did not run as built for whoever had it open. Repeats for each kind of rule broken.",
   },
   {
     key: "ci_runs_refused",
