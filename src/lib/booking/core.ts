@@ -25,6 +25,79 @@ export class EventGone extends Error {
   }
 }
 
+/**
+ * Thrown when an insert with our own client id 409s and the event Google holds
+ * under that id is CANCELLED (#3217). Google keeps a deleted event's id, so a
+ * deterministic id whose event was deleted answers the next insert with a 409,
+ * and adopting that id would confirm a booking with nothing on the agent's
+ * calendar. A caller that can derive a fresh id answers this with one; every
+ * other caller fails loudly, which is the honest outcome (L12).
+ */
+export class EventCancelledOnReuse extends Error {
+  readonly eventId: string;
+  constructor(eventId: string) {
+    super(`events.insert: the event already holding id ${eventId} is cancelled on Google`);
+    this.name = "EventCancelledOnReuse";
+    this.eventId = eventId;
+  }
+}
+
+/**
+ * The id to adopt from the event Google returned for a client id that 409ed
+ * (#3217): its id when it is live, and a refusal when it is cancelled. The one
+ * judge, shared by the real client and the fakes that stand in for it.
+ */
+export function adoptableEventId(clientId: string, existing: { id?: string; status?: string }): string {
+  if (!existing.id) throw new Error("Google did not return an event id on reuse");
+  if (existing.status === "cancelled") throw new EventCancelledOnReuse(clientId);
+  return existing.id;
+}
+
+/** How many fresh ids a create tries past a cancelled tombstone before it fails
+ *  loudly (#3217). */
+export const TOMBSTONE_FRESH_IDS = 3;
+
+/**
+ * The `n`th fresh id after `clientId` in its tombstone chain (#3217). Fixed, so
+ * every retry of one request walks the same chain. `v` is the last base32hex
+ * letter Google allows in an event id, and the digits are base32hex too, so a
+ * valid id stays valid.
+ */
+export function freshEventId(clientId: string, n: number): string {
+  return `${clientId}v${n}`;
+}
+
+/**
+ * Create under `clientId`, walking its fresh id chain past every cancelled
+ * tombstone (#3217). `tryCreate` inserts one id and THROWS `EventCancelledOnReuse`
+ * when Google holds it as cancelled (a live one it adopts). A retry walks the same
+ * chain, so it adopts the first live event an earlier attempt made on it. Returns
+ * the id it created or adopted, which the caller must store rather than its own.
+ *
+ * `onFreshId` runs BEFORE each fresh id is inserted, so a caller that records the
+ * id it is about to write (a reschedule pin, a reassign intent) records the new
+ * one first. If it throws, nothing is inserted and the error is the caller's.
+ * Every id a tombstone: the last `EventCancelledOnReuse` is thrown.
+ */
+export async function createWithFreshIdOnTombstone(
+  clientId: string,
+  tryCreate: (id: string) => Promise<string>,
+  onFreshId?: (id: string) => Promise<void>,
+): Promise<string> {
+  let refused: EventCancelledOnReuse | null = null;
+  for (let n = 0; n <= TOMBSTONE_FRESH_IDS; n++) {
+    const id = n === 0 ? clientId : freshEventId(clientId, n);
+    if (n > 0) await onFreshId?.(id);
+    try {
+      return await tryCreate(id);
+    } catch (err) {
+      if (!(err instanceof EventCancelledOnReuse)) throw err;
+      refused = err;
+    }
+  }
+  throw refused;
+}
+
 // ---------------------------------------------------------------------------
 // Reschedule/cancel reason capture + history events (#326 / #300, ADR 0001).
 // ---------------------------------------------------------------------------

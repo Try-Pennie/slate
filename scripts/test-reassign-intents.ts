@@ -127,7 +127,10 @@ async function run() {
     );
   }
 
-  // --- a swap RPC error deletes the intent too ---
+  // --- a swap RPC error KEEPS the intent (#3217) ---
+  // Unlike the terminal case above, a retry can follow, and it derives the same
+  // event id. The standing intent is what makes the deletion drain hold that event
+  // until the retry adopts it; the retry refreshes it, or the sweep clears it.
   {
     const { deps, calls } = makeDeps({
       bookingById: { booking: makeBooking({}), bucket, eventType },
@@ -140,8 +143,8 @@ async function run() {
       /* expected */
     }
     assert(
-      calls.reassignIntentDeletes.length === 1,
-      "reassign-intent(rpc error): the intent is deleted when the swap throws",
+      calls.reassignIntentDeletes.length === 0,
+      "reassign-intent(rpc error): the intent is left standing when the swap throws",
     );
   }
 

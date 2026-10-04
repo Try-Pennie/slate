@@ -6,6 +6,8 @@ import {
   chunkCalendarIds,
   hasBlockingBusy,
   EventGone,
+  adoptableEventId,
+  createWithFreshIdOnTombstone,
   type CalendarBusy,
 } from "@/lib/booking/core";
 import { log } from "@/lib/log";
@@ -404,6 +406,52 @@ export async function freeBusyMany(
   return busyByCalendarFromResponse(calendarIds, data.calendars);
 }
 
+/**
+ * The event an insert with our own client id collided with (a 409), read back
+ * and judged by `adoptableEventId`: its id when it is live, and the typed
+ * `EventCancelledOnReuse` when it is a cancelled tombstone (#3217). The one
+ * reuse every create with a client id goes through, so the rule cannot drift
+ * between them (L370). `calendarPath` arrives already encoded ("primary" or an
+ * encoded calendar id).
+ */
+async function reuseOnConflict(
+  actorEmail: string,
+  calendarPath: string,
+  clientId: string,
+  deadline: Deadline,
+): Promise<string> {
+  const existing = await ok(
+    await gfetch(
+      actorEmail,
+      `${BASE}/calendars/${calendarPath}/events/${encodeURIComponent(clientId)}`,
+      {},
+      deadline,
+      "events.get",
+    ),
+    "events.get (409 reuse)",
+  );
+  return adoptableEventId(clientId, (await existing.json()) as { id?: string; status?: string });
+}
+
+/**
+ * Every create with a client id goes through here (#3217): it walks the id's
+ * fresh id chain past each cancelled tombstone (`createWithFreshIdOnTombstone`),
+ * so no caller, booking, reschedule, reassign, time off or owner alert, can be
+ * left failing on a deleted event's id for ever, or adopting it.
+ *
+ * A fresh id rather than a restore: Google documents only that an organizer's
+ * cancelled event "can be restored (undeleted)" (Events resource, `status`), not
+ * the call that does it or what an attendee is told, and that has not been
+ * measured live.
+ */
+function withFreshIdOnTombstone(
+  clientId: string,
+  insert: (id: string) => Promise<string>,
+  opts?: CreateEventOptions,
+): Promise<string> {
+  return createWithFreshIdOnTombstone(clientId, insert, opts?.onFreshId);
+}
+
 export interface CreateEventInput {
   summary: string;
   description?: string;
@@ -414,62 +462,65 @@ export interface CreateEventInput {
   attendeeName?: string;
 }
 
+/** What a create with our own client id may be told (#3217). */
+export interface CreateEventOptions {
+  /**
+   * Runs BEFORE each fresh id past a cancelled tombstone is inserted, so a caller
+   * that records the id it is about to write (a reschedule pin, a reassign intent)
+   * records the new one first. A throw stops the create with that error.
+   */
+  onFreshId?: (id: string) => Promise<void>;
+}
+
 export async function createEvent(
   email: string,
   input: CreateEventInput,
   clientId?: string,
+  opts?: CreateEventOptions,
 ): Promise<string> {
   // #2241: the confirm path's first Google call. Ungated, a booking path load run
   // could not complete one booking.
   if (LOADTEST) return stubCreateEvent(input, clientId);
-  const res = await gfetch(
-    email,
-    `${BASE}/calendars/${CAL}/events?sendUpdates=all`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        // P4 (#439): a deterministic client-supplied id makes the create
-        // idempotent: a retry sends the same id and Google 409s the duplicate.
-        // That is also what makes the deadline safe here (#3102): an insert that
-        // timed out may still have landed, and the resume sends this same id.
-        ...(clientId ? { id: clientId } : {}),
-        summary: input.summary,
-        description: input.description,
-        start: { dateTime: input.start, timeZone: input.timezone },
-        end: { dateTime: input.end, timeZone: input.timezone },
-        attendees: input.attendeeEmail
-          ? [{ email: input.attendeeEmail, displayName: input.attendeeName }]
-          : undefined,
-      }),
-    },
-    GOOGLE_CONFIRM_TIMEOUT_MS,
-    "events.insert",
-  );
-
-  // 409-as-success: a duplicate client id means THIS event already exists (a
-  // retry of the same intent on the same agent). GET it and return it — no
-  // second insert, so no second attendee invite. Inspect the raw 409 BEFORE the
-  // shared ok() (which would throw); ok() is left untouched for all other calls.
-  if (clientId && res.status === 409) {
-    const existing = await ok(
-      await gfetch(
-        email,
-        `${BASE}/calendars/${CAL}/events/${encodeURIComponent(clientId)}`,
-        {},
-        GOOGLE_CONFIRM_TIMEOUT_MS,
-        "events.get",
-      ),
-      "events.get (409 reuse)",
+  const insert = async (id: string | undefined): Promise<string> => {
+    const res = await gfetch(
+      email,
+      `${BASE}/calendars/${CAL}/events?sendUpdates=all`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          // P4 (#439): a deterministic client-supplied id makes the create
+          // idempotent: a retry sends the same id and Google 409s the duplicate.
+          // That is also what makes the deadline safe here (#3102): an insert that
+          // timed out may still have landed, and the resume sends this same id.
+          ...(id ? { id } : {}),
+          summary: input.summary,
+          description: input.description,
+          start: { dateTime: input.start, timeZone: input.timezone },
+          end: { dateTime: input.end, timeZone: input.timezone },
+          attendees: input.attendeeEmail
+            ? [{ email: input.attendeeEmail, displayName: input.attendeeName }]
+            : undefined,
+        }),
+      },
+      GOOGLE_CONFIRM_TIMEOUT_MS,
+      "events.insert",
     );
-    const reused = (await existing.json()) as { id?: string };
-    if (!reused.id) throw new Error("Google did not return an event id on reuse");
-    return reused.id;
-  }
 
-  await ok(res, "events.insert");
-  const data = (await res.json()) as { id?: string };
-  if (!data.id) throw new Error("Google did not return an event id");
-  return data.id;
+    // 409-as-success: a duplicate client id means THIS event already exists (a
+    // retry of the same intent on the same agent). GET it and return it, with no
+    // second insert, so no second attendee invite. Inspect the raw 409 BEFORE the
+    // shared ok() (which would throw); ok() is left untouched for all other calls.
+    // A cancelled one is refused there (#3217), and the walk below moves on.
+    if (id && res.status === 409) {
+      return reuseOnConflict(email, CAL, id, GOOGLE_CONFIRM_TIMEOUT_MS);
+    }
+
+    await ok(res, "events.insert");
+    const data = (await res.json()) as { id?: string };
+    if (!data.id) throw new Error("Google did not return an event id");
+    return data.id;
+  };
+  return clientId ? withFreshIdOnTombstone(clientId, insert, opts) : insert(undefined);
 }
 
 /**
@@ -501,63 +552,59 @@ export async function createEventOnCalendar(
   calendarId: string,
   input: CreateCalendarEventInput,
   clientId?: string,
+  opts?: CreateEventOptions,
 ): Promise<string> {
   // #2371: the owner alert reaches this on the reassign path, so a booking path load
   // run would write a real event onto a real advisor's calendar. Stubbed like the
   // booking create above, which also makes the deterministic id the answer, so the
   // 409 reuse a resume depends on still behaves as it does against Google.
   if (LOADTEST) return stubCreateEvent(input, clientId);
-  const res = await gfetch(
-    actorEmail,
-    `${BASE}/calendars/${encodeURIComponent(calendarId)}/events`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        // #1469: a deterministic client supplied id makes the create idempotent,
-        // the same trick the booking path uses. These writes are bounded at 8
-        // seconds because the manager waits on them, so a slow moment at Google
-        // surfaces as an abort, and an aborted insert may still have been applied
-        // on Google's side. The retry sends this same id and Google 409s it.
-        ...(clientId ? { id: clientId } : {}),
-        summary: input.summary,
-        description: input.description,
-        start: { dateTime: input.start, timeZone: input.timezone },
-        end: { dateTime: input.end, timeZone: input.timezone },
-        // Conditional so an unset field is absent rather than null: Google reads an
-        // explicit null as a value, and every pre-#2371 caller must keep sending
-        // exactly the body it sent before.
-        ...(input.transparency ? { transparency: input.transparency } : {}),
-        ...(input.colorId ? { colorId: input.colorId } : {}),
-      }),
-    },
-    CALENDAR_WRITE_TIMEOUT_MS,
-    "events.insert",
-  );
-
-  // 409-as-success, but ONLY when we supplied the id: then the duplicate is
-  // provably this same intent, and GETting it returns the event Google already
-  // created. With no id of our own a 409 is a conflict we cannot resolve, and
-  // swallowing it would report an event that does not exist.
-  if (clientId && res.status === 409) {
-    const existing = await ok(
-      await gfetch(
-        actorEmail,
-        `${BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(clientId)}`,
-        {},
-        CALENDAR_WRITE_TIMEOUT_MS,
-        "events.get",
-      ),
-      "events.get (409 reuse)",
+  const insert = async (id: string | undefined): Promise<string> => {
+    const res = await gfetch(
+      actorEmail,
+      `${BASE}/calendars/${encodeURIComponent(calendarId)}/events`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          // #1469: a deterministic client supplied id makes the create idempotent,
+          // the same trick the booking path uses. These writes are bounded at 8
+          // seconds because the manager waits on them, so a slow moment at Google
+          // surfaces as an abort, and an aborted insert may still have been applied
+          // on Google's side. The retry sends this same id and Google 409s it.
+          ...(id ? { id } : {}),
+          summary: input.summary,
+          description: input.description,
+          start: { dateTime: input.start, timeZone: input.timezone },
+          end: { dateTime: input.end, timeZone: input.timezone },
+          // Conditional so an unset field is absent rather than null: Google reads an
+          // explicit null as a value, and every pre-#2371 caller must keep sending
+          // exactly the body it sent before.
+          ...(input.transparency ? { transparency: input.transparency } : {}),
+          ...(input.colorId ? { colorId: input.colorId } : {}),
+        }),
+      },
+      CALENDAR_WRITE_TIMEOUT_MS,
+      "events.insert",
     );
-    const reused = (await existing.json()) as { id?: string };
-    if (!reused.id) throw new Error("Google did not return an event id on reuse");
-    return reused.id;
-  }
 
-  await ok(res, "events.insert");
-  const data = (await res.json()) as { id?: string };
-  if (!data.id) throw new Error("Google did not return an event id");
-  return data.id;
+    // 409-as-success, but ONLY when we supplied the id: then the duplicate is
+    // provably this same intent, and GETting it returns the event Google already
+    // created. With no id of our own a 409 is a conflict we cannot resolve, and
+    // swallowing it would report an event that does not exist.
+    //
+    // #3217: through the same reuse as the booking create, so a cancelled event is
+    // refused here too rather than adopted as a time off block that blocks nothing,
+    // and the walk below moves on to a fresh id.
+    if (id && res.status === 409) {
+      return reuseOnConflict(actorEmail, encodeURIComponent(calendarId), id, CALENDAR_WRITE_TIMEOUT_MS);
+    }
+
+    await ok(res, "events.insert");
+    const data = (await res.json()) as { id?: string };
+    if (!data.id) throw new Error("Google did not return an event id");
+    return data.id;
+  };
+  return clientId ? withFreshIdOnTombstone(clientId, insert, opts) : insert(undefined);
 }
 
 /**

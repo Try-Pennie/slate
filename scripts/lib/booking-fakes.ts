@@ -1040,6 +1040,7 @@ export function makeDeps(opts: FakeOpts) {
     deleteReservation: async (id) => {
       calls.deletedReservations.push(id);
     },
+    repinReservationEvent: async () => {},
     loadDrainableReservations: async () => opts.drainableReservations ?? [],
     leaseReservation: async () => "lease-1",
     releaseReservationLease: async () => {},
@@ -1114,7 +1115,7 @@ export function makeDeps(opts: FakeOpts) {
     loadPendingEventDeletions: async (_limit) => opts.pending ?? [],
     // #3215: nobody holds a queued event unless a suite says so.
     liveBookingHoldingEvent: async () => null,
-    reservationPinsEvent: async () => false,
+    pendingWritePinsEvent: async () => false,
     removePendingEventDeletion: async (id) => { calls.removePendingEventDeletion.push(id); },
     bumpPendingEventDeletion: async (id, attempts) => { calls.bumpPendingEventDeletion.push({ id, attempts }); },
   };

@@ -239,7 +239,7 @@ async function run() {
       },
       liveBookingHoldingEvent: holderFrom(bookings),
       // The retry completed the reservation, so nothing pins the event any more.
-      reservationPinsEvent: async () => false,
+      pendingWritePinsEvent: async () => false,
     };
     await caught(() => underSpentConfirmBudget(() => createBooking(input, d)));
     await caught(() => underSpentConfirmBudget(() => createBooking(input, d)));
@@ -271,7 +271,7 @@ async function run() {
       ...deps,
       ...t.deps,
       liveBookingHoldingEvent: holderFrom(cancelled),
-      reservationPinsEvent: async () => false,
+      pendingWritePinsEvent: async () => false,
     };
     const lane = await processPendingEventDeletions(d, 50);
     assert(
@@ -296,7 +296,7 @@ async function run() {
       ...deps,
       ...t.deps,
       liveBookingHoldingEvent: (eventId, statuses) => ((askedFor = statuses), holder(eventId, statuses)),
-      reservationPinsEvent: async () => false,
+      pendingWritePinsEvent: async () => false,
     };
     await processPendingEventDeletions(d, 50);
     assert(
@@ -316,7 +316,7 @@ async function run() {
       ...deps,
       ...t.deps,
       liveBookingHoldingEvent: async () => null,
-      reservationPinsEvent: async (eventId) => eventId.startsWith("pinned-"),
+      pendingWritePinsEvent: async (eventId) => eventId.startsWith("pinned-"),
     };
     const first = await processPendingEventDeletions(d, 5);
     assert(
@@ -345,7 +345,7 @@ async function run() {
       liveBookingHoldingEvent: async () => {
         throw new Error("bookings read timed out");
       },
-      reservationPinsEvent: async () => false,
+      pendingWritePinsEvent: async () => false,
     };
     const lane = await processPendingEventDeletions(d, 50);
     assert(t.deleted.length === 0, "holder unreadable: nothing is deleted");
@@ -442,7 +442,7 @@ async function run() {
       loadCreationOrphans: async () => [queueRow("q-1", "gcal-1"), queueRow("q-2", "gcal-2")],
       eventExists: async () => true,
       liveBookingHoldingEvent: async (eventId) => (eventId === "gcal-1" ? "bk-retry" : null),
-      reservationPinsEvent: async () => false,
+      pendingWritePinsEvent: async () => false,
     };
     const res = await checkCreationOrphans(d, 10);
     assert(

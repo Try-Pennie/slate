@@ -312,7 +312,7 @@ function buildDeps(
     enqueueEventDeletion: async () => {},
     loadPendingEventDeletions: async () => [],
     liveBookingHoldingEvent: async () => null,
-    reservationPinsEvent: async () => false,
+    pendingWritePinsEvent: async () => false,
     removePendingEventDeletion: async () => {},
     bumpPendingEventDeletion: async () => {},
 
@@ -441,6 +441,17 @@ function buildDeps(
 
     deleteReservation: async (id) => {
       await db().from("booking_reservations").delete().eq("id", id);
+    },
+
+    repinReservationEvent: async (id, fromClientId, toClientId) => {
+      const { data, error } = await db()
+        .from("booking_reservations")
+        .update({ gcal_client_id: toClientId })
+        .eq("id", id)
+        .eq("gcal_client_id", fromClientId)
+        .eq("status", "pending")
+        .select("id");
+      if (error || !data || data.length === 0) throw new Error(`reservation ${id} was not repinned`);
     },
 
     loadDrainableReservations: async () => [],

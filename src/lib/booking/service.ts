@@ -1060,16 +1060,22 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
           .limit(1),
         "live booking holding a queued event",
       ) ?? []) as { id: string }[])[0]?.id ?? null,
-    reservationPinsEvent: async (gcalEventId) =>
-      ((unwrap(
-        await supabaseAdmin()
-          .from("booking_reservations")
-          .select("id")
-          .eq("gcal_client_id", gcalEventId)
-          .eq("status", "pending")
-          .limit(1),
-        "reservation pinning a queued event",
-      ) ?? []) as { id: string }[]).length > 0,
+    // #3217: a standing reschedule lock and a reassign intent pin their event the
+    // same way a pending reservation does, since a resume of either derives the
+    // same id. Three filtered existence questions, each THROWING on a failed read.
+    pendingWritePinsEvent: async (gcalEventId) => {
+      const db = supabaseAdmin();
+      const [reservations, locks, intents] = await Promise.all([
+        db.from("booking_reservations").select("id").eq("gcal_client_id", gcalEventId).eq("status", "pending").limit(1),
+        db.from("reschedule_locks").select("booking_id").eq("gcal_client_id", gcalEventId).limit(1),
+        db.from("reassign_intents").select("booking_id").eq("gcal_client_id", gcalEventId).limit(1),
+      ]);
+      return (
+        (unwrap(reservations, "reservation pinning a queued event") ?? []).length > 0 ||
+        (unwrap(locks, "reschedule lock pinning a queued event") ?? []).length > 0 ||
+        (unwrap(intents, "reassign intent pinning a queued event") ?? []).length > 0
+      );
+    },
     removePendingEventDeletion: async (id) => {
       // write-ok: a refused delete leaves the row, so the drain retries a deletion Google has already accepted, which is idempotent. It can never drop a deletion that has not happened.
       await supabaseAdmin().from("pending_event_deletions").delete().eq("id", id);
@@ -1596,6 +1602,23 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     deleteReservation: async (id) => {
       // write-ok: the reservation expires on its lease regardless, so a refused delete costs one slot until expiry and never releases a live hold.
       await supabaseAdmin().from("booking_reservations").delete().eq("id", id);
+    },
+
+    repinReservationEvent: async (id, fromClientId, toClientId) => {
+      // THROWS (#3217): the repoint must land before the fresh event is written,
+      // or the drain cannot see that the reservation pins it. Guarded on the id it
+      // still names and on pending, so a row another holder moved is never touched.
+      const { data, error } = await supabaseAdmin()
+        .from("booking_reservations")
+        .update({ gcal_client_id: toClientId })
+        .eq("id", id)
+        .eq("gcal_client_id", fromClientId)
+        .eq("status", "pending")
+        .select("id");
+      if (error) throw new Error(`reservation ${id} could not be repinned: ${error.message}`);
+      if (!data || data.length === 0) {
+        throw new Error(`reservation ${id} no longer names ${fromClientId}, so it was not repinned`);
+      }
     },
 
     loadDrainableReservations: async (limit) => {
