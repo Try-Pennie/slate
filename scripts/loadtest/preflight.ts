@@ -232,6 +232,9 @@ const progress: WarmupProgress = {
 };
 let bestHydrated = -1;
 let slots: string[] = [];
+// When the most recent hydration drive ANSWERED, on this runner's clock (#3236).
+// The control waits for the bucket's stored slots to be computed after it.
+let lastHydrationFinishedMs: number | null = null;
 
 for (;;) {
   const { reading, slots: offered } = await observe(progress.cronConfirmed);
@@ -258,6 +261,7 @@ for (;;) {
   progress.cronConfirmed = true;
   if (step.action === "hydrate") {
     const answered = await driveLane("hydrate-calendars");
+    lastHydrationFinishedMs = Date.now();
     progress.hydrationDrives++;
     progress.drivesSinceHydrationProgress++;
     console.log(`hydrate drive ${progress.hydrationDrives} (${step.why}): ${answered}`);
@@ -274,16 +278,32 @@ for (;;) {
 
 // The list the warm up ended on can predate its own last hydration drive, which may
 // have given the only free agent a stub meeting at the first offered time (#3236).
-// So when any drive ran, recompute once and choose from a fresh read. The decision
-// and the one SLOT_TAKEN retry live in `preflight-control.ts`, driven offline.
+// A recompute drive alone is not proof of a refresh (it skips pools it judges fresh),
+// so when any drive ran the preflight waits until the bucket's STORED row was
+// computed after that drive, then re-reads. The decisions and the one SLOT_TAKEN
+// retry live in `preflight-control.ts`, driven offline.
 const readSlots = () => readOfferedSlots(fetch, SLATE_BASE, CODE);
+async function readComputedAt(): Promise<string | null> {
+  // cap-safe: bucket_code is the primary key, so this returns at most one row
+  const found = await rows(`bucket_slots?select=computed_at&bucket_code=eq.${encodeURIComponent(CODE)}`);
+  const stamp = found[0]?.computed_at;
+  return typeof stamp === "string" ? stamp : null;
+}
+const freshRowDeps = {
+  driveRecompute: () => driveLane("recompute"),
+  readComputedAt,
+  sleep,
+  now: () => Date.now(),
+  bucketCode: CODE,
+  log: (line: string) => console.log(line),
+};
 try {
-  ({ slots } = await refreshAfterWarmup(progress, slots, {
-    driveRecompute: () => driveLane("recompute"),
+  const refreshed = await refreshAfterWarmup({ hydrationDrives: progress.hydrationDrives, lastHydrationFinishedMs }, slots, {
+    ...freshRowDeps,
     readSlots,
-    sleep,
-    log: (line) => console.log(line),
-  }));
+  });
+  if (!refreshed.ok) fail(refreshed.why);
+  else slots = refreshed.slots;
 } catch (err) {
   fail(err instanceof Error ? err.message : String(err));
 }
@@ -296,7 +316,6 @@ try {
     fetch,
     baseUrl: SLATE_BASE,
     apiKey: API_KEY,
-    bucketCode: CODE,
     bodyFor: (start) => ({
       bucketCode: CODE,
       start,
@@ -312,8 +331,7 @@ try {
         phone: loadtestPhone(externalId),
       },
     }),
-    sleep,
-    log: (line) => console.log(line),
+    ...freshRowDeps,
   });
 } catch (err) {
   fail(err instanceof Error ? err.message : String(err));

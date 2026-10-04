@@ -23,10 +23,14 @@ import {
   refreshAfterWarmup,
   readOfferedSlots,
   bookControlSlot,
+  waitForFreshSlotRow,
   SLOT_CACHE_SETTLE_MS,
+  ROW_FRESHNESS_DEADLINE_MS,
+  ROW_FRESHNESS_POLL_MS,
   type FetchLike,
 } from "./loadtest/preflight-control.ts";
 import { SLOT_TTL_SECONDS } from "../src/lib/availability/slot-cache.ts";
+import { RECOMPUTE_FRESH_MS } from "../src/lib/availability/precompute-cron.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 // --- an id the stub really produced is recognised -----------------------------
@@ -619,30 +623,10 @@ import { assert, eq, finish } from "./lib/harness.ts";
 // gave the last free agent a stub meeting at the first offered time, then booked
 // that time from a slot cache computed BEFORE the drive. The confirm path correctly
 // answered SLOT_TAKEN and the whole run was lost to the preflight's own stale list.
-
-/** A fake network: availability answers each list in turn, bookings each reply in turn. */
-function fakeNetwork(availability: string[][], bookings: { status: number; body: unknown }[]) {
-  const calls: { method: string; url: string; start?: string }[] = [];
-  let a = 0;
-  let b = 0;
-  const fetch: FetchLike = async (url, init) => {
-    const method = init?.method ?? "GET";
-    if (url.includes("/api/availability")) {
-      calls.push({ method, url });
-      const slots = availability[Math.min(a++, availability.length - 1)] ?? [];
-      return new Response(JSON.stringify({ slots }), { status: 200 });
-    }
-    if (url.endsWith("/api/bookings") && method === "POST") {
-      const start = String((JSON.parse(String(init?.body)) as { start?: unknown }).start);
-      calls.push({ method, url, start });
-      const reply = bookings[b++];
-      if (!reply) throw new Error("the fake was asked for more bookings than the test planned");
-      return new Response(JSON.stringify(reply.body), { status: reply.status });
-    }
-    throw new Error(`unexpected request ${method} ${url}`);
-  };
-  return { fetch, calls };
-}
+//
+// Every wait below is through an injected clock and sleep, so nothing waits for
+// real (L524), and the fakes record requests, row reads and sleeps in ONE order so
+// "it waited before it read" is checkable rather than assumed.
 
 const NINE = "2026-10-05T13:00:00.000Z";
 const NINE_TWENTY = "2026-10-05T13:20:00.000Z";
@@ -650,74 +634,252 @@ const NINE_FORTY = "2026-10-05T13:40:00.000Z";
 const TAKEN = { status: 409, body: { error: "That time was just taken", code: "SLOT_TAKEN" } };
 const BOOKED = { status: 200, body: { id: "b1" } };
 
-/** A sleep that returns at once, for the cases that are not about the wait. */
-const noSleep = async (_ms: number): Promise<void> => {};
+/** The runner's clock at the start of every case. */
+const T0 = Date.parse("2026-10-04T18:00:00.000Z");
+const iso = (ms: number) => new Date(ms).toISOString();
+/** A stored row computed well before T0, and one computed well after it. */
+const STALE_ROW = iso(T0 - 60_000);
+const FRESH_ROW = iso(T0 + 60_000);
 
-function bookingDeps(fetch: FetchLike, log: string[]) {
-  return {
+/**
+ * A fake world: availability answers each list in turn, bookings each reply in
+ * turn, the stored row's `computed_at` each value in turn (the last repeats), and
+ * a clock that only moves when something sleeps.
+ */
+function fakeWorld(opts: {
+  availability: string[][];
+  bookings?: { status: number; body: unknown }[];
+  rowStamps?: (string | null)[];
+}) {
+  const events: string[] = [];
+  const posted: string[] = [];
+  let t = T0;
+  let a = 0;
+  let b = 0;
+  let r = 0;
+  const rowStamps = opts.rowStamps ?? [FRESH_ROW];
+  const bookings = opts.bookings ?? [];
+  const fetch: FetchLike = async (url, init) => {
+    const method = init?.method ?? "GET";
+    if (url.includes("/api/availability")) {
+      events.push("read");
+      const slots = opts.availability[Math.min(a++, opts.availability.length - 1)] ?? [];
+      return new Response(JSON.stringify({ slots }), { status: 200 });
+    }
+    if (url.endsWith("/api/bookings") && method === "POST") {
+      posted.push(String((JSON.parse(String(init?.body)) as { start?: unknown }).start));
+      events.push("book");
+      const reply = bookings[b++];
+      // An unplanned booking answers a status nothing treats as success, rather than
+      // throwing, so the case that caused it fails on its own count.
+      if (!reply) return new Response(JSON.stringify({ error: "unplanned booking" }), { status: 599 });
+      return new Response(JSON.stringify(reply.body), { status: reply.status });
+    }
+    throw new Error(`unexpected request ${method} ${url}`);
+  };
+  const world = {
+    events,
+    posted,
     fetch,
+    now: () => t,
+    sleep: async (ms: number) => {
+      events.push(`sleep:${ms}`);
+      t += ms;
+    },
+    driveRecompute: async () => {
+      events.push("recompute");
+      return "{}";
+    },
+    readComputedAt: async () => {
+      events.push("row");
+      return rowStamps[Math.min(r++, rowStamps.length - 1)] ?? null;
+    },
+    readSlots: () => readOfferedSlots(fetch, "https://loadtest.example", "112"),
+    bucketCode: "112",
+    count: (e: string) => events.filter((x) => x === e).length,
+  };
+  return world;
+}
+
+function bookingDeps(w: ReturnType<typeof fakeWorld>, log: string[] = []) {
+  return {
+    fetch: w.fetch,
     baseUrl: "https://loadtest.example",
     apiKey: "k",
     bucketCode: "112",
     bodyFor: (start: string) => ({ bucketCode: "112", start }),
+    sleep: w.sleep,
+    now: w.now,
+    driveRecompute: w.driveRecompute,
+    readComputedAt: w.readComputedAt,
     log: (line: string) => log.push(line),
-    sleep: noSleep,
   };
 }
 
-{
-  // A ready warm up that drove hydration recomputes once and reads times AGAIN.
-  const { fetch, calls } = fakeNetwork([[NINE_TWENTY]], []);
-  let drives = 0;
-  const progress = { hydrationDrives: 7 };
-  assert(needsPostWarmupRefresh(progress), "a warm up that drove hydration needs the refresh");
-  const out = await refreshAfterWarmup(progress, [NINE, NINE_TWENTY], {
-    driveRecompute: async () => {
-      drives++;
-      return "{}";
-    },
-    readSlots: () => readOfferedSlots(fetch, "https://loadtest.example", "112"),
-    sleep: noSleep,
+function refreshDeps(w: ReturnType<typeof fakeWorld>) {
+  return {
+    driveRecompute: w.driveRecompute,
+    readComputedAt: w.readComputedAt,
+    readSlots: w.readSlots,
+    sleep: w.sleep,
+    now: w.now,
+    bucketCode: w.bucketCode,
+  };
+}
+
+/** Every availability read comes straight after a sleep of at least the cache lifetime. */
+function sleptLongEnoughBeforeEachRead(events: string[]): boolean {
+  return events.every((e, i) => {
+    if (e !== "read") return true;
+    const before = events[i - 1] ?? "";
+    return before.startsWith("sleep:") && Number(before.slice(6)) >= SLOT_TTL_SECONDS * 1000;
   });
-  eq(drives, 1, "the refresh drives the recompute lane exactly once");
-  eq(calls.filter((c) => c.url.includes("/api/availability")).length, 1, "and reads availability again");
-  assert(out.refreshed, "and says it refreshed");
-  eq(out.slots, [NINE_TWENTY], "and the control chooses from the FRESH list, not the stale one");
+}
+
+// --- the bound is derived from the lane it waits on ---------------------------
+
+{
+  // A pool comes due at the latest RECOMPUTE_FRESH_MS after its last compute (the
+  // jitter only pulls that earlier), and the lane is every minute, so the wait must
+  // outlast both or it gives up on a pool that was about to refresh.
+  assert(
+    ROW_FRESHNESS_DEADLINE_MS > RECOMPUTE_FRESH_MS + 60_000,
+    `the row freshness bound (${ROW_FRESHNESS_DEADLINE_MS}ms) outlasts the freshness window plus one cron minute`,
+  );
+  assert(
+    SLOT_CACHE_SETTLE_MS > SLOT_TTL_SECONDS * 1000,
+    `the settle wait (${SLOT_CACHE_SETTLE_MS}ms) is longer than the cache lifetime`,
+  );
+}
+
+// --- waiting for the stored row to postdate an event ---------------------------
+
+{
+  // Stale twice, then fresh: it drives recompute on every poll and returns the
+  // fresh stamp, sleeping between polls rather than spinning.
+  const w = fakeWorld({ availability: [[]], rowStamps: [STALE_ROW, STALE_ROW, FRESH_ROW] });
+  const out = await waitForFreshSlotRow(T0, "the last hydration drive", refreshDeps(w));
+  assert(out.ok, "a row that turns fresh on the third poll is accepted");
+  eq(out.ok ? out.computedAt : null, FRESH_ROW, "and the stamp it accepted is reported");
+  eq(w.count("recompute"), 3, "recompute is driven on every poll");
+  eq(w.count("row"), 3, "and the row is read on every poll");
+  eq(
+    w.events.slice(0, 3),
+    ["recompute", "row", `sleep:${ROW_FRESHNESS_POLL_MS}`],
+    "each poll drives, then reads, then sleeps before the next",
+  );
+}
+
+{
+  // A row computed BEFORE the event, or at the very same instant, is not evidence:
+  // that compute may have started before the event finished.
+  const w = fakeWorld({ availability: [[]], rowStamps: [iso(T0)] });
+  const out = await waitForFreshSlotRow(T0, "the last hydration drive", refreshDeps(w));
+  assert(!out.ok, "a row stamped at the event itself never counts as fresh");
+}
+
+{
+  // No row, or a stamp that cannot be read, is never fresh (L50): an unreadable
+  // stamp left to a raw comparison would land on whichever side NaN falls.
+  for (const stamp of [null, "not a time"]) {
+    const w = fakeWorld({ availability: [[]], rowStamps: [stamp] });
+    const out = await waitForFreshSlotRow(T0, "the last hydration drive", refreshDeps(w));
+    assert(!out.ok, `a row stamp of ${JSON.stringify(stamp)} is never read as fresh`);
+  }
+}
+
+{
+  // Expiry: a row that never turns fresh gives up inside the bound, with its own
+  // message naming the bucket, the row's stamp and the event it was waiting on.
+  const w = fakeWorld({ availability: [[]], rowStamps: [STALE_ROW] });
+  const out = await waitForFreshSlotRow(T0, "the last hydration drive", refreshDeps(w));
+  assert(!out.ok, "a row that never turns fresh fails the wait");
+  const why = out.ok ? "" : out.why;
+  assert(why.includes("112"), `the expiry names the bucket: ${why}`);
+  assert(why.includes(STALE_ROW), "and the row's computed time");
+  assert(why.includes(iso(T0)), "and the time of the event it waited on");
+  assert(why.includes("the last hydration drive"), "and which event that was");
+  assert(
+    w.now() - T0 >= ROW_FRESHNESS_DEADLINE_MS && w.now() - T0 < ROW_FRESHNESS_DEADLINE_MS + ROW_FRESHNESS_POLL_MS,
+    `it waited the whole bound and no more than one poll past it (${w.now() - T0}ms)`,
+  );
+}
+
+{
+  // And a missing row's expiry says there was no row, not a made up time.
+  const w = fakeWorld({ availability: [[]], rowStamps: [null] });
+  const out = await waitForFreshSlotRow(T0, "the last hydration drive", refreshDeps(w));
+  const why = out.ok ? "" : out.why;
+  assert(why.includes("no stored row"), `a missing row's expiry says so: ${why}`);
+}
+
+// --- the refresh after the warm up ---------------------------------------------
+
+{
+  // A ready warm up that drove hydration waits for a row computed AFTER the last
+  // drive finished, then waits out the edge cache, then reads the times again.
+  const w = fakeWorld({ availability: [[NINE_TWENTY]], rowStamps: [STALE_ROW, FRESH_ROW] });
+  const progress = { hydrationDrives: 7, lastHydrationFinishedMs: T0 };
+  assert(needsPostWarmupRefresh(progress), "a warm up that drove hydration needs the refresh");
+  const out = await refreshAfterWarmup(progress, [NINE, NINE_TWENTY], refreshDeps(w));
+  assert(out.ok && out.refreshed, "and says it refreshed");
+  eq(out.ok ? out.slots : null, [NINE_TWENTY], "and the control chooses from the FRESH list, not the stale one");
+  eq(w.count("read"), 1, "availability is read again exactly once");
+  const firstRead = w.events.indexOf("read");
+  const lastRow = w.events.lastIndexOf("row");
+  assert(lastRow >= 0 && lastRow < firstRead, "and only after the stored row was seen fresh");
+  assert(
+    sleptLongEnoughBeforeEachRead(w.events),
+    `with at least SLOT_TTL_SECONDS (${SLOT_TTL_SECONDS}s) slept between the fresh row and the read: ${w.events.join(", ")}`,
+  );
 }
 
 {
   // The quiet direction: no hydration drive means the list was computed over the
-  // calendars as they stand, so nothing is driven and nothing is re-read.
-  const { fetch, calls } = fakeNetwork([[NINE_TWENTY]], []);
-  let drives = 0;
-  const progress = { hydrationDrives: 0 };
+  // calendars as they stand, so nothing is driven, waited for or re-read.
+  const w = fakeWorld({ availability: [[NINE_TWENTY]] });
+  const progress = { hydrationDrives: 0, lastHydrationFinishedMs: null };
   assert(!needsPostWarmupRefresh(progress), "a warm up that drove no hydration needs no refresh");
-  const out = await refreshAfterWarmup(progress, [NINE], {
-    driveRecompute: async () => {
-      drives++;
-      return "{}";
-    },
-    readSlots: () => readOfferedSlots(fetch, "https://loadtest.example", "112"),
-    sleep: noSleep,
-  });
-  eq(drives, 0, "no recompute is driven");
-  eq(calls.length, 0, "and availability is not read again");
-  assert(!out.refreshed, "and it says it did not refresh");
-  eq(out.slots, [NINE], "so the warm up's own list stands");
+  const out = await refreshAfterWarmup(progress, [NINE], refreshDeps(w));
+  eq(w.events, [], "nothing is driven, slept or read");
+  assert(out.ok && !out.refreshed, "and it says it did not refresh");
+  eq(out.ok ? out.slots : null, [NINE], "so the warm up's own list stands");
 }
 
 {
-  // One SLOT_TAKEN, then a fresh read, then the next offered time books.
-  const { fetch, calls } = fakeNetwork([[NINE, NINE_TWENTY, NINE_FORTY]], [TAKEN, BOOKED]);
+  // A refresh whose row never turns fresh fails the preflight rather than booking
+  // from a list it could not prove current.
+  const w = fakeWorld({ availability: [[NINE_TWENTY]], rowStamps: [STALE_ROW] });
+  const out = await refreshAfterWarmup({ hydrationDrives: 2, lastHydrationFinishedMs: T0 }, [NINE], refreshDeps(w));
+  assert(!out.ok, "a refresh whose row never turns fresh fails");
+  const why = out.ok ? "" : String(out.why);
+  assert(why.includes("112") && why.includes(STALE_ROW), `naming the bucket and the row's time: ${why}`);
+  eq(w.count("read"), 0, "and availability is never read from the stale cache");
+}
+
+// --- the control booking and its one retry --------------------------------------
+
+{
+  // One SLOT_TAKEN, then a row newer than the refusal, then a fresh read, then the
+  // next offered time books.
+  const w = fakeWorld({
+    availability: [[NINE, NINE_TWENTY, NINE_FORTY]],
+    bookings: [TAKEN, BOOKED],
+    rowStamps: [STALE_ROW, FRESH_ROW],
+  });
   const log: string[] = [];
-  const out = await bookControlSlot([NINE, NINE_TWENTY], bookingDeps(fetch, log));
+  const out = await bookControlSlot([NINE, NINE_TWENTY], bookingDeps(w, log));
   assert(out.ok, "a single lost slot is retried and the control books");
   eq(out.ok ? out.start : null, NINE_TWENTY, "on the next offered time after the refused one");
   eq(out.ok ? out.attempts : null, 2, "on the second attempt");
-  eq(
-    calls.map((c) => c.method),
-    ["POST", "GET", "POST"],
-    "availability is read again BETWEEN the refusal and the retry",
+  eq(w.events[0], "book", "the first attempt is posted before anything else");
+  const read = w.events.indexOf("read");
+  const lastRow = w.events.lastIndexOf("row");
+  assert(lastRow > 0 && lastRow < read, "availability is re-read only once the row postdates the refusal");
+  assert(read < w.events.lastIndexOf("book"), "and before the retry is posted");
+  assert(
+    sleptLongEnoughBeforeEachRead(w.events),
+    `with at least SLOT_TTL_SECONDS (${SLOT_TTL_SECONDS}s) slept before the re-read: ${w.events.join(", ")}`,
   );
   assert(
     log.some((l) => l.includes("112") && l.includes(NINE)) &&
@@ -727,139 +889,82 @@ function bookingDeps(fetch: FetchLike, log: string[]) {
 }
 
 {
+  // The row must postdate the REFUSAL, not merely the start of the run: a row
+  // computed before the refusal is the list that offered the taken time.
+  const refusalTime = T0;
+  const w = fakeWorld({
+    availability: [[NINE_TWENTY]],
+    bookings: [TAKEN, BOOKED],
+    rowStamps: [iso(refusalTime - 1), FRESH_ROW],
+  });
+  const out = await bookControlSlot([NINE], bookingDeps(w));
+  assert(out.ok, "the retry waits past a row computed just before the refusal");
+  eq(w.count("row"), 2, "polling again rather than trusting it");
+}
+
+{
   // A second refusal is still a failed preflight, and says which two times it tried.
-  const { fetch, calls } = fakeNetwork([[NINE_TWENTY, NINE_FORTY]], [TAKEN, TAKEN]);
-  const out = await bookControlSlot([NINE], bookingDeps(fetch, []));
+  const w = fakeWorld({ availability: [[NINE_TWENTY, NINE_FORTY]], bookings: [TAKEN, TAKEN] });
+  const out = await bookControlSlot([NINE], bookingDeps(w));
   assert(!out.ok, "SLOT_TAKEN twice fails the preflight");
   const why = out.ok ? "" : out.why;
   assert(why.includes(NINE) && why.includes(NINE_TWENTY), "naming both times it tried");
   assert(why.includes("SLOT_TAKEN"), "and the refusal it met");
-  eq(calls.filter((c) => c.method === "POST").length, 2, "and it tries exactly twice, never a third time");
+  eq(w.posted.length, 2, "and it tries exactly twice, never a third time");
+}
+
+{
+  // The retry's own expiry: the row never postdates the refusal, so it fails
+  // without re-reading the cache or posting a second time.
+  const w = fakeWorld({ availability: [[NINE_TWENTY]], bookings: [TAKEN], rowStamps: [STALE_ROW] });
+  const out = await bookControlSlot([NINE], bookingDeps(w));
+  assert(!out.ok, "a retry whose row never turns fresh fails");
+  const why = out.ok ? "" : out.why;
+  assert(why.includes("SLOT_TAKEN") && why.includes(STALE_ROW), `naming the refusal and the row's time: ${why}`);
+  eq(w.count("read"), 0, "without re-reading availability");
+  eq(w.posted.length, 1, "or posting again");
 }
 
 {
   // A refusal that is NOT a lost slot is not retried: a 500 says something a second
   // time cannot fix, and retrying it would hide it (L11).
-  const { fetch, calls } = fakeNetwork([[NINE_TWENTY]], [{ status: 500, body: { error: "boom" } }]);
-  const out = await bookControlSlot([NINE], bookingDeps(fetch, []));
+  const w = fakeWorld({ availability: [[NINE_TWENTY]], bookings: [{ status: 500, body: { error: "boom" } }] });
+  const out = await bookControlSlot([NINE], bookingDeps(w));
   assert(!out.ok, "a 500 fails at once");
-  eq(calls.length, 1, "without a re-read or a retry");
+  eq(w.events, ["book"], "without a wait, a re-read or a retry");
   assert(!out.ok && out.why.includes("500"), "and names the status");
 }
 
 {
   // A 409 for any other reason is not a lost slot either.
-  const { fetch, calls } = fakeNetwork(
-    [[NINE_TWENTY]],
-    [{ status: 409, body: { code: "CONFIRM_REQUIRED" } }],
-  );
-  const out = await bookControlSlot([NINE], bookingDeps(fetch, []));
+  const w = fakeWorld({ availability: [[NINE_TWENTY]], bookings: [{ status: 409, body: { code: "CONFIRM_REQUIRED" } }] });
+  const out = await bookControlSlot([NINE], bookingDeps(w));
   assert(!out.ok, "a 409 that is not SLOT_TAKEN fails at once");
-  eq(calls.length, 1, "without a re-read or a retry");
+  eq(w.events, ["book"], "without a wait, a re-read or a retry");
+}
+
+{
+  // A first time success never waits.
+  const w = fakeWorld({ availability: [[NINE]], bookings: [BOOKED] });
+  await bookControlSlot([NINE], bookingDeps(w));
+  eq(w.events, ["book"], "a control that books first time neither waits nor re-reads");
 }
 
 {
   // No times offered at all is its own refusal rather than a booking at `undefined`.
-  const { fetch, calls } = fakeNetwork([[]], []);
-  const out = await bookControlSlot([], bookingDeps(fetch, []));
+  const w = fakeWorld({ availability: [[]] });
+  const out = await bookControlSlot([], bookingDeps(w));
   assert(!out.ok, "an empty list cannot book a control");
-  eq(calls.length, 0, "and nothing is posted");
+  eq(w.events, [], "and nothing is posted");
 }
 
 {
   // A retry whose fresh read offers nothing but the refused time fails, rather than
   // posting the same refused time again.
-  const { fetch, calls } = fakeNetwork([[NINE]], [TAKEN]);
-  const out = await bookControlSlot([NINE], bookingDeps(fetch, []));
+  const w = fakeWorld({ availability: [[NINE]], bookings: [TAKEN] });
+  const out = await bookControlSlot([NINE], bookingDeps(w));
   assert(!out.ok, "a fresh list holding only the refused time fails");
-  eq(calls.filter((c) => c.method === "POST").length, 1, "without posting that time twice");
-}
-
-// --- every re-read waits out the edge slot cache first -------------------------
-//
-// /api/availability answers first from `caches.default` for SLOT_TTL_SECONDS. A
-// recompute drive deletes that entry only for the pools it decides are due, so a
-// read straight after the drive (or straight after a SLOT_TAKEN) can be served the
-// very list the refresh exists to replace. Each re-read therefore waits longer than
-// the cache lifetime, through an injected sleep so nothing here waits for real.
-
-/** Records requests and sleeps in ONE order, so "slept before it read" is checkable. */
-function orderedNetwork(availability: string[][], bookings: { status: number; body: unknown }[]) {
-  const events: string[] = [];
-  const net = fakeNetwork(availability, bookings);
-  const fetch: FetchLike = async (url, init) => {
-    events.push(url.includes("/api/availability") ? "read" : "book");
-    return net.fetch(url, init);
-  };
-  const sleep = async (ms: number) => {
-    events.push(`sleep:${ms}`);
-  };
-  return { fetch, sleep, events };
-}
-
-function sleptLongEnoughBeforeEachRead(events: string[]): boolean {
-  return events.every((e, i) => {
-    if (e !== "read") return true;
-    const before = events[i - 1] ?? "";
-    return before.startsWith("sleep:") && Number(before.slice(6)) >= SLOT_TTL_SECONDS * 1000;
-  });
-}
-
-{
-  // The post warm up refresh: drive, then wait out the cache, then read.
-  const { fetch, sleep, events } = orderedNetwork([[NINE_TWENTY]], []);
-  await refreshAfterWarmup({ hydrationDrives: 3 }, [NINE], {
-    driveRecompute: async () => {
-      events.push("recompute");
-      return "{}";
-    },
-    readSlots: () => readOfferedSlots(fetch, "https://loadtest.example", "112"),
-    sleep,
-  });
-  eq(events[0], "recompute", "the refresh drives the recompute lane first");
-  assert(
-    events.includes("read") && sleptLongEnoughBeforeEachRead(events),
-    `and sleeps at least SLOT_TTL_SECONDS (${SLOT_TTL_SECONDS}s) between the drive and the re-read: ${events.join(", ")}`,
-  );
-}
-
-{
-  // The quiet direction spends no wait: nothing is re-read.
-  const { fetch, sleep, events } = orderedNetwork([[NINE_TWENTY]], []);
-  await refreshAfterWarmup({ hydrationDrives: 0 }, [NINE], {
-    driveRecompute: async () => "{}",
-    readSlots: () => readOfferedSlots(fetch, "https://loadtest.example", "112"),
-    sleep,
-  });
-  eq(events, [], "a warm up with no hydration drive neither sleeps nor reads");
-}
-
-{
-  // The SLOT_TAKEN retry: refused, then wait out the cache, then read, then book.
-  const { fetch, sleep, events } = orderedNetwork([[NINE, NINE_TWENTY]], [TAKEN, BOOKED]);
-  const out = await bookControlSlot([NINE], { ...bookingDeps(fetch, []), sleep });
-  assert(out.ok, "the retry still books after its wait");
-  eq(events.filter((e) => e.startsWith("sleep:")).length, 1, "with exactly one wait, before the one re-read");
-  assert(
-    events[0] === "book" && events.includes("read") && sleptLongEnoughBeforeEachRead(events),
-    `the retry sleeps at least SLOT_TTL_SECONDS (${SLOT_TTL_SECONDS}s) before re-reading: ${events.join(", ")}`,
-  );
-}
-
-{
-  // A first time success never waits.
-  const { fetch, sleep, events } = orderedNetwork([[NINE]], [BOOKED]);
-  await bookControlSlot([NINE], { ...bookingDeps(fetch, []), sleep });
-  eq(events, ["book"], "a control that books first time neither sleeps nor re-reads");
-}
-
-{
-  // The wait is DERIVED from the cache lifetime, with room to spare, so raising the
-  // TTL raises the wait rather than leaving it short.
-  assert(
-    SLOT_CACHE_SETTLE_MS > SLOT_TTL_SECONDS * 1000,
-    `the settle wait (${SLOT_CACHE_SETTLE_MS}ms) is longer than the cache lifetime`,
-  );
+  eq(w.posted.length, 1, "without posting that time twice");
 }
 
 finish();
