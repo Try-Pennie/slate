@@ -24,6 +24,7 @@ import {
 } from "./loadtest/preflight-checks.ts";
 import { hydrationBatchSize, HYDRATION_ONBOARDING_MAX } from "../src/lib/google/hydration.ts";
 import { readFileSync } from "node:fs";
+import { ROW_FRESHNESS_DEADLINE_MS } from "./loadtest/preflight-control.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 /** A branch that is entirely warm: every gate satisfied, times on offer. */
@@ -162,9 +163,12 @@ function giveUpWhy(r: WarmupReading, p: WarmupProgress, label: string): string {
   const minutes = Number(own?.[1] ?? NaN);
   assert(Number.isFinite(minutes), "and it is a number");
   const deadlineMinutes = WARMUP_CRON_DELIVERY_DEADLINE_MS / 60_000;
+  // The control booking can then wait twice for a fresh stored slot row: once
+  // after the last hydration drive and once before the SLOT_TAKEN retry (#3236).
+  const rowWaitMinutes = (2 * ROW_FRESHNESS_DEADLINE_MS) / 60_000;
   assert(
-    minutes >= deadlineMinutes + 10,
-    `the preflight job's ${minutes} minute timeout leaves at least ten minutes past the ${deadlineMinutes} minute delivery deadline`,
+    minutes >= deadlineMinutes + rowWaitMinutes + 10,
+    `the preflight job's ${minutes} minute timeout leaves at least ten minutes past the ${deadlineMinutes} minute delivery deadline and two ${rowWaitMinutes / 2} minute stored row waits`,
   );
 }
 
