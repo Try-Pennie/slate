@@ -44,6 +44,7 @@
  */
 import { formatSlotDay, formatSlotTime } from "../booking/slot-label.ts";
 import type { DayTally, TierCauseReading } from "./tier-cause.ts";
+import type { AlertResolve } from "./alert-deps";
 
 /** alert_state row key prefix. ONE constant, so the sender, the catalog and the
  *  preview cannot drift onto different keys. */
@@ -293,6 +294,53 @@ export function planTierRecovery(
     else out.holding.push({ tier: r.tier, openTimes: r.openTimes, heldMs });
   }
   return out;
+}
+
+/** What `settleTierRecovery` reaches outside itself, so every failure is driven in the node suite. */
+export interface TierRecoveryDeps {
+  /** One read of every tier's open page and hold. Throws on a refused read. */
+  loadState: () => Promise<TierAlertState>;
+  startHolds: (tiers: string[], nowMs: number) => Promise<void>;
+  clearHolds: (tiers: string[]) => Promise<void>;
+  /** Sends the all clear for one key; true only when the notice went out. */
+  resolve: AlertResolve;
+  warn: (msg: string, err?: unknown) => void;
+}
+
+/**
+ * The lane's half of ending a page (#3227): read the state once, start and drop
+ * holds, send each all clear, and drop a tier's hold only once its notice was
+ * delivered, so a notice that failed is retried on the next tick.
+ *
+ * A run that measured no tier spends no read on the state, and a state that could
+ * not be read concludes nothing for any tier (#1134, #1152).
+ */
+export async function settleTierRecovery(
+  plan: TierAlertPlan,
+  policy: TierRecoveryPolicy,
+  nowMs: number,
+  deps: TierRecoveryDeps,
+): Promise<{ recovery: TierRecoveryPlan; cleared: string[] }> {
+  const state: TierAlertState =
+    plan.recovered.length + plan.page.length === 0
+      ? { readable: false }
+      : await deps.loadState().catch((err) => {
+          deps.warn("tier alert state unreadable; recovery deferred", err);
+          return { readable: false } as const;
+        });
+  const recovery = planTierRecovery(plan, state, policy, nowMs);
+  await deps.startHolds(recovery.startHold, nowMs);
+  await deps.clearHolds(recovery.clearHold);
+  const cleared: string[] = [];
+  for (const t of recovery.allClear) {
+    const sent = await deps.resolve(tierStaffingKey(t.tier), tierRecoveredMessage(t)).catch((err) => {
+      deps.warn(`recovery notice failed for ${tierStaffingKey(t.tier)}`, err);
+      return false;
+    });
+    if (sent) cleared.push(t.tier);
+  }
+  await deps.clearHolds(cleared);
+  return { recovery, cleared };
 }
 
 // ------------------------------------------------------------------ the copy

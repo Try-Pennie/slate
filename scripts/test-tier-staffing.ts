@@ -474,4 +474,77 @@ function lane(policy: TierRecoveryPolicy = POLICY) {
 eq(tierHoldKey("1"), "empty_tier_healthy_since:1", "the hold has its own key, away from the page and its marker");
 assert(!tierHoldKey("1").startsWith(`${TIER_STAFFING_ALERT_KEY}:`), "the hold key cannot be read as a page key");
 
+// --- the lane's wiring of the hold (#3227), driven through its seams ----------
+//
+// What the route does with the plan: read the state once, start and drop holds,
+// send each all clear, and drop a hold only once its notice was delivered. Every
+// failure path here concludes nothing rather than clearing.
+{
+  const { settleTierRecovery } = await import("../src/lib/monitor/tier-staffing.ts");
+  function fakes(over: Partial<{ state: TierAlertState | Error; resolve: (key: string) => Promise<boolean> }> = {}) {
+    const calls = { started: [] as string[], cleared: [] as string[], resolved: [] as string[], warned: [] as string[], reads: 0 };
+    return {
+      calls,
+      deps: {
+        loadState: async () => {
+          calls.reads++;
+          const st = over.state ?? { readable: true as const, firing: new Set(["1"]), holdSinceMs: new Map([["1", NOW - 31 * MIN]]) };
+          if (st instanceof Error) throw st;
+          return st;
+        },
+        startHolds: async (tiers: string[]) => void calls.started.push(...tiers),
+        clearHolds: async (tiers: string[]) => void calls.cleared.push(...tiers),
+        resolve: async (key: string) => {
+          calls.resolved.push(key);
+          return over.resolve ? over.resolve(key) : true;
+        },
+        warn: (msg: string) => void calls.warned.push(msg),
+      },
+    };
+  }
+  const healthy = planTierAlerts([low(4)], WINDOW_END);
+
+  // The good path: held long enough, the notice goes out and its hold is dropped.
+  {
+    const f = fakes();
+    const out = await settleTierRecovery(healthy, POLICY, NOW, f.deps);
+    eq(f.calls.resolved.join(","), "empty_tier:1", "a held tier is cleared on its page key");
+    eq(f.calls.cleared.join(","), "1", "and its hold is dropped once the notice went out");
+    eq(out.cleared.join(","), "1", "and the run says which tiers it cleared");
+  }
+  // A notice that did not go out keeps its hold, so the next tick retries it.
+  for (const [what, resolve] of [
+    ["was refused", async () => false],
+    ["threw", async () => { throw new Error("slack down"); }],
+  ] as const) {
+    const f = fakes({ resolve });
+    const out = await settleTierRecovery(healthy, POLICY, NOW, f.deps);
+    eq(f.calls.cleared.length, 0, `a notice that ${what} keeps the hold`);
+    eq(out.cleared.length, 0, `and nothing is reported cleared when the notice ${what}`);
+    if (what === "threw") assert(f.calls.warned.length > 0, "and the throw is logged");
+  }
+  // An alert state that cannot be read sends nothing and touches no hold.
+  {
+    const f = fakes({ state: new Error("alert_state refused") });
+    const out = await settleTierRecovery(healthy, POLICY, NOW, f.deps);
+    eq(f.calls.resolved.length + f.calls.started.length + f.calls.cleared.length, 0, "an unreadable state clears nothing and holds nothing");
+    eq(out.cleared.length, 0, "and reports nothing cleared");
+    assert(f.calls.warned.length > 0, "and says so in the log");
+  }
+  // A run that measured no tier does not spend the read at all.
+  {
+    const f = fakes();
+    await settleTierRecovery(planTierAlerts([low("unmeasured")], WINDOW_END), POLICY, NOW, f.deps);
+    eq(f.calls.reads, 0, "a blind run does not read the alert state");
+    eq(f.calls.resolved.length, 0, "and clears nothing");
+  }
+  // A tier reaching the count for the first time starts its hold and sends nothing.
+  {
+    const f = fakes({ state: { readable: true, firing: new Set(["1"]), holdSinceMs: new Map() } });
+    await settleTierRecovery(healthy, POLICY, NOW, f.deps);
+    eq(f.calls.started.join(","), "1", "the first tick at N starts the hold");
+    eq(f.calls.resolved.length, 0, "and sends no all clear yet");
+  }
+}
+
 finish();

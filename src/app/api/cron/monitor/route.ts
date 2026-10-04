@@ -78,10 +78,9 @@ import {
 import { readPublicBookingPauseState } from "@/lib/booking/settings";
 import {
   planTierAlerts,
-  planTierRecovery,
+  settleTierRecovery,
   tierStaffingKey,
   tierUnstaffedMessage,
-  tierRecoveredMessage,
 } from "@/lib/monitor/tier-staffing";
 import {
   clearTierHolds,
@@ -1168,14 +1167,17 @@ export async function GET(req: NextRequest) {
       // concludes nothing for any tier, so a recovery is never announced, and a
       // hold never started or reset, off a tick that did not look (#1134, #1152).
       const recoveryPolicy = settings?.tierRecovery ?? codedTierRecovery();
-      const alertState =
-        plan.recovered.length + plan.page.length === 0
-          ? ({ readable: false } as const)
-          : await loadTierAlertState(DEBT_TIERS).catch((err) => {
-              log.warn("monitor", { msg: "tier alert state unreadable; recovery deferred" }, err);
-              return { readable: false } as const;
-            });
-      const recovery = planTierRecovery(plan, alertState, recoveryPolicy, now);
+      const { recovery } = await settleTierRecovery(plan, recoveryPolicy, now, {
+        loadState: () => loadTierAlertState(DEBT_TIERS),
+        startHolds: startTierHolds,
+        clearHolds: clearTierHolds,
+        // alert-key: empty_tier:*
+        // all-clear-proof: scripts/test-tier-staffing.ts drives planTierAlerts,
+        // planTierRecovery and settleTierRecovery with each read failed in turn and
+        // pins that nothing clears.
+        resolve: (key, text) => resolveAlert(key, text),
+        warn: (msg, err) => log.warn("monitor", { msg }, err),
+      });
       log.info("monitor", {
         msg: "tier recovery",
         holding: recovery.holding.map((h) => `${h.tier}:${h.openTimes}:${Math.round(h.heldMs / 60_000)}m`).join(",") || null,
@@ -1184,22 +1186,6 @@ export async function GET(req: NextRequest) {
         min_open_times: recoveryPolicy.minOpenTimes,
         hold_min: recoveryPolicy.holdMs / 60_000,
       });
-      await startTierHolds(recovery.startHold, now);
-      await clearTierHolds(recovery.clearHold);
-      const cleared: string[] = [];
-      for (const t of recovery.allClear) {
-        const key = tierStaffingKey(t.tier);
-        // alert-key: empty_tier:*
-        // all-clear-proof: scripts/test-tier-staffing.ts drives planTierAlerts and
-        // planTierRecovery with each read failed in turn and pins that nothing clears.
-        const sent = await resolveAlert(key, tierRecoveredMessage(t)).catch((err) => {
-          log.error("slack-alert", { msg: "recovery notice failed", key }, err);
-          return false;
-        });
-        // A notice that did not go out keeps its hold, so the next tick retries it.
-        if (sent) cleared.push(t.tier);
-      }
-      await clearTierHolds(cleared);
       return plan;
     });
     if (!gates.tierStaffing.run) {
