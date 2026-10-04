@@ -2067,7 +2067,7 @@ async function assignAgent(
   excludeLow = false,
   /** #3257: this confirm's claim in its slot's line; see `claimFromLine`. */
   seat: LineSeat | null = null,
-): Promise<AssignResult & { candidates: string[] }> {
+): Promise<AssignResult & { candidates: string[]; read: string[] }> {
   const { candidates: read, memberCount } = await deps.roundRobinCandidates(
     bucket,
     eventType,
@@ -2107,7 +2107,7 @@ async function assignAgent(
   }
   // Google may have found the advisor it first claimed busy: claim the one it took.
   if (seat && assignment.userId !== candidates[0]) seat.claim(assignment.userId, false);
-  return { ...assignment, candidates };
+  return { ...assignment, candidates, read };
 }
 
 /**
@@ -2156,6 +2156,13 @@ interface TierAssignResult {
   userId: string;
   email: string;
   candidates: string[];
+  /**
+   * #3257: the rung's whole candidate list as read, before the advisors other
+   * confirms in flight had claimed were left out of `candidates`. Whether the slot
+   * is full is judged on this, never on the thinned list: a claimed advisor this
+   * confirm never asked about may be free again by the time it finishes.
+   */
+  read: string[];
   rungsDropped: number;
   /** #2158: the bucket's legal rule matched nobody, so it was dropped and the
    *  tier's whole pool was used. Carried out here rather than recomputed, so the
@@ -2196,12 +2203,12 @@ async function assignAgentWithTierFallback(
       // The same rule the display cascade judged this rung by (#2842).
       const excludeLow = rungExcludesLow(requested.bucket.code, rungCode);
       try {
-        const { userId, email, candidates } = await assignAgent(
+        const { userId, email, candidates, read } = await assignAgent(
           deps, resolved.bucket, resolved.eventType, startIso, endIso, preview, undefined, excludeLow, seat,
         );
         return {
           hit: true,
-          value: { bucket: resolved.bucket, eventType: resolved.eventType, startIso, endIso, userId, email, candidates },
+          value: { bucket: resolved.bucket, eventType: resolved.eventType, startIso, endIso, userId, email, candidates, read },
         };
       } catch (err) {
         // #2842: a rung filtered to advisors without Low can hold nobody on a
@@ -2238,7 +2245,7 @@ async function assignNamedAgent(
   agentUserId: string,
 ): Promise<TierAssignResult> {
   const { startIso, endIso } = bookingWindow(startInstantIso, resolved.eventType.duration_min);
-  let assigned: AssignResult & { candidates: string[] };
+  let assigned: AssignResult & { candidates: string[]; read: string[] };
   try {
     assigned = await assignAgent(deps, resolved.bucket, resolved.eventType, startIso, endIso, false, agentUserId);
   } catch (err) {
@@ -2259,6 +2266,7 @@ async function assignNamedAgent(
     userId: assigned.userId,
     email: assigned.email,
     candidates: assigned.candidates,
+    read: assigned.read,
     rungsDropped: 0,
   };
 }
@@ -3912,8 +3920,15 @@ async function createHeld(
   // rung it booked from has nobody left after the advisor it took. The ones before
   // that advisor were already found busy, or lost to a race; the ones after were
   // never asked, so with any of them left the next confirm runs and asks.
+  //
+  // #3257: judged on the rung's whole list as READ, not the one thinned of other
+  // confirms' claims. An advisor left out for a claim was never asked by this
+  // confirm, and the confirm holding it may have failed and freed it since, so any
+  // advisor skipped that way leaves the slot open: the next in line reads for
+  // itself, which costs it one candidate read when the claim did book.
   const at = candidates.indexOf(result.booking.assigned_user_id ?? chosen.userId);
-  const full = at >= 0 && at === candidates.length - 1;
+  const skippedForClaims = tier.read.some((id) => !candidates.includes(id));
+  const full = at >= 0 && at === candidates.length - 1 && !skippedForClaims;
   return {
     result,
     verdict: full ? { full: true, refusal: "race", settled: { idempotencyKey, result } } : { full: false },

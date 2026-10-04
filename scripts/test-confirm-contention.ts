@@ -124,6 +124,9 @@ async function burst(opts: {
   slowEventMs?: number;
   /** When each confirm arrives, from the first; absent means all at once. */
   arriveAtMs?: number[];
+  /** The FIRST calendar write for this advisor's email fails at once, an outage
+   *  that ends that confirm and frees the advisor it claimed. */
+  failFirstEventFor?: string;
 }) {
   const clock = new VirtualClock(Date.parse("2026-06-01T00:00:00.000Z"));
   const realNow = Date.now;
@@ -146,6 +149,7 @@ async function burst(opts: {
     }
     const seatedReads: string[] = [];
     let raceLosses = 0;
+    let eventFailed = false;
     const queue: ConfirmQueue<unknown> =
       opts.queue === "off" ? NO_QUEUE : makeConfirmQueue({ timer: (ms, fire) => clock.at(clock.now + ms, fire) });
     let personReads = 0;
@@ -174,6 +178,13 @@ async function burst(opts: {
         return base.verifyFree(...args);
       },
       createEvent: async (...args) => {
+        if (opts.failFirstEventFor && args[0] === opts.failFirstEventFor && !eventFailed) {
+          eventFailed = true;
+          // Fails part way through the write, so the confirm beside it has already
+          // read its candidates and is still booking when the claim is released.
+          await clock.sleep((opts.slowEventMs ?? 0) / 2);
+          throw new Error("calendar write failed");
+        }
         if (opts.slowEventMs) await clock.sleep(opts.slowEventMs);
         return base.createEvent(...args);
       },
@@ -664,9 +675,15 @@ async function main() {
       `production crowd, pool of 2: two booked, the rest told SLOT_TAKEN (got ${JSON.stringify(tally)})`,
     );
     assert(bySlot.size === 2, "production crowd, pool of 2: one booking per advisor, never a double");
+    // The second booking was made from a pool thinned of the first one's claim,
+    // so it cannot call the slot full (the first might have failed). Exactly one
+    // confirm then leads and reads for itself, finds nobody left without asking
+    // Google, and its own verdict answers the other 97 without a read.
+    const readers = runs.filter((r) => r.outcome !== "created" && r.calls.length > 0);
+    assert(readers.length === 1, `production crowd, pool of 2: one refused confirm reads, the rest read nothing (got ${readers.length})`);
     assert(
-      runs.filter((r) => r.outcome !== "created").every((r) => r.calls.length === 0),
-      "production crowd, pool of 2: no refused confirm reads anything",
+      readers.every((r) => r.calls.every((c) => c.name !== "verifyFree" && c.name !== "createEvent")),
+      "production crowd, pool of 2: that one never asks Google",
     );
   }
 
@@ -729,6 +746,31 @@ async function main() {
     );
     assert(raceLosses === 2, `two lost races: each lost exactly once, never to the other (got ${raceLosses})`);
     assert(bySlot.size === 4, "two lost races: the two held elsewhere and two new bookings");
+  }
+
+  // --- #3257 review: a claim that FAILED never makes the next booking "full" ----
+  //
+  // A pool of two. Confirm 0 claims a and hands on; confirm 1 books b from what
+  // was left after a's claim. Confirm 0's calendar write then fails (an outage),
+  // which frees a. Confirm 1 booked the last advisor of the pool it was SHOWN, but
+  // a was never asked by it and is free now, so the confirms waiting behind it must
+  // not be told the time is taken: the next one leads and books a.
+  {
+    const { runs, tally, bySlot } = await burst({
+      inputs: Array.from({ length: 5 }, (_, i) => lead(i)),
+      pool: ["a", "b"],
+      queue: "real",
+      slowEventMs: 2_000,
+      failFirstEventFor: "a@x.com",
+    });
+    assert(runs[0].outcome !== "created" && runs[0].outcome !== "SLOT_TAKEN", `failed claim: the first confirm fails with its outage (got ${runs[0].outcome})`);
+    const agents = [...bySlot.values()].map((b) => b.assigned_user_id).sort();
+    assert(
+      JSON.stringify(agents) === JSON.stringify(["a", "b"]),
+      `failed claim: the advisor freed by the failure is still booked by somebody waiting (got ${JSON.stringify(agents)}, ${JSON.stringify(tally)})`,
+    );
+    assert(tally.created === 2, `failed claim: two booked (got ${JSON.stringify(tally)})`);
+    assert(!tally["503"], `failed claim: none is answered 503 (got ${JSON.stringify(tally)})`);
   }
 
   finish();
