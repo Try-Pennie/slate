@@ -17,8 +17,11 @@
  * expiry is never later than the confirm's.
  *
  * Outside any budget a request just gets its own limit, so the cron lanes are
- * unchanged. Work deferred past the response must leave the budget
- * (`outsideCallBudget`), or it would inherit an expiry meant for the lead.
+ * unchanged. Work deferred past the response must not inherit an expiry meant for
+ * the lead, and two things see to it: a budget stops governing anything once the
+ * scope that opened its request has settled (#3145), whoever deferred the work,
+ * and `afterResponse` leaves the budget outright (`outsideCallBudget`), which also
+ * covers deferred work that starts while the request is still answering.
  *
  * `Date.now()` in a Worker advances at I/O, not during computation, so this
  * measures time spent WAITING on dependencies, which is what it exists to bound.
@@ -45,7 +48,7 @@ interface Budget {
    * request's cleanup allowance is opened ONCE and every later cleanup reuses
    * it, even one opened after the first has returned.
    */
-  readonly request: { cleanup?: Budget };
+  readonly request: { cleanup?: Budget; closed?: boolean };
 }
 
 /** The two methods of Node's AsyncLocalStorage this module uses. */
@@ -82,6 +85,20 @@ const inert: ContextStore<Budget | undefined> = {
 };
 
 let found: ContextStore<Budget | undefined> | null = null;
+
+/**
+ * The budget in force here, or none once the scope that opened its request has
+ * returned (#3145, L1017). The async context is copied into every continuation, so
+ * work deferred from inside a budget (a float, a raw `after()` callback, a
+ * `waitUntil`, a flight another request awaits) still finds the budget in its
+ * context after the request has answered. Nobody waits on it then, so it governs
+ * nothing. Deciding that HERE, where the budget is read, covers every writer;
+ * `outsideCallBudget` at each one covers only the writers that remembered it.
+ */
+function current(): Budget | undefined {
+  const budget = store().getStore();
+  return budget && !budget.request.closed ? budget : undefined;
+}
 /** Resolved on first use, so the server runtime has installed its class by then. */
 function store(): ContextStore<Budget | undefined> {
   if (!found) {
@@ -111,9 +128,15 @@ export function withinCallBudget<T>(
   work: () => Promise<T>,
   now: () => number = () => Date.now(),
 ): Promise<T> {
-  const outer = store().getStore();
+  const outer = current();
   const own: Budget = { expiresAt: now() + ms, label, totalMs: ms, request: outer?.request ?? {} };
-  return store().run(outer && outer.expiresAt <= own.expiresAt ? outer : own, work);
+  const ran = store().run(outer && outer.expiresAt <= own.expiresAt ? outer : own, work);
+  if (outer) return ran;
+  // The ROOT of a request closes it when its work settles, success or failure. A
+  // nested budget returning (a Google call inside a confirm) leaves it open.
+  return ran.finally(() => {
+    own.request.closed = true;
+  });
 }
 
 /**
@@ -134,7 +157,7 @@ export function withinCleanupBudget<T>(
   work: () => Promise<T>,
   now: () => number = () => Date.now(),
 ): Promise<T> {
-  const outer = store().getStore();
+  const outer = current();
   if (outer?.cleanup) return store().run(outer, work);
   const opened = outer?.request.cleanup;
   if (opened) return store().run(opened, work);
@@ -151,7 +174,7 @@ export function withinCleanupBudget<T>(
  * calls on their own limits, as they have always been.
  */
 export function insideCallBudget(): boolean {
-  return store().getStore() !== undefined;
+  return current() !== undefined;
 }
 
 /** Run `work` with no budget at all: the work deferred past a response. */
@@ -198,7 +221,7 @@ export function deadlineWithinBudget(
   label: string,
   now: () => number = () => Date.now(),
 ): { waitMs: Deadline; reportAs: DeadlineReport } {
-  const budget = store().getStore();
+  const budget = current();
   const own = ownMs === NO_DEADLINE ? Infinity : ownMs;
   if (!budget) return { waitMs: ownMs, reportAs: { label, timeoutMs: own, budget: null } };
   const left = budget.expiresAt - now();

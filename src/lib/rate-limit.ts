@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import type { RateLimitRule, EdgeLimiterSpec } from "@/lib/rate-limit-core";
 import { log } from "@/lib/log";
+import { afterResponse } from "@/lib/after-response";
 import { isWorkersRuntime, workersRuntimeMarker } from "@/lib/platform/runtime";
 import {
   BurstTracker,
@@ -139,7 +140,7 @@ async function withinBurstCeiling(
   if (!ns) {
     // Same reading as a missing rate-limit binding: wrangler.jsonc always binds it, so
     // absent means broken rather than "not configured".
-    await alertEdgeLimiterDown(
+    alertEdgeLimiterDown(
       { area, friendly: spec.friendly },
       `the ${BURST_LIMITER_BINDING} binding is missing, so the burst ceiling is OFF`,
     );
@@ -175,14 +176,14 @@ async function withinBurstCeiling(
       // limiters use, so a burst ceiling that has quietly stopped counting reads the same way
       // as an edge limiter that has (#796).
       (err) => {
-        void alertEdgeLimiterDown(
+        alertEdgeLimiterDown(
           { area, friendly: spec.friendly },
           `the burst ceiling could not be reached: ${String(err)}`,
         );
       },
     );
   } catch (err) {
-    await alertEdgeLimiterDown(
+    alertEdgeLimiterDown(
       { area, friendly: spec.friendly },
       `the burst ceiling threw: ${String(err)}`,
     );
@@ -299,7 +300,7 @@ async function edgeWithinLimit(key: string, spec: EdgeLimiterSpec): Promise<bool
   if (spec.keyKind === "ip") {
     const verdict = judgeCaller(spec, key);
     if (verdict !== "identified") {
-      await reportUnidentifiedCaller(spec);
+      reportUnidentifiedCaller(spec);
       return verdict === "serve-unjudged";
     }
   }
@@ -309,7 +310,7 @@ async function edgeWithinLimit(key: string, spec: EdgeLimiterSpec): Promise<bool
   } catch (err) {
     // ONE report, not one per ceiling: the context is what both checks need, so an unreadable
     // one is a single fact about this request rather than two independent failures.
-    await alertEdgeLimiterDown(spec, `the limiter threw: ${String(err)}`);
+    alertEdgeLimiterDown(spec, `the limiter threw: ${String(err)}`);
     return true; // fail open
   }
 
@@ -327,7 +328,7 @@ async function nativeWithinLimit(
   try {
     const limiter = env[spec.binding] as EdgeLimiter | undefined;
     if (!limiter) {
-      await alertEdgeLimiterDown(
+      alertEdgeLimiterDown(
         spec,
         `the ${spec.binding} binding is missing, so the ${spec.area} throttle is OFF`,
       );
@@ -337,7 +338,7 @@ async function nativeWithinLimit(
     if (!success && spec.alertOnBlock) {
       // Best-effort, like the DB path: the alert writes to alert_state, so a
       // failed alert must never turn a block into a thrown error for the caller.
-      await alertBestEffort(
+      alertBestEffort(
         `rate_limit_blocked:${spec.area}`,
         // The window is the spec's own `perMinute` rather than a literal passed in beside it,
         // so the copy can never name a limit the binding does not enforce.
@@ -347,7 +348,7 @@ async function nativeWithinLimit(
     }
     return success;
   } catch (err) {
-    await alertEdgeLimiterDown(spec, `the limiter threw: ${String(err)}`);
+    alertEdgeLimiterDown(spec, `the limiter threw: ${String(err)}`);
     return true; // fail open
   }
 }
@@ -384,10 +385,10 @@ type EdgeLimiterFailure =
    *  here to be broken and no production request being served. */
   | "no-platform";
 
-async function alertEdgeLimiterDown(
+function alertEdgeLimiterDown(
   cfg: { area: string; friendly: string },
   reason: string,
-): Promise<void> {
+): void {
   // #1525: decide FIRST whether this is even about production. Off the Workers runtime
   // the fail-open is expected and says nothing about the deployed limiter, so paging on
   // it is a false alarm sent from a laptop to a real on-call, and the live alert store is
@@ -415,7 +416,7 @@ async function alertEdgeLimiterDown(
   if (failure === "no-platform") return;
   if (now - (lastEdgeAlertAttemptMs.get(cfg.area) ?? 0) < LIMITER_BROKEN_COOLDOWN_MS) return;
   lastEdgeAlertAttemptMs.set(cfg.area, now);
-  await alertBestEffort(
+  alertBestEffort(
     `rate_limit_broken:${cfg.area}`,
     limiterFailOpenAlert(cfg.friendly),
     cfg.area,
@@ -445,7 +446,7 @@ export async function allowRequest(
   const verdict = judgeCaller(callerPolicy(caller), rateLimitKey(caller));
   if (verdict !== "identified") {
     const policy = callerPolicy(caller);
-    if (policy) await reportUnidentifiedCaller(policy);
+    if (policy) reportUnidentifiedCaller(policy);
     return verdict === "serve-unjudged";
   }
   const key = rateLimitKey(caller);
@@ -467,7 +468,7 @@ export async function allowRequest(
       // can break the alert too. Swallow that. A failed alert must not turn a limiter
       // failure into a BOOKING failure, which would be the exact opposite of failing open.
       log.error("rate-limit", { msg: "rate_limit_hit failed", rule: rule.prefix }, error);
-      await alertBestEffort(
+      alertBestEffort(
         `rate_limit_broken:${rule.prefix}`,
         limiterFailOpenAlert(friendlyRateArea(rule.prefix)),
         rule.prefix,
@@ -480,7 +481,7 @@ export async function allowRequest(
       // ceiling is too tight (we are now failing real bookings that used to succeed) or the key
       // has leaked. Until #418 lands there is no other way to see this. Best-effort, as above.
       if (rule.alertOnBlock) {
-        await alertBestEffort(
+        alertBestEffort(
           `rate_limit_blocked:${rule.prefix}`,
           limiterBlockedAlert(friendlyRateArea(rule.prefix), key, rule.max, rule.windowSeconds),
           rule.prefix,
@@ -500,27 +501,41 @@ export async function allowRequest(
  * applying looks exactly like a ceiling nobody is hitting. Best effort like every other alert
  * on these paths, because a monitoring failure must never become a booking failure.
  */
-async function reportUnidentifiedCaller(policy: AddressLimitPolicy): Promise<void> {
-  // alert-key: rate_limit_unidentified:*
-  await sendThrottledAlert(
-    `rate_limit_unidentified:${policy.area}`,
-    LIMITER_BROKEN_COOLDOWN_MS,
-    unidentifiedCallerAlert(policy),
-  ).catch((err) => {
-    log.error("rate-limit", { msg: "unidentified-caller report failed", area: policy.area }, err);
-  });
+function reportUnidentifiedCaller(policy: AddressLimitPolicy): void {
+  // Sent after the response, outside the call budget, for the reason on `alertBestEffort`.
+  afterResponse("rate-limit-alert", () =>
+    // alert-key: rate_limit_unidentified:*
+    sendThrottledAlert(
+      `rate_limit_unidentified:${policy.area}`,
+      LIMITER_BROKEN_COOLDOWN_MS,
+      unidentifiedCallerAlert(policy),
+    ).catch((err) => {
+      log.error("rate-limit", { msg: "unidentified-caller report failed", area: policy.area }, err);
+    }),
+  );
 }
 
 /** Alert without ever letting the alert's own failure escape. The alert writes to
  *  alert_state, so whatever broke the limiter can break the alert too, and a monitoring
- *  failure must never become a booking failure. */
-async function alertBestEffort(key: string, text: string, label: string): Promise<void> {
-  // alert-key: rate_limit_blocked:*
-  // alert-key: rate_limit_broken:*
-  // alert-key: rate_limit_refund_broken:*
-  await sendThrottledAlert(key, LIMITER_BROKEN_COOLDOWN_MS, text).catch((err) => {
-    log.error("rate-limit", { msg: "alert failed", label }, err);
-  });
+ *  failure must never become a booking failure.
+ *
+ *  #3145 (L1017): sent AFTER the response and outside the call budget, never from inside
+ *  the request. Every limiter fact is noticed inside one, and on the booking confirm,
+ *  reschedule and manage routes that is the lead's budget: a page sent from there inherits
+ *  it, so a budget already spent (a limiter slow to fail spends it) refuses the page's own
+ *  alert_state read and the outage is never said, and an awaited page holds the lead's
+ *  response for a Slack send. Every page in this module passes through here or
+ *  `reportUnidentifiedCaller`, so deciding it here covers each site, present and future.
+ *  The same reasoning as the Google breaker's page (#3134). */
+function alertBestEffort(key: string, text: string, label: string): void {
+  afterResponse("rate-limit-alert", () =>
+    // alert-key: rate_limit_blocked:*
+    // alert-key: rate_limit_broken:*
+    // alert-key: rate_limit_refund_broken:*
+    sendThrottledAlert(key, LIMITER_BROKEN_COOLDOWN_MS, text).catch((err) => {
+      log.error("rate-limit", { msg: "alert failed", label }, err);
+    }),
+  );
 }
 
 /**
@@ -549,7 +564,7 @@ export async function refundRequest(
     });
     if (error) {
       log.error("rate-limit", { msg: "rate_limit_refund failed", rule: rule.prefix }, error);
-      await alertBestEffort(
+      alertBestEffort(
         `rate_limit_refund_broken:${rule.prefix}`,
         refundFailedAlert(friendlyRateArea(rule.prefix)),
         rule.prefix,

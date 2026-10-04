@@ -58,6 +58,14 @@ const logError = vi.hoisted(() => vi.fn());
 const logInfo = vi.hoisted(() => vi.fn());
 const logWarn = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/log", () => ({ log: { error: logError, warn: logWarn, info: logInfo } }));
+// A refused credential with no client address is reported by the rate limiter, and
+// since #3145 that page is deferred with after() like the recording is. Captured here so
+// running the deferred work never reaches the real alert store.
+const sendThrottledAlert = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock("@/lib/notify/dispatch", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/notify/dispatch")>()),
+  sendThrottledAlert,
+}));
 
 import { POST } from "./route";
 
@@ -100,7 +108,9 @@ describe("POST /api/regal/calls", () => {
     expect((await post(BODY, "Bearer wrong")).status).toBe(401);
     expect((await post(BODY, null)).status).toBe(401);
     expect((await post(BODY, "inbound-secret")).status).toBe(401);
-    expect(deferred.jobs).toHaveLength(0);
+    // What a refusal defers is the limiter's page about the caller, never the recording.
+    for (const job of deferred.jobs.splice(0)) await job();
+    expect(recorded.bodies).toHaveLength(0);
   });
 
   it("answers before recording, then records the parsed body in after()", async () => {
