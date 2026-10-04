@@ -2993,7 +2993,7 @@ function realRerouteDeps(actor: BookingActor): RerouteDeps {
     },
     keepSwap: async (args) => {
       const out = await rerouteSwap({ ...args, gcalClientId: null, routingTrace: null });
-      return { refused: out.refused };
+      return { refused: out.refused, updated: out.updated };
     },
     insertBookingEvent: async (row) => {
       await base.insertBookingEvent(row);

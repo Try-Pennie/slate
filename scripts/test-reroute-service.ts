@@ -54,6 +54,9 @@ interface Opts {
   free?: Set<string>;
   reassignThrows?: Error;
   swapRefused?: string;
+  swapNotUpdated?: boolean;
+  /** After a claim, what the hold read returns; default the claimed hold. */
+  heldAfterClaim?: "missing";
   liveHold?: { holdId: string; agentUserId: string; targetBucketId: string; requestedBucketId: string; rungsDropped: number; expiresAt: string } | null;
 }
 
@@ -112,12 +115,16 @@ function fake(o: Opts = {}) {
     },
     keepSwap: async (args) => {
       calls.keep.push(args as unknown as Record<string, unknown>);
-      return { refused: (o.swapRefused ?? null) as never };
+      return { refused: (o.swapRefused ?? null) as never, updated: !o.swapNotUpdated && !o.swapRefused };
     },
     insertBookingEvent: async (row) => {
       calls.events.push(row as unknown as Record<string, unknown>);
     },
-    readLiveHold: async () => o.liveHold ?? null,
+    readLiveHold: async () => {
+      if (o.liveHold !== undefined) return o.liveHold;
+      if (o.heldAfterClaim === "missing") return null;
+      return { holdId: "H1", agentUserId: "NEW", targetBucketId: "b512", requestedBucketId: "b512", rungsDropped: 0, expiresAt: new Date(NOW + 120_000).toISOString() };
+    },
     now: () => NOW,
   };
   return { deps, calls };
@@ -288,6 +295,60 @@ async function main() {
     }
     assert(thrown instanceof Error && /google down/.test(thrown.message), "the reassign's own failure surfaces");
     eq(calls.release, ["K1"], "and the hold is released so the advisor is free for leads again");
+  }
+
+  // --- confirm: ANY failure after the claim lets the held advisor go ---
+  {
+    const { deps, calls } = fake({});
+    deps.verifyFree = async (emails) => ({ free: new Set(), unverified: new Set(emails) });
+    await confirmReroute(deps, { bookingId: "K1", holdId: "H1", bucketCode: null, note: null, actor }).catch(() => undefined);
+    eq(calls.release, ["K1"], "an unreadable calendar after the claim releases the hold rather than leaving the advisor blocked");
+  }
+  {
+    const { deps, calls } = fake({});
+    deps.agentById = async () => {
+      throw new Error("users read failed");
+    };
+    await confirmReroute(deps, { bookingId: "K1", holdId: "H1", bucketCode: null, note: null, actor }).catch(() => undefined);
+    eq(calls.release, ["K1"], "a failed read after the claim releases the hold too");
+  }
+
+  // --- confirm: a claimed hold that cannot be read back stops, never guesses the drop ---
+  {
+    const { deps, calls } = fake({ heldAfterClaim: "missing" });
+    let thrown: unknown = null;
+    try {
+      await confirmReroute(deps, { bookingId: "K1", holdId: "H1", bucketCode: null, note: null, actor });
+    } catch (e) {
+      thrown = e;
+    }
+    assert(thrown instanceof Error && !(thrown instanceof RerouteRefusedError), "a hold missing right after its claim is a fault");
+    eq(calls.reassign.length, 0, "and nothing is moved on a guessed requested bucket or drop");
+  }
+
+  // --- keep: a booking with nobody on it says so, not "hold no longer active" ---
+  {
+    const { deps } = fake({ booking: { assigned_user_id: null, agent_email: null } });
+    let code: string | null = null;
+    try {
+      await confirmReroute(deps, { bookingId: "K1", holdId: null, bucketCode: "512", note: null, actor });
+    } catch (e) {
+      code = e instanceof RerouteRefusedError ? e.code : "other";
+    }
+    eq(code, "no_current_advisor", "a keep with no advisor to keep has its own refusal");
+  }
+
+  // --- keep: a swap that changed nothing never reads as kept ---
+  {
+    const { deps, calls } = fake({ swapNotUpdated: true });
+    let thrown: unknown = null;
+    try {
+      await confirmReroute(deps, { bookingId: "K1", holdId: null, bucketCode: "512", note: null, actor });
+    } catch (e) {
+      thrown = e;
+    }
+    assert(thrown instanceof Error, "a keep swap that wrote nothing with no reason throws");
+    eq(calls.events.length, 0, "and writes no history claiming the correction");
   }
 
   // --- confirm a keep: only the bucket changes, history says so, nothing is sent ---

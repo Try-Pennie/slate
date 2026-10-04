@@ -38,6 +38,7 @@ export type RerouteRefusal =
   | "booking_inactive"
   | "agent_link"
   | "unknown_bucket"
+  | "no_current_advisor"
   | PlaceRerouteHoldRefusal
   | ClaimRerouteHoldRefusal
   | RerouteSwapRefusal;
@@ -186,7 +187,7 @@ export interface RerouteDeps {
     bookedTier: string | null;
     rungsDropped: number;
     holdId: null;
-  }): Promise<{ refused: RerouteSwapRefusal | null }>;
+  }): Promise<{ refused: RerouteSwapRefusal | null; updated: boolean }>;
   insertBookingEvent(row: BookingEventInsert): Promise<void>;
   readLiveHold(bookingId: string): Promise<LiveHoldRecord | null>;
   now(): number;
@@ -316,14 +317,36 @@ export async function confirmReroute(
   }
   if (claim.refused === "hold_expired" || claim.refused === "hold_not_found") return { kind: "expired" };
   if (claim.refused) throw new RerouteRefusedError(claim.refused);
-  if (!claim.agentUserId || !claim.targetBucketId) throw new Error("reroute: a claimed hold named no advisor or bucket");
+  // From here on the hold is claimed, which extends it to a confirm lease. ANY
+  // failure lets it go, so an unreadable calendar or a failed read never leaves the
+  // advisor blocked for leads until the lease runs out (#3249 review).
+  try {
+    return await moveOnClaimedHold(deps, { booking, fromBucket, eventType }, claim, input, reason);
+  } catch (err) {
+    await deps.releaseHold(booking.id).catch(() => undefined);
+    throw err;
+  }
+}
 
+async function moveOnClaimedHold(
+  deps: RerouteDeps,
+  ctx: { booking: Booking; fromBucket: Bucket; eventType: EventType },
+  claim: { agentUserId: string | null; targetBucketId: string | null },
+  input: { holdId: string | null; actor: BookingActor },
+  reason: { code: string; detail: string | null },
+): Promise<RerouteOutcome> {
+  const { booking, fromBucket, eventType } = ctx;
+  if (!claim.agentUserId || !claim.targetBucketId || !input.holdId) {
+    throw new Error("reroute: a claimed hold named no advisor or bucket");
+  }
   const advisor = await advisorView(deps, claim.agentUserId);
   const target = await bucketOrThrow(deps, claim.targetBucketId);
-  // Read now, while the claim's lease keeps it live: the requested bucket and the
-  // drop are only on the hold row. Awaited here so a failed read is the error, never
-  // an unhandled rejection left behind a verify that threw first.
+  // The requested bucket and the drop live only on the hold row. A hold that cannot
+  // be read back moments after its claim is a fault, never a reason to record the
+  // corrected bucket as the requested one with no drop (#3249 review).
   const held = await deps.readLiveHold(booking.id);
+  if (!held) throw new Error(`reroute: the claimed hold for booking ${booking.id} could not be read back`);
+  const requested = await bucketOrThrow(deps, held.requestedBucketId);
 
   const [fromIso, toIso] = bufferedWindow(eventType, new Date(booking.starts_at).toISOString(), new Date(booking.ends_at).toISOString());
   const verify = await deps.verifyFree([advisor.email], fromIso, toIso);
@@ -333,29 +356,22 @@ export async function confirmReroute(
   if (!verify.free.has(advisor.email)) {
     // Booked since the hold was placed: release it and search again, so the admin
     // confirms a fresh proposal rather than a move onto somebody now busy.
-    const requestedId = held?.requestedBucketId ?? target.id;
-    const requested = await bucketOrThrow(deps, requestedId);
     await deps.releaseHold(booking.id);
     const proposal = await searchAndHold(deps, booking, { bucket: requested, eventType }, input.actor);
     return { kind: "taken", previous: advisor, proposal };
   }
 
-  try {
-    await deps.reassign(booking.id, advisor.email, reason, {
-      holdId: input.holdId,
-      bucketId: target.id,
-      requestedBucketId: held?.requestedBucketId ?? target.id,
-      requestedTier: tierKeyOf(held ? (await bucketOrThrow(deps, held.requestedBucketId)).code : target.code),
-      bookedTier: tierKeyOf(target.code),
-      rungsDropped: held?.rungsDropped ?? 0,
-      fromBucketId: fromBucket.id,
-    });
-  } catch (err) {
-    // The reassign rolls back its own Google event; the hold is let go here so the
-    // advisor is free for leads again rather than blocked until it expires.
-    await deps.releaseHold(booking.id).catch(() => undefined);
-    throw err;
-  }
+  // The reassign rolls back its own Google event on failure; the caller lets the
+  // hold go.
+  await deps.reassign(booking.id, advisor.email, reason, {
+    holdId: input.holdId,
+    bucketId: target.id,
+    requestedBucketId: requested.id,
+    requestedTier: tierKeyOf(requested.code),
+    bookedTier: tierKeyOf(target.code),
+    rungsDropped: held.rungsDropped,
+    fromBucketId: fromBucket.id,
+  });
   return { kind: "moved", advisor, bucket: bucketView(target) };
 }
 
@@ -367,9 +383,9 @@ async function confirmKeep(
   const { booking, bucket: fromBucket } = await reroutableBooking(deps, input.bookingId);
   const requested = await requestedBucket(deps, input.bucketCode);
   if (!booking.assigned_user_id || !booking.agent_email || !booking.gcal_event_id) {
-    throw new RerouteRefusedError("hold_not_found");
+    throw new RerouteRefusedError("no_current_advisor");
   }
-  const { refused } = await deps.keepSwap({
+  const { refused, updated } = await deps.keepSwap({
     bookingId: booking.id,
     userId: booking.assigned_user_id,
     agentName: booking.agent_name,
@@ -383,6 +399,9 @@ async function confirmKeep(
     holdId: null,
   });
   if (refused) throw new RerouteRefusedError(refused);
+  // A swap that wrote nothing gives a reason today; one that ever did not must never
+  // read as a correction made (L12).
+  if (!updated) throw new Error(`reroute: the keep swap for booking ${booking.id} wrote nothing`);
   // One history row; nothing is sent, because neither the advisor nor the time changed.
   await deps.insertBookingEvent(
     bookingEventFrom({
