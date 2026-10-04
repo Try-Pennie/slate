@@ -2015,6 +2015,9 @@ async function nextAdvisorAfterLostRace(
     startIso: string;
     endIso: string;
     eventType: EventType;
+    /** #3257: the confirm's claim in its slot's line, so the next advisor is one
+     *  nobody beside it is booking. */
+    seat: LineSeat | null;
   },
 ): Promise<AssignResult | null> {
   if (!(lost.err instanceof SlotUnavailableError)) return null;
@@ -2023,7 +2026,7 @@ async function nextAdvisorAfterLostRace(
   if (lost.lostSoFar >= MAX_RACE_REASSIGNS) return null;
   const at = lost.candidates.indexOf(lost.lostUserId);
   if (at < 0) return null;
-  const remaining = lost.candidates.slice(at + 1);
+  const { pool: remaining } = unclaimedFirst(lost.seat, lost.candidates.slice(at + 1));
   if (remaining.length === 0) return null;
   try {
     const { assignment } = await selectAgent(
@@ -2126,11 +2129,23 @@ async function assignAgent(
  */
 function claimFromLine(seat: LineSeat | null, candidates: string[]): string[] {
   if (!seat) return candidates;
+  const { pool, unclaimed } = unclaimedFirst(seat, candidates);
+  if (pool.length > 0) seat.claim(pool[0], unclaimed > 1);
+  return pool;
+}
+
+/**
+ * The advisors in `candidates` that no other confirm in flight has claimed, in
+ * order, or all of them when every one is claimed (#3257). The one rule for the
+ * first pick and for the pick after a lost race, so neither can hand a confirm an
+ * advisor the one beside it is booking while somebody unclaimed is free, and both
+ * leave a fully claimed list to the insert to decide, exactly as before the line.
+ */
+function unclaimedFirst(seat: LineSeat | null, candidates: string[]): { pool: string[]; unclaimed: number } {
+  if (!seat) return { pool: candidates, unclaimed: candidates.length };
   const others = seat.claimedByOthers();
   const unclaimed = candidates.filter((id) => !others.has(id));
-  const pool = unclaimed.length > 0 ? unclaimed : candidates;
-  if (pool.length > 0) seat.claim(pool[0], unclaimed.length > 1);
-  return pool;
+  return { pool: unclaimed.length > 0 ? unclaimed : candidates, unclaimed: unclaimed.length };
 }
 
 interface TierAssignResult {
@@ -3804,6 +3819,7 @@ async function createHeld(
         startIso,
         endIso,
         eventType: bookedEventType,
+        seat,
       });
       if (!next) {
         if (!(err instanceof SlotUnavailableError)) throw err;

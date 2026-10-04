@@ -106,9 +106,11 @@ export interface LineSeat {
   /** Advisors other confirms in this line have claimed and not yet finished with. */
   claimedByOthers(): ReadonlySet<string>;
   /**
-   * This confirm is booking `userId` (a later call replaces the claim). When
-   * `othersRemain`, an advisor nobody has claimed is still there for the next
-   * confirm, so the line is handed on now rather than when this one finishes.
+   * This confirm is booking `userId`. A confirm books one advisor, so it holds one
+   * claim: a later call (Google found the first busy, or a lost race moved it on)
+   * REPLACES the claim, releasing the advisor it held before. When `othersRemain`,
+   * an advisor nobody has claimed is still there for the next confirm, so the line
+   * is handed on now rather than when this one finishes.
    */
   claim(userId: string, othersRemain: boolean): void;
 }

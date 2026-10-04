@@ -111,6 +111,9 @@ async function burst(opts: {
   failFirstPersonRead?: boolean;
   /** #3257: bookings that already exist before the burst (a lead holding the time). */
   held?: Booking[];
+  /** Bookings another isolate has just made, which the candidate read (the busy
+   *  block cache) has not caught up with yet, so only the insert sees them. */
+  heldElsewhere?: Booking[];
   /** #3257: the FIRST read of who already sits at the instant fails. */
   failFirstSeatedRead?: boolean;
   /** #3257: how long Google takes to say whether an advisor is free, the slow
@@ -136,6 +139,11 @@ async function burst(opts: {
     const bySlot = new Map<string, Booking>();
     const byKey = new Map<string, Booking>();
     for (const b of opts.held ?? []) bySlot.set(`${b.assigned_user_id}|${b.starts_at}`, b);
+    const unseen = new Set<string>();
+    for (const b of opts.heldElsewhere ?? []) {
+      bySlot.set(`${b.assigned_user_id}|${b.starts_at}`, b);
+      unseen.add(`${b.assigned_user_id}|${b.starts_at}`);
+    }
     const seatedReads: string[] = [];
     let raceLosses = 0;
     const queue: ConfirmQueue<unknown> =
@@ -171,7 +179,10 @@ async function burst(opts: {
       },
       confirmQueue: queue as BookingDeps["confirmQueue"],
       roundRobinCandidates: async (_b, _e, startMs) => {
-        const taken = (id: string) => bySlot.has(`${id}|${new Date(startMs).toISOString()}`);
+        const taken = (id: string) => {
+          const slot = `${id}|${new Date(startMs).toISOString()}`;
+          return bySlot.has(slot) && !unseen.has(slot);
+        };
         return { candidates: opts.pool.filter((id) => !taken(id)), memberCount: opts.pool.length };
       },
       findBookingByIdempotencyKey: async (key) => byKey.get(key) ?? null,
@@ -681,6 +692,43 @@ async function main() {
       `production crowd, pool of 20: the rest are told taken or to retry, nothing else (got ${JSON.stringify(tally)})`,
     );
     assert(others.every((r) => r.calls.length === 0), "production crowd, pool of 20: none of the rest reads anything");
+  }
+
+  // --- #3257 review: two confirms that lose a race at once move apart ---------
+  //
+  // Another isolate has just booked p0 and p1, and the candidate cache has not
+  // caught up. Two confirms side by side claim p0 and p1, and both lose the insert
+  // race at the same moment. Each must move to an advisor NOBODY in flight has
+  // claimed, so neither is handed the other's: two races lost in all, two
+  // bookings on two different advisors. Handed to whoever comes next in the
+  // round robin, the first one is moved onto p1, which the second has claimed and
+  // which is taken anyway, and the pair lose races to each other from there.
+  {
+    const elsewhere = (id: string, n: number) =>
+      makeBooking({
+        id: `elsewhere-${id}`,
+        assigned_user_id: id,
+        starts_at: input.startIso,
+        external_id: `other-isolate-${n}`,
+        salesforce_id: `sf-other-${n}`,
+        attendee_email: `other${n}@example.com`,
+        attendee_phone: `+1203557${1000 + n}`,
+      } as Partial<Booking>);
+    const { runs, bySlot, raceLosses } = await burst({
+      inputs: [lead(0), lead(1)],
+      pool: BIG_POOL,
+      queue: "real",
+      heldElsewhere: [elsewhere("p0", 0), elsewhere("p1", 1)],
+    });
+    assert(runs.every((r) => r.outcome === "created"), `two lost races: both are booked (got ${runs.map((r) => r.outcome).join(",")})`);
+    const ours = runs.map((r) => r.result?.booking.assigned_user_id);
+    assert(ours[0] !== ours[1], `two lost races: on different advisors (got ${ours.join(",")})`);
+    assert(
+      ours.every((id) => id !== "p0" && id !== "p1"),
+      `two lost races: neither on an advisor another isolate holds (got ${ours.join(",")})`,
+    );
+    assert(raceLosses === 2, `two lost races: each lost exactly once, never to the other (got ${raceLosses})`);
+    assert(bySlot.size === 4, "two lost races: the two held elsewhere and two new bookings");
   }
 
   finish();
