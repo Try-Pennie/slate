@@ -255,13 +255,14 @@ jobs:
     if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.setup-burst.result == 'success' }}
     runs-on: ubuntu-latest
     # DERIVED, not chosen (#3222): `driveJobTimeoutMinutes` in book-plan.ts, the
-    # driver's own deadline (the plan with every request at the latency bar, fifteen
-    # minutes) plus the runner's setup and one in flight request's grace.
+    # driver's own deadline (the slowest passing plan, every request at the latency
+    # bar, held at three quarters of it, about twenty two minutes, #3163) plus the
+    # runner's setup and one in flight request's grace.
     # scripts/test-loadtest-driver-deadline.ts holds this number equal to it. A slow
     # driver stops at its deadline, writes what it ran and exits zero, so the judge
     # FAILS the run with figures and the ceiling and fault legs still run; only a
     # genuinely hung driver ever meets this timeout, and its missing file says so.
-    timeout-minutes: 20
+    timeout-minutes: 28
     strategy:
       # Never cancel a sibling: four drivers at fifteen a minute IS the load, and a
       # run missing one is judged as incomplete rather than as a slower run.
@@ -375,7 +376,7 @@ jobs:
     # DERIVED (#3222): `archiveJobTimeoutMinutes` in book-plan.ts, the tail
     # window below plus the runner's setup, held equal by
     # scripts/test-loadtest-driver-deadline.ts.
-    timeout-minutes: 24
+    timeout-minutes: 32
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -398,7 +399,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p results
-          timeout 21m npx wrangler tail --env loadtest --format json > results/tail.jsonl || true
+          timeout 29m npx wrangler tail --env loadtest --format json > results/tail.jsonl || true
           wc -l results/tail.jsonl
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

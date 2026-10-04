@@ -36,10 +36,20 @@ export const RUN_MINUTES = 10;
 /**
  * What one request costs a driver beside the booking's own wall time: the
  * availability read before it and the loop around it. Measured on run 37215457763
- * (2026-10-04) at a p50 of about 0.5s and a max of 1.65s between one booking's
- * reply and the next one being sent.
+ * (2026-10-04) at a p50 of about 0.5s and a MAX of 1.65s between one booking's
+ * reply and the next one being sent. The deadline is sized from the max, because
+ * it has to clear the slowest run that still passes, not the typical one (#3163).
  */
-export const PER_REQUEST_OVERHEAD_MS = 1_000;
+export const PER_REQUEST_OVERHEAD_MAX_MS = 1_650;
+/**
+ * The most of the driver's deadline the slowest PASSING run may use (#3163, L743).
+ * A driver cut short is failed as an incomplete plan, so a deadline sized at
+ * exactly the passing worst case fails the borderline runs it was meant to let
+ * the latency bar judge. The quarter left over covers what the at-the-bar sum
+ * cannot see: the bar is a p95, so a few requests may sit above it, up to the
+ * 30 second request timeout, in a run that still passes.
+ */
+export const DEADLINE_WORST_CASE_SHARE = 0.75;
 /**
  * How long a drive runner spends being checked out and installed before the driver
  * starts its clock. Measured at about 30s on run 37215457763; the rest is headroom
@@ -61,15 +71,19 @@ export const DRIVE_DEADLINE_GRACE_MINUTES = 2;
  * nothing, and the judge could only call the run incomplete. So the driver keeps its
  * own deadline and writes what it ran when it meets it.
  *
- * Sized as the time a driver takes when EVERY request sits at the latency bar, never
- * less than the plan's own span. A run inside the bar always finishes; a driver that
- * cannot finish by then was slower than the bar on average, which is the run the
- * judge must FAIL with figures rather than lose. The bar is the judge's own constant,
- * so moving it moves the deadline with it (L41).
+ * Sized from the slowest driver that still PASSES, every request at the latency bar
+ * plus the slowest overhead measured between them, held at no more than
+ * `DEADLINE_WORST_CASE_SHARE` of the deadline, and never less than the plan's own
+ * span (#3163, L743). Sized at exactly that time, as it first was, a passing run with
+ * a few slow gaps met the deadline and was failed as incomplete. A driver that cannot
+ * finish by then was far slower than the bar, which is the run the judge must FAIL
+ * with figures rather than lose. The bar is the judge's own constant, so moving it
+ * moves the deadline with it (L41).
  */
 export function driverDeadlineMs(plan: { total: number; perMinute: number }): number {
   const span = plan.perMinute > 0 ? plan.total * (60_000 / plan.perMinute) : 0;
-  return Math.max(span, plan.total * (OK_P95_MS + PER_REQUEST_OVERHEAD_MS));
+  const slowestPassing = plan.total * (OK_P95_MS + PER_REQUEST_OVERHEAD_MAX_MS);
+  return Math.max(span, Math.ceil(slowestPassing / DEADLINE_WORST_CASE_SHARE));
 }
 
 /**
