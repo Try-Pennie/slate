@@ -134,6 +134,8 @@ async function burst(opts: {
   existingContext?: BookingContext;
   /** How long Google takes on a reschedule: the live busy read and the event move. */
   slowRescheduleMs?: number;
+  /** The FIRST idempotency read for this key fails (a lookahead meeting an outage). */
+  failFirstIdempotencyReadOf?: string;
 }) {
   const clock = new VirtualClock(Date.parse("2026-06-01T00:00:00.000Z"));
   const realNow = Date.now;
@@ -161,6 +163,7 @@ async function burst(opts: {
     const seatedReads: string[] = [];
     let raceLosses = 0;
     let eventFailed = false;
+    let idempotencyFailed = false;
     const queue: ConfirmQueue<unknown> =
       opts.queue === "off" ? NO_QUEUE : makeConfirmQueue({ timer: (ms, fire) => clock.at(clock.now + ms, fire) });
     let personReads = 0;
@@ -215,7 +218,29 @@ async function burst(opts: {
         };
         return { candidates: opts.pool.filter((id) => !taken(id)), memberCount: opts.pool.length };
       },
-      findBookingByIdempotencyKey: async (key) => byKey.get(key) ?? null,
+      findBookingByIdempotencyKey: async (key) => {
+        if (opts.failFirstIdempotencyReadOf === key && !idempotencyFailed) {
+          idempotencyFailed = true;
+          throw new Error("idempotency read failed");
+        }
+        return byKey.get(key) ?? null;
+      },
+      // The bookings table moves a rescheduled row to its new slot, and its
+      // overlap index refuses a move onto a slot another booking holds.
+      commitReschedule: async (id, patch, guard) => {
+        const p = patch as { starts_at?: string; assigned_user_id?: string };
+        const fromKey = [...bySlot.entries()].find(([, b]) => b.id === id)?.[0];
+        const moving = fromKey ? bySlot.get(fromKey) : undefined;
+        const toKey = `${p.assigned_user_id ?? moving?.assigned_user_id}|${p.starts_at ?? moving?.starts_at}`;
+        const holder = bySlot.get(toKey);
+        if (holder && holder.id !== id) return false;
+        const ok = await base.commitReschedule(id, patch, guard);
+        if (ok && fromKey && moving) {
+          bySlot.delete(fromKey);
+          bySlot.set(toKey, moving);
+        }
+        return ok;
+      },
       insertBooking: async (row) => {
         calls.insertBooking.push(row as unknown as Record<string, unknown>);
         const slot = `${row.assigned_user_id}|${row.starts_at}`;
@@ -916,6 +941,79 @@ async function main() {
     assert(runs[1].answeredMs! <= 8_400, `moving lead: as fast as alone, not behind the move (answered at ${runs[1].answeredMs}ms)`);
     const newOne = [...bySlot.values()].find((b) => b.id !== "booked-9" && Date.parse(b.starts_at) === Date.parse(input.startIso));
     assert(newOne !== undefined && newOne.assigned_user_id !== "p5", `moving lead: on an advisor other than the one moving in (got ${newOne?.assigned_user_id})`);
+  }
+
+  // --- #3257 review: a lookahead that FAILS joins the line as if it found nothing
+  //
+  // The replay's own lookahead read fails. That read is an optional shortcut, so
+  // the confirm must not fail on it: it joins the line, and is answered through
+  // it (here, as the lead holding the time, with the booking it already has).
+  {
+    const replayed = lead(7);
+    const key = stableKeyFor(replayed) ?? "";
+    const theirs = makeBooking({
+      id: "booked-7",
+      assigned_user_id: "a",
+      starts_at: input.startIso,
+      external_id: "burst-7",
+      salesforce_id: "sf-7",
+      attendee_email: "lead7@example.com",
+      attendee_phone: `+1203555${1007}`,
+      idempotency_key: key,
+      manage_token: "tok-7",
+    } as Partial<Booking>);
+    const { runs } = await burst({
+      inputs: [lead(0), replayed],
+      pool: ["a", "b"],
+      queue: "real",
+      viaApi: false,
+      slowGoogleMs: 3_000,
+      slowEventMs: 5_000,
+      held: [theirs],
+      arriveAtMs: [0, 1_000],
+      failFirstIdempotencyReadOf: key,
+    });
+    assert(runs[1].outcome === "created", `failed lookahead: answered through the line, not failed (got ${runs[1].outcome})`);
+    assert(runs[1].result?.booking.id === "booked-7", "failed lookahead: with the booking it already has");
+    assert(runs[0].outcome === "created", "failed lookahead: the confirm it waited behind is booked");
+  }
+
+  // --- #3257 review: a move into the LAST advisor keeps the line ---------------
+  //
+  // Lead 9 holds 14:00 with a, the pool's only advisor, and moves to 13:00 in
+  // place. Five others want 13:00 just after. The move takes the last advisor,
+  // so it must not hand the line on: the five wait, and are answered from what is
+  // left once it is done, which is nobody. One winner, the move; no new booking.
+  {
+    const moving = lead(9);
+    const theirs = makeBooking({
+      id: "booked-9",
+      assigned_user_id: "a",
+      agent_email: "a@x.com",
+      starts_at: "2026-06-08T14:00:00.000Z",
+      ends_at: "2026-06-08T14:30:00.000Z",
+      external_id: "burst-9",
+      salesforce_id: "sf-9",
+      attendee_email: "lead9@example.com",
+      attendee_phone: `+1203555${1009}`,
+      manage_token: "tok-9",
+      gcal_event_id: "gcal-9",
+    } as Partial<Booking>);
+    const { runs, tally, bySlot } = await burst({
+      inputs: [moving, ...Array.from({ length: 5 }, (_, i) => lead(i))],
+      pool: ["a"],
+      queue: "real",
+      slowRescheduleMs: 8_000,
+      held: [theirs],
+      existingContext: { booking: theirs, bucket: fakeBucket, eventType: fakeEventType } as BookingContext,
+      arriveAtMs: [0, 200, 200, 200, 200, 200],
+    });
+    assert(runs[0].outcome === "rescheduled", `last advisor move: the move is made (got ${runs[0].outcome})`);
+    assert(
+      runs.slice(1).every((r) => r.outcome === "SLOT_TAKEN"),
+      `last advisor move: the five are told the time is taken (got ${JSON.stringify(tally)})`,
+    );
+    assert(bySlot.size === 1, `last advisor move: no new booking beside the move (got ${bySlot.size} rows)`);
   }
 
   finish();

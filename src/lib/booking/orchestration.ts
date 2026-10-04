@@ -2135,6 +2135,32 @@ function claimFromLine(seat: LineSeat | null, candidates: string[]): string[] {
 }
 
 /**
+ * Whether an advisor nobody in flight has claimed is left at `startIso` beside
+ * `userId` (#3257): the hand on rule `claimFromLine` applies to a new booking,
+ * for an in place move that never reads the candidates otherwise. One cache read
+ * (the candidate read, no Google call), made only by a move that holds a turn in
+ * the line. A read that fails answers false, keeping the line, the safe side: the
+ * crowd waits for the move rather than racing it for what may be the last advisor.
+ */
+async function othersRemainBeside(
+  deps: BookingDeps,
+  seat: LineSeat,
+  bucket: Bucket,
+  eventType: EventType,
+  startIso: string,
+  userId: string,
+): Promise<boolean> {
+  try {
+    const { candidates } = await deps.roundRobinCandidates(bucket, eventType, Date.parse(startIso), true);
+    const others = seat.claimedByOthers();
+    return candidates.some((id) => id !== userId && !others.has(id));
+  } catch (err) {
+    log.warn("booking", { msg: "could not read who else is free beside a move; keeping the confirm line", bucket_code: bucket.code }, err);
+    return false;
+  }
+}
+
+/**
  * The advisors in `candidates` that no other confirm in flight has claimed, in
  * order, or all of them when every one is claimed (#3257). The one rule for the
  * first pick and for the pick after a lost race, so neither can hand a confirm an
@@ -3310,13 +3336,23 @@ async function inConfirmTurn<R>(
 ): Promise<{ result: R; verdict: LeaderVerdict<ConfirmTaker> }> {
   const giveBack = ahead ? deps.confirmQueue.lookahead(line.key) : null;
   if (giveBack && ahead) {
+    let early: R | null = null;
     try {
-      const early = await ahead();
-      // Answered without the line, so it settles nothing for anybody in it.
-      if (early !== null) return { result: early, verdict: { full: false } };
+      early = await ahead();
+    } catch (err) {
+      // The lookahead is a shortcut, never a gate: a read that fails here is
+      // treated as finding nothing, and the confirm joins the line, where the
+      // leader's own reads (or its own, when it leads) answer it properly.
+      log.warn(
+        "booking",
+        { msg: "the replay check ahead of the confirm line failed; joining the line instead", bucket_code: line.bucketCode },
+        err,
+      );
     } finally {
       giveBack();
     }
+    // Answered without the line, so it settles nothing for anybody in it.
+    if (early !== null) return { result: early, verdict: { full: false } };
   }
   const waitMs = confirmLineWaitMs(budgetLeftMs());
   const turn = await deps.confirmQueue.enter(line.key, waitMs);
@@ -5364,9 +5400,16 @@ async function applyReschedule(
     // (enforceDailyCap is off). null while there was no in-place candidate.
     if (currentEmail && booking.assigned_user_id && booking.gcal_event_id) {
       // #3257: claimed before the live read, so a lead booking this time beside the
-      // move is given another advisor at once. If the advisor is declined below,
-      // the reroute's own pick replaces the claim.
-      seat?.claim(booking.assigned_user_id, true);
+      // move is given another advisor at once. The line is handed on only when an
+      // advisor nobody has claimed is left beside this one, judged as the create
+      // path judges it, so a move into the last advisor keeps the crowd behind it.
+      // If the advisor is declined below, the reroute's own pick replaces the claim.
+      if (seat) {
+        seat.claim(
+          booking.assigned_user_id,
+          await othersRemainBeside(deps, seat, bucket, eventType, startIso, booking.assigned_user_id),
+        );
+      }
       // Folded into the context load (#538); the fallback covers a context loaded
       // without the fold (it re-reads rather than crash on a missing schedule).
       const wh = ctx.agentWorkingHours ?? (await deps.agentWorkingHours(booking.assigned_user_id));
