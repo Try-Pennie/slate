@@ -108,8 +108,8 @@ const row = (
   );
   assert(
     res.cancel.active.length === OFFERABLE_CANCEL_REASONS.length &&
-      res.reassign.active.length === REASSIGN_REASONS.length,
-    "empty store -> cancel + reassign also fall back to their coded defaults",
+      res.reassign.active.length === REASSIGN_REASONS.filter((o) => !o.systemOnly).length,
+    "empty store -> cancel + reassign also fall back to their coded defaults (offerable ones)",
   );
 }
 {
@@ -448,7 +448,7 @@ const emptyActions = (): ReasonOptionsFormInput => ({
   );
   // Positive control on the other actions: nothing is added where no code is system only.
   assert(
-    resolveReasonOptions([row("reassign", "coverage", "Coverage", 0)]).reassign.all.length === 1,
+    resolveReasonOptions([row("reschedule", "schedule_conflict", "Schedule conflict", 0)]).reschedule.all.length === 1,
     "an action with no system only code gains nothing",
   );
 }
@@ -460,6 +460,36 @@ const emptyActions = (): ReasonOptionsFormInput => ({
   ]);
   const optOut = res.cancel.all.filter((o) => o.code === "text_opt_out");
   assert(optOut.length === 1 && optOut[0].label === "Opted out (text)", "a stored text_opt_out row is used as stored");
+}
+
+// --- bucket_correction (#3247): the reason a reroute records, written only by Slate ---
+//
+// An admin correcting a booking's bucket does not pick a reason: Slate records
+// `bucket_correction` itself (#3244), so it is a locked, system only reassign code like
+// `owner_reassignment` is locked. It must never appear in the reassign picker, where a
+// person choosing it would claim a bucket was corrected when only the agent moved.
+{
+  assert(SYSTEM_ONLY_CODES.reassign.includes("bucket_correction"), "bucket_correction is declared system only");
+  assert(LOCKED_CODES.reassign.includes("bucket_correction"), "and locked, so an admin cannot retire or rename it");
+  const res = resolveReasonOptions([
+    row("reassign", "owner_reassignment", "Owner reassignment", 0, true, true),
+    row("reassign", "other", "Other", 1, true, true),
+  ]);
+  assert(
+    res.reassign.all.filter((o) => o.code === "bucket_correction").length === 1,
+    "a store written before the code existed still validates it for the machine path, exactly once",
+  );
+  assert(
+    !res.reassign.active.some((o) => o.code === "bucket_correction") &&
+      !res.reassign.selectable.some((o) => o.code === "bucket_correction"),
+    "and a person can neither be offered it nor submit it",
+  );
+  const fallback = resolveReasonOptions([]);
+  assert(
+    fallback.reassign.all.some((o) => o.code === "bucket_correction") &&
+      !fallback.reassign.active.some((o) => o.code === "bucket_correction"),
+    "the coded fallback keeps it out of the picker too",
+  );
 }
 
 finish();

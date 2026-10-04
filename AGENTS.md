@@ -801,7 +801,7 @@ one's bound, are in `docs/verify-commands.md`.
 | `verify:pool-slot-parity` | the bucket codes sharing one availability pool really offer the same times |
 | `verify:table-drift` | production holds no table that no migration created |
 | `verify:advisor-photos`, `verify:advisor-photos-sql` | the photo refresh (#3027) against live Google with no writes, and migration 0156 in a real Postgres; why every face goes through `resolveAdvisorPhoto` |
-| `verify:agent-link-names`, `verify:replace-user-schedule-guard`, `verify:auth-domain-hook`, `verify:audit-chain-sql`, `verify:migration-replay-sql` | in Docker: 0155's link names (lowest free, never reused); 0157's import refusing a mid run edit; auth hook; audit chain; all migrations from empty, RLS per role (#3099) |
+| `verify:agent-link-names`, `verify:replace-user-schedule-guard`, `verify:auth-domain-hook`, `verify:audit-chain-sql`, `verify:migration-replay-sql`, `verify:reroute-holds-sql` | in Docker: 0155's link names (lowest free, never reused); 0157's import refusing a mid run edit; auth hook; audit chain; all migrations from empty, RLS per role (#3099); 0166's reroute hold refusing a booking on a held advisor as a lost race (#3247) |
 
 **The detail for every one of them, each exit code table, what it writes, which
 credentials it needs, what its last live run measured and the decisions behind

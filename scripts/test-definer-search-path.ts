@@ -266,6 +266,10 @@ const EXPECTED_PINNED = [
   "booking_api_outcome_mix",
   // #2366: keeps booking_settings.public_booking_paused_at in step with the flag.
   "booking_settings_stamp_pause",
+  // #3247: the reroute hold backstop on bookings, and the delete of a cancelled
+  // booking's hold. Definer, pinned, reaching only pg_catalog built ins.
+  "bookings_refuse_held_agent",
+  "bookings_release_reroute_hold",
   "bump_booking_api_outcome",
   // #2369: decides whether a named booking is really a duplicate and, when it is,
   // cancels it and enqueues its outbox row in ONE transaction.
@@ -273,12 +277,16 @@ const EXPECTED_PINNED = [
   // #2369: the half of that decision about the NAMED booking alone, its own function
   // because it is asked twice, once before any lock and once under it.
   "cancel_duplicate_named_refusal",
+  // #3247: the first step of a reroute confirm.
+  "claim_reroute_hold",
   "count_bookings_per_local_day",
   // #2447: reports which definer functions the web roles can execute. Security INVOKER
   // itself, deliberately, so it adds no row to the list it reports on.
   "definer_function_web_grants",
   "erase_booking_pii",
   "move_busy_block",
+  // #3247: holds an advisor at a booking's buffered window for a bucket correction.
+  "place_reroute_hold",
   // #3109: the daily rate_limits prune.
   "prune_rate_limits",
   "rate_limit_hit",
@@ -299,6 +307,8 @@ const EXPECTED_PINNED = [
   // failed rules write cannot leave the new zone sitting over the old hours.
   "replace_user_schedule",
   "replace_user_schedule_if_unchanged",
+  // #3247: the one clash rule the hold trigger and placement share. Security INVOKER.
+  "reroute_window_clash",
   "reserve_agent_link_name",
   // #2369: the digit rule two stored phone numbers are compared by. Deliberately not
   // libphonenumber, which no SQL expression reproduces; see migration 0124.

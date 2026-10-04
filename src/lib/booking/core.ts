@@ -160,6 +160,10 @@ export const REASSIGN_REASONS: ReasonOption[] = [
   { code: "coverage", label: "Coverage (agent unavailable)" },
   { code: "escalation", label: "Escalation" },
   { code: "other", label: "Other" },
+  // Written only by the reroute confirm (#3244): an admin correcting a booking's
+  // bucket does not pick a reason, Slate records this one. System only, so it is
+  // never offered in the reassign picker.
+  { code: "bucket_correction", label: "Bucket correction", systemOnly: true },
 ];
 
 /** Raw reason input from a request (untrusted). */

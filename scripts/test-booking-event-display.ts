@@ -204,6 +204,17 @@ eq(av.agentChange, "Jo Lee → Dan Wright", "reassign agentChange from -> to (na
 eq(av.timeChange, null, "reassign with no time change -> null");
 eq(av.reason, "Coverage (agent unavailable)", "reassign reason label");
 
+// #3247: a bucket correction is its own history entry, labelled as one, with its
+// system only reason labelled from the reassign list rather than humanized.
+const corrected = toBookingEventView(
+  { ...reassign, action: "bucket_corrected", reason_code: "bucket_correction", from_bucket_id: "b1", to_bucket_id: "b2" },
+  nameOf,
+  OPTS,
+);
+eq(corrected.actionLabel, "Bucket corrected", "bucket_corrected -> actionLabel Bucket corrected");
+eq(corrected.reason, "Bucket correction", "bucket_correction is labelled from the reassign options");
+eq(corrected.agentChange, "Jo Lee → Dan Wright", "a correction that moved the agent still shows the agent change");
+
 // The case in Dan's screenshot: a reassign records the SAME time on both sides,
 // so the time did not move and the lead names the call, not "then".
 const sameTimeReassign = toBookingEventView(

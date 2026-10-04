@@ -45,8 +45,8 @@ import {
   judgeBrowserPolicies,
   judgeGrantExemptions,
   judgeDefaultGrants,
-  migrationBatch,
   migrationPlan,
+  replayMigrations,
 } from "./lib/migration-replay.ts";
 import { MIRROR_TABLES } from "../src/lib/snowflake/export-core.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -91,17 +91,11 @@ try {
   // --- the replay ------------------------------------------------------------------
   sql(CLI_HISTORY_TABLE_SQL);
   const started = Date.now();
-  let applied = 0;
-  for (const m of plan.files) {
-    try {
-      sql(migrationBatch(m, readFileSync(join(DIR, m.file), "utf8")), undefined, { singleTransaction: true });
-      applied++;
-    } catch (err) {
-      const why = String((err as { stderr?: string }).stderr ?? err).trim().split("\n").slice(-4).join("\n  ");
-      console.error(`FAIL: replay from empty stops at ${m.file}. Every migration before it applied.\n  ${why}`);
-      throw new Error(`${m.file} does not apply to an empty database`);
-    }
-  }
+  const applied = replayMigrations(
+    plan.files,
+    (file) => readFileSync(join(DIR, file), "utf8"),
+    (batch) => void sql(batch, undefined, { singleTransaction: true }),
+  );
   eq(applied, plan.files.length,
     `every migration applied to an empty database (${Math.round((Date.now() - started) / 1000)}s)`);
 

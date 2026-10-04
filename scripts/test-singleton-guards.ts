@@ -62,6 +62,7 @@ const SINGLETON_INVARIANTS: {
   { table: "bookings", cols: "manage_token", issue: "0001", why: "one booking per manage token" },
   { table: "booking_reservations", cols: "idempotency_key", issue: "0052", why: "the create-path concurrency arbiter (one intent per key)" },
   { table: "reassign_intents", cols: "booking_id,gcal_client_id", issue: "0065", why: "one create-intent per (booking, deterministic event id)" },
+  { table: "reroute_holds", cols: "booking_id", issue: "#3247/0166", why: "one reroute hold per booking; placing again replaces it, so a booking never holds two advisors" },
   { table: "reschedule_locks", cols: "booking_id,target_starts_at", issue: "0033", why: "one in-flight reschedule lock per (booking, target)" },
   { table: "pending_event_deletions", cols: "calendar_email,gcal_event_id", issue: "0044", why: "one pending deletion per (calendar, event)" },
   { table: "ooo_requests", cols: "user_id,starts_at,ends_at", issue: "0025", why: "one active OOO request per (agent, exact window) [partial]" },

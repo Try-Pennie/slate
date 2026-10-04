@@ -1537,6 +1537,36 @@ It does not touch production. The client half, that the activation import passes
 source it read and maps `SL409` to its own reason, is pinned offline by
 `scripts/test-import-write.ts` and `scripts/test-activation-hours.ts`.
 
+# Proving the reroute hold in a real database (`pnpm verify:reroute-holds-sql`)
+
+#3247 (phase 1 of #3244, rerouting a booking into a corrected bucket): migration 0166
+adds `reroute_holds`, a trigger on `bookings` that refuses an active booking landing on a
+held advisor's window, `place_reroute_hold`, `claim_reroute_hold`, and a bucket aware
+`reassign_booking_swap` that moves (or keeps) the agent, rewrites the bucket and trace,
+consumes the hold and records a `rerouted` routing decision in one transaction. All of
+it is decided by Postgres: the advisory lock per agent, the buffered clash rule, the
+SQLSTATE the booker reads as a lost race, and the grants under the platform's default
+privileges (L714). A fake agrees with whatever it is told (L52).
+
+`pnpm verify:reroute-holds-sql` replays every migration into the `supabase/postgres`
+image and checks, both directions everywhere: a booking, a reassign or a reschedule onto
+a held advisor's window is refused as `23P01` with constraint `reroute_hold`, while the
+same write on another advisor, exactly one buffer away on either side, after the hold
+expires (set by writing `expires_at` in the past, never by sleeping) or after the held
+booking is cancelled all succeed; every placement and claim refusal returns its own word;
+a claim with two seconds left extends to the two minute confirm lease; a lead reschedule
+during the hold refuses the confirm; a move needs a claimed hold, consumes it, keeps
+`allow_double_book` false and stays under the overlap constraint; a second confirm returns
+the first result; a keep corrects only the bucket and trace; the seven argument swap is
+still the plain reassign; and no browser role can execute any of the functions. It writes
+nothing outside the container. No Docker is exit 2, never a pass (L98); any failed check
+is exit 1. It runs in the DB replay workflow with the other `verify-*-sql.ts` suites.
+
+**Re-run it after any change to `reroute_holds`, its trigger or functions, or
+`reassign_booking_swap`.** The refusal words are held in one vocabulary,
+`src/lib/db/reroute-hold-refusals.ts`, which `scripts/test-reroute-hold-refusals.ts`
+compares against the migration's function bodies in both directions.
+
 # Proving the advisor photo refresh (`pnpm verify:advisor-photos`)
 
 The daily `advisor-photos` lane (#3027) reads every active person's photo from the

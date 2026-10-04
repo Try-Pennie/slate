@@ -204,7 +204,9 @@ CREATE TABLE IF NOT EXISTS booking_events (
   lead_time_minutes   NUMBER,
   reschedule_seq      NUMBER,
   created_at          TIMESTAMP_TZ,
-  exported_at         TIMESTAMP_NTZ
+  exported_at         TIMESTAMP_NTZ,
+  from_bucket_id      VARCHAR,
+  to_bucket_id        VARCHAR
 )
 CLUSTER BY (created_at);
 
@@ -274,6 +276,15 @@ ALTER TABLE IF EXISTS bookings            ADD COLUMN IF NOT EXISTS referrer_orig
 -- #2828: the booking kind. Same rule as source: the MERGE writes it on every
 -- bookings row, so run this BEFORE the change that exports it deploys.
 ALTER TABLE IF EXISTS bookings            ADD COLUMN IF NOT EXISTS kind VARCHAR;
+
+-- #3247: a bucket correction's from and to bucket on booking_events (migration
+-- 0166). Run this in Snowsight BEFORE the change that adds them to the export's
+-- booking_events column list (src/lib/snowflake/export-core.ts) deploys, or every
+-- booking_events MERGE fails on an unknown column. That export change is held back
+-- until this has run; the corrected bucket already reaches the warehouse through
+-- bookings.bucket_id meanwhile.
+ALTER TABLE IF EXISTS booking_events      ADD COLUMN IF NOT EXISTS from_bucket_id VARCHAR;
+ALTER TABLE IF EXISTS booking_events      ADD COLUMN IF NOT EXISTS to_bucket_id VARCHAR;
 
 -- The ALTER leaves every row already here with a null kind, and a row is exported
 -- again only when it changes, so most never would be. Every booking created before

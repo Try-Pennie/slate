@@ -10,12 +10,16 @@ const REASON_ACTION: Record<BookingEventAction, ReasonAction> = {
   rescheduled: "reschedule",
   cancelled: "cancel",
   reassigned: "reassign",
+  // #3247: a bucket correction records the system only reassign code
+  // `bucket_correction`, so the reassign list is what labels it.
+  bucket_corrected: "reassign",
 };
 
 const ACTION_LABEL: Record<BookingEventAction, string> = {
   rescheduled: "Rescheduled",
   cancelled: "Cancelled",
   reassigned: "Reassigned",
+  bucket_corrected: "Bucket corrected",
 };
 
 /** The resolved reason options per action (incl. retired) the history views need
