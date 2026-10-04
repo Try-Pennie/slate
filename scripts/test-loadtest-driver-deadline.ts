@@ -153,7 +153,11 @@ const PLAN = { total: TOTAL, perMinute: PER_DRIVER_PER_MINUTE };
           DRIVER: "2",
           OUT: out,
           MODE: "steady",
-          DRIVE_DEADLINE_MS: "1000",
+          // Under the plan's four second spacing, so the driver stops before its
+          // SECOND request because that one is scheduled past the deadline, not
+          // because a clock ran out: the test waits on no timer, and a loaded
+          // machine has three and a half seconds to send the first.
+          DRIVE_DEADLINE_MS: "3500",
         },
         timeout: 60_000,
       },
@@ -169,7 +173,7 @@ const PLAN = { total: TOTAL, perMinute: PER_DRIVER_PER_MINUTE };
   eq(r?.mode, "steady", "a well formed steady file");
   eq(r?.planned, TOTAL, "carrying the whole plan, so the short file is visibly short");
   assert(r?.cutShort !== undefined, "and saying it was cut short");
-  eq(r?.cutShort?.deadlineMs, 1000, "at the deadline it was given");
+  eq(r?.cutShort?.deadlineMs, 3500, "at the deadline it was given");
   eq(r?.cutShort?.attemptsMade, r?.attempts.length, "with the count of what it made, agreeing with the file");
   assert((r?.attempts.length ?? 0) >= 1 && (r?.attempts.length ?? 0) < TOTAL, "having made some, not all");
   eq(bookingsSeen, r?.attempts.length, "and every request the deployment saw is in the file");
