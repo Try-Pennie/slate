@@ -425,16 +425,16 @@ export function incompleteness(input: JudgeInput): string[] {
       );
     }
   }
-  // WHICH systems failed (#3104). The bar the pass is held to depends on it, so a
-  // pass whose deployment faulted different systems from the ones asked for would be
-  // judged against the wrong bar, and one that never recorded them cannot be judged
-  // against any.
   // The fault drivers' files get the steady drivers' checks (#3222).
   if (input.faultPass?.drivers && input.faultPass.expectedPerDriver !== undefined) {
     for (const r of input.faultPass.drivers) {
       why.push(...driverFileProblems(r, input.faultPass.expectedPerDriver, `fault driver ${r.driver}`));
     }
   }
+  // WHICH systems failed (#3104). The bar the pass is held to depends on it, so a
+  // pass whose deployment faulted different systems from the ones asked for would be
+  // judged against the wrong bar, and one that never recorded them cannot be judged
+  // against any.
   if (input.faultPass) {
     const got = [...new Set(input.faultPass.faultTargets)].sort();
     if (got.length === 0) {

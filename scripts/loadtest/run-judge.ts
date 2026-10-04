@@ -46,7 +46,7 @@ import {
   BOOKING_WRITES_PER_MINUTE,
   DRIVERS,
   PER_DRIVER_PER_MINUTE,
-  FAULT_MINUTES_DEFAULT,
+  faultMinutesFrom,
   RUN_MINUTES,
   type DriverMode,
   type DriverResult,
@@ -413,6 +413,12 @@ try {
  * asked for is `expectedLegs.faultPct`, and the judge calls a configured leg that
  * never arrived incomplete.
  */
+// env-ok: FAULT_MINUTES (optional; the fault pass's length, unset in the workflow,
+// read through the same reader the driver uses so the two agree on the plan)
+const FAULT_MINUTES = faultMinutesFrom(process.env.FAULT_MINUTES) ?? (() => {
+  console.error(`FAILED: FAULT_MINUTES is not a positive number of minutes: ${JSON.stringify(process.env.FAULT_MINUTES)}.`);
+  process.exit(1);
+})();
 const faultDrivers = loadDrivers("fault");
 let faultPass: JudgeInput["faultPass"];
 if (faultDrivers.length > 0) {
@@ -440,10 +446,10 @@ if (faultDrivers.length > 0) {
     faultTargets: targetLists.length === 1 && targetLists[0] !== "" ? targetLists[0]!.split(",") : [],
     // The files themselves, and the plan each was meant to run, so the judge gives
     // them the steady drivers' checks and fails a pass cut short at its deadline
-    // with its figures (#3222). The plan is the workflow's, which leaves
-    // FAULT_MINUTES unset, so the driver's default.
+    // with its figures (#3222). The length is read from FAULT_MINUTES through the
+    // driver's own reader, so a hand run that set it is judged against its plan.
     drivers: faultDrivers,
-    expectedPerDriver: PER_DRIVER_PER_MINUTE * FAULT_MINUTES_DEFAULT,
+    expectedPerDriver: Math.round(PER_DRIVER_PER_MINUTE * FAULT_MINUTES),
   };
 }
 

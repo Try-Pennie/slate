@@ -32,14 +32,19 @@ import {
   effectiveDeadlineMs,
   deadlineReached,
   requestAbortMs,
-  FAULT_MINUTES_DEFAULT,
+  faultMinutesFrom,
   DRIVERS,
   PER_DRIVER_PER_MINUTE,
   RUN_MINUTES,
   type BookingAttempt,
   type DriverResult,
 } from "./book-plan.ts";
-import { faultModeVerdict, faultPollStep, FAULT_PROPAGATION_DEADLINE_MS } from "./preflight-checks.ts";
+import {
+  faultModeVerdict,
+  faultPollStep,
+  FAULT_PROPAGATION_DEADLINE_MS,
+  type FaultModeVerdict,
+} from "./preflight-checks.ts";
 import { parseFaultTargets } from "../../src/lib/loadtest-fault.ts";
 
 const PROD_HOSTS = ["slate.trypennie.app", "drukfvgaynzrralbzkzj.supabase.co"];
@@ -206,9 +211,13 @@ async function book(req: {
     // believes it has: a CI runner behind egress NAT shares an address with
     // everything else on it.
     seenIp = res.headers.get("x-loadtest-seen-ip");
-    const body = (await res.json().catch(() => null)) as
-      | { outcome?: string; code?: string }
-      | null;
+    // An unreadable body is null, but an ABORT while reading it is not: the headers
+    // arrived and the body never did, which is a timeout, never a 200 with no
+    // outcome (#3222). Rethrown to the catch below, which records it as one.
+    const body = (await res.json().catch((err: unknown) => {
+      if (timedOut(err)) throw err;
+      return null;
+    })) as { outcome?: string; code?: string } | null;
     outcome = body?.outcome ?? body?.code ?? null;
   } catch (err) {
     // status stays 0, which the judge reads as "no reply at all" and keeps apart
@@ -218,6 +227,9 @@ async function book(req: {
     // outcome, so the judge reports it apart from a reply that never came for any
     // other reason (#3222).
     outcome = timedOut(err) ? "timed-out" : `transport: ${(err as Error).name}`;
+    // A body that stalled after its headers leaves the header status behind; the
+    // request was not answered, so it carries no status either.
+    status = 0;
   }
   return {
     driver: DRIVER,
@@ -361,15 +373,34 @@ async function fault(): Promise<void> {
   // catch it because both builds come from the same commit. The ladder is pure and
   // lives in `preflight-checks.ts`; this is the clock and the request.
   const startedWaitingMs = Date.now();
+  // Each check carries the same abort every driver request does (#3222), bounded by
+  // the propagation deadline, so a version check that never answers is one more
+  // reading to wait out rather than a driver hung until the job's timeout kills it.
+  const pollDeadlineAtMs = startedWaitingMs + FAULT_PROPAGATION_DEADLINE_MS;
   for (;;) {
-    const res = await fetch(`${SLATE_BASE}/api/smoke/version`, {
-      headers: { Authorization: `Bearer ${API_KEY}` },
-    });
-    const verdict = faultModeVerdict(res.status, await res.json().catch(() => ({})), {
-      faultPct: wantedPct,
-      commit: commit === "" ? undefined : commit,
-      faultTargets: wantedTargets.targets,
-    });
+    let verdict: FaultModeVerdict;
+    try {
+      const res = await fetch(`${SLATE_BASE}/api/smoke/version`, {
+        headers: { Authorization: `Bearer ${API_KEY}` },
+        signal: requestSignal(pollDeadlineAtMs),
+      });
+      const body = await res.json().catch((err: unknown) => {
+        if (timedOut(err)) throw err;
+        return {};
+      });
+      verdict = faultModeVerdict(res.status, body, {
+        faultPct: wantedPct,
+        commit: commit === "" ? undefined : commit,
+        faultTargets: wantedTargets.targets,
+      });
+    } catch (err) {
+      if (!timedOut(err)) throw err;
+      verdict = {
+        ok: false,
+        why: "/api/smoke/version did not answer inside the driver's per request bound.",
+        retriable: true,
+      };
+    }
     const step = faultPollStep(verdict, Date.now() - startedWaitingMs);
     if (step.action === "accept") {
       faultPctConfirmed = step.faultPct;
@@ -386,8 +417,10 @@ async function fault(): Promise<void> {
     );
     await sleep(step.waitMs);
   }
-  const minutes = Number((process.env.FAULT_MINUTES ?? String(FAULT_MINUTES_DEFAULT)).trim());
-  if (!Number.isFinite(minutes) || minutes <= 0) {
+  // Read through the judge's own reader, so the plan the judge checks the file
+  // against is the plan this ran (#3222).
+  const minutes = faultMinutesFrom(process.env.FAULT_MINUTES);
+  if (minutes === null) {
     console.error(`FAILED: FAULT_MINUTES is not a positive number of minutes.`);
     process.exit(1);
   }

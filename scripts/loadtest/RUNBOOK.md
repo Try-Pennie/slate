@@ -836,7 +836,7 @@ and exits zero so the ceiling check and the fault pass still run. Every request 
 carries its own abort (`requestAbortMs`: thirty seconds, and never more than a minute
 past the deadline, inside the grace before the job's timeout), so a request that never
 answers is recorded as `timed-out` and fails its own **timed out requests** bar rather
-than keeping the driver from writing its file. The judge scores
+than keeping the driver from writing its file. The same abort covers a body that stalls after its headers and the fault leg's version polling. The archive's log window is derived too (`archiveTailMinutes`, one minute past the drive job's timeout), so a slow run keeps its last log lines. The judge scores
 that file: the latency bar on what ran, and a failing **planned bookings completed**
 bar naming the driver, how far it got and the share of the run that completed. The
 drive job's `timeout-minutes` is derived from the same deadline plus setup and grace

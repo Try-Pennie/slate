@@ -136,6 +136,34 @@ export function requestAbortMs(opts: { nowMs: number; deadlineAtMs: number }): n
 /** The fault pass's length when FAULT_MINUTES is unset, which is how the workflow runs it. */
 export const FAULT_MINUTES_DEFAULT = 2;
 
+/**
+ * The fault pass's length from `FAULT_MINUTES`, read ONE way by the driver that runs
+ * it and the judge that checks the file against it, so a hand run that sets it is not
+ * judged against the default plan. Null for anything that is not a positive number,
+ * never a NaN every comparison reads as "fine" (L50).
+ */
+export function faultMinutesFrom(raw: string | undefined): number | null {
+  const v = (raw ?? "").trim();
+  if (v === "") return FAULT_MINUTES_DEFAULT;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * How long the archive job streams the Worker's logs (#3222). It starts beside the
+ * drive, and must outlast the longest a drive job can run, or a slow run loses the
+ * last lines the judge reads its confirm timings from. One minute of margin past the
+ * drive job's own timeout.
+ */
+export function archiveTailMinutes(plan: { total: number; perMinute: number }): number {
+  return driveJobTimeoutMinutes(plan) + 1;
+}
+
+/** The archive job's `timeout-minutes`: its window plus the same runner setup. */
+export function archiveJobTimeoutMinutes(plan: { total: number; perMinute: number }): number {
+  return archiveTailMinutes(plan) + DRIVE_JOB_SETUP_MINUTES;
+}
+
 /** One request the driver will make. */
 export interface PlannedRequest {
   /** 0-based, unique within the driver. */

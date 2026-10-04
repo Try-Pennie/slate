@@ -33,6 +33,10 @@ import type { AddressInfo } from "node:net";
 import {
   driverDeadlineMs,
   driveJobTimeoutMinutes,
+  archiveTailMinutes,
+  archiveJobTimeoutMinutes,
+  faultMinutesFrom,
+  FAULT_MINUTES_DEFAULT,
   deadlineReached,
   effectiveDeadlineMs,
   requestAbortMs,
@@ -97,6 +101,38 @@ const PLAN = { total: TOTAL, perMinute: PER_DRIVER_PER_MINUTE };
   );
 }
 
+// --- the log archive covers the whole drive it records ---------------------------
+//
+// The archive streams the Worker's logs beside the drive. It used to stop at a fixed
+// fifteen minutes, while a drive may now legitimately run its fifteen minute
+// deadline plus setup and grace, so a slow run lost exactly the last lines the
+// judge reads its confirm timings from.
+{
+  const yml = readFileSync(join(ROOT, ".github/workflows/loadtest.yml"), "utf8");
+  const archive = /^ {2}archive:\n([\s\S]*?)(?=^ {2}\S)/m.exec(yml)?.[1] ?? "";
+  const tail = Number(/timeout (\d+)m npx wrangler tail/.exec(archive)?.[1] ?? NaN);
+  eq(tail, archiveTailMinutes(PLAN), "the archive's tail window is the one derived from the plan");
+  assert(
+    archiveTailMinutes(PLAN) > driveJobTimeoutMinutes(PLAN),
+    "and outlasts the longest a drive job can run",
+  );
+  const jobTimeout = Number(/^ {4}timeout-minutes:\s*(\d+)/m.exec(archive)?.[1] ?? NaN);
+  eq(jobTimeout, archiveJobTimeoutMinutes(PLAN), "the archive job's timeout is derived from its window");
+  assert(jobTimeout > tail, "and is longer than the window, so the tail ends before the job is killed");
+  // Control: a planted fixed window is read as different (L1).
+  const planted = yml.replace(/timeout \d+m npx wrangler tail/, "timeout 15m npx wrangler tail");
+  const plantedArchive = /^ {2}archive:\n([\s\S]*?)(?=^ {2}\S)/m.exec(planted)?.[1] ?? "";
+  eq(Number(/timeout (\d+)m npx wrangler tail/.exec(plantedArchive)?.[1] ?? NaN), 15, "control: a changed window is read as changed");
+}
+
+// --- the fault plan's length is read one way by the driver and the judge -----------
+{
+  eq(faultMinutesFrom(undefined), FAULT_MINUTES_DEFAULT, "unset is the default the workflow runs");
+  eq(faultMinutesFrom("5"), 5, "a hand run's FAULT_MINUTES is read");
+  eq(faultMinutesFrom("0"), null, "zero is refused, not a plan");
+  eq(faultMinutesFrom("soon"), null, "and so is something that is not a number, never NaN");
+}
+
 // --- when to stop ------------------------------------------------------------------
 {
   eq(deadlineReached({ nowMs: 100, nextAtMs: 200, deadlineAtMs: 1_000 }), false, "before the deadline it carries on");
@@ -153,12 +189,25 @@ const GAP_MS = 60_000 / PER_DRIVER_PER_MINUTE;
 const TEST_DEADLINE_MS = Math.round((GAP_MS * 7) / 8);
 
 /** Run the real driver against a local stub whose booking answer is slow, or never comes. */
+/** What the fault leg's version check is answered with once the deploy has landed. */
+const VERSION_FAULTED = { loadtest: true, productionSecrets: [], faultPct: 10, faultTargets: ["google-read"] };
+
 async function runDriver(
-  answer: "slow" | "hang",
+  answer: "slow" | "hang" | "stall-body",
   extraEnv: Record<string, string> = {},
-): Promise<{ code: number; stderr: string; result: DriverResult | null; bookingsSeen: number }> {
+  out = "driver-2.json",
+): Promise<{ code: number; stderr: string; result: DriverResult | null; bookingsSeen: number; versionSeen: number }> {
   let bookingsSeen = 0;
+  let versionSeen = 0;
   const server = createServer((req, res) => {
+    if (req.url === "/api/smoke/version") {
+      versionSeen += 1;
+      // The FIRST version check never answers, the way a deploy mid swap can.
+      if (versionSeen === 1) return;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(VERSION_FAULTED));
+      return;
+    }
     if (req.url?.startsWith("/api/availability")) {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ slots: ["2026-10-05T14:00:00.000Z", "2026-10-05T15:00:00.000Z"] }));
@@ -169,6 +218,12 @@ async function runDriver(
       req.resume();
       // "hang" never answers; the driver's own abort is the only way out.
       if (answer === "hang") return;
+      // "stall-body" sends a 200 and half a body, then nothing.
+      if (answer === "stall-body") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.write('{"outcome":');
+        return;
+      }
       // Slow, the way the 2026-10-04 confirms were.
       setTimeout(() => {
         res.writeHead(200, { "content-type": "application/json" });
@@ -182,7 +237,7 @@ async function runDriver(
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const port = (server.address() as AddressInfo).port;
   const dir = mkdtempSync(join(tmpdir(), "slate-3222-"));
-  const out = join(dir, "driver-2.json");
+  const outPath = join(dir, out);
   let code = 0;
   let stderr = "";
   try {
@@ -197,7 +252,7 @@ async function runDriver(
           BOOKING_API_KEY: "test-key",
           RUN_ID: "run-3222",
           DRIVER: "2",
-          OUT: out,
+          OUT: outPath,
           MODE: "steady",
           DRIVE_DEADLINE_MS: String(TEST_DEADLINE_MS),
           ...extraEnv,
@@ -211,9 +266,9 @@ async function runDriver(
   }
   server.closeAllConnections();
   server.close();
-  const result = existsSync(out) ? (JSON.parse(readFileSync(out, "utf8")) as DriverResult) : null;
+  const result = existsSync(outPath) ? (JSON.parse(readFileSync(outPath, "utf8")) as DriverResult) : null;
   rmSync(dir, { recursive: true, force: true });
-  return { code, stderr, result, bookingsSeen };
+  return { code, stderr, result, bookingsSeen, versionSeen };
 }
 
 {
@@ -239,6 +294,29 @@ async function runDriver(
   eq(r?.attempts[0]?.status, 0, "the hung request has no status");
   eq(r?.attempts[0]?.outcome, "timed-out", "and is recorded as timed out, not as any other failure");
   assert(r?.cutShort !== undefined, "and the driver then stops at its deadline as before");
+}
+
+{
+  // A 200 whose BODY stalls. The body read used to swallow the abort as a null
+  // body, so the attempt read as a 200 with no outcome: a success nobody saw.
+  const { code, stderr, result: r } = await runDriver("stall-body", { DRIVE_REQUEST_TIMEOUT_MS: "300" });
+  eq(code, 0, `a driver whose response body stalled still exits zero ${stderr.slice(0, 300)}`);
+  eq(r?.attempts[0]?.outcome, "timed-out", "a stalled body is recorded as timed out");
+  eq(r?.attempts[0]?.status, 0, "and not as the 200 its headers claimed");
+}
+
+{
+  // The fault leg's version polling carries the same abort. Its first check never
+  // answers; before, that hung the driver until the job's timeout killed it.
+  const { code, stderr, result: r, versionSeen } = await runDriver(
+    "slow",
+    { MODE: "fault", DRIVER: "0", FAULT_PCT: "10", FAULT_TARGETS: "google-read", FAULT_MINUTES: "1", DRIVE_REQUEST_TIMEOUT_MS: "300" },
+    "fault-0.json",
+  );
+  eq(code, 0, `a fault driver whose first version check hung still drives ${stderr.slice(0, 300)}`);
+  assert(versionSeen >= 2, "it gave up on the hung check and asked again");
+  eq(r?.mode, "fault", "and wrote its fault file");
+  eq(r?.faultPct, 10, "having confirmed the percentage from the second answer");
 }
 
 // --- a failed leg does not skip the legs that can still be judged -------------------
