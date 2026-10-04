@@ -155,6 +155,21 @@ describe("createEvent never adopts a cancelled event on a 409 (#3217)", () => {
     googleHolding("confirmed");
     await expect(createEvent("a@b.com", event, "slateabc")).resolves.toBe("slateabc");
   });
+
+  // The OOO and owner alert create shares the reuse, so a re-approved time off
+  // whose block was deleted is never "written" as a cancelled event that blocks
+  // nothing.
+  it("createEventOnCalendar refuses a cancelled event the same way", async () => {
+    googleHolding("cancelled");
+    await expect(createEventOnCalendar("a@b.com", "primary", event, "slateabc")).rejects.toBeInstanceOf(
+      EventCancelledOnReuse,
+    );
+  });
+
+  it("createEventOnCalendar still adopts a live one", async () => {
+    googleHolding("confirmed");
+    await expect(createEventOnCalendar("a@b.com", "primary", event, "slateabc")).resolves.toBe("slateabc");
+  });
 });
 
 // #2371: the owner alert's removal decides whether to retry by classifying the error,

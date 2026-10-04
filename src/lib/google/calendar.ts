@@ -405,6 +405,33 @@ export async function freeBusyMany(
   return busyByCalendarFromResponse(calendarIds, data.calendars);
 }
 
+/**
+ * The event an insert with our own client id collided with (a 409), read back
+ * and judged by `adoptableEventId`: its id when it is live, and the typed
+ * `EventCancelledOnReuse` when it is a cancelled tombstone (#3217). The one
+ * reuse every create with a client id goes through, so the rule cannot drift
+ * between them (L370). `calendarPath` arrives already encoded ("primary" or an
+ * encoded calendar id).
+ */
+async function reuseOnConflict(
+  actorEmail: string,
+  calendarPath: string,
+  clientId: string,
+  deadline: Deadline,
+): Promise<string> {
+  const existing = await ok(
+    await gfetch(
+      actorEmail,
+      `${BASE}/calendars/${calendarPath}/events/${encodeURIComponent(clientId)}`,
+      {},
+      deadline,
+      "events.get",
+    ),
+    "events.get (409 reuse)",
+  );
+  return adoptableEventId(clientId, (await existing.json()) as { id?: string; status?: string });
+}
+
 export interface CreateEventInput {
   summary: string;
   description?: string;
@@ -460,17 +487,7 @@ export async function createEvent(
   // has not been measured live. So the typed `EventCancelledOnReuse` is thrown,
   // and a caller that can derive a fresh id answers it with one.
   if (clientId && res.status === 409) {
-    const existing = await ok(
-      await gfetch(
-        email,
-        `${BASE}/calendars/${CAL}/events/${encodeURIComponent(clientId)}`,
-        {},
-        GOOGLE_CONFIRM_TIMEOUT_MS,
-        "events.get",
-      ),
-      "events.get (409 reuse)",
-    );
-    return adoptableEventId(clientId, (await existing.json()) as { id?: string; status?: string });
+    return reuseOnConflict(email, CAL, clientId, GOOGLE_CONFIRM_TIMEOUT_MS);
   }
 
   await ok(res, "events.insert");
@@ -545,20 +562,11 @@ export async function createEventOnCalendar(
   // provably this same intent, and GETting it returns the event Google already
   // created. With no id of our own a 409 is a conflict we cannot resolve, and
   // swallowing it would report an event that does not exist.
+  //
+  // #3217: through the same reuse as the booking create, so a cancelled event is
+  // refused here too rather than adopted as a time off block that blocks nothing.
   if (clientId && res.status === 409) {
-    const existing = await ok(
-      await gfetch(
-        actorEmail,
-        `${BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(clientId)}`,
-        {},
-        CALENDAR_WRITE_TIMEOUT_MS,
-        "events.get",
-      ),
-      "events.get (409 reuse)",
-    );
-    const reused = (await existing.json()) as { id?: string };
-    if (!reused.id) throw new Error("Google did not return an event id on reuse");
-    return reused.id;
+    return reuseOnConflict(actorEmail, encodeURIComponent(calendarId), clientId, CALENDAR_WRITE_TIMEOUT_MS);
   }
 
   await ok(res, "events.insert");

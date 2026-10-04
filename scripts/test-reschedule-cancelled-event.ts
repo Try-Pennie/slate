@@ -315,6 +315,147 @@ async function run() {
     assert(google.events.get(written) === "confirmed", "reassign: the drain leaves the adopted event alone");
   }
 
+  // --- reassign world shared by 7 to 9: agents A and B, a fake Google with
+  // tombstones, the queue, and a reassign_intents table the drain can see -------
+  const reassignWorld = () => {
+    const ctx = { booking: makeBooking({ gcal_event_id: "gcal-old" }), bucket, eventType };
+    const agents: Record<string, User> = {
+      "a@x.com": { id: "a", name: "Agent A", email: "a@x.com", bookable: true } as unknown as User,
+      "b@x.com": { id: "b", name: "Agent B", email: "b@x.com", bookable: true } as unknown as User,
+    };
+    const google = fakeGoogle();
+    google.events.set("gcal-old", "confirmed");
+    const q = queue(google);
+    const intents = new Set<string>();
+    const intentWrites: string[] = [];
+    const { deps } = makeDeps({ bookingById: ctx });
+    const d: BookingDeps = {
+      ...deps,
+      ...google.deps,
+      ...q.deps,
+      getAgentByEmail: async (email) => agents[email] ?? null,
+      liveBookingHoldingEvent: holderOf(ctx.booking),
+      writeReassignIntent: async ({ gcalClientId }) => {
+        intentWrites.push(gcalClientId);
+        intents.add(gcalClientId);
+      },
+      deleteReassignIntent: async (_bookingId, gcalClientId) => {
+        intents.delete(gcalClientId);
+      },
+      pendingWritePinsEvent: async (eventId) => intents.has(eventId),
+    };
+    return { ctx, google, q, d, intents, intentWrites };
+  };
+
+  // --- 7. B, then A, then B: a reassign back to an advisor the booking already
+  // left must land on a LIVE event on their calendar, never a tombstone ---------
+  {
+    const { ctx, google, d } = reassignWorld();
+    await reassignBooking("bk1", "b@x.com", SYS, d);
+    const firstB = ctx.booking.gcal_event_id!;
+    await reassignBooking("bk1", "a@x.com", SYS, d);
+    assert(google.events.get(firstB) === "cancelled", "B A B: B's first event was deleted by the move to A (the precondition)");
+    const err = await caught(() => reassignBooking("bk1", "b@x.com", SYS, d));
+    assert(err === null, "B A B: the move back to B succeeds");
+    assert(ctx.booking.assigned_user_id === "b", "B A B: the booking is on B again");
+    assert(
+      google.events.get(ctx.booking.gcal_event_id!) === "confirmed",
+      "B A B: the event the booking holds is live on Google",
+    );
+  }
+
+  // --- 8. a reassign whose derived id is ALREADY a tombstone derives a fresh id,
+  // records the intent for it BEFORE the create, and lands on a live event -------
+  {
+    const { ctx, google, d, intentWrites } = reassignWorld();
+    // Learn the id the reassign derives by letting a swap fail once, then delete
+    // that event on Google the way a drain would.
+    const swap = d.reassignSwap;
+    let failSwap = true;
+    d.reassignSwap = async (args) => {
+      if (failSwap) {
+        failSwap = false;
+        throw new Error("rpc down");
+      }
+      return swap(args);
+    };
+    await caught(() => reassignBooking("bk1", "b@x.com", SYS, d));
+    const tombstoned = intentWrites[0];
+    google.events.set(tombstoned, "cancelled");
+    const err = await caught(() => reassignBooking("bk1", "b@x.com", SYS, d));
+    const landed = ctx.booking.gcal_event_id!;
+    assert(err === null, "reassign tombstone: the retry succeeds");
+    assert(
+      landed !== tombstoned && google.events.get(landed) === "confirmed",
+      "reassign tombstone: the booking lands on a fresh, live event",
+    );
+    assert(
+      intentWrites.includes(landed) && intentWrites.lastIndexOf(landed) > intentWrites.indexOf(tombstoned),
+      "reassign tombstone: the fresh id's intent is written before it is created",
+    );
+  }
+
+  // --- 9. a failed swap KEEPS its intent standing, so a drain pass that runs
+  // before the retry holds the event rather than deleting it --------------------
+  {
+    const { ctx, google, q, d, intents } = reassignWorld();
+    const swap = d.reassignSwap;
+    let failSwap = true;
+    d.reassignSwap = async (args) => {
+      if (failSwap) {
+        failSwap = false;
+        throw new Error("rpc down");
+      }
+      return swap(args);
+    };
+    await caught(() => reassignBooking("bk1", "b@x.com", SYS, d));
+    const written = [...google.events.keys()].find((id) => id !== "gcal-old")!;
+    assert(intents.has(written), "swap hold: the failed swap leaves its intent standing");
+    const lane = await processPendingEventDeletions(d, 50);
+    assert(
+      lane.held === 1 && lane.deleted === 0 && google.events.get(written) === "confirmed",
+      "swap hold: the drain holds the event while the intent pins it",
+    );
+    await reassignBooking("bk1", "b@x.com", SYS, d);
+    assert(
+      ctx.booking.gcal_event_id === written && google.events.get(written) === "confirmed" && !intents.has(written),
+      "swap hold: the retry adopts the event live and then clears its intent",
+    );
+    await processPendingEventDeletions(d, 50);
+    assert(
+      google.events.get(written) === "confirmed" && q.rows.size === 0,
+      "swap hold: once the booking holds it the drain drops the row and leaves the event",
+    );
+  }
+
+  // --- 10. the fresh pin cannot be written: the reschedule still fails loudly AND
+  // queues the event it last asked Google for, so nothing is left unaccounted ----
+  {
+    const { google, q, d } = rescheduleWorld();
+    google.failOnce();
+    d.enqueueEventDeletion = async () => {};
+    await caught(() => rescheduleBooking("tok1", TARGET, RR, "customer", d, NOW));
+    const tombstoned = [...google.events.keys()].find((id) => id !== "gcal-old")!;
+    google.events.set(tombstoned, "cancelled");
+    d.enqueueEventDeletion = q.deps.enqueueEventDeletion!;
+    const writePin = d.writeReschedulePin;
+    let pinWrites = 0;
+    d.writeReschedulePin = async (bookingId, pin) => {
+      // The first pin lands; the fresh one after the tombstone is refused.
+      if (++pinWrites > 1) throw new Error("reschedule pin could not be written: supabase 503");
+      await writePin(bookingId, pin);
+    };
+    const err = await caught(() => rescheduleBooking("tok1", TARGET, RR, "customer", d, NOW));
+    assert(
+      err instanceof Error && /pin could not be written/.test(err.message),
+      "pin refused: the reschedule fails with the pin write's own error",
+    );
+    assert(
+      [...q.rows.values()].some((r) => r.gcal_event_id === tombstoned),
+      "pin refused: the event it asked Google for is still queued for the drain",
+    );
+  }
+
   finish();
 }
 
