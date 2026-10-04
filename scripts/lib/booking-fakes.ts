@@ -161,6 +161,8 @@ export interface FakeOpts {
   leadXbc?: Record<string, string | null>;
   /** #2638: the Salesforce read fails, which must refuse rather than route. */
   leadXbcThrows?: boolean;
+  /** #3246: each submission id's Lead id (null: a submission naming no lead). */
+  submissionLead?: Record<string, string | null>;
   /** #1334: the calling number Salesforce holds for any lead (default none). */
   callingNumber?: string | null;
   /** #1334: the calling number read fails. */
@@ -324,6 +326,8 @@ export function makeDeps(opts: FakeOpts) {
     insertBooking: [] as Record<string, unknown>[],
     /** #2638: every lead id Salesforce was asked about, and every code resolved. */
     readLeadXbc: [] as string[],
+    /** #3246: every submission id Salesforce was asked about. */
+    readSubmissionLead: [] as string[],
     /** #1334: every lead the calling number was read for. */
     readCallingNumber: [] as (string | null)[],
     /** #1334: deadline timers started and cleared around that read. */
@@ -548,6 +552,11 @@ export function makeDeps(opts: FakeOpts) {
       if (opts.leadXbcThrows) throw new Error("SF query failed: 503 unavailable");
       const table = opts.leadXbc ?? {};
       return Object.prototype.hasOwnProperty.call(table, leadId) ? table[leadId] : undefined;
+    },
+    readSubmissionLead: async (submissionId) => {
+      calls.readSubmissionLead.push(submissionId);
+      const table = opts.submissionLead ?? {};
+      return Object.prototype.hasOwnProperty.call(table, submissionId) ? table[submissionId] : undefined;
     },
     readCallingNumber: async (leadId) => {
       calls.readCallingNumber.push(leadId);

@@ -17,12 +17,27 @@
  * the page to the default route. `scripts/test-landing-identity-throttle.ts` holds
  * every call site to that.
  */
-import { readLeadXbcLive } from "@/lib/salesforce/lead-xbc";
+import { readLeadXbcLive, readSubmissionLeadIdLive } from "@/lib/salesforce/lead-xbc";
 import { resolveRoutingCode, type RoutingCodeResolution } from "./lead-code.ts";
+import { resolveRequestedCode } from "./catchall.ts";
+
+/**
+ * Whether the link's own code leaves the page needing a Salesforce read (#3246):
+ * only then is a submission id worth spending the per address landing allowance on.
+ */
+export function codeNeedsLookup(requested: string | null | undefined): boolean {
+  return resolveRequestedCode(requested ?? "").kind !== "valid";
+}
 
 export async function resolveLandingCode(
   requested: string | null | undefined,
   leadId: string | null | undefined,
+  /** #3246: the submission the link named, already through the landing throttle,
+   *  or null. Required, so every page says whether it has one. */
+  submissionId: string | null,
 ): Promise<RoutingCodeResolution> {
-  return resolveRoutingCode(requested, leadId, readLeadXbcLive);
+  return resolveRoutingCode(requested, leadId, readLeadXbcLive, {
+    id: submissionId,
+    readLeadId: readSubmissionLeadIdLive,
+  });
 }

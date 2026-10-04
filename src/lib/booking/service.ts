@@ -126,7 +126,7 @@ import type {
 } from "@/lib/booking/orchestration";
 import type { PersonIdentity, PersonWorld } from "@/lib/booking/person-dedupe";
 import { personStrongIds } from "@/lib/booking/person-dedupe";
-import { readLeadXbcLive } from "@/lib/salesforce/lead-xbc";
+import { readLeadXbcLive, readSubmissionLeadIdLive } from "@/lib/salesforce/lead-xbc";
 import { callingNumberWithinDeadline, readCallingNumberLive } from "@/lib/salesforce/lead-calling-number";
 import { bookingLeadId } from "@/lib/booking/lookup-identity";
 import { toE164 } from "@/lib/phone";
@@ -897,6 +897,7 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     // #2638: the lead's XBC for a booker confirm whose link carried none. Throws
     // on a failed read, which the confirm answers with a retriable 503.
     readLeadXbc: readLeadXbcLive,
+    readSubmissionLead: readSubmissionLeadIdLive,
     // #1334: the calling number, for an invite description rebuilt after the lead
     // corrects their number. Throws on a refused read; the caller omits the line.
     readCallingNumber: readCallingNumberLive,

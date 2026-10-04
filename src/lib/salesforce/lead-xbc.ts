@@ -108,3 +108,37 @@ export async function readLeadXbcLive(leadId: string): Promise<string | null | u
   const { token, instanceUrl } = await sfToken();
   return readOneLeadXbc(leadId, (soql) => querySoqlAll<LeadFieldRecord>(instanceUrl, token, soql));
 }
+
+/** A Salesforce Submission id: the `a04` key prefix of `Submission__c`, 15 or 18 characters. */
+export function isSubmissionId(id: string): boolean {
+  return /^a04[a-zA-Z0-9]{12}(?:[a-zA-Z0-9]{3})?$/.test(id);
+}
+
+/**
+ * The Lead a Submission belongs to, for a booker confirm that arrived with no code
+ * and no Lead id (#3246). trypennie's trigger always carries the submission id,
+ * even on the iPhone Safari path that dropped the page's own query, and
+ * `Submission__c.Lead__c` names the lead whose `XBC__c` the lead path then reads.
+ *
+ * Three answers: a Lead id; null for a submission naming no lead; undefined for a
+ * submission Salesforce did not return. A refused query THROWS, so a failed read is
+ * never mistaken for a submission with no lead.
+ */
+export async function readSubmissionLeadId(
+  submissionId: string,
+  run: LeadSoqlRunner,
+): Promise<string | null | undefined> {
+  const records = await run(`SELECT Id, Lead__c FROM Submission__c WHERE Id IN (${sfInList([submissionId])})`);
+  const key = leadIdKey(submissionId);
+  const hit = records.find((r) => leadIdKey(r.Id) === key);
+  if (!hit) return undefined;
+  const lead = hit.Lead__c;
+  return typeof lead === "string" && lead.trim() !== "" ? lead.trim() : null;
+}
+
+/** `readSubmissionLeadId` against the real org, through the shared REST client. */
+export async function readSubmissionLeadIdLive(submissionId: string): Promise<string | null | undefined> {
+  const { sfToken, querySoqlAll } = await import("@/lib/salesforce/rest");
+  const { token, instanceUrl } = await sfToken();
+  return readSubmissionLeadId(submissionId, (soql) => querySoqlAll<LeadFieldRecord>(instanceUrl, token, soql));
+}

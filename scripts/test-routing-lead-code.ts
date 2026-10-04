@@ -13,8 +13,10 @@ import {
   resolveRoutingCode,
   LeadCodeUnavailableError,
   type LeadXbcReader,
+  type SubmissionLeadReader,
 } from "../src/lib/routing/lead-code.ts";
 import { CATCHALL_CODE } from "../src/lib/routing/catchall.ts";
+import { readSubmissionLeadId, isSubmissionId } from "../src/lib/salesforce/lead-xbc.ts";
 import { PUBLIC_TEST_BUCKET_CODES } from "../src/lib/embed/public-test-bucket.ts";
 import { createBooking } from "../src/lib/booking/orchestration.ts";
 import { assert, finish } from "./lib/harness.ts";
@@ -37,11 +39,30 @@ const failing: LeadXbcReader = async () => {
   throw new Error("SF query failed: 503 unavailable");
 };
 
+// #3246: a trypennie booker that arrived with no code and no lead id still
+// carries the submission id. The submission names its Lead, so the lead's own
+// XBC is two reads away. Every case below names the lookup explicitly.
+const SUB = "a04Ui00000NNZ7uIAH";
+
+/** A submission reader answering from a table, recording every id asked about. */
+function subReader(table: Record<string, string | null>): SubmissionLeadReader & { asked: string[] } {
+  const asked: string[] = [];
+  const fn = (async (id: string) => {
+    asked.push(id);
+    return Object.prototype.hasOwnProperty.call(table, id) ? table[id] : undefined;
+  }) as SubmissionLeadReader & { asked: string[] };
+  fn.asked = asked;
+  return fn;
+}
+
+/** The lookup for a link that carried no submission id. */
+const NO_SUB = { id: null, readLeadId: subReader({}) };
+
 async function main() {
   // --- no code on the link, Salesforce holds 512: route to 512 ---
   {
     const r = reader({ [LEAD]: "512" });
-    const res = await resolveRoutingCode("", LEAD, r);
+    const res = await resolveRoutingCode("", LEAD, r, NO_SUB);
     assert(res.code === "512", "a blank link code with Salesforce holding 512 routes to 512");
     assert(res.source === "salesforce", "and says the code came from Salesforce");
     assert(r.asked.length === 1 && r.asked[0] === LEAD, "Salesforce was asked about exactly that lead");
@@ -53,7 +74,7 @@ async function main() {
 
   // --- an UNREADABLE link code is rescued the same way ---
   {
-    const res = await resolveRoutingCode("null11", LEAD, reader({ [LEAD]: " 312 " }));
+    const res = await resolveRoutingCode("null11", LEAD, reader({ [LEAD]: " 312 " }), NO_SUB);
     assert(res.code === "312", "an unreadable link code routes on the Salesforce code, trimmed");
     assert(res.record.source === "salesforce" && res.record.requested === "null11", "keeping the raw link value");
   }
@@ -61,14 +82,14 @@ async function main() {
   // --- a valid link code is never second guessed, and Salesforce is not asked ---
   {
     const r = reader({ [LEAD]: "512" });
-    const res = await resolveRoutingCode("211", LEAD, r);
+    const res = await resolveRoutingCode("211", LEAD, r, NO_SUB);
     assert(res.code === "211" && res.source === "link", "a routable link code is used as sent");
     assert(r.asked.length === 0, "and Salesforce is not asked at all");
   }
 
   // --- Salesforce holds no code: the catch-all, RECORDED with why ---
   {
-    const res = await resolveRoutingCode("", LEAD, reader({ [LEAD]: null }));
+    const res = await resolveRoutingCode("", LEAD, reader({ [LEAD]: null }), NO_SUB);
     assert(res.code === CATCHALL_CODE && res.source === "catchall", "no code anywhere takes the catch-all");
     assert(
       res.record.source === "catchall" &&
@@ -79,7 +100,7 @@ async function main() {
     );
   }
   {
-    const res = await resolveRoutingCode("", LEAD, reader({ [LEAD]: "012" }));
+    const res = await resolveRoutingCode("", LEAD, reader({ [LEAD]: "012" }), NO_SUB);
     assert(res.code === CATCHALL_CODE, "a Salesforce code Slate cannot route (tier 0) takes the catch-all");
     assert(
       res.record.source === "catchall" && res.record.salesforce === "unreadable" && res.record.salesforce_xbc === "012",
@@ -87,7 +108,7 @@ async function main() {
     );
   }
   {
-    const res = await resolveRoutingCode("", LEAD, reader({}));
+    const res = await resolveRoutingCode("", LEAD, reader({}), NO_SUB);
     assert(
       res.code === CATCHALL_CODE && res.record.source === "catchall" && res.record.salesforce === "not-found",
       "a lead Salesforce did not return takes the catch-all, recorded as not found",
@@ -95,7 +116,7 @@ async function main() {
   }
   {
     const r = reader({});
-    const res = await resolveRoutingCode("", null, r);
+    const res = await resolveRoutingCode("", null, r, NO_SUB);
     assert(
       res.code === CATCHALL_CODE && res.record.source === "catchall" && res.record.salesforce === "no-lead-id",
       "a link naming no lead takes the catch-all, recorded as having no lead id",
@@ -104,7 +125,7 @@ async function main() {
   }
   {
     const r = reader({});
-    const res = await resolveRoutingCode("", "003AB0000012345", r);
+    const res = await resolveRoutingCode("", "003AB0000012345", r, NO_SUB);
     assert(
       res.record.source === "catchall" && res.record.salesforce === "no-lead-id" && r.asked.length === 0,
       "an id that is not a Lead id (a Contact) is never sent to the Lead query",
@@ -113,7 +134,7 @@ async function main() {
 
   // --- Salesforce must never route a lead into a test bucket ---
   {
-    const res = await resolveRoutingCode("", LEAD, reader({ [LEAD]: PUBLIC_TEST_BUCKET_CODES[0] }));
+    const res = await resolveRoutingCode("", LEAD, reader({ [LEAD]: PUBLIC_TEST_BUCKET_CODES[0] }), NO_SUB);
     assert(res.code === CATCHALL_CODE, "a Salesforce value naming the public test bucket is not routed on");
   }
 
@@ -121,7 +142,7 @@ async function main() {
   {
     let thrown: unknown = null;
     try {
-      await resolveRoutingCode("", LEAD, failing);
+      await resolveRoutingCode("", LEAD, failing, NO_SUB);
     } catch (e) {
       thrown = e;
     }
@@ -134,6 +155,97 @@ async function main() {
       thrown instanceof LeadCodeUnavailableError && String((thrown.cause as Error)?.message).includes("503"),
       "with the Salesforce error kept as its cause for the log",
     );
+  }
+}
+
+// --- #3246: no code, no lead id, but a submission id ---
+async function submissionPath() {
+  {
+    const subs = subReader({ [SUB]: LEAD });
+    const leads = reader({ [LEAD]: "512" });
+    const res = await resolveRoutingCode("", null, leads, { id: SUB, readLeadId: subs });
+    assert(res.code === "512" && res.source === "salesforce", "sub: a submission naming a lead with 512 routes to 512");
+    assert(subs.asked.length === 1 && subs.asked[0] === SUB, "sub: the submission was read once");
+    assert(leads.asked.length === 1 && leads.asked[0] === LEAD, "sub: then the lead it names, through the same lead path");
+    assert(
+      res.record.source === "salesforce" &&
+        res.record.via === "submission" &&
+        res.record.submission_id === SUB &&
+        res.record.salesforce_xbc === "512",
+      "sub: the record says the lead was found through the submission, and which one",
+    );
+  }
+  {
+    const subs = subReader({ [SUB]: "00Q5e00000ZzZzZEAU" });
+    const res = await resolveRoutingCode("", LEAD, reader({ [LEAD]: "312" }), { id: SUB, readLeadId: subs });
+    assert(res.code === "312" && subs.asked.length === 0, "sub: a lead id on the link wins and the submission is never read");
+    assert(res.record.source === "salesforce" && res.record.via === undefined, "sub: and the record does not claim the submission");
+  }
+  {
+    const subs = subReader({ [SUB]: LEAD });
+    const leads = reader({ [LEAD]: "512" });
+    const res = await resolveRoutingCode("211", null, leads, { id: SUB, readLeadId: subs });
+    assert(res.code === "211" && subs.asked.length === 0 && leads.asked.length === 0, "sub: a routable code means neither is read");
+  }
+  {
+    const subs = subReader({});
+    const res = await resolveRoutingCode("", null, reader({}), { id: "003AB0000012345", readLeadId: subs });
+    assert(subs.asked.length === 0, "sub: an id that is not a submission id is never sent to the query");
+    assert(res.record.source === "catchall" && res.record.salesforce === "no-lead-id", "sub: and records no lead id");
+  }
+  {
+    const res = await resolveRoutingCode("", null, reader({}), { id: SUB, readLeadId: subReader({}) });
+    assert(
+      res.code === CATCHALL_CODE && res.record.source === "catchall" && res.record.salesforce === "submission-not-found",
+      "sub: a submission Salesforce did not return takes the catch-all, recorded as such",
+    );
+  }
+  {
+    const leads = reader({});
+    const res = await resolveRoutingCode("", null, leads, { id: SUB, readLeadId: subReader({ [SUB]: null }) });
+    assert(
+      res.record.source === "catchall" && res.record.salesforce === "submission-without-lead" && leads.asked.length === 0,
+      "sub: a submission naming no lead takes the catch-all, recorded as such, with no lead read",
+    );
+  }
+  {
+    const res = await resolveRoutingCode("", null, reader({}), { id: SUB, readLeadId: subReader({ [SUB]: LEAD }) });
+    assert(
+      res.record.source === "catchall" && res.record.salesforce === "not-found",
+      "sub: a submission naming a lead Salesforce did not return records the lead miss",
+    );
+  }
+  {
+    let thrown: unknown = null;
+    try {
+      await resolveRoutingCode("", null, reader({}), {
+        id: SUB,
+        readLeadId: async () => {
+          throw new Error("SF query failed: 503 unavailable");
+        },
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    assert(thrown instanceof LeadCodeUnavailableError, "sub: a failed submission read refuses, never falls through");
+  }
+  // Through the confirm: the booker posts the submission id in prefill and no lead id.
+  {
+    const { deps, calls } = makeDeps({ submissionLead: { [SUB]: LEAD }, leadXbc: { [LEAD]: "512" } });
+    await createBooking(
+      { ...input, salesforceId: null, bucketCode: CATCHALL_CODE, requestedCode: "", prefill: { ...input.prefill, submissionId: SUB } },
+      deps,
+    );
+    assert(calls.readSubmissionLead.length === 1 && calls.readSubmissionLead[0] === SUB, "confirm sub: the submission is read");
+    assert(calls.resolveBucketByCode[0] === "512", "confirm sub: and the booking routes to 512, not the catch-all");
+    const cs = (calls.insertBooking[0]?.routing_trace as { code_source?: Record<string, unknown> } | undefined)?.code_source;
+    assert(cs?.source === "salesforce" && cs.via === "submission" && cs.submission_id === SUB, "confirm sub: and records it");
+  }
+  {
+    const { deps, calls } = makeDeps({ submissionLead: { [SUB]: LEAD }, leadXbc: { [LEAD]: "512" } });
+    await createBooking({ ...input, salesforceId: null, bucketCode: CATCHALL_CODE, requestedCode: "" }, deps);
+    assert(calls.readSubmissionLead.length === 0, "confirm sub: a confirm with no submission id never reads one");
+    assert(calls.resolveBucketByCode[0] === CATCHALL_CODE, "confirm sub: and takes the catch-all as before");
   }
 }
 
@@ -287,6 +399,35 @@ async function confirmPath() {
   }
 }
 
+// --- the submission reader itself, with the SOQL runner injected ---
+async function submissionReader() {
+  const asked: string[] = [];
+  const run = (rows: Record<string, unknown>[]) => async (soql: string) => (asked.push(soql), rows as { Id: string }[]);
+  const lead = await readSubmissionLeadId(SUB, run([{ Id: SUB, Lead__c: LEAD }]));
+  assert(lead === LEAD, "reader: a submission naming a lead answers that lead");
+  assert(/FROM Submission__c WHERE Id IN \('a04Ui00000NNZ7uIAH'\)/.test(asked[0] ?? ""), "reader: it asks Submission__c by that id");
+  assert(/\bLead__c\b/.test(asked[0] ?? ""), "reader: and selects Lead__c");
+  assert(
+    (await readSubmissionLeadId(SUB.slice(0, 15), run([{ Id: SUB, Lead__c: LEAD }]))) === LEAD,
+    "reader: a 15 character id matches Salesforce's 18 character answer",
+  );
+  assert((await readSubmissionLeadId(SUB, run([{ Id: SUB, Lead__c: null }]))) === null, "reader: no lead answers null");
+  assert((await readSubmissionLeadId(SUB, run([]))) === undefined, "reader: no submission answers undefined");
+  let thrown: unknown = null;
+  try {
+    await readSubmissionLeadId(SUB, async () => {
+      throw new Error("SF query failed: 503");
+    });
+  } catch (e) {
+    thrown = e;
+  }
+  assert(thrown instanceof Error, "reader: a refused query throws rather than answering");
+  assert(isSubmissionId(SUB) && isSubmissionId(SUB.slice(0, 15)), "reader: a04 ids of 15 and 18 characters are submission ids");
+  assert(!isSubmissionId(LEAD) && !isSubmissionId("a04short"), "reader: a Lead id or a short value is not");
+}
+
 await main();
+await submissionReader();
+await submissionPath();
 await confirmPath();
 finish();
