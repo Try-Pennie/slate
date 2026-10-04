@@ -12,6 +12,7 @@
  */
 import type { FailureKind } from "@/lib/google/sync-health";
 import { OFFERED_OPEN_DAYS } from "@/lib/availability/bookable-days";
+import { deadlineReason } from "@/lib/notify/error-text";
 
 /** A cached busy_blocks write that did not land, per operation. */
 export function busyBlockWriteThroughAlert(
@@ -19,10 +20,13 @@ export function busyBlockWriteThroughAlert(
   subject: string,
   reason: string,
 ): string {
+  // #3263: a move or an insert runs only after the booking change itself has
+  // committed, so the page says the booking went through: the miss is in the
+  // slot cache, and a reader must not take it for a failed booking.
   if (operation === "move") {
     return (
       `A busy_blocks move (move_busy_block) failed for booking ${subject} (${reason}). ` +
-      `The slot cache may be stale until the next sync pass.`
+      `The booking change itself went through; only the slot cache may be stale until the next sync pass.`
     );
   }
   if (operation === "delete") {
@@ -33,7 +37,7 @@ export function busyBlockWriteThroughAlert(
   }
   return (
     `A busy_blocks INSERT failed for ${subject} (${reason}). ` +
-    `The slot(s) may show as free in the embed until the next sync pass.`
+    `The booking(s) went through; only the slot(s) may show as free in the embed until the next sync pass.`
   );
 }
 
@@ -294,19 +298,19 @@ export function verifyOutageAlert(): string {
  * request's budget when that is what cut it short. They claim nothing about what
  * happened to the booking afterwards (L11): whether its reservation had been
  * written is not known at the moment of the page, so it points at where to look.
+ * It is never raised for a booking that COMMITTED (#3263): once the row is in,
+ * the confirm answers the booking and the work after it is the drain's, so "A
+ * booking failed" is true whenever this is sent.
  */
 export function dependencyTimeoutAlert(timeout: {
   dependency: string;
   timeoutMs: number;
   budget: { label: string; totalMs: number } | null;
 }): string {
-  const secs = (ms: number) => `${Math.round(ms / 1000)} seconds`;
-  const { dependency, timeoutMs, budget } = timeout;
-  const what = !budget
-    ? `${dependency} did not answer within ${secs(timeoutMs)}`
-    : timeoutMs === 0
-      ? `${dependency} was not started, because ${budget.label} had already used its ${secs(budget.totalMs)}`
-      : `${dependency} was still running when ${budget.label} ran out of its ${secs(budget.totalMs)}`;
+  // #3263: one wording for a missed deadline across every alert. A call refused
+  // because the budget was already spent says the budget was used up before
+  // Slate asked, never that the dependency "was not started".
+  const what = deadlineReason({ label: timeout.dependency, timeoutMs: timeout.timeoutMs, budget: timeout.budget });
   return `A booking failed because ${what}, not because the slot was full. The lead saw a retryable error. Check booking_reservations for a pending row before asking them to rebook, and Google Calendar API and Supabase health.`;
 }
 

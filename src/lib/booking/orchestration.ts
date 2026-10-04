@@ -3673,7 +3673,7 @@ async function createHeld(
     const inFlight = await deps.loadReservationByKey(stableKey);
     // A resumed reservation was pinned by an earlier request, so it says nothing
     // about who else the slot has room for: the next confirm in line runs.
-    if (inFlight) return { result: await completeReservation(deps, inFlight), verdict: { full: false } };
+    if (inFlight) return { result: answerCommitted(await completeReservation(deps, inFlight)), verdict: { full: false } };
   }
 
   // The tier the availability cache shows for the requested bucket RIGHT NOW,
@@ -3873,8 +3873,8 @@ async function createHeld(
     // where the overlap constraint (#2280) and the in request pool recompute both
     // land: two of the three candidates #2321 names.
     try {
-      result = await profile.time("complete-reservation", () =>
-        completeReservation(deps, reservation),
+      result = answerCommitted(
+        await profile.time("complete-reservation", () => completeReservation(deps, reservation)),
       );
       break;
     } catch (err) {
@@ -4030,17 +4030,74 @@ async function deliverCreatedSideEffects(
 }
 
 /**
+ * What completing a reservation produced (#3263): the booking, and the failure
+ * that stopped the work AFTER its commit, or null when all of it landed.
+ *
+ * Once the booking row has committed, nothing that follows may turn the answer
+ * into a failure: the lead would be told to try again for a booking that exists,
+ * and one who walks away is left unsure they booked. So a failure there is
+ * carried here rather than thrown, the reservation is left pending, and the
+ * reservation drain re-runs the same idempotent side effects on its next tick.
+ * The two kinds of caller then read it differently, which is why it is returned
+ * rather than swallowed: a lead's confirm answers the booking
+ * (`answerCommitted`), and the drain treats it as the failure it is, so a finish
+ * that never lands backs off and reaches the stuck alert instead of reading as
+ * completed every tick.
+ */
+interface CompletedReservation {
+  result: BookingResult;
+  unfinished: unknown;
+}
+
+/**
+ * A lead's confirm answering a booking that committed (#3263), whatever became
+ * of the work after it. The cut off work is logged, never paged: the drain
+ * finishes it, and pages through its own stuck alert if it cannot.
+ */
+function answerCommitted(completed: CompletedReservation): BookingResult {
+  if (completed.unfinished !== null) {
+    log.error(
+      "booking",
+      {
+        msg: "the booking committed and the work after it did not finish; answering the booking, and the reservation drain finishes the rest",
+        booking_id: completed.result.booking.id,
+      },
+      completed.unfinished,
+    );
+  }
+  return completed.result;
+}
+
+/**
+ * The post-commit work of a create, with its failure returned rather than thrown
+ * (#3263), so the booking that committed is always the answer. The reservation is
+ * deleted only once everything before it landed, so a failure leaves it pending
+ * for the drain.
+ */
+async function finishCommitted(work: () => Promise<void>): Promise<unknown> {
+  try {
+    await work();
+    return null;
+  } catch (err) {
+    return err;
+  }
+}
+
+/**
  * Complete a booking from its reservation (#429 P4). Shared by the fresh create,
  * the re-submit resume, and the drain — so a crash anywhere resumes to the same
  * end state. Idempotent: createEvent reuses the event (deterministic id → 409),
  * a booking already inserted short-circuits, and insertBooking keeps the
  * active-slot 23505 handling. Deletes the reservation on success.
+ *
+ * Throws only for a failure BEFORE the booking committed. Anything after the
+ * commit comes back as `unfinished` (#3263).
  */
 async function completeReservation(
   deps: BookingDeps,
   reservation: BookingReservation,
-): Promise<BookingResult> {
-  const { booking: bookingInsert, event, bucketCode, requestedCode } = reservation.payload;
+): Promise<CompletedReservation> {
+  const { booking: bookingInsert, event, bucketCode } = reservation.payload;
   const key = bookingInsert.idempotency_key;
 
   // A resume after the booking was inserted but before the reservation was
@@ -4053,9 +4110,11 @@ async function completeReservation(
     const already = await deps.findBookingByIdempotencyKey(key);
     if (already) {
       const bookedCode = already.routing_trace?.bucket_code ?? bucketCode;
-      await deliverCreatedSideEffects(deps, already, bookedCode);
-      await deps.deleteReservation(reservation.id);
-      return { booking: already, manageUrl: manageUrl(deps, already.manage_token) };
+      const unfinished = await finishCommitted(async () => {
+        await deliverCreatedSideEffects(deps, already, bookedCode);
+        await deps.deleteReservation(reservation.id);
+      });
+      return { result: { booking: already, manageUrl: manageUrl(deps, already.manage_token) }, unfinished };
     }
   }
 
@@ -4090,8 +4149,10 @@ async function completeReservation(
       if (key) {
         const winner = await deps.findBookingByIdempotencyKey(key);
         if (winner) {
-          await deps.deleteReservation(reservation.id);
-          return { booking: winner, manageUrl: manageUrl(deps, winner.manage_token) };
+          // The winner committed, so its booking is the answer however this
+          // cleanup goes (#3263); a reservation left behind is the drain's.
+          const unfinished = await finishCommitted(() => deps.deleteReservation(reservation.id));
+          return { result: { booking: winner, manageUrl: manageUrl(deps, winner.manage_token) }, unfinished };
         }
       }
       // Genuinely unavailable: roll back the event + reservation, under the
@@ -4119,6 +4180,30 @@ async function completeReservation(
     throw new Error("Failed to persist booking", { cause: inserted.error });
   }
   const booking = inserted.booking;
+
+  // #3263: the booking has COMMITTED. From here on a failure, the commonest being
+  // the confirm budget running out in the work below, is returned as unfinished
+  // rather than thrown, so the lead is answered with the booking that exists and
+  // the reservation is left for the drain to finish.
+  const unfinished = await finishCommitted(() => afterCreateCommitted(deps, booking, reservation));
+  // #2838: the one return where THIS call's own insert made the booking. Every
+  // other return hands back a booking an earlier or racing confirm made.
+  return { result: { booking, manageUrl: manageUrl(deps, booking.manage_token), newlyInserted: true }, unfinished };
+}
+
+/**
+ * Everything a fresh create does once its booking row has committed: the side
+ * effects, the best effort routing record and tier alert, and last the
+ * reservation's delete, so a failure anywhere before it leaves the reservation
+ * for the drain (#3263).
+ */
+async function afterCreateCommitted(
+  deps: BookingDeps,
+  booking: Booking,
+  reservation: BookingReservation,
+): Promise<void> {
+  const { booking: bookingInsert, bucketCode, requestedCode } = reservation.payload;
+  const gcalEventId = booking.gcal_event_id;
 
   // #586: the booking now owns this event id, so any source=gcal block for it is a
   // stray mirror a push-sync cached while racing the create (before the booking
@@ -4200,9 +4285,6 @@ async function completeReservation(
   }
 
   await deps.deleteReservation(reservation.id);
-  // #2838: the one return where THIS call's own insert made the booking. Every
-  // other return hands back a booking an earlier or racing confirm made.
-  return { booking, manageUrl: manageUrl(deps, booking.manage_token), newlyInserted: true };
 }
 
 /**
@@ -4232,7 +4314,11 @@ export async function processBookingReservations(
     const lease = await deps.leaseReservation(reservation.id);
     if (lease === null) return;
     try {
-      await completeReservation(deps, reservation);
+      // #3263: a lead's confirm answers a committed booking whatever became of
+      // the work after it; the drain is what finishes that work, so for the drain
+      // an unfinished finish is a failure: it backs off and reaches the stuck alert.
+      const { unfinished } = await completeReservation(deps, reservation);
+      if (unfinished !== null) throw unfinished;
       completed++;
     } catch (err) {
       failed++;
