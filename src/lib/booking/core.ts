@@ -53,6 +53,51 @@ export function adoptableEventId(clientId: string, existing: { id?: string; stat
   return existing.id;
 }
 
+/** How many fresh ids a create tries past a cancelled tombstone before it fails
+ *  loudly (#3217). */
+export const TOMBSTONE_FRESH_IDS = 3;
+
+/**
+ * The `n`th fresh id after `clientId` in its tombstone chain (#3217). Fixed, so
+ * every retry of one request walks the same chain. `v` is the last base32hex
+ * letter Google allows in an event id, and the digits are base32hex too, so a
+ * valid id stays valid.
+ */
+export function freshEventId(clientId: string, n: number): string {
+  return `${clientId}v${n}`;
+}
+
+/**
+ * Create under `clientId`, walking its fresh id chain past every cancelled
+ * tombstone (#3217). `tryCreate` inserts one id and THROWS `EventCancelledOnReuse`
+ * when Google holds it as cancelled (a live one it adopts). A retry walks the same
+ * chain, so it adopts the first live event an earlier attempt made on it. Returns
+ * the id it created or adopted, which the caller must store rather than its own.
+ *
+ * `onFreshId` runs BEFORE each fresh id is inserted, so a caller that records the
+ * id it is about to write (a reschedule pin, a reassign intent) records the new
+ * one first. If it throws, nothing is inserted and the error is the caller's.
+ * Every id a tombstone: the last `EventCancelledOnReuse` is thrown.
+ */
+export async function createWithFreshIdOnTombstone(
+  clientId: string,
+  tryCreate: (id: string) => Promise<string>,
+  onFreshId?: (id: string) => Promise<void>,
+): Promise<string> {
+  let refused: EventCancelledOnReuse | null = null;
+  for (let n = 0; n <= TOMBSTONE_FRESH_IDS; n++) {
+    const id = n === 0 ? clientId : freshEventId(clientId, n);
+    if (n > 0) await onFreshId?.(id);
+    try {
+      return await tryCreate(id);
+    } catch (err) {
+      if (!(err instanceof EventCancelledOnReuse)) throw err;
+      refused = err;
+    }
+  }
+  throw refused;
+}
+
 // ---------------------------------------------------------------------------
 // Reschedule/cancel reason capture + history events (#326 / #300, ADR 0001).
 // ---------------------------------------------------------------------------

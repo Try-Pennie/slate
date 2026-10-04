@@ -752,60 +752,23 @@ async function queueOwedEventDeletion(
   await withinOwedCleanup(() => enqueueEventDeletionUnlessHeld(deps, email, eventId, bookingId));
 }
 
-/** How many fresh ids a reschedule or reassign derives before a tombstone fails
- *  it (#3217). */
-const TOMBSTONE_FRESH_IDS = 3;
-
 /**
- * Create a reschedule's event under its pinned id, deriving a FRESH id when
- * Google already holds the pinned one as a cancelled tombstone (#3217). Each
- * fresh id comes from the next ordinal, and the pin is rewritten with it BEFORE
- * the insert, the same crash-safety rule the first pin follows, so a resume lands
- * on the new id and the commit records the ordinal, which keeps any later move
- * from recomputing the dead id. Bounded, so a calendar that tombstones every id
- * fails loudly rather than looping.
- *
- * `idFor` derives the event id for an ordinal; `pinsTheId` says whether the pin
- * records it (the reassign branch) or keeps the event it patches (in place).
+ * Point a reschedule's pin at the event id it is about to write (#3217), BEFORE
+ * the write, the same crash-safety rule the first pin follows: a resume then lands
+ * on that id, and the deletion drain holds the event while the pin stands. A no-op
+ * when the pin already names it. Throws when the pin cannot be written, before
+ * anything reaches Google.
  */
-async function createRescheduleEvent(
+async function repin(
   deps: BookingDeps,
   bookingId: string,
   pin: ReschedulePin,
-  event: CreateEventArgs,
-  firstId: string,
-  idFor: (seq: number) => Promise<string>,
-  pinsTheId: boolean,
-): Promise<{ pin: ReschedulePin; clientId: string; eventId?: string; error?: unknown }> {
-  let current = pin;
-  let clientId = firstId;
-  for (let repins = 0; ; repins++) {
-    try {
-      return { pin: current, clientId, eventId: await deps.createEvent(current.pinned_agent_email, event, clientId) };
-    } catch (err) {
-      if (!(err instanceof EventCancelledOnReuse) || repins >= TOMBSTONE_FRESH_IDS) {
-        return { pin: current, clientId, error: err };
-      }
-      const seq = current.reschedule_seq + 1;
-      const fresh = await idFor(seq);
-      log.warn("reschedule", {
-        msg: "pinned event id is a cancelled tombstone on Google; pinning a fresh one",
-        booking_id: bookingId,
-        gcal_event_id: clientId,
-        fresh_gcal_event_id: fresh,
-      });
-      const next = { ...current, reschedule_seq: seq, ...(pinsTheId ? { gcal_client_id: fresh } : {}) };
-      try {
-        await deps.writeReschedulePin(bookingId, next);
-      } catch (pinErr) {
-        // Returned rather than thrown, so the caller's failure path still runs and
-        // queues the last id it asked Google for: a throw from here would skip it.
-        return { pin: current, clientId, error: pinErr };
-      }
-      current = next;
-      clientId = fresh;
-    }
-  }
+  eventId: string,
+): Promise<ReschedulePin> {
+  if (pin.gcal_client_id === eventId) return pin;
+  const next = { ...pin, gcal_client_id: eventId };
+  await deps.writeReschedulePin(bookingId, next);
+  return next;
 }
 
 export interface CreateBookingInput {
@@ -1122,7 +1085,18 @@ export interface BookingDeps {
     startIso: string,
     endIso: string,
   ): Promise<VerifyResult>;
-  createEvent(email: string, args: CreateEventArgs, clientId?: string): Promise<string>;
+  /**
+   * Create (or 409-adopt) the event under `clientId`. Past a cancelled tombstone
+   * it walks the id's fresh id chain (#3217) and returns the id it actually used,
+   * calling `onFreshId` BEFORE each fresh id is inserted so a caller can record it
+   * first (a reschedule pin, a reassign intent).
+   */
+  createEvent(
+    email: string,
+    args: CreateEventArgs,
+    clientId?: string,
+    opts?: { onFreshId?: (id: string) => Promise<void> },
+  ): Promise<string>;
   deleteEvent(email: string, eventId: string, opts?: { notifyAttendee?: boolean }): Promise<void>;
   /** #830: whether an event still exists on Google (true), is gone (false), or
    *  cannot be verified (throws), used to avoid alerting on a false orphan. */
@@ -4951,6 +4925,10 @@ async function applyReschedule(
 
   // Execute the pinned branch.
   let newGcalEventId = booking.gcal_event_id;
+  // Whether this reschedule WROTE an event of its own (the reroute always does;
+  // the in place branch only when it recreated a deleted one, #617), which is the
+  // event a lost commit rolls back.
+  let recreated = false;
   if (pin.branch === "in_place") {
     // Idempotent PATCH — a resume simply re-PATCHes the same event to the same
     // time. No createEvent / 409-reuse here; the pin stores the existing event id.
@@ -4963,15 +4941,27 @@ async function applyReschedule(
       // deterministic id keeps a crash-resume idempotent (a repeat insert 409s
       // and reuses the same event), and the customer gets a fresh invite.
       if (!(err instanceof EventGone)) throw err;
-      const recreateUserId = pin.pinned_user_id;
-      const recreateId = (seq: number) =>
-        deterministicEventId(`reschedule-recreate:${booking.id}:${seq}`, recreateUserId);
-      const created = await createRescheduleEvent(
-        deps, booking.id, pin, movedEvent, await recreateId(pin.reschedule_seq), recreateId, false,
+      // #3217: the recreated event belongs to THIS reschedule, so it gets the same
+      // queue and hold as the reroute below. The pin names it before it is
+      // written, so the deletion drain holds it while a resume may still adopt it
+      // (a resume re-PATCHes the pinned event, which is now this one), and a
+      // failure queues it rather than deleting it live.
+      const recreateId = await deterministicEventId(
+        `reschedule-recreate:${booking.id}:${pin.reschedule_seq}`,
+        pin.pinned_user_id,
       );
-      pin = created.pin;
-      if (created.error !== undefined) throw created.error;
-      newGcalEventId = created.eventId!;
+      pin = await repin(deps, booking.id, pin, recreateId);
+      try {
+        newGcalEventId = await deps.createEvent(pin.pinned_agent_email, movedEvent, recreateId, {
+          onFreshId: async (fresh) => {
+            pin = await repin(deps, booking.id, pin, fresh);
+          },
+        });
+      } catch (createErr) {
+        await queueOwedEventDeletion(deps, pin.pinned_agent_email, pin.gcal_client_id, booking.id);
+        throw createErr;
+      }
+      recreated = true;
     }
   } else {
     // reassign: CREATE-FIRST the new event with the pinned deterministic id (a
@@ -4983,18 +4973,20 @@ async function applyReschedule(
     // deleted live (#3217): the retry derives this same id, and a deleted event
     // keeps it, so a live delete hands the retry a cancelled event to adopt. The
     // drain drops the row once the retry's commit holds the event.
-    const reassignUserId = pin.pinned_user_id;
-    const reassignId = (seq: number) =>
-      deterministicEventId(`reschedule:${booking.id}:${seq}`, reassignUserId);
-    const created = await createRescheduleEvent(
-      deps, booking.id, pin, movedEvent, pin.gcal_client_id, reassignId, true,
-    );
-    pin = created.pin;
-    if (created.error !== undefined) {
-      await queueOwedEventDeletion(deps, pin.pinned_agent_email, created.clientId, booking.id);
-      throw created.error;
+    // Past a cancelled tombstone the create walks to a fresh id, and the pin is
+    // rewritten with it BEFORE it is inserted, so a resume lands on it and the
+    // queue below names the event that was actually written.
+    try {
+      newGcalEventId = await deps.createEvent(pin.pinned_agent_email, movedEvent, pin.gcal_client_id, {
+        onFreshId: async (fresh) => {
+          pin = await repin(deps, booking.id, pin, fresh);
+        },
+      });
+    } catch (err) {
+      await queueOwedEventDeletion(deps, pin.pinned_agent_email, pin.gcal_client_id, booking.id);
+      throw err;
     }
-    newGcalEventId = created.eventId!;
+    recreated = true;
   }
 
   const agentName =
@@ -5055,9 +5047,11 @@ async function applyReschedule(
       // deleting it here could remove a live event — leave it to the winner).
       // Queued rather than deleted live (#3217): the commit lost to a concurrent
       // reassign keeps the reschedule ordinal where it was, so the lead's retry
-      // derives this same id, and a deleted event would come back cancelled.
-      if (pin.branch === "reassign") {
-        await queueOwedEventDeletion(deps, pin.pinned_agent_email, pin.gcal_client_id, booking.id);
+      // derives this same id, and a deleted event would come back cancelled. An
+      // in place move that RECREATED a deleted event (#617) wrote one of its own
+      // too, and it is rolled back the same way.
+      if (recreated && newGcalEventId) {
+        await queueOwedEventDeletion(deps, pin.pinned_agent_email, newGcalEventId, booking.id);
       }
       throw new RescheduleConflictError();
     }
@@ -5248,57 +5242,54 @@ export async function reassignBooking(
   // caller-supplied, so a crash-retry recomputes the same id and createEvent
   // reuses the event (Google 409) instead of spawning a duplicate.
   const reassignOrdinal = booking.routing_trace?.reassignments?.length ?? 0;
-  // #3217: when Google already holds the derived id as a CANCELLED tombstone (a
-  // failed swap's event the drain deleted before this retry), the next id in a
-  // fixed chain is tried instead. The chain is deterministic, so a retry walks it
-  // the same way and 409-adopts the first live event on it.
-  const reassignSeed = `reassign:${booking.id}:${reassignOrdinal}`;
-  const reassignIdFor = (n: number) =>
-    deterministicEventId(n === 0 ? reassignSeed : `${reassignSeed}:fresh-${n}`, agent.id);
-  let gcalClientId = await reassignIdFor(0);
+  let gcalClientId = await deterministicEventId(
+    `reassign:${booking.id}:${reassignOrdinal}`,
+    agent.id,
+  );
+  // #518: durable intent written BEFORE the create, so a crash between here and
+  // the swap is cleaned by processAbandonedReassignIntents (the new event is
+  // orphaned + the reassign silently lost otherwise). Idempotent on
+  // (booking_id, gcal_client_id): a same-target retry (identical deterministic
+  // id, #449) refreshes the lease instead of failing.
+  await deps.writeReassignIntent({
+    bookingId: booking.id,
+    pinnedAgentEmail: agent.email,
+    gcalClientId,
+  });
   let newEventId: string;
-  for (let fresh = 0; ; fresh++) {
-    // #518: durable intent written BEFORE the create, so a crash between here and
-    // the swap is cleaned by processAbandonedReassignIntents (the new event is
-    // orphaned + the reassign silently lost otherwise). Idempotent on
-    // (booking_id, gcal_client_id): a same-target retry (identical deterministic
-    // id, #449) refreshes the lease instead of failing.
-    await deps.writeReassignIntent({
-      bookingId: booking.id,
-      pinnedAgentEmail: agent.email,
+  try {
+    newEventId = await deps.createEvent(
+      agent.email,
+      {
+        summary: eventSummary(eventType.name, booking.attendee_name),
+        // #969: this invite is the ONE notification the customer gets on a reassign
+        // (the old event is removed silently below). Explain the swap so a fresh
+        // invite for an appointment they already have does not read as a mistake.
+        description: REASSIGN_INVITE_DESCRIPTION,
+        start: booking.starts_at,
+        end: booking.ends_at,
+        timezone: booking.timezone,
+        attendeeEmail: booking.attendee_email ?? undefined,
+        attendeeName: booking.attendee_name ?? undefined,
+      },
       gcalClientId,
-    });
-    try {
-      newEventId = await deps.createEvent(
-        agent.email,
-        {
-          summary: eventSummary(eventType.name, booking.attendee_name),
-          // #969: this invite is the ONE notification the customer gets on a reassign
-          // (the old event is removed silently below). Explain the swap so a fresh
-          // invite for an appointment they already have does not read as a mistake.
-          description: REASSIGN_INVITE_DESCRIPTION,
-          start: booking.starts_at,
-          end: booking.ends_at,
-          timezone: booking.timezone,
-          attendeeEmail: booking.attendee_email ?? undefined,
-          attendeeName: booking.attendee_name ?? undefined,
+      {
+        // #3217: past a cancelled tombstone (a failed swap's event the drain
+        // deleted before this retry) the create walks to a fresh id. Its intent is
+        // written first, the same rule as above, and the tombstone's goes, since
+        // there is nothing left on Google for it to clean up.
+        onFreshId: async (fresh) => {
+          await deps.writeReassignIntent({ bookingId: booking.id, pinnedAgentEmail: agent.email, gcalClientId: fresh });
+          await deps.deleteReassignIntent(booking.id, gcalClientId);
+          gcalClientId = fresh;
         },
-        gcalClientId,
-      );
-      break;
-    } catch (err) {
-      if (!(err instanceof EventCancelledOnReuse) || fresh >= TOMBSTONE_FRESH_IDS) throw err;
-      const next = await reassignIdFor(fresh + 1);
-      log.warn("reassign", {
-        msg: "derived event id is a cancelled tombstone on Google; trying the next one",
-        booking_id: booking.id,
-        gcal_event_id: gcalClientId,
-        fresh_gcal_event_id: next,
-      });
-      // A tombstone has nothing left to clean up, so its intent goes now.
-      await deps.deleteReassignIntent(booking.id, gcalClientId);
-      gcalClientId = next;
-    }
+      },
+    );
+  } catch (err) {
+    // Every id in the chain a tombstone: nothing was created, so no intent may be
+    // left standing for the drain to hold.
+    if (err instanceof EventCancelledOnReuse) await deps.deleteReassignIntent(booking.id, gcalClientId);
+    throw err;
   }
 
   // The reassignment audit record is appended server-side in reassign_booking_swap

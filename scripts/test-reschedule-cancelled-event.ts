@@ -8,21 +8,31 @@
 // as moved while the agent's calendar showed nothing at the new time.
 //
 // The fake Google here keeps that tombstone. Its insert 409s on any id it has ever
-// held and answers through `adoptableEventId`, the same judge the real client uses,
-// so whether a reuse is refused is decided by the code under test, not the fake.
+// held and answers through `adoptableEventId`, and it walks the fresh id chain
+// through `createWithFreshIdOnTombstone`, the same two the real client uses, so
+// whether a reuse is refused and which id comes next is decided by the code under
+// test, not the fake.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-reschedule-cancelled-event.ts
 import {
   rescheduleBooking,
+  createBooking,
   reassignBooking,
   processPendingEventDeletions,
   PENDING_DELETION_GIVE_UP_AT,
   type BookingDeps,
   type PendingEventDeletion,
 } from "../src/lib/booking/orchestration.ts";
-import { adoptableEventId } from "../src/lib/booking/core.ts";
+import {
+  adoptableEventId,
+  createWithFreshIdOnTombstone,
+  freshEventId,
+  TOMBSTONE_FRESH_IDS,
+  EventCancelledOnReuse,
+  EventGone,
+} from "../src/lib/booking/core.ts";
 import type { Booking, User } from "../src/lib/db/types.ts";
-import { createAsserter, makeDeps, makeBooking, bucket, eventType, RR, SYS, NOW } from "./lib/booking-fakes.ts";
+import { createAsserter, makeDeps, makeBooking, input, bucket, eventType, RR, SYS, NOW } from "./lib/booking-fakes.ts";
 
 const { assert, finish } = createAsserter();
 
@@ -39,17 +49,23 @@ function fakeGoogle() {
   const liveDeletes: string[] = [];
   let failNextInsertAfterWrite = 0;
   const deps: Partial<BookingDeps> = {
-    createEvent: async (_email, _input, clientId) => {
+    createEvent: async (_email, _input, clientId, opts) => {
       if (!clientId) throw new Error("these paths always supply an id");
-      const status = events.get(clientId);
-      if (status) return adoptableEventId(clientId, { id: clientId, status });
-      events.set(clientId, "confirmed");
-      if (failNextInsertAfterWrite > 0) {
-        failNextInsertAfterWrite--;
-        // The insert landed on Google and the answer never came back.
-        throw new Error("DeadlineExceededError: google did not answer within 8000ms");
-      }
-      return clientId;
+      return createWithFreshIdOnTombstone(
+        clientId,
+        async (id) => {
+          const status = events.get(id);
+          if (status) return adoptableEventId(id, { id, status });
+          events.set(id, "confirmed");
+          if (failNextInsertAfterWrite > 0) {
+            failNextInsertAfterWrite--;
+            // The insert landed on Google and the answer never came back.
+            throw new Error("DeadlineExceededError: google did not answer within 8000ms");
+          }
+          return id;
+        },
+        opts?.onFreshId,
+      );
     },
     deleteEvent: async (_email, id) => {
       liveDeletes.push(id);
@@ -241,7 +257,10 @@ async function run() {
     const res = await rescheduleBooking("tok1", TARGET, RR, "customer", d, NOW);
     const landed = ctx.booking.gcal_event_id!;
     assert(res.booking.starts_at === TARGET, "tombstone: the move still succeeds");
-    assert(landed !== tombstoned, "tombstone: the booking does NOT adopt the cancelled event");
+    assert(
+      landed === freshEventId(tombstoned, 1),
+      "tombstone: the booking does NOT adopt the cancelled event; it lands on the next id in the chain",
+    );
     assert(google.events.get(landed) === "confirmed", "tombstone: the event the booking holds is live on Google");
     assert(
       pinsWritten.includes(landed) &&
@@ -250,8 +269,8 @@ async function run() {
     );
     const commit = calls.commitReschedule.at(-1)!;
     assert(
-      commit.patch.reschedule_seq === 2,
-      "tombstone: the commit records the fresh ordinal, so no later move recomputes the dead id",
+      commit.patch.gcal_event_id === landed && commit.patch.reschedule_seq === 1,
+      "tombstone: the commit records the live event and advances the ordinal, so the next move derives a new id",
     );
   }
 
@@ -454,6 +473,118 @@ async function run() {
       [...q.rows.values()].some((r) => r.gcal_event_id === tombstoned),
       "pin refused: the event it asked Google for is still queued for the drain",
     );
+  }
+
+  // --- 12 and 13: the IN PLACE branch. A's own event was deleted on Google, so
+  // the PATCH meets EventGone and the move recreates the event (#617). That event
+  // is this reschedule's own, so it gets the same queue and hold ---------------
+  const inPlaceWorld = () => {
+    const ctx = { booking: makeBooking({ gcal_event_id: "gcal-old" }), bucket, eventType };
+    const google = fakeGoogle();
+    google.events.set("gcal-old", "cancelled"); // the advisor deleted it
+    const q = queue(google);
+    const { deps, calls } = makeDeps({
+      existing: ctx,
+      bookingById: ctx,
+      freeEmails: new Set(["a@x.com"]),
+    });
+    const d: BookingDeps = {
+      ...deps,
+      ...google.deps,
+      ...q.deps,
+      updateEventTime: async (_email, id) => {
+        if (google.events.get(id) !== "confirmed") throw new EventGone("events.patch");
+      },
+      liveBookingHoldingEvent: holderOf(ctx.booking),
+      pendingWritePinsEvent: async (eventId) =>
+        (await deps.readReschedulePin(ctx.booking.id))?.gcal_client_id === eventId,
+    };
+    return { ctx, google, q, d, calls };
+  };
+  const IN_PLACE_TARGET = "2026-06-09T14:00:00.000Z";
+  {
+    const { ctx, google, q, d } = inPlaceWorld();
+    google.failOnce();
+    const err = await caught(() => rescheduleBooking("tok1", IN_PLACE_TARGET, RR, "customer", d, NOW));
+    assert(err instanceof Error, "in place: the recreate that lost its answer fails the move");
+    const written = [...google.events.keys()].find((id) => id !== "gcal-old")!;
+    assert(
+      Boolean(written) && google.events.get(written) === "confirmed" && !google.liveDeletes.includes(written),
+      "in place: the recreated event is NOT deleted live",
+    );
+    assert(
+      [...q.rows.values()].some((r) => r.gcal_event_id === written),
+      "in place: its deletion is queued for the drain instead",
+    );
+    await rescheduleBooking("tok1", IN_PLACE_TARGET, RR, "customer", d, NOW);
+    assert(
+      ctx.booking.gcal_event_id === written && google.events.get(written) === "confirmed",
+      "in place: the retry adopts the recreated event, live on Google",
+    );
+    await processPendingEventDeletions(d, 50);
+    assert(google.events.get(written) === "confirmed", "in place: the drain leaves the adopted event alone");
+  }
+  {
+    const { ctx, google, q, d } = inPlaceWorld();
+    d.commitReschedule = async () => {
+      ctx.booking.status = "cancelled";
+      return false;
+    };
+    const err = await caught(() => rescheduleBooking("tok1", IN_PLACE_TARGET, RR, "customer", d, NOW));
+    assert(err instanceof Error && err.name === "RescheduleConflictError", "in place conflict: the lost commit is reported");
+    const written = [...google.events.keys()].find((id) => id !== "gcal-old")!;
+    assert(
+      !google.liveDeletes.includes(written) && [...q.rows.values()].some((r) => r.gcal_event_id === written),
+      "in place conflict: the recreated event is rolled back through the queue, not live",
+    );
+    const lane = await processPendingEventDeletions(d, 50);
+    assert(
+      lane.deleted === 1 && google.events.get(written) === "cancelled",
+      "in place conflict: with nobody holding it, the drain deletes it",
+    );
+  }
+
+  // --- 14. the CREATE path: the reservation's id is already a tombstone on Google
+  // (an earlier attempt's event the drain deleted). The booking still confirms,
+  // on a live event, rather than failing on every retry --------------------------
+  {
+    const google = fakeGoogle();
+    const { deps } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
+    const d: BookingDeps = {
+      ...deps,
+      ...google.deps,
+      createEvent: async (email, args, clientId, opts) => {
+        if (clientId && !google.events.has(clientId)) google.events.set(clientId, "cancelled");
+        return google.deps.createEvent!(email, args, clientId, opts);
+      },
+    };
+    const res = await createBooking(input, d);
+    assert(
+      google.events.get(res.booking.gcal_event_id!) === "confirmed",
+      "create: a booking whose reserved id is a tombstone confirms on a live event",
+    );
+  }
+
+  // --- 11. every id in the chain is a tombstone: the reassign fails loudly and
+  // leaves NO intent standing, since no event was created for the drain to hold --
+  {
+    const { d, google, intents, intentWrites } = reassignWorld();
+    const swap = d.reassignSwap;
+    let failSwap = true;
+    d.reassignSwap = async (args) => {
+      if (failSwap) {
+        failSwap = false;
+        throw new Error("rpc down");
+      }
+      return swap(args);
+    };
+    await caught(() => reassignBooking("bk1", "b@x.com", SYS, d));
+    const base = intentWrites[0];
+    google.events.set(base, "cancelled");
+    for (let n = 1; n <= TOMBSTONE_FRESH_IDS; n++) google.events.set(freshEventId(base, n), "cancelled");
+    const err = await caught(() => reassignBooking("bk1", "b@x.com", SYS, d));
+    assert(err instanceof EventCancelledOnReuse, "exhausted: the reassign fails with the typed error");
+    assert(intents.size === 0, "exhausted: no intent is left standing for an event that was never created");
   }
 
   finish();

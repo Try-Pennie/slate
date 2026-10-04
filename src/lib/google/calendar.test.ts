@@ -32,7 +32,7 @@ import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
 import { REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { SYNC_TICK_BUDGET_MS } from "@/lib/google/sync-coalesce";
 import { isDefinitiveFailure, reachabilityFromError } from "@/lib/google/reachability-classify";
-import { EventGone, EventCancelledOnReuse } from "@/lib/booking/core";
+import { EventGone, EventCancelledOnReuse, freshEventId, TOMBSTONE_FRESH_IDS } from "@/lib/booking/core";
 
 const event = {
   summary: "Dana Ruiz - OOO",
@@ -127,48 +127,81 @@ describe("createEventOnCalendar idempotency (#1469)", () => {
 
 // #3217: Google keeps a deleted event's id, so a deterministic id whose event was
 // deleted 409s on the next insert and the event the GET then returns is CANCELLED.
-// Adopting it confirms a booking with nothing on the agent's calendar.
-describe("createEvent never adopts a cancelled event on a 409 (#3217)", () => {
+// Adopting it confirms a booking (or a time off block) with nothing on the
+// calendar. Both creates walk the same fixed chain of fresh ids instead, so a
+// retry walks it the same way and adopts the first live event on it.
+describe("a create never adopts a cancelled event on a 409 (#3217)", () => {
   beforeEach(() => dwd.getDelegatedToken.mockResolvedValue("tok"));
   afterEach(() => vi.unstubAllGlobals());
 
-  function googleHolding(status: string) {
-    const calls: { url: string; method: string }[] = [];
+  /** A calendar holding these ids, with these statuses. An insert of a held id
+   *  409s; any other id is created and becomes held. */
+  function googleHolding(held: Record<string, string>) {
+    const calls: { method: string; id: string }[] = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
-      calls.push({ url, method: init.method ?? "GET" });
-      return url.includes("/events/slateabc")
-        ? new Response(JSON.stringify({ id: "slateabc", status }), { status: 200 })
-        : new Response("duplicate", { status: 409 });
+      const method = init.method ?? "GET";
+      if (method === "POST") {
+        const id = JSON.parse(String(init.body)).id as string;
+        calls.push({ method, id });
+        if (held[id]) return new Response("duplicate", { status: 409 });
+        held[id] = "confirmed";
+        return new Response(JSON.stringify({ id }), { status: 200 });
+      }
+      const id = decodeURIComponent(url.split("/events/")[1].split("?")[0]);
+      calls.push({ method, id });
+      return new Response(JSON.stringify({ id, status: held[id] }), { status: 200 });
     });
     return calls;
   }
 
-  it("refuses a cancelled event with the typed error, and writes nothing to it", async () => {
-    const calls = googleHolding("cancelled");
-    await expect(createEvent("a@b.com", event, "slateabc")).rejects.toBeInstanceOf(EventCancelledOnReuse);
-    // The insert and the GET, and no restoring PATCH: undeleting is not a write
-    // this path makes without measuring it against live Google first.
-    expect(calls.map((c) => c.method)).toEqual(["POST", "GET"]);
+  it("createEvent creates the next id in the chain, and writes nothing to the tombstone", async () => {
+    const calls = googleHolding({ slateabc: "cancelled" });
+    await expect(createEvent("a@b.com", event, "slateabc")).resolves.toBe(freshEventId("slateabc", 1));
+    expect(calls).toEqual([
+      { method: "POST", id: "slateabc" },
+      { method: "GET", id: "slateabc" },
+      { method: "POST", id: freshEventId("slateabc", 1) },
+    ]);
   });
 
-  it("still adopts a LIVE event, so the resume a deterministic id exists for keeps working", async () => {
-    googleHolding("confirmed");
-    await expect(createEvent("a@b.com", event, "slateabc")).resolves.toBe("slateabc");
+  it("a time off re-approved after its block was deleted gets a live block (createEventOnCalendar)", async () => {
+    googleHolding({ slateabc: "cancelled" });
+    await expect(createEventOnCalendar("a@b.com", "primary", event, "slateabc")).resolves.toBe(
+      freshEventId("slateabc", 1),
+    );
   });
 
-  // The OOO and owner alert create shares the reuse, so a re-approved time off
-  // whose block was deleted is never "written" as a cancelled event that blocks
-  // nothing.
-  it("createEventOnCalendar refuses a cancelled event the same way", async () => {
-    googleHolding("cancelled");
+  it("a retry walks the same chain and ADOPTS the live event an earlier attempt made on it", async () => {
+    const calls = googleHolding({ slateabc: "cancelled", [freshEventId("slateabc", 1)]: "confirmed" });
+    await expect(createEvent("a@b.com", event, "slateabc")).resolves.toBe(freshEventId("slateabc", 1));
+    expect(calls.filter((c) => c.method === "POST")).toHaveLength(2);
+  });
+
+  it("tells the caller each fresh id BEFORE it is created, so it can record it first", async () => {
+    const calls = googleHolding({ slateabc: "cancelled" });
+    const seen: string[] = [];
+    await createEvent("a@b.com", event, "slateabc", {
+      onFreshId: async (id) => {
+        seen.push(`${id} after ${calls.length} calls`);
+      },
+    });
+    expect(seen).toEqual([`${freshEventId("slateabc", 1)} after 2 calls`]);
+  });
+
+  it("fails loudly with the typed error once every id in the chain is a tombstone", async () => {
+    const held: Record<string, string> = { slateabc: "cancelled" };
+    for (let n = 1; n <= TOMBSTONE_FRESH_IDS; n++) held[freshEventId("slateabc", n)] = "cancelled";
+    googleHolding(held);
     await expect(createEventOnCalendar("a@b.com", "primary", event, "slateabc")).rejects.toBeInstanceOf(
       EventCancelledOnReuse,
     );
   });
 
-  it("createEventOnCalendar still adopts a live one", async () => {
-    googleHolding("confirmed");
+  it("still adopts a LIVE event under the id itself, so a plain resume is unchanged", async () => {
+    const calls = googleHolding({ slateabc: "confirmed" });
+    await expect(createEvent("a@b.com", event, "slateabc")).resolves.toBe("slateabc");
     await expect(createEventOnCalendar("a@b.com", "primary", event, "slateabc")).resolves.toBe("slateabc");
+    expect(calls.filter((c) => c.method === "POST").map((c) => c.id)).toEqual(["slateabc", "slateabc"]);
   });
 });
 
