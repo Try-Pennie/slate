@@ -60,8 +60,8 @@ function holderIndexes(sql: string): string[] {
   assert(start >= 0, "service.ts still wires liveBookingHoldingEvent");
   // The body ends at the next wired dep. A missing end marker would slice to the
   // end of the file and let unrelated code answer, so it is refused by name.
-  const end = start >= 0 ? service.indexOf("\n    reservationPinsEvent", start) : -1;
-  assert(end > start, "service.ts: the holder check's body ends at reservationPinsEvent (update this marker if the deps moved)");
+  const end = start >= 0 ? service.indexOf("\n    pendingWritePinsEvent", start) : -1;
+  assert(end > start, "service.ts: the holder check's body ends at pendingWritePinsEvent (update this marker if the deps moved)");
   const body = end > start ? service.slice(start, end) : "";
   assert(/\.from\("bookings"\)/.test(body), "the holder check reads bookings");
   assert(/\.eq\("gcal_event_id",/.test(body), "the holder check filters on gcal_event_id equality");
