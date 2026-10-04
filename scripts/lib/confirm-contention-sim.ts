@@ -29,19 +29,88 @@
 // of a hundred confirms over a simulated 15 seconds takes milliseconds, and the
 // same inputs always give the same answer.
 //
+// "Every request is waiting" is a condition the clock measures, never a number of
+// event loop turns it assumes. The confirm path does real asynchronous work the
+// clock cannot see: `deterministicEventId` hashes through `crypto.subtle.digest`,
+// which Node runs on the libuv threadpool and answers in REAL time. The first
+// version of this loop yielded a fixed 20 turns and then moved the clock. On an
+// idle machine the hash answers inside those turns; on a loaded CI runner it did
+// not, so the clock jumped to the next timer while a confirm was still hashing,
+// the queue's 6 second waits fired for every follower, and the burst came back
+// 503 or "hung" (main run 37227801023, both attempts). So the clock watches, with
+// an async hook, every timer, immediate and native request the code under test
+// starts, and moves only once none is outstanding, waiting in real time for them
+// and failing loudly, naming each one, if they outlast `realWaitCapMs`.
+//
 // Not named test-*.ts: the runner globs that pattern as a suite, so this file is
 // a library the suite imports.
 import type { BookingDeps } from "../../src/lib/booking/orchestration.ts";
 import { DeadlineExceededError } from "../../src/lib/fetch-within-deadline.ts";
 import { deadlineWithinBudget } from "../../src/lib/call-budget.ts";
+import { createHook } from "node:async_hooks";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { performance } from "node:perf_hooks";
+
+/** This checkout, as stack frames spell it, so only work started by the repo's own
+ *  code is watched (never a runner's or a preload's). */
+const REPO_URL = pathToFileURL(resolve(dirname(fileURLToPath(import.meta.url)), "../..")).href;
+
+/** How long the clock waits in real time for outstanding real work by default. A
+ *  hash on a loaded runner takes milliseconds; this is the bound past which the
+ *  work is not slow but stuck, and the run says so rather than guessing. */
+export const REAL_WAIT_CAP_MS = 5_000;
+
+/**
+ * Real asynchronous work in flight that the code under test started: every
+ * resource except promises (they settle in the microtask checkpoint a turn
+ * already drains) and next ticks (drained in the same checkpoint), keyed by
+ * async id and removed when Node destroys it. `quiet` is set while the clock
+ * schedules its own turns, which are not work to wait for.
+ */
+const outstanding = new Map<number, { type: string; at: string }>();
+let quiet = false;
+let watching = false;
+function watchRealWork(): void {
+  if (watching) return;
+  watching = true;
+  createHook({
+    init(asyncId, type) {
+      if (quiet || type === "PROMISE" || type === "TickObject") return;
+      const limit = Error.stackTraceLimit;
+      Error.stackTraceLimit = 40;
+      const stack = new Error().stack ?? "";
+      Error.stackTraceLimit = limit;
+      const frames = stack.split("\n").filter((l) => l.includes(REPO_URL) && !l.includes("confirm-contention-sim.ts"));
+      if (frames.length === 0) return;
+      outstanding.set(asyncId, { type, at: frames[0].trim().replace(/^at /, "").replace(REPO_URL, "") });
+    },
+    destroy(asyncId) {
+      outstanding.delete(asyncId);
+    },
+  }).enable();
+}
+
+/** One turn of the event loop that the clock itself schedules, and so never waits on. */
+function ownTurn(kind: "immediate" | "pause"): Promise<void> {
+  quiet = true;
+  try {
+    return new Promise((r) => (kind === "immediate" ? setImmediate(r) : setTimeout(r, 1)));
+  } finally {
+    quiet = false;
+  }
+}
 
 /** A clock that moves only when nothing can run, so time is spent waiting. */
 export class VirtualClock {
   now: number;
   private timers: { at: number; seq: number; fire: () => void }[] = [];
   private seq = 0;
-  constructor(startMs: number) {
+  private readonly realWaitCapMs: number;
+  constructor(startMs: number, opts: { realWaitCapMs?: number } = {}) {
     this.now = startMs;
+    this.realWaitCapMs = opts.realWaitCapMs ?? REAL_WAIT_CAP_MS;
+    watchRealWork();
   }
   at(atMs: number, fire: () => void): () => void {
     const timer = { at: Math.max(atMs, this.now), seq: this.seq++, fire };
@@ -54,11 +123,34 @@ export class VirtualClock {
   sleep(ms: number): Promise<void> {
     return new Promise((resolve) => this.at(this.now + ms, resolve));
   }
+  /**
+   * Returns once nothing but the virtual clock can make progress: every microtask
+   * has run and no real timer, immediate or native request the code under test
+   * started is still outstanding. One turn drains every microtask and next tick
+   * queued so far, and anything that could outlive a turn is a resource the hook
+   * sees, so an empty `outstanding` after a turn is the condition itself.
+   */
+  async settle(): Promise<void> {
+    const since = performance.now();
+    for (;;) {
+      await ownTurn("immediate");
+      if (outstanding.size === 0) return;
+      const waited = performance.now() - since;
+      if (waited > this.realWaitCapMs) {
+        const what = [...outstanding.values()].map((o) => `${o.type} at ${o.at}`).join("; ");
+        throw new Error(
+          `simulation stalled: real work the clock cannot move past was still outstanding after ${Math.round(waited)}ms: ${what}`,
+        );
+      }
+      await ownTurn("pause");
+    }
+  }
+
   /** Lets every runnable continuation run, then moves to the next timer, until
    *  `done` says so. A run with nothing scheduled and nothing done is a hang. */
   async runUntil(done: () => boolean): Promise<void> {
     for (;;) {
-      for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+      await this.settle();
       if (done()) return;
       this.timers.sort((a, b) => a.at - b.at || a.seq - b.seq);
       const next = this.timers.shift();
