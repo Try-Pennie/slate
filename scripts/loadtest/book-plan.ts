@@ -116,6 +116,31 @@ export function burstReadiness(opts: {
   return late <= opts.graceMs ? "ready" : "missed";
 }
 
+/** At most this many sleeps toward the moment, so a clock that never advances cannot hang a driver. */
+const BURST_WAIT_MAX_SLEEPS = 50;
+
+/**
+ * Sleep until the WALL clock has reached the burst's moment (#3103).
+ *
+ * One sleep is not enough. `setTimeout` runs on a monotonic clock and `Date.now()`
+ * on the wall clock, so a timer can return a millisecond or two before the moment
+ * the wall clock names. Run 37162784607 lost its whole run to exactly that: one
+ * driver woke 1 to 3 ms early, `burstReadiness` correctly said "early", and the
+ * driver fired nothing. So this sleeps again for whatever is left, until the clock
+ * reads the moment or later. A driver already past the moment does not sleep, and
+ * `burstReadiness` still decides whether it is too late to fire.
+ */
+export async function waitForBurstMoment(
+  startAtMs: number,
+  clock: { now: () => number; sleep: (ms: number) => Promise<void> },
+): Promise<void> {
+  for (let i = 0; i < BURST_WAIT_MAX_SLEEPS; i++) {
+    const wait = startAtMs - clock.now();
+    if (wait <= 0) return;
+    await clock.sleep(wait);
+  }
+}
+
 /**
  * The lead id a request books under.
  *

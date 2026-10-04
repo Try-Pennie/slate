@@ -16,6 +16,7 @@ import {
   requestSchedule,
   availabilityRefreshMs,
   burstReadiness,
+  waitForBurstMoment,
   externalIdFor,
   pickSlot,
   AVAILABILITY_PER_MINUTE,
@@ -131,6 +132,52 @@ const T0 = Date.parse("2026-09-15T14:00:00.000Z");
   // A zero grace still admits the exact instant, or a driver that woke up perfectly
   // on time would be told it had missed.
   eq(burstReadiness({ startAtMs, nowMs: T0, graceMs: 0 }), "ready", "a zero grace admits the instant");
+}
+
+// --- waiting for the burst's moment (#3103) -----------------------------------
+// Run 37162784607 lost its whole run to one driver whose sleep ended 1 to 3 ms
+// before the moment: `setTimeout` runs on a monotonic clock and `Date.now()` on the
+// wall clock, so a timer returning a hair early is ordinary, and a single sleep then
+// one readiness check read that as "early" and fired nothing. The wait must hold
+// until the wall clock has actually reached the moment.
+{
+  const T0 = 1_791_071_579_054;
+  // A fake clock whose sleep always returns 3 ms short of what was asked.
+  function shortClock(start: number) {
+    let now = start;
+    const sleeps: number[] = [];
+    return {
+      now: () => now,
+      sleep: async (ms: number) => {
+        sleeps.push(ms);
+        now += Math.max(1, ms - 3);
+      },
+      sleeps,
+    };
+  }
+
+  const c = shortClock(T0 - 270_000);
+  await waitForBurstMoment(T0, c);
+  assert(c.now() >= T0, `a sleep that returns short is followed by another, so the wait ends at or past the moment (ended ${c.now() - T0} ms from it)`);
+  eq(burstReadiness({ startAtMs: T0, nowMs: c.now(), graceMs: 2000 }), "ready", "and the driver fires");
+  assert(c.sleeps.length >= 2 && c.sleeps.length < 10, `it re-sleeps a bounded number of times (${c.sleeps.length})`);
+
+  // Control: without the loop, the same clock reads "early", which is the run's bug.
+  const single = shortClock(T0 - 270_000);
+  await single.sleep(T0 - single.now());
+  eq(burstReadiness({ startAtMs: T0, nowMs: single.now(), graceMs: 2000 }), "early", "one sleep on that clock lands early (the defect, reproduced)");
+
+  // A driver that wakes after the moment does not sleep at all and still reads late.
+  const late = shortClock(T0 + 5_000);
+  await waitForBurstMoment(T0, late);
+  eq(late.sleeps.length, 0, "a driver already past the moment does not sleep");
+  eq(burstReadiness({ startAtMs: T0, nowMs: late.now(), graceMs: 2000 }), "missed", "and a genuinely late start still reads missed, firing nothing");
+
+  // A clock that never advances must not hang the driver: the wait gives up after a
+  // bounded number of sleeps and leaves the readiness check to say "early".
+  let frozenSleeps = 0;
+  await waitForBurstMoment(T0, { now: () => T0 - 10, sleep: async () => { frozenSleeps++; } });
+  assert(frozenSleeps > 0 && frozenSleeps <= 100, `a frozen clock stops waiting after a bounded number of sleeps (${frozenSleeps})`);
 }
 
 // --- the lead id --------------------------------------------------------------
