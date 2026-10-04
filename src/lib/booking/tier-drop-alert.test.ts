@@ -141,6 +141,8 @@ function makeTierDropDeps(requested = "511", lower = "411"): BookingDeps {
     enqueueEventDeletion: noop,
     loadPendingEventDeletions: async () => [],
     loadCreationOrphans: async () => [],
+    liveBookingHoldingEvent: async () => null,
+    reservationPinsEvent: async () => false,
     removePendingEventDeletion: noop,
     bumpPendingEventDeletion: noop,
     updateEventTime: noop,

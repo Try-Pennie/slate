@@ -144,6 +144,16 @@ export function withinCleanupBudget<T>(
   return store().run(cleanup, work);
 }
 
+/**
+ * Whether the caller is running inside a budget at all (#3215). A failure path
+ * shared by a lead's request and a cron drain asks this so it opens the cleanup
+ * allowance only where there is a spent budget to escape, and leaves the drain's
+ * calls on their own limits, as they have always been.
+ */
+export function insideCallBudget(): boolean {
+  return store().getStore() !== undefined;
+}
+
 /** Run `work` with no budget at all: the work deferred past a response. */
 export function outsideCallBudget<T>(work: () => T): T {
   return store().run(undefined, work);

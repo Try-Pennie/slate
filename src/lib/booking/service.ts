@@ -1021,8 +1021,12 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
           .from("pending_event_deletions")
           .select("*")
           .lt("attempts", orchestration.PENDING_DELETION_GIVE_UP_AT)
-          .order("attempts", { ascending: true })
-          .order("created_at", { ascending: true })
+          // #3215: least recently touched first. Every pass touches each row it
+          // loads and keeps (a failed delete, or one a pending reservation holds),
+          // so the queue rotates and no set of kept rows can occupy every page.
+          // Ordering by attempts first would let held rows, which never gain an
+          // attempt, sit in front of every row that has ever failed once.
+          .order("updated_at", { ascending: true })
           .limit(limit),
         "loadPendingEventDeletions",
       );
@@ -1035,10 +1039,37 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
         .from("pending_event_deletions")
         .select("*")
         .is("booking_id", null)
-        .order("created_at", { ascending: true })
+        // #3215: least recently touched first, like the drain, so the held rows it
+        // skips (and the drain touches each pass) cannot fill every page.
+        .order("updated_at", { ascending: true })
         .limit(limit);
       return (data ?? []) as orchestration.PendingEventDeletion[];
     },
+    // #3215 (L744): who holds an event a deletion was queued for. Both THROW on a
+    // failed read, because an empty answer here is permission to delete a
+    // confirmed booking's calendar hold. Asked as a FILTERED existence question:
+    // the statuses are in the query, so every row it can return is a holder and
+    // `limit(1)` can never page a live holder out of view.
+    liveBookingHoldingEvent: async (gcalEventId, statuses) =>
+      ((unwrap(
+        await supabaseAdmin()
+          .from("bookings")
+          .select("id")
+          .eq("gcal_event_id", gcalEventId)
+          .in("status", [...statuses])
+          .limit(1),
+        "live booking holding a queued event",
+      ) ?? []) as { id: string }[])[0]?.id ?? null,
+    reservationPinsEvent: async (gcalEventId) =>
+      ((unwrap(
+        await supabaseAdmin()
+          .from("booking_reservations")
+          .select("id")
+          .eq("gcal_client_id", gcalEventId)
+          .eq("status", "pending")
+          .limit(1),
+        "reservation pinning a queued event",
+      ) ?? []) as { id: string }[]).length > 0,
     removePendingEventDeletion: async (id) => {
       // write-ok: a refused delete leaves the row, so the drain retries a deletion Google has already accepted, which is idempotent. It can never drop a deletion that has not happened.
       await supabaseAdmin().from("pending_event_deletions").delete().eq("id", id);
@@ -1199,14 +1230,16 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
         // which is what ties this line to the confirm that produced it and to the
         // busy_blocks and calendar work around it. Never the attendee: contact data
         // does not go in logs (docs/pii.md).
-        if (!conflict) {
-          log.error(
-            "booking",
-            { msg: "insertBooking failed", ...insertFailureLogFields(row) },
-            error,
-          );
-        }
-        return { ok: false, conflict };
+        if (conflict) return { ok: false, conflict: true };
+        log.error(
+          "booking",
+          { msg: "insertBooking failed", ...insertFailureLogFields(row) },
+          error,
+        );
+        // #3215: the error goes back with the refusal, so a deadline in it (the
+        // confirm budget running out at the insert) still reaches the route as
+        // the retryable outage rather than a generic 500.
+        return { ok: false, conflict: false, error: error ?? new Error("insert returned no row") };
       }
       return { ok: true, booking: data as Booking };
     },
