@@ -44,6 +44,21 @@ vi.mock("next/server", async (importOriginal) => ({
 async function flushAfter(): Promise<void> {
   while (afterQueue.length > 0) await afterQueue.shift()!();
 }
+/** For the cases where the send itself fails: run the deferred page, which must resolve
+ *  rather than reject (a monitoring failure never escapes), and return what was logged so
+ *  the case can show the failure was recorded rather than lost. */
+async function flushFailedSend(): Promise<string> {
+  const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    await expect(flushAfter()).resolves.toBeUndefined();
+    // An Error serializes to {} under JSON.stringify, so its message is spelled out.
+    return JSON.stringify(consoleErr.mock.calls, (_k, v: unknown) =>
+      v instanceof Error ? `Error: ${v.message}` : v,
+    );
+  } finally {
+    consoleErr.mockRestore();
+  }
+}
 
 import {
   allowRequest,
@@ -130,6 +145,10 @@ describe("allowRequest (#597)", () => {
     sendThrottledAlert.mockRejectedValueOnce(new Error("alert store unreachable"));
 
     await expect(allowRequest(ADDRESS, RULES)).resolves.toBe(true);
+    const logged = await flushFailedSend();
+    expect(sendThrottledAlert).toHaveBeenCalled();
+    expect(logged).toMatch(/alert failed/);
+    expect(logged).toMatch(/alert store unreachable/);
   });
 });
 
@@ -170,6 +189,7 @@ describe("alert on block (#796)", () => {
 
     await expect(allowRequest(LOUD_CALLER, QUIET)).resolves.toBe(false);
 
+    await flushAfter();
     expect(sendThrottledAlert).not.toHaveBeenCalled();
   });
 
@@ -178,6 +198,10 @@ describe("alert on block (#796)", () => {
     sendThrottledAlert.mockRejectedValueOnce(new Error("alert store unreachable"));
 
     await expect(allowRequest(LOUD_CALLER, LOUD)).resolves.toBe(false);
+    const logged = await flushFailedSend();
+    expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
+    expect(logged).toMatch(/alert failed/);
+    expect(logged).toMatch(/alert store unreachable/);
   });
 });
 
@@ -269,6 +293,10 @@ describe("refundRequest (#796)", () => {
     sendThrottledAlert.mockRejectedValueOnce(new Error("alert store unreachable"));
 
     await expect(refundRequest(ADDRESS, RULES2)).resolves.toBeUndefined();
+    const logged = await flushFailedSend();
+    expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
+    expect(logged).toMatch(/alert failed/);
+    expect(logged).toMatch(/alert store unreachable/);
   });
 });
 
@@ -304,12 +332,15 @@ const burstNamespace = () => ({
 
 describe("availabilityWithinLimit (#796)", () => {
   // The in-isolate alert gate is time-based, so each test starts past the last one's
-  // cooldown rather than reaching into module state to reset it.
+  // cooldown rather than reaching into module state to reset it. Two hours, not one: a
+  // case here moves its own clock 31 minutes on, and an hour after that lands inside the
+  // 30 minute cooldown it stamped, so the next case would attempt no send at all and every
+  // assertion that nothing was sent would pass without being tested (#3145).
   let clock = Date.UTC(2026, 6, 14);
 
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["Date"] });
-    clock += 60 * 60_000;
+    clock += 2 * 60 * 60_000;
     vi.setSystemTime(clock);
     // BOTH bindings, because production binds both and a fake that binds one is a fake
     // that agrees with an assumption nothing checks (L143): with the burst namespace
@@ -327,6 +358,7 @@ describe("availabilityWithinLimit (#796)", () => {
 
   it("allows a request the limiter permits", async () => {
     await expect(availabilityWithinLimit("1.2.3.4")).resolves.toBe(true);
+    await flushAfter();
     expect(sendThrottledAlert).not.toHaveBeenCalled();
   });
 
@@ -352,6 +384,7 @@ describe("availabilityWithinLimit (#796)", () => {
     }
     expect(allowed).toBe(false);
     // And a throttled visitor is still not an incident, exactly as for the edge check.
+    await flushAfter();
     expect(sendThrottledAlert).not.toHaveBeenCalled();
   });
 
@@ -451,6 +484,7 @@ describe("availabilityWithinLimit (#796)", () => {
     limit.mockResolvedValue({ success: false });
 
     await expect(availabilityWithinLimit("1.2.3.4")).resolves.toBe(false);
+    await flushAfter();
     expect(sendThrottledAlert).not.toHaveBeenCalled();
   });
 
@@ -517,6 +551,10 @@ describe("availabilityWithinLimit (#796)", () => {
     sendThrottledAlert.mockRejectedValueOnce(new Error("alert store unreachable"));
 
     await expect(availabilityWithinLimit("1.2.3.4")).resolves.toBe(true);
+    const logged = await flushFailedSend();
+    expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
+    expect(logged).toMatch(/alert failed/);
+    expect(logged).toMatch(/alert store unreachable/);
   });
 
   // #1525. On 2026-08-17 `rate_limit_broken:availability` paged at 14:44 UTC saying the
@@ -541,6 +579,7 @@ describe("availabilityWithinLimit (#796)", () => {
     // Still fails open: dev must keep working.
     await expect(availabilityWithinLimit("1.2.3.4")).resolves.toBe(true);
 
+    await flushAfter();
     expect(sendThrottledAlert).not.toHaveBeenCalled();
     // Silent to Slack, never silent full stop, and it says WHICH cause this is rather
     // than borrowing the production outage wording (L11).
@@ -630,12 +669,14 @@ describe("bookingWithinLimit (#237)", () => {
 
   it("allows a request the limiter permits", async () => {
     await expect(bookingWithinLimit("1.2.3.4")).resolves.toBe(true);
+    await flushAfter();
     expect(sendThrottledAlert).not.toHaveBeenCalled();
   });
 
   it("blocks when the limiter says the IP is over, and stays silent", async () => {
     limit.mockResolvedValue({ success: false });
     await expect(bookingWithinLimit("1.2.3.4")).resolves.toBe(false);
+    await flushAfter();
     expect(sendThrottledAlert).not.toHaveBeenCalled();
   });
 
@@ -700,10 +741,12 @@ describe("edge per-minute limiters (#961)", () => {
   it("routingWithinLimit allows, blocks silently, and fails open + alerts when it throws", async () => {
     cf.env = { ROUTING_RATE_LIMITER: { limit }, BURST_LIMITER: burstNamespace() };
     await expect(routingWithinLimit("1.2.3.4")).resolves.toBe(true);
+    await flushAfter();
     expect(sendThrottledAlert).not.toHaveBeenCalled();
 
     limit.mockResolvedValueOnce({ success: false });
     await expect(routingWithinLimit("1.2.3.4")).resolves.toBe(false);
+    await flushAfter();
     expect(sendThrottledAlert).not.toHaveBeenCalled();
 
     limit.mockRejectedValueOnce(new Error("limiter unavailable"));
@@ -721,6 +764,7 @@ describe("edge per-minute limiters (#961)", () => {
 
     limit.mockResolvedValueOnce({ success: false });
     await expect(bookingApiWriteWithinLimit("primary")).resolves.toBe(false);
+    await flushAfter();
     expect(sendThrottledAlert).not.toHaveBeenCalled();
   });
 
@@ -749,6 +793,7 @@ describe("edge per-minute limiters (#961)", () => {
   it("bookingApiIpWithinLimit stays silent when the limiter permits the request", async () => {
     cf.env = { BOOKINGAPI_IP_RATE_LIMITER: { limit }, BURST_LIMITER: burstNamespace() };
     await expect(bookingApiIpWithinLimit("203.0.113.9")).resolves.toBe(true);
+    await flushAfter();
     expect(sendThrottledAlert).not.toHaveBeenCalled();
   });
 
@@ -758,6 +803,10 @@ describe("edge per-minute limiters (#961)", () => {
     sendThrottledAlert.mockRejectedValueOnce(new Error("alert store unreachable"));
 
     await expect(bookingApiIpWithinLimit("203.0.113.9")).resolves.toBe(false);
+    const logged = await flushFailedSend();
+    expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
+    expect(logged).toMatch(/alert failed/);
+    expect(logged).toMatch(/alert store unreachable/);
   });
 });
 
@@ -798,6 +847,7 @@ describe("the burst ceiling reaches every edge limiter (#1556)", () => {
 
     expect(allowed).toBe(false);
     // A throttled visitor is still not an incident.
+    await flushAfter();
     expect(sendThrottledAlert).not.toHaveBeenCalled();
   });
 
@@ -934,6 +984,7 @@ describe("the burst ceiling reaches every edge limiter (#1556)", () => {
 
     expect(allowed).toBe(false);
     expect(burstFetches).toBeGreaterThan(0);
+    await flushAfter();
     expect(sendThrottledAlert).not.toHaveBeenCalled();
   });
 
@@ -1040,6 +1091,7 @@ describe("bearerFailureWithinLimit (#3142)", () => {
   it("refuses past the ceiling and stays silent, since a flood of bad tokens is not news", async () => {
     limit.mockResolvedValue({ success: false });
     await expect(bearerFailureWithinLimit("203.0.113.9")).resolves.toBe(false);
+    await flushAfter();
     expect(sendThrottledAlert).not.toHaveBeenCalled();
   });
 });
