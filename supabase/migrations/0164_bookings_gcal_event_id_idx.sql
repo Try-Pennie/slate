@@ -1,0 +1,33 @@
+-- #3218: index bookings(gcal_event_id) for the event holder check #3216 added.
+--
+-- liveBookingHoldingEvent (src/lib/booking/service.ts) asks "does a live booking
+-- hold this calendar event" once per queued event deletion and once per failed
+-- live delete:
+--
+--   select id from bookings
+--   where gcal_event_id = $1 and status in ('confirmed', 'rescheduled', 'completed')
+--   limit 1
+--
+-- With no index on gcal_event_id that is a sequential scan of bookings on every
+-- ask, and bookings grows with booking volume.
+--
+-- WHY THIS SHAPE. The equality is what selects: an event id belongs to one booking
+-- (a reassign or reschedule replaces it), so the index returns one row or none and
+-- the status list is checked on that row for free. A composite (gcal_event_id,
+-- status) would buy nothing for that, and an index PARTIAL on status would be
+-- wrong: the statuses are a runtime argument, and the planner can use a partial
+-- index only when it can prove the query's list implies the predicate. Partial on
+-- `gcal_event_id is not null` is correct, because the equality implies it, and it
+-- leaves out the rows that never held an event.
+--
+-- NOT CONCURRENTLY. `supabase db push` runs each migration file in a transaction,
+-- and CREATE INDEX CONCURRENTLY refuses to run inside one. A plain build locks
+-- writes to bookings (never reads) for as long as the build takes, which at
+-- today's size is well under a second: the table holds a few thousand rows (the
+-- pilot went live on 2026-09-29, alongside canary and load run bookings), the
+-- same reasoning 0049 used for busy_blocks at about 500K rows.
+--
+-- scripts/test-event-holder-index.ts keeps the query and this index paired.
+create index if not exists bookings_gcal_event_id_idx
+  on bookings (gcal_event_id)
+  where gcal_event_id is not null;
