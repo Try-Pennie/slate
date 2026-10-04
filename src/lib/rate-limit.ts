@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import type { RateLimitRule, EdgeLimiterSpec } from "@/lib/rate-limit-core";
 import { log } from "@/lib/log";
+import { afterResponse } from "@/lib/after-response";
 import { isWorkersRuntime, workersRuntimeMarker } from "@/lib/platform/runtime";
 import {
   BurstTracker,
@@ -174,10 +175,19 @@ async function withinBurstCeiling(
       // would send the reader to the wrong endpoint. Routed through the same alerting the edge
       // limiters use, so a burst ceiling that has quietly stopped counting reads the same way
       // as an edge limiter that has (#796).
+      //
+      // #3145 (L1017): sent after the response and outside the call budget, never as a
+      // float from here. This runs INSIDE the request, which on the booking confirm is
+      // the lead's budget, so a float inherited it: a counter slow to fail leaves the
+      // budget spent and the page's own alert_state read failed at once, saying
+      // nothing about the outage. A float is also not kept alive past the response
+      // (#191). The same reasoning as the Google breaker's page (#3134).
       (err) => {
-        void alertEdgeLimiterDown(
-          { area, friendly: spec.friendly },
-          `the burst ceiling could not be reached: ${String(err)}`,
+        afterResponse("edge-limiter-down", () =>
+          alertEdgeLimiterDown(
+            { area, friendly: spec.friendly },
+            `the burst ceiling could not be reached: ${String(err)}`,
+          ),
         );
       },
     );

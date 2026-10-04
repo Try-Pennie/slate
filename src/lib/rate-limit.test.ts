@@ -31,6 +31,19 @@ vi.mock("@opennextjs/cloudflare", () => ({ getCloudflareContext }));
 // alarm that costs an investigation. Defaults to true here so every existing case
 // still asserts production behaviour; the off-platform case sets it false explicitly.
 vi.mock("@/lib/platform/runtime", () => ({ isWorkersRuntime, workersRuntimeMarker }));
+// #3145: work handed to `after()` is QUEUED here and run only by `flushAfter`, the
+// way the platform runs it once the response has gone, so a test can tell work done
+// inside the request from work deferred past it.
+const afterQueue = vi.hoisted(() => [] as Array<() => unknown>);
+vi.mock("next/server", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("next/server")>()),
+  after: (fn: () => unknown) => {
+    afterQueue.push(fn);
+  },
+}));
+async function flushAfter(): Promise<void> {
+  while (afterQueue.length > 0) await afterQueue.shift()!();
+}
 
 import {
   allowRequest,
@@ -47,6 +60,7 @@ import {
 } from "./rate-limit";
 import type { RateLimitRule } from "@/lib/rate-limit-core";
 import { BURST_ESCALATE_AT, burstEscalateAt } from "@/lib/rate-limit-burst";
+import { insideCallBudget, withinCallBudget } from "@/lib/call-budget";
 import {
   UNIDENTIFIED_IP,
   AVAILABILITY_LIMITER,
@@ -69,6 +83,7 @@ const ADDRESS = { kind: "address", ip: "1.2.3.4", policy: BOOKING_LIMITER } as c
 
 beforeEach(() => {
   vi.clearAllMocks();
+  afterQueue.length = 0;
   rpc.mockResolvedValue({ data: true, error: null });
   isWorkersRuntime.mockReturnValue(true);
 });
@@ -352,11 +367,46 @@ describe("availabilityWithinLimit (#796)", () => {
       allowed = await availabilityWithinLimit("8.8.8.8");
     }
     expect(allowed).toBe(true);
+    await flushAfter();
     expect(sendThrottledAlert).toHaveBeenCalled();
     const text = String(sendThrottledAlert.mock.calls[0]?.[2] ?? "");
     // Plain language, no internal binding name, same contract as the edge limiter's.
     expect(text).toMatch(/availability/i);
     expect(text).not.toMatch(/BURST_LIMITER/);
+    consoleErr.mockRestore();
+  });
+
+  // #3145 (L1017). The counter's failure is noticed inside the request, which on the
+  // booking confirm runs under the lead's call budget. A page sent from there inherits
+  // that budget: when the counter was slow to fail, the budget is spent and the page's
+  // own alert_state read fails at once, so the outage is never said. And as a bare
+  // float it is not kept alive past the response at all. So the page goes after the
+  // response and outside the budget, as the Google breaker's does (#3134).
+  it("pages about an unreachable counter after the response, outside the lead's budget", async () => {
+    cf.env = {
+      AVAIL_RATE_LIMITER: { limit },
+      BURST_LIMITER: {
+        idFromName: (name: string) => ({ name }),
+        get: () => ({ fetch: async () => new Response("nope", { status: 500 }) }),
+      },
+    };
+    const inBudget: boolean[] = [];
+    sendThrottledAlert.mockImplementation(async () => {
+      inBudget.push(insideCallBudget());
+    });
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    await withinCallBudget(12_000, "the booking confirm", async () => {
+      for (let i = 0; i <= BURST_ESCALATE_AT; i++) {
+        await expect(availabilityWithinLimit("7.7.7.7")).resolves.toBe(true);
+      }
+      // Nothing is sent while the request is still answering...
+      expect(sendThrottledAlert).not.toHaveBeenCalled();
+    });
+    // ...it was handed to after(), which keeps it alive past the response.
+    expect(afterQueue.length).toBe(1);
+    await flushAfter();
+    expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
+    expect(inBudget).toEqual([false]);
     consoleErr.mockRestore();
   });
 

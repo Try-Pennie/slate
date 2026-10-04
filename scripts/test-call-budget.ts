@@ -116,6 +116,79 @@ await withinCallBudget(
 );
 t = 0;
 
+// #3145 (L1017): work STARTED inside a budget and still running once the scope
+// that opened it has returned (a float, a raw after() callback, a waitUntil, a
+// flight another request awaits) carries the budget's async context with it,
+// because the context is copied into every continuation. Nobody is waiting on
+// that budget any more, so it must stop governing the work, whichever writer
+// deferred it. This is decided where the budget is READ, the one place that is
+// safe for every writer, rather than by each writer remembering
+// `outsideCallBudget`.
+{
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  let late: Promise<number> | null = null;
+  await withinCallBudget(
+    1_000,
+    "the booking confirm",
+    async () => {
+      // Deferred without leaving the budget, the way a raw float or after() is.
+      late = gate.then(() => deadlineWithinBudget(15_000, "supabase", now).waitMs);
+    },
+    now,
+  );
+  // The request has answered; its budget is long spent.
+  t = 5_000;
+  release();
+  let lateWait: number | string = "never ran";
+  try {
+    lateWait = await late!;
+  } catch (e) {
+    lateWait = e instanceof Error ? e.message : String(e);
+  }
+  eq(lateWait, 15_000, "work outliving the scope that opened the budget gets its own limit, not the spent budget");
+
+  // A budget opened by deferred work after the request ended is its own root:
+  // a Google call made from it still gets its own expiry, rather than inheriting
+  // the closed request's.
+  let release2: () => void = () => {};
+  const gate2 = new Promise<void>((r) => {
+    release2 = r;
+  });
+  let nested: Promise<number> | null = null;
+  t = 0;
+  await withinCallBudget(
+    1_000,
+    "the booking confirm",
+    async () => {
+      nested = gate2.then(() =>
+        withinCallBudget(8_000, "google freeBusy", async () => deadlineWithinBudget(15_000, "google freeBusy", now).waitMs, now),
+      );
+    },
+    now,
+  );
+  t = 5_000;
+  release2();
+  eq(await nested!, 8_000, "a budget opened after the request closed is its own, not the closed one");
+
+  // And the scope closing must not loosen a budget for work still INSIDE it: a
+  // nested budget returning (a Google call finishing) leaves the confirm's in force.
+  t = 0;
+  await withinCallBudget(
+    1_000,
+    "the booking confirm",
+    async () => {
+      await withinCallBudget(8_000, "google freeBusy", async () => {}, now);
+      t = 900;
+      eq(deadlineWithinBudget(15_000, "supabase", now).waitMs, 100, "a nested budget returning does not close the request's");
+    },
+    now,
+  );
+  t = 0;
+}
+
 // Cleanup after a spent budget gets its own small allowance rather than none,
 // it is bounded, and it is ONE allowance however many layers open it: a route's
 // failure path and the service's alert beneath it share it rather than each
