@@ -58,7 +58,11 @@ function holderIndexes(sql: string): string[] {
   const service = readFileSync(join(root, "src", "lib", "booking", "service.ts"), "utf8");
   const start = service.indexOf("liveBookingHoldingEvent:");
   assert(start >= 0, "service.ts still wires liveBookingHoldingEvent");
-  const body = service.slice(start, service.indexOf("\n    reservationPinsEvent", start));
+  // The body ends at the next wired dep. A missing end marker would slice to the
+  // end of the file and let unrelated code answer, so it is refused by name.
+  const end = start >= 0 ? service.indexOf("\n    reservationPinsEvent", start) : -1;
+  assert(end > start, "service.ts: the holder check's body ends at reservationPinsEvent (update this marker if the deps moved)");
+  const body = end > start ? service.slice(start, end) : "";
   assert(/\.from\("bookings"\)/.test(body), "the holder check reads bookings");
   assert(/\.eq\("gcal_event_id",/.test(body), "the holder check filters on gcal_event_id equality");
 }
@@ -70,8 +74,16 @@ assert(real.length > 0, `a bookings index led by gcal_event_id serves the holder
 
 // Positive controls (L1): each way the coverage can be lost must be caught.
 {
-  const without = files.filter((f) => !holderIndexes(migrationSql([f])).length);
-  assert(holderIndexes(migrationSql(without)).length === 0, "control: the tree without that migration is caught");
+  // The real tree with migration 0164 removed BY NAME, and the real tree with a
+  // later migration dropping its index: both must be refused.
+  const index0164 = "0164_bookings_gcal_event_id_idx.sql";
+  assert(files.includes(index0164), `control: ${index0164} is on disk to remove`);
+  const without = files.filter((f) => f !== index0164);
+  assert(holderIndexes(migrationSql(without)).length === 0, "control: the real tree without 0164 is caught");
+  assert(
+    holderIndexes(migrationSql(files) + "\ndrop index if exists bookings_gcal_event_id_idx;").length === 0,
+    "control: the real tree plus a later drop of the index is caught",
+  );
 
   const plant = (s: string) => holderIndexes(s.toLowerCase()).length;
   assert(plant("create index x on bookings (gcal_event_id) where gcal_event_id is not null;") === 1, "control: a partial not null index counts");
