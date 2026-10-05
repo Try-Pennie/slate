@@ -12,6 +12,7 @@
 import { DateTime } from "luxon";
 
 import type { MemberAvailability } from "../availability/compute.ts";
+import { bufferedWindow } from "./buffered-window.ts";
 
 const MIN = 60_000;
 
@@ -142,8 +143,11 @@ export function bufferedReadWindow(
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
     throw new Error("booking window is unreadable");
   }
-  return {
-    fromIso: new Date(startMs - buffers.buffer_before_min * MIN).toISOString(),
-    toIso: new Date(endMs + buffers.buffer_after_min * MIN).toISOString(),
-  };
+  // The same arithmetic the candidate read and verify on book use (#3273).
+  const [fromIso, toIso] = bufferedWindow(
+    buffers,
+    new Date(startMs).toISOString(),
+    new Date(endMs).toISOString(),
+  );
+  return { fromIso, toIso };
 }

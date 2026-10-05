@@ -25,6 +25,7 @@ import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import { unfairOrderingAlert } from "@/lib/booking/alert-copy";
 import type { Attributes, Booking, Bucket, Criteria, EventType } from "@/lib/db/types";
 import { bufferedReadWindow, dropHeldAgents, parseLiveHolds, type LiveHold } from "@/lib/booking/reroute-hold";
+import { bufferedWindow } from "@/lib/booking/buffered-window";
 import { userIdsOnApprovedTimeOff } from "@/lib/ooo/approved-overlap";
 import type { CurrentAgentPicture, RoundRobinOpts } from "@/lib/booking/orchestration";
 import { log } from "@/lib/log";
@@ -264,6 +265,11 @@ export async function loadMembersAvailability(
         .in("user_id", userIds)
         .lt("starts_at", to)
         .gt("ends_at", from)
+        // #3273: a total order, or OFFSET paging skips rows. Postgres owes no order to
+        // a query that asks for none, so each page could come back in its own order:
+        // measured 2026-10-05, a 43 advisor pool read 2,392 rows of which only 1,826
+        // were distinct, and the skipped meetings offered a sold out Monday as open.
+        .order("id")
         .range(pageFrom, pageTo),
   );
 
@@ -480,17 +486,24 @@ export async function roundRobinCandidates(
   excludeLow = false,
   opts: RoundRobinOpts = {},
 ): Promise<{ candidates: string[]; memberCount: number }> {
-  const endIso = new Date(
-    startMs + eventType.duration_min * 60_000,
-  ).toISOString();
+  const endMs = startMs + eventType.duration_min * 60_000;
+  // #3273: busy time is read over the BUFFERED window, the one `bookableSlotReason`
+  // judges and verify on book asks Google about. Read over the bare call, a meeting
+  // ending exactly at the start sits only inside a buffer, is never read, and the
+  // advisor goes to the live check only to be refused there.
+  const [readFrom, readTo] = bufferedWindow(
+    eventType,
+    new Date(startMs).toISOString(),
+    new Date(endMs).toISOString(),
+  );
   // The candidate list runs the SAME predicate the booker's display does, so it must
   // see the same org window (#1295): otherwise a direct-API book at a closed hour
   // would find candidates the booker would never have offered.
   const [pool, businessHours] = await Promise.all([
     loadMembersAvailability(
       bucket,
-      new Date(startMs).toISOString(),
-      endIso,
+      readFrom,
+      readTo,
       excludeLow
         ? lowExcludedResolver(eligibleAgentIds)
         : onlyUserId !== undefined
@@ -525,10 +538,10 @@ export async function roundRobinCandidates(
     ? judged
     : dropHeldAgents(
         judged,
-        await loadLiveHolds(judged, startMs, startMs + eventType.duration_min * 60_000, eventType),
+        await loadLiveHolds(judged, startMs, endMs, eventType),
         {
           startMs,
-          endMs: startMs + eventType.duration_min * 60_000,
+          endMs,
           bufferBeforeMin: eventType.buffer_before_min,
           bufferAfterMin: eventType.buffer_after_min,
         },
@@ -572,14 +585,19 @@ export async function loadLiveHolds(
   eventType: Pick<EventType, "buffer_before_min" | "buffer_after_min">,
 ): Promise<LiveHold[]> {
   if (userIds.length === 0) return [];
+  const [from, to] = bufferedWindow(
+    eventType,
+    new Date(startMs).toISOString(),
+    new Date(endMs).toISOString(),
+  );
   // Expiry is judged by the DATABASE clock inside the function, the clock the
   // trigger and the sweep use, so the three can never disagree about a hold in its
   // last seconds (L736). The function also owns the window superset.
   const rows = unwrap(
     await supabaseAdmin().rpc("live_reroute_holds", {
       p_user_ids: userIds,
-      p_from: new Date(startMs - eventType.buffer_before_min * 60_000).toISOString(),
-      p_to: new Date(endMs + eventType.buffer_after_min * 60_000).toISOString(),
+      p_from: from,
+      p_to: to,
     }),
     "live reroute holds",
   ) ?? [];
