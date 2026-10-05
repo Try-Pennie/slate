@@ -21,6 +21,8 @@ const REFUSAL: Record<RerouteRefusal, { status: number; error: string }> = {
   booking_not_found: { status: 404, error: "That booking could not be found." },
   unknown_bucket: { status: 400, error: "That is not a bucket Slate routes to." },
   no_current_advisor: { status: 409, error: "This booking has no advisor to keep, so its bucket cannot be corrected this way." },
+  no_calendar_event: { status: 409, error: "This booking has no calendar event on its advisor's calendar, so its bucket cannot be corrected this way." },
+  kept_above_requested: { status: 400, error: "The bucket kept in must be the one asked for or a lower tier." },
   booking_inactive: { status: 409, error: "This booking is cancelled or completed, so it cannot be rerouted." },
   agent_link: { status: 409, error: "This lead booked a specific advisor by link, so there is no bucket to correct." },
   booking_started: { status: 409, error: "This call has already started, so it cannot be rerouted." },

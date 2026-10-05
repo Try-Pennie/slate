@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { SelectField } from "@/components/ui/SelectField";
 import { allXbcCodes } from "@/lib/xbc";
@@ -69,6 +69,7 @@ export default function ReroutePanel({
 
   const chosenCode = showCodes ? adminCode : composeManagerCode(currentCode, debt, backend);
   const base = `/api/admin/bookings/${bookingId}/reroute`;
+  const proposal = shown?.kind === "proposal" ? shown.proposal : shown?.kind === "taken" ? shown.outcome.proposal : null;
 
   // A reload restores a live hold, so the confirm and its countdown survive it.
   useEffect(() => {
@@ -80,6 +81,31 @@ export default function ReroutePanel({
       live = false;
     };
   }, [base]);
+
+  // Closing the panel (another action, or leaving the page in app) lets go of an
+  // advisor it is holding, so they are free for leads now rather than when the hold
+  // runs out. A confirm in flight keeps its hold: the server releases it if the
+  // confirm fails. A reload runs no cleanup, so the hold and its countdown survive it.
+  const open = useRef(true);
+  const holding = useRef(false);
+  const confirming = useRef(false);
+  useEffect(() => {
+    holding.current = (shown?.kind === "proposal" || shown?.kind === "taken") && proposal?.kind === "move";
+  });
+  useEffect(() => {
+    const state = { open, holding, confirming };
+    state.open.current = true;
+    return () => {
+      state.open.current = false;
+      if (state.holding.current && !state.confirming.current) release();
+    };
+    // release reads only base, which is the dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [base]);
+
+  function release() {
+    void deleteJson(`${base}/hold`, { timeoutMs: REQUEST_TIMEOUT_MS });
+  }
 
   async function run<T>(request: () => Promise<{ ok: boolean; status: number; data: T & { error?: string } }>, onOk: (data: T) => void) {
     setBusy(true);
@@ -97,13 +123,17 @@ export default function ReroutePanel({
     return run<RerouteProposal>(
       () => postJson(base, { bucketCode: chosenCode }, { timeoutMs: REQUEST_TIMEOUT_MS }),
       (proposal) => {
+        // A search that lands after the panel closed holds somebody nobody will confirm.
+        if (!open.current) {
+          if (proposal.kind === "move") release();
+          return;
+        }
         setNote("");
         setShown({ kind: "proposal", proposal, receivedAt: Date.now() });
       },
     );
   }
 
-  const proposal = shown?.kind === "proposal" ? shown.proposal : shown?.kind === "taken" ? shown.outcome.proposal : null;
 
   function confirm() {
     if (!proposal || proposal.kind === "none") return;
@@ -114,10 +144,10 @@ export default function ReroutePanel({
             holdId: null,
             bucketCode: proposal.bucket.code,
             requestedBucketCode: proposal.requested.code,
-            rungsDropped: proposal.rungsDropped,
             note: note.trim() || null,
           };
     const heldAdvisor = proposal.kind === "move" ? proposal.advisor.name : null;
+    confirming.current = true;
     return run<RerouteOutcome>(
       () => postJson(`${base}/confirm`, body, { timeoutMs: REQUEST_TIMEOUT_MS }),
       (outcome) => {
@@ -128,7 +158,9 @@ export default function ReroutePanel({
           onChanged();
         }
       },
-    );
+    ).finally(() => {
+      confirming.current = false;
+    });
   }
 
   async function cancel() {

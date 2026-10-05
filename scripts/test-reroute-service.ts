@@ -465,12 +465,37 @@ async function main() {
   // --- keep in a LOWER tier records what was asked for and how far it dropped ---
   {
     const { deps, calls } = fake({});
-    await confirmReroute(deps, { bookingId: "K1", holdId: null, bucketCode: "412", requestedBucketCode: "512", rungsDropped: 1, note: null, actor });
+    await confirmReroute(deps, { bookingId: "K1", holdId: null, bucketCode: "412", requestedBucketCode: "512", note: null, actor });
     const k = calls.keep[0] as { bucketId: string; requestedBucketId: string; rungsDropped: number; requestedTier: string | null; bookedTier: string | null };
     eq(k.bucketId, "b412", "a cascaded keep stores the bucket the advisor was kept in");
     eq(k.requestedBucketId, "b512", "records the bucket that was asked for");
-    eq(k.rungsDropped, 1, "and how far it dropped");
+    eq(k.rungsDropped, 1, "and how far it dropped, worked out from the two codes rather than taken from the browser");
     assert(k.requestedTier !== k.bookedTier, "so the requested and booked tiers differ");
+  }
+
+  // --- keep: a "kept" bucket above the one asked for is impossible, so refused ---
+  {
+    const { deps, calls } = fake({});
+    let code: string | null = null;
+    try {
+      await confirmReroute(deps, { bookingId: "K1", holdId: null, bucketCode: "512", requestedBucketCode: "312", note: null, actor });
+    } catch (e) {
+      code = e instanceof RerouteRefusedError ? e.code : "other";
+    }
+    eq(code, "kept_above_requested", "a keep in a HIGHER tier than asked for is refused by name");
+    eq(calls.keep.length, 0, "before any swap");
+  }
+
+  // --- keep: an advisor with no calendar event says so, not "no advisor" ---
+  {
+    const { deps } = fake({ booking: { gcal_event_id: null } });
+    let code: string | null = null;
+    try {
+      await confirmReroute(deps, { bookingId: "K1", holdId: null, bucketCode: "512", note: null, actor });
+    } catch (e) {
+      code = e instanceof RerouteRefusedError ? e.code : "other";
+    }
+    eq(code, "no_calendar_event", "a booking with an advisor but no calendar event has its own refusal");
   }
 
   {

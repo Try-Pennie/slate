@@ -41,6 +41,18 @@ const sent = (fn: ReturnType<typeof mockFetch>, suffix: string, method = "POST")
     .filter(([u, i]) => String(u).endsWith(suffix) && (i?.method ?? "GET") === method)
     .map(([, i]) => (i?.body ? JSON.parse(String(i.body)) : null));
 
+/** Holds one route's reply until the returned function is called. */
+function holdReply(fn: ReturnType<typeof mockFetch>, suffix: string, method: string) {
+  let let_go!: () => void;
+  const gate = new Promise<void>((r) => (let_go = r));
+  const answer = fn.getMockImplementation()!;
+  fn.mockImplementation(async (url, init) => {
+    if (String(url).endsWith(suffix) && (init?.method ?? "GET") === method) await gate;
+    return answer(url, init);
+  });
+  return let_go;
+}
+
 const onChanged = vi.fn();
 beforeEach(() => vi.clearAllMocks());
 
@@ -79,7 +91,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
     expect(onChanged).toHaveBeenCalled();
   });
 
-  it("confirms a keep with the bucket, the bucket asked for and the drop", async () => {
+  it("confirms a keep with the bucket and the bucket asked for", async () => {
     const user = userEvent.setup();
     const fn = mockFetch({ find: () => ({ body: KEEP }), confirm: () => ({ body: { kind: "kept", bucket: bucket("512") } }) });
     render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
@@ -89,7 +101,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
     await user.click(screen.getByRole("button", { name: "Change the bucket to 512" }));
     await screen.findByText("The bucket is now 512.");
     expect(sent(fn, "/reroute/confirm")).toEqual([
-      { holdId: null, bucketCode: "512", requestedBucketCode: "512", rungsDropped: 0, note: null },
+      { holdId: null, bucketCode: "512", requestedBucketCode: "512", note: null },
     ]);
   });
 
@@ -102,6 +114,54 @@ describe("ReroutePanel, as an admin (codes)", () => {
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(sent(fn, "/reroute/hold", "DELETE")).toHaveLength(1));
     expect(screen.queryByText("One tier down, in 412")).toBeNull();
+  });
+
+  it("releases a held advisor when the panel is closed, never leaving them blocked", async () => {
+    const user = userEvent.setup();
+    const fn = mockFetch({});
+    const { unmount } = render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await screen.findByText("One tier down, in 412");
+    unmount();
+    await waitFor(() => expect(sent(fn, "/reroute/hold", "DELETE")).toHaveLength(1));
+  });
+
+  it("keeps the hold when the panel closes mid confirm, which the server settles", async () => {
+    const user = userEvent.setup();
+    const fn = mockFetch({ confirm: () => ({ body: { kind: "moved", advisor: advisor("Morgan Reyes"), bucket: bucket("412") } }) });
+    const { unmount } = render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await screen.findByText("One tier down, in 412");
+    const finish = holdReply(fn, "/reroute/confirm", "POST");
+    await user.click(screen.getByRole("button", { name: "Move to Morgan Reyes" }));
+    await waitFor(() => expect(sent(fn, "/reroute/confirm")).toHaveLength(1));
+    unmount();
+    finish();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(sent(fn, "/reroute/hold", "DELETE")).toHaveLength(0);
+  });
+
+  it("releases the advisor a search held after the panel had already closed", async () => {
+    const user = userEvent.setup();
+    const fn = mockFetch({});
+    const { unmount } = render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    const finish = holdReply(fn, "/reroute", "POST");
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await waitFor(() => expect(sent(fn, "/reroute")).toHaveLength(1));
+    unmount();
+    finish();
+    await waitFor(() => expect(sent(fn, "/reroute/hold", "DELETE")).toHaveLength(1));
+  });
+
+  it("releases nothing on close when nothing is held", async () => {
+    const user = userEvent.setup();
+    const fn = mockFetch({ find: () => ({ body: KEEP }) });
+    const { unmount } = render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await screen.findByText("Taylor Brooks stays");
+    unmount();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(sent(fn, "/reroute/hold", "DELETE")).toHaveLength(0);
   });
 
   it("restores a live hold after a reload", async () => {

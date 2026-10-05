@@ -97,6 +97,14 @@ async function sendJson<T>(
   }
 }
 
+/**
+ * GET JSON from a client component with the SAME always-resolve contract as
+ * `postJson` (#974): a network rejection, an unparseable body, or a `timeoutMs`
+ * abort all become `{ ok:false, status:0, data:{} }` rather than a throw, so an
+ * imperative preview/poll caller can branch on the result and show a distinct
+ * failed state instead of hanging. `useFetchList` is the declarative list hook;
+ * this is for one-off / polled reads.
+ */
 export async function getJson<T = Record<string, unknown>>(
   url: string,
   options: GetJsonOptions = {},
