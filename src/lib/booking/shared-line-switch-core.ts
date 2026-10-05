@@ -21,10 +21,10 @@
  * once per isolate, on the first read rather than only when it is first needed, so a
  * misconfigured deployment says so on an ordinary day.
  *
- * No server imports, and the setting's NAME is deliberately not written here: the
- * admin control and the save copy import the TTL constant from this module into the
- * browser bundle, and a deployment setting named in a client chunk fails
- * `pnpm cf:build` (scripts/check-bundle-env.ts). The production instance, which reads
+ * No server imports, and no code here reads that setting by name (this comment's
+ * mention is stripped from the build): the admin control and the save copy import the
+ * TTL constant from this module into the browser bundle, and a deployment setting
+ * named in a client chunk fails `pnpm cf:build` (scripts/check-bundle-env.ts). The production instance, which reads
  * the database and the deployment's vars, is in `shared-line-switch.ts`.
  *
  * Pure apart from its injected read, clock and timer, so
