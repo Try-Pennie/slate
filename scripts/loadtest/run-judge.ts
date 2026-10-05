@@ -704,7 +704,7 @@ if (m) {
   );
   lines.push(`- all responses: p50 ${m.all?.p50 ?? "n/a"}ms, p95 ${m.all?.p95 ?? "n/a"}ms, max ${m.all?.max ?? "n/a"}ms`);
   lines.push(`- successful only: p50 ${m.ok?.p50 ?? "n/a"}ms, p95 ${m.ok?.p95 ?? "n/a"}ms, max ${m.ok?.max ?? "n/a"}ms`);
-  if (m.latency) lines.push(latencyReportLine(m.latency));
+  if (m.latency) lines.push(latencyReportLine(m.latency, result.platformUnmeasured));
   lines.push(`- 5xx: ${m.fiveXx}, no reply at all: ${m.noReply}, timed out at the driver's bound: ${m.timedOut}, write refusals: ${m.writeRefusals}`);
   lines.push(`- refusals by the address Slate saw: ${JSON.stringify(m.refusalsByIp)}`);
   // The number the run exists to produce after #2274, on EVERY run rather than

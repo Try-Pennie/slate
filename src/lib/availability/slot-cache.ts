@@ -243,13 +243,14 @@ const bookingRefreshes = makePoolRefreshCoalescer({
   lastStartedAt: lastPoolRecomputeAt,
 });
 
+/** The reads only arm's own start times: named so the test reset can clear it. */
+const lastPoolReadAt = new Map<string, number>();
+
 /**
  * The load run's reads only arm, coalesced by the SAME rule so the arms stay
  * comparable (#3293 review), on its own start map: a read that recorded itself in
  * `lastPoolRecomputeAt` would debounce a real recompute on the push path.
  */
-/** The reads only arm's own start times: named so the test reset can clear it. */
-const lastPoolReadAt = new Map<string, number>();
 const bookingReads = makePoolRefreshCoalescer({
   now: () => Date.now(),
   sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),

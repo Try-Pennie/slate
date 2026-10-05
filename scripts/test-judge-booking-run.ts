@@ -1780,6 +1780,14 @@ function slowRun(made = 100): JudgeInput {
   assert(line.includes("3200ms") && line.includes(`${LOAD_OVER_REST_RATIO_BAR} times`), `the report names the baseline and the multiple: ${line}`);
   assert(line.includes("5000ms absolute bar"), "and the absolute bar, missed or met");
   assert(latencyReportLine(hand.measurements!.latency!).includes("no same day baseline"), "a hand run's report says why the fixed bar judged it");
+
+  // #3258 follow up, L11: the latency report line must not claim every other bar was
+  // judged when the platform half was unmeasured too; it says what the verdict line says.
+  const voidOnly = latencyReportLine({ kind: "unmeasured", why: "no baseline file arrived" }, null);
+  assert(voidOnly.includes("every other bar was judged"), `with only speed void, the other bars were judged: ${voidOnly}`);
+  const voidBoth = latencyReportLine({ kind: "unmeasured", why: "no baseline file arrived" }, "the analytics API reported no invocation outcomes");
+  assert(!voidBoth.includes("every other bar was judged"), `with the platform unmeasured too, no blanket claim: ${voidBoth}`);
+  assert(voidBoth.includes("platform limits were UNMEASURED") && voidBoth.includes("no invocation outcomes"), `and it names the platform cause: ${voidBoth}`);
 }
 
 finish();
