@@ -1324,6 +1324,53 @@ function slowRun(made = 100): JudgeInput {
     r.findings.some((f) => f.bar === "the burst" && f.detail.includes("already")),
     "a burst nobody won is a finding",
   );
+  assert(
+    r.findings.some((f) => f.bar === "the burst" && f.detail.includes("409 SLOT_TAKEN")),
+    "and it names the refusals it read, by code",
+  );
+}
+
+{
+  // But "already taken" is a claim about the refusals, so it may be made only when the
+  // refusals SAY it. Run 37333201026 had an untouched slot and every burst request
+  // refused 503 VERIFY_UNAVAILABLE, and the judge still told the reader the slot had
+  // been taken before the burst fired (L11). It must say what the refusals were.
+  const r = broken((i) => {
+    for (const b of i.burstResults) {
+      b.attempts = b.attempts.map((a) => ({ ...a, status: 503, outcome: "VERIFY_UNAVAILABLE" }));
+    }
+  });
+  const burst = r.findings.find((f) => f.bar === "the burst");
+  assert(burst !== undefined, "a burst refused entirely with 503s is a finding");
+  assert(
+    burst !== undefined && !burst.detail.includes("already taken"),
+    `and it does not claim the slot was already taken (got: ${burst?.detail})`,
+  );
+  const total = passing().burstResults.reduce((n, b) => n + b.attempts.length, 0);
+  assert(
+    burst !== undefined && burst.detail.includes(`${total} 503 VERIFY_UNAVAILABLE`),
+    `it names the refusals by code and count (got: ${burst?.detail})`,
+  );
+}
+
+{
+  // A mixed refusal set is not "already taken" either: some of it was something else.
+  const r = broken((i) => {
+    for (const b of i.burstResults) {
+      b.attempts = b.attempts.map((a, n) =>
+        n === 0 ? { ...a, status: 503, outcome: "VERIFY_UNAVAILABLE" } : { ...a, status: 409, outcome: "SLOT_TAKEN" },
+      );
+    }
+  });
+  const burst = r.findings.find((f) => f.bar === "the burst");
+  assert(
+    burst !== undefined && !burst.detail.includes("already taken"),
+    `a burst whose refusals were not all SLOT_TAKEN does not claim the slot was taken (got: ${burst?.detail})`,
+  );
+  assert(
+    burst !== undefined && burst.detail.includes("503 VERIFY_UNAVAILABLE") && burst.detail.includes("409 SLOT_TAKEN"),
+    "and names both kinds of refusal",
+  );
 }
 
 {

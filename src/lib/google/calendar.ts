@@ -881,7 +881,7 @@ export async function syncEvents(
   timeMaxForBootstrap: string,
 ): Promise<SyncResult> {
   if (LOADTEST)
-    return stubSyncEvents(syncToken, Date.now(), {
+    return stubSyncEvents(calendarId, syncToken, Date.now(), {
       timeMinIso: timeMinForBootstrap,
       timeMaxIso: timeMaxForBootstrap,
     });

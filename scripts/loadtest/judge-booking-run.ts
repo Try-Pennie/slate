@@ -967,10 +967,26 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
     const namedAgents = winningAgents.filter((id): id is string => id !== null);
     const distinct = new Set(namedAgents);
     if (won.length === 0) {
+      // Say what the refusals WERE, by code and count, and claim the slot was already
+      // taken only when every one of them says so. Run 37333201026 had an untouched
+      // slot and every request refused 503 VERIFY_UNAVAILABLE, and this sentence still
+      // told the reader the slot had been taken before the burst fired (L11).
+      const counts = new Map<string, number>();
+      for (const a of burst) {
+        const label = `${a.status} ${a.outcome}`;
+        counts.set(label, (counts.get(label) ?? 0) + 1);
+      }
+      const refusals = [...counts.entries()]
+        .sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]))
+        .map(([label, n]) => `${n} ${label}`)
+        .join(", ");
+      const allTaken = burst.every((a) => a.status === 409 && a.outcome === "SLOT_TAKEN");
       fail(
         "the burst",
-        `none of the ${burst.length} burst requests was answered 200, so the slot was already ` +
-          "taken before the burst fired and nothing about contention was measured",
+        `none of the ${burst.length} burst requests was answered 200 (${refusals}), ` +
+          (allTaken
+            ? "so the slot was already taken before the burst fired and nothing about contention was measured"
+            : "so nothing about contention was measured"),
       );
     } else if (distinct.size < namedAgents.length) {
       fail(

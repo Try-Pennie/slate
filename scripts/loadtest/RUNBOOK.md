@@ -1412,6 +1412,17 @@ branch rather than the transient one repeatedly. Every message is marked
 `(loadtest fault)`, so an injected failure is never mistaken for a real Google one while
 reading the results.
 
+A calendar SYNC read is the exception (#3103). Its fault is keyed on the calendar
+alone, so the same agents fail on every pass, and it is always the `403
+notACalendarUser` shape raised as the error the classifier reads, so it is recorded as
+not-provisioned. That is what lets the `sync_failures` page fire inside the fault
+window: a transient kind needs four consecutive passes, about 270 seconds at the load
+test Worker's sync cadence, which a five minute window cannot reliably hold, while a
+definitive kind pages on the second. The key used to carry the sync token, which
+changes every pass, so no agent ever failed two passes running and the page never
+fired. `scripts/test-loadtest-sync-fault-streak.ts` drives the stub through the real
+paging predicate.
+
 What a faulted run should show: the failing agents are named in a throttled page rather
 than one per failure; a `notACalendarUser` agent is treated as definitively failing
 rather than retried every minute; the booker still offers times from agents who are
