@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { getJson, postJson } from "@/lib/http";
+import { deleteJson, getJson, postJson } from "@/lib/http";
 
 // #625: the shared client POST helper must ALWAYS resolve with { ok, status,
 // data } — a network rejection or an unparseable body can never throw, so the
@@ -125,5 +125,27 @@ describe("getJson", () => {
 
     const r = await getJson("/api/x");
     expect(r).toEqual({ ok: false, status: 0, data: {} });
+  });
+});
+
+// #3250: the reroute panel releases a hold with DELETE. Same contract as postJson:
+// it always resolves, so the panel can clear its busy state on any failure.
+describe("deleteJson", () => {
+  it("sends DELETE with no body and returns ok + parsed body", async () => {
+    const fn = vi.fn(async (_u: RequestInfo | URL, _i?: RequestInit) =>
+      ({ ok: true, status: 200, json: async () => ({ released: true }) }) as Response,
+    );
+    global.fetch = fn as unknown as typeof fetch;
+    const r = await deleteJson<{ released?: boolean }>("/api/x/hold");
+    expect(r).toEqual({ ok: true, status: 200, data: { released: true } });
+    expect(fn.mock.calls[0]?.[1]?.method).toBe("DELETE");
+    expect(fn.mock.calls[0]?.[1]?.body).toBeUndefined();
+  });
+
+  it("normalizes a network rejection instead of throwing", async () => {
+    global.fetch = vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    }) as unknown as typeof fetch;
+    expect(await deleteJson("/api/x/hold")).toEqual({ ok: false, status: 0, data: {} });
   });
 });

@@ -1,0 +1,192 @@
+// @vitest-environment jsdom
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import ReroutePanel from "@/components/ReroutePanel";
+
+// The reroute panel (#3250, phase 4 of #3244), built to the design settled with Dan
+// (docs/design/reroute-panel.html, R1 to R17 on #3250). The routes are mocked at
+// fetch, so this drives what a manager or admin does: choose the bucket, find an
+// advisor, read the result, confirm or cancel. Words come from reroute-copy, whose
+// own suite reads every sentence; this checks the panel shows them and sends the
+// right request for each choice.
+
+const bucket = (code: string) => ({ id: `b${code}`, code, name: `n${code}` });
+const advisor = (name: string) => ({ userId: name, name, email: `${name}@x.com` });
+const MOVE = {
+  kind: "move", holdId: "11111111-2222-4333-8444-555555555555", expiresAt: "x", secondsRemaining: 272,
+  advisor: advisor("Morgan Reyes"), bucket: bucket("412"), requested: bucket("512"), rungsDropped: 1,
+};
+const KEEP = { kind: "keep", lastResort: true, advisor: advisor("Taylor Brooks"), bucket: bucket("512"), requested: bucket("512"), rungsDropped: 0 };
+
+type Responder = (body: Record<string, unknown> | null) => { status?: number; body: unknown };
+function mockFetch(routes: { current?: unknown; find?: Responder; confirm?: Responder; release?: Responder }) {
+  const fn = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(url);
+    const method = init?.method ?? "GET";
+    const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : null;
+    const reply = (r: { status?: number; body: unknown }) =>
+      ({ ok: (r.status ?? 200) < 400, status: r.status ?? 200, json: async () => r.body }) as Response;
+    if (u.endsWith("/reroute/confirm")) return reply(routes.confirm?.(body) ?? { body: {} });
+    if (u.endsWith("/reroute/hold")) return reply(routes.release?.(body) ?? { body: { released: true } });
+    if (u.endsWith("/reroute") && method === "POST") return reply(routes.find?.(body) ?? { body: MOVE });
+    if (u.endsWith("/reroute")) return reply({ body: { proposal: routes.current ?? null } });
+    throw new Error(`unexpected fetch ${method} ${u}`);
+  });
+  global.fetch = fn as unknown as typeof fetch;
+  return fn;
+}
+const sent = (fn: ReturnType<typeof mockFetch>, suffix: string, method = "POST") =>
+  fn.mock.calls
+    .filter(([u, i]) => String(u).endsWith(suffix) && (i?.method ?? "GET") === method)
+    .map(([, i]) => (i?.body ? JSON.parse(String(i.body)) : null));
+
+const onChanged = vi.fn();
+beforeEach(() => vi.clearAllMocks());
+
+describe("ReroutePanel, as an admin (codes)", () => {
+  it("finds an advisor for the code chosen and shows the drop first", async () => {
+    const user = userEvent.setup();
+    const fn = mockFetch({});
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    await user.click(screen.getByRole("combobox", { name: "Correct bucket" }));
+    await user.click(screen.getByRole("option", { name: "512" }));
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await screen.findByText("One tier down, in 412");
+    expect(screen.getByText("Morgan Reyes is free. Nobody in 512 is.")).toBeTruthy();
+    expect(screen.getByText("Held for 4:32")).toBeTruthy();
+    expect(sent(fn, "/reroute")).toEqual([{ bucketCode: "512" }]);
+  });
+
+  it("lists all sixty codes", async () => {
+    const user = userEvent.setup();
+    mockFetch({});
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    await user.click(screen.getByRole("combobox", { name: "Correct bucket" }));
+    expect(screen.getAllByRole("option")).toHaveLength(60);
+  });
+
+  it("confirms the move with the hold and the note, then says what it did", async () => {
+    const user = userEvent.setup();
+    const fn = mockFetch({ confirm: () => ({ body: { kind: "moved", advisor: advisor("Morgan Reyes"), bucket: bucket("412") } }) });
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await screen.findByText("One tier down, in 412");
+    await user.type(screen.getByRole("textbox", { name: "Note" }), "lead is Ultra High");
+    await user.click(screen.getByRole("button", { name: "Move to Morgan Reyes" }));
+    await screen.findByText("Moved to Morgan Reyes, in 412.");
+    expect(sent(fn, "/reroute/confirm")).toEqual([{ holdId: MOVE.holdId, note: "lead is Ultra High" }]);
+    expect(onChanged).toHaveBeenCalled();
+  });
+
+  it("confirms a keep with the bucket, the bucket asked for and the drop", async () => {
+    const user = userEvent.setup();
+    const fn = mockFetch({ find: () => ({ body: KEEP }), confirm: () => ({ body: { kind: "kept", bucket: bucket("512") } }) });
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await screen.findByText("Taylor Brooks stays");
+    expect(screen.queryByText(/Held for/)).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Change the bucket to 512" }));
+    await screen.findByText("The bucket is now 512.");
+    expect(sent(fn, "/reroute/confirm")).toEqual([
+      { holdId: null, bucketCode: "512", requestedBucketCode: "512", rungsDropped: 0, note: null },
+    ]);
+  });
+
+  it("cancelling a move releases the hold", async () => {
+    const user = userEvent.setup();
+    const fn = mockFetch({});
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await screen.findByText("One tier down, in 412");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(sent(fn, "/reroute/hold", "DELETE")).toHaveLength(1));
+    expect(screen.queryByText("One tier down, in 412")).toBeNull();
+  });
+
+  it("restores a live hold after a reload", async () => {
+    mockFetch({ current: MOVE });
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    await screen.findByText("One tier down, in 412");
+    expect(screen.getByRole("button", { name: "Move to Morgan Reyes" })).toBeTruthy();
+  });
+
+  it("shows the next advisor when the held one was taken at confirm", async () => {
+    const user = userEvent.setup();
+    mockFetch({
+      confirm: () => ({ body: { kind: "taken", previous: advisor("Morgan Reyes"), proposal: { ...MOVE, advisor: advisor("Casey Lin") } } }),
+    });
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await screen.findByText("One tier down, in 412");
+    await user.click(screen.getByRole("button", { name: "Move to Morgan Reyes" }));
+    await screen.findByText(/Morgan Reyes was booked a moment ago, so Slate searched again\. Casey Lin is free/);
+    expect(screen.getByRole("button", { name: "Move to Casey Lin" })).toBeTruthy();
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it("names the advisor whose hold ran out, and offers to search again", async () => {
+    const user = userEvent.setup();
+    mockFetch({ confirm: () => ({ body: { kind: "expired" } }) });
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await screen.findByText("One tier down, in 412");
+    await user.click(screen.getByRole("button", { name: "Move to Morgan Reyes" }));
+    await screen.findByText("The hold ran out");
+    expect(screen.getByText("Morgan Reyes may have been booked since. Nothing has changed.")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Find an advisor" }).length).toBeGreaterThan(0);
+  });
+
+  it("shows the route's own sentence when a request is refused", async () => {
+    const user = userEvent.setup();
+    mockFetch({ find: () => ({ status: 409, body: { error: "This lead booked a specific advisor by link, so there is no bucket to correct.", code: "agent_link" } }) });
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/specific advisor by link/);
+  });
+
+  it("never offers nothing as success when the request did not complete", async () => {
+    const user = userEvent.setup();
+    global.fetch = vi.fn(async (_u: RequestInfo | URL, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "GET") return { ok: true, status: 200, json: async () => ({ proposal: null }) } as Response;
+      throw new TypeError("Failed to fetch");
+    }) as unknown as typeof fetch;
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/try again/i);
+  });
+});
+
+describe("ReroutePanel, as a manager (pools)", () => {
+  it("picks a backend, then a debt level, and keeps the rest of the booking's code", async () => {
+    const user = userEvent.setup();
+    const fn = mockFetch({});
+    render(<ReroutePanel bookingId="bk1" currentCode="112" showCodes={false} onChanged={onChanged} />);
+    expect(screen.queryByRole("combobox", { name: "Correct bucket" })).toBeNull();
+    const backends = screen.getAllByRole("radio").map((r) => r.closest("label")?.textContent);
+    expect(backends).toEqual(["Beyond", "Achieve", "Either"]);
+    await user.click(screen.getByRole("radio", { name: "Achieve" }));
+    await user.click(screen.getByRole("combobox", { name: "Debt level" }));
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(["Low", "Medium", "High", "Very High", "Ultra High"]);
+    await user.click(screen.getByRole("option", { name: "Ultra High" }));
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await screen.findByText(/tier down/);
+    expect(sent(fn, "/reroute")).toEqual([{ bucketCode: "532" }]);
+  });
+
+  it("reads pools, never codes, in the result", async () => {
+    const user = userEvent.setup();
+    mockFetch({});
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes={false} onChanged={onChanged} />);
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await screen.findByText("One tier down, in Very High");
+    expect(screen.getByText("Morgan Reyes is free. Nobody in Ultra High is.")).toBeTruthy();
+  });
+
+  it("starts from the booking's own backend and debt level", () => {
+    mockFetch({});
+    render(<ReroutePanel bookingId="bk1" currentCode="332" showCodes={false} onChanged={onChanged} />);
+    expect((screen.getByRole("radio", { name: "Achieve" }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByRole("combobox", { name: "Debt level" }).textContent).toMatch(/High/);
+  });
+});

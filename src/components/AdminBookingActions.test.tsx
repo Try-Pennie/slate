@@ -78,15 +78,15 @@ async function pickDay() {
 describe("AdminBookingActions", () => {
   it("shows no actions for a terminal booking", () => {
     mockFetch();
-    render(<AdminBookingActions bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="cancelled" reasonOptions={TEST_REASON_OPTIONS} />);
+    render(<AdminBookingActions showCodes bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="cancelled" reasonOptions={TEST_REASON_OPTIONS} />);
     expect(screen.queryByRole("button", { name: /reschedule/i })).toBeNull();
   });
 
   it("requires a reason before an admin cancel, then sends it", async () => {
     const fn = mockFetch();
-    render(<AdminBookingActions bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
+    render(<AdminBookingActions showCodes bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
 
-    await userEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^cancel booking$/i }));
     const confirm = () => screen.getByRole("button", { name: /confirm cancel/i }) as HTMLButtonElement;
     expect(confirm().disabled).toBe(true);
 
@@ -100,7 +100,7 @@ describe("AdminBookingActions", () => {
 
   it("requires a reason before an admin reschedule slot, then sends it", async () => {
     const fn = mockFetch();
-    render(<AdminBookingActions bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
+    render(<AdminBookingActions showCodes bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     await pickDay();
@@ -134,7 +134,7 @@ describe("AdminBookingActions", () => {
               json: async () => ({ code: "DAILY_CAP_EXCEEDED", day: "Mon, Jun 22" }),
             } as Response),
     });
-    render(<AdminBookingActions bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" currentAgentId="ag-9" reasonOptions={TEST_REASON_OPTIONS} />);
+    render(<AdminBookingActions showCodes bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" currentAgentId="ag-9" reasonOptions={TEST_REASON_OPTIONS} />);
 
     await userEvent.click(screen.getByRole("button", { name: /^reassign$/i }));
     await userEvent.click(await screen.findByRole("radio", { name: /owner reassignment/i }));
@@ -162,7 +162,7 @@ describe("AdminBookingActions", () => {
       reassign: () =>
         ({ ok: false, json: async () => ({ code: "DAILY_CAP_EXCEEDED", day: "" }) } as Response),
     });
-    render(<AdminBookingActions bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
+    render(<AdminBookingActions showCodes bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
 
     await userEvent.click(screen.getByRole("button", { name: /^reassign$/i }));
     await userEvent.click(await screen.findByRole("radio", { name: /owner reassignment/i }));
@@ -201,7 +201,7 @@ describe("AdminBookingActions", () => {
 
   it("renders an out-of-rotation agent greyed with a 'not in rotation' flag, sorted below in-pool", async () => {
     mockFetchMixed();
-    render(<AdminBookingActions bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" currentAgentId="ag-9" reasonOptions={TEST_REASON_OPTIONS} />);
+    render(<AdminBookingActions showCodes bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" currentAgentId="ag-9" reasonOptions={TEST_REASON_OPTIONS} />);
 
     await userEvent.click(screen.getByRole("button", { name: /^reassign$/i }));
     await userEvent.click(await screen.findByRole("radio", { name: /owner reassignment/i }));
@@ -227,7 +227,7 @@ describe("AdminBookingActions", () => {
   // NOT post until 'Reassign anyway'.
   it("confirms before reassigning to an out-of-rotation agent, then POSTs on 'Reassign anyway'", async () => {
     const fn = mockFetchMixed();
-    render(<AdminBookingActions bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" currentAgentId="ag-9" reasonOptions={TEST_REASON_OPTIONS} />);
+    render(<AdminBookingActions showCodes bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" currentAgentId="ag-9" reasonOptions={TEST_REASON_OPTIONS} />);
 
     await userEvent.click(screen.getByRole("button", { name: /^reassign$/i }));
     await userEvent.click(await screen.findByRole("radio", { name: /owner reassignment/i }));
@@ -248,7 +248,7 @@ describe("AdminBookingActions", () => {
 
   it("dismissing the out-of-rotation warning returns to the picker without posting", async () => {
     const fn = mockFetchMixed();
-    render(<AdminBookingActions bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" currentAgentId="ag-9" reasonOptions={TEST_REASON_OPTIONS} />);
+    render(<AdminBookingActions showCodes bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" currentAgentId="ag-9" reasonOptions={TEST_REASON_OPTIONS} />);
 
     await userEvent.click(screen.getByRole("button", { name: /^reassign$/i }));
     await userEvent.click(await screen.findByRole("radio", { name: /owner reassignment/i }));
@@ -263,7 +263,7 @@ describe("AdminBookingActions", () => {
 
   it("still posts immediately (no extra confirm) for an in-rotation agent", async () => {
     const fn = mockFetch();
-    render(<AdminBookingActions bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" currentAgentId="ag-9" reasonOptions={TEST_REASON_OPTIONS} />);
+    render(<AdminBookingActions showCodes bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" currentAgentId="ag-9" reasonOptions={TEST_REASON_OPTIONS} />);
 
     await userEvent.click(screen.getByRole("button", { name: /^reassign$/i }));
     await userEvent.click(await screen.findByRole("radio", { name: /owner reassignment/i }));
@@ -280,9 +280,9 @@ describe("AdminBookingActions", () => {
     global.fetch = vi.fn(async () => {
       throw new TypeError("Failed to fetch");
     }) as unknown as typeof fetch;
-    render(<AdminBookingActions bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
+    render(<AdminBookingActions showCodes bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
 
-    await userEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^cancel booking$/i }));
     await userEvent.click(screen.getByRole("radio", { name: /booked by mistake/i }));
     await userEvent.click(screen.getByRole("button", { name: /confirm cancel/i }));
 
@@ -299,7 +299,7 @@ describe("AdminBookingActions", () => {
       }
       throw new TypeError("Failed to fetch");
     }) as unknown as typeof fetch;
-    render(<AdminBookingActions bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
+    render(<AdminBookingActions showCodes bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     await userEvent.click(screen.getByRole("radio", { name: /found a better time/i }));
@@ -320,7 +320,7 @@ describe("AdminBookingActions", () => {
       }
       throw new TypeError("Failed to fetch");
     }) as unknown as typeof fetch;
-    render(<AdminBookingActions bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" currentAgentId="ag-9" reasonOptions={TEST_REASON_OPTIONS} />);
+    render(<AdminBookingActions showCodes bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" currentAgentId="ag-9" reasonOptions={TEST_REASON_OPTIONS} />);
 
     await userEvent.click(screen.getByRole("button", { name: /^reassign$/i }));
     await userEvent.click(await screen.findByRole("radio", { name: /owner reassignment/i }));
@@ -337,7 +337,7 @@ describe("AdminBookingActions", () => {
   // while the fetch is still in flight or after it failed.
   it("shows loading skeletons, not the empty copy, while reschedule availability loads", async () => {
     global.fetch = vi.fn(() => new Promise(() => {})) as unknown as typeof fetch;
-    render(<AdminBookingActions bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
+    render(<AdminBookingActions showCodes bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
 
@@ -358,7 +358,7 @@ describe("AdminBookingActions", () => {
       }
       return { ok: true, json: async () => ({}) } as Response;
     }) as unknown as typeof fetch;
-    render(<AdminBookingActions bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
+    render(<AdminBookingActions showCodes bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
 
@@ -377,7 +377,7 @@ describe("AdminBookingActions", () => {
       }
       return { ok: true, json: async () => ({}) } as Response;
     }) as unknown as typeof fetch;
-    render(<AdminBookingActions bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
+    render(<AdminBookingActions showCodes bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
 
@@ -389,7 +389,7 @@ describe("AdminBookingActions", () => {
 
   it("shows loading skeletons, not the empty copy, while the reassign agent list loads", async () => {
     global.fetch = vi.fn(() => new Promise(() => {})) as unknown as typeof fetch;
-    render(<AdminBookingActions bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
+    render(<AdminBookingActions showCodes bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
 
     await userEvent.click(screen.getByRole("button", { name: /^reassign$/i }));
 
@@ -408,7 +408,7 @@ describe("AdminBookingActions", () => {
       }
       return { ok: true, json: async () => ({}) } as Response;
     }) as unknown as typeof fetch;
-    render(<AdminBookingActions bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" currentAgentId="ag-9" reasonOptions={TEST_REASON_OPTIONS} />);
+    render(<AdminBookingActions showCodes bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" currentAgentId="ag-9" reasonOptions={TEST_REASON_OPTIONS} />);
 
     await userEvent.click(screen.getByRole("button", { name: /^reassign$/i }));
 
@@ -432,8 +432,8 @@ describe("AdminBookingActions", () => {
       return Promise.resolve({ ok: true, json: async () => ({}) } as Response);
     }) as unknown as typeof fetch;
 
-    render(<AdminBookingActions bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
-    fireEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+    render(<AdminBookingActions showCodes bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
+    fireEvent.click(screen.getByRole("button", { name: /^cancel booking$/i }));
     fireEvent.click(screen.getByRole("radio", { name: /booked by mistake/i }));
 
     vi.useFakeTimers();
@@ -465,7 +465,7 @@ describe("AdminBookingActions", () => {
       });
     }) as unknown as typeof fetch;
 
-    render(<AdminBookingActions bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
+    render(<AdminBookingActions showCodes bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
     fireEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     fireEvent.click(await screen.findByRole("radio", { name: /found a better time/i }));
     fireEvent.click(await dayChip());
@@ -498,7 +498,7 @@ describe("AdminBookingActions", () => {
     }) as unknown as typeof fetch;
 
     render(
-      <AdminBookingActions bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" currentAgentId="ag-9" reasonOptions={TEST_REASON_OPTIONS} />,
+      <AdminBookingActions showCodes bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" currentAgentId="ag-9" reasonOptions={TEST_REASON_OPTIONS} />,
     );
     fireEvent.click(screen.getByRole("button", { name: /^reassign$/i }));
     fireEvent.click(await screen.findByRole("radio", { name: /owner reassignment/i }));
@@ -529,7 +529,7 @@ describe("AdminBookingActions", () => {
       }
       return { ok: true, json: async () => ({}) } as Response;
     }) as unknown as typeof fetch;
-    render(<AdminBookingActions bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
+    render(<AdminBookingActions showCodes bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     // Both days are offered, so the load is settled and this is not a spinner.
@@ -546,7 +546,7 @@ describe("AdminBookingActions", () => {
   // not just the loading skeletons.
   it("announces the reschedule slot count via role=status (#633)", async () => {
     mockFetch(); // availability responds with one slot
-    render(<AdminBookingActions bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
+    render(<AdminBookingActions showCodes bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     await pickDay();
@@ -564,6 +564,7 @@ describe("the lead's calling hours on the admin panel (#2310)", () => {
     mockFetch();
     render(
       <AdminBookingActions
+        showCodes
         bookingId="bk1"
         bucketCode="411"
         rescheduleTimesFrom="pool"
@@ -610,7 +611,7 @@ describe("the admin move of an advisor link booking (#2827)", () => {
   it("reads the advisor's times through the staff route, and the pool-only time is not offered", async () => {
     const fn = twoSources();
     render(
-      <AdminBookingActions bookingId="bk1" bucketCode="411" rescheduleTimesFrom="advisor" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />,
+      <AdminBookingActions showCodes bookingId="bk1" bucketCode="411" rescheduleTimesFrom="advisor" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />,
     );
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     await pickDay();
@@ -621,7 +622,7 @@ describe("the admin move of an advisor link booking (#2827)", () => {
   it("a routed booking reads the pool, where the pool-only time IS offered", async () => {
     const fn = twoSources();
     render(
-      <AdminBookingActions bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />,
+      <AdminBookingActions showCodes bookingId="bk1" bucketCode="411" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />,
     );
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     await pickDay();
@@ -631,3 +632,41 @@ describe("the admin move of an advisor link booking (#2827)", () => {
 });
 
 afterEach(() => vi.useRealTimers());
+
+// #3250: Reroute is the fourth action (R1). Its panel opens under a divider and the
+// action row stays on screen with Reroute marked as the open one, so the backend
+// buttons never read as more actions.
+describe("AdminBookingActions reroute (#3250)", () => {
+  it("offers Reroute between Reassign and Cancel booking, and keeps the row open beside its panel", async () => {
+    const user = userEvent.setup();
+    mockFetch();
+    render(<AdminBookingActions showCodes bookingId="bk1" bucketCode="100" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
+    const names = screen.getAllByRole("button").map((b) => b.textContent);
+    expect(names).toEqual(["Reschedule", "Reassign", "Reroute", "Cancel booking"]);
+    await user.click(screen.getByRole("button", { name: "Reroute" }));
+    expect(screen.getByRole("button", { name: "Reroute" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Reassign" }).getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByRole("combobox", { name: "Correct bucket" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Find an advisor" })).toBeTruthy();
+  });
+
+  it("gives a manager the backend and debt level controls, not codes", async () => {
+    const user = userEvent.setup();
+    mockFetch();
+    render(<AdminBookingActions showCodes={false} bookingId="bk1" bucketCode="100" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
+    await user.click(screen.getByRole("button", { name: "Reroute" }));
+    expect(screen.queryByRole("combobox", { name: "Correct bucket" })).toBeNull();
+    expect(screen.getByRole("combobox", { name: "Debt level" })).toBeTruthy();
+    expect(screen.getAllByRole("radio")).toHaveLength(3);
+  });
+
+  it("leaves Reroute when another action is chosen", async () => {
+    const user = userEvent.setup();
+    mockFetch();
+    render(<AdminBookingActions showCodes bookingId="bk1" bucketCode="100" rescheduleTimesFrom="pool" leadTimeZone="America/New_York" status="confirmed" reasonOptions={TEST_REASON_OPTIONS} />);
+    await user.click(screen.getByRole("button", { name: "Reroute" }));
+    await user.click(screen.getByRole("button", { name: "Reassign" }));
+    expect(screen.queryByRole("button", { name: "Find an advisor" })).toBeNull();
+  });
+});
+

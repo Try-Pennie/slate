@@ -55,6 +55,27 @@ export async function postJson<T = Record<string, unknown>>(
   body: unknown,
   options: PostJsonOptions = {},
 ): Promise<PostJsonResult<T>> {
+  return sendJson<T>("POST", url, body, options);
+}
+
+/**
+ * DELETE from a client component, on the same always-resolves contract as
+ * `postJson` (#3250: releasing a reroute hold). No request body.
+ */
+export async function deleteJson<T = Record<string, unknown>>(
+  url: string,
+  options: PostJsonOptions = {},
+): Promise<PostJsonResult<T>> {
+  return sendJson<T>("DELETE", url, undefined, options);
+}
+
+/** The one body behind `postJson` and `deleteJson`; `undefined` sends no body. */
+async function sendJson<T>(
+  method: "POST" | "DELETE",
+  url: string,
+  body: unknown,
+  options: PostJsonOptions,
+): Promise<PostJsonResult<T>> {
   const controller = options.timeoutMs != null ? new AbortController() : null;
   const timer =
     controller && options.timeoutMs != null
@@ -62,9 +83,9 @@ export async function postJson<T = Record<string, unknown>>(
       : null;
   try {
     const res = await fetch(url, {
-      method: "POST",
-      headers: { ...options.headers, "content-type": "application/json" },
-      body: JSON.stringify(body),
+      method,
+      headers: body === undefined ? options.headers : { ...options.headers, "content-type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
       signal: controller?.signal,
     });
     const data = (await res.json().catch(() => ({}))) as T;
@@ -76,14 +97,6 @@ export async function postJson<T = Record<string, unknown>>(
   }
 }
 
-/**
- * GET JSON from a client component with the SAME always-resolve contract as
- * `postJson` (#974): a network rejection, an unparseable body, or a `timeoutMs`
- * abort all become `{ ok:false, status:0, data:{} }` rather than a throw, so an
- * imperative preview/poll caller can branch on the result and show a distinct
- * failed state instead of hanging. `useFetchList` is the declarative list hook;
- * this is for one-off / polled reads.
- */
 export async function getJson<T = Record<string, unknown>>(
   url: string,
   options: GetJsonOptions = {},

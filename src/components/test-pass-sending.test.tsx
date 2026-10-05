@@ -229,6 +229,7 @@ describe("the manage page and the admin panel send it for a test booking (#2666)
     const fn = mockFetch({ availability: { ok: true, body: { slots: [] } } });
     render(
       <AdminBookingActions
+        showCodes
         bookingId="bk1"
         rescheduleTimesFrom="pool"
         bucketCode={PUBLIC_TEST}
@@ -247,6 +248,7 @@ describe("the manage page and the admin panel send it for a test booking (#2666)
     const fn = mockFetch({ availability: { ok: true, body: { slots: [] } } });
     render(
       <AdminBookingActions
+        showCodes
         bookingId="bk1"
         rescheduleTimesFrom="pool"
         bucketCode="411"

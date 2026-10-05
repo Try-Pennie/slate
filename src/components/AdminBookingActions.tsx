@@ -12,6 +12,7 @@ import {
 import { bookingIsActionable } from "@/lib/booking/detail";
 import { rankReassignAgents, type ReassignAgent } from "@/lib/booking/reassign-agents";
 import ReasonPicker from "@/components/ReasonPicker";
+import ReroutePanel from "@/components/ReroutePanel";
 import { AsyncListStates, useFetchList } from "@/components/AsyncList";
 import { BookerStrip } from "@/components/BookerStrip";
 import { SlotTimes, SLOT_TIMES_CLASSES } from "@/components/SlotTimes";
@@ -25,7 +26,7 @@ import {
   type RescheduleTimesFrom,
 } from "@/lib/booking/reschedule-times-url";
 
-type Mode = null | "cancel" | "reschedule" | "reassign";
+type Mode = null | "cancel" | "reschedule" | "reassign" | "reroute";
 
 const extractAgents = (json: unknown): ReassignAgent[] =>
   (json as { agents?: ReassignAgent[] } | null)?.agents ?? [];
@@ -50,6 +51,7 @@ export default function AdminBookingActions({
   status,
   currentAgentId,
   reasonOptions: options,
+  showCodes,
 }: {
   bookingId: string;
   bucketCode: string | null;
@@ -80,6 +82,10 @@ export default function AdminBookingActions({
   /** Active reason options per action, resolved from the store server-side (#346);
    *  drives both the picker and the client validate gate so the UI and server agree. */
   reasonOptions: Record<ReasonAction, ReasonOption[]>;
+  /** #3250: whether the viewer reads bucket codes (an admin) or pool names (a
+   *  manager or team lead). Required, so the page decides it, as it does for the
+   *  booking's own Bucket field. */
+  showCodes: boolean;
 }) {
   const router = useRouter();
   const [mode, setMode] = useState<Mode>(null);
@@ -235,27 +241,50 @@ export default function AdminBookingActions({
     }
   }
 
-  if (mode === null) {
+  // The action row. #3250: Reroute keeps it on screen with Reroute marked as the
+  // open action (R1), so its panel reads as that action's, and the destructive
+  // button is named for what it does, since the reroute result has a Cancel of its
+  // own that only drops the reroute.
+  const actionRow = (open: Mode) => {
+    const pressed = (m: Mode) => (open === null ? undefined : open === m);
+    const neutral = "min-h-9 rounded-md border border-border bg-surface px-2 py-1 text-xs text-fg hover:border-fg/45";
+    const marked = "min-h-9 rounded-md border border-fg bg-surface px-2 py-1 text-xs font-semibold text-fg shadow-[inset_0_0_0_1px_var(--fg)]";
     return (
       <div className="flex gap-2">
-        <button
-          onClick={openReschedule}
-          className="min-h-9 rounded-md border border-border bg-surface px-2 py-1 text-xs text-fg hover:border-fg/45"
-        >
+        <button onClick={openReschedule} aria-pressed={pressed("reschedule")} className={neutral}>
           Reschedule
         </button>
-        <button
-          onClick={openReassign}
-          className="min-h-9 rounded-md border border-border bg-surface px-2 py-1 text-xs text-fg hover:border-fg/45"
-        >
+        <button onClick={openReassign} aria-pressed={pressed("reassign")} className={neutral}>
           Reassign
         </button>
         <button
+          onClick={() => {
+            reset();
+            setMode("reroute");
+          }}
+          aria-pressed={pressed("reroute")}
+          className={open === "reroute" ? marked : neutral}
+        >
+          Reroute
+        </button>
+        <button
           onClick={() => setMode("cancel")}
+          aria-pressed={pressed("cancel")}
           className="min-h-9 rounded-md border border-[var(--error)] px-2 py-1 text-xs font-semibold text-[var(--error)] hover:bg-[color-mix(in_srgb,var(--error)_6%,transparent)]"
         >
-          Cancel
+          Cancel booking
         </button>
+      </div>
+    );
+  };
+
+  if (mode === null) return actionRow(null);
+
+  if (mode === "reroute") {
+    return (
+      <div>
+        {actionRow("reroute")}
+        <ReroutePanel bookingId={bookingId} currentCode={bucketCode} showCodes={showCodes} onChanged={() => router.refresh()} />
       </div>
     );
   }
