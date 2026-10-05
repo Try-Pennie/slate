@@ -125,6 +125,10 @@ vi.mock("@/lib/notify/dispatch", () => dispatch);
 vi.mock("@/lib/notify/email", () => email);
 vi.mock("@/lib/supabase/admin", () => admin);
 vi.mock("@/lib/env", () => ({ appUrl: () => "https://slate.example" }));
+// Spied rather than silenced, so the failed send's log line can be asserted: it is
+// where every page points its reader ("Diagnose via the booking-reminder log lines").
+const logSpy = vi.hoisted(() => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
+vi.mock("@/lib/log", () => logSpy);
 
 // #1334: the calling number read and the invite write, the two new outside calls.
 const callingNumber = vi.hoisted(() => ({
@@ -267,6 +271,34 @@ describe("GET /api/cron/booking-reminders", () => {
     // six hour cooldown (2026-10-05).
     expect(keys).toContain("booking_reminder_failed:bk-1");
     expect(keys).not.toContain(REMINDER_FAILURE_RATE_KEY);
+  });
+
+  // Plan item E: the page says to diagnose via the log, so the log line has to carry
+  // the booking, the code, the outcome and the claim, and the Error itself as the
+  // THIRD argument so Cloudflare serializes its cause and stack. No contact data.
+  it("logs a failed send with its booking, code, outcome and claim, and the Error passed through", async () => {
+    state.pages = [[due(1)]];
+    const refused = new EmailSendError("Gmail send failed: 400 Invalid To header", {
+      outcome: "refused",
+      stage: "post",
+      status: 400,
+      transient: false,
+    });
+    state.sendFailures = [refused];
+    await GET(req());
+    const call = logSpy.log.warn.mock.calls.find(
+      (c) => c[0] === "booking-reminder" && (c[1] as Record<string, unknown>)?.booking_id === "bk-1",
+    );
+    expect(call).toBeDefined();
+    expect(call![1]).toMatchObject({
+      booking_id: "bk-1",
+      code: "recipient_refused",
+      outcome: "refused",
+      disposition: "refused",
+      claim_released: false,
+    });
+    expect(call![2]).toBe(refused);
+    expect(JSON.stringify(call![1])).not.toContain("lead-1@example.com");
   });
 
   // 2026-10-05: a token mint that timed out delivered nothing, because the mint runs

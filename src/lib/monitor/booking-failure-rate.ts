@@ -81,6 +81,9 @@ export interface RateSample {
    *  every tick can be counted once rather than once per tick. Optional for the
    *  same reason as `refusals`. */
   retried?: Record<string, string>;
+  /** The reminder lane's window only: how a booking handed back earlier in the
+   *  window ended on this tick, `sent` or `kept`, so it stops counting as retried. */
+  settled?: Record<string, string>;
 }
 
 /** The single persisted state row: the last reading (the baseline the next delta

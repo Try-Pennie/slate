@@ -25,8 +25,8 @@
  *                path that can deliver twice.
  *
  * `transient` says whether the same call could succeed if made again shortly (a
- * token deadline, a network fault, a 429 or 5xx), as opposed to needing a repair
- * (a refused delegation, a rejected address).
+ * token deadline, a network fault, a 429, a 403 whose reason is a rate limit, a
+ * 5xx), as opposed to needing a repair (a refused delegation, a rejected address).
  *
  * The outcome is set by STAGE, never inferred from an error's class: a deadline
  * during the mint and a deadline during the POST are the same class of error and
@@ -43,6 +43,9 @@ export class EmailSendError extends Error {
   readonly stage: EmailSendStage;
   /** The HTTP status that decided it (the token endpoint's or Gmail's), or null. */
   readonly status: number | null;
+  /** Google's machine reason (`rateLimitExceeded`, `unauthorized_client`), or null.
+   *  What separates a 403 rate limit from a 403 permission refusal (#917). */
+  readonly reason: string | null;
   readonly transient: boolean;
   constructor(
     message: string,
@@ -50,6 +53,7 @@ export class EmailSendError extends Error {
       outcome: EmailSendOutcome;
       stage: EmailSendStage;
       status?: number | null;
+      reason?: string | null;
       transient: boolean;
       cause?: unknown;
     },
@@ -59,6 +63,7 @@ export class EmailSendError extends Error {
     this.outcome = init.outcome;
     this.stage = init.stage;
     this.status = init.status ?? null;
+    this.reason = init.reason ?? null;
     this.transient = init.transient;
   }
 }

@@ -285,8 +285,10 @@ export async function GET(req: NextRequest) {
    * time, so one refused address is one page and a total outage is a page per lead
    * with nothing saying they share a cause. This folds the tick into a rolling window
    * and pages on the SHARE, which is the only thing that can tell the two apart.
-   * Sends released to be retried ride along by booking id, so one booking retried
-   * every tick counts once rather than once per tick (`judgeReminderWindow`).
+   * Sends released to be retried ride along by booking id, with how every other
+   * attempted booking settled, so one booking retried every tick counts once rather
+   * than once per tick and stops counting once it is sent or given up
+   * (`judgeReminderWindow`).
    *
    * It runs AFTER the sends and cannot stop them: every failure inside it is caught
    * and reported, because a monitor bolted onto a lane that emails real people must
@@ -295,7 +297,13 @@ export async function GET(req: NextRequest) {
   const rate = await runReminderFailureRateCheck({
     nowMs: now,
     day: reminderRateDay(now),
-    tick: { attempts: run.attempted, failures: run.failed, byCode: run.byCode, retried: run.retried },
+    tick: {
+      attempts: run.attempted,
+      failures: run.failed,
+      byCode: run.byCode,
+      retried: run.retried,
+      settled: run.settled,
+    },
     thresholds: SHIPPED_REMINDER_FAILURE_RATE_THRESHOLDS,
     cooldownMs: REMINDER_ALERT_COOLDOWN_MS,
     loadState: loadReminderRateState,

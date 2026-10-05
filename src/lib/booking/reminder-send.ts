@@ -1,7 +1,7 @@
 import { reminderDue, reminderHeld, reminderSubject, reminderBody, REMINDER_HOLD_FLOOR_MS } from "./reminder.ts";
-import { classifyReminderSendFailure, type ReminderFailureCode } from "./reminder-rate.ts";
+import { classifyReminderSendFailure, type ReminderFailureCode, type ReminderSettlement } from "./reminder-rate.ts";
 import type { MimeMessage } from "@/lib/notify/email-mime";
-import { asEmailSendError } from "@/lib/notify/email-errors";
+import { asEmailSendError, type EmailSendOutcome } from "@/lib/notify/email-errors";
 import { shortErrorReason } from "@/lib/notify/error-text";
 import { parseStampMs } from "@/lib/date/stamp";
 import { isLeadId, leadIdKey } from "@/lib/salesforce/lead-xbc";
@@ -19,6 +19,18 @@ import { readWithinDeadline, type ScheduleTimer } from "@/lib/read-within-deadli
  * number, never the reminder itself.
  */
 export const REMINDER_CALLING_NUMBER_DEADLINE_MS = 10_000;
+
+/**
+ * How much further than `REMINDER_HOLD_FLOOR_MS` a call must be for a failed send
+ * to be handed back (2026-10-05 review). The floor is where a reminder stops being
+ * worth sending, because it would land after the lead's one hour text; the RETRY is
+ * the next tick, one five minute cadence later, so a hand back made right at the
+ * floor would be retried inside it. Ten minutes is that cadence plus another, so a
+ * next tick that itself spends minutes on slow mints still sends before the hour.
+ * The distance is judged on the clock read when the send FAILED, not the tick's
+ * start, for the same reason.
+ */
+export const REMINDER_RETRY_MARGIN_MS = 10 * 60_000;
 
 /**
  * The 24 hour reminder lane's orchestration (#2359).
@@ -46,7 +58,8 @@ export const REMINDER_CALLING_NUMBER_DEADLINE_MS = 10_000;
  * The exception is a failure that PROVES nothing was delivered and could pass: the
  * send threw an `EmailSendError` whose outcome is `never_sent` or `refused` and
  * which is `transient` (a token mint that timed out, a 429), while the call is still
- * more than `REMINDER_HOLD_FLOOR_MS` away. Then the claim is handed back, by a
+ * more than `REMINDER_HOLD_FLOOR_MS` plus `REMINDER_RETRY_MARGIN_MS` away, so the
+ * retry itself lands before the hour. Then the claim is handed back, by a
  * compare and swap as exact as the claim itself, and the next tick sends it
  * (2026-10-05: a mint timeout cost a lead their reminder under the old rule, though
  * the mint runs before Gmail is ever called). Anything less certain, a plain Error
@@ -181,6 +194,13 @@ export interface ReminderRun {
   /** The released bookings by id, with the code each failed with, so the failure
    *  share can count one booking once however many ticks retry it. */
   retried: Record<string, ReminderFailureCode>;
+  /**
+   * Every other booking this tick attempted, by id: `sent`, or `kept` when it failed
+   * and kept its claim. With `retried` it covers every attempt, and it is what lets
+   * the share stop counting a booking as retried once it has gone out or been given
+   * up (`judgeReminderWindow`).
+   */
+  settled: Record<string, ReminderSettlement>;
   /** Reminders sent naming the calling number, with the advisor's card (#1334). */
   withCallingNumber: number;
   /**
@@ -211,16 +231,30 @@ export interface ReminderRun {
 /**
  * Why a failed reminder pages, which decides what the page can truthfully say.
  *
- *   too_late     - nothing reached Gmail, and the call is within the hour, so a retry
- *                  would land after the lead's one hour text reminder.
- *   refused      - Google refused it (the address, or the mailbox's delegation) in a
- *                  way that will not pass, so it is not resent until that is repaired.
- *   unknown      - the send failed in a way that cannot say whether Gmail accepted
- *                  it, so it is not resent: that could deliver a second copy.
- *   not_released - nothing reached Gmail and a retry was due, but handing the claim
- *                  back failed, so nothing will retry it.
+ *   too_late: it did not go out (nothing reached Gmail, or Gmail turned it away
+ *     for now), and the call is too close for the next tick to resend it before
+ *     the lead's one hour text reminder.
+ *   refused: Google answered and refused it (the address, or the mailbox's
+ *     delegation) in a way that will not pass, so it is not resent until that is
+ *     repaired.
+ *   not_built: Slate could not build the message, so nothing reached Google, and
+ *     it would fail the same way again. Never called a Google refusal, which sends
+ *     its reader to the wrong system.
+ *   unknown: the send failed in a way that cannot say whether Gmail accepted it,
+ *     so it is not resent, because that could deliver a second copy.
+ *   not_released: it did not go out and a retry was due, but handing the claim
+ *     back threw. The update may still have landed with its reply lost, so the
+ *     page says it may not be sent, never that it will not.
  */
-export type ReminderFailureDisposition = "too_late" | "refused" | "unknown" | "not_released";
+export type ReminderFailureDisposition = "too_late" | "refused" | "not_built" | "unknown" | "not_released";
+
+/** What a send that did not go out can truthfully say about Gmail, by outcome. A
+ *  rate limited send reached Gmail and was answered, so it is never "nothing". */
+function didNotGoOut(outcome: EmailSendOutcome): string {
+  return outcome === "refused"
+    ? "Gmail turned it away for now and asked for it to be sent later"
+    : "nothing reached Gmail";
+}
 
 /**
  * The alert for a reminder that did not go out, or may not have.
@@ -236,22 +270,29 @@ export function reminderFailedAlert(
   bookingId: string,
   disposition: ReminderFailureDisposition,
   reason: string,
+  /** The send's outcome, which decides what too_late and not_released say about
+   *  Gmail. Ignored by the dispositions whose sentence does not depend on it. */
+  outcome: EmailSendOutcome,
 ): string {
   const what: Record<ReminderFailureDisposition, string> = {
     too_late:
-      `A 24 hour reminder email did not go out for booking ${bookingId}: nothing reached Gmail, ` +
-      `and the call is less than an hour away, so it is not tried again, since it would arrive ` +
-      `after the one hour text reminder.`,
+      `A 24 hour reminder email did not go out for booking ${bookingId}: ${didNotGoOut(outcome)}, ` +
+      `and it is too close to the call to try again before the lead's one hour text reminder, so it ` +
+      `is not resent.`,
     refused:
       `A 24 hour reminder email did not go out for booking ${bookingId}: Google refused it, and it ` +
       `will not be resent until that is repaired, so that lead has not been reminded about their call.`,
+    not_built:
+      `A 24 hour reminder email did not go out for booking ${bookingId}: Slate could not build the ` +
+      `message, so nothing reached Google, and it will not be resent until that is repaired.`,
     unknown:
       `A 24 hour reminder email for booking ${bookingId} may not have gone out: the send failed in a ` +
       `way that cannot say whether Gmail accepted it, and it is not resent, because that could ` +
       `deliver a second copy.`,
     not_released:
-      `A 24 hour reminder email did not go out for booking ${bookingId}: nothing reached Gmail, and ` +
-      `the retry could not be arranged, so that lead will not be reminded about their call.`,
+      `A 24 hour reminder email did not go out for booking ${bookingId}: ${didNotGoOut(outcome)}, and ` +
+      `handing it back for a retry could not be confirmed, so it may not be sent at all. If the next ` +
+      `tick does not send it, nothing will.`,
   };
   return `${what[disposition]} Reason: ${reason}. Diagnose via the booking-reminder log lines.`;
 }
@@ -269,6 +310,7 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
     byCode: {},
     retrying: 0,
     retried: {},
+    settled: {},
     withCallingNumber: 0,
     callingNumberUnread: false,
     inviteRefreshFailed: 0,
@@ -409,6 +451,7 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
           : {}),
       });
       run.sent += 1;
+      run.settled[row.id] = "sent";
       if (callingNumber) {
         run.withCallingNumber += 1;
         if (advisorPhoto) run.withPhoto += 1;
@@ -427,55 +470,75 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
       const outcome = typed?.outcome ?? "unknown";
       const undelivered = outcome === "never_sent" || outcome === "refused";
       const startsAtMs = parseStampMs(row.startsAtIso);
-      // The lane's one clock again. An unreadable start is never "far enough away".
-      const beforeFloor = startsAtMs !== null && startsAtMs - nowMs > REMINDER_HOLD_FLOOR_MS;
-      const fields = (released: boolean) => ({
+      // Read when the send FAILED, not at the tick's start: a tick that spent minutes
+      // on slow mints before this one is that much closer to the call. An unreadable
+      // start is never "far enough away".
+      const failedAtMs = deps.now();
+      const msToStart = startsAtMs === null ? null : startsAtMs - failedAtMs;
+      const farEnough = msToStart !== null && msToStart > REMINDER_HOLD_FLOOR_MS + REMINDER_RETRY_MARGIN_MS;
+      // Ids and codes only, never contact data: enough for whoever reads the log to
+      // tell which page went out and why it was or was not retried, without
+      // re-deriving the floor arithmetic from the booking row.
+      const fields = (
+        disposition: ReminderFailureDisposition | "released" | "release_lost",
+        release: "released" | "lost" | "threw" | "not_attempted",
+      ) => ({
         code,
         outcome,
         stage: typed?.stage ?? null,
-        claim_released: released,
+        transient: typed?.transient ?? null,
+        disposition,
+        claim_released: release === "released",
+        release,
+        minutes_to_start: msToStart === null ? null : Math.round(msToStart / 60_000),
       });
+      const page = async (disposition: ReminderFailureDisposition) => {
+        // alert-text-ok: the reason is `shortErrorReason`'s one short line, never the
+        // provider's body, which goes to the log through `warn`.
+        // swallow-ok: this IS the failure path's own reporter, so a throw from it has
+        // nowhere left to be reported to, and letting it escape would abandon every
+        // remaining lead's reminder to report one that already failed. The send
+        // failure is still returned in `run.failed`, which the caller logs and the
+        // lane's heartbeat is judged against, so the tick is never silent about it.
+        await deps.alert(row.id, reminderFailedAlert(row.id, disposition, shortErrorReason(err), outcome)).catch(() => {});
+      };
 
-      let disposition: ReminderFailureDisposition;
-      if (typed && undelivered && typed.transient && beforeFloor) {
-        let released = false;
+      if (typed && undelivered && typed.transient && farEnough) {
+        let released: boolean;
         try {
           released = await deps.release(row.id, row.startsAtIso, row.reminderSentForIso);
         } catch (releaseErr) {
-          deps.warn("reminder send failed and its claim was not released: the release threw", row.id, releaseErr, fields(false));
-          deps.warn("reminder send failed", row.id, err, fields(false));
-          disposition = "not_released";
-          // swallow-ok: see the reporter below; the release failure is logged above.
-          await deps.alert(row.id, reminderFailedAlert(row.id, disposition, shortErrorReason(err))).catch(() => {});
+          // The update may have landed with only its reply lost, so the page says
+          // the retry could not be CONFIRMED rather than that it will not happen.
+          run.settled[row.id] = "kept";
+          deps.warn("reminder claim not released: the release threw", row.id, releaseErr, fields("not_released", "threw"));
+          deps.warn("reminder send failed", row.id, err, fields("not_released", "threw"));
+          await page("not_released");
           continue;
         }
         if (released) {
           run.retrying += 1;
           run.retried[row.id] = code;
-          deps.warn("reminder send never reached Gmail; claim released, the next tick tries again", row.id, err, fields(true));
+          deps.warn("reminder send did not go out; claim released, the next tick tries again", row.id, err, fields("released", "released"));
           continue;
         }
         // The row no longer holds the claim this tick wrote, which only a deleted
         // booking produces (nothing else writes the record). Nothing to page about,
         // and nothing to retry.
-        deps.warn("reminder send failed and its claim was not released: the row had changed", row.id, err, fields(false));
+        run.settled[row.id] = "kept";
+        deps.warn("reminder send failed and its claim was not released: the row had changed", row.id, err, fields("release_lost", "lost"));
         continue;
-      } else if (outcome === "unknown") {
-        disposition = "unknown";
-      } else if (typed?.transient) {
-        disposition = "too_late";
-      } else {
-        disposition = "refused";
       }
-      deps.warn("reminder send failed", row.id, err, fields(false));
-      // alert-text-ok: the reason is `shortErrorReason`'s one short line, never the
-      // provider's body, which goes to the log through `warn` above.
-      // swallow-ok: this IS the failure path's own reporter, so a throw from it has
-      // nowhere left to be reported to, and letting it escape would abandon every
-      // remaining lead's reminder to report one that already failed. The send
-      // failure is still returned in `run.failed`, which the caller logs and the
-      // lane's heartbeat is judged against, so the tick is never silent about it.
-      await deps.alert(row.id, reminderFailedAlert(row.id, disposition, shortErrorReason(err))).catch(() => {});
+
+      let disposition: ReminderFailureDisposition;
+      if (outcome === "unknown") disposition = "unknown";
+      else if (typed?.transient) disposition = "too_late";
+      // Google answered with a refusal only when there is a status to show for it.
+      else if (typed?.status !== null && typed?.status !== undefined) disposition = "refused";
+      else disposition = "not_built";
+      run.settled[row.id] = "kept";
+      deps.warn("reminder send failed", row.id, err, fields(disposition, "not_attempted"));
+      await page(disposition);
       continue;
     }
 

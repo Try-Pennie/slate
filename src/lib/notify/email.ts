@@ -4,6 +4,7 @@ import { buildMimeMessage, type MimeMessage } from "@/lib/notify/email-mime";
 import { EmailSendError } from "@/lib/notify/email-errors";
 import { GoogleHttpError } from "@/lib/google/http-error";
 import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
+import { isGoogleRateLimitReason, parseGoogleErrorReason } from "@/lib/google/reachability-classify";
 import { log } from "@/lib/log";
 
 /**
@@ -37,21 +38,35 @@ function b64url(input: string): string {
 function tokenFailure(err: unknown, postInFlight: boolean): EmailSendError {
   const outcome = postInFlight ? "unknown" : "never_sent";
   if (err instanceof GoogleHttpError) {
+    // Only Google refusing the grant (a 4xx other than 429) needs a repair.
     const transient = err.status === 429 || err.status >= 500;
     return new EmailSendError(
       `Gmail token unavailable: ${err.status}${err.reason ? ` ${err.reason}` : ""}`,
-      { outcome, stage: "token", status: err.status, transient, cause: err },
+      { outcome, stage: "token", status: err.status, reason: err.reason ?? null, transient, cause: err },
     );
   }
   if (isDeadlineExceeded(err)) {
     return new EmailSendError((err as Error).message, { outcome, stage: "token", transient: true, cause: err });
   }
-  // `fetch` rejects with a TypeError when the token endpoint cannot be reached at
-  // all. Anything else (a key that will not import, a signing fault) is ours and
-  // will fail the same way next time, so it is not transient.
-  const transient = err instanceof TypeError;
+  // Everything else is transient, whatever its class: the token endpoint could not
+  // be reached (a TypeError), the Workers subrequest ceiling was crossed, a reply
+  // could not be parsed, or the key would not sign. The mint runs before any POST,
+  // so trying again on a fresh invocation cannot deliver a second copy, and a fault
+  // that does recur is still paged once the call is too close to retry. Calling it
+  // permanent instead cost the lead a reminder the next tick would have sent, and
+  // paged a Google refusal that never happened.
   const detail = err instanceof Error ? err.message : String(err);
-  return new EmailSendError(`Gmail token unavailable: ${detail}`, { outcome, stage: "token", transient, cause: err });
+  return new EmailSendError(`Gmail token unavailable: ${detail}`, { outcome, stage: "token", transient: true, cause: err });
+}
+
+/**
+ * Gmail's sending limits that it reports as a 403 rather than a 429. The shared
+ * calendar list (`isGoogleRateLimitReason`) plus Gmail's daily sending quota, which
+ * is added here and not to that list, because widening it would change what a
+ * calendar probe calls gone and that is not this file's decision.
+ */
+function isGmailRateLimitReason(reason: string | undefined): boolean {
+  return isGoogleRateLimitReason(reason) || reason?.toLowerCase() === "dailylimitexceeded";
 }
 
 export async function sendGmailEmail(msg: MimeMessage): Promise<string> {
@@ -139,10 +154,19 @@ export async function sendGmailEmail(msg: MimeMessage): Promise<string> {
     const status = res.status;
     // A 5xx can arrive after Google acted, so it proves nothing about delivery. A
     // 4xx is Gmail refusing the request, 401 here being the SECOND refusal after a
-    // fresh token, and only 429 among them could succeed if sent again shortly.
+    // fresh token. Among them only a rate limit could succeed if sent again shortly:
+    // a 429, or a 403 whose reason says so, which Gmail uses for its per user and
+    // daily sending limits (#917). Any other 403 is the delegation.
+    const reason = parseGoogleErrorReason(body);
     const outcome = status >= 400 && status < 500 ? "refused" : "unknown";
-    const transient = status === 429 || status >= 500;
-    throw new EmailSendError(`Gmail send failed: ${status} ${body}`, { outcome, stage: "post", status, transient });
+    const transient = status === 429 || status >= 500 || (status === 403 && isGmailRateLimitReason(reason));
+    throw new EmailSendError(`Gmail send failed: ${status} ${body}`, {
+      outcome,
+      stage: "post",
+      status,
+      reason: reason ?? null,
+      transient,
+    });
   }
 
   // Accepted. A body that cannot be read changes nothing about that, so it is

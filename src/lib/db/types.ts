@@ -1220,6 +1220,9 @@ export interface BookingFailureRateState {
     /** The reminder lane's row only: bookings released to be retried, by id, with
      *  the code each failed with. Optional, so older samples read as none. */
     retried?: Record<string, string>;
+    /** The reminder lane's row only: how a booking handed back earlier in the
+     *  window ended, `sent` or `kept`. Optional, so older samples read as none. */
+    settled?: Record<string, string>;
   }[];
   updated_at: string;
 }

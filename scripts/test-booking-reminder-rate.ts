@@ -359,6 +359,16 @@ function run(
     "no_recipients",
     "a compose failure with nobody to send to is ours",
   );
+  eq(
+    classifyReminderSendFailure(typed("refused", "post", 403, true)),
+    "rate_limited",
+    "a Gmail 403 carrying a rate limit reason is rate_limited, not the delegation",
+  );
+  eq(
+    classifyReminderSendFailure(typed("never_sent", "token", null, true, "Gmail token unavailable: Too many subrequests.")),
+    "token_unavailable",
+    "a token failure with no status is token_unavailable",
+  );
   // The fallback, for a plain Error carrying the mint's own sentences.
   eq(
     classifyReminderSendFailure(new Error("google token mint did not answer within 8000ms")),
@@ -408,6 +418,72 @@ function run(
   eq(w.status === "breach" ? w.topCodes[0]?.code : "", "token_unavailable", "named by the code they failed with");
 }
 
+// --- a retried booking that later SETTLED is not still "being retried" --------------
+//
+// Counting every booking ever released in the window as retrying said "being tried
+// again" about leads already reminded, kept the window in breach for hours after a
+// blip had fully recovered, and counted a booking released and then given up inside
+// the hour twice: once as retrying and once as kept.
+{
+  const retriedTick = (id: string): ReminderTick => ({
+    attempts: 1,
+    failures: 1,
+    byCode: { token_unavailable: 1 },
+    retried: { [id]: "token_unavailable" },
+  });
+  // Seven ordinary sends, a mint blip that hands three bookings back, then the next
+  // tick delivers all three.
+  let state: RateWindowState | null = advanceReminderWindow(null, tick(7, 0), DAY, NOW - 30 * MINUTE, TH.windowMs);
+  state = advanceReminderWindow(
+    state,
+    {
+      attempts: 3,
+      failures: 3,
+      byCode: { token_unavailable: 3 },
+      retried: { a: "token_unavailable", b: "token_unavailable", c: "token_unavailable" },
+    },
+    DAY,
+    NOW - 10 * MINUTE,
+    TH.windowMs,
+  );
+  state = advanceReminderWindow(
+    state,
+    { attempts: 3, failures: 0, byCode: {}, settled: { a: "sent", b: "sent", c: "sent" } },
+    DAY,
+    NOW - 5 * MINUTE,
+    TH.windowMs,
+  );
+  const v = judgeReminderWindow(state, NOW, TH);
+  eq([v.attempts, v.failures, v.retrying, v.recovered], [10, 0, 0, 3], "three retried then sent: no failures, none retrying, three recovered");
+  assert(v.status !== "breach", `so a blip that healed itself cannot page (${v.status})`);
+
+  // One booking handed back, then given up inside the hour on the next tick.
+  let gaveUp: RateWindowState | null = advanceReminderWindow(null, tick(8, 0), DAY, NOW - 30 * MINUTE, TH.windowMs);
+  gaveUp = advanceReminderWindow(gaveUp, retriedTick("y"), DAY, NOW - 10 * MINUTE, TH.windowMs);
+  gaveUp = advanceReminderWindow(
+    gaveUp,
+    { attempts: 1, failures: 1, byCode: { token_unavailable: 1 }, settled: { y: "kept" } },
+    DAY,
+    NOW - 5 * MINUTE,
+    TH.windowMs,
+  );
+  const g = judgeReminderWindow(gaveUp, NOW, TH);
+  eq([g.attempts, g.failures, g.retrying], [9, 1, 0], "one lead handed back then kept is one failure, and not retrying");
+
+  // Settled ids are stored only for bookings retried inside the window, so the row
+  // does not grow by every booking ever sent.
+  const sample = gaveUp.samples.at(-1)!;
+  eq(sample.settled, { y: "kept" }, "the settled booking was retried in the window, so it is kept");
+  const plain = advanceReminderWindow(
+    null,
+    { attempts: 2, failures: 0, byCode: {}, settled: { p: "sent", q: "sent" } },
+    DAY,
+    NOW,
+    TH.windowMs,
+  );
+  eq(plain.samples.at(-1)!.settled, undefined, "and bookings never retried are not stored at all");
+}
+
 // --- the page says which failed leads are being retried ---------------------------
 {
   const page = formatReminderFailureRateAlert({
@@ -419,8 +495,10 @@ function run(
     topCodes: [{ code: "token_unavailable", count: 12 }],
   });
   assert(page.includes("15 of 30"), `the page still says what it measured (${page})`);
-  assert(/12 (of them )?never reached Gmail/.test(page), `and that 12 never reached Gmail (${page})`);
-  assert(/3 leads? will not/.test(page), `and that the other 3 will not be sent one (${page})`);
+  assert(/12 of them did not go out and were handed back to be tried again/.test(page), `and that 12 were handed back (${page})`);
+  assert(!/never reached Gmail/.test(page), `without claiming nothing reached Gmail, untrue of a 429 (${page})`);
+  assert(/For 3 leads, no retry is set/.test(page), `and that the other 3 have no retry set (${page})`);
+  assert(/too close to the call/.test(page), `which covers a send given up as too late (${page})`);
   assert(!/none coming: a failed send is deliberately not retried/.test(page), "the old claim that nothing is retried is gone");
   assert(page.includes("token_unavailable"), "and the code is named");
 
@@ -431,8 +509,8 @@ function run(
     windowMinutes: 240,
     topCodes: [{ code: "not_authorised", count: 24 }],
   });
-  assert(!/never reached Gmail/.test(none), `with nothing retried, no retry is claimed (${none})`);
-  assert(/24 leads will not/.test(none), `and every failed lead is said to get none (${none})`);
+  assert(!/handed back to be tried again/.test(none), `with nothing retried, no retry is claimed (${none})`);
+  assert(/For 24 leads, no retry is set/.test(none), `and every failed lead is said to have none (${none})`);
 }
 
 // --- the copy says what was measured, and names what to do ------------------------

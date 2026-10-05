@@ -131,6 +131,25 @@ describe("sendGmailEmail says what a failure proves about delivery", () => {
     expect([network.outcome, network.transient]).toEqual(["never_sent", true]);
   });
 
+  // The mint runs before any POST, so a token failure that is not Google refusing
+  // the grant can be tried again without any risk of a second copy. The Workers
+  // subrequest ceiling, a token reply whose JSON cannot be read and a signing fault
+  // all land here, and each would pass on a fresh invocation.
+  it("a token failure that is not a Google 4xx is never_sent and transient, whatever its class", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    for (const cause of [
+      new Error("Too many subrequests."),
+      new SyntaxError("Unexpected token < in JSON at position 0"),
+      new DOMException("Invalid keyData", "DataError"),
+    ]) {
+      dwd.getDelegatedToken.mockRejectedValueOnce(cause);
+      const err = await rejection(sendGmailEmail(msg));
+      expect([err.outcome, err.stage, err.transient, err.status]).toEqual(["never_sent", "token", true, null]);
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("a POST with no answer at all is unknown, because Gmail may have accepted it", async () => {
     vi.stubGlobal("fetch", async () => {
       throw new TypeError("Network connection lost");
@@ -158,6 +177,22 @@ describe("sendGmailEmail says what a failure proves about delivery", () => {
     vi.stubGlobal("fetch", async () => new Response("rateLimitExceeded", { status: 429 }));
     const err = await rejection(sendGmailEmail(msg));
     expect([err.outcome, err.transient, err.status]).toEqual(["refused", true, 429]);
+  });
+
+  // Gmail reports its sending limits as a 403 as well as a 429, told apart from a
+  // permission refusal only by the reason in the body (#917). A rate limited send
+  // was not delivered and can pass, so it is transient like the 429.
+  it("a 403 whose reason is a rate limit is refused and transient, and a permission 403 is not", async () => {
+    const body = (reason: string) => JSON.stringify({ error: { code: 403, errors: [{ reason }] } });
+    for (const reason of ["userRateLimitExceeded", "rateLimitExceeded", "dailyLimitExceeded"]) {
+      vi.stubGlobal("fetch", async () => new Response(body(reason), { status: 403 }));
+      const err = await rejection(sendGmailEmail(msg));
+      expect([err.outcome, err.transient, err.status, err.reason]).toEqual(["refused", true, 403, reason]);
+      expect(err.message).toMatch(/^Gmail send failed: 403 /);
+    }
+    vi.stubGlobal("fetch", async () => new Response(body("insufficientPermissions"), { status: 403 }));
+    const denied = await rejection(sendGmailEmail(msg));
+    expect([denied.outcome, denied.transient, denied.reason]).toEqual(["refused", false, "insufficientPermissions"]);
   });
 
   it("a second 401 is refused, after the one resend", async () => {

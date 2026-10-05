@@ -3907,76 +3907,87 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   // throws, never a copy of either's wording (L41): a preview showing text that is
   // not what ships would be worse than no preview. One state per disposition, since
   // each says something different about whether the lead will still be reminded
-  // (2026-10-05). A send that never reached Gmail with the call more than an hour
-  // away pages nobody, so it has no state here.
-  {
+  // (2026-10-05), and the two that depend on the outcome once per outcome, since a
+  // rate limited send reached Gmail and must never read as "nothing reached Gmail".
+  // A send that did not go out with the call far enough away pages nobody, so it has
+  // no state here.
+  ...([
+    {
+      state: "too late to try again: the token mint timed out and the call is within the hour",
+      disposition: "too_late",
+      err: new EmailSendError("google token mint did not answer within 8000ms", {
+        outcome: "never_sent",
+        stage: "token",
+        transient: true,
+        cause: new DeadlineExceededError("google token mint", 8000),
+      }),
+    },
+    {
+      state: "too late to try again: Gmail rate limited it and the call is within the hour",
+      disposition: "too_late",
+      err: new EmailSendError("Gmail send failed: 429 rateLimitExceeded", {
+        outcome: "refused",
+        stage: "post",
+        status: 429,
+        transient: true,
+      }),
+    },
+    {
+      state: "refused, and not resent until the mailbox delegation is repaired",
+      disposition: "refused",
+      err: new EmailSendError("Gmail token unavailable: 401 unauthorized_client", {
+        outcome: "never_sent",
+        stage: "token",
+        status: 401,
+        reason: "unauthorized_client",
+        transient: false,
+      }),
+    },
+    {
+      state: "Slate could not build the message, so Google never saw it",
+      disposition: "not_built",
+      err: new EmailSendError("MIME build failed: attachment content is not base64", {
+        outcome: "never_sent",
+        stage: "compose",
+        transient: false,
+      }),
+    },
+    {
+      state: "may have gone out, so it is not resent",
+      disposition: "unknown",
+      err: new EmailSendError('Gmail send failed: 503 {"error":{"errors":[{"reason":"backendError"}]}}', {
+        outcome: "unknown",
+        stage: "post",
+        status: 503,
+        transient: true,
+      }),
+    },
+    {
+      state: "a retry was due after a mint timeout and the hand back could not be confirmed",
+      disposition: "not_released",
+      err: new EmailSendError("google token mint did not answer within 8000ms", {
+        outcome: "never_sent",
+        stage: "token",
+        transient: true,
+        cause: new DeadlineExceededError("google token mint", 8000),
+      }),
+    },
+    {
+      state: "a retry was due after a rate limit and the hand back could not be confirmed",
+      disposition: "not_released",
+      err: new EmailSendError("Gmail send failed: 429 rateLimitExceeded", {
+        outcome: "refused",
+        stage: "post",
+        status: 429,
+        transient: true,
+      }),
+    },
+  ] as const).map(({ state, disposition, err }) => ({
     key: "booking_reminder_failed:*",
-    state: "too late to try again: the token mint timed out and the call is within the hour",
-    channel: "alert",
-    text: reminderFailedAlert(
-      "b7f1c2e4-9a3d-4c88-b0f2-15ac7d9e6431",
-      "too_late",
-      shortErrorReason(
-        new EmailSendError("google token mint did not answer within 8000ms", {
-          outcome: "never_sent",
-          stage: "token",
-          transient: true,
-          cause: new DeadlineExceededError("google token mint", 8000),
-        }),
-      ),
-    ),
-  },
-  {
-    key: "booking_reminder_failed:*",
-    state: "refused, and not resent until the mailbox delegation is repaired",
-    channel: "alert",
-    text: reminderFailedAlert(
-      "b7f1c2e4-9a3d-4c88-b0f2-15ac7d9e6431",
-      "refused",
-      shortErrorReason(
-        new EmailSendError("Gmail token unavailable: 401 unauthorized_client", {
-          outcome: "never_sent",
-          stage: "token",
-          status: 401,
-          transient: false,
-        }),
-      ),
-    ),
-  },
-  {
-    key: "booking_reminder_failed:*",
-    state: "may have gone out, so it is not resent",
-    channel: "alert",
-    text: reminderFailedAlert(
-      "b7f1c2e4-9a3d-4c88-b0f2-15ac7d9e6431",
-      "unknown",
-      shortErrorReason(
-        new EmailSendError('Gmail send failed: 503 {"error":{"errors":[{"reason":"backendError"}]}}', {
-          outcome: "unknown",
-          stage: "post",
-          status: 503,
-          transient: true,
-        }),
-      ),
-    ),
-  },
-  {
-    key: "booking_reminder_failed:*",
-    state: "a retry was due and the claim could not be handed back",
-    channel: "alert",
-    text: reminderFailedAlert(
-      "b7f1c2e4-9a3d-4c88-b0f2-15ac7d9e6431",
-      "not_released",
-      shortErrorReason(
-        new EmailSendError("Gmail send failed: 429 rateLimitExceeded", {
-          outcome: "refused",
-          stage: "post",
-          status: 429,
-          transient: true,
-        }),
-      ),
-    ),
-  },
+    state,
+    channel: "alert" as const,
+    text: reminderFailedAlert("b7f1c2e4-9a3d-4c88-b0f2-15ac7d9e6431", disposition, shortErrorReason(err), err.outcome),
+  })),
   // #2496. The one above and the three below are the whole point of the issue: they
   // are the same fault at two very different sizes, and they have to READ that way
   // side by side or the second says nothing the first did not.
@@ -3994,7 +4005,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   },
   {
     key: "booking_reminders_failing",
-    state: "most of the failures never reached Gmail and are being retried",
+    state: "most of the failures did not go out and were handed back to be retried",
     channel: "alert",
     text: formatReminderFailureRateAlert({
       attempts: 30,

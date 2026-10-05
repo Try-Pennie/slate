@@ -39,6 +39,12 @@ const RATE_LIMIT_REASONS = new Set([
   "quotaexceeded",
 ]);
 
+/** Whether a Google error reason names a rate limit rather than a refusal (#917).
+ *  Exported so the Gmail sender reads a 403 by the same list the calendar does. */
+export function isGoogleRateLimitReason(reason: string | null | undefined): boolean {
+  return !!reason && RATE_LIMIT_REASONS.has(reason.toLowerCase());
+}
+
 /**
  * Classify a failed Google calendar probe from its HTTP status (#913). A
  * definitive account or permission failure means the connection is genuinely
@@ -55,7 +61,7 @@ export function classifyGoogleStatus(
   reason?: string,
 ): Exclude<Reachability, "reachable"> {
   const lower = reason?.toLowerCase();
-  if (status === 403 && lower && RATE_LIMIT_REASONS.has(lower)) return "transient";
+  if (status === 403 && isGoogleRateLimitReason(reason)) return "transient";
   // Checked before the general 4xx rule below, which would otherwise swallow it
   // as gone (#1396).
   if (lower === NOT_A_CALENDAR_USER_REASON.toLowerCase()) return "not-provisioned";

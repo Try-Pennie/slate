@@ -789,6 +789,8 @@ const failingWith = (err: unknown) => async () => {
   eq(line?.fields.code, "token_unavailable", "with its code");
   eq(line?.fields.outcome, "never_sent", "its outcome");
   eq(line?.fields.claim_released, true, "and that the claim was released");
+  eq(line?.fields.disposition, "released", "under the released disposition");
+  assert(!/never reached Gmail/i.test(line?.msg ?? ""), `in a line true of a 429 as well (${line?.msg})`);
   assert(line?.err instanceof Error, "with the Error itself passed through for the log");
   assert(
     !JSON.stringify(line?.fields).includes("lead@example.com"),
@@ -807,10 +809,105 @@ const failingWith = (err: unknown) => async () => {
   eq(run.retrying, 0, "and nothing is retrying");
   eq(s.alerts.length, 1, "so the lost reminder pages");
   assert(/nothing reached Gmail/i.test(s.alerts[0]!), `saying nothing was sent (${s.alerts[0]})`);
-  assert(/less than an hour/i.test(s.alerts[0]!), `and that it is too late to try again (${s.alerts[0]})`);
+  assert(/too close to the call/i.test(s.alerts[0]!), `and that it is too late to try again (${s.alerts[0]})`);
   assert(!/may have/i.test(s.alerts[0]!), "and never that it may have gone out, which it provably did not");
   eq(s.alertIds, ["bk-1"], "keyed to the booking, so it cannot silence another booking's page");
   assert(/did not answer within 8 seconds/.test(s.alerts[0]!), `with the short reason (${s.alerts[0]})`);
+  // Every failed send is logged, the ones that page included (plan item E).
+  const line = s.warned.find((w) => w.bookingId === "bk-1");
+  eq(
+    line && {
+      code: line.fields.code,
+      outcome: line.fields.outcome,
+      transient: line.fields.transient,
+      disposition: line.fields.disposition,
+      claim_released: line.fields.claim_released,
+      minutes_to_start: line.fields.minutes_to_start,
+    },
+    {
+      code: "token_unavailable",
+      outcome: "never_sent",
+      transient: true,
+      disposition: "too_late",
+      claim_released: false,
+      minutes_to_start: 40,
+    },
+    "the log line says which page went out and why it was not retried",
+  );
+  assert(line?.err instanceof Error, "with the Error passed through");
+}
+
+// --- the retry must itself land before the hour, judged when the send FAILED -------
+//
+// The floor decides whether the claim goes back, and the retry happens on the NEXT
+// tick, five minutes later. A release made 65 minutes out would be retried about 60
+// minutes out, after the lead's one hour text: so a release needs the floor plus a
+// margin covering the next tick. And a tick that has spent minutes on slow mints
+// before this send failed is judged on the clock at the failure, not at its start.
+{
+  const s = spy({
+    loadDue: async () => [due({ startsAtIso: new Date(NOW + 65 * 60_000).toISOString() })],
+    send: failingWith(mintTimeout()),
+  });
+  await runBookingReminders(s.deps);
+  eq(s.released.length, 0, "a call 65 minutes away is not handed back: the retry would land inside the hour");
+  eq(s.alerts.length, 1, "so it pages as too late");
+  assert(/too close to the call/i.test(s.alerts[0]!), `saying it is too close to try again (${s.alerts[0]})`);
+}
+{
+  let reads = 0;
+  const s = spy({
+    // The tick starts 72 minutes before the call; by the time this send fails the
+    // tick has spent three minutes elsewhere.
+    now: () => (reads++ === 0 ? NOW : NOW + 3 * 60_000),
+    loadDue: async () => [due({ startsAtIso: new Date(NOW + 72 * 60_000).toISOString() })],
+    send: failingWith(mintTimeout()),
+  });
+  await runBookingReminders(s.deps);
+  eq(s.released.length, 0, "judged on the clock at the failure (69 minutes out), not the tick's start (72)");
+  eq(s.alerts.length, 1, "and pages as too late");
+}
+{
+  const s = spy({
+    loadDue: async () => [due({ startsAtIso: new Date(NOW + 80 * 60_000).toISOString() })],
+    send: failingWith(mintTimeout()),
+  });
+  await runBookingReminders(s.deps);
+  eq(s.released.length, 1, "the control: 80 minutes out is far enough for the next tick to land before the hour");
+}
+
+// --- a rate limit inside the hour does not claim nothing reached Gmail -------------
+{
+  const limited = new EmailSendError("Gmail send failed: 429 rateLimitExceeded", {
+    outcome: "refused",
+    stage: "post",
+    status: 429,
+    transient: true,
+  });
+  const s = spy({
+    loadDue: async () => [due({ startsAtIso: new Date(NOW + 40 * 60_000).toISOString() })],
+    send: failingWith(limited),
+  });
+  await runBookingReminders(s.deps);
+  eq(s.alerts.length, 1, "a 429 forty minutes out pages as too late");
+  assert(!/nothing reached Gmail/i.test(s.alerts[0]!), `and does not say nothing reached Gmail, which answered it (${s.alerts[0]})`);
+  assert(/Gmail turned it away for now/i.test(s.alerts[0]!), `it says Gmail turned it away for now (${s.alerts[0]})`);
+}
+
+// --- a message Slate could not build is not called a Google refusal ----------------
+{
+  const unbuilt = new EmailSendError("MIME build failed", {
+    outcome: "never_sent",
+    stage: "compose",
+    transient: false,
+  });
+  const s = spy({ send: failingWith(unbuilt) });
+  await runBookingReminders(s.deps);
+  eq(s.released.length, 0, "a fault that will recur is not retried");
+  eq(s.alerts.length, 1, "and pages");
+  assert(!/Google refused/i.test(s.alerts[0]!), `without blaming Google, which never saw it (${s.alerts[0]})`);
+  assert(/could not build/i.test(s.alerts[0]!), `saying Slate could not build it (${s.alerts[0]})`);
+  eq(s.warned.find((w) => w.bookingId === "bk-1")?.fields.disposition, "not_built", "and logs which page it was");
 }
 
 // --- a refusal that will not pass keeps the claim ----------------------------------
@@ -828,6 +925,14 @@ const failingWith = (err: unknown) => async () => {
   eq(s.alerts.length, 1, "and pages");
   assert(/refused/i.test(s.alerts[0]!), `saying it was refused (${s.alerts[0]})`);
   assert(/until/i.test(s.alerts[0]!) && /repaired/i.test(s.alerts[0]!), `and that it waits on a repair (${s.alerts[0]})`);
+  const line = s.warned.find((w) => w.bookingId === "bk-1");
+  eq(
+    line && [line.fields.code, line.fields.outcome, line.fields.disposition, line.fields.claim_released, line.fields.transient],
+    ["recipient_refused", "refused", "refused", false, false],
+    "and is logged with its code, outcome and disposition",
+  );
+  assert(line?.err === refused, "with the Error itself passed through");
+  eq(run.settled, { "bk-1": "kept" }, "and the share is told this booking is settled, its claim kept");
 }
 
 // --- a refusal that can pass is retried, like a send that never left ----------------
@@ -860,6 +965,13 @@ const failingWith = (err: unknown) => async () => {
   eq(s.alerts.length, 1, "and it pages");
   assert(/may/i.test(s.alerts[0]!), `saying it may have gone out (${s.alerts[0]})`);
   assert(/second copy/i.test(s.alerts[0]!), `and why it is not resent (${s.alerts[0]})`);
+  const line = s.warned.find((w) => w.bookingId === "bk-1");
+  eq(
+    line && [line.fields.code, line.fields.outcome, line.fields.disposition, line.fields.claim_released],
+    ["provider_unavailable", "unknown", "unknown", false],
+    "and is logged with its code, outcome and disposition",
+  );
+  assert(line?.err === unknown, "with the Error itself passed through");
 }
 
 // --- a plain Error keeps the claim: nothing it says is proof -----------------------
@@ -890,8 +1002,25 @@ const failingWith = (err: unknown) => async () => {
   const thrownRun = await runBookingReminders(thrown.deps);
   eq(thrownRun.retrying, 0, "a release that threw is not counted as retrying");
   assert(thrown.warnings.some((w) => /not released/i.test(w)), "it is logged");
-  eq(thrown.alerts.length, 1, "and pages, because the claim stands and nothing will retry it");
-  assert(/could not be/i.test(thrown.alerts[0]!), `saying the retry could not be arranged (${thrown.alerts[0]})`);
+  eq(thrown.alerts.length, 1, "and pages, because the claim may stand and then nothing will retry it");
+  assert(/could not be confirmed/i.test(thrown.alerts[0]!), `saying the retry could not be confirmed (${thrown.alerts[0]})`);
+  // A release whose UPDATE committed and whose reply was lost also throws, and then
+  // the next tick DOES send it, so the page must not state the opposite as fact.
+  assert(!/will not be reminded/i.test(thrown.alerts[0]!), `and never that the lead certainly will not be reminded (${thrown.alerts[0]})`);
+  const lines = thrown.warned.filter((w) => w.bookingId === "bk-1");
+  assert(lines.length > 0 && lines.every((l) => l.fields.disposition === "not_released"), "every log line names the disposition");
+  assert(lines.some((l) => l.fields.release === "threw"), "and says the release threw rather than lost its race");
+  assert(lines.some((l) => l.err instanceof EmailSendError), "with the send's own Error on one of them");
+  eq(lost.warned.find((w) => w.bookingId === "bk-1")?.fields.release, "lost", "a release that lost its race says so");
+}
+
+// --- the share is told how each attempted booking settled ---------------------------
+{
+  const s = spy();
+  const run = await runBookingReminders(s.deps);
+  eq(run.settled, { "bk-1": "sent" }, "a booking sent is settled as sent");
+  const released = await runBookingReminders(spy({ send: failingWith(mintTimeout()) }).deps);
+  eq(released.settled, {}, "and a booking handed back is not settled: it is still being retried");
 }
 
 // --- two ticks against one store: released, then sent exactly once ----------------
