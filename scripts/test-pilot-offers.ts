@@ -195,10 +195,10 @@ const row = (system: "slate" | "calcom", minutes: number | null, count: number |
     row("slate", 90, 190, t3),
     row("calcom", null, null, t3),
   ]);
-  eq(s.slate, { samples: 3, failed: 0, medianMinutesToFirst: 120, medianOffered24h: 200 }, "Slate's typical wait and count, from its readable samples");
-  eq(s.calcom, { samples: 3, failed: 1, medianMinutesToFirst: 630, medianOffered24h: 35 }, "cal.com's, with the failed sample counted and left out of the medians");
+  eq(s.slate, { samples: 3, failed: 0, nothingIn24h: 0, medianMinutesToFirst: 120, medianOffered24h: 200 }, "Slate's typical wait and count, from its readable samples");
+  eq(s.calcom, { samples: 3, failed: 1, nothingIn24h: 0, medianMinutesToFirst: 630, medianOffered24h: 35 }, "cal.com's, with the failed sample counted and left out of the medians");
   eq(s.paired, 2, "only quarter hours where BOTH systems were read are compared");
-  eq(s.slateEarlier, 1, "and Slate offered the earlier time in one of those two");
+  eq([s.slateEarlier, s.calcomEarlier, s.same], [1, 1, 0], "and each system offered the earlier time in one of those two");
 }
 {
   const s = summarisePilotOffers([]);
@@ -206,16 +206,111 @@ const row = (system: "slate" | "calcom", minutes: number | null, count: number |
   eq(s.slate.medianMinutesToFirst, null, "with no median rather than a zero");
 }
 {
-  // A system that answered with nothing has no wait to measure, and must not be
-  // scored as a zero minute wait (it offered NOTHING, the opposite of immediately).
+  // A system that answered with nothing must not be scored as a zero minute wait (it
+  // offered NOTHING, the opposite of immediately), nor dropped from the median, which
+  // would describe only the samples where it did offer something (#3328).
   const t = at(0);
   const s = summarisePilotOffers([
     { ...row("slate", 60, 10, t) },
     { sampled_at: t, system: "calcom", bucket_code: "112", ok: true, earliest_offered_at: null, offered_24h: 0, error: null, calcom_time_zone: "America/New_York" },
   ]);
   eq(s.calcom.medianOffered24h, 0, "an empty answer counts as zero times");
-  eq(s.calcom.medianMinutesToFirst, null, "and has no wait to take a median of");
-  eq([s.paired, s.slateEarlier], [1, 1], "a system offering something is earlier than one offering nothing");
+  eq(s.calcom.medianMinutesToFirst, "nothing", "and its median is nothing in the next 24 hours, never a wait");
+  eq(s.calcom.nothingIn24h, 1, "and it is counted as a sample with nothing in the next 24 hours");
+  eq([s.paired, s.slateEarlier, s.calcomEarlier, s.same], [1, 1, 0, 0], "a system offering something is earlier than one offering nothing");
+}
+
+// --- #3328: both systems judged over the same next 24 hours ------------------------
+// cal.com's routed answer reaches only so far, so where it had nothing in the next
+// day it stored NO first time, while Slate, which answers out to its horizon, stored
+// one a day and a half away. The old summary dropped cal.com's empty samples from its
+// median and kept Slate's distant ones, so the report set Slate's 33 hours against
+// cal.com's 5 over two different sets of quarter hours. Both are now judged over the
+// next 24 hours: a first time beyond them, or none at all, is nothing in the next 24
+// hours for either system alike.
+const none = (system: "slate" | "calcom", sampleAt: string): PilotOfferRow => ({
+  ...row(system, 0, 0, sampleAt),
+  earliest_offered_at: null,
+});
+{
+  // Slate's first time beyond 24 hours while cal.com had nothing: the same answer.
+  const t = at(0);
+  const s = summarisePilotOffers([row("slate", 33 * 60, 0, t), none("calcom", t)]);
+  eq(s.slate.medianMinutesToFirst, "nothing", "a first time 33 hours away is nothing in the next 24 hours, never a 33 hour wait");
+  eq([s.slate.nothingIn24h, s.calcom.nothingIn24h], [1, 1], "and both systems count it as nothing in the next 24 hours");
+  eq([s.paired, s.slateEarlier, s.calcomEarlier, s.same], [1, 0, 0, 1], "so neither is credited with the earlier time");
+  const lines = pilotOffersReportLines({ ok: true, summary: s });
+  eq(lines.slice(1), [
+    "  Slate: typically 0 times in the next 24 hours, first one: nothing in the next 24 hours, over 1 readable sample, 1 of which had nothing in the next 24 hours",
+    "  cal.com: typically 0 times in the next 24 hours, first one: nothing in the next 24 hours, over 1 readable sample, 1 of which had nothing in the next 24 hours",
+    "  Of 1 quarter hour where both were read, Slate offered the earlier first time in 0, cal.com in 0, and neither in 1 (the same first time, or nothing from either in the next 24 hours).",
+  ], "the report says nothing in the next 24 hours for both, rather than a 33 hour wait against none");
+}
+{
+  // Positive control on the window's edge, the same edge the sampler's count uses: a
+  // first time a minute inside the day is a wait, one exactly a day away is not.
+  const inside = summarisePilotOffers([row("slate", 24 * 60 - 1, 1, at(0)), none("calcom", at(0))]);
+  eq(inside.slate.medianMinutesToFirst, 24 * 60 - 1, "a first time a minute inside the next 24 hours is a wait");
+  eq([inside.slateEarlier, inside.same], [1, 0], "and is earlier than nothing");
+  const edge = summarisePilotOffers([row("slate", 24 * 60, 0, at(0)), none("calcom", at(0))]);
+  eq(edge.slate.medianMinutesToFirst, "nothing", "one exactly 24 hours away is outside them, as the sampler's count has it");
+  eq([edge.slateEarlier, edge.same], [0, 1], "and ties with nothing");
+}
+{
+  // One or both systems offering nothing, across three quarter hours: one each way
+  // and one where neither had anything.
+  const [t1, t2, t3] = [at(0), at(0, 15), at(0, 30)];
+  const s = summarisePilotOffers([
+    none("slate", t1),
+    row("calcom", 60, 4, t1),
+    none("slate", t2),
+    none("calcom", t2),
+    row("slate", 30, 9, t3),
+    none("calcom", t3),
+  ]);
+  eq([s.slate.nothingIn24h, s.calcom.nothingIn24h], [2, 2], "each system's samples with nothing in the next 24 hours are counted");
+  eq([s.paired, s.slateEarlier, s.calcomEarlier, s.same], [3, 1, 1, 1], "Slate earlier once, cal.com earlier once, and the same once when neither had anything");
+  eq(s.slateEarlier + s.calcomEarlier + s.same, s.paired, "every paired quarter hour lands in exactly one of the three");
+  const lines = pilotOffersReportLines({ ok: true, summary: s });
+  eq(lines.slice(1), [
+    "  Slate: typically 0 times in the next 24 hours, first one: nothing in the next 24 hours, over 3 readable samples, 2 of which had nothing in the next 24 hours",
+    "  cal.com: typically 0 times in the next 24 hours, first one: nothing in the next 24 hours, over 3 readable samples, 2 of which had nothing in the next 24 hours",
+    "  Of 3 quarter hours where both were read, Slate offered the earlier first time in 1, cal.com in 1, and neither in 1 (the same first time, or nothing from either in the next 24 hours).",
+  ], "the lines carry each system's count and all three pairing counts");
+}
+{
+  // The same first instant from both is a tie, not a win for either.
+  const t = at(0);
+  const s = summarisePilotOffers([row("slate", 90, 5, t), row("calcom", 90, 3, t)]);
+  eq([s.slateEarlier, s.calcomEarlier, s.same], [0, 0, 1], "the same first time is counted as the same");
+}
+{
+  // The median ranks nothing in the next 24 hours slowest rather than dropping it.
+  const [t1, t2, t3] = [at(0), at(0, 15), at(0, 30)];
+  const ranked = summarisePilotOffers([row("calcom", 60, 5, t1), row("calcom", 120, 3, t2), none("calcom", t3)]);
+  eq(ranked.calcom.medianMinutesToFirst, 120, "with one of three empty, the median is the slower of the two waits, not their midpoint");
+  const lines = pilotOffersReportLines({ ok: true, summary: ranked });
+  eq(
+    lines.find((l) => l.startsWith("  cal.com:")),
+    "  cal.com: typically 3 times in the next 24 hours, first one in 2h 0m, over 3 readable samples, 1 of which had nothing in the next 24 hours",
+    "and the line gives that wait with the count of empty samples beside it",
+  );
+
+  const lands = summarisePilotOffers([row("calcom", 60, 5, t1), none("calcom", t2), row("calcom", 30 * 60, 0, t3)]);
+  eq(lands.calcom.medianMinutesToFirst, "nothing", "with two of three having nothing in the next 24 hours, the median lands on nothing");
+  eq(lands.calcom.nothingIn24h, 2, "a first time beyond the day and no time at all are both counted");
+
+  const half = summarisePilotOffers([row("calcom", 60, 5, t1), none("calcom", t2)]);
+  eq(half.calcom.medianMinutesToFirst, "nothing", "with exactly half empty, the median is nothing, so no wait is claimed that half the samples lacked");
+}
+{
+  // A system whose every sample failed has nothing to typify: the line must not read
+  // as a measured zero.
+  const t = at(0);
+  const s = summarisePilotOffers([row("slate", 60, 10, t), row("calcom", null, null, t)]);
+  eq(s.calcom, { samples: 1, failed: 1, nothingIn24h: 0, medianMinutesToFirst: null, medianOffered24h: null }, "a system with no readable sample has no medians");
+  const line = pilotOffersReportLines({ ok: true, summary: s }).find((l) => l.startsWith("  cal.com:"));
+  eq(line, "  cal.com: no readable samples (1 of 1 cal.com samples failed and are left out)", "and its line says so rather than typically 0 times");
 }
 
 
@@ -239,18 +334,24 @@ const row = (system: "slate" | "calcom", minutes: number | null, count: number |
   assert(text.includes("Slate") && text.includes("200"), "Slate's typical count is shown");
   assert(text.includes("cal.com") && text.includes("30"), "and cal.com's");
   assert(text.includes("1 of 2 cal.com samples failed") || text.includes("1 failed"), "failed samples are counted out loud");
-  assert(text.includes("1 of 1"), "and how often Slate offered the earlier time, out of the quarter hours both were read");
+  assert(
+    text.includes("Of 1 quarter hour where both were read, Slate offered the earlier first time in 1, cal.com in 0, and neither in 0"),
+    "and how often each offered the earlier time, out of the quarter hours both were read",
+  );
 }
 
 // --- a stored stamp that cannot be read -------------------------------------------
 {
+  // Neither a wait nor nothing can be read off it, so it is left out with the failed
+  // reads rather than guessed into either answer.
   const t = at(0);
   const s = summarisePilotOffers([
     { ...row("slate", 60, 10, t), earliest_offered_at: "not a time" },
     row("calcom", 1200, 30, t),
   ]);
   eq(s.slate.medianMinutesToFirst, null, "an unreadable stored time gives no wait, rather than a NaN one");
-  eq([s.paired, s.slateEarlier], [1, 0], "and never credits that system with the earlier time");
+  eq([s.slate.failed, s.slate.nothingIn24h], [1, 0], "and is counted with the samples left out, never as nothing offered");
+  eq([s.paired, s.slateEarlier, s.calcomEarlier], [0, 0, 0], "and never credits either system with the earlier time");
 }
 
 // --- #3002: samples taken before cal.com was asked in a time zone -------------------
