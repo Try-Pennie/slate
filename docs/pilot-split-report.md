@@ -139,7 +139,37 @@ than from the booker: on 2026-09-30 cal.com's first time for a Low lead was the 
 morning with 32 in the next day, while Slate's was that evening with 249. So the
 report ends with a section saying, over the export's days, how many times each
 system typically offered a Low lead in the next 24 hours, how long until its first
-time, and in how many quarter hours Slate's first time came earlier.
+time, and in how many quarter hours each system's first time came earlier.
+
+**Both systems are judged over the same next 24 hours** (#3328). cal.com's routed
+answer reaches only so far, so where it had nothing in the next day it stored no
+first time at all, while Slate answers out to its booking horizon and stored one a
+day and a half away. The section used to drop cal.com's empty samples from its
+median and keep Slate's distant ones, so on the 2026-10-02 to 05 readout it set
+Slate's "first one in 33h 9m" against cal.com's "4h 54m", two numbers taken over
+different quarter hours, and credited Slate with the earlier time in 106 quarter
+hours where neither system had anything in the next day. Now:
+
+- A first time beyond the next 24 hours, or none at all, is **nothing in the next
+  24 hours**, for either system alike. This is the same window, and the same edge,
+  as the count of times beside it.
+- The typical time to first is the median over EVERY readable sample, with nothing
+  in the next 24 hours ranked slowest. When at least half the readable samples had
+  nothing, the median lands on it and the line says "nothing in the next 24 hours"
+  instead of a duration, so it never claims a wait half the samples lacked.
+- Each system's line says in how many readable samples it had nothing in the next
+  24 hours.
+- The pairing gives three counts that add up to the quarter hours both were read:
+  Slate earlier, cal.com earlier, and neither (the same first time, or nothing from
+  either in the next 24 hours).
+
+The same readout now reads:
+
+```
+  Slate: typically 0 times in the next 24 hours, first one: nothing in the next 24 hours, over 295 readable samples, 197 of which had nothing in the next 24 hours
+  cal.com: typically 4 times in the next 24 hours, first one in 11h 2m, over 290 readable samples, 109 of which had nothing in the next 24 hours (5 of 295 cal.com samples failed and are left out)
+  Of 290 quarter hours where both were read, Slate offered the earlier first time in 11, cal.com in 154, and neither in 125 (the same first time, or nothing from either in the next 24 hours).
+```
 
 The numbers come from the monitor lane, which every 15 minutes asks both systems,
 read only, what a Low lead (bucket 112) would be offered and stores one row each in
@@ -148,9 +178,12 @@ its routing form's `calculate-slots` call, so it answers for the pool a Low lead
 the split pages is routed to, not the whole event; the call stores no response.
 Slate is asked through its booker's own read of the bucket. A failed read is stored
 as a failure with its reason and counted out loud in the report, never as zero
-times. With no samples for the export's days the section says so rather than
-reading as equal availability. It needs the Supabase key, like the cross check, and
-never changes the exit code.
+times, and stays out of every median and of the pairing; so does a stored time that
+cannot be read. A system with no readable sample says "no readable samples" rather
+than a typical zero. With no samples for the export's days the section says so
+rather than reading as equal availability. It needs the Supabase key, like the cross
+check, and never changes the exit code. The summary is pinned offline by
+`scripts/test-pilot-offers.ts`.
 
 ## Exit codes
 

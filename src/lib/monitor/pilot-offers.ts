@@ -39,6 +39,13 @@ const DUE_SLACK_MS = 2.5 * 60_000;
 /** The window a count covers. */
 const COUNT_WINDOW_MS = 24 * 3_600_000;
 
+/**
+ * Whether an offered instant falls in the next 24 hours from `fromMs`. One predicate
+ * for the sampler's count and the report's time to first (#3328), so a first time
+ * the count left out is never reported as a wait, and the reverse.
+ */
+const inCountWindow = (ms: number, fromMs: number): boolean => ms < fromMs + COUNT_WINDOW_MS;
+
 /** The Low bucket both systems are asked about, and its routing fields. */
 export const PILOT_OFFER_BUCKET = "112";
 
@@ -102,7 +109,7 @@ export function offerSummary(
     if (ms === null) throw new Error(`an offered time could not be read: ${t.slice(0, 40)}`);
     if (ms < nowMs) continue;
     if (earliest === null || ms < earliest) earliest = ms;
-    if (ms < nowMs + COUNT_WINDOW_MS) count++;
+    if (inCountWindow(ms, nowMs)) count++;
   }
   return { earliestOfferedAt: earliest === null ? null : new Date(earliest).toISOString(), offered24h: count };
 }
@@ -199,11 +206,28 @@ export async function runPilotOfferSample(deps: PilotOfferDeps): Promise<PilotOf
   return { sampled: true, calcom: calcom.ok ? "ok" : "failed", slate: slate.ok ? "ok" : "failed" };
 }
 
+/**
+ * The answer a readable sample gives when its first time is not in the next 24
+ * hours: it offered none at all, or its first one was further out (#3328).
+ */
+export const NOTHING_IN_24H = "nothing";
+
 export interface SystemOffers {
   samples: number;
+  /**
+   * Samples left out: a failed read, or a stored stamp that cannot be read, which
+   * is never guessed into a wait or into nothing.
+   */
   failed: number;
-  /** Median minutes from the sample to the earliest time offered, over samples that offered one. */
-  medianMinutesToFirst: number | null;
+  /** Readable samples whose first time was not in the next 24 hours. */
+  nothingIn24h: number;
+  /**
+   * Median minutes from the sample to its first time, over EVERY readable sample,
+   * with nothing in the next 24 hours ranked slowest. It is `NOTHING_IN_24H` when at
+   * least half the readable samples had nothing, so no wait is claimed that half of
+   * them lacked, and null only when no sample was readable.
+   */
+  medianMinutesToFirst: number | typeof NOTHING_IN_24H | null;
   /** Median count of times in the next 24 hours, over readable samples. */
   medianOffered24h: number | null;
 }
@@ -211,10 +235,14 @@ export interface SystemOffers {
 export interface PilotOffersSummary {
   slate: SystemOffers;
   calcom: SystemOffers;
-  /** Quarter hours where both systems were read. */
+  /** Quarter hours where both systems were read. Always the sum of the three below. */
   paired: number;
-  /** Of those, how many had Slate's earliest time strictly before cal.com's. */
+  /** Of those, how many had Slate's first time in the next 24 hours strictly before cal.com's. */
   slateEarlier: number;
+  /** And how many had cal.com's strictly before Slate's. */
+  calcomEarlier: number;
+  /** And how many had the same first time, which includes neither offering anything in the next 24 hours. */
+  same: number;
   /**
    * Quarter hours left out because their cal.com row was read with no time zone
    * (#3002), so cal.com's count there was cut short. Both systems' rows from those
@@ -225,33 +253,48 @@ export interface PilotOffersSummary {
 
 function median(values: number[]): number | null {
   if (values.length === 0) return null;
-  const v = [...values].sort((a, b) => a - b);
+  // Not `a - b`: two Infinities subtract to NaN.
+  const v = [...values].sort((a, b) => (a === b ? 0 : a < b ? -1 : 1));
   const mid = Math.floor(v.length / 2);
   return v.length % 2 ? v[mid]! : (v[mid - 1]! + v[mid]!) / 2;
 }
 
-function summariseSystem(rows: PilotOfferRow[]): SystemOffers {
-  const ok = rows.filter((r) => r.ok);
-  const waits = ok.flatMap((r) => {
-    if (r.earliest_offered_at === null) return [];
-    const first = parseStampMs(r.earliest_offered_at);
-    const taken = parseStampMs(r.sampled_at);
-    return first !== null && taken !== null ? [(first - taken) / 60_000] : [];
-  });
-  return {
-    samples: rows.length,
-    failed: rows.length - ok.length,
-    medianMinutesToFirst: median(waits),
-    medianOffered24h: median(ok.map((r) => r.offered_24h ?? 0)),
-  };
+/**
+ * Minutes from a sample to its first offered time, judged over the next 24 hours for
+ * both systems alike (#3328). cal.com's routed answer reaches only so far, so where
+ * it had nothing it stored no first time, while Slate stored one up to its horizon;
+ * judging Slate's distant times as waits and dropping cal.com's empty samples set
+ * the two against different quarter hours. So a first time beyond the next 24 hours,
+ * or none at all, is nothing in the next 24 hours, ranked slowest as Infinity.
+ *
+ * Null when the sample cannot be judged: a failed read, or a stored stamp that
+ * cannot be read. Neither is guessed into a wait or into nothing, so neither can
+ * credit either system with the earlier time.
+ */
+function minutesToFirst(r: PilotOfferRow): number | null {
+  if (!r.ok) return null;
+  const taken = parseStampMs(r.sampled_at);
+  if (taken === null) return null;
+  if (r.earliest_offered_at === null) return Number.POSITIVE_INFINITY;
+  const first = parseStampMs(r.earliest_offered_at);
+  if (first === null) return null;
+  return inCountWindow(first, taken) ? (first - taken) / 60_000 : Number.POSITIVE_INFINITY;
 }
 
-/**
- * Earliest time as a number, with "offered nothing" as infinitely late. An
- * unreadable stored stamp is also treated as late, so it can never credit either
- * system with the earlier time.
- */
-const firstMs = (r: PilotOfferRow): number => parseStampMs(r.earliest_offered_at) ?? Number.POSITIVE_INFINITY;
+function summariseSystem(rows: PilotOfferRow[]): SystemOffers {
+  const judged = rows.flatMap((r) => {
+    const minutes = minutesToFirst(r);
+    return minutes === null ? [] : [{ minutes, offered24h: r.offered_24h ?? 0 }];
+  });
+  const typical = median(judged.map((j) => j.minutes));
+  return {
+    samples: rows.length,
+    failed: rows.length - judged.length,
+    nothingIn24h: judged.filter((j) => j.minutes === Number.POSITIVE_INFINITY).length,
+    medianMinutesToFirst: typical === Number.POSITIVE_INFINITY ? NOTHING_IN_24H : typical,
+    medianOffered24h: median(judged.map((j) => j.offered24h)),
+  };
+}
 
 export function summarisePilotOffers(allRows: readonly PilotOfferRow[]): PilotOffersSummary {
   const truncated = new Set(
@@ -261,19 +304,27 @@ export function summarisePilotOffers(allRows: readonly PilotOfferRow[]): PilotOf
   const slateRows = rows.filter((r) => r.system === "slate");
   const calcomRows = rows.filter((r) => r.system === "calcom");
   const calcomAt = new Map(calcomRows.filter((r) => r.ok).map((r) => [r.sampled_at, r]));
-  let paired = 0;
   let slateEarlier = 0;
+  let calcomEarlier = 0;
+  let same = 0;
   for (const s of slateRows) {
     const c = calcomAt.get(s.sampled_at);
-    if (!s.ok || !c) continue;
-    paired++;
-    if (firstMs(s) < firstMs(c)) slateEarlier++;
+    if (!c) continue;
+    // Both rows carry the same sample instant, so their minutes compare as instants.
+    const slateFirst = minutesToFirst(s);
+    const calcomFirst = minutesToFirst(c);
+    if (slateFirst === null || calcomFirst === null) continue;
+    if (slateFirst < calcomFirst) slateEarlier++;
+    else if (calcomFirst < slateFirst) calcomEarlier++;
+    else same++;
   }
   return {
     slate: summariseSystem(slateRows),
     calcom: summariseSystem(calcomRows),
-    paired,
+    paired: slateEarlier + calcomEarlier + same,
     slateEarlier,
+    calcomEarlier,
+    same,
     leftOutTruncated: truncated.size,
   };
 }
@@ -283,20 +334,29 @@ export type PilotOffersRead =
   | { ok: false; message: string }
   | { ok: "skipped"; missing: string[] };
 
-const wait = (minutes: number | null): string => {
-  if (minutes === null) return "nothing offered";
+const firstOne = (minutes: number | typeof NOTHING_IN_24H): string => {
+  if (minutes === NOTHING_IN_24H) return "first one: nothing in the next 24 hours";
   const m = Math.round(minutes);
-  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
+  return `first one in ${m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`}`;
 };
 
 const systemLine = (name: string, s: SystemOffers): string => {
   const readable = s.samples - s.failed;
   const failed = s.failed > 0 ? ` (${s.failed} of ${s.samples} ${name} samples failed and are left out)` : "";
+  // Nothing readable is nothing measured: never a typical zero (L90).
+  if (readable === 0 || s.medianMinutesToFirst === null) return `  ${name}: no readable samples${failed}`;
   return (
-    `  ${name}: typically ${s.medianOffered24h ?? 0} times in the next 24 hours, first one in ${wait(s.medianMinutesToFirst)}, ` +
-    `over ${readable} readable sample${readable === 1 ? "" : "s"}${failed}`
+    `  ${name}: typically ${s.medianOffered24h ?? 0} times in the next 24 hours, ${firstOne(s.medianMinutesToFirst)}, ` +
+    `over ${readable} readable sample${readable === 1 ? "" : "s"}, ${s.nothingIn24h} of which had nothing in the next 24 hours${failed}`
   );
 };
+
+const pairingLine = (s: PilotOffersSummary): string =>
+  s.paired === 0
+    ? "  no quarter hour had both systems read, so neither can be said to have offered earlier."
+    : `  Of ${s.paired} quarter hour${s.paired === 1 ? "" : "s"} where both were read, Slate offered the earlier first time in ` +
+      `${s.slateEarlier}, cal.com in ${s.calcomEarlier}, and neither in ${s.same} ` +
+      "(the same first time, or nothing from either in the next 24 hours).";
 
 /**
  * The report's availability section: what each booker offered a Low lead over the
@@ -309,7 +369,7 @@ export function pilotOffersReportLines(read: PilotOffersRead): string[] {
     return [head, `  skipped: ${read.missing.join(" and ")} ${read.missing.length === 1 ? "is" : "are"} not set here.`];
   }
   if (read.ok === false) return [head, `  the samples could not be read: ${read.message}`];
-  const { slate, calcom, paired, slateEarlier, leftOutTruncated } = read.summary;
+  const { slate, calcom, leftOutTruncated } = read.summary;
   const leftOut =
     leftOutTruncated > 0
       ? [
@@ -329,9 +389,7 @@ export function pilotOffersReportLines(read: PilotOffersRead): string[] {
     ...leftOut,
     systemLine("Slate", slate),
     systemLine("cal.com", calcom),
-    paired === 0
-      ? "  no quarter hour had both systems read, so neither can be said to have offered earlier."
-      : `  Slate offered the earlier first time in ${slateEarlier} of ${paired} quarter hours where both were read.`,
+    pairingLine(read.summary),
   ];
 }
 
