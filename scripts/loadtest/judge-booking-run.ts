@@ -973,14 +973,16 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
       // told the reader the slot had been taken before the burst fired (L11).
       const counts = new Map<string, number>();
       for (const a of burst) {
-        const label = `${a.status} ${a.outcome}`;
+        // A refusal that carried no outcome says so, rather than rendering "undefined".
+        const outcome = a.outcome ?? "";
+        const label = `${a.status} ${outcome === "" ? "no outcome" : outcome}`;
         counts.set(label, (counts.get(label) ?? 0) + 1);
       }
       const refusals = [...counts.entries()]
         .sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]))
         .map(([label, n]) => `${n} ${label}`)
         .join(", ");
-      const allTaken = burst.every((a) => a.status === 409 && a.outcome === "SLOT_TAKEN");
+      const allTaken = burst.every((a) => a.status === 409 && (a.outcome ?? "") === "SLOT_TAKEN");
       fail(
         "the burst",
         `none of the ${burst.length} burst requests was answered 200 (${refusals}), ` +

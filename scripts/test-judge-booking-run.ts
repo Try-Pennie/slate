@@ -1354,6 +1354,29 @@ function slowRun(made = 100): JudgeInput {
 }
 
 {
+  // A refusal that carried no outcome at all is labelled as such, never rendered as
+  // "undefined", and is never counted as SLOT_TAKEN.
+  const r = broken((i) => {
+    for (const b of i.burstResults) {
+      b.attempts = b.attempts.map((a) => ({ ...a, status: 503, outcome: undefined as unknown as string }));
+    }
+  });
+  const burst = r.findings.find((f) => f.bar === "the burst");
+  assert(
+    burst !== undefined && !burst.detail.includes("undefined"),
+    `a refusal with no outcome never renders as undefined (got: ${burst?.detail})`,
+  );
+  assert(
+    burst !== undefined && burst.detail.includes("503 no outcome"),
+    `it is labelled as having no outcome (got: ${burst?.detail})`,
+  );
+  assert(
+    burst !== undefined && !burst.detail.includes("already taken"),
+    "and it is not counted as the slot being taken",
+  );
+}
+
+{
   // A mixed refusal set is not "already taken" either: some of it was something else.
   const r = broken((i) => {
     for (const b of i.burstResults) {
