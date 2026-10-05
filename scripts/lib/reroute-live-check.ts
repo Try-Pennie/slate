@@ -17,7 +17,8 @@ export const REROUTE_LIVE_OUTCOMES = {
   calendarUnreadable: { exit: 8, says: "a test advisor's calendar could not be read, so no time could be judged clear; nothing was booked" },
   bookingRefused: { exit: 5, says: "a test call could not be booked" },
   stepDiffered: { exit: 6, says: "a reroute step did not land as expected" },
-  residue: { exit: 7, says: "cleanup left something behind (an active call, a live hold or a hold block)" },
+  residue: { exit: 7, says: "cleanup found something left behind (a call not cancelled, a live hold, a hold block or a calendar event)" },
+  cleanupUnverified: { exit: 9, says: "cleanup could not read whether everything is gone, so nothing is vouched for" },
 } as const;
 
 export type RerouteLiveOutcome = keyof typeof REROUTE_LIVE_OUTCOMES;
@@ -31,6 +32,23 @@ export type RerouteLiveOutcome = keyof typeof REROUTE_LIVE_OUTCOMES;
 export function inCanaryWindow(ms: number): boolean {
   const m = new Date(ms).getUTCMinutes() % 30;
   return m >= 27 || m < 8;
+}
+
+/**
+ * How long a run is allowed for, from start to the end of its cleanup. Measured
+ * runs took one to two minutes on 2026-10-05; the margin covers a slow Google day.
+ */
+export const RUN_BUDGET_MS = 5 * 60_000;
+
+/**
+ * Whether a run starting at `startMs` could meet the canary before it finishes:
+ * starting inside the window, or still running when the next one opens.
+ */
+export function runMeetsCanary(startMs: number): boolean {
+  for (let t = startMs; t <= startMs + RUN_BUDGET_MS; t += 60_000) {
+    if (inCanaryWindow(t)) return true;
+  }
+  return inCanaryWindow(startMs + RUN_BUDGET_MS);
 }
 
 /**
@@ -77,21 +95,72 @@ export interface ResidueCheck {
 }
 
 /**
- * What the cleanup found left, in the order checked. A read that throws is a
- * finding of its own ("could not verify ..."), never a crash and never read as
- * gone: by the time this runs the command has written to production, so it must
- * still reach its residue verdict (L515), and an unreadable record proves nothing
- * was removed (L11, L98). One failure never stops the checks after it.
+ * What the cleanup found left, and separately what it could not read, each in the
+ * order checked. A read that throws is never a crash and never read as gone: by the
+ * time this runs the command has written to production, so it must still reach a
+ * verdict (L515), and an unreadable record proves nothing was removed (L98). The two
+ * stay apart because "something is left" and "could not tell" send somebody to do
+ * different things (L11). One failure never stops the checks after it.
  */
-export async function residue(checks: readonly ResidueCheck[]): Promise<string[]> {
+export async function residue(checks: readonly ResidueCheck[]): Promise<{ left: string[]; unverified: string[] }> {
   const left: string[] = [];
+  const unverified: string[] = [];
   for (const c of checks) {
     try {
       const found = await c.leftOver();
       if (found) left.push(found);
     } catch (err) {
-      left.push(`could not verify ${c.label}: ${err instanceof Error ? err.message : String(err)}`);
+      unverified.push(`${c.label}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  return left;
+  return { left, unverified };
+}
+
+/**
+ * Every calendar event the run's calls hold, with the calendar it is on, noted the
+ * moment a booking is seen and before any check on that step, so a step that fails
+ * still leaves its event for the cleanup. The cleanup checks these rather than
+ * re-reading the bookings afterwards, because a cancel may clear the id or the
+ * advisor, and a missing id must never read as a deleted event (L98). An event on
+ * an advisor outside `calendars` is noted with no calendar, which the cleanup
+ * reports rather than reads.
+ */
+export function eventLedger(calendars: Readonly<Record<string, string>>) {
+  const byEvent = new Map<string, string | null>();
+  return {
+    note(b: { gcal_event_id: string | null; assigned_user_id: string | null }): void {
+      if (!b.gcal_event_id) return;
+      byEvent.set(b.gcal_event_id, (b.assigned_user_id && calendars[b.assigned_user_id]) || null);
+    },
+    events: (): ReadonlyMap<string, string | null> => byEvent,
+  };
+}
+
+/**
+ * Runs every cleanup step in order, each in its own attempt, and names the ones
+ * that failed. A release that throws must never stop the cancel after it, or the
+ * call itself stays on production.
+ */
+export async function attemptEach(steps: readonly { what: string; run: () => Promise<unknown> }[]): Promise<string[]> {
+  const failed: string[] = [];
+  for (const step of steps) {
+    try {
+      await step.run();
+    } catch (err) {
+      failed.push(`could not ${step.what}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return failed;
+}
+
+/**
+ * The cleanup's own verdict, or null when nothing is left and everything was
+ * read. Something left outranks something unread, and the detail names both.
+ */
+export function cleanupVerdict(found: { left: readonly string[]; unverified: readonly string[] }):
+  { outcome: "residue" | "cleanupUnverified"; detail: string } | null {
+  const unread = found.unverified.length > 0 ? `could not read: ${found.unverified.join("; ")}` : "";
+  if (found.left.length > 0) return { outcome: "residue", detail: [found.left.join("; "), unread].filter(Boolean).join("; ") };
+  if (unread) return { outcome: "cleanupUnverified", detail: unread };
+  return null;
 }

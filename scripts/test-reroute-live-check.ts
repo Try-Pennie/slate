@@ -3,7 +3,18 @@
 // run.
 //
 // Run: node --experimental-strip-types scripts/test-reroute-live-check.ts
-import { REROUTE_LIVE_OUTCOMES, candidateStarts, inCanaryWindow, residue, startIsClear } from "./lib/reroute-live-check.ts";
+import {
+  REROUTE_LIVE_OUTCOMES,
+  RUN_BUDGET_MS,
+  attemptEach,
+  candidateStarts,
+  cleanupVerdict,
+  eventLedger,
+  inCanaryWindow,
+  residue,
+  runMeetsCanary,
+  startIsClear,
+} from "./lib/reroute-live-check.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const at = (hhmm: string, day = "2031-03-04") => Date.parse(`${day}T${hhmm}:00Z`);
@@ -15,6 +26,9 @@ const MIN = 60_000;
   eq(new Set(outcomes.map((o) => o.exit)).size, outcomes.length, "no two outcomes share an exit code");
   eq(new Set(outcomes.map((o) => o.says)).size, outcomes.length, "no two outcomes share a message");
   eq(REROUTE_LIVE_OUTCOMES.proven.exit, 0, "only proof exits 0");
+  const codeOf = (o: keyof typeof REROUTE_LIVE_OUTCOMES): number => REROUTE_LIVE_OUTCOMES[o].exit;
+  assert(codeOf("cleanupUnverified") !== codeOf("residue"),
+    "could not confirm cleanup and found something left are different outcomes (L11)");
   assert(outcomes.filter((o) => o.exit === 0).length === 1, "and nothing else does (L98)");
   assert(!/[\u2014\u2013]/.test(JSON.stringify(outcomes)), "no dashes in any message");
 }
@@ -26,6 +40,13 @@ for (const [hhmm, inside] of [
 ] as const) {
   eq(inCanaryWindow(at(hhmm)), inside, `${hhmm} is ${inside ? "inside" : "outside"} the canary's window`);
 }
+
+// --- a run must END before the canary's window too, not only start outside it -------------------
+eq(RUN_BUDGET_MS >= 5 * 60_000, true, "the run is budgeted at least five minutes (measured runs take one to two)");
+eq(runMeetsCanary(at("14:10")), false, "a run starting at 14:10 finishes well clear of 14:27");
+eq(runMeetsCanary(at("14:23")), true, "one starting at 14:23 would still be running at 14:27, so it is refused");
+eq(runMeetsCanary(at("14:30")), true, "one starting inside the window is refused, as before");
+eq(runMeetsCanary(at("14:38")), false, "control: one starting just after the window is clear");
 
 // --- the starts tried ----------------------------------------------------------------------------
 {
@@ -72,10 +93,40 @@ async function residueCases() {
     },
     { label: "the hold blocks", leftOver: async () => (calls.push("blocks"), "a hold busy block is still there") },
   ]);
-  eq(left, ["B2 is confirmed", "could not verify B3's calendar event: events.get 503", "a hold busy block is still there"],
-    "each check's finding in order, with a failed read named as unverified");
-  eq(calls, ["B1", "B2", "B3", "blocks"], "and a failed read never stops the checks after it");
-  eq(await residue([{ label: "B1", leftOver: async () => null }]), [], "nothing left is an empty list");
+  eq(left.left, ["B2 is confirmed", "a hold busy block is still there"], "what was found left, in order");
+  eq(left.unverified, ["B3's calendar event: events.get 503"], "and what could not be read, kept apart from it");
+  eq(calls, ["B1", "B2", "B3", "blocks"], "a failed read never stops the checks after it");
+  eq(await residue([{ label: "B1", leftOver: async () => null }]), { left: [], unverified: [] }, "nothing left reads as two empty lists");
 }
 
-residueCases().then(() => finish());
+// --- events are recorded as they appear, with the calendar that holds them -----------------------
+{
+  const ledger = eventLedger({ ONE: "one@x.com", TWO: "two@x.com" });
+  ledger.note({ gcal_event_id: "ev-1", assigned_user_id: "ONE" });
+  ledger.note({ gcal_event_id: null, assigned_user_id: "TWO" });
+  ledger.note({ gcal_event_id: "ev-2", assigned_user_id: "TWO" });
+  ledger.note({ gcal_event_id: "ev-3", assigned_user_id: "REAL" });
+  ledger.note({ gcal_event_id: "ev-1", assigned_user_id: "ONE" });
+  eq([...ledger.events()], [["ev-1", "one@x.com"], ["ev-2", "two@x.com"], ["ev-3", null]],
+    "each event once, with its calendar; a booking with no event records nothing; one outside the test world records no calendar");
+}
+
+// --- every cleanup step is attempted, whatever the one before it did ---------------------------
+async function attemptCases() {
+  const ran: string[] = [];
+  const failed = await attemptEach([
+    { what: "release the hold on B1", run: async () => { ran.push("release"); throw new Error("rpc 500"); } },
+    { what: "cancel B1", run: async () => { ran.push("cancel"); } },
+  ]);
+  eq(ran, ["release", "cancel"], "a failed release never stops the cancel after it");
+  eq(failed, ["could not release the hold on B1: rpc 500"], "and the failure is named");
+}
+
+// --- the verdict: left wins, then could not tell, then proven -------------------------------------
+eq(cleanupVerdict({ left: [], unverified: [] }), null, "nothing left and everything read: no cleanup verdict");
+eq(cleanupVerdict({ left: ["B1 is not cancelled"], unverified: ["event x: 503"] }),
+  { outcome: "residue", detail: "B1 is not cancelled; could not read: event x: 503" }, "something left is the residue outcome, naming the unread too");
+eq(cleanupVerdict({ left: [], unverified: ["event x: 503"] }),
+  { outcome: "cleanupUnverified", detail: "could not read: event x: 503" }, "only unread records is its own outcome");
+
+residueCases().then(attemptCases).then(() => finish());
