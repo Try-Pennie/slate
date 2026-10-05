@@ -384,11 +384,21 @@ const recomputePoolsOf = (codes: string[]): Promise<void> =>
  * splice are exactly as they were, and the lane covers them.
  */
 export async function spliceBookedTimeAfterBooking(code: string, booked: BookedTime): Promise<void> {
+  // A failed roster read THROWS out of the plan (could not tell); an empty plan was
+  // read successfully and means the advisor serves no pool now, most often because
+  // they were made unbookable or deactivated after the booking. No pool routes to
+  // them, so no row offers their time and there is nothing to splice: a logged skip,
+  // never a failed job.
   const outcome = await spliceBookedTime(booked, bookedSpliceDeps(code));
-  log.info("slot-cache", { msg: "booked time spliced", bucket: code, user_id: booked.userId, ...outcome });
   if (outcome.pools === 0) {
-    throw new Error(`advisor ${booked.userId} serves no pool, so no booked time was spliced for ${code}`);
+    log.info("slot-cache", {
+      msg: "booked time splice skipped: the advisor serves no pool",
+      bucket: code,
+      user_id: booked.userId,
+    });
+    return;
   }
+  log.info("slot-cache", { msg: "booked time spliced", bucket: code, user_id: booked.userId, ...outcome });
   if (outcome.failed > 0) {
     throw new Error(`${outcome.failed} code(s) could not be spliced after the booking on ${code}; the lane covers them`);
   }

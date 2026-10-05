@@ -206,12 +206,39 @@ describe("spliceBookedTimeAfterBooking (#3324): failures", () => {
     expect(log.warn).toHaveBeenCalled();
   });
 
-  it("REJECTS when the advisor serves no pool, rather than reporting a splice that never happened", async () => {
+  it("SKIPS, logged, when the advisor serves no pool any more (made unbookable since the booking)", async () => {
+    // Deactivated or made unbookable between the confirm and the splice: no pool
+    // routes to them, so no row offers their time and there is nothing to splice.
+    // That is a legitimate outcome, not a failed job.
     const r = roster(2, 0);
     r.users = r.users.filter((u) => u.id !== A);
     world = countingDb(r);
     db.current = world.client;
-    await expect(spliceBookedTimeAfterBooking("101", BOOKED)).rejects.toThrow(/serves no pool/);
+    await expect(spliceBookedTimeAfterBooking("101", BOOKED)).resolves.toBeUndefined();
+    expect(world.table.statements.update).toBe(0);
+    expect(log.info).toHaveBeenCalledWith(
+      "slot-cache",
+      expect.objectContaining({ msg: "booked time splice skipped: the advisor serves no pool", user_id: A }),
+    );
+  });
+
+  it("REJECTS when the roster read itself fails, which is could not tell, never no pools", async () => {
+    world = countingDb(roster(2, 0));
+    const real = world.client.from.bind(world.client);
+    world.client.from = (name: string) => {
+      if (name !== "users") return real(name);
+      world.statements.push(name);
+      const b: Record<string, unknown> = {
+        select: () => b,
+        eq: () => b,
+        is: () => b,
+        then: (ok: (v: unknown) => unknown) =>
+          Promise.resolve({ data: null, error: { message: "connection reset" } }).then(ok),
+      };
+      return b;
+    };
+    db.current = world.client;
+    await expect(spliceBookedTimeAfterBooking("101", BOOKED)).rejects.toThrow(/connection reset/);
     expect(world.table.statements.update).toBe(0);
   });
 });

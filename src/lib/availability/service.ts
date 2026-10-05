@@ -348,11 +348,8 @@ export async function loadBucketSlotInputs(
   from: string,
   to: string,
   resolveEligible: EligibleResolver = eligibleAgentIds,
-  /** #3324: a caller that already resolved the bucket (to size its window from the
-   *  event type) passes it, rather than paying the same read twice. */
-  preResolved?: ResolvedBucket,
 ): Promise<BucketSlotInputs | null> {
-  const resolved = preResolved ?? (await resolveBucketByCode(code));
+  const resolved = await resolveBucketByCode(code);
   if (!resolved) return null;
   const { bucket } = resolved;
 
