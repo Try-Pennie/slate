@@ -45,6 +45,8 @@ import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
 import { savedOutcome, savedSentence } from "@/lib/admin/save-outcomes";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
 import { PublicBookingSwitch } from "@/components/admin/PublicBookingSwitch";
+import { SharedConfirmLineSwitch } from "@/components/admin/SharedConfirmLineSwitch";
+import { readSharedConfirmLineSetting } from "@/lib/booking/shared-line-switch";
 import { btnCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
 import { OFFERED_OPEN_DAYS } from "@/lib/availability/bookable-days";
 
@@ -103,7 +105,13 @@ export default async function BusinessHoursPage({
   // #2297: the kill switch's current state. Its OWN read, resolving to null when it
   // fails, because "we could not read whether bookings are running" is a different
   // screen from either answer and the page must not draw one of them instead (L530).
-  const publicBookingPaused = await readPublicBookingPaused();
+  //
+  // #3325: the shared confirm line's switch, read beside it for the same reason and in
+  // the same way: its own read, null when it fails.
+  const [publicBookingPaused, sharedConfirmLine] = await Promise.all([
+    readPublicBookingPaused(),
+    readSharedConfirmLineSetting(),
+  ]);
 
   const db = supabaseAdmin();
   // #1892: the org's DEFAULT hours for a new agent ARE read here now, because
@@ -212,10 +220,10 @@ export default async function BusinessHoursPage({
           the org's own hours reading as a "default" is exactly the confusion
           #1297 was written about. Dan chose Hours on 2026-09-04. */}
       <AdminPageHeader title="Hours">
-        Whether Slate is taking bookings at all, when Pennie is open, the holidays and
-        closures on top of that, how far ahead a lead can book, and what a new agent
-        starts on. Every offered time is judged against the business hours, so a change
-        there moves the whole roster.
+        Whether Slate is taking bookings at all, how confirms for one time are lined up,
+        when Pennie is open, the holidays and closures on top of that, how far ahead a
+        lead can book, and what a new agent starts on. Every offered time is judged
+        against the business hours, so a change there moves the whole roster.
       </AdminPageHeader>
       {/* #1990: the sentence comes from the OUTCOME, so it names the form
           that saved rather than whatever this page had written down. An
@@ -235,6 +243,21 @@ export default async function BusinessHoursPage({
           syncing and existing bookings alone.
         </p>
         <PublicBookingSwitch paused={publicBookingPaused} />
+      </section>
+      {/* #3325: beside the pause, because it is the other switch on this page that
+          changes what happens when a lead presses confirm. Quiet either way: neither
+          state is an emergency. */}
+      <section className={cardCls}>
+        <h2 className="mb-1 text-sm font-semibold">Shared confirm line</h2>
+        <p className={`mb-4 ${proseCls} text-xs text-fg-muted`}>
+          When several leads confirm the same time at once, their confirms wait in a line
+          so one advisor is never given two of them. Each server normally keeps its own
+          line, so in a crowd the lines get in each other&apos;s way and confirms can run
+          out of time with nobody booked. With one line shared by every server, a crowd
+          gets one booking for each free advisor and a quick answer that the time was
+          taken for everyone else.
+        </p>
+        <SharedConfirmLineSwitch on={sharedConfirmLine} />
       </section>
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Business hours</h2>

@@ -119,7 +119,15 @@
 		// as (#3027). It must hold an admin role: as an agent, photos.get answers 403.
 		// Dan's own account for now (his decision, 2026-10-02); it moves to a non
 		// human admin mailbox at rollout, so a staff change cannot stop the photos.
-		"DIRECTORY_ADMIN_SUBJECT": "dwright@trypennie.com"
+		"DIRECTORY_ADMIN_SUBJECT": "dwright@trypennie.com",
+		// The shared confirm line's answer in an isolate that has not yet read the stored
+		// switch, booking_settings.shared_confirm_line (#3325). The switch itself is
+		// flipped on the admin Hours page with no deploy; this only covers a cold isolate
+		// whose read failed. "off" until the line is activated in production, when the
+		// activation change flips it to "on". Exactly "on" or "off": anything else is
+		// read as off and logged. env.loadtest sets "on" (vars do not inherit), and
+		// scripts/test-wrangler-loadtest-env.ts pins both resolved values.
+		"SHARED_CONFIRM_LINE_DEFAULT": "off"
 	},
 	"assets": {
 		"binding": "ASSETS",
@@ -323,6 +331,11 @@
 				"SNOWFLAKE_ROLE": "SLATE_ROLE",
 				// Follows production (#3027); the advisor-photos lane is held back below.
 				"DIRECTORY_ADMIN_SUBJECT": "dwright@trypennie.com",
+				// The one var that deliberately differs from production (#3325): the load run
+				// proves the shared confirm line before production uses it, so a cold isolate
+				// here must not read the line as off. The seed also writes the stored switch
+				// on, and the preflight refuses a branch where it is not.
+				"SHARED_CONFIRM_LINE_DEFAULT": "on",
 				// The flag every load test stub and refusal keys on. It exists HERE and
 				// nowhere else, which is the whole safety story: the Google stub, the
 				// webhook short circuit, the seen-address echo and the two refusals in

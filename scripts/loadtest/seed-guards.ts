@@ -246,3 +246,17 @@ export const SEED_ORG_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 export const SEED_ORG_NAME = "Loadtest Org";
 /** Every seeded agent's address is `loadtest-agent-<n>@` this domain, which is not routable. */
 export const SEED_AGENT_EMAIL_DOMAIN = "loadtest.local";
+
+/**
+ * The settings row the seed writes (#3325): the shared confirm line ON.
+ *
+ * The run exists to prove the shared confirm line before production uses it, so the
+ * branch's stored switch must be on, or every confirm would wait in its own server's
+ * line and the burst would measure the line the run is meant to replace. A fresh branch
+ * holds no settings row at all (migration 0086 seeds none), and every other column has a
+ * default, so this one row is the whole write. The preflight refuses a branch where the
+ * switch is not on (`sharedLineSwitchVerdict` in `preflight-checks.ts`), and its test
+ * drives that verdict with THIS constant, so the two cannot disagree about what on looks
+ * like.
+ */
+export const SEED_BOOKING_SETTINGS = { id: 1, shared_confirm_line: true } as const;

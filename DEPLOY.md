@@ -153,6 +153,15 @@ Change one by editing `wrangler.jsonc` and redeploying.
   delegation (scope `admin.directory.user.readonly`). It must hold an admin role:
   as an agent, `photos.get` answers 403. A committed wrangler var, not a secret.
   Missing or blank, the lane refuses by name and pages `advisor_photos_unread`.
+- `SHARED_CONFIRM_LINE_DEFAULT` (#3325): whether the shared confirm line is on in an
+  isolate that has not yet managed to read the stored switch
+  (`booking_settings.shared_confirm_line`, flipped on the admin Hours page with no
+  deploy). It only matters on a cold isolate whose read failed: a failed read is never
+  cached, the isolate answers this default and reads again five seconds later. Exactly
+  `"on"` or `"off"`; anything else, or unset, is read as off and logged once per
+  isolate. Production commits `"off"` until the line is activated there, and the
+  activation change flips it to `"on"`. `env.loadtest` commits `"on"`, the one var it
+  deliberately sets differently, and `scripts/test-wrangler-loadtest-env.ts` pins both.
 - `OOO_APPROVALS_TO` / `OOO_APPROVALS_BCC` / `OOO_APPROVALS_REPLY_TO`: recipients of
   the daily OOO-approvals digest email. Empty `TO` = the digest no-ops.
 - `EMBED_TEST_ORIGINS` (#2666): the websites allowed to open the public test bucket,

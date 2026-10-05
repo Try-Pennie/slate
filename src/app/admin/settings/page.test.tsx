@@ -787,3 +787,44 @@ describe("the new agent starting hours panel (#1651, moved by #1892)", () => {
     expect(screen.getByRole("button", { name: /save business hours/i })).toBeTruthy();
   });
 });
+
+// #3325: the shared confirm line's switch sits beside the public booking pause, the
+// other switch on this page that changes what happens when a lead presses confirm. It
+// is its own read and its own card, and an unreadable read draws its own state rather
+// than either answer (L530).
+describe("the shared confirm line switch (#3325)", () => {
+  function cards() {
+    const pause = screen.getByText("Online booking", { selector: "h2" }).closest("section");
+    const line = screen.getByText("Shared confirm line", { selector: "h2" }).closest("section");
+    return { pause, line };
+  }
+
+  it("draws its own card directly after the public booking pause", async () => {
+    db.results.booking_settings = { data: { shared_confirm_line: false }, error: null };
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await BusinessHoursPage(props));
+
+    const { pause, line } = cards();
+    expect(line).not.toBe(pause);
+    expect(pause?.nextElementSibling).toBe(line);
+    expect(line?.querySelector('[data-state="off"]')).toBeTruthy();
+  });
+
+  it("draws the line as on when the stored switch is on", async () => {
+    db.results.booking_settings = { data: { shared_confirm_line: true }, error: null };
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await BusinessHoursPage(props));
+
+    expect(cards().line?.querySelector('[data-state="on"]')).toBeTruthy();
+  });
+
+  it("says it could not read the switch rather than drawing it off", async () => {
+    db.results.booking_settings = { data: null, error: { message: "statement timeout" } };
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await BusinessHoursPage(props));
+
+    const { line } = cards();
+    expect(line?.querySelector('[data-state="unreadable"]')).toBeTruthy();
+    expect(line?.querySelector('[data-state="off"]')).toBeNull();
+  });
+});

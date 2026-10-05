@@ -39,6 +39,7 @@ import {
   productionRefusal,
   SEED_ORG_ID,
   SEED_ORG_NAME,
+  SEED_BOOKING_SETTINGS,
 } from "./seed-guards.ts";
 import { PRODUCTION_SUPABASE_REF } from "../../src/lib/loadtest-guard.ts";
 
@@ -186,6 +187,9 @@ async function main() {
   await assertMigrationsMatch();
 
   await insert("organizations", [{ id: SEED_ORG_ID, name: SEED_ORG_NAME }]);
+  // #3325: the shared confirm line ON, because proving it is what the run is for. The
+  // preflight refuses a branch where it is not, before anything else is written.
+  await insert("booking_settings", [SEED_BOOKING_SETTINGS]);
   // Production's own event type, measured 2026-09-11: 20 minutes on a 10 minute
   // grid with 120 minutes notice and no buffers. The grid is what decides how many
   // slots a day offers, so it decides how much four drivers contend; a 30-on-15

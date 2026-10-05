@@ -18,6 +18,8 @@
  * Pure apart from its injected read, clock and timer, so scripts/test-frame-lock.ts drives it.
  */
 
+import { makeCachedSwitchReader, type SwitchTimer } from "@/lib/cached-switch";
+
 /** How long one read of the switch stands in an isolate. */
 export const FRAME_LOCK_TTL_MS = 15_000;
 
@@ -33,58 +35,29 @@ export const FRAME_LOCK_TTL_SECONDS = Math.ceil(FRAME_LOCK_TTL_MS / 1000);
 export const FRAME_LOCK_READ_DEADLINE_MS = 500;
 
 /** Starts a timer and returns the function that clears it. Injected in tests. */
-export type LockTimer = (ms: number, fire: () => void) => () => void;
+export type LockTimer = SwitchTimer;
 
-const realTimer: LockTimer = (ms, fire) => {
-  const t = setTimeout(fire, ms);
-  return () => clearTimeout(t);
-};
-
+/**
+ * The frame lock's reader: the shared cached switch reader (`src/lib/cached-switch.ts`,
+ * #3325) with the policy described above, a failed read HELD for the TTL like a good
+ * one, and no lock when nothing good was ever read.
+ */
 export function makeFrameLockReader(deps: {
   read: () => Promise<boolean>;
   now: () => number;
   onError: (err: unknown) => void;
   timer?: LockTimer;
 }): () => Promise<boolean> {
-  let known: { value: boolean; readAtMs: number } | null = null;
-  let inFlight: Promise<boolean> | null = null;
-  const timer = deps.timer ?? realTimer;
-
-  /** The read, raced against the deadline; a timeout rejects like any failed read. */
-  const readWithinDeadline = () =>
-    new Promise<boolean>((resolve, reject) => {
-      const cancel = timer(FRAME_LOCK_READ_DEADLINE_MS, () =>
-        reject(new Error(`frame lock read did not answer within ${FRAME_LOCK_READ_DEADLINE_MS}ms`)),
-      );
-      deps.read().then(
-        (v) => {
-          cancel();
-          resolve(v);
-        },
-        (err: unknown) => {
-          cancel();
-          reject(err);
-        },
-      );
-    });
-
-  return async () => {
-    if (known && deps.now() - known.readAtMs < FRAME_LOCK_TTL_MS) return known.value;
-    if (inFlight) return inFlight;
-    inFlight = (async () => {
-      try {
-        const value = await readWithinDeadline();
-        known = { value, readAtMs: deps.now() };
-        return value;
-      } catch (err) {
-        deps.onError(err);
-        const value = known?.value ?? false;
-        known = { value, readAtMs: deps.now() };
-        return value;
-      } finally {
-        inFlight = null;
-      }
-    })();
-    return inFlight;
-  };
+  const read = makeCachedSwitchReader({
+    label: "frame lock",
+    read: deps.read,
+    now: deps.now,
+    onError: deps.onError,
+    timer: deps.timer,
+    ttlMs: FRAME_LOCK_TTL_MS,
+    readDeadlineMs: FRAME_LOCK_READ_DEADLINE_MS,
+    fallback: () => false,
+    onFailure: { kind: "hold" },
+  });
+  return async () => (await read()).on;
 }
