@@ -1644,8 +1644,16 @@ export interface BookingDeps {
    *  so it can never equal a derived bucket|slot|contact key. */
   newIdempotencyKey(): string;
   appBaseUrl(): string;
-  /** Best-effort clear of a bucket's cached availability after a booking changes it. */
-  invalidateSlots(bucketCode: string): Promise<void>;
+  /**
+   * Best-effort clear of a bucket's cached availability after a booking changes it.
+   * A create passes the booked advisor and window (#3324), once its busy block has
+   * committed, so the time can be spliced out of every pool that advisor serves;
+   * the cancel, reschedule and reassign steps pass none and refresh the code's pool.
+   */
+  invalidateSlots(
+    bucketCode: string,
+    booked?: { userId: string; startsAt: string; endsAt: string },
+  ): Promise<void>;
   /**
    * Persist one routing decision to the decision log and fire a misroute alert if
    * warranted (#504). Injected (rather than called as a module function) so tests
@@ -4608,7 +4616,14 @@ async function deliverCreatedSideEffects(
       booking.id,
     );
   }
-  await deps.invalidateSlots(bookedCode);
+  // #3324: after the busy block above has committed, so the splice's fence is
+  // stamped no earlier than the block every later compute will read.
+  await deps.invalidateSlots(
+    bookedCode,
+    booking.assigned_user_id
+      ? { userId: booking.assigned_user_id, startsAt: booking.starts_at, endsAt: booking.ends_at }
+      : undefined,
+  );
 
   // Re-resolve bucket + eventType for the webhook (works on the drain path too).
   const resolved = await deps.resolveBucketByCode(bookedCode);

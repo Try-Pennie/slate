@@ -37,6 +37,8 @@ import {
   recomputeBucketSlotsForToday,
   readPoolInputsAfterBooking,
   refreshPoolAfterBooking,
+  readSpliceInputsAfterBooking,
+  spliceBookedTimeAfterBooking,
   getBucketSlotsWithFallback,
   refreshPoolsForAgents,
 } from "@/lib/availability/slot-cache";
@@ -1268,14 +1270,23 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
     // measure what it costs the confirms beside it. Production always reads `on`
     // (`postConfirmRecomputeMode`). The cron drains' float is not switched: the
     // question is the cost a booking's own refresh puts on the next confirms.
-    invalidateSlots: (bucketCode) => {
+    //
+    // #3324: a CREATE passes the booked advisor and window, and the refresh becomes
+    // a splice of that window into every pool the advisor serves: no whole pool
+    // compute after the booking at all, and the advisor's other pools stop offering
+    // the time within seconds rather than at the lane's next pass. The fence is
+    // stamped HERE, synchronously, after the busy block's write returned, so it is
+    // never earlier than the block a later compute reads. The cancel, reschedule and
+    // reassign steps pass no window and keep the coalesced pool refresh.
+    invalidateSlots: (bucketCode, booked) => {
       if (deferSend) {
+        const target = booked ? { ...booked, fenceAtMs: Date.now() } : null;
         const refresh = postConfirmRefresh(postConfirmRecomputeMode(), bucketCode, {
-          // #3258: the booked code's POOL, coalesced with the pool's other bookings
-          // inside a short window, rather than a whole compute per booking.
-          recompute: refreshPoolAfterBooking,
-          // The same coalescing as the on arm, so the two arms stay comparable.
-          readsOnly: readPoolInputsAfterBooking,
+          recompute: (code) =>
+            target ? spliceBookedTimeAfterBooking(code, target) : refreshPoolAfterBooking(code),
+          // The reads of the same work the on arm does, so the arms stay comparable.
+          readsOnly: (code) =>
+            target ? readSpliceInputsAfterBooking(code, target) : readPoolInputsAfterBooking(code),
         });
         if (refresh) afterResponse(refresh.context, refresh.work);
       } else {

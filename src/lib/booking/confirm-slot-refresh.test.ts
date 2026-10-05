@@ -23,6 +23,8 @@ const slotCache = vi.hoisted(() => ({
   recomputeBucketSlotsForToday: vi.fn(async (_code: string) => {}),
   refreshPoolAfterBooking: vi.fn(async (_code: string) => {}),
   readPoolInputsAfterBooking: vi.fn(async (_code: string) => {}),
+  spliceBookedTimeAfterBooking: vi.fn(async (_code: string, _booked: unknown) => {}),
+  readSpliceInputsAfterBooking: vi.fn(async (_code: string, _booked: unknown) => {}),
   getBucketSlotsWithFallback: vi.fn(),
   refreshPoolsForAgents: vi.fn(),
 }));
@@ -134,5 +136,60 @@ describe("the post confirm recompute arm (#3258)", () => {
       await realDeps().invalidateSlots("212");
       expect(slotCache.recomputeBucketSlotsForToday).toHaveBeenCalledWith("212");
     });
+  });
+
+  it("reads-only after a create reads the splice's inputs, never the pool's", async () => {
+    const booked = { userId: "agent-a", startsAt: "2026-10-13T14:00:00.000Z", endsAt: "2026-10-13T14:20:00.000Z" };
+    await withEnv({ SLATE_LOADTEST: "true", [VAR]: "reads-only" }, async () => {
+      await realDeps(after.deferWebhookSend).invalidateSlots("212", booked);
+      expect(after.afterResponse.mock.calls[0][0]).toBe("post-confirm-recompute-reads-only");
+      await after.afterResponse.mock.calls[0][1]();
+      expect(slotCache.readSpliceInputsAfterBooking).toHaveBeenCalledWith("212", expect.objectContaining(booked));
+      expect(slotCache.readPoolInputsAfterBooking).not.toHaveBeenCalled();
+      expect(slotCache.spliceBookedTimeAfterBooking).not.toHaveBeenCalled();
+    });
+  });
+});
+
+// #3324: a create hands over the booked advisor and window, and the refresh becomes
+// a splice of that window into every pool the advisor serves, rather than a whole
+// pool compute of the booked code's pool alone.
+describe("a confirmed booking splices its window (#3324)", () => {
+  const BOOKED = { userId: "agent-a", startsAt: "2026-10-13T14:00:00.000Z", endsAt: "2026-10-13T14:20:00.000Z" };
+
+  it("schedules the splice under the same job name, with the fence stamped when the confirm asked", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.parse("2026-10-12T15:00:00.000Z"));
+      await realDeps(after.deferWebhookSend).invalidateSlots("411", BOOKED);
+      // Later than the confirm: the fence must still be the confirm's instant, which
+      // is after the busy block committed and before any later compute began.
+      vi.setSystemTime(Date.parse("2026-10-12T15:00:09.000Z"));
+
+      expect(after.afterResponse.mock.calls[0][0]).toBe("post-confirm-recompute");
+      expect(slotCache.spliceBookedTimeAfterBooking).not.toHaveBeenCalled();
+      await after.afterResponse.mock.calls[0][1]();
+      expect(slotCache.spliceBookedTimeAfterBooking).toHaveBeenCalledWith("411", {
+        ...BOOKED,
+        fenceAtMs: Date.parse("2026-10-12T15:00:00.000Z"),
+      });
+      // The whole pool compute it replaces is not run beside it.
+      expect(slotCache.refreshPoolAfterBooking).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets a failed splice REJECT, so afterResponse logs it", async () => {
+    slotCache.spliceBookedTimeAfterBooking.mockRejectedValueOnce(new Error("2 code(s) could not be spliced"));
+    await realDeps(after.deferWebhookSend).invalidateSlots("411", BOOKED);
+    await expect(after.afterResponse.mock.calls[0][1]()).rejects.toThrow(/could not be spliced/);
+  });
+
+  it("a refresh with no booked window (cancel, reschedule, reassign) still refreshes the pool", async () => {
+    await realDeps(after.deferWebhookSend).invalidateSlots("411");
+    await after.afterResponse.mock.calls[0][1]();
+    expect(slotCache.refreshPoolAfterBooking).toHaveBeenCalledWith("411");
+    expect(slotCache.spliceBookedTimeAfterBooking).not.toHaveBeenCalled();
   });
 });
