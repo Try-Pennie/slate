@@ -1168,6 +1168,13 @@ export function makeDeps(opts: FakeOpts) {
     // it can override deps.displayedTier after building the deps.
     displayedTier: async () => null,
     loadPendingEventDeletions: async (_limit) => opts.pending ?? [],
+    // #1630: the rest of a refused calendar's queue, from the same fixture rows.
+    loadPendingEventDeletionsForCalendar: async (email, limit) =>
+      (opts.pending ?? []).filter((r) => r.calendar_email === email).slice(0, limit),
+    // #1630: nobody owns a refused calendar, and no booking moved, unless a suite
+    // says so; an unknown owner keeps today's page.
+    loadCalendarOwners: async () => [],
+    loadBookingAssignees: async () => [],
     // #3215: nobody holds a queued event unless a suite says so.
     liveBookingHoldingEvent: async () => null,
     pendingWritePinsEvent: async () => false,

@@ -204,7 +204,14 @@ for `pending_event_deletions_refused` (#2577), a queued calendar event DELETE wa
 refused with a definitive status, so the drain stopped retrying it on that pass: the
 row sits in `pending_event_deletions` at the give-up count with `last_error` naming the
 kind, and the cancelled meeting is still on that agent's calendar until the account
-below is fixed and the event removed by hand.
+below is fixed and the event removed by hand. The drain asks Google once per calendar
+in a pass: once one row is refused, the calendar's other queued rows are settled the
+same way without a call of their own, and their `last_error` says they were not tried
+(#1630). This page is only ever about an owner who is still active, or one Slate could
+not read: Google answers a licence offboarding REVOKED with the same
+`403 notACalendarUser` it gives one never granted, so a calendar whose owner has left
+goes out as `pending_event_deletions_departed` on the info channel instead, under
+"Something was measured and is only worth knowing" below.
 
 **The branch that decides everything** is the failure's classification, and the alert
 carries it (`gone`, `not-provisioned`, `transient`):
@@ -595,7 +602,18 @@ nothing either way; re-run it.
 
 Keys: `rate_limit_blocked:*`, `ooo_agent_dm`, `ooo_approvals_digest`,
 `ooo-digest-unreachable:*`, `ooo-digest-unrouted-unreachable`, `ooo_undo`,
-`embed_origin_mismatch`, `cron_cpu_not_configured`.
+`embed_origin_mismatch`, `cron_cpu_not_configured`, `pending_event_deletions_departed`.
+
+**`pending_event_deletions_departed`** (#1630) says Slate could not remove old invites
+from the calendar of somebody who has left, because offboarding removed their Google
+Calendar licence. It names who left and when, and, where Slate could read it, how many
+of those calls were moved to other advisors. No account needs fixing: the rows stay in
+`pending_event_deletions` at the give-up count as the record. Slate reads the owner's
+`users.deactivated_at` to decide this, and a read that fails sends the ordinary
+`pending_event_deletions_refused` page rather than claim a departure it did not see.
+Each pass sends at most one of these on a 30 minute cooldown, so rows a still running
+offboarding sweep queues after the first notice can go unnamed; the table holds every
+one of them.
 
 **`cron_cpu_not_configured`** (#3141) says, once a day, that the Worker has no
 `CF_ANALYTICS_TOKEN`, so nothing is reading cron CPU and nothing will page about it. It

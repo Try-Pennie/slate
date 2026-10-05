@@ -13,6 +13,8 @@
 import type { FailureKind } from "@/lib/google/sync-health";
 import { OFFERED_OPEN_DAYS } from "@/lib/availability/bookable-days";
 import { deadlineReason } from "@/lib/notify/error-text";
+import { normalizeEmail } from "@/lib/auth/email";
+import { formatSlotDay, formatSlotTime } from "@/lib/booking/slot-label";
 
 /** A cached busy_blocks write that did not land, per operation. */
 export function busyBlockWriteThroughAlert(
@@ -75,6 +77,12 @@ export interface RefusedDeletionForAlert {
   calendarEmail: string;
   eventId: string;
   kind: FailureKind;
+  /**
+   * #1630: whether the call behind this invite now sits with another advisor.
+   * Measured only for a calendar whose owner has left; null or absent where it was
+   * not measured or could not be read, so the copy claims nothing about it.
+   */
+  movedToAnotherAdvisor?: boolean | null;
 }
 
 /** How many event ids to name per calendar before summarizing the rest. */
@@ -125,12 +133,159 @@ export function pendingDeletionRefusedAlert(refused: RefusedDeletionForAlert[]):
   return parts.join(" ");
 }
 
-/** "a@x.com (event ids evt-1, evt-2 and 3 more); b@x.com (event id evt-9)". */
+/** Who a refused calendar belongs to (#1630), as Slate's users row records it. */
+export interface CalendarOwnerForAlert {
+  /** The owner's name, or null when the row carries none. */
+  name: string | null;
+  /** When they were deactivated, or null while they are still active. */
+  deactivatedAt: string | null;
+}
+
+/** The messages one pass's refusals owe, either of which may be absent. */
+export interface RefusedDeletionNotices {
+  /** Today's page, for calendars whose owner is active or could not be read. */
+  page: string | null;
+  /** The info notice, for calendars whose owner has left. */
+  departed: string | null;
+}
+
+/**
+ * Split one pass's refused deletions by whether the calendar's owner has LEFT
+ * (#1630), and word each half.
+ *
+ * Google answers `403 notACalendarUser` for a licence that was REVOKED exactly as
+ * it does for one never granted, and offboarding revokes it, so the provisioning
+ * remedy was being sent about people who had just left. Slate already knows who
+ * has left, so the departure is a fact about the owner rather than a fourth kind
+ * of Google answer, and it applies whatever definitive kind ended the row.
+ *
+ * `owners` is keyed by the normalised address (#1663), and is null when it could
+ * not be read. Null, a calendar with no users row, and an owner still active all
+ * keep today's page with both its remedies, word for word: departure is claimed
+ * only where the deactivation was actually read (L11).
+ */
+export function refusedDeletionNotices(
+  refused: RefusedDeletionForAlert[],
+  owners: ReadonlyMap<string, CalendarOwnerForAlert> | null,
+): RefusedDeletionNotices {
+  const active: RefusedDeletionForAlert[] = [];
+  const departed = new Map<string, DepartedCalendarForAlert>();
+  for (const r of refused) {
+    const owner = owners?.get(normalizeEmail(r.calendarEmail));
+    if (!owner?.deactivatedAt) {
+      active.push(r);
+      continue;
+    }
+    const entry = departed.get(r.calendarEmail) ?? {
+      calendarEmail: r.calendarEmail,
+      name: owner.name,
+      deactivatedAt: owner.deactivatedAt,
+      events: [],
+    };
+    entry.events.push({ eventId: r.eventId, movedToAnotherAdvisor: r.movedToAnotherAdvisor ?? null });
+    departed.set(r.calendarEmail, entry);
+  }
+  return {
+    page: active.length > 0 ? pendingDeletionRefusedAlert(active) : null,
+    departed: departed.size > 0 ? pendingDeletionDepartedNotice([...departed.values()]) : null,
+  };
+}
+
+/** One departed owner's calendar and the invites on it Slate could not remove. */
+export interface DepartedCalendarForAlert {
+  calendarEmail: string;
+  name: string | null;
+  deactivatedAt: string;
+  events: { eventId: string; movedToAnotherAdvisor: boolean | null }[];
+}
+
+/** The zone a departure time is written in, named in the text as ET. */
+const DEPARTURE_ZONE = "America/New_York";
+
+/**
+ * Invites Slate could not remove from the calendar of somebody who has LEFT
+ * (#1630). Info, never a page: no account needs fixing and nobody can act, since
+ * the account that would have to be repaired belongs to a person who is gone (L112,
+ * L36). So it says who left and when, why the invites stay, where the calls went
+ * when that was measured, and that nothing needs doing, and it names neither
+ * remedy the page carries.
+ */
+export function pendingDeletionDepartedNotice(departed: DepartedCalendarForAlert[]): string {
+  const total = departed.reduce((n, d) => n + d.events.length, 0);
+  const record =
+    `${total === 1 ? "The row stays" : "Each row stays"} in pending_event_deletions at the give-up count ` +
+    `as the record of an invite Slate could not remove`;
+  if (departed.length === 1) {
+    const d = departed[0];
+    const n = d.events.length;
+    const moved = movedClause(d.events);
+    return [
+      `${departedWho(d)} left on ${departedAt(d.deactivatedAt)}, and Slate cannot remove ` +
+        `${n === 1 ? "the old invite" : `the ${n} old invites`} from their calendar because the account no longer ` +
+        `has Google Calendar.`,
+      ...(moved ? [`${moved.charAt(0).toUpperCase()}${moved.slice(1)}.`] : []),
+      `No account needs fixing.`,
+      `${record} (${eventIdList(d.events.map((e) => e.eventId))}).`,
+    ].join(" ");
+  }
+  const people = departed.map((d) => {
+    const n = d.events.length;
+    const moved = movedClause(d.events);
+    return (
+      `${departedWho(d)} left on ${departedAt(d.deactivatedAt)}: ${n} old ${n === 1 ? "invite" : "invites"} ` +
+      `(${eventIdList(d.events.map((e) => e.eventId))})${moved ? `, and ${moved}` : ""}.`
+    );
+  });
+  return [
+    `${departed.length} people who have left still have old invites on their calendars that Slate cannot ` +
+      `remove, because their accounts no longer have Google Calendar.`,
+    ...people,
+    `No account needs fixing.`,
+    `${record}.`,
+  ].join(" ");
+}
+
+/** "Jane Doe (jane@x.com)", or the address alone when there is no name. */
+function departedWho(d: DepartedCalendarForAlert): string {
+  return d.name ? `${d.name} (${d.calendarEmail})` : d.calendarEmail;
+}
+
+/** "Mon, Oct 5 at 10:43am ET". */
+function departedAt(iso: string): string {
+  return `${formatSlotDay(iso, DEPARTURE_ZONE)} at ${formatSlotTime(iso, DEPARTURE_ZONE)} ET`;
+}
+
+/**
+ * Where the calls went, lower case, or null when there is nothing true to say: no
+ * call was moved, or whether any was could not be read. "3 of the 4" claims the
+ * fourth was NOT moved, so it is only said when every one was measured.
+ */
+function movedClause(events: { movedToAnotherAdvisor: boolean | null }[]): string | null {
+  if (events.some((e) => e.movedToAnotherAdvisor === null)) return null;
+  const n = events.length;
+  const moved = events.filter((e) => e.movedToAnotherAdvisor).length;
+  if (moved === 0) return null;
+  if (moved === n) {
+    if (n === 1) return "the call was moved to another advisor";
+    if (n === 2) return "both calls were moved to other advisors";
+    return `all ${n} calls were moved to other advisors`;
+  }
+  return `${moved} of the ${n} calls ${moved === 1 ? "was moved to another advisor" : "were moved to other advisors"}`;
+}
+
+/** "event ids evt-1, evt-2, evt-3 and 2 more", capped like the page's lines. */
+function eventIdList(ids: string[]): string {
+  const named = ids.slice(0, MAX_NAMED_REFUSED_EVENTS).join(", ");
+  const rest = ids.length - MAX_NAMED_REFUSED_EVENTS;
+  return `${ids.length === 1 ? "event id" : "event ids"} ${named}${rest > 0 ? ` and ${rest} more` : ""}`;
+}
+
 /** How many distinct calendars (accounts) a set of refused deletions belongs to. */
 function distinctCalendars(rows: RefusedDeletionForAlert[]): number {
   return new Set(rows.map((r) => r.calendarEmail)).size;
 }
 
+/** "a@x.com (event ids evt-1, evt-2 and 3 more); b@x.com (event id evt-9)". */
 function refusedCalendarLines(rows: RefusedDeletionForAlert[]): string {
   const byCalendar = new Map<string, string[]>();
   for (const r of rows) {
@@ -139,12 +294,7 @@ function refusedCalendarLines(rows: RefusedDeletionForAlert[]): string {
     byCalendar.set(r.calendarEmail, ids);
   }
   return [...byCalendar.entries()]
-    .map(([email, ids]) => {
-      const named = ids.slice(0, MAX_NAMED_REFUSED_EVENTS).join(", ");
-      const rest = ids.length - MAX_NAMED_REFUSED_EVENTS;
-      const label = ids.length === 1 ? "event id" : "event ids";
-      return `${email} (${label} ${named}${rest > 0 ? ` and ${rest} more` : ""})`;
-    })
+    .map(([email, ids]) => `${email} (${eventIdList(ids)})`)
     .join("; ")
     .concat(".");
 }

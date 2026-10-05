@@ -462,6 +462,9 @@ import {
   pendingDeletionAlert,
   pendingDeletionRecovery,
   pendingDeletionRefusedAlert,
+  refusedDeletionNotices,
+  type CalendarOwnerForAlert,
+  type RefusedDeletionForAlert,
   reassignIntentDroppedAlert,
   reconcileFreedAlert,
   reconcileRecreatedAlert,
@@ -586,6 +589,36 @@ const NOW_MS = Date.parse("2026-07-29T12:00:00.000Z");
 
 /** #3037: the Ultra High tier's first offered time as of 2026-10-02, Monday Oct 5 at 11:30am ET. */
 const PREVIEW_TIER_FIRST_SLOT = Date.parse("2026-10-05T15:30:00.000Z"); // parse-ok: a literal
+
+/**
+ * #1630: who the refused calendars in the previews below belong to. Two people who
+ * have left (the first at the 2026-10-05 incident's moment) and one active new hire,
+ * keyed the way the drain keys them, by normalised address.
+ */
+const PREVIEW_REFUSED_OWNERS = new Map<string, CalendarOwnerForAlert>([
+  ["left.agent@trypennie.com", { name: "Jordan Avery", deactivatedAt: "2026-10-05T14:43:27.000Z" }],
+  ["moved.on@trypennie.com", { name: "Sam Okafor", deactivatedAt: "2026-10-02T19:10:00.000Z" }],
+  ["new.hire@trypennie.com", { name: "Casey Lin", deactivatedAt: null }],
+]);
+
+/** `n` refused rows on one calendar, each call moved (true), kept (false) or unread (null). */
+function previewRefusedRows(
+  email: string,
+  prefix: string,
+  moved: (boolean | null)[],
+  kind: RefusedDeletionForAlert["kind"] = "not-provisioned",
+): RefusedDeletionForAlert[] {
+  return moved.map((m, i) => ({ calendarEmail: email, eventId: `evt_${prefix}${i + 1}`, kind, movedToAnotherAdvisor: m }));
+}
+
+/** The 2026-10-05 shape: one advisor left, four calls moved, plus an active new hire refused in the same pass. */
+const PREVIEW_REFUSED_MIX = refusedDeletionNotices(
+  [
+    ...previewRefusedRows("left.agent@trypennie.com", "7a", [true, true, true, true]),
+    ...previewRefusedRows("new.hire@trypennie.com", "4c", [null]),
+  ],
+  PREVIEW_REFUSED_OWNERS,
+);
 
 /** A measured tier cause for the preview, from its day tallies. */
 function previewTierCause(
@@ -4122,6 +4155,69 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       { calendarEmail: "left.agent@trypennie.com", eventId: "evt_4d5", kind: "gone" },
       { calendarEmail: "revoked@trypennie.com", eventId: "evt_4e6", kind: "gone" },
     ]),
+  },
+  {
+    key: "pending_event_deletions_refused",
+    state: "a pass refusing one departed and one active calendar: the page names only the active one",
+    channel: "alert",
+    text: PREVIEW_REFUSED_MIX.page ?? "",
+  },
+  {
+    key: "pending_event_deletions_refused",
+    state: "who owns the calendar could not be read, so a departed advisor's refusal still pages",
+    channel: "alert",
+    text:
+      refusedDeletionNotices(
+        previewRefusedRows("left.agent@trypennie.com", "7a", [null, null]),
+        null,
+      ).page ?? "",
+  },
+  {
+    key: "pending_event_deletions_departed",
+    state: "one advisor left, one old invite, its call moved",
+    channel: "info",
+    text:
+      refusedDeletionNotices(previewRefusedRows("left.agent@trypennie.com", "7a", [true]), PREVIEW_REFUSED_OWNERS)
+        .departed ?? "",
+  },
+  {
+    key: "pending_event_deletions_departed",
+    state: "a pass refusing one departed and one active calendar: the departure half, four calls moved, over the id cap",
+    channel: "info",
+    text: PREVIEW_REFUSED_MIX.departed ?? "",
+  },
+  {
+    key: "pending_event_deletions_departed",
+    state: "one advisor left, some calls moved and one not",
+    channel: "info",
+    text:
+      refusedDeletionNotices(
+        previewRefusedRows("left.agent@trypennie.com", "7a", [true, true, false]),
+        PREVIEW_REFUSED_OWNERS,
+      ).departed ?? "",
+  },
+  {
+    key: "pending_event_deletions_departed",
+    state: "one advisor left and where the calls went could not be read, so no move is claimed",
+    channel: "info",
+    text:
+      refusedDeletionNotices(
+        previewRefusedRows("left.agent@trypennie.com", "7a", [null, null], "gone"),
+        PREVIEW_REFUSED_OWNERS,
+      ).departed ?? "",
+  },
+  {
+    key: "pending_event_deletions_departed",
+    state: "two advisors who left, in one pass",
+    channel: "info",
+    text:
+      refusedDeletionNotices(
+        [
+          ...previewRefusedRows("left.agent@trypennie.com", "7a", [true, true]),
+          ...previewRefusedRows("moved.on@trypennie.com", "8b", [false]),
+        ],
+        PREVIEW_REFUSED_OWNERS,
+      ).departed ?? "",
   },
   {
     key: "creation_orphan_events",

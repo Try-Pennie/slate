@@ -768,7 +768,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "pending_event_deletions_refused",
     kind: "incident",
-    why: "The drain has STOPPED retrying the named deletions because Google refused the calendar for good (gone, or never given Calendar), so nothing observes them again: the rows sit at the give-up count and only a person re-authenticating, removing or provisioning the account changes anything. Distinct from pending_event_deletions, whose stuck rows are still being retried and whose remedy is API health (#2577).",
+    why: "The drain has STOPPED retrying the named deletions because Google refused the calendar for good (gone, or never given Calendar), so nothing observes them again: the rows sit at the give-up count and only a person re-authenticating, removing or provisioning the account changes anything. Distinct from pending_event_deletions, whose stuck rows are still being retried and whose remedy is API health (#2577). Sent only for an owner who is still active, or one Slate could not read; a departed owner's refusals are pending_event_deletions_departed (#1630).",
   },
   {
     key: "reconcile_busy_blocks",
@@ -1051,6 +1051,18 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "from the coverage panel, so it is a once-a-day worklist rather than something " +
       "to act on tonight. Its page sibling owns the urgent half and clears on its own " +
       "measured zero; this half has nothing to end.",
+  },
+  {
+    key: "pending_event_deletions_departed",
+    kind: "info",
+    why:
+      "Google refused for good the calendar of somebody who has LEFT, so Slate cannot remove the old " +
+      "invites the deletion drain was asked to delete (#1630). Offboarding revokes the licence, and Google " +
+      "answers a revoked licence exactly as it answers one never granted, so this used to page a " +
+      "provisioning request about a departed advisor. No account needs fixing and nobody can act on it, so " +
+      "it is put on the record and wakes nobody. There is no condition to end either: the rows are settled " +
+      "and stay as the record, and the all-clear would say only that the past stopped happening. An owner " +
+      "still active, or one Slate could not read, keeps the pending_event_deletions_refused page.",
   },
   {
     key: "detector_parked",
