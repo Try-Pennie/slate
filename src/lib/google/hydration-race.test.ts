@@ -328,6 +328,7 @@ vi.mock("@/lib/env", () => ({
 }));
 vi.mock("@/lib/availability/slot-cache", () => ({
   recomputeBucketsForAgent: vi.fn(async () => {}),
+  refreshAgentPoolsAfterPush: vi.fn(async () => null),
   recomputeBucketSlotsForToday: vi.fn(async () => {}),
 }));
 vi.mock("@/lib/after-response", () => ({
@@ -374,7 +375,7 @@ vi.mock("@/lib/google/calendar", async () => {
 
 import { hydrateCalendar, syncByChannel, runIncrementalSync } from "@/lib/google/sync";
 import { calendarsDueForHydration, type HydrationCandidate } from "@/lib/google/hydration";
-import { recomputeBucketsForAgent } from "@/lib/availability/slot-cache";
+import { refreshAgentPoolsAfterPush } from "@/lib/availability/slot-cache";
 import type { AgentCalendar } from "@/lib/db/types";
 
 // ---------------------------------------------------------------------------
@@ -813,7 +814,7 @@ describe("a push sync waits for its slot refresh (#2922)", () => {
 
     let release!: () => void;
     let claimDuringRefresh: string | null | undefined;
-    vi.mocked(recomputeBucketsForAgent).mockImplementationOnce(async (userId) => {
+    vi.mocked(refreshAgentPoolsAfterPush).mockImplementationOnce(async (userId) => {
       expect(userId).toBe(USER_ID);
       claimDuringRefresh = cal().sync_claimed_at;
       await new Promise<void>((r) => (release = r));
@@ -835,5 +836,53 @@ describe("a push sync waits for its slot refresh (#2922)", () => {
     release();
     await expect(pending).resolves.toBe("synced");
     expect(blockFor("evt-new")).toBeTruthy();
+  });
+});
+
+// #3258: a push whose sync changed no busy time refreshes nothing. Production
+// (2026-10-05) measured the push path at two thirds of the Worker's CPU, about
+// 10s a push, and every push refreshed every pool of its agent even when Google's
+// delta held nothing that moves busy time: a title edit, or the echo of the event
+// Slate itself created for a booking, whose pool the booking already refreshed.
+describe("a push refreshes slots only when its sync changed busy time (#3258)", () => {
+  it("refreshes nothing when the delta carried no change", async () => {
+    await bootstrap();
+    vi.mocked(refreshAgentPoolsAfterPush).mockClear();
+    await expect(syncByChannel(CHANNEL)).resolves.toBe("synced");
+    expect(refreshAgentPoolsAfterPush).not.toHaveBeenCalled();
+  });
+
+  it("refreshes nothing when the only change was the event Slate itself created", async () => {
+    await bootstrap();
+    (db.current as FakeDb).seed("bookings", [
+      { id: "bk-1", assigned_user_id: USER_ID, status: "confirmed", gcal_event_id: "evt-slate" },
+    ]);
+    (google.current as FakeGoogle).put("evt-slate", at(DAY + 3), at(DAY + 4));
+    vi.mocked(refreshAgentPoolsAfterPush).mockClear();
+    await expect(syncByChannel(CHANNEL)).resolves.toBe("synced");
+    expect(blockFor("evt-slate")).toBeUndefined();
+    expect(refreshAgentPoolsAfterPush).not.toHaveBeenCalled();
+  });
+
+  it("refreshes the agent's pools once when the sync moved busy time (positive control)", async () => {
+    await bootstrap();
+    (google.current as FakeGoogle).put("evt-meeting", at(DAY + 5), at(DAY + 6));
+    vi.mocked(refreshAgentPoolsAfterPush).mockClear();
+    await expect(syncByChannel(CHANNEL)).resolves.toBe("synced");
+    expect(blockFor("evt-meeting")).toBeTruthy();
+    expect(refreshAgentPoolsAfterPush).toHaveBeenCalledTimes(1);
+    expect(refreshAgentPoolsAfterPush).toHaveBeenCalledWith(USER_ID);
+  });
+
+  it("refreshes when a meeting was cancelled, since that frees time", async () => {
+    await bootstrap();
+    const g = google.current as FakeGoogle;
+    g.put("evt-gone", at(DAY + 7), at(DAY + 8));
+    await syncByChannel(CHANNEL);
+    g.cancel("evt-gone");
+    vi.mocked(refreshAgentPoolsAfterPush).mockClear();
+    await syncByChannel(CHANNEL);
+    expect(blockFor("evt-gone")).toBeUndefined();
+    expect(refreshAgentPoolsAfterPush).toHaveBeenCalledTimes(1);
   });
 });

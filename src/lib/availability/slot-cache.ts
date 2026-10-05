@@ -236,7 +236,7 @@ const lastPoolRecomputeAt = new Map<string, number>();
  * that measured why. It shares `lastPoolRecomputeAt` with the push path, so the two
  * never compute one pool back to back.
  */
-const bookingRefreshes = makePoolRefreshCoalescer({
+const poolRefreshes = makePoolRefreshCoalescer({
   now: () => Date.now(),
   sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
   windowMs: POST_CONFIRM_REFRESH_WINDOW_MS,
@@ -334,7 +334,7 @@ async function forPoolsOf(
 
 /** For tests: forget both coalescers, the pool key cache and both start maps. */
 export function resetBookingRefreshesForTests(): void {
-  bookingRefreshes.reset();
+  poolRefreshes.reset();
   bookingReads.reset();
   poolKeyCache = null;
   lastPoolRecomputeAt.clear();
@@ -350,16 +350,86 @@ export function resetBookingRefreshesForTests(): void {
  */
 export async function refreshPoolAfterBooking(code: string): Promise<void> {
   const key = await poolKeyOfCode(code);
-  await bookingRefreshes.request(key, code, (codes) =>
-    forPoolsOf(codes, async (pool, horizon) => {
-      const stored = await recomputePoolSlotsForToday(pool, undefined, horizon);
-      if (stored === 0) {
-        throw new Error(
-          `post confirm pool refresh for ${pool.map((b) => b.code).join("+")} stored no rows; the recompute lane will retry`,
-        );
-      }
-    }),
-  );
+  await poolRefreshes.request(key, code, recomputePoolsOf);
+}
+
+/** The refresh both the booking and the push paths share: one compute per pool. */
+const recomputePoolsOf = (codes: string[]): Promise<void> =>
+  forPoolsOf(codes, async (pool, horizon) => {
+    const stored = await recomputePoolSlotsForToday(pool, undefined, horizon);
+    if (stored === 0) {
+      throw new Error(
+        `pool refresh for ${pool.map((b) => b.code).join("+")} stored no rows; the recompute lane will retry`,
+      );
+    }
+  });
+
+/**
+ * How many pools one Google push may refresh (#3258).
+ *
+ * Production, 2026-10-05: `POST /api/google/push` was about two thirds of the
+ * Worker's CPU (2,208 a day at a p50 of 10.2s, about 2.5s a pool and four pools a
+ * push), and every lead facing confirm timeout since 2026-10-04 overlapped one;
+ * confirms overlapping 6s or more of push and cron CPU timed out over 10s 39
+ * percent of the time against 4 percent under 1s. Two halves the measured push.
+ *
+ * The pools past it are left to the recompute lane, which refreshes every pool at
+ * least once a `RECOMPUTE_FRESH_MS` (four minutes), with the stale alarm at six. So a
+ * calendar change reaches the deferred pools' offered times within about four
+ * minutes rather than seconds. Verify on book re-reads Google live at confirm, so an
+ * over-offered time costs a lead "that time was just taken", never a double booking.
+ * Before #2923 most push refreshes were cancelled outright (#2922 measured 90 percent
+ * and more), so the lane was carrying this freshness for months already.
+ */
+export const MAX_PUSH_POOLS_PER_CALL = 2;
+
+/**
+ * Refresh the pools an agent's calendar change affects, after a Google push (#2922,
+ * #3258): through the SAME per pool coalescer and window as the booking refresh, so
+ * a pool a booking or another push refreshed a moment ago is not computed again
+ * beside it, and at most `MAX_PUSH_POOLS_PER_CALL` pools per push.
+ *
+ * Never throws, so the push route's sync still reports; a failed pool is counted
+ * and logged, and the recompute lane backstops it. Null, logged at error, when the
+ * agent's buckets could not be read at all, which is never reported as zero work.
+ */
+export async function refreshAgentPoolsAfterPush(userId: string): Promise<TouchedPoolsOutcome | null> {
+  try {
+    const codes = await bucketsForAgent(userId);
+    const byKey = new Map<string, string>();
+    for (const code of codes) {
+      const key = await poolKeyOfCode(code);
+      if (!byKey.has(key)) byKey.set(key, code);
+    }
+    const keys = [...byKey.keys()];
+    const chosen = keys.slice(0, MAX_PUSH_POOLS_PER_CALL);
+    // One request per POOL, with one code standing for it: the refresh resolves the
+    // whole pool from that code, and a second code of the same pool would only join.
+    const settled = await Promise.allSettled(
+      chosen.map((key) => poolRefreshes.request(key, byKey.get(key)!, recomputePoolsOf)),
+    );
+    const failures = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    const outcome: TouchedPoolsOutcome = {
+      refreshed: settled.length - failures.length,
+      deferred: keys.length - chosen.length,
+      failed: failures.length,
+      debounced: 0,
+    };
+    for (const f of failures) {
+      log.warn("slot-cache", { msg: "push pool refresh failed", user_id: userId }, f.reason);
+    }
+    log.info("slot-cache", {
+      msg: "agent pools refreshed after push",
+      user_id: userId,
+      codes: codes.length,
+      pools: keys.length,
+      ...outcome,
+    });
+    return outcome;
+  } catch (err) {
+    log.error("slot-cache", { msg: "push pool refresh could not start", user_id: userId }, err);
+    return null;
+  }
 }
 
 /**

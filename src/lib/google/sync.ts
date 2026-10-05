@@ -10,7 +10,7 @@ import {
   type GoogleEvent,
 } from "@/lib/google/calendar";
 import { selectableCalendarIds } from "@/lib/google/calendar-select";
-import { recomputeBucketsForAgent } from "@/lib/availability/slot-cache";
+import { refreshAgentPoolsAfterPush } from "@/lib/availability/slot-cache";
 import {
   isBusyEvent,
   partitionBusyWrites,
@@ -308,7 +308,7 @@ export async function applyEvents(
   events: GoogleEvent[],
   slateEventIds: Set<string>,
   timeZone: string,
-): Promise<void> {
+): Promise<number> {
   const db = supabaseAdmin();
   const { upserts, deletes } = partitionBusyWrites(
     userId,
@@ -345,15 +345,24 @@ export async function applyEvents(
   // The consequence of that failure is why it matters more than a retry: `applyEvents`
   // throws, `syncCalendar` never advances this calendar's sync token, and the same
   // pass retries forever, so the agent's cached availability silently stops updating.
+  // #3258: the rows each delete REMOVED, not the ids it was asked about. Slate's own
+  // events are always queued here to clear a stray mirror (#586), and their echo
+  // after every booking would otherwise read as a change. A count the store did not
+  // report is taken as the whole chunk, so an unknown never reads as "nothing moved".
+  let deleted = 0;
   for (const chunk of chunkIdsByUrlBudget(deletes)) {
-    const { error } = await db
+    const { error, count } = await db
       .from("busy_blocks")
-      .delete()
+      .delete({ count: "exact" })
       .eq("user_id", userId)
       .eq("calendar_id", calendarId)
       .in("gcal_event_id", chunk);
     if (error) throw new Error(`busy_blocks bulk delete failed: ${error.message}`);
+    deleted += count ?? chunk.length;
   }
+  // #3258: how many busy time writes the delta made. Zero means nothing a slot
+  // compute reads has changed: a title edit, or the echo of Slate's own event.
+  return upserts.length + deleted;
 }
 
 /**
@@ -495,11 +504,18 @@ async function recordCalHealth(
 }
 
 /** Sync one calendar's changes into busy_blocks; advances its stored sync token. */
+/** What one calendar's sync did (#3258): the delta's size, and whether busy time moved. */
+interface CalendarSyncOutcome {
+  events: number;
+  /** True when busy_blocks were written, or the pass was a full resync that may purge. */
+  busyChanged: boolean;
+}
+
 async function syncCalendar(
   email: string,
   cal: AgentCalendar,
   timeZone: string,
-): Promise<number> {
+): Promise<CalendarSyncOutcome> {
   // ONE window for this pass, computed once and passed to both the fetch and the reconcile
   // that judges it (#1261). Computing it twice would let the two drift by however long the
   // fetch took, and the reconcile may only ever judge what the fetch actually asked for.
@@ -551,7 +567,7 @@ async function syncCalendar(
       result.events.length > 0
         ? await loadSlateBookingEventIds(cal.user_id)
         : new Set<string>();
-    await applyEvents(cal.user_id, cal.calendar_id, result.events, slateEventIds, timeZone);
+    const busyWrites = await applyEvents(cal.user_id, cal.calendar_id, result.events, slateEventIds, timeZone);
     // Never reconcile against a PARTIAL event set (#1259). A page-capped pass read only
     // the first MAX_SYNC_PAGES pages, so every event on the pages it never fetched
     // looks vanished and its cached busy time would be deleted, leaving the agent
@@ -578,7 +594,9 @@ async function syncCalendar(
         .eq("id", cal.id);
     }
     await recordCalHealth(cal.id, "sync", prev, { ok: true });
-    return result.events.length;
+    // A full resync may have purged vanished blocks, which `applyEvents` does not
+    // count, so it is treated as a change rather than asked to prove it was not.
+    return { events: result.events.length, busyChanged: busyWrites > 0 || full };
   } catch (err) {
     // Record the failure (streak + message + classification) before rethrowing so
     // the per-agent error handling + alert still fire and the cache never drifts
@@ -907,7 +925,7 @@ export async function runIncrementalSync(
     if (pastDeadline(Date.now(), deadlineMs)) {
       return { events, truncated: true, goneSkipped, claimSkipped };
     }
-    events += await syncCalendar(email, cals[i], timeZone);
+    events += (await syncCalendar(email, cals[i], timeZone)).events;
   }
   return { events, truncated: false, goneSkipped, claimSkipped };
 }
@@ -955,6 +973,9 @@ export async function syncByChannel(
   if (!claimed) return "coalesced";
 
   const email = await loadAgentEmail(cal.user_id);
+  // #3258: whether any pass moved busy time, which is the only thing that can make
+  // the agent's offered slots differ from what is stored.
+  let busyChanged = false;
   try {
     if (!email) return "synced";
     const timeZone = await loadAgentTimezone(cal.user_id);
@@ -969,7 +990,7 @@ export async function syncByChannel(
         .eq("id", cal.id)
         .maybeSingle();
       if (!fresh) break;
-      await syncCalendar(email, fresh as AgentCalendar, timeZone);
+      if ((await syncCalendar(email, fresh as AgentCalendar, timeZone)).busyChanged) busyChanged = true;
       // error-ok: post-pass sync_pending check; a read error just ends the rerun
       // loop and the 1-min cron backstop owns anything missed.
       const { data: after } = await db
@@ -991,14 +1012,21 @@ export async function syncByChannel(
       .eq("id", cal.id)
       .eq("sync_claimed_at", claimIso);
   }
-  // The agent's calendar changed: refresh the precomputed slot rows for every
-  // pool they affect so it shows up in seconds. Awaited rather than scheduled
-  // (#2922): the sole caller, the push route, already runs this whole function
-  // inside after() (#503), so awaiting it here keeps the refresh inside the same
-  // post response window and lets the route time the sync and the refresh as ONE
-  // unit, which is the unit Cloudflare cancels. It never throws, and the budget
-  // inside it leaves unstarted pools to the every minute recompute lane.
-  await recomputeBucketsForAgent(cal.user_id);
+  // The agent's calendar changed: refresh the precomputed slot rows for the pools
+  // they affect so it shows up in seconds. Awaited rather than scheduled (#2922):
+  // the sole caller, the push route, already runs this whole function inside
+  // after() (#503), so awaiting it here keeps the refresh inside the same post
+  // response window and lets the route time the sync and the refresh as ONE unit,
+  // which is the unit Cloudflare cancels. It never throws.
+  //
+  // #3258: only when the sync actually moved busy time. Production measured the
+  // push path at two thirds of the Worker's CPU (about 10s a push, 2,208 a day),
+  // beside every lead facing confirm timeout since 2026-10-04, and every push used
+  // to refresh every pool of its agent whatever the delta held. The refresh itself
+  // goes through the booking refresh's per pool coalescing and is bounded per push
+  // (`refreshAgentPoolsAfterPush`); pools past the bound are left to the recompute
+  // lane's freshness window.
+  if (busyChanged) await refreshAgentPoolsAfterPush(cal.user_id);
   return "synced";
 }
 
