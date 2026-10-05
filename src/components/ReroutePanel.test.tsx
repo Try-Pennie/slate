@@ -137,7 +137,8 @@ describe("ReroutePanel, as an admin (codes)", () => {
     await waitFor(() => expect(sent(fn, "/reroute/confirm")).toHaveLength(1));
     unmount();
     finish();
-    await new Promise((r) => setTimeout(r, 0));
+    // The confirm settles (it reports the move) and nothing lets the hold go.
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
     expect(sent(fn, "/reroute/hold", "DELETE")).toHaveLength(0);
   });
 
@@ -159,8 +160,8 @@ describe("ReroutePanel, as an admin (codes)", () => {
     const { unmount } = render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     await screen.findByText("Taylor Brooks stays");
+    // A release is sent as the panel closes, before any await, so it would be here now.
     unmount();
-    await new Promise((r) => setTimeout(r, 0));
     expect(sent(fn, "/reroute/hold", "DELETE")).toHaveLength(0);
   });
 
