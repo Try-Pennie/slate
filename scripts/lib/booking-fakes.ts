@@ -24,6 +24,8 @@ import type {
   BookingReservation,
   OwnerAlertEvent,
   RoutingTrace,
+  Attributes,
+  Criteria,
 } from "../../src/lib/db/types.ts";
 import { deterministicEventId, EventGone, eventDescription } from "../../src/lib/booking/core.ts";
 import type { PersonIdentity, PersonWorld } from "../../src/lib/booking/person-dedupe.ts";
@@ -268,6 +270,12 @@ export interface FakeOpts {
   raceBoundPageThrows?: boolean;
   /** #3272: every advisor in the bucket's pool, free or not (default: the candidates). */
   poolAgents?: string[];
+  /**
+   * #3272: the pool's criteria and each advisor's attributes, so a suite can drive
+   * criteria matching and the requested tier. Absent, every advisor named is a manual
+   * member and only availability decides considered against excluded.
+   */
+  poolCriteria?: { criteria: Record<string, unknown>; attributes: Record<string, Record<string, unknown>> };
 }
 
 /** The three ways a calendar write fails, as the fakes model them. */
@@ -1140,6 +1148,14 @@ export function makeDeps(opts: FakeOpts) {
     // when a suite names them, else the candidates.
     resolveBucketPool: async () => {
       const ids = opts.poolAgents ?? opts.candidates ?? ["a"];
+      const pc = opts.poolCriteria;
+      if (pc) {
+        return {
+          orgAgents: ids.map((id) => ({ id, attributes: (pc.attributes[id] ?? {}) as Attributes })),
+          manualMemberIds: new Set<string>(),
+          criteria: pc.criteria as Criteria,
+        };
+      }
       return {
         orgAgents: ids.map((id) => ({ id, attributes: {} })),
         // Every advisor named is a manual member, so each is eligible and only

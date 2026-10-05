@@ -9,7 +9,11 @@
  * 2026-10-04 burst could only be judged from the client's side.
  *
  * This is the time from the handler starting to the response being handed back,
- * under the route's own tag, with the status. It carries nothing about the lead.
+ * under the route's own tag, with the status. On a refusal it also carries the
+ * refusal's stage, instant, bucket and per rung counts (#3272), and the refused
+ * lead's Salesforce lead id (`lead_id`, 15 characters), an external id that is safe
+ * to log and lets a run of refusals be counted in people (#3276). Nothing else about
+ * the lead: never a name, email or phone.
  * A Worker's clock moves at I/O, so it measures the waiting the confirm did, and
  * a response is always handed back after I/O, so the end is never early.
  */

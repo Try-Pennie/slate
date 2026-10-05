@@ -114,10 +114,16 @@ export function rungOf(err: unknown): RungTrace | null {
 /**
  * The stage one rung refused at, from what it saw. Pure, so the order is decided in
  * one place: an empty pool, then an empty read, then Google.
+ *
+ * `checked` is how many advisors were actually sent to Google. Read free advisors
+ * with no resolvable email are dropped before the check, so a rung can read people
+ * and ask Google about none of them; that is `verify_unreadable` (nobody could be
+ * verified), never `verify_busy`, which would claim an answer Google never gave.
  */
-export function rungStage(r: { members: number; read: number; anyUnverified: boolean }): RefusalStage {
+export function rungStage(r: { members: number; read: number; checked: number; anyUnverified: boolean }): RefusalStage {
   if (r.members === 0) return "pool_empty";
   if (r.read === 0) return "candidate_read_empty";
+  if (r.checked === 0) return "verify_unreadable";
   return r.anyUnverified ? "verify_unreadable" : "verify_busy";
 }
 

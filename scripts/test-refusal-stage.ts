@@ -139,6 +139,76 @@ async function main() {
     assert(t?.stage === "race_lost" && t.lostRaces === 1, `race: the trace (got ${JSON.stringify(t)})`);
   }
 
+  // --- a criteria pool: the requested tier and a criteria miss -------------------
+  {
+    const { deps, calls } = makeDeps({
+      candidates: ["a", "b"],
+      freeEmails: new Set(),
+      poolAgents: ["a", "b", "c", "d"],
+      poolCriteria: {
+        criteria: { debt_team: "high" },
+        attributes: {
+          a: { debt_team: ["high", "medium"] },
+          b: { debt_team: ["high"] },
+          c: { debt_team: ["high"] },
+          d: { debt_team: ["low"] },
+        },
+      },
+    });
+    await refusal(() => createBooking(refusedInput, deps));
+    const row = calls.recordRoutingDecision[0];
+    assert(row?.requestedTier === "high", `criteria: the requested tier is the pool's (got ${row?.requestedTier})`);
+    assert(
+      JSON.stringify(row?.considered) === JSON.stringify(["a", "b"]),
+      `criteria: the read free, eligible advisors are considered (got ${JSON.stringify(row?.considered)})`,
+    );
+    const reasons = Object.fromEntries((row?.excluded ?? []).map((e) => [e.user_id, e.reason]));
+    assert(
+      reasons.c === "no_availability" && reasons.d === "criteria_miss" && Object.keys(reasons).length === 2,
+      `criteria: c unavailable in the cache, d not in the tier (got ${JSON.stringify(reasons)})`,
+    );
+  }
+
+  // --- nobody could be sent to Google: never verify_busy -------------------------
+  //
+  // A candidate with no resolvable email is dropped before the live check, so when
+  // every one of them is, Google was asked about nobody. Calling that "Google found
+  // everyone busy" is a claim nothing measured; nobody could be verified.
+  {
+    const { deps, calls } = makeDeps({ candidates: ["nomail"], freeEmails: new Set(), poolAgents: ["nomail"] });
+    const err = await refusal(() => createBooking(refusedInput, deps));
+    assert(err instanceof SlotUnavailableError, "no email: still refused as taken");
+    const row = calls.recordRoutingDecision[0];
+    const first = row?.stageCounts?.[0];
+    assert(first?.read === 1 && first.checked === 0, `no email: read one, sent none (got ${JSON.stringify(first)})`);
+    assert(first?.stage === "verify_unreadable", `no email: the rung is unverifiable, not busy (got ${first?.stage})`);
+    assert(row?.refusalStage === "verify_unreadable", `no email: the refusal stage (got ${row?.refusalStage})`);
+    assert(calls.verifyFree.length === 0, "no email: Google really was asked nothing");
+  }
+
+  // --- a rung skipped for a top tier lead never becomes the reason -----------------
+  //
+  // A rung filtered to advisors without Low can hold nobody on a perfectly configured
+  // bucket (#2842), so the ladder skips it without it becoming the reason. It must not
+  // become the reason in the record either, as pool_empty.
+  {
+    const { deps, calls } = makeDeps({
+      // Every lower rung reads nobody (the fake's pool size follows its list).
+      candidatesByCode: { "511": ["a"] },
+      freeEmails: new Set(),
+      poolAgents: ["a"],
+    });
+    const err = await refusal(() => createBooking({ ...refusedInput, bucketCode: "511", prefill: { xbc: "511" } }, deps));
+    assert(err instanceof SlotUnavailableError || err instanceof NoEligibleAgentsError, `skipped: refused (got ${String(err)})`);
+    const row = calls.recordRoutingDecision[0];
+    const lowerExcluded = (row?.stageCounts ?? []).filter((r) => Number(r.code[0]) < 5);
+    assert(
+      lowerExcluded.length === 0,
+      `skipped: no Low filtered rung is recorded (got ${JSON.stringify(row?.stageCounts)})`,
+    );
+    assert(row?.refusalStage !== "pool_empty", `skipped: the refusal is not blamed on an empty pool (got ${row?.refusalStage})`);
+  }
+
   // --- a booked confirm records none of it ---------------------------------------
   {
     const { deps, calls } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
@@ -190,10 +260,11 @@ async function main() {
   }
 
   // --- the pure rules -----------------------------------------------------------
-  assert(rungStage({ members: 0, read: 0, anyUnverified: false }) === "pool_empty", "rung: no members");
-  assert(rungStage({ members: 4, read: 0, anyUnverified: false }) === "candidate_read_empty", "rung: none read");
-  assert(rungStage({ members: 4, read: 2, anyUnverified: false }) === "verify_busy", "rung: Google busy");
-  assert(rungStage({ members: 4, read: 2, anyUnverified: true }) === "verify_unreadable", "rung: Google unreadable");
+  assert(rungStage({ members: 0, read: 0, checked: 0, anyUnverified: false }) === "pool_empty", "rung: no members");
+  assert(rungStage({ members: 4, read: 0, checked: 0, anyUnverified: false }) === "candidate_read_empty", "rung: none read");
+  assert(rungStage({ members: 4, read: 2, checked: 2, anyUnverified: false }) === "verify_busy", "rung: Google busy");
+  assert(rungStage({ members: 4, read: 2, checked: 2, anyUnverified: true }) === "verify_unreadable", "rung: Google unreadable");
+  assert(rungStage({ members: 4, read: 2, checked: 0, anyUnverified: false }) === "verify_unreadable", "rung: read, none sent");
   const r = (stage: "pool_empty" | "candidate_read_empty" | "verify_busy") => ({
     code: "x",
     members: 1,

@@ -5,6 +5,7 @@
 
 import type { BookingSource } from "../booking/booking-source.ts";
 import type { RoutingCodeRecord } from "../routing/lead-code.ts";
+import type { RecordedRefusalStage } from "../booking/refusal-trace.ts";
 
 export type Role = "super_admin" | "admin" | "team_lead" | "manager" | "agent";
 /** `hold` (#3248, migration 0167): written by a reroute hold's trigger, carrying
@@ -814,7 +815,6 @@ export interface RerouteHold {
   result: Record<string, unknown> | null;
 }
 
-/** One routing decision, including attempts that produced no booking. */
 /** One rung of a refused confirm's ladder, as stored (#3272). Null is "not reached". */
 export interface RoutingStageCount {
   code: string;
@@ -825,6 +825,7 @@ export interface RoutingStageCount {
   stage: string;
 }
 
+/** One routing decision, including attempts that produced no booking. */
 export interface RoutingDecision {
   id: string;
   org_id: string;
@@ -850,13 +851,7 @@ export interface RoutingDecision {
   /** #3272 (migration 0168), on a refused confirm only: the instant the lead asked
    *  for, the stage that refused it, and per rung what each stage left. */
   requested_start: string | null;
-  refusal_stage:
-    | "pool_empty"
-    | "candidate_read_empty"
-    | "verify_busy"
-    | "verify_unreadable"
-    | "race_lost"
-    | null;
+  refusal_stage: RecordedRefusalStage | null;
   stage_counts: RoutingStageCount[] | null;
   /** The refused lead's Salesforce lead id in its 15 character form (#3276), so a
    *  volume of refusals can be counted in people. Null when the request named none. */

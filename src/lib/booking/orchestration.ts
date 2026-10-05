@@ -2147,7 +2147,7 @@ async function assignAgent(
       read: read.length,
       claimed: others ? read.filter((id) => others.has(id)).length : 0,
       checked: checked ?? null,
-      stage: rungStage({ members: memberCount, read: read.length, anyUnverified }),
+      stage: rungStage({ members: memberCount, read: read.length, checked: checked ?? 0, anyUnverified }),
       readIds: read,
     };
     // #1300: an EMPTY BUCKET is a misconfiguration and pages; a bucket whose people
@@ -2481,13 +2481,14 @@ async function assignAgentWithTierFallback(
         };
       } catch (err) {
         const rung = rungOf(err);
-        if (rung) rungs.push(rung);
         // #2842: a rung filtered to advisors without Low can hold nobody on a
         // perfectly configured bucket (most Medium advisors also carry Low), so an
         // empty one says nothing about the bucket. It is skipped WITHOUT becoming
         // the reason, so the lead is told what the rungs that could serve them
-        // said, and a filtered rung can never page as an empty bucket.
+        // said, and a filtered rung can never page as an empty bucket. Nor is it
+        // recorded (#3272): in stage_counts it would read as an empty pool.
         if (err instanceof NoEligibleAgentsError && excludeLow) return { hit: false };
+        if (rung) rungs.push(rung);
         if (err instanceof SlotUnavailableError || err instanceof NoEligibleAgentsError) {
           lastErr = err; // this tier can't serve the slot; drop a rung
           return { hit: false };
