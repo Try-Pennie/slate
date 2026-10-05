@@ -129,6 +129,22 @@ export interface LineSeat {
    */
   claim(userId: string, othersRemain: boolean): void;
   /**
+   * Read who else is claimed and claim, in ONE step (#3325). The candidates nobody
+   * else in flight has claimed come first, in order (all of them when every one is
+   * claimed, so the insert decides as before the line existed), and this confirm
+   * claims the first of them, handing the line on when another unclaimed one
+   * remains. One operation, because a line hosted in a shared object answers each
+   * call over the network, and between a separate read and claim another leader
+   * could claim the same advisor.
+   */
+  claimFirst(candidates: readonly string[]): { pool: string[]; unclaimed: number };
+  /**
+   * Claim `userId` and hand the line on only when some advisor in `besides` other
+   * than `userId` is unclaimed by anybody else (#3325): an in place move's rule,
+   * read and decided in one step for the same reason as `claimFirst`.
+   */
+  claimBeside(userId: string, besides: readonly string[]): void;
+  /**
    * This confirm will take NO advisor at this time (#3257): the direct booking
    * API found the lead already holds it, or must ask them before moving. The line
    * is handed on at once, so its arm never holds up a lead booking for real.
@@ -151,15 +167,44 @@ export type QueueTurn<T> =
    * many are in line behind it right now, so a leader reads only for a crowd.
    * `seat` is its claim on an advisor (see `LineSeat`).
    */
-  | { kind: "lead"; done(verdict: LeaderVerdict<T>): void; waiting(): number; seat: LineSeat }
+  | {
+      kind: "lead";
+      done(verdict: LeaderVerdict<T>): void;
+      waiting(): number;
+      seat: LineSeat;
+      /**
+       * Confirms this turn reached its caller (#3325). A host that requires it
+       * (`ackMs`) ends a lead nobody acknowledges within that window, so an answer
+       * its caller never received cannot hold the line. A no op otherwise.
+       */
+      ack(): void;
+      /** Extends this turn's lease by `leaseMs` from now (#3325); a no op once it has ended. */
+      renew(): void;
+    }
   /** The confirm ahead settled the slot: answer without doing the work. */
   | { kind: "refused"; refusal: "race" | "taken"; settled: T | null }
   /** Waited the whole bound without a verdict: the caller decides what it answers. */
   | { kind: "unqueued" };
 
+/**
+ * What entering a line answers AT ONCE (#3325): the turn, when this confirm leads,
+ * or a promise of its turn and a way to leave the line. A host in a shared object
+ * answers its caller immediately, so the caller can tell an unreachable object from
+ * a long line, and drops a waiter whose caller stopped asking, since nothing tells an
+ * object that a request was cancelled. `cancel` is for a waiter whose caller is gone:
+ * one still waiting leaves the line (answered unqueued), and one already promoted to
+ * lead and never collected ends that lead as settling nothing, so the line is handed
+ * on rather than held until the lease runs out. Never call it after collecting a lead.
+ */
+export type EnteredNow<T> =
+  | { kind: "lead"; turn: Extract<QueueTurn<T>, { kind: "lead" }> }
+  | { kind: "wait"; turn: Promise<QueueTurn<T>>; cancel(): void };
+
 export interface ConfirmQueue<T> {
   /** `waitMs` overrides the queue's own bound for this one follower. */
   enter(key: string, waitMs?: number): Promise<QueueTurn<T>>;
+  /** `enter`, answered synchronously (#3325). See `EnteredNow`. */
+  enterNow(key: string, waitMs?: number): EnteredNow<T>;
   /**
    * Permission to make one cheap read before joining a BUSY line, as a function
    * that gives the permission back (call it exactly once), or null: the line is
@@ -207,12 +252,27 @@ export function makeConfirmQueue<T>(
      *  test can fire one without the other. Defaults to an unreferenced real timer. */
     leaseTimer?: ScheduleTimer;
     now?: () => number;
+    /**
+     * How long a lead turn lasts without a report or a renewal. Defaults to
+     * `CONFIRM_CLAIM_LEASE_MS`, right for one isolate, where a leader that dies takes
+     * its whole invocation with it. A host in a shared object sets it short and has
+     * its leaders renew (#3325), so an abandoned leader frees the line well inside the
+     * followers' wait.
+     */
+    leaseMs?: number;
+    /** When set, a new lead must `ack` within this many ms or it is ended (#3325). */
+    ackMs?: number;
+    /** How long a lookahead place may stay out before it is reclaimed (#3325). */
+    lookaheadLeaseMs?: number;
   } = {},
 ): ConfirmQueue<T> {
   const waitMs = opts.waitMs ?? CONFIRM_QUEUE_WAIT_MS;
   const timer = opts.timer ?? realTimer;
   const now = opts.now ?? (() => Date.now());
   const leaseTimer = opts.leaseTimer ?? unreferencedTimer;
+  const leaseMs = opts.leaseMs ?? CONFIRM_CLAIM_LEASE_MS;
+  const ackMs = opts.ackMs;
+  const lookaheadLeaseMs = opts.lookaheadLeaseMs ?? CONFIRM_CLAIM_LEASE_MS;
   // A key is present while somebody leads it or waits in it.
   const lines = new Map<string, Line<T>>();
   // Removes THIS line only: a lookahead returned after its line settled must not
@@ -265,10 +325,12 @@ export function makeConfirmQueue<T>(
     dropIfIdle(key, line);
   };
 
-  const leadTurn = (key: string, line: Line<T>): QueueTurn<T> => {
+  const leadTurn = (key: string, line: Line<T>): Extract<QueueTurn<T>, { kind: "lead" }> => {
     const me = {};
     let reported = false;
-    const until = now() + CONFIRM_CLAIM_LEASE_MS;
+    // #3325: a host that requires acknowledgement gives a new lead only the ack
+    // window; `ack` and `renew` extend it by a full lease from then.
+    let until = now() + (ackMs ?? leaseMs);
     // #3274 review: the lease ends on its own, not only when something next reads the
     // line, so an abandoned turn frees whoever is still waiting then, and a line with
     // nobody left in it is dropped, with no traffic needed. Followers ALREADY behind
@@ -289,7 +351,7 @@ export function makeConfirmQueue<T>(
       }
       dropIfIdle(key, line);
     };
-    cancelLease = leaseTimer(CONFIRM_CLAIM_LEASE_MS, onLeaseEnd);
+    cancelLease = leaseTimer(until - now(), onLeaseEnd);
     // A turn whose lease has passed was dropped by `expire`: whatever it does next
     // is ignored, so a late claim cannot exclude an advisor again.
     const live = () => !reported && line.claims.has(me);
@@ -300,21 +362,45 @@ export function makeConfirmQueue<T>(
       line.holder = null;
       promoteNext(key, line);
     };
+    const claimedByOthers = (): Set<string> => {
+      expireAndHandOn(key, line);
+      const others = new Set<string>();
+      for (const [who, c] of line.claims) if (who !== me && c.userId !== null) others.add(c.userId);
+      return others;
+    };
+    const claim = (userId: string, othersRemain: boolean): void => {
+      expireAndHandOn(key, line);
+      if (!live()) return;
+      line.claims.set(me, { userId, until });
+      if (othersRemain) handOn();
+    };
+    // The pending lease timer fires at the old end, finds time left and re-arms for
+    // it (`onLeaseEnd`), so extending is only moving `until` on the turn and its claim.
+    const renew = (): void => {
+      expireAndHandOn(key, line);
+      if (!live()) return;
+      until = now() + leaseMs;
+      const mine = line.claims.get(me);
+      if (mine) mine.until = until;
+    };
     return {
       kind: "lead",
+      ack: renew,
+      renew,
       waiting: () => line.waiting.length,
       seat: {
-        claimedByOthers() {
-          expireAndHandOn(key, line);
-          const others = new Set<string>();
-          for (const [who, c] of line.claims) if (who !== me && c.userId !== null) others.add(c.userId);
-          return others;
+        claimedByOthers,
+        claim,
+        claimFirst(candidates) {
+          const others = claimedByOthers();
+          const unclaimed = candidates.filter((id) => !others.has(id));
+          const pool = unclaimed.length > 0 ? unclaimed : [...candidates];
+          if (pool.length > 0) claim(pool[0]!, unclaimed.length > 1);
+          return { pool, unclaimed: unclaimed.length };
         },
-        claim(userId, othersRemain) {
-          expireAndHandOn(key, line);
-          if (!live()) return;
-          line.claims.set(me, { userId, until });
-          if (othersRemain) handOn();
+        claimBeside(userId, besides) {
+          const others = claimedByOthers();
+          claim(userId, besides.some((id) => id !== userId && !others.has(id)));
         },
         pass() {
           expireAndHandOn(key, line);
@@ -345,47 +431,73 @@ export function makeConfirmQueue<T>(
     };
   };
 
+  const enterNow = (key: string, ownWaitMs?: number): EnteredNow<T> => {
+    let existing = lines.get(key);
+    // #3274: an abandoned leader past its lease no longer holds the line. Handing
+    // on serves whoever was already waiting first, in order, before this arrival,
+    // and a line left with nobody in it is dropped, so this arrival opens a new one.
+    if (existing) {
+      expireAndHandOn(key, existing);
+      existing = lines.get(key);
+    }
+    if (!existing) {
+      const line: Line<T> = { waiting: [], holder: null, claims: new Map(), looking: 0 };
+      lines.set(key, line);
+      return { kind: "lead", turn: leadTurn(key, line) };
+    }
+    // Every leader in flight has handed on: nobody to wait behind.
+    if (existing.holder === null && existing.waiting.length === 0) {
+      return { kind: "lead", turn: leadTurn(key, existing) };
+    }
+    const line = existing;
+    let settled = false;
+    let answered: QueueTurn<T> | null = null;
+    let resolve: (turn: QueueTurn<T>) => void = () => {};
+    const turn = new Promise<QueueTurn<T>>((r) => (resolve = r));
+    const leave = () => {
+      const i = line.waiting.indexOf(waiter);
+      if (i >= 0) line.waiting.splice(i, 1);
+      dropIfIdle(key, line);
+    };
+    const waiter: Waiter<T> = {
+      answer(t) {
+        if (settled) return;
+        settled = true;
+        cancelWait();
+        answered = t;
+        resolve(t);
+      },
+    };
+    const cancelWait = timer(ownWaitMs ?? waitMs, () => {
+      if (settled) return;
+      settled = true;
+      leave();
+      resolve({ kind: "unqueued" });
+    });
+    line.waiting.push(waiter);
+    return {
+      kind: "wait",
+      turn,
+      cancel() {
+        if (!settled) {
+          settled = true;
+          cancelWait();
+          leave();
+          resolve({ kind: "unqueued" });
+          return;
+        }
+        const got = answered as QueueTurn<T> | null;
+        if (got?.kind === "lead") got.done({ full: false });
+      },
+    };
+  };
+
   return {
     enter(key, ownWaitMs) {
-      let existing = lines.get(key);
-      // #3274: an abandoned leader past its lease no longer holds the line. Handing
-      // on serves whoever was already waiting first, in order, before this arrival,
-      // and a line left with nobody in it is dropped, so this arrival opens a new one.
-      if (existing) {
-        expireAndHandOn(key, existing);
-        existing = lines.get(key);
-      }
-      if (!existing) {
-        const line: Line<T> = { waiting: [], holder: null, claims: new Map(), looking: 0 };
-        lines.set(key, line);
-        return Promise.resolve(leadTurn(key, line));
-      }
-      // Every leader in flight has handed on: nobody to wait behind.
-      if (existing.holder === null && existing.waiting.length === 0) {
-        return Promise.resolve(leadTurn(key, existing));
-      }
-      const line = existing;
-      return new Promise<QueueTurn<T>>((resolve) => {
-        let settled = false;
-        const waiter: Waiter<T> = {
-          answer(turn) {
-            if (settled) return;
-            settled = true;
-            cancel();
-            resolve(turn);
-          },
-        };
-        const cancel = timer(ownWaitMs ?? waitMs, () => {
-          if (settled) return;
-          settled = true;
-          const i = line.waiting.indexOf(waiter);
-          if (i >= 0) line.waiting.splice(i, 1);
-          dropIfIdle(key, line);
-          resolve({ kind: "unqueued" });
-        });
-        line.waiting.push(waiter);
-      });
+      const entered = enterNow(key, ownWaitMs);
+      return entered.kind === "lead" ? Promise.resolve(entered.turn) : entered.turn;
     },
+    enterNow,
     lookahead(key) {
       const found = lines.get(key);
       if (found) expireAndHandOn(key, found);
@@ -396,12 +508,18 @@ export function makeConfirmQueue<T>(
       if (line.looking >= CONFIRM_LINE_LOOKAHEAD) return null;
       line.looking++;
       let returned = false;
-      return () => {
+      // #3325: in a shared object the give back is a network call that can be lost,
+      // and a place never returned would keep the line from ever being dropped and,
+      // two lost, switch lookahead off for that slot. So the place is leased.
+      const giveBack = () => {
         if (returned) return;
         returned = true;
+        cancelLookLease();
         line.looking--;
         dropIfIdle(key, line);
       };
+      const cancelLookLease = leaseTimer(lookaheadLeaseMs, giveBack);
+      return giveBack;
     },
   };
 }
