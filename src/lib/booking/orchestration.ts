@@ -1960,10 +1960,13 @@ export interface ActiveUpcomingBooking {
  * safe to run aggressively. A genuinely-missing block is inserted once; the next
  * tick sees the block and skips it, so blocks don't accumulate in steady state.
  *
- * The one thing it does NOT act on is a booking still inside its grace window: the
- * loader withholds those (#778, RECONCILE_MISSING_GRACE_MS), because a booking that
- * is merely mid-create has not missed anything, and treating it as a miss made this
+ * It does NOT act on two kinds of booking, both withheld by the loader. One still
+ * inside its grace window (#778, RECONCILE_MISSING_GRACE_MS): a booking that is
+ * merely mid-create has not missed anything, and treating it as a miss made this
  * sweep's counters and its Slack alert report far more damage than had occurred.
+ * And one whose agent has left the pool (#3304, `hasLeftPool`): leaving deletes the
+ * agent's blocks on purpose and the pool exit backstop deletes them again every
+ * tick, so a block re-created for them was never a missed write, only a false page.
  *
  * Returns the affected agents (not buckets): a missing block makes the agent
  * look free in EVERY bucket they serve, so the caller recomputes all of each

@@ -54,6 +54,7 @@ import { googlePushUrl } from "@/lib/env";
 import { parseStampMs } from "@/lib/date/stamp";
 import type { AgentCalendar } from "@/lib/db/types";
 import { unwrap, unwrapCount } from "@/lib/db/result";
+import { hasLeftPool, POOL_STATE_COLUMNS, type PoolStateRow } from "@/lib/bookable/left-pool";
 import { chunkIdsByUrlBudget } from "@/lib/db/id-batch";
 import { log } from "@/lib/log";
 import { gatedWriteRows } from "@/lib/booking/gated-write";
@@ -1451,10 +1452,10 @@ export async function reconcileOrphanedPoolExits(
   const leftRows = (unwrap(
     await db
       .from("users")
-      .select("id, deactivated_at, bookable_pending_since")
+      .select(`id, ${POOL_STATE_COLUMNS}`)
       .or("bookable.eq.false,deactivated_at.not.is.null"),
     "pool-exit-reconcile",
-  ) ?? []) as { id: string; deactivated_at: string | null; bookable_pending_since: string | null }[];
+  ) ?? []) as ({ id: string } & PoolStateRow)[];
   // #2302: skip anybody an activation is OWED for. The gate establishes their
   // watches and loads their calendar before the bookable write, so for the second
   // or two in between they look exactly like an agent who has left the pool: not
@@ -1466,11 +1467,10 @@ export async function reconcileOrphanedPoolExits(
   //
   // The exclusion is no broader than that reason (L324): somebody DEACTIVATED has
   // left, whatever stale mark their row carries, so they are reaped as before.
-  const ids = leftRows
-    // `== null` rather than `=== null`: a nullable column comes back as null, and
-    // an absent key means the same thing, so both have to read as 'no mark'.
-    .filter((r) => r.deactivated_at != null || r.bookable_pending_since == null)
-    .map((r) => r.id);
+  //
+  // #3304: that rule is `hasLeftPool`, shared with the reconcile missing sweep, so
+  // the sweep that RE-CREATES booking blocks never rebuilds the ones this prunes.
+  const ids = leftRows.filter(hasLeftPool).map((r) => r.id);
   if (ids.length === 0)
     return { scanned: 0, cleaned: 0, blocksDeleted: 0, blocksPreserved: 0 };
 

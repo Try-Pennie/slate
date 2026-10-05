@@ -45,6 +45,24 @@ import { assert, eq, finish } from "./lib/harness.ts";
     "findEmbeds: a !left join hint resolves the same way",
   );
 
+  // A relationship hint (`table!<constraint>(...)`, optionally followed by a join
+  // hint) names the CONSTRAINT after the table, for when more than one path links
+  // the two tables (#3304). The embedded table is still the identifier before the
+  // first `!`; reading the constraint name as the relation would report a covered
+  // embed as missing, and would let one through against a table nobody declared.
+  const fkHinted = `db.from("bookings").select("id, users!bookings_assigned_user_id_fkey!inner(id)")`;
+  eq(
+    JSON.stringify(findEmbeds(fkHinted)),
+    JSON.stringify([{ table: "bookings", relation: "users" }]),
+    "findEmbeds: a constraint hint before !inner resolves to the embedded table",
+  );
+  const fkOnly = `db.from("bookings").select("id, users!bookings_assigned_user_id_fkey(id)")`;
+  eq(
+    JSON.stringify(findEmbeds(fkOnly)),
+    JSON.stringify([{ table: "bookings", relation: "users" }]),
+    "findEmbeds: a constraint hint alone resolves to the embedded table",
+  );
+
   // A plain column list (no `identifier(`) is not an embed.
   assert(findEmbeds(`db.from("users").select("id, role")`).length === 0, "findEmbeds: plain column list yields nothing");
 

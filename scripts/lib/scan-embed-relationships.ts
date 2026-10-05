@@ -31,9 +31,12 @@ export function findEmbeds(src: string, file?: string): Embed[] {
     // carrying PostgREST's join hint (`buckets!inner(...)`, `buckets!left(...)`).
     // The hint is not a table, so the identifier BEFORE it is the embedded relation;
     // reading "inner" as the relation would make the embed impossible to cover.
-    const relNames = [...content.matchAll(/\b([a-z_][a-z0-9_]*)(?:!(?:inner|left))?\s*\(/gi)].map(
-      (r) => r[1],
-    );
+    // A relationship hint naming the constraint can sit between the two
+    // (`users!bookings_assigned_user_id_fkey!inner(...)`, #3304), and is not a
+    // table either, so every `!` segment is skipped and the first identifier kept.
+    const relNames = [
+      ...content.matchAll(/\b([a-z_][a-z0-9_]*)(?:![a-z_][a-z0-9_]*)*\s*\(/gi),
+    ].map((r) => r[1]);
     if (relNames.length === 0) continue;
     // Walk back to the nearest `.from("<table>")` that opened this chain.
     const before = src.slice(0, m.index);
