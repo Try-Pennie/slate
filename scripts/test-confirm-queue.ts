@@ -14,9 +14,10 @@ import {
   CONFIRM_QUEUE_WAIT_MS,
   CONFIRM_QUEUE_RESERVE_MS,
   CONFIRM_LINE_LOOKAHEAD,
+  CONFIRM_CLAIM_LEASE_MS,
   type QueueTurn,
 } from "../src/lib/booking/confirm-queue.ts";
-import { BOOKING_CONFIRM_BUDGET_MS } from "../src/lib/booking/confirm-budget.ts";
+import { BOOKING_CONFIRM_BUDGET_MS, BOOKING_CONFIRM_WORST_CASE_MS } from "../src/lib/booking/confirm-budget.ts";
 import { createAsserter } from "./lib/booking-fakes.ts";
 
 const { assert, finish } = createAsserter();
@@ -284,6 +285,73 @@ async function main() {
     if (t.kind === "lead") t.done({ full: false });
     const t2 = await later;
     if (t2.kind === "lead") t2.done({ full: false });
+  }
+
+  // --- #3274: a claim from an abandoned confirm is leased, not held for ever ----
+  //
+  // A confirm torn down mid flight (a client disconnect cancelling the invocation)
+  // may never report its verdict, so its claim on an advisor would keep every later
+  // confirm in this isolate off that advisor for that slot, and a leader that never
+  // handed on would keep the line behind it. A claim lives for the confirm budget
+  // plus its cleanup, the longest a real confirm can still be working, and is then
+  // ignored and dropped.
+  assert(
+    CONFIRM_CLAIM_LEASE_MS === BOOKING_CONFIRM_WORST_CASE_MS,
+    `lease: the confirm budget plus cleanup (${CONFIRM_CLAIM_LEASE_MS} vs ${BOOKING_CONFIRM_WORST_CASE_MS})`,
+  );
+  {
+    let now = 1_000_000;
+    const t = manualTimer();
+    const q = makeConfirmQueue<string>({ timer: t.timer, now: () => now });
+    const abandoned = await q.enter("slot");
+    assert(abandoned.kind === "lead", "lease: the first confirm leads");
+    // It claims advisor x with another free beside it, hands on, and is never heard from again.
+    if (abandoned.kind === "lead") abandoned.seat.claim("x", true);
+
+    const second = await q.enter("slot");
+    assert(second.kind === "lead", "lease: the next confirm leads at once (the first handed on)");
+    if (second.kind !== "lead") return;
+    assert(second.seat.claimedByOthers().has("x"), "lease: inside the lease the abandoned claim still excludes x");
+
+    now += CONFIRM_CLAIM_LEASE_MS - 1;
+    assert(second.seat.claimedByOthers().has("x"), "lease: one millisecond before it ends, still excluded");
+
+    now += 1;
+    assert(!second.seat.claimedByOthers().has("x"), "lease: once the lease passes, x is no longer excluded");
+    second.done({ full: false });
+
+    // And it is dropped, so the idle line goes with it: a fresh confirm leads a clean line.
+    const third = await q.enter("slot");
+    assert(third.kind === "lead" && third.seat.claimedByOthers().size === 0, "lease: the expired claim was dropped, not just hidden");
+    if (third.kind === "lead") third.done({ full: false });
+  }
+
+  // --- #3274: an abandoned leader that never handed on stops holding the line ----
+  {
+    let now = 5_000_000;
+    const t = manualTimer();
+    const q = makeConfirmQueue<string>({ timer: t.timer, now: () => now });
+    const abandoned = await q.enter("slot");
+    assert(abandoned.kind === "lead", "held: the first confirm leads, then is abandoned without handing on");
+
+    const early = q.enter("slot");
+    let earlyTurn: QueueTurn<string> | null = null;
+    void early.then((turn) => (earlyTurn = turn));
+    await tick();
+    assert(earlyTurn === null, "held: inside the lease a later confirm waits behind it, as before");
+    t.fireAll(); // its own wait runs out
+    await tick();
+    assert((earlyTurn as QueueTurn<string> | null)?.kind === "unqueued", "held: and is answered retryably when its wait runs out");
+
+    now += CONFIRM_CLAIM_LEASE_MS;
+    const late = await q.enter("slot");
+    assert(late.kind === "lead", `held: once the lease passes, a new confirm leads rather than waiting (got ${late.kind})`);
+    // A verdict the abandoned confirm reports after its lease cannot claim again.
+    if (abandoned.kind === "lead") abandoned.seat.claim("y", false);
+    if (late.kind === "lead") {
+      assert(!late.seat.claimedByOthers().has("y"), "held: an expired confirm's late claim is ignored");
+      late.done({ full: false });
+    }
   }
 
   finish();
