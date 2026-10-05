@@ -20,10 +20,14 @@ import {
 import type { RerouteTarget } from "../src/lib/booking/orchestration.ts";
 import type { Booking, Bucket, EventType } from "../src/lib/db/types.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { HIDDEN_TEST_BUCKET_CODES, PUBLIC_TEST_BUCKET_CODES } from "../src/lib/embed/public-test-bucket.ts";
 
 const eventType = { id: "et1", duration_min: 20, buffer_before_min: 10, buffer_after_min: 10 } as unknown as EventType;
+/** The test buckets live in their own world (#2660); every XBC code is real. */
+const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
+const TEST_CODES = new Set<string>([...PUBLIC_TEST_BUCKET_CODES, ...HIDDEN_TEST_BUCKET_CODES]);
 const bucketFor = (code: string) =>
-  ({ id: `b${code}`, org_id: "org1", code, name: `name ${code}`, is_test: false, event_type_id: "et1" }) as unknown as Bucket;
+  ({ id: `b${code}`, org_id: "org1", code, name: `name ${code}`, is_test: TEST_CODES.has(code), event_type_id: "et1" }) as unknown as Bucket;
 
 const START = "2031-03-04T10:00:00.000Z";
 const END = "2031-03-04T10:20:00.000Z";
@@ -62,6 +66,8 @@ interface Opts {
   /** After a claim, what the hold read returns; default the claimed hold. */
   heldAfterClaim?: "missing" | "another";
   liveHold?: { holdId: string; agentUserId: string; targetBucketId: string; requestedBucketId: string; rungsDropped: number; expiresAt: string } | null;
+  /** The bucket the booking is stored in; default 100, a real one. */
+  storedIn?: string;
 }
 
 function fake(o: Opts = {}) {
@@ -80,11 +86,12 @@ function fake(o: Opts = {}) {
   const targets = [...(o.targets ?? [])];
   const booking = o.booking === null ? null : ({ ...baseBooking, ...(o.booking ?? {}) } as Booking);
   const deps: RerouteDeps = {
-    loadBookingById: async (id) => (booking && id === booking.id ? { booking, bucket: bucketFor("100"), eventType } : null),
-    resolveBucketByCode: async (code) => (/^[1-5][0-3][0-2]$/.test(code) ? { bucket: bucketFor(code), eventType } : null),
+    loadBookingById: async (id) => (booking && id === booking.id ? { booking, bucket: bucketFor(o.storedIn ?? "100"), eventType } : null),
+    resolveBucketByCode: async (code) =>
+      /^[1-5][0-3][0-2]$/.test(code) || TEST_CODES.has(code) ? { bucket: bucketFor(code), eventType } : null,
     findTarget: async (_b, requested, excludeUserIds = []) => {
       calls.find.push(requested.bucket.code);
-      calls.findExcludes.push(excludeUserIds);
+      calls.findExcludes.push([...excludeUserIds]);
       if (o.findThrows) throw o.findThrows;
       const next = targets.shift();
       if (!next) throw new Error("test ran out of targets");
@@ -223,6 +230,46 @@ async function main() {
   eq(await refusedCode({ booking: { status: "cancelled" } }), "booking_inactive", "a cancelled booking is refused");
   eq(await refusedCode({ booking: { kind: "agent_link" } }), "agent_link", "an advisor link booking is refused: the lead chose that advisor");
   eq(await refusedCode({}, { bookingId: "K1", bucketCode: "999", actor }), "unknown_bucket", "a code that is no bucket is refused");
+
+  // --- #3251: a reroute never crosses between the test world and the real one ---
+  // A test call rerouted into a real bucket would hold a real advisor away from
+  // leads, and a keep would leave a test call in a real bucket (or a real lead's
+  // call in a test one, where its webhooks are suppressed). Refused before any
+  // search, so nobody is ever held.
+  for (const [storedIn, asked, why] of [
+    [PUBLIC_TEST, "512", "a test call into a real bucket"],
+    ["100", "SMOKE", "a real call into a test bucket"],
+  ] as const) {
+    const { deps, calls } = fake({ storedIn, targets: [moveTarget("NEW", asked, 0)] });
+    let code: string | null = null;
+    try {
+      await startReroute(deps, { bookingId: "K1", bucketCode: asked, actor });
+    } catch (e) {
+      code = e instanceof RerouteRefusedError ? e.code : `threw ${String(e)}`;
+    }
+    eq(code, "across_worlds", `${why} is refused by name`);
+    eq(calls.find.length + calls.place.length, 0, `before any search or hold (${why})`);
+  }
+  {
+    const { deps, calls } = fake({ storedIn: PUBLIC_TEST, targets: [moveTarget("NEW", "SMOKE", 0)] });
+    const p = await startReroute(deps, { bookingId: "K1", bucketCode: "SMOKE", actor });
+    eq(p.kind, "move", "control: a test call rerouted into another test bucket searches and holds");
+    eq(calls.place.length, 1, "control: and the hold is placed");
+  }
+  for (const [storedIn, kept, why] of [
+    [PUBLIC_TEST, "512", "a test call kept in a real bucket"],
+    ["100", "SMOKE", "a real call kept in a test bucket"],
+  ] as const) {
+    const { deps, calls } = fake({ storedIn });
+    let code: string | null = null;
+    try {
+      await confirmReroute(deps, { bookingId: "K1", holdId: null, bucketCode: kept, requestedBucketCode: kept, note: null, actor });
+    } catch (e) {
+      code = e instanceof RerouteRefusedError ? e.code : `threw ${String(e)}`;
+    }
+    eq(code, "across_worlds", `${why} is refused at the confirm too, since a keep's bucket comes from the request`);
+    eq(calls.keep.length, 0, `before any swap (${why})`);
+  }
   eq(
     await refusedCode({ targets: [moveTarget("NEW", "512", 0)], placeRefused: "confirm_in_progress" }),
     "confirm_in_progress",
