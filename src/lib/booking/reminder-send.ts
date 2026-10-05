@@ -245,8 +245,8 @@ export interface ReminderRun {
 /**
  * Why a failed reminder pages, which decides what the page can truthfully say.
  *
- *   too_late: it did not go out (nothing reached Gmail, or Gmail turned it away
- *     for now), and the call is too close for the next tick to resend it before
+ *   too_late: it did not go out (nothing reached Gmail, or Gmail asked for it to
+ *     be sent later), and the call is too close for the next tick to resend it before
  *     the lead's one hour text reminder.
  *   refused: Google answered and refused it (the address, or the mailbox's
  *     delegation) in a way that will not pass, so it is not resent until that is
