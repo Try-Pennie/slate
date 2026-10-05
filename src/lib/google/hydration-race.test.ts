@@ -864,6 +864,47 @@ describe("a push refreshes slots only when its sync changed busy time (#3258)", 
     expect(refreshAgentPoolsAfterPush).not.toHaveBeenCalled();
   });
 
+  it("refreshes nothing when a meeting's title changed and its times did not", async () => {
+    await bootstrap();
+    const g = google.current as FakeGoogle;
+    g.put("evt-renamed", at(DAY + 2), at(DAY + 3));
+    await syncByChannel(CHANNEL);
+    expect(blockFor("evt-renamed")).toBeTruthy();
+    // Google redelivers the event for a title or description edit: same times.
+    g.put("evt-renamed", at(DAY + 2), at(DAY + 3));
+    vi.mocked(refreshAgentPoolsAfterPush).mockClear();
+    await expect(syncByChannel(CHANNEL)).resolves.toBe("synced");
+    expect(refreshAgentPoolsAfterPush).not.toHaveBeenCalled();
+  });
+
+  it("fails the pass, with its token unadvanced, when the read before the upsert fails", async () => {
+    await bootstrap();
+    const tokenBefore = cal().sync_token;
+    const g = google.current as FakeGoogle;
+    g.put("evt-later", at(DAY + 6), at(DAY + 7));
+    (db.current as FakeDb).fail("busy_blocks", "select", 1, "read refused");
+    vi.mocked(refreshAgentPoolsAfterPush).mockClear();
+    await expect(syncByChannel(CHANNEL)).rejects.toThrow(/read before upsert failed/);
+    expect(cal().sync_token).toBe(tokenBefore);
+    expect(blockFor("evt-later")).toBeUndefined();
+    expect(refreshAgentPoolsAfterPush).not.toHaveBeenCalled();
+    // The next pass re-reads the same delta and lands it, refreshing once.
+    await expect(syncByChannel(CHANNEL)).resolves.toBe("synced");
+    expect(blockFor("evt-later")).toBeTruthy();
+    expect(refreshAgentPoolsAfterPush).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes when a meeting kept its id and moved (positive control for the edit case)", async () => {
+    await bootstrap();
+    const g = google.current as FakeGoogle;
+    g.put("evt-moved", at(DAY + 2), at(DAY + 3));
+    await syncByChannel(CHANNEL);
+    g.put("evt-moved", at(DAY + 4), at(DAY + 5));
+    vi.mocked(refreshAgentPoolsAfterPush).mockClear();
+    await syncByChannel(CHANNEL);
+    expect(refreshAgentPoolsAfterPush).toHaveBeenCalledTimes(1);
+  });
+
   it("refreshes the agent's pools once when the sync moved busy time (positive control)", async () => {
     await bootstrap();
     (google.current as FakeGoogle).put("evt-meeting", at(DAY + 5), at(DAY + 6));

@@ -76,6 +76,7 @@ import {
 import { WATCH_PAGING } from "@/lib/notify/alerts";
 import { GoogleHttpError } from "@/lib/google/http-error";
 import { idFilterBytes, MAX_IN_FILTER_BYTES } from "@/lib/db/id-batch";
+import { movedBusyRows } from "./sync-core";
 
 /**
  * Chainable stand-in for the supabase client that emulates PostgREST paging:
@@ -259,7 +260,15 @@ describe("applyEvents keys + deletes per calendar (#619)", () => {
     const deletes: { filters: Record<string, unknown> }[] = [];
     const from = () => {
       let del: { filters: Record<string, unknown> } | null = null;
+      // #3258: applyEvents reads the stored rows for its upserts first, to count only
+      // the ones that move busy time. Nothing is stored here, so every upsert is new.
+      let reading = false;
       const b: Record<string, unknown> = {
+        select: () => {
+          reading = true;
+          return b;
+        },
+        limit: () => Promise.resolve({ data: [], error: null }),
         upsert: (rows: Record<string, unknown>[], opts: { onConflict?: string }) => {
           upserts.push({ rows, onConflict: opts?.onConflict });
           return Promise.resolve({ error: null });
@@ -273,6 +282,7 @@ describe("applyEvents keys + deletes per calendar (#619)", () => {
           return b;
         },
         in: (col: string, ids: unknown[]) => {
+          if (reading) return b;
           del!.filters[col] = ids;
           deletes.push(del!);
           return Promise.resolve({ error: null });
@@ -1560,5 +1570,37 @@ describe("a calendar Slate could not record is not a calendar it has (#2482)", (
     const result = await ensureWatches("agent-1");
     expect(inserts.some((i) => i.table === "agent_calendars")).toBe(true);
     expect(result.status).not.toBe("error");
+  });
+});
+
+// #3258: an upsert moves busy time only when its row is new or retimed. Compared as
+// instants, because the store answers `+00:00` where the event wrote `Z`.
+describe("movedBusyRows (#3258)", () => {
+  const row = (id: string, start: string, end: string) => ({
+    user_id: "u1",
+    gcal_event_id: id,
+    calendar_id: "cal-A",
+    source: "gcal" as const,
+    starts_at: start,
+    ends_at: end,
+  });
+  it("counts new and retimed rows, and not a row with the same instants in another spelling", () => {
+    const upserts = [
+      row("same", "2026-01-01T10:00:00.000Z", "2026-01-01T11:00:00.000Z"),
+      row("moved", "2026-01-01T12:00:00.000Z", "2026-01-01T13:00:00.000Z"),
+      row("new", "2026-01-01T14:00:00.000Z", "2026-01-01T15:00:00.000Z"),
+    ];
+    const stored = [
+      { gcal_event_id: "same", starts_at: "2026-01-01T10:00:00+00:00", ends_at: "2026-01-01T11:00:00+00:00" },
+      { gcal_event_id: "moved", starts_at: "2026-01-01T12:00:00+00:00", ends_at: "2026-01-01T13:30:00+00:00" },
+    ];
+    expect(movedBusyRows(upserts, stored)).toBe(2);
+  });
+  it("counts a row whose stored stamp cannot be read as moved, never as unchanged", () => {
+    expect(
+      movedBusyRows([row("x", "2026-01-01T10:00:00Z", "2026-01-01T11:00:00Z")], [
+        { gcal_event_id: "x", starts_at: "garbage", ends_at: "2026-01-01T11:00:00Z" },
+      ]),
+    ).toBe(1);
   });
 });

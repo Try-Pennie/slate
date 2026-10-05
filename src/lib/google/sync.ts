@@ -14,6 +14,7 @@ import { refreshAgentPoolsAfterPush } from "@/lib/availability/slot-cache";
 import {
   isBusyEvent,
   partitionBusyWrites,
+  movedBusyRows,
   staleBlockIds,
 } from "@/lib/google/sync-core";
 import {
@@ -324,6 +325,24 @@ export async function applyEvents(
   // Keyed on (user_id, calendar_id, gcal_event_id) so the same event id invited
   // to two of an agent's watched calendars keeps a distinct block per calendar,
   // instead of one calendar's sync overwriting the other's row (#619).
+  // #3258: which upserts MOVE busy time, read before they are written. Only a
+  // non-empty delta pays it, one indexed read per URL sized batch, against a pool
+  // refresh it can save (about 2.5s of CPU a pool, measured 2026-10-05). A read that
+  // fails THROWS, like every other store failure here, so the pass is retried with its
+  // token unadvanced rather than guessing what moved.
+  let moved = 0;
+  for (const ids of chunkIdsByUrlBudget(upserts.map((u) => u.gcal_event_id))) {
+    const { data, error } = await db
+      .from("busy_blocks")
+      .select("gcal_event_id, starts_at, ends_at")
+      .eq("user_id", userId)
+      .eq("calendar_id", calendarId)
+      .in("gcal_event_id", ids)
+      .limit(ids.length);
+    if (error) throw new Error(`busy_blocks read before upsert failed: ${error.message}`);
+    const batch = upserts.filter((u) => ids.includes(u.gcal_event_id));
+    moved += movedBusyRows(batch, (data ?? []) as { gcal_event_id: string | null; starts_at: string; ends_at: string }[]);
+  }
   for (let i = 0; i < upserts.length; i += UPSERT_CHUNK) {
     const { error } = await db
       .from("busy_blocks")
@@ -360,9 +379,9 @@ export async function applyEvents(
     if (error) throw new Error(`busy_blocks bulk delete failed: ${error.message}`);
     deleted += count ?? chunk.length;
   }
-  // #3258: how many busy time writes the delta made. Zero means nothing a slot
-  // compute reads has changed: a title edit, or the echo of Slate's own event.
-  return upserts.length + deleted;
+  // #3258: how many rows the delta MOVED. Zero means nothing a slot compute reads
+  // has changed: a title edit, or the echo of Slate's own event.
+  return moved + deleted;
 }
 
 /**
@@ -503,14 +522,15 @@ async function recordCalHealth(
   }
 }
 
-/** Sync one calendar's changes into busy_blocks; advances its stored sync token. */
 /** What one calendar's sync did (#3258): the delta's size, and whether busy time moved. */
 interface CalendarSyncOutcome {
   events: number;
-  /** True when busy_blocks were written, or the pass was a full resync that may purge. */
+  /** True when busy time MOVED (a row new or retimed, or one really deleted), or the pass
+   *  was a full resync that may purge. */
   busyChanged: boolean;
 }
 
+/** Sync one calendar's changes into busy_blocks; advances its stored sync token. */
 async function syncCalendar(
   email: string,
   cal: AgentCalendar,
