@@ -4,8 +4,9 @@
 // and this checks the four places the command must use them:
 //
 //   1. every reroute confirm goes through ONE helper, `confirmAndNote`, which records
-//      the calendar event the confirm left before anything else happens, so no step
-//      can confirm and skip the check that it still holds an event;
+//      the calendar event the confirm left before anything else happens (also when
+//      the confirm fails partway), so no step can confirm and skip the check that it
+//      still holds an event;
 //   2. `noteEventAfter` fails the step through `rerouteLostEvent`;
 //   3. the public test bucket's buffers are checked with `publicBucketWindowProblem`
 //      and a problem refuses the run as `testWorldDiffers`;
@@ -87,6 +88,10 @@ export function rerouteLiveWiringProblems(source: string): string[] {
     const note = confirmBody.indexOf("noteEventAfter(");
     if (call === -1) problems.push("confirmAndNote does not confirm the reroute");
     if (note === -1 || note < call) problems.push("confirmAndNote does not record the calendar event after the confirm");
+    const caught = confirmBody.slice(confirmBody.indexOf("catch"));
+    if (!/catch\s*\(/.test(confirmBody) || !/noteEvent\b/.test(caught.slice(0, Math.max(0, caught.indexOf("throw"))))) {
+      problems.push("confirmAndNote does not record the event a confirm that fails partway may have left");
+    }
   }
   if (confirms !== 1) {
     problems.push(`adminConfirmReroute is called in ${confirms} places; every confirm must go through confirmAndNote alone`);

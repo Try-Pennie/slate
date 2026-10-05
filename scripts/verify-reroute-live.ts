@@ -204,7 +204,17 @@ type Confirmed = { outcome: Awaited<ReturnType<typeof service.adminConfirmRerout
  * `scripts/test-reroute-live-wiring.ts` holds the command to that.
  */
 async function confirmAndNote(bookingId: string, input: ConfirmInput, what: string): Promise<Confirmed> {
-  const outcome = await service.adminConfirmReroute(bookingId, input, actor);
+  let outcome: Confirmed["outcome"];
+  try {
+    outcome = await service.adminConfirmReroute(bookingId, input, actor);
+  } catch (err) {
+    // A confirm that fails partway may already have put a new event on the
+    // booking, so record whatever it holds now for the cleanup before failing. A
+    // read that also fails is left to the cleanup's own reads; the confirm's error
+    // is the one that names the step.
+    await load(bookingId).then(noteEvent, () => undefined);
+    throw err;
+  }
   const booking = await noteEventAfter(bookingId, what);
   return { outcome, booking };
 }

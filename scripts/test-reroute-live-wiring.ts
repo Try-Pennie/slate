@@ -41,6 +41,14 @@ const has = (problems: string[], part: string) => problems.some((p) => p.include
 }
 
 {
+  const body = source.slice(source.indexOf("async function confirmAndNote"));
+  const catchStart = body.indexOf("} catch (err) {");
+  const rethrow = body.indexOf("throw err;", catchStart);
+  assert(catchStart !== -1 && rethrow !== -1, "the real helper has a catch that rethrows");
+  const unnotedOnFailure = planted(body.slice(catchStart, rethrow), "} catch (err) {\n    ");
+  assert(has(rerouteLiveWiringProblems(unnotedOnFailure), "a confirm that fails partway"), "a helper that stops recording the event when a confirm fails is caught");
+}
+{
   const reused = planted("testCallIdentity(startMs, RUN_STARTED_MS, n)", "{ idempotencyKey: `x-${n}`, externalId: `x-${n}` }");
   assert(has(rerouteLiveWiringProblems(reused), "testCallIdentity"), "a booking that stops using the run's own identity is caught");
 }
