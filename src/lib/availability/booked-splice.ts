@@ -261,27 +261,33 @@ export async function spliceBookedTime<C>(
     const settled = await mapBounded(work, SPLICE_WRITE_CONCURRENCY, async ({ code, parts }) => {
       const row = rows.get(code);
       if (!row) return "no-row" as const;
+      let result: BatchedRowOutcome;
       try {
         const first = await deps.writeFromRead(code, row, parts, booked.fenceAtMs, computeStartedMs);
         // The row moved since the batched read: read it afresh, through the
         // single code path's own bounded retries.
-        return first === "changed"
+        result = first === "changed"
           ? await deps.writeSplice(code, parts, booked.fenceAtMs, computeStartedMs)
           : first;
       } catch (err) {
         deps.warn(`splice of ${code} threw`, err);
         return "failed" as const;
       }
+      // Dropped the moment this code's row is stored, beside the other codes' writes,
+      // rather than one after another once every write is done: each code's cached
+      // offer is served until its own drop lands (#3332 review).
+      if (result === "spliced") {
+        await deps.invalidate(code).catch((err) => deps.warn(`edge cache drop for ${code} failed`, err));
+      }
+      return result;
     });
 
     const again = new Set<string>();
     for (let i = 0; i < work.length; i++) {
       const code = work[i]!.code;
       const result = settled[i]!;
-      if (result === "spliced") {
-        outcome.spliced++;
-        await deps.invalidate(code).catch((err) => deps.warn(`edge cache drop for ${code} failed`, err));
-      } else if (result === "unchanged") outcome.unchanged++;
+      if (result === "spliced") outcome.spliced++;
+      else if (result === "unchanged") outcome.unchanged++;
       else if (result === "no-row") outcome.noRow++;
       else if (result === "recompute" && attempt + 1 < COMPUTE_ATTEMPTS) again.add(code);
       else {

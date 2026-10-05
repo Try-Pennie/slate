@@ -719,4 +719,59 @@ for (const [pools, sole] of [
   eq(outcome.spliced, 0, "and reports nothing spliced");
 }
 
+// --- the edge cache drops run together, not one after another (#3332 review) ----------
+// An advisor in twelve pools can splice dozens of codes, and each code's cached offer
+// stays served until its drop lands, so a drop must not wait for the one before it.
+{
+  const w = world();
+  const before = storedRows(w);
+  const booked = book(w, A, et("10:00"));
+  const h = harness(w, before);
+  const started: string[] = [];
+  const releases: (() => void)[] = [];
+  let released = false;
+  // A drop that starts after the release lands at once, so a serial loop fails the
+  // assertion below and still finishes rather than hanging the run.
+  h.deps.invalidate = (code) =>
+    new Promise<void>((resolve) => {
+      started.push(code);
+      if (released) resolve();
+      else releases.push(resolve);
+    });
+  // The handler is attached now, so a rejection during the waits below is caught here (L749).
+  const settled = spliceBookedTime(booked, h.deps).then(
+    (outcome) => ({ outcome, err: null }),
+    (err: unknown) => ({ outcome: null, err }),
+  );
+  // Wait on the condition, bounded by turns of the event loop rather than wall time (L290).
+  for (let turn = 0; turn < 500 && started.length < 2; turn++) await new Promise((r) => setImmediate(r));
+  eq([...started].sort(), ["201", "202"], "both spliced codes' drops started while neither had finished");
+  released = true;
+  for (const release of releases) release();
+  const { outcome, err } = await settled;
+  eq(err, null, "and the splice finished once they landed");
+  eq(outcome?.spliced, 2, "with both codes spliced");
+}
+
+// --- one drop failing costs the other code nothing ----------------------------------
+{
+  const w = world();
+  const before = storedRows(w);
+  const booked = book(w, A, et("10:00"));
+  const h = harness(w, before);
+  const dropped: string[] = [];
+  h.deps.invalidate = async (code) => {
+    if (code === "201") throw new Error("cache unavailable");
+    dropped.push(code);
+  };
+  const outcome = await spliceBookedTime(booked, h.deps);
+  eq(outcome.spliced, 2, "a failed drop does not unsplice a stored row");
+  eq(outcome.failed, 0, "nor count the code as failed, since its row is right");
+  eq(dropped, ["202"], "the other code's entry is still dropped");
+  assert(
+    h.warnings.some((m) => m === "edge cache drop for 201 failed"),
+    "and the failed drop is logged, naming its code",
+  );
+}
+
 finish();
