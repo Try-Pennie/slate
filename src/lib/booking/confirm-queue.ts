@@ -180,6 +180,8 @@ export type QueueTurn<T> =
       ack(): void;
       /** Extends this turn's lease by `leaseMs` from now (#3325); a no op once it has ended. */
       renew(): void;
+      /** False once it has reported or its lease has run out (#3325), so a host can say so. */
+      alive(): boolean;
     }
   /** The confirm ahead settled the slot: answer without doing the work. */
   | { kind: "refused"; refusal: "race" | "taken"; settled: T | null }
@@ -387,6 +389,10 @@ export function makeConfirmQueue<T>(
       kind: "lead",
       ack: renew,
       renew,
+      alive: () => {
+        expireAndHandOn(key, line);
+        return live();
+      },
       waiting: () => line.waiting.length,
       seat: {
         claimedByOthers,

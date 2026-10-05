@@ -635,6 +635,22 @@ async function main() {
     silent.turn.done({ full: false }); // a late report from the expired turn changes nothing
   }
 
+  // --- #3325: a lead turn says whether it is still alive -----------------------
+  {
+    let now = 1_000;
+    const leases = manualTimer();
+    const q = makeConfirmQueue<string>({ timer: manualTimer().timer, leaseTimer: leases.timer, now: () => now, ackMs: 1_000, leaseMs: 4_000 });
+    const a = q.enterNow("a");
+    const b = q.enterNow("b");
+    if (a.kind !== "lead" || b.kind !== "lead") throw new Error("alive: did not lead");
+    assert(a.turn.alive() && b.turn.alive(), "alive: a new lead is alive");
+    a.turn.done({ full: false });
+    assert(!a.turn.alive(), "alive: a lead that reported is not");
+    now += 1_000;
+    leases.fireAll();
+    assert(!b.turn.alive(), "alive: a lead whose lease ran out is not");
+  }
+
   // --- #3325: a lookahead place that is never given back is reclaimed ----------
   {
     let now = 1_000;
