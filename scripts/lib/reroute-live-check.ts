@@ -130,7 +130,10 @@ export function eventLedger(calendars: Readonly<Record<string, string>>) {
   return {
     note(b: { gcal_event_id: string | null; assigned_user_id: string | null }): void {
       if (!b.gcal_event_id) return;
-      byEvent.set(b.gcal_event_id, (b.assigned_user_id && calendars[b.assigned_user_id]) || null);
+      const calendar = (b.assigned_user_id && calendars[b.assigned_user_id]) || null;
+      // The first calendar known for an event is kept: a later read with the advisor
+      // cleared must never turn a checkable event into one the cleanup cannot read.
+      if (!byEvent.get(b.gcal_event_id)) byEvent.set(b.gcal_event_id, calendar);
     },
     events: (): ReadonlyMap<string, string | null> => byEvent,
   };
@@ -163,4 +166,20 @@ export function cleanupVerdict(found: { left: readonly string[]; unverified: rea
   if (found.left.length > 0) return { outcome: "residue", detail: [found.left.join("; "), unread].filter(Boolean).join("; ") };
   if (unread) return { outcome: "cleanupUnverified", detail: unread };
   return null;
+}
+
+/**
+ * Why the public test bucket's event type no longer fits the clear window
+ * `startIsClear` checks, or null. That window ends with the bucket's call itself, so
+ * it holds only while the call carries no buffers on either side.
+ */
+export function publicBucketWindowProblem(et: { buffer_before_min: number; buffer_after_min: number }): string | null {
+  return et.buffer_before_min === 0 && et.buffer_after_min === 0
+    ? null
+    : "the public test bucket's event type now has buffers, so the clear window would be too short";
+}
+
+/** The step's failure when a reroute left its booking with no calendar event, or null. */
+export function rerouteLostEvent(b: { gcal_event_id: string | null }, what: string): string | null {
+  return b.gcal_event_id ? null : `${what} left the booking with no calendar event`;
 }

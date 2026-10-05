@@ -42,6 +42,8 @@ import {
   attemptEach,
   cleanupVerdict,
   eventLedger,
+  publicBucketWindowProblem,
+  rerouteLostEvent,
   residue,
   runMeetsCanary,
   startIsClear,
@@ -125,6 +127,10 @@ expectMembers(partner, [ONE]);
 expectMembers(smoke, [ONE, TWO]);
 expectMembers(smoke2, [ONE]);
 if (partner.eventType.daily_cap == null) exit("testWorldDiffers", "the public test bucket has no daily cap, so the cap check would not run");
+// The clear window `startIsClear` checks assumes the public test bucket's call carries
+// no buffers (its own event type), so a buffer added there would make it too short.
+const windowProblem = publicBucketWindowProblem(partner.eventType);
+if (windowProblem) exit("testWorldDiffers", windowProblem);
 
 // --- a start both advisors are clear for, by Google's own answer ------------------------------
 const starts = candidateStarts(Date.now());
@@ -175,6 +181,29 @@ const expectEq = (actual: unknown, expected: unknown, what: string) => {
 
 function noteEvent(b: Booking): void {
   ledger.note(b);
+}
+
+/** Notes the booking's event and fails the step when a reroute left it with none. */
+async function noteEventAfter(bookingId: string, what: string): Promise<Booking> {
+  const b = await load(bookingId);
+  noteEvent(b);
+  const lost = rerouteLostEvent(b, what);
+  if (lost) differ(lost);
+  return b;
+}
+
+type ConfirmInput = Parameters<typeof service.adminConfirmReroute>[1];
+type Confirmed = { outcome: Awaited<ReturnType<typeof service.adminConfirmReroute>>; booking: Booking };
+
+/**
+ * Every confirm in the run goes through here, and only here, so none can skip
+ * recording the calendar event it left (and failing when it left none).
+ * `scripts/test-reroute-live-wiring.ts` holds the command to that.
+ */
+async function confirmAndNote(bookingId: string, input: ConfirmInput, what: string): Promise<Confirmed> {
+  const outcome = await service.adminConfirmReroute(bookingId, input, actor);
+  const booking = await noteEventAfter(bookingId, what);
+  return { outcome, booking };
 }
 
 async function book(code: string, startMs: number, n: number): Promise<Booking> {
@@ -255,8 +284,7 @@ try {
   expectEq(p1.kind === "keep" ? [p1.kind, p1.lastResort, p1.advisor.email] : [p1.kind], ["keep", true, TEST_ADVISORS[1]],
     "SMOKE2's only advisor is busy, so smoketest2@ stays as the last resort");
   expectEq(await liveHold(b1.id), null, "a keep places no hold");
-  const kept1 = await service.adminConfirmReroute(b1.id, keepInput("SMOKE2"), actor);
-  noteEvent(await load(b1.id));
+  const { outcome: kept1 } = await confirmAndNote(b1.id, keepInput("SMOKE2"), "the last resort keep");
   expectEq(kept1.kind === "kept" ? kept1.bucket.code : kept1.kind, "SMOKE2", "the keep changes the bucket");
   expectEq([(await load(b1.id)).assigned_user_id, (await load(b1.id)).bucket_id], [TWO, smoke2.bucket.id], "and leaves the advisor");
 
@@ -276,9 +304,11 @@ try {
 
   // 4. the move
   const oldEvent = (await load(b1.id)).gcal_event_id;
-  const moved = await service.adminConfirmReroute(b1.id, { holdId: p2.holdId, bucketCode: null, requestedBucketCode: null, note: "reroute live check" }, actor);
-  const b1Moved = await load(b1.id);
-  noteEvent(b1Moved);
+  const { outcome: moved, booking: b1Moved } = await confirmAndNote(
+    b1.id,
+    { holdId: p2.holdId, bucketCode: null, requestedBucketCode: null, note: "reroute live check" },
+    "the move",
+  );
   const summary = (o: typeof moved) => (o.kind === "moved" ? [o.kind, o.advisor.email, o.bucket.code] : [o.kind]);
   expectEq(summary(moved), ["moved", TEST_ADVISORS[0], "SMOKE2"], "the confirm moves B1 to smoketest@ in SMOKE2");
 
@@ -289,15 +319,18 @@ try {
   expectEq(event && event.status !== "cancelled" ? Date.parse(event.start?.dateTime ?? "") : null, T,
     "Google holds the call on smoketest@'s calendar at T");
   expectEq(await eventGone(TEST_ADVISORS[1], oldEvent), true, "and smoketest2@'s event is gone");
-  const again = await service.adminConfirmReroute(b1.id, { holdId: p2.holdId, bucketCode: null, requestedBucketCode: null, note: null }, actor);
+  const { outcome: again } = await confirmAndNote(
+    b1.id,
+    { holdId: p2.holdId, bucketCode: null, requestedBucketCode: null, note: null },
+    "a second confirm of the same hold",
+  );
   expectEq(summary(again), summary(moved), "a second confirm of the same hold answers with the first result");
 
   // 5. into SMOKE, where smoketest@ belongs and is free: a plain keep
   const p3 = await service.adminStartReroute(b1.id, "SMOKE", actor);
   expectEq(p3.kind === "keep" ? [p3.kind, p3.lastResort, p3.advisor.email] : [p3.kind], ["keep", false, TEST_ADVISORS[0]],
     "SMOKE keeps smoketest@, who is in its pool and free");
-  const kept3 = await service.adminConfirmReroute(b1.id, keepInput("SMOKE"), actor);
-  noteEvent(await load(b1.id));
+  const { outcome: kept3 } = await confirmAndNote(b1.id, keepInput("SMOKE"), "the keep into SMOKE");
   expectEq(kept3.kind === "kept" ? kept3.bucket.code : kept3.kind, "SMOKE", "and the keep lands");
 
   // 6. the public test bucket, against its real daily cap
@@ -306,8 +339,7 @@ try {
   const p4 = await service.adminStartReroute(b3.id, PUBLIC_TEST, actor);
   expectEq(p4.kind === "keep" ? [p4.kind, p4.lastResort, p4.advisor.email] : [p4.kind], ["keep", false, TEST_ADVISORS[0]],
     "the public test bucket keeps smoketest@ within its daily cap of 8, B3 itself left out of the count");
-  const kept4 = await service.adminConfirmReroute(b3.id, keepInput(PUBLIC_TEST), actor);
-  noteEvent(await load(b3.id));
+  const { outcome: kept4 } = await confirmAndNote(b3.id, keepInput(PUBLIC_TEST), "the keep against the daily cap");
   expectEq(kept4.kind, "kept", "and the keep lands");
 
   // 7. a real bucket is refused, before any search or hold

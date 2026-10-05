@@ -10,6 +10,8 @@ import {
   candidateStarts,
   cleanupVerdict,
   eventLedger,
+  publicBucketWindowProblem,
+  rerouteLostEvent,
   inCanaryWindow,
   residue,
   runMeetsCanary,
@@ -42,9 +44,15 @@ for (const [hhmm, inside] of [
 }
 
 // --- a run must END before the canary's window too, not only start outside it -------------------
-eq(RUN_BUDGET_MS >= 5 * 60_000, true, "the run is budgeted at least five minutes (measured runs take one to two)");
+{
+  // The last start allowed is the one whose budget ends just before the window
+  // opens at :27; derived from the budget, so a changed budget moves both cases.
+  const opens = at("14:27");
+  const lastClear = opens - RUN_BUDGET_MS - 60_000;
+  eq(runMeetsCanary(lastClear), false, "the last start whose whole budget ends before the window is clear");
+  eq(runMeetsCanary(lastClear + 60_000), true, "a minute later its budget reaches the window, so it is refused");
+}
 eq(runMeetsCanary(at("14:10")), false, "a run starting at 14:10 finishes well clear of 14:27");
-eq(runMeetsCanary(at("14:23")), true, "one starting at 14:23 would still be running at 14:27, so it is refused");
 eq(runMeetsCanary(at("14:30")), true, "one starting inside the window is refused, as before");
 eq(runMeetsCanary(at("14:38")), false, "control: one starting just after the window is clear");
 
@@ -107,8 +115,9 @@ async function residueCases() {
   ledger.note({ gcal_event_id: "ev-2", assigned_user_id: "TWO" });
   ledger.note({ gcal_event_id: "ev-3", assigned_user_id: "REAL" });
   ledger.note({ gcal_event_id: "ev-1", assigned_user_id: "ONE" });
+  ledger.note({ gcal_event_id: "ev-2", assigned_user_id: null });
   eq([...ledger.events()], [["ev-1", "one@x.com"], ["ev-2", "two@x.com"], ["ev-3", null]],
-    "each event once, with its calendar; a booking with no event records nothing; one outside the test world records no calendar");
+    "each event once, with its first known calendar (a later read with the advisor cleared never erases it); no event records nothing; one outside the test world records no calendar");
 }
 
 // --- every cleanup step is attempted, whatever the one before it did ---------------------------
@@ -128,5 +137,14 @@ eq(cleanupVerdict({ left: ["B1 is not cancelled"], unverified: ["event x: 503"] 
   { outcome: "residue", detail: "B1 is not cancelled; could not read: event x: 503" }, "something left is the residue outcome, naming the unread too");
 eq(cleanupVerdict({ left: [], unverified: ["event x: 503"] }),
   { outcome: "cleanupUnverified", detail: "could not read: event x: 503" }, "only unread records is its own outcome");
+
+// --- the clear window assumes the public test bucket's call carries no buffers --------------------
+eq(publicBucketWindowProblem({ buffer_before_min: 0, buffer_after_min: 0 }), null, "no buffers: the window fits");
+assert(publicBucketWindowProblem({ buffer_before_min: 0, buffer_after_min: 10 }) !== null, "an after buffer would outrun the window, so the run refuses");
+assert(publicBucketWindowProblem({ buffer_before_min: 5, buffer_after_min: 0 }) !== null, "and so would a before buffer");
+
+// --- a reroute must leave its booking holding a calendar event ------------------------------------
+eq(rerouteLostEvent({ gcal_event_id: "ev-1" }, "the keep"), null, "an event still held is fine");
+eq(rerouteLostEvent({ gcal_event_id: null }, "the keep"), "the keep left the booking with no calendar event", "a lost event fails the step by name");
 
 residueCases().then(attemptCases).then(() => finish());

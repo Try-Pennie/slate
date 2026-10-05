@@ -1606,9 +1606,10 @@ REROUTE_LIVE_APPLY=1 REROUTE_LIVE_ACTOR_EMAIL=<admin address> pnpm verify:rerout
 
 It WRITES to production, hence the flag, and acts as a named admin (any rank from
 admin up, judged by `atLeast`), who is recorded on each hold and history row. Run it
-from a checkout of current main holding `.env.local`. It refuses to start within
-three minutes before or eight after `:00` and `:30`, when the smoke canary may be
-booking the same advisors.
+from a checkout of current main holding `.env.local`. It refuses any start whose five minute budget
+would reach the smoke canary's window (three minutes before to eight after `:00` and
+`:30`), when the canary may be booking the same advisors, so only starts from eight
+to twenty one minutes past each mark go ahead.
 
 | exit | what it met |
 |---|---|
@@ -1621,6 +1622,7 @@ booking the same advisors.
 | 6 | **a reroute step did not land as expected**, named |
 | 7 | **cleanup left something behind**, named |
 | 8 | a test advisor's calendar could not be read |
+| 9 | cleanup could not read whether everything is gone, so nothing is vouched for |
 
 **Last run, 2026-10-05 01:48 UTC: exit 0**, all 23 steps at 2026-10-07 15:00 UTC.
 The first attempt that night is what moved the run off `PARTNER` for the moves
