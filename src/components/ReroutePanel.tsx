@@ -18,12 +18,13 @@ import {
   type ManagerBackend,
   type ManagerDebtDigit,
   type RerouteCopy,
+  REROUTE_UNREACHABLE,
+  rerouteFailed,
 } from "@/lib/booking/reroute-copy";
 
 const SECONDARY_CLS = "min-h-9 rounded-md border border-border px-3 py-1 text-xs text-fg disabled:opacity-60";
 const PRIMARY_CLS = "pn-btn pn-btn--primary min-h-9 rounded-md px-3 py-1 text-xs disabled:opacity-60";
 const LABEL_CLS = "mb-1 block text-xs text-fg-muted";
-const UNREACHABLE = "Slate could not reach the server. Please try again.";
 
 /** What the result column is showing. */
 type Shown =
@@ -71,11 +72,16 @@ export default function ReroutePanel({
   const base = `/api/admin/bookings/${bookingId}/reroute`;
   const proposal = shown?.kind === "proposal" ? shown.proposal : shown?.kind === "taken" ? shown.outcome.proposal : null;
 
-  // A reload restores a live hold, so the confirm and its countdown survive it.
+  // A reload restores a live hold, so the confirm and its countdown survive it. Once
+  // the admin has acted, a restore landing late is older than what they asked for,
+  // and replacing it would offer a hold their own search already replaced.
+  const acted = useRef(false);
   useEffect(() => {
     let live = true;
     getJson<{ proposal?: RerouteProposal | null }>(base, { timeoutMs: REQUEST_TIMEOUT_MS }).then((r) => {
-      if (live && r.ok && r.data.proposal) setShown({ kind: "proposal", proposal: r.data.proposal, receivedAt: Date.now() });
+      if (live && !acted.current && r.ok && r.data.proposal) {
+        setShown({ kind: "proposal", proposal: r.data.proposal, receivedAt: Date.now() });
+      }
     });
     return () => {
       live = false;
@@ -108,12 +114,13 @@ export default function ReroutePanel({
   }
 
   async function run<T>(request: () => Promise<{ ok: boolean; status: number; data: T & { error?: string } }>, onOk: (data: T) => void) {
+    acted.current = true;
     setBusy(true);
     setError(null);
     try {
       const r = await request();
       if (r.ok) onOk(r.data);
-      else setError(r.status === 0 ? UNREACHABLE : (r.data.error ?? UNREACHABLE));
+      else setError(r.status === 0 ? REROUTE_UNREACHABLE : (r.data.error ?? rerouteFailed(r.status)));
     } finally {
       setBusy(false);
     }
@@ -151,6 +158,12 @@ export default function ReroutePanel({
     return run<RerouteOutcome>(
       () => postJson(`${base}/confirm`, body, { timeoutMs: REQUEST_TIMEOUT_MS }),
       (outcome) => {
+        // A search the confirm re-ran after the panel closed holds somebody nobody
+        // will confirm, the same as a late search.
+        if (outcome.kind === "taken" && !open.current) {
+          if (outcome.proposal.kind === "move") release();
+          return;
+        }
         if (outcome.kind === "taken") setShown({ kind: "taken", outcome, receivedAt: Date.now() });
         else if (outcome.kind === "expired") setShown({ kind: "expired", heldAdvisor });
         else {
@@ -161,6 +174,19 @@ export default function ReroutePanel({
     ).finally(() => {
       confirming.current = false;
     });
+  }
+
+  /**
+   * A new choice makes the result on screen the answer to a different question, so
+   * it goes, and an advisor it was holding is let go (the same as Cancel).
+   */
+  function choose(apply: () => void) {
+    apply();
+    if (shown?.kind === "proposal" || shown?.kind === "taken") {
+      if (proposal?.kind === "move") release();
+      setShown(null);
+      setError(null);
+    }
   }
 
   async function cancel() {
@@ -195,7 +221,7 @@ export default function ReroutePanel({
         <div>
           {showCodes ? (
             <>
-              <span id={`${ids}-code`} className={LABEL_CLS}>
+              <span className={LABEL_CLS}>
                 Correct bucket
               </span>
               <SelectField
@@ -203,7 +229,7 @@ export default function ReroutePanel({
                 ariaLabel="Correct bucket"
                 value={adminCode}
                 options={codes.map((c) => ({ value: c, label: c }))}
-                onChange={setAdminCode}
+                onChange={(v) => choose(() => setAdminCode(v))}
                 disabled={busy}
               />
             </>
@@ -219,7 +245,7 @@ export default function ReroutePanel({
                         name={`${ids}-backend`}
                         value={b.key}
                         checked={backend === b.key}
-                        onChange={() => setBackend(b.key)}
+                        onChange={() => choose(() => setBackend(b.key))}
                         disabled={busy}
                         className="peer sr-only"
                       />
@@ -236,7 +262,7 @@ export default function ReroutePanel({
                 ariaLabel="Debt level"
                 value={debt}
                 options={MANAGER_DEBT_LEVELS.map((d) => ({ value: d.digit, label: d.label }))}
-                onChange={(v) => setDebt(v as ManagerDebtDigit)}
+                onChange={(v) => choose(() => setDebt(v as ManagerDebtDigit))}
                 disabled={busy}
               />
             </>

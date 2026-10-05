@@ -14,6 +14,8 @@ import {
   outcomeCopy,
   heldFor,
   tiersDownPhrase,
+  REROUTE_UNREACHABLE,
+  rerouteFailed,
 } from "../src/lib/booking/reroute-copy.ts";
 import type { RerouteProposal } from "../src/lib/booking/reroute.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -114,6 +116,12 @@ eq(heldFor(5), "Held for 0:05", "padding the seconds");
 eq(heldFor(-3), "Held for 0:00", "never negative");
 eq(heldFor(Number.NaN), "Held for 0:00", "an unreadable count reads as none left, never NaN (L50)");
 eq(tiersDownPhrase(3), "Three tiers down", "three tiers");
-assert(!/[\u2014\u2013]/.test(JSON.stringify([proposalCopy(move("412", 1), true), outcomeCopy({ kind: "expired" }, true, "A")])), "no dashes in any sentence");
+// --- a failed request: no answer at all, or an answer with no message (L11) ---
+eq(REROUTE_UNREACHABLE, "Slate could not reach the server. Please try again.", "no answer blames the connection");
+eq(rerouteFailed(502), "Slate could not finish that (error 502). Please try again.", "an answer with no message says the server answered, with its status");
+assert(
+  !/[\u2014\u2013]/.test(JSON.stringify([proposalCopy(move("412", 1), true), outcomeCopy({ kind: "expired" }, true, "A"), REROUTE_UNREACHABLE, rerouteFailed(500)])),
+  "no dashes in any sentence",
+);
 
 finish();

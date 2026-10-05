@@ -72,6 +72,14 @@ export function heldFor(seconds: number): string {
   return `Held for ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
+/** No answer came back at all: the request never reached Slate or timed out. */
+export const REROUTE_UNREACHABLE = "Slate could not reach the server. Please try again.";
+
+/** Slate answered with a refusal that carried no message of its own (L11). */
+export function rerouteFailed(status: number): string {
+  return `Slate could not finish that (error ${status}). Please try again.`;
+}
+
 export interface RerouteCopy {
   heading: string;
   body: string;

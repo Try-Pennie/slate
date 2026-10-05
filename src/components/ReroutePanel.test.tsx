@@ -41,6 +41,12 @@ const sent = (fn: ReturnType<typeof mockFetch>, suffix: string, method = "POST")
     .filter(([u, i]) => String(u).endsWith(suffix) && (i?.method ?? "GET") === method)
     .map(([, i]) => (i?.body ? JSON.parse(String(i.body)) : null));
 
+/**
+ * Runs every promise continuation already queued. The fakes here are promises with no
+ * timers, so one macrotask turn drains them all: it waits on the queue, not the clock.
+ */
+const drainPromises = () => new Promise<void>((r) => setTimeout(r, 0));
+
 /** Holds one route's reply until the returned function is called. */
 function holdReply(fn: ReturnType<typeof mockFetch>, suffix: string, method: string) {
   let let_go!: () => void;
@@ -122,8 +128,9 @@ describe("ReroutePanel, as an admin (codes)", () => {
     const { unmount } = render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     await screen.findByText("One tier down, in 412");
+    // Sent as the panel closes, with no await, which the "nothing held" test relies on.
     unmount();
-    await waitFor(() => expect(sent(fn, "/reroute/hold", "DELETE")).toHaveLength(1));
+    expect(sent(fn, "/reroute/hold", "DELETE")).toHaveLength(1);
   });
 
   it("keeps the hold when the panel closes mid confirm, which the server settles", async () => {
@@ -154,6 +161,22 @@ describe("ReroutePanel, as an admin (codes)", () => {
     await waitFor(() => expect(sent(fn, "/reroute/hold", "DELETE")).toHaveLength(1));
   });
 
+  it("releases the next advisor a confirm held when it came back taken after the panel closed", async () => {
+    const user = userEvent.setup();
+    const NEXT = { ...MOVE, holdId: "22222222-3333-4444-8555-666666666666", advisor: advisor("Avery Lin") };
+    const fn = mockFetch({ confirm: () => ({ body: { kind: "taken", previous: advisor("Morgan Reyes"), proposal: NEXT } }) });
+    const { unmount } = render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await screen.findByText("One tier down, in 412");
+    const finish = holdReply(fn, "/reroute/confirm", "POST");
+    await user.click(screen.getByRole("button", { name: "Move to Morgan Reyes" }));
+    await waitFor(() => expect(sent(fn, "/reroute/confirm")).toHaveLength(1));
+    unmount();
+    expect(sent(fn, "/reroute/hold", "DELETE")).toHaveLength(0);
+    finish();
+    await waitFor(() => expect(sent(fn, "/reroute/hold", "DELETE")).toHaveLength(1));
+  });
+
   it("releases nothing on close when nothing is held", async () => {
     const user = userEvent.setup();
     const fn = mockFetch({ find: () => ({ body: KEEP }) });
@@ -163,6 +186,51 @@ describe("ReroutePanel, as an admin (codes)", () => {
     // A release is sent as the panel closes, before any await, so it would be here now.
     unmount();
     expect(sent(fn, "/reroute/hold", "DELETE")).toHaveLength(0);
+  });
+
+  it("control: the same late restore does land when the admin has not acted", async () => {
+    const OLD = { ...MOVE, holdId: "33333333-4444-4555-8666-777777777777", advisor: advisor("Old Hold") };
+    const fn = mockFetch({ current: OLD });
+    const finishRestore = holdReply(fn, "/reroute", "GET");
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    finishRestore();
+    await drainPromises();
+    expect(screen.getByText("Old Hold is free. Nobody in 512 is.")).toBeTruthy();
+  });
+
+  it("clears a result, releasing its hold, when the bucket chosen changes after the search", async () => {
+    const user = userEvent.setup();
+    const fn = mockFetch({});
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await screen.findByText("One tier down, in 412");
+    await user.click(screen.getByRole("combobox", { name: "Correct bucket" }));
+    await user.click(screen.getByRole("option", { name: "512" }));
+    expect(screen.queryByText("One tier down, in 412")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Move to Morgan Reyes" })).toBeNull();
+    expect(sent(fn, "/reroute/hold", "DELETE")).toHaveLength(1);
+  });
+
+  it("says the server answered, with its status, when a refusal carries no message", async () => {
+    const user = userEvent.setup();
+    mockFetch({ find: () => ({ status: 502, body: {} }) });
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("Slate could not finish that (error 502). Please try again.");
+  });
+
+  it("never lets a late restore replace a search the admin already ran", async () => {
+    const user = userEvent.setup();
+    const OLD = { ...MOVE, holdId: "33333333-4444-4555-8666-777777777777", advisor: advisor("Old Hold") };
+    const fn = mockFetch({ current: OLD });
+    const finishRestore = holdReply(fn, "/reroute", "GET");
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await screen.findByText("Morgan Reyes is free. Nobody in 512 is.");
+    finishRestore();
+    await drainPromises();
+    expect(screen.queryByText(/Old Hold/)).toBeNull();
+    expect(screen.getByText("Morgan Reyes is free. Nobody in 512 is.")).toBeTruthy();
   });
 
   it("restores a live hold after a reload", async () => {
