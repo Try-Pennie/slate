@@ -261,10 +261,21 @@ const bookingReads = makePoolRefreshCoalescer({
  * buckets, so a bucket edited in the last minute is computed from what it is now.
  *
  * A code the cached grouping does not know (a bucket created inside the minute) is
- * re-read once, and if still unknown is coalesced on its own key: never skipped,
- * because the refresh resolves its pool fresh when it runs (#3293 review).
+ * re-read once, and if still unknown is remembered as missing for the rest of the
+ * cache's minute and coalesced on its own key: never skipped, because the refresh
+ * resolves its pool fresh when it runs, and never a re-read per booking (#3293
+ * review).
+ *
+ * Why a STALE key is harmless (#3293 review). The key decides only which bookings
+ * share a refresh and when; what gets refreshed is resolved from the live buckets
+ * for every joined code (`forPoolsOf`). If a bucket changed pools inside the minute:
+ * two bookings of one live pool may hold different keys, which costs a second
+ * compute (possibly beside the first, which the compare and swap row write makes
+ * safe, #1048); and bookings of different live pools may share a key, which
+ * refreshes all of their live pools in one run. Neither can leave a booked time
+ * unrefreshed, and both last only until the cache's minute is up.
  */
-let poolKeyCache: { readAtMs: number; byCode: Map<string, string> } | null = null;
+let poolKeyCache: { readAtMs: number; byCode: Map<string, string>; missing: Set<string> } | null = null;
 const POOL_KEY_CACHE_MS = 60_000;
 
 async function readPoolKeys(now: number): Promise<Map<string, string>> {
@@ -272,7 +283,7 @@ async function readPoolKeys(now: number): Promise<Map<string, string>> {
   for (const [key, members] of groupByPool(await listPoolBuckets())) {
     for (const m of members) byCode.set(m.code, key);
   }
-  poolKeyCache = { readAtMs: now, byCode };
+  poolKeyCache = { readAtMs: now, byCode, missing: new Set() };
   return byCode;
 }
 
@@ -280,8 +291,11 @@ async function poolKeyOfCode(code: string): Promise<string> {
   const now = Date.now();
   const fresh = !poolKeyCache || now - poolKeyCache.readAtMs > POOL_KEY_CACHE_MS;
   let byCode = fresh ? await readPoolKeys(now) : poolKeyCache!.byCode;
-  if (!byCode.has(code) && !fresh) byCode = await readPoolKeys(now);
-  return byCode.get(code) ?? `code:${code}`;
+  if (!byCode.has(code) && !fresh && !poolKeyCache!.missing.has(code)) byCode = await readPoolKeys(now);
+  const key = byCode.get(code);
+  if (key !== undefined) return key;
+  poolKeyCache!.missing.add(code);
+  return `code:${code}`;
 }
 
 /**
@@ -295,10 +309,14 @@ async function forPoolsOf(
 ): Promise<void> {
   const [buckets, horizon] = await Promise.all([listPoolBuckets(), loadBookingHorizonDays()]);
   const groups = [...groupByPool(buckets).values()];
-  for (const code of codes) {
-    if (!groups.some((members) => members.some((m) => m.code === code))) {
-      log.warn("slot-cache", { msg: "booked code is in no pool, so nothing was refreshed", bucket: code });
-    }
+  const homeless = codes.filter((code) => !groups.some((members) => members.some((m) => m.code === code)));
+  for (const code of homeless) {
+    log.warn("slot-cache", { msg: "booked code is in no pool, so nothing was refreshed", bucket: code });
+  }
+  // #3293 review: a refresh that could refresh NOTHING failed, and says so, so the
+  // deferred job records a failure rather than a refresh that never happened.
+  if (homeless.length === codes.length) {
+    throw new Error(`no pool holds booked code ${codes.join(", ")}, so nothing was refreshed`);
   }
   const failures: string[] = [];
   for (const pool of groups.filter((members) => members.some((m) => codes.includes(m.code)))) {
@@ -309,6 +327,14 @@ async function forPoolsOf(
     }
   }
   if (failures.length > 0) throw new Error(failures.join("; "));
+}
+
+/** For tests: forget both coalescers, the pool key cache and the start map. */
+export function resetBookingRefreshesForTests(): void {
+  bookingRefreshes.reset();
+  bookingReads.reset();
+  poolKeyCache = null;
+  lastPoolRecomputeAt.clear();
 }
 
 /**

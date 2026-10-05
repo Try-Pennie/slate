@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // #3258: the refresh a booking schedules after its response computes the booked
 // code's whole POOL once, writes every code in it, and shares that compute with
@@ -29,7 +29,7 @@ vi.mock("@/lib/booking/settings", () => ({ loadBookingHorizonDays: vi.fn(async (
 const log = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }));
 vi.mock("@/lib/log", () => ({ log }));
 
-import { refreshPoolAfterBooking, readPoolInputsAfterBooking } from "./slot-cache";
+import { refreshPoolAfterBooking, readPoolInputsAfterBooking, resetBookingRefreshesForTests } from "./slot-cache";
 import { searchWindowDays } from "./bookable-days";
 
 function pooled(code: string, debtTeam: string) {
@@ -50,11 +50,17 @@ let clockMs = Date.parse("2026-10-05T12:00:00.000Z");
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // The coalescing window is module state, so each case starts well past it.
+  // The coalescers, the pool key cache and the start map are module state: each
+  // case starts from none of it rather than relying on the clock to age it out.
+  resetBookingRefreshesForTests();
   clockMs += 10 * 60_000;
   vi.useFakeTimers({ toFake: ["Date", "setTimeout"] });
   vi.setSystemTime(clockMs);
   precompute.listPoolBuckets.mockResolvedValue([...LOW, ...MID]);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("refreshPoolAfterBooking (#3258)", () => {
@@ -76,11 +82,43 @@ describe("refreshPoolAfterBooking (#3258)", () => {
     await expect(refreshPoolAfterBooking("211")).rejects.toThrow(/stored no rows/);
   });
 
-  it("does nothing, and says so, for a code that names no bucket", async () => {
-    await expect(refreshPoolAfterBooking("999")).resolves.toBeUndefined();
+  // #3293 review: a refresh that refreshed NOTHING is a failure, so afterResponse
+  // records it, never a quiet success.
+  it("rejects when none of its codes is in any pool, after saying which", async () => {
+    await expect(refreshPoolAfterBooking("999")).rejects.toThrow(/999/);
     expect(precompute.computeBucketSlotsForWindow).not.toHaveBeenCalled();
     expect(log.warn).toHaveBeenCalled();
   });
+
+  it("still succeeds when some of its codes were refreshed and one was in no pool", async () => {
+    const lead = refreshPoolAfterBooking("212");
+    await vi.advanceTimersByTimeAsync(0);
+    await lead;
+    // 211 and 212 join one trailing refresh of the mid pool; before it runs, 211's
+    // bucket is deleted, so only 212 can be refreshed.
+    const a = refreshPoolAfterBooking("211");
+    const b = refreshPoolAfterBooking("212");
+    precompute.listPoolBuckets.mockResolvedValue([...LOW, MID[1]!]);
+    precompute.storeBucketSlotsRow.mockClear();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(Promise.all([a, b])).resolves.toBeDefined();
+    expect(precompute.storeBucketSlotsRow.mock.calls.map((c) => c[0])).toEqual(["212"]);
+    expect(log.warn).toHaveBeenCalledWith("slot-cache", expect.objectContaining({ bucket: "211" }));
+  });
+
+  it("remembers a code in no pool for the cache's lifetime instead of re-reading every booking", async () => {
+    await refreshPoolAfterBooking("112"); // caches the grouping
+    const reads0 = precompute.listPoolBuckets.mock.calls.length;
+    await refreshPoolAfterBooking("999").catch(() => {});
+    // The first miss re-reads the grouping once, and the refresh reads the live buckets.
+    expect(precompute.listPoolBuckets.mock.calls.length - reads0).toBe(2);
+    const reads1 = precompute.listPoolBuckets.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(20_000); // past the window, inside the cache's minute
+    await refreshPoolAfterBooking("999").catch(() => {});
+    // Only the refresh's own live read: the key lookup remembered 999 was missing.
+    expect(precompute.listPoolBuckets.mock.calls.length - reads1).toBe(1);
+  });
+
 });
 
 // --- #3293 review ---------------------------------------------------------------------

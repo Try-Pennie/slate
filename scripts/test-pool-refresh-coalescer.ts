@@ -217,4 +217,35 @@ assert(
   r.starts[1]!.finish();
 }
 
+// --- #3293 review: idle keys are evicted --------------------------------------------------
+// A key whose refresh finished and whose window has passed holds nothing anyone can
+// join or be debounced by, so it is dropped: fallback keys for unknown codes would
+// otherwise accumulate for the isolate's life.
+{
+  const c = clock();
+  const r = refreshes(c);
+  const lastStartedAt = new Map<string, number>();
+  const co = makePoolRefreshCoalescer({ now: c.now, sleep: c.sleep, windowMs: 10_000, lastStartedAt });
+  void co.request("code:999", "999", r.run("code:999"));
+  await flush();
+  r.starts[0]!.finish();
+  await flush();
+  eq(co.trackedKeys(), 1, "a key just refreshed is still held, for its window");
+  await c.advance(10_001);
+  void co.request("pool-a", "112", r.run("pool-a"));
+  await flush();
+  eq(co.trackedKeys(), 1, "after its window, an idle key is evicted when the next request arrives");
+  assert(!lastStartedAt.has("code:999"), "and so is its start time");
+  assert(lastStartedAt.has("pool-a"), "while the key being refreshed is kept");
+  r.starts[1]!.finish();
+  // A key with a pending or running refresh is never evicted.
+  await c.advance(500);
+  void co.request("pool-a", "111", r.run("pool-a"));
+  await c.advance(10_000);
+  void co.request("pool-b", "211", r.run("pool-b"));
+  await flush();
+  assert(co.trackedKeys() >= 2, "a key with work in hand is kept");
+  r.starts.forEach((x) => x.finish());
+}
+
 finish();

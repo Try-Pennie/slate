@@ -64,6 +64,10 @@ export interface PoolRefreshCoalescer {
    *  Resolves when the refresh covering this request has finished, and rejects if
    *  it failed. */
   request(key: string, code: string, run: PoolRefresh): Promise<void>;
+  /** How many keys it holds state for, so a test can see idle ones are evicted. */
+  trackedKeys(): number;
+  /** Forget every key, for tests that must not inherit another case's state. */
+  reset(): void;
 }
 
 export function makePoolRefreshCoalescer(deps: {
@@ -90,8 +94,29 @@ export function makePoolRefreshCoalescer(deps: {
     return running;
   };
 
+  /**
+   * Drop every key with nothing in hand whose window has passed (#3293 review). Such
+   * a key can neither be joined nor debounce anyone, so keeping it only grows the
+   * maps, and the fallback keys for unknown codes would otherwise accumulate for the
+   * isolate's life. Its start time goes too: the push path's own debounce is two
+   * seconds, well inside the window, so an entry older than the window is one it
+   * would never act on.
+   */
+  const evictIdle = (keep: string) => {
+    const now = deps.now();
+    for (const [key, state] of pools) {
+      if (key === keep || state.pending !== null || state.inflight !== null) continue;
+      if (now - (deps.lastStartedAt.get(key) ?? -Infinity) < deps.windowMs) continue;
+      pools.delete(key);
+      deps.lastStartedAt.delete(key);
+    }
+  };
+
   return {
+    trackedKeys: () => pools.size,
+    reset: () => pools.clear(),
     request(key, code, run) {
+      evictIdle(key);
       let state = pools.get(key);
       if (!state) {
         state = { inflight: null, pending: null, pendingCodes: new Set() };
