@@ -1,3 +1,17 @@
+import {
+  startReroute,
+  confirmReroute,
+  releaseReroute,
+  currentReroute,
+  agentHeldFrom,
+  type RerouteDeps,
+  type RerouteOutcome,
+  type RerouteProposal,
+} from "@/lib/booking/reroute";
+import { placeRerouteHold, releaseRerouteHold } from "@/lib/booking/reroute-hold-store";
+import { rerouteHoldStoreDeps } from "@/lib/booking/reroute-hold-store-live";
+import type { ClaimRerouteHoldRefusal, RerouteSwapRefusal } from "@/lib/db/reroute-hold-refusals";
+import { loadCurrentAgentPicture } from "@/lib/availability/service";
 import { reportWriteFailure } from "@/lib/db/result";
 import { nanoid } from "nanoid";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -174,6 +188,7 @@ import type {
   BookingReservation,
   Bucket,
   EventType,
+  RoutingTrace,
   User,
 } from "@/lib/db/types";
 import { processBookingOutbox, everyLeasedRowStoodDown, runOutboxSteps } from "@/lib/booking/outbox";
@@ -1351,7 +1366,18 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
       gcalEventId,
       gcalClientId,
       routingTrace,
+      reroute,
     }) => {
+      // #3249: a reroute move takes the bucket aware form (migration 0166), which
+      // consumes the claimed hold in the same transaction. Its seven extra
+      // arguments are ALL OR NONE (the overloads are told apart by name), and its
+      // refusal word comes back rather than raising.
+      if (reroute) return rerouteSwap({
+        bookingId, userId, agentName, agentEmail, gcalEventId, gcalClientId,
+        routingTrace, bucketId: reroute.bucketId, requestedBucketId: reroute.requestedBucketId,
+        requestedTier: reroute.requestedTier, bookedTier: reroute.bookedTier,
+        rungsDropped: reroute.rungsDropped, holdId: reroute.holdId,
+      });
       // Atomic swap-and-return-previous (#449). Unlike the best-effort cache
       // writes, this IS the durable anchor of the reassign, so a failure must
       // surface (the caller cleans up the event it created and reports failure).
@@ -1371,6 +1397,11 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
         p_gcal_client_id: gcalClientId,
       });
       if (error) {
+        // #3249: the target is held for another booking's bucket correction. Its own
+        // error, so the admin reassign says so and when it ends (the coverage sweep
+        // retries it on its next tick, as it does any failed move).
+        const held = agentHeldFrom(error);
+        if (held) throw held;
         throw new Error(`reassign_booking_swap failed for booking ${bookingId}: ${error.message}`);
       }
       const row = ((data ?? []) as {
@@ -2858,6 +2889,194 @@ export function adminReassignBooking(
     initiator: "admin",
     allowNonBookable: true,
   });
+}
+
+/**
+ * The bucket aware reassign_booking_swap (#3247, migration 0166), used for a reroute
+ * MOVE (a claimed hold) and a KEEP (no hold, the current agent). Throws on a failed
+ * call; a refusal comes back as its word, and the caller names it (L11).
+ */
+async function rerouteSwap(args: {
+  bookingId: string;
+  userId: string;
+  agentName: string | null;
+  agentEmail: string;
+  gcalEventId: string;
+  gcalClientId: string | null;
+  routingTrace: RoutingTrace | null;
+  bucketId: string;
+  requestedBucketId: string;
+  requestedTier: string | null;
+  bookedTier: string | null;
+  rungsDropped: number;
+  holdId: string | null;
+}): Promise<{ prevGcalEventId: string | null; prevAgentEmail: string | null; updated: boolean; refused: RerouteSwapRefusal | null }> {
+  const { data, error } = await supabaseAdmin().rpc("reassign_booking_swap", {
+    p_booking_id: args.bookingId,
+    p_user_id: args.userId,
+    p_agent_name: args.agentName,
+    p_agent_email: args.agentEmail,
+    p_gcal_event_id: args.gcalEventId,
+    p_routing_trace: args.routingTrace,
+    p_gcal_client_id: args.gcalClientId,
+    p_bucket_id: args.bucketId,
+    p_requested_bucket_id: args.requestedBucketId,
+    p_requested_tier: args.requestedTier,
+    p_booked_tier: args.bookedTier,
+    p_rungs_dropped: args.rungsDropped,
+    p_hold_id: args.holdId,
+    p_result: null,
+  });
+  if (error) {
+    const held = agentHeldFrom(error);
+    if (held) throw held;
+    throw new Error(`reassign_booking_swap (reroute) failed for booking ${args.bookingId}: ${error.message}`);
+  }
+  const row = ((data ?? []) as {
+    prev_gcal_event_id: string | null;
+    prev_agent_email: string | null;
+    updated: boolean;
+    refused?: RerouteSwapRefusal | null;
+  }[])[0];
+  if (!row) throw new Error(`reassign_booking_swap (reroute) returned no row for booking ${args.bookingId}`);
+  return {
+    prevGcalEventId: row.prev_gcal_event_id ?? null,
+    prevAgentEmail: row.prev_agent_email ?? null,
+    updated: row.updated,
+    refused: row.refused ?? null,
+  };
+}
+
+/**
+ * The live deps behind `reroute.ts` (#3249). The search is phase 2's
+ * `findRerouteTarget` over the booking path's own reads; the move is the existing
+ * admin reassign with the reroute carried into its swap, so there is one reassign
+ * path, not two.
+ */
+function realRerouteDeps(actor: BookingActor): RerouteDeps {
+  const base = realDeps(deferWebhookSend);
+  const holds = rerouteHoldStoreDeps("reroute");
+  return {
+    loadBookingById: base.loadBookingById,
+    resolveBucketByCode: base.resolveBucketByCode,
+    findTarget: (booking, requested, excludeUserIds) =>
+      orchestration.findRerouteTarget(
+        {
+          resolveBucketByCode: base.resolveBucketByCode,
+          roundRobinCandidates: base.roundRobinCandidates,
+          loadEmails: base.loadEmails,
+          verifyFree: base.verifyFree,
+          loadCurrentAgentPicture,
+          now: () => Date.now(),
+        },
+        booking,
+        requested,
+        { excludeUserIds },
+      ),
+    placeHold: (args) => placeRerouteHold(args, holds),
+    releaseHold: (bookingId) => releaseRerouteHold(bookingId, holds),
+    claimHold: async (orgId, bookingId, holdId) => {
+      const rows = unwrap(
+        await supabaseAdmin().rpc("claim_reroute_hold", { p_org_id: orgId, p_booking_id: bookingId, p_hold_id: holdId }),
+        "claim_reroute_hold",
+      ) as {
+        agent_user_id: string | null;
+        target_bucket_id: string | null;
+        refused: ClaimRerouteHoldRefusal | null;
+        result: Record<string, unknown> | null;
+      }[];
+      const row = rows?.[0];
+      if (!row) throw new Error(`claim_reroute_hold returned no row for booking ${bookingId}`);
+      return { refused: row.refused, result: row.result, agentUserId: row.agent_user_id, targetBucketId: row.target_bucket_id };
+    },
+    verifyFree: base.verifyFree,
+    agentById: async (id) =>
+      unwrap(await supabaseAdmin().from("users").select("id, name, email").eq("id", id).maybeSingle(), "reroute advisor") as
+        | { id: string; name: string | null; email: string | null }
+        | null,
+    bucketById: async (id) =>
+      unwrap(await supabaseAdmin().from("buckets").select("*").eq("id", id).maybeSingle(), "reroute bucket") as Bucket | null,
+    reassign: async (bookingId, agentEmail, reason, reroute) => {
+      try {
+        await orchestration.reassignBooking(bookingId, agentEmail, reason, base, {
+          actor,
+          initiator: "admin",
+          allowNonBookable: true,
+          reroute,
+        });
+        return "moved";
+      } catch (err) {
+        // Thrown before any calendar event exists, so nothing is left to clean up.
+        if (err instanceof orchestration.DailyCapExceededError) return "over_cap";
+        throw err;
+      }
+    },
+    onReleaseFailed: (bookingId, err) => {
+      log.error("reroute", { msg: "could not release a reroute hold after a failed confirm; it stays until its lease ends", booking_id: bookingId }, err);
+    },
+    keepSwap: async (args) => {
+      const out = await rerouteSwap({ ...args, gcalClientId: null, routingTrace: null });
+      return { refused: out.refused, updated: out.updated };
+    },
+    insertBookingEvent: async (row) => {
+      await base.insertBookingEvent(row);
+    },
+    readLiveHold: async (bookingId) => {
+      const row = unwrap(
+        await supabaseAdmin()
+          // cap-safe: booking_id is unique on reroute_holds, so at most one row.
+          .from("reroute_holds")
+          .select("id, agent_user_id, target_bucket_id, requested_bucket_id, rungs_dropped, expires_at")
+          .eq("booking_id", bookingId)
+          .is("consumed_at", null)
+          .gt("expires_at", new Date().toISOString())
+          .maybeSingle(),
+        "reroute live hold",
+      ) as {
+        id: string;
+        agent_user_id: string;
+        target_bucket_id: string;
+        requested_bucket_id: string;
+        rungs_dropped: number;
+        expires_at: string;
+      } | null;
+      return row
+        ? {
+            holdId: row.id,
+            agentUserId: row.agent_user_id,
+            targetBucketId: row.target_bucket_id,
+            requestedBucketId: row.requested_bucket_id,
+            rungsDropped: row.rungs_dropped,
+            expiresAt: row.expires_at,
+          }
+        : null;
+    },
+    now: () => Date.now(),
+  };
+}
+
+/** Find who should take a booking in a corrected bucket, holding them when new (#3249). */
+export function adminStartReroute(bookingId: string, bucketCode: string, actor: BookingActor): Promise<RerouteProposal> {
+  return startReroute(realRerouteDeps(actor), { bookingId, bucketCode, actor });
+}
+
+/** Confirm a reroute: a move with its hold, or a keep into `bucketCode` (#3249). */
+export function adminConfirmReroute(
+  bookingId: string,
+  input: { holdId: string | null; bucketCode: string | null; requestedBucketCode: string | null; rungsDropped: number; note: string | null },
+  actor: BookingActor,
+): Promise<RerouteOutcome> {
+  return confirmReroute(realRerouteDeps(actor), { bookingId, ...input, actor });
+}
+
+/** Let a booking's held advisor go (Cancel, or the admin walking away). */
+export function adminReleaseReroute(bookingId: string, actor: BookingActor): Promise<{ released: boolean }> {
+  return releaseReroute(realRerouteDeps(actor), bookingId);
+}
+
+/** The booking's live hold, so a reload restores the confirm panel and its countdown. */
+export function adminCurrentReroute(bookingId: string, actor: BookingActor): Promise<RerouteProposal | null> {
+  return currentReroute(realRerouteDeps(actor), bookingId);
 }
 
 /**

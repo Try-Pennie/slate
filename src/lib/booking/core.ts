@@ -254,6 +254,9 @@ export interface BookingEventDraft {
    *  oscillation back to a used time gets its own row + webhook. Only set for
    *  'rescheduled' events; null/omitted for cancel/reassign. */
   rescheduleSeq?: number | null;
+  /** The bucket a reroute moved the booking from and to (#3249); null otherwise. */
+  fromBucketId?: string | null;
+  toBucketId?: string | null;
   nowMs: number;
 }
 
@@ -272,6 +275,9 @@ export type BookingEventInsert = {
   acting_as_user_id: string | null;
   lead_time_minutes: number | null;
   reschedule_seq: number | null;
+  /** A reroute's bucket before and after (#3249, migration 0166); null otherwise. */
+  from_bucket_id: string | null;
+  to_bucket_id: string | null;
 };
 
 /**
@@ -301,6 +307,8 @@ export function bookingEventFrom(d: BookingEventDraft): BookingEventInsert {
     acting_as_user_id: d.actingAsUserId ?? null,
     lead_time_minutes,
     reschedule_seq: d.rescheduleSeq ?? null,
+    from_bucket_id: d.fromBucketId ?? null,
+    to_bucket_id: d.toBucketId ?? null,
   };
 }
 

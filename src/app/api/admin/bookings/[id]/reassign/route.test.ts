@@ -65,6 +65,7 @@ vi.mock("@/lib/auth", () => auth);
 vi.mock("@/lib/booking/service", () => service);
 
 import { POST } from "./route";
+import { AgentHeldError } from "@/lib/booking/reroute";
 import { NotAuthorizedError } from "@/lib/auth/http";
 
 /** Same-origin headers, which is what Slate's own UI sends. The route refuses a
@@ -127,6 +128,23 @@ describe("POST /admin/bookings/[id]/reassign", () => {
     const body = await res.json();
     expect(body.code).toBe("DAILY_CAP_EXCEEDED");
     expect(body.agentEmail).toBe("b@x.com");
+  });
+
+  // #3249: a hold ends by itself, so it is TRANSIENT in this file's classification: a
+  // 503 with Retry-After, which the machine reassign caller sharing this mapper
+  // retries, never the 409 that tells it to stop.
+  it("maps a held advisor to a retriable 503 HELD naming when the hold ends", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-05T19:01:30Z"));
+    service.adminReassignBooking.mockRejectedValueOnce(new AgentHeldError("2026-10-05T19:04:00Z"));
+    const res = await POST(req({ agentEmail: "b@x.com", reason: "owner_reassignment" }), params);
+    vi.useRealTimers();
+    expect(res.status).toBe(503);
+    expect(res.headers.get("Retry-After")).toBe("150");
+    const body = await res.json();
+    expect(body.code).toBe("HELD");
+    expect(body.error).toBe("This advisor is held for a bucket correction until 3:04pm ET.");
+    expect(body.heldUntil).toBe("2026-10-05T19:04:00Z");
   });
 
   // #2660: the refusal is a genuine conflict (retrying changes nothing), so it is

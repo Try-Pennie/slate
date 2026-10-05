@@ -193,6 +193,8 @@ export interface FakeOpts {
   pending?: PendingEventDeletion[]; // loadPendingEventDeletions result (#401)
   reassignSwapTerminal?: boolean; // reassign_booking_swap returns updated=false (#449)
   reassignSwapThrows?: boolean; // reassign_booking_swap rejects (rpc/network error) (#449)
+  /** #3249: the bucket aware swap refuses a reroute with this word. */
+  reassignSwapRefused?: string;
   // Per-agent calendar busy intervals the single-agent free check sees (#523):
   // models a reschedule overlapping the booking's OWN still-present event.
   busyByEmail?: Map<string, { start: string; end: string }[]>;
@@ -369,6 +371,8 @@ export function makeDeps(opts: FakeOpts) {
       gcalEventId: string;
       gcalClientId: string;
       prevGcal: string | null;
+      /** #3249: the reroute a bucket aware swap carried, if any. */
+      reroute?: unknown;
     }[],
     webhooks: [] as {
       event: string;
@@ -827,8 +831,12 @@ export function makeDeps(opts: FakeOpts) {
       gcalEventId,
       gcalClientId,
       routingTrace,
+      reroute,
     }) => {
       if (opts.reassignSwapThrows) throw new Error("rpc down");
+      if (reroute && opts.reassignSwapRefused) {
+        return { prevGcalEventId: null, prevAgentEmail: null, updated: false, refused: opts.reassignSwapRefused as never };
+      }
       const ctx = [opts.bookingById, opts.existing].find((c) => c?.booking?.id === bookingId);
       const prev = ctx?.booking;
       // Model a concurrent cancellation between load and swap, or a terminal row.
@@ -837,7 +845,7 @@ export function makeDeps(opts: FakeOpts) {
       }
       const prevGcal = prev.gcal_event_id ?? null;
       const prevEmail = prev.agent_email ?? null;
-      calls.reassignSwaps.push({ bookingId, userId, gcalEventId, gcalClientId, prevGcal });
+      calls.reassignSwaps.push({ bookingId, userId, gcalEventId, gcalClientId, prevGcal, ...(reroute ? { reroute } : {}) });
       // #759: the RPC stamps the intent in the SAME transaction as the booking update,
       // so the fake records it here rather than in a separate dep the caller invokes
       // afterwards. A crash cannot land between the two.
