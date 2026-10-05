@@ -523,3 +523,83 @@ export function makeConfirmQueue<T>(
     },
   };
 }
+
+/**
+ * Which line a confirm joins, in two parts (#3325): the GROUP whose confirms can
+ * settle each other (one fallback ladder, one code, or one named advisor's link) and
+ * the INSTANT within it. A line shared across isolates is one object per group with a
+ * line per instant inside it, because a new object costs about 170ms to create and an
+ * existing one about 13ms to call (measured, #3325), and an object per instant would
+ * create one on almost every booking.
+ */
+export interface LineKey {
+  /** `ladder:<fingerprint>`, `code:<code>` or `link:<userId>`. */
+  group: string;
+  /** The instant's epoch milliseconds, as a string. */
+  instant: string;
+}
+
+/** The one string a per isolate line keys a `LineKey` by. */
+export function isolateKeyOf(key: LineKey): string {
+  return `${key.group}|${key.instant}`;
+}
+
+/** `LineSeat`, answered over the network (#3325). Same rules, every step awaited. */
+export interface SharedSeat {
+  claimedByOthers(): Promise<ReadonlySet<string>>;
+  claim(userId: string, othersRemain: boolean): Promise<void>;
+  claimFirst(candidates: readonly string[]): Promise<{ pool: string[]; unclaimed: number }>;
+  claimBeside(userId: string, besides: readonly string[]): Promise<void>;
+  pass(): Promise<void>;
+}
+
+/** `QueueTurn` as the confirm path holds it (#3325). */
+export type LineTurn<T> =
+  | { kind: "lead"; seat: SharedSeat; waiting(): Promise<number>; done(verdict: LeaderVerdict<T>): Promise<void> }
+  | { kind: "refused"; refusal: "race" | "taken"; settled: T | null }
+  | { kind: "unqueued" };
+
+/**
+ * The line as the confirm path uses it (#3325), whether it lives in this isolate or
+ * in a shared object. The confirm path awaits every call, so a line answered over the
+ * network and one answered from memory are interchangeable behind it.
+ */
+export interface ConfirmLine<T> {
+  enter(key: LineKey, waitMs?: number): Promise<LineTurn<T>>;
+  /** As `ConfirmQueue.lookahead`; the give back is awaited too. */
+  lookahead(key: LineKey): Promise<(() => Promise<void>) | null>;
+}
+
+/** A lead turn from the in memory rules, as the confirm path holds it. */
+export function asLineTurn<T>(turn: QueueTurn<T>): LineTurn<T> {
+  if (turn.kind !== "lead") return turn;
+  const seat = turn.seat;
+  return {
+    kind: "lead",
+    waiting: async () => turn.waiting(),
+    done: async (verdict) => turn.done(verdict),
+    seat: {
+      claimedByOthers: async () => seat.claimedByOthers(),
+      claim: async (userId, othersRemain) => seat.claim(userId, othersRemain),
+      claimFirst: async (candidates) => seat.claimFirst(candidates),
+      claimBeside: async (userId, besides) => seat.claimBeside(userId, besides),
+      pass: async () => seat.pass(),
+    },
+  };
+}
+
+/**
+ * The per isolate line behind the async interface (#3325). It translates and
+ * decides nothing: every rule stays in `makeConfirmQueue`.
+ */
+export function isolateLine<T>(host: ConfirmQueue<T>): ConfirmLine<T> {
+  return {
+    async enter(key, waitMs) {
+      return asLineTurn(await host.enter(isolateKeyOf(key), waitMs));
+    },
+    async lookahead(key) {
+      const giveBack = host.lookahead(isolateKeyOf(key));
+      return giveBack ? async () => giveBack() : null;
+    },
+  };
+}

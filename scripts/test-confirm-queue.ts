@@ -10,6 +10,7 @@
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-confirm-queue.ts
 import {
   makeConfirmQueue,
+  isolateLine,
   confirmLineWaitMs,
   CONFIRM_QUEUE_WAIT_MS,
   CONFIRM_QUEUE_RESERVE_MS,
@@ -649,6 +650,42 @@ async function main() {
     leases.fireAll();
     assert(q.lookahead("slot") !== null, "lookahead lease: a place nobody gave back is reclaimed after its lease");
     first.turn.done({ full: false });
+  }
+
+  // --- #3325: the booking path talks to any line through one async interface ----
+  //
+  // A line hosted in a shared object answers over the network, so the confirm path
+  // awaits every step. The per isolate line is wrapped in the same interface rather
+  // than given a second set of call sites, and it keeps its own rules exactly: the
+  // adapter only translates, it decides nothing.
+  {
+    const { timer } = manualTimer();
+    const line = isolateLine(makeConfirmQueue<string>({ timer }));
+    const key = { group: "code:521", instant: "1791230400000" };
+    const first = await line.enter(key);
+    assert(first.kind === "lead", "adapter: the first confirm leads");
+    if (first.kind !== "lead") throw new Error("adapter: unexpected");
+    const picked = await first.seat.claimFirst(["p0", "p1"]);
+    assert(JSON.stringify(picked) === JSON.stringify({ pool: ["p0", "p1"], unclaimed: 2 }), "adapter: claimFirst answers through a promise");
+    const second = await line.enter(key);
+    assert(second.kind === "lead", "adapter: the line was handed on, so the next leads");
+    if (second.kind !== "lead") throw new Error("adapter: unexpected");
+    assert((await second.seat.claimedByOthers()).has("p0"), "adapter: the second leader sees the first one's claim");
+    await second.seat.claimBeside("p1", ["p1"]);
+    const waiting = line.enter(key);
+    await tick();
+    assert((await second.waiting()) === 1, "adapter: waiting counts the confirm behind the last advisor");
+    await first.done({ full: false });
+    await second.done({ full: true, refusal: "race", settled: "second" });
+    const refused = await waiting;
+    assert(refused.kind === "refused" && refused.settled === "second", "adapter: a full verdict refuses the waiting through the adapter");
+    const other = await line.enter({ group: "code:521", instant: "1791231000000" });
+    assert(other.kind === "lead", "adapter: another instant of the same group is its own line");
+    const look = await line.lookahead({ group: "code:521", instant: "1791231000000" });
+    assert(typeof look === "function", "adapter: a busy line offers a lookahead place");
+    if (look) await look();
+    if (other.kind === "lead") await other.done({ full: false });
+    assert((await line.lookahead(key)) === null, "adapter: an idle line offers none");
   }
 
   finish();
