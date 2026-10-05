@@ -134,6 +134,15 @@ export interface Database {
             referencedRelation: "buckets";
             referencedColumns: ["id"];
           },
+          {
+            // #3304: the reconcile missing sweep embeds the assigned agent to skip
+            // a booking whose agent has left the pool (migration 0004 names it).
+            foreignKeyName: "bookings_assigned_user_id_fkey";
+            columns: ["assigned_user_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
         ]
       >;
       booking_events: Table<BookingEvent>;

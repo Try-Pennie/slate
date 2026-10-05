@@ -51,6 +51,8 @@ vi.mock("@/lib/supabase/admin", () => ({
         in: () => b,
         is: () => b,
         not: () => b,
+        // #3304: the missing-block scan narrows to agents still in the pool.
+        or: () => b,
         order: () => b,
         range: () => b,
         limit: () => b,

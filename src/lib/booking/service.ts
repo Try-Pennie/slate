@@ -24,6 +24,7 @@ import {
   releaseReservationLeaseRow,
 } from "@/lib/booking/outbox-lease";
 import { unwrap, isSlotClash, type DbResult } from "@/lib/db/result";
+import { whereStillInPool } from "@/lib/bookable/left-pool";
 import { gatedWriteApplied, gatedWriteRows } from "@/lib/booking/gated-write";
 import { appUrl } from "@/lib/env";
 import {
@@ -522,22 +523,6 @@ export async function insertBusyBlocksWithRetry(blocks: BusyBlockInsert[]): Prom
 }
 
 /**
- * The rows the reconcile-missing sweep (#431) scans: active bookings whose slot is
- * still in the future and that have an assigned agent (a null-agent booking can't
- * own a per-user busy_block).
- *
- * Ordered created_at DESC because a missed write-through INSERT happens at create
- * time, so the freshest bookings are the likeliest to be missing a block - scan
- * those first within the `limit` cap. `offset` rotates the window across ticks
- * (#512) so an older upcoming booking beyond the first page is still eventually
- * healed, not starved forever.
- *
- * But newest-first ran straight into the create path's own block write (#778), so
- * bookings younger than the grace window are held back here rather than fetched and
- * then skipped: excluding them in SQL is what keeps them from eating the sweep's
- * per-tick row budget. See RECONCILE_MISSING_GRACE_MS.
- */
-/**
  * An agent's OTHER active bookings in a window (#536), as epoch ms, excluding the
  * booking being moved. The in-place reschedule and reassign guards count these
  * against the event type's daily cap.
@@ -741,6 +726,37 @@ function withWorld(row: Booking): orchestration.BookingWithWorld {
   return { ...(booking as Booking), isTest: buckets?.is_test === true };
 }
 
+/**
+ * The rows the reconcile-missing sweep (#431) scans: active bookings whose slot is
+ * still in the future and that have an assigned agent (a null-agent booking can't
+ * own a per-user busy_block).
+ *
+ * Ordered created_at DESC because a missed write-through INSERT happens at create
+ * time, so the freshest bookings are the likeliest to be missing a block, and are
+ * scanned first within the `limit` cap. `offset` rotates the window across ticks
+ * (#512) so an older upcoming booking beyond the first page is still eventually
+ * healed, not starved forever.
+ *
+ * But newest-first ran straight into the create path's own block write (#778), so
+ * bookings younger than the grace window are held back here rather than fetched and
+ * then skipped: excluding them in SQL is what keeps them from eating the sweep's
+ * per-tick row budget. See RECONCILE_MISSING_GRACE_MS.
+ *
+ * #3304: bookings whose agent has LEFT the pool are held back the same way, in SQL
+ * and for the same reason. Leaving deletes the agent's busy_blocks, write throughs
+ * included, and the pool exit backstop deletes them again every self heal tick, so
+ * a block this sweep re-created for them was gone again within the same tick, and
+ * all the sweep did was page about a missed write that never happened. They are
+ * judged by `hasLeftPool`, the backstop's own rule, through its SQL form.
+ *
+ * That includes an agent who is merely not bookable, not only a departed one, and
+ * one read does use such an agent's blocks: an advisor link booking's move times
+ * (#2827, `bookingRescheduleTimes`) are computed from its own advisor's busy_blocks
+ * whatever their pool state. It is still no reason to rebuild them here, because
+ * the backstop deletes every block written for anybody `hasLeftPool` names on this
+ * same tick, so the sweep could never keep one standing for that read; the move
+ * itself re-checks the advisor's live calendar before it lands.
+ */
 export async function loadActiveUpcomingBookings(
   limit: number,
   offset = 0,
@@ -755,13 +771,21 @@ export async function loadActiveUpcomingBookings(
   // hands the lane its "could not tell" marker instead, which pages nobody and
   // all-clears nobody.
   const data = unwrap(
-    await supabaseAdmin()
-      .from("bookings")
-      .select("id, assigned_user_id, starts_at, ends_at")
-      .in("status", ["confirmed", "rescheduled"])
-      .gte("ends_at", new Date().toISOString())
-      .not("assigned_user_id", "is", null)
-      .lt("created_at", settledBefore)
+    await whereStillInPool(
+      supabaseAdmin()
+        .from("bookings")
+        // `!inner` is load bearing: it is what makes the user filters drop a
+        // BOOKING. On a plain embed they would only empty the embedded user and
+        // every booking would still come back. The constraint is named because
+        // other tables (busy_blocks, reroute_holds, owner_alert_events) also link
+        // bookings to users, and an embed PostgREST finds ambiguous is refused.
+        .select("id, assigned_user_id, starts_at, ends_at, users!bookings_assigned_user_id_fkey!inner(id)")
+        .in("status", ["confirmed", "rescheduled"])
+        .gte("ends_at", new Date().toISOString())
+        .not("assigned_user_id", "is", null)
+        .lt("created_at", settledBefore),
+      "users",
+    )
       .order("created_at", { ascending: false })
       // `id` breaks created_at ties into a total order, so range paging (#512)
       // can't skip or double-scan a row at a page boundary.
