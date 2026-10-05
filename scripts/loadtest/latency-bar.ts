@@ -215,17 +215,36 @@ export function latencyReportLine(j: LatencyJudgement): string {
 }
 
 /**
- * The report's verdict line (#3258). When the speed verdict is void it is said IN
- * the verdict line, beside the verdict every other bar reached, so a pass with the
- * speed unmeasured can never be read as a pass that measured it (L98).
+ * The report's verdict line (#3258). Every unmeasured cause is NAMED in the line,
+ * beside the verdict, and a pass is claimed only for bars that were actually judged
+ * (L11, L98): when the platform reading was unmeasured too, its bars were never
+ * judged, so "every other bar passed" would be false.
  */
-export function verdictText(verdict: string, speedUnmeasured: string | null): string {
-  const head = `Verdict: **${verdict.toUpperCase()}**`;
-  if (speedUnmeasured === null) return `${head}.`;
-  // #3294 review: an otherwise clean run with no speed verdict is UNMEASURED, and
-  // the line says what passed and what was not judged; a failed run says the speed
-  // was not measured either.
-  return verdict === "unmeasured"
-    ? `${head}: every other bar passed, and speed was UNMEASURED because ${speedUnmeasured}.`
-    : `${head}; speed was also UNMEASURED because ${speedUnmeasured}.`;
+export function verdictText(r: {
+  verdict: string;
+  speedUnmeasured: string | null;
+  platformUnmeasured: string | null;
+}): string {
+  const head = `Verdict: **${r.verdict.toUpperCase()}**`;
+  const causes = [
+    ...(r.speedUnmeasured !== null ? [`speed was UNMEASURED because ${r.speedUnmeasured}`] : []),
+    ...(r.platformUnmeasured !== null ? [`platform limits were UNMEASURED because ${r.platformUnmeasured}`] : []),
+  ];
+  if (causes.length === 0) return `${head}.`;
+  if (r.verdict === "fail") return `${head}; also, ${causes.join("; and ")}.`;
+  // Unmeasured with nothing failed: claim a pass only for what was judged.
+  const judged = r.platformUnmeasured === null ? "every other bar passed" : "the bars that were judged passed";
+  return `${head}: ${judged}, and ${causes.join("; and ")}.`;
+}
+
+/**
+ * Whether the judge was told the run carried a same day baseline (#3294 review).
+ * The workflow sets "1"; unset or empty is a hand run. Anything else ("true", "yes",
+ * "0") is refused by name rather than quietly read as "no baseline expected", which
+ * would put a run configured with a baseline back on the fixed bar.
+ */
+export function expectBaselineFrom(raw: string | undefined): { ok: true; expected: boolean } | { ok: false; why: string } {
+  if (raw === undefined || raw === "") return { ok: true, expected: false };
+  if (raw === "1") return { ok: true, expected: true };
+  return { ok: false, why: `EXPECT_BASELINE is ${JSON.stringify(raw)}, and only "1" or unset is understood` };
 }

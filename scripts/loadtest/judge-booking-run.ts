@@ -766,6 +766,8 @@ export interface JudgeResult {
    * 2026-10-05).
    */
   speedUnmeasured: string | null;
+  /** #3294 review: why the platform reading was unmeasured, or null when it was read. */
+  platformUnmeasured: string | null;
 }
 
 /**
@@ -800,6 +802,7 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
       measurements: null,
       incomplete,
       speedUnmeasured: null,
+      platformUnmeasured: null,
     };
   }
 
@@ -1268,6 +1271,7 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
     findings,
     measurements: m,
     speedUnmeasured: speedVoid,
+    platformUnmeasured: null,
     incomplete: [],
   };
 }
@@ -1297,6 +1301,7 @@ function unmeasured(m: RunMeasurements, why: string, findings: Finding[]): Judge
     findings: [...findings, { bar: "platform limits", detail: why }],
     measurements: m,
     speedUnmeasured: speedUnmeasuredOf(m),
+    platformUnmeasured: why,
     incomplete: [],
   };
 }

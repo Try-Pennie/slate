@@ -31,6 +31,7 @@ import {
   latencyReportLine,
   baselineReading,
   verdictText,
+  expectBaselineFrom,
 } from "./loadtest/latency-bar.ts";
 import { REQUEST_CPU_P99_MS, REQUEST_STARTUP_P95_MS } from "./loadtest/judge-booking-run.ts";
 import {
@@ -1680,15 +1681,46 @@ function slowRun(made = 100): JudgeInput {
   eq(failsElsewhere.exit, JUDGE_EXIT.fail, "a real failure outranks the void speed verdict");
   assert(JUDGE_EXIT.unmeasured !== 0, "the unmeasured exit is never the pass exit");
   eq(fairDay.speedUnmeasured, null, "a measured run carries no unmeasured note");
-  eq(verdictText("pass", null), "Verdict: **PASS**.", "a measured run's verdict line is unchanged");
-  const voided = verdictText("unmeasured", "no baseline file arrived");
+  const vline = (verdict: string, speed: string | null, platform: string | null = null) =>
+    verdictText({ verdict, speedUnmeasured: speed, platformUnmeasured: platform });
+  eq(vline("pass", null), "Verdict: **PASS**.", "a measured run's verdict line is unchanged");
+  const voided = vline("unmeasured", "no baseline file arrived");
   assert(
     voided.startsWith("Verdict: **UNMEASURED**") && voided.includes("every other bar passed") && voided.includes("no baseline file arrived"),
     `a void speed verdict on an otherwise clean run says so in the verdict line: ${voided}`,
   );
   assert(!/PASS/.test(voided), "and never says pass");
-  const failedToo = verdictText("fail", "no baseline file arrived");
-  assert(failedToo.startsWith("Verdict: **FAIL**") && failedToo.includes("speed was also UNMEASURED"), `a failed run says the speed was not measured either: ${failedToo}`);
+  const failedToo = vline("fail", "no baseline file arrived");
+  assert(failedToo.startsWith("Verdict: **FAIL**") && failedToo.includes("no baseline file arrived"), `a failed run says the speed was not measured either: ${failedToo}`);
+
+  // #3294 review, L11: with the platform ALSO unmeasured, its bars were never judged,
+  // so the line names each unmeasured cause and claims a pass only for what was judged.
+  const both = vline("unmeasured", "no baseline file arrived", "the analytics API reported no invocation outcomes");
+  assert(!both.includes("every other bar passed"), `never claims every other bar passed when the platform was not judged: ${both}`);
+  assert(both.includes("no baseline file arrived") && both.includes("no invocation outcomes"), `names both causes: ${both}`);
+  assert(both.includes("the bars that were judged passed"), `and claims a pass only for the bars judged: ${both}`);
+  const platformOnly = vline("unmeasured", null, "the analytics API reported no invocation outcomes");
+  assert(platformOnly.includes("platform limits") && platformOnly.includes("the bars that were judged passed"), `the platform alone is named: ${platformOnly}`);
+
+  // Through the judge: a missing baseline and an empty platform histogram together.
+  const doubleBlind = broken((i) => {
+    i.expectedLegs = { ...i.expectedLegs, baseline: true };
+    i.baseline = { kind: "absent" };
+    i.platform = { ...i.platform, statuses: {} };
+  });
+  eq(doubleBlind.verdict, "unmeasured", "a run blind on speed and the platform is unmeasured");
+  assert(doubleBlind.platformUnmeasured !== null, "and records that the platform was unmeasured");
+  const text = verdictText(doubleBlind);
+  assert(!text.includes("every other bar passed") && text.includes("no baseline file"), `its verdict line names both and claims no blanket pass: ${text}`);
+
+  // #3294 review: EXPECT_BASELINE is "1" or unset, and anything else is refused by name.
+  eq(expectBaselineFrom(undefined), { ok: true, expected: false }, "unset is a hand run");
+  eq(expectBaselineFrom(""), { ok: true, expected: false }, "empty is a hand run");
+  eq(expectBaselineFrom("1"), { ok: true, expected: true }, "1 expects a baseline");
+  for (const bad of ["true", "yes", "0", " 1x"]) {
+    const r = expectBaselineFrom(bad);
+    assert(!r.ok && r.why.includes(JSON.stringify(bad)), `${JSON.stringify(bad)} is refused, naming it`);
+  }
 
   // #3294 review: a malformed baseline is unreadable, never a crash, and never cast blind.
   const shape = (parsed: unknown) => baselineReading([{ name: "baseline.json", parsed }]);

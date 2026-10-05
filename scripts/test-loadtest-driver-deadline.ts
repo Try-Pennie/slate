@@ -413,7 +413,9 @@ function baselineWiringProblems(yml: string, runJudge: string): string[] {
   if (!/needs: \[[^\]]*\bbaseline\b/.test(judge)) out.push("the judge does not wait for the baseline");
   if (!/EXPECT_BASELINE: "1"/.test(judge)) out.push("the judge is not told the run carried a baseline");
   if (!/baselineReading\(resultEntries\.files, resultEntries\.listingError\)/.test(runJudge)) out.push("the judge entry does not read the baseline through baselineReading");
-  if (!/baseline: process\.env\.EXPECT_BASELINE === "1"/.test(runJudge)) out.push("the judge entry does not pass the expectation through");
+  if (!/expectBaselineFrom\(process\.env\.EXPECT_BASELINE\)/.test(runJudge) || !/baseline: expectBaseline,/.test(runJudge)) {
+    out.push("the judge entry does not pass the expectation through");
+  }
   return out;
 }
 
@@ -434,7 +436,7 @@ function baselineWiringProblems(yml: string, runJudge: string): string[] {
     ["the judge is not told the run carried a baseline"],
     "control: a judge job without EXPECT_BASELINE is caught, and only that",
   );
-  const noPass = runJudge.replace(/baseline: process\.env\.EXPECT_BASELINE === "1"/, "baseline: false");
+  const noPass = runJudge.replace(/baseline: expectBaseline,/, "baseline: false,");
   eq(
     baselineWiringProblems(yml, noPass),
     ["the judge entry does not pass the expectation through"],

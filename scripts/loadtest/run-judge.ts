@@ -28,7 +28,7 @@ import {
 } from "./confirm-startup.ts";
 import { DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES } from "../../src/lib/rate-limit-core.ts";
 import { burstControlStrength, type BurstDepthReading } from "./burst-target.ts";
-import { baselineReading, latencyReportLine, verdictText } from "./latency-bar.ts";
+import { baselineReading, expectBaselineFrom, latencyReportLine, verdictText } from "./latency-bar.ts";
 import { recomputeArmLine } from "../../src/lib/booking/post-confirm-recompute-modes.ts";
 import { REQUEST_CPU_P99_MS, cronCpuShareText, faultPassKeepsFiveXxBar } from "./judge-booking-run.ts";
 import {
@@ -360,6 +360,14 @@ function resultFileEntries(): {
     }),
   };
 }
+// #3294 review: "1" or unset, and anything else is refused by name.
+// env-ok: EXPECT_BASELINE (optional; "1" when the workflow ran the same day baseline)
+const expectBaselineRead = expectBaselineFrom(process.env.EXPECT_BASELINE);
+if (!expectBaselineRead.ok) {
+  console.error(`FAILED: ${expectBaselineRead.why}.`);
+  process.exit(1);
+}
+const expectBaseline = expectBaselineRead.expected;
 const resultEntries = resultFileEntries();
 const baseline = baselineReading(resultEntries.files, resultEntries.listingError);
 // What the run itself sent on the steady pass. It is the CONTROL the analytics
@@ -621,9 +629,9 @@ const input: JudgeInput = {
     burstDrivers: wholeNumber(process.env.EXPECT_BURST_DRIVERS, "EXPECT_BURST_DRIVERS"),
     faultPct: wholeNumber(process.env.EXPECT_FAULT_PCT, "EXPECT_FAULT_PCT"),
     faultTargets: expectedFaultTargets.targets,
-    // env-ok: EXPECT_BASELINE (optional; "1" when the workflow ran the same day
-    // baseline leg, #3258. Unset on a hand run, which keeps the fixed bar.)
-    baseline: process.env.EXPECT_BASELINE === "1",
+    // #3258: read and checked above (expectBaselineFrom); unset is a hand run,
+    // which keeps the fixed bar.
+    baseline: expectBaseline,
   },
   unreadableDriverFiles,
   budgets: { cpuMsP99: cpuBudgetMs(), cronCpuMs: cronCpuBudgetMs() },
@@ -660,7 +668,7 @@ function burstDepthReading(): BurstDepthReading | null {
 const lines: string[] = [];
 lines.push(`# Booking path load run ${RUN_ID}`);
 lines.push("");
-lines.push(`Judged ${new Date().toISOString()}. ${verdictText(result.verdict, result.speedUnmeasured)}`);
+lines.push(`Judged ${new Date().toISOString()}. ${verdictText(result)}`);
 lines.push("");
 // #3258: which arm of the post confirm recompute this run was dispatched for, so
 // three back to back reports cannot be read against the wrong arm. The preflight
