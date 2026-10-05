@@ -26,7 +26,7 @@ import type { DriverResult } from "./book-plan.ts";
 export const BASELINE_BOOKINGS = 12;
 /** One every fifteen seconds: a booking takes three or four seconds on a slow day, so they never overlap. */
 export const BASELINE_PER_MINUTE = 4;
-/** Fewer successes than this and there is no median worth a bar: the run is incomplete. */
+/** Fewer successes than this and there is no median worth a bar: the speed verdict is void. */
 export const BASELINE_MIN_OK = 8;
 
 /**
@@ -65,21 +65,55 @@ function median(values: number[]): number {
 }
 
 /**
+ * What the judge entry found in the results directory for the baseline (#3258).
+ * Four answers, because each sends a reader somewhere different (L11): none
+ * arrived, two or more arrived (taking the first silently would judge the day by
+ * whichever the directory listed first), one could not be parsed, or one usable file.
+ */
+export type BaselineReading =
+  | { kind: "file"; result: DriverResult }
+  | { kind: "absent" }
+  | { kind: "several"; files: string[] }
+  | { kind: "unreadable"; file: string; why: string };
+
+/**
+ * The reading from every result file the judge gathered. A file counts as the
+ * baseline when it SAYS mode baseline, or when it is named like one and cannot be
+ * parsed: a corrupt `baseline.json` is an unreadable baseline, never an absent one.
+ */
+export function baselineReading(
+  files: { name: string; parsed?: unknown; error?: string }[],
+): BaselineReading {
+  const corrupt = files.find((f) => f.error !== undefined && /^baseline.*\.json$/.test(f.name));
+  if (corrupt) return { kind: "unreadable", file: corrupt.name, why: corrupt.error! };
+  const found = files.filter(
+    (f) => f.error === undefined && (f.parsed as { mode?: unknown } | undefined)?.mode === "baseline",
+  );
+  if (found.length > 1) return { kind: "several", files: found.map((f) => f.name) };
+  if (found.length === 1) return { kind: "file", result: found[0]!.parsed as DriverResult };
+  return { kind: "absent" };
+}
+
+/**
  * Which rule judges this run's latency, and its answer.
  *
- * - A baseline the run was configured for and did not deliver, or one with too few
- *   successes for a median, is `unmeasured`: the run is incomplete. Falling back to
- *   the absolute bar there would quietly change what a pass means mid run (L98).
  * - A run with no baseline leg (a hand run) keeps the absolute bar as the bar.
+ * - A baseline the run was configured for that is missing, doubled, unreadable,
+ *   from another run, or too thin for a median is `unmeasured`. Dan, 2026-10-05:
+ *   that voids the SPEED verdict only; every other bar is still judged, and the
+ *   speed result is reported as unmeasured, never as a pass and never as the fixed
+ *   bar quietly standing in for the rule the run was configured with (L98).
  */
 export function judgeLatency(input: {
   steadyP95: number;
   absoluteBarMs: number;
-  baseline: DriverResult | null | undefined;
+  baseline: BaselineReading | undefined;
   baselineExpected: boolean;
+  runId: string;
 }): LatencyJudgement {
   const { steadyP95, absoluteBarMs } = input;
-  if (!input.baselineExpected && !input.baseline) {
+  const reading = input.baseline ?? { kind: "absent" as const };
+  if (!input.baselineExpected && reading.kind === "absent") {
     return {
       kind: "absolute",
       steadyP95,
@@ -88,15 +122,28 @@ export function judgeLatency(input: {
       why: "no same day baseline ran, so the fixed bar is the bar",
     };
   }
-  if (!input.baseline) {
-    return { kind: "unmeasured", why: "the run was configured with a same day baseline and no baseline file arrived" };
+  if (reading.kind === "absent") {
+    return { kind: "unmeasured", why: "no baseline file arrived, though the run was configured with a same day baseline" };
   }
-  const ok = input.baseline.attempts.filter((a) => a.status === 200).map((a) => a.wallMs);
+  if (reading.kind === "several") {
+    return {
+      kind: "unmeasured",
+      why: `${reading.files.length} baseline files arrived (${reading.files.join(", ")}), so which one measured the day cannot be told`,
+    };
+  }
+  if (reading.kind === "unreadable") {
+    return { kind: "unmeasured", why: `the baseline file ${reading.file} could not be read (${reading.why})` };
+  }
+  const baseline = reading.result;
+  if (baseline.runId !== input.runId) {
+    return { kind: "unmeasured", why: `the baseline file is from run ${baseline.runId}, not ${input.runId}` };
+  }
+  const ok = baseline.attempts.filter((a) => a.status === 200).map((a) => a.wallMs);
   if (ok.length < BASELINE_MIN_OK) {
     return {
       kind: "unmeasured",
       why:
-        `the same day baseline confirmed ${ok.length} of ${input.baseline.attempts.length} bookings, and a ` +
+        `the same day baseline confirmed ${ok.length} of ${baseline.attempts.length} bookings, and a ` +
         `median needs at least ${BASELINE_MIN_OK}`,
     };
   }
@@ -124,7 +171,7 @@ export function absoluteBarText(j: { steadyP95: number; absoluteBarMs: number })
 
 /** The report's one line on latency: which rule judged it, against what, and the absolute bar. */
 export function latencyReportLine(j: LatencyJudgement): string {
-  if (j.kind === "unmeasured") return `- latency: unjudged; ${j.why}`;
+  if (j.kind === "unmeasured") return `- latency: UNMEASURED, so the speed verdict is void and every other bar was judged; ${j.why}`;
   if (j.kind === "absolute") {
     return `- latency: judged against the fixed ${j.absoluteBarMs}ms bar because ${j.why}; ${absoluteBarText(j)}`;
   }
@@ -133,4 +180,16 @@ export function latencyReportLine(j: LatencyJudgement): string {
     `steady p95 of ${j.steadyP95}ms is ${j.ratio.toFixed(1)} times it, against a bar of ` +
     `${LOAD_OVER_REST_RATIO_BAR} times (${j.barMs}ms); ${absoluteBarText(j)}`
   );
+}
+
+/**
+ * The report's verdict line (#3258). When the speed verdict is void it is said IN
+ * the verdict line, beside the verdict every other bar reached, so a pass with the
+ * speed unmeasured can never be read as a pass that measured it (L98).
+ */
+export function verdictText(verdict: string, speedUnmeasured: string | null): string {
+  const head = `Verdict: **${verdict.toUpperCase()}**`;
+  return speedUnmeasured === null
+    ? `${head}.`
+    : `${head} on every bar but speed; speed UNMEASURED because ${speedUnmeasured}.`;
 }

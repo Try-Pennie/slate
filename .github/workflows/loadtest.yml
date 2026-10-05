@@ -268,7 +268,8 @@ jobs:
   setup-burst:
     # After the baseline, so its bookings are made at rest (#3258). Whatever the
     # baseline concluded: a failed baseline leaves no file, which the judge reports
-    # as an incomplete latency bar, and it must not cost the rest of the run.
+    # as an UNMEASURED speed verdict while judging every other bar (Dan,
+    # 2026-10-05), so it must not cost the rest of the run.
     needs: [preflight, baseline]
     if: ${{ !cancelled() && needs.preflight.result == 'success' }}
     runs-on: ubuntu-latest

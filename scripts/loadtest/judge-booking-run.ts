@@ -15,6 +15,7 @@ import {
   absoluteBarText,
   judgeLatency,
   LOAD_OVER_REST_RATIO_BAR,
+  type BaselineReading,
   type LatencyJudgement,
 } from "./latency-bar.ts";
 import type { BookingAttempt, DriverResult } from "./book-plan.ts";
@@ -228,10 +229,10 @@ export interface JudgeInput {
   };
   /**
    * #3258: the same day baseline, a dozen bookings at rest on the same deployment
-   * just before the steady pass, or null when none arrived. The steady pass's
-   * latency is judged against its median (`latency-bar.ts`).
+   * just before the steady pass, as the judge entry found it (`baselineReading`).
+   * The steady pass's latency is judged against its median (`latency-bar.ts`).
    */
-  baselineResult?: DriverResult | null;
+  baseline?: BaselineReading;
   /**
    * Result files the gatherer found and could not use as a steady driver's (#3222):
    * unparsable, or a `driver-N.json` in another mode. Required, so `tsc` names every
@@ -374,16 +375,6 @@ export function burstShortfall(input: JudgeInput): string[] {
  */
 export function incompleteness(input: JudgeInput): string[] {
   const why: string[] = [];
-  // #3258: a baseline the run was configured for and never delivered, or too thin
-  // for a median, leaves the latency bar with nothing to stand on. Asked through the
-  // judge's own rule, so the two can never disagree about what counts (L70).
-  const latencyRule = judgeLatency({
-    steadyP95: 0,
-    absoluteBarMs: OK_P95_MS,
-    baseline: input.baselineResult,
-    baselineExpected: input.expectedLegs.baseline === true,
-  });
-  if (latencyRule.kind === "unmeasured") why.push(`latency: ${latencyRule.why}.`);
   const expectedPerDriver = input.target.perDriverPerMinute * input.target.minutes;
 
   if (input.driverResults.length !== input.target.drivers) {
@@ -768,6 +759,13 @@ export interface JudgeResult {
   findings: Finding[];
   measurements: RunMeasurements | null;
   incomplete: string[];
+  /**
+   * #3258: why the speed verdict is void, or null when it was judged. Set when the
+   * run's same day baseline could not be used; the verdict above is then every
+   * OTHER bar's, and a reader must be told the speed was not measured (Dan,
+   * 2026-10-05).
+   */
+  speedUnmeasured: string | null;
 }
 
 /**
@@ -787,6 +785,11 @@ export function faultPassKeepsFiveXxBar(targets: readonly string[]): boolean {
   return everyTargetDegrades(parsed.targets);
 }
 
+/** Why the speed verdict is void, read off the latency judgement, or null (#3258). */
+function speedUnmeasuredOf(m: RunMeasurements): string | null {
+  return m.latency?.kind === "unmeasured" ? m.latency.why : null;
+}
+
 export function judgeBookingRun(input: JudgeInput): JudgeResult {
   const incomplete = incompleteness(input);
   if (incomplete.length > 0) {
@@ -796,6 +799,7 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
       findings: [],
       measurements: null,
       incomplete,
+      speedUnmeasured: null,
     };
   }
 
@@ -844,10 +848,14 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
     const latency = judgeLatency({
       steadyP95: m.ok.p95,
       absoluteBarMs: OK_P95_MS,
-      baseline: input.baselineResult,
+      baseline: input.baseline,
       baselineExpected: input.expectedLegs.baseline === true,
+      runId: input.runId,
     });
     m.latency = latency;
+    // Dan, 2026-10-05: an unusable baseline voids the speed verdict ONLY. No latency
+    // finding is invented and none is dropped in silence: the result carries why
+    // (`speedUnmeasuredOf`).
     if (latency.kind === "relative" && !latency.pass) {
       fail(
         "latency of successful bookings",
@@ -1254,6 +1262,7 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
     exit: findings.length === 0 ? JUDGE_EXIT.pass : JUDGE_EXIT.fail,
     findings,
     measurements: m,
+    speedUnmeasured: speedUnmeasuredOf(m),
     incomplete: [],
   };
 }
@@ -1282,6 +1291,7 @@ function unmeasured(m: RunMeasurements, why: string, findings: Finding[]): Judge
     exit: measuredFailures ? JUDGE_EXIT.fail : JUDGE_EXIT.unmeasured,
     findings: [...findings, { bar: "platform limits", detail: why }],
     measurements: m,
+    speedUnmeasured: speedUnmeasuredOf(m),
     incomplete: [],
   };
 }

@@ -28,7 +28,7 @@ import {
 } from "./confirm-startup.ts";
 import { DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES } from "../../src/lib/rate-limit-core.ts";
 import { burstControlStrength, type BurstDepthReading } from "./burst-target.ts";
-import { latencyReportLine } from "./latency-bar.ts";
+import { baselineReading, latencyReportLine, verdictText } from "./latency-bar.ts";
 import { recomputeArmLine } from "../../src/lib/booking/post-confirm-recompute-modes.ts";
 import { REQUEST_CPU_P99_MS, cronCpuShareText, faultPassKeepsFiveXxBar } from "./judge-booking-run.ts";
 import {
@@ -336,7 +336,25 @@ function cronCpuBudgetMs(): number {
 const steady = loadDrivers("steady");
 const burst = loadDrivers("burst");
 // #3258: the same day baseline at rest, which the latency bar is judged against.
-const baselineFiles = loadDrivers("baseline");
+// Read from EVERY result file rather than through `loadDrivers`, which would take
+// the first baseline silently and count a corrupt baseline.json as missing:
+// `baselineReading` refuses two, and calls a corrupt one unreadable.
+function resultFileEntries(): { name: string; parsed?: unknown; error?: string }[] {
+  let names: string[] = [];
+  try {
+    names = readdirSync(RESULTS).filter((f) => f.endsWith(".json"));
+  } catch {
+    return [];
+  }
+  return names.map((name) => {
+    try {
+      return { name, parsed: readJson<unknown>(join(RESULTS, name)) };
+    } catch (err) {
+      return { name, error: (err as Error).message };
+    }
+  });
+}
+const baseline = baselineReading(resultFileEntries());
 // What the run itself sent on the steady pass. It is the CONTROL the analytics
 // count is polled against: the run knows how many requests it made, so a count far
 // under it means the window has not caught up rather than that the Worker was idle.
@@ -602,7 +620,7 @@ const input: JudgeInput = {
   },
   unreadableDriverFiles,
   budgets: { cpuMsP99: cpuBudgetMs(), cronCpuMs: cronCpuBudgetMs() },
-  baselineResult: baselineFiles[0] ?? null,
+  baseline,
 };
 
 const result = judgeBookingRun(input);
@@ -635,7 +653,7 @@ function burstDepthReading(): BurstDepthReading | null {
 const lines: string[] = [];
 lines.push(`# Booking path load run ${RUN_ID}`);
 lines.push("");
-lines.push(`Judged ${new Date().toISOString()}. Verdict: **${result.verdict.toUpperCase()}**.`);
+lines.push(`Judged ${new Date().toISOString()}. ${verdictText(result.verdict, result.speedUnmeasured)}`);
 lines.push("");
 // #3258: which arm of the post confirm recompute this run was dispatched for, so
 // three back to back reports cannot be read against the wrong arm. The preflight

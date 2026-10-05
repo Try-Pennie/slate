@@ -29,6 +29,8 @@ import {
   BASELINE_PER_MINUTE,
   LOAD_OVER_REST_RATIO_BAR,
   latencyReportLine,
+  baselineReading,
+  verdictText,
 } from "./loadtest/latency-bar.ts";
 import { REQUEST_CPU_P99_MS, REQUEST_STARTUP_P95_MS } from "./loadtest/judge-booking-run.ts";
 import {
@@ -1597,7 +1599,7 @@ function slowRun(made = 100): JudgeInput {
       for (const a of all) a.wallMs = Math.round(p95Ms * 0.6);
       for (const a of all.slice(0, Math.ceil(all.length * 0.1))) a.wallMs = p95Ms;
       i.expectedLegs = { ...i.expectedLegs, baseline: true };
-      i.baselineResult = baseline;
+      i.baseline = baseline ? { kind: "file", result: baseline } : { kind: "absent" };
     });
 
   eq(idPrefix(RUN, "baseline"), `${RUN}-r`, "the baseline's bookings carry their own prefix, so no steady id is reused");
@@ -1623,13 +1625,79 @@ function slowRun(made = 100): JudgeInput {
   const fl = fastDay.measurements!.latency!;
   assert(fl.kind === "relative" && !fl.absoluteOver, "a p95 inside 5s reports the absolute bar as met");
 
-  // Expected and missing, or too small to have a median: never a pass, never the old bar.
-  const missing = withBaseline(3_000, 2_000, null);
-  eq(missing.verdict, "incomplete", "a baseline the run was configured for and never delivered is incomplete");
-  assert(missing.incomplete.some((w) => w.includes("baseline")), "naming the baseline");
-  const thin = withBaseline(3_000, 2_000, restFile(2_000, BASELINE_BOOKINGS, BASELINE_MIN_OK - 1));
-  eq(thin.verdict, "incomplete", "a baseline with too few successes to have a median is incomplete");
-  assert(thin.incomplete.some((w) => w.includes(String(BASELINE_MIN_OK))), "saying how many it needed");
+  // Dan, 2026-10-05: a baseline that is missing, thin, doubled, unreadable or from
+  // another run voids the SPEED verdict only. Every other bar is still judged, and the
+  // speed result is reported as unmeasured, never as a pass and never as the old bar.
+  const unmeasured = (r: ReturnType<typeof judgeBookingRun>, cause: string, label: string) => {
+    assert(r.verdict !== "incomplete", `${label}: the run is still judged`);
+    assert(!bars(r).includes("latency of successful bookings"), `${label}: and no latency finding is invented`);
+    eq(r.measurements?.latency?.kind, "unmeasured", `${label}: the speed result is unmeasured`);
+    assert(r.speedUnmeasured?.includes(cause) ?? false, `${label}: saying why (${r.speedUnmeasured})`);
+  };
+  unmeasured(withBaseline(3_000, 2_000, null), "no baseline file", "a missing baseline");
+  unmeasured(
+    withBaseline(3_000, 2_000, restFile(2_000, BASELINE_BOOKINGS, BASELINE_MIN_OK - 1)),
+    String(BASELINE_MIN_OK),
+    "a thin baseline",
+  );
+  unmeasured(
+    broken((i) => {
+      i.expectedLegs = { ...i.expectedLegs, baseline: true };
+      i.baseline = { kind: "several", files: ["baseline.json", "baseline-2.json"] };
+    }),
+    "baseline-2.json",
+    "two baseline files",
+  );
+  unmeasured(
+    broken((i) => {
+      i.expectedLegs = { ...i.expectedLegs, baseline: true };
+      i.baseline = { kind: "unreadable", file: "baseline.json", why: "Unexpected end of JSON input" };
+    }),
+    "could not be read",
+    "a corrupt baseline file",
+  );
+  unmeasured(
+    broken((i) => {
+      i.expectedLegs = { ...i.expectedLegs, baseline: true };
+      i.baseline = { kind: "file", result: { ...restFile(2_000), runId: "run-older" } };
+    }),
+    "run-older",
+    "a baseline from another run",
+  );
+  // The other bars still bite on such a run: a 5xx beside a missing baseline fails.
+  const failsElsewhere = broken((i) => {
+    i.expectedLegs = { ...i.expectedLegs, baseline: true };
+    i.baseline = { kind: "absent" };
+    i.driverResults[0]!.attempts[0]!.status = 500;
+    i.driverResults[0]!.attempts[0]!.outcome = "INTERNAL";
+    i.bookings = i.bookings.filter((b) => b.external_id !== `${RUN}-0-0`);
+    i.bookingIdsWithBusyBlock = i.bookings.map((b) => b.id);
+  });
+  eq(failsElsewhere.verdict, "fail", "and a run with a real finding beside an unmeasured speed still fails");
+  eq(fairDay.speedUnmeasured, null, "a measured run carries no unmeasured note");
+  eq(verdictText("pass", null), "Verdict: **PASS**.", "a measured run's verdict line is unchanged");
+  const voided = verdictText("pass", "no baseline file arrived");
+  assert(voided.startsWith("Verdict: **PASS**") && voided.includes("speed UNMEASURED") && voided.includes("no baseline file arrived"), `a void speed verdict is stated in the verdict line itself: ${voided}`);
+
+  // How the judge entry turns the results directory into a reading.
+  const good = restFile(2_000);
+  eq(baselineReading([{ name: "baseline.json", parsed: good }]), { kind: "file", result: good }, "one baseline file is the reading");
+  eq(baselineReading([{ name: "driver-0.json", parsed: { mode: "steady" } }]), { kind: "absent" }, "no baseline file is absent");
+  eq(
+    baselineReading([{ name: "baseline.json", parsed: good }, { name: "baseline-again.json", parsed: good }]),
+    { kind: "several", files: ["baseline.json", "baseline-again.json"] },
+    "two baseline files are refused, never the first silently taken",
+  );
+  eq(
+    baselineReading([{ name: "baseline.json", error: "Unexpected end of JSON input" }]),
+    { kind: "unreadable", file: "baseline.json", why: "Unexpected end of JSON input" },
+    "a corrupt baseline.json is unreadable, not absent",
+  );
+  eq(
+    baselineReading([{ name: "driver-9.json", error: "boom" }]),
+    { kind: "absent" },
+    "a corrupt file that is not a baseline is not the baseline's problem",
+  );
 
   // A hand run with no baseline leg keeps the absolute bar as THE bar, and says why.
   const hand = broken((i) => {
