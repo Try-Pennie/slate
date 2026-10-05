@@ -800,6 +800,7 @@ one's bound, are in `docs/verify-commands.md`.
 | `verify:parallel-run-readiness` | the preconditions of a trustworthy shadow run, each judged by the code that already owns it, including trypennie's key seen from production (exit 13, #2717) (every caller holds its own key since #2865, so exits 17 and 18 are retired), plus the low volume alarms' arming preconditions, reported without gating while they are disarmed (exits 14 to 16, #2767) |
 | `verify:pool-slot-parity` | the bucket codes sharing one availability pool really offer the same times |
 | `verify:table-drift` | production holds no table that no migration created |
+| `verify:reroute-live` | every reroute outcome end to end on production's test advisors, leaving nothing behind (#3251) |
 | `verify:advisor-photos`, `verify:advisor-photos-sql` | the photo refresh (#3027) against live Google with no writes, and migration 0156 in a real Postgres; why every face goes through `resolveAdvisorPhoto` |
 | `verify:agent-link-names`, `verify:replace-user-schedule-guard`, `verify:auth-domain-hook`, `verify:audit-chain-sql`, `verify:migration-replay-sql`, `verify:reroute-holds-sql` | in Docker: 0155's link names (lowest free, never reused); 0157's import refusing a mid run edit; auth hook; audit chain; all migrations from empty, RLS per role (#3099); 0166's reroute hold refusing a booking on a held advisor as a lost race (#3247) |
 

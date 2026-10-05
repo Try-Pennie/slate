@@ -264,7 +264,7 @@ const VERIFY_CONCURRENCY = 6;
  * genuine empty: on an error we must NOT silently fall back to checking only the
  * primary calendar (it could miss a conflict on a secondary one and double-book).
  */
-async function calendarIdsForEmail(
+export async function calendarIdsForEmail(
   email: string,
 ): Promise<{ readFailed: boolean; ids: string[] }> {
   const db = supabaseAdmin();

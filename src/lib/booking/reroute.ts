@@ -41,6 +41,7 @@ export type RerouteRefusal =
   | "no_current_advisor"
   | "no_calendar_event"
   | "kept_off_ladder"
+  | "across_worlds"
   | PlaceRerouteHoldRefusal
   | ClaimRerouteHoldRefusal
   | RerouteSwapRefusal;
@@ -304,9 +305,22 @@ export async function startReroute(
   deps: RerouteDeps,
   input: { bookingId: string; bucketCode: string; actor: BookingActor },
 ): Promise<RerouteProposal> {
-  const { booking } = await reroutableBooking(deps, input.bookingId);
+  const { booking, bucket } = await reroutableBooking(deps, input.bookingId);
   const requested = await requestedBucket(deps, input.bucketCode);
+  sameWorld(bucket, requested.bucket);
   return searchAndHold(deps, booking, requested, input.actor);
+}
+
+/**
+ * A reroute stays in the world the booking is in (#2660, #3251). The search walks
+ * only buckets in the REQUESTED bucket's world, so a test call asked into a real
+ * bucket would hold a real advisor away from leads, and a keep would leave a test
+ * call in a real bucket or a real lead's call in a test one, where its webhooks
+ * are suppressed. The reassign beneath a move refuses the advisor too, but only
+ * after the hold, and a keep never reaches that check at all.
+ */
+function sameWorld(stored: Bucket, asked: Bucket): void {
+  if (Boolean(stored.is_test) !== Boolean(asked.is_test)) throw new RerouteRefusedError("across_worlds");
 }
 
 /**
@@ -437,8 +451,11 @@ async function confirmKeep(
   const kept = await requestedBucket(deps, input.bucketCode);
   // A cascaded keep records what was asked for and the drop, as the move does,
   // derived here rather than taken from the request (the move reads its drop off
-  // the hold the server placed).
+  // the hold the server placed). Both buckets come from the request, so each is
+  // held to the booking's world.
   const asked = input.requestedBucketCode ? await requestedBucket(deps, input.requestedBucketCode) : kept;
+  sameWorld(fromBucket, kept.bucket);
+  sameWorld(fromBucket, asked.bucket);
   // The drop is the kept bucket's position on the ladder the search walks from the
   // bucket asked for, the same measure a move records, so a keep and a move of the
   // same distance read alike in the history. A code the search could never have

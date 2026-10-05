@@ -1573,6 +1573,67 @@ is exit 1. It runs in the DB replay workflow with the other `verify-*-sql.ts` su
 `src/lib/db/reroute-hold-refusals.ts`, which `scripts/test-reroute-hold-refusals.ts`
 compares against the migration's function bodies in both directions.
 
+# Proving a reroute end to end on production (`pnpm verify:reroute-live`)
+
+#3251 (phase 5 of #3244). The Docker suite above proves the hold in a database with
+nothing on the other side of it. This drives the REAL service code against
+production: the applied functions and trigger, Google moving a calendar event, the
+hold's busy block appearing and going, the booker's candidate list skipping a held
+advisor, and a real daily cap count. Only in the test world, so no real advisor is
+held or booked and no webhook leaves (L58, L52).
+
+It books on SMOKE and SMOKE2 as well as `PARTNER`, which is the one deliberate
+departure from "a live test books PARTNER" (#2760), and it is forced: a reroute
+cannot cross event types (the database refuses `event_type_mismatch`), `PARTNER` has
+its own, and SMOKE and SMOKE2 share the event type every real bucket uses, so they
+are the only pair a held MOVE can be proved between. All three are `is_test`, so
+the reasons #2760 exists (no webhook, no monitor reading it as a lead) hold for
+each. `PARTNER` carries the only daily cap (8), so its keep is what proves the cap
+check leaves the booking itself out of the count.
+
+The run, at a start two to seven days ahead where Google says both test advisors
+are clear: a last resort keep (B1 lands on smoketest2@, who is not in SMOKE2, whose
+only advisor is busy), a held move (that advisor freed, SMOKE2 holds smoketest@, the
+booker leaves them out, the confirm moves the event, a second confirm answers the
+same), a plain keep into SMOKE, a keep in `PARTNER` against its cap, and a test call
+into 512 refused `across_worlds` with nobody held. Then every call is cancelled and
+the run proves nothing is left: no active call, no unconsumed hold, no hold block,
+no live calendar event.
+
+```
+REROUTE_LIVE_APPLY=1 REROUTE_LIVE_ACTOR_EMAIL=<admin address> pnpm verify:reroute-live
+```
+
+It WRITES to production, hence the flag, and acts as a named admin (any rank from
+admin up, judged by `atLeast`), who is recorded on each hold and history row. Run it
+from a checkout of current main holding `.env.local`. It refuses to start within
+three minutes before or eight after `:00` and `:30`, when the smoke canary may be
+booking the same advisors.
+
+| exit | what it met |
+|---|---|
+| 0 | every step landed and nothing is left |
+| 1 | no flag, no acting admin, or no credentials; nothing was attempted |
+| 2 | inside the canary's window; nothing was attempted |
+| 3 | the test buckets or advisors are not as it expects; nothing was attempted |
+| 4 | no start in the next week where both test advisors are clear |
+| 5 | a test call could not be booked |
+| 6 | **a reroute step did not land as expected**, named |
+| 7 | **cleanup left something behind**, named |
+| 8 | a test advisor's calendar could not be read |
+
+**Last run, 2026-10-05 01:48 UTC: exit 0**, all 23 steps at 2026-10-07 15:00 UTC.
+The first attempt that night is what moved the run off `PARTNER` for the moves
+(`event_type_mismatch`) and found #3281: Google answers a read of a deleted event
+with `status: "cancelled"`, which Slate's `eventExists` reads as present, so the run
+judges a gone event itself until that is fixed. Its pure decisions (the canary
+window, the starts tried, when a start is clear, one code and message per outcome)
+are pinned offline by `scripts/test-reroute-live-check.ts`.
+
+**Re-run it after any change to the reroute path** (`src/lib/booking/reroute.ts`,
+the reroute wiring in `service.ts`, `findRerouteTarget`, or migrations touching
+`reroute_holds` or `reassign_booking_swap`).
+
 # Proving the advisor photo refresh (`pnpm verify:advisor-photos`)
 
 The daily `advisor-photos` lane (#3027) reads every active person's photo from the
