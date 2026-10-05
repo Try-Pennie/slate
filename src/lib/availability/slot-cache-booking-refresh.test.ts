@@ -173,3 +173,20 @@ describe("the reads only arm goes through the same pool coalescing (#3293 review
     expect(precompute.computeBucketSlotsForWindow).not.toHaveBeenCalled();
   });
 });
+
+// #3258 follow up: the reset must clear the reads only arm's start times too. They
+// lived in an anonymous map the reset could not reach, so a case that read a pool
+// left it inside the window for the next case, whose read then waited it out.
+describe("resetBookingRefreshesForTests clears the reads only arm (#3258)", () => {
+  it("a read right after a reset starts at once rather than waiting out the last case's window", async () => {
+    const first = readPoolInputsAfterBooking("211");
+    await vi.advanceTimersByTimeAsync(0);
+    await first;
+    expect(service.loadBucketSlotInputs).toHaveBeenCalledTimes(1);
+    resetBookingRefreshesForTests();
+    const second = readPoolInputsAfterBooking("211");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(service.loadBucketSlotInputs).toHaveBeenCalledTimes(2);
+    await second;
+  });
+});

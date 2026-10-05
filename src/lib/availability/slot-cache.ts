@@ -248,11 +248,13 @@ const bookingRefreshes = makePoolRefreshCoalescer({
  * comparable (#3293 review), on its own start map: a read that recorded itself in
  * `lastPoolRecomputeAt` would debounce a real recompute on the push path.
  */
+/** The reads only arm's own start times: named so the test reset can clear it. */
+const lastPoolReadAt = new Map<string, number>();
 const bookingReads = makePoolRefreshCoalescer({
   now: () => Date.now(),
   sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
   windowMs: POST_CONFIRM_REFRESH_WINDOW_MS,
-  lastStartedAt: new Map(),
+  lastStartedAt: lastPoolReadAt,
 });
 
 /**
@@ -329,12 +331,13 @@ async function forPoolsOf(
   if (failures.length > 0) throw new Error(failures.join("; "));
 }
 
-/** For tests: forget both coalescers, the pool key cache and the start map. */
+/** For tests: forget both coalescers, the pool key cache and both start maps. */
 export function resetBookingRefreshesForTests(): void {
   bookingRefreshes.reset();
   bookingReads.reset();
   poolKeyCache = null;
   lastPoolRecomputeAt.clear();
+  lastPoolReadAt.clear();
 }
 
 /**
