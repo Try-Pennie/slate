@@ -48,7 +48,7 @@ import {
   type BookingResult,
 } from "../src/lib/booking/orchestration.ts";
 import { withinBookingConfirmBudget, BOOKING_CONFIRM_BUDGET_MS } from "../src/lib/booking/confirm-budget.ts";
-import { makeConfirmQueue, CONFIRM_QUEUE_WAIT_MS, CONFIRM_LINE_LOOKAHEAD, type ConfirmQueue } from "../src/lib/booking/confirm-queue.ts";
+import { makeConfirmQueue, isolateLine, CONFIRM_QUEUE_WAIT_MS, CONFIRM_LINE_LOOKAHEAD, type ConfirmLine } from "../src/lib/booking/confirm-queue.ts";
 import type { Booking, User } from "../src/lib/db/types.ts";
 import type { BookingContext } from "../src/lib/booking/orchestration.ts";
 import { createAsserter, makeDeps, makeBooking, input, users, bucket as fakeBucket, eventType as fakeEventType } from "./lib/booking-fakes.ts";
@@ -78,14 +78,20 @@ interface Run {
 
 /** A queue that never queues: the behaviour before #3221, for the control. Every
  *  confirm leads at once with nobody behind it, so each runs the whole path. */
-const NO_QUEUE: ConfirmQueue<never> = {
+const NO_QUEUE: ConfirmLine<never> = {
   enter: async () => ({
     kind: "lead",
-    done: () => {},
-    waiting: () => 0,
-    seat: { claimedByOthers: () => new Set<string>(), claim: () => {}, pass: () => {} },
+    done: async () => {},
+    waiting: async () => 0,
+    seat: {
+      claimedByOthers: async () => new Set<string>(),
+      claim: async () => {},
+      claimFirst: async (candidates) => ({ pool: [...candidates], unclaimed: candidates.length }),
+      claimBeside: async () => {},
+      pass: async () => {},
+    },
   }),
-  lookahead: () => null,
+  lookahead: async () => null,
 };
 
 function lead(i: number, over: Partial<CreateBookingInput> = {}): CreateBookingInput {
@@ -165,16 +171,16 @@ async function burst(opts: {
     let raceLosses = 0;
     let eventFailed = false;
     let idempotencyFailed = false;
-    const queue: ConfirmQueue<unknown> =
+    const queue: ConfirmLine<unknown> =
       opts.queue === "off"
         ? NO_QUEUE
-        : makeConfirmQueue({
+        : isolateLine(makeConfirmQueue({
             timer: (ms, fire) => clock.at(clock.now + ms, fire),
             // #3274: the lease end runs on the same virtual clock, so the simulation
             // owns every timer the line sets and judges leases by its own time.
             leaseTimer: (ms, fire) => clock.at(clock.now + ms, fire),
             now: () => clock.now,
-          });
+          }));
     let personReads = 0;
     const shared: BookingDeps = {
       ...base,
@@ -536,18 +542,27 @@ async function main() {
 
   // --- #3257: where the line can be entered before any read ---------------------
   {
+    const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+    const instant = String(Date.parse(input.startIso));
+    // #3325: a key is a GROUP (whose confirms can settle each other) and an instant.
     assert(
-      queueKeyBeforeRouting({ bucketCode: "120", startIso: input.startIso }) === confirmQueueKey("120", input.startIso, undefined),
+      same(confirmQueueKey("120", input.startIso, undefined), { group: "code:120", instant }),
+      `key: a code's line is its code and the parsed instant (got ${JSON.stringify(confirmQueueKey("120", input.startIso, undefined))})`,
+    );
+    assert(
+      same(confirmQueueKey("120", input.startIso, "u1"), { group: "link:u1", instant }),
+      "key: a named link's line is its advisor's, whichever code it came through, since the same person is contended",
+    );
+    assert(
+      same(queueKeyBeforeRouting({ bucketCode: "120", startIso: input.startIso }), confirmQueueKey("120", input.startIso, undefined)),
       "early key: a request naming its bucket outright is keyed before any read",
     );
     assert(
-      queueKeyBeforeRouting({ bucketCode: "120", startIso: input.startIso, requestedCode: "120" }) ===
-        confirmQueueKey("120", input.startIso, undefined),
+      same(queueKeyBeforeRouting({ bucketCode: "120", startIso: input.startIso, requestedCode: "120" }), confirmQueueKey("120", input.startIso, undefined)),
       "early key: a booker link carrying a routable code is keyed before any read",
     );
     assert(
-      queueKeyBeforeRouting({ bucketCode: "120", startIso: input.startIso, agentLinkUserId: "u1" }) ===
-        confirmQueueKey("120", input.startIso, "u1"),
+      same(queueKeyBeforeRouting({ bucketCode: "120", startIso: input.startIso, agentLinkUserId: "u1" }), confirmQueueKey("120", input.startIso, "u1")),
       "early key: a named link is keyed on its advisor before any read",
     );
     assert(

@@ -32,7 +32,7 @@ import type { PersonIdentity, PersonWorld } from "../../src/lib/booking/person-d
 import { GoogleHttpError } from "../../src/lib/google/http-error.ts";
 import type { OwnerAlertEventBody } from "../../src/lib/booking/owner-alert.ts";
 import type { BookingEventPayload } from "../../src/lib/webhooks/types.ts";
-import { makeConfirmQueue } from "../../src/lib/booking/confirm-queue.ts";
+import { makeConfirmQueue, isolateLine } from "../../src/lib/booking/confirm-queue.ts";
 
 /**
  * Per-file assertion counter. Each suite is its own process (the runner spawns
@@ -746,7 +746,7 @@ export function makeDeps(opts: FakeOpts) {
     },
     // #3221: a line of this fake's own, so no two suites (or two makeDeps in one
     // suite) ever wait on each other's confirms.
-    confirmQueue: makeConfirmQueue(),
+    confirmQueue: isolateLine(makeConfirmQueue()),
     advisorTimezone: async (userId) => {
       calls.advisorTimezoneReads.push(userId);
       if (opts.advisorTimezoneThrows) throw new Error("advisor schedule read failed");
