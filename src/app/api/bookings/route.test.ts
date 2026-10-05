@@ -293,11 +293,26 @@ describe("POST /api/bookings (auth skeleton)", () => {
     }
   });
 
+  it("hands the booking the facts it logs, so the line that served the call is on its log line (#3325)", async () => {
+    regalKey.primary.mockReturnValue("real-secret");
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    service.bookViaApi.mockImplementationOnce((async (_input: unknown, facts?: { line?: unknown }) => {
+      if (facts) facts.line = { line: "fallback", reason: "reach-timeout", key: "code", lineMs: 1500 };
+      return result("created");
+    }) as never);
+    const res = await post("Bearer real-secret", VALID_BODY);
+    const lines = info.mock.calls.map((c) => c.map(String).join(" ")).filter((l) => l.includes('msg="confirm answered"'));
+    info.mockRestore();
+    expect(res.status).toBe(200);
+    expect(lines.at(-1)).toContain('line="fallback"');
+    expect(lines.at(-1)).toContain('line_reason="reach-timeout"');
+  });
+
   it("hands the authenticated caller to the booking, so a call naming no page records who made it (#2876)", async () => {
     regalKey.primary.mockReturnValue("real-secret");
     const res = await post("Bearer real-secret", VALID_BODY);
     expect(res.status).toBe(200);
-    expect(service.bookViaApi).toHaveBeenCalledWith(expect.objectContaining({ apiCaller: "regal" }));
+    expect(service.bookViaApi).toHaveBeenCalledWith(expect.objectContaining({ apiCaller: "regal" }), expect.anything());
   });
 
   it("returns 409 on confirm_required so the bot can ask the lead first", async () => {
@@ -1014,13 +1029,13 @@ describe("POST /api/bookings: who may book a test bucket (#2669)", () => {
   it("the canary's own key books the hidden SMOKE bucket", async () => {
     const res = await post("Bearer canary-secret", { ...VALID_BODY, bucketCode: "SMOKE" });
     expect(res.status).toBe(200);
-    expect(service.bookViaApi).toHaveBeenCalledWith(expect.objectContaining({ allowTestBuckets: true }));
+    expect(service.bookViaApi).toHaveBeenCalledWith(expect.objectContaining({ allowTestBuckets: true }), expect.anything());
   });
 
   it("a partner key booking SMOKE gets the byte identical 422 an unknown code gets", async () => {
     const hidden = await post("Bearer trypennie-secret", { ...VALID_BODY, bucketCode: "SMOKE" });
     const unknown = await post("Bearer trypennie-secret", { ...VALID_BODY, bucketCode: "NOPE" });
-    expect(service.bookViaApi).toHaveBeenNthCalledWith(1, expect.objectContaining({ allowTestBuckets: false }));
+    expect(service.bookViaApi).toHaveBeenNthCalledWith(1, expect.objectContaining({ allowTestBuckets: false }), expect.anything());
     expect(hidden.status).toBe(422);
     expect(unknown.status).toBe(422);
     expect(await hidden.text()).toBe(await unknown.text());
@@ -1042,12 +1057,13 @@ describe("POST /api/bookings: who may book a test bucket (#2669)", () => {
     expect(res.status).toBe(200);
     expect(service.bookViaApi).toHaveBeenCalledWith(
       expect.objectContaining({ bucketCode: PUBLIC_TEST, allowTestBuckets: true }),
+      expect.anything(),
     );
   });
 
   it("a partner key on a real code carries no test opt in", async () => {
     const res = await post("Bearer trypennie-secret", VALID_BODY);
     expect(res.status).toBe(200);
-    expect(service.bookViaApi).toHaveBeenCalledWith(expect.objectContaining({ allowTestBuckets: false }));
+    expect(service.bookViaApi).toHaveBeenCalledWith(expect.objectContaining({ allowTestBuckets: false }), expect.anything());
   });
 });

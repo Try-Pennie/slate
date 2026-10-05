@@ -163,7 +163,7 @@ async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
       allowTestBuckets,
       // #2876: from the key that matched, so a call naming no page records who made it.
       apiCaller: authd.caller,
-    });
+    }, facts);
 
     const body = {
       outcome: result.outcome,

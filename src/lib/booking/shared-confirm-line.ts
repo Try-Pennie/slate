@@ -30,6 +30,9 @@
 import { isolateKeyOf, type ConfirmLine, type LeaderVerdict, type LineKey, type LineTurn } from "./confirm-queue.ts";
 import { CONFIRM_LINE_PROTOCOL, CONFIRM_LINE_HEARTBEAT_MS, CONFIRM_LINE_POLL_MS } from "./confirm-line-object.ts";
 import { readWithinDeadline, type ScheduleTimer } from "../read-within-deadline.ts";
+import type { SwitchReading } from "../cached-switch.ts";
+
+export type { SwitchReading };
 
 /**
  * How long `enter` may take before the object is treated as unreachable. A new
@@ -59,11 +62,6 @@ export interface LineServed {
    * in it (enter, acknowledge, claims, report): what the line ADDS to a confirm.
    */
   lineMs: number;
-}
-
-export interface SwitchReading {
-  on: boolean;
-  source: "read" | "last-known" | "default";
 }
 
 /** One object, as the client talks to it: a JSON message in, a JSON answer out. */
@@ -305,6 +303,39 @@ export function makeSharedConfirmLine<T>(deps: {
       // follows uses this answer rather than asking again.
       stash.set(isolateKeyOf(key), { kind: "answer", stub, attempt, answer: r.answer, spentMs: r.ms });
       return null;
+    },
+  };
+}
+
+/** The Durable Object namespace, as much of it as this client uses. */
+export interface DurableLineNamespace {
+  idFromName(name: string): unknown;
+  get(id: unknown, opts?: { locationHint?: string }): { fetch(url: string, init: { method?: string; body?: string; headers?: Record<string, string> }): Promise<Response> };
+}
+
+/**
+ * The real binding as the client's transport (#3325): one object per line GROUP,
+ * named from the group, created near the database. Smart placement runs the Worker
+ * beside Supabase (us west), and an object is created where its first request comes
+ * from, so the hint keeps a group's object there even when that first request does
+ * not. An answer that is not the protocol's JSON is a failed call, never a guess.
+ */
+export function durableLineNamespace(ns: DurableLineNamespace): LineNamespace {
+  return {
+    stubFor(group) {
+      const stub = ns.get(ns.idFromName(`confirm-line:v1:${group}`), { locationHint: "wnam" });
+      return {
+        async send(message) {
+          const res = await stub.fetch("https://confirm-line/", {
+            method: "POST",
+            body: JSON.stringify(message),
+            headers: { "content-type": "application/json" },
+          });
+          const body = (await res.json()) as unknown;
+          if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error(`the shared line answered ${res.status} with something that is not a message`);
+          return body as Record<string, unknown>;
+        },
+      };
     },
   };
 }

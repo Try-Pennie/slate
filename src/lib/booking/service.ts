@@ -480,6 +480,8 @@ import { resolveAdvisorName, type AdvisorNameReader } from "@/lib/booking/adviso
 import { resolveBookingAdvisorPhoto } from "@/lib/booking/advisor-photo";
 import { loadPhotoRecords, loadUserSignInPhoto } from "@/lib/advisor-photos/store";
 import { makeConfirmQueue, isolateLine } from "@/lib/booking/confirm-queue";
+import { confirmLineFor } from "@/lib/booking/confirm-line-live";
+import type { ConfirmLineFacts } from "@/lib/booking/confirm-latency";
 export type { BookingResult, CreateBookingInput };
 export type { ExistingCall } from "@/lib/booking/orchestration";
 export type { BookingActor } from "@/lib/booking/core";
@@ -968,8 +970,14 @@ async function fetchAgentWorkingHours(
  * and `realDeps` is built per request.
  */
 const ISOLATE_CONFIRM_QUEUE = makeConfirmQueue<orchestration.SlotSettlement>();
+/** #3325: the isolate's line behind the async interface, the shared line's fallback. */
+const ISOLATE_LINE = isolateLine(ISOLATE_CONFIRM_QUEUE);
 
-export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
+/**
+ * `lineFacts`, when given, receives which confirm line served this request's turn
+ * (#3325), for the route's `confirm answered` line.
+ */
+export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLineFacts): BookingDeps {
   return {
     deferSend,
     resolveBucketByCode,
@@ -1078,7 +1086,11 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     postHandoffNotice: (channel, text) => postSlack({ channel, text }),
     advisorTimezone: (userId) => loadAdvisorTimezone(supabaseAdmin(), userId),
     pageRaceBoundHit: pageRaceBoundHitAfterResponse,
-    confirmQueue: isolateLine(ISOLATE_CONFIRM_QUEUE),
+    // #3325: the shared line when its switch is on and its binding answers, else
+    // the isolate's own line, exactly as before.
+    confirmQueue: confirmLineFor(ISOLATE_LINE, (served) => {
+      if (lineFacts) lineFacts.line = served;
+    }),
     enqueueEventDeletion: async (calendarEmail, gcalEventId, bookingId) => {
       // THROWS (#2482). This row IS the record that a Google event still has to be
       // deleted, and nothing else holds that fact: a refused upsert leaves the event
@@ -2425,9 +2437,9 @@ async function rescheduleWithLog(
   }
 }
 
-export function createBooking(input: CreateBookingInput): Promise<BookingResult> {
+export function createBooking(input: CreateBookingInput, lineFacts?: ConfirmLineFacts): Promise<BookingResult> {
   return alertOnBookingFailure(() =>
-    orchestration.createBooking(input, realDeps(deferWebhookSend)),
+    orchestration.createBooking(input, realDeps(deferWebhookSend, lineFacts)),
   );
 }
 
@@ -2654,10 +2666,10 @@ export async function updateBookingPhone(
  * verify-outage alerting as createBooking (the create/reschedule paths it dispatches
  * to both verify-on-book).
  */
-export function bookViaApi(input: ApiBookingInput): Promise<ApiBookingResult> {
+export function bookViaApi(input: ApiBookingInput, lineFacts?: ConfirmLineFacts): Promise<ApiBookingResult> {
   return alertOnBookingFailure(async () => {
     try {
-      const res = await orchestration.bookViaApi(input, realDeps(deferWebhookSend));
+      const res = await orchestration.bookViaApi(input, realDeps(deferWebhookSend, lineFacts));
       // Only a "rescheduled" outcome can carry a decline reason (#543).
       if (res.outcome === "rescheduled") {
         logRescheduleSuccess(res.booking.id, "system", res.rescheduleDecline);

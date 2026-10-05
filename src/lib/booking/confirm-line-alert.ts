@@ -51,7 +51,7 @@ const NEVER_PAGES: ReadonlySet<LineReason> = new Set(["gone", "off", "unread-def
 export function makeReachFailureReporter(deps: {
   now: () => number;
   onWorkers: () => boolean;
-  log: (fields: Record<string, unknown>) => void;
+  log: (fields: Record<string, string | number | boolean | null | undefined>) => void;
   page: (text: string) => void;
 }): (reason: LineReason, err: unknown) => void {
   let recent: number[] = [];

@@ -11,6 +11,7 @@
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-shared-confirm-line.ts
 import {
   makeSharedConfirmLine,
+  durableLineNamespace,
   keyKindOf,
   CONFIRM_LINE_REACH_MS,
   type LineServed,
@@ -217,6 +218,34 @@ async function main() {
     if (place) await w.settle(place());
     assert(w.sent.includes("giveBack"), "lookahead: the place is given back");
     if (t.kind === "lead") await w.settle(t.done({ full: false }));
+  }
+
+  // --- the real binding: one object per GROUP, near the database, JSON both ways ----
+  {
+    const asked: { name?: string; hint?: string; url?: string; body?: string }[] = [];
+    const ns = {
+      idFromName: (name: string) => ({ name }),
+      get: (id: { name: string }, opts?: { locationHint?: string }) => ({
+        fetch: async (url: string, init: { method?: string; body?: string }) => {
+          asked.push({ name: id.name, hint: opts?.locationHint, url, body: init.body });
+          return new Response(JSON.stringify({ kind: "lead", turn: "t1" }), { headers: { "content-type": "application/json" } });
+        },
+      }),
+    };
+    const stub = durableLineNamespace(ns).stubFor("ladder:abc");
+    const answer = await stub.send({ v: 1, op: "enter", attempt: "a", line: "100", waitMs: 1 });
+    assert(answer.kind === "lead" && answer.turn === "t1", "binding: the object's JSON answer comes back parsed");
+    assert(asked[0]?.name === "confirm-line:v1:ladder:abc", `binding: one object per group, named from the group (got ${asked[0]?.name})`);
+    assert(asked[0]?.hint === "wnam", "binding: placed near the database, which smart placement puts the Worker beside");
+    assert(JSON.parse(asked[0]?.body ?? "{}").op === "enter", "binding: the message is sent as the JSON body");
+    const bad = durableLineNamespace({ ...ns, get: () => ({ fetch: async () => new Response("<html>", { status: 500 }) }) }).stubFor("code:1");
+    let threw = false;
+    try {
+      await bad.send({ v: 1, op: "poll", ticket: "x" });
+    } catch {
+      threw = true;
+    }
+    assert(threw, "binding: an answer that is not the protocol's JSON is a failed call, never a guessed one");
   }
 
   finish();
