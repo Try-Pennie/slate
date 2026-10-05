@@ -41,7 +41,7 @@ export function confirmLineUnreachableAlert(reason: LineReason): string {
     `${what}, so each server is using its own line for confirms, as it did before the shared line existed. ` +
     "Bookings still go through and nothing can be double booked, but a crowd of leads asking for the same time " +
     "may be answered slowly or told to try again. An engineer should check the ConfirmLine Durable Object " +
-    '(the cause is in the logs under tag=confirm-line); the switch on the admin page turns the shared line off.'
+    '(the cause is in the logs under tag=confirm-line); the switch on the admin Hours page turns the shared line off.'
   );
 }
 
