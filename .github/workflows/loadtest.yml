@@ -226,6 +226,39 @@ jobs:
           name: preflight
           path: results/
 
+  # The same day baseline (#3258): a dozen bookings at rest, one every fifteen
+  # seconds, on the deployment and branch the steady pass is about to drive, and
+  # before anything else loads them. The steady pass's latency is judged against a
+  # multiple of its median rather than a fixed number, because a fixed number was
+  # judging the throwaway environment more than the code: the 09-15 code measured
+  # 3.5s at the p95 on 09-15 and 7.0s on 2026-10-04. The absolute bar is still
+  # reported. See scripts/loadtest/latency-bar.ts.
+  baseline:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Book a dozen times at rest
+        env:
+          SLATE_BASE: ${{ vars.LOADTEST_BASE_URL }}
+          BOOKING_API_KEY: ${{ secrets.LOADTEST_BOOKING_API_KEY }}
+          MODE: baseline
+          DRIVER: 0
+          OUT: results/baseline.json
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/book.ts
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: baseline
+          path: results/
+
   # The burst leg runs BEFORE the steady pass and alone, which is a decision rather
   # than an ordering accident. The steady mix includes `122` (it is real traffic),
   # so a steady driver that happened to take the burst's slot first would make every
@@ -233,7 +266,12 @@ jobs:
   # nothing to do with the unique index it exists to test. Twenty five simultaneous
   # requests on one slot is the contention being measured either way.
   setup-burst:
-    needs: preflight
+    # After the baseline, so its bookings are made at rest (#3258). Whatever the
+    # baseline concluded: a failed baseline leaves no file, which the judge reports
+    # as an UNMEASURED speed verdict while judging every other bar (Dan,
+    # 2026-10-05), so it must not cost the rest of the run.
+    needs: [preflight, baseline]
+    if: ${{ !cancelled() && needs.preflight.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -594,7 +632,7 @@ jobs:
     # `preflight` is here only so this job can SAY the environment is still
     # standing when the preflight refused (#2347); every other leg already depends
     # on it, so it adds no ordering.
-    needs: [preflight, setup-burst, drive, burst, freshness, ceiling, archive, fault]
+    needs: [preflight, baseline, setup-burst, drive, burst, freshness, ceiling, archive, fault]
     # Judged even when a driver failed: the judge's own job is to say the run was
     # incomplete, and skipping it would leave that unsaid.
     if: always()
@@ -645,6 +683,10 @@ jobs:
           EXPECT_BURST_DRIVERS: ${{ needs.setup-burst.outputs.driver_count }}
           EXPECT_FAULT_PCT: ${{ inputs.fault_pct }}
           EXPECT_FAULT_TARGETS: ${{ inputs.fault_targets }}
+          # This workflow always runs the same day baseline (#3258), so the latency
+          # bar is the multiple of its median; a hand run passes nothing and keeps the
+          # fixed bar.
+          EXPECT_BASELINE: "1"
           # The post confirm recompute arm, named in the report's header (#3258).
           EXPECT_POST_CONFIRM_RECOMPUTE: ${{ inputs.post_confirm_recompute }}
           # The lanes env.loadtest holds back, so the judge knows which lanes should

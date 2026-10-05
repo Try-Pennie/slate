@@ -28,6 +28,7 @@ import {
 } from "./confirm-startup.ts";
 import { DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES } from "../../src/lib/rate-limit-core.ts";
 import { burstControlStrength, type BurstDepthReading } from "./burst-target.ts";
+import { baselineReading, expectBaselineFrom, latencyReportLine, verdictText } from "./latency-bar.ts";
 import { recomputeArmLine } from "../../src/lib/booking/post-confirm-recompute-modes.ts";
 import { REQUEST_CPU_P99_MS, cronCpuShareText, faultPassKeepsFiveXxBar } from "./judge-booking-run.ts";
 import {
@@ -334,6 +335,41 @@ function cronCpuBudgetMs(): number {
 
 const steady = loadDrivers("steady");
 const burst = loadDrivers("burst");
+// #3258: the same day baseline at rest, which the latency bar is judged against.
+// Read from EVERY result file rather than through `loadDrivers`, which would take
+// the first baseline silently and count a corrupt baseline.json as missing:
+// `baselineReading` refuses two, and calls a corrupt one unreadable.
+function resultFileEntries(): {
+  files: { name: string; parsed?: unknown; error?: string }[];
+  listingError?: string;
+} {
+  let names: string[] = [];
+  try {
+    names = readdirSync(RESULTS).filter((f) => f.endsWith(".json"));
+  } catch (err) {
+    // Its own reason (L11): an unlistable directory is not "no baseline file".
+    return { files: [], listingError: (err as Error).message };
+  }
+  return {
+    files: names.map((name) => {
+      try {
+        return { name, parsed: readJson<unknown>(join(RESULTS, name)) };
+      } catch (err) {
+        return { name, error: (err as Error).message };
+      }
+    }),
+  };
+}
+// #3294 review: "1" or unset, and anything else is refused by name.
+// env-ok: EXPECT_BASELINE (optional; "1" when the workflow ran the same day baseline)
+const expectBaselineRead = expectBaselineFrom(process.env.EXPECT_BASELINE);
+if (!expectBaselineRead.ok) {
+  console.error(`FAILED: ${expectBaselineRead.why}.`);
+  process.exit(1);
+}
+const expectBaseline = expectBaselineRead.expected;
+const resultEntries = resultFileEntries();
+const baseline = baselineReading(resultEntries.files, resultEntries.listingError);
 // What the run itself sent on the steady pass. It is the CONTROL the analytics
 // count is polled against: the run knows how many requests it made, so a count far
 // under it means the window has not caught up rather than that the Worker was idle.
@@ -593,9 +629,13 @@ const input: JudgeInput = {
     burstDrivers: wholeNumber(process.env.EXPECT_BURST_DRIVERS, "EXPECT_BURST_DRIVERS"),
     faultPct: wholeNumber(process.env.EXPECT_FAULT_PCT, "EXPECT_FAULT_PCT"),
     faultTargets: expectedFaultTargets.targets,
+    // #3258: read and checked above (expectBaselineFrom); unset is a hand run,
+    // which keeps the fixed bar.
+    baseline: expectBaseline,
   },
   unreadableDriverFiles,
   budgets: { cpuMsP99: cpuBudgetMs(), cronCpuMs: cronCpuBudgetMs() },
+  baseline,
 };
 
 const result = judgeBookingRun(input);
@@ -628,7 +668,7 @@ function burstDepthReading(): BurstDepthReading | null {
 const lines: string[] = [];
 lines.push(`# Booking path load run ${RUN_ID}`);
 lines.push("");
-lines.push(`Judged ${new Date().toISOString()}. Verdict: **${result.verdict.toUpperCase()}**.`);
+lines.push(`Judged ${new Date().toISOString()}. ${verdictText(result)}`);
 lines.push("");
 // #3258: which arm of the post confirm recompute this run was dispatched for, so
 // three back to back reports cannot be read against the wrong arm. The preflight
@@ -664,6 +704,7 @@ if (m) {
   );
   lines.push(`- all responses: p50 ${m.all?.p50 ?? "n/a"}ms, p95 ${m.all?.p95 ?? "n/a"}ms, max ${m.all?.max ?? "n/a"}ms`);
   lines.push(`- successful only: p50 ${m.ok?.p50 ?? "n/a"}ms, p95 ${m.ok?.p95 ?? "n/a"}ms, max ${m.ok?.max ?? "n/a"}ms`);
+  if (m.latency) lines.push(latencyReportLine(m.latency));
   lines.push(`- 5xx: ${m.fiveXx}, no reply at all: ${m.noReply}, timed out at the driver's bound: ${m.timedOut}, write refusals: ${m.writeRefusals}`);
   lines.push(`- refusals by the address Slate saw: ${JSON.stringify(m.refusalsByIp)}`);
   // The number the run exists to produce after #2274, on EVERY run rather than

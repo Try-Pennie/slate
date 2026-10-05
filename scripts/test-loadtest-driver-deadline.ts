@@ -24,6 +24,7 @@
 // Run: node --experimental-strip-types scripts/test-loadtest-driver-deadline.ts
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
+import { BASELINE_BOOKINGS } from "./loadtest/latency-bar.ts";
 import { promisify } from "node:util";
 import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -376,6 +377,71 @@ function gateProblems(yml: string): string[] {
   // Control: the workflow as it was, with the conditions stripped, is caught (L1).
   const stripped = yml.replace(/^ {4}if: \$\{\{ !cancelled\(\).*\n/gm, "");
   assert(gateProblems(stripped).length >= 5, "control: a workflow without the conditions fails the check");
+}
+
+// --- #3258: the same day baseline leg ---------------------------------------------------
+{
+  // The driver in baseline mode: its own plan (a dozen at four a minute), its own
+  // mode on the file the judge gathers by mode, and its own id prefix, so no steady
+  // booking id is reused. Cut short by the test deadline after its first request.
+  const { code, stderr, result: r } = await runDriver("slow", { MODE: "baseline", DRIVER: "0" }, "baseline.json");
+  eq(code, 0, `the baseline driver exits zero ${stderr.slice(0, 300)}`);
+  eq(r?.mode, "baseline", "and writes a baseline file, which the judge gathers apart from the steady pass");
+  eq(r?.planned, BASELINE_BOOKINGS, "planning the baseline's dozen, not a steady driver's plan");
+  assert((r?.attempts.length ?? 0) >= 1, "having booked");
+  assert(r?.attempts.every((a) => a.externalId.startsWith("run-3222-r-")) ?? false, "under the baseline's own id prefix");
+}
+/**
+ * Why the baseline is not wired the way the judge relies on (#3258), as findings, so
+ * the same check can be run on the real files AND on a broken copy (L1): a control
+ * that only re-tests its own mutation proves nothing about the check.
+ */
+function baselineWiringProblems(yml: string, runJudge: string): string[] {
+  const out: string[] = [];
+  const job = (name: string) => new RegExp(`^ {2}${name}:\\n([\\s\\S]*?)(?=^ {2}\\S)`, "m").exec(yml)?.[1] ?? "";
+  const baseline = job("baseline");
+  if (!/MODE: baseline/.test(baseline) || !/OUT: results\/baseline\.json/.test(baseline)) {
+    out.push("the baseline job does not drive baseline mode into baseline.json");
+  }
+  if (!/needs: preflight/.test(baseline)) out.push("the baseline does not wait for the preflight to warm the deployment");
+  const setup = jobGate(yml, "setup-burst");
+  if (!setup.needs.includes("baseline")) out.push("the burst setup does not wait for the baseline to finish at rest");
+  if (!setup.cond.includes("!cancelled()") || !setup.cond.includes("needs.preflight.result == 'success'")) {
+    out.push("the burst setup is skipped behind a failed baseline");
+  }
+  const judge = job("judge");
+  if (!/needs: \[[^\]]*\bbaseline\b/.test(judge)) out.push("the judge does not wait for the baseline");
+  if (!/EXPECT_BASELINE: "1"/.test(judge)) out.push("the judge is not told the run carried a baseline");
+  if (!/baselineReading\(resultEntries\.files, resultEntries\.listingError\)/.test(runJudge)) out.push("the judge entry does not read the baseline through baselineReading");
+  if (!/expectBaselineFrom\(process\.env\.EXPECT_BASELINE\)/.test(runJudge) || !/baseline: expectBaseline,/.test(runJudge)) {
+    out.push("the judge entry does not pass the expectation through");
+  }
+  return out;
+}
+
+{
+  const yml = readFileSync(join(ROOT, ".github/workflows/loadtest.yml"), "utf8");
+  const runJudge = readFileSync(join(ROOT, "scripts/loadtest/run-judge.ts"), "utf8");
+  eq(
+    baselineWiringProblems(yml, runJudge),
+    [],
+    "the baseline runs at rest before the burst, a failed one costs only the speed verdict, and the judge " +
+      "is told to expect it, so a missing file reports the speed as unmeasured rather than as the fixed bar",
+  );
+  // Controls: the REAL check, run on a copy with one piece removed, must go red (L1).
+  const noExpectation = yml.replace(/^ +EXPECT_BASELINE: "1"\n/m, "");
+  assert(noExpectation !== yml, "control setup: the expectation line was really removed");
+  eq(
+    baselineWiringProblems(noExpectation, runJudge),
+    ["the judge is not told the run carried a baseline"],
+    "control: a judge job without EXPECT_BASELINE is caught, and only that",
+  );
+  const noPass = runJudge.replace(/baseline: expectBaseline,/, "baseline: false,");
+  eq(
+    baselineWiringProblems(yml, noPass),
+    ["the judge entry does not pass the expectation through"],
+    "control: a judge entry that drops the expectation is caught",
+  );
 }
 
 finish();
