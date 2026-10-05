@@ -18,8 +18,10 @@
 //     `nulls not distinct`. Postgres treats NULLs as distinct in a unique
 //     constraint, so a nullable column holds any number of NULL rows, and those
 //     can swap between page requests like any other tie.
-// Nullability is followed through `not null` on the column, `alter column ... set
-// not null` and `drop not null`. An index column's modifiers (`asc`, `desc`,
+// Nullability is followed through `not null` on the column, a serial type or an
+// identity column (NOT NULL implicitly), `alter column ... set not null` and `drop
+// not null`, and a column added by `alter table ... add [column]` is read like one
+// in `create table`. An index column's modifiers (`asc`, `desc`,
 // `collate`, `nulls first|last`, an operator class) are not part of its name. The
 // word `unique` inside a string or a parenthesised expression (a default, a check)
 // is not a constraint. A constraint later dropped is not tracked; every key in use
@@ -140,7 +142,10 @@ function columnDef(f: TableFacts, item: string): void {
   if (/^(constraint|check|foreign|exclude|like)$/i.test(name)) return;
   const words = bareWords(t.slice(m[0].length));
   const pk = /\bprimary\s+key\b/i.test(words);
-  if (pk || /\bnot\s+null\b/i.test(words)) f.notNull.set(name, true);
+  // serial types and identity columns are NOT NULL without saying so.
+  const implicitNotNull =
+    /\b(?:small|big)?serial[248]?\b/i.test(words) || /\bgenerated\s+(?:always|by\s+default)\s+as\s+identity\b/i.test(words);
+  if (pk || implicitNotNull || /\bnot\s+null\b/i.test(words)) f.notNull.set(name, true);
   else if (!f.notNull.has(name)) f.notNull.set(name, false);
   if (pk) f.declared.push({ cols: [name], unconditional: true });
   else if (/\bunique\b/i.test(words)) {
@@ -191,6 +196,9 @@ export function uniqueSetsFromMigrations(sources: string[]): UniqueSets {
             if (/^\s*(?:constraint\s+[\w"]+\s+)?primary/i.test(addCon[1])) {
               for (const col of c.cols) f.notNull.set(col, true);
             }
+          } else if (!/^\s*(?:constraint|primary|unique|check|foreign|exclude)\b/i.test(addCon[1])) {
+            // ADD without the COLUMN keyword is a column add too.
+            columnDef(f, addCon[1]);
           }
           continue;
         }
