@@ -1217,6 +1217,9 @@ export interface BookingFailureRateState {
     /** Optional: a sample written before 0113 has none, which reads as "not
      *  measured in that interval", not as zero refusals. */
     refusals?: Record<string, number>;
+    /** The reminder lane's row only: bookings released to be retried, by id, with
+     *  the code each failed with. Optional, so older samples read as none. */
+    retried?: Record<string, string>;
   }[];
   updated_at: string;
 }

@@ -23,6 +23,9 @@
  * the fixture should be the state that embarrasses it.
  */
 import { DateTime } from "luxon";
+import { EmailSendError } from "@/lib/notify/email-errors";
+import { shortErrorReason } from "@/lib/notify/error-text";
+import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
 import { ALERT_CATALOG, type AlertKind } from "@/lib/notify/alert-catalog";
 import { formatRetiredKeyAlert } from "@/lib/booking/retired-keys";
 import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
@@ -3900,13 +3903,79 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   },
 
   // --- the booking layer's incidents ----------------------------------------
+  // The REAL builder and the REAL short reason, fed the errors `sendGmailEmail`
+  // throws, never a copy of either's wording (L41): a preview showing text that is
+  // not what ships would be worse than no preview. One state per disposition, since
+  // each says something different about whether the lead will still be reminded
+  // (2026-10-05). A send that never reached Gmail with the call more than an hour
+  // away pages nobody, so it has no state here.
   {
-    key: "booking_reminder_failed",
-    state: "a lead's 24 hour reminder that did not go out",
+    key: "booking_reminder_failed:*",
+    state: "too late to try again: the token mint timed out and the call is within the hour",
     channel: "alert",
-    // The REAL builder, never a copy of its wording (L41): a preview showing text
-    // that is not what ships would be worse than no preview.
-    text: reminderFailedAlert("bk_8f21c4", "Gmail send failed: 503"),
+    text: reminderFailedAlert(
+      "b7f1c2e4-9a3d-4c88-b0f2-15ac7d9e6431",
+      "too_late",
+      shortErrorReason(
+        new EmailSendError("google token mint did not answer within 8000ms", {
+          outcome: "never_sent",
+          stage: "token",
+          transient: true,
+          cause: new DeadlineExceededError("google token mint", 8000),
+        }),
+      ),
+    ),
+  },
+  {
+    key: "booking_reminder_failed:*",
+    state: "refused, and not resent until the mailbox delegation is repaired",
+    channel: "alert",
+    text: reminderFailedAlert(
+      "b7f1c2e4-9a3d-4c88-b0f2-15ac7d9e6431",
+      "refused",
+      shortErrorReason(
+        new EmailSendError("Gmail token unavailable: 401 unauthorized_client", {
+          outcome: "never_sent",
+          stage: "token",
+          status: 401,
+          transient: false,
+        }),
+      ),
+    ),
+  },
+  {
+    key: "booking_reminder_failed:*",
+    state: "may have gone out, so it is not resent",
+    channel: "alert",
+    text: reminderFailedAlert(
+      "b7f1c2e4-9a3d-4c88-b0f2-15ac7d9e6431",
+      "unknown",
+      shortErrorReason(
+        new EmailSendError('Gmail send failed: 503 {"error":{"errors":[{"reason":"backendError"}]}}', {
+          outcome: "unknown",
+          stage: "post",
+          status: 503,
+          transient: true,
+        }),
+      ),
+    ),
+  },
+  {
+    key: "booking_reminder_failed:*",
+    state: "a retry was due and the claim could not be handed back",
+    channel: "alert",
+    text: reminderFailedAlert(
+      "b7f1c2e4-9a3d-4c88-b0f2-15ac7d9e6431",
+      "not_released",
+      shortErrorReason(
+        new EmailSendError("Gmail send failed: 429 rateLimitExceeded", {
+          outcome: "refused",
+          stage: "post",
+          status: 429,
+          transient: true,
+        }),
+      ),
+    ),
   },
   // #2496. The one above and the three below are the whole point of the issue: they
   // are the same fault at two very different sizes, and they have to READ that way
@@ -3921,6 +3990,22 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       pct: 100,
       windowMinutes: 240,
       topCodes: [{ code: "not_authorised", count: 24 }],
+    }),
+  },
+  {
+    key: "booking_reminders_failing",
+    state: "most of the failures never reached Gmail and are being retried",
+    channel: "alert",
+    text: formatReminderFailureRateAlert({
+      attempts: 30,
+      failures: 15,
+      retrying: 12,
+      pct: 50,
+      windowMinutes: 240,
+      topCodes: [
+        { code: "token_unavailable", count: 12 },
+        { code: "provider_unavailable", count: 3 },
+      ],
     }),
   },
   {

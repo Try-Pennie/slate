@@ -733,9 +733,17 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "message, never two (Dan, 2026-10-03).",
   },
   {
-    key: "booking_reminder_failed",
+    key: "booking_reminder_failed:*",
     kind: "incident",
-    why: "That lead's 24 hour reminder did not go out and will not: the send is deliberately not retried, because a retry after a timeout can deliver a second copy. There is no healthy state to announce, only a call somebody was not reminded about (#2359).",
+    suffix: "booking",
+    why:
+      "That lead's 24 hour reminder did not go out, or may not have, and nothing will send it: " +
+      "it was too late to try again, Google refused it, the send cannot say whether Gmail accepted " +
+      "it (a retry could deliver a second copy), or the retry could not be arranged. A send that " +
+      "provably never reached Gmail while the call is more than an hour away is retried instead and " +
+      "never pages. There is no healthy state to announce, only a call somebody was not reminded " +
+      "about (#2359). Keyed per booking, so one lost reminder cannot hold back another's page " +
+      "(2026-10-05).",
   },
   {
     key: "busy_block_write_through",

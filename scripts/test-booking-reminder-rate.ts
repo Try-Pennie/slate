@@ -1,9 +1,9 @@
 // Telling a MASS reminder failure apart from a single one (#2496). Run:
 //   node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-booking-reminder-rate.ts
 //
-// `booking_reminder_failed` fires per booking and is throttled at six hours, so one
-// lead's refused address and EVERY reminder failing arrive as one message at the same
-// rate (L77: an error classified as expected must still be counted against a RATE, or
+// `booking_reminder_failed:<id>` fires per booking, so one lead's refused address and
+// EVERY reminder failing look alike one page at a time, with nothing saying how many
+// share a cause (L77: an error classified as expected must still be counted against a RATE, or
 // a benign instance and a systemic outage travel the same path and the second stays
 // invisible for as long as it lasts).
 //
@@ -21,10 +21,12 @@ import {
   classifyReminderSendFailure,
   formatReminderFailureRateAlert,
   formatReminderFailureRateAllClear,
+  judgeReminderWindow,
   REMINDER_FAILURE_RATE_KEY,
   runReminderFailureRateCheck,
   type ReminderTick,
 } from "../src/lib/booking/reminder-rate.ts";
+import { EmailSendError } from "../src/lib/notify/email-errors.ts";
 import { SHIPPED_REMINDER_FAILURE_RATE_THRESHOLDS } from "../src/lib/monitor/failure-rate-thresholds.ts";
 import type { RateWindowState } from "../src/lib/monitor/booking-failure-rate.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -254,7 +256,7 @@ function run(
 // --- a send failure is classified into a bounded vocabulary -----------------------
 //
 // Keying the window's reasons on the provider's raw message would give the map one
-// key per message and make the top reason meaningless (L131). The six codes are
+// key per message and make the top reason meaningless (L131). The codes are
 // chosen because they send different people to do different things: a refused
 // mailbox is a delegation repair, a refused recipient is one lead's address.
 {
@@ -296,6 +298,141 @@ function run(
   // A code nobody can read must still be a code: dropping it would shrink the
   // denominator of the very share this exists to measure (L215).
   eq(classifyReminderSendFailure(""), "unclassified", "an empty message is still counted");
+}
+
+// --- a typed send failure is classified by what it PROVES (2026-10-05) -----------
+//
+// The incident's mint timeout and a mint refusal both fell to `unclassified`, which
+// told the reader nothing about the system to look at. The typed error is read first
+// and the message is only the fallback for a plain Error.
+{
+  const typed = (
+    outcome: "never_sent" | "refused" | "unknown",
+    stage: "compose" | "token" | "post",
+    status: number | null,
+    transient: boolean,
+    message = "x",
+  ) => new EmailSendError(message, { outcome, stage, status, transient });
+
+  eq(
+    classifyReminderSendFailure(typed("never_sent", "token", null, true, "google token mint did not answer within 8000ms")),
+    "token_unavailable",
+    "a mint that timed out is token_unavailable: nothing reached Gmail",
+  );
+  eq(
+    classifyReminderSendFailure(typed("never_sent", "token", 503, true)),
+    "token_unavailable",
+    "and so is a token endpoint 5xx",
+  );
+  eq(
+    classifyReminderSendFailure(typed("never_sent", "token", 403, false)),
+    "not_authorised",
+    "a token endpoint 4xx is the mailbox delegation, the existing not_authorised",
+  );
+  eq(
+    classifyReminderSendFailure(typed("never_sent", "token", 400, false)),
+    "not_authorised",
+    "including a 400, which is the token endpoint refusing the grant, never the lead's address",
+  );
+  eq(
+    classifyReminderSendFailure(typed("refused", "post", 429, true)),
+    "rate_limited",
+    "a Gmail 429 is still rate_limited",
+  );
+  eq(
+    classifyReminderSendFailure(typed("refused", "post", 400, false)),
+    "recipient_refused",
+    "a Gmail 400 is still the address",
+  );
+  eq(
+    classifyReminderSendFailure(typed("unknown", "post", 503, true)),
+    "provider_unavailable",
+    "a Gmail 5xx is still Google",
+  );
+  eq(
+    classifyReminderSendFailure(typed("unknown", "post", null, true, "Gmail send failed: no response (fetch failed)")),
+    "unclassified",
+    "a POST with no answer has no status to classify by",
+  );
+  eq(
+    classifyReminderSendFailure(typed("never_sent", "compose", null, false, "sendGmailEmail: no recipients")),
+    "no_recipients",
+    "a compose failure with nobody to send to is ours",
+  );
+  // The fallback, for a plain Error carrying the mint's own sentences.
+  eq(
+    classifyReminderSendFailure(new Error("google token mint did not answer within 8000ms")),
+    "token_unavailable",
+    "a plain mint deadline is recognised by the deadline's own label",
+  );
+  eq(
+    classifyReminderSendFailure(new Error('Delegated token failed for a@b.com: 403 {"error":"unauthorized_client"}')),
+    "not_authorised",
+    "and a plain mint refusal by the mint's own wording",
+  );
+}
+
+// --- one booking retried every tick is ONE lead, not a wave (2026-10-05) ----------
+//
+// A send that never reached Gmail is released and tried again five minutes later,
+// so one stuck booking appears in every sample of a four hour window. Counted per
+// send it would be 48 failures and trip the share on its own, reporting 48 leads
+// who are one. Counted per booking it is one failure.
+{
+  const retriedTick = (id: string): ReminderTick => ({
+    attempts: 1,
+    failures: 1,
+    byCode: { token_unavailable: 1 },
+    retried: { [id]: "token_unavailable" },
+  });
+  let state: RateWindowState | null = advanceReminderWindow(null, tick(20, 0), DAY, NOW - 200 * MINUTE, TH.windowMs);
+  for (let i = 0; i < 40; i++) {
+    state = advanceReminderWindow(state, retriedTick("bk-stuck"), DAY, NOW - (195 - i * 5) * MINUTE, TH.windowMs);
+  }
+  const v = judgeReminderWindow(state!, NOW, TH);
+  eq(v.attempts, 21, "the forty retries of one booking count as one attempt beside the twenty sends");
+  eq(v.failures, 1, "and as one failure");
+  eq(v.retrying, 1, "naming one booking being retried");
+  eq(v.status, "healthy", "so one stuck booking cannot page as a wave");
+
+  // The control: fifteen DIFFERENT bookings released is a wave (a mint outage for
+  // every mailbox), and must still page. Without it the collapse could be hiding
+  // every retried failure rather than collapsing repeats.
+  let wide: RateWindowState | null = advanceReminderWindow(null, tick(20, 0), DAY, NOW - 100 * MINUTE, TH.windowMs);
+  for (let i = 0; i < 15; i++) {
+    wide = advanceReminderWindow(wide, retriedTick(`bk-${i}`), DAY, NOW - (95 - i * 5) * MINUTE, TH.windowMs);
+  }
+  const w = judgeReminderWindow(wide!, NOW, TH);
+  eq([w.attempts, w.failures, w.retrying], [35, 15, 15], "fifteen bookings retried count fifteen times");
+  eq(w.status, "breach", "and are a wave");
+  eq(w.status === "breach" ? w.topCodes[0]?.code : "", "token_unavailable", "named by the code they failed with");
+}
+
+// --- the page says which failed leads are being retried ---------------------------
+{
+  const page = formatReminderFailureRateAlert({
+    attempts: 30,
+    failures: 15,
+    retrying: 12,
+    pct: 50,
+    windowMinutes: 240,
+    topCodes: [{ code: "token_unavailable", count: 12 }],
+  });
+  assert(page.includes("15 of 30"), `the page still says what it measured (${page})`);
+  assert(/12 (of them )?never reached Gmail/.test(page), `and that 12 never reached Gmail (${page})`);
+  assert(/3 leads? will not/.test(page), `and that the other 3 will not be sent one (${page})`);
+  assert(!/none coming: a failed send is deliberately not retried/.test(page), "the old claim that nothing is retried is gone");
+  assert(page.includes("token_unavailable"), "and the code is named");
+
+  const none = formatReminderFailureRateAlert({
+    attempts: 24,
+    failures: 24,
+    pct: 100,
+    windowMinutes: 240,
+    topCodes: [{ code: "not_authorised", count: 24 }],
+  });
+  assert(!/never reached Gmail/.test(none), `with nothing retried, no retry is claimed (${none})`);
+  assert(/24 leads will not/.test(none), `and every failed lead is said to get none (${none})`);
 }
 
 // --- the copy says what was measured, and names what to do ------------------------

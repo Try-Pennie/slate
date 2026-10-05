@@ -12,6 +12,7 @@ import {
   type DueBooking,
 } from "../src/lib/booking/reminder-send.ts";
 import { PENNIE_CARD_LOGO } from "../src/lib/booking/pennie-card-logo.ts";
+import { EmailSendError } from "../src/lib/notify/email-errors.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const HOUR = 60 * 60_000;
@@ -45,7 +46,10 @@ function spy(over: Partial<ReminderDeps> = {}) {
   const order: string[] = [];
   const sent: { to: string; subject: string }[] = [];
   const alerts: string[] = [];
+  const alertIds: string[] = [];
   const warnings: string[] = [];
+  const warned: { msg: string; bookingId: string | null; err: unknown; fields: Record<string, unknown> }[] = [];
+  const released: { id: string; claimedForIso: string; restoreTo: string | null }[] = [];
   const deps: ReminderDeps = {
     now: () => NOW,
     loadDue: async () => [due()],
@@ -53,14 +57,21 @@ function spy(over: Partial<ReminderDeps> = {}) {
       order.push(`claim:${id}`);
       return true;
     },
+    // A release that lands, by default; the cases that need it to lose say so.
+    release: async (id, claimedForIso, restoreTo) => {
+      order.push(`release:${id}`);
+      released.push({ id, claimedForIso, restoreTo });
+      return true;
+    },
     send: async (msg) => {
       order.push(`send:${msg.to[0]}`);
       sent.push({ to: msg.to[0]!, subject: msg.subject });
       return "gmail-id";
     },
-    alert: async (text) => {
+    alert: async (bookingId, text) => {
       order.push("alert");
       alerts.push(text);
+      alertIds.push(bookingId);
     },
     // No calling number known by default, so the suites above judge the send path
     // exactly as it was; the calling number has its own section at the end.
@@ -73,12 +84,13 @@ function spy(over: Partial<ReminderDeps> = {}) {
     },
     // No photo held by default; the photo has its own section at the end.
     readAdvisorPhotos: async () => new Map(),
-    warn: (msg) => {
+    warn: (msg, bookingId, err, fields) => {
       warnings.push(msg);
+      warned.push({ msg, bookingId, err, fields: fields ?? {} });
     },
     ...over,
   };
-  return { deps, order, sent, alerts, warnings };
+  return { deps, order, sent, alerts, alertIds, warnings, warned, released };
 }
 
 // --- the claim comes BEFORE the send, which is what makes a crash safe -----------
@@ -737,6 +749,189 @@ for (const [label, row] of unusable) {
   eq((await senderFor(null)).join(","), "Pennie", "#2985: no name on record reads as Pennie");
   eq((await senderFor("jordan@trypennie.com")).join(","), "Pennie", "#2985: an address in the name field reads as Pennie, not as a name");
   eq((await senderFor("")).join(","), "Pennie", "#2985: an empty name reads as Pennie");
+}
+
+// --- a send that provably never reached Gmail is RELEASED and tried again ---------
+//
+// 2026-10-05 13:30 UTC: one reminder's token mint timed out. The mint runs before
+// the Gmail POST, so nothing was delivered, yet the claim was kept like any other
+// failure and the lead was never reminded. A failure that PROVES nothing went out,
+// and that could pass, now hands the claim back so the next tick sends it, while the
+// call is still more than an hour away (the floor that lands before Regal's text).
+// Everything else keeps the claim, so the default stays the safe direction: a plain
+// Error, or an outcome that might have been delivered, is never retried.
+const mintTimeout = () =>
+  new EmailSendError("google token mint did not answer within 8000ms", {
+    outcome: "never_sent",
+    stage: "token",
+    transient: true,
+  });
+const failingWith = (err: unknown) => async () => {
+  throw err;
+};
+{
+  const s = spy({ send: failingWith(mintTimeout()) });
+  const run = await runBookingReminders(s.deps);
+  eq(s.released.length, 1, "the claim is released");
+  eq(
+    s.released[0],
+    { id: "bk-1", claimedForIso: due().startsAtIso, restoreTo: null },
+    "for this booking, conditional on the start it claimed, back to the value the tick read",
+  );
+  eq(s.order.join(" -> "), "claim:bk-1 -> release:bk-1", "after the claim and the failed send, never before");
+  eq(s.alerts.length, 0, "nobody is paged: the lead is still going to be reminded");
+  eq(run.failed, 1, "it still counts as a failed send");
+  eq(run.byCode.token_unavailable, 1, "classified as token_unavailable");
+  eq(run.retrying, 1, "and counted as retrying");
+  eq(run.retried, { "bk-1": "token_unavailable" }, "naming the booking, so the share can count it once");
+  const line = s.warned.find((w) => w.bookingId === "bk-1");
+  assert(line !== undefined, "the failure is logged against the booking");
+  eq(line?.fields.code, "token_unavailable", "with its code");
+  eq(line?.fields.outcome, "never_sent", "its outcome");
+  eq(line?.fields.claim_released, true, "and that the claim was released");
+  assert(line?.err instanceof Error, "with the Error itself passed through for the log");
+  assert(
+    !JSON.stringify(line?.fields).includes("lead@example.com"),
+    "and no contact data in the fields",
+  );
+}
+
+// --- inside the floor it is too late, and says so ---------------------------------
+{
+  const s = spy({
+    loadDue: async () => [due({ startsAtIso: new Date(NOW + 40 * 60_000).toISOString() })],
+    send: failingWith(mintTimeout()),
+  });
+  const run = await runBookingReminders(s.deps);
+  eq(s.released.length, 0, "a call forty minutes away is not retried");
+  eq(run.retrying, 0, "and nothing is retrying");
+  eq(s.alerts.length, 1, "so the lost reminder pages");
+  assert(/nothing reached Gmail/i.test(s.alerts[0]!), `saying nothing was sent (${s.alerts[0]})`);
+  assert(/less than an hour/i.test(s.alerts[0]!), `and that it is too late to try again (${s.alerts[0]})`);
+  assert(!/may have/i.test(s.alerts[0]!), "and never that it may have gone out, which it provably did not");
+  eq(s.alertIds, ["bk-1"], "keyed to the booking, so it cannot silence another booking's page");
+  assert(/did not answer within 8 seconds/.test(s.alerts[0]!), `with the short reason (${s.alerts[0]})`);
+}
+
+// --- a refusal that will not pass keeps the claim ----------------------------------
+{
+  const refused = new EmailSendError("Gmail send failed: 400 Invalid To header", {
+    outcome: "refused",
+    stage: "post",
+    status: 400,
+    transient: false,
+  });
+  const s = spy({ send: failingWith(refused) });
+  const run = await runBookingReminders(s.deps);
+  eq(s.released.length, 0, "a refused address is not retried: it would be refused again");
+  eq(run.byCode.recipient_refused, 1, "classified as the address");
+  eq(s.alerts.length, 1, "and pages");
+  assert(/refused/i.test(s.alerts[0]!), `saying it was refused (${s.alerts[0]})`);
+  assert(/until/i.test(s.alerts[0]!) && /repaired/i.test(s.alerts[0]!), `and that it waits on a repair (${s.alerts[0]})`);
+}
+
+// --- a refusal that can pass is retried, like a send that never left ----------------
+{
+  const limited = new EmailSendError("Gmail send failed: 429 rateLimitExceeded", {
+    outcome: "refused",
+    stage: "post",
+    status: 429,
+    transient: true,
+  });
+  const s = spy({ send: failingWith(limited) });
+  const run = await runBookingReminders(s.deps);
+  eq(s.released.length, 1, "a 429 was not delivered and can pass, so it is retried");
+  eq(run.retried, { "bk-1": "rate_limited" }, "under its own code");
+  eq(s.alerts.length, 0, "without a page");
+}
+
+// --- an outcome that may have been delivered is NEVER retried -----------------------
+{
+  const unknown = new EmailSendError("Gmail send failed: 503 backendError", {
+    outcome: "unknown",
+    stage: "post",
+    status: 503,
+    transient: true,
+  });
+  const s = spy({ send: failingWith(unknown) });
+  const run = await runBookingReminders(s.deps);
+  eq(s.released.length, 0, "a 503 may have been accepted, so the claim is kept even though it is transient");
+  eq(run.retrying, 0, "nothing is retrying");
+  eq(s.alerts.length, 1, "and it pages");
+  assert(/may/i.test(s.alerts[0]!), `saying it may have gone out (${s.alerts[0]})`);
+  assert(/second copy/i.test(s.alerts[0]!), `and why it is not resent (${s.alerts[0]})`);
+}
+
+// --- a plain Error keeps the claim: nothing it says is proof -----------------------
+{
+  const s = spy({ send: failingWith(new Error("google token mint did not answer within 8000ms")) });
+  const run = await runBookingReminders(s.deps);
+  eq(s.released.length, 0, "release is never called for an error that is not typed");
+  eq(run.retrying, 0, "so nothing is retrying");
+  eq(s.alerts.length, 1, "and the lost reminder pages");
+  assert(/may/i.test(s.alerts[0]!), `as one that may have gone out, since nothing proves otherwise (${s.alerts[0]})`);
+}
+
+// --- a release that loses its race, or throws, keeps the claim ---------------------
+{
+  const lost = spy({ send: failingWith(mintTimeout()), release: async () => false });
+  const lostRun = await runBookingReminders(lost.deps);
+  eq(lostRun.retrying, 0, "a release that changed no row is not counted as retrying");
+  eq(lostRun.retried, {}, "and names no booking to the share");
+  assert(lost.warnings.some((w) => /not released/i.test(w)), "it is logged");
+  eq(lost.alerts.length, 0, "and not paged: the row no longer holds the claim this tick wrote");
+
+  const thrown = spy({
+    send: failingWith(mintTimeout()),
+    release: async () => {
+      throw new Error("release update failed");
+    },
+  });
+  const thrownRun = await runBookingReminders(thrown.deps);
+  eq(thrownRun.retrying, 0, "a release that threw is not counted as retrying");
+  assert(thrown.warnings.some((w) => /not released/i.test(w)), "it is logged");
+  eq(thrown.alerts.length, 1, "and pages, because the claim stands and nothing will retry it");
+  assert(/could not be/i.test(thrown.alerts[0]!), `saying the retry could not be arranged (${thrown.alerts[0]})`);
+}
+
+// --- two ticks against one store: released, then sent exactly once ----------------
+//
+// The release is a compare and swap like the claim, so the property is end to end:
+// tick one claims, fails before Gmail and hands the claim back; tick two claims
+// again and sends. One email, and the store ends holding the reminded start.
+{
+  const startsAtIso = due().startsAtIso;
+  const store = { reminderSentFor: null as string | null };
+  let sends = 0;
+  const delivered: string[] = [];
+  const s = spy({
+    loadDue: async () => [due({ reminderSentForIso: store.reminderSentFor })],
+    claim: async (_id, start) => {
+      if (store.reminderSentFor === start) return false;
+      store.reminderSentFor = start;
+      return true;
+    },
+    release: async (_id, claimedForIso, restoreTo) => {
+      if (store.reminderSentFor !== claimedForIso) return false;
+      store.reminderSentFor = restoreTo;
+      return true;
+    },
+    send: async (msg) => {
+      sends += 1;
+      if (sends === 1) throw mintTimeout();
+      delivered.push(msg.to[0]!);
+      return "gmail-id";
+    },
+  });
+  const first = await runBookingReminders(s.deps);
+  eq(first.retrying, 1, "tick one: the mint timed out and the claim went back");
+  eq(store.reminderSentFor, null, "so the store no longer records a reminder");
+  const second = await runBookingReminders(s.deps);
+  eq(second.sent, 1, "tick two: sent");
+  eq(delivered, ["lead@example.com"], "exactly one email reached the lead");
+  eq(store.reminderSentFor, startsAtIso, "and the store records the start it was sent about");
+  const third = await runBookingReminders(s.deps);
+  eq(third.attempted, 0, "a third tick finds nothing due");
 }
 
 finish();

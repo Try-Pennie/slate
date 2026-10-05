@@ -167,9 +167,9 @@ export const SHIPPED_FAILURE_RATE_THRESHOLDS: RateThresholds = deriveFailureRate
  * When a wave of reminder emails that did not go out is a page rather than one
  * lead's bad address (#2496).
  *
- * `booking_reminder_failed` fires per booking and is throttled at six hours, so a
- * single refused recipient and every reminder in the roster failing arrive as one
- * message at the same rate. The two send different people to do different things,
+ * `booking_reminder_failed:<id>` fires per booking, so a single refused recipient
+ * is one message and every reminder in the roster failing is one per lead, none of
+ * which says how many share a cause. The two send different people to do different things,
  * so the lane measures a SHARE as well, in the same shape as the booking failure
  * rate above and judged by the same `judgeFailureRate`.
  *

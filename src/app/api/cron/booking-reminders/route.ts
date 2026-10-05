@@ -39,13 +39,16 @@ export const dynamic = "force-dynamic";
  */
 
 /**
- * At most one page every six hours about a broken send path, so a bad afternoon is
- * one message rather than one per lead.
+ * The cooldown on both keys this lane can send, and they say different things: the
+ * per booking incident names one booking, and the share names a wave (#2496).
  *
- * It applies to BOTH keys this lane can send, and they say different things: the per
- * booking incident names one booking, and the share names a wave (#2496). Six hours
- * is deliberate for the second as well, since the condition it reports lasts until
- * somebody repairs it and repeating that hourly is how a page stops being read (L36).
+ * The incident is keyed by booking (`booking_reminder_failed:<id>`, 2026-10-05), so
+ * this bounds how often ONE booking can page, not how often the lane can. Under a
+ * single shared key the first lost reminder held every other booking's page back for
+ * six hours, and a second lead could go unreminded with nobody told. A bad afternoon
+ * is still said once as a wave, by the share. Six hours is deliberate for the share,
+ * since the condition it reports lasts until somebody repairs it and repeating that
+ * hourly is how a page stops being read (L36).
  */
 const REMINDER_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
@@ -188,12 +191,33 @@ export async function GET(req: NextRequest) {
         | null;
       return !!claimed;
     },
+    // Hand a claim back after a send that provably delivered nothing (2026-10-05).
+    // The mirror of the claim: back to the value THIS tick read, and only where the
+    // row still holds the start this tick claimed, so it can undo its own claim and
+    // nothing else. The timestamps go through `.eq`, never a filter string, for the
+    // reason the claim gives.
+    release: async (id, claimedForIso, restoreTo) => {
+      const released = unwrap(
+        await db
+          .from("bookings")
+          .update({ reminder_sent_for: restoreTo })
+          .eq("id", id)
+          .eq("reminder_sent_for", claimedForIso)
+          .select("id")
+          .maybeSingle(),
+        "release booking reminder claim",
+      ) as { id: string } | null;
+      return !!released;
+    },
     send: (msg) => sendGmailEmail(msg),
-    alert: async (text) => {
-      // alert-key: booking_reminder_failed
+    alert: async (bookingId, text) => {
+      // alert-key: booking_reminder_failed:*
       // alert-text-ok: the text is built by `reminderFailedAlert`, which carries a
       // short reason rather than the provider's body.
-      await sendThrottledAlert("booking_reminder_failed", REMINDER_ALERT_COOLDOWN_MS, text);
+      // Keyed per booking (2026-10-05): under one shared key the first lost reminder
+      // held every other booking's page back for the six hour cooldown, so a second
+      // lead could go unreminded with nobody told. A wave is the share's job below.
+      await sendThrottledAlert(`booking_reminder_failed:${bookingId}`, REMINDER_ALERT_COOLDOWN_MS, text);
     },
     // #1334: one Salesforce read per tick (a token exchange and one SOQL query for
     // the leads being sent to). It throws on a refusal, and the lane then sends
@@ -213,21 +237,35 @@ export async function GET(req: NextRequest) {
       const event = await getEventOnPrimary(agentEmail, eventId);
       return event === null ? null : (event.description ?? "");
     },
-    warn: (msg, bookingId, err) =>
-      log.warn("booking-reminder", {
-        msg,
-        ...(bookingId ? { booking_id: bookingId } : {}),
-        reason: shortErrorReason(err),
-      }),
+    // Every failed send arrives here with its booking id, code, outcome and whether
+    // the claim was released, and the Error itself as the third argument so the log
+    // keeps its cause (the token endpoint's body, the deadline) whole. Never contact
+    // data: the lane passes ids and codes only.
+    warn: (msg, bookingId, err, fields) =>
+      log.warn(
+        "booking-reminder",
+        {
+          msg,
+          ...(bookingId ? { booking_id: bookingId } : {}),
+          ...(fields ?? {}),
+          reason: shortErrorReason(err),
+        },
+        err,
+      ),
   });
 
   if (run.failed > 0) {
-    log.error("booking-reminder", { msg: "reminders failed to send", failed: run.failed }, new Error("reminder send failed"));
+    log.error(
+      "booking-reminder",
+      { msg: "reminders failed to send", failed: run.failed, retrying: run.retrying },
+      new Error("reminder send failed"),
+    );
   }
   log.info("booking-reminder", {
     msg: "cycle",
     sent: run.sent,
     failed: run.failed,
+    retrying: run.retrying,
     skipped: run.skipped,
     held: run.held,
     lost: run.lost,
@@ -243,10 +281,12 @@ export async function GET(req: NextRequest) {
   /**
    * Is this ONE lead's reminder, or every lead's? (#2496)
    *
-   * The per booking incident above cannot answer that: it is throttled at six hours,
-   * so one refused address and a total outage arrive as the same single message at
-   * the same rate. This folds the tick into a rolling window and pages on the SHARE,
-   * which is the only thing that can tell the two apart.
+   * The per booking incident above cannot answer that: it names one booking each
+   * time, so one refused address is one page and a total outage is a page per lead
+   * with nothing saying they share a cause. This folds the tick into a rolling window
+   * and pages on the SHARE, which is the only thing that can tell the two apart.
+   * Sends released to be retried ride along by booking id, so one booking retried
+   * every tick counts once rather than once per tick (`judgeReminderWindow`).
    *
    * It runs AFTER the sends and cannot stop them: every failure inside it is caught
    * and reported, because a monitor bolted onto a lane that emails real people must
@@ -255,7 +295,7 @@ export async function GET(req: NextRequest) {
   const rate = await runReminderFailureRateCheck({
     nowMs: now,
     day: reminderRateDay(now),
-    tick: { attempts: run.attempted, failures: run.failed, byCode: run.byCode },
+    tick: { attempts: run.attempted, failures: run.failed, byCode: run.byCode, retried: run.retried },
     thresholds: SHIPPED_REMINDER_FAILURE_RATE_THRESHOLDS,
     cooldownMs: REMINDER_ALERT_COOLDOWN_MS,
     loadState: loadReminderRateState,
@@ -263,7 +303,7 @@ export async function GET(req: NextRequest) {
     notify: async (key, cooldownMs, text) => {
       // alert-key: booking_reminders_failing
       // alert-text-ok: the text is built by `formatReminderFailureRateAlert`, which
-      // carries counts and one of six codes rather than the provider's body.
+      // carries counts and `ReminderFailureCode`s rather than the provider's body.
       await sendThrottledAlert(key, cooldownMs, text);
     },
     // alert-key: booking_reminders_failing
