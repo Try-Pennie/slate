@@ -31,6 +31,7 @@
 // must win while every other one is told SLOT_TAKEN well inside the budget.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-confirm-contention.ts
+import { refusalTraceOf } from "../src/lib/booking/refusal-trace.ts";
 import {
   bookViaApi,
   createBooking,
@@ -417,6 +418,16 @@ async function main() {
     assert(
       err instanceof RaceLostRefusalError && err.lostRaces === 1 && err.boundHit === false,
       `refusal: the follower is refused as one lost race, bound not hit (got ${String(err)})`,
+    );
+    // #3272: and it says so: the stage is the line's, with the instant and bucket it
+    // asked for and what the confirm ahead of it was refused as.
+    const t = refusalTraceOf(err);
+    assert(
+      t?.stage === "follower" &&
+        t.requestedStart === lead(1).startIso &&
+        t.bucketCode === lead(1).bucketCode &&
+        t.leaderRefusal === "race",
+      `refusal: the follower's trace names its stage, instant and bucket (got ${JSON.stringify(t)})`,
     );
   }
 

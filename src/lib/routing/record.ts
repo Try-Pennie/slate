@@ -2,7 +2,8 @@ import { isMisroute } from "./explain.ts";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import type { Attributes, Criteria, RoutingExclusion, RoutingDecision } from "@/lib/db/types";
+import type { Attributes, Criteria, RoutingExclusion, RoutingDecision, RoutingStageCount } from "@/lib/db/types";
+import type { RecordedRefusalStage } from "@/lib/booking/refusal-trace";
 import { log } from "@/lib/log";
 import { misrouteAlert } from "@/lib/notify/misc-alert-copy";
 
@@ -33,6 +34,13 @@ export interface RecordRoutingDecisionInput {
   rungsDropped: number;
   requestedTier: string | null;
   bookedTier: string | null;
+  /** #3272, on a refused confirm: the instant asked for, the stage that refused it,
+   *  and per rung what each stage left. Absent on a booked decision. */
+  requestedStart?: string | null;
+  refusalStage?: RecordedRefusalStage | null;
+  /** The refused lead's Salesforce lead id, 15 character form, or null (#3276). */
+  leadId?: string | null;
+  stageCounts?: RoutingStageCount[] | null;
   outcome: RoutingDecision["outcome"];
 }
 
@@ -61,6 +69,11 @@ export async function recordRoutingDecision(input: RecordRoutingDecisionInput): 
       tier_fallback: input.tierFallback,
       rungs_dropped: input.rungsDropped,
       outcome: input.outcome,
+      // #3272: null on a booked decision, so the refusal lookup index stays small.
+      requested_start: input.requestedStart ?? null,
+      refusal_stage: input.refusalStage ?? null,
+      stage_counts: input.stageCounts ?? null,
+      lead_id: input.leadId ?? null,
     });
   } catch (err) {
     log.error("routing", { msg: "routing_decisions insert failed" }, err);

@@ -76,8 +76,20 @@ import { runOutboxSteps, type OutboxHandlers } from "./outbox.ts";
 import type { OutboxWriteOutcome } from "./outbox-lease.ts";
 import { DRAIN_ALERT_AFTER } from "./drain-backoff.ts";
 import { buildRoutingTraceExtras } from "../routing/explain.ts";
+import {
+  ladderStage,
+  refusalTraceOf,
+  rungCounts,
+  rungOf,
+  refusedLeadId,
+  rungStage,
+  traced,
+  withRung,
+  type RefusalStage,
+  type RefusalTrace,
+  type RungTrace,
+} from "./refusal-trace.ts";
 import { calendarLinks, icsDocument, icsUrl, leadCalendarEvent, type CalendarLinks } from "./calendar-links.ts";
-import { resolveBucketPool } from "../availability/service.ts";
 import type { RecordRoutingDecisionInput } from "../routing/record.ts";
 import { rungExcludesLow, tierKeyOf } from "../routing/tiers.ts";
 import { walkTierLadder } from "../routing/tier-fallback.ts";
@@ -1614,6 +1626,13 @@ export interface BookingDeps {
    */
   recordRoutingDecision(input: RecordRoutingDecisionInput): Promise<void>;
   /**
+   * The bucket's raw pool (its org agents, manual members and criteria), for the
+   * routing decision's considered and excluded lists. Injected rather than imported
+   * (#3272), so the refusal record a test drives is the one production writes; an
+   * imported read cannot run under the node suite and left that record untested.
+   */
+  resolveBucketPool(bucket: Bucket): Promise<Parameters<typeof buildRoutingTraceExtras>[0]>;
+  /**
    * The tier the availability cache CURRENTLY displays for a bucket code, or null
    * (#827). Read once on a fresh confirm, before write-through mutates the cache,
    * so createBooking can measure when verify-on-book dropped a further rung
@@ -2108,7 +2127,7 @@ async function assignAgent(
     : ranked;
   const candidates = claimFromLine(seat, read);
 
-  const { assignment, anyUnverified } = await selectAgent(
+  const { assignment, anyUnverified, checked } = await selectAgent(
     candidates,
     (userIds) => deps.loadEmails(userIds),
     (emails) => {
@@ -2118,6 +2137,19 @@ async function assignAgent(
     VERIFY_WAVE_SIZE,
   );
   if (!assignment) {
+    // #3272: what this rung saw at each stage, carried on whichever refusal follows
+    // so the ladder and the route can say where the confirm was refused. `claimed`
+    // counts the read advisors another confirm in the line held.
+    const others = seat?.claimedByOthers();
+    const rung: RungTrace = {
+      code: bucket.code,
+      members: memberCount,
+      read: read.length,
+      claimed: others ? read.filter((id) => others.has(id)).length : 0,
+      checked: checked ?? null,
+      stage: rungStage({ members: memberCount, read: read.length, checked: checked ?? 0, anyUnverified }),
+      readIds: read,
+    };
     // #1300: an EMPTY BUCKET is a misconfiguration and pages; a bucket whose people
     // are simply not on shift is an ordinary evening and must not.
     //
@@ -2125,15 +2157,15 @@ async function assignAgent(
     // used to mean both, and the alert said "No advisors are configured for this
     // booking type" for every out of hours attempt a bot could make. The pool size
     // is what tells them apart, and it is the only thing that can.
-    if (memberCount === 0) throw new NoEligibleAgentsError(bucket.code, bucket.is_test);
+    if (memberCount === 0) throw withRung(new NoEligibleAgentsError(bucket.code, bucket.is_test), rung);
     // People exist and none of them can take this time: from the caller's side that
     // is the same instruction as a taken slot, pick another time, so it reuses that
     // error rather than inventing a code the booking API's contract does not carry.
     // No agent was free. If at least one candidate couldn't be VERIFIED (read
     // error / outage), this isn't a genuinely-full slot — surface it distinctly
     // so the caller alerts + lets the lead retry, rather than showing "no times".
-    if (anyUnverified) throw new VerifyUnavailableError();
-    throw new SlotUnavailableError();
+    if (anyUnverified) throw withRung(new VerifyUnavailableError(), rung);
+    throw withRung(new SlotUnavailableError(), rung);
   }
   // Google may have found the advisor it first claimed busy: claim the one it took.
   if (seat && assignment.userId !== candidates[0]) seat.claim(assignment.userId, false);
@@ -2422,6 +2454,14 @@ async function assignAgentWithTierFallback(
   // can never drift on the ladder or the rungs-dropped accounting; only the per-rung
   // predicate differs (here: an agent verifies free for the slot).
   let lastErr: unknown = null;
+  // #3272: every rung this confirm was refused on, in ladder order.
+  const rungs: RungTrace[] = [];
+  const trace = (stage: RefusalStage): RefusalTrace => ({
+    requestedStart: startInstantIso,
+    bucketCode: requested.bucket.code,
+    stage,
+    rungs,
+  });
   const winner = await walkTierLadder<Omit<TierAssignResult, "rungsDropped">>(
     requested.bucket.code,
     async (rungCode, i) => {
@@ -2440,22 +2480,27 @@ async function assignAgentWithTierFallback(
           value: { bucket: resolved.bucket, eventType: resolved.eventType, startIso, endIso, userId, email, candidates, read },
         };
       } catch (err) {
+        const rung = rungOf(err);
         // #2842: a rung filtered to advisors without Low can hold nobody on a
         // perfectly configured bucket (most Medium advisors also carry Low), so an
         // empty one says nothing about the bucket. It is skipped WITHOUT becoming
         // the reason, so the lead is told what the rungs that could serve them
-        // said, and a filtered rung can never page as an empty bucket.
+        // said, and a filtered rung can never page as an empty bucket. Nor is it
+        // recorded (#3272): in stage_counts it would read as an empty pool.
         if (err instanceof NoEligibleAgentsError && excludeLow) return { hit: false };
+        if (rung) rungs.push(rung);
         if (err instanceof SlotUnavailableError || err instanceof NoEligibleAgentsError) {
           lastErr = err; // this tier can't serve the slot; drop a rung
           return { hit: false };
         }
-        throw err; // VerifyUnavailableError and anything unexpected: do not mask
+        // VerifyUnavailableError and anything unexpected: do not mask. An outage the
+        // rung measured carries the ladder so far.
+        throw rung ? traced(err, trace(rung.stage)) : err;
       }
     },
   );
   if (winner) return { ...winner.value, rungsDropped: winner.rungsDropped };
-  throw lastErr ?? new SlotUnavailableError();
+  throw traced(lastErr ?? new SlotUnavailableError(), trace(ladderStage(rungs)));
 }
 
 /**
@@ -2478,8 +2523,11 @@ async function assignNamedAgent(
   try {
     assigned = await assignAgent(deps, resolved.bucket, resolved.eventType, startIso, endIso, false, agentUserId);
   } catch (err) {
-    if (err instanceof NoEligibleAgentsError) throw new SlotUnavailableError();
-    throw err;
+    const rung = rungOf(err);
+    const refused = err instanceof NoEligibleAgentsError ? new SlotUnavailableError() : err;
+    throw rung
+      ? traced(refused, { requestedStart: startInstantIso, bucketCode: resolved.bucket.code, stage: rung.stage, rungs: [rung] })
+      : refused;
   }
   // The candidate read was narrowed to this agent, so anybody else here is a
   // fault in that read. Refused rather than booked: booking somebody the link
@@ -3581,7 +3629,19 @@ async function inConfirmTurn<R>(
       bucket_code: line.bucketCode,
       refusal: turn.refusal,
     });
-    throw turn.refusal === "race" ? new RaceLostRefusalError(1, false) : new SlotUnavailableError();
+    // #3272: answered from the leader's verdict, so the stage is the line's, and the
+    // leader's refusal rides along. It reaches the confirm line, never a routing
+    // decision row: writing one would put a bucket read and an insert on every one
+    // of a crowd waiting behind a full slot, the very reads the line exists to keep
+    // off it (#3257, test-confirm-contention). The leader's row is the slot's record.
+    throw traced(turn.refusal === "race" ? new RaceLostRefusalError(1, false) : new SlotUnavailableError(), {
+      requestedStart: line.startIso,
+      bucketCode: line.bucketCode,
+      stage: "follower",
+      rungs: [],
+      leaderRefusal: turn.refusal,
+      leadId: refusedLeadId(line.person),
+    });
   }
   if (turn.kind === "unqueued") {
     log.warn("booking", {
@@ -3813,6 +3873,26 @@ interface HeldCreate {
   seat: LineSeat | null;
 }
 
+/**
+ * The refusal columns of a routing decision (#3272), from the trace the refusal
+ * carries. With no trace (an error thrown before any rung measured anything) the
+ * instant is still recorded, since the request named it, and the stage is left
+ * null rather than guessed.
+ */
+function refusalRecord(
+  trace: RefusalTrace | null,
+  startIso: string,
+  person: { salesforceId?: string | null; externalId?: string | null },
+): Pick<RecordRoutingDecisionInput, "requestedStart" | "refusalStage" | "stageCounts" | "leadId"> {
+  return {
+    requestedStart: trace?.requestedStart ?? startIso,
+    // A follower writes no row (see `inConfirmTurn`), so it never reaches here.
+    refusalStage: trace && trace.stage !== "follower" ? trace.stage : null,
+    stageCounts: trace ? trace.rungs.map(rungCounts) : null,
+    leadId: refusedLeadId(person),
+  };
+}
+
 /** What a waiting double submit needs to recognise its own booking (#3221). */
 export interface ConfirmTaker {
   idempotencyKey: string;
@@ -3917,15 +3997,29 @@ async function createHeld(
     ) {
       const outcome =
         err instanceof NoEligibleAgentsError ? "no_eligible_agents" : "no_availability";
+      // #3272: the trace the refusal carries says when it was asked for, which stage
+      // refused it, and what the requested rung's cached read found free.
+      const trace = refusalTraceOf(err);
+      if (trace) trace.leadId = refusedLeadId(input);
+      const requestedRung = trace?.rungs.find((r) => r.code === bucket.code);
       try {
-        const pool = await resolveBucketPool(bucket);
+        const pool = await deps.resolveBucketPool(bucket);
         await deps.recordRoutingDecision({
           orgId: bucket.org_id,
           bookingId: null,
           bucketCode: bucket.code,
           bucketId: bucket.id,
           criteria: pool.criteria,
-          ...buildRoutingTraceExtras(pool, []),
+          // The requested rung's cached read is the real free set: those advisors
+          // were considered and refused later (the stage says where), and only the
+          // rest were unavailable in the cache. Labelling the whole pool
+          // no_availability, as an empty free set did, read as "everyone busy"
+          // whatever refused them (#3272). With no read to go on (the read itself
+          // failed), both lists stay empty rather than claim anything.
+          ...(requestedRung?.readIds
+            ? buildRoutingTraceExtras(pool, requestedRung.readIds)
+            : { considered: [], excluded: [] }),
+          ...refusalRecord(trace, input.startIso, input),
           chosenUserId: null,
           chosenAttributes: null,
           emptyPoolFallback: false,
@@ -3962,7 +4056,7 @@ async function createHeld(
   };
   if (agentLinkUserId === undefined) {
     try {
-      const pool = await resolveBucketPool(bookedBucket);
+      const pool = await deps.resolveBucketPool(bookedBucket);
       traceExtras = buildRoutingTraceExtras(pool, candidates);
     } catch {
       // best-effort: a transient pool-resolve failure must not fail the booking
@@ -4127,7 +4221,51 @@ async function createHeld(
             log.warn("booking", { msg: "could not hand off a race bound hit page; the refusal stands" }, pageErr);
           }
         }
-        throw new RaceLostRefusalError(raceLost.length + 1, boundHit);
+        const raceTrace: RefusalTrace = {
+          requestedStart: input.startIso,
+          bucketCode: input.bucketCode,
+          stage: "race_lost",
+          rungs: [
+            {
+              code: bookedBucket.code,
+              members: null,
+              read: tier.read.length,
+              claimed: null,
+              checked: null,
+              stage: "race_lost",
+            },
+          ],
+          lostRaces: raceLost.length + 1,
+          leadId: refusedLeadId(input),
+        };
+        // #3272: a lost race wrote no routing decision at all, so it was the one
+        // refusal nothing could look up. Best effort, like the refusal record above.
+        if (agentLinkUserId === undefined) {
+          try {
+            await deps.recordRoutingDecision({
+              orgId: bookedBucket.org_id,
+              bookingId: null,
+              bucketCode: bookedBucket.code,
+              bucketId: bookedBucket.id,
+              criteria: bookedBucket.criteria,
+              considered: traceExtras.considered,
+              excluded: traceExtras.excluded,
+              chosenUserId: null,
+              chosenAttributes: null,
+              emptyPoolFallback: false,
+              tierFallback: tier.rungsDropped > 0,
+              rungsDropped: tier.rungsDropped,
+              requestedTier: bucket.criteria.debt_team ? String(bucket.criteria.debt_team) : null,
+              bookedTier: null,
+              ...catchallRecord(input.requestedCode, bookedBucket.code, codeSource),
+              ...refusalRecord(raceTrace, input.startIso, input),
+              outcome: "no_availability",
+            });
+          } catch {
+            // best-effort: never change the refusal
+          }
+        }
+        throw traced(new RaceLostRefusalError(raceLost.length + 1, boundHit), raceTrace);
       }
       log.info("booking", {
         msg: "confirm lost the overlap race, handed to the next advisor in the same rung",

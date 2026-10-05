@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { withinBookingCleanupBudget, withinBookingRequest } from "@/lib/booking/confirm-budget";
-import { answerTimed } from "@/lib/booking/confirm-latency";
+import { answerTimed, noteRefusal, type ConfirmLineFacts } from "@/lib/booking/confirm-latency";
 import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import { z } from "zod";
 import {
@@ -158,6 +158,8 @@ interface ConfirmProgress {
   spent: { caller: CallerKey; rules: typeof BOOKING_HOURLY_RATE_RULES }[];
   /** Where the attempt is counted, once the body has named a bucket. */
   source: { by: "bucket"; code: string; host: ReturnType<typeof confirmHost> } | null;
+  /** #3272: what the confirm line says about this request, a refusal's stage included. */
+  facts: ConfirmLineFacts;
   /** An advisor's own link, which is not a routed booking (#2073). */
   agentLink: boolean;
 }
@@ -176,7 +178,7 @@ export async function POST(req: NextRequest) {
   // deadline from a read made before the booking's own try (the limits, the paused
   // flag, an advisor link) is the same outage, answered the same way, rather than
   // escaping as an unhandled 500.
-  const progress: ConfirmProgress = { spent: [], source: null, agentLink: false };
+  const progress: ConfirmProgress = { spent: [], source: null, agentLink: false, facts: {} };
   // #3221: one line per confirm with how long the lead waited for the answer,
   // kept apart from the work deferred past the response.
   return noStore(
@@ -198,6 +200,7 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ error: timeout.message }, { status: 503 });
         },
       ),
+      { facts: progress.facts },
     ),
   );
 }
@@ -512,6 +515,7 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
     // #3102: the failure path runs under the cleanup allowance, not the confirm
     // budget, which a timeout has already spent; its outcome and report would
     // otherwise fail at once and the failure would go unrecorded.
+    noteRefusal(progress.facts, err);
     return withinBookingCleanupBudget(async () => {
       // The lead already has an active call, so nothing was created (#1337). Refund
       // the rate-limit hit: being declined is not an attempt they should pay for,

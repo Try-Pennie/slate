@@ -413,6 +413,9 @@ export interface SelectionOutcome {
    * as one (alert + retryable error) — #319.
    */
   anyUnverified: boolean;
+  /** How many candidates were sent to the live check, across every wave (#3272).
+   *  Set by `selectAgent`; the coverage selection beside it does not count. */
+  checked?: number;
 }
 
 /**
@@ -438,6 +441,7 @@ export async function selectAgent(
   batchSize: number,
 ): Promise<SelectionOutcome> {
   let anyUnverified = false;
+  let checked = 0;
   for (let i = 0; i < candidates.length; i += batchSize) {
     const waveIds = candidates.slice(i, i + batchSize);
     const emailById = await loadEmails(waveIds);
@@ -448,13 +452,14 @@ export async function selectAgent(
       if (email) wave.push({ userId, email });
     }
     if (wave.length === 0) continue;
+    checked += wave.length;
     const { free, unverified } = await verifyFree(wave.map((c) => c.email));
     if (unverified.size > 0) anyUnverified = true;
     for (const candidate of wave) {
-      if (free.has(candidate.email)) return { assignment: candidate, anyUnverified };
+      if (free.has(candidate.email)) return { assignment: candidate, anyUnverified, checked };
     }
   }
-  return { assignment: null, anyUnverified };
+  return { assignment: null, anyUnverified, checked };
 }
 
 /**
