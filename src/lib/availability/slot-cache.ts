@@ -339,7 +339,7 @@ export function resetBookingRefreshesForTests(): void {
   poolKeyCache = null;
   lastPoolRecomputeAt.clear();
   lastPoolReadAt.clear();
-  pushRotation = 0;
+  pushRotation.clear();
 }
 
 /**
@@ -384,8 +384,25 @@ const recomputePoolsOf = (codes: string[]): Promise<void> =>
  */
 export const MAX_PUSH_POOLS_PER_CALL = 2;
 
-/** Where the next push starts in its agent's sorted pools, so each gets its turn. */
-let pushRotation = 0;
+/**
+ * Where each agent's next push starts in its sorted pools, so every pool gets its
+ * turn. PER AGENT (#3302 advisory review): one counter shared by agents with
+ * different pool counts steps each by however many other pushes came between, which
+ * can pin an agent to the same pools forever. Bounded like the coalescer's keys: an
+ * entry not used for `PUSH_ROTATION_IDLE_MS` is dropped, which only restarts that
+ * agent's rotation, and the map never holds more than the agents pushing recently.
+ */
+const pushRotation = new Map<string, { next: number; usedAtMs: number }>();
+const PUSH_ROTATION_IDLE_MS = 60 * 60_000;
+
+function nextRotation(userId: string, nowMs: number): number {
+  for (const [id, r] of pushRotation) {
+    if (nowMs - r.usedAtMs > PUSH_ROTATION_IDLE_MS) pushRotation.delete(id);
+  }
+  const r = pushRotation.get(userId) ?? { next: 0, usedAtMs: nowMs };
+  pushRotation.set(userId, { next: r.next + 1, usedAtMs: nowMs });
+  return r.next;
+}
 
 /**
  * Refresh the pools an agent's calendar change affects, after a Google push (#2922,
@@ -405,12 +422,12 @@ export async function refreshAgentPoolsAfterPush(userId: string): Promise<Touche
       const key = await poolKeyOfCode(code);
       if (!byKey.has(key)) byKey.set(key, code);
     }
-    // Sorted, then ROTATED per push (#3302 lessons review): a fixed first two would
+    // Sorted, then ROTATED per agent (#3302 reviews): a fixed first two would
     // starve an agent's other pools of push freshness for as long as the isolate
     // lives. Rotating costs nothing to read, where preferring the oldest rows would
     // cost a read per push; the lane still refreshes every pool on its own clock.
     const sorted = [...byKey.keys()].sort();
-    const start = sorted.length > 0 ? pushRotation++ % sorted.length : 0;
+    const start = sorted.length > 0 ? nextRotation(userId, Date.now()) % sorted.length : 0;
     const keys = [...sorted.slice(start), ...sorted.slice(0, start)];
     const chosen = keys.slice(0, MAX_PUSH_POOLS_PER_CALL);
     // One request per POOL, with one code standing for it: the refresh resolves the

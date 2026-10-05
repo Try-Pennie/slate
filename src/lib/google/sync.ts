@@ -316,7 +316,7 @@ export async function applyEvents(
    * read would be a subrequest per batch bought for nothing. Without it the count is
    * every upsert plus every row a delete removed.
    */
-  opts: { countMoved?: boolean } = {},
+  opts: { countMoved?: boolean; onWriteStart?: () => void } = {},
 ): Promise<number> {
   const db = supabaseAdmin();
   const { upserts, deletes } = partitionBusyWrites(
@@ -361,6 +361,9 @@ export async function applyEvents(
       );
     }
   }
+  // #3302 lessons review: from here on the store may have changed, so a failure past
+  // this point must be read as busy time having moved (see `busyMovedBeforeFailure`).
+  if (upserts.length > 0 || deletes.length > 0) opts.onWriteStart?.();
   for (let i = 0; i < upserts.length; i += UPSERT_CHUNK) {
     const { error } = await db
       .from("busy_blocks")
@@ -540,6 +543,24 @@ async function recordCalHealth(
   }
 }
 
+/**
+ * Errors from a sync pass that failed AFTER it began writing busy time (#3302
+ * lessons review). Such a pass may have moved some, and its exact count is lost
+ * with the throw; a retry would find those rows already stored and count zero. A
+ * failure is rare and one extra refresh is cheap, where a missed one leaves offered
+ * times wrong for up to the recompute lane's window, so it is read as having moved.
+ */
+const busyMovedErrors = new WeakSet<object>();
+
+function markBusyMoved(err: unknown): void {
+  if (typeof err === "object" && err !== null) busyMovedErrors.add(err);
+}
+
+/** Whether a sync pass's error came after it began writing busy time. */
+function busyMovedBeforeFailure(err: unknown): boolean {
+  return typeof err === "object" && err !== null && busyMovedErrors.has(err);
+}
+
 /** What one calendar's sync did (#3258): the delta's size, and whether busy time moved. */
 interface CalendarSyncOutcome {
   events: number;
@@ -556,6 +577,8 @@ async function syncCalendar(
   /** #3302 review: only the push sync, which acts on `busyChanged`, asks for the count. */
   opts: { countMoved?: boolean } = {},
 ): Promise<CalendarSyncOutcome> {
+  // #3302 lessons review: set once this pass's first busy write is sent.
+  let beganWriting = false;
   // ONE window for this pass, computed once and passed to both the fetch and the reconcile
   // that judges it (#1261). Computing it twice would let the two drift by however long the
   // fetch took, and the reconcile may only ever judge what the fetch actually asked for.
@@ -611,6 +634,9 @@ async function syncCalendar(
     // for the count.
     const busyWrites = await applyEvents(cal.user_id, cal.calendar_id, result.events, slateEventIds, timeZone, {
       countMoved: opts.countMoved === true && !full,
+      onWriteStart: () => {
+        beganWriting = true;
+      },
     });
     // Never reconcile against a PARTIAL event set (#1259). A page-capped pass read only
     // the first MAX_SYNC_PAGES pages, so every event on the pages it never fetched
@@ -651,6 +677,10 @@ async function syncCalendar(
       error: err instanceof Error ? err.message : String(err),
       kind: reachabilityFromError(err),
     });
+    // #3302 lessons review: the exact count is lost with the throw, and a retry would
+    // find the rows already written and count nothing, so a pass that failed after it
+    // began writing is read as having moved busy time.
+    if (beganWriting) markBusyMoved(err);
     throw err;
   }
 }
@@ -1054,6 +1084,7 @@ export async function syncByChannel(
     }
   } catch (err) {
     failed = { err };
+    if (busyMovedBeforeFailure(err)) busyChanged = true;
   } finally {
     // Release only OUR claim - after the TTL another request may hold a newer one.
     // write-ok: the claim expires on its TTL regardless, so a refused release costs a wait and never frees a newer claim.

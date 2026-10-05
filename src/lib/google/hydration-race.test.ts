@@ -41,6 +41,8 @@ interface Fault {
   table: string;
   mode: Mode;
   times: number;
+  /** Matching operations to let through before failing. */
+  skip?: number;
   message: string;
 }
 
@@ -63,12 +65,17 @@ class FakeDb {
     return (this.tables[table] ??= []);
   }
   /** Make the next `times` matching operations fail the way PostgREST does. */
-  fail(table: string, mode: Mode, times = 1, message = "injected failure"): void {
-    this.faults.push({ table, mode, times, message });
+  /** Fail the next `times` matching operations, after letting `skip` of them through. */
+  fail(table: string, mode: Mode, times = 1, message = "injected failure", skip = 0): void {
+    this.faults.push({ table, mode, times, message, skip });
   }
   private takeFault(table: string, mode: Mode): Fault | null {
     const hit = this.faults.find((f) => f.table === table && f.mode === mode && f.times > 0);
     if (!hit) return null;
+    if ((hit.skip ?? 0) > 0) {
+      hit.skip! -= 1;
+      return null;
+    }
     hit.times -= 1;
     return hit;
   }
@@ -1020,5 +1027,36 @@ describe("a push sync refreshes what moved even when a later pass throws (#3302)
     vi.mocked(refreshAgentPoolsAfterPush).mockClear();
     await expect(syncByChannel(CHANNEL)).rejects.toThrow(/pass 1/);
     expect(refreshAgentPoolsAfterPush).not.toHaveBeenCalled();
+  });
+});
+
+// #3302 lessons review: a pass that throws after it began writing busy time may have
+// moved some, and a retry would find those rows already stored and count zero, so
+// it is treated as having moved: the refresh runs, and the error is rethrown.
+describe("a pass that fails part way through its writes still refreshes (#3302)", () => {
+  it("refreshes once and rethrows when the second upsert chunk fails", async () => {
+    await bootstrap();
+    const g = google.current as FakeGoogle;
+    // More than one upsert chunk (500 rows each).
+    for (let i = 0; i < 501; i++) g.put(`evt-bulk-${i}`, at(DAY + 1 + (i % 50) / 10), at(DAY + 2 + (i % 50) / 10));
+    (db.current as FakeDb).fail("busy_blocks", "upsert", 1, "chunk 2 refused", 1);
+    vi.mocked(refreshAgentPoolsAfterPush).mockClear();
+    await expect(syncByChannel(CHANNEL)).rejects.toThrow(/chunk 2 refused/);
+    expect(blockFor("evt-bulk-0")).toBeTruthy();
+    expect(refreshAgentPoolsAfterPush).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes once and rethrows when the delete after the upserts fails", async () => {
+    await bootstrap();
+    const g = google.current as FakeGoogle;
+    g.put("evt-keep", at(DAY + 1), at(DAY + 2));
+    g.put("evt-drop", at(DAY + 3), at(DAY + 4));
+    await syncByChannel(CHANNEL);
+    g.put("evt-new", at(DAY + 5), at(DAY + 6));
+    g.cancel("evt-drop");
+    (db.current as FakeDb).fail("busy_blocks", "delete", 1, "delete refused");
+    vi.mocked(refreshAgentPoolsAfterPush).mockClear();
+    await expect(syncByChannel(CHANNEL)).rejects.toThrow(/delete refused/);
+    expect(refreshAgentPoolsAfterPush).toHaveBeenCalledTimes(1);
   });
 });

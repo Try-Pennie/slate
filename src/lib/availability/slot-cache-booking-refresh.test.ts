@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // FAILS rather than reading as done.
 
 const precompute = vi.hoisted(() => ({
-  bucketsForAgent: vi.fn(async (): Promise<string[]> => []),
+  bucketsForAgent: vi.fn(async (_userId?: string): Promise<string[]> => []),
   listPoolBuckets: vi.fn(async (): Promise<unknown[]> => []),
   computeBucketSlotsForWindow: vi.fn(async (code: string): Promise<unknown> => ({
     bucket: { code },
@@ -252,6 +252,34 @@ describe("refreshAgentPoolsAfterPush (#3258)", () => {
     }
     expect([...seen].sort()).toEqual(["1", "2", "3"]);
     expect(new Set(picks).size).toBeGreaterThan(1);
+  });
+
+  // #3302 advisory review: one isolate wide counter, stepped by pushes from agents
+  // with different pool counts, can leave one agent's offset stuck. Three agents
+  // interleaved step it by three a round, which pins an agent with three pools to
+  // the same two forever. Rotation is per agent.
+  it("covers every pool of an agent when pushes from agents with different pool counts interleave", async () => {
+    precompute.listPoolBuckets.mockResolvedValue([...LOW, ...MID, ...HIGH]);
+    const pools: Record<string, string[]> = {
+      "agent-1": ["111", "211", "311"],
+      "agent-2": ["111", "211"],
+      "agent-3": ["311"],
+    };
+    precompute.bucketsForAgent.mockImplementation(async (userId?: string) => pools[userId ?? ""] ?? []);
+    const seen = new Set<string>();
+    for (let round = 0; round < 3; round++) {
+      for (const agent of ["agent-1", "agent-2", "agent-3"]) {
+        precompute.storeBucketSlotsRow.mockClear();
+        const push = refreshAgentPoolsAfterPush(agent);
+        await vi.advanceTimersByTimeAsync(0);
+        await push;
+        if (agent === "agent-1") {
+          precompute.storeBucketSlotsRow.mock.calls.forEach((c) => seen.add(String(c[0]).charAt(0)));
+        }
+        await vi.advanceTimersByTimeAsync(20_000);
+      }
+    }
+    expect([...seen].sort()).toEqual(["1", "2", "3"]);
   });
 
   it("never throws: a failed pool is counted and the push carries on", async () => {
