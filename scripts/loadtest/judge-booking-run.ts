@@ -307,6 +307,21 @@ function attemptsOf(results: DriverResult[]): BookingAttempt[] {
 }
 
 /**
+ * How a refused request is named in a finding: its status and its outcome, or "no
+ * outcome" when the response carried none. One helper for every burst finding, so a
+ * missing outcome can never render as "undefined" in one of them (#3103).
+ */
+function refusalLabel(a: BookingAttempt): string {
+  const outcome = a.outcome ?? "";
+  return `${a.status} ${outcome === "" ? "no outcome" : outcome}`;
+}
+
+/** Whether a request was refused because the slot was taken, read the same way. */
+function isSlotTaken(a: BookingAttempt): boolean {
+  return a.status === 409 && (a.outcome ?? "") === "SLOT_TAKEN";
+}
+
+/**
  * What is wrong with one driver's FILE, steady or fault alike (#3222).
  *
  * A driver that stopped at its own deadline wrote a whole partial file, and that is
@@ -967,10 +982,26 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
     const namedAgents = winningAgents.filter((id): id is string => id !== null);
     const distinct = new Set(namedAgents);
     if (won.length === 0) {
+      // Say what the refusals WERE, by code and count, and claim the slot was already
+      // taken only when every one of them says so. Run 37333201026 had an untouched
+      // slot and every request refused 503 VERIFY_UNAVAILABLE, and this sentence still
+      // told the reader the slot had been taken before the burst fired (L11).
+      const counts = new Map<string, number>();
+      for (const a of burst) {
+        const label = refusalLabel(a);
+        counts.set(label, (counts.get(label) ?? 0) + 1);
+      }
+      const refusals = [...counts.entries()]
+        .sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]))
+        .map(([label, n]) => `${n} ${label}`)
+        .join(", ");
+      const allTaken = burst.every(isSlotTaken);
       fail(
         "the burst",
-        `none of the ${burst.length} burst requests was answered 200, so the slot was already ` +
-          "taken before the burst fired and nothing about contention was measured",
+        `none of the ${burst.length} burst requests was answered 200 (${refusals}), ` +
+          (allTaken
+            ? "so the slot was already taken before the burst fired and nothing about contention was measured"
+            : "so nothing about contention was measured"),
       );
     } else if (distinct.size < namedAgents.length) {
       fail(
@@ -985,13 +1016,16 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
           "no booking row naming an agent, so the SLOT_TAKEN answers point at nothing",
       );
     }
-    const taken = burst.filter((a) => a.status === 409 && a.outcome === "SLOT_TAKEN");
-    const otherRefusals = burst.filter((a) => a.status !== 200 && a.outcome !== "SLOT_TAKEN");
+    const taken = burst.filter(isSlotTaken);
+    // `a.outcome !== "SLOT_TAKEN"` rather than `!isSlotTaken(a)`, deliberately: a
+    // SLOT_TAKEN answered with some other status is reported by neither bar today, and
+    // widening this one is a separate decision from how its refusals are labelled.
+    const otherRefusals = burst.filter((a) => a.status !== 200 && (a.outcome ?? "") !== "SLOT_TAKEN");
     if (otherRefusals.length > 0) {
       fail(
         "the burst's losers",
         `${otherRefusals.length} burst requests were refused for a reason other than the slot being ` +
-          `taken (${[...new Set(otherRefusals.map((a) => `${a.status} ${a.outcome}`))].join(", ")})`,
+          `taken (${[...new Set(otherRefusals.map(refusalLabel))].join(", ")})`,
       );
     }
     // `taken` is read for the count above and deliberately not asserted on

@@ -134,7 +134,7 @@ import { fileURLToPath } from "node:url";
     try { stubFreeBusy("agent@trypennie.com"); } catch (e) { out.freeBusy = String(e.message); }
     try { stubCalendarList("agent@trypennie.com"); } catch (e) { out.calendarList = String(e.message); }
     try {
-      stubSyncEvents(null, Date.now(), {
+      stubSyncEvents("agent@trypennie.com", null, Date.now(), {
         timeMinIso: new Date().toISOString(),
         timeMaxIso: new Date(Date.now() + 86400000).toISOString(),
       });
