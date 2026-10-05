@@ -277,7 +277,19 @@ export function makeConfirmQueue<T>(
     // and is answered retryably. That is accepted: it needs a confirm torn down while
     // holding the line, which is rare, and the answer is one the lead can retry, which
     // is now served by a line that has been freed. Cancelled when the turn reports.
-    const cancelLease = leaseTimer(CONFIRM_CLAIM_LEASE_MS, () => dropIfIdle(key, line));
+    // A timer can fire a moment before `until` by the clock it is judged against
+    // (the two clocks disagree by a millisecond), find nothing expired, and never run
+    // again. So it re-arms for whatever is left while this turn is still in flight.
+    let cancelLease: () => void = () => {};
+    const onLeaseEnd = () => {
+      const left = until - now();
+      if (left > 0 && line.claims.has(me)) {
+        cancelLease = leaseTimer(left, onLeaseEnd);
+        return;
+      }
+      dropIfIdle(key, line);
+    };
+    cancelLease = leaseTimer(CONFIRM_CLAIM_LEASE_MS, onLeaseEnd);
     // A turn whose lease has passed was dropped by `expire`: whatever it does next
     // is ignored, so a late claim cannot exclude an advisor again.
     const live = () => !reported && line.claims.has(me);

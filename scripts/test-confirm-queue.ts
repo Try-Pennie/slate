@@ -348,9 +348,6 @@ async function main() {
     assert(followerTurn === null, "dropped: a follower waits behind the later confirm");
 
     now = start + CONFIRM_CLAIM_LEASE_MS; // the abandoned lease ends; the later one runs on
-    // A late claim from the abandoned confirm, on the SAME live line, is ignored.
-    abandoned.seat.claim("y", false);
-    assert(!live.seat.claimedByOthers().has("y"), "late claim: an expired confirm's claim is ignored on a live line");
     assert(!live.seat.claimedByOthers().has("x"), "dropped: its earlier claim no longer excludes x");
 
     live.done({ full: true, refusal: "taken", settled: null });
@@ -387,10 +384,11 @@ async function main() {
 
   // --- #3274 review: a turn that has ended cannot claim again, on a live line -------
   //
-  // The guard on `claim` refuses a turn that has reported. (An EXPIRED turn's late
-  // claim is also refused, but that half cannot be told apart from outside: a
-  // re-set would carry the turn's own expired lease and every read expires first,
-  // so the "late claim" assertion above holds with or without it.)
+  // The guard on `claim` refuses a turn that has reported; removing it makes this
+  // fail, since a re-set claim would carry the turn's still running lease. An
+  // EXPIRED turn's late claim needs no test of its own: a re-set would carry the
+  // turn's expired lease, and every read expires first, which is what the "dropped"
+  // test above pins (it fails when an expired claim is only hidden).
   {
     const t = manualTimer();
     const lt = manualTimer();
@@ -434,6 +432,28 @@ async function main() {
     assert(f?.kind === "lead", `lease timer: the follower leads once the lease ends (got ${f?.kind ?? "still waiting"})`);
     if (f?.kind === "lead") f.done({ full: false });
     assert(lt.live() === 0, "lease timer: the finished follower cancelled its own lease timer");
+
+    // A timer that fires a little before the lease ends (clocks disagree by a
+    // millisecond) finds nothing expired. It must re-arm for what is left rather
+    // than never run again.
+    const early = makeConfirmQueue<string>({ timer: t.timer, leaseTimer: lt.timer, now: () => now });
+    const s0 = now;
+    const held = await early.enter("early");
+    if (held.kind !== "lead") throw new Error("early timer: the first confirm must lead");
+    let waitingTurn: QueueTurn<string> | null = null;
+    void early.enter("early").then((turn) => (waitingTurn = turn));
+    await tick();
+    now = s0 + CONFIRM_CLAIM_LEASE_MS - 1; // lands just short
+    lt.fireAll();
+    await tick();
+    assert(waitingTurn === null, "early timer: one millisecond short, nothing has expired yet");
+    assert(lt.live() === 1 && lt.pending.at(-1)?.ms === 1, `early timer: re-armed for the 1ms left (got ${lt.pending.at(-1)?.ms})`);
+    now = s0 + CONFIRM_CLAIM_LEASE_MS;
+    lt.fireAll();
+    await tick();
+    const w = waitingTurn as QueueTurn<string> | null;
+    assert(w?.kind === "lead", `early timer: the re-armed timer ends the lease (got ${w?.kind ?? "still waiting"})`);
+    if (w?.kind === "lead") w.done({ full: false });
 
     // A turn that reports normally cancels its timer, so it never fires on a later line.
     const q2 = makeConfirmQueue<string>({ timer: t.timer, leaseTimer: lt.timer, now: () => now });
