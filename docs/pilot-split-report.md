@@ -68,12 +68,33 @@ one:
   Salesforce keeps no history of that field, so set `PILOT_SPLIT_TIERS` for an
   export from before a change. With neither, an export with an `xbc` column exits
   16 rather than guess Low.
-- **`PILOT_SPLIT_PERCENT`.** A `cal.com` lead whose bucket is UNDER the percentage
-  cannot be a pilot lead, so the hash finds those. It cannot find a non Low lead
-  whose bucket is over the percentage, so when it finds any at all the command
-  exits 8 with an estimate of how many more are hiding in the control half. This
-  is the fallback for an export built without the `xbc` dimension, and on real
-  traffic it will exit 8, because non Low leads reach `/my-offers/result`.
+- **The hash, without `xbc`.** A lead never seen under Slate whose bucket is UNDER
+  the percentage cannot be a pilot lead, so the hash finds those. It cannot find a
+  lead outside the pilot whose bucket is over the percentage, so when it finds any
+  at all the command exits 8 with an estimate of how many more are hiding in the
+  control half. This is the fallback for an export built without the `xbc`
+  dimension, and on real traffic it will exit 8, because leads outside the pilot
+  reach `/my-offers/result`.
+
+## The percentage decides each lead's side
+
+Every lead is judged on the side the split ASSIGNED it: `slateBucket(submission id)`
+under the percentage is the Slate side, the rest the cal.com side, whichever booker
+the lead was later seen in. That is intention to treat, the rule
+`report:pilot-compare` already holds (`docs/pilot-compare-report.md`), and it is the
+only reading the randomisation supports (#3327). Until #3327 a lead seen under both
+providers was dropped from both halves. On 2026-10-02 to 05 that was 168 leads, 167
+of them on the Slate side and 126 of those booked, so Slate read 1.8 points under
+cal.com (35.5% against 37.3%) where, counted on its own side, it reads 0.2 points
+under (37.1% against 37.3%), an interval that includes zero.
+
+So every run needs the percentage. It is `PILOT_SPLIT_PERCENT` when set, otherwise
+`SlatePilotPercent__c` as Salesforce holds it NOW, read when Salesforce credentials
+are here, the same way the tiers are. Salesforce keeps no history of that field
+either, so set `PILOT_SPLIT_PERCENT` for an export from before a change. With
+neither, the command exits 17; an empty `SlatePilotPercent__c` (which trypennie
+reads as 100, every pilot lead on Slate) or one outside 0 to 100 exits 17 too,
+naming the field. The report says which source it used.
 
 ## What is counted
 
@@ -84,12 +105,14 @@ one:
 - **Only a lead with a `booking_assignment` event is in the comparison.** Booker
   events alone come from pages outside the split (`/offerportal`, `/portal`), and
   are counted and left out.
-- **A lead seen under both providers** means the two pages disagreed about it. It
-  is counted and left out of both halves.
-- **Opened the booker**: `view_booker`, `navigate_to_booker`, or a booking.
-  **Booked**: `complete_booking`, even when a `cancel_booking` follows: the rate
-  is whether the booker converted the lead, and the Slate cross check reads Slate's
-  bookings in every status so both sides count the same leads.
+- **A lead seen under both providers** is counted on its own side like any other,
+  and named in a leakage line by direction: Slate side leads also seen under
+  cal.com, and how many booked there, then the reverse.
+- **Opened the booker**: `view_booker`, `navigate_to_booker`, or a booking, under
+  either provider. **Booked**: `complete_booking` under either provider, even when
+  a `cancel_booking` follows: the rate is whether the lead booked, and the Slate
+  cross check reads Slate's bookings in every status so both sides count the same
+  leads.
 - **Bounce is "left without opening the booker"**, the booker level bounce, which
   reads the same way for both providers. GA4's own session bounce cannot be split
   by an event scoped parameter such as `booking_provider`.
@@ -98,9 +121,10 @@ one:
 - **Not yet readable**: each half needs at least 100 leads, 10 bookings and 10
   leads who did not book (`MIN_LEADS_PER_HALF`, `MIN_OUTCOMES_PER_HALF`), or no
   finding is reported (L716).
-- **Hash check**: with a percentage, the report counts Slate leads whose bucket
-  says they should have had cal.com. Nonzero means the percentage moved, or the
-  pilot was off, on some day in the range.
+- **Hash check**: the report counts leads whose `booking_assignment` named the
+  other booker from the one their bucket gives. Nonzero means the percentage
+  moved, or the pilot was off, on some day in the range. Each is still counted on
+  the side its bucket gives.
 
 ## Running it
 
@@ -128,9 +152,12 @@ the percentage, and returns the days the smaller half needs to reach its number.
 `NEXT_PUBLIC_SUPABASE_URL` in `.env.local`, the command reads Slate's own routed,
 real bookings over the export's dates (a day either side, since GA4 dates are in
 the property's zone) and compares their `prefill` submission ids with the Slate
-half's GA4 bookings: GA4 bookings with no Slate row (a tagging fault), Slate
-bookings GA4 never saw (GA4 losses, which undercount the Slate half), and Slate
-bookings outside the export. Without the key it says it was skipped.
+side leads whose `complete_booking` GA4 labelled `slate` (a Slate side lead who
+booked on cal.com has no Slate row to find, so it is not looked for): GA4 Slate
+bookings with no Slate row (a tagging fault), Slate bookings GA4 never saw on
+Slate (GA4 losses, which undercount the Slate half, or a booking GA4 labelled
+cal.com), and Slate bookings outside the export's Slate side. Without the key it
+says it was skipped.
 
 ## What each booker offered (#2927)
 
@@ -166,7 +193,7 @@ code (L98, L11).
 | 4 | a date or event count cannot be read, line named |
 | 5 | `PILOT_SPLIT_PERCENT` is not a number from 0 to 100 |
 | 6 | no `booking_assignment` event at all: the GTM tag is not sending it |
-| 7 | no `xbc` column and no `PILOT_SPLIT_PERCENT`: the population cannot be checked |
+| 7 | retired by #3327 (no `xbc` and no percentage): every run now needs the percentage, so that case is 17 |
 | 8 | the export holds leads outside the pilot and nothing can remove them |
 | 9 | one half has no leads |
 | 10 | plenty of leads and not one booker event in the export |
@@ -176,6 +203,7 @@ code (L98, L11).
 | 14 | an export ends exactly on a GA4 row limit, so it was probably cut off; export fewer days per file |
 | 15 | two exports cover the same day, so its leads would be read twice |
 | 16 | the export has an `xbc` column and no pilot tiers are known |
+| 17 | no split percentage is known (`PILOT_SPLIT_PERCENT`, or `SlatePilotPercent__c` read from Salesforce), so no lead has a side |
 
 ## Where the code lives
 
