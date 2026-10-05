@@ -240,6 +240,12 @@
 			{
 				"name": "BURST_LIMITER",
 				"class_name": "BurstLimiter"
+			},
+			// #3325: the confirm line shared across isolates, one object per line group
+			// (src/lib/booking/confirm-line-object.ts). Memory only; nothing is stored.
+			{
+				"name": "CONFIRM_LINE",
+				"class_name": "ConfirmLine"
 			}
 		]
 	},
@@ -247,6 +253,10 @@
 		{
 			"tag": "v1",
 			"new_sqlite_classes": ["BurstLimiter"]
+		},
+		{
+			"tag": "v2",
+			"new_sqlite_classes": ["ConfirmLine"]
 		}
 	],
 	// --- the load test environment (#2242) ----------------------------------
@@ -382,6 +392,10 @@
 					{
 						"name": "BURST_LIMITER",
 						"class_name": "BurstLimiter"
+					},
+					{
+						"name": "CONFIRM_LINE",
+						"class_name": "ConfirmLine"
 					}
 				]
 			},
@@ -389,6 +403,10 @@
 				{
 					"tag": "v1",
 					"new_sqlite_classes": ["BurstLimiter"]
+				},
+				{
+					"tag": "v2",
+					"new_sqlite_classes": ["ConfirmLine"]
 				}
 			]
 		}

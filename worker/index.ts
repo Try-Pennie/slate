@@ -42,6 +42,7 @@ import {
 // primitive that can hold ONE count across isolates, which is what the native
 // rate limiter cannot do and why a parallel burst sailed through its ceiling.
 export { BurstLimiter } from "./burst-limiter";
+export { ConfirmLine } from "./confirm-line";
 
 // Durable Object classes the generated worker exports must be re-exported
 // from the entry wrangler actually loads.

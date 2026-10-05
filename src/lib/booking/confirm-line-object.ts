@@ -43,6 +43,10 @@
 import { makeConfirmQueue, type LeaderVerdict, type QueueTurn, type EnteredNow } from "./confirm-queue.ts";
 import type { ScheduleTimer } from "../read-within-deadline.ts";
 
+/** The Worker binding the shared line is reached through, and the class behind it. */
+export const CONFIRM_LINE_BINDING = "CONFIRM_LINE";
+export const CONFIRM_LINE_CLASS = "ConfirmLine";
+
 /** Raised whenever the messages change shape; a mismatch answers `gone`. */
 export const CONFIRM_LINE_PROTOCOL = 1;
 /** The longest one poll is held. A deploy strands a follower for at most this. */
