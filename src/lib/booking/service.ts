@@ -2984,12 +2984,22 @@ function realRerouteDeps(actor: BookingActor): RerouteDeps {
     bucketById: async (id) =>
       unwrap(await supabaseAdmin().from("buckets").select("*").eq("id", id).maybeSingle(), "reroute bucket") as Bucket | null,
     reassign: async (bookingId, agentEmail, reason, reroute) => {
-      await orchestration.reassignBooking(bookingId, agentEmail, reason, base, {
-        actor,
-        initiator: "admin",
-        allowNonBookable: true,
-        reroute,
-      });
+      try {
+        await orchestration.reassignBooking(bookingId, agentEmail, reason, base, {
+          actor,
+          initiator: "admin",
+          allowNonBookable: true,
+          reroute,
+        });
+        return "moved";
+      } catch (err) {
+        // Thrown before any calendar event exists, so nothing is left to clean up.
+        if (err instanceof orchestration.DailyCapExceededError) return "over_cap";
+        throw err;
+      }
+    },
+    onReleaseFailed: (bookingId, err) => {
+      log.error("reroute", { msg: "could not release a reroute hold after a failed confirm; it stays until its lease ends", booking_id: bookingId }, err);
     },
     keepSwap: async (args) => {
       const out = await rerouteSwap({ ...args, gcalClientId: null, routingTrace: null });

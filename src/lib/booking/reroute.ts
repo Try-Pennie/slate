@@ -172,8 +172,20 @@ export interface RerouteDeps {
   verifyFree(emails: string[], startIso: string, endIso: string): Promise<VerifyResult>;
   agentById(id: string): Promise<{ id: string; name: string | null; email: string | null } | null>;
   bucketById(id: string): Promise<Bucket | null>;
-  /** The existing reassign (`reassignBooking`), bound to the admin actor, with the reroute swap args. */
-  reassign(bookingId: string, agentEmail: string, reason: { code: string; detail: string | null }, reroute: RerouteSwapArgs): Promise<void>;
+  /**
+   * The existing reassign (`reassignBooking`), bound to the admin actor, with the
+   * reroute swap args. "over_cap" is the held advisor having reached their daily cap
+   * since the search: the reroute searches again rather than offering the manual
+   * reassign's "Reassign anyway", which a reroute has no place for.
+   */
+  reassign(
+    bookingId: string,
+    agentEmail: string,
+    reason: { code: string; detail: string | null },
+    reroute: RerouteSwapArgs,
+  ): Promise<"moved" | "over_cap">;
+  /** A hold release that itself failed after a failed confirm. Never throws. */
+  onReleaseFailed(bookingId: string, err: unknown): void;
   /** The bucket aware swap as a keep: the current agent, the corrected bucket, no hold. */
   keepSwap(args: {
     bookingId: string;
@@ -337,7 +349,9 @@ export async function confirmReroute(
   try {
     return await moveOnClaimedHold(deps, { booking, fromBucket, eventType }, claim, input, reason);
   } catch (err) {
-    await deps.releaseHold(booking.id).catch(() => undefined);
+    // The confirm's own error is the one surfaced; a release that fails too is
+    // reported, since its advisor then stays blocked until the lease runs out.
+    await deps.releaseHold(booking.id).catch((releaseErr) => deps.onReleaseFailed(booking.id, releaseErr));
     throw err;
   }
 }
@@ -367,17 +381,19 @@ async function moveOnClaimedHold(
   if (verify.unverified.has(advisor.email)) {
     throw new Error(`reroute: ${advisor.email}'s calendar could not be read at confirm`);
   }
-  if (!verify.free.has(advisor.email)) {
-    // Booked since the hold was placed: release it and search again, so the admin
-    // confirms a fresh proposal rather than a move onto somebody now busy.
+  // Booked since the hold was placed, or now at their daily cap: release it and
+  // search again, so the admin confirms a fresh proposal rather than a move onto
+  // somebody who can no longer take it.
+  const searchAgain = async (): Promise<RerouteOutcome> => {
     await deps.releaseHold(booking.id);
     const proposal = await searchAndHold(deps, booking, { bucket: requested, eventType }, input.actor);
     return { kind: "taken", previous: advisor, proposal };
-  }
+  };
+  if (!verify.free.has(advisor.email)) return searchAgain();
 
   // The reassign rolls back its own Google event on failure; the caller lets the
   // hold go.
-  await deps.reassign(booking.id, advisor.email, reason, {
+  const moved = await deps.reassign(booking.id, advisor.email, reason, {
     holdId: input.holdId,
     bucketId: target.id,
     requestedBucketId: requested.id,
@@ -386,6 +402,7 @@ async function moveOnClaimedHold(
     rungsDropped: held.rungsDropped,
     fromBucketId: fromBucket.id,
   });
+  if (moved === "over_cap") return searchAgain();
   return { kind: "moved", advisor, bucket: bucketView(target) };
 }
 

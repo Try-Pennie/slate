@@ -130,9 +130,7 @@ describe("POST /admin/bookings/[id]/reassign", () => {
     expect(body.agentEmail).toBe("b@x.com");
   });
 
-  // #3249: an advisor held for another booking's bucket correction is a conflict
-  // that ends by itself, said with the time it ends.
-  // A hold ends by itself, so it is TRANSIENT in this file's classification: a
+  // #3249: a hold ends by itself, so it is TRANSIENT in this file's classification: a
   // 503 with Retry-After, which the machine reassign caller sharing this mapper
   // retries, never the 409 that tells it to stop.
   it("maps a held advisor to a retriable 503 HELD naming when the hold ends", async () => {

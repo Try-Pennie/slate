@@ -53,6 +53,9 @@ interface Opts {
   claim?: { refused?: string; result?: Record<string, unknown>; agent?: string; bucket?: string };
   free?: Set<string>;
   reassignThrows?: Error;
+  /** The held advisor reached their daily cap between the search and the confirm. */
+  reassignOverCap?: boolean;
+  releaseThrows?: boolean;
   swapRefused?: string;
   swapNotUpdated?: boolean;
   /** After a claim, what the hold read returns; default the claimed hold. */
@@ -65,6 +68,7 @@ function fake(o: Opts = {}) {
     find: [] as string[],
     place: [] as { agentUserId: string; targetBucketId: string; requestedBucketId: string; rungsDropped: number }[],
     release: [] as string[],
+    releaseFailed: [] as { bookingId: string; message: string }[],
     claim: [] as string[],
     verify: [] as { emails: string[]; from: string; to: string }[],
     reassign: [] as { email: string; reason: { code: string; detail: string | null }; reroute: unknown }[],
@@ -90,7 +94,11 @@ function fake(o: Opts = {}) {
     },
     releaseHold: async (bookingId) => {
       calls.release.push(bookingId);
+      if (o.releaseThrows) throw new Error("delete refused");
       return { released: true };
+    },
+    onReleaseFailed: (bookingId, err) => {
+      calls.releaseFailed.push({ bookingId, message: err instanceof Error ? err.message : String(err) });
     },
     claimHold: async (_org, _booking, holdId) => {
       calls.claim.push(holdId);
@@ -112,6 +120,7 @@ function fake(o: Opts = {}) {
     reassign: async (_id, email, reason, reroute) => {
       calls.reassign.push({ email, reason, reroute });
       if (o.reassignThrows) throw o.reassignThrows;
+      return o.reassignOverCap ? "over_cap" : "moved";
     },
     keepSwap: async (args) => {
       calls.keep.push(args as unknown as Record<string, unknown>);
@@ -323,6 +332,24 @@ async function main() {
     };
     await confirmReroute(deps, { bookingId: "K1", holdId: "H1", bucketCode: null, note: null, actor }).catch(() => undefined);
     eq(calls.release, ["K1"], "a failed read after the claim releases the hold too");
+  }
+
+  // --- confirm: a release that itself fails is reported, never swallowed ---
+  {
+    const { deps, calls } = fake({ releaseThrows: true });
+    deps.verifyFree = async (emails) => ({ free: new Set(), unverified: new Set(emails) });
+    await confirmReroute(deps, { bookingId: "K1", holdId: "H1", bucketCode: null, note: null, actor }).catch(() => undefined);
+    eq(calls.releaseFailed.length, 1, "a failed release after a failed confirm is reported");
+    eq(calls.releaseFailed[0]?.message, "delete refused", "with the release's own error");
+  }
+
+  // --- confirm: the held advisor reached their cap meanwhile, so it searches again ---
+  {
+    const { deps, calls } = fake({ reassignOverCap: true, targets: [moveTarget("NEXT", "512", 0)] });
+    const out = await confirmReroute(deps, { bookingId: "K1", holdId: "H1", bucketCode: null, note: null, actor });
+    eq(out.kind, "taken", "an advisor now at their daily cap reads as taken, never the manual reassign's override");
+    assert(out.kind === "taken" && out.proposal.kind === "move" && out.proposal.advisor.name === "Casey Lin", "offering the next person found");
+    eq(calls.release, ["K1"], "after letting the capped advisor's hold go");
   }
 
   // --- confirm: a claimed hold that cannot be read back stops, never guesses the drop ---
