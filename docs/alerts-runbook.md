@@ -305,7 +305,11 @@ them, or a time off window that Slate promised to protect may not actually be bl
 **Fix or escalate.** A missing calendar block is re-created by re-running the approval's
 side effects. A coverage gap is a decision about who takes those appointments, which the
 admin coverage panel does. `coverage_needs_human` means the automatic reassign declined
-on purpose and is waiting for somebody.
+on purpose and is waiting for somebody. It counts each call once, only once the sweep
+that gave up on it has finished (or 30 minutes after the give up, for a sweep that is
+still running), and only while the call is still with the agent that sweep was moving
+it off. A call stranded after a page pages again straight away rather than waiting out
+the cooldown, so the newest page always carries the whole count (#3303).
 
 ---
 

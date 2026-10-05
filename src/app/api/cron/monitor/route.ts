@@ -344,10 +344,12 @@ import {
   type OutOfPoolAgent,
 } from "@/lib/monitor/inactive-agent-bookings";
 import {
+  countStranded,
   runCoverageNeedsHumanCheck,
   strandedHoldersFromItems,
   type CoverageOutAgent,
-  type StrandedAppointment,
+  type StrandedItemRead,
+  type StrandedRead,
   type StrandedStatus,
 } from "@/lib/monitor/coverage-needs-human";
 import { runOooProtectionCheck } from "@/lib/monitor/ooo-protection";
@@ -364,7 +366,7 @@ import { ACTIVE_BOOKING_STATUSES } from "@/lib/booking/bulk-reassign-store";
 import { loadOooCoverageBookings, loadSnapshottedBookingIds } from "@/lib/monitor/ooo-coverage-bookings";
 import { inIdChunks } from "@/lib/db/id-batch";
 import { selectAllPages } from "@/lib/supabase/paginate";
-import type { Attributes, Bucket } from "@/lib/db/types";
+import type { Attributes, Bucket, BulkReassignJob } from "@/lib/db/types";
 import { log } from "@/lib/log";
 import { groupRulesBySchedule, runUnsetHoursCheck, type UnsetHoursAgent, type HoursSource } from "@/lib/monitor/unset-hours";
 import {
@@ -2720,18 +2722,29 @@ export async function GET(req: NextRequest) {
     // approved absence, offboarding) including agents who are still active. Both
     // reads go through `unwrap`, because an unread worklist comes back empty and an
     // empty result here is indistinguishable from "nothing is stranded", which
-    // would post an all-clear over a real gap. ---
-    const loadStrandedHolders = async () => {
-      const items = await selectAllPages<{ booking_id: string; status: string; job_id: string }>(
-        "monitor stranded coverage items",
-        "id",
-        () =>
-          db
-            .from("bulk_reassign_items")
-            .select("booking_id, status, job_id")
-            .in("status", ACTIONABLE_ITEM_STATUSES),
+    // would post an all-clear over a real gap.
+    //
+    // #3303: what counts is decided by `countStranded` (a finished sweep's give
+    // ups, one per booking, only while the booking is still with the sweep's out
+    // agent), so this reads the facts it needs and nothing more. ---
+    const loadStrandedHolders = async (): Promise<StrandedRead> => {
+      // Taken BEFORE the first read, never after: a sweep that finishes while these
+      // reads run is left for the next tick, where it reads as news and re-pages,
+      // rather than landing on this page with a stamp after its measurement time.
+      const asOfMs = Date.now();
+      const nothing: StrandedRead = { holders: [], waiting: 0, newestCountableMs: null, asOfMs };
+      const items = await selectAllPages<{
+        booking_id: string;
+        status: string;
+        job_id: string;
+        updated_at: string;
+      }>("monitor stranded coverage items", "id", () =>
+        db
+          .from("bulk_reassign_items")
+          .select("booking_id, status, job_id, updated_at")
+          .in("status", ACTIONABLE_ITEM_STATUSES),
       );
-      if (items.length === 0) return [];
+      if (items.length === 0) return nothing;
       // Only an UPCOMING appointment needs a person: a stranded one that has passed
       // is history, and paging about it would never clear.
       //
@@ -2742,7 +2755,8 @@ export async function GET(req: NextRequest) {
       // quiet direction: the stranded appointments stay stranded and unreported.
       const bookingPages = await inIdChunks(
         "monitor stranded coverage bookings",
-        items.map((it) => it.booking_id),
+        // Deduped: two sweeps over one day name the same booking twice (#3303).
+        [...new Set(items.map((it) => it.booking_id))],
         async (batch) =>
           (unwrap(
             await db
@@ -2750,16 +2764,18 @@ export async function GET(req: NextRequest) {
               // a person, whatever kind of booking it is (#2073).
               .from("bookings")
               // cap-safe: primary-key lookup, already split to the URL budget.
-              .select("id")
+              .select("id, assigned_user_id")
               .in("id", batch)
               .in("status", ACTIVE_BOOKING_STATUSES)
               .gte("starts_at", new Date(now).toISOString()),
             "monitor stranded coverage bookings",
-          ) ?? []) as { id: string }[],
+          ) ?? []) as { id: string; assigned_user_id: string | null }[],
       );
-      const upcoming = new Set(bookingPages.flat().map((b) => b.id));
-      const live = items.filter((it) => upcoming.has(it.booking_id));
-      if (live.length === 0) return [];
+      // Who holds each active, upcoming booking NOW (#3303): `countStranded` keeps
+      // a give up only while that is still the sweep's out agent.
+      const holderByBooking = new Map(bookingPages.flat().map((b) => [b.id, b.assigned_user_id]));
+      const live = items.filter((it) => holderByBooking.has(it.booking_id));
+      if (live.length === 0) return nothing;
       // The out agent lives on the job, so resolve the jobs these belong to. Split
       // across requests (#2388): `bulk_reassign_jobs` accumulates over time, so the
       // distinct job ids behind a set of actionable items are bounded by nothing in
@@ -2772,19 +2788,30 @@ export async function GET(req: NextRequest) {
             await db
               .from("bulk_reassign_jobs")
               // cap-safe: primary-key lookup, already split to the URL budget.
-              .select("id, out_user_id")
+              .select("id, out_user_id, status, updated_at")
               .in("id", batch),
             "monitor stranded coverage jobs",
-          ) ?? []) as { id: string; out_user_id: string }[],
+          ) ?? []) as Pick<BulkReassignJob, "id" | "out_user_id" | "status" | "updated_at">[],
       );
-      const outByJob = new Map(jobPages.flat().map((j) => [j.id, j.out_user_id]));
-      const stranded: StrandedAppointment[] = live.flatMap((it) => {
-        const outUserId = outByJob.get(it.job_id);
-        return outUserId
-          ? [{ bookingId: it.booking_id, outUserId, status: it.status as StrandedStatus }]
+      const jobById = new Map(jobPages.flat().map((j) => [j.id, j]));
+      const reads: StrandedItemRead[] = live.flatMap((it) => {
+        const job = jobById.get(it.job_id);
+        return job
+          ? [
+              {
+                bookingId: it.booking_id,
+                status: it.status as StrandedStatus,
+                settledAt: it.updated_at,
+                sweep: { outUserId: job.out_user_id, status: job.status, updatedAt: job.updated_at },
+                assignedUserId: holderByBooking.get(it.booking_id) ?? null,
+              },
+            ]
           : [];
       });
-      if (stranded.length === 0) return [];
+      const counted = countStranded(reads, asOfMs);
+      const found = { waiting: counted.waiting, newestCountableMs: counted.newestCountableMs, asOfMs };
+      const stranded = counted.appointments;
+      if (stranded.length === 0) return { ...found, holders: [] };
       const agents = (unwrap(
         await db
           .from("users")
@@ -2797,7 +2824,7 @@ export async function GET(req: NextRequest) {
           .in("id", [...new Set(stranded.map((s) => s.outUserId))]),
         "monitor stranded coverage agents",
       ) ?? []) as CoverageOutAgent[];
-      return strandedHoldersFromItems(stranded, agents);
+      return { ...found, holders: strandedHoldersFromItems(stranded, agents) };
     };
     const strandedCoverage = await steps.run("stranded_coverage", null, () =>
       runCoverageNeedsHumanCheck({

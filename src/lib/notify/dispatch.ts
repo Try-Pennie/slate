@@ -3,7 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { chunkIdsByUrlBudget, inIdChunks } from "@/lib/db/id-batch";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import { postSlack, slackConfigured } from "@/lib/notify/slack";
-import { shouldSendAlert, alertStampMs } from "@/lib/notify/alerts";
+import { shouldSendAlert, alertStampMs, pageCarriesNews } from "@/lib/notify/alerts";
 import { parseStampMs } from "@/lib/date/stamp";
 import { defaultInfoChannel } from "@/lib/notify/channels";
 import { log } from "@/lib/log";
@@ -28,8 +28,34 @@ import type { AlertResolve, ThrottledNotify } from "@/lib/monitor/alert-deps";
  * It is written only after a page is CONFIRMED delivered, which is the whole
  * point: a recovery notice may only claim something cleared if the reader was
  * actually told it broke.
+ *
+ * A delivered send stamps it and the cooldown row with ONE value (#3303): when the
+ * page went out, or, for a page that carries `PageNews`, when its content was
+ * measured. That shared stamp is how a cooldown a delivered page wrote is told
+ * apart from a retry or claim hold, which only news may cut short.
  */
 export const firingKey = (key: string) => `alert_firing:${key}`;
+
+/**
+ * What a page knows about how new its content is (#3303), so a page whose content
+ * holds something the last delivered page could not have carried goes out at once,
+ * inside the cooldown, while one with nothing new still waits it out.
+ *
+ * On 2026-10-05 the coverage give up page said 1 appointment and the rest of the
+ * count landed inside its cooldown, so the reader acted on a number that was
+ * already wrong and was never told.
+ */
+export interface PageNews {
+  /** The newest moment anything the page reports became true; null when none is known. */
+  newestMs: number | null;
+  /**
+   * When the page's content was measured: every read behind it began at or after
+   * this. A delivered page is stamped with it rather than with when it was posted,
+   * because a fact that became true between the read and the post is not in this
+   * page and has to read as news to the next one.
+   */
+  asOfMs: number;
+}
 
 /**
  * Deliberate opt-in for sending alerts from OFF the Workers runtime (#1537).
@@ -122,6 +148,38 @@ function stampIsDue(seen: StampRead, cooldownMs: number, nowMs: number): boolean
 }
 
 /**
+ * Whether `news` may cut `key`'s cooldown short (#3303); the rule is
+ * `pageCarriesNews`. Asked only once the cooldown has held a page back, so a page
+ * the ordinary rule already lets through costs no extra read.
+ *
+ * A marker that cannot be read is no news, which leaves the ordinary cooldown to
+ * decide: the page still repeats on it, so this can delay an update by one cooldown
+ * and never mutes the alert. Said out loud rather than skipped in silence.
+ */
+async function carriesNews(key: string, seen: StampRead, news: PageNews): Promise<boolean> {
+  if (news.newestMs === null || seen.kind !== "present" || seen.ms === null) return false;
+  const delivered = await readStamp(firingKey(key));
+  if (delivered.kind === "unreadable") {
+    log.warn("slack-alert", {
+      msg: "the last delivered page could not be read, so news waits for the cooldown",
+      key,
+    });
+    return false;
+  }
+  return pageCarriesNews(seen.ms, delivered.kind === "present" ? delivered.ms : null, news.newestMs);
+}
+
+/**
+ * The stamp a DELIVERED page leaves on both rows: when its content was measured if
+ * it says (#3303), otherwise now. Never later than now, since an anchor in the
+ * future would hide every fact up to it; earlier only costs a re-page.
+ */
+function deliveredStampMs(news: PageNews | undefined, nowMs: number): number {
+  if (!news || !Number.isFinite(news.asOfMs)) return nowMs;
+  return Math.min(news.asOfMs, nowMs);
+}
+
+/**
  * The outcome of claiming a send before posting it (#3170).
  *
  * `won`: this sender, and no other, may post. `lost`: another sender moved the row
@@ -199,13 +257,19 @@ function claimStampIso(ms: number, seen: StampRead): string {
   return new Date(clash ? ms - 1 : ms).toISOString();
 }
 
+/**
+ * `news` (#3303) lets a page whose content holds something the last delivered page
+ * could not have carried go out inside the cooldown; see `PageNews`. Without it the
+ * cooldown is the only rule, exactly as before.
+ */
 export async function sendThrottledAlert(
   key: string,
   cooldownMs: number,
   text: string,
   channel?: string,
+  news?: PageNews,
 ): Promise<void> {
-  await sendThrottledAlertUnrecorded(key, cooldownMs, text, channel);
+  await sendThrottledAlertUnrecorded(key, cooldownMs, text, channel, news);
   // Noted only once the send RETURNED (#3133 follow-up, see alert-recording.ts): a
   // page sent, held back by its cooldown or dropped by an unconfigured Slack is the
   // owner's word on the matter; a send that threw is nobody's.
@@ -217,6 +281,7 @@ async function sendThrottledAlertUnrecorded(
   cooldownMs: number,
   text: string,
   channel?: string,
+  news?: PageNews,
 ): Promise<void> {
   // Refused BEFORE anything is posted (2026-09-24). A missing cooldown compares
   // as "due", so the page went out and only then did the stamp throw on
@@ -238,7 +303,7 @@ async function sendThrottledAlertUnrecorded(
   const db = supabaseAdmin();
   const nowMs = Date.now();
   const seen = await readStamp(key);
-  if (!stampIsDue(seen, cooldownMs, nowMs)) return;
+  if (!stampIsDue(seen, cooldownMs, nowMs) && !(news && (await carriesNews(key, seen, news)))) return;
 
   // #3170: claim the send BEFORE posting, so two overlapping runs of one lane post
   // one page between them rather than one each. The claim is written as the SHORT
@@ -275,11 +340,19 @@ async function sendThrottledAlertUnrecorded(
   if (!result.ok) {
     log.warn("slack-alert", { msg: "send failed", key, error: result.error ?? null });
   }
+  // A delivered page leaves ONE stamp on both rows (#3303): `alertStampMs(true, ...)`
+  // is now, and a page carrying news is stamped with when it was measured instead.
+  // That shared stamp is how `carriesNews` tells a delivered page's cooldown, which
+  // news may cut short, from the retry hold a failed send leaves here, which it may not.
+  const deliveredMs = deliveredStampMs(news, nowMs);
   // write-ok: a refused stamp leaves the claim's short retry window (or no cooldown at all, unclaimed), so the alert re-sends within minutes. Repeating a page is the safe direction; a stamp that landed wrongly would mute one.
   await db
     .from("alert_state")
     .upsert(
-      { key, last_sent_at: new Date(alertStampMs(result.ok, nowMs, cooldownMs)).toISOString() },
+      {
+        key,
+        last_sent_at: new Date(result.ok ? deliveredMs : alertStampMs(false, nowMs, cooldownMs)).toISOString(),
+      },
       { onConflict: "key" },
     );
   // #1133: remember that this alert is firing, so `resolveAlert` can say when it
@@ -295,7 +368,7 @@ async function sendThrottledAlertUnrecorded(
       await db
       .from("alert_state")
       .upsert(
-        { key: firingKey(key), last_sent_at: new Date(nowMs).toISOString() },
+        { key: firingKey(key), last_sent_at: new Date(deliveredMs).toISOString() },
         { onConflict: "key" },
       ),
       "alert firing marker",

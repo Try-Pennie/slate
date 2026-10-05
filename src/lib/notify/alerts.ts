@@ -40,6 +40,36 @@ export function alertStampMs(ok: boolean, nowMs: number, cooldownMs: number): nu
   return nowMs - cooldownMs + delay;
 }
 
+/**
+ * Whether a page carries something the last DELIVERED page could not have (#3303),
+ * which is the one reason a page may go out inside its cooldown.
+ *
+ * On 2026-10-05 the coverage give up page said 1 appointment and the rest of the
+ * count landed inside its cooldown, so the reader acted on a number that was
+ * already wrong and was never told. A cooldown exists so a condition that has not
+ * CHANGED does not repeat every tick; it was never meant to hide one that has.
+ *
+ * - `cooldownStampMs`: the key's cooldown row.
+ * - `deliveredStampMs`: its firing marker, written only when a page was delivered.
+ * - `newestMs`: the newest moment anything this page reports became true.
+ *
+ * Only a cooldown a delivered page wrote may be cut short, and a delivered send
+ * writes both rows with ONE stamp. Anything else in the cooldown row is a hold: the
+ * short retry stamp a failed send leaves (#1035), or the claim a sender writes
+ * before posting (#3170). Cutting through those would post one page twice from two
+ * overlapping runs, or hit a Slack that is down on every tick. Any input that is
+ * missing answers false, which leaves the ordinary cooldown to decide.
+ */
+export function pageCarriesNews(
+  cooldownStampMs: number | null,
+  deliveredStampMs: number | null,
+  newestMs: number | null,
+): boolean {
+  if (cooldownStampMs === null || deliveredStampMs === null || newestMs === null) return false;
+  if (cooldownStampMs !== deliveredStampMs) return false;
+  return newestMs > deliveredStampMs;
+}
+
 /** A persistently-failing agent calendar, for the named alert (#273). */
 export interface FailingAgent {
   email: string;

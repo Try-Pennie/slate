@@ -37,6 +37,9 @@ const del = vi.hoisted(() => vi.fn());
 const failReads = vi.hoisted(() => ({ value: false }));
 // #2542: the per key cooldown read, which fails toward SENDING.
 const failCooldownRead = vi.hoisted(() => ({ value: false }));
+// #3303: refuse the single-row read of exactly these keys, so a test can fail the
+// firing marker read while the cooldown read beside it still answers.
+const failKeyReads = vi.hoisted(() => new Set<string>());
 // The bulk delete behind settleAlertsSilently: the batch sizes it was asked for
 // (the ids ride in the URL, so an unchunked 60-key delete is the PR#1251 defect),
 // plus a switch to make the delete itself fail.
@@ -100,7 +103,7 @@ vi.mock("@/lib/supabase/admin", () => {
           // on it is proved rather than asserted. supabase-js resolves a refused
           // statement as `{ data: null, error }`, which is what this returns.
           maybeSingle: async () => {
-            const result = failCooldownRead.value
+            const result = failCooldownRead.value || failKeyReads.has(key)
               ? { data: null, error: { message: "statement timeout" } }
               : { data: rows.has(key) ? { last_sent_at: rows.get(key) } : null, error: null };
             if (readBarrier.size > 0) {
@@ -217,6 +220,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   rows.clear();
   failReads.value = false;
+  failKeyReads.clear();
   failReadInCall.value = 0;
   failDeletes.value = false;
   claims.enforce = true;
@@ -393,6 +397,138 @@ describe("sendThrottledAlert under a load test (#3104)", () => {
     await sendThrottledAlert("sync_failures", COOLDOWN, "broken");
     expect(upsert).not.toHaveBeenCalled();
     slack.slackConfigured.mockReturnValue(true);
+  });
+});
+
+// #3303: a page whose content holds something the last DELIVERED page could not
+// have carried goes out at once, inside the cooldown. On 2026-10-05 the coverage
+// give up page said 1 appointment and the other give ups landed inside its
+// cooldown, so the reader acted on a number that was already wrong and was never
+// told. A page with nothing new still waits the cooldown out.
+describe("a page that carries news (#3303)", () => {
+  const COOLDOWN = 60 * 60 * 1000;
+  const KEY = "coverage_needs_human";
+  /** A page delivered `agoMs` ago: both rows carry the same stamp, as a delivered send leaves them. */
+  const deliveredAgo = (agoMs: number): number => {
+    const at = Date.now() - agoMs;
+    const iso = new Date(at).toISOString();
+    rows.set(KEY, iso);
+    rows.set(firingKey(KEY), iso);
+    return at;
+  };
+
+  it("re-pages inside the cooldown when something became true after the last delivered page", async () => {
+    const paged = deliveredAgo(5 * 60_000);
+    await sendThrottledAlert(KEY, COOLDOWN, "4 appointments", undefined, {
+      newestMs: paged + 60_000,
+      asOfMs: Date.now() - 1_000,
+    });
+    expect(slack.postSlack).toHaveBeenCalledTimes(1);
+    expect(slack.postSlack.mock.calls[0][0]).toMatchObject({ text: "4 appointments" });
+  });
+
+  it("stays throttled when nothing is newer than the last delivered page", async () => {
+    const paged = deliveredAgo(5 * 60_000);
+    await sendThrottledAlert(KEY, COOLDOWN, "2 appointments", undefined, {
+      newestMs: paged,
+      asOfMs: Date.now() - 1_000,
+    });
+    await sendThrottledAlert(KEY, COOLDOWN, "2 appointments", undefined, {
+      newestMs: paged - 10 * 60_000,
+      asOfMs: Date.now() - 1_000,
+    });
+    expect(slack.postSlack).not.toHaveBeenCalled();
+  });
+
+  // The anchor a later page compares against is when this page's content was
+  // MEASURED, not when it was posted: anything that became true between the read
+  // and the post is not in this page, so it has to count as news next time.
+  it("stamps both rows with when the content was measured, so a later fact can be told apart", async () => {
+    const asOfMs = Date.now() - 2_000;
+    await sendThrottledAlert(KEY, COOLDOWN, "2 appointments", undefined, { newestMs: asOfMs - 60_000, asOfMs });
+    expect(rows.get(KEY)).toBe(new Date(asOfMs).toISOString());
+    expect(rows.get(firingKey(KEY))).toBe(new Date(asOfMs).toISOString());
+
+    // A fact that became true after the measurement and before the post is news.
+    await sendThrottledAlert(KEY, COOLDOWN, "3 appointments", undefined, {
+      newestMs: asOfMs + 500,
+      asOfMs: Date.now(),
+    });
+    expect(slack.postSlack).toHaveBeenCalledTimes(2);
+    // And once told, the same fact is not news again.
+    await sendThrottledAlert(KEY, COOLDOWN, "3 appointments", undefined, {
+      newestMs: asOfMs + 500,
+      asOfMs: Date.now(),
+    });
+    expect(slack.postSlack).toHaveBeenCalledTimes(2);
+  });
+
+  it("never stamps a measurement time later than now", async () => {
+    const before = Date.now();
+    await sendThrottledAlert(KEY, COOLDOWN, "2 appointments", undefined, {
+      newestMs: before - 60_000,
+      asOfMs: before + 10 * 60_000,
+    });
+    expect(Date.parse(rows.get(KEY)!)).toBeLessThanOrEqual(Date.now());
+    expect(Date.parse(rows.get(firingKey(KEY))!)).toBeLessThanOrEqual(Date.now());
+  });
+
+  // A failed send leaves a short retry hold (#1035). News must not cut through it,
+  // or a hard down Slack is hit on every tick and the hold that stops two
+  // overlapping runs posting twice (#3170) stops holding.
+  it("does not cut through the retry hold a failed send left", async () => {
+    const paged = deliveredAgo(5 * 60_000);
+    // Not a queued once-value: if the first send were held back, a queued failure
+    // would leak into whichever test posts next and fail it for no reason of its own.
+    slack.postSlack.mockImplementation(async () => ({ ok: false, error: "channel_not_found" }));
+    try {
+      await sendThrottledAlert(KEY, COOLDOWN, "3 appointments", undefined, {
+        newestMs: paged + 60_000,
+        asOfMs: Date.now() - 1_000,
+      });
+    } finally {
+      slack.postSlack.mockImplementation(async () => ({ ok: true }));
+    }
+    expect(slack.postSlack).toHaveBeenCalledTimes(1);
+    await sendThrottledAlert(KEY, COOLDOWN, "3 appointments", undefined, {
+      newestMs: paged + 60_000,
+      asOfMs: Date.now(),
+    });
+    expect(slack.postSlack).toHaveBeenCalledTimes(1);
+  });
+
+  it("posts news once between two overlapping runs that read the same rows", async () => {
+    const paged = deliveredAgo(5 * 60_000);
+    readBarrier.size = 2;
+    const news = { newestMs: paged + 60_000, asOfMs: Date.now() - 1_000 };
+    await Promise.all([
+      sendThrottledAlert(KEY, COOLDOWN, "4 appointments", undefined, news),
+      sendThrottledAlert(KEY, COOLDOWN, "4 appointments", undefined, news),
+    ]);
+    expect(slack.postSlack).toHaveBeenCalledTimes(1);
+  });
+
+  // Unable to read when the last page was delivered is unable to say what is
+  // new, so the ordinary cooldown decides: the page still repeats on it, and the
+  // failure is said out loud rather than skipped in silence.
+  it("falls back to the cooldown, and says so, when the delivered marker cannot be read", async () => {
+    const paged = deliveredAgo(5 * 60_000);
+    failKeyReads.add(firingKey(KEY));
+    await sendThrottledAlert(KEY, COOLDOWN, "4 appointments", undefined, {
+      newestMs: paged + 60_000,
+      asOfMs: Date.now() - 1_000,
+    });
+    expect(slack.postSlack).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      "slack-alert",
+      expect.objectContaining({ key: KEY, msg: expect.stringMatching(/delivered page could not be read/) }),
+    );
+  });
+
+  it("without news, a page inside the cooldown is held even though a later fact exists", async () => {
+    deliveredAgo(5 * 60_000);
+    await sendThrottledAlert(KEY, COOLDOWN, "4 appointments");
+    expect(slack.postSlack).not.toHaveBeenCalled();
   });
 });
 

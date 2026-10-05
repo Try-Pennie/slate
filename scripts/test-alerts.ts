@@ -8,6 +8,7 @@ import {
   dedupeFailingAgents,
   isPageableFailure,
   alertStampMs,
+  pageCarriesNews,
   FAILED_SEND_RETRY_MS,
   shortFailureReason,
   relativeAge,
@@ -184,6 +185,30 @@ assert(
   alertStampMs(false, T, SHORT) + SHORT === T + SHORT,
   "failed send never pushes next-eligible past the cooldown it would have used",
 );
+
+// ---------------------------------------------------------------------------
+// #3303: a page that carries news cuts its cooldown short, and nothing else does.
+// ---------------------------------------------------------------------------
+// On 2026-10-05 the coverage give up page said 1 appointment at 14:45:54 and the
+// other five give ups landed inside its cooldown, so the reader acted on a number
+// that was already wrong and was never told. A page whose content has something
+// the last DELIVERED page could not have carried goes out at once; a page with
+// nothing new waits out the cooldown exactly as before.
+{
+  const P = 50_000_000; // when the last page was delivered (both rows stamped P)
+  assert(pageCarriesNews(P, P, P + 1), "news: something became true after the last delivered page");
+  assert(!pageCarriesNews(P, P, P), "no news: the newest fact is exactly what the last page measured");
+  assert(!pageCarriesNews(P, P, P - 60_000), "no news: everything was already true when the last page went out");
+  assert(!pageCarriesNews(P, P, null), "no news: the newest moment is unknown, so the cooldown decides");
+  // A hold written after the delivered page (a failed send's short retry stamp, or a
+  // claim another run made before posting) is NOT a delivered page's cooldown, so
+  // news must not cut through it: a hold is what stops two overlapping runs posting
+  // one page twice (#3170) and a hard down Slack being hit every minute (#1035).
+  const hold = alertStampMs(false, P + 5 * 60_000, COOLDOWN);
+  assert(!pageCarriesNews(hold, P, P + 60_000), "a retry or claim hold is never cut short by news");
+  assert(!pageCarriesNews(P, null, P + 1), "no delivered page on record: the ordinary cooldown decides");
+  assert(!pageCarriesNews(null, P, P + 1), "no cooldown stamp: the ordinary rule already sends");
+}
 
 // ---------------------------------------------------------------------------
 // #1133: readable copy + blast-radius paging.
