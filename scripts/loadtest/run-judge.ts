@@ -30,7 +30,14 @@ import { DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES } from "../../src/lib/rate-limi
 import { burstControlStrength, type BurstDepthReading } from "./burst-target.ts";
 import { baselineReading, expectBaselineFrom, latencyReportLine, verdictText } from "./latency-bar.ts";
 import { recomputeArmLine } from "../../src/lib/booking/post-confirm-recompute-modes.ts";
-import { REQUEST_CPU_P99_MS, cronCpuShareText, faultPassKeepsFiveXxBar } from "./judge-booking-run.ts";
+import {
+  REQUEST_CPU_P99_MS,
+  cronCpuShareText,
+  faultPassKeepsFiveXxBar,
+  burstLegText,
+  burstsSummaryText,
+  steadyLineText,
+} from "./judge-booking-run.ts";
 import {
   INVOCATIONS_QUERY,
   SCHEDULED_QUERY,
@@ -625,8 +632,13 @@ const input: JudgeInput = {
   // zero for a hand run with no burst leg)
   // env-ok: EXPECT_FAULT_PCT (optional; the workflow's fault_pct input, and zero
   // for a hand run with no fault leg)
+  // env-ok: EXPECT_BURSTS (optional; how many bursts the setup planned, and unset for
+  // a hand run, which the judge reads as the one burst a run fired before #3325)
   expectedLegs: {
     burstDrivers: wholeNumber(process.env.EXPECT_BURST_DRIVERS, "EXPECT_BURST_DRIVERS"),
+    // #3325: three bursts a run, each judged on its own, so a burst whose files never
+    // arrived is a failure by name rather than a run with fewer bursts.
+    bursts: (process.env.EXPECT_BURSTS ?? "").trim() === "" ? undefined : wholeNumber(process.env.EXPECT_BURSTS, "EXPECT_BURSTS"),
     faultPct: wholeNumber(process.env.EXPECT_FAULT_PCT, "EXPECT_FAULT_PCT"),
     faultTargets: expectedFaultTargets.targets,
     // #3258: read and checked above (expectBaselineFrom); unset is a hand run,
@@ -807,6 +819,15 @@ if (m) {
   // with no burst leg says nothing here, because there was no control to describe.
   const burstDepth = burstDepthReading();
   if (burstDepth) lines.push(`- the burst's pool: ${burstControlStrength(burstDepth)}`);
+  // #3325: every burst judged on its own, the ones that failed named first, then each
+  // burst's own line: its split across the two codes, its winners and losers, which
+  // confirm line served it, its ladder share, and how fast its losers were told.
+  const burstsSummary = burstsSummaryText(m.bursts);
+  if (burstsSummary) lines.push(`- ${burstsSummary}`);
+  for (const leg of m.bursts) lines.push(`  - ${burstLegText(leg)}`);
+  // #3325: which line the steady pass took and the absolute time it added, reported
+  // beside the speed ratio because the ratio hides an overhead the baseline pays too.
+  lines.push(`- ${steadyLineText(m.steadyLine)}`);
   lines.push("");
   lines.push("### Outcome mix");
   lines.push("");

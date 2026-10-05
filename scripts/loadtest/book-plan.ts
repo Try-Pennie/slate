@@ -14,6 +14,9 @@ import {
 } from "../../src/lib/rate-limit-core.ts";
 import { codeSequence, MEASURED_CODE_MIX, type CodeWeight } from "./code-mix.ts";
 import { OK_P95_MS } from "./judge-booking-run.ts";
+// Type only, erased under --experimental-strip-types: the attempt carries the echo the
+// deployment sent, read through the one parser both sides share (#3325, L41).
+import type { LoadtestEcho } from "../../src/lib/loadtest-echo.ts";
 
 /** Availability reads a single address may make in a minute (30, from the app). */
 export const AVAILABILITY_PER_MINUTE = AVAILABILITY_LIMITER.perMinute;
@@ -136,6 +139,50 @@ export const REQUEST_TIMEOUT_MS = 30_000;
  * that never answers can no longer keep the driver from writing it.
  */
 export const REQUEST_OVERRUN_MS = 60_000;
+
+/**
+ * How many bursts one run fires (#3325), each at its own slot and moment and each
+ * judged on its own. One burst is one spread of simultaneous requests over the
+ * deployment's isolates, and one lucky spread can pass a run that a second would
+ * fail, so a single reading cannot carry the verdict (L395).
+ */
+export const BURST_LEGS = 3;
+/** Requests one burst driver fires in one burst, when BURST_REQUESTS is unset. */
+export const BURST_REQUESTS_DEFAULT = 25;
+/** How late a burst driver may wake and still be part of the burst, when BURST_GRACE_MS is unset. */
+export const BURST_GRACE_DEFAULT_MS = 2_000;
+/**
+ * The time between one burst's moment and the next (#3325).
+ *
+ * Derived, not picked: every burst request carries the driver's own abort bound, so a
+ * burst is over by `REQUEST_TIMEOUT_MS` past its moment plus the lateness a driver is
+ * allowed. Twice the timeout leaves the next moment well past that, so two bursts
+ * never overlap and each is the contention it is counted as. It also lets whatever
+ * the confirm line held for one burst (its followers' polls, its leader's lease, a
+ * few seconds at most) clear before the next.
+ */
+export const BURST_SPACING_MS = REQUEST_TIMEOUT_MS * 2;
+/**
+ * How far apart in TIME the three slots are (#3325).
+ *
+ * An hour is longer than any appointment plus its buffers (twenty minutes and ten
+ * either side in production), so a booking one burst makes, on any rung of the
+ * ladder, cannot overlap the slot another burst fires at. Closer slots would make the
+ * second burst's refusals partly the first burst's bookings.
+ */
+export const BURST_SLOT_GAP_MS = 60 * 60_000;
+
+/**
+ * The whole minutes a burst driver's job needs at a given lead (#3325): the lead to
+ * the first moment, the spacing to the last, that burst's longest life (its requests'
+ * own timeout plus the lateness a driver may fire at), and the runner's setup. The
+ * workflow's burst job timeout is held at or above this at its default lead.
+ */
+export function burstJobMinutesNeeded(leadSeconds: number): number {
+  const workMs =
+    leadSeconds * 1000 + (BURST_LEGS - 1) * BURST_SPACING_MS + REQUEST_TIMEOUT_MS + BURST_GRACE_DEFAULT_MS;
+  return Math.ceil(workMs / 60_000) + DRIVE_JOB_SETUP_MINUTES;
+}
 
 /**
  * The abort bound for a request sent now: its own timeout, or the time left until
@@ -345,6 +392,29 @@ export interface BookingAttempt {
    * limiter refusing it when something else spent the budget (#2244).
    */
   seenIp: string | null;
+  /**
+   * What the deployment echoed on the response (#3325): which confirm line served it,
+   * why, under which key, the time the line added, and when the deployment built the
+   * answer. Read through the one parser the deployment's builders are tested against,
+   * and kept per field as absent, unreadable or read, so a header that never arrived
+   * is never recorded as a value. Null when no response arrived at all (nothing was
+   * offered, or the request never got an answer).
+   */
+  echo: LoadtestEcho | null;
+}
+
+/** Which burst of the run a burst driver file holds (#3325). */
+export interface BurstLegRecord {
+  /** Zero based, in firing order. */
+  index: number;
+  /** How many bursts the run's plan held. */
+  of: number;
+  /** The slot every request in this burst asked for. */
+  slot: string;
+  /** The two sibling codes the burst was split across. */
+  codes: string[];
+  /** The shared moment, epoch ms. */
+  startAtMs: number;
 }
 
 /** What one driver writes when it finishes. The judge refuses without all of them. */
@@ -369,6 +439,12 @@ export interface DriverResult {
   finishedAtMs: number;
   /** Set only in burst mode, and only when the driver did not fire. */
   burstSkipped?: BurstReadiness;
+  /**
+   * Set only in burst mode: which of the run's bursts this file holds (#3325). A
+   * driver writes one file per burst, so a driver that missed one burst still hands
+   * the judge the others whole.
+   */
+  burstLeg?: BurstLegRecord;
   /**
    * Set only in fault mode: the percentage the DEPLOYMENT reported it was running
    * with, read from `/api/smoke/version` before a single request was sent.
@@ -417,17 +493,109 @@ export interface DriverResult {
  * of an unordered list is not "the furthest away".
  */
 export function chooseBurstSlot(slots: readonly string[]): string | null {
+  return chooseBurstSlots(slots, 1, 0)?.[0] ?? null;
+}
+
+/**
+ * The slots a run's bursts fire at, one per burst, in time order (#3325), or null
+ * when there are not `count` of them at least `minGapMs` apart.
+ *
+ * The furthest offered time first, for the reason one burst always took it, then the
+ * latest earlier time at least the gap before the last one chosen, and so on. Never
+ * fewer than asked: a plan of three bursts handed two slots would fire two and the
+ * judge would count a third that never had a slot.
+ *
+ * Unreadable times are DROPPED rather than sorted, and the list is sorted here rather
+ * than trusted to arrive in order (L50, L343), exactly as one slot always was.
+ */
+export function chooseBurstSlots(slots: readonly string[], count: number, minGapMs: number): string[] | null {
   const readable: { iso: string; ms: number }[] = [];
   for (const iso of slots) {
     const ms = Date.parse(iso);
-    // An unreadable time is DROPPED rather than sorted, because NaN compares false
-    // against everything and would land wherever the sort happened to put it,
-    // making the choice depend on the input order this sort exists to remove (L50).
     if (Number.isFinite(ms)) readable.push({ iso, ms });
   }
-  if (readable.length === 0) return null;
   readable.sort((a, b) => a.ms - b.ms);
-  return readable[readable.length - 1]!.iso;
+  const chosen: { iso: string; ms: number }[] = [];
+  for (let i = readable.length - 1; i >= 0 && chosen.length < count; i--) {
+    const last = chosen[chosen.length - 1];
+    if (last === undefined || last.ms - readable[i]!.ms >= minGapMs) chosen.push(readable[i]!);
+  }
+  if (count <= 0 || chosen.length < count) return null;
+  return chosen.reverse().map((c) => c.iso);
+}
+
+/** Each burst's shared moment, `spacingMs` apart from the first (#3325). */
+export function burstMoments(startAtMs: number, legs: number, spacingMs: number): number[] {
+  return Array.from({ length: Math.max(0, legs) }, (_, i) => startAtMs + i * spacingMs);
+}
+
+/**
+ * Which of the two sibling codes request `i` of driver `driver` asks for (#3325).
+ *
+ * Alternating within a driver, and opening on a different code per driver, so four
+ * drivers of twenty five split a burst fifty fifty and neither code's requests are
+ * bunched at the start of the burst.
+ */
+export function burstCodeFor(codes: readonly [string, string] | readonly string[], driver: number, i: number): string {
+  return codes[(driver + i) % 2]!;
+}
+
+/** The file one burst's results go to, beside the driver's own name (#3325). */
+export function burstLegOut(out: string, index: number): string {
+  return `${out.replace(/\.json$/, "")}-leg-${index}.json`;
+}
+
+/** The burst plan the setup chose once and every driver fires (#3325). */
+export interface BurstPlan {
+  /** The two sibling codes, measured to share a fallback ladder. */
+  codes: [string, string];
+  /** One per burst, in firing order. */
+  bursts: { slot: string; startAtMs: number }[];
+}
+
+/**
+ * The plan from `BURST_PLAN`, or the reason it cannot be fired (#3325).
+ *
+ * Read strictly, and refused by name, because a plan this half read would be a burst
+ * nobody configured: one code instead of two, a slot that is not a time (every
+ * request then refused as a validation error and counted as a loser), or moments out
+ * of order, which would have a driver wait past one burst to fire the next late.
+ */
+export function readBurstPlan(raw: string): { ok: true; plan: BurstPlan } | { ok: false; why: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ok: false, why: "BURST_PLAN is not JSON" };
+  }
+  const p = parsed as { codes?: unknown; bursts?: unknown } | null;
+  if (typeof p !== "object" || p === null) return { ok: false, why: "BURST_PLAN is not an object" };
+  const codes = p.codes;
+  if (!Array.isArray(codes) || codes.length !== 2 || !codes.every((c) => typeof c === "string" && c.trim() !== "")) {
+    return { ok: false, why: "BURST_PLAN must name exactly two codes, the burst and its sibling" };
+  }
+  if (codes[0] === codes[1]) {
+    return { ok: false, why: `BURST_PLAN must name two different codes, and names ${codes[0]} twice` };
+  }
+  const bursts = p.bursts;
+  if (!Array.isArray(bursts) || bursts.length === 0) return { ok: false, why: "BURST_PLAN holds no bursts" };
+  const out: BurstPlan["bursts"] = [];
+  for (const [i, b] of bursts.entries()) {
+    const slot = (b as { slot?: unknown } | null)?.slot;
+    const startAtMs = (b as { startAtMs?: unknown } | null)?.startAtMs;
+    if (typeof slot !== "string" || !Number.isFinite(Date.parse(slot))) {
+      return { ok: false, why: `BURST_PLAN burst ${i + 1}'s slot is not a time: ${JSON.stringify(slot)}` };
+    }
+    if (typeof startAtMs !== "number" || !Number.isSafeInteger(startAtMs) || startAtMs <= 0) {
+      return { ok: false, why: `BURST_PLAN burst ${i + 1}'s moment is not epoch milliseconds: ${JSON.stringify(startAtMs)}` };
+    }
+    const prev = out[out.length - 1];
+    if (prev && startAtMs <= prev.startAtMs) {
+      return { ok: false, why: `BURST_PLAN burst ${i + 1}'s moment is not after burst ${i}'s, so the bursts are not in time order` };
+    }
+    out.push({ slot, startAtMs });
+  }
+  return { ok: true, plan: { codes: [codes[0], codes[1]], bursts: out } };
 }
 
 /**

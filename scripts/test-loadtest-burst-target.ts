@@ -24,7 +24,16 @@
 //     apart (L98, L11).
 //
 // Run: node --experimental-strip-types scripts/test-loadtest-burst-target.ts
-import { burstCandidateOrder, burstControlStrength } from "./loadtest/burst-target.ts";
+import {
+  burstCandidateOrder,
+  burstControlStrength,
+  burstPairOrder,
+  ladderSignature,
+  poolKeysByCode,
+  siblingCodes,
+  type PoolRow,
+} from "./loadtest/burst-target.ts";
+import { allXbcCodes, bucketSpecForXbc } from "../src/lib/xbc.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 // --- the shallowest pool is asked first -----------------------------------------
@@ -130,6 +139,124 @@ import { assert, eq, finish } from "./lib/harness.ts";
   assert(
     unknown !== burstControlStrength({ measured: true, code: "222", depth: 1 }),
     "and it does not read like a measured one deep pool",
+  );
+}
+
+// --- the burst is split across two codes of ONE fallback ladder (#3325) ------------
+//
+// The shared confirm line keys a crowd on the whole fallback LADDER, so a follower is
+// only ever told "taken" by a leader who walked the same pools at every rung. The
+// burst splits across two codes whose ladders are the same pools at every rung, so
+// the line is proved across codes and not only within one. Which codes qualify is
+// MEASURED from the branch's own bucket rows, through the booker's own ladder and the
+// recompute lane's own pool key, never assumed: on today's matrix two codes differing
+// only in the legal digit qualify, and a bucket given a hand named member must stop
+// qualifying the moment it is.
+
+/** The sixty buckets as the load test seed writes them: one org, one event type. */
+function seededRows(edit: (row: PoolRow) => PoolRow = (r) => r): PoolRow[] {
+  return allXbcCodes().map((code) =>
+    edit({
+      code,
+      orgId: "org",
+      eventTypeId: "evt",
+      criteria: bucketSpecForXbc(code)!.criteria,
+      fallbackUserId: null,
+      memberIds: [],
+    }),
+  );
+}
+
+{
+  const keys = poolKeysByCode(seededRows());
+  eq(keys.size, 60, "every seeded code has a pool key");
+  eq(siblingCodes("122", keys), ["120", "121"], "on the seeded matrix the legal digit is inert, so 120 and 121 share 122's ladder");
+  eq(siblingCodes("120", keys), ["121", "122"], "and the relation is the same from either end");
+  eq(siblingCodes("112", keys), ["100", "101", "102", "110", "111"], "the whole tier codes share a one rung ladder too");
+  assert(!siblingCodes("122", keys).includes("132"), "a different backend is a different ladder");
+  assert(!siblingCodes("122", keys).includes("222"), "and so is a different tier");
+}
+
+{
+  // A hand named member changes who a bucket routes to, so it changes the pool key
+  // and the bucket splits off its siblings at once.
+  const keys = poolKeysByCode(seededRows((r) => (r.code === "121" ? { ...r, memberIds: ["agent-9"] } : r)));
+  eq(siblingCodes("122", keys), ["120"], "a bucket with a hand named member is no longer a sibling");
+}
+
+{
+  // At EVERY rung, not only the first. 120 and 122 start on the same pool, but if
+  // the whole tier rung they fall back to differs (110 against 112), a follower on
+  // one could be told taken by a leader who walked a different pool.
+  const keys = poolKeysByCode(seededRows((r) => (r.code === "110" ? { ...r, fallbackUserId: "agent-4" } : r)));
+  assert(!siblingCodes("122", keys).includes("120"), "two codes whose LOWER rungs differ are not siblings");
+  assert(siblingCodes("122", keys).includes("121"), "while a code whose every rung matches still is");
+}
+
+{
+  // The Low exclusion is part of the ladder. With every bucket made the same pool, a
+  // top tier code and one below it still walk the rungs differently, because a top
+  // tier lead's lower rungs skip advisors who also carry Low (#2842).
+  const keys = poolKeysByCode(seededRows((r) => ({ ...r, criteria: { debt_team: "low" } })));
+  assert(!siblingCodes("322", keys).includes("422"), "a top tier ladder never matches one below it");
+  assert(ladderSignature("422", keys) !== null, "and both ladders are readable");
+}
+
+{
+  // A rung with no bucket cannot be vouched for, so the code has no ladder signature
+  // and no siblings, rather than being matched on the rungs that happen to exist.
+  const keys = poolKeysByCode(seededRows().filter((r) => r.code !== "132"));
+  eq(ladderSignature("122", keys), null, "a ladder with a missing rung has no signature");
+  eq(siblingCodes("122", keys), [], "and so no siblings");
+}
+
+{
+  // Shallowest pool first, among the codes that HAVE a sibling, each paired with its
+  // first sibling in code order so two runs against one roster pick the same pair.
+  const keys = poolKeysByCode(
+    seededRows((r) => (r.code === "321" || r.code === "320" ? { ...r, memberIds: [`m-${r.code}`] } : r)),
+  );
+  const pairs = burstPairOrder(
+    [
+      { code: "322", depth: 1 },
+      { code: "122", depth: 1 },
+      { code: "112", depth: 40 },
+      { code: "222", depth: 0 },
+    ],
+    keys,
+    6,
+  );
+  eq(
+    pairs,
+    [
+      { code: "122", sibling: "120" },
+      { code: "112", sibling: "100" },
+    ],
+    "a one deep code whose siblings all split off is skipped, and an empty pool is never asked",
+  );
+  eq(burstPairOrder([{ code: "122", depth: 1 }], keys, 0), [], "a limit of zero asks nothing");
+}
+
+{
+  // ONE pair per ladder. Siblings resolve to the same pools, so they offer the same
+  // times: asking 121 with 120 after 120 with 121 spends two availability reads on an
+  // answer already known, and pushes a genuinely different pool out of the bounded
+  // walk. Measured on the seeded roster, the first three candidates were all one
+  // ladder before this.
+  const keys = poolKeysByCode(seededRows());
+  const pairs = burstPairOrder(
+    ["120", "121", "122", "220", "221", "222", "320"].map((code) => ({ code, depth: 1 })),
+    keys,
+    6,
+  );
+  eq(
+    pairs,
+    [
+      { code: "120", sibling: "121" },
+      { code: "220", sibling: "221" },
+      { code: "320", sibling: "321" },
+    ],
+    "each ladder is asked about once, by its first code",
   );
 }
 

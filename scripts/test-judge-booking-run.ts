@@ -18,11 +18,22 @@ import {
   FRESHNESS_MAX_SEC,
   CRON_CPU_MARGIN_SHARE,
   cronCpuShareText,
+  BURST_LOSER_LAG_MS,
+  burstsSummaryText,
+  burstLegText,
+  steadyLineText,
   type JudgeInput,
   type JudgedBooking,
 } from "./loadtest/judge-booking-run.ts";
 import type { BookingAttempt, DriverResult } from "./loadtest/book-plan.ts";
-import { idPrefix } from "./loadtest/book-plan.ts";
+import { idPrefix, burstCodeFor, externalIdFor } from "./loadtest/book-plan.ts";
+import {
+  answeredAtEchoHeader,
+  confirmLineEchoHeaders,
+  readLoadtestEcho,
+  type ConfirmLineEcho,
+  type LoadtestEcho,
+} from "../src/lib/loadtest-echo.ts";
 import {
   BASELINE_BOOKINGS,
   BASELINE_MIN_OK,
@@ -94,7 +105,23 @@ import { assert, eq, finish } from "./lib/harness.ts";
 
 const RUN = "run-1";
 const T0 = Date.parse("2026-09-15T14:00:00.000Z");
+
+/**
+ * What the deployment echoed on one response (#3325), built by the deployment's OWN
+ * builders and read back through the driver's OWN parser, so no fixture here can
+ * hold an echo the driver could never record (L48). `line` null sends no line
+ * headers at all, which is what a deployment without the shared line sends; `at`
+ * null sends no answer stamp.
+ */
+function echoOf(line: Partial<ConfirmLineEcho> | null, at: number | null): LoadtestEcho {
+  const pairs: [string, string][] = [];
+  if (line) pairs.push(...confirmLineEchoHeaders({ line: "shared", reason: "ok", key: "ladder", lineMs: 40, ...line }));
+  if (at !== null) pairs.push(answeredAtEchoHeader(at));
+  return readLoadtestEcho(new Headers(pairs));
+}
 const TARGET = { drivers: 4, perDriverPerMinute: 15, minutes: 10 };
+/** When the base fixture's burst fired, on the deployment's clock. */
+const BURST_AT = Date.parse("2026-09-15T13:50:00.000Z");
 const PER_DRIVER = TARGET.perDriverPerMinute * TARGET.minutes;
 
 function attempt(driver: number, n: number, over: Partial<BookingAttempt> = {}): BookingAttempt {
@@ -111,6 +138,9 @@ function attempt(driver: number, n: number, over: Partial<BookingAttempt> = {}):
     // fixture carries no accidental overlap of its own.
     startIso: new Date(T0 + 86_400_000 + (driver * 1000 + n) * 20 * 60_000).toISOString(),
     seenIp: "203.0.113.9",
+    // Served by the shared line, as a load run expects (#3325), and stamped when the
+    // deployment answered.
+    echo: echoOf({}, T0 + n * 4000 + 400),
     ...over,
   };
 }
@@ -147,7 +177,13 @@ function bookingFor(a: BookingAttempt, over: Partial<JudgedBooking> = {}): Judge
 /** The passing run, built once so every case below is one deliberate break from it. */
 function passing(): JudgeInput {
   const driverResults = [0, 1, 2, 3].map((d) => driverFile(d));
-  const burstWinner = attempt(9, 0, { code: "122", startIso: "2026-09-16T15:00:00.000Z" });
+  // The burst's answers, stamped on the deployment's clock (#3325): the winner at
+  // BURST_AT + 800ms and every loser within half a second of it.
+  const burstWinner = attempt(9, 0, {
+    code: "122",
+    startIso: "2026-09-16T15:00:00.000Z",
+    echo: echoOf({}, BURST_AT + 800),
+  });
   const burstResults: DriverResult[] = [
     {
       runId: RUN,
@@ -156,6 +192,7 @@ function passing(): JudgeInput {
       planned: 25,
       startedAtMs: T0,
       finishedAtMs: T0 + 2000,
+      burstLeg: { index: 0, of: 1, slot: "2026-09-16T15:00:00.000Z", codes: ["122"], startAtMs: BURST_AT },
       attempts: [
         burstWinner,
         ...Array.from({ length: 24 }, (_, i) =>
@@ -164,6 +201,7 @@ function passing(): JudgeInput {
             startIso: "2026-09-16T15:00:00.000Z",
             status: 409,
             outcome: "SLOT_TAKEN",
+            echo: echoOf({}, BURST_AT + 800 + (i + 1) * 20),
           }),
         ),
       ],
@@ -223,7 +261,7 @@ function passing(): JudgeInput {
     faultPass: { attempts: 100, fiveXx: 0, faultPct: 10, faultTargets: ["google-read"] },
     // #3104: the lanes kept running and the sync page fired once while faulted.
     faultLanes: { evidence: healthyFaultLanes(LANES_T0, RUN), expectations: fixtureLaneExpectations(LANES_T0) },
-    expectedLegs: { burstDrivers: burstResults.length, faultPct: 10 },
+    expectedLegs: { burstDrivers: burstResults.length, bursts: 1, faultPct: 10 },
     unreadableDriverFiles: [],
     budgets: { cpuMsP99: REQUEST_CPU_P99_MS, cronCpuMs: 120_000 },
   };
@@ -1873,6 +1911,441 @@ function slowRun(made = 100): JudgeInput {
   const voidBoth = latencyReportLine({ kind: "unmeasured", why: "no baseline file arrived" }, "the analytics API reported no invocation outcomes");
   assert(!voidBoth.includes("every other bar was judged"), `with the platform unmeasured too, no blanket claim: ${voidBoth}`);
   assert(voidBoth.includes("platform limits were UNMEASURED") && voidBoth.includes("no invocation outcomes"), `and it names the platform cause: ${voidBoth}`);
+}
+
+// =====================================================================================
+// The shared confirm line, proved by the burst (#3325)
+// =====================================================================================
+//
+// Three bursts a run, each split across two sibling codes, each judged on its own,
+// and two new clauses per burst: every confirm took the SHARED line, and every
+// SLOT_TAKEN was answered within BURST_LOSER_LAG_MS of the LAST winner on the
+// deployment's own clock. Each clause is driven in BOTH directions from the passing
+// run (L1), on the artifact shape the judge actually reads: burst driver files whose
+// attempts carry echoes built and read by the real contract.
+
+const SIBLINGS = ["120", "121"] as const;
+const LEG_SLOTS = ["2026-09-16T15:00:00.000Z", "2026-09-16T16:10:00.000Z", "2026-09-16T17:20:00.000Z"];
+/** Each leg's moment on the deployment's clock, a minute apart. */
+const legAt = (leg: number) => BURST_AT + leg * 60_000;
+
+/**
+ * One burst driver's file for one leg: twenty five requests split across the two
+ * siblings exactly as the driver splits them, the first request of driver 0 winning
+ * and every other one refused SLOT_TAKEN, all answered within half a second.
+ */
+function legFile(leg: number, driver: number): DriverResult {
+  const attempts = Array.from({ length: 25 }, (_, i) => {
+    const n = leg * 25 + i;
+    const won = driver === 0 && i === 0;
+    return attempt(driver, n, {
+      code: burstCodeFor(SIBLINGS, driver, i),
+      externalId: externalIdFor(idPrefix(RUN, "burst"), driver, n),
+      startIso: LEG_SLOTS[leg]!,
+      status: won ? 200 : 409,
+      outcome: won ? "booked" : "SLOT_TAKEN",
+      echo: echoOf({}, legAt(leg) + 800 + (won ? 0 : 100 + driver * 30 + i * 10)),
+    });
+  });
+  return {
+    runId: RUN,
+    driver,
+    mode: "burst",
+    planned: 25,
+    startedAtMs: legAt(leg) - 1000,
+    finishedAtMs: legAt(leg) + 2000,
+    burstLeg: { index: leg, of: 3, slot: LEG_SLOTS[leg]!, codes: [...SIBLINGS], startAtMs: legAt(leg) },
+    attempts,
+  };
+}
+
+/** The passing run, with the workflow's real burst shape: three legs of four drivers. */
+function threeBursts(): JudgeInput {
+  const input = passing();
+  input.burstResults = [0, 1, 2].flatMap((leg) => [0, 1, 2, 3].map((d) => legFile(leg, d)));
+  // Each leg's winner booked the pool's one agent, an hour apart, so nothing overlaps.
+  const winners = input.burstResults.flatMap((r) => r.attempts.filter((a) => a.status === 200));
+  input.bookings = [
+    ...input.driverResults.flatMap((r) => r.attempts.map((a) => bookingFor(a))),
+    ...winners.map((a) => bookingFor(a, { assigned_user_id: "agent-beyond" })),
+  ];
+  input.bookingIdsWithBusyBlock = input.bookings.map((b) => b.id);
+  input.expectedLegs = { ...input.expectedLegs, burstDrivers: 4, bursts: 3 };
+  return input;
+}
+
+function brokenThree(mutate: (i: JudgeInput) => void) {
+  const input = threeBursts();
+  mutate(input);
+  return judgeBookingRun(input);
+}
+
+/** The attempts of one leg, across every driver. */
+const legAttempts = (i: JudgeInput, leg: number) =>
+  i.burstResults.filter((r) => (r.burstLeg?.index ?? 0) === leg).flatMap((r) => r.attempts);
+
+// --- the three leg run passes, and each leg is read on its own ------------------------
+{
+  const r = judgeBookingRun(threeBursts());
+  eq(`${r.verdict} ${bars(r).join("|")}`, "pass ", "three clean bursts of four drivers pass");
+  const legs = r.measurements!.bursts;
+  eq(legs.length, 3, "and the report carries one reading per burst");
+  eq(legs.map((l) => l.attempts).join(","), "100,100,100", "each burst read on its own hundred requests");
+  eq(legs.map((l) => l.failed.length).join(","), "0,0,0", "with nothing failed in any of them");
+  eq(legs[1]!.codes, { "120": 50, "121": 50 }, "and the split across the two siblings is reported");
+}
+
+// --- a. every burst confirm took the SHARED line ----------------------------------------
+{
+  const one = brokenThree((i) => {
+    legAttempts(i, 1)[7]!.echo = echoOf({ line: "isolate", reason: "off" }, legAt(1) + 900);
+  });
+  const f = one.findings.find((x) => x.bar === "the burst's line");
+  assert(f !== undefined, "one burst confirm served by the per isolate line fails the line clause");
+  assert(
+    f !== undefined && f.detail.includes("burst 2 of 3") && f.detail.includes("isolate/off 1") && f.detail.includes("shared/ok 99"),
+    `naming the burst and the count per line and reason (got: ${f?.detail})`,
+  );
+  eq(one.verdict, "fail", "and the run fails");
+  eq(
+    one.measurements!.bursts.map((l) => l.failed.join("+")).join(","),
+    ",the burst's line,",
+    "and only that burst is marked failed",
+  );
+}
+
+{
+  // The state every run is in until the shared line ships: no line header at all.
+  // That must FAIL by name, never pass for want of anything to object to (L98).
+  const silent = brokenThree((i) => {
+    for (const r of i.burstResults) for (const a of r.attempts) a.echo = echoOf(null, a.echo!.answeredAtMs.state === "read" ? a.echo!.answeredAtMs.value : null);
+  });
+  const lines = silent.findings.filter((x) => x.bar === "the burst's line");
+  eq(lines.length, 3, "every burst fails the line clause when the deployment says nothing");
+  assert(
+    lines.every((x) => x.detail.includes("the deployment did not say which line served the burst")),
+    `in those words (got: ${lines[0]?.detail})`,
+  );
+}
+
+{
+  const garbled = brokenThree((i) => {
+    legAttempts(i, 0)[3]!.echo = readLoadtestEcho(
+      new Headers([
+        ["x-loadtest-confirm-line", "Shared"],
+        ["x-loadtest-answered-at", String(legAt(0) + 900)],
+      ]),
+    );
+  });
+  const f = garbled.findings.find((x) => x.bar === "the burst's line");
+  assert(
+    f !== undefined && f.detail.includes('unreadable line "Shared" 1'),
+    `a line value the contract does not know fails, quoted rather than dropped (got: ${f?.detail})`,
+  );
+}
+
+{
+  const fallback = brokenThree((i) => {
+    for (const a of legAttempts(i, 2).slice(0, 4)) {
+      a.echo = echoOf({ line: "fallback", reason: "reach-timeout", key: "code" }, legAt(2) + 900);
+    }
+  });
+  const f = fallback.findings.find((x) => x.bar === "the burst's line");
+  assert(
+    f !== undefined && f.detail.includes("fallback/reach-timeout 4") && f.detail.includes("burst 3 of 3"),
+    `a burst that fell back to the per isolate line names the fallback and why (got: ${f?.detail})`,
+  );
+}
+
+{
+  // The ladder share is REPORTED, never barred: a request that could not take a
+  // ladder key still took the shared line, under its code.
+  const coded = brokenThree((i) => {
+    for (const a of legAttempts(i, 0).slice(0, 10)) a.echo = echoOf({ key: "code" }, a.echo!.answeredAtMs.state === "read" ? a.echo!.answeredAtMs.value : null);
+  });
+  eq(coded.verdict, "pass", "a burst partly on code keys still passes");
+  eq(coded.measurements!.bursts[0]!.ladderKeys, 90, "and reports 90 of its 100 confirms on a ladder key");
+  eq(coded.measurements!.bursts[1]!.ladderKeys, 100, "and 100 of 100 for a burst wholly on the ladder");
+}
+
+// --- b. every SLOT_TAKEN within BURST_LOSER_LAG_MS of the LAST 200 ----------------------
+{
+  eq(BURST_LOSER_LAG_MS, 2_000, "the bound is two seconds, a named constant");
+
+  const atBound = brokenThree((i) => {
+    const loser = legAttempts(i, 0).find((a) => a.status === 409)!;
+    loser.echo = echoOf({}, legAt(0) + 800 + BURST_LOSER_LAG_MS);
+  });
+  eq(atBound.verdict, "pass", "a loser answered exactly at the bound after the last winner passes");
+
+  const late = brokenThree((i) => {
+    const loser = legAttempts(i, 1).find((a) => a.status === 409)!;
+    loser.echo = echoOf({}, legAt(1) + 800 + BURST_LOSER_LAG_MS + 1);
+  });
+  const f = late.findings.find((x) => x.bar === "the burst's speed");
+  assert(f !== undefined, "a loser answered one millisecond past the bound fails the speed clause");
+  assert(
+    f !== undefined && f.detail.includes("burst 2 of 3") && f.detail.includes(`${BURST_LOSER_LAG_MS + 1}ms after`),
+    `naming the burst and how far behind the last winner it came (got: ${f?.detail})`,
+  );
+}
+
+{
+  // Measured from the LAST winner, not the first: with one agent per rung, winners
+  // land at different moments, and a loser told taken just after the last of them was
+  // answered promptly.
+  const twoWinners = brokenThree((i) => {
+    const second = legAttempts(i, 0).find((a) => a.status === 409)!;
+    second.status = 200;
+    second.outcome = "booked";
+    second.echo = echoOf({}, legAt(0) + 3_000);
+    for (const a of legAttempts(i, 0)) if (a.status === 409) a.echo = echoOf({}, legAt(0) + 4_500);
+    i.bookings.push(bookingFor(second, { assigned_user_id: "agent-achieve-low" }));
+    i.bookingIdsWithBusyBlock = i.bookings.map((b) => b.id);
+  });
+  eq(
+    twoWinners.verdict,
+    "pass",
+    "losers 3.7s after the first winner and 1.5s after the last are prompt",
+  );
+}
+
+{
+  const unstamped = brokenThree((i) => {
+    legAttempts(i, 2)[5]!.echo = echoOf({}, null);
+  });
+  const f = unstamped.findings.find((x) => x.bar === "the burst's speed");
+  assert(
+    f !== undefined && f.detail.includes("could not be measured") && f.detail.includes("1 absent"),
+    `a burst answer with no stamp FAILS as unmeasured, never passes (got: ${f?.detail})`,
+  );
+
+  const garbled = brokenThree((i) => {
+    legAttempts(i, 2)[5]!.echo = readLoadtestEcho(
+      new Headers([...confirmLineEchoHeaders({ line: "shared", reason: "ok", key: "ladder", lineMs: 30 }), ["x-loadtest-answered-at", "soon"]]),
+    );
+  });
+  const g = garbled.findings.find((x) => x.bar === "the burst's speed");
+  assert(
+    g !== undefined && g.detail.includes("could not be measured") && g.detail.includes("1 unreadable"),
+    `and so does one whose stamp cannot be read (got: ${g?.detail})`,
+  );
+
+  const unanswered = brokenThree((i) => {
+    const a = legAttempts(i, 2)[6]!;
+    a.status = 0;
+    a.outcome = "timed-out";
+    a.echo = null;
+  });
+  assert(
+    unanswered.findings.some((x) => x.bar === "the burst's speed" && x.detail.includes("could not be measured")),
+    "and so does a request that got no answer at all, beside the losers finding it also makes",
+  );
+}
+
+{
+  const noWinner = brokenThree((i) => {
+    for (const a of legAttempts(i, 0)) {
+      a.status = 409;
+      a.outcome = "SLOT_TAKEN";
+    }
+  });
+  assert(
+    noWinner.findings.some(
+      (x) => x.bar === "the burst's speed" && x.detail.includes("burst 1 of 3") && x.detail.includes("no request was answered 200"),
+    ),
+    "a burst nobody won cannot measure its losers against a winner, and says so rather than passing",
+  );
+
+  const noLoser = brokenThree((i) => {
+    for (const a of legAttempts(i, 1)) {
+      a.status = 200;
+      a.outcome = "booked";
+      i.bookings.push(bookingFor(a, { assigned_user_id: `agent-${a.externalId}` }));
+    }
+    i.bookingIdsWithBusyBlock = i.bookings.map((b) => b.id);
+  });
+  assert(
+    noLoser.findings.some(
+      (x) => x.bar === "the burst's speed" && x.detail.includes("burst 2 of 3") && x.detail.includes("no request was refused SLOT_TAKEN"),
+    ),
+    "and a burst nobody lost never tested how fast losers are answered, so it is not a pass either (L98)",
+  );
+}
+
+// --- c. any burst failing fails the run, and the report names which ---------------------
+{
+  const missedOne = brokenThree((i) => {
+    const file = i.burstResults.find((r) => r.burstLeg?.index === 1 && r.driver === 2)!;
+    file.burstSkipped = "missed";
+    file.attempts = [];
+  });
+  eq(missedOne.verdict, "fail", "one driver missing one burst fails the run");
+  const burstBars = missedOne.findings.filter((x) => x.bar.startsWith("the burst"));
+  eq(burstBars.length, 1, "with one finding, the shortfall, and no contention question asked of that burst");
+  assert(burstBars[0]!.detail.startsWith("burst 2 of 3"), `naming which burst (got: ${burstBars[0]?.detail})`);
+  eq(
+    missedOne.measurements!.bursts.map((l) => (l.failed.length > 0 ? "x" : "ok")).join(","),
+    "ok,x,ok",
+    "and the other two bursts are still judged, and pass",
+  );
+}
+
+{
+  // A short burst must not stop the bursts AFTER it being asked their questions. A
+  // later burst that passes reads the same judged or skipped, so this one fails.
+  const shortThenLate = brokenThree((i) => {
+    const file = i.burstResults.find((r) => r.burstLeg?.index === 0 && r.driver === 1)!;
+    file.burstSkipped = "missed";
+    file.attempts = [];
+    legAttempts(i, 2).find((a) => a.status === 409)!.echo = echoOf({}, legAt(2) + 9_000);
+  });
+  assert(
+    shortThenLate.findings.some((x) => x.bar === "the burst" && x.detail.startsWith("burst 1 of 3")) &&
+      shortThenLate.findings.some((x) => x.bar === "the burst's speed" && x.detail.startsWith("burst 3 of 3")),
+    "a burst short of a driver is failed, and the bursts after it are still judged",
+  );
+}
+
+{
+  const lostLeg = brokenThree((i) => {
+    i.burstResults = i.burstResults.filter((r) => r.burstLeg?.index !== 2);
+  });
+  assert(
+    lostLeg.findings.some((x) => x.bar === "the burst" && x.detail.startsWith("burst 3 of 3") && x.detail.includes("0 burst driver files, expected 4")),
+    "a configured burst whose files never arrived fails by name, never counts as absent",
+  );
+}
+
+{
+  // Two bursts failing for two different reasons each carry their own finding.
+  const two = brokenThree((i) => {
+    legAttempts(i, 0)[4]!.echo = echoOf({ line: "isolate", reason: "unbound" }, legAt(0) + 900);
+    legAttempts(i, 2).find((a) => a.status === 409)!.echo = echoOf({}, legAt(2) + 9_000);
+  });
+  assert(
+    two.findings.some((x) => x.bar === "the burst's line" && x.detail.startsWith("burst 1 of 3")) &&
+      two.findings.some((x) => x.bar === "the burst's speed" && x.detail.startsWith("burst 3 of 3")),
+    "two failing bursts are each named with their own clause",
+  );
+  eq(
+    two.measurements!.bursts.map((l) => l.failed.join("+") || "ok").join(","),
+    "the burst's line,ok,the burst's speed",
+    "and the per burst reading says which failed and why",
+  );
+}
+
+{
+  // The contention bars are per burst too: an agent holding two bookings in burst 3
+  // is named as burst 3, while bursts 1 and 2 pass.
+  const doubled = brokenThree((i) => {
+    const second = legAttempts(i, 2).find((a) => a.status === 409)!;
+    second.status = 200;
+    second.outcome = "booked";
+    second.echo = echoOf({}, legAt(2) + 820);
+    i.bookings.push(bookingFor(second, { assigned_user_id: "agent-beyond" }));
+    i.bookingIdsWithBusyBlock = i.bookings.map((b) => b.id);
+  });
+  const f = doubled.findings.find((x) => x.bar === "the burst's winners");
+  assert(f !== undefined && f.detail.startsWith("burst 3 of 3"), `a double booking names its burst (got: ${f?.detail})`);
+}
+
+{
+  // Two files claiming one driver within ONE burst is incomplete; the same driver
+  // across three bursts is the plan.
+  const dup = brokenThree((i) => {
+    const file = i.burstResults.find((r) => r.burstLeg?.index === 0 && r.driver === 3)!;
+    file.driver = 2;
+  });
+  eq(dup.verdict, "incomplete", "two files for one driver in one burst is incomplete");
+  assert(
+    dup.incomplete.some((w) => w.includes("burst 1")),
+    `naming the burst (got: ${dup.incomplete.join(" | ")})`,
+  );
+}
+
+// --- d. the steady pass's line, reported and never barred --------------------------------
+{
+  const r = judgeBookingRun(passing());
+  const steady = r.measurements!.steadyLine;
+  eq(steady.answered, 4 * PER_DRIVER, "every steady answer is counted");
+  eq(steady.byLineReason, { "shared/ok": 4 * PER_DRIVER }, "by line and reason");
+  eq(steady.lineMs?.p50, 40, "with the time the line added, p50");
+  eq(steady.lineMs?.p95, 40, "and p95");
+}
+
+{
+  const mixed = broken((i) => {
+    const all = i.driverResults.flatMap((d) => d.attempts);
+    all.forEach((a, n) => {
+      a.echo =
+        n % 10 === 0
+          ? echoOf({ line: "isolate", reason: "off", lineMs: 0 }, a.sentAtMs + 400)
+          : n % 10 === 1
+            ? echoOf(null, a.sentAtMs + 400)
+            : echoOf({ lineMs: 20 + (n % 100) }, a.sentAtMs + 400);
+    });
+  });
+  eq(mixed.verdict, "pass", "the steady pass's line never fails a run: it is a report, not a bar");
+  const steady = mixed.measurements!.steadyLine;
+  eq(steady.byLineReason["isolate/off"], 60, "a tenth on the per isolate line, counted by reason");
+  eq(steady.notSaid, 60, "and the answers that carried no line header are counted, not dropped");
+  assert(steady.lineMs !== null && steady.lineMs.p95 > steady.lineMs.p50, "the percentiles come from the readings");
+  eq(steady.lineMsUnread, 60, "and an answer with no time header is counted as unread, never as zero");
+}
+
+{
+  const none = broken((i) => {
+    for (const d of i.driverResults) for (const a of d.attempts) a.echo = echoOf(null, null);
+  });
+  eq(none.measurements!.steadyLine.lineMs, null, "with no time header anywhere the percentile is null, never zero");
+  eq(none.measurements!.steadyLine.notSaid, 4 * PER_DRIVER, "and every answer is counted as not saying");
+}
+
+// --- the report says which burst failed, in its own words ----------------------------
+{
+  const clean = judgeBookingRun(threeBursts()).measurements!;
+  eq(burstsSummaryText(clean.bursts), "the bursts: 3 judged, and every one passed", "a clean run says all three passed");
+  const two = brokenThree((i) => {
+    legAttempts(i, 0)[4]!.echo = echoOf({ line: "isolate", reason: "unbound" }, legAt(0) + 900);
+    legAttempts(i, 2).find((a) => a.status === 409)!.echo = echoOf({}, legAt(2) + 9_000);
+  }).measurements!;
+  const summary = burstsSummaryText(two.bursts);
+  assert(
+    summary.includes("2 of 3 FAILED") && summary.includes("burst 1 of 3") && summary.includes("burst 3 of 3") && !summary.includes("burst 2 of 3"),
+    `a run with two failing bursts names exactly those two (got: ${summary})`,
+  );
+  const leg = burstLegText(two.bursts[2]!);
+  assert(leg.includes("FAILED (the burst's speed)") && leg.includes("120 50, 121 50"), `each burst's line says its verdict and its split (got: ${leg})`);
+  assert(burstLegText(two.bursts[1]!).includes("passed"), "and a passing burst says it passed");
+  assert(burstLegText(clean.bursts[0]!).includes("ladder key on 100 of 100 (100.0%)"), "with its ladder share");
+  eq(burstsSummaryText([]), null, "a run with no burst leg says nothing about bursts");
+  const steady = steadyLineText(clean.steadyLine);
+  assert(
+    steady.includes("not a bar") && steady.includes("p50 40ms, p95 40ms") && steady.includes("absolute time the line added"),
+    `the steady line says it is a report and gives the absolute time the line added (got: ${steady})`,
+  );
+}
+
+// --- a file written before #3325 carries no echo at all, and is read as not said ------
+{
+  // Driver files from before the echo existed have no `echo` field, and a hand built
+  // input may omit it. That must read as the deployment saying nothing, never crash
+  // the judge, which would leave the run with no verdict at all (L98).
+  const old = broken((i) => {
+    for (const d of i.driverResults) for (const a of d.attempts) delete (a as { echo?: unknown }).echo;
+    for (const b of i.burstResults) for (const a of b.attempts) delete (a as { echo?: unknown }).echo;
+  });
+  eq(old.measurements!.steadyLine.notSaid, 4 * PER_DRIVER, "a steady attempt with no echo field counts as not said");
+  eq(old.measurements!.steadyLine.lineMs, null, "with no time read");
+  assert(
+    old.findings.some((f) => f.bar === "the burst's line" && f.detail.includes("the deployment did not say which line served the burst")),
+    "and a burst with no echo fields fails the line clause by name",
+  );
+  assert(
+    old.findings.some((f) => f.bar === "the burst's speed" && f.detail.includes("could not be measured")),
+    "and the speed clause as unmeasured",
+  );
 }
 
 finish();

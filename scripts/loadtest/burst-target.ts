@@ -26,6 +26,8 @@
  * Pure, so `scripts/test-loadtest-burst-target.ts` drives it with no network and no
  * database.
  */
+import { tierLadder, rungExcludesLow } from "../../src/lib/routing/tiers.ts";
+import { poolKeyFor, type PoolInput } from "../../src/lib/availability/pool-key.ts";
 
 /** One bucket code and how many agents its pool resolves to. */
 export interface PoolDepth {
@@ -91,4 +93,90 @@ export function burstControlStrength(reading: BurstDepthReading): string {
     `spread over ${reading.depth} agents and the control is weaker than a one deep pool would be. ` +
     "The bar itself still holds: it asks for one winner per agent, not one winner"
   );
+}
+
+/** One bucket's pool inputs and its code, as the app's own `listPoolBuckets` reads them. */
+export interface PoolRow extends PoolInput {
+  code: string;
+}
+
+/**
+ * Each code's pool key, through the recompute lane's own `poolKeyFor` (#3325), so the
+ * burst and the lane cannot disagree about which codes are one pool (L41).
+ */
+export function poolKeysByCode(rows: readonly PoolRow[]): Map<string, string> {
+  return new Map(rows.map((r) => [r.code, poolKeyFor(r)]));
+}
+
+/**
+ * The fingerprint of `code`'s whole fallback ladder (#3325): for every rung the
+ * booker walks (`tierLadder`), the pool that rung resolves to and whether a top tier
+ * lead skips Low carriers on it (`rungExcludesLow`). Two codes with the same
+ * fingerprint send a crowd through the same pools in the same way, which is exactly
+ * when the shared confirm line may tell one of them "taken" on the other's verdict.
+ *
+ * Null when any rung has no bucket: a ladder that cannot be read whole cannot be
+ * vouched for, and matching it on the rungs that happen to exist is how two codes
+ * that route differently would read as one.
+ */
+export function ladderSignature(code: string, poolKeyByCode: ReadonlyMap<string, string>): string | null {
+  const rungs: [string, boolean][] = [];
+  for (const rung of tierLadder(code)) {
+    const key = poolKeyByCode.get(rung);
+    if (key === undefined) return null;
+    rungs.push([key, rungExcludesLow(code, rung)]);
+  }
+  return JSON.stringify(rungs);
+}
+
+/**
+ * Every other code whose ladder is the same pools at every rung as `code`'s, in code
+ * order (#3325). Measured from the branch's own bucket rows rather than assumed from
+ * the legal digit being inert today: a bucket given a hand named member or a fallback
+ * advisor changes its pool key and drops out here at once.
+ */
+export function siblingCodes(code: string, poolKeyByCode: ReadonlyMap<string, string>): string[] {
+  const mine = ladderSignature(code, poolKeyByCode);
+  if (mine === null) return [];
+  return [...poolKeyByCode.keys()]
+    .filter((c) => c !== code && ladderSignature(c, poolKeyByCode) === mine)
+    .sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * The code pairs to ask availability about, shallowest pool first (#3325): each code
+ * that has at least one sibling, paired with its first sibling in code order so two
+ * runs against one roster split the burst the same way (L419). A code with no sibling
+ * is skipped rather than fired alone, because a burst on one code never exercises the
+ * line ACROSS codes, which is what the split is for.
+ *
+ * ONE pair per ladder: siblings resolve to the same pools and so offer the same times,
+ * and asking a second pair of one ladder would spend two of the bounded availability
+ * reads on an answer already known.
+ */
+export function burstPairOrder(
+  depths: readonly PoolDepth[],
+  poolKeyByCode: ReadonlyMap<string, string>,
+  limit: number,
+): { code: string; sibling: string }[] {
+  const paired = new Map<string, string>();
+  for (const d of depths) {
+    const sibling = siblingCodes(d.code, poolKeyByCode)[0];
+    if (sibling !== undefined) paired.set(d.code, sibling);
+  }
+  const ordered = burstCandidateOrder(
+    depths.filter((d) => paired.has(d.code)),
+    depths.length,
+  );
+  const seenLadders = new Set<string>();
+  const out: { code: string; sibling: string }[] = [];
+  for (const code of ordered) {
+    if (out.length >= limit) break;
+    // Non null: a code is only paired when its ladder has a signature.
+    const ladder = ladderSignature(code, poolKeyByCode)!;
+    if (seenLadders.has(ladder)) continue;
+    seenLadders.add(ladder);
+    out.push({ code, sibling: paired.get(code)! });
+  }
+  return out;
 }

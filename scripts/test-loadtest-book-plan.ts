@@ -29,6 +29,17 @@ import {
   offeredSlots,
   loadtestPhone,
   idPrefix,
+  chooseBurstSlots,
+  burstMoments,
+  burstCodeFor,
+  burstLegOut,
+  readBurstPlan,
+  BURST_LEGS,
+  BURST_REQUESTS_DEFAULT,
+  BURST_SPACING_MS,
+  BURST_SLOT_GAP_MS,
+  BURST_GRACE_DEFAULT_MS,
+  REQUEST_TIMEOUT_MS,
 } from "./loadtest/book-plan.ts";
 import {
   AVAILABILITY_LIMITER,
@@ -439,6 +450,132 @@ const T0 = Date.parse("2026-09-15T14:00:00.000Z");
   const a = externalIdFor(idPrefix("run-1", "fault"), 0, 0);
   const b = externalIdFor(idPrefix("run-2", "fault"), 0, 0);
   assert(a !== b, "two runs' fault passes do not share ids");
+}
+
+// --- three bursts a run, at three slots, split across two sibling codes (#3325) ----
+//
+// One burst is one spread of requests over the deployment's isolates, and one lucky
+// spread can pass a run that a second would fail (L395). So a run fires THREE bursts,
+// each at its own slot and its own moment, and each is judged on its own. And each
+// burst is split across TWO codes whose fallback ladders are the same pools at every
+// rung, so the shared confirm line is exercised across codes rather than only within
+// one.
+
+{
+  eq(BURST_LEGS, 3, "a run fires three bursts");
+  // Spaced so a burst has finished before the next one fires: every request carries
+  // its own abort, so a burst is over by its timeout plus the lateness a driver is
+  // allowed, and the next moment must be past that or two bursts would overlap and
+  // neither would be the contention it is counted as.
+  assert(
+    BURST_SPACING_MS > REQUEST_TIMEOUT_MS + BURST_GRACE_DEFAULT_MS,
+    `the bursts are spaced past one burst's longest life (${BURST_SPACING_MS}ms against ${REQUEST_TIMEOUT_MS + BURST_GRACE_DEFAULT_MS}ms)`,
+  );
+  // The slots are an hour apart, which is longer than any appointment plus its
+  // buffers, so a booking made by one burst cannot overlap the slot another fires at.
+  assert(BURST_SLOT_GAP_MS >= 60 * 60_000, "the three slots are at least an hour apart");
+}
+
+{
+  const at = 1_760_000_000_000;
+  eq(burstMoments(at, 3, 60_000), [at, at + 60_000, at + 120_000], "three moments, spaced");
+  eq(burstMoments(at, 1, 60_000), [at], "one leg is one moment");
+}
+
+{
+  // The last offered time first, as one burst always chose (the preflight books the
+  // FIRST time its own bucket offers), then the latest earlier time at least the gap
+  // before it, and again. Fired in time order, so the report reads forwards.
+  const hour = 60 * 60_000;
+  const t = (h: number, m = 0) => new Date(Date.parse("2026-10-06T13:00:00.000Z") + h * hour + m * 60_000).toISOString();
+  const offered = [t(0), t(0, 10), t(1), t(1, 20), t(2), t(2, 30), t(3), t(3, 10)];
+  eq(
+    chooseBurstSlots(offered, 3, hour),
+    [t(1), t(2), t(3, 10)],
+    "picks the furthest time and then the latest ones an hour or more before it",
+  );
+}
+
+{
+  const hour = 60 * 60_000;
+  const t = (m: number) => new Date(Date.parse("2026-10-06T13:00:00.000Z") + m * 60_000).toISOString();
+  const offered = [t(0), t(30), t(70), t(130)];
+  eq(chooseBurstSlots(offered, 3, hour), [t(0), t(70), t(130)], "every chosen pair is at least the gap apart");
+  eq(chooseBurstSlots([...offered].reverse(), 3, hour), [t(0), t(70), t(130)], "whatever order they arrived in (L343)");
+  eq(chooseBurstSlots([t(0), t(30), t(50)], 3, hour), null, "too few times far enough apart yields nothing, never two of three");
+  eq(chooseBurstSlots([t(0), "not a time", t(70), t(140)], 3, hour), [t(0), t(70), t(140)], "an unreadable time is dropped, never chosen");
+  eq(chooseBurstSlots([], 3, hour), null, "nothing offered yields nothing");
+  // The one slot chooser is the three slot chooser asked for one, so the two cannot
+  // disagree about which time is the furthest (L41).
+  eq(chooseBurstSlot(offered), t(130), "one slot is still the last offered time");
+}
+
+{
+  // Each driver's share alternates between the two codes, starting on a different
+  // one per driver, so four drivers of twenty five split a burst fifty fifty.
+  const codes = ["120", "121"] as const;
+  const counts = new Map<string, number>();
+  for (let d = 0; d < DRIVERS; d++) {
+    for (let i = 0; i < BURST_REQUESTS_DEFAULT; i++) {
+      const c = burstCodeFor(codes, d, i);
+      counts.set(c, (counts.get(c) ?? 0) + 1);
+    }
+  }
+  eq(counts.get("120"), 50, "half the burst asks for the first code");
+  eq(counts.get("121"), 50, "and half for its sibling");
+  eq(burstCodeFor(codes, 0, 0), "120", "driver 0 opens on the first code");
+  eq(burstCodeFor(codes, 1, 0), "121", "driver 1 opens on the second");
+}
+
+{
+  eq(burstLegOut("results/burst-2.json", 0), "results/burst-2-leg-0.json", "leg 0's file sits beside the driver's own name");
+  eq(burstLegOut("results/burst-2.json", 2), "results/burst-2-leg-2.json", "and leg 2's");
+  eq(burstLegOut("results/burst-2", 1), "results/burst-2-leg-1.json", "a name with no extension still gets one");
+}
+
+{
+  // The plan is chosen ONCE by the setup and handed through as one value, so the
+  // drivers cannot fire at different codes, slots or moments while each reads as
+  // correct (L70). Read strictly: a plan this cannot read is refused by name rather
+  // than becoming a burst nobody configured.
+  const good = JSON.stringify({
+    codes: ["120", "121"],
+    bursts: [
+      { slot: "2026-10-06T14:00:00.000Z", startAtMs: 1_760_000_000_000 },
+      { slot: "2026-10-06T15:10:00.000Z", startAtMs: 1_760_000_060_000 },
+      { slot: "2026-10-06T16:20:00.000Z", startAtMs: 1_760_000_120_000 },
+    ],
+  });
+  const read = readBurstPlan(good);
+  assert(read.ok, `a well formed plan is read (got: ${JSON.stringify(read)})`);
+  if (read.ok) {
+    eq(read.plan.codes, ["120", "121"], "with its two codes");
+    eq(read.plan.bursts.length, 3, "and its three bursts");
+    eq(read.plan.bursts[1]!.startAtMs, 1_760_000_060_000, "each with its moment");
+  }
+
+  const refusals: [string, string][] = [
+    ["not json", "not JSON"],
+    [JSON.stringify({ codes: ["120"], bursts: JSON.parse(good).bursts }), "two codes"],
+    [JSON.stringify({ codes: ["120", "120"], bursts: JSON.parse(good).bursts }), "two different codes"],
+    [JSON.stringify({ codes: ["120", "121"], bursts: [] }), "no bursts"],
+    [JSON.stringify({ codes: ["120", "121"], bursts: [{ slot: "soon", startAtMs: 1 }] }), "slot"],
+    [JSON.stringify({ codes: ["120", "121"], bursts: [{ slot: "2026-10-06T14:00:00.000Z", startAtMs: "x" }] }), "moment"],
+    [
+      JSON.stringify({
+        codes: ["120", "121"],
+        bursts: [
+          { slot: "2026-10-06T14:00:00.000Z", startAtMs: 1_760_000_060_000 },
+          { slot: "2026-10-06T15:00:00.000Z", startAtMs: 1_760_000_000_000 },
+        ],
+      }),
+      "in time order",
+    ],
+  ];
+  for (const [raw, says] of refusals) {
+    const r = readBurstPlan(raw);
+    assert(!r.ok && r.why.includes(says), `refused, saying "${says}" (got: ${JSON.stringify(r)})`);
+  }
 }
 
 finish();
