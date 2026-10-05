@@ -465,12 +465,47 @@ async function main() {
   // --- keep in a LOWER tier records what was asked for and how far it dropped ---
   {
     const { deps, calls } = fake({});
-    await confirmReroute(deps, { bookingId: "K1", holdId: null, bucketCode: "412", requestedBucketCode: "512", rungsDropped: 1, note: null, actor });
+    await confirmReroute(deps, { bookingId: "K1", holdId: null, bucketCode: "412", requestedBucketCode: "512", note: null, actor });
     const k = calls.keep[0] as { bucketId: string; requestedBucketId: string; rungsDropped: number; requestedTier: string | null; bookedTier: string | null };
     eq(k.bucketId, "b412", "a cascaded keep stores the bucket the advisor was kept in");
     eq(k.requestedBucketId, "b512", "records the bucket that was asked for");
-    eq(k.rungsDropped, 1, "and how far it dropped");
+    eq(k.rungsDropped, 1, "and how far it dropped, worked out from the two codes rather than taken from the browser");
     assert(k.requestedTier !== k.bookedTier, "so the requested and booked tiers differ");
+  }
+
+  // --- keep: a "kept" bucket the search could never have reached is refused ---
+  for (const [kept, asked, why] of [
+    ["512", "312", "a HIGHER tier than asked for"],
+    ["412", "332", "a code off the ladder of the one asked for"],
+  ] as const) {
+    const { deps, calls } = fake({});
+    let code: string | null = null;
+    try {
+      await confirmReroute(deps, { bookingId: "K1", holdId: null, bucketCode: kept, requestedBucketCode: asked, note: null, actor });
+    } catch (e) {
+      code = e instanceof RerouteRefusedError ? e.code : "other";
+    }
+    eq(code, "kept_off_ladder", `a keep in ${why} is refused by name`);
+    eq(calls.keep.length, 0, "before any swap");
+  }
+
+  // --- keep: the drop recorded is the ladder position the search measures ---
+  {
+    const { deps, calls } = fake({});
+    await confirmReroute(deps, { bookingId: "K1", holdId: null, bucketCode: "512", requestedBucketCode: "522", note: null, actor });
+    eq(calls.keep[0]?.rungsDropped, 2, "522 to the pool 512 is two rungs (522, 532, 512), as the search counts them, not zero tiers");
+  }
+
+  // --- keep: an advisor with no calendar event says so, not "no advisor" ---
+  {
+    const { deps } = fake({ booking: { gcal_event_id: null } });
+    let code: string | null = null;
+    try {
+      await confirmReroute(deps, { bookingId: "K1", holdId: null, bucketCode: "512", note: null, actor });
+    } catch (e) {
+      code = e instanceof RerouteRefusedError ? e.code : "other";
+    }
+    eq(code, "no_calendar_event", "a booking with an advisor but no calendar event has its own refusal");
   }
 
   {

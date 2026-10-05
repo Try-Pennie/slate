@@ -188,6 +188,7 @@ export default async function BookingDetailPage({
             status={booking.status}
             currentAgentId={booking.assigned_user_id}
             reasonOptions={actionReasons}
+            showCodes={showCodes}
           />
         </section>
         )}

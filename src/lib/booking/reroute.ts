@@ -25,7 +25,7 @@ import type { PlaceRerouteHoldArgs, PlaceRerouteHoldResult } from "./reroute-hol
 import type { RerouteTarget } from "./orchestration.ts";
 import type { BookingActor, BookingEventInsert, VerifyResult } from "./core.ts";
 import { bookingEventFrom, bufferedWindow } from "./core.ts";
-import { tierKeyOf } from "../routing/tiers.ts";
+import { tierKeyOf, tierLadder } from "../routing/tiers.ts";
 import { DateTime } from "luxon";
 import { formatClockTime } from "../date/parse.ts";
 
@@ -39,6 +39,8 @@ export type RerouteRefusal =
   | "agent_link"
   | "unknown_bucket"
   | "no_current_advisor"
+  | "no_calendar_event"
+  | "kept_off_ladder"
   | PlaceRerouteHoldRefusal
   | ClaimRerouteHoldRefusal
   | RerouteSwapRefusal;
@@ -321,9 +323,9 @@ export async function confirmReroute(
     holdId: string | null;
     /** A keep: the bucket the advisor is kept in. */
     bucketCode: string | null;
-    /** A keep in a lower tier: the bucket that was asked for, and how far it dropped. */
+    /** A keep in a lower tier: the bucket that was asked for. The drop is worked
+     *  out from the two codes, never taken from the caller. */
     requestedBucketCode?: string | null;
-    rungsDropped?: number;
     note: string | null;
     actor: BookingActor;
   },
@@ -428,17 +430,23 @@ async function moveOnClaimedHold(
 
 async function confirmKeep(
   deps: RerouteDeps,
-  input: { bookingId: string; bucketCode: string | null; requestedBucketCode?: string | null; rungsDropped?: number; actor: BookingActor },
+  input: { bookingId: string; bucketCode: string | null; requestedBucketCode?: string | null; actor: BookingActor },
   reason: { code: string; detail: string | null },
 ): Promise<RerouteOutcome> {
   const { booking, bucket: fromBucket } = await reroutableBooking(deps, input.bookingId);
   const kept = await requestedBucket(deps, input.bucketCode);
-  // A cascaded keep records what was asked for and the drop, as the move does.
+  // A cascaded keep records what was asked for and the drop, as the move does,
+  // derived here rather than taken from the request (the move reads its drop off
+  // the hold the server placed).
   const asked = input.requestedBucketCode ? await requestedBucket(deps, input.requestedBucketCode) : kept;
-  const rungs = input.rungsDropped ?? 0;
-  if (!booking.assigned_user_id || !booking.agent_email || !booking.gcal_event_id) {
-    throw new RerouteRefusedError("no_current_advisor");
-  }
+  // The drop is the kept bucket's position on the ladder the search walks from the
+  // bucket asked for, the same measure a move records, so a keep and a move of the
+  // same distance read alike in the history. A code the search could never have
+  // reached from it is refused rather than recorded.
+  const rungs = tierLadder(asked.bucket.code).indexOf(kept.bucket.code);
+  if (rungs < 0) throw new RerouteRefusedError("kept_off_ladder");
+  if (!booking.assigned_user_id || !booking.agent_email) throw new RerouteRefusedError("no_current_advisor");
+  if (!booking.gcal_event_id) throw new RerouteRefusedError("no_calendar_event");
   const { refused, updated } = await deps.keepSwap({
     bookingId: booking.id,
     userId: booking.assigned_user_id,

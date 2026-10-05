@@ -14,9 +14,8 @@ const schema = z.union([
   z.object({
     holdId: z.null(),
     bucketCode: z.string().min(1).max(16),
-    // A keep in a lower tier: the bucket asked for and the drop, from the proposal.
+    // A keep in a lower tier: the bucket asked for. The drop is worked out on the server.
     requestedBucketCode: z.string().min(1).max(16).nullish(),
-    rungsDropped: z.number().int().min(0).max(5).optional(),
     note: z.string().max(500).nullish(),
   }),
 ]);
@@ -43,7 +42,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         holdId: body.holdId,
         bucketCode: keep?.bucketCode ?? null,
         requestedBucketCode: keep?.requestedBucketCode ?? null,
-        rungsDropped: keep?.rungsDropped ?? 0,
         note: body.note ?? null,
       },
       actor,

@@ -118,17 +118,17 @@ describe("POST /admin/bookings/[id]/reroute/confirm", () => {
     expect(res.status).toBe(200);
     expect(service.adminConfirmReroute).toHaveBeenCalledWith(
       "bk1",
-      { holdId: HOLD, bucketCode: null, requestedBucketCode: null, rungsDropped: 0, note: "lead is Ultra High" },
+      { holdId: HOLD, bucketCode: null, requestedBucketCode: null, note: "lead is Ultra High" },
       { userId: "mgr1", actingAsUserId: null },
     );
   });
 
   it("confirms a keep by the bucket to correct to, with no hold", async () => {
     service.adminConfirmReroute.mockResolvedValueOnce({ kind: "kept" });
-    await CONFIRM(req({ holdId: null, bucketCode: "412", requestedBucketCode: "512", rungsDropped: 1 }), params);
+    await CONFIRM(req({ holdId: null, bucketCode: "412", requestedBucketCode: "512" }), params);
     expect(service.adminConfirmReroute).toHaveBeenCalledWith(
       "bk1",
-      { holdId: null, bucketCode: "412", requestedBucketCode: "512", rungsDropped: 1, note: null },
+      { holdId: null, bucketCode: "412", requestedBucketCode: "512", note: null },
       expect.anything(),
     );
   });

@@ -3063,7 +3063,7 @@ export function adminStartReroute(bookingId: string, bucketCode: string, actor: 
 /** Confirm a reroute: a move with its hold, or a keep into `bucketCode` (#3249). */
 export function adminConfirmReroute(
   bookingId: string,
-  input: { holdId: string | null; bucketCode: string | null; requestedBucketCode: string | null; rungsDropped: number; note: string | null },
+  input: { holdId: string | null; bucketCode: string | null; requestedBucketCode: string | null; note: string | null },
   actor: BookingActor,
 ): Promise<RerouteOutcome> {
   return confirmReroute(realRerouteDeps(actor), { bookingId, ...input, actor });
