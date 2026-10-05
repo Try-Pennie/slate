@@ -183,3 +183,15 @@ export function publicBucketWindowProblem(et: { buffer_before_min: number; buffe
 export function rerouteLostEvent(b: { gcal_event_id: string | null }, what: string): string | null {
   return b.gcal_event_id ? null : `${what} left the booking with no calendar event`;
 }
+
+/**
+ * The identity a run's `n`th test call books under. A booking's calendar event id
+ * is derived from its idempotency key, so a run that reused an earlier run's key at
+ * the same start would meet that run's cancelled event, and after three the create
+ * refuses (#3217's fresh id limit, met live on 2026-10-05). The run's own start
+ * time makes every run's identity new.
+ */
+export function testCallIdentity(startMs: number, runStartedMs: number, n: number): { idempotencyKey: string; externalId: string } {
+  const id = `REROUTE-LIVE-${startMs}-${runStartedMs}-${n}`;
+  return { idempotencyKey: id, externalId: id };
+}

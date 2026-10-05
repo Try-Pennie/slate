@@ -1,14 +1,15 @@
 // #3251: how `pnpm verify:reroute-live` wires its offline-tested helpers in, read
 // from its source. The command itself can only run against production, so its
 // decisions live in `reroute-live-check.ts` (pinned by `test-reroute-live-check.ts`)
-// and this checks the three places the command must use them:
+// and this checks the four places the command must use them:
 //
 //   1. every reroute confirm goes through ONE helper, `confirmAndNote`, which records
 //      the calendar event the confirm left before anything else happens, so no step
 //      can confirm and skip the check that it still holds an event;
 //   2. `noteEventAfter` fails the step through `rerouteLostEvent`;
 //   3. the public test bucket's buffers are checked with `publicBucketWindowProblem`
-//      and a problem refuses the run as `testWorldDiffers`.
+//      and a problem refuses the run as `testWorldDiffers`;
+//   4. every test call books under `testCallIdentity`, the run's own identity.
 //
 // Comments are stripped first, so a comment naming a call never satisfies the scan
 // (L135), and a shape is judged by the structure it forms, never a fixed number of
@@ -99,6 +100,10 @@ export function rerouteLiveWiringProblems(source: string): string[] {
   const windowCheck = /const\s+(\w+)\s*=\s*publicBucketWindowProblem\(\s*partner\.eventType\s*\)\s*;\s*if\s*\(\s*\1\s*\)\s*exit\(\s*"testWorldDiffers"\s*,\s*\1\s*\)/;
   if (!windowCheck.test(code)) {
     problems.push("the public test bucket's buffers are not checked with publicBucketWindowProblem, refusing as testWorldDiffers");
+  }
+  const bookBody = functionBody(code, "book");
+  if (!bookBody || !/testCallIdentity\(/.test(bookBody) || !/idempotencyKey/.test(bookBody)) {
+    problems.push("a test call does not book under testCallIdentity, the run's own identity");
   }
   return problems;
 }

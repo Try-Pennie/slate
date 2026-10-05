@@ -40,6 +40,11 @@ const has = (problems: string[], part: string) => problems.some((p) => p.include
   assert(has(rerouteLiveWiringProblems(unguarded), "publicBucketWindowProblem"), "a dropped buffer check is caught");
 }
 
+{
+  const reused = planted("testCallIdentity(startMs, RUN_STARTED_MS, n)", "{ idempotencyKey: `x-${n}`, externalId: `x-${n}` }");
+  assert(has(rerouteLiveWiringProblems(reused), "testCallIdentity"), "a booking that stops using the run's own identity is caught");
+}
+
 // --- comments never satisfy it ---------------------------------------------------------------------
 eq(stripComments('a(); // b()\n/* c() */ d("// not a comment");'), 'a(); \n d("// not a comment");', "comments go, strings stay");
 {

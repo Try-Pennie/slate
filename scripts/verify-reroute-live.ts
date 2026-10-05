@@ -45,6 +45,7 @@ import {
   publicBucketWindowProblem,
   rerouteLostEvent,
   residue,
+  testCallIdentity,
   runMeetsCanary,
   startIsClear,
   type ResidueCheck,
@@ -52,6 +53,8 @@ import {
 } from "./lib/reroute-live-check.ts";
 
 loadEnvFiles([".env.local", ".dev.vars"]);
+/** When this run started; with the call's start it makes every run's booking identity new. */
+const RUN_STARTED_MS = Date.now();
 const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
 
 function exit(outcome: RerouteLiveOutcome, detail?: string): never {
@@ -207,6 +210,7 @@ async function confirmAndNote(bookingId: string, input: ConfirmInput, what: stri
 }
 
 async function book(code: string, startMs: number, n: number): Promise<Booking> {
+  const identity = testCallIdentity(startMs, RUN_STARTED_MS, n);
   try {
     const r = await service.createBooking({
       bucketCode: code,
@@ -214,7 +218,8 @@ async function book(code: string, startMs: number, n: number): Promise<Booking> 
       timezone: "America/New_York",
       attendee: { name: "Reroute Live Check", firstName: "Reroute", email: "smoke@trypennie.com", phone: "+12125550123" },
       prefill: {},
-      externalId: `REROUTE-LIVE-${T}-${n}`,
+      externalId: identity.externalId,
+      idempotencyKey: identity.idempotencyKey,
       salesforceId: null,
       allowTestBuckets: true,
     });

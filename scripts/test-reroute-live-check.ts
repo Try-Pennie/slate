@@ -12,6 +12,7 @@ import {
   eventLedger,
   publicBucketWindowProblem,
   rerouteLostEvent,
+  testCallIdentity,
   inCanaryWindow,
   residue,
   runMeetsCanary,
@@ -146,5 +147,19 @@ assert(publicBucketWindowProblem({ buffer_before_min: 5, buffer_after_min: 0 }) 
 // --- a reroute must leave its booking holding a calendar event ------------------------------------
 eq(rerouteLostEvent({ gcal_event_id: "ev-1" }, "the keep"), null, "an event still held is fine");
 eq(rerouteLostEvent({ gcal_event_id: null }, "the keep"), "the keep left the booking with no calendar event", "a lost event fails the step by name");
+
+// --- every run books under its own identity -----------------------------------------------------
+// A booking's calendar event id is derived from its idempotency key, so two runs at
+// the same start that reused one identity would meet the first run's cancelled event,
+// and after three of them the create refuses (#3217's fresh id limit, met live on
+// 2026-10-05). The run's own start makes each run's identity new.
+{
+  const T = at("15:00");
+  const a = testCallIdentity(T, at("02:45"), 1);
+  const b = testCallIdentity(T, at("03:09"), 1);
+  assert(a.idempotencyKey !== b.idempotencyKey, "two runs at the same start book under different keys");
+  assert(a.externalId !== b.externalId, "and different lead ids");
+  assert(testCallIdentity(T, at("02:45"), 2).idempotencyKey !== a.idempotencyKey, "and each call in a run has its own key");
+}
 
 residueCases().then(attemptCases).then(() => finish());
