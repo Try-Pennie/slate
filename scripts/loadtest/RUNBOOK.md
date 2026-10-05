@@ -1218,7 +1218,11 @@ three ARMS, set by `SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE`:
 **Since #3324 the arms measure the splice, not a pool recompute.** A create no longer
 computes a whole pool: it re-judges a call or so either side of the booked time (the
 advisor's whole local day when the booking takes them to their cap), in each of the
-advisor's pools, and splices that into the stored rows without moving `computed_at`.
+advisor's pools, and splices that into the stored rows without moving `computed_at`. Its reads are
+batched across the advisor's pools: seven statements per booking whatever the pool
+count (three roster reads, schedules, the cap count, busy time, the affected rows),
+plus one compare and swap per code whose offer actually changed. Watch the database
+side of the next run as closely as the CPU side, since that is where the cost moved.
 Cancels, reschedules and reassigns still schedule the coalesced pool refresh
 (`refreshPoolAfterBooking`), under the same job name, and the reads only arm reads
 that refresh's inputs for them. So runs from before #3324 (the #3293 coalesced

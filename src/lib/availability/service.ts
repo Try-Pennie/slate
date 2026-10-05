@@ -10,11 +10,10 @@ import {
   type MemberAvailability,
 } from "@/lib/availability/compute";
 import { loadBusinessHours } from "@/lib/booking/business-hours-load";
-import { agentIdsFromPool } from "@/lib/availability/pool";
+import { agentIdsFromPool, eligibleFromRoster } from "@/lib/availability/pool";
 import { lowCarrierIds, withoutLowCarriers } from "@/lib/availability/low-exclusion";
 import { poolServesLowExcludedRungs } from "@/lib/routing/tiers";
 import {
-  applyFallback,
   payPeriod,
   bucketShareFromResult,
   orderByBucketShare,
@@ -127,32 +126,14 @@ export type EligibleResolver = (bucket: Bucket) => Promise<EligibleAgents>;
 export type EligibleAgents = { ids: string[]; fallbackApplied: boolean; lowIds?: string[] };
 
 export async function eligibleAgentIds(bucket: Bucket): Promise<EligibleAgents> {
-  const pool = await resolveBucketAgentPool(bucket);
-  const matched = pool.ids;
-  const withLow = (r: { ids: string[]; fallbackApplied: boolean }): EligibleAgents => {
-    const low = new Set(pool.lowIds);
-    return { ...r, lowIds: r.ids.filter((id) => low.has(id)) };
-  };
-  // The fallback is only consulted when the matched pool is empty, so skip the
-  // eligibility round-trip otherwise. A stored fallback_user_id can point at an
-  // agent who is no longer bookable (or, with offboarding, deactivated); never
-  // route to them just because the pool came up empty.
-  if (matched.length > 0 || !bucket.fallback_user_id) {
-    return withLow(applyFallback(matched, bucket.fallback_user_id, false));
-  }
-  const db = supabaseAdmin();
-  const fallback = unwrap(
-    await db
-      .from("users")
-      .select("id")
-      .eq("id", bucket.fallback_user_id)
-      .eq("org_id", bucket.org_id)
-      .eq("bookable", true)
-      .is("deactivated_at", null)
-      .maybeSingle(),
-    "fallback agent",
-  );
-  return withLow(applyFallback(matched, bucket.fallback_user_id, !!fallback));
+  // #3324: judged from the org's bookable, not deactivated advisors that
+  // `resolveBucketPool` already read, which is exactly the set a fallback agent must
+  // be in to be routable (a stored fallback_user_id can point at somebody since
+  // turned off or offboarded), so the fallback costs no second read. The judge is
+  // shared with the booked window splice, which reads the roster once for every
+  // pool an advisor serves (`eligibleFromRoster`).
+  const { orgAgents, manualMemberIds } = await resolveBucketPool(bucket);
+  return eligibleFromRoster(bucket, orgAgents, manualMemberIds);
 }
 
 /**
@@ -310,7 +291,7 @@ export async function loadMembersAvailability(
  * whole count under a single PostgREST row, so it never hits the 1,000-row SETOF cap the
  * old paged row-read had to walk (#832).
  */
-function parseDayCounts(data: unknown): Map<string, Map<string, number>> {
+export function parseDayCounts(data: unknown): Map<string, Map<string, number>> {
   const out = new Map<string, Map<string, number>>();
   if (!data || typeof data !== "object") return out;
   for (const [key, n] of Object.entries(data as Record<string, number>)) {

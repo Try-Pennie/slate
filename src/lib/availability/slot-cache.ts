@@ -1,10 +1,4 @@
-import {
-  getBucketSlots,
-  loadBucketSlotInputs,
-  computeSlotsFromInputs,
-  resolveBucketByCode,
-  type EligibleResolver,
-} from "./service";
+import { getBucketSlots, loadBucketSlotInputs, type EligibleResolver } from "./service";
 import { slotCacheKey } from "./cache-key";
 import {
   resolveBucketSlots,
@@ -28,7 +22,8 @@ import {
   type TouchedPoolsOutcome,
   type PooledBucket,
 } from "./pool-recompute";
-import { SlotRowRefused, spliceSlotRow } from "./slot-row-write";
+import { SlotRowRefused } from "./slot-row-write";
+import { bookedSpliceIo } from "./booked-splice-io";
 import { spliceBookedTime, type BookedTime, type BookedSpliceOutcome } from "./booked-splice";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { groupByPool } from "./pool-key";
@@ -408,38 +403,10 @@ export async function readSpliceInputsAfterBooking(code: string, booked: BookedT
   await spliceBookedTime(booked, bookedSpliceDeps(code), { readsOnly: true });
 }
 
-type ResolvedForSplice = NonNullable<Awaited<ReturnType<typeof resolveBucketByCode>>>;
-type InputsForSplice = NonNullable<Awaited<ReturnType<typeof loadBucketSlotInputs>>>;
-type LoadedForSplice = InputsForSplice & { members: InputsForSplice["membersResult"]["members"] };
-
-function bookedSpliceDeps(bookedCode: string): Parameters<
-  typeof spliceBookedTime<ResolvedForSplice, LoadedForSplice>
->[1] {
-  return {
-    now: Date.now,
-    // Read fresh for every booking: the pools decide which rows get the splice, and
-    // a stale grouping would miss a code that joined a pool inside the minute.
-    agentPools: async (userId) => {
-      const [codes, buckets] = await Promise.all([bucketsForAgent(userId), listPoolBuckets()]);
-      const mine = new Set(codes);
-      return [...groupByPool(buckets).values()]
-        .filter((members) => members.some((m) => mine.has(m.code)))
-        .map((members) => members.map((m) => m.code));
-    },
-    resolve: (code) => resolveBucketByCode(code),
-    // Busy time over the READ window (the compute window widened by the buffers).
-    load: async (resolved, code, range) => {
-      const inputs = await loadBucketSlotInputs(code, range.readFrom, range.readTo, undefined, resolved);
-      return inputs ? { ...inputs, members: inputs.membersResult.members } : null;
-    },
-    // The same predicate a full compute runs, over the COMPUTE window.
-    compute: (loaded, range, nowMs) =>
-      computeSlotsFromInputs(loaded.resolved.bucket.code, loaded, range.computeFrom, range.computeTo, nowMs),
-    writeSplice: (code, w, judge, fenceAtMs, startedMs) =>
-      spliceSlotRow(supabaseAdmin(), code, w, judge, fenceAtMs, startedMs),
-    invalidate: (code) => invalidateBucketSlots(code),
-    warn: (msg, err) => log.warn("slot-cache", { msg, bucket: bookedCode }, err),
-  };
+/** The batched database reads and writes (`booked-splice-io.ts`), with this module's
+ *  edge cache as the one thing a splice drops besides the row. */
+function bookedSpliceDeps(bookedCode: string) {
+  return { ...bookedSpliceIo(supabaseAdmin(), bookedCode), invalidate: invalidateBucketSlots };
 }
 
 export type { BookedTime, BookedSpliceOutcome };
