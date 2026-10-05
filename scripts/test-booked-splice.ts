@@ -15,11 +15,15 @@
 // fake busy_blocks table, and the real row splice over an in memory bucket_slots, so
 // what is asserted is what a lead would be offered afterwards.
 //
+// #3334: a reschedule or reassign splices BOTH of its windows the same way: the time
+// taken out of every pool its advisor serves, the time left back into every pool the
+// old advisor serves, from the same seven reads.
+//
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-booked-splice.ts
 import { DateTime } from "luxon";
 import { spliceBookedTime, type BookedTime, type BookedSpliceDeps } from "../src/lib/availability/booked-splice.ts";
 import { affectedWindow, widenToLocalDay, spliceRanges } from "../src/lib/availability/slot-splice.ts";
-import { readSlotRows, spliceFromRead, spliceSlotRow } from "../src/lib/availability/slot-row-write.ts";
+import { readSlotRows, spliceFromRead, spliceSlotRow, writeSlotRow } from "../src/lib/availability/slot-row-write.ts";
 import {
   computeBucketSlots,
   type BusinessHoursRules,
@@ -125,10 +129,11 @@ function computeOver(w: World, members: MemberAvailability[], from: string, to: 
   });
 }
 
-/** Every pool's rows, as a full compute over the whole day would store them. */
-function storedRows(w: World): SlotRow[] {
+/** Every pool's rows, as a full compute over the whole day (or `days` days from
+ *  Tuesday) would store them. */
+function storedRows(w: World, days = 1): SlotRow[] {
   const from = et("00:00");
-  const to = et("00:00", "2026-10-14");
+  const to = DateTime.fromISO("2026-10-13T00:00", { zone: ZONE }).plus({ days }).toUTC().toISO()!.replace("+00:00", "Z");
   return w.pools.flatMap((p) => {
     const slots = computeOver(w, membersOf(w, p.members, w.busy), from, to);
     return p.codes.map((code) => ({
@@ -167,11 +172,17 @@ function harness(w: World, rows: SlotRow[]): Harness {
     now: () => (clock += 1),
     // Three statements in production: buckets with their event types, the active
     // manual members, the bookable advisors.
-    loadPlan: async (userId) => {
+    loadPlan: async (userIds) => {
       calls.log.push("buckets", "bucket_members", "users");
       return w.pools
-        .filter((p) => p.members.includes(userId))
-        .map((p) => ({ codes: p.codes, eventType: w.ev, memberIds: p.members, ctx: null }));
+        .filter((p) => p.members.some((m) => userIds.includes(m)))
+        .map((p) => ({
+          codes: p.codes,
+          servedBy: userIds.filter((u) => p.members.includes(u)),
+          eventType: w.ev,
+          memberIds: p.members,
+          ctx: null,
+        }));
     },
     loadSchedules: async (ids) => {
       calls.log.push("availability_schedules");
@@ -184,19 +195,20 @@ function harness(w: World, rows: SlotRow[]): Harness {
       calls.log.push("count_bookings_per_local_day");
       return dayCounts(w);
     },
-    loadBusy: async (ids, from, to) => {
+    loadBusy: async (ids, spans) => {
       calls.log.push("busy_blocks");
-      calls.busyWindows.push([from, to]);
-      const hit = w.busy.filter((b) => ids.includes(b.user_id) && ms(b.starts_at) < ms(to) && ms(b.ends_at) > ms(from));
+      for (const s of spans) calls.busyWindows.push([s.from, s.to]);
+      const hit = w.busy.filter(
+        (b) => ids.includes(b.user_id) && spans.some((s) => ms(b.starts_at) < ms(s.to) && ms(b.ends_at) > ms(s.from)),
+      );
       calls.busyRows += hit.length;
       return hit;
     },
     compute: (_pool, members, range) => ({ slots: computeOver(w, members, range.computeFrom, range.computeTo) }),
     readRows: (codes) => readSlotRows(table.db, codes),
-    writeFromRead: (code, row, win, judge, fenceAtMs, startedMs) =>
-      spliceFromRead(table.db, code, row, win, judge, fenceAtMs, startedMs),
-    writeSplice: (code, win, judge, fenceAtMs, startedMs) =>
-      spliceSlotRow(table.db, code, win, judge, fenceAtMs, startedMs),
+    writeFromRead: (code, row, parts, fenceAtMs, startedMs) =>
+      spliceFromRead(table.db, code, row, parts, fenceAtMs, startedMs),
+    writeSplice: (code, parts, fenceAtMs, startedMs) => spliceSlotRow(table.db, code, parts, fenceAtMs, startedMs),
     invalidate: async (code) => {
       invalidated.push(code);
     },
@@ -219,6 +231,27 @@ function book(w: World, user: string, start: string): BookedTime {
   w.busy.push({ user_id: user, starts_at: start, ends_at: end });
   w.bookings.push({ user_id: user, starts_at: start });
   return { userId: user, startsAt: start, endsAt: end, fenceAtMs: NOW };
+}
+
+/**
+ * Move a booking (#3334): its busy block and its cap count go from `from` to `to`,
+ * exactly as the reschedule and reassign commits leave them before the refresh runs,
+ * and the splice is told both the time taken and the time left.
+ */
+function move(w: World, from: { user: string; start: string }, to: { user: string; start: string }): BookedTime {
+  const dur = w.ev.duration_min * 60_000;
+  w.busy = w.busy.filter((b) => !(b.user_id === from.user && b.starts_at === from.start));
+  w.bookings = w.bookings.filter((b) => !(b.user_id === from.user && b.starts_at === from.start));
+  const end = iso(ms(to.start) + dur);
+  w.busy.push({ user_id: to.user, starts_at: to.start, ends_at: end });
+  w.bookings.push({ user_id: to.user, starts_at: to.start });
+  return {
+    userId: to.user,
+    startsAt: to.start,
+    endsAt: end,
+    fenceAtMs: NOW,
+    freed: { userId: from.user, startsAt: from.start, endsAt: iso(ms(from.start) + dur) },
+  };
 }
 
 const slotsOf = (h: Harness, code: string) =>
@@ -378,6 +411,184 @@ for (const [pools, sole] of [
     h.dbCalls() <= BATCHED_READS + outcome.spliced,
     `${pools} pools: database calls stay within ${BATCHED_READS} plus one per changed code (${h.dbCalls()})`,
   );
+}
+
+// --- a move: the time left goes back on offer, the time taken comes off (#3334) ---------
+//
+// A reschedule or reassign used to refresh only the booked code's pool, so the moved
+// booking's NEW time stayed offered in the advisor's other pools, and its OLD time
+// stayed withheld, until the lane reached them. Now both windows are spliced, in every
+// pool either advisor serves, from the same batched reads a create makes.
+{
+  // An in place reschedule: A moves their own call from 10:00 to 14:00.
+  const w = world();
+  book(w, A, et("10:00"));
+  const before = storedRows(w);
+  assert(!(before.find((r) => r.bucket_code === "201")!.payload as { slots: string[] }).slots.includes(et("10:00")), "control: A's own pool withholds A's booked 10:00");
+  const moved = move(w, { user: A, start: et("10:00") }, { user: A, start: et("14:00") });
+  const h = harness(w, before);
+  const outcome = await spliceBookedTime(moved, h.deps);
+
+  eq(outcome.pools, 2, "both of A's pools were visited");
+  for (const code of ["201", "202"]) {
+    const s = slotsOf(h, code);
+    assert(s.includes(et("10:00")), `${code}: the time A left is back on offer`);
+    assert(s.includes(et("09:50")), `${code}: and so is the start whose call ran into it`);
+    assert(!s.includes(et("14:00")), `${code}: the time A moved to is gone`);
+    assert(!s.includes(et("13:50")), `${code}: and so is the start whose call would run into it`);
+    assert(s.includes(et("15:00")), `${code}: and the rest of the day is untouched`);
+  }
+  for (const code of ["101", "102"]) {
+    assert(slotsOf(h, code).includes(et("14:00")), `${code}: B is still free at 14:00, so it stays on offer`);
+  }
+  eq(outcome.spliced, 2, "the pool only A serves was spliced");
+  eq(outcome.unchanged, 2, "and the shared pool, which B kept offering throughout, needed no write");
+  eq(h.table.statements.update, 2, "one compare and swap per changed code, carrying both windows");
+  eq(h.calls.log.length + h.table.statements.select, 7, "and the same seven reads a create makes");
+  eq(h.calls.busyWindows.length, 2, "busy time read over the two windows, which are hours apart");
+  eq(h.invalidated.sort(), ["201", "202"], "each spliced code's edge cache entry is dropped");
+}
+{
+  // A cross advisor reassign: A's 10:00 goes to B at the same time.
+  const w = world();
+  w.pools.push({ codes: ["301", "302"], members: [B] });
+  book(w, A, et("10:00"));
+  const before = storedRows(w);
+  assert(
+    (before.find((r) => r.bucket_code === "301")!.payload as { slots: string[] }).slots.includes(et("10:00")),
+    "control: B's own pool offers 10:00 before the reassign",
+  );
+  const moved = move(w, { user: A, start: et("10:00") }, { user: B, start: et("10:00") });
+  const h = harness(w, before);
+  const outcome = await spliceBookedTime(moved, h.deps);
+
+  eq(outcome.pools, 3, "every pool either advisor serves was visited");
+  for (const code of ["201", "202"]) {
+    assert(slotsOf(h, code).includes(et("10:00")), `${code}: the old advisor's pool offers the time again`);
+  }
+  for (const code of ["301", "302"]) {
+    assert(!slotsOf(h, code).includes(et("10:00")), `${code}: the new advisor's pool no longer offers it`);
+  }
+  for (const code of ["101", "102"]) {
+    assert(slotsOf(h, code).includes(et("10:00")), `${code}: the shared pool offers it throughout (A is free now)`);
+  }
+  eq(outcome.spliced, 4, "the two single advisor pools were spliced");
+  eq(outcome.unchanged, 2, "and the shared one needed no write");
+  eq(h.calls.log.filter((c) => c === "users").length, 1, "both advisors' pools come from ONE roster read");
+  eq(h.calls.log.length + h.table.statements.select, 7, "and the reads are still seven");
+}
+{
+  // The cap: A was at their cap of one on Tuesday, so every Tuesday time was refused
+  // them. Moving the call to Wednesday frees the whole day, which is judged again.
+  const w = world({ daily_cap: 1 });
+  book(w, A, et("10:00"));
+  w.busy.push({ user_id: B, starts_at: et("15:00"), ends_at: et("15:20") });
+  const before = storedRows(w, 2);
+  const shared = (before.find((r) => r.bucket_code === "101")!.payload as { slots: string[] }).slots;
+  assert(!shared.includes(et("15:00")), "control: nobody could take 15:00 Tuesday (A capped, B busy)");
+  const moved = move(w, { user: A, start: et("10:00") }, { user: A, start: et("10:00", "2026-10-14") });
+  const h = harness(w, before);
+  const outcome = await spliceBookedTime(moved, h.deps);
+
+  assert(slotsOf(h, "101").includes(et("15:00")), "hours from the freed call, 15:00 Tuesday is offered again");
+  assert(
+    !slotsOf(h, "201").includes(et("15:00", "2026-10-14")),
+    "and the taken side widens too: Wednesday is closed in A's own pool",
+  );
+  // A's own pool offered NOTHING on Tuesday while A was capped, so Tuesday is a day
+  // the stored strip does not have. Re-opening it waits for the next full compute.
+  assert(
+    !slotsOf(h, "201").some((t) => t.startsWith("2026-10-13")),
+    "a day the row did not offer is not opened by a splice",
+  );
+  eq(outcome.widened, 2, "both pools widened");
+  eq(h.calls.log.filter((c) => c === "count_bookings_per_local_day").length, 1, "from one cap count");
+}
+{
+  // CONTROL for the freed widening: a move within the same day leaves A at the cap,
+  // so nothing else on Tuesday may come back.
+  const w = world({ daily_cap: 1 });
+  book(w, A, et("10:00"));
+  w.busy.push({ user_id: B, starts_at: et("15:00"), ends_at: et("15:20") });
+  const before = storedRows(w);
+  const moved = move(w, { user: A, start: et("10:00") }, { user: A, start: et("11:00") });
+  const h = harness(w, before);
+  await spliceBookedTime(moved, h.deps);
+  assert(!slotsOf(h, "101").includes(et("15:00")), "A is still at the cap on Tuesday, so 15:00 stays withheld");
+  assert(slotsOf(h, "101").includes(et("10:00")), "while the time A left, which B is free for, is offered");
+}
+{
+  // And a same day move UNDER the cap judges only the two calls' neighbourhoods: the
+  // count read after the move still includes the booking on that day, so it does not
+  // read as one fewer than before. Widening there would be correct but a whole day's
+  // compute for nothing.
+  const w = world({ daily_cap: 2 });
+  book(w, A, et("10:00"));
+  const before = storedRows(w);
+  const moved = move(w, { user: A, start: et("10:00") }, { user: A, start: et("11:00") });
+  const h = harness(w, before);
+  const outcome = await spliceBookedTime(moved, h.deps);
+  eq(outcome.widened, 0, "one booking under a cap of two, moved within its day, widens nothing");
+  assert(slotsOf(h, "201").includes(et("15:00")), "and a time hours away stays on offer");
+}
+{
+  // The fence covers both windows on every code: a full compute that began before the
+  // move and lands after its splice cannot put the NEW time back.
+  const w = world();
+  book(w, A, et("10:00"));
+  const before = storedRows(w);
+  const stale = storedRows(w); // what a compute that read before the move would write
+  const moved = move(w, { user: A, start: et("10:00") }, { user: A, start: et("14:00") });
+  const h = harness(w, before);
+  await spliceBookedTime(moved, h.deps);
+  for (const code of ["201", "202"]) {
+    const row = stale.find((r) => r.bucket_code === code)!;
+    eq(await writeSlotRow(h.table.db, code, row.payload, NOW - 1), "written", `${code}: the older compute lands`);
+    assert(!slotsOf(h, code).includes(et("14:00")), `${code}: and the moved booking's new time stays gone`);
+  }
+}
+{
+  // A move whose two times are days apart reads busy time over the two windows only,
+  // still in one statement, and the reads stay seven at twelve pools.
+  for (const [pools, sole] of [
+    [4, 1],
+    [12, 3],
+  ] as const) {
+    const w = poolWorld(pools, sole);
+    book(w, A, et("10:00"));
+    const before = storedRows(w, 3);
+    const moved = move(w, { user: A, start: et("10:00") }, { user: A, start: et("14:00", "2026-10-15") });
+    const h = harness(w, before);
+    const outcome = await spliceBookedTime(moved, h.deps);
+    eq(h.calls.log.length + h.table.statements.select, BATCHED_READS, `${pools} pools: a move makes the same seven reads`);
+    eq(h.calls.log.filter((c) => c === "busy_blocks").length, 1, `${pools} pools: one busy statement`);
+    eq(
+      h.calls.busyWindows,
+      [
+        [et("09:40"), et("10:40")],
+        [et("13:40", "2026-10-15"), et("14:40", "2026-10-15")],
+      ],
+      `${pools} pools: over the two windows, never the days between them`,
+    );
+    eq(h.table.statements.update, sole * 4, `${pools} pools: one write per code whose offer changed`);
+    eq(outcome.spliced, sole * 4, `${pools} pools: A's own pools were spliced`);
+  }
+}
+{
+  // The reads only arm makes the same reads for a move and writes nothing.
+  const w = world({ daily_cap: 1 });
+  book(w, A, et("10:00"));
+  const before = storedRows(w);
+  const snapshot = JSON.stringify(before);
+  const moved = move(w, { user: A, start: et("10:00") }, { user: A, start: et("14:00") });
+  const on = harness(w, storedRows(w));
+  await spliceBookedTime(moved, on.deps);
+  const reads = harness(w, before);
+  await spliceBookedTime(moved, reads.deps, { readsOnly: true });
+  eq(reads.calls.log, on.calls.log, "reads only makes the move's batched reads");
+  eq(reads.calls.busyWindows, on.calls.busyWindows, "over the same windows");
+  eq(reads.table.statements.update, 0, "and writes no row");
+  eq(JSON.stringify(reads.table.rows), snapshot, "leaving every row as it was");
 }
 
 // --- failures ------------------------------------------------------------------------

@@ -375,9 +375,11 @@ const recomputePoolsOf = (codes: string[]): Promise<void> =>
  * `slot-splice.ts` for the fence that keeps an older full compute from putting the
  * time back.
  *
- * It replaces `refreshPoolAfterBooking` for a confirmed booking: no whole pool
- * compute, no coalescing window to wait out, and the advisor's OTHER pools are
- * covered too. The recompute lane keeps doing full computes as the freshness floor.
+ * It replaces `refreshPoolAfterBooking` for a confirmed booking, and since #3334 for
+ * a reschedule or reassign too (`booked.freed`, the time the move left, goes back on
+ * offer in every pool the old advisor serves): no whole pool compute, no coalescing
+ * window to wait out, and the advisors' OTHER pools are covered too. The recompute
+ * lane keeps doing full computes as the freshness floor.
  *
  * REJECTS when a code could not be spliced, so `afterResponse` logs the job as
  * failed rather than reporting a splice that never landed; the rows it could not

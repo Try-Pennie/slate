@@ -1262,8 +1262,10 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     // compute after the booking at all, and the advisor's other pools stop offering
     // the time within seconds rather than at the lane's next pass. The fence is
     // stamped HERE, synchronously, after the busy block's write returned, so it is
-    // never earlier than the block a later compute reads. The cancel, reschedule and
-    // reassign steps pass no window and keep the coalesced pool refresh.
+    // never earlier than the block a later compute reads. A reschedule or reassign
+    // also passes the window it LEFT (#3334), spliced back into every pool the old
+    // advisor serves under the same fence, stamped after the busy block's move. The
+    // cancel step passes no window and keeps the coalesced pool refresh.
     invalidateSlots: (bucketCode, booked) => {
       if (deferSend) {
         const target = booked ? { ...booked, fenceAtMs: Date.now() } : null;

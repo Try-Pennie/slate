@@ -89,9 +89,11 @@ function roster(pools: number, sole: number) {
 
 /** A supabase client fake that answers each table from the roster and COUNTS every
  *  statement: one per `from()` or `rpc()`, which is one round trip each. */
-function countingDb(r: ReturnType<typeof roster>) {
+function countingDb(r: ReturnType<typeof roster>, counts: Record<string, number> = { [`${A}|2026-10-13`]: 1 }) {
   const table = fakeBucketSlotsTable(r.slotRows);
   const statements: string[] = [];
+  /** Every `or` a busy read sent: one overlap test per span (#3334). */
+  const busyOr: string[] = [];
   const answer = (name: string): Row[] => {
     if (name === "buckets") return r.buckets;
     if (name === "bucket_members") return r.members;
@@ -109,6 +111,17 @@ function countingDb(r: ReturnType<typeof roster>) {
       in: (c: string, vs: unknown[]) => ((out = out.filter((x) => vs.includes(x[c]))), b),
       lt: (c: string, v: string) => ((out = out.filter((x) => String(x[c]) < v)), b),
       gt: (c: string, v: string) => ((out = out.filter((x) => String(x[c]) > v)), b),
+      // Reads the one shape the splice sends: `and(starts_at.lt.X,ends_at.gt.Y)`, comma joined.
+      or: (expr: string) => {
+        busyOr.push(expr);
+        const spans = [...expr.matchAll(/and\(starts_at\.lt\.([^,]+),ends_at\.gt\.([^)]+)\)/g)].map((m) => ({
+          to: m[1]!,
+          from: m[2]!,
+        }));
+        if (spans.length === 0) throw new Error(`the fake cannot read or(${expr})`);
+        out = out.filter((x) => spans.some((sp) => String(x.starts_at) < sp.to && String(x.ends_at) > sp.from));
+        return b;
+      },
       order: () => b,
       range: async () => ({ data: out, error: null }),
       then: (ok: (v: unknown) => unknown) => Promise.resolve({ data: out, error: null }).then(ok),
@@ -125,10 +138,10 @@ function countingDb(r: ReturnType<typeof roster>) {
       statements.push(name);
       expect(name).toBe("count_bookings_per_local_day");
       expect(args.p_user_ids).toContain(A);
-      return Promise.resolve({ data: { [`${A}|2026-10-13`]: 1 }, error: null });
+      return Promise.resolve({ data: counts, error: null });
     },
   };
-  return { client, statements, table };
+  return { client, statements, table, busyOr };
 }
 
 let world: ReturnType<typeof countingDb>;
@@ -251,5 +264,115 @@ describe("readSpliceInputsAfterBooking (#3324, the reads-only arm)", () => {
     expect(world.statements.length).toBe(READS);
     expect(world.table.statements.update).toBe(0);
     expect(slotsOf("100")).toContain(BOOKED_AT);
+  });
+});
+
+// #3334: a reschedule or reassign splices BOTH windows: the time taken comes off every
+// pool its advisor serves, and the time left goes back on in every pool ITS advisor
+// serves. Through the real wiring, so the reads a move makes are counted.
+describe("spliceBookedTimeAfterBooking (#3334): a move", () => {
+  // A moves their Tuesday 10:00 call to Thursday 14:00 Eastern, two days away.
+  const MOVED_TO = "2026-10-15T18:00:00.000Z";
+  const MOVED_END = "2026-10-15T18:20:00.000Z";
+  const TUESDAY_NINE = "2026-10-13T13:00:00.000Z";
+  /** Every start on the ten minute grid from `from` to `to` (inclusive), UTC. */
+  const grid = (day: string, from: string, to: string) => {
+    const out: string[] = [];
+    for (let t = Date.parse(`${day}T${from}:00.000Z`); t <= Date.parse(`${day}T${to}:00.000Z`); t += 600_000) {
+      out.push(new Date(t).toISOString());
+    }
+    return out;
+  };
+  // What the shared predicate offers around each call, so a stored row agrees with
+  // the fresh answer wherever nothing changed (a real row is the same predicate's).
+  // The call is 20 minutes on a 10 minute grid with no buffers, so a booking at 10:00
+  // refuses 09:50, 10:00 and 10:10 to its advisor.
+  const TUESDAY_FREE = [TUESDAY_NINE, ...grid("2026-10-13", "13:40", "14:20")];
+  const TUESDAY_HELD = [TUESDAY_NINE, "2026-10-13T13:40:00.000Z", "2026-10-13T14:20:00.000Z"];
+  const THURSDAY_FREE = grid("2026-10-15", "17:40", "18:20");
+  const MOVE = {
+    userId: A,
+    startsAt: MOVED_TO,
+    endsAt: MOVED_END,
+    fenceAtMs: BOOKED.fenceAtMs,
+    freed: { userId: A, startsAt: BOOKED_AT, endsAt: BOOKED.endsAt },
+  };
+
+  /** The roster as the rows stood BEFORE the move: A's own pools withheld Tuesday
+   *  10:00 (A held it) and offered Thursday 14:00; busy time is as the move left it. */
+  function movedRoster(pools: number, sole: number) {
+    const r = roster(pools, sole);
+    r.busy = [{ id: "busy-1", user_id: A, starts_at: MOVED_TO, ends_at: MOVED_END }];
+    r.slotRows = r.slotRows.map((row, i) => {
+      const own = Math.floor(i / 4) < sole;
+      const slots = own ? [...TUESDAY_HELD, ...THURSDAY_FREE] : [...TUESDAY_FREE, ...THURSDAY_FREE];
+      return { ...row, payload: { ...(row.payload as object), slots } };
+    });
+    return r;
+  }
+
+  for (const [pools, sole] of [
+    [4, 1],
+    [12, 3],
+  ] as const) {
+    it(`${pools} pools: the same seven reads a create makes, one busy statement over both windows`, async () => {
+      world = countingDb(movedRoster(pools, sole), { [`${A}|2026-10-15`]: 1 });
+      db.current = world.client;
+      await spliceBookedTimeAfterBooking("101", MOVE);
+
+      const writes = world.table.statements.update;
+      expect(world.statements.length - writes, "a move must not add reads to the splice").toBe(READS);
+      expect(world.statements.filter((t) => t === "busy_blocks")).toHaveLength(1);
+      expect(world.busyOr, "busy time over the two windows only, never the two days between them").toEqual([
+        "and(starts_at.lt.2026-10-13T14:40:00.000Z,ends_at.gt.2026-10-13T13:40:00.000Z)," +
+          "and(starts_at.lt.2026-10-15T18:40:00.000Z,ends_at.gt.2026-10-15T17:40:00.000Z)",
+      ]);
+      expect(writes, "one compare and swap per changed code, carrying both windows").toBe(sole * 4);
+
+      for (let i = 0; i < pools; i++) {
+        const code = `${i + 1}00`;
+        expect(slotsOf(code), `${code}: Tuesday 10:00 is on offer after the move`).toContain(BOOKED_AT);
+        if (i < sole) expect(slotsOf(code), `${code}: A's own pool no longer offers Thursday 14:00`).not.toContain(MOVED_TO);
+        else expect(slotsOf(code), `${code}: B is free on Thursday, so it stays`).toContain(MOVED_TO);
+      }
+    });
+  }
+
+  it("a cross advisor reassign: the old advisor's pools offer the time again, the new one's stop", async () => {
+    // Three pools: t0 is A's alone, t1 both, t2 B's alone. A's 10:00 goes to B.
+    const r = roster(3, 0);
+    r.users = [
+      { id: A, org_id: "org-1", attributes: { debt_team: ["t0", "t1"] } },
+      { id: B, org_id: "org-1", attributes: { debt_team: ["t1", "t2"] } },
+    ];
+    r.busy = [{ id: "busy-1", user_id: B, starts_at: BOOKED_AT, ends_at: BOOKED.endsAt }];
+    r.slotRows = r.slotRows.map((row) => {
+      const pool = row.bucket_code[0];
+      // Before: A held 10:00, so A's own pool withheld it; B's own pool offered it.
+      const slots = pool === "1" ? TUESDAY_HELD : TUESDAY_FREE;
+      return { ...row, payload: { ...(row.payload as object), slots } };
+    });
+    world = countingDb(r, { [`${B}|2026-10-13`]: 1 });
+    db.current = world.client;
+    await spliceBookedTimeAfterBooking("101", {
+      userId: B,
+      startsAt: BOOKED_AT,
+      endsAt: BOOKED.endsAt,
+      fenceAtMs: BOOKED.fenceAtMs,
+      freed: { userId: A, startsAt: BOOKED_AT, endsAt: BOOKED.endsAt },
+    });
+
+    expect(world.statements.length - world.table.statements.update, "still seven reads").toBe(READS);
+    expect(world.statements.filter((t) => t === "users"), "both advisors from one roster read").toHaveLength(1);
+    for (const j of [0, 1, 2, 3]) {
+      expect(slotsOf(`10${j}`), `10${j}: A's own pool offers 10:00 again`).toContain(BOOKED_AT);
+      expect(slotsOf(`20${j}`), `20${j}: the shared pool offers it throughout`).toContain(BOOKED_AT);
+      expect(slotsOf(`30${j}`), `30${j}: B's own pool no longer offers it`).not.toContain(BOOKED_AT);
+    }
+    expect(world.table.statements.update, "a write for each single advisor pool's codes, none for the shared one").toBe(8);
+    expect(log.info).toHaveBeenCalledWith(
+      "slot-cache",
+      expect.objectContaining({ msg: "booked time spliced", pools: 3, spliced: 8, unchanged: 4, failed: 0 }),
+    );
   });
 });

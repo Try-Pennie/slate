@@ -1,4 +1,5 @@
 import { DateTime } from "luxon";
+import { BUSINESS_ZONE } from "../booking/business-hours.ts";
 
 /**
  * The pure half of splicing a booked window into a stored slot row (#3324).
@@ -10,21 +11,32 @@ import { DateTime } from "luxon";
  * whole horizon, the booking recomputes that window through the shared predicate and
  * splices the answer in.
  *
- * Two rules shape every function here.
+ * Three rules shape every function here.
  *
- * **A splice only ever REMOVES.** Inside the window a time stays only when the row
+ * **A window a booking TAKES only removes.** Inside it a time stays only when the row
  * and the fresh compute both offer it. A booking only takes time, so a correct answer
  * inside the window is never larger than the row's; adding times is the full
  * compute's job. Removing only also means a splice can never re-offer a day the
  * bookable day trim took off the end of the row, and never re-trims one either.
  *
+ * **A window a move LEAVES is re-judged both ways (#3334).** A reschedule or reassign
+ * also frees the window the booking held, and there the fresh answer stands, so a
+ * held time goes back on offer (`reofferList`). Only on a day the list already
+ * offers, though, so a re-offer never opens a day the trim left out, and it never
+ * re-trims either. A move splices its taken window first and its freed one second,
+ * in one write, so where the two overlap the freed window's answer is what stands;
+ * both come from the same post move state, so they agree on every start they share.
+ *
  * **The row carries its own fence.** A splice leaves `computed_at` alone, because the
  * rest of the row is as old as it was, so the compare and swap that stops an older
  * compute overwriting a newer one (#1048) cannot see it. The splice therefore records
- * its window and the booking's instant in the payload (`splice`), and a full compute
- * that began before that instant keeps the row's answer inside the window when it
- * lands (`mergeFreshSplices`). Refusing such a compute outright was measured and
- * rejected: at load run rates it starves the recompute lane (see the PR for #3324).
+ * each window and the booking's instant in the payload (`splice`), and a full compute
+ * that began before that instant keeps a time inside the window only where the row
+ * agrees when it lands (`mergeFreshSplices`). Refusing such a compute outright was
+ * measured and rejected: at load run rates it starves the recompute lane (see the PR
+ * for #3324). Inside a FREED window that same merge lets an older compute withhold
+ * the re-offered time again until the next compute, which is the safe side: nothing
+ * can show a compute that began before the move knew the time was free.
  */
 
 const MIN = 60_000;
@@ -123,6 +135,25 @@ export function reachedDailyCap(
   return (member.dayCounts?.get(key) ?? 0) >= dailyCap;
 }
 
+/**
+ * Whether the advisor was at or over their daily cap on the FREED start's local day
+ * before a move (#3334), so every other start that day was refused them and the move
+ * may have opened the whole day. The count is read after the move, so it includes the
+ * moved booking on that day only when it stayed there with the same advisor
+ * (`stillCountedThere`); otherwise the count before the move was one higher.
+ */
+export function atCapBeforeMove(
+  member: { timezone: string; dayCounts?: Map<string, number> },
+  freedStartMs: number,
+  dailyCap: number | null,
+  stillCountedThere: boolean,
+): boolean {
+  if (dailyCap === null) return false;
+  const key = DateTime.fromMillis(freedStartMs, { zone: member.timezone }).toISODate();
+  if (key === null) return false;
+  return (member.dayCounts?.get(key) ?? 0) + (stillCountedThere ? 0 : 1) >= dailyCap;
+}
+
 const inWindow = (w: SpliceWindow, startMs: number) => startMs >= w.fromMs && startMs <= w.lastStartMs;
 
 /**
@@ -143,10 +174,73 @@ export function spliceList(stored: string[], w: SpliceWindow, judge: string[]): 
   });
 }
 
+/**
+ * `stored` with the window replaced by what `judge` offers there, for a window a
+ * move left (#3334). The booking that held those times has gone, so the fresh answer
+ * is authoritative inside the window in both directions, with one limit:
+ *
+ * **A time goes back only on a day the list already offers.** A stored list holds
+ * the first N bookable days the lane found (#1326), grouped in the org's zone as the
+ * lane groups them, and the splice does not know N. Opening a day the list lacks (the
+ * booking held that day's only time, the cap had closed it, or the trim left it out)
+ * would stretch the strip past the horizon, so that day waits for the next full
+ * compute, as every freed time did before #3334. Withholding a free time is the safe
+ * side; offering one past the horizon is not.
+ */
+export function reofferList(stored: string[], w: SpliceWindow, judge: string[]): string[] {
+  const days = new Set<string>();
+  for (const s of stored) {
+    const day = dayOf(Date.parse(s));
+    if (day !== null) days.add(day);
+  }
+  const outside = stored.filter((s) => !inWindow(w, Date.parse(s)));
+  const inside: { iso: string; ms: number }[] = [];
+  for (const s of judge) {
+    const t = Date.parse(s);
+    const day = dayOf(t);
+    if (day !== null && inWindow(w, t) && days.has(day)) inside.push({ iso: s, ms: t });
+  }
+  return mergeByInstant(outside, inside);
+}
+
+/** The org local date an instant falls on, the grouping the bookable day trim uses
+ *  (`precompute.ts`), or null for an unreadable one. */
+function dayOf(ms: number): string | null {
+  if (!Number.isFinite(ms)) return null;
+  return DateTime.fromMillis(ms, { zone: BUSINESS_ZONE }).toISODate();
+}
+
+/** `kept` (in its order) with `added` placed by instant; an unreadable kept entry
+ *  stays where it was for the read path to drop. */
+function mergeByInstant(kept: string[], added: { iso: string; ms: number }[]): string[] {
+  const queue = [...added].sort((a, b) => a.ms - b.ms);
+  const out: string[] = [];
+  let i = 0;
+  for (const s of kept) {
+    const t = Date.parse(s);
+    while (Number.isFinite(t) && i < queue.length && queue[i]!.ms < t) out.push(queue[i++]!.iso);
+    out.push(s);
+  }
+  while (i < queue.length) out.push(queue[i++]!.iso);
+  return out;
+}
+
 /** The two slot lists a row can carry (#2842). */
 export interface SlotLists {
   slots: string[];
   slotsWithoutLow?: string[];
+}
+
+/**
+ * One window a splice re-judges, with the shared predicate's fresh answer over it.
+ * A create splices one; a move splices two (#3334), in ONE compare and swap per code.
+ */
+export interface SplicePart {
+  w: SpliceWindow;
+  judge: SlotLists;
+  /** The window a move LEFT (#3334): the fresh answer may put times back inside it
+   *  (`reofferList`). Absent, the window was taken and the splice only removes. */
+  reoffer?: boolean;
 }
 
 /**
@@ -155,10 +249,11 @@ export interface SlotLists {
  * it could not say who is free without Low, so the window is emptied rather than left
  * offering times nobody vouched for.
  */
-function spliceLists<T extends SlotLists>(row: T, w: SpliceWindow, judge: SlotLists): T {
-  const out = { ...row, slots: spliceList(row.slots, w, judge.slots) };
+function spliceLists<T extends SlotLists>(row: T, w: SpliceWindow, judge: SlotLists, reoffer = false): T {
+  const one = reoffer ? reofferList : spliceList;
+  const out = { ...row, slots: one(row.slots, w, judge.slots) };
   if (Array.isArray(row.slotsWithoutLow)) {
-    out.slotsWithoutLow = spliceList(row.slotsWithoutLow, w, judge.slotsWithoutLow ?? []);
+    out.slotsWithoutLow = one(row.slotsWithoutLow, w, judge.slotsWithoutLow ?? []);
   }
   return out;
 }
@@ -203,22 +298,23 @@ export function windowsOverlap(a: SpliceWindow, b: SpliceWindow): boolean {
 }
 
 /**
- * The stored payload with one booking's window spliced in and its fence recorded.
- * Fences older than the row's own compute are dropped: the compute behind the row
- * began after them, so it saw those bookings, and any older compute is already
- * refused by `computed_at`.
+ * The stored payload with one booking's windows spliced in, in order, and a fence
+ * recorded for each. Fences older than the row's own compute are dropped: the
+ * compute behind the row began after them, so it saw those bookings, and any older
+ * compute is already refused by `computed_at`.
  */
 export function splicePayload(
   row: Record<string, unknown> & SlotLists,
-  w: SpliceWindow,
-  judge: SlotLists,
+  parts: SplicePart[],
   fenceAtMs: number,
   rowComputedAtMs: number,
 ): Record<string, unknown> & SlotLists {
   const meta = spliceMetaOf(row);
   const kept = (meta?.windows ?? []).filter((f) => f.atMs >= rowComputedAtMs);
-  const spliced = spliceLists(withoutSpliceMeta(row), w, judge);
-  return { ...spliced, splice: metaFor([...kept, { atMs: fenceAtMs, ...w }], (meta?.seq ?? 0) + 1) };
+  let spliced = withoutSpliceMeta(row);
+  for (const p of parts) spliced = spliceLists(spliced, p.w, p.judge, p.reoffer);
+  const fences = parts.map((p) => ({ atMs: fenceAtMs, ...p.w }));
+  return { ...spliced, splice: metaFor([...kept, ...fences], (meta?.seq ?? 0) + 1) };
 }
 
 /**
