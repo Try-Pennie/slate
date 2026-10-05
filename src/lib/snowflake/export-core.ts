@@ -101,7 +101,7 @@ export const MIRROR_TABLES: TableSpec[] = [
       ts("from_starts_at"), ts("to_starts_at"), v("from_agent_user_id"), v("to_agent_user_id"),
       v("actor_user_id"), v("acting_as_user_id"), n("lead_time_minutes"), n("reschedule_seq"),
       // #3261: the buckets a reroute moved the booking from and to (migration 0166),
-      // exported since the warehouse ALTER in docs/snowflake-setup.sql ran (2026-10-05).
+      // exported since Dan ran the warehouse ALTER in docs/snowflake-setup.sql (2026-10-04 ET).
       v("from_bucket_id"), v("to_bucket_id"),
       ts("created_at"),
     ],

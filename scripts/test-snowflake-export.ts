@@ -119,7 +119,7 @@ async function main() {
   // --- #3261: a rerouted booking's bucket history reaches the warehouse ---------------
   // Migration 0166 records which bucket a reroute moved a booking from and to. Those
   // two columns were held back until the warehouse table had them (the Snowsight ALTER
-  // in docs/snowflake-setup.sql, run 2026-10-05); without them the warehouse knows a
+  // in docs/snowflake-setup.sql, which Dan ran on 2026-10-04 ET); without them the warehouse knows a
   // booking's bucket today but never that a correction moved it.
   {
     const events = MIRROR_TABLES.find((t) => t.table === "booking_events");
