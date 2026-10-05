@@ -64,6 +64,21 @@ export const CONFIRM_QUEUE_RESERVE_MS = 2_000;
 export const CONFIRM_QUEUE_WAIT_MS = 10_000;
 
 /**
+ * How long a leader's turn, and its claim on an advisor, lasts without a verdict
+ * (#3274). A confirm torn down mid flight (a client disconnect cancelling the
+ * invocation) may never call `done`, and nothing else ends its turn: its claim
+ * would keep every later confirm in this isolate off that advisor for that slot,
+ * and a leader that never handed on would keep the line behind it for good.
+ *
+ * So a turn is leased for the confirm budget plus its cleanup allowance, the
+ * longest a real confirm can still be working (both are enforced deadlines, #3102),
+ * after which the turn is ignored and dropped. Kept as a literal for the same reason
+ * as `CONFIRM_QUEUE_WAIT_MS`; `scripts/test-confirm-queue.ts` pins it equal to
+ * `BOOKING_CONFIRM_WORST_CASE_MS`.
+ */
+export const CONFIRM_CLAIM_LEASE_MS = 14_000;
+
+/**
  * How long THIS follower waits: what its budget has left less the reserve, capped
  * at `CONFIRM_QUEUE_WAIT_MS`, and never negative. `budgetLeftMs` is null outside
  * any budget, where the cap alone applies. The route's own reads (the key and the
@@ -167,16 +182,37 @@ interface Waiter<T> {
 interface Line<T> {
   waiting: Waiter<T>[];
   holder: object | null;
-  claims: Map<object, string | null>;
+  /** Each leader in flight: the advisor it claimed (or none yet) and when its lease ends (#3274). */
+  claims: Map<object, { userId: string | null; until: number }>;
   /** Cheap reads in flight ahead of joining this line (`lookahead`). */
   looking: number;
 }
 
+/**
+ * A real timer that never keeps a process alive by itself (#3274): a lease left by an
+ * abandoned confirm must not hold a Node test run open for 14 seconds. `unref` exists
+ * on Node's timers and not on a Worker's, where it is simply not called.
+ */
+const unreferencedTimer: ScheduleTimer = (ms, fire) => {
+  const t = setTimeout(fire, ms) as unknown as { unref?: () => void };
+  t.unref?.();
+  return () => clearTimeout(t as unknown as Parameters<typeof clearTimeout>[0]);
+};
+
 export function makeConfirmQueue<T>(
-  opts: { waitMs?: number; timer?: ScheduleTimer } = {},
+  opts: {
+    waitMs?: number;
+    timer?: ScheduleTimer;
+    /** The timer that ends each lead turn's lease (#3274), apart from the waits' so a
+     *  test can fire one without the other. Defaults to an unreferenced real timer. */
+    leaseTimer?: ScheduleTimer;
+    now?: () => number;
+  } = {},
 ): ConfirmQueue<T> {
   const waitMs = opts.waitMs ?? CONFIRM_QUEUE_WAIT_MS;
   const timer = opts.timer ?? realTimer;
+  const now = opts.now ?? (() => Date.now());
+  const leaseTimer = opts.leaseTimer ?? unreferencedTimer;
   // A key is present while somebody leads it or waits in it.
   const lines = new Map<string, Line<T>>();
   // Removes THIS line only: a lookahead returned after its line settled must not
@@ -184,9 +220,36 @@ export function makeConfirmQueue<T>(
   const drop = (key: string, line: Line<T>) => {
     if (lines.get(key) === line) lines.delete(key);
   };
+  // #3274: drop every leader whose lease has passed, as if it had reported nothing
+  // that settles the slot. Run before anything reads the claims or the holder, so an
+  // abandoned confirm can never be counted as booking an advisor or holding the line.
+  // Returns whether the holder was among them, so the caller can hand the line on.
+  const expire = (line: Line<T>): boolean => {
+    const t = now();
+    let heldExpired = false;
+    for (const [who, c] of line.claims) {
+      if (c.until > t) continue;
+      line.claims.delete(who);
+      if (line.holder === who) {
+        line.holder = null;
+        heldExpired = true;
+      }
+    }
+    return heldExpired;
+  };
+
+  // The one way any path expires leases (#3274 review): expire, and when that
+  // released the holder, hand the line on at once. Expiring without handing on
+  // left anybody waiting behind nobody until their own wait ran out. Every caller
+  // goes through this, so none can forget the second half.
+  const expireAndHandOn = (key: string, line: Line<T>): void => {
+    if (expire(line)) promoteNext(key, line);
+  };
+
   // The one test for a line nobody needs any more: nobody leading it without
   // having handed on, nobody waiting, no claim in flight, no lookahead out.
   const dropIfIdle = (key: string, line: Line<T>) => {
+    expireAndHandOn(key, line);
     if (line.holder === null && line.waiting.length === 0 && line.claims.size === 0 && line.looking === 0) {
       drop(key, line);
     }
@@ -205,8 +268,33 @@ export function makeConfirmQueue<T>(
   const leadTurn = (key: string, line: Line<T>): QueueTurn<T> => {
     const me = {};
     let reported = false;
+    const until = now() + CONFIRM_CLAIM_LEASE_MS;
+    // #3274 review: the lease ends on its own, not only when something next reads the
+    // line, so an abandoned turn frees whoever is still waiting then, and a line with
+    // nobody left in it is dropped, with no traffic needed. Followers ALREADY behind
+    // an abandoned holder usually do not benefit: a follower's own wait (10s,
+    // `CONFIRM_QUEUE_WAIT_MS`) is shorter than the lease (14s), so it times out first
+    // and is answered retryably. That is accepted: it needs a confirm torn down while
+    // holding the line, which is rare, and the answer is one the lead can retry, which
+    // is now served by a line that has been freed. Cancelled when the turn reports.
+    // A timer can fire a moment before `until` by the clock it is judged against
+    // (the two clocks disagree by a millisecond), find nothing expired, and never run
+    // again. So it re-arms for whatever is left while this turn is still in flight.
+    let cancelLease: () => void = () => {};
+    const onLeaseEnd = () => {
+      const left = until - now();
+      if (left > 0 && line.claims.has(me)) {
+        cancelLease = leaseTimer(left, onLeaseEnd);
+        return;
+      }
+      dropIfIdle(key, line);
+    };
+    cancelLease = leaseTimer(CONFIRM_CLAIM_LEASE_MS, onLeaseEnd);
+    // A turn whose lease has passed was dropped by `expire`: whatever it does next
+    // is ignored, so a late claim cannot exclude an advisor again.
+    const live = () => !reported && line.claims.has(me);
     line.holder = me;
-    line.claims.set(me, null);
+    line.claims.set(me, { userId: null, until });
     const handOn = () => {
       if (line.holder !== me) return;
       line.holder = null;
@@ -217,24 +305,29 @@ export function makeConfirmQueue<T>(
       waiting: () => line.waiting.length,
       seat: {
         claimedByOthers() {
+          expireAndHandOn(key, line);
           const others = new Set<string>();
-          for (const [who, userId] of line.claims) if (who !== me && userId !== null) others.add(userId);
+          for (const [who, c] of line.claims) if (who !== me && c.userId !== null) others.add(c.userId);
           return others;
         },
         claim(userId, othersRemain) {
-          if (reported) return;
-          line.claims.set(me, userId);
+          expireAndHandOn(key, line);
+          if (!live()) return;
+          line.claims.set(me, { userId, until });
           if (othersRemain) handOn();
         },
         pass() {
-          if (reported) return;
-          line.claims.set(me, null);
+          expireAndHandOn(key, line);
+          if (!live()) return;
+          line.claims.set(me, { userId: null, until });
           handOn();
         },
       },
       done(verdict) {
         if (reported) return;
         reported = true;
+        cancelLease();
+        expireAndHandOn(key, line);
         line.claims.delete(me);
         if (line.holder === me) line.holder = null;
         // A full verdict settles the slot for the waiting only when no other
@@ -254,7 +347,14 @@ export function makeConfirmQueue<T>(
 
   return {
     enter(key, ownWaitMs) {
-      const existing = lines.get(key);
+      let existing = lines.get(key);
+      // #3274: an abandoned leader past its lease no longer holds the line. Handing
+      // on serves whoever was already waiting first, in order, before this arrival,
+      // and a line left with nobody in it is dropped, so this arrival opens a new one.
+      if (existing) {
+        expireAndHandOn(key, existing);
+        existing = lines.get(key);
+      }
       if (!existing) {
         const line: Line<T> = { waiting: [], holder: null, claims: new Map(), looking: 0 };
         lines.set(key, line);
@@ -287,6 +387,8 @@ export function makeConfirmQueue<T>(
       });
     },
     lookahead(key) {
+      const found = lines.get(key);
+      if (found) expireAndHandOn(key, found);
       const line = lines.get(key);
       // An idle line, or one whose leaders have all handed on: entering leads at
       // once, so there is nothing to look ahead of.
