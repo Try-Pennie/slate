@@ -156,7 +156,12 @@ export interface LiveHoldRecord {
 export interface RerouteDeps {
   loadBookingById(id: string): Promise<{ booking: Booking; bucket: Bucket; eventType: EventType } | null>;
   resolveBucketByCode(code: string): Promise<{ bucket: Bucket; eventType: EventType } | null>;
-  findTarget(booking: Booking, requested: { bucket: Bucket; eventType: EventType }): Promise<RerouteTarget>;
+  /** `excludeUserIds`: advisors a re-search must not offer back. */
+  findTarget(
+    booking: Booking,
+    requested: { bucket: Bucket; eventType: EventType },
+    excludeUserIds?: readonly string[],
+  ): Promise<RerouteTarget>;
   placeHold(args: PlaceRerouteHoldArgs): Promise<PlaceRerouteHoldResult>;
   releaseHold(bookingId: string): Promise<{ released: boolean }>;
   claimHold(
@@ -246,8 +251,9 @@ async function searchAndHold(
   booking: Booking,
   requested: { bucket: Bucket; eventType: EventType },
   actor: BookingActor,
+  excludeUserIds: readonly string[] = [],
 ): Promise<RerouteProposal> {
-  const target = await deps.findTarget(booking, requested);
+  const target = await deps.findTarget(booking, requested, excludeUserIds);
   const req = bucketView(requested.bucket);
 
   if (target.outcome === "move-in-requested" || target.outcome === "move-cascaded") {
@@ -326,9 +332,8 @@ export async function confirmReroute(
 
   if (input.holdId === null) return confirmKeep(deps, input, reason);
 
-  const ctx = await deps.loadBookingById(input.bookingId);
-  if (!ctx) throw new RerouteRefusedError("booking_not_found");
-  const { booking, bucket: fromBucket, eventType } = ctx;
+  // The same booking checks start and keep apply, before any hold is claimed.
+  const { booking, bucket: fromBucket, eventType } = await reroutableBooking(deps, input.bookingId);
 
   const claim = await deps.claimHold(booking.org_id, booking.id, input.holdId);
   if (claim.refused === "hold_consumed") {
@@ -374,6 +379,9 @@ async function moveOnClaimedHold(
   // corrected bucket as the requested one with no drop (#3249 review).
   const held = await deps.readLiveHold(booking.id);
   if (!held) throw new Error(`reroute: the claimed hold for booking ${booking.id} could not be read back`);
+  if (held.holdId !== input.holdId) {
+    throw new Error(`reroute: booking ${booking.id} holds ${held.holdId}, not the claimed ${input.holdId}`);
+  }
   const requested = await bucketOrThrow(deps, held.requestedBucketId);
 
   const [fromIso, toIso] = bufferedWindow(eventType, new Date(booking.starts_at).toISOString(), new Date(booking.ends_at).toISOString());
@@ -386,22 +394,34 @@ async function moveOnClaimedHold(
   // somebody who can no longer take it.
   const searchAgain = async (): Promise<RerouteOutcome> => {
     await deps.releaseHold(booking.id);
-    const proposal = await searchAndHold(deps, booking, { bucket: requested, eventType }, input.actor);
+    // Never offer back the advisor who just fell through: cached day counts can lag
+    // the cap the reassign enforces, and the search would pick them again.
+    const proposal = await searchAndHold(deps, booking, { bucket: requested, eventType }, input.actor, [advisor.userId]);
     return { kind: "taken", previous: advisor, proposal };
   };
   if (!verify.free.has(advisor.email)) return searchAgain();
 
   // The reassign rolls back its own Google event on failure; the caller lets the
   // hold go.
-  const moved = await deps.reassign(booking.id, advisor.email, reason, {
-    holdId: input.holdId,
-    bucketId: target.id,
-    requestedBucketId: requested.id,
-    requestedTier: tierKeyOf(requested.code),
-    bookedTier: tierKeyOf(target.code),
-    rungsDropped: held.rungsDropped,
-    fromBucketId: fromBucket.id,
-  });
+  let moved: "moved" | "over_cap";
+  try {
+    moved = await deps.reassign(booking.id, advisor.email, reason, {
+      holdId: input.holdId,
+      bucketId: target.id,
+      requestedBucketId: requested.id,
+      requestedTier: tierKeyOf(requested.code),
+      bookedTier: tierKeyOf(target.code),
+      rungsDropped: held.rungsDropped,
+      fromBucketId: fromBucket.id,
+    });
+  } catch (err) {
+    // The hold ran out (or was replaced) by the time the swap ran: the same answer
+    // as when the claim finds it so, never a 409 for one and "expired" for the other.
+    if (err instanceof RerouteRefusedError && (err.code === "hold_expired" || err.code === "hold_not_found")) {
+      return { kind: "expired" };
+    }
+    throw err;
+  }
   if (moved === "over_cap") return searchAgain();
   return { kind: "moved", advisor, bucket: bucketView(target) };
 }

@@ -55,17 +55,19 @@ interface Opts {
   reassignThrows?: Error;
   /** The held advisor reached their daily cap between the search and the confirm. */
   reassignOverCap?: boolean;
+  reassignRefused?: string;
   releaseThrows?: boolean;
   swapRefused?: string;
   swapNotUpdated?: boolean;
   /** After a claim, what the hold read returns; default the claimed hold. */
-  heldAfterClaim?: "missing";
+  heldAfterClaim?: "missing" | "another";
   liveHold?: { holdId: string; agentUserId: string; targetBucketId: string; requestedBucketId: string; rungsDropped: number; expiresAt: string } | null;
 }
 
 function fake(o: Opts = {}) {
   const calls = {
     find: [] as string[],
+    findExcludes: [] as string[][],
     place: [] as { agentUserId: string; targetBucketId: string; requestedBucketId: string; rungsDropped: number }[],
     release: [] as string[],
     releaseFailed: [] as { bookingId: string; message: string }[],
@@ -80,8 +82,9 @@ function fake(o: Opts = {}) {
   const deps: RerouteDeps = {
     loadBookingById: async (id) => (booking && id === booking.id ? { booking, bucket: bucketFor("100"), eventType } : null),
     resolveBucketByCode: async (code) => (/^[1-5][0-3][0-2]$/.test(code) ? { bucket: bucketFor(code), eventType } : null),
-    findTarget: async (_b, requested) => {
+    findTarget: async (_b, requested, excludeUserIds = []) => {
       calls.find.push(requested.bucket.code);
+      calls.findExcludes.push(excludeUserIds);
       if (o.findThrows) throw o.findThrows;
       const next = targets.shift();
       if (!next) throw new Error("test ran out of targets");
@@ -120,6 +123,7 @@ function fake(o: Opts = {}) {
     reassign: async (_id, email, reason, reroute) => {
       calls.reassign.push({ email, reason, reroute });
       if (o.reassignThrows) throw o.reassignThrows;
+      if (o.reassignRefused) throw new RerouteRefusedError(o.reassignRefused as never);
       return o.reassignOverCap ? "over_cap" : "moved";
     },
     keepSwap: async (args) => {
@@ -132,6 +136,9 @@ function fake(o: Opts = {}) {
     readLiveHold: async () => {
       if (o.liveHold !== undefined) return o.liveHold;
       if (o.heldAfterClaim === "missing") return null;
+      if (o.heldAfterClaim === "another") {
+        return { holdId: "H-OTHER", agentUserId: "NEW", targetBucketId: "b512", requestedBucketId: "b512", rungsDropped: 0, expiresAt: new Date(NOW + 120_000).toISOString() };
+      }
       return { holdId: "H1", agentUserId: "NEW", targetBucketId: "b512", requestedBucketId: "b512", rungsDropped: 0, expiresAt: new Date(NOW + 120_000).toISOString() };
     },
     now: () => NOW,
@@ -350,6 +357,51 @@ async function main() {
     eq(out.kind, "taken", "an advisor now at their daily cap reads as taken, never the manual reassign's override");
     assert(out.kind === "taken" && out.proposal.kind === "move" && out.proposal.advisor.name === "Casey Lin", "offering the next person found");
     eq(calls.release, ["K1"], "after letting the capped advisor's hold go");
+  }
+
+  // --- confirm: a re-search never offers back the advisor who fell through ---
+  {
+    const { deps, calls } = fake({ reassignOverCap: true, targets: [moveTarget("NEXT", "512", 0)] });
+    await confirmReroute(deps, { bookingId: "K1", holdId: "H1", bucketCode: null, note: null, actor });
+    eq(calls.findExcludes[0], ["NEW"], "after a cap refusal the search leaves out the capped advisor");
+  }
+  {
+    const { deps, calls } = fake({ free: new Set(), targets: [moveTarget("NEXT", "512", 0)] });
+    await confirmReroute(deps, { bookingId: "K1", holdId: "H1", bucketCode: null, note: null, actor });
+    eq(calls.findExcludes[0], ["NEW"], "and after a booked advisor, the same");
+  }
+
+  // --- confirm: the move path checks the booking as start and keep do ---
+  for (const [patch, code] of [[{ status: "cancelled" }, "booking_inactive"], [{ kind: "agent_link" }, "agent_link"]] as const) {
+    const { deps, calls } = fake({ booking: patch });
+    let got: string | null = null;
+    try {
+      await confirmReroute(deps, { bookingId: "K1", holdId: "H1", bucketCode: null, note: null, actor });
+    } catch (e) {
+      got = e instanceof RerouteRefusedError ? e.code : "other";
+    }
+    eq(got, code, `a move confirm on a ${code} booking is refused by name`);
+    eq(calls.claim.length, 0, `${code}: before any hold is claimed`);
+  }
+
+  // --- confirm: a hold that expires during the move reads as expired, as at the claim ---
+  for (const refused of ["hold_expired", "hold_not_found"]) {
+    const { deps } = fake({ reassignRefused: refused });
+    const out = await confirmReroute(deps, { bookingId: "K1", holdId: "H1", bucketCode: null, note: null, actor });
+    eq(out.kind, "expired", `${refused} at the swap answers expired, the same as at the claim`);
+  }
+
+  // --- confirm: the hold read back must be the one claimed ---
+  {
+    const { deps, calls } = fake({ heldAfterClaim: "another" });
+    let thrown: unknown = null;
+    try {
+      await confirmReroute(deps, { bookingId: "K1", holdId: "H1", bucketCode: null, note: null, actor });
+    } catch (e) {
+      thrown = e;
+    }
+    assert(thrown instanceof Error, "a different hold read back after the claim is a fault");
+    eq(calls.reassign.length, 0, "and nothing is moved on its values");
   }
 
   // --- confirm: a claimed hold that cannot be read back stops, never guesses the drop ---

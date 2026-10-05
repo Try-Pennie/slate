@@ -2088,9 +2088,11 @@ async function assignAgent(
   /**
    * #3248: a reroute. The booking's current advisor is taken out of the candidates
    * BEFORE verify, because their own call makes them busy in Google and they are
-   * judged separately; the round robin is asked at the fixed time.
+   * judged separately; the round robin is asked at the fixed time. #3249:
+   * `alsoExclude` names advisors a re-search must not offer back (the one just
+   * found booked or at their daily cap at confirm).
    */
-  reroute?: { excludeUserId: string; forBookingId: string },
+  reroute?: { excludeUserId: string; forBookingId: string; alsoExclude?: readonly string[] },
 ): Promise<AssignResult & { candidates: string[]; read: string[] }> {
   const { candidates: ranked, memberCount } = await deps.roundRobinCandidates(
     bucket,
@@ -2101,7 +2103,9 @@ async function assignAgent(
     excludeLow,
     reroute ? { fixedTime: true, forBookingId: reroute.forBookingId } : undefined,
   );
-  const read = reroute ? ranked.filter((id) => id !== reroute.excludeUserId) : ranked;
+  const read = reroute
+    ? ranked.filter((id) => id !== reroute.excludeUserId && !(reroute.alsoExclude ?? []).includes(id))
+    : ranked;
   const candidates = claimFromLine(seat, read);
 
   const { assignment, anyUnverified } = await selectAgent(
@@ -2304,6 +2308,8 @@ export async function findRerouteTarget(
   deps: RerouteTargetDeps,
   booking: Booking,
   requested: { bucket: Bucket; eventType: EventType },
+  /** #3249: advisors a re-search must not offer back. */
+  opts: { excludeUserIds?: readonly string[] } = {},
 ): Promise<RerouteTarget> {
   const current = booking.assigned_user_id;
   const startIso = new Date(booking.starts_at).toISOString();
@@ -2336,7 +2342,7 @@ export async function findRerouteTarget(
         undefined,
         excludeLow,
         null,
-        { excludeUserId: current ?? "", forBookingId: booking.id },
+        { excludeUserId: current ?? "", forBookingId: booking.id, alsoExclude: opts.excludeUserIds },
       );
       return {
         hit: true,

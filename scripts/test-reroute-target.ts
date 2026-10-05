@@ -128,6 +128,14 @@ async function run() {
       "minimum notice does not refuse a keep 30 minutes before the call");
   }
 
+  // --- #3249: a re-search after the held advisor fell through never offers them again ---
+  {
+    const { deps, calls } = fake({ buckets: ["212"], membership: { "212": { member: false } }, candidates: { "212": ["CUR", "A", "B"] }, free: new Set(["A@x.com", "B@x.com"]) });
+    const r = await findRerouteTarget(deps, booking, requested("212"), { excludeUserIds: ["A"] });
+    eq(r.outcome === "move-in-requested" ? r.userId : null, "B", "an excluded advisor is passed over even when free and first in order");
+    assert(!calls.verify.flat().includes("A@x.com"), "and is never verified at all");
+  }
+
   // --- 2. otherwise anyone else free in it -------------------------------------------------
   {
     const { deps, calls } = fake({ buckets: ["212"], membership: { "212": { member: false } }, candidates: { "212": ["CUR", "A", "B"] }, free: new Set(["B@x.com", "CUR@x.com"]) });

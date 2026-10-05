@@ -2947,7 +2947,7 @@ function realRerouteDeps(actor: BookingActor): RerouteDeps {
   return {
     loadBookingById: base.loadBookingById,
     resolveBucketByCode: base.resolveBucketByCode,
-    findTarget: (booking, requested) =>
+    findTarget: (booking, requested, excludeUserIds) =>
       orchestration.findRerouteTarget(
         {
           resolveBucketByCode: base.resolveBucketByCode,
@@ -2959,6 +2959,7 @@ function realRerouteDeps(actor: BookingActor): RerouteDeps {
         },
         booking,
         requested,
+        { excludeUserIds },
       ),
     placeHold: (args) => placeRerouteHold(args, holds),
     releaseHold: (bookingId) => releaseRerouteHold(bookingId, holds),
