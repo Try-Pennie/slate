@@ -918,6 +918,19 @@ number under a heading covering six would drop five readings on a screen whose
 job is to report them. That cannot happen while the pool key covers every input,
 which is exactly why it is guarded.
 
+# The confirm line is shared across isolates (#3325)
+
+Confirms for one slot take turns in a line, and since #3325 that line can live in
+ONE Durable Object every isolate reaches, behind `booking_settings.shared_confirm_line`
+(admin Hours page). Three rules: the line's rules exist once, in `makeConfirmQueue`
+(the object hosts it, never a copy); every call the confirm path makes to its line is
+awaited (`scripts/test-unawaited-line-calls.ts`), because a Worker cancels unawaited
+work and a lost report holds the line; and correctness never rests on the line, so
+any failure to use it falls back to the isolate's own line and is recorded on the
+`confirm answered` log line (`line`, `line_reason`, `line_key`, `line_ms`). The
+key, the switch, every fallback, the timings and what pages are in
+**`docs/confirm-line.md`**.
+
 # Capped single-page reads (the `// cap-safe:` convention)
 
 PostgREST returns at most **one 1000-row page** per list read. Code that then

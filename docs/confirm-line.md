@@ -33,9 +33,22 @@ so a crowd gets one booking per free advisor and fast "taken" answers.
 A line key is a GROUP and an instant. One object per group, one line per instant
 inside it, because creating an object costs about 170ms and calling an existing one
 about 13ms (measured below): an object per instant would create one on almost every
-booking. The group is `link:<userId>` for a named advisor's link, otherwise
-`code:<code>`. Matching sibling codes on their whole fallback ladder (so 510 and 511
-share a line when every tier they can fall to is the same pool) is the next step.
+booking. The group is:
+
+- `link:<userId>` for a named advisor's link, whatever code it came through;
+- `ladder:<fingerprint>` when this isolate knows the pool of every rung of the code's
+  fallback ladder (`src/lib/booking/line-key.ts`). A leader's "full" verdict means
+  nobody in any rung of ITS ladder was free, so it may settle only followers that
+  would walk the same pools at every rung. Today 510, 511, 500 and 501 share one;
+  a bucket that gains a hand named member splits off by itself (Dan, 2026-10-05);
+- `code:<code>` otherwise, which is what a cold isolate uses. The pool grouping is
+  read without waiting (`peekPoolKey` in `slot-cache.ts`) and warmed after the
+  response when unknown, so a confirm never adds a read before its line.
+
+Accepted, and stated: for up to one minute after an admin edits a bucket's members,
+an isolate holding the old grouping can put two codes whose ladders now differ in
+one line, so a follower can be told "taken" while the edited bucket's new member is
+free. The lead picks another time; nothing is double booked.
 
 ## The switch, and which way everything fails
 

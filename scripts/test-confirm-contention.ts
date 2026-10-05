@@ -629,6 +629,25 @@ async function main() {
       same(confirmQueueKey("120", input.startIso, "u1"), { group: "link:u1", instant }),
       "key: a named link's line is its advisor's, whichever code it came through, since the same person is contended",
     );
+    // #3325: a code whose whole fallback ladder this isolate knows joins its LADDER's
+    // line, shared with sibling codes; one it does not know keeps its own code's line.
+    const ladderOf = (code: string) => (code === "120" ? "ladder:abc" : null);
+    assert(
+      same(confirmQueueKey("120", input.startIso, undefined, ladderOf), { group: "ladder:abc", instant }),
+      "key: a code whose ladder is known joins the ladder's line",
+    );
+    assert(
+      same(confirmQueueKey("121", input.startIso, undefined, ladderOf), { group: "code:121", instant }),
+      "key: a code whose ladder is not known keeps its own line",
+    );
+    assert(
+      same(confirmQueueKey("120", input.startIso, "u1", ladderOf), { group: "link:u1", instant }),
+      "key: a named link is the advisor's line whatever the ladder",
+    );
+    assert(
+      same(queueKeyBeforeRouting({ bucketCode: "120", startIso: input.startIso }, ladderOf), { group: "ladder:abc", instant }),
+      "early key: the ladder is known before any read, from what the isolate already holds",
+    );
     assert(
       same(queueKeyBeforeRouting({ bucketCode: "120", startIso: input.startIso }), confirmQueueKey("120", input.startIso, undefined)),
       "early key: a request naming its bucket outright is keyed before any read",

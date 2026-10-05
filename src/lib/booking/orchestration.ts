@@ -1208,6 +1208,12 @@ export interface BookingDeps {
    */
   confirmQueue: ConfirmLine<SlotSettlement>;
   /**
+   * #3325: the LADDER group a code's confirms share, from what this isolate already
+   * holds, or null to keep the code's own line. Optional: a suite that does not set it
+   * keys every line by code, which is what a cold isolate does.
+   */
+  lineGroupOf?: (code: string) => string | null;
+  /**
    * #3257: every ACTIVE booking that starts at this instant, in any bucket and
    * either world. Read once by a confirm whose verdict settles its slot, so the
    * confirms waiting behind it can tell whether one of them already holds the
@@ -3721,12 +3727,13 @@ export function stableKeyFor(input: CreateBookingInput): string | null {
  */
 export function queueKeyBeforeRouting(
   input: Pick<CreateBookingInput, "bucketCode" | "startIso" | "requestedCode" | "agentLinkUserId">,
+  lineGroupOf?: (code: string) => string | null,
 ): LineKey | null {
   const known =
     input.agentLinkUserId !== undefined ||
     input.requestedCode === undefined ||
     resolveRequestedCode(input.requestedCode).kind === "valid";
-  return known ? confirmQueueKey(input.bucketCode, input.startIso, input.agentLinkUserId) : null;
+  return known ? confirmQueueKey(input.bucketCode, input.startIso, input.agentLinkUserId, lineGroupOf) : null;
 }
 
 /**
@@ -3961,7 +3968,7 @@ async function createBookingWithVerdict(
   // idempotency read, the routing and the bucket read first. Those reads are what
   // timed out on 2026-10-04 (run 37229344882) with the #3221 line behind them.
   if (opts.held) return createChecked(requestedInput, deps, opts, stableKey, opts.held);
-  const early = queueKeyBeforeRouting(requestedInput);
+  const early = queueKeyBeforeRouting(requestedInput, deps.lineGroupOf);
   if (early === null) return createChecked(requestedInput, deps, opts, stableKey, "late");
   return inConfirmTurn(
     deps,
@@ -4074,7 +4081,7 @@ async function createChecked(
   return inConfirmTurn(
     deps,
     {
-      key: confirmQueueKey(input.bucketCode, input.startIso, agentLinkUserId),
+      key: confirmQueueKey(input.bucketCode, input.startIso, agentLinkUserId, deps.lineGroupOf),
       stableKey,
       bucketCode: input.bucketCode,
       startIso: input.startIso,
@@ -4131,11 +4138,20 @@ export interface ConfirmTaker {
  * person and two to different advisors never do; otherwise it is the bucket's code.
  * The instant is parsed, so two spellings of one moment share a line.
  */
-export function confirmQueueKey(bucketCode: string, startIso: string, agentLinkUserId: string | undefined): LineKey {
-  return {
-    group: agentLinkUserId !== undefined ? `link:${agentLinkUserId}` : `code:${bucketCode}`,
-    instant: String(Date.parse(startIso)),
-  };
+export function confirmQueueKey(
+  bucketCode: string,
+  startIso: string,
+  agentLinkUserId: string | undefined,
+  /**
+   * #3325: the code's LADDER group when this isolate knows every rung's pool
+   * (`ladderGroupOf`), so sibling codes that walk the same pools share one line;
+   * null or absent keeps the code's own line. Never asked for a named link.
+   */
+  lineGroupOf?: (code: string) => string | null,
+): LineKey {
+  const group =
+    agentLinkUserId !== undefined ? `link:${agentLinkUserId}` : (lineGroupOf?.(bucketCode) ?? `code:${bucketCode}`);
+  return { group, instant: String(Date.parse(startIso)) };
 }
 
 /**
@@ -5399,7 +5415,7 @@ export async function bookViaApi(
   // whole decision; the rest wait, read nothing, and are answered from what it
   // showed. Whoever books has run the person decision itself (#357, #1641), as
   // leader or after waiting out the bound, so dedupe for one person is unchanged.
-  const key = queueKeyBeforeRouting(input);
+  const key = queueKeyBeforeRouting(input, deps.lineGroupOf);
   if (key === null) return (await bookViaApiDecided(input, deps, undefined)).result;
   const { result } = await inConfirmTurn(
     deps,

@@ -14,7 +14,19 @@ const sent = vi.hoisted(() => ({ alerts: [] as string[] }));
 vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert: async (key: string) => void sent.alerts.push(key) }));
 vi.mock("@/lib/platform/runtime", () => ({ isWorkersRuntime: () => true }));
 
-import { confirmLineFor } from "@/lib/booking/confirm-line-live";
+const pools = vi.hoisted(() => ({ known: new Map<string, string | null>(), warms: 0, after: [] as string[] }));
+vi.mock("@/lib/availability/slot-cache", () => ({
+  peekPoolKey: (code: string) => (pools.known.has(code) ? pools.known.get(code) : undefined),
+  warmPoolKeys: async () => void pools.warms++,
+}));
+vi.mock("@/lib/after-response", () => ({
+  afterResponse: (label: string, work: () => Promise<unknown>) => {
+    pools.after.push(label);
+    void work();
+  },
+}));
+
+import { confirmLineFor, lineGroupOfLive } from "@/lib/booking/confirm-line-live";
 import { isolateLine, makeConfirmQueue } from "@/lib/booking/confirm-queue";
 import type { LineServed } from "@/lib/booking/shared-confirm-line";
 
@@ -79,5 +91,20 @@ describe("confirmLineFor (#3325)", () => {
     expect(names).toContain("confirm-line:v1:code:521");
     expect(served.at(-1)).toMatchObject({ line: "shared", reason: "ok", key: "code" });
     if (turn.kind === "lead") await turn.done({ full: false });
+  });
+
+  it("names a code's ladder from what the isolate holds, and warms it after the response when it does not know", async () => {
+    pools.known = new Map();
+    pools.warms = 0;
+    pools.after = [];
+    expect(lineGroupOfLive("510")).toBeNull();
+    await Promise.resolve();
+    expect(pools.after).toEqual(["pool-keys-warm"]);
+    expect(pools.warms).toBe(1);
+    for (const code of ["510", "410", "310", "210", "511", "411", "311", "211"]) pools.known.set(code, `pool-${code[0]}`);
+    const g = lineGroupOfLive("510");
+    expect(g).toMatch(/^ladder:/);
+    expect(lineGroupOfLive("511")).toBe(g);
+    expect(pools.after).toEqual(["pool-keys-warm"]);
   });
 });

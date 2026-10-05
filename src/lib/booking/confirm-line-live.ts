@@ -19,6 +19,8 @@ import {
   type LineServed,
 } from "@/lib/booking/shared-confirm-line";
 import { readSharedConfirmLine } from "@/lib/booking/shared-line-switch";
+import { ladderGroupOf } from "@/lib/booking/line-key";
+import { peekPoolKey, warmPoolKeys } from "@/lib/availability/slot-cache";
 
 /**
  * The shared confirm line, wired to the deployment (#3325): the binding, the stored
@@ -73,4 +75,22 @@ export function confirmLineFor<T>(fallback: ConfirmLine<T>, record: (served: Lin
     timer: realTimer,
     newId: () => crypto.randomUUID(),
   });
+}
+
+/**
+ * The ladder group a code's confirms share, from the pool grouping this isolate
+ * already holds, or null to keep the code's own line (#3325). It never reads: a
+ * confirm joins its line before any read. When the grouping is not known yet it is
+ * warmed after the response, so the next confirm on this isolate can use it.
+ */
+export function lineGroupOfLive(code: string): string | null {
+  const group = ladderGroupOf(code, peekPoolKey);
+  if (group === null) {
+    afterResponse("pool-keys-warm", () =>
+      warmPoolKeys().catch((err) => {
+        log.warn("confirm-line", { msg: "could not warm the pool grouping; confirms keep their code's own line" }, err);
+      }),
+    );
+  }
+  return group;
 }

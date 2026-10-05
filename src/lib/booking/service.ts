@@ -480,7 +480,7 @@ import { resolveAdvisorName, type AdvisorNameReader } from "@/lib/booking/adviso
 import { resolveBookingAdvisorPhoto } from "@/lib/booking/advisor-photo";
 import { loadPhotoRecords, loadUserSignInPhoto } from "@/lib/advisor-photos/store";
 import { makeConfirmQueue, isolateLine } from "@/lib/booking/confirm-queue";
-import { confirmLineFor } from "@/lib/booking/confirm-line-live";
+import { confirmLineFor, lineGroupOfLive } from "@/lib/booking/confirm-line-live";
 import type { ConfirmLineFacts } from "@/lib/booking/confirm-latency";
 export type { BookingResult, CreateBookingInput };
 export type { ExistingCall } from "@/lib/booking/orchestration";
@@ -1091,6 +1091,8 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
     confirmQueue: confirmLineFor(ISOLATE_LINE, (served) => {
       if (lineFacts) lineFacts.line = served;
     }),
+    // #3325: sibling codes that walk the same pools share one line.
+    lineGroupOf: lineGroupOfLive,
     enqueueEventDeletion: async (calendarEmail, gcalEventId, bookingId) => {
       // THROWS (#2482). This row IS the record that a Google event still has to be
       // deleted, and nothing else holds that fact: a refused upsert leaves the event
