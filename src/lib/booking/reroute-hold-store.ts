@@ -30,7 +30,12 @@ export interface RerouteHoldStoreDeps {
   /** Delete the booking's UNCONSUMED hold, returning the advisor it held. */
   deleteUnconsumed(bookingId: string): PromiseLike<DbAnswer<{ agent_user_id: string }>>;
   pruneRpc(): PromiseLike<DbAnswer<{ user_id: string }>>;
-  /** Refresh the buckets these advisors serve. Never throws (the recompute lane backstops). */
+  /**
+   * Refresh the buckets these advisors serve. Never throws (the recompute lane
+   * backstops). On a request path the live deps hand it to run after the response
+   * and resolve at once (#3307), so a place or release answers without waiting on
+   * it; the sweep lane awaits it (`reroute-hold-store-live.ts`).
+   */
   refreshPools(userIds: string[]): Promise<void>;
 }
 

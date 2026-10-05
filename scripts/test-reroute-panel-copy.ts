@@ -15,6 +15,7 @@ import {
   heldFor,
   tiersDownPhrase,
   REROUTE_UNREACHABLE,
+  REROUTE_TIMED_OUT,
   rerouteFailed,
 } from "../src/lib/booking/reroute-copy.ts";
 import type { RerouteProposal } from "../src/lib/booking/reroute.ts";
@@ -119,7 +120,15 @@ eq(proposalCopy(move("312", 2), true).heading, "Two tiers down, in 312", "R9: tw
   eq(c.body, "Morgan Reyes was booked a moment ago, so Slate searched again. Casey Lin is free. Nobody in 512 is.", "R13: who was taken, then the new answer");
   eq(c.primary, "Move to Casey Lin", "R13: moving to the new advisor");
 }
-eq(outcomeCopy({ kind: "moved", advisor: advisor("Morgan Reyes"), bucket: bucket("412") }, true, null).body, "Moved to Morgan Reyes, in 412.", "a move says what it did");
+eq(outcomeCopy({ kind: "moved", advisor: advisor("Morgan Reyes"), bucket: bucket("412"), already: false }, true, null).body, "Moved to Morgan Reyes, in 412.", "a move says what it did");
+{
+  // #3307: a repeated confirm whose first one had landed. It says the earlier press
+  // made the move and this one changed nothing, so nobody reads it as a second move.
+  const c = outcomeCopy({ kind: "moved", advisor: advisor("Morgan Reyes"), bucket: bucket("412"), already: true }, true, null);
+  eq(c.heading, "Already moved", "a repeated confirm is headed as already done");
+  eq(c.body, "Moved to Morgan Reyes, in 412, by an earlier confirm. Nothing changed this time.", "naming the move and that this press changed nothing");
+  eq(c.primary, null, "with nothing left to press");
+}
 eq(outcomeCopy({ kind: "kept", bucket: bucket("512") }, false, null).body, "The pool is now Ultra High.", "a keep says what it did, in pool words for a manager");
 eq(outcomeCopy({ kind: "kept", bucket: bucket("512") }, true, null).body, "The bucket is now 512.", "and in code words for an admin");
 
@@ -131,6 +140,21 @@ eq(heldFor(Number.NaN), "Held for 0:00", "an unreadable count reads as none left
 eq(tiersDownPhrase(3), "Three tiers down", "three tiers");
 // --- a failed request: no answer at all, or an answer with no message (L11) ---
 eq(REROUTE_UNREACHABLE, "Slate could not reach the server. Please try again.", "no answer blames the connection");
+// #3307: the panel stopped waiting, which says nothing about the server. Find an
+// advisor answered 200 after 24 seconds, having held somebody, while the line above
+// said the server was unreachable; so this claims only that no answer came in
+// time, and sends the reader to reload rather than to press again.
+eq(
+  REROUTE_TIMED_OUT,
+  "Slate did not answer in time, so this may still be finishing. Reload the page to see whether it went through.",
+  "a slow answer says the work may still finish and to reload",
+);
+assert(!/reach/.test(REROUTE_TIMED_OUT), "and never says the server could not be reached");
+assert(REROUTE_TIMED_OUT !== REROUTE_UNREACHABLE, "a timeout and a network failure read differently (L11)");
+assert(
+  ![...REROUTE_TIMED_OUT].some((ch) => ch.charCodeAt(0) === 0x2014 || ch.charCodeAt(0) === 0x2013),
+  "no dashes in the timeout sentence",
+);
 eq(rerouteFailed(502), "Slate could not finish that (error 502). Please try again.", "an answer with no message says the server answered, with its status");
 assert(
   !/[\u2014\u2013]/.test(JSON.stringify([proposalCopy(move("412", 1), true), outcomeCopy({ kind: "expired" }, true, "A"), REROUTE_UNREACHABLE, rerouteFailed(500)])),

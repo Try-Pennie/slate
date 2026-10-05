@@ -72,8 +72,19 @@ export function heldFor(seconds: number): string {
   return `Held for ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-/** No answer came back at all: the request never reached Slate or timed out. */
+/** The request failed on the network: no answer came back at all. */
 export const REROUTE_UNREACHABLE = "Slate could not reach the server. Please try again.";
+
+/**
+ * The panel stopped waiting before an answer came (#3307). That says nothing about
+ * the server, which can still finish: Find an advisor once answered 200 after 24
+ * seconds, having held somebody, while this panel said the server was unreachable.
+ * So it claims only that no answer came in time (L11), and sends the reader to
+ * reload, which restores a hold that was placed or shows a move that landed,
+ * rather than to press again.
+ */
+export const REROUTE_TIMED_OUT =
+  "Slate did not answer in time, so this may still be finishing. Reload the page to see whether it went through.";
 
 /** Slate answered with a refusal that carried no message of its own (L11). */
 export function rerouteFailed(status: number): string {
@@ -178,7 +189,13 @@ export function outcomeCopy(o: RerouteOutcome, showCodes: boolean, heldAdvisor: 
     return { ...next, body: `${o.previous.name} was booked a moment ago, so Slate searched again. ${next.body}` };
   }
   if (o.kind === "moved") {
-    return { heading: "Moved", body: `Moved to ${o.advisor.name}, in ${bucketWords(o.bucket.code, showCodes)}.`, ...quiet };
+    const where = `${o.advisor.name}, in ${bucketWords(o.bucket.code, showCodes)}`;
+    // #3307: a repeated confirm whose first one landed moved nothing itself, and the
+    // reader pressed again because they believed the first failed (L12).
+    if (o.already) {
+      return { heading: "Already moved", body: `Moved to ${where}, by an earlier confirm. Nothing changed this time.`, ...quiet };
+    }
+    return { heading: "Moved", body: `Moved to ${where}.`, ...quiet };
   }
   return {
     heading: "Corrected",

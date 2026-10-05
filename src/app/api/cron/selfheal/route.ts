@@ -151,7 +151,7 @@ export async function GET(req: NextRequest) {
     // Built inside the promise chain, so even a throw while wiring the deps lands in
     // this sweep's own catch rather than ending the tick (L73).
     const holdSweep = await Promise.resolve()
-      .then(() => sweepExpiredRerouteHoldBlocks(rerouteHoldStoreDeps("reroute-hold-sweep")))
+      .then(() => sweepExpiredRerouteHoldBlocks(rerouteHoldStoreDeps("reroute-hold-sweep", "inline")))
       .catch(
       (err) => {
         log.error("selfheal", { msg: "reroute hold sweep failed" }, err);
