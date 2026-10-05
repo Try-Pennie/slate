@@ -25,7 +25,7 @@ import type { PlaceRerouteHoldArgs, PlaceRerouteHoldResult } from "./reroute-hol
 import type { RerouteTarget } from "./orchestration.ts";
 import type { BookingActor, BookingEventInsert, VerifyResult } from "./core.ts";
 import { bookingEventFrom, bufferedWindow } from "./core.ts";
-import { tierKeyOf } from "../routing/tiers.ts";
+import { tierKeyOf, tierLadder } from "../routing/tiers.ts";
 import { DateTime } from "luxon";
 import { formatClockTime } from "../date/parse.ts";
 
@@ -40,7 +40,7 @@ export type RerouteRefusal =
   | "unknown_bucket"
   | "no_current_advisor"
   | "no_calendar_event"
-  | "kept_above_requested"
+  | "kept_off_ladder"
   | PlaceRerouteHoldRefusal
   | ClaimRerouteHoldRefusal
   | RerouteSwapRefusal;
@@ -439,8 +439,12 @@ async function confirmKeep(
   // drop is the tier distance between the two codes, derived here rather than taken
   // from the request (the move reads its drop off the hold the server placed).
   const asked = input.requestedBucketCode ? await requestedBucket(deps, input.requestedBucketCode) : kept;
-  const rungs = tierDistance(asked.bucket.code, kept.bucket.code);
-  if (rungs < 0) throw new RerouteRefusedError("kept_above_requested");
+  // The drop is the kept bucket's position on the ladder the search walks from the
+  // bucket asked for, the same measure a move records, so a keep and a move of the
+  // same distance read alike in the history. A code the search could never have
+  // reached from it is refused rather than recorded.
+  const rungs = tierLadder(asked.bucket.code).indexOf(kept.bucket.code);
+  if (rungs < 0) throw new RerouteRefusedError("kept_off_ladder");
   if (!booking.assigned_user_id || !booking.agent_email) throw new RerouteRefusedError("no_current_advisor");
   if (!booking.gcal_event_id) throw new RerouteRefusedError("no_calendar_event");
   const { refused, updated } = await deps.keepSwap({
@@ -479,13 +483,6 @@ async function confirmKeep(
     }),
   );
   return { kind: "kept", bucket: bucketView(kept.bucket) };
-}
-
-/** How many tiers `kept` sits below `asked`, by their first digits; 0 for codes outside the ladder. */
-function tierDistance(askedCode: string, keptCode: string): number {
-  const a = Number(askedCode[0]);
-  const k = Number(keptCode[0]);
-  return /^[1-5]$/.test(askedCode[0] ?? "") && /^[1-5]$/.test(keptCode[0] ?? "") ? a - k : 0;
 }
 
 /** Cancel, or the admin walking away: let the held advisor go. */

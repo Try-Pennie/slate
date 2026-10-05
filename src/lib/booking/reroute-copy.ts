@@ -93,9 +93,21 @@ export interface RerouteCopy {
   cancel: boolean;
 }
 
-function heading(rungs: number, bucketCode: string, showCodes: boolean): string {
+/**
+ * How many DEBT tiers below the bucket asked for `code` sits, from the two codes'
+ * first digits, or 0 when either is no XBC. Not the ladder position the search
+ * records: a Beyond or Achieve code widens sideways in its own tier first (522,
+ * then 532, then the pool 512), and calling that "one tier down" would be false.
+ */
+function tiersBelow(requestedCode: string, code: string): number {
+  if (!bucketSpecForXbc(requestedCode) || !bucketSpecForXbc(code)) return 0;
+  return Math.max(0, Number(requestedCode[0]) - Number(code[0]));
+}
+
+function heading(requestedCode: string, bucketCode: string, showCodes: boolean): string {
   const where = bucketWords(bucketCode, showCodes);
-  return rungs > 0 ? `${tiersDownPhrase(rungs)}, in ${where}` : `In ${where}`;
+  const tiers = tiersBelow(requestedCode, bucketCode);
+  return tiers > 0 ? `${tiersDownPhrase(tiers)}, in ${where}` : `In ${where}`;
 }
 
 /** What a search found (R8 to R11). */
@@ -113,8 +125,8 @@ export function proposalCopy(p: RerouteProposal, showCodes: boolean): RerouteCop
   const requested = bucketWords(p.requested.code, showCodes);
   if (p.kind === "move") {
     return {
-      heading: heading(p.rungsDropped, p.bucket.code, showCodes),
-      body: p.rungsDropped > 0 ? `${p.advisor.name} is free. Nobody in ${requested} is.` : `${p.advisor.name} is free.`,
+      heading: heading(p.requested.code, p.bucket.code, showCodes),
+      body: p.bucket.code !== p.requested.code ? `${p.advisor.name} is free. Nobody in ${requested} is.` : `${p.advisor.name} is free.`,
       held: true,
       note: true,
       primary: `Move to ${p.advisor.name}`,
@@ -133,9 +145,9 @@ export function proposalCopy(p: RerouteProposal, showCodes: boolean): RerouteCop
     };
   }
   return {
-    heading: heading(p.rungsDropped, p.bucket.code, showCodes),
+    heading: heading(p.requested.code, p.bucket.code, showCodes),
     body:
-      p.rungsDropped > 0
+      p.bucket.code !== p.requested.code
         ? `${p.advisor.name} can keep this call. Nobody in ${requested} is free.`
         : `${p.advisor.name} can keep this call.`,
     held: false,

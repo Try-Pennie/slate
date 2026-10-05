@@ -178,9 +178,11 @@ export default function ReroutePanel({
 
   /**
    * A new choice makes the result on screen the answer to a different question, so
-   * it goes, and an advisor it was holding is let go (the same as Cancel).
+   * it goes, and an advisor it was holding is let go (the same as Cancel). Picking
+   * what is already chosen changes nothing, and keeps both.
    */
-  function choose(apply: () => void) {
+  function choose(changed: boolean, apply: () => void) {
+    if (!changed) return;
     apply();
     if (shown?.kind === "proposal" || shown?.kind === "taken") {
       if (proposal?.kind === "move") release();
@@ -229,7 +231,7 @@ export default function ReroutePanel({
                 ariaLabel="Correct bucket"
                 value={adminCode}
                 options={codes.map((c) => ({ value: c, label: c }))}
-                onChange={(v) => choose(() => setAdminCode(v))}
+                onChange={(v) => choose(v !== adminCode, () => setAdminCode(v))}
                 disabled={busy}
               />
             </>
@@ -245,7 +247,7 @@ export default function ReroutePanel({
                         name={`${ids}-backend`}
                         value={b.key}
                         checked={backend === b.key}
-                        onChange={() => choose(() => setBackend(b.key))}
+                        onChange={() => choose(b.key !== backend, () => setBackend(b.key))}
                         disabled={busy}
                         className="peer sr-only"
                       />
@@ -262,7 +264,7 @@ export default function ReroutePanel({
                 ariaLabel="Debt level"
                 value={debt}
                 options={MANAGER_DEBT_LEVELS.map((d) => ({ value: d.digit, label: d.label }))}
-                onChange={(v) => choose(() => setDebt(v as ManagerDebtDigit))}
+                onChange={(v) => choose(v !== debt, () => setDebt(v as ManagerDebtDigit))}
                 disabled={busy}
               />
             </>

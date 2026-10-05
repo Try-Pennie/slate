@@ -61,6 +61,19 @@ const move = (code: string, rungs: number): RerouteProposal => ({
 }
 eq(proposalCopy(move("312", 2), true).heading, "Two tiers down, in 312", "R9: two tiers");
 {
+  // A Beyond or Achieve code widens sideways before it drops a tier (522, then 532,
+  // then the pool 512), so a rung is not a tier: the heading counts debt tiers from
+  // the codes, never the ladder position.
+  const sideways: RerouteProposal = { ...move("532", 1), requested: bucket("522") };
+  const c = proposalCopy(sideways, true);
+  eq(c.heading, "In 532", "a sideways rung in the same debt tier claims no tier dropped");
+  eq(c.body, "Morgan Reyes is free. Nobody in 522 is.", "and still says nobody in the bucket asked for was free");
+  eq(proposalCopy({ ...move("432", 4), requested: bucket("522") }, true).heading, "One tier down, in 432", "a rung one debt tier lower is one tier down, whatever its position");
+  const keep: RerouteProposal = { kind: "keep", lastResort: false, advisor: advisor("Taylor Brooks"), bucket: bucket("512"), requested: bucket("522"), rungsDropped: 2 };
+  eq(proposalCopy(keep, true).heading, "In 512", "a cascaded keep on a sideways rung too");
+  eq(proposalCopy(keep, true).body, "Taylor Brooks can keep this call. Nobody in 522 is free.", "naming the bucket asked for");
+}
+{
   const c = proposalCopy(move("412", 1), false);
   eq(c.heading, "One tier down, in Very High", "R15: a manager reads pools in the heading");
   eq(c.body, "Morgan Reyes is free. Nobody in Ultra High is.", "R15: and in the body");

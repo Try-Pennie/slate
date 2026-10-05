@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import ReroutePanel from "@/components/ReroutePanel";
 
@@ -42,10 +42,17 @@ const sent = (fn: ReturnType<typeof mockFetch>, suffix: string, method = "POST")
     .map(([, i]) => (i?.body ? JSON.parse(String(i.body)) : null));
 
 /**
- * Runs every promise continuation already queued. The fakes here are promises with no
- * timers, so one macrotask turn drains them all: it waits on the queue, not the clock.
+ * Lets a held reply go and settles everything it sets off, inside React's act so
+ * any render it causes has happened before the test reads the screen. The fakes
+ * are promises with no timers, so one macrotask turn drains them: it waits on the
+ * queue, not the clock.
  */
-const drainPromises = () => new Promise<void>((r) => setTimeout(r, 0));
+async function settle(letGo: () => void) {
+  await act(async () => {
+    letGo();
+    await new Promise<void>((r) => setTimeout(r, 0));
+  });
+}
 
 /** Holds one route's reply until the returned function is called. */
 function holdReply(fn: ReturnType<typeof mockFetch>, suffix: string, method: string) {
@@ -193,8 +200,7 @@ describe("ReroutePanel, as an admin (codes)", () => {
     const fn = mockFetch({ current: OLD });
     const finishRestore = holdReply(fn, "/reroute", "GET");
     render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
-    finishRestore();
-    await drainPromises();
+    await settle(finishRestore);
     expect(screen.getByText("Old Hold is free. Nobody in 512 is.")).toBeTruthy();
   });
 
@@ -209,6 +215,18 @@ describe("ReroutePanel, as an admin (codes)", () => {
     expect(screen.queryByText("One tier down, in 412")).toBeNull();
     expect(screen.queryByRole("button", { name: "Move to Morgan Reyes" })).toBeNull();
     expect(sent(fn, "/reroute/hold", "DELETE")).toHaveLength(1);
+  });
+
+  it("keeps the result and its hold when the same bucket is picked again", async () => {
+    const user = userEvent.setup();
+    const fn = mockFetch({});
+    render(<ReroutePanel bookingId="bk1" currentCode="512" showCodes onChanged={onChanged} />);
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await screen.findByText("One tier down, in 412");
+    await user.click(screen.getByRole("combobox", { name: "Correct bucket" }));
+    await user.click(screen.getByRole("option", { name: "512" }));
+    expect(screen.getByText("One tier down, in 412")).toBeTruthy();
+    expect(sent(fn, "/reroute/hold", "DELETE")).toHaveLength(0);
   });
 
   it("says the server answered, with its status, when a refusal carries no message", async () => {
@@ -227,8 +245,8 @@ describe("ReroutePanel, as an admin (codes)", () => {
     render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     await screen.findByText("Morgan Reyes is free. Nobody in 512 is.");
-    finishRestore();
-    await drainPromises();
+    // Settled the same way the control above proves shows a landed restore.
+    await settle(finishRestore);
     expect(screen.queryByText(/Old Hold/)).toBeNull();
     expect(screen.getByText("Morgan Reyes is free. Nobody in 512 is.")).toBeTruthy();
   });
