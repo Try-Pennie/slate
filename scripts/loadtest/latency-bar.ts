@@ -202,8 +202,15 @@ export function absoluteBarText(j: { steadyP95: number; absoluteBarMs: number })
 }
 
 /** The report's one line on latency: which rule judged it, against what, and the absolute bar. */
-export function latencyReportLine(j: LatencyJudgement): string {
-  if (j.kind === "unmeasured") return `- latency: UNMEASURED, so the speed verdict is void and every other bar was judged; ${j.why}`;
+export function latencyReportLine(j: LatencyJudgement, platformUnmeasured: string | null = null): string {
+  if (j.kind === "unmeasured") {
+    // The same rule the verdict line follows (L11): the other bars are claimed as
+    // judged only when the platform half was read too.
+    return platformUnmeasured === null
+      ? `- latency: UNMEASURED, so the speed verdict is void and every other bar was judged; ${j.why}`
+      : `- latency: UNMEASURED, so the speed verdict is void, and platform limits were UNMEASURED ` +
+          `too (${platformUnmeasured}), so only the remaining bars were judged; ${j.why}`;
+  }
   if (j.kind === "absolute") {
     return `- latency: judged against the fixed ${j.absoluteBarMs}ms bar because ${j.why}; ${absoluteBarText(j)}`;
   }
