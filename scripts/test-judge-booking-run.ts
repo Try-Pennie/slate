@@ -2137,9 +2137,30 @@ const legAttempts = (i: JudgeInput, leg: number) =>
     a.outcome = "timed-out";
     a.echo = null;
   });
+  const u = unanswered.findings.find((x) => x.bar === "the burst's speed");
   assert(
-    unanswered.findings.some((x) => x.bar === "the burst's speed" && x.detail.includes("could not be measured")),
+    u !== undefined && u.detail.includes("could not be measured"),
     "and so does a request that got no answer at all, beside the losers finding it also makes",
+  );
+  // #3337 review, L11: a request with no reply is not an answer missing its stamp. The
+  // reason names what happened, so nobody goes looking for a header fault.
+  assert(
+    u !== undefined && u.detail.includes("1 of 100 burst requests got no reply") && !u.detail.includes("stamp"),
+    `naming the unanswered request as unanswered, not as an unstamped answer (got: ${u?.detail})`,
+  );
+  const both = brokenThree((i) => {
+    const a = legAttempts(i, 2)[6]!;
+    a.status = 0;
+    a.outcome = "timed-out";
+    a.echo = null;
+    legAttempts(i, 2)[5]!.echo = echoOf({}, null);
+  });
+  const b = both.findings.find((x) => x.bar === "the burst's speed");
+  assert(
+    b !== undefined &&
+      b.detail.includes("1 of 100 burst requests got no reply") &&
+      b.detail.includes("1 of 99 burst answers carried no readable"),
+    `and with both, each is counted against its own population (got: ${b?.detail})`,
   );
 }
 

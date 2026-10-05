@@ -531,22 +531,32 @@ export type BurstSpeedReading =
  * fast answer, and finding nothing to measure is never a pass (L98).
  */
 export function burstSpeed(attempts: readonly BookingAttempt[]): BurstSpeedReading {
+  // A request with no reply is not an answer missing its stamp, so it is counted on
+  // its own: either way the slowest loser is unknown, but only one of them is a
+  // header fault (#3337 review, L11).
+  const answered = attempts.filter((a) => a.status !== 0);
+  const noReply = attempts.length - answered.length;
   let absent = 0;
   let unreadable = 0;
   const at = new Map<BookingAttempt, number>();
-  for (const a of attempts) {
+  for (const a of answered) {
     const stamp = a.echo?.answeredAtMs;
     if (!stamp || stamp.state === "absent") absent += 1;
     else if (stamp.state === "unreadable") unreadable += 1;
     else at.set(a, stamp.value);
   }
-  if (absent + unreadable > 0) {
-    return {
-      kind: "unmeasured",
-      why:
-        `${absent + unreadable} of ${attempts.length} burst answers carried no readable ` +
-        `${ANSWERED_AT_HEADER} stamp (${absent} absent, ${unreadable} unreadable)`,
-    };
+  if (noReply + absent + unreadable > 0) {
+    const why: string[] = [];
+    if (noReply > 0) {
+      why.push(`${noReply} of ${attempts.length} burst requests got no reply, so when they would have been answered is unknown`);
+    }
+    if (absent + unreadable > 0) {
+      why.push(
+        `${absent + unreadable} of ${answered.length} burst answers carried no readable ` +
+          `${ANSWERED_AT_HEADER} stamp (${absent} absent, ${unreadable} unreadable)`,
+      );
+    }
+    return { kind: "unmeasured", why: why.join("; ") };
   }
   const won = attempts.filter((a) => a.status === 200);
   if (won.length === 0) {
