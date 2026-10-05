@@ -1,0 +1,229 @@
+// #3324: the race a booking's splice has to fence.
+//
+// A splice recomputes only the booked window and leaves `computed_at` alone, because
+// the rest of the row is exactly as old as it was. That takes away the protection the
+// whole pool refresh had for free: its compute began AFTER the booking, so its newer
+// stamp beat any older compute through the compare and swap (#1048). A full compute
+// that read busy_blocks before the booking's block existed, and writes after the
+// splice, would put the booked time straight back.
+//
+// The obvious fence, stamping `invalidated_at` so the older compute is REFUSED, was
+// measured and rejected: at the load run's sixty bookings a minute, the busiest pool
+// takes a booking inside nearly every lane compute (94 percent refused at a four
+// second compute, from the production roster), so the lane would almost never land
+// and the stale alarm would page. So the fence MERGES instead: the splice records its
+// window and the booking's instant in the row, and an older full compute landing
+// later keeps its own times everywhere except inside a window spliced after it began,
+// where a time stays only if both agree it is free.
+//
+// Driven against an in memory bucket_slots that evaluates the filters the writers
+// really send, interleaving by interleaving.
+//
+// Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-booked-splice-race.ts
+import { markSlotRowsInvalidated, spliceSlotRow, writeSlotRow } from "../src/lib/availability/slot-row-write.ts";
+import { shapePrecomputedRow } from "../src/lib/availability/precompute-shape.ts";
+import type { SpliceWindow } from "../src/lib/availability/slot-splice.ts";
+import { fakeBucketSlotsTable, type SlotRow } from "./lib/fake-bucket-slots-table.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
+
+const T = (hhmm: string) => `2026-10-13T${hhmm}:00.000Z`;
+const at = (hhmm: string) => Date.parse(`2026-10-12T${hhmm}:00.000Z`);
+
+// The day's offer before the booking: 14:00 to 15:00 on a 20 minute grid.
+const BEFORE = [T("14:00"), T("14:20"), T("14:40"), T("15:00"), T("15:20")];
+// The booking takes 14:40, and nobody else is free then.
+const BOOKED = T("14:40");
+const WINDOW: SpliceWindow = { fromMs: Date.parse(T("14:20")) + 1, lastStartMs: Date.parse(T("15:00")) - 1 };
+const WINDOW_ANSWER = { slots: [] as string[] }; // nothing in (14:20, 15:00) is free now
+
+const payload = (slots: string[], extra: Record<string, unknown> = {}) => ({
+  bucket: { code: "201" },
+  eventType: { duration_min: 20 },
+  orgName: "Pennie",
+  slots,
+  ...extra,
+});
+const slots = (rows: SlotRow[]) => (rows[0]!.payload as { slots: string[] }).slots;
+
+function table(computedAt = "2026-10-12T09:55:00.000Z") {
+  return fakeBucketSlotsTable([
+    { bucket_code: "201", payload: payload(BEFORE), computed_at: computedAt, invalidated_at: null },
+  ]);
+}
+
+const LANE_START_BEFORE_BOOKING = at("10:00");
+const BOOKING_COMMIT = at("10:00") + 1500;
+const SPLICE_START = at("10:00") + 1600;
+const LANE_START_AFTER_BOOKING = at("10:00") + 2000;
+
+// --- an older full compute landing AFTER the splice cannot restore the booked time ---
+{
+  const t = table();
+  eq(
+    await spliceSlotRow(t.db, "201", WINDOW, WINDOW_ANSWER, BOOKING_COMMIT, SPLICE_START),
+    "spliced",
+    "the splice lands",
+  );
+  assert(!slots(t.rows).includes(BOOKED), "and the booked time is gone");
+  eq(t.rows[0]!.computed_at, "2026-10-12T09:55:00.000Z", "without moving computed_at");
+
+  // The lane compute began BEFORE the booking, so it still thinks 14:40 is free, and
+  // it also found 16:00 newly free outside the window.
+  const laneAnswer = payload([...BEFORE, T("16:00")]);
+  eq(await writeSlotRow(t.db, "201", laneAnswer, LANE_START_BEFORE_BOOKING), "written", "the older compute still lands");
+  const s = slots(t.rows);
+  assert(!s.includes(BOOKED), "but the booked time stays gone");
+  assert(s.includes(T("16:00")), "while its own news outside the window is kept");
+  assert(s.includes(T("14:20")) && s.includes(T("15:00")), "and the window's edges, which the splice never judged, are its own");
+  eq(t.rows[0]!.computed_at, new Date(LANE_START_BEFORE_BOOKING).toISOString(), "and computed_at describes the full compute");
+
+  // A full compute that began after the booking saw it, so the fence has done its job
+  // and is cleared by the next one past it.
+  const fresh = payload([T("14:00"), T("14:20"), T("15:00"), T("15:20"), T("16:00")]);
+  eq(await writeSlotRow(t.db, "201", fresh, LANE_START_AFTER_BOOKING), "written", "a later compute lands");
+  eq(slots(t.rows), fresh.slots, "exactly as computed");
+  assert(!("splice" in (t.rows[0]!.payload as object)), "and the fence record is gone with it");
+}
+
+// --- an older full compute landing BEFORE the splice is spliced over ------------------
+{
+  const t = table();
+  eq(await writeSlotRow(t.db, "201", payload(BEFORE), LANE_START_BEFORE_BOOKING), "written", "the lane lands first");
+  await spliceSlotRow(t.db, "201", WINDOW, WINDOW_ANSWER, BOOKING_COMMIT, SPLICE_START);
+  assert(!slots(t.rows).includes(BOOKED), "and the splice after it still removes the booked time");
+}
+
+// --- a full compute landing BETWEEN the splice's read and its write --------------------
+{
+  const t = table();
+  // The lane lands with a time the splice never read (16:00), just before the splice's
+  // write. The splice's compare and swap must notice and splice into the NEW row.
+  t.beforeNextUpdate(async () => {
+    t.rows[0]!.payload = payload([...BEFORE, T("16:00")]);
+    t.rows[0]!.computed_at = new Date(LANE_START_BEFORE_BOOKING).toISOString();
+  });
+  eq(
+    await spliceSlotRow(t.db, "201", WINDOW, WINDOW_ANSWER, BOOKING_COMMIT, SPLICE_START),
+    "spliced",
+    "the splice retries past the write that landed under it",
+  );
+  assert(!slots(t.rows).includes(BOOKED), "the booked time is gone");
+  assert(slots(t.rows).includes(T("16:00")), "and the lane's news is not overwritten by the splice's stale read");
+}
+
+// --- two splices racing on one row ---------------------------------------------------
+{
+  const t = table();
+  // A second booking for 15:20 splices in the gap between the first splice's read and
+  // its write. Neither may lose the other's removal.
+  const second: SpliceWindow = { fromMs: Date.parse(T("15:00")) + 1, lastStartMs: Date.parse(T("15:40")) - 1 };
+  t.beforeNextUpdate(async () => {
+    eq(
+      await spliceSlotRow(t.db, "201", second, { slots: [] }, BOOKING_COMMIT - 500, SPLICE_START - 400),
+      "spliced",
+      "the second booking's splice lands first",
+    );
+  });
+  await spliceSlotRow(t.db, "201", WINDOW, WINDOW_ANSWER, BOOKING_COMMIT, SPLICE_START);
+  const s = slots(t.rows);
+  assert(!s.includes(BOOKED), "the first booking's time is gone");
+  assert(!s.includes(T("15:20")), "and so is the second's: neither splice undid the other");
+}
+{
+  // A splice whose compute began BEFORE another booking it overlaps cannot know about
+  // it, so it is told to compute again rather than splice a stale answer in.
+  const t = table();
+  await spliceSlotRow(t.db, "201", WINDOW, WINDOW_ANSWER, BOOKING_COMMIT, SPLICE_START);
+  eq(
+    await spliceSlotRow(t.db, "201", WINDOW, { slots: [BOOKED] }, BOOKING_COMMIT - 2000, BOOKING_COMMIT - 1000),
+    "recompute",
+    "an overlapping splice computed before the other booking committed is refused",
+  );
+  assert(!slots(t.rows).includes(BOOKED), "and the time stays gone");
+}
+
+// --- a settings save keeps its own meaning ---------------------------------------------
+{
+  const t = table();
+  await spliceSlotRow(t.db, "201", WINDOW, WINDOW_ANSWER, BOOKING_COMMIT, SPLICE_START);
+  await markSlotRowsInvalidated(t.db, LANE_START_AFTER_BOOKING);
+  eq(
+    await writeSlotRow(t.db, "201", payload(BEFORE), LANE_START_BEFORE_BOOKING),
+    "invalidated",
+    "a compute that straddles a save is still refused, fence or no fence (#3118)",
+  );
+  eq(
+    await spliceSlotRow(t.db, "201", WINDOW, WINDOW_ANSWER, BOOKING_COMMIT, SPLICE_START),
+    "recompute",
+    "and a splice computed before the save is told to compute again",
+  );
+}
+
+// --- what a lead is served never carries the fence record -------------------------------
+{
+  const t = table();
+  await spliceSlotRow(t.db, "201", WINDOW, WINDOW_ANSWER, BOOKING_COMMIT, SPLICE_START);
+  const served = shapePrecomputedRow(t.rows[0]!);
+  assert(served !== null && !("splice" in served), "the row read back as slots has no fence record on it");
+}
+
+// --- failures ----------------------------------------------------------------------
+{
+  const t = table();
+  eq(
+    await spliceSlotRow(t.db, "999", WINDOW, WINDOW_ANSWER, BOOKING_COMMIT, SPLICE_START),
+    "no-row",
+    "a code with no row is not created by a splice",
+  );
+  eq(t.rows.length, 1, "nothing was inserted");
+}
+{
+  // A read error leaves the row as it was, and the lane still lands over it.
+  const t = table();
+  const snapshot = JSON.stringify(t.rows);
+  const broken = {
+    from: (name: string) => {
+      const real = (t.db as unknown as { from(n: string): Record<string, unknown> }).from(name);
+      return {
+        ...real,
+        select: () => {
+          const b: Record<string, unknown> = {
+            eq: () => b,
+            maybeSingle: async () => ({ data: null, error: { message: "connection reset" } }),
+          };
+          return b;
+        },
+      };
+    },
+  };
+  eq(
+    await spliceSlotRow(broken as never, "201", WINDOW, WINDOW_ANSWER, BOOKING_COMMIT, SPLICE_START),
+    "failed",
+    "a splice that cannot read the row fails",
+  );
+  eq(JSON.stringify(t.rows), snapshot, "and leaves it exactly as it was");
+  const fresh = payload([T("14:00"), T("14:20"), T("15:00"), T("15:20")]);
+  eq(await writeSlotRow(t.db, "201", fresh, LANE_START_AFTER_BOOKING), "written", "the lane's next compute covers it");
+  assert(!slots(t.rows).includes(BOOKED), "and the booked time is gone that way instead");
+}
+{
+  // A row that keeps changing under the splice is given up on, not spun on forever.
+  const t = table();
+  let n = 0;
+  const churn = async () => {
+    n++;
+    t.rows[0]!.computed_at = new Date(at("09:00") + n).toISOString();
+    t.beforeNextUpdate(churn);
+  };
+  t.beforeNextUpdate(churn);
+  const snapshot = slots(t.rows);
+  eq(
+    await spliceSlotRow(t.db, "201", WINDOW, WINDOW_ANSWER, BOOKING_COMMIT, SPLICE_START),
+    "failed",
+    "a splice that loses every compare and swap fails",
+  );
+  assert(n <= 3, `after a bounded number of attempts (${n})`);
+  eq(slots(t.rows), snapshot, "leaving the slots as they were");
+}
+
+finish();

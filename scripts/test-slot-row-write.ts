@@ -17,7 +17,8 @@
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs \
 //        scripts/test-slot-row-write.ts
-import { markSlotRowsInvalidated, writeSlotRow } from "../src/lib/availability/slot-row-write.ts";
+import { FENCE_PATH, markSlotRowsInvalidated, writeSlotRow } from "../src/lib/availability/slot-row-write.ts";
+import { fakeBucketSlotsTable, type SlotRow } from "./lib/fake-bucket-slots-table.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 interface Recorded {
@@ -109,11 +110,20 @@ const PAYLOAD = { slots: [{ start: "2026-09-02T13:00:00.000Z" }] };
     upd.lt.some(([c, v]) => c === "computed_at" && v === STAMP),
     "and gated on the stored row being OLDER than this compute",
   );
-  // #3118: and on no save having invalidated the row since this compute began.
+  // #3118: and on no save having invalidated the row since this compute began, and
+  // #3324: no booking having been spliced into it since then. One expression, every
+  // combination of the two spelled out.
   eq(
     upd.or,
-    [`invalidated_at.is.null,invalidated_at.lt.${STAMP}`],
-    "and gated on the row not having been invalidated at or after this compute began",
+    [
+      [
+        `and(invalidated_at.is.null,${FENCE_PATH}.is.null)`,
+        `and(invalidated_at.is.null,${FENCE_PATH}.lt.${STAMP})`,
+        `and(invalidated_at.lt.${STAMP},${FENCE_PATH}.is.null)`,
+        `and(invalidated_at.lt.${STAMP},${FENCE_PATH}.lt.${STAMP})`,
+      ].join(","),
+    ],
+    "and gated on the row not having been invalidated or spliced at or after this compute began",
   );
 }
 
@@ -197,78 +207,10 @@ const PAYLOAD = { slots: [{ start: "2026-09-02T13:00:00.000Z" }] };
 // before that instant is refused. This drives the real interleaving against a
 // table that applies the filters it is given: compute start, save, then write.
 
-interface SlotRow {
-  bucket_code: string;
-  payload: unknown;
-  computed_at: string;
-  invalidated_at: string | null;
-}
-
-/** An in-memory `bucket_slots` that evaluates the filter shapes the writers send. */
+/** The shared in-memory table (#3324), which evaluates the filters it is given. */
 function tableDb(rows: SlotRow[]) {
-  const matches = (row: SlotRow, filters: ((r: SlotRow) => boolean)[]) => filters.every((f) => f(row));
-  const cell = (r: SlotRow, col: string) => (r as unknown as Record<string, string | null>)[col];
-  const orFilter = (expr: string) => (r: SlotRow) =>
-    expr.split(",").some((part) => {
-      const [col, op, ...rest] = part.split(".");
-      const val = rest.join(".");
-      const v = cell(r, col);
-      if (op === "is" && val === "null") return v === null;
-      if (op === "lt") return v !== null && Date.parse(v) < Date.parse(val);
-      throw new Error(`fake cannot read or() part ${part}`);
-    });
-  const db = {
-    from(_t: string) {
-      return {
-        update(values: Partial<SlotRow>) {
-          const filters: ((r: SlotRow) => boolean)[] = [];
-          const b: Record<string, unknown> = {
-            eq(col: string, val: string) {
-              filters.push((r) => cell(r, col) === val);
-              return b;
-            },
-            lt(col: string, val: string) {
-              filters.push((r) => Date.parse(String(cell(r, col))) < Date.parse(val));
-              return b;
-            },
-            gte(col: string, val: string) {
-              filters.push((r) => Date.parse(String(cell(r, col))) >= Date.parse(val));
-              return b;
-            },
-            or(expr: string) {
-              filters.push(orFilter(expr));
-              return b;
-            },
-            select: async () => {
-              const hit = rows.filter((r) => matches(r, filters));
-              for (const r of hit) Object.assign(r, values);
-              return { data: hit.map((r) => ({ bucket_code: r.bucket_code })), error: null };
-            },
-          };
-          return b;
-        },
-        insert: async (values: SlotRow) => {
-          if (rows.some((r) => r.bucket_code === values.bucket_code)) {
-            return { data: null, error: { code: "23505", message: "duplicate key" } };
-          }
-          rows.push({ ...values, invalidated_at: null });
-          return { data: null, error: null };
-        },
-        select(_cols: string) {
-          const filters: ((r: SlotRow) => boolean)[] = [];
-          const b: Record<string, unknown> = {
-            eq(col: string, val: string) {
-              filters.push((r) => cell(r, col) === val);
-              return b;
-            },
-            maybeSingle: async () => ({ data: rows.find((r) => matches(r, filters)) ?? null, error: null }),
-          };
-          return b;
-        },
-      };
-    },
-  };
-  return { db: db as never, rows };
+  const t = fakeBucketSlotsTable(rows);
+  return { db: t.db, rows: t.rows };
 }
 
 {

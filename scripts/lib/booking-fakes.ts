@@ -428,6 +428,9 @@ export function makeDeps(opts: FakeOpts) {
     releaseReschedule: 0,
     releaseRescheduleIfTarget: 0,
     invalidateSlots: [] as string[],
+    // #3324: the booked advisor and window a create hands the splice, one per call
+    // (undefined for a refresh that carries none: cancel, reschedule, reassign).
+    invalidateSlotsBooked: [] as ({ userId: string; startsAt: string; endsAt: string } | undefined)[],
     // #504: every routing decision the orchestration recorded, so a suite can
     // assert the outcome + payload directly instead of via a log line.
     recordRoutingDecision: [] as RecordRoutingDecisionInput[],
@@ -1137,8 +1140,9 @@ export function makeDeps(opts: FakeOpts) {
     newManageToken: () => "tok-fixed",
     newIdempotencyKey: () => "anon-fixed", // synthetic key for keyless bookings (#666)
     appBaseUrl: () => "https://slate.test",
-    invalidateSlots: async (bucketCode) => {
+    invalidateSlots: async (bucketCode, booked) => {
       calls.invalidateSlots.push(bucketCode);
+      calls.invalidateSlotsBooked.push(booked);
     },
     recordRoutingDecision: async (input) => {
       calls.recordRoutingDecision.push(input);

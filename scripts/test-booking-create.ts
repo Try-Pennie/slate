@@ -86,6 +86,13 @@ async function run() {
       calls.invalidateSlots.length === 1 && calls.invalidateSlots[0] === "411",
       "create: invalidates cached slots for the booked bucket exactly once",
     );
+    // #3324: and hands over the booked advisor and window, so the splice can take
+    // the time out of every pool that advisor serves, not just the booked code's.
+    assert(
+      JSON.stringify(calls.invalidateSlotsBooked[0]) ===
+        JSON.stringify({ userId: "a", startsAt: "2026-06-08T13:00:00.000Z", endsAt: "2026-06-08T13:30:00.000Z" }),
+      "create: the refresh carries the booked advisor and window (#3324)",
+    );
     // #504: the routing decision log is now injected through deps, so a test can
     // assert it directly instead of inferring it from a swallowed-error log line.
     assert(
