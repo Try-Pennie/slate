@@ -997,10 +997,10 @@ export interface BookingContext {
   agentWorkingHours?: { timezone: string; rules: WorkingRule[] };
 }
 
-/** Every side effect the orchestration needs. `service.ts` wires the real ones. */
 /** A booked call as the slot refresh needs it: who holds it, and when (#3324). */
 export type BookedWindow = { userId: string; startsAt: string; endsAt: string };
 
+/** Every side effect the orchestration needs. `service.ts` wires the real ones. */
 export interface BookingDeps {
   // availability / routing
   resolveBucketByCode(code: string): Promise<{ bucket: Bucket; eventType: EventType } | null>;
