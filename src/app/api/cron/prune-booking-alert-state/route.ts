@@ -46,8 +46,8 @@ export async function GET(req: NextRequest) {
     const db = supabaseAdmin();
     const keysLike = async (prefix: string) =>
       (
-        await selectAllPages<{ key: string }>(`alert_state keys ${prefix}`, (from, to) =>
-          db.from("alert_state").select("key").like("key", likePrefix(prefix)).order("key").range(from, to),
+        await selectAllPages<{ key: string }>(`alert_state keys ${prefix}`, "key", () =>
+          db.from("alert_state").select("key").like("key", likePrefix(prefix)),
         )
       ).map((r) => r.key);
 

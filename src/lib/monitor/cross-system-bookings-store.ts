@@ -1,5 +1,5 @@
 import type { supabaseAdmin } from "@/lib/supabase/admin";
-import { selectAllPages } from "@/lib/supabase/paginate";
+import { selectAllPages, type PageableQuery } from "@/lib/supabase/paginate";
 import { unwrap } from "@/lib/db/result";
 import { ACTIVE_BOOKING_STATUSES } from "@/lib/booking/bulk-reassign-store";
 import type { SlateUpcomingBooking } from "@/lib/monitor/cross-system-bookings";
@@ -24,7 +24,7 @@ export async function loadSlateUpcomingBookings(
     "monitor cross system real buckets",
   ) ?? []) as { id: string }[];
   if (buckets.length === 0) throw new Error("monitor cross system: no real buckets read, so no booking can be judged");
-  return selectAllPages<SlateUpcomingBooking>("monitor cross system bookings", (from, to) =>
+  return selectAllPages<SlateUpcomingBooking>("monitor cross system bookings", "id", () =>
     db
       // agent-link-ok: a lead on two calls is the defect whichever kind each is;
       // a call booked through an advisor's own link is still one the lead attends.
@@ -34,11 +34,6 @@ export async function loadSlateUpcomingBookings(
       // design target, about 2,300 bytes of uuids against the 10,000 budget.
       .in("bucket_id", buckets.map((b) => b.id))
       .in("status", ACTIVE_BOOKING_STATUSES)
-      .gte("starts_at", nowIso)
-      .order("id")
-      .range(from, to) as unknown as PromiseLike<{
-      data: unknown[] | null;
-      error?: { message: string } | null;
-    }>,
+      .gte("starts_at", nowIso) as unknown as PageableQuery,
   );
 }

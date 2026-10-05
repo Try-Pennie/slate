@@ -117,6 +117,7 @@ function pagingDb(
         bounds.push({ op: "lt", col, value });
         return b;
       },
+      order: () => b,
       range: (f: number, t: number) => {
         range = [f, t];
         return b;
@@ -177,6 +178,7 @@ function syncFlowDb(opts: {
       lt: () => b,
       gt: () => b,
       limit: () => b,
+      order: () => b,
       range: () => b,
       insert: (rows: unknown) => {
         inserts.push({ table, rows });
@@ -1372,6 +1374,7 @@ describe("hydrateCalendar write ordering (#1261)", () => {
         in: () => b,
         not: () => b,
         limit: () => b,
+        order: () => b,
         range: () => b,
         // The agent's mailbox, so hydrateCalendar gets past its no-mailbox guard. A fake
         // that answered null would make every success-path assertion below pass for the

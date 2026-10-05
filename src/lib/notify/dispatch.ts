@@ -418,8 +418,8 @@ export async function firingFamilyMembers(family: string): Promise<string[]> {
   // 1,000 markers and stop: every member past them would never be cleared and the
   // family would read as smaller than it is. Ordered by key so the pages are
   // stable. selectAllPages throws on a failed page, which keeps the contract below.
-  const rows = await selectAllPages<{ key: string }>(`alert_state family ${family}`, (from, to) =>
-    supabaseAdmin().from("alert_state").select("key").like("key", pattern).order("key").range(from, to),
+  const rows = await selectAllPages<{ key: string }>(`alert_state family ${family}`, "key", () =>
+    supabaseAdmin().from("alert_state").select("key").like("key", pattern),
   );
   return rows
     .map((r) => r.key)

@@ -198,6 +198,16 @@ const FIXTURES: Fixture[] = [
     flagged: false,
     src: `let q = db.from("ooo_requests").select("*");\nif (org) q = q.eq("org_id", org);\nconst { data } = await q.limit(500);\nreturn (data ?? []).length;`,
   },
+  {
+    name: "paged through selectAllPages, which orders and cuts the pages itself (#3273)",
+    flagged: false,
+    src: `const rows = await selectAllPages<Row>("busy", "id", () =>\n  db.from("busy_blocks").select("user_id") // a ) in a comment\n    .in("user_id", ids),\n);\nreturn rows.length;`,
+  },
+  {
+    name: "the same chain outside selectAllPages",
+    flagged: true,
+    src: `const rows = await readOnePage<Row>("busy", "id", () =>\n  db.from("busy_blocks").select("user_id")\n    .in("user_id", ids),\n);\nreturn rows.length;`,
+  },
 ];
 
 for (const f of FIXTURES) {
@@ -205,20 +215,23 @@ for (const f of FIXTURES) {
   assert(found === f.flagged, `${f.flagged ? "flags" : "allows"}: ${f.name}`);
 }
 
-// --- real-file mutation control: a paginated read stripped of .range is caught -
-// availability/service.ts pages busy_blocks + bookings via selectAllPages() with
-// .range(); removing the .range() turns them into capped single-page reads and
-// the guard MUST notice. Proves it verifies something against the real code.
+// --- real-file mutation control: a paged read taken out of selectAllPages is caught
+// availability/service.ts pages busy_blocks via selectAllPages(), which since #3273
+// orders the query by a unique key and cuts each page itself, so the chain carries
+// no .range() of its own. Calling anything else in its place turns it into a capped
+// single-page read and the guard MUST notice. Proves it verifies something against
+// the real code.
 const availPath = join(ROOT, "src", "lib", "availability", "service.ts");
 const availSrc = readFileSync(availPath, "utf8");
 assert(
   scanSrcCappedReads(availSrc, availPath).length === 0,
   "the real availability/service.ts is clean",
 );
-const mutated = availSrc.replace(/\n\s*\.range\(pageFrom, pageTo\)/g, "");
+const mutated = availSrc.replace(/\bselectAllPages\b/g, "readOnePage");
+assert(mutated !== availSrc, "positive control setup: availability/service.ts calls selectAllPages");
 assert(
   scanSrcCappedReads(mutated, availPath).length > 0,
-  "positive control: stripping .range() from the paginated reads is caught",
+  "positive control: a paged read taken out of selectAllPages is caught",
 );
 
 // --- repo invariant: all of src/ is clean -------------------------------------

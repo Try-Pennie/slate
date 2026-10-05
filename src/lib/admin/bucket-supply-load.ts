@@ -199,7 +199,8 @@ export async function loadBookedTimes(
   // no shares at all.
   const rows = await selectAllPages<{ starts_at: string; buckets: { code: string } | null }>(
     "bucket supply booked times",
-    (from, to) => {
+    "id",
+    () => {
       const q = db
         .from("bookings")
         .select("starts_at, buckets!inner(code)")
@@ -214,8 +215,7 @@ export async function loadBookedTimes(
         // slot is genuinely taken.
         .neq("status", "cancelled")
         .gte("starts_at", start.toISO() ?? "")
-        .lt("starts_at", end.toISO() ?? "")
-        .range(from, to);
+        .lt("starts_at", end.toISO() ?? "");
     },
   );
 

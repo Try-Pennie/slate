@@ -1,5 +1,5 @@
 import type { supabaseAdmin } from "@/lib/supabase/admin";
-import { selectAllPages } from "@/lib/supabase/paginate";
+import { selectAllPages, type PageableQuery } from "@/lib/supabase/paginate";
 import { inIdChunks } from "@/lib/db/id-batch";
 import { ACTIVE_BOOKING_STATUSES } from "@/lib/booking/bulk-reassign-store";
 
@@ -39,7 +39,7 @@ export async function loadOooCoverageBookings(
   nowIso: string,
 ): Promise<OooCoverageBooking[]> {
   if (userIds.length === 0) return [];
-  return selectAllPages<OooCoverageBooking>("monitor ooo coverage bookings", (from, to) =>
+  return selectAllPages<OooCoverageBooking>("monitor ooo coverage bookings", "id", () =>
     db
       // agent-link-ok: a call booked through an agent's own link is still a call
       // somebody has to take during their absence, so it needs covering like any
@@ -52,11 +52,7 @@ export async function loadOooCoverageBookings(
       // `ends_at`, NOT `starts_at`. The straddler begins before the absence and runs
       // into it, so flooring on the start is the exact miss this check exists to
       // catch, and a prefilter that repeats it would hide it again (#1237).
-      .gte("ends_at", nowIso)
-      .range(from, to) as unknown as PromiseLike<{
-      data: unknown[] | null;
-      error?: { message: string } | null;
-    }>,
+      .gte("ends_at", nowIso) as unknown as PageableQuery,
   );
 }
 
@@ -90,12 +86,11 @@ export async function loadSnapshottedBookingIds(
 ): Promise<Set<string>> {
   if (bookingIds.length === 0) return new Set();
   const pages = await inIdChunks("monitor ooo coverage snapshotted", bookingIds, (batch) =>
-    selectAllPages<{ booking_id: string }>("monitor ooo coverage snapshotted", (from, to) =>
+    selectAllPages<{ booking_id: string }>("monitor ooo coverage snapshotted", "id", () =>
       db
         .from("bulk_reassign_items")
         .select("booking_id")
-        .in("booking_id", batch)
-        .range(from, to),
+        .in("booking_id", batch),
     ),
   );
   return new Set(pages.flat().map((r) => r.booking_id));

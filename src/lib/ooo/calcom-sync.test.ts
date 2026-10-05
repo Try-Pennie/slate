@@ -55,6 +55,7 @@ vi.mock("@/lib/supabase/admin", () => ({
           state.filters.push([`gt:${col}`, val]);
           return chain;
         },
+        order: () => chain,
         range: (from: number, to: number) => {
           range(from, to);
           return Promise.resolve(

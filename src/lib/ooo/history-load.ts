@@ -14,7 +14,7 @@ export async function loadOrgOooHistory(
   db: ReturnType<typeof supabaseAdmin>,
   orgId: string,
 ): Promise<OooRequest[]> {
-  return selectAllPages<OooRequest>("ooo_requests history", (from, to) =>
-    db.from("ooo_requests").select("*").eq("org_id", orgId).range(from, to),
+  return selectAllPages<OooRequest>("ooo_requests history", "id", () =>
+    db.from("ooo_requests").select("*").eq("org_id", orgId),
   );
 }

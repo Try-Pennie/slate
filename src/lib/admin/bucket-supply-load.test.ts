@@ -106,6 +106,7 @@ vi.mock("@/lib/supabase/admin", () => ({
             db.bookingQuery.filters.push(["lt", col, String(val)]);
             return q;
           },
+          order: () => q,
           range: async () => {
             if (db.bookingError) return { data: null, error: db.bookingError };
             const page = served ? [] : db.bookingRows;

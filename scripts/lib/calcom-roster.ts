@@ -220,13 +220,13 @@ export async function loadBookableRoster(
     ? []
     : await selectAllPages<{ schedule_id: string; weekday: number; start_minute: number; end_minute: number }>(
         "rules",
-        (from, to) =>
+        "id",
+        () =>
           db
             .from("availability_rules")
             .select("schedule_id, weekday, start_minute, end_minute")
             .in("schedule_id", scheduleIds)
-            .order("id")
-            .range(from, to),
+            .order("id"),
       );
 
   const schedByUser = new Map(scheds.map((s) => [s.user_id, s]));

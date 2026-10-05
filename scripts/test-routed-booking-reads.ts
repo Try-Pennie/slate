@@ -40,7 +40,7 @@ function walk(dir: string): string[] {
   eq(scanRoutedBookingReads("f.ts", unfiltered).length, 1, "an unfiltered read of bookings is flagged");
   const filtered = unfiltered.replace(`.gte(`, `.eq("kind", "routed")\n  .gte(`);
   eq(scanRoutedBookingReads("f.ts", filtered).length, 0, "the routed filter in the same statement is accepted");
-  const paged = `const rows = await selectAllPages("x", (from, to) =>\n  db\n    .from("bookings")\n    .select("starts_at")\n    .eq("kind", "routed")\n    .range(from, to),\n);`;
+  const paged = `const rows = await selectAllPages("x", "id", () =>\n  db\n    .from("bookings")\n    .select("starts_at")\n    .eq("kind", "routed"),\n);`;
   eq(scanRoutedBookingReads("f.ts", paged).length, 0, "a paged callback's chain is read whole");
   const hatched = `// agent-link-ok: a coverage sweep, every real call needs a person\nconst rows = await db.from("bookings").select("id").in("id", ids);`;
   eq(scanRoutedBookingReads("f.ts", hatched).length, 0, "a reasoned hatch is accepted");

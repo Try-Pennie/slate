@@ -71,14 +71,12 @@ export async function loadPutBackBacklog(db: Db, nowMs: number): Promise<number 
       starts_at: string;
       ends_at: string;
       side_effects: Record<string, string> | null;
-    }>("calcom.putBackBacklog", (from, to) =>
+    }>("calcom.putBackBacklog", "id", () =>
       db
         .from("ooo_requests")
         .select("id, user_id, starts_at, ends_at, side_effects")
         .eq("status", "approved")
-        .gt("ends_at", new Date(nowMs).toISOString())
-        .order("id")
-        .range(from, to),
+        .gt("ends_at", new Date(nowMs).toISOString()),
     );
     const waiting: PutBackRow[] = rows
       .map((r) => ({
@@ -121,14 +119,12 @@ export async function loadPutBackBacklog(db: Db, nowMs: number): Promise<number 
  */
 export async function loadStaleBlockCount(db: Db, nowMs: number): Promise<number | null> {
   try {
-    const rows = await selectAllPages<{ id: string }>("calcom.staleBlockCount", (from, to) =>
+    const rows = await selectAllPages<{ id: string }>("calcom.staleBlockCount", "id", () =>
       db
         .from("calcom_override_removals")
         .select("id")
         .is("resolved_at", null)
-        .gt("ends_at", new Date(nowMs).toISOString())
-        .order("id")
-        .range(from, to),
+        .gt("ends_at", new Date(nowMs).toISOString()),
     );
     return rows.length;
   } catch (err) {

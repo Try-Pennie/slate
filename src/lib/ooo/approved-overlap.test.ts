@@ -45,6 +45,7 @@ const admin = vi.hoisted(() => ({
         },
         // Deliberately NO lte/gte: the read is half open on both sides, and a fake
         // that answers the inclusive spellings would let that change go unnoticed.
+        order: () => builder,
         range: (from: number, to: number) =>
           Promise.resolve(
             state.failWith

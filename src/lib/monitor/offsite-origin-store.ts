@@ -1,5 +1,5 @@
 import type { supabaseAdmin } from "@/lib/supabase/admin";
-import { selectAllPages } from "@/lib/supabase/paginate";
+import { selectAllPages, type PageableQuery } from "@/lib/supabase/paginate";
 import { ACTIVE_BOOKING_STATUSES } from "@/lib/booking/bulk-reassign-store";
 import type { RecentBooking } from "@/lib/monitor/offsite-origin";
 
@@ -18,7 +18,7 @@ export async function loadRecentBookingsInBuckets(
   sinceIso: string,
 ): Promise<RecentBooking[]> {
   if (bucketIds.length === 0) return [];
-  return selectAllPages<RecentBooking>("monitor offsite origin bookings", (from, to) =>
+  return selectAllPages<RecentBooking>("monitor offsite origin bookings", "id", () =>
     db
       .from("bookings")
       .select("id, bucket_id, starts_at, agent_name, agent_email, prefill, referrer_origin")
@@ -29,11 +29,6 @@ export async function loadRecentBookingsInBuckets(
       // #2073: the check is about which HOST PAGES route leads into the buckets,
       // and an agent's own link is Slate's own page and routes nothing.
       .eq("kind", "routed")
-      .gte("created_at", sinceIso)
-      .order("id")
-      .range(from, to) as unknown as PromiseLike<{
-      data: unknown[] | null;
-      error?: { message: string } | null;
-    }>,
+      .gte("created_at", sinceIso) as unknown as PageableQuery,
   );
 }

@@ -45,8 +45,8 @@ export async function ensureDefaultSchedules(orgId: string): Promise<number> {
     // target is ~1,400 rows and a single page would silently stop at 1,000,
     // which here reads as "these agents have no working hours" and would refill
     // a week somebody had personalized.
-    selectAllPages<{ schedule_id: string }>("ensureDefaultSchedules rules", (from, to) =>
-      db.from("availability_rules").select("schedule_id").range(from, to),
+    selectAllPages<{ schedule_id: string }>("ensureDefaultSchedules rules", "id", () =>
+      db.from("availability_rules").select("schedule_id"),
     ),
   ]);
   const users = unwrap(usersRes, "ensureDefaultSchedules users");

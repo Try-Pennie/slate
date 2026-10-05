@@ -50,13 +50,12 @@ const defaultDeps: BookingHistoryDeps = {
     return row?.org_id ?? null;
   },
   async events(bookingId) {
-    return selectAllPages<BookingEvent>("booking_events history", (from, to) =>
+    return selectAllPages<BookingEvent>("booking_events history", "id", () =>
       supabaseAdmin()
         .from("booking_events")
         .select("*")
         .eq("booking_id", bookingId)
-        .order("created_at", { ascending: true })
-        .range(from, to),
+        .order("created_at", { ascending: true }),
     );
   },
   async users(ids) {

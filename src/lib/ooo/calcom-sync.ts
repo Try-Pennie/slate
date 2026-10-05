@@ -68,7 +68,8 @@ export async function loadOtherApprovedWindows(args: {
   try {
     const rows = await selectAllPages<{ starts_at: string; ends_at: string }>(
       "ooo.otherApprovedWindows",
-      (pageFrom, pageTo) =>
+      "id",
+      () =>
         supabaseAdmin()
           .from("ooo_requests")
           .select("starts_at, ends_at")
@@ -76,8 +77,7 @@ export async function loadOtherApprovedWindows(args: {
           .eq("status", "approved")
           .neq("id", args.requestId)
           .lt("starts_at", to)
-          .gt("ends_at", from)
-          .range(pageFrom, pageTo),
+          .gt("ends_at", from),
     );
     return rows.map((r) => ({ startIso: r.starts_at, endIso: r.ends_at }));
   } catch (err) {

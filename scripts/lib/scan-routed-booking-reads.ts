@@ -18,8 +18,8 @@
 //
 // The statement is taken from `.from("bookings")` to the first `;` after it,
 // which holds the whole chain for every shape on these surfaces, including the
-// `selectAllPages` callback whose chain ends in `.range(from, to),` and closes
-// with `);`. What it cannot see, said here so a green run is not read as more:
+// `selectAllPages` builder, which since #3273 hands its chain over without a
+// `.range()` and closes with `);`. What it cannot see, said here so a green run is not read as more:
 // a builder bound to a name and filtered on a LATER statement, and a read reached
 // through a helper outside the scanned directories.
 import { hasOptOutAtOffset } from "./opt-out.ts";

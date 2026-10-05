@@ -11,7 +11,7 @@
  */
 
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { selectAllPages } from "@/lib/supabase/paginate";
+import { selectAllPages, type PageableQuery } from "@/lib/supabase/paginate";
 import { inIdChunks } from "@/lib/db/id-batch";
 import { bookingTestFlags } from "@/lib/booking/test-flag";
 
@@ -30,22 +30,18 @@ export interface ErasureAuditRow {
 
 /**
  * Every `pii.erasure` audit row. Paginated because `audit_log` is a growth table
- * (the `.range` in the page callback bounds each read), and it THROWS on a read
+ * (`selectAllPages` orders it by id and bounds each page), and it THROWS on a read
  * error rather than returning a short list: an empty trail read as "nothing has
  * been erased" would make the residual audit report clean and the purge do
  * nothing, both of which look identical to a healthy system.
  */
 export async function readErasureAuditRows(): Promise<ErasureAuditRow[]> {
   const db = supabaseAdmin();
-  return selectAllPages<ErasureAuditRow>("erasure-audit ids", (from, to) =>
+  return selectAllPages<ErasureAuditRow>("erasure-audit ids", "id", () =>
     db
       .from("audit_log")
       .select("id, org_id, created_at, details")
-      .eq("action", "pii.erasure")
-      .range(from, to) as unknown as PromiseLike<{
-      data: unknown[] | null;
-      error?: { message: string } | null;
-    }>,
+      .eq("action", "pii.erasure") as unknown as PageableQuery,
   );
 }
 

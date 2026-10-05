@@ -124,13 +124,11 @@ export async function loadTeamHours(
     // and a truncated read here draws the last agents as having no hours.
     const rules = (
       await inIdChunks("team hours rules", scheduleIds, (chunk) =>
-        selectAllPages<RuleRow>("team hours rules", (from, to) =>
+        selectAllPages<RuleRow>("team hours rules", "id", () =>
           db
             .from("availability_rules")
             .select("schedule_id, weekday, start_minute, end_minute")
-            .in("schedule_id", chunk)
-            .order("id")
-            .range(from, to),
+            .in("schedule_id", chunk),
         ),
       )
     ).flat();
