@@ -30,11 +30,13 @@ const state = vi.hoisted(() => ({
   worklistSelects: [] as string[],
   bookingsReadError: null as { message: string } | null,
   claimed: [] as string[],
+  /** Every conditional update on bookings: what it set and every equality it carried. */
+  updates: [] as { set: Row; eqs: [string, unknown][] }[],
   /** The stored reminder rate window, or null for a first run. */
   rateRow: null as Row | null,
   rateReadError: null as { message: string } | null,
   upserts: [] as Row[],
-  sendFailures: [] as (string | null)[],
+  sendFailures: [] as (string | Error | null)[],
   sent: [] as { to: string[]; subject: string; body?: string; attachments?: { content: string }[] }[],
 }));
 
@@ -52,6 +54,8 @@ const admin = vi.hoisted(() => {
   function make(table: string) {
     let mode: "select" | "update" | "upsert" = "select";
     let updateId = "";
+    let updateSet: Row = {};
+    const updateEqs: [string, unknown][] = [];
     const b: Record<string, unknown> = {};
     const self = () => b as never;
     Object.assign(b, {
@@ -64,14 +68,19 @@ const admin = vi.hoisted(() => {
       gt: () => self(),
       lte: () => self(),
       order: () => self(),
-      is: () => self(),
+      is: (col: string, value: unknown) => {
+        if (mode === "update") updateEqs.push([col, value]);
+        return self();
+      },
       eq: (col: string, value: unknown) => {
         if (mode === "update" && col === "id") updateId = String(value);
+        if (mode === "update") updateEqs.push([col, value]);
         if (mode === "select" && table === "bookings") state.worklistFilters.push([col, value]);
         return self();
       },
-      update: () => {
+      update: (set: Row) => {
         mode = "update";
+        updateSet = set;
         return self();
       },
       upsert: async (row: Row) => {
@@ -88,7 +97,8 @@ const admin = vi.hoisted(() => {
           if (state.rateReadError) return { data: null, error: state.rateReadError };
           return { data: state.rateRow, error: null };
         }
-        // The claim: a conditional update returning the row it wrote.
+        // The claim, or a release: a conditional update returning the row it wrote.
+        state.updates.push({ set: updateSet, eqs: [...updateEqs] });
         state.claimed.push(updateId);
         return { data: { id: updateId }, error: null };
       },
@@ -115,6 +125,10 @@ vi.mock("@/lib/notify/dispatch", () => dispatch);
 vi.mock("@/lib/notify/email", () => email);
 vi.mock("@/lib/supabase/admin", () => admin);
 vi.mock("@/lib/env", () => ({ appUrl: () => "https://slate.example" }));
+// Spied rather than silenced, so the failed send's log line can be asserted: it is
+// where every page points its reader ("Diagnose via the booking-reminder log lines").
+const logSpy = vi.hoisted(() => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
+vi.mock("@/lib/log", () => logSpy);
 
 // #1334: the calling number read and the invite write, the two new outside calls.
 const callingNumber = vi.hoisted(() => ({
@@ -136,6 +150,7 @@ vi.mock("@/lib/google/calendar", () => calendar);
 import { GET } from "./route";
 import { REMINDER_FAILURE_RATE_KEY } from "@/lib/booking/reminder-rate";
 import { PAGE_SIZE } from "@/lib/supabase/paginate";
+import { EmailSendError } from "@/lib/notify/email-errors";
 
 const HOUR = 60 * 60_000;
 
@@ -172,6 +187,7 @@ beforeEach(() => {
   state.worklistSelects = [];
   state.bookingsReadError = null;
   state.claimed = [];
+  state.updates = [];
   state.rateRow = null;
   state.rateReadError = null;
   state.upserts = [];
@@ -180,7 +196,7 @@ beforeEach(() => {
   email.sendGmailEmail.mockImplementation(async (msg: { to: string[]; subject: string }) => {
     state.sent.push(msg);
     const failure = state.sendFailures.shift();
-    if (failure) throw new Error(failure);
+    if (failure) throw typeof failure === "string" ? new Error(failure) : failure;
     return "gmail-id";
   });
 });
@@ -251,8 +267,70 @@ describe("GET /api/cron/booking-reminders", () => {
     const res = await GET(req());
     expect(res.status).toBe(200);
     const keys = dispatch.sendThrottledAlert.mock.calls.map((c) => c[0]);
-    expect(keys).toContain("booking_reminder_failed");
+    // Keyed per booking, so this page cannot hold back another booking's for the
+    // six hour cooldown (2026-10-05).
+    expect(keys).toContain("booking_reminder_failed:bk-1");
     expect(keys).not.toContain(REMINDER_FAILURE_RATE_KEY);
+  });
+
+  // Plan item E: the page says to diagnose via the log, so the log line has to carry
+  // the booking, the code, the outcome and the claim, and the Error itself as the
+  // THIRD argument so Cloudflare serializes its cause and stack. No contact data.
+  it("logs a failed send with its booking, code, outcome and claim, and the Error passed through", async () => {
+    state.pages = [[due(1)]];
+    const refused = new EmailSendError("Gmail send failed: 400 Invalid To header", {
+      outcome: "refused",
+      stage: "post",
+      status: 400,
+      transient: false,
+    });
+    state.sendFailures = [refused];
+    await GET(req());
+    const call = logSpy.log.warn.mock.calls.find(
+      (c) => c[0] === "booking-reminder" && (c[1] as Record<string, unknown>)?.booking_id === "bk-1",
+    );
+    expect(call).toBeDefined();
+    expect(call![1]).toMatchObject({
+      booking_id: "bk-1",
+      code: "recipient_refused",
+      outcome: "refused",
+      disposition: "refused",
+      claim_released: false,
+    });
+    expect(call![2]).toBe(refused);
+    expect(JSON.stringify(call![1])).not.toContain("lead-1@example.com");
+  });
+
+  // 2026-10-05: a token mint that timed out delivered nothing, because the mint runs
+  // before the Gmail POST, yet the claim was kept and the lead was never reminded.
+  // The typed outcome now hands the claim back, conditionally, and pages nobody.
+  it("releases the claim and pages nobody when the send provably never reached Gmail", async () => {
+    state.pages = [[due(1)]];
+    state.sendFailures = [
+      new EmailSendError("google token mint did not answer within 8000ms", {
+        outcome: "never_sent",
+        stage: "token",
+        transient: true,
+      }),
+    ];
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    const startsAt = String(due(1).starts_at).slice(0, 13);
+    expect(state.updates).toHaveLength(2);
+    const [claim, release] = state.updates;
+    expect(String(claim!.set.reminder_sent_for).slice(0, 13)).toBe(startsAt);
+    // Back to what the tick read (null: never reminded), only where the row still
+    // holds the claim this tick wrote.
+    expect(release!.set).toEqual({ reminder_sent_for: null });
+    expect(release!.eqs).toContainEqual(["id", "bk-1"]);
+    expect(release!.eqs.find(([col]) => col === "reminder_sent_for")?.[1]).toBe(claim!.set.reminder_sent_for);
+    const keys = dispatch.sendThrottledAlert.mock.calls.map((c) => String(c[0]));
+    expect(keys.filter((k) => k.startsWith("booking_reminder_failed"))).toEqual([]);
+    await expect(res.json()).resolves.toMatchObject({ failed: 1, retrying: 1 });
+    // The share's sample carries the booking, so a retried booking counts once.
+    const saved = state.upserts.find((u) => u.key === "booking_reminders");
+    const samples = (saved?.samples ?? []) as { retried?: Record<string, string> }[];
+    expect(samples.at(-1)?.retried).toEqual({ "bk-1": "token_unavailable" });
   });
 
   // #2496, the other half. Enough failures against enough attempts inside the

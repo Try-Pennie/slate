@@ -119,11 +119,13 @@ export function exampleDeps(io: ExampleIo): ReminderDeps {
     now: () => io.nowMs,
     loadDue: async () => [io.booking],
     claim: async () => true,
+    // The claim above wrote nothing, so there is no row to hand back to.
+    release: async () => false,
     send: async (msg) => {
       io.preview(msg);
       return io.config.send ? io.sendEmail(msg) : "not-sent";
     },
-    alert: async (text) => console.error(`(would have paged) ${text}`),
+    alert: async (_bookingId, text) => console.error(`(would have paged) ${text}`),
     readCallingNumbers: io.readCallingNumbers,
     refreshInvite: async () => {
       throw new Error("the reminder example never writes a calendar invite");

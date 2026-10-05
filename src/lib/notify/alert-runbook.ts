@@ -179,8 +179,10 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
 
   // A booking exists and one of its side effects did not land.
   // #2359. The reminder is a side effect of a booking like the invite and the
-  // webhook, and it is the one with no retry behind it, so the remedy is this
-  // family's: look at what did not land for that specific booking.
+  // webhook, and a page about it means no retry is set for it (a send that provably
+  // did not go out is retried and never pages), so the remedy is this family's:
+  // look at what did not land for that specific booking. Keyed per booking since
+  // 2026-10-05, matched here by its prefix.
   booking_reminder_failed: "a-booking-side-effect-did-not-complete",
   // #2496. Same family, deliberately: the remedy is still "look at what did not
   // land", and the difference between this and the key above is how MANY bookings

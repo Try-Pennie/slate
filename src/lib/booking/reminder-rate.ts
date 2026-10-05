@@ -7,16 +7,19 @@ import {
   type RateWindowState,
 } from "@/lib/monitor/booking-failure-rate";
 import type { AlertResolve, ThrottledNotify } from "@/lib/monitor/alert-deps";
+import { asEmailSendError } from "@/lib/notify/email-errors";
 
 /**
  * A wave of reminder emails that did not go out, as distinct from one (#2496).
  *
  * ## The gap this fills
  *
- * `booking_reminder_failed` (#2359) names one booking and is throttled at six
- * hours, so one lead's refused address and EVERY reminder failing arrive as the
- * same single message at the same rate. Those send two different people to do two
- * different things: the first is one address to look at after the fact, the second
+ * `booking_reminder_failed:<id>` (#2359) names one booking. It was once a single
+ * key throttled at six hours, so one lead's refused address and EVERY reminder
+ * failing arrived as the same single message at the same rate; it is keyed per
+ * booking now (2026-10-05), so a wave arrives as one page per lead, which says no
+ * more about its size. Those send two different people to do two different
+ * things: the first is one address to look at after the fact, the second
  * is a broken mailbox delegation or a Gmail outage that is costing every lead their
  * reminder right now. L77 is the rule: an error deliberately classified as expected
  * must still be counted against a RATE, or the systemic case stays invisible for as
@@ -50,17 +53,24 @@ export const REMINDER_FAILURE_RATE_KEY = "booking_reminders_failing";
  *
  * Keying the window on the provider's raw message would give one key per message,
  * so the "top reason" the page names would be whichever wording happened to repeat
- * (L131), and the map would grow without bound inside a jsonb column. These six are
+ * (L131), and the map would grow without bound inside a jsonb column. These are
  * the distinctions that change what somebody does about it.
  */
 export type ReminderFailureCode =
-  /** 401 / 403: the advisor's mailbox will not accept a send at all. Every reminder
-   *  from that mailbox fails until the delegation is repaired. */
+  /** 401 / 403 from Gmail, or any 4xx from the token endpoint: the advisor's mailbox
+   *  will not accept a send at all. Every reminder from that mailbox fails until the
+   *  delegation is repaired. */
   | "not_authorised"
+  /** The delegated token could not be had for a reason other than Google refusing
+   *  the grant: the mint timed out, the token endpoint answered 429 or 5xx or could
+   *  not be reached, or the request could not be built or signed. The token is
+   *  minted before the POST, so nothing reached Gmail (2026-10-05). */
+  | "token_unavailable"
   /** 400: Gmail refused the message, which on this path is almost always the
    *  recipient. One lead, not a system. */
   | "recipient_refused"
-  /** 429: we are sending faster than the mailbox is allowed to. */
+  /** 429, or a 403 whose reason is a rate limit (#917): we are sending faster than
+   *  the mailbox is allowed to. */
   | "rate_limited"
   /** 5xx: Google. Usually self healing, and nothing here can fix it. */
   | "provider_unavailable"
@@ -71,26 +81,60 @@ export type ReminderFailureCode =
    *  about a socket error looks at the wrong system. */
   | "unclassified";
 
+/** A Gmail POST status as a code. Shared by the typed and the message paths so the
+ *  two can never disagree about what a status means. */
+function codeForGmailStatus(status: number | null): ReminderFailureCode {
+  if (status === 401 || status === 403) return "not_authorised";
+  if (status === 400) return "recipient_refused";
+  if (status === 429) return "rate_limited";
+  if (status !== null && status >= 500 && status < 600) return "provider_unavailable";
+  return "unclassified";
+}
+
+/** A token endpoint status as a code: a 4xx other than 429 is the grant being
+ *  refused, which is the delegation, and anything that can pass is transient. */
+function codeForTokenStatus(status: number): ReminderFailureCode {
+  return status === 429 || status >= 500 ? "token_unavailable" : "not_authorised";
+}
+
 /**
- * Classify a send failure by what its message can actually prove.
+ * Classify a send failure by what it can actually prove.
  *
- * `sendGmailEmail` throws `Gmail send failed: <status> <body>`, so the status is
- * the one machine readable fact available, and the body is deliberately NOT read
- * for keywords: matching English in a provider's prose is how a classifier starts
- * agreeing with whatever wording it was written against.
+ * A typed `EmailSendError` is read first: its stage says whether the failure was the
+ * token or the POST, which the incident's mint timeout needed and its message could
+ * not say. A plain Error (or a bare message) falls back to the message, which
+ * `sendGmailEmail` writes as `Gmail send failed: <status> <body>`, so the status is
+ * the one machine readable fact; the body is deliberately NOT read for keywords,
+ * because matching English in a provider's prose is how a classifier starts agreeing
+ * with whatever wording it was written against. The two mint sentences it does
+ * recognise are Slate's own (`dwd.ts`), not a provider's.
  *
  * Everything unrecognised is `unclassified` and still COUNTED. Dropping it would
  * shrink the numerator of the share this exists to measure, and a failure nobody
  * could categorise is exactly the kind worth seeing (L215).
  */
-export function classifyReminderSendFailure(message: string): ReminderFailureCode {
+export function classifyReminderSendFailure(err: unknown): ReminderFailureCode {
+  const typed = asEmailSendError(err);
+  if (typed) {
+    if (typed.stage === "compose") {
+      return /no recipients/i.test(typed.message) ? "no_recipients" : "unclassified";
+    }
+    if (typed.stage === "token") {
+      if (typed.status !== null) return codeForTokenStatus(typed.status);
+      return typed.transient ? "token_unavailable" : "unclassified";
+    }
+    // A 403 Gmail marked as a rate limit is not the delegation; `sendGmailEmail`
+    // read its reason and said so by calling it transient.
+    if (typed.status === 403 && typed.transient) return "rate_limited";
+    return codeForGmailStatus(typed.status);
+  }
+  const message = typeof err === "string" ? err : err instanceof Error ? err.message : String(err ?? "");
   if (/no recipients/i.test(message)) return "no_recipients";
+  if (/google token mint did not answer/i.test(message)) return "token_unavailable";
+  const mintStatus = /Delegated token failed for .*?: (\d{3})\b/.exec(message)?.[1];
+  if (mintStatus) return codeForTokenStatus(Number(mintStatus));
   const status = /\bfailed:\s*(\d{3})\b/.exec(message)?.[1];
-  if (status === "401" || status === "403") return "not_authorised";
-  if (status === "400") return "recipient_refused";
-  if (status === "429") return "rate_limited";
-  if (status && status.startsWith("5")) return "provider_unavailable";
-  return "unclassified";
+  return codeForGmailStatus(status ? Number(status) : null);
 }
 
 /** One tick's own measurement: what it tried, what failed, and why. */
@@ -100,7 +144,23 @@ export interface ReminderTick {
   failures: number;
   /** The failures by `ReminderFailureCode`. Sums to `failures`. */
   byCode: Record<string, number>;
+  /**
+   * The failures whose claim was RELEASED to be tried again next tick, by booking
+   * id, with the code each failed with. Already counted in `failures` and `byCode`.
+   * Carried so the window can count one booking once however many ticks retry it.
+   */
+  retried?: Record<string, string>;
+  /**
+   * How each booking this tick attempted and did NOT hand back ended: `sent`, or
+   * `kept` (failed with its claim kept). Only the entries for bookings handed back
+   * earlier in the window are stored, which is what lets the judge stop counting a
+   * retried booking once it has gone out or been given up.
+   */
+  settled?: Record<string, ReminderSettlement>;
 }
+
+/** How an attempted booking that was not handed back ended. */
+export type ReminderSettlement = "sent" | "kept";
 
 /**
  * Fold one tick into the window.
@@ -128,11 +188,20 @@ export function advanceReminderWindow(
 
   const samples = pruneSamples(prev?.samples ?? [], atMs, windowMs);
   if (tick.attempts > 0) {
+    const retried = tick.retried && Object.keys(tick.retried).length > 0 ? { ...tick.retried } : null;
+    // Only the bookings some live sample handed back. Every other settlement is
+    // already said by the counts, and storing it would grow the row by every
+    // booking sent in four hours for nothing the judge reads.
+    const handedBack = new Set(samples.flatMap((s) => Object.keys(s.retried ?? {})));
+    const settledEntries = Object.entries(tick.settled ?? {}).filter(([id]) => handedBack.has(id));
+    const settled = settledEntries.length > 0 ? Object.fromEntries(settledEntries) : null;
     samples.push({
       atMs,
       attempts: tick.attempts,
       failures: tick.failures,
       byCode: { ...tick.byCode },
+      ...(retried ? { retried } : {}),
+      ...(settled ? { settled } : {}),
     });
   }
 
@@ -163,6 +232,10 @@ const CODE_GUIDANCE: Record<string, string> = {
   rate_limited:
     "rate_limited means the mailbox is being sent to faster than Google allows, so look at how " +
     "many reminders one advisor is carrying.",
+  token_unavailable:
+    "token_unavailable means no delegated token could be had for the mailbox, before anything " +
+    "reached Gmail: usually Google's token service being slow or overloaded, which nothing in " +
+    "Slate repairs. If it lasts, the reason on the log lines says whether it is Google or Slate's own key.",
 };
 
 /** "1 lead" / "3 leads": the count reads as a sentence either way. */
@@ -191,6 +264,8 @@ function codeList(codes: CodeCount[]): string {
 export function formatReminderFailureRateAlert(input: {
   attempts: number;
   failures: number;
+  /** Of `failures`, the bookings released to be tried again (counted once each). */
+  retrying?: number;
   pct: number;
   windowMinutes: number;
   topCodes: CodeCount[];
@@ -199,11 +274,28 @@ export function formatReminderFailureRateAlert(input: {
   const naming = codes ? ` Failing with: ${codes}.` : "";
   const top = input.topCodes[0]?.code;
   const guidance = top && CODE_GUIDANCE[top] ? ` ${CODE_GUIDANCE[top]}` : "";
+  // Two different futures, said apart (2026-10-05). A send that provably did not go
+  // out (nothing reached Gmail, or Gmail asked for it later) is handed back to be
+  // tried again while the call is far enough away; every other failure keeps its
+  // claim. `retrying` counts only bookings whose LATEST outcome in the window is that
+  // hand back, so it is never a lead already reminded or one since given up, and the
+  // two sentences never count one lead twice. Past tense, because a handed back
+  // booking that was cancelled since is not being retried either.
+  const retrying = Math.min(Math.max(input.retrying ?? 0, 0), input.failures);
+  const kept = input.failures - retrying;
+  const retried =
+    retrying > 0
+      ? ` ${retrying} of them did not go out and ${retrying === 1 ? "was" : "were"} handed back to be ` +
+        `tried again, with no send since.`
+      : "";
+  const keptLine =
+    kept > 0
+      ? ` For ${plural(kept, "lead")}, no retry is set: the send was refused, may already have been ` +
+        `accepted, came too close to the call to try again, or could not be confirmed as handed back.`
+      : "";
   return (
-    `${input.failures} of ${input.attempts} reminder emails did not go out in the last ` +
-    `${input.windowMinutes} minutes (${input.pct}%), leaving ${plural(input.failures, "lead")} ` +
-    `with no reminder of their call and none coming: a failed send is deliberately not ` +
-    `retried, because a retry can deliver a second copy.${naming}${guidance} ` +
+    `${input.failures} of ${input.attempts} reminder emails failed to send in the last ` +
+    `${input.windowMinutes} minutes (${input.pct}%).${retried}${keptLine}${naming}${guidance} ` +
     `The per booking detail is in the booking-reminder log lines.`
   );
 }
@@ -222,11 +314,100 @@ export function formatReminderFailureRateAllClear(input: {
   );
 }
 
+/**
+ * The shared verdict, plus what became of the bookings handed back in the window:
+ * `retrying` (their latest outcome is still the hand back, and inside `failures`)
+ * and `recovered` (sent since, so in neither the failures nor the page).
+ */
+export type ReminderRateVerdict = RateVerdict & { retrying: number; recovered: number };
+
+/**
+ * Judge the window with each RETRIED booking counted once (2026-10-05).
+ *
+ * A send that provably did not go out is released and tried again on the next tick, so
+ * one booking stuck behind a slow token service appears in every sample for as long
+ * as it is retried: 48 samples in a four hour window. Counted per send that is 48
+ * failures, enough to trip the share on its own and to report 48 leads who are one.
+ *
+ * So every retried send is taken back out of its sample, and each distinct booking
+ * judged by its LATEST outcome in the window:
+ *
+ *   still handed back: put back as ONE attempt and ONE failure under the last
+ *     code it failed with, and counted as `retrying`.
+ *   sent since: nothing is put back, because the send that delivered it is
+ *     already an attempt in its own sample, and a lead who was reminded is not a
+ *     failure. Counted as `recovered`, so a blip that healed itself cannot hold
+ *     the window in breach for four hours.
+ *   kept since: nothing is put back, because the failure that gave it up is
+ *     already in its own sample, so the lead is one failure, never two.
+ *
+ * Many different bookings still handed back (a token outage for every mailbox) count
+ * once each and still page, which is the case this share exists for.
+ *
+ * The collapsed totals go through the SAME `judgeFailureRate` the booking share
+ * uses, as one synthetic sample, so the floor, the threshold and the rounding stay
+ * one rule (L370).
+ */
+export function judgeReminderWindow(
+  state: RateWindowState,
+  atMs: number,
+  thresholds: RateThresholds,
+): ReminderRateVerdict {
+  const live = pruneSamples(state.samples, atMs, thresholds.windowMs);
+  let attempts = 0;
+  let failures = 0;
+  const byCode: Record<string, number> = {};
+  type Latest = { atMs: number; outcome: "retried"; code: string } | { atMs: number; outcome: ReminderSettlement };
+  const latest = new Map<string, Latest>();
+  const note = (id: string, event: Latest) => {
+    const seen = latest.get(id);
+    // A settlement wins a tie: one tick cannot both hand a booking back and settle it.
+    if (!seen || event.atMs > seen.atMs || (event.atMs === seen.atMs && event.outcome !== "retried")) {
+      latest.set(id, event);
+    }
+  };
+  for (const s of live) {
+    const retried = Object.entries(s.retried ?? {});
+    attempts += s.attempts - retried.length;
+    failures += s.failures - retried.length;
+    for (const [code, n] of Object.entries(s.byCode)) byCode[code] = (byCode[code] ?? 0) + n;
+    for (const [id, code] of retried) {
+      byCode[code] = (byCode[code] ?? 0) - 1;
+      note(id, { atMs: s.atMs, outcome: "retried", code });
+    }
+  }
+  // Settlements are read only for bookings handed back inside the live window; one
+  // whose hand back has aged out is an ordinary send already counted in its sample.
+  for (const s of live) {
+    for (const [id, outcome] of Object.entries(s.settled ?? {})) {
+      if (latest.has(id) && (outcome === "sent" || outcome === "kept")) note(id, { atMs: s.atMs, outcome });
+    }
+  }
+  let retrying = 0;
+  let recovered = 0;
+  for (const event of latest.values()) {
+    if (event.outcome === "retried") {
+      retrying += 1;
+      attempts += 1;
+      failures += 1;
+      byCode[event.code] = (byCode[event.code] ?? 0) + 1;
+    } else if (event.outcome === "sent") {
+      recovered += 1;
+    }
+  }
+  for (const [code, n] of Object.entries(byCode)) if (n <= 0) delete byCode[code];
+  const collapsed: RateWindowState = {
+    ...state,
+    samples: [{ atMs, attempts: Math.max(attempts, 0), failures: Math.max(failures, 0), byCode }],
+  };
+  return { ...judgeFailureRate(collapsed, atMs, thresholds), retrying, recovered };
+}
+
 export type ReminderRateResult =
   /** The window could not be read, so this tick claims nothing in either direction.
    *  Deliberately NOT folded into an empty window scored as zero failures. */
   | { status: "unverified"; why: "state" }
-  | { status: "checked"; verdict: RateVerdict; state: RateWindowState };
+  | { status: "checked"; verdict: ReminderRateVerdict; state: RateWindowState };
 
 /**
  * Measure this tick, judge the window, and decide whether a human hears about it.
@@ -279,7 +460,7 @@ export async function runReminderFailureRateCheck(deps: {
   );
   // Persist BEFORE notifying: a hung Slack must not cost us the window.
   await deps.saveState(state).catch((err) => deps.onError?.("saveState", err));
-  const verdict = judgeFailureRate(state, deps.nowMs, deps.thresholds);
+  const verdict = judgeReminderWindow(state, deps.nowMs, deps.thresholds);
 
   deps.log?.({
     msg: "reminder failure rate",
@@ -287,6 +468,8 @@ export async function runReminderFailureRateCheck(deps: {
     window_min: windowMinutes,
     attempts: verdict.attempts,
     failures: verdict.failures,
+    retrying: verdict.retrying,
+    recovered: verdict.recovered,
     pct: verdict.status === "insufficient" ? null : verdict.pct,
     top_code: verdict.status === "insufficient" ? null : (verdict.topCodes[0]?.code ?? null),
   });

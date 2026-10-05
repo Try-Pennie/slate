@@ -23,6 +23,9 @@
  * the fixture should be the state that embarrasses it.
  */
 import { DateTime } from "luxon";
+import { EmailSendError } from "@/lib/notify/email-errors";
+import { shortErrorReason } from "@/lib/notify/error-text";
+import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
 import { ALERT_CATALOG, type AlertKind } from "@/lib/notify/alert-catalog";
 import { formatRetiredKeyAlert } from "@/lib/booking/retired-keys";
 import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
@@ -506,7 +509,7 @@ import {
 } from "@/lib/handoffs/copy";
 import { HANDOFF_UNDELIVERED_AFTER_MS } from "@/lib/handoffs/check";
 import { formatOwnerReassignNotice } from "@/lib/booking/owner-notice-copy";
-import { reminderFailedAlert } from "@/lib/booking/reminder-send";
+import { reminderFailedAlert, reminderFoldedAlert } from "@/lib/booking/reminder-send";
 import {
   photosDeadlineAlert,
   photosHeldAlert,
@@ -3900,13 +3903,99 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   },
 
   // --- the booking layer's incidents ----------------------------------------
+  // The REAL builder and the REAL short reason, fed the errors `sendGmailEmail`
+  // throws, never a copy of either's wording (L41): a preview showing text that is
+  // not what ships would be worse than no preview. One state per disposition, since
+  // each says something different about whether the lead will still be reminded
+  // (2026-10-05), and the two that depend on the outcome once per outcome, since a
+  // rate limited send reached Gmail and must never read as "nothing reached Gmail".
+  // A send that did not go out with the call far enough away pages nobody, so it has
+  // no state here.
+  ...([
+    {
+      state: "too late to try again: the token mint timed out and the call is within the hour",
+      disposition: "too_late",
+      err: new EmailSendError("google token mint did not answer within 8000ms", {
+        outcome: "never_sent",
+        stage: "token",
+        transient: true,
+        cause: new DeadlineExceededError("google token mint", 8000),
+      }),
+    },
+    {
+      state: "too late to try again: Gmail rate limited it and the call is within the hour",
+      disposition: "too_late",
+      err: new EmailSendError("Gmail send failed: 429 rateLimitExceeded", {
+        outcome: "refused",
+        stage: "post",
+        status: 429,
+        transient: true,
+      }),
+    },
+    {
+      state: "refused, and not resent until the mailbox delegation is repaired",
+      disposition: "refused",
+      err: new EmailSendError("Gmail token unavailable: 401 unauthorized_client", {
+        outcome: "never_sent",
+        stage: "token",
+        status: 401,
+        reason: "unauthorized_client",
+        transient: false,
+      }),
+    },
+    {
+      state: "Slate could not build the message, so Google never saw it",
+      disposition: "not_built",
+      err: new EmailSendError("MIME build failed: attachment content is not base64", {
+        outcome: "never_sent",
+        stage: "compose",
+        transient: false,
+      }),
+    },
+    {
+      state: "may have gone out, so it is not resent",
+      disposition: "unknown",
+      err: new EmailSendError('Gmail send failed: 503 {"error":{"errors":[{"reason":"backendError"}]}}', {
+        outcome: "unknown",
+        stage: "post",
+        status: 503,
+        transient: true,
+      }),
+    },
+    {
+      state: "a retry was due after a mint timeout and the hand back could not be confirmed",
+      disposition: "not_released",
+      err: new EmailSendError("google token mint did not answer within 8000ms", {
+        outcome: "never_sent",
+        stage: "token",
+        transient: true,
+        cause: new DeadlineExceededError("google token mint", 8000),
+      }),
+    },
+    {
+      state: "a retry was due after a rate limit and the hand back could not be confirmed",
+      disposition: "not_released",
+      err: new EmailSendError("Gmail send failed: 429 rateLimitExceeded", {
+        outcome: "refused",
+        stage: "post",
+        status: 429,
+        transient: true,
+      }),
+    },
+  ] as const).map(({ state, disposition, err }) => ({
+    key: "booking_reminder_failed:*",
+    state,
+    channel: "alert" as const,
+    text: reminderFailedAlert("b7f1c2e4-9a3d-4c88-b0f2-15ac7d9e6431", disposition, shortErrorReason(err), err.outcome),
+  })),
   {
-    key: "booking_reminder_failed",
-    state: "a lead's 24 hour reminder that did not go out",
+    key: "booking_reminder_failed:*",
+    state: "more lost reminders in one run than are paged by name",
     channel: "alert",
-    // The REAL builder, never a copy of its wording (L41): a preview showing text
-    // that is not what ships would be worse than no preview.
-    text: reminderFailedAlert("bk_8f21c4", "Gmail send failed: 503"),
+    text: reminderFoldedAlert([
+      "c2d8e1f0-4b7a-4e19-9c3d-7f1a2b6e8d40",
+      "e9a4b7c1-2f6d-4a83-b5e0-3c8d1f7a9b62",
+    ]),
   },
   // #2496. The one above and the three below are the whole point of the issue: they
   // are the same fault at two very different sizes, and they have to READ that way
@@ -3921,6 +4010,22 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       pct: 100,
       windowMinutes: 240,
       topCodes: [{ code: "not_authorised", count: 24 }],
+    }),
+  },
+  {
+    key: "booking_reminders_failing",
+    state: "most of the failures did not go out and were handed back to be retried",
+    channel: "alert",
+    text: formatReminderFailureRateAlert({
+      attempts: 30,
+      failures: 15,
+      retrying: 12,
+      pct: 50,
+      windowMinutes: 240,
+      topCodes: [
+        { code: "token_unavailable", count: 12 },
+        { code: "provider_unavailable", count: 3 },
+      ],
     }),
   },
   {
