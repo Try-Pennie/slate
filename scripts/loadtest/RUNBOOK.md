@@ -1177,14 +1177,18 @@ three ARMS, set by `SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE`:
 
 | arm | what a booking schedules after its response | per job line name |
 |---|---|---|
-| `on` (default) | the full recompute, exactly as production | `post-confirm-recompute` |
+| `on` (default) | the refresh exactly as production: since #3293, the booked code's pool, coalesced per ten second window | `post-confirm-recompute` |
 | `off` | nothing; the recompute lane keeps slots fresh | none |
-| `reads-only` | the recompute's reads (`loadBucketSlotInputs`), no compute, no row write | `post-confirm-recompute-reads-only` |
+| `reads-only` | the reads of the same coalesced pool refreshes (`readPoolInputsAfterBooking`), no compute, no row write | `post-confirm-recompute-reads-only` |
 
 `off` against `on` says whether the recompute is what the confirms wait on;
 `reads-only` against both says whether its cost is the database reads or the CPU of
 the compute, which decides the fix. Expect `off` to report a worse "worst recompute
 age", since freshness falls back to the lane: that is the arm, not a defect.
+
+Both arms go through one coalescing rule (#3293), so `reads-only` is the reads of the
+very refreshes `on` computes. The 2026-10-04 figures predate it: there, both arms ran
+per code per booking, so compare a new arm only with new arms, never with that day's.
 
 **Production cannot reach it.** It is read only when `SLATE_LOADTEST` is "true"
 (`src/lib/booking/post-confirm-recompute.ts`); otherwise every value, a typo

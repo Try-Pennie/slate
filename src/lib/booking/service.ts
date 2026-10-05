@@ -34,7 +34,8 @@ import {
 } from "@/lib/availability/service";
 import {
   recomputeBucketSlotsForToday,
-  readBucketSlotInputsForToday,
+  readPoolInputsAfterBooking,
+  refreshPoolAfterBooking,
   getBucketSlotsWithFallback,
   refreshPoolsForAgents,
 } from "@/lib/availability/slot-cache";
@@ -1185,6 +1186,11 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     // pending at the response is not guaranteed to run at all (#191, #503). A
     // failure is logged by afterResponse under the job's own name.
     //
+    // #3258: and it refreshes the booked code's POOL, sharing one compute with the
+    // pool's other bookings inside a ten second window (`refreshPoolAfterBooking`).
+    // The three arm load run measured the per booking compute as the code half of
+    // the confirm slowdown, crowding the Worker that answers the next confirms.
+    //
     // The cron drains (no `deferSend`) keep the float, as #503 decided: there,
     // waitUntil would hold the shared minute invocation open for the recompute,
     // a lane budget regression, and the recompute lane backstops a dropped one.
@@ -1197,8 +1203,11 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     invalidateSlots: (bucketCode) => {
       if (deferSend) {
         const refresh = postConfirmRefresh(postConfirmRecomputeMode(), bucketCode, {
-          recompute: (code) => recomputeBucketSlotsForToday(code),
-          readsOnly: readBucketSlotInputsForToday,
+          // #3258: the booked code's POOL, coalesced with the pool's other bookings
+          // inside a short window, rather than a whole compute per booking.
+          recompute: refreshPoolAfterBooking,
+          // The same coalescing as the on arm, so the two arms stay comparable.
+          readsOnly: readPoolInputsAfterBooking,
         });
         if (refresh) afterResponse(refresh.context, refresh.work);
       } else {

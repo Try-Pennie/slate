@@ -23,6 +23,8 @@ import {
   type PooledBucket,
 } from "./pool-recompute";
 import { SlotRowRefused } from "./slot-row-write";
+import { groupByPool } from "./pool-key";
+import { makePoolRefreshCoalescer, POST_CONFIRM_REFRESH_WINDOW_MS } from "./pool-refresh-coalescer";
 import { appUrl } from "@/lib/env";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadBusinessHoursCached } from "@/lib/booking/business-hours-load";
@@ -166,23 +168,6 @@ export async function recomputeBucketSlotsForToday(
 }
 
 /**
- * The load run's `reads-only` arm of the post confirm recompute (#3258): the reads
- * `recomputeBucketSlotsForToday` makes, over the same window and through the same
- * code, with no compute, no row write and no L1 delete. It exists only to separate
- * the database half of the recompute's cost from the CPU half, and is reached only
- * under load test (`postConfirmRecomputeMode`). It shares the per code debounce, so
- * the arm schedules the reads exactly as often as the real arm schedules recomputes.
- */
-export async function readBucketSlotInputsForToday(code: string): Promise<void> {
-  const now = Date.now();
-  if (now - (lastRecomputeAt.get(code) ?? 0) < RECOMPUTE_SKIP_MS) return;
-  lastRecomputeAt.set(code, now);
-  const horizon = await loadBookingHorizonDays();
-  const { fromIso, toIso } = slotCacheKey(code, new Date().toISOString(), horizon);
-  await loadBucketSlotInputs(code, fromIso, toIso);
-}
-
-/**
  * Refresh a whole POOL over the org-wide horizon: one availability compute,
  * written to every bucket code in the pool, each with its own identity (#2245).
  * Returns how many codes were actually stored.
@@ -244,6 +229,151 @@ export const AGENT_RECOMPUTE_BUDGET_MS = 20_000;
 
 /** When each pool was last started in this isolate, for the burst debounce. */
 const lastPoolRecomputeAt = new Map<string, number>();
+
+/**
+ * The refresh every confirmed booking schedules after its response (#3258), per
+ * POOL and coalesced: see `pool-refresh-coalescer.ts` for the rule and the load run
+ * that measured why. It shares `lastPoolRecomputeAt` with the push path, so the two
+ * never compute one pool back to back.
+ */
+const bookingRefreshes = makePoolRefreshCoalescer({
+  now: () => Date.now(),
+  sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
+  windowMs: POST_CONFIRM_REFRESH_WINDOW_MS,
+  lastStartedAt: lastPoolRecomputeAt,
+});
+
+/**
+ * The load run's reads only arm, coalesced by the SAME rule so the arms stay
+ * comparable (#3293 review), on its own start map: a read that recorded itself in
+ * `lastPoolRecomputeAt` would debounce a real recompute on the push path.
+ */
+const bookingReads = makePoolRefreshCoalescer({
+  now: () => Date.now(),
+  sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
+  windowMs: POST_CONFIRM_REFRESH_WINDOW_MS,
+  lastStartedAt: new Map(),
+});
+
+/**
+ * Which pool a code is in, from a grouping read at most once a minute per isolate.
+ * It only decides which bookings SHARE a refresh; the refresh itself re-reads the
+ * buckets, so a bucket edited in the last minute is computed from what it is now.
+ *
+ * A code the cached grouping does not know (a bucket created inside the minute) is
+ * re-read once, and if still unknown is remembered as missing for the rest of the
+ * cache's minute and coalesced on its own key: never skipped, because the refresh
+ * resolves its pool fresh when it runs, and never a re-read per booking (#3293
+ * review).
+ *
+ * Why a STALE key is harmless (#3293 review). The key decides only which bookings
+ * share a refresh and when; what gets refreshed is resolved from the live buckets
+ * for every joined code (`forPoolsOf`). If a bucket changed pools inside the minute:
+ * two bookings of one live pool may hold different keys, which costs a second
+ * compute (possibly beside the first, which the compare and swap row write makes
+ * safe, #1048); and bookings of different live pools may share a key, which
+ * refreshes all of their live pools in one run. Neither can leave a booked time
+ * unrefreshed, and both last only until the cache's minute is up.
+ */
+let poolKeyCache: { readAtMs: number; byCode: Map<string, string>; missing: Set<string> } | null = null;
+const POOL_KEY_CACHE_MS = 60_000;
+
+async function readPoolKeys(now: number): Promise<Map<string, string>> {
+  const byCode = new Map<string, string>();
+  for (const [key, members] of groupByPool(await listPoolBuckets())) {
+    for (const m of members) byCode.set(m.code, key);
+  }
+  poolKeyCache = { readAtMs: now, byCode, missing: new Set() };
+  return byCode;
+}
+
+async function poolKeyOfCode(code: string): Promise<string> {
+  const now = Date.now();
+  const fresh = !poolKeyCache || now - poolKeyCache.readAtMs > POOL_KEY_CACHE_MS;
+  let byCode = fresh ? await readPoolKeys(now) : poolKeyCache!.byCode;
+  if (!byCode.has(code) && !fresh && !poolKeyCache!.missing.has(code)) byCode = await readPoolKeys(now);
+  const key = byCode.get(code);
+  if (key !== undefined) return key;
+  poolKeyCache!.missing.add(code);
+  return `code:${code}`;
+}
+
+/**
+ * Run `act` once for every pool holding any of `codes`, resolved from the buckets as
+ * they are NOW. Every pool is attempted even when one fails, and the failures are
+ * thrown together afterwards, so one bad pool cannot cost another its refresh.
+ */
+async function forPoolsOf(
+  codes: string[],
+  act: (pool: PooledBucket[], horizon: number) => Promise<void>,
+): Promise<void> {
+  const [buckets, horizon] = await Promise.all([listPoolBuckets(), loadBookingHorizonDays()]);
+  const groups = [...groupByPool(buckets).values()];
+  const homeless = codes.filter((code) => !groups.some((members) => members.some((m) => m.code === code)));
+  for (const code of homeless) {
+    log.warn("slot-cache", { msg: "booked code is in no pool, so nothing was refreshed", bucket: code });
+  }
+  // #3293 review: a refresh that could refresh NOTHING failed, and says so, so the
+  // deferred job records a failure rather than a refresh that never happened.
+  if (homeless.length === codes.length) {
+    throw new Error(`no pool holds booked code ${codes.join(", ")}, so nothing was refreshed`);
+  }
+  const failures: string[] = [];
+  for (const pool of groups.filter((members) => members.some((m) => codes.includes(m.code)))) {
+    try {
+      await act(pool, horizon);
+    } catch (err) {
+      failures.push(err instanceof Error ? err.message : String(err));
+    }
+  }
+  if (failures.length > 0) throw new Error(failures.join("; "));
+}
+
+/** For tests: forget both coalescers, the pool key cache and the start map. */
+export function resetBookingRefreshesForTests(): void {
+  bookingRefreshes.reset();
+  bookingReads.reset();
+  poolKeyCache = null;
+  lastPoolRecomputeAt.clear();
+}
+
+/**
+ * Refresh the pool a just-booked code is in, so the booked time stops being offered
+ * (#2345, #2968), sharing one compute with the pool's other bookings inside the
+ * window (#3258). Resolves when the refresh covering this booking has finished, and
+ * REJECTS when a pool stored no row, so `afterResponse` logs the job as failed
+ * rather than reporting a refresh that never landed; the recompute lane backstops it.
+ */
+export async function refreshPoolAfterBooking(code: string): Promise<void> {
+  const key = await poolKeyOfCode(code);
+  await bookingRefreshes.request(key, code, (codes) =>
+    forPoolsOf(codes, async (pool, horizon) => {
+      const stored = await recomputePoolSlotsForToday(pool, undefined, horizon);
+      if (stored === 0) {
+        throw new Error(
+          `post confirm pool refresh for ${pool.map((b) => b.code).join("+")} stored no rows; the recompute lane will retry`,
+        );
+      }
+    }),
+  );
+}
+
+/**
+ * The load run's `reads-only` arm (#3258): exactly the reads the coalesced refresh
+ * makes for a pool (the representative code's, over the same window), with no
+ * compute, no row write and no L1 delete, scheduled by the same coalescing rule so
+ * the arm measures the reads of the SAME refreshes the on arm computes.
+ */
+export async function readPoolInputsAfterBooking(code: string): Promise<void> {
+  const key = await poolKeyOfCode(code);
+  await bookingReads.request(key, code, (codes) =>
+    forPoolsOf(codes, async (pool, horizon) => {
+      const representative = pool[0]!.code;
+      const { fromIso, toIso } = slotCacheKey(representative, new Date().toISOString(), horizon);
+      await loadBucketSlotInputs(representative, fromIso, toIso);
+    }),
+  );
+}
 
 /**
  * Recompute every bucket an agent affects (their calendar/OOO just changed), one
