@@ -26,7 +26,7 @@
  * Pure, so `scripts/test-loadtest-burst-target.ts` drives it with no network and no
  * database.
  */
-import { tierLadder, rungExcludesLow } from "../../src/lib/routing/tiers.ts";
+import { ladderGroupOf } from "../../src/lib/booking/line-key.ts";
 import { poolKeyFor, type PoolInput } from "../../src/lib/availability/pool-key.ts";
 
 /** One bucket code and how many agents its pool resolves to. */
@@ -109,24 +109,14 @@ export function poolKeysByCode(rows: readonly PoolRow[]): Map<string, string> {
 }
 
 /**
- * The fingerprint of `code`'s whole fallback ladder (#3325): for every rung the
- * booker walks (`tierLadder`), the pool that rung resolves to and whether a top tier
- * lead skips Low carriers on it (`rungExcludesLow`). Two codes with the same
- * fingerprint send a crowd through the same pools in the same way, which is exactly
- * when the shared confirm line may tell one of them "taken" on the other's verdict.
- *
- * Null when any rung has no bucket: a ladder that cannot be read whole cannot be
- * vouched for, and matching it on the rungs that happen to exist is how two codes
- * that route differently would read as one.
+ * The fingerprint of `code`'s whole fallback ladder (#3325): exactly the group the
+ * confirm path's shared line keys `code` under (`ladderGroupOf`), so the burst picks
+ * codes production really puts in one line, by the one definition of that rule (L41).
+ * The branch's bucket rows are the whole picture here, so a rung with no bucket is a
+ * gap in the ladder (part of its identity), never "not known yet".
  */
 export function ladderSignature(code: string, poolKeyByCode: ReadonlyMap<string, string>): string | null {
-  const rungs: [string, boolean][] = [];
-  for (const rung of tierLadder(code)) {
-    const key = poolKeyByCode.get(rung);
-    if (key === undefined) return null;
-    rungs.push([key, rungExcludesLow(code, rung)]);
-  }
-  return JSON.stringify(rungs);
+  return ladderGroupOf(code, (rung) => poolKeyByCode.get(rung) ?? null);
 }
 
 /**
