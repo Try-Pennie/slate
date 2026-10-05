@@ -82,7 +82,7 @@ import {
   rungCounts,
   rungOf,
   refusedLeadId,
-  rungStage,
+  rungTraceFrom,
   traced,
   withRung,
   type RefusalStage,
@@ -2140,16 +2140,14 @@ async function assignAgent(
     // #3272: what this rung saw at each stage, carried on whichever refusal follows
     // so the ladder and the route can say where the confirm was refused. `claimed`
     // counts the read advisors another confirm in the line held.
-    const others = seat?.claimedByOthers();
-    const rung: RungTrace = {
+    const rung = rungTraceFrom({
       code: bucket.code,
       members: memberCount,
-      read: read.length,
-      claimed: others ? read.filter((id) => others.has(id)).length : 0,
-      checked: checked ?? null,
-      stage: rungStage({ members: memberCount, read: read.length, checked: checked ?? 0, anyUnverified }),
-      readIds: read,
-    };
+      read,
+      claimedByOthers: seat?.claimedByOthers(),
+      checked,
+      anyUnverified,
+    });
     // #1300: an EMPTY BUCKET is a misconfiguration and pages; a bucket whose people
     // are simply not on shift is an ordinary evening and must not.
     //

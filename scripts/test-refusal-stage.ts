@@ -27,6 +27,7 @@ import {
   refusalTraceOf,
   refusedLeadId,
   rungStage,
+  rungTraceFrom,
 } from "../src/lib/booking/refusal-trace.ts";
 import { answerTimed, noteRefusal, type ConfirmLineFacts } from "../src/lib/booking/confirm-latency.ts";
 import { createAsserter, input, makeDeps } from "./lib/booking-fakes.ts";
@@ -265,6 +266,28 @@ async function main() {
   assert(rungStage({ members: 4, read: 2, checked: 2, anyUnverified: false }) === "verify_busy", "rung: Google busy");
   assert(rungStage({ members: 4, read: 2, checked: 2, anyUnverified: true }) === "verify_unreadable", "rung: Google unreadable");
   assert(rungStage({ members: 4, read: 2, checked: 0, anyUnverified: false }) === "verify_unreadable", "rung: read, none sent");
+  // An unmeasured count (null: the selector did not say) is not a zero. The rung is
+  // judged by what WAS measured, Google's answer, never read as "nobody was sent".
+  assert(
+    rungStage({ members: 4, read: 2, checked: null, anyUnverified: false }) === "verify_busy",
+    "rung: an unmeasured check count is judged by Google's answer, not read as none sent",
+  );
+  assert(
+    rungStage({ members: 4, read: 2, checked: null, anyUnverified: true }) === "verify_unreadable",
+    "rung: an unmeasured check count with an unverified answer is unreadable",
+  );
+  // The rung as assignAgent builds it: an unmeasured check count stays null in the
+  // record AND in the stage, never a zero in one and a null in the other.
+  const unmeasured = rungTraceFrom({ code: "411", members: 4, read: ["a", "b"], claimedByOthers: undefined, checked: undefined, anyUnverified: false });
+  assert(
+    unmeasured.checked === null && unmeasured.stage === "verify_busy",
+    `rung: built with no check count, it records null and is judged by Google's answer (got ${JSON.stringify(unmeasured)})`,
+  );
+  const none = rungTraceFrom({ code: "411", members: 4, read: ["a"], claimedByOthers: new Set(["a"]), checked: 0, anyUnverified: false });
+  assert(
+    none.checked === 0 && none.stage === "verify_unreadable" && none.claimed === 1,
+    `rung: built with none sent, it is unreadable and counts the claimed (got ${JSON.stringify(none)})`,
+  );
   const r = (stage: "pool_empty" | "candidate_read_empty" | "verify_busy") => ({
     code: "x",
     members: 1,

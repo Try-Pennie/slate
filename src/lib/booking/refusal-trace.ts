@@ -120,11 +120,42 @@ export function rungOf(err: unknown): RungTrace | null {
  * and ask Google about none of them; that is `verify_unreadable` (nobody could be
  * verified), never `verify_busy`, which would claim an answer Google never gave.
  */
-export function rungStage(r: { members: number; read: number; checked: number; anyUnverified: boolean }): RefusalStage {
+export function rungStage(r: {
+  members: number;
+  read: number;
+  /** Null when the selection did not count what it sent: judged by Google's answer alone. */
+  checked: number | null;
+  anyUnverified: boolean;
+}): RefusalStage {
   if (r.members === 0) return "pool_empty";
   if (r.read === 0) return "candidate_read_empty";
   if (r.checked === 0) return "verify_unreadable";
   return r.anyUnverified ? "verify_unreadable" : "verify_busy";
+}
+
+/**
+ * One rung's trace from what `assignAgent` measured (#3272). The ONE place a rung
+ * is built, so the stored count and the stage it is judged by can never disagree
+ * about an unmeasured `checked` (one null, the other zero).
+ */
+export function rungTraceFrom(m: {
+  code: string;
+  members: number;
+  read: string[];
+  claimedByOthers: ReadonlySet<string> | undefined;
+  checked: number | undefined;
+  anyUnverified: boolean;
+}): RungTrace {
+  return {
+    code: m.code,
+    members: m.members,
+    read: m.read.length,
+    claimed: m.claimedByOthers ? m.read.filter((id) => m.claimedByOthers?.has(id)).length : 0,
+    checked: m.checked ?? null,
+    // Null, not zero: an unmeasured count must not read as "nobody was sent".
+    stage: rungStage({ members: m.members, read: m.read.length, checked: m.checked ?? null, anyUnverified: m.anyUnverified }),
+    readIds: m.read,
+  };
 }
 
 /**
