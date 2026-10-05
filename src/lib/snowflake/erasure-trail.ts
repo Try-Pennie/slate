@@ -30,7 +30,7 @@ export interface ErasureAuditRow {
 
 /**
  * Every `pii.erasure` audit row. Paginated because `audit_log` is a growth table
- * (the `.range` in the page callback bounds each read), and it THROWS on a read
+ * (`selectAllPages` orders it by id and bounds each page), and it THROWS on a read
  * error rather than returning a short list: an empty trail read as "nothing has
  * been erased" would make the residual audit report clean and the purge do
  * nothing, both of which look identical to a healthy system.

@@ -27,8 +27,9 @@ const from = vi.hoisted(() =>
     const b: Record<string, unknown> = {
       select: () => b,
       eq: () => b,
-      // `range` resolves the whole (small) fixture in one page, which is what
-      // selectAllPages sees when a first page comes back short.
+      // selectAllPages orders the query by its key, then `range` resolves the whole
+      // (small) fixture in one page, which is what it sees when a first page comes
+      // back short.
       order: () => b,
       range: res,
       single: res,
