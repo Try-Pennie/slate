@@ -13,9 +13,9 @@
 //   RUN_ID=<run> DRIVER=0 OUT=results/driver-0.json \
 //   node --experimental-strip-types scripts/loadtest/book.ts
 //
-// Burst mode adds START_AT (epoch ms) and BURST_SLOT, both chosen ONCE by the
-// setup step and handed to every driver, because a burst whose drivers each chose
-// their own time is not a burst.
+// Burst mode adds BURST_PLAN: the two sibling codes, and each of the run's bursts'
+// slot and moment, all chosen ONCE by the setup step and handed to every driver,
+// because a burst whose drivers each chose their own time is not a burst (#3325).
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import {
@@ -33,6 +33,11 @@ import {
   deadlineReached,
   requestAbortMs,
   faultMinutesFrom,
+  readBurstPlan,
+  burstCodeFor,
+  burstLegOut,
+  BURST_REQUESTS_DEFAULT,
+  BURST_GRACE_DEFAULT_MS,
   DRIVERS,
   PER_DRIVER_PER_MINUTE,
   RUN_MINUTES,
@@ -47,6 +52,7 @@ import {
 } from "./preflight-checks.ts";
 import { parseFaultTargets } from "../../src/lib/loadtest-fault.ts";
 import { BASELINE_BOOKINGS, BASELINE_PER_MINUTE } from "./latency-bar.ts";
+import { readLoadtestEcho, type LoadtestEcho } from "../../src/lib/loadtest-echo.ts";
 
 const PROD_HOSTS = ["slate.trypennie.app", "drukfvgaynzrralbzkzj.supabase.co"];
 
@@ -69,13 +75,12 @@ const OUT = need("OUT");
 // carrying five variables it does not use reads as configuration somebody chose.
 // env-ok: MODE (optional; defaults to steady; only the burst, fault and baseline jobs set it)
 const MODE = (process.env.MODE ?? "steady") as "steady" | "burst" | "fault" | "baseline";
-// env-ok: BURST_REQUESTS (optional; defaults to 25, which is what one burst driver fires)
-const BURST_REQUESTS = Number(process.env.BURST_REQUESTS ?? "25");
+// env-ok: BURST_REQUESTS (optional; defaults to 25, which is what one burst driver
+// fires in each burst)
+const BURST_REQUESTS = Number(process.env.BURST_REQUESTS ?? String(BURST_REQUESTS_DEFAULT));
 // env-ok: BURST_GRACE_MS (optional; defaults to 2000, how late a driver may be and
 // still be part of the same burst)
-const BURST_GRACE_MS = Number(process.env.BURST_GRACE_MS ?? "2000");
-// env-ok: BURST_CODE_OVERRIDE (required in burst mode; the code `burst-setup.ts`
-// measured and chose, handed through so the drivers and the setup cannot disagree)
+const BURST_GRACE_MS = Number(process.env.BURST_GRACE_MS ?? String(BURST_GRACE_DEFAULT_MS));
 // env-ok: FAULT_PCT (required in fault mode only; the percentage the deployment
 // was redeployed with, which the driver then CONFIRMS with the deployment itself)
 // env-ok: FAULT_MINUTES (optional; defaults to 2, long enough for the bar to have
@@ -186,6 +191,7 @@ async function book(req: {
   let status = 0;
   let outcome: string | null = null;
   let seenIp: string | null = null;
+  let echo: LoadtestEcho | null = null;
   try {
     const res = await fetch(`${SLATE_BASE}/api/bookings`, {
       signal: requestSignal(req.deadlineAtMs),
@@ -212,6 +218,11 @@ async function book(req: {
     // believes it has: a CI runner behind egress NAT shares an address with
     // everything else on it.
     seenIp = res.headers.get("x-loadtest-seen-ip");
+    // Which confirm line served this, why, under which key, the time the line added,
+    // and when the deployment built the answer (#3325), through the one parser the
+    // deployment's own builders are tested against (L41). A header it does not know
+    // is recorded as UNREADABLE with what was sent, never dropped and never a value.
+    echo = readLoadtestEcho(res.headers);
     // An unreadable body is null, but an ABORT while reading it is not: the headers
     // arrived and the body never did, which is a timeout, never a 200 with no
     // outcome (#3222). Rethrown to the catch below, which records it as one.
@@ -229,8 +240,9 @@ async function book(req: {
     // other reason (#3222).
     outcome = timedOut(err) ? "timed-out" : `transport: ${(err as Error).name}`;
     // A body that stalled after its headers leaves the header status behind; the
-    // request was not answered, so it carries no status either.
+    // request was not answered, so it carries no status either, and no echo.
     status = 0;
+    echo = null;
   }
   return {
     driver: DRIVER,
@@ -243,13 +255,14 @@ async function book(req: {
     outcome,
     startIso: req.startIso,
     seenIp,
+    echo,
   };
 }
 
-function write(result: DriverResult): void {
-  mkdirSync(dirname(OUT), { recursive: true });
-  writeFileSync(OUT, JSON.stringify(result, null, 2), "utf8");
-  console.log(`driver ${DRIVER} (${MODE}): wrote ${result.attempts.length} attempts to ${OUT}`);
+function write(result: DriverResult, out: string = OUT): void {
+  mkdirSync(dirname(out), { recursive: true });
+  writeFileSync(out, JSON.stringify(result, null, 2), "utf8");
+  console.log(`driver ${DRIVER} (${MODE}): wrote ${result.attempts.length} attempts to ${out}`);
 }
 
 async function steady(
@@ -308,6 +321,7 @@ async function steady(
         outcome: "no-slots-offered",
         startIso: null,
         seenIp: null,
+        echo: null,
       });
       continue;
     }
@@ -442,71 +456,95 @@ async function fault(): Promise<void> {
 }
 
 async function burst(): Promise<void> {
-  // Refused by NAME rather than left as NaN. A NaN start does land safe here (every
-  // comparison against it is false, so `burstReadiness` answers "missed" and the
-  // driver fires nothing), but it lands there by accident: the run would report a
-  // burst nobody attended and the reason would be a typo nothing named (L50).
-  const rawStart = need("START_AT");
-  if (!/^\d+$/.test(rawStart.trim())) {
-    console.error(`FAILED: START_AT is not an epoch milliseconds value: ${JSON.stringify(rawStart)}`);
+  // ONE value, chosen once by the setup step (#3325): the two sibling codes and each
+  // burst's slot and moment. Read strictly and refused by name, because a half read
+  // plan is a burst nobody configured (L50, L70). Never re-derived here: a constant
+  // to fall back on is how the drivers and the setup end up firing at different codes
+  // while each reads as correct, and it was the unmeasured constant #2278 removed.
+  const read = readBurstPlan(need("BURST_PLAN"));
+  if (!read.ok) {
+    console.error(`FAILED: ${read.why}, so nothing was fired.`);
     process.exit(1);
   }
-  const startAtMs = Number(rawStart.trim());
-  const startIso = need("BURST_SLOT");
-  // Named by the setup step, never re-derived here. A constant to fall back on is
-  // how the drivers and the setup end up firing at two different codes while each
-  // reads as correct (L70), and it was the unmeasured constant #2278 removed.
-  const code = need("BURST_CODE_OVERRIDE");
-  const startedAtMs = Date.now();
+  const plan = read.plan;
+  let missedAny = false;
 
-  // Wait for the shared moment, then check we actually made it. A driver that woke
-  // late must NOT fire: its request meets an already taken slot and records a
-  // SLOT_TAKEN indistinguishable from the contention the control is counting, so
-  // the judge would be handed a staggered burst wearing a simultaneous one's
-  // clothes.
-  // Looped, not one sleep: a timer can return a millisecond before the wall clock
-  // reaches the moment, and that alone cost run 37162784607 its burst (#3103).
-  await waitForBurstMoment(startAtMs, { now: Date.now, sleep });
-  const readiness = burstReadiness({ startAtMs, nowMs: Date.now(), graceMs: BURST_GRACE_MS });
-  if (readiness !== "ready") {
-    console.error(`driver ${DRIVER}: burst-missed (${readiness}), firing nothing`);
-    write({
-      runId: RUN_ID,
-      driver: DRIVER,
-      mode: "burst",
-      planned: BURST_REQUESTS,
-      startedAtMs,
-      finishedAtMs: Date.now(),
-      burstSkipped: readiness,
-      attempts: [],
-    });
-    // Non-zero, so a missed driver is visible in the workflow rather than only in a
-    // file the judge reads later.
-    process.exit(3);
+  for (const [index, leg] of plan.bursts.entries()) {
+    const startedAtMs = Date.now();
+    const burstLeg = {
+      index,
+      of: plan.bursts.length,
+      slot: leg.slot,
+      codes: [...plan.codes],
+      startAtMs: leg.startAtMs,
+    };
+    const out = burstLegOut(OUT, index);
+
+    // Wait for the shared moment, then check we actually made it. A driver that woke
+    // late must NOT fire: its request meets an already taken slot and records a
+    // SLOT_TAKEN indistinguishable from the contention the control is counting, so
+    // the judge would be handed a staggered burst wearing a simultaneous one's
+    // clothes. Looped, not one sleep: a timer can return a millisecond before the
+    // wall clock reaches the moment, and that alone cost run 37162784607 its burst
+    // (#3103).
+    await waitForBurstMoment(leg.startAtMs, { now: Date.now, sleep });
+    const readiness = burstReadiness({ startAtMs: leg.startAtMs, nowMs: Date.now(), graceMs: BURST_GRACE_MS });
+    if (readiness !== "ready") {
+      // This burst only. The others are still fired and still written, so one late
+      // wake costs the run one burst rather than three (#3325).
+      console.error(`driver ${DRIVER}: burst ${index + 1} of ${plan.bursts.length} missed (${readiness}), firing nothing`);
+      write(
+        {
+          runId: RUN_ID,
+          driver: DRIVER,
+          mode: "burst",
+          planned: BURST_REQUESTS,
+          startedAtMs,
+          finishedAtMs: Date.now(),
+          burstSkipped: readiness,
+          burstLeg,
+          attempts: [],
+        },
+        out,
+      );
+      missedAny = true;
+      continue;
+    }
+
+    // All at once, with no pacing: contention on ONE slot is the whole point. Split
+    // across the two sibling codes, so the shared confirm line is exercised ACROSS
+    // codes whose ladders are the same pools rather than only within one (#3325).
+    // Each burst's ids are numbered past the previous bursts', so no two of the run's
+    // requests share an external id (#2261).
+    const attempts = await Promise.all(
+      Array.from({ length: BURST_REQUESTS }, (_, i) =>
+        book({
+          code: burstCodeFor(plan.codes, DRIVER, i),
+          startIso: leg.slot,
+          externalId: externalIdFor(idPrefix(RUN_ID, "burst"), DRIVER, index * BURST_REQUESTS + i),
+          n: index * BURST_REQUESTS + i,
+          deadlineAtMs: Number.POSITIVE_INFINITY,
+        }),
+      ),
+    );
+    write(
+      {
+        runId: RUN_ID,
+        driver: DRIVER,
+        mode: "burst",
+        planned: BURST_REQUESTS,
+        startedAtMs,
+        finishedAtMs: Date.now(),
+        burstLeg,
+        attempts,
+      },
+      out,
+    );
   }
 
-  // All at once, with no pacing: contention on ONE slot is the whole point, and the
-  // control is that exactly one of them wins.
-  const attempts = await Promise.all(
-    Array.from({ length: BURST_REQUESTS }, (_, i) =>
-      book({
-        code,
-        startIso,
-        externalId: externalIdFor(idPrefix(RUN_ID, "burst"), DRIVER, i),
-        n: i,
-        deadlineAtMs: Number.POSITIVE_INFINITY,
-      }),
-    ),
-  );
-  write({
-    runId: RUN_ID,
-    driver: DRIVER,
-    mode: "burst",
-    planned: BURST_REQUESTS,
-    startedAtMs,
-    finishedAtMs: Date.now(),
-    attempts,
-  });
+  // Non-zero, so a missed burst is visible in the workflow rather than only in a file
+  // the judge reads later.
+  if (missedAny) process.exit(3);
 }
 
 await (MODE === "burst"

@@ -33,6 +33,7 @@ import {
   type FaultLaneExpectations,
 } from "./fault-lanes.ts";
 import { everyTargetDegrades, parseFaultTargets } from "../../src/lib/loadtest-fault.ts";
+import { ANSWERED_AT_HEADER, CONFIRM_LINE_HEADER, type LoadtestEcho } from "../../src/lib/loadtest-echo.ts";
 
 /** A booking row the run created, as the judge needs it. */
 export interface JudgedBooking {
@@ -222,6 +223,12 @@ export interface JudgeInput {
    */
   expectedLegs: {
     burstDrivers: number;
+    /**
+     * #3325: how many bursts the run was configured to fire, each with
+     * `burstDrivers` drivers. Absent is the shape before #3325, one burst, so a hand
+     * built input from then judges exactly as it did.
+     */
+    bursts?: number;
     faultPct: number;
     faultTargets?: readonly string[];
     /** #3258: whether the run was configured with a same day baseline leg. */
@@ -349,18 +356,85 @@ export function driverFileProblems(r: DriverResult, expectedPlanned: number, lab
 }
 
 /**
- * Why the burst leg did not happen as it was configured, or nothing (#3222).
+ * How long after the LAST winner of a burst every SLOT_TAKEN must have been
+ * answered, on the deployment's own clock (#3325).
  *
- * Each reason FAILS the burst bar rather than making the run incomplete. It used to
- * be incompleteness, and a late burst driver exits non-zero by design, which failed
- * the burst job and skipped the steady pass behind it: one late driver cost the run
- * every figure it had. The contention question ("one winner per agent") is still
- * never asked of a burst that was not whole, because it would be answered by however
- * many drivers happened to arrive (L11).
+ * The shared confirm line exists so that a crowd for one slot is told it is taken
+ * at the speed of one confirm rather than queuing behind each other: run 37333201026
+ * had about fifty two leaders on fifty two isolates, a twelve second budget, answers
+ * at about thirteen seconds and nobody booked. Two seconds is the bound Dan set on
+ * 2026-10-05 for "answered SLOT_TAKEN quickly". Measured from the LAST winner rather
+ * than the first, because a crowd walking a ladder legitimately produces winners at
+ * different moments, one per free advisor, and a loser is told as soon as the last
+ * free advisor is gone.
  */
-export function burstShortfall(input: JudgeInput): string[] {
+export const BURST_LOSER_LAG_MS = 2_000;
+
+/** Which burst of the run a burst driver file holds; zero for a file from before #3325. */
+function legIndexOf(r: DriverResult): number {
+  return r.burstLeg?.index ?? 0;
+}
+
+/** How many bursts the run was configured to fire (one before #3325, none with no burst leg). */
+function configuredLegs(input: JudgeInput): number {
+  if (input.expectedLegs.burstDrivers <= 0) return 0;
+  return input.expectedLegs.bursts ?? 1;
+}
+
+/** One burst of the run, as the judge groups its files (#3325). */
+export interface BurstLegGroup {
+  index: number;
+  /** How many bursts the run holds, for the label. */
+  of: number;
+  /** The slot it fired at, when any file says. */
+  slot: string | null;
+  files: DriverResult[];
+}
+
+/**
+ * The run's bursts, each with its own files, in firing order (#3325).
+ *
+ * Every burst the run was CONFIGURED to fire is here even when none of its files
+ * arrived, so a burst that produced nothing is judged as missing rather than read as
+ * a run with fewer bursts (L98). A burst a file names that the configuration did not
+ * is here too, and judged, rather than dropped.
+ */
+export function burstLegGroups(input: JudgeInput): BurstLegGroup[] {
+  const byIndex = new Map<number, DriverResult[]>();
+  for (let i = 0; i < configuredLegs(input); i++) byIndex.set(i, []);
+  for (const r of input.burstResults) {
+    const list = byIndex.get(legIndexOf(r)) ?? [];
+    list.push(r);
+    byIndex.set(legIndexOf(r), list);
+  }
+  const indices = [...byIndex.keys()].sort((a, b) => a - b);
+  const of = Math.max(configuredLegs(input), ...indices.map((i) => i + 1), 0);
+  return indices.map((index) => {
+    const files = byIndex.get(index)!.slice().sort((a, b) => a.driver - b.driver);
+    const first = files[0];
+    return { index, of, slot: first?.burstLeg?.slot ?? first?.attempts[0]?.startIso ?? null, files };
+  });
+}
+
+/** How every finding about one burst names it, so the report says WHICH burst. */
+export function burstLegLabel(g: Pick<BurstLegGroup, "index" | "of" | "slot">): string {
+  return `burst ${g.index + 1} of ${g.of}${g.slot ? ` (${g.slot})` : ""}`;
+}
+
+/**
+ * Why one burst did not happen as configured, or nothing (#3222, per burst since #3325).
+ *
+ * Each reason FAILS the burst rather than making the run incomplete. It used to be
+ * incompleteness, and a late burst driver exits non-zero by design, which failed the
+ * burst job and skipped the steady pass behind it: one late driver cost the run every
+ * figure it had. The contention question ("one winner per agent") is still never
+ * asked of a burst that was not whole, because it would be answered by however many
+ * drivers happened to arrive (L11). The other bursts are still asked it: one late
+ * wake costs the run one burst, not three.
+ */
+function legShortfall(g: BurstLegGroup, wantDrivers: number): string[] {
   const why: string[] = [];
-  for (const b of input.burstResults) {
+  for (const b of g.files) {
     if (b.burstSkipped) {
       why.push(`burst driver ${b.driver} did not fire (${b.burstSkipped}), so the burst was not simultaneous`);
     } else if (b.attempts.length !== b.planned) {
@@ -370,16 +444,261 @@ export function burstShortfall(input: JudgeInput): string[] {
       );
     }
   }
-  // A leg the run was configured to have and did not get. Answering the winners
-  // question over nothing is how a missing control reads as a passing one.
-  const want = input.expectedLegs.burstDrivers;
-  if (want > 0 && input.burstResults.length !== want) {
+  // A burst the run was configured to have and did not get whole. Answering the
+  // winners question over nothing is how a missing control reads as a passing one.
+  if (wantDrivers > 0 && g.files.length !== wantDrivers) {
     why.push(
-      `${input.burstResults.length} burst driver files, expected ${want}. A burst judged on ` +
+      `${g.files.length} burst driver files, expected ${wantDrivers}. A burst judged on ` +
         "fewer drivers than fired is not the contention the control counts.",
     );
   }
   return why;
+}
+
+/** Every burst's shortfall, each naming its burst (#3222, #3325). */
+export function burstShortfall(input: JudgeInput): string[] {
+  const want = input.expectedLegs.burstDrivers;
+  return burstLegGroups(input).flatMap((g) => legShortfall(g, want).map((w) => `${burstLegLabel(g)}: ${w}`));
+}
+
+/**
+ * How one answer names the confirm line that served it, the one way findings and the
+ * report spell it (#3325): `shared/ok`, `fallback/reach-timeout`, or what the
+ * deployment failed to say. A value the contract does not know is QUOTED, never
+ * dropped and never read as one it does.
+ */
+export function lineReasonLabel(echo: LoadtestEcho | null | undefined): string {
+  // `undefined` too: a driver file written before #3325 carries no echo field, and it
+  // is a deployment that said nothing, never a crash that leaves the run unjudged.
+  if (!echo || echo.line.state === "absent") return "no line header";
+  if (echo.line.state === "unreadable") return `unreadable line ${JSON.stringify(echo.line.raw)}`;
+  const r = echo.reason;
+  const reason = r.state === "read" ? r.value : r.state === "absent" ? "no reason" : `unreadable reason ${JSON.stringify(r.raw)}`;
+  return `${echo.line.value}/${reason}`;
+}
+
+/** The answers' lines, counted by line and reason. */
+function tallyLines(attempts: readonly BookingAttempt[]): {
+  byLineReason: Record<string, number>;
+  shared: number;
+  notSaid: number;
+  unreadable: number;
+} {
+  const byLineReason: Record<string, number> = {};
+  let shared = 0;
+  let notSaid = 0;
+  let unreadable = 0;
+  for (const a of attempts) {
+    const label = lineReasonLabel(a.echo);
+    byLineReason[label] = (byLineReason[label] ?? 0) + 1;
+    const line = a.echo?.line;
+    if (!line || line.state === "absent") notSaid += 1;
+    else if (line.state === "unreadable") unreadable += 1;
+    else if (line.value === "shared") shared += 1;
+  }
+  return { byLineReason, shared, notSaid, unreadable };
+}
+
+/** A tally as `label count` pairs, the commonest first, for a finding or a report line. */
+function tallyText(counts: Record<string, number>): string {
+  return Object.entries(counts)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([label, n]) => `${label} ${n}`)
+    .join(", ");
+}
+
+/** What the burst's speed clause found, or why it could not (#3325). */
+export type BurstSpeedReading =
+  | {
+      kind: "measured";
+      /** The last winner's answer, on the deployment's clock. */
+      lastOkAtMs: number;
+      /** The slowest SLOT_TAKEN, in ms after the last winner (negative when before it). */
+      worstLagMs: number;
+      /** SLOT_TAKEN answers past `BURST_LOSER_LAG_MS`. */
+      late: number;
+      slotTaken: number;
+    }
+  | { kind: "unmeasured"; why: string };
+
+/**
+ * How soon after the LAST winner each SLOT_TAKEN was answered, on the deployment's
+ * own answer stamps (#3325).
+ *
+ * Every way of learning nothing is UNMEASURED, and unmeasured fails: an answer with
+ * no readable stamp, a burst nobody won (no winner to measure against), and a burst
+ * nobody lost (no loser to measure). A stamp that never arrived is never read as a
+ * fast answer, and finding nothing to measure is never a pass (L98).
+ */
+export function burstSpeed(attempts: readonly BookingAttempt[]): BurstSpeedReading {
+  let absent = 0;
+  let unreadable = 0;
+  const at = new Map<BookingAttempt, number>();
+  for (const a of attempts) {
+    const stamp = a.echo?.answeredAtMs;
+    if (!stamp || stamp.state === "absent") absent += 1;
+    else if (stamp.state === "unreadable") unreadable += 1;
+    else at.set(a, stamp.value);
+  }
+  if (absent + unreadable > 0) {
+    return {
+      kind: "unmeasured",
+      why:
+        `${absent + unreadable} of ${attempts.length} burst answers carried no readable ` +
+        `${ANSWERED_AT_HEADER} stamp (${absent} absent, ${unreadable} unreadable)`,
+    };
+  }
+  const won = attempts.filter((a) => a.status === 200);
+  if (won.length === 0) {
+    return {
+      kind: "unmeasured",
+      why: "no request was answered 200, so there is no winner to measure the SLOT_TAKEN answers against",
+    };
+  }
+  const taken = attempts.filter(isSlotTaken);
+  if (taken.length === 0) {
+    return {
+      kind: "unmeasured",
+      why: "no request was refused SLOT_TAKEN, so how fast the losers are told was never tested",
+    };
+  }
+  const lastOkAtMs = Math.max(...won.map((a) => at.get(a)!));
+  const lags = taken.map((a) => at.get(a)! - lastOkAtMs);
+  return {
+    kind: "measured",
+    lastOkAtMs,
+    worstLagMs: Math.max(...lags),
+    late: lags.filter((l) => l > BURST_LOSER_LAG_MS).length,
+    slotTaken: taken.length,
+  };
+}
+
+/** What one burst measured, for the report and for the judge's own findings (#3325). */
+export interface BurstLegReading {
+  index: number;
+  of: number;
+  label: string;
+  /** Requests the burst's files hold, and how many of them got an answer. */
+  attempts: number;
+  answered: number;
+  won: number;
+  slotTaken: number;
+  /** Requests per code, so the split across the two siblings is visible. */
+  codes: Record<string, number>;
+  /** The answered requests' lines, by line and reason. */
+  lines: Record<string, number>;
+  /** Answered requests that took the shared line under a LADDER key. */
+  ladderKeys: number;
+  speed: BurstSpeedReading;
+  /** The bars this burst failed, filled in by the judge; empty for a burst that passed. */
+  failed: string[];
+}
+
+/** One reading per burst, from the same grouping the judge uses (L41). */
+export function burstLegReadings(input: JudgeInput): BurstLegReading[] {
+  return burstLegGroups(input).map((g) => {
+    const attempts = attemptsOf(g.files);
+    const answered = attempts.filter((a) => a.status !== 0);
+    const codes: Record<string, number> = {};
+    for (const a of attempts) codes[a.code] = (codes[a.code] ?? 0) + 1;
+    return {
+      index: g.index,
+      of: g.of,
+      label: burstLegLabel(g),
+      attempts: attempts.length,
+      answered: answered.length,
+      won: attempts.filter((a) => a.status === 200).length,
+      slotTaken: attempts.filter(isSlotTaken).length,
+      codes,
+      lines: tallyLines(answered).byLineReason,
+      ladderKeys: answered.filter((a) => a.echo?.key.state === "read" && a.echo.key.value === "ladder").length,
+      speed: burstSpeed(attempts),
+      failed: [],
+    };
+  });
+}
+
+/** Which confirm line the steady pass's answers took, and the time it added (#3325). */
+export interface SteadyLineReading {
+  /** Steady requests that got an answer. */
+  answered: number;
+  byLineReason: Record<string, number>;
+  /** Answers that carried no line header. */
+  notSaid: number;
+  /** Answers whose line header the contract does not know. */
+  unreadable: number;
+  /**
+   * The absolute time the line added per confirm, from `x-loadtest-confirm-line-ms`.
+   * Reported beside the ratio bar because the ratio alone hides an overhead the
+   * at rest baseline pays too. Null when no answer carried a readable time, never 0.
+   */
+  lineMs: ReturnType<typeof percentiles>;
+  /** Answers with no readable time, counted rather than scored zero (L90). */
+  lineMsUnread: number;
+}
+
+/** The steady pass's line reading. A report, never a bar (#3325). */
+export function steadyLineReading(attempts: readonly BookingAttempt[]): SteadyLineReading {
+  const answered = attempts.filter((a) => a.status !== 0);
+  const t = tallyLines(answered);
+  const ms: number[] = [];
+  for (const a of answered) {
+    const v = a.echo?.lineMs;
+    if (v?.state === "read") ms.push(v.value);
+  }
+  return {
+    answered: answered.length,
+    byLineReason: t.byLineReason,
+    notSaid: t.notSaid,
+    unreadable: t.unreadable,
+    lineMs: percentiles(ms),
+    lineMsUnread: answered.length - ms.length,
+  };
+}
+
+/** The steady line reading as one report line, so the report never re-derives it (L41). */
+export function steadyLineText(r: SteadyLineReading): string {
+  if (r.answered === 0) return "the confirm line on the steady pass: no request was answered, so nothing was read";
+  const shared = r.byLineReason["shared/ok"] ?? 0;
+  return (
+    `the confirm line on the steady pass (reported, not a bar): ${tallyText(r.byLineReason)} over ` +
+    `${r.answered} answered requests (${((shared / r.answered) * 100).toFixed(1)}% shared/ok); the ` +
+    "absolute time the line added per confirm: " +
+    (r.lineMs === null
+      ? "not measured, no answer carried a readable time"
+      : `p50 ${r.lineMs.p50}ms, p95 ${r.lineMs.p95}ms, max ${r.lineMs.max}ms`) +
+    (r.lineMsUnread > 0 ? ` (${r.lineMsUnread} answers carried no readable time)` : "")
+  );
+}
+
+/**
+ * The bursts in one line, naming every one that failed (#3325), or null for a run
+ * with no burst leg. Any one burst failing fails the run, so the reader is told which
+ * before reading the per burst lines.
+ */
+export function burstsSummaryText(readings: readonly BurstLegReading[]): string | null {
+  if (readings.length === 0) return null;
+  const failed = readings.filter((r) => r.failed.length > 0);
+  if (failed.length === 0) return `the bursts: ${readings.length} judged, and every one passed`;
+  return (
+    `the bursts: ${failed.length} of ${readings.length} FAILED, which fails the run: ` +
+    failed.map((r) => `${r.label} (${r.failed.join(", ")})`).join("; ")
+  );
+}
+
+/** One burst's reading as one report line (#3325). */
+export function burstLegText(r: BurstLegReading): string {
+  const verdict = r.failed.length === 0 ? "passed" : `FAILED (${r.failed.join(", ")})`;
+  const speed =
+    r.speed.kind === "unmeasured"
+      ? `losers' speed not measured: ${r.speed.why}`
+      : `the slowest of ${r.speed.slotTaken} SLOT_TAKEN came ${r.speed.worstLagMs}ms after the last 200 ` +
+        `(bound ${BURST_LOSER_LAG_MS}ms, ${r.speed.late} past it)`;
+  const ladder = r.answered === 0 ? "n/a" : `${r.ladderKeys} of ${r.answered} (${((r.ladderKeys / r.answered) * 100).toFixed(1)}%)`;
+  return (
+    `${r.label}: ${verdict}; ${r.attempts} requests (${tallyText(r.codes) || "none"}), ${r.won} won, ` +
+    `${r.slotTaken} SLOT_TAKEN; line: ${tallyText(r.lines) || "nothing answered"}; ladder key on ${ladder}; ${speed}`
+  );
 }
 
 /**
@@ -432,9 +751,18 @@ export function incompleteness(input: JudgeInput): string[] {
   // file that never arrived, a driver that fired part of its plan) is NOT here: it
   // FAILS the burst bar with its reason (`burstShortfall`, #3222), so a late burst
   // driver no longer costs the run its steady figures.
-  const seenBurst = new Set(input.burstResults.map((b) => b.driver));
-  if (seenBurst.size !== input.burstResults.length) {
-    why.push("two burst driver files claim the same driver number, so one driver's burst is missing");
+  // Per burst (#3325): one driver fires every burst, so the same driver number across
+  // bursts is the plan, and twice within ONE burst is a file standing in for another.
+  const seenBurst = new Set<string>();
+  for (const b of input.burstResults) {
+    const key = `${legIndexOf(b)}:${b.driver}`;
+    if (seenBurst.has(key)) {
+      why.push(
+        `two burst driver files claim driver ${b.driver} in burst ${legIndexOf(b) + 1}, so one driver's ` +
+          "burst is missing",
+      );
+    }
+    seenBurst.add(key);
   }
   for (const b of input.burstResults) {
     if (b.runId !== input.runId) {
@@ -585,6 +913,10 @@ export interface RunMeasurements {
    * reads, which is why it is reported beside that bar rather than folded into it.
    */
   confirmAfterResponse: ReturnType<typeof percentiles>;
+  /** #3325: one reading per burst, each judged on its own; `failed` names its bars. */
+  bursts: BurstLegReading[];
+  /** #3325: which confirm line the steady pass took, and the time it added. A report. */
+  steadyLine: SteadyLineReading;
 }
 
 /**
@@ -680,6 +1012,8 @@ export function measure(input: JudgeInput): RunMeasurements {
     confirmColdStartup: percentiles(input.confirmStartup?.coldPreProfileMs ?? []),
     confirmWarmStartup: percentiles(input.confirmStartup?.warmPreProfileMs ?? []),
     confirmAfterResponse: percentiles(input.confirmStartup?.afterProfileMs ?? []),
+    bursts: burstLegReadings(input),
+    steadyLine: steadyLineReading(attempts),
   };
 }
 
@@ -805,6 +1139,128 @@ export function faultPassKeepsFiveXxBar(targets: readonly string[]): boolean {
 /** Why the speed verdict is void, read off the latency judgement, or null (#3258). */
 function speedUnmeasuredOf(m: RunMeasurements): string | null {
   return m.latency?.kind === "unmeasured" ? m.latency.why : null;
+}
+
+/**
+ * The questions asked of ONE whole burst (#2261, #2273, #3325): its winners, its
+ * losers, which confirm line served it, and how fast its losers were told.
+ */
+function judgeBurstLeg(
+  burst: BookingAttempt[],
+  bookings: readonly JudgedBooking[],
+  failLeg: (bar: string, detail: string) => void,
+  reading: BurstLegReading | undefined,
+): void {
+  const won = burst.filter((a) => a.status === 200);
+  // The invariant is ONE WINNER PER AGENT, not one winner (#2261).
+  //
+  // "Exactly one" was a proxy for the burst code's pool being one agent deep,
+  // which the seed does not guarantee and did not deliver: the first real run
+  // answered TWO 200s at one slot, and they went to two DIFFERENT agents, which
+  // is `bookings_active_slot_uniq` working exactly as specified. A bar that
+  // failed on it would be red for a property of the roster rather than for
+  // anything the booking path did, which is how a check stops being read (L36).
+  //
+  // What the index actually promises is that no AGENT holds two active bookings
+  // at one slot, so that is what is asked. It is the stronger reading as well as
+  // the truer one: at a pool of one it is the original control unchanged, and at
+  // any depth it still catches the double booking the control existed to find.
+  const agentOf = new Map(bookings.map((b) => [b.external_id ?? "", b.assigned_user_id]));
+  const winningAgents = won.map((a) => agentOf.get(a.externalId) ?? null);
+  const namedAgents = winningAgents.filter((id): id is string => id !== null);
+  const distinct = new Set(namedAgents);
+  if (won.length === 0) {
+    // Say what the refusals WERE, by code and count, and claim the slot was already
+    // taken only when every one of them says so. Run 37333201026 had an untouched
+    // slot and every request refused 503 VERIFY_UNAVAILABLE, and this sentence still
+    // told the reader the slot had been taken before the burst fired (L11).
+    const counts = new Map<string, number>();
+    for (const a of burst) {
+      const label = refusalLabel(a);
+      counts.set(label, (counts.get(label) ?? 0) + 1);
+    }
+    const refusals = [...counts.entries()]
+      .sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]))
+      .map(([label, n]) => `${n} ${label}`)
+      .join(", ");
+    const allTaken = burst.every(isSlotTaken);
+    failLeg(
+      "the burst",
+      `none of the ${burst.length} burst requests was answered 200 (${refusals}), ` +
+        (allTaken
+          ? "so the slot was already taken before the burst fired and nothing about contention was measured"
+          : "so nothing about contention was measured"),
+    );
+  } else if (distinct.size < namedAgents.length) {
+    failLeg(
+      "the burst's winners",
+      `${won.length} of ${burst.length} burst requests were answered 200 and they resolve to ` +
+        `only ${distinct.size} agent(s), so an agent holds two active bookings at one slot`,
+    );
+  } else if (namedAgents.length < won.length) {
+    failLeg(
+      "the burst's winners",
+      `${won.length - namedAgents.length} of the ${won.length} burst requests answered 200 have ` +
+        "no booking row naming an agent, so the SLOT_TAKEN answers point at nothing",
+    );
+  }
+  // `a.outcome !== "SLOT_TAKEN"` rather than `!isSlotTaken(a)`, deliberately: a
+  // SLOT_TAKEN answered with some other status is reported by neither bar today, and
+  // widening this one is a separate decision from how its refusals are labelled.
+  // Every non-winner is required to be SLOT_TAKEN here, and whether each winner has a
+  // booking row is what the agent lookup above measures.
+  const otherRefusals = burst.filter((a) => a.status !== 200 && (a.outcome ?? "") !== "SLOT_TAKEN");
+  if (otherRefusals.length > 0) {
+    failLeg(
+      "the burst's losers",
+      `${otherRefusals.length} burst requests were refused for a reason other than the slot being ` +
+        `taken (${[...new Set(otherRefusals.map(refusalLabel))].join(", ")})`,
+    );
+  }
+
+  // --- a. every burst confirm took the SHARED line (#3325) ----------------------
+  // The deployment says which line served each confirm, on a load test only header;
+  // a SLOT_TAKEN reads the same whichever line produced it, so nothing else can tell.
+  // A deployment that says nothing FAILS by name: it is the state of every run until
+  // the shared line ships, and a bar with nothing to object to is not a pass (L98).
+  const answered = burst.filter((a) => a.status !== 0);
+  const lines = tallyLines(answered);
+  if (answered.length === 0) {
+    failLeg(
+      "the burst's line",
+      `none of the ${burst.length} burst requests was answered, so which line served the burst is unknown`,
+    );
+  } else if (lines.notSaid === answered.length) {
+    failLeg(
+      "the burst's line",
+      `the deployment did not say which line served the burst: none of the ${answered.length} answers ` +
+        `carried ${CONFIRM_LINE_HEADER}, so whether the shared line ran is unknown`,
+    );
+  } else if (lines.shared !== answered.length) {
+    failLeg(
+      "the burst's line",
+      `${lines.shared} of ${answered.length} burst confirms took the shared line, and every one must. ` +
+        `By line and reason: ${tallyText(lines.byLineReason)}`,
+    );
+  }
+
+  // --- b. every SLOT_TAKEN within the bound of the LAST winner (#3325) ----------
+  // On the deployment's own answer stamps, never four runners' clocks.
+  const speed = reading?.speed ?? burstSpeed(burst);
+  if (speed.kind === "unmeasured") {
+    failLeg(
+      "the burst's speed",
+      `how fast the losers were answered could not be measured: ${speed.why}. Finding nothing to ` +
+        "measure is never a pass",
+    );
+  } else if (speed.late > 0) {
+    failLeg(
+      "the burst's speed",
+      `${speed.late} of ${speed.slotTaken} SLOT_TAKEN answers came more than ${BURST_LOSER_LAG_MS}ms ` +
+        `after the last 200, the slowest ${speed.worstLagMs}ms after it, read on the deployment's own ` +
+        "answer stamps",
+    );
+  }
 }
 
 export function judgeBookingRun(input: JudgeInput): JudgeResult {
@@ -958,81 +1414,22 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
     );
   }
 
-  // --- the burst --------------------------------------------------------------
-  const shortfall = burstShortfall(input);
-  for (const w of shortfall) fail("the burst", w);
-  if (shortfall.length === 0 && input.burstResults.length > 0) {
-    const burst = attemptsOf(input.burstResults);
-    const won = burst.filter((a) => a.status === 200);
-    // The invariant is ONE WINNER PER AGENT, not one winner (#2261).
-    //
-    // "Exactly one" was a proxy for the burst code's pool being one agent deep,
-    // which the seed does not guarantee and did not deliver: the first real run
-    // answered TWO 200s at one slot, and they went to two DIFFERENT agents, which
-    // is `bookings_active_slot_uniq` working exactly as specified. A bar that
-    // failed on it would be red for a property of the roster rather than for
-    // anything the booking path did, which is how a check stops being read (L36).
-    //
-    // What the index actually promises is that no AGENT holds two active bookings
-    // at one slot, so that is what is asked. It is the stronger reading as well as
-    // the truer one: at a pool of one it is the original control unchanged, and at
-    // any depth it still catches the double booking the control existed to find.
-    const agentOf = new Map(input.bookings.map((b) => [b.external_id ?? "", b.assigned_user_id]));
-    const winningAgents = won.map((a) => agentOf.get(a.externalId) ?? null);
-    const namedAgents = winningAgents.filter((id): id is string => id !== null);
-    const distinct = new Set(namedAgents);
-    if (won.length === 0) {
-      // Say what the refusals WERE, by code and count, and claim the slot was already
-      // taken only when every one of them says so. Run 37333201026 had an untouched
-      // slot and every request refused 503 VERIFY_UNAVAILABLE, and this sentence still
-      // told the reader the slot had been taken before the burst fired (L11).
-      const counts = new Map<string, number>();
-      for (const a of burst) {
-        const label = refusalLabel(a);
-        counts.set(label, (counts.get(label) ?? 0) + 1);
-      }
-      const refusals = [...counts.entries()]
-        .sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]))
-        .map(([label, n]) => `${n} ${label}`)
-        .join(", ");
-      const allTaken = burst.every(isSlotTaken);
-      fail(
-        "the burst",
-        `none of the ${burst.length} burst requests was answered 200 (${refusals}), ` +
-          (allTaken
-            ? "so the slot was already taken before the burst fired and nothing about contention was measured"
-            : "so nothing about contention was measured"),
-      );
-    } else if (distinct.size < namedAgents.length) {
-      fail(
-        "the burst's winners",
-        `${won.length} of ${burst.length} burst requests were answered 200 and they resolve to ` +
-          `only ${distinct.size} agent(s), so an agent holds two active bookings at one slot`,
-      );
-    } else if (namedAgents.length < won.length) {
-      fail(
-        "the burst's winners",
-        `${won.length - namedAgents.length} of the ${won.length} burst requests answered 200 have ` +
-          "no booking row naming an agent, so the SLOT_TAKEN answers point at nothing",
-      );
-    }
-    const taken = burst.filter(isSlotTaken);
-    // `a.outcome !== "SLOT_TAKEN"` rather than `!isSlotTaken(a)`, deliberately: a
-    // SLOT_TAKEN answered with some other status is reported by neither bar today, and
-    // widening this one is a separate decision from how its refusals are labelled.
-    const otherRefusals = burst.filter((a) => a.status !== 200 && (a.outcome ?? "") !== "SLOT_TAKEN");
-    if (otherRefusals.length > 0) {
-      fail(
-        "the burst's losers",
-        `${otherRefusals.length} burst requests were refused for a reason other than the slot being ` +
-          `taken (${[...new Set(otherRefusals.map(refusalLabel))].join(", ")})`,
-      );
-    }
-    // `taken` is read for the count above and deliberately not asserted on
-    // separately: every non-winner is already required to be SLOT_TAKEN by the
-    // `otherRefusals` bar, and whether each winner has a booking row is what the
-    // agent lookup above measures.
-    void taken;
+  // --- the bursts, each judged on its own (#3325) --------------------------------
+  // Three bursts, at three slots and three moments, so one lucky spread of isolates
+  // cannot pass the run (L395). Any one failing fails the run, and every finding
+  // names its burst.
+  const wantBurstDrivers = input.expectedLegs.burstDrivers;
+  for (const g of burstLegGroups(input)) {
+    const label = burstLegLabel(g);
+    const reading = m.bursts.find((r) => r.index === g.index);
+    const failLeg = (bar: string, detail: string) => {
+      fail(bar, `${label}: ${detail}`);
+      if (reading && !reading.failed.includes(bar)) reading.failed.push(bar);
+    };
+    const short = legShortfall(g, wantBurstDrivers);
+    for (const w of short) failLeg("the burst", w);
+    if (short.length > 0 || g.files.length === 0) continue;
+    judgeBurstLeg(attemptsOf(g.files), input.bookings, failLeg, reading);
   }
 
   // --- freshness --------------------------------------------------------------
