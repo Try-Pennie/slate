@@ -1257,12 +1257,17 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
     );
   }
 
+  // #3294 review, L98: a void speed verdict on an otherwise clean run is
+  // UNMEASURED, with its own non zero exit, never a pass; a real finding on any
+  // other bar outranks it and the run fails.
+  const speedVoid = speedUnmeasuredOf(m);
+  const verdict: JudgeVerdict = findings.length > 0 ? "fail" : speedVoid !== null ? "unmeasured" : "pass";
   return {
-    verdict: findings.length === 0 ? "pass" : "fail",
-    exit: findings.length === 0 ? JUDGE_EXIT.pass : JUDGE_EXIT.fail,
+    verdict,
+    exit: JUDGE_EXIT[verdict],
     findings,
     measurements: m,
-    speedUnmeasured: speedUnmeasuredOf(m),
+    speedUnmeasured: speedVoid,
     incomplete: [],
   };
 }

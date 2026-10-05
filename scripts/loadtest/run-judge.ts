@@ -339,22 +339,29 @@ const burst = loadDrivers("burst");
 // Read from EVERY result file rather than through `loadDrivers`, which would take
 // the first baseline silently and count a corrupt baseline.json as missing:
 // `baselineReading` refuses two, and calls a corrupt one unreadable.
-function resultFileEntries(): { name: string; parsed?: unknown; error?: string }[] {
+function resultFileEntries(): {
+  files: { name: string; parsed?: unknown; error?: string }[];
+  listingError?: string;
+} {
   let names: string[] = [];
   try {
     names = readdirSync(RESULTS).filter((f) => f.endsWith(".json"));
-  } catch {
-    return [];
+  } catch (err) {
+    // Its own reason (L11): an unlistable directory is not "no baseline file".
+    return { files: [], listingError: (err as Error).message };
   }
-  return names.map((name) => {
-    try {
-      return { name, parsed: readJson<unknown>(join(RESULTS, name)) };
-    } catch (err) {
-      return { name, error: (err as Error).message };
-    }
-  });
+  return {
+    files: names.map((name) => {
+      try {
+        return { name, parsed: readJson<unknown>(join(RESULTS, name)) };
+      } catch (err) {
+        return { name, error: (err as Error).message };
+      }
+    }),
+  };
 }
-const baseline = baselineReading(resultFileEntries());
+const resultEntries = resultFileEntries();
+const baseline = baselineReading(resultEntries.files, resultEntries.listingError);
 // What the run itself sent on the steady pass. It is the CONTROL the analytics
 // count is polled against: the run knows how many requests it made, so a count far
 // under it means the window has not caught up rather than that the Worker was idle.

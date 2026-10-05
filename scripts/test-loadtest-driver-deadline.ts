@@ -412,7 +412,7 @@ function baselineWiringProblems(yml: string, runJudge: string): string[] {
   const judge = job("judge");
   if (!/needs: \[[^\]]*\bbaseline\b/.test(judge)) out.push("the judge does not wait for the baseline");
   if (!/EXPECT_BASELINE: "1"/.test(judge)) out.push("the judge is not told the run carried a baseline");
-  if (!/baselineReading\(resultFileEntries\(\)\)/.test(runJudge)) out.push("the judge entry does not read the baseline through baselineReading");
+  if (!/baselineReading\(resultEntries\.files, resultEntries\.listingError\)/.test(runJudge)) out.push("the judge entry does not read the baseline through baselineReading");
   if (!/baseline: process\.env\.EXPECT_BASELINE === "1"/.test(runJudge)) out.push("the judge entry does not pass the expectation through");
   return out;
 }

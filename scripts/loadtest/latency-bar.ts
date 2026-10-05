@@ -74,7 +74,26 @@ export type BaselineReading =
   | { kind: "file"; result: DriverResult }
   | { kind: "absent" }
   | { kind: "several"; files: string[] }
-  | { kind: "unreadable"; file: string; why: string };
+  | { kind: "unreadable"; file: string; why: string }
+  /** The results directory itself could not be listed, so nothing was looked at. */
+  | { kind: "unlisted"; why: string };
+
+/**
+ * What is wrong with a parsed baseline's shape, or null when the judge can use it
+ * (#3294 review). Every field the latency rule reads is checked, so a malformed file
+ * is reported as unreadable rather than cast blind and crashing the judge.
+ */
+function baselineShapeProblem(parsed: unknown): string | null {
+  const f = parsed as { runId?: unknown; attempts?: unknown };
+  if (typeof f.runId !== "string") return "it carries no runId string";
+  if (!Array.isArray(f.attempts)) return "its attempts field is not a list";
+  for (const [i, a] of f.attempts.entries()) {
+    const at = a as { status?: unknown; wallMs?: unknown } | null;
+    if (typeof at?.status !== "number") return `attempt ${i} has no numeric status`;
+    if (typeof at?.wallMs !== "number" || !Number.isFinite(at.wallMs)) return `attempt ${i} has no finite wallMs`;
+  }
+  return null;
+}
 
 /**
  * The reading from every result file the judge gathered. A file counts as the
@@ -83,15 +102,25 @@ export type BaselineReading =
  */
 export function baselineReading(
   files: { name: string; parsed?: unknown; error?: string }[],
+  /** Set when the results directory could not be listed at all (L11). */
+  listingError?: string,
 ): BaselineReading {
+  if (listingError !== undefined) return { kind: "unlisted", why: listingError };
   const corrupt = files.find((f) => f.error !== undefined && /^baseline.*\.json$/.test(f.name));
   if (corrupt) return { kind: "unreadable", file: corrupt.name, why: corrupt.error! };
   const found = files.filter(
-    (f) => f.error === undefined && (f.parsed as { mode?: unknown } | undefined)?.mode === "baseline",
+    (f) =>
+      f.error === undefined &&
+      typeof f.parsed === "object" &&
+      f.parsed !== null &&
+      (f.parsed as { mode?: unknown }).mode === "baseline",
   );
   if (found.length > 1) return { kind: "several", files: found.map((f) => f.name) };
-  if (found.length === 1) return { kind: "file", result: found[0]!.parsed as DriverResult };
-  return { kind: "absent" };
+  if (found.length === 0) return { kind: "absent" };
+  const only = found[0]!;
+  const problem = baselineShapeProblem(only.parsed);
+  if (problem !== null) return { kind: "unreadable", file: only.name, why: problem };
+  return { kind: "file", result: only.parsed as DriverResult };
 }
 
 /**
@@ -130,6 +159,9 @@ export function judgeLatency(input: {
       kind: "unmeasured",
       why: `${reading.files.length} baseline files arrived (${reading.files.join(", ")}), so which one measured the day cannot be told`,
     };
+  }
+  if (reading.kind === "unlisted") {
+    return { kind: "unmeasured", why: `the results directory could not be listed (${reading.why}), so no baseline was looked for` };
   }
   if (reading.kind === "unreadable") {
     return { kind: "unmeasured", why: `the baseline file ${reading.file} could not be read (${reading.why})` };
@@ -189,7 +221,11 @@ export function latencyReportLine(j: LatencyJudgement): string {
  */
 export function verdictText(verdict: string, speedUnmeasured: string | null): string {
   const head = `Verdict: **${verdict.toUpperCase()}**`;
-  return speedUnmeasured === null
-    ? `${head}.`
-    : `${head} on every bar but speed; speed UNMEASURED because ${speedUnmeasured}.`;
+  if (speedUnmeasured === null) return `${head}.`;
+  // #3294 review: an otherwise clean run with no speed verdict is UNMEASURED, and
+  // the line says what passed and what was not judged; a failed run says the speed
+  // was not measured either.
+  return verdict === "unmeasured"
+    ? `${head}: every other bar passed, and speed was UNMEASURED because ${speedUnmeasured}.`
+    : `${head}; speed was also UNMEASURED because ${speedUnmeasured}.`;
 }

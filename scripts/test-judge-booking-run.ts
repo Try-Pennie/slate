@@ -1633,6 +1633,9 @@ function slowRun(made = 100): JudgeInput {
     assert(!bars(r).includes("latency of successful bookings"), `${label}: and no latency finding is invented`);
     eq(r.measurements?.latency?.kind, "unmeasured", `${label}: the speed result is unmeasured`);
     assert(r.speedUnmeasured?.includes(cause) ?? false, `${label}: saying why (${r.speedUnmeasured})`);
+    // #3294 review, L98: every other bar passed, and that is still NOT a pass.
+    eq(r.verdict, "unmeasured", `${label}: the run's verdict is unmeasured, never pass`);
+    eq(r.exit, JUDGE_EXIT.unmeasured, `${label}: and it exits non zero, so the workflow is not green`);
   };
   unmeasured(withBaseline(3_000, 2_000, null), "no baseline file", "a missing baseline");
   unmeasured(
@@ -1674,10 +1677,42 @@ function slowRun(made = 100): JudgeInput {
     i.bookingIdsWithBusyBlock = i.bookings.map((b) => b.id);
   });
   eq(failsElsewhere.verdict, "fail", "and a run with a real finding beside an unmeasured speed still fails");
+  eq(failsElsewhere.exit, JUDGE_EXIT.fail, "a real failure outranks the void speed verdict");
+  assert(JUDGE_EXIT.unmeasured !== 0, "the unmeasured exit is never the pass exit");
   eq(fairDay.speedUnmeasured, null, "a measured run carries no unmeasured note");
   eq(verdictText("pass", null), "Verdict: **PASS**.", "a measured run's verdict line is unchanged");
-  const voided = verdictText("pass", "no baseline file arrived");
-  assert(voided.startsWith("Verdict: **PASS**") && voided.includes("speed UNMEASURED") && voided.includes("no baseline file arrived"), `a void speed verdict is stated in the verdict line itself: ${voided}`);
+  const voided = verdictText("unmeasured", "no baseline file arrived");
+  assert(
+    voided.startsWith("Verdict: **UNMEASURED**") && voided.includes("every other bar passed") && voided.includes("no baseline file arrived"),
+    `a void speed verdict on an otherwise clean run says so in the verdict line: ${voided}`,
+  );
+  assert(!/PASS/.test(voided), "and never says pass");
+  const failedToo = verdictText("fail", "no baseline file arrived");
+  assert(failedToo.startsWith("Verdict: **FAIL**") && failedToo.includes("speed was also UNMEASURED"), `a failed run says the speed was not measured either: ${failedToo}`);
+
+  // #3294 review: a malformed baseline is unreadable, never a crash, and never cast blind.
+  const shape = (parsed: unknown) => baselineReading([{ name: "baseline.json", parsed }]);
+  for (const [label, parsed, field] of [
+    ["no attempts", { mode: "baseline", runId: RUN }, "attempts"],
+    ["attempts not a list", { mode: "baseline", runId: RUN, attempts: "x" }, "attempts"],
+    ["no run id", { ...restFile(2_000), runId: undefined }, "runId"],
+    ["an attempt with no status", { ...restFile(2_000), attempts: [{ wallMs: 10 }] }, "status"],
+    ["an attempt with no wall time", { ...restFile(2_000), attempts: [{ status: 200 }] }, "wallMs"],
+  ] as [string, unknown, string][]) {
+    const r = shape(parsed);
+    assert(r.kind === "unreadable" && r.why.includes(field), `${label} is unreadable, naming ${field}: ${JSON.stringify(r)}`);
+  }
+  // A results directory that cannot be listed is its own reason, not "no baseline file".
+  const unlisted = baselineReading([], "EACCES: permission denied");
+  eq(unlisted, { kind: "unlisted", why: "EACCES: permission denied" }, "an unlistable directory is its own reading");
+  unmeasured(
+    broken((i) => {
+      i.expectedLegs = { ...i.expectedLegs, baseline: true };
+      i.baseline = unlisted;
+    }),
+    "could not be listed",
+    "an unlistable results directory",
+  );
 
   // How the judge entry turns the results directory into a reading.
   const good = restFile(2_000);

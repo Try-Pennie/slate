@@ -882,7 +882,7 @@ arrived). The fault drivers' files get the same file checks as the steady ones.
 |---|---|
 | planned bookings completed | every steady driver ran its whole plan. A driver that stopped at its own deadline FAILS this with the driver, how far it got and the run's completed share (#3222); every other bar is still scored on what ran |
 | confirmed a minute | at or above 80 percent of target, with the full outcome mix printed so a short run says WHY |
-| latency | p50, p95 and max over ALL responses. The pass rule (#3258) is the p95 of the **200s** at most `LOAD_OVER_REST_RATIO_BAR` (2.5) times the median of the **same day baseline**: a dozen bookings at rest on the same deployment just before the steady pass. The fixed 5,000ms bar is still **reported** on every run, met or missed, beside the baseline median. A run with no baseline leg (a hand run) is held to the fixed bar and says why; a baseline the workflow ran that did not arrive, arrived twice, could not be read, came from another run or confirmed fewer than 8 voids the **speed verdict only** (Dan, 2026-10-05): the report says speed UNMEASURED in its verdict line, and every other bar is still judged. See "Latency is judged against its own day" below |
+| latency | p50, p95 and max over ALL responses. The pass rule (#3258) is the p95 of the **200s** at most `LOAD_OVER_REST_RATIO_BAR` (2.5) times the median of the **same day baseline**: a dozen bookings at rest on the same deployment just before the steady pass. The fixed 5,000ms bar is still **reported** on every run, met or missed, beside the baseline median. A run with no baseline leg (a hand run) is held to the fixed bar and says why; a baseline the workflow ran that did not arrive, arrived twice, could not be read, came from another run or confirmed fewer than 8 voids the **speed verdict only** (Dan, 2026-10-05): every other bar is still judged; a run clean on all of them is UNMEASURED (exit 3), never a pass, and a failure on any of them still FAILS it. See "Latency is judged against its own day" below |
 | 5xx and no reply | counted **separately** and both fail: a request answered badly and one never answered send two different people to two different places |
 | double bookings | no two run-scoped ACTIVE bookings overlap on one agent in `[starts_at, ends_at)`, read through a **paginating** list, and the preflight must have seen `bookings_active_slot_uniq` actually REFUSE a planted duplicate (without that, an absence of overlaps proves nothing). The count is printed in the measured section on EVERY run, with its denominator and the same-slot count beside it, because a measured zero and a check that never ran read the same when neither prints (#2323) |
 | every 200 left a row | a booking row carrying the request's external id, an idempotency key, and a `busy_blocks` row |
@@ -929,9 +929,13 @@ are printed on every run: a slow day and a slow change are both visible, and the
 reader decides which it was.
 
 **An unusable baseline voids only the speed verdict** (Dan, 2026-10-05). Missing,
-doubled, unreadable, from another run, or fewer than 8 confirmed: the verdict line
-reads "on every bar but speed; speed UNMEASURED because ...", and the burst, steady,
-fault, overlap and freshness bars are judged as usual.
+doubled, unreadable or malformed, from another run, fewer than 8 confirmed, or a
+results directory that could not be listed: the burst, steady, fault, overlap and
+freshness bars are judged as usual. If any of them fails, the run FAILS (exit 4) and
+the verdict line adds that the speed was also unmeasured. If every one passes, the
+run is **UNMEASURED** (exit 3), never a pass, so the workflow is not green: finding
+nothing about speed is not a result about speed (L98). The line reads "every other
+bar passed, and speed was UNMEASURED because ...".
 
 **The multiple, 2.5, is provisional.** Dan approved it on 2026-10-05 on that basis. It was set from the 2026-10-04 arms with each
 arm's single at rest control booking standing in for a baseline it did not yet have.
