@@ -405,7 +405,7 @@ backfill is fixed by rewinding that table's cursor, in the same change as the wr
 ## A limit or a guard is not working
 
 Keys: `edge_limiter_unusable`, `rate_limit_broken:*`, `rate_limit_refund_broken:*`,
-`rate_limit_unidentified:*`.
+`rate_limit_unidentified:*`, `confirm_line_unreachable`.
 
 **What fired it.** A control that is supposed to bound something has stopped bounding
 it. Every limiter here fails OPEN, so the page means requests are being served
@@ -418,6 +418,12 @@ UNMETERED, not that anybody is being turned away.
   codes name which of the twelve things it met.
 - `rate_limit_unidentified` means requests arrived with no client address, which behind
   Cloudflare should be impossible: something is in front of us that should not be.
+- `confirm_line_unreachable` means confirms could not use the shared confirm line and fell
+  back to each server's own line (#3325). Bookings still go through and nothing can be
+  double booked; a crowd for one time may be answered slowly. Read `tag=confirm-line` for
+  the reason (`unbound` is a deploy without the `CONFIRM_LINE` binding), and the
+  `line_reason` on `confirm answered` lines for how many confirms it touched. Turning the
+  switch off on the admin Hours page stops the attempts. `docs/confirm-line.md` has the rest.
 
 **Fix or escalate.** A missing binding is a deploy fix. Treat an unmetered public path
 as time-sensitive rather than urgent: nothing is broken for a customer, and nothing is
