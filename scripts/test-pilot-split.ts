@@ -23,8 +23,11 @@ import {
   parseTiers,
   planFromEnv,
   crossCheckSlateBookings,
+  leadKey,
   PILOT_SPLIT_EXIT,
+  RETIRED_PILOT_SPLIT_EXITS,
   type SalesforceTiers,
+  type SalesforcePercent,
   MIN_LEADS_PER_HALF,
   MIN_OUTCOMES_PER_HALF,
 } from "./lib/pilot-split.ts";
@@ -153,33 +156,52 @@ function idsInBucketRange(n: number, below: boolean, percent: number, prefix: st
   if (notSet.ok) eq(notSet.withoutSubmission, 3, "events with no submission id are counted, not dropped silently");
 }
 
-// --- 3. per lead: dedupe, contradictions, pages that do not assign -------------
+// --- 3. per lead: dedupe, the side the split assigned, pages that do not assign --
 {
+  // #3327: every lead is judged on the side slateBucket gives it at the percentage
+  // (intention to treat), whichever booker it was later seen in. A lead seen under
+  // both providers used to be dropped from both halves, and on real traffic those
+  // were nearly all Slate side leads who booked, so Slate read low.
+  const [repeat, slateLeaked] = idsInBucketRange(2, true, 50, "a04UiDS");
+  const [calcomLeaked, noAssign, opener, booker] = idsInBucketRange(4, false, 50, "a04UiDC");
   const rows = [
     // Three visits, one lead: counted once.
-    ...lead("a04Ui000000AAAA", "slate"),
-    ...lead("a04Ui000000AAAA", "slate", [], "20261006"),
-    ...lead("a04Ui000000AAAAQAB", "slate", ["view_booker", "complete_booking"], "20261007"),
-    // Seen under both providers: the two pages disagreed.
-    ...lead("a04Ui000000BBBB", "slate"),
-    ...lead("a04Ui000000BBBB", "cal.com"),
+    ...lead(repeat, "slate"),
+    ...lead(repeat, "slate", [], "20261006"),
+    ...lead(`${repeat}QAB`, "slate", ["view_booker", "complete_booking"], "20261007"),
+    // A Slate side lead who opened and booked on cal.com.
+    ...lead(slateLeaked, "slate"),
+    ["20261006", slateLeaked, "cal.com", "cal_booking", "view_booker", "1"],
+    ["20261006", slateLeaked, "cal.com", "cal_booking", "complete_booking", "1"],
+    // A cal.com side lead who booked on Slate.
+    ...lead(calcomLeaked, "cal.com"),
+    ["20261006", calcomLeaked, "slate", "cal_booking", "complete_booking", "1"],
     // Booker events and no assignment: a page outside the split.
-    ["20261005", "a04Ui000000CCCC", "cal.com", "cal_booking", "view_booker", "1"],
-    ...lead("a04Ui000000DDDD", "cal.com", ["navigate_to_booker"]),
-    ...lead("a04Ui000000EEEE", "cal.com", ["complete_booking"]),
+    ["20261005", noAssign, "cal.com", "cal_booking", "view_booker", "1"],
+    ...lead(opener, "cal.com", ["navigate_to_booker"]),
+    ...lead(booker, "cal.com", ["complete_booking"]),
   ];
   const parsed = parseGa4Export(csv(rows));
   assert(parsed.ok, "the dedupe fixture parses");
   if (parsed.ok) {
-    const s = summarizeLeads(parsed, { percent: null });
-    eq(s.slate.leads, 1, "a lead with three assignment events (15 and 18 character forms) counts once");
-    eq(s.slate.bookings, 1, "its booking on a later visit counts for it");
-    eq(s.contradictions, 1, "a lead seen under both providers is counted as a contradiction");
-    eq(s.calcom.leads, 2, "the contradiction is in neither half");
+    const s = summarizeLeads(parsed, { percent: 50 });
+    eq(s.slate.leads, 2, "a lead with three assignment events (15 and 18 character forms) counts once, and a lead seen under both providers is counted on its hash side");
+    eq(s.slate.bookings, 2, "a later visit's booking counts, and so does a Slate side lead's booking on cal.com");
+    eq(s.calcom.leads, 3, "a cal.com side lead seen under Slate stays on the cal.com side");
+    eq(s.calcom.bookings, 2, "and its booking on Slate counts for the cal.com side");
+    eq(
+      s.leakage,
+      { slateSide: 1, slateSideBookedOnCalcom: 1, calcomSide: 1, calcomSideBookedOnSlate: 1 },
+      "leads seen under both providers are counted as leakage, by direction",
+    );
     eq(s.withoutAssignment, 1, "a lead with booker events and no assignment is counted and left out");
-    eq(s.calcom.opened, 2, "navigate_to_booker counts as opening, and so does a booking with no open event");
-    eq(s.calcom.bookings, 1, "complete_booking counts as a booking");
-    eq(s.slate.leftWithoutOpening, 0, "a lead who opened on any visit did not leave without opening");
+    eq(s.calcom.opened, 3, "navigate_to_booker counts as opening, and so does a booking with no open event, under either provider");
+    eq(s.slate.leftWithoutOpening, 0, "a lead who opened on any visit, under either provider, did not leave without opening");
+    assert(s.slateKeys.has(leadKey(slateLeaked)) && !s.slateKeys.has(leadKey(calcomLeaked)), "the Slate half is the Slate side");
+    assert(
+      s.slateBookedKeys.has(leadKey(repeat)) && !s.slateBookedKeys.has(leadKey(slateLeaked)) && !s.slateBookedKeys.has(leadKey(calcomLeaked)),
+      "the cross check gets only Slate side leads with a complete_booking labelled slate",
+    );
   }
 }
 
@@ -194,8 +216,8 @@ function idsInBucketRange(n: number, below: boolean, percent: number, prefix: st
     const s = summarizeLeads(parsed, { percent: 50 });
     eq(s.outsidePilot, 1, "a cal.com lead whose bucket is under the percentage is outside the pilot");
     eq(s.hashDisagrees, 1, "a Slate lead whose bucket is at or over the percentage disagrees with the hash");
-    eq(s.calcom.leads, 1, "the outside lead is not in the control half");
-    eq(s.slate.leads, 2, "the disagreeing Slate lead is still counted in the half it was given");
+    eq(s.calcom.leads, 2, "the disagreeing Slate lead is counted on the cal.com side the hash gave it (#3327)");
+    eq(s.slate.leads, 1, "and the outside lead is in neither half");
   }
   // With an xbc column the population is filtered directly.
   const withXbc = parseGa4Export(
@@ -214,11 +236,12 @@ function idsInBucketRange(n: number, below: boolean, percent: number, prefix: st
     const s = summarizeLeads(withXbc, { percent: 50, tiers: new Set(["1"]) });
     eq(s.outsidePilot, 1, "a lead whose XBC is not in a pilot tier is outside the pilot");
     eq(s.hashDisagrees, 1, "a Low cal.com lead under the percentage disagrees with the hash");
-    eq(s.calcom.leads, 2, "both Low cal.com leads stay in the control half: a lead is counted by the booker it was given");
+    eq(s.calcom.leads, 1, "only the Low lead the hash put on the cal.com side is in the control half");
+    eq(s.slate.leads, 2, "the Low lead given cal.com against its hash is counted on the Slate side (#3327)");
     // #2946: the pilot covers the tiers SlatePilotTiers__c names, not Low alone.
     const wide = summarizeLeads(withXbc, { percent: 50, tiers: parseTiers("1;2;3;4;5") as Set<string> });
     eq(wide.outsidePilot, 0, "with every tier in the pilot, a High lead is in it");
-    eq(wide.calcom.leads, 3, "and counted in the half it was given");
+    eq(wide.calcom.leads, 2, "and counted on the side its hash gave it");
     let threw = false;
     try {
       summarizeLeads(withXbc, { percent: 50 });
@@ -372,7 +395,79 @@ function idsInBucketRange(n: number, below: boolean, percent: number, prefix: st
   eq(noAssign.exit, PILOT_SPLIT_EXIT.noAssignmentEvents, "an export with no booking_assignment at all names the missing tag");
   assert(/GTM/.test(text(noAssign)), "and points at the GTM tag");
 
-  eq(judge(csv(healthyRows)).exit, PILOT_SPLIT_EXIT.populationUnchecked, "no percentage and no xbc: the population cannot be checked");
+  // #3327: the percentage decides every lead's side, so with none known nothing is
+  // compared, with or without an xbc column, and the refusal is its own code.
+  const noPercent = judge(csv(healthyRows));
+  eq(noPercent.exit, PILOT_SPLIT_EXIT.percentUnknown, "no PILOT_SPLIT_PERCENT and no Salesforce reading: no lead has a side");
+  assert(/PILOT_SPLIT_PERCENT/.test(text(noPercent)) && /SlatePilotPercent__c/.test(text(noPercent)), `and it says where the percentage comes from (${text(noPercent)})`);
+  eq(noPercent.needsPercent, true, "and asks the command to read SlatePilotPercent__c");
+  eq(healthy.needsPercent, false, "a run given PILOT_SPLIT_PERCENT asks for nothing");
+  const xbcHealthy = csv(
+    healthyRows.map((r) => [...r.slice(0, 3), "111", ...r.slice(3)]),
+    [...HEADER.slice(0, 3), "xbc", ...HEADER.slice(3)],
+  );
+  eq(
+    judge(xbcHealthy, { PILOT_SPLIT_TIERS: "1;2;3;4;5" }).exit,
+    PILOT_SPLIT_EXIT.percentUnknown,
+    "an xbc column does not stand in for the percentage: the side still needs it",
+  );
+  // SlatePilotPercent__c as the command read it, judged as Salesforce's (L11).
+  const sfPercent = (salesforcePercent: SalesforcePercent, env: Record<string, string> = {}) => {
+    const r = judgePilotSplit({ exports: [{ name: "export-1.csv", text: csv(healthyRows) }], env, salesforcePercent });
+    seen.add(r.exit);
+    return r;
+  };
+  const fromSf = sfPercent({ ok: true, value: 50 });
+  eq(fromSf.exit, PILOT_SPLIT_EXIT.compared, "a readable SlatePilotPercent__c supplies the percentage");
+  assert(/50%/.test(text(fromSf)) && /SlatePilotPercent__c/.test(text(fromSf)), `and the report names it as the source (${text(fromSf)})`);
+  eq(fromSf.needsPercent, false, "and asks for nothing more");
+  assert(/PILOT_SPLIT_PERCENT/.test(text(healthy)) && !/SlatePilotPercent__c as/.test(text(healthy)), `a set PILOT_SPLIT_PERCENT is named as the source (${text(healthy)})`);
+  const sfEmptyPercent = sfPercent({ ok: true, value: null });
+  assert(
+    sfEmptyPercent.exit === PILOT_SPLIT_EXIT.percentUnknown && /SlatePilotPercent__c holds no number/.test(text(sfEmptyPercent)),
+    `an empty SlatePilotPercent__c is refused, never read as a default (${text(sfEmptyPercent)})`,
+  );
+  const sfBadPercent = sfPercent({ ok: true, value: 150 });
+  assert(
+    sfBadPercent.exit === PILOT_SPLIT_EXIT.percentUnknown && /SlatePilotPercent__c=150/.test(text(sfBadPercent)) && !/PILOT_SPLIT_PERCENT=/.test(text(sfBadPercent)),
+    `a SlatePilotPercent__c outside 0 to 100 is refused by its own name (${text(sfBadPercent)})`,
+  );
+  const sfFailedPercent = sfPercent({ ok: false, message: "SF token failed: 401" });
+  assert(
+    sfFailedPercent.exit === PILOT_SPLIT_EXIT.percentUnknown && /SlatePilotPercent__c could not be read: SF token failed: 401/.test(text(sfFailedPercent)),
+    `a failed Salesforce read names the read (${text(sfFailedPercent)})`,
+  );
+  eq(sfPercent({ ok: true, value: 0 }, { PILOT_SPLIT_PERCENT: "50" }).exit, PILOT_SPLIT_EXIT.compared, "PILOT_SPLIT_PERCENT, when set, wins over Salesforce");
+
+  // #3327 against the whole judgement: Slate side leads who booked on cal.com are
+  // Slate side bookings, named as leakage, and kept out of the Slate cross check.
+  const leaked = slateIds.slice(100, 105);
+  const backwards = calIds[100]!;
+  const leakRows = [
+    ...healthyRows,
+    ...leaked.flatMap((id) => [
+      ["20261005", id, "cal.com", "cal_booking", "view_booker", "1"],
+      ["20261005", id, "cal.com", "cal_booking", "complete_booking", "1"],
+    ]),
+    ["20261005", backwards, "slate", "cal_booking", "view_booker", "1"],
+  ];
+  const slateBooked = slateIds.slice(0, 30);
+  const leak = judgePilotSplit({
+    exports: [{ name: "export-1.csv", text: csv(leakRows) }],
+    env: { PILOT_SPLIT_PERCENT: "50" },
+    slateCheck: { ok: true, submissionIds: slateBooked },
+  });
+  seen.add(leak.exit);
+  eq(leak.exit, PILOT_SPLIT_EXIT.compared, "an export with leads seen under both providers is compared");
+  assert(text(leak).includes(`Slate:   ${slateIds.length} leads, 35 bookings`), `a Slate side lead who booked on cal.com is a Slate side lead and booking (${text(leak)})`);
+  assert(text(leak).includes(`cal.com: ${calIds.length} leads, 20 bookings`), `a cal.com side lead seen under Slate stays on the cal.com side (${text(leak)})`);
+  assert(
+    /5 Slate side leads were also seen under cal.com \(5 booked there\)/.test(text(leak)) && /1 cal.com side lead was also seen under Slate \(0 booked there\)/.test(text(leak)),
+    `and the leakage is named in each direction (${text(leak)})`,
+  );
+  assert(!/seen under both providers \(the two pages disagreed/.test(text(leak)), "and they are no longer left out of both halves");
+  eq(leak.slateBookedKeys.size, 30, "the cross check reads only Slate side bookings labelled slate");
+  assert(/Slate cross check: 30 of 30 /.test(text(leak)) && /0 GA4 bookings have none/.test(text(leak)), `so a booking made on cal.com is never reported as a missing Slate row (${text(leak)})`);
 
   const outsideRows = [...healthyRows, ...lead(idsInBucketRange(1, true, 50, "a04UiX")[0], "cal.com")];
   const outside = judge(csv(outsideRows), { PILOT_SPLIT_PERCENT: "50" });
@@ -549,6 +644,12 @@ function idsInBucketRange(n: number, below: boolean, percent: number, prefix: st
     assert(seen.has(code), `exit ${code} (${name}) is produced by at least one case`);
   }
   eq(new Set(Object.values(PILOT_SPLIT_EXIT)).size, Object.keys(PILOT_SPLIT_EXIT).length, "no two outcomes share an exit code");
+  // A retired code keeps meaning what it meant in old runs and old notes, so it is
+  // never handed to a new outcome.
+  assert(RETIRED_PILOT_SPLIT_EXITS.includes(7), "exit 7 (population unchecked) is recorded as retired by #3327");
+  for (const code of RETIRED_PILOT_SPLIT_EXITS) {
+    assert(!(Object.values(PILOT_SPLIT_EXIT) as number[]).includes(code), `retired exit ${code} is not reused`);
+  }
 }
 
 finish();

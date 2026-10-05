@@ -32,7 +32,7 @@ const endMs = (e: { end?: { dateTime?: string } }) => Date.parse(e.end?.dateTime
 
 // --- a bootstrap is scoped to what it asked for -------------------------------
 {
-  const { events } = stubSyncEvents(null, NOW, WINDOW);
+  const { events } = stubSyncEvents("agent@x.com", null, NOW, WINDOW);
   assert(events.length > 0, "a bootstrap returns events at all, so the checks below are not vacuous");
 
   const min = Date.parse(WINDOW.timeMinIso);
@@ -49,8 +49,8 @@ const endMs = (e: { end?: { dateTime?: string } }) => Date.parse(e.end?.dateTime
   // The window is HONOURED, not ignored: a narrower one returns strictly fewer events. A stub
   // that returned the same set whatever it was handed would pass the check above and prove
   // nothing, which is exactly the state this replaces.
-  const wide = stubSyncEvents(null, NOW, WINDOW).events.length;
-  const narrow = stubSyncEvents(null, NOW, {
+  const wide = stubSyncEvents("agent@x.com", null, NOW, WINDOW).events.length;
+  const narrow = stubSyncEvents("agent@x.com", null, NOW, {
     timeMinIso: WINDOW.timeMinIso,
     timeMaxIso: new Date(NOW + 2 * DAY).toISOString(),
   }).events.length;
@@ -61,7 +61,7 @@ const endMs = (e: { end?: { dateTime?: string } }) => Date.parse(e.end?.dateTime
 {
   // The straddling cases, which are the ones the reconcile predicate exists for. Google's two
   // bounds apply to two DIFFERENT fields: timeMin bounds an event's END, timeMax its START.
-  const { events } = stubSyncEvents(null, NOW, WINDOW);
+  const { events } = stubSyncEvents("agent@x.com", null, NOW, WINDOW);
   const min = Date.parse(WINDOW.timeMinIso);
   const max = Date.parse(WINDOW.timeMaxIso);
   assert(
@@ -80,7 +80,7 @@ const endMs = (e: { end?: { dateTime?: string } }) => Date.parse(e.end?.dateTime
   // event arrives through the delta and is delivered exactly once, so nothing re-adds it
   // later. The soak has to reproduce that, or the case the window filter is dangerous for
   // never occurs in it.
-  const { events } = stubSyncEvents("a-token", NOW, WINDOW);
+  const { events } = stubSyncEvents("agent@x.com", "a-token", NOW, WINDOW);
   const max = Date.parse(WINDOW.timeMaxIso);
   assert(events.length > 0, "an incremental returns something");
   assert(
@@ -92,15 +92,15 @@ const endMs = (e: { end?: { dateTime?: string } }) => Date.parse(e.end?.dateTime
 {
   // Deterministic, so a soak run is reproducible and a difference between two runs means the
   // code changed rather than the fixture rolling differently.
-  const a = stubSyncEvents(null, NOW, WINDOW).events.map((e) => e.id).join(",");
-  const b = stubSyncEvents(null, NOW, WINDOW).events.map((e) => e.id).join(",");
+  const a = stubSyncEvents("agent@x.com", null, NOW, WINDOW).events.map((e) => e.id).join(",");
+  const b = stubSyncEvents("agent@x.com", null, NOW, WINDOW).events.map((e) => e.id).join(",");
   eq(a, b, "the same inputs produce the same batch");
 }
 
 {
   // A window whose bounds cannot be read must not silently produce the unscoped set, which
   // would put the soak back where it started while looking like it was testing something.
-  const { events } = stubSyncEvents(null, NOW, { timeMinIso: "nope", timeMaxIso: "nope" });
+  const { events } = stubSyncEvents("agent@x.com", null, NOW, { timeMinIso: "nope", timeMaxIso: "nope" });
   eq(events.length, 0, "an unreadable window returns nothing rather than everything");
 }
 

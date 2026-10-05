@@ -26,15 +26,22 @@
 //    Booker events alone come from pages outside the split (`/offerportal`,
 //    `/portal` and anything else still on cal.com), and counting them would put
 //    leads the split never saw into the control half.
-// 3. A lead seen under BOTH providers is a contradiction: the two pages disagreed
-//    about it. It is counted and left out of both halves.
+// 3. A lead is judged on the side the split ASSIGNED it, `slateBucket(key)` under
+//    the percentage, whichever booker it was later seen in (intention to treat,
+//    #3327, the rule `report:pilot-compare` already holds). Booked is a
+//    `complete_booking` under either provider, opened is an open step under either.
+//    A lead seen under both providers is counted on its side and named as leakage,
+//    by direction. Until #3327 such a lead was dropped from both halves, and on
+//    real traffic nearly all of them were Slate side leads who booked, so the
+//    report read Slate low. So the percentage is always needed: it comes from
+//    PILOT_SPLIT_PERCENT, or SlatePilotPercent__c as Salesforce holds it now, and
+//    with neither nothing is reported (exit 17).
 // 4. The export must be limited to PILOT leads. `booking_assignment` fires for
-//    every lead on those pages, and a non Low lead is labelled `cal.com`, so an
-//    unfiltered export puts High and Medium leads into the control half, which is
-//    exactly the lead mix difference the split exists to remove. Either an `xbc`
-//    column filters them directly, or the percentage lets the hash find them: a
-//    `cal.com` lead whose bucket is UNDER the percentage cannot be a pilot lead.
-//    With neither, the population cannot be checked and nothing is reported.
+//    every lead on those pages, and a lead outside the pilot is labelled `cal.com`,
+//    so an unfiltered export puts them into the control half, which is exactly the
+//    lead mix difference the split exists to remove. Either an `xbc` column filters
+//    them directly, or the hash finds the ones it can: a lead never seen under
+//    Slate whose bucket is UNDER the percentage cannot be a pilot lead.
 
 export type Provider = "slate" | "cal.com";
 
@@ -57,8 +64,6 @@ export const PILOT_SPLIT_EXIT = {
   unreadablePercent: 5,
   /** Not one booking_assignment event: the GTM tag is not sending it. */
   noAssignmentEvents: 6,
-  /** No xbc column and no percentage, so leads outside the pilot cannot be found. */
-  populationUnchecked: 7,
   /** The export holds leads outside the pilot and nothing can remove them. */
   outsidePilot: 8,
   /** One half has no leads at all. */
@@ -77,7 +82,19 @@ export const PILOT_SPLIT_EXIT = {
   overlappingExports: 15,
   /** The export has an xbc column and no pilot tiers were given or could be read (#2946). */
   tiersUnknown: 16,
+  /**
+   * No split percentage is known (PILOT_SPLIT_PERCENT, or SlatePilotPercent__c read
+   * from Salesforce), so no lead has a side (#3327).
+   */
+  percentUnknown: 17,
 } as const;
+
+/**
+ * Codes no outcome may take again, so an old run's exit or an old note keeps meaning
+ * what it meant. 7 was "no xbc column and no percentage, so the population cannot be
+ * checked": since #3327 every run needs the percentage, so that case is exit 17.
+ */
+export const RETIRED_PILOT_SPLIT_EXITS: readonly number[] = [7];
 
 /**
  * Row counts GA4 stops an export at: the Exploration's Show rows choices and its
@@ -464,20 +481,35 @@ export interface Half {
   leftWithoutOpening: number;
 }
 
+/**
+ * Leads seen under BOTH providers, by the side the split assigned them (#3327). Each
+ * is counted in its own side's half; this says how many crossed over, and how many
+ * of those booked on the other provider.
+ */
+export interface Leakage {
+  slateSide: number;
+  slateSideBookedOnCalcom: number;
+  calcomSide: number;
+  calcomSideBookedOnSlate: number;
+}
+
 export interface LeadSummary {
   slate: Half;
   calcom: Half;
-  contradictions: number;
+  leakage: Leakage;
   withoutAssignment: number;
   unknownProvider: number;
   unrecognisedProviders: string[];
   xbcUnknown: number;
   outsidePilot: number;
+  /** Leads whose booking_assignment named the other booker from the one slateBucket gives. */
   hashDisagrees: number;
   bookerEvents: number;
   assignmentEvents: number;
   dates: string[];
+  /** The Slate side: every lead slateBucket put under the percentage. */
   slateKeys: Set<string>;
+  /** Slate side leads with a complete_booking labelled slate: what Slate's own rows should hold. */
   slateBookedKeys: Set<string>;
 }
 
@@ -485,14 +517,26 @@ const emptyHalf = (): Half => ({ leads: 0, bookings: 0, opened: 0, leftWithoutOp
 
 export function summarizeLeads(
   parsed: Extract<ParsedExport, { ok: true }>,
-  opts: { percent: number | null; tiers?: ReadonlySet<string> | null },
+  opts: { percent: number; tiers?: ReadonlySet<string> | null },
 ): LeadSummary {
   if (parsed.hasXbc && !opts.tiers) {
     // Never a default: before #2946 this filter was a hard coded Low, which put every
     // other tier's lead out of the pilot once the split covered them all.
     throw new Error("summarizeLeads: the export has an xbc column and no pilot tiers were given");
   }
-  type Acc = { assigned: boolean; providers: Set<Provider>; opened: boolean; booked: boolean; xbc: string | null };
+  type Acc = {
+    assigned: boolean;
+    /** The booker each booking_assignment named. */
+    assignedAs: Set<Provider>;
+    /** Every provider any of the lead's events carried. */
+    seenAs: Set<Provider>;
+    opened: boolean;
+    /** A complete_booking under either provider (#3327). */
+    booked: boolean;
+    /** The providers its complete_booking events carried. */
+    bookedAs: Set<Provider>;
+    xbc: string | null;
+  };
   const byLead = new Map<string, Acc>();
   const unrecognised = new Set<string>();
   const dates = new Set<string>();
@@ -502,21 +546,33 @@ export function summarizeLeads(
     if (row.count <= 0) continue;
     dates.add(row.date);
     if (row.unrecognisedProvider !== null) unrecognised.add(row.unrecognisedProvider);
-    const acc =
-      byLead.get(row.submissionKey) ??
-      ({ assigned: false, providers: new Set<Provider>(), opened: false, booked: false, xbc: null } as Acc);
+    const acc: Acc = byLead.get(row.submissionKey) ?? {
+      assigned: false,
+      assignedAs: new Set(),
+      seenAs: new Set(),
+      opened: false,
+      booked: false,
+      bookedAs: new Set(),
+      xbc: null,
+    };
     byLead.set(row.submissionKey, acc);
     if (acc.xbc === null && row.xbc !== null) acc.xbc = row.xbc;
     if (row.event === ASSIGNMENT_EVENT) {
       assignmentEvents += row.count;
       acc.assigned = true;
-      if (row.provider) acc.providers.add(row.provider);
+      if (row.provider) {
+        acc.assignedAs.add(row.provider);
+        acc.seenAs.add(row.provider);
+      }
     } else if (BOOKER_EVENTS.has(row.event)) {
       bookerEvents += row.count;
-      if (row.provider) acc.providers.add(row.provider);
+      if (row.provider) acc.seenAs.add(row.provider);
       if (OPEN_EVENTS.has(row.event)) acc.opened = true;
       if (row.event === BOOKED_EVENT) {
+        // A booking under a provider this file does not know still booked; it only
+        // cannot say where.
         acc.booked = true;
+        if (row.provider) acc.bookedAs.add(row.provider);
         acc.opened = true;
       }
     }
@@ -525,7 +581,7 @@ export function summarizeLeads(
   const s: LeadSummary = {
     slate: emptyHalf(),
     calcom: emptyHalf(),
-    contradictions: 0,
+    leakage: { slateSide: 0, slateSideBookedOnCalcom: 0, calcomSide: 0, calcomSideBookedOnSlate: 0 },
     withoutAssignment: 0,
     unknownProvider: 0,
     unrecognisedProviders: [...unrecognised].sort(),
@@ -543,15 +599,10 @@ export function summarizeLeads(
       s.withoutAssignment++;
       continue;
     }
-    if (acc.providers.size > 1) {
-      s.contradictions++;
-      continue;
-    }
-    if (acc.providers.size === 0) {
+    if (acc.seenAs.size === 0) {
       s.unknownProvider++;
       continue;
     }
-    const provider = [...acc.providers][0];
     if (parsed.hasXbc) {
       if (acc.xbc === null) {
         s.xbcUnknown++;
@@ -562,28 +613,35 @@ export function summarizeLeads(
         continue;
       }
     }
-    if (opts.percent !== null) {
-      const expectSlate = slateBucket(key) < opts.percent;
-      if (provider === "slate" && !expectSlate) s.hashDisagrees++;
-      if (provider === "cal.com" && expectSlate) {
-        // With XBC known this is a pilot tier lead the hash says should have had Slate
-        // (the pilot was off that day, or the percentage moved). Without it, the
-        // likelier reading is a lead that was never in the pilot.
-        if (parsed.hasXbc) s.hashDisagrees++;
-        else {
-          s.outsidePilot++;
-          continue;
-        }
+    // The side the split assigned: the one thing that decides the half (#3327).
+    const side: Provider = slateBucket(key) < opts.percent ? "slate" : "cal.com";
+    // Without XBC, a lead the hash puts on the Slate side that was never once shown
+    // Slate is likelier a lead that was never in the pilot than a pilot lead the page
+    // got wrong, and the hash can say no more about it. With XBC known, it is a pilot
+    // tier lead given the other booker (the pilot was off that day, or the percentage
+    // moved), and it stays on its side.
+    if (!parsed.hasXbc && side === "slate" && !acc.seenAs.has("slate")) {
+      s.outsidePilot++;
+      continue;
+    }
+    if ([...acc.assignedAs].some((p) => p !== side)) s.hashDisagrees++;
+    if (acc.seenAs.size > 1) {
+      if (side === "slate") {
+        s.leakage.slateSide++;
+        if (acc.bookedAs.has("cal.com")) s.leakage.slateSideBookedOnCalcom++;
+      } else {
+        s.leakage.calcomSide++;
+        if (acc.bookedAs.has("slate")) s.leakage.calcomSideBookedOnSlate++;
       }
     }
-    const half = provider === "slate" ? s.slate : s.calcom;
+    const half = side === "slate" ? s.slate : s.calcom;
     half.leads++;
     if (acc.booked) half.bookings++;
     if (acc.opened) half.opened++;
     else half.leftWithoutOpening++;
-    if (provider === "slate") {
+    if (side === "slate") {
       s.slateKeys.add(key);
-      if (acc.booked) s.slateBookedKeys.add(key);
+      if (acc.bookedAs.has("slate")) s.slateBookedKeys.add(key);
     }
   }
   return s;
@@ -680,11 +738,17 @@ export function daysNeeded(input: { leadsPerDay: number; percent: number; baseRa
 
 // --- the Slate cross check --------------------------------------------------------
 
+/**
+ * GA4's Slate bookings against Slate's own rows. `ga4Booked` is the Slate side leads
+ * with a complete_booking LABELLED slate (#3327): a Slate side lead who booked on
+ * cal.com is a booking in the comparison and has no Slate row to find, so counting it
+ * here would report the leakage as a tagging fault.
+ */
 export interface CrossCheck {
   matched: number;
-  /** GA4 says the lead booked, and Slate holds no booking for it. */
+  /** GA4 says the lead booked on Slate, and Slate holds no booking for it. */
   ga4Only: number;
-  /** Slate holds a booking for a Slate half lead GA4 never saw book. */
+  /** Slate holds a booking for a Slate half lead GA4 never saw book on Slate. */
   slateOnly: number;
   /** Slate holds a booking for a submission outside this export's Slate half. */
   outsideExport: number;
@@ -754,10 +818,19 @@ export interface Judgement {
    * SlatePilotTiers__c and judge again. An export with no xbc column needs no tiers.
    */
   needsTiers: boolean;
+  /**
+   * True only when PILOT_SPLIT_PERCENT is unset and no Salesforce reading was given:
+   * the command should read SlatePilotPercent__c and judge again (#3327). Every
+   * export needs the percentage, because it decides each lead's side.
+   */
+  needsPercent: boolean;
 }
 
 /** SlatePilotTiers__c as read from Salesforce: its value (null when empty), or why it could not be read. */
 export type SalesforceTiers = { ok: true; value: string | null } | { ok: false; message: string };
+
+/** SlatePilotPercent__c as read from Salesforce: its value (null when it holds no number), or why it could not be read. */
+export type SalesforcePercent = { ok: true; value: number | null } | { ok: false; message: string };
 
 const BOUNCE_NOTE =
   "Bounce here means a lead who left without opening the booker (no view_booker, navigate_to_booker or complete_booking). " +
@@ -771,6 +844,8 @@ export function judgePilotSplit(input: {
   slateCheck?: SlateCheckInput;
   /** SlatePilotTiers__c as the command read it, when PILOT_SPLIT_TIERS is unset and the judgement asked (`needsTiers`). */
   salesforceTiers?: SalesforceTiers;
+  /** SlatePilotPercent__c as the command read it, when PILOT_SPLIT_PERCENT is unset and the judgement asked (`needsPercent`). */
+  salesforcePercent?: SalesforcePercent;
 }): Judgement {
   const lines: string[] = [];
   const out = (exit: number, extra: Partial<Judgement> = {}): Judgement => ({
@@ -780,6 +855,7 @@ export function judgePilotSplit(input: {
     slateKeys: new Set(),
     slateBookedKeys: new Set(),
     needsTiers: false,
+    needsPercent: false,
     ...extra,
   });
 
@@ -798,7 +874,35 @@ export function judgePilotSplit(input: {
     lines.push(`FAILED (unreadable-percent): ${pr.message}.`);
     return out(PILOT_SPLIT_EXIT.unreadablePercent);
   }
-  const percent = pr.percent;
+  // The percentage, and where it came from (#3327), resolved like the tiers below:
+  // PILOT_SPLIT_PERCENT when the person set it, otherwise SlatePilotPercent__c as the
+  // command read it, judged and refused under its own name (L11). Never a default:
+  // the percentage decides every lead's side.
+  const sfp = input.salesforcePercent;
+  let percent: number | null = pr.percent;
+  let percentSource = "PILOT_SPLIT_PERCENT";
+  let percentRefusal: string | null = null;
+  if (percent === null) {
+    if (sfp === undefined) {
+      percentRefusal =
+        "no split percentage is known, so no lead has a side. Set PILOT_SPLIT_PERCENT to SlatePilotPercent__c for these " +
+        "days, or run with Salesforce credentials so the command reads it.";
+    } else if (!sfp.ok) {
+      percentRefusal = `SlatePilotPercent__c could not be read: ${sfp.message}. Set PILOT_SPLIT_PERCENT to the percentage for these days.`;
+    } else if (sfp.value === null) {
+      percentRefusal =
+        "SlatePilotPercent__c holds no number in Salesforce (trypennie reads an empty value as 100, every pilot lead on " +
+        "Slate), so there is no split to compare. Set PILOT_SPLIT_PERCENT to the percentage for these days.";
+    } else if (!Number.isFinite(sfp.value) || sfp.value < 0 || sfp.value > 100) {
+      percentRefusal =
+        `SlatePilotPercent__c=${sfp.value} (read from Salesforce now) is not a number from 0 to 100. ` +
+        "Set PILOT_SPLIT_PERCENT to the percentage for these days.";
+    } else {
+      percent = sfp.value;
+      percentSource = "SlatePilotPercent__c as Salesforce holds it now";
+    }
+  }
+  const needsPercent = pr.percent === null && sfp === undefined;
   // The tiers, and where they came from, so a refusal names the value that was
   // actually wrong (L11): PILOT_SPLIT_TIERS when the person set it, otherwise
   // SlatePilotTiers__c as the command read it from Salesforce.
@@ -825,9 +929,15 @@ export function judgePilotSplit(input: {
         "leads were in the pilot. Set PILOT_SPLIT_TIERS to the tiers for these days.";
     }
   }
+  // Both asks are returned with either refusal, so one Salesforce read answers both.
+  const needs = { needsTiers: parsed.hasXbc && tiersRaw === "" && sf === undefined, needsPercent };
   if (parsed.hasXbc && tiers === null) {
     lines.push(`FAILED (tiers-unknown): ${tiersRefusal as string}`);
-    return out(PILOT_SPLIT_EXIT.tiersUnknown, { needsTiers: tiersRaw === "" && sf === undefined });
+    return out(PILOT_SPLIT_EXIT.tiersUnknown, needs);
+  }
+  if (percent === null) {
+    lines.push(`FAILED (percent-unknown): ${percentRefusal as string}`);
+    return out(PILOT_SPLIT_EXIT.percentUnknown, needs);
   }
   const s = summarizeLeads(parsed, { percent, tiers });
   const range = s.dates.length > 0 ? `${s.dates[0]} to ${s.dates[s.dates.length - 1]}` : "no dates";
@@ -844,7 +954,6 @@ export function judgePilotSplit(input: {
   }
 
   const excluded: string[] = [];
-  if (s.contradictions > 0) excluded.push(`${plural(s.contradictions, "lead")} seen under both providers (the two pages disagreed about them)`);
   if (s.withoutAssignment > 0) excluded.push(`${plural(s.withoutAssignment, "lead")} with booker events and no assignment (a page outside the split)`);
   if (s.unknownProvider > 0) excluded.push(`${plural(s.unknownProvider, "lead")} with no recognisable booking_provider`);
   if (s.xbcUnknown > 0) excluded.push(`${plural(s.xbcUnknown, "lead")} with no xbc value`);
@@ -854,16 +963,8 @@ export function judgePilotSplit(input: {
   if (s.unrecognisedProviders.length > 0) notes.push(`booking_provider values this report does not know: ${s.unrecognisedProviders.join(", ")}`);
   if (parsed.ignoredRemainder) notes.push("the export held a second table after the first; only the first was read");
 
-  if (!parsed.hasXbc && percent === null) {
-    lines.push(
-      "FAILED (population-unchecked): the export has no xbc column and PILOT_SPLIT_PERCENT is not set, so leads outside the " +
-        "pilot cannot be found. booking_assignment fires for every lead on those pages and a non Low lead is labelled cal.com, " +
-        "so they would sit in the control half. Set PILOT_SPLIT_PERCENT to SlatePilotPercent__c for these days, or add xbc.",
-    );
-    return out(PILOT_SPLIT_EXIT.populationUnchecked, extra);
-  }
   if (!parsed.hasXbc && s.outsidePilot > 0) {
-    const share = percent as number;
+    const share = percent;
     const estimate = share > 0 && share < 100 ? Math.round((s.outsidePilot * (100 - share)) / share) : null;
     lines.push(
       `FAILED (outside-pilot): ${plural(s.outsidePilot, "cal.com lead")} in ${range} had a bucket under ${share}%, so they were ` +
@@ -878,7 +979,8 @@ export function judgePilotSplit(input: {
   if (s.slate.leads === 0 || s.calcom.leads === 0) {
     lines.push(
       `FAILED (empty-half): in ${range} Slate has ${plural(s.slate.leads, "lead")} and cal.com ${plural(s.calcom.leads, "lead")}; ` +
-        "one half is empty, so there is nothing to compare. Is SlatePilotPercent__c set between 0 and 100?",
+        `one half is empty, so there is nothing to compare. The split was read at ${percent}% (${percentSource}), and a ` +
+        "percentage of 0 or 100 puts every lead on one side.",
     );
     if (excluded.length > 0) lines.push(`Left out: ${excluded.join("; ")}.`);
     return out(PILOT_SPLIT_EXIT.emptyHalf, extra);
@@ -897,8 +999,21 @@ export function judgePilotSplit(input: {
     `${name} ${plural(h.leads, "lead")}, ${plural(h.bookings, "booking")} (${pct(h.bookings / h.leads)}), ` +
     `${h.leftWithoutOpening} left without opening the booker (${pct(h.leftWithoutOpening / h.leads)})`;
   lines.push(`Pilot split, ${range} (${plural(s.dates.length, "day")} in the export)`);
+  lines.push(
+    `Each lead is counted on the side the split assigned it, slateBucket under ${percent}% for Slate (${percentSource}), ` +
+      "whichever booker it was later seen in.",
+  );
   lines.push(halfLine("Slate:  ", s.slate));
   lines.push(halfLine("cal.com:", s.calcom));
+  const { slateSide, slateSideBookedOnCalcom, calcomSide, calcomSideBookedOnSlate } = s.leakage;
+  if (slateSide > 0 || calcomSide > 0) {
+    const were = (n: number, one: string) => `${plural(n, one)} ${n === 1 ? "was" : "were"}`;
+    lines.push(
+      `Leakage, each lead counted on its own side: ${were(slateSide, "Slate side lead")} also seen under cal.com ` +
+        `(${slateSideBookedOnCalcom} booked there); ${were(calcomSide, "cal.com side lead")} also seen under Slate ` +
+        `(${calcomSideBookedOnSlate} booked there).`,
+    );
+  }
 
   const short = (h: Half) =>
     h.leads < MIN_LEADS_PER_HALF || h.bookings < MIN_OUTCOMES_PER_HALF || h.leads - h.bookings < MIN_OUTCOMES_PER_HALF;
@@ -923,19 +1038,17 @@ export function judgePilotSplit(input: {
   }
   lines.push(BOUNCE_NOTE);
   if (excluded.length > 0) lines.push(`Left out: ${excluded.join("; ")}.`);
-  if (percent !== null) {
-    lines.push(
-      s.hashDisagrees > 0
-        ? `Hash check at ${percent}%: ${plural(s.hashDisagrees, "lead")} got the other booker from what slateBucket gives (the percentage moved, or the pilot was off, on some day in the range).`
-        : `Hash check at ${percent}%: every lead got the booker slateBucket gives.`,
-    );
-  }
+  lines.push(
+    s.hashDisagrees > 0
+      ? `Hash check at ${percent}%: ${plural(s.hashDisagrees, "lead")} got the other booker from what slateBucket gives (the percentage moved, or the pilot was off, on some day in the range). Each is counted on the side slateBucket gives.`
+      : `Hash check at ${percent}%: every lead got the booker slateBucket gives.`,
+  );
   for (const n of notes) lines.push(`Note: ${n}.`);
 
   const perDay = (s.slate.leads + s.calcom.leads) / Math.max(1, s.dates.length);
   lines.push(`Leads a day in this export: ${perDay.toFixed(1)}.`);
   const liftRaw = input.env.PILOT_SPLIT_LIFT;
-  if (liftRaw !== undefined && liftRaw.trim() !== "" && percent !== null) {
+  if (liftRaw !== undefined && liftRaw.trim() !== "") {
     const d = daysNeeded({ leadsPerDay: perDay, percent, baseRate: c.calcomRate, lift: Number(liftRaw) });
     lines.push(
       d.ok
@@ -961,9 +1074,10 @@ export function judgePilotSplit(input: {
   }
   const x = crossCheckSlateBookings({ ga4Booked: s.slateBookedKeys, slateHalf: s.slateKeys, slateRows: check.submissionIds });
   lines.push(
-    `Slate cross check: ${x.matched} of ${plural(s.slateBookedKeys.size, "GA4 booking")} have a Slate booking; ` +
-      `${x.ga4Only} GA4 bookings have none (a tagging fault); ${x.slateOnly} Slate bookings for Slate half leads GA4 never saw book ` +
-      `(GA4 losses such as ad blockers, which undercount the Slate half); ${x.outsideExport} Slate bookings for submissions outside this export's Slate half.`,
+    `Slate cross check: ${x.matched} of ${plural(s.slateBookedKeys.size, "Slate side lead")} GA4 saw book on Slate have a Slate booking; ` +
+      `${x.ga4Only} GA4 bookings have none (a tagging fault); ${x.slateOnly} Slate bookings for Slate side leads GA4 never saw book on Slate ` +
+      `(GA4 losses such as ad blockers, which undercount the Slate half, or a booking GA4 labelled cal.com); ` +
+      `${x.outsideExport} Slate bookings for submissions outside this export's Slate side.`,
   );
   return out(PILOT_SPLIT_EXIT.compared, extra);
 }

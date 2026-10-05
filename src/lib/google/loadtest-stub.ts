@@ -6,6 +6,7 @@
 // simulated agents without needing real Google accounts.
 import type { GoogleEvent, Interval } from "@/lib/google/calendar";
 import { parseStampMs } from "@/lib/date/stamp";
+import { GoogleHttpError } from "@/lib/google/http-error";
 import { keyHash, shouldInject, type FaultTarget } from "@/lib/loadtest-fault";
 
 export const LOADTEST = process.env.SLATE_LOADTEST === "true";
@@ -84,6 +85,47 @@ export function stubEventWrite(op: string, eventId: string): void {
   faultIfDue(`${op}:${eventId}`, "google-write");
 }
 
+/**
+ * The key a sync read is judged by: the CALENDAR, and nothing that changes between
+ * passes (#3103).
+ *
+ * It used to be `sync:<timeMin>:<syncToken>`, and the stub mints a new token on every
+ * call, so a calendar's verdict was redrawn each pass. The `sync_failures` page needs
+ * one agent failing on CONSECUTIVE passes, which a per pass draw almost never gives,
+ * so the fault leg's page had never fired on any run. Keyed on the calendar alone,
+ * the same share of calendars fails on every pass, which is what the comment above
+ * `faultIfDue` always said the fault was for.
+ */
+export function syncFaultKey(calendarId: string): string {
+  return `sync:${calendarId}`;
+}
+
+/**
+ * The failure a faulted sync read raises: a `403 notACalendarUser`, as the
+ * GoogleHttpError the classifier reads, so the lane records it as not-provisioned
+ * (#3103).
+ *
+ * Always that one shape, not drawn from the three, and it is a timing decision rather
+ * than a preference. A transient kind pages only at TRANSIENT_PAGE_AT, four
+ * consecutive passes, which at the load test Worker's roughly 90 second sync cadence
+ * is about 270 seconds after the first failure, and the first failure can itself land
+ * a whole pass into a five minute fault window. A definitive kind pages at the second
+ * consecutive pass, so it is the only kind the window can see page. The production
+ * rule is not touched. `scripts/test-loadtest-sync-fault-streak.ts` drives both kinds
+ * through the real predicate.
+ *
+ * And a GoogleHttpError, not a plain Error: the classifier reads a kind only from the
+ * status and reason it carries, so a plain Error saying "403" is recorded as transient
+ * whatever its message says.
+ */
+export function loadtestSyncFault(): GoogleHttpError {
+  return new GoogleHttpError(
+    "Google API error 403: notACalendarUser (loadtest fault)",
+    403,
+    "notACalendarUser",
+  );
+}
+
 // How many busy events a bootstrap sync returns per calendar (realistic batch
 // the sync lane then writes to busy_blocks). Incrementals return ~nothing.
 const HORIZON_MS = 4 * 86_400_000;
@@ -144,11 +186,12 @@ export function stubCalendarList(email = "unknown"): {
  * produces comfortable interior events would never exercise it.
  */
 export function stubSyncEvents(
+  calendarId: string,
   syncToken: string | null,
   nowMs: number,
   window: { timeMinIso: string; timeMaxIso: string },
 ): { events: GoogleEvent[]; nextSyncToken: string | null; truncated: boolean } {
-  faultIfDue(`sync:${window.timeMinIso}:${syncToken ?? "bootstrap"}`);
+  if (shouldInject("google-read", syncFaultKey(calendarId))) throw loadtestSyncFault();
   const minMs = parseStampMs(window.timeMinIso);
   const maxMs = parseStampMs(window.timeMaxIso);
   // An unreadable window returns NOTHING, not everything. Falling back to the unscoped set
