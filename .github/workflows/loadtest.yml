@@ -11,20 +11,27 @@ name: Booking path load run
 #               cannot make six hundred real calendar events), and that the
 #               database really refuses a planted clash. Nothing downstream means
 #               anything if this does not pass.
-#   setup-burst picks the ONE bucket, the ONE slot and the ONE moment the burst
-#               fires at, because a burst whose drivers each chose their own is not
-#               a burst: nothing contends and everything succeeds. The bucket is
-#               MEASURED (#2278): every pool's depth is read through the booker's
-#               own predicate and the shallowest one actually offering times wins,
-#               since the control is worth more the fewer agents share the slot.
-#   burst       four drivers firing twenty five requests each at that moment.
-#               One winner PER AGENT and the rest SLOT_TAKEN is
-#               `bookings_active_slot_uniq` doing its job under real contention
-#               rather than against a planted duplicate, and the report states the
-#               depth it ran at. It runs BEFORE the steady pass, on purpose: the
-#               steady mix can include the burst's code, so a steady driver taking
-#               that slot first would make every burst request SLOT_TAKEN and fail
-#               the control for a reason that has nothing to do with the index.
+#   setup-burst picks the ONE plan every burst driver fires: a code and its sibling,
+#               and for each of three bursts ONE slot and ONE moment, because a
+#               burst whose drivers each chose their own is not a burst: nothing
+#               contends and everything succeeds. The bucket is MEASURED (#2278):
+#               every pool's depth is read through the booker's own predicate and
+#               the shallowest one actually offering times wins, since the control
+#               is worth more the fewer agents share the slot. The sibling is a
+#               second code whose fallback ladder is the same pools at every rung
+#               (#3325), so each burst also proves the shared confirm line ACROSS
+#               codes the line treats as one.
+#   burst       four drivers firing twenty five requests each at each of three
+#               moments, a minute apart, at three slots an hour apart, each burst
+#               split across the two codes and judged on its own (#3325): one lucky
+#               spread of isolates cannot pass the run. One winner PER AGENT and
+#               the rest SLOT_TAKEN is `bookings_active_slot_uniq` doing its job
+#               under real contention; every confirm on the SHARED line and every
+#               SLOT_TAKEN within two seconds of the last winner is the shared line
+#               doing its. It runs BEFORE the steady pass, on purpose: the steady
+#               mix can include the burst's codes, so a steady driver taking a burst
+#               slot first would make every burst request SLOT_TAKEN and fail the
+#               control for a reason that has nothing to do with the index.
 #   drivers     four of them, fifteen a minute for ten minutes, which is exactly
 #               the per address write ceiling.
 #   freshness   the existing soak sampler, one sample a minute, so recompute is
@@ -276,8 +283,14 @@ jobs:
     timeout-minutes: 10
     outputs:
       burst_code: ${{ steps.pick.outputs.burst_code }}
-      burst_slot: ${{ steps.pick.outputs.burst_slot }}
-      start_at: ${{ steps.pick.outputs.start_at }}
+      burst_sibling_code: ${{ steps.pick.outputs.burst_sibling_code }}
+      # ONE value (#3325): both codes and every burst's slot and moment, so the four
+      # drivers cannot fire at different codes, slots or moments while each reads as
+      # correct (L70).
+      burst_plan: ${{ steps.pick.outputs.burst_plan }}
+      # Emitted from the app's own BURST_LEGS, so the plan and the judge's
+      # expectation are one number.
+      burst_count: ${{ steps.pick.outputs.burst_count }}
       # Emitted from the app's own DRIVERS constant, so the matrix below and the
       # judge's expectation are ONE number rather than two that drift (L41).
       drivers: ${{ steps.pick.outputs.drivers }}
@@ -293,10 +306,12 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # ONE bucket, ONE slot, ONE moment, chosen here and handed to every driver.
-      # It refuses on its own exit code when the bucket offers nothing, because an
-      # empty burst file and a run with no burst leg are otherwise the same thing.
-      - name: Pick the burst's bucket, slot and moment
+      # ONE plan, chosen here and handed to every driver: the code and its sibling,
+      # and each burst's slot and moment. It refuses on its own exit code when the
+      # pair offers nothing, because an empty burst file and a run with no burst leg
+      # are otherwise the same thing, and when no two codes share a fallback ladder
+      # (exit 6), because a burst on one code cannot prove the split (#3325).
+      - name: Pick the burst's codes, slots and moments
         id: pick
         env:
           SLATE_BASE: ${{ vars.LOADTEST_BASE_URL }}
@@ -326,20 +341,19 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # A driver that wakes after the grace window exits WITHOUT firing and says so,
-      # in its file and on a non-zero exit. A late request meets an already taken
-      # slot and records a SLOT_TAKEN indistinguishable from the contention the
-      # control is counting, so the judge would be handed a staggered burst wearing
-      # a simultaneous one's clothes.
-      - name: Fire at the shared moment
+      # A driver that wakes after the grace window for one burst fires nothing for
+      # THAT burst and says so, in that burst's file, then fires the others and exits
+      # non-zero (#3325). A late request meets an already taken slot and records a
+      # SLOT_TAKEN indistinguishable from the contention the control is counting, so
+      # the judge would be handed a staggered burst wearing a simultaneous one's
+      # clothes. One file per burst (burst-N-leg-K.json), so a miss costs one burst.
+      - name: Fire at each shared moment
         env:
           SLATE_BASE: ${{ vars.LOADTEST_BASE_URL }}
           BOOKING_API_KEY: ${{ secrets.LOADTEST_BOOKING_API_KEY }}
           MODE: burst
           DRIVER: ${{ matrix.driver }}
-          START_AT: ${{ needs.setup-burst.outputs.start_at }}
-          BURST_SLOT: ${{ needs.setup-burst.outputs.burst_slot }}
-          BURST_CODE_OVERRIDE: ${{ needs.setup-burst.outputs.burst_code }}
+          BURST_PLAN: ${{ needs.setup-burst.outputs.burst_plan }}
           OUT: results/burst-${{ matrix.driver }}.json
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/book.ts
       # ALWAYS uploaded: a driver that missed its moment wrote a file saying so, and
@@ -681,6 +695,10 @@ jobs:
           # count comes from the setup step, which emits it from the app's own
           # constant, so it can never disagree with the matrix that fired.
           EXPECT_BURST_DRIVERS: ${{ needs.setup-burst.outputs.driver_count }}
+          # How many bursts the plan held (#3325), from the same setup step, so a
+          # burst whose files never arrived fails by name rather than reading as a
+          # run that fired fewer.
+          EXPECT_BURSTS: ${{ needs.setup-burst.outputs.burst_count }}
           EXPECT_FAULT_PCT: ${{ inputs.fault_pct }}
           EXPECT_FAULT_TARGETS: ${{ inputs.fault_targets }}
           # This workflow always runs the same day baseline (#3258), so the latency

@@ -1,4 +1,4 @@
-import { stampSeenIp } from "@/lib/loadtest-echo";
+import { stampAnsweredAt, stampSeenIp } from "@/lib/loadtest-echo";
 import { NextResponse, type NextRequest } from "next/server";
 import { withinBookingCleanupBudget, withinBookingRequest } from "@/lib/booking/confirm-budget";
 import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
@@ -52,6 +52,11 @@ export const dynamic = "force-dynamic";
  * than each of its dozen returns being stamped, so a return added later carries it
  * by construction (L96) and nothing about the production path changes: with the
  * flag unset `stampSeenIp` adds a header to nothing.
+ *
+ * #3325: the same wrapper stamps WHEN the answer was built, on the deployment's own
+ * clock, because the load run's burst judges how soon every SLOT_TAKEN follows the
+ * last winner and four runners' clocks cannot measure that. Outermost, so it is
+ * taken after every other part of the answer is settled; off without the flag too.
  */
 export async function POST(req: NextRequest) {
   // #3221: one line per call with how long the caller waited for the answer, kept
@@ -61,7 +66,7 @@ export async function POST(req: NextRequest) {
   // from a read before the booking's own try (the key ceilings, the hourly cap) is
   // the same outage the booking path answers with VERIFY_UNAVAILABLE, rather than
   // escaping as an unhandled 500.
-  return stampSeenIp(
+  return stampAnsweredAt(stampSeenIp(
     await answerTimed(
       "booking-api",
       () =>
@@ -79,7 +84,7 @@ export async function POST(req: NextRequest) {
       { facts },
     ),
     req.headers,
-  );
+  ));
 }
 
 async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
