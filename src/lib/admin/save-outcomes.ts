@@ -38,6 +38,7 @@
  */
 
 import { FRAME_LOCK_TTL_SECONDS } from "@/lib/embed/frame-lock";
+import { SHARED_LINE_SWITCH_TTL_SECONDS } from "@/lib/booking/shared-line-switch-core";
 
 /**
  * Every outcome a form can report.
@@ -67,6 +68,8 @@ export const SAVE_OUTCOMES = [
   "org-default-hours",
   "regal-ignore-added",
   "regal-ignore-removed",
+  "shared-line-off",
+  "shared-line-on",
   "volume-ramp-end-cleared",
   "volume-ramp-end-set",
   "webhook-endpoint",
@@ -112,6 +115,10 @@ export const SAVE_OUTCOME_COPY: Record<Exclude<SaveOutcome, DynamicOutcome>, str
   // confirmed is which way the list moved.
   "regal-ignore-added": "Added to the ignore list. Their calls in Regal are no longer reported.",
   "regal-ignore-removed": "Removed from the ignore list. Their calls in Regal are reported again.",
+  // #3325: which way it went and when it lands, like the frame lock above. What each
+  // state means is drawn once, by the switch beneath this notice (L605).
+  "shared-line-on": `The shared confirm line is on. It takes hold on every server within ${SHARED_LINE_SWITCH_TTL_SECONDS} seconds.`,
+  "shared-line-off": `The shared confirm line is off. Each server goes back to its own line within ${SHARED_LINE_SWITCH_TTL_SECONDS} seconds.`,
   // #2739. Each names what now happens to the floors, because which way it went is
   // the one thing the reader needs confirmed.
   "volume-ramp-end-set": "Ramp end saved. Slate learns its low volume floors from its own bookings after that day.",

@@ -6,7 +6,7 @@
 // the handler starting to the response being handed back, and nothing else.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-confirm-latency-line.ts
-import { answerTimed } from "../src/lib/booking/confirm-latency.ts";
+import { answerTimed, type ConfirmLineFacts } from "../src/lib/booking/confirm-latency.ts";
 import { createAsserter } from "./lib/booking-fakes.ts";
 
 const { assert, finish } = createAsserter();
@@ -40,6 +40,29 @@ async function main() {
     assert(ours[0]?.includes("tag=booking-api"), "answered: under the route's existing tag");
     assert(ours[0]?.includes("response_ms=2345"), `answered: the time from start to response (got ${ours[0]})`);
     assert(ours[0]?.includes("status=409"), "answered: the status the lead got");
+  }
+
+  // --- #3325: which confirm line served it, why, and what the line cost ---------
+  {
+    const cap = captureInfo();
+    const facts: ConfirmLineFacts = {};
+    await answerTimed(
+      "booking",
+      async () => {
+        facts.line = { line: "fallback", reason: "reach-timeout", key: "ladder", lineMs: 1_512 };
+        return new Response("{}", { status: 200 });
+      },
+      { now: () => 0, facts },
+    );
+    const plain = await answerTimed("booking", async () => new Response("{}", { status: 200 }), { now: () => 0, facts: {} });
+    cap.restore();
+    void plain;
+    const lines = cap.lines.filter((l) => l.includes('msg="confirm answered"'));
+    assert(
+      (lines[0] ?? "").includes('line="fallback"') && lines[0]!.includes('line_reason="reach-timeout"') && lines[0]!.includes('line_key="ladder"') && lines[0]!.includes("line_ms=1512"),
+      `line: the line, its reason, its key kind and its cost are on the confirm's line (got ${lines[0]})`,
+    );
+    assert(!(lines[1] ?? "x").includes("line_"), `line: a confirm that recorded none carries no line fields (got ${lines[1]})`);
   }
 
   // --- a dry run says so, so it never mixes into the confirm latency -----------

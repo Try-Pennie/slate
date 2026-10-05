@@ -325,6 +325,8 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   rate_limit_broken: "a-limit-or-a-guard-is-not-working",
   rate_limit_refund_broken: "a-limit-or-a-guard-is-not-working",
   rate_limit_unidentified: "a-limit-or-a-guard-is-not-working",
+  // #3325: the shared confirm line fails open to each server's own line, like a limiter.
+  confirm_line_unreachable: "a-limit-or-a-guard-is-not-working",
   rate_limit_blocked: "something-was-measured-and-is-only-worth-knowing",
 
   // A fault nothing predicted.

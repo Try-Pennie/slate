@@ -48,11 +48,13 @@ import {
   type BookingResult,
 } from "../src/lib/booking/orchestration.ts";
 import { withinBookingConfirmBudget, BOOKING_CONFIRM_BUDGET_MS } from "../src/lib/booking/confirm-budget.ts";
-import { makeConfirmQueue, CONFIRM_QUEUE_WAIT_MS, CONFIRM_LINE_LOOKAHEAD, type ConfirmQueue } from "../src/lib/booking/confirm-queue.ts";
+import { makeConfirmQueue, isolateLine, CONFIRM_QUEUE_WAIT_MS, CONFIRM_LINE_LOOKAHEAD, type ConfirmLine } from "../src/lib/booking/confirm-queue.ts";
 import type { Booking, User } from "../src/lib/db/types.ts";
 import type { BookingContext } from "../src/lib/booking/orchestration.ts";
 import { createAsserter, makeDeps, makeBooking, input, users, bucket as fakeBucket, eventType as fakeEventType } from "./lib/booking-fakes.ts";
 import { VirtualClock, SharedResource, onSharedCapacity, type CallRecord } from "./lib/confirm-contention-sim.ts";
+import { makeConfirmLineHost } from "../src/lib/booking/confirm-line-object.ts";
+import { makeSharedConfirmLine } from "../src/lib/booking/shared-confirm-line.ts";
 
 const { assert, finish } = createAsserter();
 
@@ -78,14 +80,20 @@ interface Run {
 
 /** A queue that never queues: the behaviour before #3221, for the control. Every
  *  confirm leads at once with nobody behind it, so each runs the whole path. */
-const NO_QUEUE: ConfirmQueue<never> = {
+const NO_QUEUE: ConfirmLine<never> = {
   enter: async () => ({
     kind: "lead",
-    done: () => {},
-    waiting: () => 0,
-    seat: { claimedByOthers: () => new Set<string>(), claim: () => {}, pass: () => {} },
+    done: async () => {},
+    waiting: async () => 0,
+    seat: {
+      claimedByOthers: async () => new Set<string>(),
+      claim: async () => {},
+      claimFirst: async (candidates) => ({ pool: [...candidates], unclaimed: candidates.length }),
+      claimBeside: async () => {},
+      pass: async () => {},
+    },
   }),
-  lookahead: () => null,
+  lookahead: async () => null,
 };
 
 function lead(i: number, over: Partial<CreateBookingInput> = {}): CreateBookingInput {
@@ -108,6 +116,13 @@ async function burst(opts: {
   inputs: CreateBookingInput[];
   pool: string[];
   queue: "real" | "off";
+  /**
+   * #3325: spread the confirms over this many isolates, confirm i on isolate
+   * i % isolates, all sharing the one database. `line: "isolate"` gives each its
+   * own line (what production ran on 2026-10-05); `line: "shared"` gives every
+   * isolate the shared line's client, talking to ONE object host on this clock.
+   */
+  isolates?: { count: number; line: "isolate" | "shared" };
   viaApi?: boolean;
   /** #3257: how long one dependency call takes on the shared capacity. */
   serviceMs?: number;
@@ -165,16 +180,41 @@ async function burst(opts: {
     let raceLosses = 0;
     let eventFailed = false;
     let idempotencyFailed = false;
-    const queue: ConfirmQueue<unknown> =
+    const queue: ConfirmLine<unknown> =
       opts.queue === "off"
         ? NO_QUEUE
-        : makeConfirmQueue({
+        : isolateLine(makeConfirmQueue({
             timer: (ms, fire) => clock.at(clock.now + ms, fire),
             // #3274: the lease end runs on the same virtual clock, so the simulation
             // owns every timer the line sets and judges leases by its own time.
             leaseTimer: (ms, fire) => clock.at(clock.now + ms, fire),
             now: () => clock.now,
-          });
+          }));
+    const timerOnClock = (ms: number, fire: () => void) => clock.at(clock.now + ms, fire);
+    const isolateLines: ConfirmLine<unknown>[] = [];
+    if (opts.isolates) {
+      let ids = 0;
+      const host = makeConfirmLineHost({ now: () => clock.now, timer: timerOnClock, leaseTimer: timerOnClock, newId: () => `o${++ids}` });
+      for (let k = 0; k < opts.isolates.count; k++) {
+        const own = isolateLine(makeConfirmQueue({ timer: timerOnClock, leaseTimer: timerOnClock, now: () => clock.now }));
+        isolateLines.push(
+          opts.isolates.line === "isolate"
+            ? own
+            : makeSharedConfirmLine<unknown>({
+                // The object is reached in no time at all: the simulation cannot see
+                // network latency, which is why the load run measures it (#3325).
+                namespace: { stubFor: () => ({ send: async (m) => JSON.parse(await host.handle(m)) as Record<string, unknown> }) },
+                fallback: own,
+                enabled: async () => ({ on: true, source: "read" }),
+                record: () => {},
+                onReachFailure: () => {},
+                now: () => clock.now,
+                timer: timerOnClock,
+                newId: () => `c${++ids}`,
+              }),
+        );
+      }
+    }
     let personReads = 0;
     const shared: BookingDeps = {
       ...base,
@@ -267,7 +307,8 @@ async function burst(opts: {
     const t0 = clock.now;
     opts.inputs.forEach((one, i) => clock.at(t0 + (opts.arriveAtMs?.[i] ?? 0), () => {
       const run = runs[i];
-      const deps = onSharedCapacity(shared, resource, clock, run.calls, SYNCHRONOUS);
+      const onIsolate = opts.isolates ? { ...shared, confirmQueue: isolateLines[i % opts.isolates.count] as BookingDeps["confirmQueue"] } : shared;
+      const deps = onSharedCapacity(onIsolate, resource, clock, run.calls, SYNCHRONOUS);
       const startedAt = clock.now;
       const work = opts.viaApi === false ? () => createBooking(one, deps) : () => bookViaApi(one, deps);
       void withinBookingConfirmBudget(work as () => Promise<unknown>).then(
@@ -385,6 +426,47 @@ async function main() {
     });
     assert(tally.created === 2, `two slots: both confirms are booked (got ${JSON.stringify(tally)})`);
     assert(bySlot.size === 2, "two slots: two booking rows");
+  }
+
+  // --- #3325: the 2026-10-05 failure, reproduced: one line PER ISOLATE ---------
+  //
+  // Load run 37333201026 sent a hundred confirms for one slot and they landed on
+  // many isolates, each forming its own line: about 52 leaders ran the full path
+  // together and timed out on the database. Fifty isolates of two confirms each is
+  // that shape: fifty leaders at once. What is asserted is the failure the load
+  // run's burst bar counts, confirms told to retry rather than told the time is
+  // taken, and NOT that nobody is booked: this model of the database lets one
+  // leader through where production let none, and tuning it until it matched would
+  // make the fixture prove only itself (L48). The shared line case below runs the
+  // identical crowd and must answer none of them retryably.
+  {
+    const { tally, bySlot } = await burst({
+      inputs: Array.from({ length: BURST }, (_, i) => lead(i)),
+      pool: ["a"],
+      queue: "real",
+      isolates: { count: 50, line: "isolate" },
+    });
+    assert((tally["503"] ?? 0) >= 40, `per isolate lines: dozens of leaders are told to retry, as on 2026-10-05 (got ${JSON.stringify(tally)})`);
+    assert(bySlot.size <= 1, `per isolate lines: still never a double booking (got ${bySlot.size})`);
+  }
+
+  // --- #3325: the same crowd on ONE line shared across those isolates ----------
+  {
+    const { runs, tally, bySlot } = await burst({
+      inputs: Array.from({ length: BURST }, (_, i) => lead(i)),
+      pool: ["a"],
+      queue: "real",
+      isolates: { count: 50, line: "shared" },
+    });
+    assert(bySlot.size === 1 && tally.created === 1, `shared line: exactly one confirm is booked (got ${JSON.stringify(tally)})`);
+    assert(tally.SLOT_TAKEN === BURST - 1, `shared line: every other one is told SLOT_TAKEN (got ${JSON.stringify(tally)})`);
+    assert(!tally["503"], `shared line: none is answered 503 (got ${tally["503"] ?? 0})`);
+    const winner = runs.find((r) => r.outcome === "created")!;
+    const lastLoser = maxOf(runs.filter((r) => r.outcome === "SLOT_TAKEN").map((r) => r.answeredMs!));
+    assert(
+      lastLoser <= winner.answeredMs! + 2_000,
+      `shared line: every loser hears "taken" within 2s of the winner's answer (winner ${winner.answeredMs}ms, last loser ${lastLoser}ms)`,
+    );
   }
 
   // --- a pool of two: two booked, the rest SLOT_TAKEN, none 503 ---------------
@@ -536,18 +618,46 @@ async function main() {
 
   // --- #3257: where the line can be entered before any read ---------------------
   {
+    const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+    const instant = String(Date.parse(input.startIso));
+    // #3325: a key is a GROUP (whose confirms can settle each other) and an instant.
     assert(
-      queueKeyBeforeRouting({ bucketCode: "120", startIso: input.startIso }) === confirmQueueKey("120", input.startIso, undefined),
+      same(confirmQueueKey("120", input.startIso, undefined), { group: "code:120", instant }),
+      `key: a code's line is its code and the parsed instant (got ${JSON.stringify(confirmQueueKey("120", input.startIso, undefined))})`,
+    );
+    assert(
+      same(confirmQueueKey("120", input.startIso, "u1"), { group: "link:u1", instant }),
+      "key: a named link's line is its advisor's, whichever code it came through, since the same person is contended",
+    );
+    // #3325: a code whose whole fallback ladder this isolate knows joins its LADDER's
+    // line, shared with sibling codes; one it does not know keeps its own code's line.
+    const ladderOf = (code: string) => (code === "120" ? "ladder:abc" : null);
+    assert(
+      same(confirmQueueKey("120", input.startIso, undefined, ladderOf), { group: "ladder:abc", instant }),
+      "key: a code whose ladder is known joins the ladder's line",
+    );
+    assert(
+      same(confirmQueueKey("121", input.startIso, undefined, ladderOf), { group: "code:121", instant }),
+      "key: a code whose ladder is not known keeps its own line",
+    );
+    assert(
+      same(confirmQueueKey("120", input.startIso, "u1", ladderOf), { group: "link:u1", instant }),
+      "key: a named link is the advisor's line whatever the ladder",
+    );
+    assert(
+      same(queueKeyBeforeRouting({ bucketCode: "120", startIso: input.startIso }, ladderOf), { group: "ladder:abc", instant }),
+      "early key: the ladder is known before any read, from what the isolate already holds",
+    );
+    assert(
+      same(queueKeyBeforeRouting({ bucketCode: "120", startIso: input.startIso }), confirmQueueKey("120", input.startIso, undefined)),
       "early key: a request naming its bucket outright is keyed before any read",
     );
     assert(
-      queueKeyBeforeRouting({ bucketCode: "120", startIso: input.startIso, requestedCode: "120" }) ===
-        confirmQueueKey("120", input.startIso, undefined),
+      same(queueKeyBeforeRouting({ bucketCode: "120", startIso: input.startIso, requestedCode: "120" }), confirmQueueKey("120", input.startIso, undefined)),
       "early key: a booker link carrying a routable code is keyed before any read",
     );
     assert(
-      queueKeyBeforeRouting({ bucketCode: "120", startIso: input.startIso, agentLinkUserId: "u1" }) ===
-        confirmQueueKey("120", input.startIso, "u1"),
+      same(queueKeyBeforeRouting({ bucketCode: "120", startIso: input.startIso, agentLinkUserId: "u1" }), confirmQueueKey("120", input.startIso, "u1")),
       "early key: a named link is keyed on its advisor before any read",
     );
     assert(

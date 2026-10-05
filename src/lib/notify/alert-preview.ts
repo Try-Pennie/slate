@@ -336,6 +336,7 @@ import {
   CLIENT_ERROR_ADDRESS_POLICY,
   refundFailedAlert,
 } from "@/lib/rate-limit-core";
+import { confirmLineUnreachableAlert } from "@/lib/booking/confirm-line-alert";
 import { evaluateRecon } from "@/lib/snowflake/reconcile-core";
 import { evaluateExportLag } from "@/lib/snowflake/export-lag-core";
 import {
@@ -4810,6 +4811,11 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "alert", text: unidentifiedCallerAlert(BOOKING_LIMITER) },
   { key: "rate_limit_unidentified:*", state: "a ceiling that refused the request",
     channel: "alert", text: unidentifiedCallerAlert(CLIENT_ERROR_ADDRESS_POLICY) },
+  // #3325: the two ways a switched on shared confirm line goes unused, each in its own words.
+  { key: "confirm_line_unreachable", state: "confirms cannot reach the shared line", channel: "alert",
+    text: confirmLineUnreachableAlert("reach-timeout") },
+  { key: "confirm_line_unreachable", state: "switched on with no binding", channel: "alert",
+    text: confirmLineUnreachableAlert("unbound") },
   { key: "rate_limit_refund_broken:*", state: "a refund of a counted hit failed", channel: "alert",
     text: refundFailedAlert(friendlyRateArea("book")) },
 

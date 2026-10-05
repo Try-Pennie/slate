@@ -13,8 +13,11 @@ import {
   faultModeVerdict,
   faultPollStep,
   overlappingProbeWindow,
+  sharedLineSwitchVerdict,
   FAULT_PROPAGATION_DEADLINE_MS,
 } from "./loadtest/preflight-checks.ts";
+import { SEED_BOOKING_SETTINGS } from "./loadtest/seed-guards.ts";
+import { readFileSync } from "node:fs";
 import { stubCreateEvent } from "../src/lib/google/loadtest-stub.ts";
 import { deterministicEventId } from "../src/lib/booking/core.ts";
 import { authenticateBearer } from "../src/lib/booking/api-auth.ts";
@@ -965,6 +968,61 @@ function sleptLongEnoughBeforeEachRead(events: string[]): boolean {
   const out = await bookControlSlot([NINE], bookingDeps(w));
   assert(!out.ok, "a fresh list holding only the refused time fails");
   eq(w.posted.length, 1, "without posting that time twice");
+}
+
+// --- the shared confirm line's switch is on before anything is written (#3325) ------
+//
+// The run exists to prove the shared confirm line, so a branch whose stored switch is
+// off would measure the per isolate line it is meant to replace, and the burst would
+// read as the shared line failing. The seed writes the switch on; the preflight refuses
+// a branch where it is not, each cause in its own words (L11).
+
+{
+  eq(SEED_BOOKING_SETTINGS.id, 1, "the seed writes the one settings row there is");
+  eq(SEED_BOOKING_SETTINGS.shared_confirm_line, true, "with the shared confirm line on");
+  // Both directions, driven with the SEED'S OWN row as the passing case, so the seed and
+  // the preflight cannot drift apart on what "on" looks like (L58).
+  eq(sharedLineSwitchVerdict(200, [SEED_BOOKING_SETTINGS]), { ok: true }, "the seeded row passes the preflight");
+  const off = sharedLineSwitchVerdict(200, [{ ...SEED_BOOKING_SETTINGS, shared_confirm_line: false }]);
+  assert(!off.ok, "a branch with the switch off is refused");
+
+  const refusals = {
+    off,
+    noRow: sharedLineSwitchVerdict(200, []),
+    refused: sharedLineSwitchVerdict(400, { message: 'column booking_settings.shared_confirm_line does not exist' }),
+    notAList: sharedLineSwitchVerdict(200, { shared_confirm_line: true }),
+    notABoolean: sharedLineSwitchVerdict(200, [{ shared_confirm_line: "true" }]),
+  };
+  for (const [name, verdict] of Object.entries(refusals)) {
+    assert(!verdict.ok, `the preflight refuses: ${name}`);
+  }
+  const why = Object.fromEntries(
+    Object.entries(refusals).map(([k, v]) => [k, v.ok ? "" : v.why]),
+  ) as Record<keyof typeof refusals, string>;
+  assert(/off/.test(why.off) && /own line/.test(why.off), `an off switch says the run would measure each server's own line: ${why.off}`);
+  assert(/no settings row/i.test(why.noRow) && /seed/.test(why.noRow), `a missing row points at the seed: ${why.noRow}`);
+  assert(/400/.test(why.refused) && /0169/.test(why.refused), `a refused read names its status and the migration: ${why.refused}`);
+  assert(/could not be read/.test(why.notAList), `an unreadable answer says so: ${why.notAList}`);
+  eq(new Set(Object.values(why)).size, Object.keys(why).length, "and no two causes share a message");
+}
+
+{
+  // The wiring, pinned by source because both scripts run on import against a live
+  // branch (the reset test pins the seed's org the same way).
+  const seed = readFileSync(new URL("./loadtest/seed.ts", import.meta.url), "utf8");
+  assert(
+    /insert\("booking_settings", \[SEED_BOOKING_SETTINGS\]\)/.test(seed),
+    "the seed writes the settings row from the same constant the preflight is tested against",
+  );
+  const preflight = readFileSync(new URL("./loadtest/preflight.ts", import.meta.url), "utf8");
+  const asks = preflight.indexOf("sharedLineSwitchVerdict(");
+  const firstWrite = preflight.indexOf("bookControlSlot(");
+  const firstDrive = preflight.indexOf('driveLane("hydrate-calendars")');
+  assert(asks > 0, "the preflight asks whether the shared line is on");
+  assert(
+    asks < firstWrite && asks < firstDrive,
+    "and asks before it drives a lane or books its control, so a refusal costs the branch nothing",
+  );
 }
 
 finish();

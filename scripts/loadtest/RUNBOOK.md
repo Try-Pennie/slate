@@ -825,6 +825,15 @@ catalogue lookup reported the index missing on EVERY run, which is how a check
 stops being read; and behaviour is the stronger proof anyway, because an index
 present but not enforcing reads as fine to a name lookup.
 
+Ahead of the control booking, before it drives a lane or writes anything, it refuses a
+branch whose **shared confirm line switch is off** (#3325). The run exists to prove
+that line, which is off in production until the burst passes, so the seed writes
+`booking_settings.shared_confirm_line = true` (`SEED_BOOKING_SETTINGS`), the load test
+Worker's `SHARED_CONFIRM_LINE_DEFAULT` is `"on"` for an isolate that has not read it
+yet, and the preflight reads the branch's row and names which way it was wrong: off, no
+settings row (the current seed did not finish), or a read the branch refused (a 400
+usually means it predates migration 0169).
+
 ### CPU cannot be apportioned by stage, and the report says what it can (#2353)
 
 Run 34980777198 failed one bar: request CPU p99 **2,777ms** against 2,500ms. It

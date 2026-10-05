@@ -60,7 +60,7 @@ vi.mock("@/lib/booking/service", () => service);
 vi.mock("@/lib/monitor/record-api-outcome", () => ({ recordApiOutcome: vi.fn() }));
 
 import { POST } from "./route";
-import { ANSWERED_AT_HEADER, SEEN_IP_HEADER, readLoadtestEcho } from "@/lib/loadtest-echo";
+import { ANSWERED_AT_HEADER, CONFIRM_LINE_HEADER, SEEN_IP_HEADER, readLoadtestEcho } from "@/lib/loadtest-echo";
 
 const BODY = {
   bucketCode: "411",
@@ -133,6 +133,26 @@ describe("POST /api/bookings under SLATE_LOADTEST", () => {
       expect(at.value).toBeGreaterThanOrEqual(before);
       expect(at.value).toBeLessThanOrEqual(after);
     }
+  });
+
+  // #3325: the line the confirm took, recorded by the confirm path into the request's
+  // facts, rides on the same answer, so the burst can require every confirm be shared.
+  it("stamps which confirm line served the call, from what the confirm recorded", async () => {
+    service.bookViaApi.mockImplementation(async (_input: unknown, facts?: { line?: unknown }) => {
+      if (facts) facts.line = { line: "shared", reason: "ok", key: "ladder", lineMs: 41 };
+      throw new service.SlotUnavailableError("taken");
+    });
+    const res = await post("Bearer real-secret");
+    expect(res.status).toBe(409);
+    const echo = readLoadtestEcho(res.headers);
+    expect(res.headers.get(CONFIRM_LINE_HEADER)).toBe("shared");
+    expect(echo.line).toMatchObject({ state: "read", value: "shared" });
+    expect(echo.lineMs).toMatchObject({ state: "read", value: 41 });
+  });
+
+  it("leaves the line unsaid when the confirm recorded none, so the run reads it as not said", async () => {
+    const res = await post("Bearer wrong-secret");
+    expect(res.headers.get(CONFIRM_LINE_HEADER)).toBeNull();
   });
 
   it("stamps a refusal made before the booking was even read", async () => {

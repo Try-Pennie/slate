@@ -924,6 +924,16 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "The limiter failed open for specific requests already served; a later request simply works. The ongoing state, a limiter that is unusable in the running deployment, is a separate condition (edge_limiter_unusable) that resolves.",
   },
   {
+    key: "confirm_line_unreachable",
+    kind: "incident",
+    // #3325. An incident, for the same reason rate_limit_broken is one: it names confirms
+    // already served that fell back to their isolate's own line, and a fallback is
+    // always safe (the bookings indexes and verify on book still decide). A later
+    // confirm reaching the shared line again calls nothing that could clear it, and
+    // making it do so would put a database write on every confirm during the outage.
+    why: "Confirms already served fell back to their own server's line, which is always safe; the next confirm tries the shared line again by itself, so there is no healthy state for an all clear to observe.",
+  },
+  {
     key: "rate_limit_refund_broken:*",
     kind: "incident",
     suffix: "bounded",

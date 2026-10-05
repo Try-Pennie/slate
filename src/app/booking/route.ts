@@ -447,7 +447,7 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
       },
       prefill: parsed.data.prefill,
       referrerOrigin: parsed.data.referrerOrigin,
-    });
+    }, progress.facts);
     // Backstop, not the ordinary path (#1337): a second booking is normally
     // DECLINED above before anything is created. Since #1641 the window it
     // covers is two simultaneous confirms both passing the check, and no longer

@@ -1,4 +1,4 @@
-import { stampAnsweredAt, stampSeenIp } from "@/lib/loadtest-echo";
+import { stampAnsweredAt, stampConfirmLine, stampSeenIp } from "@/lib/loadtest-echo";
 import { NextResponse, type NextRequest } from "next/server";
 import { withinBookingCleanupBudget, withinBookingRequest } from "@/lib/booking/confirm-budget";
 import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
@@ -66,7 +66,7 @@ export async function POST(req: NextRequest) {
   // from a read before the booking's own try (the key ceilings, the hourly cap) is
   // the same outage the booking path answers with VERIFY_UNAVAILABLE, rather than
   // escaping as an unhandled 500.
-  return stampAnsweredAt(stampSeenIp(
+  const res = stampSeenIp(
     await answerTimed(
       "booking-api",
       () =>
@@ -84,7 +84,10 @@ export async function POST(req: NextRequest) {
       { facts },
     ),
     req.headers,
-  ));
+  );
+  // #3325: the confirm line the confirm took, as it recorded it into `facts`; a call
+  // that never reached a line says nothing, which the run reads as not said.
+  return stampAnsweredAt(facts.line ? stampConfirmLine(res, facts.line) : res);
 }
 
 async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
@@ -168,7 +171,7 @@ async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
       allowTestBuckets,
       // #2876: from the key that matched, so a call naming no page records who made it.
       apiCaller: authd.caller,
-    });
+    }, facts);
 
     const body = {
       outcome: result.outcome,

@@ -203,11 +203,15 @@ function seededRows(edit: (row: PoolRow) => PoolRow = (r) => r): PoolRow[] {
 }
 
 {
-  // A rung with no bucket cannot be vouched for, so the code has no ladder signature
-  // and no siblings, rather than being matched on the rungs that happen to exist.
-  const keys = poolKeysByCode(seededRows().filter((r) => r.code !== "132"));
-  eq(ladderSignature("122", keys), null, "a ladder with a missing rung has no signature");
-  eq(siblingCodes("122", keys), [], "and so no siblings");
+  // A rung with no bucket is a GAP, part of the ladder's identity, exactly as the
+  // confirm path's own key reads it (`ladderGroupOf`, #3325): the burst must pick codes
+  // production really puts in one line. So a code whose ladder crosses the gap differs
+  // from the same ladder with that rung filled.
+  const full = poolKeysByCode(seededRows());
+  const gapped = poolKeysByCode(seededRows().filter((r) => r.code !== "132"));
+  assert(ladderSignature("122", gapped) !== null, "a ladder with a gap still has a signature");
+  assert(ladderSignature("122", gapped) !== ladderSignature("122", full), "and a different one from the ladder with that rung filled");
+  eq(ladderSignature("122", gapped), ladderSignature("122", gapped), "and the same gap always gives the same signature");
 }
 
 {

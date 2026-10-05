@@ -210,6 +210,35 @@ It fails **open and loud** like every other limiter here, and it declines to
 judge a request whose address could not be identified at all, because `"unknown"`
 is a shared bucket rather than an address.
 
+## A Durable Object call: what it costs, and what a deploy does to it (#3325)
+
+Measured on 2026-10-05 from inside a Worker invocation, against a throwaway Worker
+(`slate-confirm-line-spike`, deleted after), 100 samples each:
+
+| call | p50 | p95 | max |
+|---|---|---|---|
+| first call to a NEW object, same region | 171ms | 266ms | 379ms |
+| call to a WARM object, same region | 11ms | 19ms | 20ms |
+| first call to a NEW object, cross country (`locationHint: "wnam"` from EWR) | 215ms | 323ms | 452ms |
+| call to a WARM object, cross country | 53ms | 59ms | 62ms |
+
+- **Creating an object is the expensive part.** Re-waking one that went idle is
+  about a third of the cost: 17ms after 30s idle, about 50ms after 90s, about 55ms
+  after 180s. So key objects by something long lived (a pool, a code), never by
+  something new on every request (a slot), or every request pays creation.
+- **Concurrency inside one object is cheap.** 100 calls held open on one object (each
+  awaiting an in memory promise, nothing in storage, so no input gate closes) were
+  all released by one call with no measurable lag.
+- **A deploy does NOT cut held calls.** 30 calls held on the old version ran out their
+  own 45s timeout there, while new calls reached the new version about 6 seconds into
+  the deploy and found none of the old state. Anything holding a request open on an
+  object must re-ask on a short cycle, or it is stranded for its whole timeout by
+  every merge.
+- `wrangler deploy` prints "no such Durable Object class is exported" for classes
+  re-exported through the OpenNext entry even when they are (#2334); the binding test
+  (`scripts/test-confirm-line-binding.ts`) is what tells the false warning from a
+  real one.
+
 ## Work after the response is cancelled 30 seconds after it (#2922)
 
 `after()` maps to `ctx.waitUntil`, and Cloudflare cancels whatever is still

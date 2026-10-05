@@ -1,0 +1,244 @@
+// The confirm line hosted in a shared object (#3325): the message handler the
+// `ConfirmLine` Durable Object runs, driven here with hand fired timers and no
+// network. Every rule of the line itself lives in `makeConfirmQueue` (tested by
+// test-confirm-queue.ts); what is tested here is the protocol around it, and above
+// all every way a message can be lost, late, repeated or outlived by a deploy,
+// because each of those strands a line that a lease alone frees too late.
+//
+// Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-confirm-line-object.ts
+import {
+  makeConfirmLineHost,
+  CONFIRM_LINE_PROTOCOL,
+  CONFIRM_LINE_POLL_MS,
+  CONFIRM_LINE_POLL_GRACE_MS,
+  CONFIRM_LINE_ACK_MS,
+  CONFIRM_LINE_LEASE_MS,
+  CONFIRM_LINE_HEARTBEAT_MS,
+} from "../src/lib/booking/confirm-line-object.ts";
+import { CONFIRM_QUEUE_WAIT_MS } from "../src/lib/booking/confirm-queue.ts";
+import { createAsserter } from "./lib/booking-fakes.ts";
+
+const { assert, finish } = createAsserter();
+const v = CONFIRM_LINE_PROTOCOL;
+const tick = () => new Promise((r) => setImmediate(r));
+
+/** Timers fired by hand, in order of when they are due on a clock the test moves. */
+function clockAndTimers(start = 1_000) {
+  let now = start;
+  const pending: { at: number; fire: () => void; live: boolean }[] = [];
+  const timer = (ms: number, fire: () => void) => {
+    const t = { at: now + ms, fire, live: true };
+    pending.push(t);
+    return () => {
+      t.live = false;
+    };
+  };
+  /** Moves the clock forward and fires everything now due, earliest first. */
+  const advance = async (ms: number) => {
+    now += ms;
+    for (;;) {
+      const due = pending.filter((t) => t.live && t.at <= now).sort((a, b) => a.at - b.at)[0];
+      if (!due) break;
+      due.live = false;
+      due.fire();
+      await tick();
+    }
+    await tick();
+  };
+  return { now: () => now, timer, advance };
+}
+
+function host() {
+  const c = clockAndTimers();
+  let n = 0;
+  const h = makeConfirmLineHost({ now: c.now, timer: c.timer, leaseTimer: c.timer, newId: () => `id${++n}` });
+  const send = async (req: Record<string, unknown>) => JSON.parse(await h.handle({ v, ...req })) as Record<string, unknown>;
+  return { ...c, h, send };
+}
+
+async function main() {
+  // --- the timings hold together -----------------------------------------------
+  //
+  // An abandoned leader must free the line while the followers behind it can still
+  // be served, so the ack window and the lease must sit well inside the follower
+  // wait, and a heartbeat must renew comfortably before the lease ends.
+  // The worst case is the larger of the two: a lead that never checks in is freed
+  // after the ack window, one that dies just after renewing after one lease.
+  assert(CONFIRM_LINE_ACK_MS < CONFIRM_LINE_LEASE_MS, "timings: the ack window is shorter than a lease");
+  assert(CONFIRM_LINE_LEASE_MS <= CONFIRM_QUEUE_WAIT_MS / 2, "timings: an abandoned leader is freed inside half the follower wait");
+  assert(CONFIRM_LINE_HEARTBEAT_MS * 2 < CONFIRM_LINE_LEASE_MS, "timings: two heartbeats fit inside one lease, so one lost renewal is survivable");
+  assert(CONFIRM_LINE_POLL_MS + CONFIRM_LINE_POLL_GRACE_MS < CONFIRM_LINE_LEASE_MS, "timings: a vanished follower is dropped before a lease runs out");
+
+  // --- the first in leads, and a repeated enter gets the same answer ------------
+  {
+    const { send } = host();
+    const a = await send({ op: "enter", attempt: "A", line: "100", waitMs: 10_000 });
+    assert(a.kind === "lead" && typeof a.turn === "string", `enter: the first confirm leads (got ${JSON.stringify(a)})`);
+    const again = await send({ op: "enter", attempt: "A", line: "100", waitMs: 10_000 });
+    assert(JSON.stringify(again) === JSON.stringify(a), "enter: a retried enter with the same attempt id gets the same answer, not a second place");
+    const b = await send({ op: "enter", attempt: "B", line: "100", waitMs: 10_000 });
+    assert(b.kind === "wait" && typeof b.ticket === "string", "enter: the next confirm waits with a ticket");
+    const other = await send({ op: "enter", attempt: "C", line: "200", waitMs: 10_000 });
+    assert(other.kind === "lead", "enter: another instant in the same object is its own line");
+  }
+
+  // --- a full verdict answers every waiter, from ONE serialised settlement --------
+  {
+    const { send } = host();
+    const lead = await send({ op: "enter", attempt: "A", line: "100", waitMs: 10_000 });
+    await send({ op: "ack", turn: lead.turn });
+    await send({ op: "claimFirst", turn: lead.turn, candidates: ["p0"] });
+    const w1 = await send({ op: "enter", attempt: "B", line: "100", waitMs: 10_000 });
+    const w2 = await send({ op: "enter", attempt: "C", line: "100", waitMs: 10_000 });
+    const p1 = send({ op: "poll", ticket: w1.ticket });
+    const p2 = send({ op: "poll", ticket: w2.ticket });
+    await tick();
+    const settled = { booked: { idempotencyKey: "k", result: { booking: { id: "b1" }, manageUrl: "u" } }, seated: [] };
+    const d = await send({ op: "done", turn: lead.turn, verdict: { full: true, refusal: "race", settled } });
+    assert(d.ok === true, "done: the leader's report is accepted");
+    const [r1, r2] = await Promise.all([p1, p2]);
+    assert(r1.kind === "refused" && r1.refusal === "race", `poll: a held follower is refused from the verdict (got ${JSON.stringify(r1)})`);
+    assert(JSON.stringify(r1.settled) === JSON.stringify(settled), "poll: the settlement arrives intact after the round trip");
+    assert(JSON.stringify(r1) === JSON.stringify(r2), "poll: every follower gets the same answer");
+    const again = await send({ op: "done", turn: lead.turn, verdict: { full: false } });
+    assert(again.ok === true, "done: a repeated report is accepted and changes nothing");
+  }
+
+  // --- a poll with nothing to report comes back after one poll length -----------
+  {
+    const { send, advance } = host();
+    await send({ op: "enter", attempt: "A", line: "100", waitMs: 10_000 }).then((l) => send({ op: "ack", turn: l.turn }));
+    const w = await send({ op: "enter", attempt: "B", line: "100", waitMs: 10_000 });
+    const p = send({ op: "poll", ticket: w.ticket });
+    await advance(CONFIRM_LINE_POLL_MS);
+    const r = await p;
+    assert(r.kind === "pending", `poll: an unsettled line answers pending after one poll (got ${JSON.stringify(r)})`);
+  }
+
+  // --- a lead nobody acknowledges frees the line for the waiter behind it ---------
+  {
+    const { send, advance } = host();
+    await send({ op: "enter", attempt: "A", line: "100", waitMs: 10_000 });
+    const w = await send({ op: "enter", attempt: "B", line: "100", waitMs: 10_000 });
+    const p = send({ op: "poll", ticket: w.ticket });
+    await advance(CONFIRM_LINE_ACK_MS);
+    const r = await p;
+    assert(r.kind === "lead", `ack: an unacknowledged lead (its answer lost) hands the line on within the ack window (got ${JSON.stringify(r)})`);
+  }
+
+  // --- a leader that keeps renewing keeps the line; one that stops loses it ------
+  {
+    const { send, advance } = host();
+    const lead = await send({ op: "enter", attempt: "A", line: "100", waitMs: 10_000 });
+    await send({ op: "ack", turn: lead.turn });
+    await send({ op: "claim", turn: lead.turn, userId: "p0", othersRemain: false });
+    // A wait long enough that only the leader's lease, never the follower's own
+    // bound, can end this case.
+    const w = await send({ op: "enter", attempt: "B", line: "100", waitMs: 60_000 });
+    for (let i = 0; i < 3; i++) {
+      await advance(CONFIRM_LINE_HEARTBEAT_MS);
+      await send({ op: "renew", turn: lead.turn });
+      const r = await (async () => {
+        const p = send({ op: "poll", ticket: w.ticket });
+        await advance(CONFIRM_LINE_POLL_MS);
+        return p;
+      })();
+      assert(r.kind === "pending", `renew: a renewing leader keeps the follower waiting (round ${i}, got ${r.kind})`);
+    }
+    // The leader goes silent. The follower keeps polling, as its client does.
+    let r: Record<string, unknown> = { kind: "pending" };
+    let polls = 0;
+    while (r.kind === "pending" && polls < 6) {
+      const p = send({ op: "poll", ticket: w.ticket });
+      await advance(CONFIRM_LINE_POLL_MS);
+      r = await p;
+      polls++;
+    }
+    assert(r.kind === "lead", `renew: a leader that stopped renewing frees the line one lease later (got ${JSON.stringify(r)})`);
+    assert(polls * CONFIRM_LINE_POLL_MS <= CONFIRM_LINE_LEASE_MS + CONFIRM_LINE_POLL_MS, `renew: within one lease and one poll (took ${polls} polls)`);
+    const late = await send({ op: "claim", turn: lead.turn, userId: "p1", othersRemain: false });
+    assert(late.kind === "gone", "renew: a call from the expired leader is told its turn is gone");
+  }
+
+  // --- a follower that stops polling is dropped, and does not hold a lead ---------
+  {
+    const { send, advance } = host();
+    const lead = await send({ op: "enter", attempt: "A", line: "100", waitMs: 10_000 });
+    await send({ op: "ack", turn: lead.turn });
+    await send({ op: "claim", turn: lead.turn, userId: "p0", othersRemain: false });
+    await send({ op: "enter", attempt: "B", line: "100", waitMs: 10_000 }); // never polls: its caller went away
+    const c = await send({ op: "enter", attempt: "C", line: "100", waitMs: 10_000 });
+    await send({ op: "done", turn: lead.turn, verdict: { full: false } });
+    // B was promoted to lead, but nobody collects it.
+    let r: Record<string, unknown> = { kind: "pending" };
+    for (let i = 0; i < 4 && r.kind === "pending"; i++) {
+      const p = send({ op: "poll", ticket: c.ticket });
+      await advance(CONFIRM_LINE_POLL_MS);
+      r = await p;
+    }
+    assert(r.kind === "lead", `vanished: a follower promoted to lead and never collected is dropped, and the next one leads (got ${JSON.stringify(r)})`);
+  }
+
+  // --- abandon: the caller gave up on an enter that the object did answer ---------
+  {
+    const { send } = host();
+    await send({ op: "enter", attempt: "A", line: "100", waitMs: 10_000 }); // answered too late for its caller
+    const w = await send({ op: "enter", attempt: "B", line: "100", waitMs: 10_000 });
+    const p = send({ op: "poll", ticket: w.ticket });
+    const ab = await send({ op: "abandon", attempt: "A" });
+    assert(ab.ok === true, "abandon: accepted");
+    const r = await p;
+    assert(r.kind === "lead", `abandon: the abandoned lead hands the line on at once (got ${JSON.stringify(r)})`);
+    const unknown = await send({ op: "abandon", attempt: "nobody" });
+    assert(unknown.ok === true, "abandon: an attempt the object never saw is a no op");
+  }
+
+  // --- a deploy: the new instance knows nothing, and says so ----------------------
+  {
+    const { send } = host();
+    const g1 = await send({ op: "poll", ticket: "from-the-old-instance" });
+    const g2 = await send({ op: "claimFirst", turn: "from-the-old-instance", candidates: ["p0"] });
+    const g3 = await send({ op: "done", turn: "from-the-old-instance", verdict: { full: false } });
+    assert(g1.kind === "gone" && g2.kind === "gone", "deploy: a ticket or turn the instance never issued is gone");
+    assert(g3.ok === true && g3.gone === true, "deploy: a report for an unknown turn is accepted as already over");
+    const old = JSON.parse(await host().h.handle({ v: v + 1, op: "enter", attempt: "A", line: "1", waitMs: 1 })) as Record<string, unknown>;
+    assert(old.kind === "gone" && old.why === "version", "deploy: a message from another protocol version is gone, never guessed at");
+  }
+
+  // --- lookahead: a busy line hands out a leased place instead of a ticket --------
+  {
+    const { send, advance } = host();
+    const idle = await send({ op: "enter", attempt: "A", line: "100", waitMs: 10_000, wantLookahead: true });
+    assert(idle.kind === "lead", "lookahead: an idle line just leads");
+    await send({ op: "ack", turn: idle.turn });
+    const l1 = await send({ op: "enter", attempt: "B", line: "100", waitMs: 10_000, wantLookahead: true });
+    const l2 = await send({ op: "enter", attempt: "C", line: "100", waitMs: 10_000, wantLookahead: true });
+    const l3 = await send({ op: "enter", attempt: "D", line: "100", waitMs: 10_000, wantLookahead: true });
+    assert(l1.kind === "lookahead" && l2.kind === "lookahead", "lookahead: a busy line offers its places");
+    assert(l3.kind === "wait", "lookahead: past the bound, a confirm waits like the rest");
+    const gb = await send({ op: "giveBack", permit: l1.permit });
+    assert(gb.ok === true, "lookahead: a place is given back");
+    const l4 = await send({ op: "enter", attempt: "E", line: "100", waitMs: 10_000, wantLookahead: true });
+    assert(l4.kind === "lookahead", "lookahead: a returned place is offered again");
+    await advance(CONFIRM_LINE_LEASE_MS * 2);
+    await send({ op: "renew", turn: idle.turn });
+    const l5 = await send({ op: "enter", attempt: "F", line: "100", waitMs: 10_000, wantLookahead: true });
+    assert(l5.kind === "lookahead" || l5.kind === "lead", "lookahead: places nobody gave back are reclaimed by their lease");
+  }
+
+  // --- malformed input is refused by name, never crashes the object ---------------
+  {
+    const { h } = host();
+    const bad = JSON.parse(await h.handle({ v, op: "claimFirst", turn: 3, candidates: "p0" })) as Record<string, unknown>;
+    assert(bad.kind === "bad", `malformed: a message of the wrong shape is refused (got ${JSON.stringify(bad)})`);
+    const junk = JSON.parse(await h.handle("not an object")) as Record<string, unknown>;
+    assert(junk.kind === "bad", "malformed: something that is not a message is refused");
+  }
+
+  finish();
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

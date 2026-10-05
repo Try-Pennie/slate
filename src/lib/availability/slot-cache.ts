@@ -293,6 +293,34 @@ async function readPoolKeys(now: number): Promise<Map<string, string>> {
   return byCode;
 }
 
+/**
+ * The pool a code is in, as this isolate already knows it, WITHOUT reading (#3325):
+ * the pool key, null for a code with no bucket, or undefined when the grouping is
+ * absent or a minute old. The confirm line keys on it before any read, which is why it
+ * never reads; `warmPoolKeys`, scheduled after the response, is what fills it.
+ */
+export function peekPoolKey(code: string): string | null | undefined {
+  if (!poolKeyCache || Date.now() - poolKeyCache.readAtMs > POOL_KEY_CACHE_MS) return undefined;
+  return poolKeyCache.byCode.get(code) ?? null;
+}
+
+let warmingPoolKeys: Promise<void> | null = null;
+
+/**
+ * Refresh the grouping when it is absent or a minute old, at most one read at a time
+ * however many confirms ask (#3325). A failed read REJECTS and leaves the grouping as
+ * it was, so a code reads as unknown rather than as having no pool.
+ */
+export function warmPoolKeys(): Promise<void> {
+  if (poolKeyCache && Date.now() - poolKeyCache.readAtMs <= POOL_KEY_CACHE_MS) return Promise.resolve();
+  warmingPoolKeys ??= readPoolKeys(Date.now())
+    .then(() => undefined)
+    .finally(() => {
+      warmingPoolKeys = null;
+    });
+  return warmingPoolKeys;
+}
+
 async function poolKeyOfCode(code: string): Promise<string> {
   const now = Date.now();
   const fresh = !poolKeyCache || now - poolKeyCache.readAtMs > POOL_KEY_CACHE_MS;

@@ -19,6 +19,7 @@ import { overlaps, type JudgedBooking } from "./judge-booking-run.ts";
 import {
   stubShapedEventId,
   faultModeVerdict,
+  sharedLineSwitchVerdict,
   awaitRecomputeArm,
   overlappingProbeWindow,
   warmupStep,
@@ -106,6 +107,20 @@ function fail(why: string): never {
   const verdict = faultModeVerdict(res.status, await res.json().catch(() => ({})), { faultPct: 0 });
   if (!verdict.ok) fail(verdict.why);
   console.log("ok: the deployment reports load test mode and is injecting no faults");
+}
+
+// --- the shared confirm line's switch is on (#3325) --------------------------------
+//
+// The run exists to prove the shared confirm line, and the branch's stored switch is
+// what turns it on. Asked here, before anything is driven or written, so a branch the
+// current seed did not finish is refused at no cost. The decision is in
+// `preflight-checks.ts`, driven offline with the seed's own row.
+{
+  // cap-safe: booking_settings is a single row table pinned to id 1
+  const res = await fetch(`${SUPA}/booking_settings?select=shared_confirm_line&id=eq.1`, { headers: H });
+  const verdict = sharedLineSwitchVerdict(res.status, await res.json().catch(() => null));
+  if (!verdict.ok) fail(verdict.why);
+  console.log("ok: the branch has the shared confirm line switched on");
 }
 
 // --- the post confirm recompute arm (#3258) ------------------------------------

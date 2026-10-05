@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { makeConfirmQueue } from "@/lib/booking/confirm-queue";
+import { makeConfirmQueue, isolateLine } from "@/lib/booking/confirm-queue";
 
 // Asserts the runtime half of AUD-061 (#827): on a fresh confirm, when the tier
 // the availability cache currently DISPLAYS for the requested bucket differs from
@@ -266,7 +266,7 @@ function makeDeps(): BookingDeps {
       throw new Error("race bound hit page not exercised by this suite");
     },
     // #3221: a line of this fake's own, never the isolate's.
-    confirmQueue: makeConfirmQueue(),
+    confirmQueue: isolateLine(makeConfirmQueue()),
   };
 }
 

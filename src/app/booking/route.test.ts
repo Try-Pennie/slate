@@ -401,9 +401,9 @@ describe("POST /booking (embed) error mapping", () => {
 
   it("does not call a booking a test one when the link carried no routable code (#2638)", async () => {
     await post({ ...VALID_BODY, bucketCode: PUBLIC_TEST, requestedCode: "" }, goodPass());
-    expect(service.createBooking).toHaveBeenCalledWith(expect.objectContaining({ allowTestBuckets: false }));
+    expect(service.createBooking).toHaveBeenCalledWith(expect.objectContaining({ allowTestBuckets: false }), expect.anything());
     await post({ ...VALID_BODY, bucketCode: PUBLIC_TEST, requestedCode: PUBLIC_TEST }, goodPass());
-    expect(service.createBooking).toHaveBeenLastCalledWith(expect.objectContaining({ allowTestBuckets: true }));
+    expect(service.createBooking).toHaveBeenLastCalledWith(expect.objectContaining({ allowTestBuckets: true }), expect.anything());
   });
 
   // #3221: what the lead waited, measurable outside a load test. One line per
@@ -670,6 +670,7 @@ describe("POST /booking (embed) error mapping", () => {
     await post(VALID_BODY);
     expect(service.createBooking).toHaveBeenCalledWith(
       expect.objectContaining({ refuseIfPersonHasCall: true }),
+      expect.anything(),
     );
   });
 
@@ -819,7 +820,7 @@ describe("POST /booking and the test pass (#2666)", () => {
     service.createBooking.mockRejectedValue(new service.UnknownBucketError("Unknown booking bucket"));
     const res = await post({ ...VALID_BODY, bucketCode: HIDDEN_TEST_BUCKET_CODES[0] }, goodPass());
     expect(res.status).toBe(422);
-    expect(service.createBooking).toHaveBeenCalledWith(expect.objectContaining({ allowTestBuckets: false }));
+    expect(service.createBooking).toHaveBeenCalledWith(expect.objectContaining({ allowTestBuckets: false }), expect.anything());
   });
 
   it("a real bucket is booked with no pass at all", async () => {
@@ -1052,6 +1053,26 @@ describe("POST /booking kill switch", () => {
 
   // Both halves, so neither assertion can be satisfied by a route hard wired to
   // one answer (L1): the SAME request books when the flag reads false.
+  // #3325: the confirm line facts the service records reach the route's own
+  // "confirm answered" line, so a fallback rate and the line's cost can be counted.
+  it("hands the booking the facts it logs, so the line that served the confirm is on its log line (#3325)", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    service.createBooking.mockImplementationOnce((async (_input: unknown, facts?: { line?: unknown }) => {
+      if (facts) facts.line = { line: "shared", reason: "ok", key: "ladder", lineMs: 87 };
+      return {
+        booking: { id: "b1", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z", agent_name: "Jane", prefill: null, salesforce_id: null, external_id: null },
+        manageUrl: "https://x.test/m/t",
+        newlyInserted: true,
+      };
+    }) as never);
+    const res = await post(VALID_BODY);
+    const lines = info.mock.calls.map((c) => c.map(String).join(" ")).filter((l) => l.includes('msg="confirm answered"'));
+    info.mockRestore();
+    expect(res.status).toBe(200);
+    expect(lines.at(-1)).toContain('line="shared"');
+    expect(lines.at(-1)).toContain("line_ms=87");
+  });
+
   it("books exactly as before when the flag reads false", async () => {
     bookingSettings.readPublicBookingPaused.mockResolvedValue(false);
     const res = await post(VALID_BODY);

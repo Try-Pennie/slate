@@ -10,6 +10,7 @@
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-confirm-queue.ts
 import {
   makeConfirmQueue,
+  isolateLine,
   confirmLineWaitMs,
   CONFIRM_QUEUE_WAIT_MS,
   CONFIRM_QUEUE_RESERVE_MS,
@@ -494,6 +495,213 @@ async function main() {
       `timer expiry: the next follower leads at once rather than waiting out its own bound (got ${second?.kind ?? "still waiting"})`,
     );
     if (second?.kind === "lead") second.done({ full: false });
+  }
+
+  // --- #3325: reading who else is claimed and claiming happen in ONE step ------
+  //
+  // In one isolate the read and the claim were two synchronous calls, so nothing
+  // could come between them. Hosted in a shared object they are network calls, and
+  // a second leader could claim the same advisor in the gap, so the seat answers
+  // both in one operation: the advisors nobody else has claimed, first, and a claim
+  // on the first of them, handing on when another unclaimed one remains.
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = await q.enter("slot");
+    if (first.kind !== "lead") throw new Error("claimFirst: the first confirm did not lead");
+    const seen: string[] = [];
+    const second = q.enter("slot").then((t) => (seen.push(t.kind), t));
+    const picked = first.seat.claimFirst(["p0", "p1", "p2"]);
+    assert(JSON.stringify(picked) === JSON.stringify({ pool: ["p0", "p1", "p2"], unclaimed: 3 }), `claimFirst: an empty line offers every candidate (got ${JSON.stringify(picked)})`);
+    await tick();
+    assert(JSON.stringify(seen) === JSON.stringify(["lead"]), "claimFirst: claiming with others unclaimed hands the line on");
+    const t2 = await second;
+    if (t2.kind !== "lead") throw new Error("claimFirst: the second confirm did not lead");
+    const next = t2.seat.claimFirst(["p0", "p1", "p2"]);
+    assert(JSON.stringify(next) === JSON.stringify({ pool: ["p1", "p2"], unclaimed: 2 }), `claimFirst: the advisor claimed beside it is left out (got ${JSON.stringify(next)})`);
+    assert(t2.seat.claimedByOthers().has("p0") && !t2.seat.claimedByOthers().has("p1"), "claimFirst: the second leader's own claim is p1, not counted as another's");
+    const third = await q.enter("slot");
+    if (third.kind !== "lead") throw new Error("claimFirst: the third confirm did not lead");
+    const last = third.seat.claimFirst(["p0", "p1", "p2"]);
+    assert(JSON.stringify(last) === JSON.stringify({ pool: ["p2"], unclaimed: 1 }), `claimFirst: one advisor left is offered alone (got ${JSON.stringify(last)})`);
+    const fourthSeen: string[] = [];
+    void q.enter("slot").then((t) => fourthSeen.push(t.kind));
+    await tick();
+    assert(fourthSeen.length === 0, "claimFirst: claiming the LAST unclaimed advisor keeps the line");
+    const allClaimed = third.seat.claimFirst(["p0", "p1"]);
+    assert(JSON.stringify(allClaimed) === JSON.stringify({ pool: ["p0", "p1"], unclaimed: 0 }), "claimFirst: when every candidate is claimed none is left out, the insert decides");
+    first.done({ full: false });
+    t2.done({ full: false });
+    third.done({ full: false });
+  }
+
+  // --- #3325: a move claims its advisor and hands on only when another is free --
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = await q.enter("slot");
+    if (first.kind !== "lead") throw new Error("claimBeside: the first confirm did not lead");
+    first.seat.claim("p1", false);
+    first.done({ full: false });
+    const mover = await q.enter("slot");
+    const other = await q.enter("other");
+    if (mover.kind !== "lead" || other.kind !== "lead") throw new Error("claimBeside: a confirm did not lead");
+    const seen: string[] = [];
+    void q.enter("slot").then((t) => seen.push(t.kind));
+    mover.seat.claimBeside("p0", ["p0"]);
+    await tick();
+    assert(seen.length === 0, "claimBeside: nobody else free beside the move keeps the crowd behind it");
+    mover.seat.claimBeside("p0", ["p0", "p2"]);
+    await tick();
+    assert(JSON.stringify(seen) === JSON.stringify(["lead"]), "claimBeside: an unclaimed advisor beside the move hands the line on");
+    assert(JSON.stringify([...mover.seat.claimedByOthers()]) === "[]", "claimBeside: a mover counts nobody else's claim but the next leader's");
+    mover.done({ full: false });
+    other.done({ full: false });
+  }
+
+  // --- #3325: entering answers at once, and a waiter can be cancelled ----------
+  //
+  // A shared object must answer "you lead" or "you wait" without holding the call,
+  // so its caller can tell an unreachable object from a long line. And it must be
+  // able to drop a waiter whose caller went away (nothing tells an object that a
+  // request was cancelled), including one that was promoted to lead in the meantime,
+  // whose turn would otherwise hold the line until its lease ran out.
+  {
+    const { timer, live } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const lead = q.enterNow("slot");
+    assert(lead.kind === "lead", "enterNow: an idle line answers lead synchronously");
+    const w = q.enterNow("slot");
+    assert(w.kind === "wait", "enterNow: a busy line answers wait synchronously");
+    assert(live() === 1, "enterNow: the waiter's own wait is armed");
+    if (lead.kind !== "lead" || w.kind !== "wait") throw new Error("enterNow: unexpected kinds");
+    w.cancel();
+    const cancelled = await w.turn;
+    assert(cancelled.kind === "unqueued", `enterNow: a cancelled waiter is answered unqueued (got ${cancelled.kind})`);
+    assert(live() === 0, "enterNow: cancelling clears the waiter's timer");
+    const w2 = q.enterNow("slot");
+    if (w2.kind !== "wait") throw new Error("enterNow: second waiter did not wait");
+    lead.turn.done({ full: false });
+    const promoted = await w2.turn;
+    assert(promoted.kind === "lead", "enterNow: the next waiter is promoted to lead");
+    const w3 = q.enterNow("slot");
+    if (w3.kind !== "wait") throw new Error("enterNow: third waiter did not wait");
+    w2.cancel(); // its caller never collected the lead it was promoted to
+    const after = await w3.turn;
+    assert(after.kind === "lead", `enterNow: cancelling an uncollected lead hands the line on at once (got ${after.kind})`);
+    if (after.kind === "lead") after.done({ full: false });
+    const back = q.enterNow("slot");
+    assert(back.kind === "lead", "enterNow: the line is idle again once everyone has left");
+    if (back.kind === "lead") back.turn.done({ full: false });
+  }
+
+  // --- #3325: a host can require a lead to check in, and to keep checking in ----
+  //
+  // In one isolate a leader that dies takes the whole invocation with it, which is
+  // rare, so a 14s lease was enough. Hosted in a shared object the leader is in
+  // another process: an `enter` answered after its caller gave up, or a `done` that
+  // never arrives, would hold the line for 14s, past every follower's 10s wait. So a
+  // hosted line gives a new lead a short window to acknowledge it, then a short lease
+  // its calls renew, both well under the follower wait.
+  {
+    let now = 1_000;
+    const waits = manualTimer();
+    const leases = manualTimer();
+    const q = makeConfirmQueue<string>({ timer: waits.timer, leaseTimer: leases.timer, now: () => now, ackMs: 1_000, leaseMs: 4_000 });
+    const silent = q.enterNow("slot");
+    if (silent.kind !== "lead") throw new Error("ack: first did not lead");
+    const w = q.enterNow("slot");
+    if (w.kind !== "wait") throw new Error("ack: second did not wait");
+    now += 1_000;
+    leases.fireAll();
+    const t = await w.turn;
+    assert(t.kind === "lead", `ack: a lead never acknowledged within the window frees the line (got ${t.kind})`);
+    if (t.kind !== "lead") throw new Error("ack: unexpected");
+    t.ack();
+    const w2 = q.enterNow("slot");
+    if (w2.kind !== "wait") throw new Error("ack: third did not wait");
+    now += 3_000;
+    t.renew();
+    leases.fireAll();
+    let settled = false;
+    void w2.turn.then(() => (settled = true));
+    await tick();
+    assert(!settled, "ack: an acknowledged lead that keeps renewing keeps the line");
+    now += 4_000;
+    leases.fireAll();
+    const t2 = await w2.turn;
+    assert(t2.kind === "lead", `ack: a lead that stops renewing frees the line one lease later (got ${t2.kind})`);
+    if (t2.kind === "lead") t2.done({ full: false });
+    silent.turn.done({ full: false }); // a late report from the expired turn changes nothing
+  }
+
+  // --- #3325: a lead turn says whether it is still alive -----------------------
+  {
+    let now = 1_000;
+    const leases = manualTimer();
+    const q = makeConfirmQueue<string>({ timer: manualTimer().timer, leaseTimer: leases.timer, now: () => now, ackMs: 1_000, leaseMs: 4_000 });
+    const a = q.enterNow("a");
+    const b = q.enterNow("b");
+    if (a.kind !== "lead" || b.kind !== "lead") throw new Error("alive: did not lead");
+    assert(a.turn.alive() && b.turn.alive(), "alive: a new lead is alive");
+    a.turn.done({ full: false });
+    assert(!a.turn.alive(), "alive: a lead that reported is not");
+    now += 1_000;
+    leases.fireAll();
+    assert(!b.turn.alive(), "alive: a lead whose lease ran out is not");
+  }
+
+  // --- #3325: a lookahead place that is never given back is reclaimed ----------
+  {
+    let now = 1_000;
+    const waits = manualTimer();
+    const leases = manualTimer();
+    const q = makeConfirmQueue<string>({ timer: waits.timer, leaseTimer: leases.timer, now: () => now, lookaheadLeaseMs: 3_000 });
+    const first = q.enterNow("slot");
+    if (first.kind !== "lead") throw new Error("lookahead lease: first did not lead");
+    const lost = [q.lookahead("slot"), q.lookahead("slot")];
+    assert(lost.every((g) => g !== null), "lookahead lease: both places are given out");
+    assert(q.lookahead("slot") === null, "lookahead lease: a third is refused while both are out");
+    now += 3_000;
+    leases.fireAll();
+    assert(q.lookahead("slot") !== null, "lookahead lease: a place nobody gave back is reclaimed after its lease");
+    first.turn.done({ full: false });
+  }
+
+  // --- #3325: the booking path talks to any line through one async interface ----
+  //
+  // A line hosted in a shared object answers over the network, so the confirm path
+  // awaits every step. The per isolate line is wrapped in the same interface rather
+  // than given a second set of call sites, and it keeps its own rules exactly: the
+  // adapter only translates, it decides nothing.
+  {
+    const { timer } = manualTimer();
+    const line = isolateLine(makeConfirmQueue<string>({ timer }));
+    const key = { group: "code:521", instant: "1791230400000" };
+    const first = await line.enter(key);
+    assert(first.kind === "lead", "adapter: the first confirm leads");
+    if (first.kind !== "lead") throw new Error("adapter: unexpected");
+    const picked = await first.seat.claimFirst(["p0", "p1"]);
+    assert(JSON.stringify(picked) === JSON.stringify({ pool: ["p0", "p1"], unclaimed: 2 }), "adapter: claimFirst answers through a promise");
+    const second = await line.enter(key);
+    assert(second.kind === "lead", "adapter: the line was handed on, so the next leads");
+    if (second.kind !== "lead") throw new Error("adapter: unexpected");
+    assert((await second.seat.claimedByOthers()).has("p0"), "adapter: the second leader sees the first one's claim");
+    await second.seat.claimBeside("p1", ["p1"]);
+    const waiting = line.enter(key);
+    await tick();
+    assert((await second.waiting()) === 1, "adapter: waiting counts the confirm behind the last advisor");
+    await first.done({ full: false });
+    await second.done({ full: true, refusal: "race", settled: "second" });
+    const refused = await waiting;
+    assert(refused.kind === "refused" && refused.settled === "second", "adapter: a full verdict refuses the waiting through the adapter");
+    const other = await line.enter({ group: "code:521", instant: "1791231000000" });
+    assert(other.kind === "lead", "adapter: another instant of the same group is its own line");
+    const look = await line.lookahead({ group: "code:521", instant: "1791231000000" });
+    assert(typeof look === "function", "adapter: a busy line offers a lookahead place");
+    if (look) await look();
+    if (other.kind === "lead") await other.done({ full: false });
+    assert((await line.lookahead(key)) === null, "adapter: an idle line offers none");
   }
 
   finish();

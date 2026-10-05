@@ -108,7 +108,7 @@ import type { ScheduleTimer } from "../read-within-deadline.ts";
 import { findDeadlineExceeded, type DeadlineFound } from "../fetch-within-deadline.ts";
 import { GoogleBreakerOpenError } from "../google/breaker.ts";
 import { withinOwedCleanup } from "./cleanup-allowance.ts";
-import { confirmLineWaitMs, type ConfirmQueue, type LeaderVerdict, type LineSeat } from "./confirm-queue.ts";
+import { confirmLineWaitMs, type ConfirmLine, type LeaderVerdict, type LineKey, type SharedSeat } from "./confirm-queue.ts";
 import { budgetLeftMs } from "../call-budget.ts";
 import { log } from "@/lib/log";
 import { readBookingSource } from "./booking-source.ts";
@@ -1205,10 +1205,17 @@ export interface BookingDeps {
   pageRaceBoundHit(page: { key: string; cooldownMs: number; text: string }): void;
   /**
    * #3221: the line confirms for one slot take turns in. Production hands every
-   * request the isolate's one line (`ISOLATE_CONFIRM_QUEUE`); a suite hands its
-   * own, so no two suites ever share a turn.
+   * request the shared line's client (#3325, `makeSharedConfirmLine`), which falls
+   * back to the isolate's one line; a suite hands its own, so no two suites ever
+   * share a turn. Every call is awaited: a shared line answers over the network.
    */
-  confirmQueue: ConfirmQueue<SlotSettlement>;
+  confirmQueue: ConfirmLine<SlotSettlement>;
+  /**
+   * #3325: the LADDER group a code's confirms share, from what this isolate already
+   * holds, or null to keep the code's own line. Optional: a suite that does not set it
+   * keys every line by code, which is what a cold isolate does.
+   */
+  lineGroupOf?: (code: string) => string | null;
   /**
    * #3257: every ACTIVE booking that starts at this instant, in any bucket and
    * either world. Read once by a confirm whose verdict settles its slot, so the
@@ -2278,7 +2285,7 @@ async function nextAdvisorAfterLostRace(
     eventType: EventType;
     /** #3257: the confirm's claim in its slot's line, so the next advisor is one
      *  nobody beside it is booking. */
-    seat: LineSeat | null;
+    seat: SharedSeat | null;
   },
 ): Promise<AssignResult | null> {
   if (!(lost.err instanceof SlotUnavailableError)) return null;
@@ -2287,7 +2294,7 @@ async function nextAdvisorAfterLostRace(
   if (lost.lostSoFar >= MAX_RACE_REASSIGNS) return null;
   const at = lost.candidates.indexOf(lost.lostUserId);
   if (at < 0) return null;
-  const { pool: remaining } = unclaimedFirst(lost.seat, lost.candidates.slice(at + 1));
+  const { pool: remaining } = await unclaimedFirst(lost.seat, lost.candidates.slice(at + 1));
   if (remaining.length === 0) return null;
   try {
     const { assignment } = await selectAgent(
@@ -2327,7 +2334,7 @@ async function assignAgent(
   onlyUserId?: string,
   excludeLow = false,
   /** #3257: this confirm's claim in its slot's line; see `claimFromLine`. */
-  seat: LineSeat | null = null,
+  seat: SharedSeat | null = null,
   /**
    * #3248: a reroute. The booking's current advisor is taken out of the candidates
    * BEFORE verify, because their own call makes them busy in Google and they are
@@ -2349,7 +2356,7 @@ async function assignAgent(
   const read = reroute
     ? ranked.filter((id) => id !== reroute.excludeUserId && !(reroute.alsoExclude ?? []).includes(id))
     : ranked;
-  const candidates = claimFromLine(seat, read);
+  const candidates = await claimFromLine(seat, read);
 
   const { assignment, anyUnverified, checked } = await selectAgent(
     candidates,
@@ -2368,7 +2375,7 @@ async function assignAgent(
       code: bucket.code,
       members: memberCount,
       read,
-      claimedByOthers: seat?.claimedByOthers(),
+      claimedByOthers: seat ? await seat.claimedByOthers() : undefined,
       checked,
       anyUnverified,
     });
@@ -2390,7 +2397,7 @@ async function assignAgent(
     throw withRung(new SlotUnavailableError(), rung);
   }
   // Google may have found the advisor it first claimed busy: claim the one it took.
-  if (seat && assignment.userId !== candidates[0]) seat.claim(assignment.userId, false);
+  if (seat && assignment.userId !== candidates[0]) await seat.claim(assignment.userId, false);
   return { ...assignment, candidates, read };
 }
 
@@ -2411,37 +2418,39 @@ async function assignAgent(
  * exactly as before the line existed. Dropping a rung for advisors that are merely
  * claimed would send a lead to a lower tier for a reason that is not true.
  */
-function claimFromLine(seat: LineSeat | null, candidates: string[]): string[] {
+async function claimFromLine(seat: SharedSeat | null, candidates: string[]): Promise<string[]> {
   if (!seat) return candidates;
-  const { pool, unclaimed } = unclaimedFirst(seat, candidates);
-  if (pool.length > 0) seat.claim(pool[0], unclaimed > 1);
-  return pool;
+  // #3325: read and claim in ONE call, so a leader on another isolate cannot claim
+  // the same advisor between the two.
+  return (await seat.claimFirst(candidates)).pool;
 }
 
 /**
- * Whether an advisor nobody in flight has claimed is left at `startIso` beside
- * `userId` (#3257): the hand on rule `claimFromLine` applies to a new booking,
- * for an in place move that never reads the candidates otherwise. One cache read
- * (the candidate read, no Google call), made only by a move that holds a turn in
- * the line. A read that fails answers false, keeping the line, the safe side: the
- * crowd waits for the move rather than racing it for what may be the last advisor.
+ * An in place move claims its advisor, handing the line on only when an advisor
+ * nobody in flight has claimed is left at `startIso` beside `userId` (#3257): the
+ * hand on rule `claimFromLine` applies to a new booking, for a move that never
+ * reads the candidates otherwise. One cache read (the candidate read, no Google
+ * call), made only by a move that holds a turn in the line. A read that fails
+ * claims with nobody beside it, keeping the line, the safe side: the crowd waits
+ * for the move rather than racing it for what may be the last advisor. The claim
+ * and the judgement of who else is free are ONE call (#3325, `claimBeside`).
  */
-async function othersRemainBeside(
+async function claimBesideMove(
   deps: BookingDeps,
-  seat: LineSeat,
+  seat: SharedSeat,
   bucket: Bucket,
   eventType: EventType,
   startIso: string,
   userId: string,
-): Promise<boolean> {
+): Promise<void> {
+  let besides: string[] = [];
   try {
-    const { candidates } = await deps.roundRobinCandidates(bucket, eventType, Date.parse(startIso), true);
-    const others = seat.claimedByOthers();
-    return candidates.some((id) => id !== userId && !others.has(id));
+    ({ candidates: besides } = await deps.roundRobinCandidates(bucket, eventType, Date.parse(startIso), true));
   } catch (err) {
     log.warn("booking", { msg: "could not read who else is free beside a move; keeping the confirm line", bucket_code: bucket.code }, err);
-    return false;
+    besides = [];
   }
+  await seat.claimBeside(userId, besides);
 }
 
 /**
@@ -2451,9 +2460,9 @@ async function othersRemainBeside(
  * advisor the one beside it is booking while somebody unclaimed is free, and both
  * leave a fully claimed list to the insert to decide, exactly as before the line.
  */
-function unclaimedFirst(seat: LineSeat | null, candidates: string[]): { pool: string[]; unclaimed: number } {
+async function unclaimedFirst(seat: SharedSeat | null, candidates: string[]): Promise<{ pool: string[]; unclaimed: number }> {
   if (!seat) return { pool: candidates, unclaimed: candidates.length };
-  const others = seat.claimedByOthers();
+  const others = await seat.claimedByOthers();
   const unclaimed = candidates.filter((id) => !others.has(id));
   return { pool: unclaimed.length > 0 ? unclaimed : candidates, unclaimed: unclaimed.length };
 }
@@ -2670,7 +2679,7 @@ async function assignAgentWithTierFallback(
   // leaves it false.
   preview = false,
   /** #3257: the real book's claim in its slot's line; read only paths pass none. */
-  seat: LineSeat | null = null,
+  seat: SharedSeat | null = null,
 ): Promise<TierAssignResult> {
   // Shares walkTierLadder with the availability display cascade (#499), so the two
   // can never drift on the ladder or the rungs-dropped accounting; only the per-rung
@@ -3769,12 +3778,13 @@ export function stableKeyFor(input: CreateBookingInput): string | null {
  */
 export function queueKeyBeforeRouting(
   input: Pick<CreateBookingInput, "bucketCode" | "startIso" | "requestedCode" | "agentLinkUserId">,
-): string | null {
+  lineGroupOf?: (code: string) => string | null,
+): LineKey | null {
   const known =
     input.agentLinkUserId !== undefined ||
     input.requestedCode === undefined ||
     resolveRequestedCode(input.requestedCode).kind === "valid";
-  return known ? confirmQueueKey(input.bucketCode, input.startIso, input.agentLinkUserId) : null;
+  return known ? confirmQueueKey(input.bucketCode, input.startIso, input.agentLinkUserId, lineGroupOf) : null;
 }
 
 /**
@@ -3807,8 +3817,8 @@ export interface SlotSettlement {
 }
 
 /** Where a confirm stands in its slot's line. */
-interface ConfirmLine {
-  key: string;
+interface LineStanding {
+  key: LineKey;
   stableKey: string | null;
   bucketCode: string;
   startIso: string;
@@ -3838,7 +3848,7 @@ interface ConfirmLine {
  */
 async function inConfirmTurn<R>(
   deps: BookingDeps,
-  line: ConfirmLine,
+  line: LineStanding,
   work: (held: HeldTurn) => Promise<{ result: R; verdict: LeaderVerdict<ConfirmTaker> }>,
   fromTaker: (taker: ConfirmTaker) => R,
   /**
@@ -3850,7 +3860,7 @@ async function inConfirmTurn<R>(
    */
   ahead?: () => Promise<R | null>,
 ): Promise<{ result: R; verdict: LeaderVerdict<ConfirmTaker> }> {
-  const giveBack = ahead ? deps.confirmQueue.lookahead(line.key) : null;
+  const giveBack = ahead ? await deps.confirmQueue.lookahead(line.key, confirmLineWaitMs(budgetLeftMs())) : null;
   if (giveBack && ahead) {
     let early: R | null = null;
     try {
@@ -3865,7 +3875,7 @@ async function inConfirmTurn<R>(
         err,
       );
     } finally {
-      giveBack();
+      await giveBack();
     }
     // Answered without the line, so it settles nothing for anybody in it.
     if (early !== null) return { result: early, verdict: { full: false } };
@@ -3917,14 +3927,24 @@ async function inConfirmTurn<R>(
       null,
     );
   }
+  // The turn's end is reported however the work ends, and however the settling read
+  // ends: a report that never arrives holds the line until its lease runs out (#3325).
+  const report = async (verdict: LeaderVerdict<ConfirmTaker>) => {
+    let settled: LeaderVerdict<SlotSettlement> = { full: false };
+    try {
+      settled = await settleSlot(deps, line, verdict, await turn.waiting());
+    } finally {
+      await turn.done(settled);
+    }
+  };
   let done: { result: R; verdict: LeaderVerdict<ConfirmTaker> };
   try {
     done = await work({ seat: turn.seat });
   } catch (err) {
-    turn.done(await settleSlot(deps, line, verdictForRefusal(err), turn.waiting()));
+    await report(verdictForRefusal(err));
     throw err;
   }
-  turn.done(await settleSlot(deps, line, done.verdict, turn.waiting()));
+  await report(done.verdict);
   return done;
 }
 
@@ -3936,7 +3956,7 @@ async function inConfirmTurn<R>(
  */
 async function settleSlot(
   deps: BookingDeps,
-  line: ConfirmLine,
+  line: LineStanding,
   verdict: LeaderVerdict<ConfirmTaker>,
   waiting: number,
 ): Promise<LeaderVerdict<SlotSettlement>> {
@@ -3966,7 +3986,7 @@ async function settleSlot(
  * already holds the time, answered by its own chain).
  */
 export interface HeldTurn {
-  seat: LineSeat | null;
+  seat: SharedSeat | null;
 }
 
 /**
@@ -3999,7 +4019,7 @@ async function createBookingWithVerdict(
   // idempotency read, the routing and the bucket read first. Those reads are what
   // timed out on 2026-10-04 (run 37229344882) with the #3221 line behind them.
   if (opts.held) return createChecked(requestedInput, deps, opts, stableKey, opts.held);
-  const early = queueKeyBeforeRouting(requestedInput);
+  const early = queueKeyBeforeRouting(requestedInput, deps.lineGroupOf);
   if (early === null) return createChecked(requestedInput, deps, opts, stableKey, "late");
   return inConfirmTurn(
     deps,
@@ -4112,7 +4132,7 @@ async function createChecked(
   return inConfirmTurn(
     deps,
     {
-      key: confirmQueueKey(input.bucketCode, input.startIso, agentLinkUserId),
+      key: confirmQueueKey(input.bucketCode, input.startIso, agentLinkUserId, deps.lineGroupOf),
       stableKey,
       bucketCode: input.bucketCode,
       startIso: input.startIso,
@@ -4133,7 +4153,7 @@ interface HeldCreate {
   eventType: EventType;
   profile: ReturnType<typeof makeConfirmProfile>;
   /** #3257: this confirm's claim on an advisor in its slot's line, or none. */
-  seat: LineSeat | null;
+  seat: SharedSeat | null;
 }
 
 /**
@@ -4163,12 +4183,26 @@ export interface ConfirmTaker {
 }
 
 /**
- * The line a confirm joins: one bucket, one instant, and for a named link the
- * advisor it names, since two links to different advisors never contend. The
- * instant is parsed, so two spellings of one moment share a line.
+ * The line a confirm joins (#3325): a GROUP whose confirms can settle each other,
+ * and the instant. For a named link the group is the advisor it names, whichever
+ * code the link came through, since two links to one advisor contend for the same
+ * person and two to different advisors never do; otherwise it is the bucket's code.
+ * The instant is parsed, so two spellings of one moment share a line.
  */
-export function confirmQueueKey(bucketCode: string, startIso: string, agentLinkUserId: string | undefined): string {
-  return `${bucketCode}|${Date.parse(startIso)}|${agentLinkUserId ?? ""}`;
+export function confirmQueueKey(
+  bucketCode: string,
+  startIso: string,
+  agentLinkUserId: string | undefined,
+  /**
+   * #3325: the code's LADDER group when this isolate knows every rung's pool
+   * (`ladderGroupOf`), so sibling codes that walk the same pools share one line;
+   * null or absent keeps the code's own line. Never asked for a named link.
+   */
+  lineGroupOf?: (code: string) => string | null,
+): LineKey {
+  const group =
+    agentLinkUserId !== undefined ? `link:${agentLinkUserId}` : (lineGroupOf?.(bucketCode) ?? `code:${bucketCode}`);
+  return { group, instant: String(Date.parse(startIso)) };
 }
 
 /**
@@ -4540,7 +4574,7 @@ async function createHeld(
       raceLost.push(userId);
       chosen = next;
       // #3257: the confirms beside it in line must not pick this one next.
-      seat?.claim(next.userId, false);
+      await seat?.claim(next.userId, false);
     }
   }
 
@@ -5439,7 +5473,7 @@ export async function bookViaApi(
   // whole decision; the rest wait, read nothing, and are answered from what it
   // showed. Whoever books has run the person decision itself (#357, #1641), as
   // leader or after waiting out the bound, so dedupe for one person is unchanged.
-  const key = queueKeyBeforeRouting(input);
+  const key = queueKeyBeforeRouting(input, deps.lineGroupOf);
   if (key === null) return (await bookViaApiDecided(input, deps, undefined)).result;
   const { result } = await inConfirmTurn(
     deps,
@@ -5503,7 +5537,7 @@ async function bookViaApiDecided(
   }
   // #3257: an arm that takes no advisor at this time hands the line on now, so it
   // never holds up a lead booking here for the length of its own work.
-  if (takesNoAdvisorHere(decision, requested)) held?.seat?.pass();
+  if (takesNoAdvisorHere(decision, requested)) await held?.seat?.pass();
   return { result: await bookViaApiArm(input, deps, decision, requested, held), verdict: { full: false } };
 }
 
@@ -5893,7 +5927,7 @@ export async function rescheduleBooking(
   opts?: {
     leadZone?: string | null;
     /** #3257: the direct booking API's claim in this time's confirm line. */
-    seat?: LineSeat | null;
+    seat?: SharedSeat | null;
   },
 ): Promise<BookingResult> {
   // #2310: a zone the caller supplied is judged BEFORE the contact write below,
@@ -6025,7 +6059,7 @@ async function applyReschedule(
   nowMs: number,
   actor?: BookingActor,
   /** #3257: this move's claim in the new time's confirm line, or none. */
-  seat: LineSeat | null = null,
+  seat: SharedSeat | null = null,
 ): Promise<BookingResult> {
   const { booking, bucket, eventType } = ctx;
   const currentEmail = booking.agent_email;
@@ -6105,12 +6139,7 @@ async function applyReschedule(
       // advisor nobody has claimed is left beside this one, judged as the create
       // path judges it, so a move into the last advisor keeps the crowd behind it.
       // If the advisor is declined below, the reroute's own pick replaces the claim.
-      if (seat) {
-        seat.claim(
-          booking.assigned_user_id,
-          await othersRemainBeside(deps, seat, bucket, eventType, startIso, booking.assigned_user_id),
-        );
-      }
+      if (seat) await claimBesideMove(deps, seat, bucket, eventType, startIso, booking.assigned_user_id);
       // Folded into the context load (#538); the fallback covers a context loaded
       // without the fold (it re-reads rather than crash on a missing schedule).
       const wh = ctx.agentWorkingHours ?? (await deps.agentWorkingHours(booking.assigned_user_id));

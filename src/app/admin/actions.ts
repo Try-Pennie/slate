@@ -3337,6 +3337,54 @@ export async function setFrameLock(form: FormData): Promise<void> {
 }
 
 /**
+ * Turn the shared confirm line on or off (#3325). Admin only.
+ *
+ * Built the way `setFrameLock` above is, for the same reasons: one column on
+ * `booking_settings` id=1 through a column scoped upsert, the STATE the form wants
+ * rather than a toggle (L60), the write consulted before anything reports a save
+ * (#2379), and an audit entry carrying which way it went (L529). The confirm path reads
+ * the column through a per isolate cache (`shared-line-switch-core.ts`), so a flip
+ * lands within `SHARED_LINE_SWITCH_TTL_MS`, with no deploy, in both directions.
+ *
+ * Anything that is not an explicit "true" turns it OFF. Off is how confirms have always
+ * run, each server keeping its own line, so a stray submit lands on the known path.
+ */
+export async function setSharedConfirmLine(form: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const on = String(form.get("on") ?? "") === "true";
+
+  const { error } = await supabaseAdmin().from("booking_settings").upsert(
+    {
+      id: 1,
+      shared_confirm_line: on,
+      updated_at: new Date().toISOString(),
+      updated_by: admin.id,
+    },
+    { onConflict: "id" },
+  );
+  if (error) {
+    redirect(
+      `/admin/business-hours${refusedQuery(
+        writeRefused(
+          on ? "The change to turn the shared confirm line on" : "The change to turn the shared confirm line off",
+          error,
+        ),
+      )}`,
+    );
+  }
+
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "booking.settings",
+    details: { shared_confirm_line: on },
+  });
+
+  revalidatePath("/admin/business-hours");
+  redirect(`/admin/business-hours${savedQuery(on ? "shared-line-on" : "shared-line-off")}`);
+}
+
+/**
  * Refresh every advisor photo from the Google directory now (#3027): the same run
  * the daily lane makes, with its guards, alerts and verdict, for rollout and for
  * whenever an admin wants the roster current without waiting for the morning.

@@ -918,6 +918,13 @@ number under a heading covering six would drop five readings on a screen whose
 job is to report them. That cannot happen while the pool key covers every input,
 which is exactly why it is guarded.
 
+# The confirm line is shared across isolates (#3325)
+
+Behind `booking_settings.shared_confirm_line`, ONE Durable Object holds the confirm
+line for every isolate. Its rules live only in `makeConfirmQueue`, every call to it is
+awaited (`scripts/test-unawaited-line-calls.ts`), and any failure falls back to the
+isolate's own line. The rest: **`docs/confirm-line.md`**.
+
 # Capped single-page reads (the `// cap-safe:` convention)
 
 PostgREST returns at most **one 1000-row page** per list read. Code that then
@@ -1833,16 +1840,5 @@ investigating a limits question or concluding the logs are broken.
 
 # Screenshotting the dev UI (Playwright/Peekaboo)
 
-Screenshots against `next dev` hang and time out: element shots wait forever on
-CSS animations to "settle" (the `.pn-*` entrance/pulse keyframes never do), and
-full-page shots stall on font loading. Before capturing, freeze motion by
-injecting this style via `browser_evaluate`, then take the shot:
-
-```js
-const s = document.createElement('style');
-s.textContent = '*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important;caret-color:transparent!important}';
-document.head.appendChild(s);
-```
-
-A JPEG capture also succeeds where PNG times out. Save outside the repo root
-(or delete after) so stray images aren't committed.
+Screenshots against `next dev` hang unless motion is frozen first; the snippet and the
+JPEG workaround are in **`docs/screenshotting-dev-ui.md`**.
