@@ -27,7 +27,7 @@ const fixtureSets = uniqueSetsFromMigrations([
      id uuid primary key default gen_random_uuid(), -- a comment, with (parens)
      day date not null,
      code text not null unique,
-     name text,
+     name text not null,
      unique (day, name)
    );
    create table pairs (a text, b text, n int, primary key (a, b));
@@ -49,6 +49,53 @@ assert(fx("things", ["name"]) !== null, "an expression index does not make the b
 assert(fx("things", ["day"]) !== null, "an ordinary column is not unique");
 assert(fx("missing", ["id"]) !== null, "a table the migrations never declare is refused, not passed");
 
+// --- review of 710a1cb: what the schema reading must not misread ------------------
+const gapSets = uniqueSetsFromMigrations([
+  `create table opt (
+     id uuid primary key,
+     ext text unique,
+     a text not null,
+     b text,
+     unique (a, b)
+   );
+   create table nnd (
+     a text,
+     b text,
+     unique nulls not distinct (a, b)
+   );
+   create table chk (
+     id uuid primary key,
+     note text not null default 'unique',
+     kind text not null check (kind <> 'unique'),
+     flag text not null
+   );
+   create table idx (id uuid primary key, a text not null, b text not null, c text not null);
+   create unique index idx_ab on idx (a desc, b collate "C" nulls last);
+   create unique index idx_c on public.idx using btree (c text_pattern_ops);
+   create table later (code text unique);
+   alter table later alter column code set not null;
+   create table added (id uuid primary key);
+   alter table added add column if not exists slug text not null unique;`,
+]);
+const gx = (table: string, keys: string[]) =>
+  judgePagedReadKey({ file: "fixture", line: 1, table, keys }, gapSets);
+// Postgres treats NULLs as distinct in a unique constraint, so a nullable column
+// holds any number of NULL rows and orders them however it likes.
+assert(gx("opt", ["ext"]) !== null, "nullable: a unique column that may be NULL is not proven unique");
+assert(gx("opt", ["a", "b"]) !== null, "nullable: a unique pair with a nullable member is not proven unique");
+assert(gx("opt", ["id"]) === null, "nullable: a primary key is NOT NULL by definition and stays accepted");
+assert(gx("later", ["code"]) === null, "nullable: a column made NOT NULL later is proven unique again");
+assert(gx("added", ["slug"]) === null, "added: a NOT NULL unique column added by ALTER is unique");
+// NULLS NOT DISTINCT makes the NULLs collide, so the set is unique whatever is nullable.
+assert(gx("nnd", ["a", "b"]) === null, "nulls not distinct: the pair is unique");
+assert(gx("nnd", ["a"]) !== null, "nulls not distinct: and not misread as a column named a being unique");
+// The word unique inside a default or a check is not a constraint.
+assert(gx("chk", ["note"]) !== null, "default: 'unique' in a default does not make the column unique");
+assert(gx("chk", ["kind"]) !== null, "check: 'unique' in a check does not make the column unique");
+// Index column modifiers are not part of the column's name.
+assert(gx("idx", ["a", "b"]) === null, "modifiers: desc, collate and nulls last are stripped from an index column");
+assert(gx("idx", ["c"]) === null, "modifiers: an operator class is stripped, and a schema qualified table is read");
+
 // --- the call reading, on fixtures --------------------------------------------
 const calls = pagedReadKeys(
   "fixture.ts",
@@ -60,6 +107,14 @@ const b = await selectAllPages<Row>(\`ctx \${n}\`, ["a", "b"], () =>
 assert(calls.length === 2, `reads both fixture calls (got ${calls.length})`);
 assert(calls[0]?.table === "things" && calls[0]?.keys?.join() === "id", "reads a string key");
 assert(calls[1]?.table === "pairs" && calls[1]?.keys?.join() === "a,b", "reads an array key past a template context");
+// Single quotes are as valid TypeScript as double ones, and JSON.parse throws on them.
+const single = pagedReadKeys(
+  "fixture.ts",
+  `const c = await selectAllPages<Row>('x', ['a', 'b'], () => db.from('pairs').select('a'));
+const d = await selectAllPages<Row>('y', 'id', () => db.from('things').select('id'));`,
+);
+assert(single[0]?.table === "pairs" && single[0]?.keys?.join() === "a,b", `reads a single quoted key array (got ${JSON.stringify(single[0])})`);
+assert(single[1]?.table === "things" && single[1]?.keys?.join() === "id", `reads a single quoted key (got ${JSON.stringify(single[1])})`);
 
 // --- the real repository ------------------------------------------------------
 const migDir = join(ROOT, "supabase", "migrations");
