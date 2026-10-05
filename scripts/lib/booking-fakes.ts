@@ -428,9 +428,10 @@ export function makeDeps(opts: FakeOpts) {
     releaseReschedule: 0,
     releaseRescheduleIfTarget: 0,
     invalidateSlots: [] as string[],
-    // #3324: the booked advisor and window a create hands the splice, one per call
-    // (undefined for a refresh that carries none: cancel, reschedule, reassign).
-    invalidateSlotsBooked: [] as ({ userId: string; startsAt: string; endsAt: string } | undefined)[],
+    // #3324: the booked advisor and window a create hands the splice, one per call,
+    // plus the window a reschedule or reassign left (#3334). Undefined for a refresh
+    // that carries none (a cancel).
+    invalidateSlotsBooked: [] as (Parameters<BookingDeps["invalidateSlots"]>[1])[],
     // #504: every routing decision the orchestration recorded, so a suite can
     // assert the outcome + payload directly instead of via a log line.
     recordRoutingDecision: [] as RecordRoutingDecisionInput[],

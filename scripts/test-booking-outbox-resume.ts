@@ -57,6 +57,8 @@ async function run() {
     assert(calls.deleteEvent.length === 0, "resume: does NOT re-delete the already-done gcal event");
     assert(calls.deleteBusyBlocks.length === 0, "resume: does NOT re-delete the already-done busy block");
     assert(calls.invalidateSlots.length === 1, "resume: runs the pending recompute step");
+    // #3334: a cancel hands over no window; it refreshes the code's pool as before.
+    assert(calls.invalidateSlotsBooked[0] === undefined, "resume: a cancel's refresh carries no booked window");
     assert(
       calls.webhooks.length === 1 && calls.webhooks[0].event === "booking.cancelled",
       "resume: fires the pending webhook exactly once",
@@ -105,6 +107,20 @@ async function run() {
     assert(res.delivered === true, "resched resume: row reaches delivered");
     assert(calls.moveBusyBlock.length === 0, "resched resume: does NOT re-move the already-done busy block");
     assert(calls.invalidateSlots.length === 1, "resched resume: runs the pending recompute");
+    // #3334: and hands the splice BOTH windows: the new time to take out of every
+    // pool its advisor serves, and the old one to put back where nothing holds it.
+    // The old call's end is its start plus the call's length, which a reschedule
+    // keeps (the payload records where it started, not where it ended).
+    assert(
+      JSON.stringify(calls.invalidateSlotsBooked[0]) ===
+        JSON.stringify({
+          userId: "a",
+          startsAt: "2026-06-09T14:00:00.000Z",
+          endsAt: "2026-06-09T14:30:00.000Z",
+          freed: { userId: "a", startsAt: "2026-06-08T13:00:00.000Z", endsAt: "2026-06-08T13:30:00.000Z" },
+        }),
+      "resched resume: the refresh carries the time taken and the time left (#3334)",
+    );
     assert(
       calls.webhooks.length === 1 &&
         calls.webhooks[0].event === "booking.rescheduled",
@@ -150,6 +166,17 @@ async function run() {
     assert(res.delivered === true, "reassign resume: row reaches delivered");
     assert(calls.moveBusyBlock.length === 0, "reassign resume: does NOT re-move the already-done busy block");
     assert(calls.invalidateSlots.length === 1, "reassign resume: runs the pending recompute");
+    // #3334: the same time, taken by the new advisor and left by the old one.
+    assert(
+      JSON.stringify(calls.invalidateSlotsBooked[0]) ===
+        JSON.stringify({
+          userId: "b",
+          startsAt: "2026-06-08T13:00:00.000Z",
+          endsAt: "2026-06-08T13:30:00.000Z",
+          freed: { userId: "a", startsAt: "2026-06-08T13:00:00.000Z", endsAt: "2026-06-08T13:30:00.000Z" },
+        }),
+      "reassign resume: the refresh carries the new advisor's time and the old advisor's (#3334)",
+    );
     assert(
       calls.webhooks.length === 1 &&
         calls.webhooks[0].event === "booking.reassigned" &&
@@ -168,6 +195,58 @@ async function run() {
     assert(
       calls.bookingEvents.length === 1 && calls.bookingEvents[0].action === "reassigned",
       "reassign resume: records a 'reassigned' history row",
+    );
+  }
+
+  // --- #3334: what a move's refresh can and cannot know from its payload ---
+  {
+    const rescheduled = {
+      booking: makeBooking({
+        starts_at: "2026-06-09T14:00:00.000Z",
+        ends_at: "2026-06-09T14:30:00.000Z",
+        status: "rescheduled",
+      }),
+      bucket,
+      eventType,
+    };
+    const resumeWith = async (payload: BookingOutbox["payload"]) => {
+      const { deps, calls } = makeDeps({ existing: rescheduled, bookingById: rescheduled });
+      const steps = rescheduleOutboxSteps();
+      steps[0].state = "done";
+      await runOutboxSteps(
+        deps,
+        {
+          id: "ob-resched-3334",
+          booking_id: rescheduled.booking.id,
+          action: "reschedule",
+          status: "pending",
+          steps,
+          payload,
+          lease_until: null,
+          attempts: 0,
+          last_error: null,
+          created_at: "",
+          updated_at: "",
+        },
+        OUTBOX_HANDLERS,
+      );
+      return calls;
+    };
+    // The booking was held by nobody before (an unassigned call): nothing was
+    // withheld, so only the time taken is spliced.
+    const unheld = await resumeWith({ fromStartsIso: "2026-06-08T13:00:00.000Z", fromAgentUserId: null });
+    assert(
+      JSON.stringify(unheld.invalidateSlotsBooked[0]) ===
+        JSON.stringify({ userId: "a", startsAt: "2026-06-09T14:00:00.000Z", endsAt: "2026-06-09T14:30:00.000Z" }),
+      "#3334: a move from nobody splices only the time taken",
+    );
+    // A row that does not say where the call was cannot say what was freed, so it
+    // keeps the code's pool refresh rather than guessing.
+    const unknown = await resumeWith({ fromAgentUserId: "a" });
+    assert(unknown.invalidateSlots.length === 1, "#3334: a row with no old time still refreshes");
+    assert(
+      unknown.invalidateSlotsBooked[0] === undefined,
+      "#3334: and hands over no window, so the pool refresh runs instead of a half splice",
     );
   }
 

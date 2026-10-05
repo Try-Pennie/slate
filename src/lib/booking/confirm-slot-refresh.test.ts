@@ -186,10 +186,35 @@ describe("a confirmed booking splices its window (#3324)", () => {
     await expect(after.afterResponse.mock.calls[0][1]()).rejects.toThrow(/could not be spliced/);
   });
 
-  it("a refresh with no booked window (cancel, reschedule, reassign) still refreshes the pool", async () => {
+  it("a refresh with no booked window (a cancel) still refreshes the pool", async () => {
     await realDeps(after.deferWebhookSend).invalidateSlots("411");
     await after.afterResponse.mock.calls[0][1]();
     expect(slotCache.refreshPoolAfterBooking).toHaveBeenCalledWith("411");
     expect(slotCache.spliceBookedTimeAfterBooking).not.toHaveBeenCalled();
+  });
+
+  // #3334: a reschedule or reassign hands over the window it LEFT as well, and the
+  // splice gets both under the one fence, stamped when the step asked (after the
+  // busy block's move had committed), never the pool refresh beside it.
+  it("a move hands the splice both windows under the step's fence", async () => {
+    const MOVE = {
+      ...BOOKED,
+      freed: { userId: "agent-b", startsAt: "2026-10-13T15:00:00.000Z", endsAt: "2026-10-13T15:20:00.000Z" },
+    };
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.parse("2026-10-12T15:00:00.000Z"));
+      await realDeps(after.deferWebhookSend).invalidateSlots("411", MOVE);
+      vi.setSystemTime(Date.parse("2026-10-12T15:00:09.000Z"));
+      expect(after.afterResponse.mock.calls[0][0]).toBe("post-confirm-recompute");
+      await after.afterResponse.mock.calls[0][1]();
+      expect(slotCache.spliceBookedTimeAfterBooking).toHaveBeenCalledWith("411", {
+        ...MOVE,
+        fenceAtMs: Date.parse("2026-10-12T15:00:00.000Z"),
+      });
+      expect(slotCache.refreshPoolAfterBooking).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -12,7 +12,8 @@
  *
  *   - `on` (the default, and the ONLY value production ever reads): the refresh.
  *     Since #3324 a create splices the booked window into every pool the advisor
- *     serves; a cancel, reschedule or reassign refreshes the code's pool, coalesced.
+ *     serves, and since #3334 a reschedule or reassign splices both of its windows;
+ *     a cancel refreshes the code's pool, coalesced.
  *   - `off`: nothing is scheduled; the recompute lane keeps the slots fresh, as it
  *     already does for any recompute that is missed.
  *   - `reads-only`: the reads of the SAME work the on arm does (#3293 review,

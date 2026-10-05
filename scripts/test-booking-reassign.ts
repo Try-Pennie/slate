@@ -109,6 +109,21 @@ async function run() {
       calls.invalidateSlots.length === 1 && calls.invalidateSlots[0] === "411",
       "reassign: invalidates cached slots for the bucket exactly once",
     );
+    // #3334: and splices both windows, the time taken by B and the same time left,
+    // rather than refreshing only this code's pool. WHO left it is pinned by the
+    // outbox resume suite from a real payload: this fake's swap writes the new
+    // advisor onto the very object the reassign read (the real RPC does not), so
+    // here the payload's old advisor reads as B.
+    const moved = calls.invalidateSlotsBooked[0] as
+      | { userId: string; startsAt: string; endsAt: string; freed?: { startsAt: string; endsAt: string } }
+      | undefined;
+    assert(
+      moved?.userId === "b" &&
+        moved.startsAt === "2026-06-08T13:00:00.000Z" &&
+        moved.freed?.startsAt === "2026-06-08T13:00:00.000Z" &&
+        moved.freed?.endsAt === "2026-06-08T13:30:00.000Z",
+      "reassign: the refresh carries the time taken by B and the window the move left (#3334)",
+    );
     // #326: recorded as 'reassigned' (NOT 'rescheduled') so it doesn't inflate
     // the reschedule rate, initiator 'system', same time, agent change to B.
     assert(
