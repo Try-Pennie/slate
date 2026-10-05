@@ -36,7 +36,15 @@
 //   REROUTE_LIVE_APPLY=1 REROUTE_LIVE_ACTOR_EMAIL=<admin address> pnpm verify:reroute-live
 import { loadEnvFiles } from "./smoke-env.ts";
 import { PUBLIC_TEST_BUCKET_CODES } from "../src/lib/embed/public-test-bucket.ts";
-import { REROUTE_LIVE_OUTCOMES, candidateStarts, inCanaryWindow, startIsClear, type RerouteLiveOutcome } from "./lib/reroute-live-check.ts";
+import {
+  REROUTE_LIVE_OUTCOMES,
+  candidateStarts,
+  inCanaryWindow,
+  residue,
+  startIsClear,
+  type ResidueCheck,
+  type RerouteLiveOutcome,
+} from "./lib/reroute-live-check.ts";
 
 loadEnvFiles([".env.local", ".dev.vars"]);
 const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
@@ -150,6 +158,13 @@ console.log(`Rerouting live at ${iso(T)} on the test advisors.`);
 
 // --- the run ------------------------------------------------------------------------------------
 const made: string[] = [];
+/**
+ * Every calendar event the run's calls have held, with the calendar it is on,
+ * recorded as each one appears. The cleanup checks these rather than re-reading
+ * the bookings afterwards, because a cancel may clear the id or the advisor, and
+ * a missing id must never read as a deleted event (L98).
+ */
+const events = new Map<string, string>();
 let failure: { outcome: RerouteLiveOutcome; detail: string } | null = null;
 function differ(detail: string): never {
   throw Object.assign(new Error(detail), { outcome: "stepDiffered" as const });
@@ -158,6 +173,14 @@ const expectEq = (actual: unknown, expected: unknown, what: string) => {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) differ(`${what}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
   step(`ok  ${what}`);
 };
+
+/** Records the booking's current calendar event and whose calendar holds it. */
+function noteEvent(b: Booking, what: string): void {
+  if (!b.gcal_event_id) differ(`${what} has no calendar event`);
+  const email = b.assigned_user_id === ONE ? TEST_ADVISORS[0] : b.assigned_user_id === TWO ? TEST_ADVISORS[1] : null;
+  if (!email) differ(`${what} is on an advisor outside the test world`);
+  events.set(b.gcal_event_id, email);
+}
 
 async function book(code: string, startMs: number, n: number): Promise<Booking> {
   try {
@@ -229,6 +252,8 @@ try {
   const b0 = await book("SMOKE2", T, 0);
   const b1 = await book("SMOKE", T, 1);
   expectEq([b0.assigned_user_id, b1.assigned_user_id], [ONE, TWO], "B0 takes smoketest@, so B1 lands on smoketest2@");
+  noteEvent(b0, "B0");
+  noteEvent(b1, "B1");
 
   // 2. B1 into SMOKE2: nobody else free, so the last resort keeps the advisor
   const p1 = await service.adminStartReroute(b1.id, "SMOKE2", actor);
@@ -237,6 +262,7 @@ try {
   expectEq(await liveHold(b1.id), null, "a keep places no hold");
   const kept1 = await service.adminConfirmReroute(b1.id, keepInput("SMOKE2"), actor);
   expectEq(kept1.kind === "kept" ? kept1.bucket.code : kept1.kind, "SMOKE2", "the keep changes the bucket");
+  noteEvent(await load(b1.id), "B1 after the keep");
   expectEq([(await load(b1.id)).assigned_user_id, (await load(b1.id)).bucket_id], [TWO, smoke2.bucket.id], "and leaves the advisor");
 
   // 3. with smoketest@ free again, the same correction holds them
@@ -259,6 +285,7 @@ try {
   const summary = (o: typeof moved) => (o.kind === "moved" ? [o.kind, o.advisor.email, o.bucket.code] : [o.kind]);
   expectEq(summary(moved), ["moved", TEST_ADVISORS[0], "SMOKE2"], "the confirm moves B1 to smoketest@ in SMOKE2");
   const b1Moved = await load(b1.id);
+  noteEvent(b1Moved, "B1 after the move");
   expectEq([b1Moved.assigned_user_id, b1Moved.bucket_id], [ONE, smoke2.bucket.id], "the stored booking agrees");
   expectEq((await liveHold(b1.id))?.consumed_at != null, true, "the hold is consumed");
   expectEq(await holdBlocks(ONE), 0, "and its busy block is gone");
@@ -275,15 +302,18 @@ try {
     "SMOKE keeps smoketest@, who is in its pool and free");
   const kept3 = await service.adminConfirmReroute(b1.id, keepInput("SMOKE"), actor);
   expectEq(kept3.kind === "kept" ? kept3.bucket.code : kept3.kind, "SMOKE", "and the keep lands");
+  noteEvent(await load(b1.id), "B1 after the keep into SMOKE");
 
   // 6. the public test bucket, against its real daily cap
   const b3 = await book(PUBLIC_TEST, T + 60 * 60_000, 3);
   expectEq(b3.assigned_user_id, ONE, "B3 lands on smoketest@ in the public test bucket");
+  noteEvent(b3, "B3");
   const p4 = await service.adminStartReroute(b3.id, PUBLIC_TEST, actor);
   expectEq(p4.kind === "keep" ? [p4.kind, p4.lastResort, p4.advisor.email] : [p4.kind], ["keep", false, TEST_ADVISORS[0]],
     "the public test bucket keeps smoketest@ within its daily cap of 8, B3 itself left out of the count");
   const kept4 = await service.adminConfirmReroute(b3.id, keepInput(PUBLIC_TEST), actor);
   expectEq(kept4.kind, "kept", "and the keep lands");
+  noteEvent(await load(b3.id), "B3 after the keep");
 
   // 7. a real bucket is refused, before any search or hold
   let refused: string | null = null;
@@ -309,16 +339,27 @@ try {
       console.error(`  could not clean up ${id}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  const left: string[] = [];
-  for (const id of made) {
-    const b = await load(id);
-    if (b.status !== "cancelled") left.push(`${id} is ${b.status}`);
-    const h = await liveHold(id);
-    if (h && !h.consumed_at) left.push(`${id} still has an unconsumed hold`);
-    const email = b.assigned_user_id === ONE ? TEST_ADVISORS[0] : TEST_ADVISORS[1];
-    if (!(await eventGone(email, b.gcal_event_id))) left.push(`${id}'s calendar event is still on ${email}`);
-  }
-  if ((await holdBlocks(ONE)) > 0 || (await holdBlocks(TWO)) > 0) left.push("a hold busy block is still there");
+  const checks: ResidueCheck[] = [
+    ...made.flatMap((id): ResidueCheck[] => [
+      { label: `${id}'s status`, leftOver: async () => ((await load(id)).status === "cancelled" ? null : `${id} is not cancelled`) },
+      {
+        label: `${id}'s hold`,
+        leftOver: async () => {
+          const h = await liveHold(id);
+          return h && !h.consumed_at ? `${id} still has an unconsumed hold` : null;
+        },
+      },
+    ]),
+    ...[...events].map(([eventId, email]): ResidueCheck => ({
+      label: `event ${eventId.slice(0, 16)} on ${email}`,
+      leftOver: async () => ((await eventGone(email, eventId)) ? null : `event ${eventId.slice(0, 16)} is still on ${email}`),
+    })),
+    ...[ONE, TWO].map((userId, i): ResidueCheck => ({
+      label: `${TEST_ADVISORS[i]}'s hold blocks`,
+      leftOver: async () => ((await holdBlocks(userId)) > 0 ? `a hold busy block is still on ${TEST_ADVISORS[i]}` : null),
+    })),
+  ];
+  const left = await residue(checks);
   if (left.length > 0) {
     if (failure) console.error(`  (and before cleanup: ${failure.detail})`);
     exit("residue", left.join("; "));

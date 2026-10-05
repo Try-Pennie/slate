@@ -3,7 +3,7 @@
 // run.
 //
 // Run: node --experimental-strip-types scripts/test-reroute-live-check.ts
-import { REROUTE_LIVE_OUTCOMES, candidateStarts, inCanaryWindow, startIsClear } from "./lib/reroute-live-check.ts";
+import { REROUTE_LIVE_OUTCOMES, candidateStarts, inCanaryWindow, residue, startIsClear } from "./lib/reroute-live-check.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const at = (hhmm: string, day = "2031-03-04") => Date.parse(`${day}T${hhmm}:00Z`);
@@ -54,4 +54,28 @@ for (const [hhmm, inside] of [
   assert(!startIsClear(T, [], busy("15:45", "15:55")), "smoketest2@ busy inside the before buffer is not");
 }
 
-finish();
+// --- the cleanup verdict: what is left, and a read that fails is a finding, never a crash -------
+// By the time it runs the command has written to production, so it must always reach
+// its own verdict (L515) rather than dying on one unreadable record, and a record it
+// could not read must say so rather than reading as gone (L11, L98).
+async function residueCases() {
+  const calls: string[] = [];
+  const left = await residue([
+    { label: "B1", leftOver: async () => (calls.push("B1"), null) },
+    { label: "B2", leftOver: async () => (calls.push("B2"), "B2 is confirmed") },
+    {
+      label: "B3's calendar event",
+      leftOver: async () => {
+        calls.push("B3");
+        throw new Error("events.get 503");
+      },
+    },
+    { label: "the hold blocks", leftOver: async () => (calls.push("blocks"), "a hold busy block is still there") },
+  ]);
+  eq(left, ["B2 is confirmed", "could not verify B3's calendar event: events.get 503", "a hold busy block is still there"],
+    "each check's finding in order, with a failed read named as unverified");
+  eq(calls, ["B1", "B2", "B3", "blocks"], "and a failed read never stops the checks after it");
+  eq(await residue([{ label: "B1", leftOver: async () => null }]), [], "nothing left is an empty list");
+}
+
+residueCases().then(() => finish());

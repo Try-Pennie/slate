@@ -1,9 +1,9 @@
 // #3251: the decisions `pnpm verify:reroute-live` makes, kept pure so
 // `scripts/test-reroute-live-check.ts` pins them with no network and no clock.
 //
-// The live command books two calls on the public test bucket, reroutes them
-// through every outcome a reroute can reach on the test advisors, and cancels
-// what it made. Every way it can fail to prove that exits on its OWN code, so a
+// The live command books three test calls (two in the shared test pool at one start,
+// one on the public test bucket an hour later), reroutes them through every outcome
+// a reroute can reach on the test advisors, and cancels what it made. Every way it can fail to prove that exits on its OWN code, so a
 // shell caller can branch on which one it met and one message never answers for
 // another (L11). Finding nothing to check is never a pass (L98).
 
@@ -37,7 +37,8 @@ export function inCanaryWindow(ms: number): boolean {
  * The starts this run will try, in order: on the twenty minute grid, between
  * 15:00 and 20:40 UTC (inside every org and test advisor window seen so far), two
  * to seven days ahead, so the canary's near term bookings are never the ones met.
- * Each start leaves room for a second call twenty minutes later.
+ * The run's last call is sixty minutes after the start, so the latest start (20:40)
+ * puts it at 21:40 UTC, still inside the same windows.
  */
 export function candidateStarts(nowMs: number): number[] {
   const day = 24 * 60 * 60 * 1000;
@@ -67,4 +68,30 @@ export function startIsClear(startMs: number, first: readonly BusyPeriod[], seco
   const min = 60_000;
   const overlaps = (busy: readonly BusyPeriod[], from: number, to: number) => busy.some((b) => b.startMs < to && from < b.endMs);
   return !overlaps(first, startMs - 10 * min, startMs + 80 * min) && !overlaps(second, startMs - 10 * min, startMs + 30 * min);
+}
+
+/** One thing the cleanup must find gone: a label for the report, and a read returning what is left, or null. */
+export interface ResidueCheck {
+  label: string;
+  leftOver: () => Promise<string | null>;
+}
+
+/**
+ * What the cleanup found left, in the order checked. A read that throws is a
+ * finding of its own ("could not verify ..."), never a crash and never read as
+ * gone: by the time this runs the command has written to production, so it must
+ * still reach its residue verdict (L515), and an unreadable record proves nothing
+ * was removed (L11, L98). One failure never stops the checks after it.
+ */
+export async function residue(checks: readonly ResidueCheck[]): Promise<string[]> {
+  const left: string[] = [];
+  for (const c of checks) {
+    try {
+      const found = await c.leftOver();
+      if (found) left.push(found);
+    } catch (err) {
+      left.push(`could not verify ${c.label}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return left;
 }
