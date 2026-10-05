@@ -8,9 +8,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // for never provisioned). And the stuck CONDITION's recovery must still be judged on
 // stuck rows alone: a refused row is a finished incident, not an open state, so it
 // must neither hold the stuck page open nor block the queue's all-clear.
+//
+// #1630: a refused calendar whose owner has LEFT is a departure, not an account to
+// fix. Nobody can act on it, so it goes to the info channel on its own key and
+// never pages; an owner still active, or one Slate could not read, keeps the page.
 
 const notify = vi.hoisted(() => ({
   sendThrottledAlert: vi.fn(async () => {}),
+  sendThrottledInfo: vi.fn(async () => {}),
   resolveRecovered: vi.fn(async (_r: { key: string; text: string }[]) => [] as string[]),
 }));
 vi.mock("@/lib/notify/dispatch", () => notify);
@@ -22,16 +27,23 @@ const drain = vi.hoisted(() => ({
     stuck: [] as unknown[],
     refused: [] as unknown[],
   },
+  /** Set to stand in for who the refused calendars belong to; unset runs the real read. */
+  facts: null as unknown,
 }));
 vi.mock("@/lib/booking/orchestration", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/booking/orchestration")>();
   return {
     ...actual,
     processPendingEventDeletions: vi.fn(async () => drain.result),
+    describeRefusedDeletions: vi.fn((...args: Parameters<typeof actual.describeRefusedDeletions>) =>
+      drain.facts ? Promise.resolve(drain.facts) : actual.describeRefusedDeletions(...args),
+    ),
   };
 });
 
-// realDeps() is built but never exercised: the drain itself is the mock above.
+// realDeps() is built but never exercised by the drain, which is the mock above.
+// The owner read IS real when `drain.facts` is unset, and this refusal is how it
+// fails: that is the case where Slate cannot tell whether anybody has left.
 vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: () => {
     throw new Error("the wrapper test must not reach the database");
@@ -63,7 +75,32 @@ const recoveredKeys = () => (notify.resolveRecovered.mock.calls[0]?.[0] ?? []).m
 beforeEach(() => {
   vi.clearAllMocks();
   drain.result = { deleted: 0, failed: 0, stuck: [], refused: [] };
+  drain.facts = null;
 });
+
+const infoKeys = () => notify.sendThrottledInfo.mock.calls.map((c) => (c as unknown as [string])[0]);
+const infoText = (key: string) => {
+  const call = notify.sendThrottledInfo.mock.calls.find((c) => (c as unknown as [string])[0] === key);
+  return (call as unknown as [string, number, string] | undefined)?.[2] ?? "";
+};
+
+const LEFT_AT = "2026-10-05T14:43:27.000Z";
+
+/** What `describeRefusedDeletions` answers for the given owners. */
+function factsFor(
+  refused: { row: ReturnType<typeof row>; kind: string; moved?: boolean | null }[],
+  owners: Record<string, { name: string | null; deactivatedAt: string | null }>,
+) {
+  return {
+    rows: refused.map((r) => ({
+      calendarEmail: r.row.calendar_email,
+      eventId: r.row.gcal_event_id,
+      kind: r.kind,
+      movedToAnotherAdvisor: r.moved ?? null,
+    })),
+    owners: new Map(Object.entries(owners)),
+  };
+}
 
 describe("the deletion drain wrapper alerts refused rows apart from stuck ones (#2577)", () => {
   it("sends the refused alert with per kind copy, and still clears the stuck condition", async () => {
@@ -128,6 +165,73 @@ describe("the deletion drain wrapper alerts refused rows apart from stuck ones (
     await processPendingEventDeletions(20);
 
     expect(notify.sendThrottledAlert).not.toHaveBeenCalled();
+    expect(notify.sendThrottledInfo).not.toHaveBeenCalled();
     expect(recoveredKeys()).toEqual(["pending_event_deletions"]);
+  });
+});
+
+describe("a refused calendar whose owner has left is a departure, not a page (#1630)", () => {
+  const leftRows = [
+    { row: row("p1", "left@x.com", "evt-1"), kind: "not-provisioned", moved: true },
+    { row: row("p2", "left@x.com", "evt-2"), kind: "not-provisioned", moved: true },
+  ];
+
+  it("sends the departure to the info channel on its own key, and never pages", async () => {
+    drain.result = { deleted: 0, failed: 2, stuck: [], refused: leftRows };
+    drain.facts = factsFor(leftRows, { "left@x.com": { name: "Jane Doe", deactivatedAt: LEFT_AT } });
+
+    await processPendingEventDeletions(20);
+
+    expect(sentKeys()).toEqual([]);
+    expect(infoKeys()).toEqual(["pending_event_deletions_departed"]);
+    const text = infoText("pending_event_deletions_departed");
+    expect(text).toContain("Jane Doe");
+    expect(text).toContain("left on Mon, Oct 5 at 10:43am ET");
+    expect(text).toContain("Both calls were moved to other advisors");
+    expect(text).toContain("No account needs fixing");
+    expect(text).not.toMatch(/Workspace admin|re-authenticate/);
+    expect(recoveredKeys()).toEqual(["pending_event_deletions"]);
+  });
+
+  it("keeps today's page, word for word, for an owner who is still active", async () => {
+    const activeRows = [{ row: row("p3", "new-hire@x.com", "evt-3"), kind: "not-provisioned" }];
+    drain.result = { deleted: 0, failed: 1, stuck: [], refused: activeRows };
+    drain.facts = factsFor(activeRows, { "new-hire@x.com": { name: "New Hire", deactivatedAt: null } });
+
+    await processPendingEventDeletions(20);
+
+    expect(sentKeys()).toEqual(["pending_event_deletions_refused"]);
+    expect(sentText("pending_event_deletions_refused")).toContain("Workspace admin");
+    expect(notify.sendThrottledInfo).not.toHaveBeenCalled();
+  });
+
+  it("falls back to today's page when who owns the calendar cannot be read", async () => {
+    // drain.facts unset: the REAL owner read runs against a database that refuses.
+    drain.result = { deleted: 0, failed: 2, stuck: [], refused: leftRows };
+
+    await processPendingEventDeletions(20);
+
+    expect(sentKeys()).toEqual(["pending_event_deletions_refused"]);
+    expect(sentText("pending_event_deletions_refused")).toContain("left@x.com");
+    expect(sentText("pending_event_deletions_refused")).toContain("Workspace admin");
+    expect(notify.sendThrottledInfo).not.toHaveBeenCalled();
+  });
+
+  it("sends both for a mix, each naming only its own calendars", async () => {
+    const mixed = [...leftRows, { row: row("p3", "new-hire@x.com", "evt-3"), kind: "gone" }];
+    drain.result = { deleted: 0, failed: 3, stuck: [], refused: mixed };
+    drain.facts = factsFor(mixed, {
+      "left@x.com": { name: "Jane Doe", deactivatedAt: LEFT_AT },
+      "new-hire@x.com": { name: "New Hire", deactivatedAt: null },
+    });
+
+    await processPendingEventDeletions(20);
+
+    expect(sentKeys()).toEqual(["pending_event_deletions_refused"]);
+    expect(infoKeys()).toEqual(["pending_event_deletions_departed"]);
+    expect(sentText("pending_event_deletions_refused")).toContain("new-hire@x.com");
+    expect(sentText("pending_event_deletions_refused")).not.toContain("left@x.com");
+    expect(infoText("pending_event_deletions_departed")).toContain("left@x.com");
+    expect(infoText("pending_event_deletions_departed")).not.toContain("new-hire@x.com");
   });
 });

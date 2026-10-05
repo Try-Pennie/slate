@@ -9,79 +9,27 @@
 // stuck retry ("failed N+ times, check API health") rather than as an account a
 // person has to fix.
 //
-// The queue fake here is STATEFUL and its read applies the same give-up filter the
-// real `loadPendingEventDeletions` does (`attempts < PENDING_DELETION_GIVE_UP_AT`),
-// so "never retried again" is measured by running a second pass against the rows
-// the first pass wrote, rather than by trusting the attempt count alone.
+// The queue fake (scripts/lib/pending-deletion-queue.ts) is STATEFUL and its read
+// applies the same give-up filter the real `loadPendingEventDeletions` does
+// (`attempts < PENDING_DELETION_GIVE_UP_AT`), so "never retried again" is measured
+// by running a second pass against the rows the first pass wrote, rather than by
+// trusting the attempt count alone.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-pending-deletion-refused.ts
 import {
   processPendingEventDeletions,
   PENDING_DELETION_ALERT_AFTER,
   PENDING_DELETION_GIVE_UP_AT,
-  type BookingDeps,
-  type PendingEventDeletion,
 } from "../src/lib/booking/orchestration.ts";
 import { pendingDeletionRefusedAlert } from "../src/lib/booking/alert-copy.ts";
-import { GoogleHttpError } from "../src/lib/google/http-error.ts";
-import { makeDeps } from "./lib/booking-fakes.ts";
+import {
+  GONE,
+  NOT_PROVISIONED,
+  TRANSIENT,
+  pendingDeletionQueue as queue,
+  pendingRow as row,
+} from "./lib/pending-deletion-queue.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
-
-function row(id: string, email: string, eventId: string, attempts = 0): PendingEventDeletion {
-  return {
-    id,
-    calendar_email: email,
-    gcal_event_id: eventId,
-    booking_id: null,
-    attempts,
-    last_error: attempts > 0 ? "events.delete failed: 503 backendError" : null,
-    created_at: "2026-09-21T00:00:00.000Z",
-    updated_at: "2026-09-21T00:00:00.000Z",
-  };
-}
-
-// The same shapes src/lib/google/calendar.test.ts proves `deleteEvent` throws for
-// a 403 notACalendarUser, a 401 and a 503 (#2561).
-const NOT_PROVISIONED = () =>
-  new GoogleHttpError(
-    'events.delete failed: 403 {"error":{"errors":[{"reason":"notACalendarUser"}]}}',
-    403,
-    "notACalendarUser",
-  );
-const GONE = () => new GoogleHttpError("events.delete failed: 401 unauthorized", 401, "unauthorized");
-const TRANSIENT = () => new GoogleHttpError("events.delete failed: 503 backendError", 503, "backendError");
-
-/** A pending_event_deletions table the drain reads and writes across passes. */
-function queue(rows: PendingEventDeletion[], failWith: (email: string) => unknown | null) {
-  const table = new Map(rows.map((r) => [r.id, { ...r }]));
-  const deletes: string[] = [];
-  const bumps: { id: string; attempts: number; error: string }[] = [];
-  const { deps: base } = makeDeps({});
-  const deps: BookingDeps = {
-    ...base,
-    loadPendingEventDeletions: async (limit) =>
-      [...table.values()]
-        .filter((r) => r.attempts < PENDING_DELETION_GIVE_UP_AT)
-        .sort((a, b) => a.attempts - b.attempts)
-        .slice(0, limit),
-    deleteEvent: async (email, eventId) => {
-      deletes.push(eventId);
-      const err = failWith(email);
-      if (err) throw err;
-    },
-    removePendingEventDeletion: async (id) => {
-      table.delete(id);
-    },
-    bumpPendingEventDeletion: async (id, attempts, error) => {
-      const r = table.get(id);
-      if (!r) throw new Error(`bump on a row the table does not hold: ${id}`);
-      r.attempts = attempts;
-      r.last_error = error;
-      bumps.push({ id, attempts, error });
-    },
-  };
-  return { deps, table, deletes, bumps };
-}
 
 // --- a never provisioned calendar ends on the first pass -------------------------
 {

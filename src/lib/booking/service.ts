@@ -154,7 +154,7 @@ import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
 import { emitWebhook, type WebhookSendScheduler } from "@/lib/webhooks/emit";
 import { afterResponse, deferWebhookSend } from "@/lib/after-response";
 import { withinBookingCleanupBudget } from "@/lib/booking/confirm-budget";
-import { sendThrottledAlert, resolveRecovered } from "@/lib/notify/dispatch";
+import { sendThrottledAlert, sendThrottledInfo, resolveRecovered } from "@/lib/notify/dispatch";
 import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import {
   bookingEventInsertAlert,
@@ -167,7 +167,7 @@ import {
   outboxHandoffRecovery,
   pendingDeletionAlert,
   pendingDeletionRecovery,
-  pendingDeletionRefusedAlert,
+  refusedDeletionNotices,
   reassignIntentDroppedAlert,
   reconcileFreedAlert,
   reconcileRecreatedAlert,
@@ -1121,6 +1121,36 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
       );
       return (data ?? []) as orchestration.PendingEventDeletion[];
     },
+    // #1630: one refused calendar's other queued deletions, read by the drain so they
+    // settle in the same pass. THROWS: the drain logs a refused read and leaves the
+    // rows for a later pass, so an empty answer is never mistaken for "no more rows".
+    loadPendingEventDeletionsForCalendar: async (calendarEmail, limit) => {
+      const data = unwrap(
+        await supabaseAdmin()
+          .from("pending_event_deletions")
+          .select("*")
+          .eq("calendar_email", calendarEmail)
+          .lt("attempts", orchestration.PENDING_DELETION_GIVE_UP_AT)
+          .order("updated_at", { ascending: true })
+          .limit(limit),
+        "loadPendingEventDeletionsForCalendar",
+      );
+      return (data ?? []) as orchestration.PendingEventDeletion[];
+    },
+    // #1630: who owns each refused calendar, and where a departed owner's calls sit
+    // now. Both THROW on a failed read, which the drain's describer turns into an
+    // explicit unknown: an empty answer would read as nobody having left, or as no
+    // call having moved.
+    loadCalendarOwners: async (emails) =>
+      (unwrap(
+        await supabaseAdmin().from("users").select("id, email, name, deactivated_at").in("email", [...emails]),
+        "calendar owners of refused deletions",
+      ) ?? []) as Pick<User, "id" | "email" | "name" | "deactivated_at">[],
+    loadBookingAssignees: async (bookingIds) =>
+      (unwrap(
+        await supabaseAdmin().from("bookings").select("id, assigned_user_id, status").in("id", [...bookingIds]),
+        "bookings behind refused deletions",
+      ) ?? []) as Pick<Booking, "id" | "assigned_user_id" | "status">[],
     loadCreationOrphans: async (limit) => {
       // error-ok: best-effort creation-orphan alert worklist; a read error skips
       // this tick and the deletion lane retries next tick.
@@ -3409,29 +3439,45 @@ const PENDING_DELETION_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
  *  key because its remedy is a person fixing an account, not API health. */
 const PENDING_DELETION_REFUSED_ALERT_KEY = "pending_event_deletions_refused";
 const PENDING_DELETION_REFUSED_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+/** #1630: the same refusals for a calendar whose owner has LEFT. Info, never a
+ *  page: no account needs fixing and nobody can act, so it is on the record and
+ *  wakes nobody (L112, L36). Its own key, so a departure never throttles the page
+ *  about an account that does need fixing, or the other way round. */
+const PENDING_DELETION_DEPARTED_INFO_KEY = "pending_event_deletions_departed";
+const PENDING_DELETION_DEPARTED_INFO_COOLDOWN_MS = 30 * 60 * 1000;
 
 /** #401: drain the deletion retry queue and alert if any deletion is stuck. */
 export async function processPendingEventDeletions(limit: number) {
   // all-clear-proof: src/lib/booking/selfheal-worklist-reads.test.ts - pins that a
   // failed worklist read aborts the tick and announces no recovery, for this sweep
   // and its two siblings below.
-  const res = await orchestration.processPendingEventDeletions(realDeps(), limit);
+  const deps = realDeps();
+  const res = await orchestration.processPendingEventDeletions(deps, limit);
   if (res.refused.length > 0) {
     // #2577: ended on this pass, never retried again, so the copy names who has to
     // fix each account. Kept apart from `stuck` below in both directions: a refused
     // row never feeds the stuck page, and never holds its recovery back.
-    const refusedText = pendingDeletionRefusedAlert(
-      res.refused.map((r) => ({
-        calendarEmail: r.row.calendar_email,
-        eventId: String(r.row.gcal_event_id),
-        kind: r.kind,
-      })),
-    );
-    await sendThrottledAlert(
-      PENDING_DELETION_REFUSED_ALERT_KEY,
-      PENDING_DELETION_REFUSED_ALERT_COOLDOWN_MS,
-      refusedText,
-    ).catch(logAlertSendFailure(PENDING_DELETION_REFUSED_ALERT_KEY));
+    //
+    // #1630: split by whether the calendar's owner has left. Google says the same
+    // thing for a revoked licence as for one never granted, so a departure reads as
+    // a provisioning request unless Slate says who left. An owner nobody could read
+    // keeps the page, since departure is claimed only where it was read.
+    const facts = await orchestration.describeRefusedDeletions(deps, res.refused);
+    const notices = refusedDeletionNotices(facts.rows, facts.owners);
+    if (notices.page) {
+      await sendThrottledAlert(
+        PENDING_DELETION_REFUSED_ALERT_KEY,
+        PENDING_DELETION_REFUSED_ALERT_COOLDOWN_MS,
+        notices.page,
+      ).catch(logAlertSendFailure(PENDING_DELETION_REFUSED_ALERT_KEY));
+    }
+    if (notices.departed) {
+      await sendThrottledInfo(
+        PENDING_DELETION_DEPARTED_INFO_KEY,
+        PENDING_DELETION_DEPARTED_INFO_COOLDOWN_MS,
+        notices.departed,
+      ).catch(logAlertSendFailure(PENDING_DELETION_DEPARTED_INFO_KEY));
+    }
   }
   if (res.stuck.length > 0) {
     await sendThrottledAlert(

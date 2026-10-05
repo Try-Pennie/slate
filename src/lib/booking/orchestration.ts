@@ -70,6 +70,8 @@ import { bookingIdentityFrom } from "./booking-identity.ts";
 import { SLACK_NOT_CONFIGURED } from "../notify/slack.ts";
 import { isDefinitiveFailure, reachabilityFromError } from "../google/reachability-classify.ts";
 import type { FailureKind } from "../google/sync-health.ts";
+import { normalizeEmail } from "../auth/email.ts";
+import type { CalendarOwnerForAlert, RefusedDeletionForAlert } from "./alert-copy.ts";
 import { encodeCursor, type ListQuery } from "./api-request.ts";
 import { webhookDedupeKey } from "../webhooks/dedupe.ts";
 import { runOutboxSteps, type OutboxHandlers } from "./outbox.ts";
@@ -1217,6 +1219,27 @@ export interface BookingDeps {
   /** #401: load pending event deletions for the retry drain. */
   loadPendingEventDeletions(limit: number): Promise<PendingEventDeletion[]>;
   /**
+   * #1630: one calendar's pending deletions (still under the give-up count), least
+   * recently touched first. Read once Google has refused that calendar for good in
+   * a pass, so its other rows settle in the same pass rather than each spending a
+   * Google call on the same answer. THROWS on a failed read; the drain logs it and
+   * leaves those rows for a later pass, which is the behaviour before #1630.
+   */
+  loadPendingEventDeletionsForCalendar(calendarEmail: string, limit: number): Promise<PendingEventDeletion[]>;
+  /**
+   * #1630: the users rows for these addresses (normalised, #1663), so a refused
+   * calendar can be worded by whether its owner has left. THROWS on a failed read:
+   * an empty answer would read as nobody having left, and the caller turns a throw
+   * into an explicit unknown.
+   */
+  loadCalendarOwners(emails: readonly string[]): Promise<Pick<User, "id" | "email" | "name" | "deactivated_at">[]>;
+  /**
+   * #1630: who each of these bookings sits with now, and its status, so the
+   * departure notice says a call was moved only where it was. THROWS on a failed
+   * read, for the same reason.
+   */
+  loadBookingAssignees(bookingIds: readonly string[]): Promise<Pick<Booking, "id" | "assigned_user_id" | "status">[]>;
+  /**
    * #3215 (L744): the id of a booking in one of `statuses` whose row names this
    * Google event id, or null when none does. An event id is derived from the
    * request, so a retry adopts the event a failed attempt queued for deletion, and
@@ -1680,92 +1703,280 @@ export interface RefusedEventDeletion {
  * never deleted: one a live booking holds is dropped as obsolete, and one a
  * write still in flight pins (a pending create reservation, a standing reschedule
  * lock or a reassign intent, #3217) is left for a later pass.
+ *
+ * Once Google refuses a calendar for good, every other row for that calendar would
+ * spend a Google call only to reach the same answer (#1630), and each pass alerted
+ * on its own refusals, so the page about one departed advisor named 1 of their 4
+ * invites. So the rest of that calendar's rows settle in the SAME pass with no
+ * Google call: the rest of this page first, then up to `siblingLimit` more read
+ * past it (`beyondPage`). Each still goes through the holder check first, so a row
+ * a live booking holds is dropped as before rather than recorded as orphaned, and
+ * each is settled exactly as a refused row is (at the give-up count, kept as the
+ * record), with a `last_error` that says it was not itself tried. Rows past the
+ * page appear in `refused` and `stuck` but never in `deleted`, `failed` or `held`,
+ * which stay the size of the page this pass loaded.
  */
 export async function processPendingEventDeletions(
   deps: BookingDeps,
   limit: number,
+  opts: { siblingLimit?: number } = {},
 ): Promise<{
   deleted: number;
   failed: number;
   held: number;
   stuck: PendingEventDeletion[];
   refused: RefusedEventDeletion[];
+  /** #1630: rows of a refused calendar read and settled past this page. */
+  beyondPage: number;
 }> {
   const rows = await deps.loadPendingEventDeletions(limit);
+  // This pass's calendars Google has refused for good, with the kind it ended on.
+  const refusedCalendars = new Map<string, FailureKind>();
   let deleted = 0;
   let failed = 0;
   let held = 0;
   const stuck: PendingEventDeletion[] = [];
   const refused: RefusedEventDeletion[] = [];
   for (const row of rows) {
-    // #3215 (L744): ask who holds the event BEFORE deleting it. The id is derived
-    // from the request, so a lead's retry adopts the event the failed attempt
-    // queued here, and deleting it leaves a confirmed booking with nothing on the
-    // agent's calendar. A failed read is a transient failure of this row, never a
-    // delete, and never a Google refusal (it is not Google's answer).
-    let holder: Awaited<ReturnType<typeof queuedEventHolder>>;
-    try {
-      holder = await queuedEventHolder(deps, row.gcal_event_id);
-    } catch (err) {
-      const attempts = row.attempts + 1;
-      const message = err instanceof Error ? err.message : String(err);
-      await deps.bumpPendingEventDeletion(row.id, attempts, `could not read who holds the event: ${message}`);
+    const outcome = await drainPendingDeletion(deps, row, refusedCalendars);
+    if (outcome.kind === "deleted") deleted++;
+    else if (outcome.kind === "held") held++;
+    else if (outcome.kind === "refused") {
       failed++;
-      if (attempts >= PENDING_DELETION_ALERT_AFTER) stuck.push(row);
-      continue;
-    }
-    if (holder?.kind === "booking") {
-      // The deletion is obsolete, not failed: the row goes, and the log line is
-      // the record of why an event it asked to delete is still there.
-      log.info("booking", {
-        msg: "queued event deletion dropped: a live booking holds the event",
-        pending_deletion_id: row.id,
-        booking_id: row.booking_id,
-        holder_booking_id: holder.bookingId,
-        gcal_event_id: row.gcal_event_id,
-      });
-      await deps.removePendingEventDeletion(row.id);
-      held++;
-      continue;
-    }
-    if (holder?.kind === "pending") {
-      // A write still in flight pins it (a pending create reservation, a standing
-      // reschedule lock or a reassign intent, #3217), so a resume may yet adopt it.
-      // Kept for a later pass: once the reservation completes the row is dropped
-      // above, and once it expires the event is deleted below. Touched rather than
-      // left alone, because the loader takes the least recently touched rows
-      // first: an untouched held row would sit at the front of every page, and
-      // enough of them would starve every deletable row behind them. Attempts are
-      // unchanged, since holding is not failing and must not walk the row toward
-      // the stuck alert or the give up.
-      await deps.bumpPendingEventDeletion(
-        row.id,
-        row.attempts,
-        "held: a write still in flight pins this event, so a resume may adopt it",
-      );
-      held++;
-      continue;
-    }
-    try {
-      await deps.deleteEvent(row.calendar_email, row.gcal_event_id);
-      await deps.removePendingEventDeletion(row.id);
-      deleted++;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const kind = reachabilityFromError(err);
-      if (isDefinitiveFailure(kind)) {
-        await deps.bumpPendingEventDeletion(row.id, PENDING_DELETION_GIVE_UP_AT, `${kind}: ${message}`);
-        failed++;
-        refused.push({ row, kind });
-        continue;
-      }
-      const attempts = row.attempts + 1;
-      await deps.bumpPendingEventDeletion(row.id, attempts, message);
+      refused.push({ row, kind: outcome.refusal });
+    } else {
       failed++;
-      if (attempts >= PENDING_DELETION_ALERT_AFTER) stuck.push(row);
+      if (outcome.stuck) stuck.push(row);
     }
   }
-  return { deleted, failed, held, stuck, refused };
+
+  // #1630: the rest of each refused calendar's queue, past this page.
+  let beyondPage = 0;
+  let budget = opts.siblingLimit ?? PENDING_DELETION_SIBLING_LIMIT;
+  const seen = new Set(rows.map((r) => r.id));
+  for (const email of [...refusedCalendars.keys()]) {
+    if (budget <= 0) break;
+    let more: PendingEventDeletion[];
+    try {
+      // Asked for enough to see past this page's own rows of the calendar that are
+      // still pending (held, or a blip before the refusal), which are skipped.
+      const pageRows = rows.filter((r) => r.calendar_email === email).length;
+      more = await deps.loadPendingEventDeletionsForCalendar(email, budget + pageRows);
+    } catch (err) {
+      // Those rows keep their place in the queue and each meets the refusal on a
+      // later pass, as before #1630; this pass's own result is unaffected.
+      log.warn(
+        "booking",
+        { msg: "could not read a refused calendar's other queued deletions; left for a later pass", calendar_email: email },
+        err,
+      );
+      continue;
+    }
+    for (const row of more) {
+      if (budget <= 0) break;
+      // Only rows of this calendar, so no row read here can reach a Google call.
+      if (seen.has(row.id) || row.calendar_email !== email) continue;
+      seen.add(row.id);
+      budget--;
+      beyondPage++;
+      const outcome = await drainPendingDeletion(deps, row, refusedCalendars);
+      if (outcome.kind === "refused") refused.push({ row, kind: outcome.refusal });
+      else if (outcome.kind === "failed" && outcome.stuck) stuck.push(row);
+    }
+  }
+  return { deleted, failed, held, stuck, refused, beyondPage };
+}
+
+/**
+ * How many rows of refused calendars one drain pass settles past its page (#1630).
+ * They cost no Google call, only the holder reads and one write each (about five
+ * database subrequests a row), so this is looser than the page, whose rows each
+ * cost a Google call. It exists so one pass stays bounded: a departed advisor's
+ * queue is their upcoming calls, and any left over meet the same rule next pass.
+ */
+export const PENDING_DELETION_SIBLING_LIMIT = 50;
+
+/** What happened to one queued deletion in a drain pass. */
+type PendingDeletionOutcome =
+  | { kind: "deleted" }
+  | { kind: "held" }
+  | { kind: "failed"; stuck: boolean }
+  | { kind: "refused"; refusal: FailureKind };
+
+/**
+ * One queued deletion, as the drain handles it (#401, #2577, #3215, #1630). Shared
+ * by the page and by the rows read past it, so a row is judged the same way
+ * whichever read found it. `refusedCalendars` is this pass's record of calendars
+ * Google has refused for good: a row on one of them settles without a Google call,
+ * and a fresh refusal is added to it.
+ */
+async function drainPendingDeletion(
+  deps: BookingDeps,
+  row: PendingEventDeletion,
+  refusedCalendars: Map<string, FailureKind>,
+): Promise<PendingDeletionOutcome> {
+  // #3215 (L744): ask who holds the event BEFORE deleting it. The id is derived
+  // from the request, so a lead's retry adopts the event the failed attempt
+  // queued here, and deleting it leaves a confirmed booking with nothing on the
+  // agent's calendar. A failed read is a transient failure of this row, never a
+  // delete, and never a Google refusal (it is not Google's answer).
+  let holder: Awaited<ReturnType<typeof queuedEventHolder>>;
+  try {
+    holder = await queuedEventHolder(deps, row.gcal_event_id);
+  } catch (err) {
+    const attempts = row.attempts + 1;
+    const message = err instanceof Error ? err.message : String(err);
+    await deps.bumpPendingEventDeletion(row.id, attempts, `could not read who holds the event: ${message}`);
+    return { kind: "failed", stuck: attempts >= PENDING_DELETION_ALERT_AFTER };
+  }
+  if (holder?.kind === "booking") {
+    // The deletion is obsolete, not failed: the row goes, and the log line is
+    // the record of why an event it asked to delete is still there.
+    log.info("booking", {
+      msg: "queued event deletion dropped: a live booking holds the event",
+      pending_deletion_id: row.id,
+      booking_id: row.booking_id,
+      holder_booking_id: holder.bookingId,
+      gcal_event_id: row.gcal_event_id,
+    });
+    await deps.removePendingEventDeletion(row.id);
+    return { kind: "held" };
+  }
+  if (holder?.kind === "pending") {
+    // A write still in flight pins it (a pending create reservation, a standing
+    // reschedule lock or a reassign intent, #3217), so a resume may yet adopt it.
+    // Kept for a later pass: once the reservation completes the row is dropped
+    // above, and once it expires the event is deleted below. Touched rather than
+    // left alone, because the loader takes the least recently touched rows
+    // first: an untouched held row would sit at the front of every page, and
+    // enough of them would starve every deletable row behind them. Attempts are
+    // unchanged, since holding is not failing and must not walk the row toward
+    // the stuck alert or the give up.
+    await deps.bumpPendingEventDeletion(
+      row.id,
+      row.attempts,
+      "held: a write still in flight pins this event, so a resume may adopt it",
+    );
+    return { kind: "held" };
+  }
+  const known = refusedCalendars.get(row.calendar_email);
+  if (known) {
+    // #1630: Google refused this calendar for good earlier in this pass and would
+    // answer this row the same way, so it is settled as that row was, without a
+    // call of its own. Its last_error says it was not tried, so the record claims
+    // only what was measured (L11).
+    await deps.bumpPendingEventDeletion(
+      row.id,
+      PENDING_DELETION_GIVE_UP_AT,
+      `${known}: not attempted, Google refused this calendar for good earlier in the same drain pass`,
+    );
+    return { kind: "refused", refusal: known };
+  }
+  try {
+    await deps.deleteEvent(row.calendar_email, row.gcal_event_id);
+    await deps.removePendingEventDeletion(row.id);
+    return { kind: "deleted" };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const kind = reachabilityFromError(err);
+    if (isDefinitiveFailure(kind)) {
+      await deps.bumpPendingEventDeletion(row.id, PENDING_DELETION_GIVE_UP_AT, `${kind}: ${message}`);
+      refusedCalendars.set(row.calendar_email, kind);
+      return { kind: "refused", refusal: kind };
+    }
+    const attempts = row.attempts + 1;
+    await deps.bumpPendingEventDeletion(row.id, attempts, message);
+    return { kind: "failed", stuck: attempts >= PENDING_DELETION_ALERT_AFTER };
+  }
+}
+
+/** Who each refused calendar belongs to, and where a departed owner's calls went (#1630). */
+export interface RefusedDeletionFacts {
+  /** One per refused row, in order, with `movedToAnotherAdvisor` set on a departed owner's rows. */
+  rows: RefusedDeletionForAlert[];
+  /** Keyed by normalised address (#1663); null when the owners could not be read. */
+  owners: Map<string, CalendarOwnerForAlert> | null;
+}
+
+/**
+ * What the refusal copy needs about each refused calendar's owner (#1630).
+ *
+ * Never throws. A failed owner read returns `owners: null`, which the copy turns
+ * into today's page: a departure may be claimed only where it was read (L11), and
+ * an empty map would claim nobody had left. An address two users answer to names
+ * nobody (L521) and falls to the page too. The calls are looked up only for owners
+ * who have left; a failed read of them keeps the departure and claims no move.
+ */
+export async function describeRefusedDeletions(
+  deps: BookingDeps,
+  refused: RefusedEventDeletion[],
+): Promise<RefusedDeletionFacts> {
+  const rows: RefusedDeletionForAlert[] = refused.map((r) => ({
+    calendarEmail: r.row.calendar_email,
+    eventId: String(r.row.gcal_event_id),
+    kind: r.kind,
+  }));
+  if (refused.length === 0) return { rows, owners: new Map() };
+  const emails = [...new Set(refused.map((r) => normalizeEmail(r.row.calendar_email)))];
+  let users: Awaited<ReturnType<BookingDeps["loadCalendarOwners"]>>;
+  try {
+    users = await deps.loadCalendarOwners(emails);
+  } catch (err) {
+    log.warn("booking", { msg: "could not read who owns the refused calendars; worded as for an active account" }, err);
+    return { rows, owners: null };
+  }
+  const matches = new Map<string, typeof users>();
+  for (const u of users) {
+    const key = normalizeEmail(u.email);
+    matches.set(key, [...(matches.get(key) ?? []), u]);
+  }
+  const owners = new Map<string, CalendarOwnerForAlert>();
+  const ownerIds = new Map<string, string>();
+  for (const [email, found] of matches) {
+    if (found.length !== 1) {
+      log.warn("booking", { msg: "a refused calendar's address matches more than one user; no owner named", calendar_email: email, matches: found.length });
+      continue;
+    }
+    owners.set(email, { name: found[0].name, deactivatedAt: found[0].deactivated_at });
+    ownerIds.set(email, found[0].id);
+  }
+
+  const departedAt = (r: RefusedEventDeletion) => owners.get(normalizeEmail(r.row.calendar_email))?.deactivatedAt ?? null;
+  const bookingIds = [
+    ...new Set(refused.filter((r) => departedAt(r) !== null && r.row.booking_id).map((r) => r.row.booking_id as string)),
+  ];
+  let assignees: Map<string, Pick<Booking, "id" | "assigned_user_id" | "status">> | null = new Map();
+  if (bookingIds.length > 0) {
+    try {
+      assignees = new Map((await deps.loadBookingAssignees(bookingIds)).map((b) => [b.id, b]));
+    } catch (err) {
+      log.warn("booking", { msg: "could not read where a departed advisor's calls went; no move claimed" }, err);
+      assignees = null;
+    }
+  }
+  refused.forEach((r, i) => {
+    if (departedAt(r) === null) return;
+    const ownerId = ownerIds.get(normalizeEmail(r.row.calendar_email));
+    rows[i].movedToAnotherAdvisor = assignees === null ? null : callMovedAway(r.row.booking_id, ownerId, assignees);
+  });
+  return { rows, owners };
+}
+
+/**
+ * Whether a departed owner's call now sits, live, with somebody else (#1630). An
+ * invite with no booking, a booking the read did not return, a cancelled call and a
+ * call still on the owner are all NOT moved: each was measured, and none of them is
+ * a call another advisor now takes.
+ */
+function callMovedAway(
+  bookingId: string | null,
+  ownerId: string | undefined,
+  assignees: Map<string, Pick<Booking, "id" | "assigned_user_id" | "status">>,
+): boolean {
+  if (!bookingId) return false;
+  const b = assignees.get(bookingId);
+  if (!b) return false;
+  return ACTIVE_BUSY_STATUSES.has(b.status) && b.assigned_user_id !== null && b.assigned_user_id !== ownerId;
 }
 
 /**

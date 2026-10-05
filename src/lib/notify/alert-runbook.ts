@@ -234,6 +234,10 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // #2641: a host misconfiguration Slate cannot fix, worth passing on and never
   // worth waking for, because bookings still complete inside the embed.
   embed_origin_mismatch: "something-was-measured-and-is-only-worth-knowing",
+  // #1630: invites left on the calendar of somebody who has left, whose licence
+  // offboarding revoked. Nothing to repair and nobody to act, so it sits with the
+  // things only worth knowing rather than with the Google reachability pages.
+  pending_event_deletions_departed: "something-was-measured-and-is-only-worth-knowing",
   // #2660: a partner's own page throwing while on the public test bucket. Theirs
   // to fix, and the booking it stopped was a test one.
   client_error_test_bucket: "something-was-measured-and-is-only-worth-knowing",

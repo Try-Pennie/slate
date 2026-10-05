@@ -22,9 +22,15 @@ function result() {
   return writeError ? { data: null, error: writeError } : { data: null, error: null };
 }
 
+/** Set to make the next `select(...).in(...)` read refuse the way PostgREST does. */
+let readError: { message: string } | null = null;
+/** What a `select(...).in(...)` read returns when it lands. */
+let readRows: unknown[] = [];
+const readTables: string[] = [];
+
 vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: () => ({
-    from: () => ({
+    from: (table: string) => ({
       upsert: (row: unknown) => {
         upserted.push(row);
         return result();
@@ -38,6 +44,10 @@ vi.mock("@/lib/supabase/admin", () => ({
       insert: () => ({ select: () => ({ single: async () => result() }) }),
       select: () => ({
         eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }),
+        in: async () => {
+          readTables.push(table);
+          return readError ? { data: null, error: readError } : { data: readRows, error: null };
+        },
       }),
       delete: () => ({ eq: () => result() }),
     }),
@@ -50,6 +60,34 @@ beforeEach(() => {
   writeError = null;
   upserted.length = 0;
   updated.length = 0;
+  readError = null;
+  readRows = [];
+  readTables.length = 0;
+});
+
+describe("the reads that word a refused calendar (#1630)", () => {
+  // A refused calendar is worded as a departure only when its owner's deactivation
+  // was READ. These reads must refuse rather than answer empty: an empty owner list
+  // happens to fall back to the page, but an empty bookings list would claim no call
+  // moved, and either way the failure would vanish without a log line.
+  it("refuses rather than answering that nobody owns the calendars", async () => {
+    readError = { message: "canceling statement due to statement timeout" };
+    await expect(realDeps().loadCalendarOwners(["left@trypennie.com"])).rejects.toThrow(/statement timeout/);
+    expect(readTables).toEqual(["users"]);
+  });
+
+  it("refuses rather than answering that no call moved", async () => {
+    readError = { message: "connection reset" };
+    await expect(realDeps().loadBookingAssignees(["bk-1"])).rejects.toThrow(/connection reset/);
+    expect(readTables).toEqual(["bookings"]);
+  });
+
+  it("CONTROL: reads that land return the rows", async () => {
+    readRows = [{ id: "u-1", email: "left@trypennie.com", name: "Jane Doe", deactivated_at: "2026-10-05T14:43:27.000Z" }];
+    await expect(realDeps().loadCalendarOwners(["left@trypennie.com"])).resolves.toEqual(readRows);
+    readRows = [{ id: "bk-1", assigned_user_id: "u-2", status: "confirmed" }];
+    await expect(realDeps().loadBookingAssignees(["bk-1"])).resolves.toEqual(readRows);
+  });
 });
 
 describe("enqueueEventDeletion (#2482)", () => {
