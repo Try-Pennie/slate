@@ -24,7 +24,7 @@ import { readSlotRows, spliceFromRead, spliceSlotRow, type SlotRowDb } from "./s
  * whose offer changed; collapsing those needs an RPC (see the PR for #3324).
  *
  * `db` is injected so a test can count the statements the REAL wiring makes:
- * `src/lib/availability/booked-splice-io.test.ts`.
+ * `src/lib/availability/slot-cache-splice.test.ts`.
  */
 
 /** What a pool's compute needs that the roster read already holds. */
