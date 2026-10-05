@@ -1,5 +1,14 @@
 import { log } from "../log.ts";
 import type { supabaseAdmin } from "@/lib/supabase/admin";
+import {
+  freshFences,
+  mergeFreshSplices,
+  spliceMetaOf,
+  splicePayload,
+  windowsOverlap,
+  type SlotLists,
+  type SpliceWindow,
+} from "./slot-splice.ts";
 
 /**
  * The one write into `bucket_slots` (#1048).
@@ -89,7 +98,7 @@ export async function writeSlotRow(
   // lost while holding newer data), overwrite it; otherwise it is genuinely fresher,
   // or a save invalidated it after this compute began, and it stands.
   const second = await gatedUpdate(db, code, payload, computedAt);
-  return second === "no-row" ? whyRefused(db, code, computedAtMs) : second;
+  return second === "no-row" ? settleRefused(db, code, payload, computedAtMs) : second;
 }
 
 /**
@@ -121,28 +130,97 @@ export async function markSlotRowsInvalidated(db: SlotRowDb, nowMs: number): Pro
  *  window). */
 export const STALE_STAMP = "1970-01-01T00:00:00.000Z";
 
-/**
- * Says WHY a write was refused, by reading the row that stood (#3118). Only reached on
- * the rare refused path, so the one PK read is cheap. A row this cannot judge is a
- * failure rather than a guess at either reason.
- */
-async function whyRefused(
-  db: SlotRowDb,
-  code: string,
-  computedAtMs: number,
-): Promise<SlotRowWriteOutcome> {
+/** How many times a writer re-reads a row that changed under its compare and swap
+ *  before it gives up and leaves the row to the next compute. */
+const CAS_ATTEMPTS = 3;
+
+export interface StoredSlotRow {
+  payload: unknown;
+  computed_at: string;
+  invalidated_at: string | null;
+}
+
+/** One PK read of everything a refused or spliced write needs to decide. */
+async function readRow(db: SlotRowDb, code: string): Promise<{ row: StoredSlotRow | null; error: unknown }> {
   // cap-safe: bucket_code is the primary key, so this is one row.
   const { data, error } = await db
     .from("bucket_slots")
-    .select("computed_at, invalidated_at")
+    .select("payload, computed_at, invalidated_at")
     .eq("bucket_code", code)
     .maybeSingle();
-  const row = data as { computed_at: string; invalidated_at: string | null } | null;
-  const invalidatedMs = row?.invalidated_at ? Date.parse(row.invalidated_at) : Number.NaN;
-  if (!error && Number.isFinite(invalidatedMs) && invalidatedMs >= computedAtMs) return "invalidated";
-  const computedMs = row ? Date.parse(row.computed_at) : Number.NaN;
-  if (!error && Number.isFinite(computedMs) && computedMs >= computedAtMs) return "kept-newer";
-  log.warn("precompute", { msg: "slot row refused for a reason that could not be read", bucket: code }, error ?? undefined);
+  return { row: (data as StoredSlotRow | null) ?? null, error };
+}
+
+/**
+ * The compare and swap both writers below use: the row is updated only while it
+ * still holds the `computed_at`, `invalidated_at` and splice sequence it was read
+ * with, so a compute, a save or another splice landing between the read and the
+ * write sends the writer back to read again rather than overwriting it.
+ */
+async function swapRow(
+  db: SlotRowDb,
+  code: string,
+  read: StoredSlotRow,
+  values: { payload: unknown; computed_at?: string },
+): Promise<"swapped" | "changed" | "failed"> {
+  let q = db
+    .from("bucket_slots")
+    .update(values)
+    .eq("bucket_code", code)
+    .eq("computed_at", read.computed_at);
+  q = read.invalidated_at === null ? q.is("invalidated_at", null) : q.eq("invalidated_at", read.invalidated_at);
+  const seq = spliceMetaOf(read.payload)?.seq;
+  q = seq === undefined ? q.is("payload->splice->>seq", null) : q.eq("payload->splice->>seq", String(seq));
+  const { data, error } = await q.select("bucket_code");
+  if (error) {
+    log.warn("precompute", { msg: "slot row compare and swap failed", bucket: code }, error);
+    return "failed";
+  }
+  return ((data ?? []) as unknown[]).length > 0 ? "swapped" : "changed";
+}
+
+/**
+ * Settles a write the gated update refused (#3118, #3324), by reading the row that
+ * stood. Three of the answers were always here: a save invalidated the row after this
+ * compute began, a fresher compute already stands, or the reason cannot be read.
+ *
+ * The fourth is the booking fence. A booking spliced its window into this row after
+ * this compute began, so this compute may not have seen it. It still lands, because
+ * everything outside the window is newer than the row; inside the window it keeps a
+ * time only where the row (which saw the booking) agrees. Refusing it instead would
+ * starve the recompute lane under load (#3324). Only reached on a refused write, so
+ * the extra read is paid only when there is something to settle.
+ */
+async function settleRefused(
+  db: SlotRowDb,
+  code: string,
+  payload: unknown,
+  computedAtMs: number,
+): Promise<SlotRowWriteOutcome> {
+  const computedAt = new Date(computedAtMs).toISOString();
+  for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt++) {
+    const { row, error } = await readRow(db, code);
+    const invalidatedMs = row?.invalidated_at ? Date.parse(row.invalidated_at) : Number.NaN;
+    const storedMs = row ? Date.parse(row.computed_at) : Number.NaN;
+    if (error || !row || !Number.isFinite(storedMs)) break;
+    if (Number.isFinite(invalidatedMs) && invalidatedMs >= computedAtMs) return "invalidated";
+    if (storedMs >= computedAtMs) return "kept-newer";
+    if (freshFences(spliceMetaOf(row.payload), computedAtMs).length === 0) {
+      // Nothing explains the refusal any more: the row changed between the update and
+      // this read. Try the plain gated update again.
+      const again = await gatedUpdate(db, code, payload, computedAt);
+      if (again !== "no-row") return again;
+      continue;
+    }
+    const merged = mergeFreshSplices(payload as SlotLists, row.payload, computedAtMs);
+    const swapped = await swapRow(db, code, row, { payload: merged, computed_at: computedAt });
+    if (swapped === "failed") return "failed";
+    if (swapped === "swapped") {
+      log.info("precompute", { msg: "merged a compute with a booking spliced after it began", bucket: code });
+      return "written";
+    }
+  }
+  log.warn("precompute", { msg: "slot row refused for a reason that could not be read", bucket: code });
   return "failed";
 }
 
@@ -160,13 +238,124 @@ async function gatedUpdate(
     .update({ payload, computed_at: computedAt })
     .eq("bucket_code", code)
     .lt("computed_at", computedAt)
-    // #3118: and no save has invalidated the row since this compute began. Strictly
-    // before, so a compute starting at the save instant is refused too.
-    .or(`invalidated_at.is.null,invalidated_at.lt.${computedAt}`)
+    // #3118: no save has invalidated the row since this compute began, and #3324: no
+    // booking has been spliced into it since then either. Both strictly before, so a
+    // compute starting at either instant is refused too. One `or` of four `and`s,
+    // because two `or` parameters on one request is not a shape to rely on. The fence
+    // is a json path, compared as text, which is why it is always an ISO stamp.
+    .or(
+      [
+        `and(invalidated_at.is.null,${FENCE_PATH}.is.null)`,
+        `and(invalidated_at.is.null,${FENCE_PATH}.lt.${computedAt})`,
+        `and(invalidated_at.lt.${computedAt},${FENCE_PATH}.is.null)`,
+        `and(invalidated_at.lt.${computedAt},${FENCE_PATH}.lt.${computedAt})`,
+      ].join(","),
+    )
     .select("bucket_code");
   if (error) {
     log.warn("precompute", { msg: "slot row update failed", bucket: code }, error);
     return "failed";
   }
   return ((data ?? []) as unknown[]).length > 0 ? "written" : "no-row";
+}
+
+/** Where a spliced row keeps its newest booking fence (see `SpliceMeta`). */
+export const FENCE_PATH = "payload->splice->>fenceAt";
+
+/** What a splice did. `recompute` means its answer may predate something that has
+ *  landed since (a settings save, or another booking overlapping its window), so the
+ *  caller computes the window again rather than splicing a stale answer in.
+ *  `unchanged` means the booking removed nothing this row offers, so nothing was
+ *  written (#3324 review: a write per code is the part of a splice that scales). */
+export type SpliceRowOutcome = "spliced" | "unchanged" | "no-row" | "recompute" | "failed";
+
+/**
+ * Splice one booked window into a row ALREADY READ (#3324), so a booking touching
+ * many codes reads them all in one statement and only writes per code. Answers
+ * `changed` when the row moved since that read; the caller then reads it afresh
+ * through `spliceSlotRow`.
+ *
+ * A splice that removes nothing is not written. Its only other effect would be the
+ * fence, and the fence protects times a splice REMOVED: with none removed, the row
+ * already agrees with the booking inside the window. (The one residue: a row that
+ * was already missing a time a stale full compute would re-add. That time was free
+ * when that compute began, verify on book re-checks it live, and the next compute
+ * past the booking corrects it.)
+ */
+export async function spliceFromRead(
+  db: SlotRowDb,
+  code: string,
+  row: StoredSlotRow,
+  w: SpliceWindow,
+  judge: SlotLists,
+  fenceAtMs: number,
+  computeStartedMs: number,
+): Promise<SpliceRowOutcome | "changed"> {
+  const p = row.payload as (Record<string, unknown> & SlotLists) | null;
+  if (!p || typeof p !== "object" || !Array.isArray(p.slots)) return "no-row";
+  const invalidatedMs = row.invalidated_at ? Date.parse(row.invalidated_at) : Number.NaN;
+  if (Number.isFinite(invalidatedMs) && invalidatedMs >= computeStartedMs) return "recompute";
+  if (freshFences(spliceMetaOf(p), computeStartedMs).some((f) => windowsOverlap(f, w))) return "recompute";
+  // parse-ok: an unreadable stamp keeps every fence (0 drops none), the safe direction.
+  const storedMs = Date.parse(row.computed_at);
+  const next = splicePayload(p, w, judge, fenceAtMs, Number.isFinite(storedMs) ? storedMs : 0);
+  // A splice only removes, so equal lengths mean equal lists.
+  const removedNothing =
+    next.slots.length === p.slots.length &&
+    (next.slotsWithoutLow?.length ?? 0) === (Array.isArray(p.slotsWithoutLow) ? p.slotsWithoutLow.length : 0);
+  if (removedNothing) return "unchanged";
+  const swapped = await swapRow(db, code, row, { payload: next });
+  return swapped === "swapped" ? "spliced" : swapped;
+}
+
+/** Every listed code's row in ONE read (#3324 review), keyed by code. A code with
+ *  no row is absent. Throws on a read error, which is "could not tell", never "no
+ *  rows": the caller counts every code as failed and the lane covers them. */
+export async function readSlotRows(db: SlotRowDb, codes: string[]): Promise<Map<string, StoredSlotRow>> {
+  const out = new Map<string, StoredSlotRow>();
+  if (codes.length === 0) return out;
+  // cap-safe: bucket_code is the primary key and the list is one advisor's codes (at most the roster's sixty odd).
+  const { data, error } = await db
+    .from("bucket_slots")
+    .select("bucket_code, payload, computed_at, invalidated_at")
+    .in("bucket_code", codes);
+  if (error) throw new Error(`bucket_slots read for a splice failed: ${error.message}`);
+  for (const r of (data ?? []) as (StoredSlotRow & { bucket_code: string })[]) out.set(r.bucket_code, r);
+  return out;
+}
+
+/**
+ * Splice one booked window into a stored row (#3324), WITHOUT moving `computed_at`:
+ * the rest of the row is exactly as old as it was, and the freshness floor (the lane
+ * and the stale alarm) has to go on seeing that.
+ *
+ * `fenceAtMs` is when the booking's busy block had committed; it is recorded in the
+ * row so an older full compute landing later keeps the booking (see `settleRefused`).
+ * `computeStartedMs` is when the splice's own reads began, so a booking fenced at or
+ * after it, overlapping this window, sends the splice back to compute again.
+ *
+ * Never creates a row: a code with none is offering nothing yet, and the lane builds
+ * it. A row that keeps changing under the compare and swap is given up on after a
+ * few attempts and left to the lane, unchanged.
+ */
+export async function spliceSlotRow(
+  db: SlotRowDb,
+  code: string,
+  w: SpliceWindow,
+  judge: SlotLists,
+  fenceAtMs: number,
+  computeStartedMs: number,
+): Promise<SpliceRowOutcome> {
+  for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt++) {
+    const { row, error } = await readRow(db, code);
+    if (error) {
+      log.warn("precompute", { msg: "slot row read for a splice failed", bucket: code }, error);
+      return "failed";
+    }
+    if (!row) return "no-row";
+    const result = await spliceFromRead(db, code, row, w, judge, fenceAtMs, computeStartedMs);
+    if (result !== "changed") return result;
+  }
+  log.warn("precompute", { msg: "slot row kept changing under a splice; left to the lane", bucket: code });
+  return "failed";
 }

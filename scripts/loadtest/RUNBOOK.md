@@ -1278,17 +1278,36 @@ three ARMS, set by `SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE`:
 
 | arm | what a booking schedules after its response | per job line name |
 |---|---|---|
-| `on` (default) | the refresh exactly as production: since #3293, the booked code's pool, coalesced per ten second window | `post-confirm-recompute` |
+| `on` (default) | the refresh exactly as production: since #3324, a create splices the booked window into every pool the booked advisor serves (`spliceBookedTimeAfterBooking`) | `post-confirm-recompute` |
 | `off` | nothing; the recompute lane keeps slots fresh | none |
-| `reads-only` | the reads of the same coalesced pool refreshes (`readPoolInputsAfterBooking`), no compute, no row write | `post-confirm-recompute-reads-only` |
+| `reads-only` | the reads of the same splice (`readSpliceInputsAfterBooking`), the cap widening included, no compute, no row write | `post-confirm-recompute-reads-only` |
+
+**Since #3324 the arms measure the splice, not a pool recompute.** A create no longer
+computes a whole pool: it re-judges a call or so either side of the booked time (the
+advisor's whole local day when the booking takes them to their cap), in each of the
+advisor's pools, and splices that into the stored rows without moving `computed_at`. Its reads are
+batched across the advisor's pools: seven statements per booking whatever the pool
+count (three roster reads, schedules, the cap count, busy time, the affected rows),
+plus one compare and swap per code whose offer actually changed. Watch the database
+side of the next run as closely as the CPU side, since that is where the cost moved.
+Cancels, reschedules and reassigns still schedule the coalesced pool refresh
+(`refreshPoolAfterBooking`), under the same job name, and the reads only arm reads
+that refresh's inputs for them. So runs from before #3324 (the #3293 coalesced
+refresh, and the 2026-10-04 per code refresh) are a different `on`: compare a new arm
+only with new arms. What to read off the next run, per #3324: computes per booking
+(should fall to zero whole pool computes from creates), CPU per booking request at
+the p99, the `booked time spliced` lines (`spliced`, `failed`, `widened`), the
+`merged a compute with a booking spliced after it began` lines (how often a lane
+compute met a fence and merged rather than being refused), and that the booked time
+is gone from every pool within seconds.
 
 `off` against `on` says whether the recompute is what the confirms wait on;
 `reads-only` against both says whether its cost is the database reads or the CPU of
 the compute, which decides the fix. Expect `off` to report a worse "worst recompute
 age", since freshness falls back to the lane: that is the arm, not a defect.
 
-Both arms go through one coalescing rule (#3293), so `reads-only` is the reads of the
-very refreshes `on` computes. The 2026-10-04 figures predate it: there, both arms ran
+Both arms make the same reads for the same booking (#3293, #3324), so `reads-only` is
+the reads of the very splices `on` computes. The 2026-10-04 figures predate it: there, both arms ran
 per code per booking, so compare a new arm only with new arms, never with that day's.
 
 **Production cannot reach it.** It is read only when `SLATE_LOADTEST` is "true"

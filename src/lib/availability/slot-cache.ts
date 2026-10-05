@@ -23,6 +23,9 @@ import {
   type PooledBucket,
 } from "./pool-recompute";
 import { SlotRowRefused } from "./slot-row-write";
+import { bookedSpliceIo } from "./booked-splice-io";
+import { spliceBookedTime, type BookedTime, type BookedSpliceOutcome } from "./booked-splice";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import { groupByPool } from "./pool-key";
 import { makePoolRefreshCoalescer, POST_CONFIRM_REFRESH_WINDOW_MS } from "./pool-refresh-coalescer";
 import { appUrl } from "@/lib/env";
@@ -364,6 +367,59 @@ const recomputePoolsOf = (codes: string[]): Promise<void> =>
       );
     }
   });
+
+/**
+ * Take a just booked time out of what EVERY pool the booked advisor serves is
+ * offering (#3324), by re-judging only the window the booking can have changed and
+ * splicing that into each code's row. See `booked-splice.ts` for the rule and
+ * `slot-splice.ts` for the fence that keeps an older full compute from putting the
+ * time back.
+ *
+ * It replaces `refreshPoolAfterBooking` for a confirmed booking: no whole pool
+ * compute, no coalescing window to wait out, and the advisor's OTHER pools are
+ * covered too. The recompute lane keeps doing full computes as the freshness floor.
+ *
+ * REJECTS when a code could not be spliced, so `afterResponse` logs the job as
+ * failed rather than reporting a splice that never landed; the rows it could not
+ * splice are exactly as they were, and the lane covers them.
+ */
+export async function spliceBookedTimeAfterBooking(code: string, booked: BookedTime): Promise<void> {
+  // A failed roster read THROWS out of the plan (could not tell); an empty plan was
+  // read successfully and means the advisor serves no pool now, most often because
+  // they were made unbookable or deactivated after the booking. No pool routes to
+  // them, so no row offers their time and there is nothing to splice: a logged skip,
+  // never a failed job.
+  const outcome = await spliceBookedTime(booked, bookedSpliceDeps(code));
+  if (outcome.pools === 0) {
+    log.info("slot-cache", {
+      msg: "booked time splice skipped: the advisor serves no pool",
+      bucket: code,
+      user_id: booked.userId,
+    });
+    return;
+  }
+  log.info("slot-cache", { msg: "booked time spliced", bucket: code, user_id: booked.userId, ...outcome });
+  if (outcome.failed > 0) {
+    throw new Error(`${outcome.failed} code(s) could not be spliced after the booking on ${code}; the lane covers them`);
+  }
+}
+
+/**
+ * The load run's `reads-only` arm (#3258, #3324): exactly the reads the splice makes
+ * for the same booking, the cap widening included, with no compute, no row write and
+ * no edge cache drop, so it stays comparable with the `on` arm.
+ */
+export async function readSpliceInputsAfterBooking(code: string, booked: BookedTime): Promise<void> {
+  await spliceBookedTime(booked, bookedSpliceDeps(code), { readsOnly: true });
+}
+
+/** The batched database reads and writes (`booked-splice-io.ts`), with this module's
+ *  edge cache as the one thing a splice drops besides the row. */
+function bookedSpliceDeps(bookedCode: string) {
+  return { ...bookedSpliceIo(supabaseAdmin(), bookedCode), invalidate: invalidateBucketSlots };
+}
+
+export type { BookedTime, BookedSpliceOutcome };
 
 /**
  * How many pools one Google push may refresh (#3258).

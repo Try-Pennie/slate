@@ -10,15 +10,13 @@ import {
   type MemberAvailability,
 } from "@/lib/availability/compute";
 import { loadBusinessHours } from "@/lib/booking/business-hours-load";
-import { agentIdsFromPool } from "@/lib/availability/pool";
+import { agentIdsFromPool, eligibleFromRoster } from "@/lib/availability/pool";
 import { lowCarrierIds, withoutLowCarriers } from "@/lib/availability/low-exclusion";
 import { poolServesLowExcludedRungs } from "@/lib/routing/tiers";
 import {
-  applyFallback,
   payPeriod,
   bucketShareFromResult,
   orderByBucketShare,
-  shadowRankingDivergence,
 } from "@/lib/availability/roundrobin";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { logAlertSendFailure } from "@/lib/notify/send-failure";
@@ -28,7 +26,6 @@ import { bufferedReadWindow, dropHeldAgents, parseLiveHolds, type LiveHold } fro
 import { bufferedWindow } from "@/lib/booking/buffered-window";
 import { userIdsOnApprovedTimeOff } from "@/lib/ooo/approved-overlap";
 import type { CurrentAgentPicture, RoundRobinOpts } from "@/lib/booking/orchestration";
-import { log } from "@/lib/log";
 
 export { agentIdsFromPool } from "@/lib/availability/pool";
 
@@ -127,32 +124,14 @@ export type EligibleResolver = (bucket: Bucket) => Promise<EligibleAgents>;
 export type EligibleAgents = { ids: string[]; fallbackApplied: boolean; lowIds?: string[] };
 
 export async function eligibleAgentIds(bucket: Bucket): Promise<EligibleAgents> {
-  const pool = await resolveBucketAgentPool(bucket);
-  const matched = pool.ids;
-  const withLow = (r: { ids: string[]; fallbackApplied: boolean }): EligibleAgents => {
-    const low = new Set(pool.lowIds);
-    return { ...r, lowIds: r.ids.filter((id) => low.has(id)) };
-  };
-  // The fallback is only consulted when the matched pool is empty, so skip the
-  // eligibility round-trip otherwise. A stored fallback_user_id can point at an
-  // agent who is no longer bookable (or, with offboarding, deactivated); never
-  // route to them just because the pool came up empty.
-  if (matched.length > 0 || !bucket.fallback_user_id) {
-    return withLow(applyFallback(matched, bucket.fallback_user_id, false));
-  }
-  const db = supabaseAdmin();
-  const fallback = unwrap(
-    await db
-      .from("users")
-      .select("id")
-      .eq("id", bucket.fallback_user_id)
-      .eq("org_id", bucket.org_id)
-      .eq("bookable", true)
-      .is("deactivated_at", null)
-      .maybeSingle(),
-    "fallback agent",
-  );
-  return withLow(applyFallback(matched, bucket.fallback_user_id, !!fallback));
+  // #3324: judged from the org's bookable, not deactivated advisors that
+  // `resolveBucketPool` already read, which is exactly the set a fallback agent must
+  // be in to be routable (a stored fallback_user_id can point at somebody since
+  // turned off or offboarded), so the fallback costs no second read. The judge is
+  // shared with the booked window splice, which reads the roster once for every
+  // pool an advisor serves (`eligibleFromRoster`).
+  const { orgAgents, manualMemberIds } = await resolveBucketPool(bucket);
+  return eligibleFromRoster(bucket, orgAgents, manualMemberIds);
 }
 
 /**
@@ -310,7 +289,7 @@ export async function loadMembersAvailability(
  * whole count under a single PostgREST row, so it never hits the 1,000-row SETOF cap the
  * old paged row-read had to walk (#832).
  */
-function parseDayCounts(data: unknown): Map<string, Map<string, number>> {
+export function parseDayCounts(data: unknown): Map<string, Map<string, number>> {
   const out = new Map<string, Map<string, number>>();
   if (!data || typeof data !== "object") return out;
   for (const [key, n] of Object.entries(data as Record<string, number>)) {
@@ -400,6 +379,21 @@ export async function getBucketSlots(
 ): Promise<BucketSlots | null> {
   const inputs = await loadBucketSlotInputs(code, from, to, resolveEligible);
   if (!inputs) return null;
+  return computeSlotsFromInputs(code, inputs, from, to, Date.now());
+}
+
+/**
+ * The compute half of `getBucketSlots`, over inputs already read (#3324). Split out
+ * so a booking's splice runs the SAME predicate over a narrow window whose busy time
+ * it read slightly wider (by the buffers), rather than a copy of it (L41).
+ */
+export function computeSlotsFromInputs(
+  code: string,
+  inputs: BucketSlotInputs,
+  from: string,
+  to: string,
+  nowMs: number,
+): BucketSlots {
   const { resolved, orgRes, membersResult, businessHours } = inputs;
   const { bucket, eventType } = resolved;
   const members = membersResult.members;
@@ -411,7 +405,6 @@ export async function getBucketSlots(
   // it are the ones that matter and neither is null-tolerant: `loadBusinessHours`
   // throws (#1294) and `loadMembersAvailability` throws on its daily-cap count.
   const org = orgRes.data;
-  const nowMs = Date.now();
   const slotsFor = (pool: MemberAvailability[]) =>
     computeBucketSlots({
       members: pool,
@@ -550,17 +543,14 @@ export async function roundRobinCandidates(
   const memberCount = members.length;
   if (free.length <= 1) return { candidates: free, memberCount };
   // Per-bucket equal-share (#305): anchor the pay period on the SLOT's start so a
-  // next-period slot balances against next-period meetings. On the real assignment
-  // path, log the equal-share vs recency divergence (#321) for pre-cutover
-  // validation; a dry-run preview (#380) suppresses both that log and the
-  // unfair-ordering alert so previews never pollute real-assignment data.
+  // next-period slot balances against next-period meetings. A dry-run preview
+  // (#380) suppresses the unfair-ordering alert, so a preview never pages.
   return {
     candidates: await rankBucketShare(
       bucket.id,
       free,
       startMs,
       "verify-on-book candidate order",
-      !preview,
       preview,
     ),
     memberCount,
@@ -668,7 +658,6 @@ async function rankBucketShare(
   candidateIds: string[],
   anchorMs: number,
   context: string,
-  shadowLog = false,
   preview = false,
 ): Promise<string[]> {
   if (candidateIds.length <= 1) return candidateIds;
@@ -691,28 +680,8 @@ async function rankBucketShare(
     period.startMs,
   );
   // A dry-run preview (#380) is not a real assignment, so it must not page on a
-  // degraded share (nor log the shadow line below).
+  // degraded share.
   if (share.degraded && !preview) await alertUnfairOrdering(context);
-
-  // Pre-cutover shadow run (#321): on the real assignment path, log how the live
-  // equal-share order compares to the prior recency order, so the equal-share
-  // distribution can be validated against real traffic before the fleet relies
-  // on it. Structured line for Cloudflare observability; assignment is unaffected
-  // (the live order is always equal-share). Skipped for the routing-API preview.
-  if (shadowLog && !share.degraded) {
-    const div = shadowRankingDivergence(candidateIds, share);
-    log.info("routing-shadow", {
-      bucket_id: bucketId,
-      anchor_ms: anchorMs,
-      candidates: candidateIds.length,
-      diverged: div.diverged,
-      equal_share_top: div.equalShareTop,
-      recency_top: div.recencyTop,
-      equal_share_order: div.equalShareOrder.join(","),
-      recency_order: div.recencyOrder.join(","),
-    });
-    return div.equalShareOrder;
-  }
   return orderByBucketShare(candidateIds, share);
 }
 
@@ -739,8 +708,8 @@ export async function resolveRouting(
   // No slot in a routing preview, so anchor the period on now. This endpoint is a
   // read-only lookup, not an assignment (#673): run it as a dry-run preview so an
   // anonymous probe against a skewed bucket can never page the unfair-ordering
-  // alert or write a shadow line. The returned order is unaffected.
-  const ordered = await rankBucketShare(bucket.id, ids, Date.now(), "routing API order", false, true);
+  // alert. The returned order is unaffected.
+  const ordered = await rankBucketShare(bucket.id, ids, Date.now(), "routing API order", true);
   return {
     bucket,
     eventType,

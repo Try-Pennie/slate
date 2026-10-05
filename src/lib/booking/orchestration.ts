@@ -1030,8 +1030,8 @@ export interface BookingDeps {
    * edit one line rather than rebuild the whole description.
    */
   readEventDescription(agentEmail: string, eventId: string): Promise<string | null>;
-  /** `preview` = a dry run (#380): route read-only, skipping the #321 shadow-study
-   *  log + the unfair-ordering alert so previews don't pollute real-assignment data. */
+  /** `preview` = a dry run (#380): route read-only, skipping the unfair-ordering
+   *  alert so a preview never pages. */
   /**
    * The agents free for this instant, AND how many the bucket has at all (#1300).
    *
@@ -1637,8 +1637,16 @@ export interface BookingDeps {
    *  so it can never equal a derived bucket|slot|contact key. */
   newIdempotencyKey(): string;
   appBaseUrl(): string;
-  /** Best-effort clear of a bucket's cached availability after a booking changes it. */
-  invalidateSlots(bucketCode: string): Promise<void>;
+  /**
+   * Best-effort clear of a bucket's cached availability after a booking changes it.
+   * A create passes the booked advisor and window (#3324), once its busy block has
+   * committed, so the time can be spliced out of every pool that advisor serves;
+   * the cancel, reschedule and reassign steps pass none and refresh the code's pool.
+   */
+  invalidateSlots(
+    bucketCode: string,
+    booked?: { userId: string; startsAt: string; endsAt: string },
+  ): Promise<void>;
   /**
    * Persist one routing decision to the decision log and fire a misroute alert if
    * warranted (#504). Injected (rather than called as a module function) so tests
@@ -2656,8 +2664,8 @@ async function assignAgentWithTierFallback(
   startInstantIso: string,
   allowTestBuckets: boolean,
   // Read-only paths (dry-run preview, the validate-only bookable check #541) pass
-  // true so the cascade routes WITHOUT the #321 shadow-study log / unfair-ordering
-  // alert. The real book leaves it false.
+  // true so the cascade routes WITHOUT the unfair-ordering alert. The real book
+  // leaves it false.
   preview = false,
   /** #3257: the real book's claim in its slot's line; read only paths pass none. */
   seat: LineSeat | null = null,
@@ -4574,7 +4582,14 @@ async function deliverCreatedSideEffects(
       booking.id,
     );
   }
-  await deps.invalidateSlots(bookedCode);
+  // #3324: after the busy block above has committed, so the splice's fence is
+  // stamped no earlier than the block every later compute will read.
+  await deps.invalidateSlots(
+    bookedCode,
+    booking.assigned_user_id
+      ? { userId: booking.assigned_user_id, startsAt: booking.starts_at, endsAt: booking.ends_at }
+      : undefined,
+  );
 
   // Re-resolve bucket + eventType for the webhook (works on the drain path too).
   const resolved = await deps.resolveBucketByCode(bookedCode);
@@ -5142,7 +5157,7 @@ export async function previewBooking(
       { bucket: resolved.bucket, eventType: resolved.eventType },
       input.startIso,
       input.allowTestBuckets ?? false,
-      true, // preview: read-only, no shadow-study log / unfair-ordering alert
+      true, // preview: read-only, no unfair-ordering alert
     );
     const agent = await deps.getUser(tier.userId);
     return {
@@ -5199,7 +5214,7 @@ export interface BookableResult {
  * cascade drops a tier only when the WHOLE horizon is empty, while the booking
  * cascade drops PER-SLOT at T.
  *
- * Routes in preview mode (no shadow-study log / unfair-ordering alert). A busy
+ * Routes in preview mode (no unfair-ordering alert). A busy
  * ladder is a normal `bookable:false` answer, NOT an error; only an unknown
  * bucket (UnknownBucketError) and a transient verify outage (VerifyUnavailableError)
  * throw, so the caller can map them to 422 / 503 respectively.
