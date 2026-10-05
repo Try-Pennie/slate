@@ -23,6 +23,8 @@ import {
   type PooledBucket,
 } from "./pool-recompute";
 import { SlotRowRefused } from "./slot-row-write";
+import { groupByPool } from "./pool-key";
+import { makePoolRefreshCoalescer, POST_CONFIRM_REFRESH_WINDOW_MS } from "./pool-refresh-coalescer";
 import { appUrl } from "@/lib/env";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadBusinessHoursCached } from "@/lib/booking/business-hours-load";
@@ -244,6 +246,66 @@ export const AGENT_RECOMPUTE_BUDGET_MS = 20_000;
 
 /** When each pool was last started in this isolate, for the burst debounce. */
 const lastPoolRecomputeAt = new Map<string, number>();
+
+/**
+ * The refresh every confirmed booking schedules after its response (#3258), per
+ * POOL and coalesced: see `pool-refresh-coalescer.ts` for the rule and the load run
+ * that measured why. It shares `lastPoolRecomputeAt` with the push path, so the two
+ * never compute one pool back to back.
+ */
+const bookingRefreshes = makePoolRefreshCoalescer({
+  now: () => Date.now(),
+  sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
+  windowMs: POST_CONFIRM_REFRESH_WINDOW_MS,
+  lastStartedAt: lastPoolRecomputeAt,
+});
+
+/**
+ * Which pool a code is in, from a grouping read at most once a minute per isolate.
+ * It only decides which bookings SHARE a refresh; the refresh itself re-reads the
+ * buckets, so a bucket edited in the last minute is computed from what it is now.
+ */
+let poolKeyCache: { readAtMs: number; byCode: Map<string, string> } | null = null;
+const POOL_KEY_CACHE_MS = 60_000;
+
+async function poolKeyOfCode(code: string): Promise<string | null> {
+  const now = Date.now();
+  if (!poolKeyCache || now - poolKeyCache.readAtMs > POOL_KEY_CACHE_MS) {
+    const byCode = new Map<string, string>();
+    for (const [key, members] of groupByPool(await listPoolBuckets())) {
+      for (const m of members) byCode.set(m.code, key);
+    }
+    poolKeyCache = { readAtMs: now, byCode };
+  }
+  return poolKeyCache.byCode.get(code) ?? null;
+}
+
+/**
+ * Refresh the pool a just-booked code is in, so the booked time stops being offered
+ * (#2345, #2968), sharing one compute with the pool's other bookings inside the
+ * window (#3258). Resolves when the refresh covering this booking has finished, and
+ * REJECTS when it stored no row, so `afterResponse` logs the job as failed rather
+ * than reporting a refresh that never landed; the recompute lane backstops it.
+ */
+export async function refreshPoolAfterBooking(code: string): Promise<void> {
+  const key = await poolKeyOfCode(code);
+  if (key === null) {
+    log.warn("slot-cache", { msg: "booked code is in no pool, so nothing was refreshed", bucket: code });
+    return;
+  }
+  await bookingRefreshes.request(key, async () => {
+    const [buckets, horizon] = await Promise.all([listPoolBuckets(), loadBookingHorizonDays()]);
+    const pool = [...groupByPool(buckets)].find(([, members]) => members.some((m) => m.code === code))?.[1];
+    if (!pool) {
+      log.warn("slot-cache", { msg: "booked code left its pool before the refresh ran", bucket: code });
+      return;
+    }
+    const stored = await recomputePoolSlotsForToday(pool, undefined, horizon);
+    if (stored === 0) {
+      throw new Error(`post confirm pool refresh for ${code} stored no rows; the recompute lane will retry`);
+    }
+  });
+}
 
 /**
  * Recompute every bucket an agent affects (their calendar/OOO just changed), one

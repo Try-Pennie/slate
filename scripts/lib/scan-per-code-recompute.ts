@@ -24,10 +24,10 @@ export interface PerCodeRecomputeSite {
  */
 export const ALLOWED_PER_CODE_RECOMPUTE: Record<string, { count: number; why: string }> = {
   "src/lib/booking/service.ts": {
-    count: 2,
+    count: 1,
     why:
-      "invalidateSlots: ONE booking's own bucket, once per booking (afterResponse on the " +
-      "user-facing paths, the #503 float on the cron drains), debounced per bucket",
+      "invalidateSlots on the cron drains: ONE booking's own bucket, the #503 float, " +
+      "debounced per bucket. The user facing paths refresh the POOL, coalesced (#3258)",
   },
   "src/app/api/cron/monitor/route.ts": {
     count: 1,
