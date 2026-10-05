@@ -511,6 +511,12 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
         minutes_to_start: msToStart === null ? null : Math.round(msToStart / 60_000),
       });
       const page = async (disposition: ReminderFailureDisposition) => {
+        // Past the cap, this booking goes into the one folded page after the loop.
+        if (pagedByName >= REMINDER_PAGES_PER_TICK) {
+          folded.push(row.id);
+          return;
+        }
+        pagedByName += 1;
         // alert-text-ok: the reason is `shortErrorReason`'s one short line, never the
         // provider's body, which goes to the log through `warn`.
         // swallow-ok: this IS the failure path's own reporter, so a throw from it has
@@ -518,11 +524,6 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
         // remaining lead's reminder to report one that already failed. The send
         // failure is still returned in `run.failed`, which the caller logs and the
         // lane's heartbeat is judged against, so the tick is never silent about it.
-        if (pagedByName >= REMINDER_PAGES_PER_TICK) {
-          folded.push(row.id);
-          return;
-        }
-        pagedByName += 1;
         await deps.alert(row.id, reminderFailedAlert(row.id, disposition, shortErrorReason(err), outcome)).catch(() => {});
       };
 
