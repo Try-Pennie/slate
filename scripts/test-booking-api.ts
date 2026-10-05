@@ -568,7 +568,7 @@ async function run() {
     );
     assert(
       calls.roundRobinPreview.at(-1) === true,
-      "previewBooking: routes in PREVIEW mode (so it skips the #321 shadow-study log + unfair-ordering alert)",
+      "previewBooking: routes in PREVIEW mode (so it skips the unfair-ordering alert)",
     );
   }
   {

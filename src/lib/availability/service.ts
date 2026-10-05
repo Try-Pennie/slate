@@ -17,7 +17,6 @@ import {
   payPeriod,
   bucketShareFromResult,
   orderByBucketShare,
-  shadowRankingDivergence,
 } from "@/lib/availability/roundrobin";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { logAlertSendFailure } from "@/lib/notify/send-failure";
@@ -27,7 +26,6 @@ import { bufferedReadWindow, dropHeldAgents, parseLiveHolds, type LiveHold } fro
 import { bufferedWindow } from "@/lib/booking/buffered-window";
 import { userIdsOnApprovedTimeOff } from "@/lib/ooo/approved-overlap";
 import type { CurrentAgentPicture, RoundRobinOpts } from "@/lib/booking/orchestration";
-import { log } from "@/lib/log";
 
 export { agentIdsFromPool } from "@/lib/availability/pool";
 
@@ -545,17 +543,14 @@ export async function roundRobinCandidates(
   const memberCount = members.length;
   if (free.length <= 1) return { candidates: free, memberCount };
   // Per-bucket equal-share (#305): anchor the pay period on the SLOT's start so a
-  // next-period slot balances against next-period meetings. On the real assignment
-  // path, log the equal-share vs recency divergence (#321) for pre-cutover
-  // validation; a dry-run preview (#380) suppresses both that log and the
-  // unfair-ordering alert so previews never pollute real-assignment data.
+  // next-period slot balances against next-period meetings. A dry-run preview
+  // (#380) suppresses the unfair-ordering alert, so a preview never pages.
   return {
     candidates: await rankBucketShare(
       bucket.id,
       free,
       startMs,
       "verify-on-book candidate order",
-      !preview,
       preview,
     ),
     memberCount,
@@ -663,7 +658,6 @@ async function rankBucketShare(
   candidateIds: string[],
   anchorMs: number,
   context: string,
-  shadowLog = false,
   preview = false,
 ): Promise<string[]> {
   if (candidateIds.length <= 1) return candidateIds;
@@ -686,28 +680,8 @@ async function rankBucketShare(
     period.startMs,
   );
   // A dry-run preview (#380) is not a real assignment, so it must not page on a
-  // degraded share (nor log the shadow line below).
+  // degraded share.
   if (share.degraded && !preview) await alertUnfairOrdering(context);
-
-  // Pre-cutover shadow run (#321): on the real assignment path, log how the live
-  // equal-share order compares to the prior recency order, so the equal-share
-  // distribution can be validated against real traffic before the fleet relies
-  // on it. Structured line for Cloudflare observability; assignment is unaffected
-  // (the live order is always equal-share). Skipped for the routing-API preview.
-  if (shadowLog && !share.degraded) {
-    const div = shadowRankingDivergence(candidateIds, share);
-    log.info("routing-shadow", {
-      bucket_id: bucketId,
-      anchor_ms: anchorMs,
-      candidates: candidateIds.length,
-      diverged: div.diverged,
-      equal_share_top: div.equalShareTop,
-      recency_top: div.recencyTop,
-      equal_share_order: div.equalShareOrder.join(","),
-      recency_order: div.recencyOrder.join(","),
-    });
-    return div.equalShareOrder;
-  }
   return orderByBucketShare(candidateIds, share);
 }
 
@@ -734,8 +708,8 @@ export async function resolveRouting(
   // No slot in a routing preview, so anchor the period on now. This endpoint is a
   // read-only lookup, not an assignment (#673): run it as a dry-run preview so an
   // anonymous probe against a skewed bucket can never page the unfair-ordering
-  // alert or write a shadow line. The returned order is unaffected.
-  const ordered = await rankBucketShare(bucket.id, ids, Date.now(), "routing API order", false, true);
+  // alert. The returned order is unaffected.
+  const ordered = await rankBucketShare(bucket.id, ids, Date.now(), "routing API order", true);
   return {
     bucket,
     eventType,
