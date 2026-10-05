@@ -882,7 +882,7 @@ arrived). The fault drivers' files get the same file checks as the steady ones.
 |---|---|
 | planned bookings completed | every steady driver ran its whole plan. A driver that stopped at its own deadline FAILS this with the driver, how far it got and the run's completed share (#3222); every other bar is still scored on what ran |
 | confirmed a minute | at or above 80 percent of target, with the full outcome mix printed so a short run says WHY |
-| latency | p50, p95 and max over ALL responses, and the p95 of the **200s** under 5,000ms |
+| latency | p50, p95 and max over ALL responses. The pass rule (#3258) is the p95 of the **200s** at most `LOAD_OVER_REST_RATIO_BAR` (2.5) times the median of the **same day baseline**: a dozen bookings at rest on the same deployment just before the steady pass. The fixed 5,000ms bar is still **reported** on every run, met or missed, beside the baseline median. A run with no baseline leg (a hand run) is held to the fixed bar and says why; a baseline the workflow ran and that did not arrive, or that confirmed fewer than 8, makes the run incomplete. See "Latency is judged against its own day" below |
 | 5xx and no reply | counted **separately** and both fail: a request answered badly and one never answered send two different people to two different places |
 | double bookings | no two run-scoped ACTIVE bookings overlap on one agent in `[starts_at, ends_at)`, read through a **paginating** list, and the preflight must have seen `bookings_active_slot_uniq` actually REFUSE a planted duplicate (without that, an absence of overlaps proves nothing). The count is printed in the measured section on EVERY run, with its denominator and the same-slot count beside it, because a measured zero and a check that never ran read the same when neither prints (#2323) |
 | every 200 left a row | a booking row carrying the request's external id, an idempotency key, and a `busy_blocks` row |
@@ -907,6 +907,31 @@ it is reported as `unmeasured` on its own exit code rather than as a pass: the
 pipeline has been measured **three hours behind** (#1533), and a low CPU reading
 from a lagging pipeline looks exactly like a cheap run. Its `cpuTime` is in
 **microseconds**.
+
+### Latency is judged against its own day (#3258)
+
+The fixed 5s p95 bar was judging the throwaway environment more than the code. The
+09-15 code passed it on 2026-09-15 at 3.5s and measured 7.0s on 2026-10-04 on the same
+rig, and that day's three arm experiment measured 6.6s with the suspect removed. No
+change could pass on its merits on such a day, and a pass on a fast day said nothing
+about the code either.
+
+So the workflow's `baseline` job books a dozen times at rest, one every fifteen
+seconds, after the preflight and before the burst and steady passes, and the judge
+holds the steady p95 to a multiple of that baseline's median
+(`scripts/loadtest/latency-bar.ts`). The multiple is what the code controls: how much
+sixty bookings a minute slow one booking down. The environment cancels, because both
+halves ran on it within minutes.
+
+**What it cannot see:** a change that makes every booking slower at rest raises the
+baseline and the bar with it. That is why the absolute 5s bar and the baseline median
+are printed on every run: a slow day and a slow change are both visible, and the
+reader decides which it was.
+
+**The multiple, 2.5, is provisional.** It was set from the 2026-10-04 arms with each
+arm's single at rest control booking standing in for a baseline it did not yet have.
+The first runs carrying a real twelve booking baseline, main and main with the #3258
+recompute fix, are what should confirm or move it.
 
 ### The report outlives the branch
 

@@ -355,8 +355,9 @@ export interface BookingAttempt {
  *  directory by mode: a fault pass written as `steady` would be folded into the
  *  steady pass's own latency, outcome and 5xx numbers, and the bar that says the
  *  path must not 5xx would then be measuring the faults the run injected on
- *  purpose. */
-export type DriverMode = "steady" | "burst" | "fault";
+ *  purpose. `baseline` (#3258) is the same day measurement at rest that the steady
+ *  pass's latency is judged against, and is kept apart for the same reason. */
+export type DriverMode = "steady" | "burst" | "fault" | "baseline";
 
 export interface DriverResult {
   runId: string;
@@ -545,8 +546,10 @@ export function loadtestPhone(seed: string): string {
  * Every prefix stays rooted at RUN_ID, because the judge scopes its database reads
  * to `external_id=like.<run>-*` and an id outside that is a row the run cannot see.
  */
-export function idPrefix(runId: string, mode: "steady" | "burst" | "fault"): string {
+export function idPrefix(runId: string, mode: DriverMode): string {
   if (mode === "fault") return `${runId}-f`;
+  // #3258: the baseline runs first on the same driver number, so it needs its own.
+  if (mode === "baseline") return `${runId}-r`;
   if (mode === "burst") return `${runId}-b`;
   return runId;
 }

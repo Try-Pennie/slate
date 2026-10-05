@@ -22,6 +22,14 @@ import {
   type JudgedBooking,
 } from "./loadtest/judge-booking-run.ts";
 import type { BookingAttempt, DriverResult } from "./loadtest/book-plan.ts";
+import { idPrefix } from "./loadtest/book-plan.ts";
+import {
+  BASELINE_BOOKINGS,
+  BASELINE_MIN_OK,
+  BASELINE_PER_MINUTE,
+  LOAD_OVER_REST_RATIO_BAR,
+  latencyReportLine,
+} from "./loadtest/latency-bar.ts";
 import { REQUEST_CPU_P99_MS, REQUEST_STARTUP_P95_MS } from "./loadtest/judge-booking-run.ts";
 import {
   ceilingVerdict,
@@ -1557,6 +1565,86 @@ function slowRun(made = 100): JudgeInput {
     (clean.measurements?.activeBookings ?? 0) > 0,
     "over a denominator, so the zero cannot be read as a run that looked at nothing",
   );
+}
+
+// --- #3258: latency is judged against a same day baseline at rest ------------------
+//
+// The fixed 5s p95 bar failed the 09-15 code on 2026-10-04's environment (7.0s), so a
+// run could not pass on its code's merits. With a baseline leg (a dozen bookings at
+// rest on the same deployment, just before the steady pass) the pass rule is the
+// steady p95 against a multiple of the baseline's median, which the day moves just
+// as it moves the steady pass. The absolute bar is still REPORTED on every run.
+{
+  const restFile = (wallMs: number, n = BASELINE_BOOKINGS, okCount = n): DriverResult => ({
+    runId: RUN,
+    driver: 0,
+    mode: "baseline",
+    planned: BASELINE_BOOKINGS,
+    startedAtMs: T0 - 5 * 60_000,
+    finishedAtMs: T0 - 60_000,
+    attempts: Array.from({ length: n }, (_, k) =>
+      attempt(0, k, {
+        externalId: `${RUN}-r-0-${k}`,
+        wallMs,
+        ...(k >= okCount ? { status: 409, outcome: "SLOT_TAKEN" } : {}),
+      }),
+    ),
+  });
+  /** A run whose steady p95 is `p95Ms`, with a baseline at rest of `restMs`. */
+  const withBaseline = (p95Ms: number, restMs: number, baseline: DriverResult | null = restFile(restMs)) =>
+    broken((i) => {
+      const all = i.driverResults.flatMap((r) => r.attempts);
+      for (const a of all) a.wallMs = Math.round(p95Ms * 0.6);
+      for (const a of all.slice(0, Math.ceil(all.length * 0.1))) a.wallMs = p95Ms;
+      i.expectedLegs = { ...i.expectedLegs, baseline: true };
+      i.baselineResult = baseline;
+    });
+
+  eq(idPrefix(RUN, "baseline"), `${RUN}-r`, "the baseline's bookings carry their own prefix, so no steady id is reused");
+  assert(BASELINE_PER_MINUTE * 2 < 15, "the baseline paces well below one steady driver, so it measures the path at rest");
+  assert(BASELINE_MIN_OK <= BASELINE_BOOKINGS, "the sample floor is reachable");
+
+  // Today's environment: slow at rest, and the steady pass in proportion.
+  const fairDay = withBaseline(6_600, 3_200);
+  assert(!bars(fairDay).includes("latency of successful bookings"), "a p95 over 5s that stays within the multiple of the day's rest passes");
+  const lat = fairDay.measurements!.latency!;
+  eq(lat.kind, "relative", "judged against the baseline");
+  assert(lat.kind === "relative" && lat.absoluteOver, "and the absolute bar is still reported, as missed");
+  assert(lat.kind === "relative" && lat.barMs === Math.round(3_200 * LOAD_OVER_REST_RATIO_BAR), "the bar is the multiple of the baseline median");
+
+  // The code got slower under load on the same day: the multiple is exceeded.
+  const slowUnderLoad = withBaseline(Math.round(3_200 * LOAD_OVER_REST_RATIO_BAR) + 500, 3_200);
+  const f = slowUnderLoad.findings.find((x) => x.bar === "latency of successful bookings");
+  assert(f !== undefined, "a p95 past the multiple of the day's rest fails");
+  assert(f !== undefined && f.detail.includes("baseline") && f.detail.includes("5000ms"), "naming the baseline and still stating the absolute bar");
+
+  // A fast day: the absolute bar met and reported as met.
+  const fastDay = withBaseline(3_000, 2_000);
+  const fl = fastDay.measurements!.latency!;
+  assert(fl.kind === "relative" && !fl.absoluteOver, "a p95 inside 5s reports the absolute bar as met");
+
+  // Expected and missing, or too small to have a median: never a pass, never the old bar.
+  const missing = withBaseline(3_000, 2_000, null);
+  eq(missing.verdict, "incomplete", "a baseline the run was configured for and never delivered is incomplete");
+  assert(missing.incomplete.some((w) => w.includes("baseline")), "naming the baseline");
+  const thin = withBaseline(3_000, 2_000, restFile(2_000, BASELINE_BOOKINGS, BASELINE_MIN_OK - 1));
+  eq(thin.verdict, "incomplete", "a baseline with too few successes to have a median is incomplete");
+  assert(thin.incomplete.some((w) => w.includes(String(BASELINE_MIN_OK))), "saying how many it needed");
+
+  // A hand run with no baseline leg keeps the absolute bar as THE bar, and says why.
+  const hand = broken((i) => {
+    const all = i.driverResults.flatMap((r) => r.attempts);
+    for (const a of all.slice(0, Math.ceil(all.length * 0.1))) a.wallMs = OK_P95_MS + 1000;
+  });
+  const hf = hand.findings.find((x) => x.bar === "latency of successful bookings");
+  assert(hf !== undefined && hf.detail.includes("no same day baseline"), "a run without a baseline is held to the absolute bar, and says so");
+  eq(hand.measurements!.latency!.kind, "absolute", "and records which rule judged it");
+
+  // The report says which rule judged the run and always states the absolute bar.
+  const line = latencyReportLine(fairDay.measurements!.latency!);
+  assert(line.includes("3200ms") && line.includes(`${LOAD_OVER_REST_RATIO_BAR} times`), `the report names the baseline and the multiple: ${line}`);
+  assert(line.includes("5000ms absolute bar"), "and the absolute bar, missed or met");
+  assert(latencyReportLine(hand.measurements!.latency!).includes("no same day baseline"), "a hand run's report says why the fixed bar judged it");
 }
 
 finish();

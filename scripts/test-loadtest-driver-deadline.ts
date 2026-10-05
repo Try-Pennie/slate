@@ -24,6 +24,7 @@
 // Run: node --experimental-strip-types scripts/test-loadtest-driver-deadline.ts
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
+import { BASELINE_BOOKINGS } from "./loadtest/latency-bar.ts";
 import { promisify } from "node:util";
 import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -376,6 +377,40 @@ function gateProblems(yml: string): string[] {
   // Control: the workflow as it was, with the conditions stripped, is caught (L1).
   const stripped = yml.replace(/^ {4}if: \$\{\{ !cancelled\(\).*\n/gm, "");
   assert(gateProblems(stripped).length >= 5, "control: a workflow without the conditions fails the check");
+}
+
+// --- #3258: the same day baseline leg ---------------------------------------------------
+{
+  // The driver in baseline mode: its own plan (a dozen at four a minute), its own
+  // mode on the file the judge gathers by mode, and its own id prefix, so no steady
+  // booking id is reused. Cut short by the test deadline after its first request.
+  const { code, stderr, result: r } = await runDriver("slow", { MODE: "baseline", DRIVER: "0" }, "baseline.json");
+  eq(code, 0, `the baseline driver exits zero ${stderr.slice(0, 300)}`);
+  eq(r?.mode, "baseline", "and writes a baseline file, which the judge gathers apart from the steady pass");
+  eq(r?.planned, BASELINE_BOOKINGS, "planning the baseline's dozen, not a steady driver's plan");
+  assert((r?.attempts.length ?? 0) >= 1, "having booked");
+  assert(r?.attempts.every((a) => a.externalId.startsWith("run-3222-r-")) ?? false, "under the baseline's own id prefix");
+}
+{
+  const yml = readFileSync(join(ROOT, ".github/workflows/loadtest.yml"), "utf8");
+  const job = (name: string) => new RegExp(`^ {2}${name}:\\n([\\s\\S]*?)(?=^ {2}\\S)`, "m").exec(yml)?.[1] ?? "";
+  const baseline = job("baseline");
+  assert(/MODE: baseline/.test(baseline) && /OUT: results\/baseline\.json/.test(baseline), "the baseline job drives baseline mode into baseline.json");
+  assert(/needs: preflight/.test(baseline), "after the preflight has warmed the deployment");
+  const setup = jobGate(yml, "setup-burst");
+  assert(setup.needs.includes("baseline"), "the burst setup, and so everything after it, waits for the baseline to finish at rest");
+  assert(
+    setup.cond.includes("!cancelled()") && setup.cond.includes("needs.preflight.result == 'success'"),
+    "and runs whatever the baseline concluded, so a failed baseline costs only the latency bar",
+  );
+  const judge = job("judge");
+  assert(/needs: \[[^\]]*\bbaseline\b/.test(judge), "the judge waits for the baseline");
+  assert(/EXPECT_BASELINE: "1"/.test(judge), "and is told the run carried one, so a missing file is incomplete rather than the fixed bar");
+  const runJudge = readFileSync(join(ROOT, "scripts/loadtest/run-judge.ts"), "utf8");
+  assert(/loadDrivers\("baseline"\)/.test(runJudge), "the judge entry gathers the baseline file by mode");
+  assert(/baseline: process\.env\.EXPECT_BASELINE === "1"/.test(runJudge), "and passes the expectation through");
+  // Control: a judge job without the expectation is caught (L1).
+  assert(!/EXPECT_BASELINE: "1"/.test(judge.replace(/EXPECT_BASELINE: "1"/, "")), "control: removing it is caught");
 }
 
 finish();

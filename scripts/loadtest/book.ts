@@ -46,6 +46,7 @@ import {
   type FaultModeVerdict,
 } from "./preflight-checks.ts";
 import { parseFaultTargets } from "../../src/lib/loadtest-fault.ts";
+import { BASELINE_BOOKINGS, BASELINE_PER_MINUTE } from "./latency-bar.ts";
 
 const PROD_HOSTS = ["slate.trypennie.app", "drukfvgaynzrralbzkzj.supabase.co"];
 
@@ -66,8 +67,8 @@ const OUT = need("OUT");
 // The burst settings are all optional and all default to what the run uses. They
 // are declared rather than wired because the steady job never sets them: a step
 // carrying five variables it does not use reads as configuration somebody chose.
-// env-ok: MODE (optional; defaults to steady; only the burst and fault jobs set it)
-const MODE = (process.env.MODE ?? "steady") as "steady" | "burst" | "fault";
+// env-ok: MODE (optional; defaults to steady; only the burst, fault and baseline jobs set it)
+const MODE = (process.env.MODE ?? "steady") as "steady" | "burst" | "fault" | "baseline";
 // env-ok: BURST_REQUESTS (optional; defaults to 25, which is what one burst driver fires)
 const BURST_REQUESTS = Number(process.env.BURST_REQUESTS ?? "25");
 // env-ok: BURST_GRACE_MS (optional; defaults to 2000, how late a driver may be and
@@ -251,11 +252,20 @@ function write(result: DriverResult): void {
   console.log(`driver ${DRIVER} (${MODE}): wrote ${result.attempts.length} attempts to ${OUT}`);
 }
 
-async function steady(mode: "steady" | "fault" = "steady", minutes = RUN_MINUTES): Promise<void> {
-  const startedAtMs = Date.now();
-  const plan = requestSchedule({
+async function steady(
+  mode: "steady" | "fault" | "baseline" = "steady",
+  minutes = RUN_MINUTES,
+  // #3258: the baseline paces itself, a dozen bookings at four a minute, so it
+  // measures one booking at rest rather than a driver's share of the load.
+  pace: { total: number; perMinute: number } = {
     total: PER_DRIVER_PER_MINUTE * minutes,
     perMinute: PER_DRIVER_PER_MINUTE,
+  },
+): Promise<void> {
+  const startedAtMs = Date.now();
+  const plan = requestSchedule({
+    total: pace.total,
+    perMinute: pace.perMinute,
     startAtMs: startedAtMs,
   });
   // Its OWN deadline, derived from the plan (#3222). The drivers send one request
@@ -263,7 +273,7 @@ async function steady(mode: "steady" | "fault" = "steady", minutes = RUN_MINUTES
   // timeout killed the driver mid run, it wrote nothing, and a run that should have
   // FAILED on latency could only be called incomplete.
   const deadlineMs = effectiveDeadlineMs(
-    driverDeadlineMs({ total: plan.length, perMinute: PER_DRIVER_PER_MINUTE }),
+    driverDeadlineMs({ total: plan.length, perMinute: pace.perMinute }),
     DEADLINE_OVERRIDE,
   );
   const deadlineAtMs = startedAtMs + deadlineMs;
@@ -499,4 +509,10 @@ async function burst(): Promise<void> {
   });
 }
 
-await (MODE === "burst" ? burst() : MODE === "fault" ? fault() : steady());
+await (MODE === "burst"
+  ? burst()
+  : MODE === "fault"
+    ? fault()
+    : MODE === "baseline"
+      ? steady("baseline", 0, { total: BASELINE_BOOKINGS, perMinute: BASELINE_PER_MINUTE })
+      : steady());

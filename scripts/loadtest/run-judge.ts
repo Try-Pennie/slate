@@ -28,6 +28,7 @@ import {
 } from "./confirm-startup.ts";
 import { DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES } from "../../src/lib/rate-limit-core.ts";
 import { burstControlStrength, type BurstDepthReading } from "./burst-target.ts";
+import { latencyReportLine } from "./latency-bar.ts";
 import { recomputeArmLine } from "../../src/lib/booking/post-confirm-recompute-modes.ts";
 import { REQUEST_CPU_P99_MS, cronCpuShareText, faultPassKeepsFiveXxBar } from "./judge-booking-run.ts";
 import {
@@ -334,6 +335,8 @@ function cronCpuBudgetMs(): number {
 
 const steady = loadDrivers("steady");
 const burst = loadDrivers("burst");
+// #3258: the same day baseline at rest, which the latency bar is judged against.
+const baselineFiles = loadDrivers("baseline");
 // What the run itself sent on the steady pass. It is the CONTROL the analytics
 // count is polled against: the run knows how many requests it made, so a count far
 // under it means the window has not caught up rather than that the Worker was idle.
@@ -593,9 +596,13 @@ const input: JudgeInput = {
     burstDrivers: wholeNumber(process.env.EXPECT_BURST_DRIVERS, "EXPECT_BURST_DRIVERS"),
     faultPct: wholeNumber(process.env.EXPECT_FAULT_PCT, "EXPECT_FAULT_PCT"),
     faultTargets: expectedFaultTargets.targets,
+    // env-ok: EXPECT_BASELINE (optional; "1" when the workflow ran the same day
+    // baseline leg, #3258. Unset on a hand run, which keeps the fixed bar.)
+    baseline: process.env.EXPECT_BASELINE === "1",
   },
   unreadableDriverFiles,
   budgets: { cpuMsP99: cpuBudgetMs(), cronCpuMs: cronCpuBudgetMs() },
+  baselineResult: baselineFiles[0] ?? null,
 };
 
 const result = judgeBookingRun(input);
@@ -664,6 +671,7 @@ if (m) {
   );
   lines.push(`- all responses: p50 ${m.all?.p50 ?? "n/a"}ms, p95 ${m.all?.p95 ?? "n/a"}ms, max ${m.all?.max ?? "n/a"}ms`);
   lines.push(`- successful only: p50 ${m.ok?.p50 ?? "n/a"}ms, p95 ${m.ok?.p95 ?? "n/a"}ms, max ${m.ok?.max ?? "n/a"}ms`);
+  if (m.latency) lines.push(latencyReportLine(m.latency));
   lines.push(`- 5xx: ${m.fiveXx}, no reply at all: ${m.noReply}, timed out at the driver's bound: ${m.timedOut}, write refusals: ${m.writeRefusals}`);
   lines.push(`- refusals by the address Slate saw: ${JSON.stringify(m.refusalsByIp)}`);
   // The number the run exists to produce after #2274, on EVERY run rather than

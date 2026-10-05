@@ -11,6 +11,12 @@
  * numbers says which. A run that half happened must be reported as a run that half
  * happened, never as a run with a verdict (L288).
  */
+import {
+  absoluteBarText,
+  judgeLatency,
+  LOAD_OVER_REST_RATIO_BAR,
+  type LatencyJudgement,
+} from "./latency-bar.ts";
 import type { BookingAttempt, DriverResult } from "./book-plan.ts";
 import { HEALTHY_INVOCATION_STATUS, type ScheduledReading } from "./platform-reading.ts";
 import { CEILING_CONCLUSION, type CeilingVerdict } from "./preflight-checks.ts";
@@ -213,7 +219,19 @@ export interface JudgeInput {
    * quietly absent (L98, L11). A hand run with no burst passes zeroes and the bars
    * are skipped exactly as before.
    */
-  expectedLegs: { burstDrivers: number; faultPct: number; faultTargets?: readonly string[] };
+  expectedLegs: {
+    burstDrivers: number;
+    faultPct: number;
+    faultTargets?: readonly string[];
+    /** #3258: whether the run was configured with a same day baseline leg. */
+    baseline?: boolean;
+  };
+  /**
+   * #3258: the same day baseline, a dozen bookings at rest on the same deployment
+   * just before the steady pass, or null when none arrived. The steady pass's
+   * latency is judged against its median (`latency-bar.ts`).
+   */
+  baselineResult?: DriverResult | null;
   /**
    * Result files the gatherer found and could not use as a steady driver's (#3222):
    * unparsable, or a `driver-N.json` in another mode. Required, so `tsc` names every
@@ -356,6 +374,16 @@ export function burstShortfall(input: JudgeInput): string[] {
  */
 export function incompleteness(input: JudgeInput): string[] {
   const why: string[] = [];
+  // #3258: a baseline the run was configured for and never delivered, or too thin
+  // for a median, leaves the latency bar with nothing to stand on. Asked through the
+  // judge's own rule, so the two can never disagree about what counts (L70).
+  const latencyRule = judgeLatency({
+    steadyP95: 0,
+    absoluteBarMs: OK_P95_MS,
+    baseline: input.baselineResult,
+    baselineExpected: input.expectedLegs.baseline === true,
+  });
+  if (latencyRule.kind === "unmeasured") why.push(`latency: ${latencyRule.why}.`);
   const expectedPerDriver = input.target.perDriverPerMinute * input.target.minutes;
 
   if (input.driverResults.length !== input.target.drivers) {
@@ -469,6 +497,8 @@ export function incompleteness(input: JudgeInput): string[] {
 
 /** What the run measured, once it is known to be complete. */
 export interface RunMeasurements {
+  /** #3258: which latency rule judged the run and what it measured, set once judged. */
+  latency?: LatencyJudgement;
   /** What the plan held across every steady driver, so `attempts` reads against it. */
   planned: number;
   attempts: number;
@@ -806,13 +836,33 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
   }
 
   // --- latency ----------------------------------------------------------------
+  // #3258: against a multiple of the same day baseline when the run has one, with
+  // the absolute bar still reported; against the absolute bar alone when it has none.
   if (m.ok === null) {
     fail("latency of successful bookings", "not one request succeeded, so there is no p95 to judge");
-  } else if (m.ok.p95 > OK_P95_MS) {
-    fail(
-      "latency of successful bookings",
-      `p95 ${m.ok.p95}ms over the ${OK_P95_MS}ms bar (p50 ${m.ok.p50}ms, max ${m.ok.max}ms)`,
-    );
+  } else {
+    const latency = judgeLatency({
+      steadyP95: m.ok.p95,
+      absoluteBarMs: OK_P95_MS,
+      baseline: input.baselineResult,
+      baselineExpected: input.expectedLegs.baseline === true,
+    });
+    m.latency = latency;
+    if (latency.kind === "relative" && !latency.pass) {
+      fail(
+        "latency of successful bookings",
+        `p95 ${m.ok.p95}ms is ${latency.ratio.toFixed(1)} times the same day baseline's median of ` +
+          `${latency.baselineP50}ms (${latency.baselineOk} bookings at rest), over the ` +
+          `${LOAD_OVER_REST_RATIO_BAR} times bar of ${latency.barMs}ms (p50 ${m.ok.p50}ms, max ` +
+          `${m.ok.max}ms). ${absoluteBarText(latency)}`,
+      );
+    } else if (latency.kind === "absolute" && !latency.pass) {
+      fail(
+        "latency of successful bookings",
+        `p95 ${m.ok.p95}ms over the ${OK_P95_MS}ms bar (p50 ${m.ok.p50}ms, max ${m.ok.max}ms); ` +
+          `${latency.why}`,
+      );
+    }
   }
   // 5xx and no-reply are reported separately and BOTH fail. A request the
   // deployment answered badly and one it never answered send two different people
