@@ -34,7 +34,7 @@ import {
 } from "@/lib/availability/service";
 import {
   recomputeBucketSlotsForToday,
-  readBucketSlotInputsForToday,
+  readPoolInputsAfterBooking,
   refreshPoolAfterBooking,
   getBucketSlotsWithFallback,
   refreshPoolsForAgents,
@@ -1206,7 +1206,8 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
           // #3258: the booked code's POOL, coalesced with the pool's other bookings
           // inside a short window, rather than a whole compute per booking.
           recompute: refreshPoolAfterBooking,
-          readsOnly: readBucketSlotInputsForToday,
+          // The same coalescing as the on arm, so the two arms stay comparable.
+          readsOnly: readPoolInputsAfterBooking,
         });
         if (refresh) afterResponse(refresh.context, refresh.work);
       } else {

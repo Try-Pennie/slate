@@ -42,10 +42,10 @@ function clock() {
 
 /** A refresh whose completion the test controls, recording when each one started. */
 function refreshes(c: ReturnType<typeof clock>) {
-  const starts: { key: string; at: number; finish: (err?: Error) => void }[] = [];
-  const run = (key: string) => () =>
+  const starts: { key: string; at: number; codes: string[]; finish: (err?: Error) => void }[] = [];
+  const run = (key: string) => (codes: string[]) =>
     new Promise<void>((resolve, reject) => {
-      starts.push({ key, at: c.now(), finish: (err) => (err ? reject(err) : resolve()) });
+      starts.push({ key, at: c.now(), codes: [...codes].sort(), finish: (err) => (err ? reject(err) : resolve()) });
     });
   return { starts, run };
 }
@@ -65,7 +65,7 @@ assert(
   const c = clock();
   const r = refreshes(c);
   const co = makePoolRefreshCoalescer({ now: c.now, sleep: c.sleep, windowMs: 10_000, lastStartedAt: new Map() });
-  const done = co.request("pool-a", r.run("pool-a"));
+  const done = co.request("pool-a", "pool-a-code", r.run("pool-a"));
   await flush();
   eq(r.starts.length, 1, "the first request starts a refresh immediately");
   eq(r.starts[0]!.at, c.now(), "with no wait");
@@ -79,17 +79,17 @@ assert(
   const r = refreshes(c);
   const lastStartedAt = new Map<string, number>();
   const co = makePoolRefreshCoalescer({ now: c.now, sleep: c.sleep, windowMs: 10_000, lastStartedAt });
-  const first = co.request("pool-a", r.run("pool-a"));
+  const first = co.request("pool-a", "pool-a-code", r.run("pool-a"));
   await flush();
   const t0 = c.now();
   eq(lastStartedAt.get("pool-a"), t0, "the shared map records when the pool's refresh started");
   // Three more bookings land while the first compute runs and inside the window.
   await c.advance(1_000);
-  const b = co.request("pool-a", r.run("pool-a"));
+  const b = co.request("pool-a", "pool-a-code", r.run("pool-a"));
   await c.advance(1_000);
-  const cReq = co.request("pool-a", r.run("pool-a"));
+  const cReq = co.request("pool-a", "pool-a-code", r.run("pool-a"));
   await c.advance(1_000);
-  const d = co.request("pool-a", r.run("pool-a"));
+  const d = co.request("pool-a", "pool-a-code", r.run("pool-a"));
   await flush();
   eq(r.starts.length, 1, "requests inside the window start nothing of their own");
   r.starts[0]!.finish();
@@ -109,15 +109,15 @@ assert(
   const c = clock();
   const r = refreshes(c);
   const co = makePoolRefreshCoalescer({ now: c.now, sleep: c.sleep, windowMs: 10_000, lastStartedAt: new Map() });
-  void co.request("pool-a", r.run("pool-a"));
+  void co.request("pool-a", "pool-a-code", r.run("pool-a"));
   await flush();
   await c.advance(500);
-  void co.request("pool-a", r.run("pool-a")); // trailing
+  void co.request("pool-a", "pool-a-code", r.run("pool-a")); // trailing
   r.starts[0]!.finish();
   await c.advance(9_500);
   eq(r.starts.length, 2, "the trailing refresh started");
   await c.advance(200);
-  const late = co.request("pool-a", r.run("pool-a")); // lands while the trailing one RUNS
+  const late = co.request("pool-a", "pool-a-code", r.run("pool-a")); // lands while the trailing one RUNS
   await flush();
   eq(r.starts.length, 2, "a request during a running refresh does not join it, since that one began before it");
   r.starts[1]!.finish();
@@ -132,10 +132,10 @@ assert(
   const c = clock();
   const r = refreshes(c);
   const co = makePoolRefreshCoalescer({ now: c.now, sleep: c.sleep, windowMs: 10_000, lastStartedAt: new Map() });
-  void co.request("pool-a", r.run("pool-a"));
+  void co.request("pool-a", "pool-a-code", r.run("pool-a"));
   await flush();
   await c.advance(1_000);
-  void co.request("pool-a", r.run("pool-a"));
+  void co.request("pool-a", "pool-a-code", r.run("pool-a"));
   await c.advance(12_000);
   eq(r.starts.length, 1, "no second compute of one pool runs beside the first");
   r.starts[0]!.finish();
@@ -148,8 +148,8 @@ assert(
   const c = clock();
   const r = refreshes(c);
   const co = makePoolRefreshCoalescer({ now: c.now, sleep: c.sleep, windowMs: 10_000, lastStartedAt: new Map() });
-  void co.request("pool-a", r.run("pool-a"));
-  void co.request("pool-b", r.run("pool-b"));
+  void co.request("pool-a", "pool-a-code", r.run("pool-a"));
+  void co.request("pool-b", "pool-b-code", r.run("pool-b"));
   await flush();
   eq(r.starts.map((s) => s.key), ["pool-a", "pool-b"], "a booking in another pool is never held for this one");
   r.starts.forEach((s) => s.finish());
@@ -160,11 +160,11 @@ assert(
   const c = clock();
   const r = refreshes(c);
   const co = makePoolRefreshCoalescer({ now: c.now, sleep: c.sleep, windowMs: 10_000, lastStartedAt: new Map() });
-  void co.request("pool-a", r.run("pool-a")).catch(() => {});
+  void co.request("pool-a", "pool-a-code", r.run("pool-a")).catch(() => {});
   await flush();
   await c.advance(1_000);
-  const joined = co.request("pool-a", r.run("pool-a"));
-  const joinedToo = co.request("pool-a", r.run("pool-a"));
+  const joined = co.request("pool-a", "pool-a-code", r.run("pool-a"));
+  const joinedToo = co.request("pool-a", "pool-a-code", r.run("pool-a"));
   r.starts[0]!.finish();
   await c.advance(9_000);
   r.starts[1]!.finish(new Error("bucket_slots write refused"));
@@ -175,7 +175,7 @@ assert(
     "a failed trailing refresh rejects for every request it covered, so each is logged",
   );
   await c.advance(10_000);
-  const after = co.request("pool-a", r.run("pool-a"));
+  const after = co.request("pool-a", "pool-a-code", r.run("pool-a"));
   await flush();
   eq(r.starts.length, 3, "and the next request starts a fresh refresh");
   r.starts[2]!.finish();
@@ -188,11 +188,33 @@ assert(
   const r = refreshes(c);
   const lastStartedAt = new Map<string, number>([["pool-a", c.now() - 2_000]]);
   const co = makePoolRefreshCoalescer({ now: c.now, sleep: c.sleep, windowMs: 10_000, lastStartedAt });
-  void co.request("pool-a", r.run("pool-a"));
+  void co.request("pool-a", "pool-a-code", r.run("pool-a"));
   await flush();
   eq(r.starts.length, 0, "a pool the push path refreshed two seconds ago waits out the rest of the window");
   await c.advance(8_000);
   eq(r.starts.length, 1, "then refreshes, AFTER the request, so the booking is included");
+}
+
+// --- #3293 review: the trailing refresh covers EVERY joiner's code -------------------------
+// The refresh is resolved from the codes it covers when it runs, never from the first
+// requester's alone: a bucket can change pools inside the window, and a joiner whose
+// code is still in the pool must still get it refreshed.
+{
+  const c = clock();
+  const r = refreshes(c);
+  const co = makePoolRefreshCoalescer({ now: c.now, sleep: c.sleep, windowMs: 10_000, lastStartedAt: new Map() });
+  void co.request("pool-a", "211", r.run("pool-a"));
+  await flush();
+  eq(r.starts[0]!.codes, ["211"], "a leading refresh is handed the one code that asked");
+  await c.advance(1_000);
+  void co.request("pool-a", "212", r.run("pool-a"));
+  void co.request("pool-a", "222", r.run("pool-a"));
+  void co.request("pool-a", "212", r.run("pool-a"));
+  r.starts[0]!.finish();
+  await c.advance(9_000);
+  eq(r.starts.length, 2, "one trailing refresh");
+  eq(r.starts[1]!.codes, ["212", "222"], "handed every joiner's code, once each");
+  r.starts[1]!.finish();
 }
 
 finish();

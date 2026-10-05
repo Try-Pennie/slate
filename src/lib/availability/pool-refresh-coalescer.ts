@@ -47,12 +47,23 @@ interface PoolState {
   inflight: Promise<void> | null;
   /** The trailing refresh not yet started, which later requests join, or null. */
   pending: Promise<void> | null;
+  /** The codes the pending refresh covers, one per booking that joined it. */
+  pendingCodes: Set<string>;
 }
 
+/**
+ * The refresh itself, handed EVERY code it covers (#3293 review). It must resolve
+ * the pools from those codes when it runs, never from the first requester's alone:
+ * a bucket can change pools inside the window, and a joiner whose code is still in
+ * the pool must still get its pool refreshed.
+ */
+export type PoolRefresh = (codes: string[]) => Promise<void>;
+
 export interface PoolRefreshCoalescer {
-  /** Ask for `key`'s pool to be refreshed after this moment. Resolves when the
-   *  refresh covering this request has finished, and rejects if it failed. */
-  request(key: string, run: () => Promise<void>): Promise<void>;
+  /** Ask for the pool `key` (which `code` is in) to be refreshed after this moment.
+   *  Resolves when the refresh covering this request has finished, and rejects if
+   *  it failed. */
+  request(key: string, code: string, run: PoolRefresh): Promise<void>;
 }
 
 export function makePoolRefreshCoalescer(deps: {
@@ -64,9 +75,9 @@ export function makePoolRefreshCoalescer(deps: {
 }): PoolRefreshCoalescer {
   const pools = new Map<string, PoolState>();
 
-  const start = (key: string, state: PoolState, run: () => Promise<void>): Promise<void> => {
+  const start = (key: string, state: PoolState, run: PoolRefresh, codes: string[]): Promise<void> => {
     deps.lastStartedAt.set(key, deps.now());
-    const running = run();
+    const running = run(codes);
     // Settled either way, so a waiter behind it never sees its rejection twice.
     const settled: Promise<void> = running.then(
       () => undefined,
@@ -80,19 +91,24 @@ export function makePoolRefreshCoalescer(deps: {
   };
 
   return {
-    request(key, run) {
+    request(key, code, run) {
       let state = pools.get(key);
       if (!state) {
-        state = { inflight: null, pending: null };
+        state = { inflight: null, pending: null, pendingCodes: new Set() };
         pools.set(key, state);
       }
-      // A trailing refresh not yet started will begin after this request: join it.
-      if (state.pending) return state.pending;
+      // A trailing refresh not yet started will begin after this request: join it,
+      // adding this booking's code to the ones it covers.
+      if (state.pending) {
+        state.pendingCodes.add(code);
+        return state.pending;
+      }
 
       const earliest = (deps.lastStartedAt.get(key) ?? -Infinity) + deps.windowMs;
-      if (state.inflight === null && deps.now() >= earliest) return start(key, state, run);
+      if (state.inflight === null && deps.now() >= earliest) return start(key, state, run, [code]);
 
       const s = state;
+      s.pendingCodes = new Set([code]);
       s.pending = (async () => {
         const wait = earliest - deps.now();
         if (wait > 0) await deps.sleep(wait);
@@ -102,7 +118,9 @@ export function makePoolRefreshCoalescer(deps: {
         // Cleared BEFORE it starts, so a request arriving while it runs gets a
         // refresh of its own rather than joining one that began before it.
         s.pending = null;
-        await start(key, s, run);
+        const codes = [...s.pendingCodes];
+        s.pendingCodes = new Set();
+        await start(key, s, run, codes);
       })();
       return s.pending;
     },

@@ -22,7 +22,7 @@ vi.mock("@/lib/after-response", () => after);
 const slotCache = vi.hoisted(() => ({
   recomputeBucketSlotsForToday: vi.fn(async (_code: string) => {}),
   refreshPoolAfterBooking: vi.fn(async (_code: string) => {}),
-  readBucketSlotInputsForToday: vi.fn(async (_code: string) => {}),
+  readPoolInputsAfterBooking: vi.fn(async (_code: string) => {}),
   getBucketSlotsWithFallback: vi.fn(),
   refreshPoolsForAgents: vi.fn(),
 }));
@@ -115,7 +115,7 @@ describe("the post confirm recompute arm (#3258)", () => {
       expect(after.afterResponse).toHaveBeenCalledTimes(1);
       expect(after.afterResponse.mock.calls[0][0]).toBe("post-confirm-recompute-reads-only");
       await after.afterResponse.mock.calls[0][1]();
-      expect(slotCache.readBucketSlotInputsForToday).toHaveBeenCalledWith("212");
+      expect(slotCache.readPoolInputsAfterBooking).toHaveBeenCalledWith("212");
       expect(slotCache.refreshPoolAfterBooking).not.toHaveBeenCalled();
     });
   });

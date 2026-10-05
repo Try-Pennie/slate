@@ -14,8 +14,10 @@
  *     which since #3258 is the booked code's pool, coalesced per window.
  *   - `off`: nothing is scheduled; the recompute lane keeps the slots fresh, as it
  *     already does for any recompute that is missed.
- *   - `reads-only`: the recompute's reads, with no compute and no write, under its
- *     own job name. It separates the database half of the cost from the CPU half.
+ *   - `reads-only`: the reads of the SAME coalesced pool refreshes the on arm
+ *     computes (#3293 review), with no compute and no write, under its own job
+ *     name. It separates the database half of the cost from the CPU half, and stays
+ *     comparable with `on` because both are scheduled by one coalescing rule.
  *     Nothing is written, because a row built without the compute would be a lie
  *     every booker then serves.
  *
