@@ -3,7 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { withinBookingCleanupBudget, withinBookingRequest } from "@/lib/booking/confirm-budget";
 import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import { authorizeBookingApi } from "@/lib/booking/route-auth";
-import { answerTimed, type ConfirmLineFacts } from "@/lib/booking/confirm-latency";
+import { answerTimed, noteRefusal, type ConfirmLineFacts } from "@/lib/booking/confirm-latency";
 import { parseDirectBookingRequest, parseLookupQuery, parseCancelQuery, parseListQuery, LIST_ONLY_PARAMS } from "@/lib/booking/api-request";
 import { respondToDirectCancel, apiErrorBody, mapLookupError } from "@/lib/booking/direct-cancel-http";
 import {
@@ -257,6 +257,7 @@ async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
     }
     return NextResponse.json(body, { status });
   } catch (err) {
+    noteRefusal(facts, err);
     // #3102: the failure path runs under the cleanup allowance, not the confirm
     // budget, which a timeout has already spent; its outcome and report would
     // otherwise fail at once and the failure would go unrecorded.

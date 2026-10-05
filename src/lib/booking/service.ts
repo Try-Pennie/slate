@@ -28,6 +28,7 @@ import { gatedWriteApplied, gatedWriteRows } from "@/lib/booking/gated-write";
 import { appUrl } from "@/lib/env";
 import {
   resolveBucketByCode,
+  resolveBucketPool,
   resolveRouting,
   roundRobinCandidates,
 } from "@/lib/availability/service";
@@ -1213,6 +1214,7 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     // test-observable. Best-effort in the impl (never throws), matching the prior
     // module-function behavior.
     recordRoutingDecision,
+    resolveBucketPool,
     // #827: the tier the availability cache currently displays for a bucket, so a
     // fresh confirm can measure display-vs-booked tier divergence. `from` matches
     // the availability route's default (now). A hidden test bucket resolves to

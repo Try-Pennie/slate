@@ -54,7 +54,7 @@ export function createAsserter() {
 // `is_test: false` as the column really is (NOT NULL, default false, #396): the
 // person gate reads the world off it (#2660), so a fixture missing the field would
 // ask in a world that is neither.
-export const bucket = { id: "bkt1", org_id: "org1", code: "411", is_test: false } as unknown as Bucket;
+export const bucket = { id: "bkt1", org_id: "org1", code: "411", is_test: false, criteria: {} } as unknown as Bucket;
 export const eventType = {
   id: "et1",
   name: "Senior Loan Advisor Call",
@@ -266,6 +266,8 @@ export interface FakeOpts {
   advisorTimezoneThrows?: boolean;
   /** #2838: the race bound hit dispatcher throws synchronously when handed a page. */
   raceBoundPageThrows?: boolean;
+  /** #3272: every advisor in the bucket's pool, free or not (default: the candidates). */
+  poolAgents?: string[];
 }
 
 /** The three ways a calendar write fails, as the fakes model them. */
@@ -1132,6 +1134,19 @@ export function makeDeps(opts: FakeOpts) {
     },
     recordRoutingDecision: async (input) => {
       calls.recordRoutingDecision.push(input);
+    },
+    // #3272: the bucket's raw pool for the routing decision's considered and
+    // excluded lists. Every advisor the bucket holds, free or not: `poolAgents`
+    // when a suite names them, else the candidates.
+    resolveBucketPool: async () => {
+      const ids = opts.poolAgents ?? opts.candidates ?? ["a"];
+      return {
+        orgAgents: ids.map((id) => ({ id, attributes: {} })),
+        // Every advisor named is a manual member, so each is eligible and only
+        // availability decides considered against excluded, which is what is pinned.
+        manualMemberIds: new Set(ids),
+        criteria: {},
+      };
     },
     // #827: no divergence measure in the fake by default; a test that exercises
     // it can override deps.displayedTier after building the deps.

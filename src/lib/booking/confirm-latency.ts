@@ -14,11 +14,28 @@
  * a response is always handed back after I/O, so the end is never early.
  */
 import { log } from "@/lib/log";
+import { refusalLogFields, refusalTraceOf } from "@/lib/booking/refusal-trace";
 
 /** What a route learns while handling the request that the line should say. */
 export interface ConfirmLineFacts {
   /** A direct booking API dry run, which books nothing and answers fast. */
   dryRun?: boolean;
+  /**
+   * #3272: on a refused confirm, the instant and bucket it asked for, the stage
+   * that refused it and what each stage left, so a refusal in the logs can be
+   * looked up by time and traced. Counts and codes only.
+   */
+  refusal?: Record<string, string | number>;
+}
+
+/**
+ * Note a refusal on the line, from the trace the refused error carries. A route
+ * calls this where it turns a booking error into its response; an error with no
+ * trace (an outage before any stage measured anything) adds nothing.
+ */
+export function noteRefusal(facts: ConfirmLineFacts, err: unknown): void {
+  const trace = refusalTraceOf(err);
+  if (trace) facts.refusal = refusalLogFields(trace);
 }
 
 export async function answerTimed(
@@ -34,6 +51,7 @@ export async function answerTimed(
       response_ms: Math.max(0, now() - startedAt),
       status,
       ...(opts.facts?.dryRun ? { dry_run: true } : {}),
+      ...(opts.facts?.refusal ?? {}),
     });
   try {
     const res = await handle();

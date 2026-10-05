@@ -815,6 +815,16 @@ export interface RerouteHold {
 }
 
 /** One routing decision, including attempts that produced no booking. */
+/** One rung of a refused confirm's ladder, as stored (#3272). Null is "not reached". */
+export interface RoutingStageCount {
+  code: string;
+  members: number | null;
+  read: number | null;
+  claimed: number | null;
+  checked: number | null;
+  stage: string;
+}
+
 export interface RoutingDecision {
   id: string;
   org_id: string;
@@ -837,6 +847,20 @@ export interface RoutingDecision {
   catchall_applied: boolean;
   tier_fallback: boolean;
   rungs_dropped: number;
+  /** #3272 (migration 0168), on a refused confirm only: the instant the lead asked
+   *  for, the stage that refused it, and per rung what each stage left. */
+  requested_start: string | null;
+  refusal_stage:
+    | "pool_empty"
+    | "candidate_read_empty"
+    | "verify_busy"
+    | "verify_unreadable"
+    | "race_lost"
+    | null;
+  stage_counts: RoutingStageCount[] | null;
+  /** The refused lead's Salesforce lead id in its 15 character form (#3276), so a
+   *  volume of refusals can be counted in people. Null when the request named none. */
+  lead_id: string | null;
   /** `rerouted` (#3247, migration 0166) is an admin correcting a booking's bucket:
    *  its own outcome, so the monitors counting `booked` as bookings never count one
    *  booking twice. */

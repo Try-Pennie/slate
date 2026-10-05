@@ -58,6 +58,11 @@ export const UNMIRRORED_COLUMNS: Record<string, Record<string, string>> = {
   routing_decisions: {
     requested_code: "null on an inserted decision",
     catchall_applied: "false on an inserted decision",
+    // #3272: refusal evidence, read while it is fresh; a restored decision loses it.
+    requested_start: "null on an inserted decision",
+    refusal_stage: "null on an inserted decision",
+    stage_counts: "null on an inserted decision",
+    lead_id: "null on an inserted decision",
   },
   booking_outbox: {},
   booking_events: {

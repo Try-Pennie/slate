@@ -94,6 +94,11 @@ const bookInput: CreateBookingInput = {
 function makeDeps(): BookingDeps {
   const noop = async (..._args: unknown[]): Promise<void> => {};
   return {
+    // #3272: the pool read is injected now; these tests never reach it with a
+    // pool to report, so it fails like the Supabase read it stood in for.
+    resolveBucketPool: async () => {
+      throw new Error("no pool read in this test");
+    },
     // #2638: no test here routes a booker confirm on a missing code.
     readLeadXbc: async () => {
       throw new Error("Salesforce is not reachable from this test");
