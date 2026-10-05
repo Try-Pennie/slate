@@ -321,11 +321,45 @@ async function main() {
     now += 1;
     assert(!second.seat.claimedByOthers().has("x"), "lease: once the lease passes, x is no longer excluded");
     second.done({ full: false });
+  }
 
-    // And it is dropped, so the idle line goes with it: a fresh confirm leads a clean line.
-    const third = await q.enter("slot");
-    assert(third.kind === "lead" && third.seat.claimedByOthers().size === 0, "lease: the expired claim was dropped, not just hidden");
-    if (third.kind === "lead") third.done({ full: false });
+  // --- #3274 review: the expired claim is DROPPED, not just hidden, on a live line --
+  //
+  // A claim only filtered out of `claimedByOthers` would still count as somebody
+  // booking in the slot, and a full verdict settles the waiting only when nobody is.
+  // So: the abandoned confirm and a LATER one share one line, the abandoned lease
+  // ends while the later one is still live, and the later one's full verdict must
+  // answer the follower behind it rather than hand it the lead.
+  {
+    const start = 2_000_000;
+    let now = start;
+    const t = manualTimer();
+    const lt = manualTimer();
+    const q = makeConfirmQueue<string>({ timer: t.timer, leaseTimer: lt.timer, now: () => now });
+    const abandoned = await q.enter("slot");
+    if (abandoned.kind !== "lead") throw new Error("dropped: the first confirm must lead");
+    abandoned.seat.claim("x", true); // hands on, then is never heard from again
+    now += 1_000; // the next confirm starts later, so its lease ends later
+    const live = await q.enter("slot");
+    if (live.kind !== "lead") throw new Error("dropped: the later confirm must lead");
+    let followerTurn: QueueTurn<string> | null = null;
+    void q.enter("slot").then((turn) => (followerTurn = turn));
+    await tick();
+    assert(followerTurn === null, "dropped: a follower waits behind the later confirm");
+
+    now = start + CONFIRM_CLAIM_LEASE_MS; // the abandoned lease ends; the later one runs on
+    // A late claim from the abandoned confirm, on the SAME live line, is ignored.
+    abandoned.seat.claim("y", false);
+    assert(!live.seat.claimedByOthers().has("y"), "late claim: an expired confirm's claim is ignored on a live line");
+    assert(!live.seat.claimedByOthers().has("x"), "dropped: its earlier claim no longer excludes x");
+
+    live.done({ full: true, refusal: "taken", settled: null });
+    await tick();
+    const f = followerTurn as QueueTurn<string> | null;
+    assert(
+      f?.kind === "refused",
+      `dropped: with the expired claim gone, the full verdict answers the follower (got ${f?.kind ?? "still waiting"})`,
+    );
   }
 
   // --- #3274: an abandoned leader that never handed on stops holding the line ----
@@ -348,12 +382,64 @@ async function main() {
     now += CONFIRM_CLAIM_LEASE_MS;
     const late = await q.enter("slot");
     assert(late.kind === "lead", `held: once the lease passes, a new confirm leads rather than waiting (got ${late.kind})`);
-    // A verdict the abandoned confirm reports after its lease cannot claim again.
-    if (abandoned.kind === "lead") abandoned.seat.claim("y", false);
-    if (late.kind === "lead") {
-      assert(!late.seat.claimedByOthers().has("y"), "held: an expired confirm's late claim is ignored");
-      late.done({ full: false });
-    }
+    if (late.kind === "lead") late.done({ full: false });
+  }
+
+  // --- #3274 review: a turn that has ended cannot claim again, on a live line -------
+  //
+  // The guard on `claim` refuses a turn that has reported. (An EXPIRED turn's late
+  // claim is also refused, but that half cannot be told apart from outside: a
+  // re-set would carry the turn's own expired lease and every read expires first,
+  // so the "late claim" assertion above holds with or without it.)
+  {
+    const t = manualTimer();
+    const lt = manualTimer();
+    const q = makeConfirmQueue<string>({ timer: t.timer, leaseTimer: lt.timer, now: () => 3_000_000 });
+    const first = await q.enter("slot");
+    if (first.kind !== "lead") throw new Error("reported: the first confirm must lead");
+    first.seat.claim("x", true);
+    const second = await q.enter("slot");
+    if (second.kind !== "lead") throw new Error("reported: the second confirm must lead");
+    first.done({ full: false });
+    first.seat.claim("z", false); // a stray call after the verdict
+    assert(!second.seat.claimedByOthers().has("z"), "reported: a turn that reported cannot claim an advisor again");
+    second.done({ full: false });
+  }
+
+  // --- #3274 review: the lease end itself expires the turn, with no traffic --------
+  //
+  // Expiry used to run only when something read the line. A follower's own wait
+  // (10s) is shorter than the lease (14s), so one stuck behind an abandoned holder
+  // still times out first and is answered retryably (rare, and the lead can retry);
+  // the timer at the lease end is what frees the line for whoever is still waiting
+  // then, and drops a line nobody is in, with nothing else touching it.
+  {
+    const start = 7_000_000;
+    let now = start;
+    const t = manualTimer();
+    const lt = manualTimer();
+    const q = makeConfirmQueue<string>({ timer: t.timer, leaseTimer: lt.timer, now: () => now });
+    const abandoned = await q.enter("slot");
+    if (abandoned.kind !== "lead") throw new Error("lease timer: the first confirm must lead");
+    assert(lt.live() === 1 && lt.pending[0]?.ms === CONFIRM_CLAIM_LEASE_MS, "lease timer: armed at the lease end when a turn starts");
+    let followerTurn: QueueTurn<string> | null = null;
+    void q.enter("slot").then((turn) => (followerTurn = turn));
+    await tick();
+    assert(followerTurn === null, "lease timer: a follower waits behind the abandoned holder");
+
+    now = start + CONFIRM_CLAIM_LEASE_MS;
+    lt.fireAll(); // nothing else touches the line: no enter, no claim, no wait timer
+    await tick();
+    const f = followerTurn as QueueTurn<string> | null;
+    assert(f?.kind === "lead", `lease timer: the follower leads once the lease ends (got ${f?.kind ?? "still waiting"})`);
+    if (f?.kind === "lead") f.done({ full: false });
+    assert(lt.live() === 0, "lease timer: the finished follower cancelled its own lease timer");
+
+    // A turn that reports normally cancels its timer, so it never fires on a later line.
+    const q2 = makeConfirmQueue<string>({ timer: t.timer, leaseTimer: lt.timer, now: () => now });
+    const normal = await q2.enter("other");
+    if (normal.kind === "lead") normal.done({ full: false });
+    assert(lt.live() === 0, "lease timer: a confirm that reports cancels its lease timer");
   }
 
   // --- #3274 review: expiry found by a waiter's own timer still hands the line on --

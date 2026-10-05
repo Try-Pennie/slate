@@ -188,12 +188,31 @@ interface Line<T> {
   looking: number;
 }
 
+/**
+ * A real timer that never keeps a process alive by itself (#3274): a lease left by an
+ * abandoned confirm must not hold a Node test run open for 14 seconds. `unref` exists
+ * on Node's timers and not on a Worker's, where it is simply not called.
+ */
+const unreferencedTimer: ScheduleTimer = (ms, fire) => {
+  const t = setTimeout(fire, ms) as unknown as { unref?: () => void };
+  t.unref?.();
+  return () => clearTimeout(t as unknown as Parameters<typeof clearTimeout>[0]);
+};
+
 export function makeConfirmQueue<T>(
-  opts: { waitMs?: number; timer?: ScheduleTimer; now?: () => number } = {},
+  opts: {
+    waitMs?: number;
+    timer?: ScheduleTimer;
+    /** The timer that ends each lead turn's lease (#3274), apart from the waits' so a
+     *  test can fire one without the other. Defaults to an unreferenced real timer. */
+    leaseTimer?: ScheduleTimer;
+    now?: () => number;
+  } = {},
 ): ConfirmQueue<T> {
   const waitMs = opts.waitMs ?? CONFIRM_QUEUE_WAIT_MS;
   const timer = opts.timer ?? realTimer;
   const now = opts.now ?? (() => Date.now());
+  const leaseTimer = opts.leaseTimer ?? unreferencedTimer;
   // A key is present while somebody leads it or waits in it.
   const lines = new Map<string, Line<T>>();
   // Removes THIS line only: a lookahead returned after its line settled must not
@@ -250,6 +269,15 @@ export function makeConfirmQueue<T>(
     const me = {};
     let reported = false;
     const until = now() + CONFIRM_CLAIM_LEASE_MS;
+    // #3274 review: the lease ends on its own, not only when something next reads the
+    // line, so an abandoned turn frees whoever is still waiting then, and a line with
+    // nobody left in it is dropped, with no traffic needed. Followers ALREADY behind
+    // an abandoned holder usually do not benefit: a follower's own wait (10s,
+    // `CONFIRM_QUEUE_WAIT_MS`) is shorter than the lease (14s), so it times out first
+    // and is answered retryably. That is accepted: it needs a confirm torn down while
+    // holding the line, which is rare, and the answer is one the lead can retry, which
+    // is now served by a line that has been freed. Cancelled when the turn reports.
+    const cancelLease = leaseTimer(CONFIRM_CLAIM_LEASE_MS, () => dropIfIdle(key, line));
     // A turn whose lease has passed was dropped by `expire`: whatever it does next
     // is ignored, so a late claim cannot exclude an advisor again.
     const live = () => !reported && line.claims.has(me);
@@ -286,6 +314,7 @@ export function makeConfirmQueue<T>(
       done(verdict) {
         if (reported) return;
         reported = true;
+        cancelLease();
         expireAndHandOn(key, line);
         line.claims.delete(me);
         if (line.holder === me) line.holder = null;

@@ -165,7 +165,15 @@ async function burst(opts: {
     let eventFailed = false;
     let idempotencyFailed = false;
     const queue: ConfirmQueue<unknown> =
-      opts.queue === "off" ? NO_QUEUE : makeConfirmQueue({ timer: (ms, fire) => clock.at(clock.now + ms, fire) });
+      opts.queue === "off"
+        ? NO_QUEUE
+        : makeConfirmQueue({
+            timer: (ms, fire) => clock.at(clock.now + ms, fire),
+            // #3274: the lease end runs on the same virtual clock, so the simulation
+            // owns every timer the line sets and judges leases by its own time.
+            leaseTimer: (ms, fire) => clock.at(clock.now + ms, fire),
+            now: () => clock.now,
+          });
     let personReads = 0;
     const shared: BookingDeps = {
       ...base,
