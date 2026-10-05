@@ -1377,6 +1377,21 @@ function slowRun(made = 100): JudgeInput {
 }
 
 {
+  // The losers finding labels refusals with the SAME helper, so a loser with no
+  // outcome reads "no outcome" there too, never "undefined".
+  const r = broken((i) => {
+    const a = i.burstResults[0]!.attempts[1]!;
+    i.burstResults[0]!.attempts[1] = { ...a, status: 503, outcome: undefined as unknown as string };
+  });
+  const losers = r.findings.find((f) => f.bar === "the burst's losers");
+  assert(losers !== undefined, "a loser refused with no outcome is a losers finding");
+  assert(
+    losers !== undefined && !losers.detail.includes("undefined") && losers.detail.includes("503 no outcome"),
+    `and it is labelled as having no outcome (got: ${losers?.detail})`,
+  );
+}
+
+{
   // A mixed refusal set is not "already taken" either: some of it was something else.
   const r = broken((i) => {
     for (const b of i.burstResults) {
