@@ -1596,6 +1596,14 @@ describe("movedBusyRows (#3258)", () => {
     ];
     expect(movedBusyRows(upserts, stored)).toBe(2);
   });
+  it("counts a stored row with a missing stamp as moved (#3302 review)", () => {
+    expect(
+      movedBusyRows([row("x", "2026-01-01T10:00:00Z", "2026-01-01T11:00:00Z")], [
+        { gcal_event_id: "x", starts_at: null, ends_at: "2026-01-01T11:00:00Z" },
+      ]),
+    ).toBe(1);
+  });
+
   it("counts a row whose stored stamp cannot be read as moved, never as unchanged", () => {
     expect(
       movedBusyRows([row("x", "2026-01-01T10:00:00Z", "2026-01-01T11:00:00Z")], [

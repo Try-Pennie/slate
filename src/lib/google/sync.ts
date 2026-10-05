@@ -309,6 +309,14 @@ export async function applyEvents(
   events: GoogleEvent[],
   slateEventIds: Set<string>,
   timeZone: string,
+  /**
+   * #3302 review: count only the rows that MOVE busy time, which costs a read before
+   * the upserts. Opt in, and only the incremental push sync asks: a full resync
+   * counts as a change whatever it wrote, and hydration ignores the count, so the
+   * read would be a subrequest per batch bought for nothing. Without it the count is
+   * every upsert plus every row a delete removed.
+   */
+  opts: { countMoved?: boolean } = {},
 ): Promise<number> {
   const db = supabaseAdmin();
   const { upserts, deletes } = partitionBusyWrites(
@@ -325,23 +333,33 @@ export async function applyEvents(
   // Keyed on (user_id, calendar_id, gcal_event_id) so the same event id invited
   // to two of an agent's watched calendars keeps a distinct block per calendar,
   // instead of one calendar's sync overwriting the other's row (#619).
-  // #3258: which upserts MOVE busy time, read before they are written. Only a
-  // non-empty delta pays it, one indexed read per URL sized batch, against a pool
-  // refresh it can save (about 2.5s of CPU a pool, measured 2026-10-05). A read that
-  // fails THROWS, like every other store failure here, so the pass is retried with its
+  // #3258: which upserts MOVE busy time, read before they are written, when the
+  // caller asked (see `opts`). One indexed read per URL sized batch, against a pool
+  // refresh of about 2.5s of CPU it can save (measured 2026-10-05). A failed read
+  // THROWS, like every other store failure here, so the pass is retried with its
   // token unadvanced rather than guessing what moved.
-  let moved = 0;
-  for (const ids of chunkIdsByUrlBudget(upserts.map((u) => u.gcal_event_id))) {
-    const { data, error } = await db
-      .from("busy_blocks")
-      .select("gcal_event_id, starts_at, ends_at")
-      .eq("user_id", userId)
-      .eq("calendar_id", calendarId)
-      .in("gcal_event_id", ids)
-      .limit(ids.length);
-    if (error) throw new Error(`busy_blocks read before upsert failed: ${error.message}`);
-    const batch = upserts.filter((u) => ids.includes(u.gcal_event_id));
-    moved += movedBusyRows(batch, (data ?? []) as { gcal_event_id: string | null; starts_at: string; ends_at: string }[]);
+  let moved = upserts.length;
+  if (opts.countMoved && upserts.length > 0) {
+    // By event id, so each batch finds its rows in constant time (#3302 review); a
+    // delta naming one event twice upserts its LAST row, which is the one compared.
+    const byEvent = new Map(upserts.map((u) => [u.gcal_event_id, u]));
+    moved = 0;
+    for (const ids of chunkIdsByUrlBudget([...byEvent.keys()])) {
+      const res = await db
+        .from("busy_blocks")
+        .select("gcal_event_id, starts_at, ends_at")
+        .eq("user_id", userId)
+        .eq("calendar_id", calendarId)
+        .in("gcal_event_id", ids)
+        .limit(ids.length);
+      if (res.error) throw new Error(`busy_blocks read before upsert failed: ${res.error.message}`);
+      // Typed by the schema, so a changed column list fails the build rather than a
+      // cast hiding it; a row missing a stamp counts as moved (`movedBusyRows`).
+      moved += movedBusyRows(
+        ids.map((id) => byEvent.get(id)!),
+        res.data ?? [],
+      );
+    }
   }
   for (let i = 0; i < upserts.length; i += UPSERT_CHUNK) {
     const { error } = await db
@@ -535,6 +553,8 @@ async function syncCalendar(
   email: string,
   cal: AgentCalendar,
   timeZone: string,
+  /** #3302 review: only the push sync, which acts on `busyChanged`, asks for the count. */
+  opts: { countMoved?: boolean } = {},
 ): Promise<CalendarSyncOutcome> {
   // ONE window for this pass, computed once and passed to both the fetch and the reconcile
   // that judges it (#1261). Computing it twice would let the two drift by however long the
@@ -587,7 +607,11 @@ async function syncCalendar(
       result.events.length > 0
         ? await loadSlateBookingEventIds(cal.user_id)
         : new Set<string>();
-    const busyWrites = await applyEvents(cal.user_id, cal.calendar_id, result.events, slateEventIds, timeZone);
+    // A full resync is a change whatever it wrote (it may purge), so it never pays
+    // for the count.
+    const busyWrites = await applyEvents(cal.user_id, cal.calendar_id, result.events, slateEventIds, timeZone, {
+      countMoved: opts.countMoved === true && !full,
+    });
     // Never reconcile against a PARTIAL event set (#1259). A page-capped pass read only
     // the first MAX_SYNC_PAGES pages, so every event on the pages it never fetched
     // looks vanished and its cached busy time would be deleted, leaving the agent
@@ -996,6 +1020,9 @@ export async function syncByChannel(
   // #3258: whether any pass moved busy time, which is the only thing that can make
   // the agent's offered slots differ from what is stored.
   let busyChanged = false;
+  // #3302 lessons review: a later pass that throws must not lose a refresh an
+  // earlier pass already owes, so the error is held until the refresh has run.
+  let failed: { err: unknown } | null = null;
   try {
     if (!email) return "synced";
     const timeZone = await loadAgentTimezone(cal.user_id);
@@ -1010,7 +1037,9 @@ export async function syncByChannel(
         .eq("id", cal.id)
         .maybeSingle();
       if (!fresh) break;
-      if ((await syncCalendar(email, fresh as AgentCalendar, timeZone)).busyChanged) busyChanged = true;
+      if ((await syncCalendar(email, fresh as AgentCalendar, timeZone, { countMoved: true })).busyChanged) {
+        busyChanged = true;
+      }
       // error-ok: post-pass sync_pending check; a read error just ends the rerun
       // loop and the 1-min cron backstop owns anything missed.
       const { data: after } = await db
@@ -1023,6 +1052,8 @@ export async function syncByChannel(
       );
       if (!shouldRerun(pendingAgain, pass)) break;
     }
+  } catch (err) {
+    failed = { err };
   } finally {
     // Release only OUR claim - after the TTL another request may hold a newer one.
     // write-ok: the claim expires on its TTL regardless, so a refused release costs a wait and never frees a newer claim.
@@ -1047,6 +1078,7 @@ export async function syncByChannel(
   // (`refreshAgentPoolsAfterPush`); pools past the bound are left to the recompute
   // lane's freshness window.
   if (busyChanged) await refreshAgentPoolsAfterPush(cal.user_id);
+  if (failed) throw failed.err;
   return "synced";
 }
 

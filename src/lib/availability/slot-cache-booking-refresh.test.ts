@@ -233,6 +233,27 @@ describe("refreshAgentPoolsAfterPush (#3258)", () => {
     );
   });
 
+  // #3302 lessons review: the bound must not starve the same pools forever.
+  it("rotates which pools a bounded push refreshes, so every pool gets its turn", async () => {
+    precompute.listPoolBuckets.mockResolvedValue([...LOW, ...MID, ...HIGH]);
+    precompute.bucketsForAgent.mockResolvedValue(["111", "211", "311"]);
+    const seen = new Set<string>();
+    const picks: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      precompute.storeBucketSlotsRow.mockClear();
+      const push = refreshAgentPoolsAfterPush("agent-1");
+      await vi.advanceTimersByTimeAsync(0);
+      await push;
+      // The tier digit names the pool here: LOW is 1xx, MID 2xx, HIGH 3xx.
+      const pools = [...new Set(precompute.storeBucketSlotsRow.mock.calls.map((c) => String(c[0]).charAt(0)))].sort();
+      picks.push(pools.join(","));
+      pools.forEach((tier) => seen.add(tier));
+      await vi.advanceTimersByTimeAsync(20_000); // past the window, so nothing joins
+    }
+    expect([...seen].sort()).toEqual(["1", "2", "3"]);
+    expect(new Set(picks).size).toBeGreaterThan(1);
+  });
+
   it("never throws: a failed pool is counted and the push carries on", async () => {
     precompute.bucketsForAgent.mockResolvedValue(["211"]);
     precompute.computeBucketSlotsForWindow.mockResolvedValueOnce(null);

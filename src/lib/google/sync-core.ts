@@ -145,12 +145,12 @@ export type BusyBlockRow = {
  * redelivers an event for a title or description edit with the same times, and an
  * upsert of it changes nothing any slot compute reads. Compared as instants, never
  * as strings, because the store answers `+00:00` where the event wrote `Z`; an
- * unreadable stamp on either side counts as moved, the side that never under
- * refreshes.
+ * unreadable or missing stamp on either side counts as moved, the side that never
+ * under refreshes.
  */
 export function movedBusyRows(
   upserts: BusyBlockRow[],
-  stored: { gcal_event_id: string | null; starts_at: string; ends_at: string }[],
+  stored: { gcal_event_id: string | null; starts_at: string | null; ends_at: string | null }[],
 ): number {
   const byEvent = new Map(stored.map((r) => [r.gcal_event_id, r]));
   let moved = 0;

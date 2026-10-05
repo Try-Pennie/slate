@@ -339,6 +339,7 @@ export function resetBookingRefreshesForTests(): void {
   poolKeyCache = null;
   lastPoolRecomputeAt.clear();
   lastPoolReadAt.clear();
+  pushRotation = 0;
 }
 
 /**
@@ -383,6 +384,9 @@ const recomputePoolsOf = (codes: string[]): Promise<void> =>
  */
 export const MAX_PUSH_POOLS_PER_CALL = 2;
 
+/** Where the next push starts in its agent's sorted pools, so each gets its turn. */
+let pushRotation = 0;
+
 /**
  * Refresh the pools an agent's calendar change affects, after a Google push (#2922,
  * #3258): through the SAME per pool coalescer and window as the booking refresh, so
@@ -401,7 +405,13 @@ export async function refreshAgentPoolsAfterPush(userId: string): Promise<Touche
       const key = await poolKeyOfCode(code);
       if (!byKey.has(key)) byKey.set(key, code);
     }
-    const keys = [...byKey.keys()];
+    // Sorted, then ROTATED per push (#3302 lessons review): a fixed first two would
+    // starve an agent's other pools of push freshness for as long as the isolate
+    // lives. Rotating costs nothing to read, where preferring the oldest rows would
+    // cost a read per push; the lane still refreshes every pool on its own clock.
+    const sorted = [...byKey.keys()].sort();
+    const start = sorted.length > 0 ? pushRotation++ % sorted.length : 0;
+    const keys = [...sorted.slice(start), ...sorted.slice(0, start)];
     const chosen = keys.slice(0, MAX_PUSH_POOLS_PER_CALL);
     // One request per POOL, with one code standing for it: the refresh resolves the
     // whole pool from that code, and a second code of the same pool would only join.

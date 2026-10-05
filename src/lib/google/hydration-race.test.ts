@@ -927,3 +927,98 @@ describe("a push refreshes slots only when its sync changed busy time (#3258)", 
     expect(refreshAgentPoolsAfterPush).toHaveBeenCalledTimes(1);
   });
 });
+
+// #3302 review: the read that tells a retimed row from a redelivered one is paid
+// ONLY by the incremental push sync, the one caller that uses the count. A full
+// resync counts as a change whatever it wrote, and hydration ignores the count, so a
+// bootstrap reading before every upsert batch would be a subrequest bought for nothing.
+describe("only the incremental push sync reads before its upserts (#3302 review)", () => {
+  /** Selects on busy_blocks filtered by event id: the pre upsert read's shape. */
+  function countPreReads(): () => number {
+    const fake = db.current as FakeDb;
+    const original = fake.run.bind(fake);
+    let n = 0;
+    fake.run = (q: FakeQuery) => {
+      if (
+        q.table === "busy_blocks" &&
+        q.mode === "select" &&
+        q.filters.some((f) => f.kind === "in" && f.column === "gcal_event_id")
+      ) {
+        n += 1;
+      }
+      return original(q);
+    };
+    return () => n;
+  }
+
+  it("hydration makes no pre read", async () => {
+    (db.current as FakeDb).seed("agent_calendars", [calendarRow()]);
+    (google.current as FakeGoogle).put("evt-a", at(DAY + 1), at(DAY + 2));
+    const reads = countPreReads();
+    expect((await hydrateCalendar(cal())).ok).toBe(true);
+    expect(reads()).toBe(0);
+  });
+
+  it("a full resync (no token yet) makes no pre read", async () => {
+    (db.current as FakeDb).seed("agent_calendars", [calendarRow()]);
+    (google.current as FakeGoogle).put("evt-b", at(DAY + 1), at(DAY + 2));
+    const reads = countPreReads();
+    await expect(syncByChannel(CHANNEL)).resolves.toBe("synced");
+    expect(blockFor("evt-b")).toBeTruthy();
+    expect(reads()).toBe(0);
+  });
+
+  it("the cron's incremental sync makes no pre read", async () => {
+    await bootstrap();
+    (google.current as FakeGoogle).put("evt-c", at(DAY + 1), at(DAY + 2));
+    const reads = countPreReads();
+    await runIncrementalSync(USER_ID);
+    expect(blockFor("evt-c")).toBeTruthy();
+    expect(reads()).toBe(0);
+  });
+
+  it("the incremental push sync does make it (positive control)", async () => {
+    await bootstrap();
+    (google.current as FakeGoogle).put("evt-d", at(DAY + 1), at(DAY + 2));
+    const reads = countPreReads();
+    await syncByChannel(CHANNEL);
+    expect(reads()).toBe(1);
+  });
+});
+
+// #3302 lessons review: a push sync whose first pass moved busy time and whose
+// second pass then threw used to lose the refresh, because the throw left the
+// function before the refresh ran. Busy time that moved must still be refreshed.
+describe("a push sync refreshes what moved even when a later pass throws (#3302)", () => {
+  it("refreshes once, then rethrows", async () => {
+    await bootstrap();
+    const g = google.current as FakeGoogle;
+    g.put("evt-first", at(DAY + 1), at(DAY + 2));
+    g.midFetch = async () => {
+      // A second push lands during pass 1, so a second pass runs, and Google
+      // fails that second fetch.
+      const row = (db.current as FakeDb).rows("agent_calendars").find((r) => r.id === CAL_ID)!;
+      row.sync_pending = true;
+      g.midFetch = async () => {
+        throw new Error("google down on pass 2");
+      };
+    };
+    vi.mocked(refreshAgentPoolsAfterPush).mockClear();
+    await expect(syncByChannel(CHANNEL)).rejects.toThrow(/google down on pass 2/);
+    expect(blockFor("evt-first")).toBeTruthy();
+    expect(refreshAgentPoolsAfterPush).toHaveBeenCalledTimes(1);
+    expect(cal().sync_claimed_at).toBeNull();
+  });
+
+  it("refreshes nothing when the pass that threw was the only one (control)", async () => {
+    await bootstrap();
+    const g = google.current as FakeGoogle;
+    g.put("evt-x", at(DAY + 1), at(DAY + 2));
+    g.midFetch = async () => {
+      throw new Error("google down on pass 1");
+    };
+    vi.mocked(refreshAgentPoolsAfterPush).mockClear();
+    await expect(syncByChannel(CHANNEL)).rejects.toThrow(/pass 1/);
+    expect(refreshAgentPoolsAfterPush).not.toHaveBeenCalled();
+  });
+});
