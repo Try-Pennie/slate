@@ -11,7 +11,14 @@ export const dynamic = "force-dynamic";
 // A move names its hold; a keep names no hold and the bucket to correct to.
 const schema = z.union([
   z.object({ holdId: z.string().uuid(), note: z.string().max(500).nullish() }),
-  z.object({ holdId: z.null(), bucketCode: z.string().min(1).max(16), note: z.string().max(500).nullish() }),
+  z.object({
+    holdId: z.null(),
+    bucketCode: z.string().min(1).max(16),
+    // A keep in a lower tier: the bucket asked for and the drop, from the proposal.
+    requestedBucketCode: z.string().min(1).max(16).nullish(),
+    rungsDropped: z.number().int().min(0).max(5).optional(),
+    note: z.string().max(500).nullish(),
+  }),
 ]);
 
 /** Confirm a reroute (#3249): turn the hold into the move, or correct only the bucket. */
@@ -29,11 +36,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!parsed.ok) return parsed.response;
   const body = parsed.data;
   try {
+    const keep = "bucketCode" in body ? body : null;
     const outcome = await adminConfirmReroute(
       id,
-      body.holdId,
-      "bucketCode" in body ? body.bucketCode : null,
-      body.note ?? null,
+      {
+        holdId: body.holdId,
+        bucketCode: keep?.bucketCode ?? null,
+        requestedBucketCode: keep?.requestedBucketCode ?? null,
+        rungsDropped: keep?.rungsDropped ?? 0,
+        note: body.note ?? null,
+      },
       actor,
     );
     return NextResponse.json(outcome);

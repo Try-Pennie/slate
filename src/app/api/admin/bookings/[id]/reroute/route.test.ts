@@ -116,13 +116,21 @@ describe("POST /admin/bookings/[id]/reroute/confirm", () => {
     service.adminConfirmReroute.mockResolvedValueOnce({ kind: "moved" });
     const res = await CONFIRM(req({ holdId: HOLD, note: "lead is Ultra High" }), params);
     expect(res.status).toBe(200);
-    expect(service.adminConfirmReroute).toHaveBeenCalledWith("bk1", HOLD, null, "lead is Ultra High", { userId: "mgr1", actingAsUserId: null });
+    expect(service.adminConfirmReroute).toHaveBeenCalledWith(
+      "bk1",
+      { holdId: HOLD, bucketCode: null, requestedBucketCode: null, rungsDropped: 0, note: "lead is Ultra High" },
+      { userId: "mgr1", actingAsUserId: null },
+    );
   });
 
   it("confirms a keep by the bucket to correct to, with no hold", async () => {
     service.adminConfirmReroute.mockResolvedValueOnce({ kind: "kept" });
-    await CONFIRM(req({ holdId: null, bucketCode: "512" }), params);
-    expect(service.adminConfirmReroute).toHaveBeenCalledWith("bk1", null, "512", null, expect.anything());
+    await CONFIRM(req({ holdId: null, bucketCode: "412", requestedBucketCode: "512", rungsDropped: 1 }), params);
+    expect(service.adminConfirmReroute).toHaveBeenCalledWith(
+      "bk1",
+      { holdId: null, bucketCode: "412", requestedBucketCode: "512", rungsDropped: 1, note: null },
+      expect.anything(),
+    );
   });
 
   it("refuses a keep with no bucket, and a move whose hold is not an id", async () => {

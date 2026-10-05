@@ -171,6 +171,18 @@ async function main() {
     eq(calls.place.length, 0, `${outcome}: no hold is placed for a keep`);
   }
 
+  // --- start: a search that ends without a move lets any earlier hold go ---
+  for (const outcome of ["keep-in-requested", "keep-last-resort"] as const) {
+    const { deps, calls } = fake({ targets: [{ outcome, bucket: bucketFor("412"), eventType, rungsDropped: 0 }] });
+    await startReroute(deps, { bookingId: "K1", bucketCode: "412", actor });
+    eq(calls.release, ["K1"], `${outcome}: an earlier hold for this booking is released, so its advisor is not left blocked`);
+  }
+  {
+    const { deps, calls } = fake({ targets: [moveTarget("NEW", "512", 0)] });
+    await startReroute(deps, { bookingId: "K1", bucketCode: "512", actor });
+    eq(calls.release.length, 0, "a move releases nothing itself: placing its hold replaces any earlier one");
+  }
+
   // --- start: a booking with nobody on it and nobody free is "none" ---
   {
     const { deps } = fake({
@@ -371,6 +383,17 @@ async function main() {
     eq(ev.from_agent_user_id, "CUR", "the advisor before");
     eq(ev.to_agent_user_id, "CUR", "and after are the same");
   }
+  // --- keep in a LOWER tier records what was asked for and how far it dropped ---
+  {
+    const { deps, calls } = fake({});
+    await confirmReroute(deps, { bookingId: "K1", holdId: null, bucketCode: "412", requestedBucketCode: "512", rungsDropped: 1, note: null, actor });
+    const k = calls.keep[0] as { bucketId: string; requestedBucketId: string; rungsDropped: number; requestedTier: string | null; bookedTier: string | null };
+    eq(k.bucketId, "b412", "a cascaded keep stores the bucket the advisor was kept in");
+    eq(k.requestedBucketId, "b512", "records the bucket that was asked for");
+    eq(k.rungsDropped, 1, "and how far it dropped");
+    assert(k.requestedTier !== k.bookedTier, "so the requested and booked tiers differ");
+  }
+
   {
     const { deps, calls } = fake({ swapRefused: "booking_inactive" });
     let code: string | null = null;

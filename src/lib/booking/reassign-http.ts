@@ -80,13 +80,17 @@ export async function mapReassignError(
       { status: 503 },
     );
   }
-  // The target advisor is held for another booking's bucket correction (#3249). A
-  // conflict that ends by itself, with its own code and the time it ends, so the
-  // manager knows to wait or pick somebody else rather than reading a failure.
+  // The target advisor is held for another booking's bucket correction (#3249). It
+  // ends by itself within minutes, so it is TRANSIENT here: a 503 with Retry-After
+  // set to the time left, which the machine reassign caller sharing this mapper
+  // retries, never the 409 that tells it to stop. Its own code and sentence say
+  // when it ends, so a manager waits or picks somebody else.
   if (err instanceof AgentHeldError) {
+    const untilMs = err.heldUntilIso ? Date.parse(err.heldUntilIso) : NaN;
+    const retryAfter = Number.isFinite(untilMs) ? Math.max(1, Math.ceil((untilMs - Date.now()) / 1000)) : 60;
     return NextResponse.json(
       { error: err.message, code: "HELD", heldUntil: err.heldUntilIso },
-      { status: 409 },
+      { status: 503, headers: { "Retry-After": String(retryAfter) } },
     );
   }
   // Genuine not-found (bad/stale booking id or target agent): do not retry.

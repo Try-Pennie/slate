@@ -261,6 +261,10 @@ async function searchAndHold(
     };
   }
 
+  // No move, so no advisor needs holding: an earlier search's hold for this booking
+  // is let go, or its advisor stays blocked and a reload restores a stale move.
+  await deps.releaseHold(booking.id);
+
   // A keep needs somebody to keep. A booking nobody holds, with nobody free
   // anywhere, is "none": correcting the bucket of an unassigned call onto nobody
   // is not a keep (#3244 Done when: "refused, nobody at all").
@@ -294,7 +298,17 @@ export async function startReroute(
  */
 export async function confirmReroute(
   deps: RerouteDeps,
-  input: { bookingId: string; holdId: string | null; bucketCode: string | null; note: string | null; actor: BookingActor },
+  input: {
+    bookingId: string;
+    holdId: string | null;
+    /** A keep: the bucket the advisor is kept in. */
+    bucketCode: string | null;
+    /** A keep in a lower tier: the bucket that was asked for, and how far it dropped. */
+    requestedBucketCode?: string | null;
+    rungsDropped?: number;
+    note: string | null;
+    actor: BookingActor;
+  },
 ): Promise<RerouteOutcome> {
   const reason = { code: REROUTE_REASON_CODE, detail: input.note && input.note.trim() ? input.note.trim() : null };
 
@@ -377,11 +391,14 @@ async function moveOnClaimedHold(
 
 async function confirmKeep(
   deps: RerouteDeps,
-  input: { bookingId: string; bucketCode: string | null; actor: BookingActor },
+  input: { bookingId: string; bucketCode: string | null; requestedBucketCode?: string | null; rungsDropped?: number; actor: BookingActor },
   reason: { code: string; detail: string | null },
 ): Promise<RerouteOutcome> {
   const { booking, bucket: fromBucket } = await reroutableBooking(deps, input.bookingId);
-  const requested = await requestedBucket(deps, input.bucketCode);
+  const kept = await requestedBucket(deps, input.bucketCode);
+  // A cascaded keep records what was asked for and the drop, as the move does.
+  const asked = input.requestedBucketCode ? await requestedBucket(deps, input.requestedBucketCode) : kept;
+  const rungs = input.rungsDropped ?? 0;
   if (!booking.assigned_user_id || !booking.agent_email || !booking.gcal_event_id) {
     throw new RerouteRefusedError("no_current_advisor");
   }
@@ -391,11 +408,11 @@ async function confirmKeep(
     agentName: booking.agent_name,
     agentEmail: booking.agent_email,
     gcalEventId: booking.gcal_event_id,
-    bucketId: requested.bucket.id,
-    requestedBucketId: requested.bucket.id,
-    requestedTier: tierKeyOf(requested.bucket.code),
-    bookedTier: tierKeyOf(requested.bucket.code),
-    rungsDropped: 0,
+    bucketId: kept.bucket.id,
+    requestedBucketId: asked.bucket.id,
+    requestedTier: tierKeyOf(asked.bucket.code),
+    bookedTier: tierKeyOf(kept.bucket.code),
+    rungsDropped: rungs,
     holdId: null,
   });
   if (refused) throw new RerouteRefusedError(refused);
@@ -414,13 +431,13 @@ async function confirmKeep(
       fromAgentUserId: booking.assigned_user_id,
       toAgentUserId: booking.assigned_user_id,
       fromBucketId: fromBucket.id,
-      toBucketId: requested.bucket.id,
+      toBucketId: kept.bucket.id,
       actorUserId: input.actor.userId,
       actingAsUserId: input.actor.actingAsUserId,
       nowMs: deps.now(),
     }),
   );
-  return { kind: "kept", bucket: bucketView(requested.bucket) };
+  return { kind: "kept", bucket: bucketView(kept.bucket) };
 }
 
 /** Cancel, or the admin walking away: let the held advisor go. */
