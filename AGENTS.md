@@ -920,16 +920,10 @@ which is exactly why it is guarded.
 
 # The confirm line is shared across isolates (#3325)
 
-Confirms for one slot take turns in a line, and since #3325 that line can live in
-ONE Durable Object every isolate reaches, behind `booking_settings.shared_confirm_line`
-(admin Hours page). Three rules: the line's rules exist once, in `makeConfirmQueue`
-(the object hosts it, never a copy); every call the confirm path makes to its line is
-awaited (`scripts/test-unawaited-line-calls.ts`), because a Worker cancels unawaited
-work and a lost report holds the line; and correctness never rests on the line, so
-any failure to use it falls back to the isolate's own line and is recorded on the
-`confirm answered` log line (`line`, `line_reason`, `line_key`, `line_ms`). The
-key, the switch, every fallback, the timings and what pages are in
-**`docs/confirm-line.md`**.
+Behind `booking_settings.shared_confirm_line`, ONE Durable Object holds the confirm
+line for every isolate. Its rules live only in `makeConfirmQueue`, every call to it is
+awaited (`scripts/test-unawaited-line-calls.ts`), and any failure falls back to the
+isolate's own line. The rest: **`docs/confirm-line.md`**.
 
 # Capped single-page reads (the `// cap-safe:` convention)
 
@@ -1846,16 +1840,5 @@ investigating a limits question or concluding the logs are broken.
 
 # Screenshotting the dev UI (Playwright/Peekaboo)
 
-Screenshots against `next dev` hang and time out: element shots wait forever on
-CSS animations to "settle" (the `.pn-*` entrance/pulse keyframes never do), and
-full-page shots stall on font loading. Before capturing, freeze motion by
-injecting this style via `browser_evaluate`, then take the shot:
-
-```js
-const s = document.createElement('style');
-s.textContent = '*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important;caret-color:transparent!important}';
-document.head.appendChild(s);
-```
-
-A JPEG capture also succeeds where PNG times out. Save outside the repo root
-(or delete after) so stray images aren't committed.
+Screenshots against `next dev` hang unless motion is frozen first; the snippet and the
+JPEG workaround are in **`docs/screenshotting-dev-ui.md`**.
