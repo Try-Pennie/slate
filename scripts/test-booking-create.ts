@@ -32,7 +32,7 @@ async function run() {
     assert(res.booking.id === "bk-new", "create returns the persisted booking");
     assert(
       calls.roundRobinPreview.at(-1) !== true,
-      "real create routes in NON-preview mode (the shadow study sees only real assignments)",
+      "real create routes in NON-preview mode (so a degraded share on a real assignment still alerts)",
     );
     assert(
       res.booking.original_starts_at === "2026-06-08T13:00:00.000Z" &&
