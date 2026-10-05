@@ -367,8 +367,11 @@ export async function loadBucketSlotInputs(
   from: string,
   to: string,
   resolveEligible: EligibleResolver = eligibleAgentIds,
+  /** #3324: a caller that already resolved the bucket (to size its window from the
+   *  event type) passes it, rather than paying the same read twice. */
+  preResolved?: ResolvedBucket,
 ): Promise<BucketSlotInputs | null> {
-  const resolved = await resolveBucketByCode(code);
+  const resolved = preResolved ?? (await resolveBucketByCode(code));
   if (!resolved) return null;
   const { bucket } = resolved;
 
@@ -400,6 +403,21 @@ export async function getBucketSlots(
 ): Promise<BucketSlots | null> {
   const inputs = await loadBucketSlotInputs(code, from, to, resolveEligible);
   if (!inputs) return null;
+  return computeSlotsFromInputs(code, inputs, from, to, Date.now());
+}
+
+/**
+ * The compute half of `getBucketSlots`, over inputs already read (#3324). Split out
+ * so a booking's splice runs the SAME predicate over a narrow window whose busy time
+ * it read slightly wider (by the buffers), rather than a copy of it (L41).
+ */
+export function computeSlotsFromInputs(
+  code: string,
+  inputs: BucketSlotInputs,
+  from: string,
+  to: string,
+  nowMs: number,
+): BucketSlots {
   const { resolved, orgRes, membersResult, businessHours } = inputs;
   const { bucket, eventType } = resolved;
   const members = membersResult.members;
@@ -411,7 +429,6 @@ export async function getBucketSlots(
   // it are the ones that matter and neither is null-tolerant: `loadBusinessHours`
   // throws (#1294) and `loadMembersAvailability` throws on its daily-cap count.
   const org = orgRes.data;
-  const nowMs = Date.now();
   const slotsFor = (pool: MemberAvailability[]) =>
     computeBucketSlots({
       members: pool,

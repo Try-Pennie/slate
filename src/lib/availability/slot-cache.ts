@@ -1,4 +1,10 @@
-import { getBucketSlots, loadBucketSlotInputs, type EligibleResolver } from "./service";
+import {
+  getBucketSlots,
+  loadBucketSlotInputs,
+  computeSlotsFromInputs,
+  resolveBucketByCode,
+  type EligibleResolver,
+} from "./service";
 import { slotCacheKey } from "./cache-key";
 import {
   resolveBucketSlots,
@@ -22,7 +28,9 @@ import {
   type TouchedPoolsOutcome,
   type PooledBucket,
 } from "./pool-recompute";
-import { SlotRowRefused } from "./slot-row-write";
+import { SlotRowRefused, spliceSlotRow } from "./slot-row-write";
+import { spliceBookedTime, type BookedTime, type BookedSpliceOutcome } from "./booked-splice";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import { groupByPool } from "./pool-key";
 import { makePoolRefreshCoalescer, POST_CONFIRM_REFRESH_WINDOW_MS } from "./pool-refresh-coalescer";
 import { appUrl } from "@/lib/env";
@@ -364,6 +372,77 @@ const recomputePoolsOf = (codes: string[]): Promise<void> =>
       );
     }
   });
+
+/**
+ * Take a just booked time out of what EVERY pool the booked advisor serves is
+ * offering (#3324), by re-judging only the window the booking can have changed and
+ * splicing that into each code's row. See `booked-splice.ts` for the rule and
+ * `slot-splice.ts` for the fence that keeps an older full compute from putting the
+ * time back.
+ *
+ * It replaces `refreshPoolAfterBooking` for a confirmed booking: no whole pool
+ * compute, no coalescing window to wait out, and the advisor's OTHER pools are
+ * covered too. The recompute lane keeps doing full computes as the freshness floor.
+ *
+ * REJECTS when a code could not be spliced, so `afterResponse` logs the job as
+ * failed rather than reporting a splice that never landed; the rows it could not
+ * splice are exactly as they were, and the lane covers them.
+ */
+export async function spliceBookedTimeAfterBooking(code: string, booked: BookedTime): Promise<void> {
+  const outcome = await spliceBookedTime(booked, bookedSpliceDeps(code));
+  log.info("slot-cache", { msg: "booked time spliced", bucket: code, user_id: booked.userId, ...outcome });
+  if (outcome.pools === 0) {
+    throw new Error(`advisor ${booked.userId} serves no pool, so no booked time was spliced for ${code}`);
+  }
+  if (outcome.failed > 0) {
+    throw new Error(`${outcome.failed} code(s) could not be spliced after the booking on ${code}; the lane covers them`);
+  }
+}
+
+/**
+ * The load run's `reads-only` arm (#3258, #3324): exactly the reads the splice makes
+ * for the same booking, the cap widening included, with no compute, no row write and
+ * no edge cache drop, so it stays comparable with the `on` arm.
+ */
+export async function readSpliceInputsAfterBooking(code: string, booked: BookedTime): Promise<void> {
+  await spliceBookedTime(booked, bookedSpliceDeps(code), { readsOnly: true });
+}
+
+type ResolvedForSplice = NonNullable<Awaited<ReturnType<typeof resolveBucketByCode>>>;
+type InputsForSplice = NonNullable<Awaited<ReturnType<typeof loadBucketSlotInputs>>>;
+type LoadedForSplice = InputsForSplice & { members: InputsForSplice["membersResult"]["members"] };
+
+function bookedSpliceDeps(bookedCode: string): Parameters<
+  typeof spliceBookedTime<ResolvedForSplice, LoadedForSplice>
+>[1] {
+  return {
+    now: Date.now,
+    // Read fresh for every booking: the pools decide which rows get the splice, and
+    // a stale grouping would miss a code that joined a pool inside the minute.
+    agentPools: async (userId) => {
+      const [codes, buckets] = await Promise.all([bucketsForAgent(userId), listPoolBuckets()]);
+      const mine = new Set(codes);
+      return [...groupByPool(buckets).values()]
+        .filter((members) => members.some((m) => mine.has(m.code)))
+        .map((members) => members.map((m) => m.code));
+    },
+    resolve: (code) => resolveBucketByCode(code),
+    // Busy time over the READ window (the compute window widened by the buffers).
+    load: async (resolved, code, range) => {
+      const inputs = await loadBucketSlotInputs(code, range.readFrom, range.readTo, undefined, resolved);
+      return inputs ? { ...inputs, members: inputs.membersResult.members } : null;
+    },
+    // The same predicate a full compute runs, over the COMPUTE window.
+    compute: (loaded, range, nowMs) =>
+      computeSlotsFromInputs(loaded.resolved.bucket.code, loaded, range.computeFrom, range.computeTo, nowMs),
+    writeSplice: (code, w, judge, fenceAtMs, startedMs) =>
+      spliceSlotRow(supabaseAdmin(), code, w, judge, fenceAtMs, startedMs),
+    invalidate: (code) => invalidateBucketSlots(code),
+    warn: (msg, err) => log.warn("slot-cache", { msg, bucket: bookedCode }, err),
+  };
+}
+
+export type { BookedTime, BookedSpliceOutcome };
 
 /**
  * How many pools one Google push may refresh (#3258).
