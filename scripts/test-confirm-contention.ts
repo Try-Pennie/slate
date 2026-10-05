@@ -53,6 +53,8 @@ import type { Booking, User } from "../src/lib/db/types.ts";
 import type { BookingContext } from "../src/lib/booking/orchestration.ts";
 import { createAsserter, makeDeps, makeBooking, input, users, bucket as fakeBucket, eventType as fakeEventType } from "./lib/booking-fakes.ts";
 import { VirtualClock, SharedResource, onSharedCapacity, type CallRecord } from "./lib/confirm-contention-sim.ts";
+import { makeConfirmLineHost } from "../src/lib/booking/confirm-line-object.ts";
+import { makeSharedConfirmLine } from "../src/lib/booking/shared-confirm-line.ts";
 
 const { assert, finish } = createAsserter();
 
@@ -114,6 +116,13 @@ async function burst(opts: {
   inputs: CreateBookingInput[];
   pool: string[];
   queue: "real" | "off";
+  /**
+   * #3325: spread the confirms over this many isolates, confirm i on isolate
+   * i % isolates, all sharing the one database. `line: "isolate"` gives each its
+   * own line (what production ran on 2026-10-05); `line: "shared"` gives every
+   * isolate the shared line's client, talking to ONE object host on this clock.
+   */
+  isolates?: { count: number; line: "isolate" | "shared" };
   viaApi?: boolean;
   /** #3257: how long one dependency call takes on the shared capacity. */
   serviceMs?: number;
@@ -181,6 +190,31 @@ async function burst(opts: {
             leaseTimer: (ms, fire) => clock.at(clock.now + ms, fire),
             now: () => clock.now,
           }));
+    const timerOnClock = (ms: number, fire: () => void) => clock.at(clock.now + ms, fire);
+    const isolateLines: ConfirmLine<unknown>[] = [];
+    if (opts.isolates) {
+      let ids = 0;
+      const host = makeConfirmLineHost({ now: () => clock.now, timer: timerOnClock, leaseTimer: timerOnClock, newId: () => `o${++ids}` });
+      for (let k = 0; k < opts.isolates.count; k++) {
+        const own = isolateLine(makeConfirmQueue({ timer: timerOnClock, leaseTimer: timerOnClock, now: () => clock.now }));
+        isolateLines.push(
+          opts.isolates.line === "isolate"
+            ? own
+            : makeSharedConfirmLine<unknown>({
+                // The object is reached in no time at all: the simulation cannot see
+                // network latency, which is why the load run measures it (#3325).
+                namespace: { stubFor: () => ({ send: async (m) => JSON.parse(await host.handle(m)) as Record<string, unknown> }) },
+                fallback: own,
+                enabled: async () => ({ on: true, source: "read" }),
+                record: () => {},
+                onReachFailure: () => {},
+                now: () => clock.now,
+                timer: timerOnClock,
+                newId: () => `c${++ids}`,
+              }),
+        );
+      }
+    }
     let personReads = 0;
     const shared: BookingDeps = {
       ...base,
@@ -273,7 +307,8 @@ async function burst(opts: {
     const t0 = clock.now;
     opts.inputs.forEach((one, i) => clock.at(t0 + (opts.arriveAtMs?.[i] ?? 0), () => {
       const run = runs[i];
-      const deps = onSharedCapacity(shared, resource, clock, run.calls, SYNCHRONOUS);
+      const onIsolate = opts.isolates ? { ...shared, confirmQueue: isolateLines[i % opts.isolates.count] as BookingDeps["confirmQueue"] } : shared;
+      const deps = onSharedCapacity(onIsolate, resource, clock, run.calls, SYNCHRONOUS);
       const startedAt = clock.now;
       const work = opts.viaApi === false ? () => createBooking(one, deps) : () => bookViaApi(one, deps);
       void withinBookingConfirmBudget(work as () => Promise<unknown>).then(
@@ -391,6 +426,47 @@ async function main() {
     });
     assert(tally.created === 2, `two slots: both confirms are booked (got ${JSON.stringify(tally)})`);
     assert(bySlot.size === 2, "two slots: two booking rows");
+  }
+
+  // --- #3325: the 2026-10-05 failure, reproduced: one line PER ISOLATE ---------
+  //
+  // Load run 37333201026 sent a hundred confirms for one slot and they landed on
+  // many isolates, each forming its own line: about 52 leaders ran the full path
+  // together and timed out on the database. Fifty isolates of two confirms each is
+  // that shape: fifty leaders at once. What is asserted is the failure the load
+  // run's burst bar counts, confirms told to retry rather than told the time is
+  // taken, and NOT that nobody is booked: this model of the database lets one
+  // leader through where production let none, and tuning it until it matched would
+  // make the fixture prove only itself (L48). The shared line case below runs the
+  // identical crowd and must answer none of them retryably.
+  {
+    const { tally, bySlot } = await burst({
+      inputs: Array.from({ length: BURST }, (_, i) => lead(i)),
+      pool: ["a"],
+      queue: "real",
+      isolates: { count: 50, line: "isolate" },
+    });
+    assert((tally["503"] ?? 0) >= 40, `per isolate lines: dozens of leaders are told to retry, as on 2026-10-05 (got ${JSON.stringify(tally)})`);
+    assert(bySlot.size <= 1, `per isolate lines: still never a double booking (got ${bySlot.size})`);
+  }
+
+  // --- #3325: the same crowd on ONE line shared across those isolates ----------
+  {
+    const { runs, tally, bySlot } = await burst({
+      inputs: Array.from({ length: BURST }, (_, i) => lead(i)),
+      pool: ["a"],
+      queue: "real",
+      isolates: { count: 50, line: "shared" },
+    });
+    assert(bySlot.size === 1 && tally.created === 1, `shared line: exactly one confirm is booked (got ${JSON.stringify(tally)})`);
+    assert(tally.SLOT_TAKEN === BURST - 1, `shared line: every other one is told SLOT_TAKEN (got ${JSON.stringify(tally)})`);
+    assert(!tally["503"], `shared line: none is answered 503 (got ${tally["503"] ?? 0})`);
+    const winner = runs.find((r) => r.outcome === "created")!;
+    const lastLoser = maxOf(runs.filter((r) => r.outcome === "SLOT_TAKEN").map((r) => r.answeredMs!));
+    assert(
+      lastLoser <= winner.answeredMs! + 2_000,
+      `shared line: every loser hears "taken" within 2s of the winner's answer (winner ${winner.answeredMs}ms, last loser ${lastLoser}ms)`,
+    );
   }
 
   // --- a pool of two: two booked, the rest SLOT_TAKEN, none 503 ---------------
