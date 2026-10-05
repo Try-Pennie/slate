@@ -572,8 +572,12 @@ export type LineTurn<T> =
  */
 export interface ConfirmLine<T> {
   enter(key: LineKey, waitMs?: number): Promise<LineTurn<T>>;
-  /** As `ConfirmQueue.lookahead`; the give back is awaited too. */
-  lookahead(key: LineKey): Promise<(() => Promise<void>) | null>;
+  /**
+   * As `ConfirmQueue.lookahead`; the give back is awaited too. `waitMs` is the wait
+   * the `enter` that follows will ask for: a shared line answers an idle or full line
+   * here with the lead or the ticket that `enter` then uses, saving a call.
+   */
+  lookahead(key: LineKey, waitMs?: number): Promise<(() => Promise<void>) | null>;
 }
 
 /** A lead turn from the in memory rules, as the confirm path holds it. */
