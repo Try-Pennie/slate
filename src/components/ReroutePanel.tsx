@@ -4,7 +4,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { SelectField } from "@/components/ui/SelectField";
 import { allXbcCodes } from "@/lib/xbc";
-import { deleteJson, getJson, postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
+import { deleteJson, getJson, postJson, REQUEST_TIMEOUT_MS, type PostJsonResult } from "@/lib/http";
 import { useStalledAfter } from "@/lib/useStalledAfter";
 import type { RerouteOutcome, RerouteProposal } from "@/lib/booking/reroute";
 import {
@@ -19,6 +19,7 @@ import {
   type ManagerDebtDigit,
   type RerouteCopy,
   REROUTE_UNREACHABLE,
+  REROUTE_TIMED_OUT,
   rerouteFailed,
 } from "@/lib/booking/reroute-copy";
 
@@ -113,14 +114,17 @@ export default function ReroutePanel({
     void deleteJson(`${base}/hold`, { timeoutMs: REQUEST_TIMEOUT_MS });
   }
 
-  async function run<T>(request: () => Promise<{ ok: boolean; status: number; data: T & { error?: string } }>, onOk: (data: T) => void) {
+  async function run<T>(request: () => Promise<PostJsonResult<T & { error?: string }>>, onOk: (data: T) => void) {
     acted.current = true;
     setBusy(true);
     setError(null);
     try {
       const r = await request();
       if (r.ok) onOk(r.data);
-      else setError(r.status === 0 ? REROUTE_UNREACHABLE : (r.data.error ?? rerouteFailed(r.status)));
+      // No answer in time is not an unreachable server (#3307): the work may still
+      // land, so the reader is sent to reload rather than to press again.
+      else if (r.status === 0) setError(r.timedOut ? REROUTE_TIMED_OUT : REROUTE_UNREACHABLE);
+      else setError(r.data.error ?? rerouteFailed(r.status));
     } finally {
       setBusy(false);
     }

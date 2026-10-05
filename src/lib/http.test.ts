@@ -64,7 +64,35 @@ describe("postJson", () => {
 
     const p = postJson("/booking", {}, { timeoutMs: 20000 });
     await vi.advanceTimersByTimeAsync(20000);
-    await expect(p).resolves.toEqual({ ok: false, status: 0, data: {} });
+    // #3307: the abort says it was the timeout, since the server may still finish
+    // the work after the client stopped waiting; status and data are unchanged.
+    await expect(p).resolves.toEqual({ ok: false, status: 0, data: {}, timedOut: true });
+    vi.useRealTimers();
+  });
+
+  // #3307: a network failure is not a timeout. Exact key set, because toEqual reads
+  // a key holding undefined as absent and would let a stray `timedOut` through.
+  it("marks only its own timeout, never a network failure, as timed out", async () => {
+    global.fetch = vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    }) as unknown as typeof fetch;
+    const r = await postJson("/booking", {}, { timeoutMs: 20000 });
+    expect(Object.keys(r).sort()).toEqual(["data", "ok", "status"]);
+    expect(r.timedOut).toBeUndefined();
+  });
+
+  it("marks a DELETE and a GET cut off by their timeout the same way", async () => {
+    vi.useFakeTimers();
+    global.fetch = vi.fn((_url, init: RequestInit = {}) =>
+      new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+      }),
+    ) as unknown as typeof fetch;
+    const del = deleteJson("/api/x/hold", { timeoutMs: 20000 });
+    const get = getJson("/api/x", { timeoutMs: 20000 });
+    await vi.advanceTimersByTimeAsync(20000);
+    await expect(del).resolves.toEqual({ ok: false, status: 0, data: {}, timedOut: true });
+    await expect(get).resolves.toEqual({ ok: false, status: 0, data: {}, timedOut: true });
     vi.useRealTimers();
   });
 
@@ -123,8 +151,9 @@ describe("getJson", () => {
       throw new TypeError("Failed to fetch");
     }) as unknown as typeof fetch;
 
-    const r = await getJson("/api/x");
+    const r = await getJson("/api/x", { timeoutMs: 20000 });
     expect(r).toEqual({ ok: false, status: 0, data: {} });
+    expect("timedOut" in r).toBe(false);
   });
 });
 

@@ -2966,7 +2966,8 @@ async function rerouteSwap(args: {
  */
 function realRerouteDeps(actor: BookingActor): RerouteDeps {
   const base = realDeps(deferWebhookSend);
-  const holds = rerouteHoldStoreDeps("reroute");
+  // #3307: a manager is waiting, so the pool refresh after a hold runs after the answer.
+  const holds = rerouteHoldStoreDeps("reroute", "after-response");
   return {
     loadBookingById: base.loadBookingById,
     resolveBucketByCode: base.resolveBucketByCode,

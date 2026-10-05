@@ -1,18 +1,29 @@
 export interface PostJsonResult<T> {
   /** True when the server responded 2xx. */
   ok: boolean;
-  /** HTTP status, or 0 when the request never completed (network failure). */
+  /** HTTP status, or 0 when the request never completed (a network failure, or the `timeoutMs` abort). */
   status: number;
   /** Parsed JSON body; `{}` when the body wasn't JSON or the request failed. */
   data: T;
+  /**
+   * Present, and true, only when this helper's own `timeoutMs` cut the request off
+   * (#3307). The server may still finish the work after the client stops waiting:
+   * the reroute search answered 200 after 24 seconds, having held an advisor, while
+   * its panel had given up at 20 and said the server was unreachable. So a caller
+   * can tell "no answer in time" from "the network failed" and say which. Absent on
+   * every other result, so a caller that does not read it behaves exactly as before.
+   */
+  timedOut?: true;
 }
 
 /**
  * Client-side abort ceiling for booking-flow POSTs (#626). A request still in
- * flight this long is wedged, not slow; aborting converts it to the retryable
- * `{ ok:false, status:0 }` result. Paired with the ~10s `useStalledAfter`
- * "still working" cue, this gives the three distinct states every time-taking
- * action must have (started / still-alive / failed).
+ * flight this long is treated as failed, which turns a wedged one into the
+ * retryable `{ ok:false, status:0 }` result rather than an endless wait. It is not
+ * proof the server gave up: a slow one can still finish, which is why the result
+ * says `timedOut` (#3307). Paired with the ~10s `useStalledAfter` "still working"
+ * cue, this gives the three distinct states every time-taking action must have
+ * (started / still-alive / failed).
  */
 export const REQUEST_TIMEOUT_MS = 20000;
 
@@ -43,9 +54,10 @@ export interface PostJsonOptions {
 
 /**
  * POST a JSON body from a client component and ALWAYS resolve with
- * `{ ok, status, data }`. A network rejection (flaky mobile, offline), an
- * unparseable body, or a `timeoutMs` abort all become
- * `{ ok: false, status: 0, data: {} }` rather than a thrown rejection. Callers
+ * `{ ok, status, data }`. A network rejection (flaky mobile, offline) or a
+ * `timeoutMs` abort becomes `{ ok: false, status: 0, data: {} }` (the abort also
+ * carries `timedOut: true`), and an unparseable body keeps its status with
+ * `data: {}`, rather than a thrown rejection. Callers
  * branch on the result and clear their busy state in a `finally`, so a failed
  * action surfaces an error and re-enables its control instead of freezing
  * forever (#625, #626).
@@ -91,7 +103,7 @@ async function sendJson<T>(
     const data = (await res.json().catch(() => ({}))) as T;
     return { ok: res.ok, status: res.status, data };
   } catch {
-    return { ok: false, status: 0, data: {} as T };
+    return failedRequest<T>(controller);
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -99,8 +111,9 @@ async function sendJson<T>(
 
 /**
  * GET JSON from a client component with the SAME always-resolve contract as
- * `postJson` (#974): a network rejection, an unparseable body, or a `timeoutMs`
- * abort all become `{ ok:false, status:0, data:{} }` rather than a throw, so an
+ * `postJson` (#974): a network rejection or a `timeoutMs` abort becomes
+ * `{ ok:false, status:0, data:{} }` (the abort marked `timedOut`), and an
+ * unparseable body keeps its status with `data: {}`, rather than a throw, so an
  * imperative preview/poll caller can branch on the result and show a distinct
  * failed state instead of hanging. `useFetchList` is the declarative list hook;
  * this is for one-off / polled reads.
@@ -124,8 +137,18 @@ export async function getJson<T = Record<string, unknown>>(
     const data = (await res.json().catch(() => ({}))) as T;
     return { ok: res.ok, status: res.status, data };
   } catch {
-    return { ok: false, status: 0, data: {} as T };
+    return failedRequest<T>(controller);
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/**
+ * The result for a request that never completed. Marked `timedOut` only when this
+ * helper's own timer aborted it, judged by that timer's signal rather than by the
+ * error's name, so an abort from anywhere else is never reported as a slow server.
+ */
+function failedRequest<T>(controller: AbortController | null): PostJsonResult<T> {
+  if (controller?.signal.aborted) return { ok: false, status: 0, data: {} as T, timedOut: true };
+  return { ok: false, status: 0, data: {} as T };
 }

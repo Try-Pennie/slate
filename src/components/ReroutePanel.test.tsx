@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import ReroutePanel from "@/components/ReroutePanel";
+import { REQUEST_TIMEOUT_MS } from "@/lib/http";
+import { REROUTE_TIMED_OUT, REROUTE_UNREACHABLE } from "@/lib/booking/reroute-copy";
 
 // The reroute panel (#3250, phase 4 of #3244), built to the design settled with Dan
 // (docs/design/reroute-panel.html, R1 to R17 on #3250). The routes are mocked at
@@ -306,6 +308,56 @@ describe("ReroutePanel, as an admin (codes)", () => {
     render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
     await user.click(screen.getByRole("button", { name: "Find an advisor" }));
     expect((await screen.findByRole("alert")).textContent).toMatch(/specific advisor by link/);
+  });
+
+  // #3307: Find an advisor answered 200 after 24 seconds, having held somebody, and
+  // the panel had stopped waiting at 20 and said the server was unreachable. A
+  // request cut off by the panel's own timeout says the work may still be finishing.
+  it("says the work may still be finishing when no answer comes in time, never that the server was unreachable", async () => {
+    vi.useFakeTimers();
+    try {
+      global.fetch = vi.fn((_u: RequestInfo | URL, init: RequestInit = {}) => {
+        if ((init.method ?? "GET") === "GET") {
+          return Promise.resolve({ ok: true, status: 200, json: async () => ({ proposal: null }) } as Response);
+        }
+        // The server is still working: nothing settles until the panel gives up.
+        return new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+        });
+      }) as unknown as typeof fetch;
+      render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+      fireEvent.click(screen.getByRole("button", { name: "Find an advisor" }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS);
+      });
+      expect(screen.getByRole("alert").textContent).toBe(REROUTE_TIMED_OUT);
+      expect(screen.getByRole("alert").textContent).not.toMatch(/reach/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the unreachable sentence for a request that failed on the network", async () => {
+    const user = userEvent.setup();
+    global.fetch = vi.fn(async (_u: RequestInfo | URL, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "GET") return { ok: true, status: 200, json: async () => ({ proposal: null }) } as Response;
+      throw new TypeError("Failed to fetch");
+    }) as unknown as typeof fetch;
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(REROUTE_UNREACHABLE);
+  });
+
+  it("says a move was already made when a repeated confirm finds the first one landed", async () => {
+    const user = userEvent.setup();
+    mockFetch({ confirm: () => ({ body: { kind: "moved", advisor: advisor("Morgan Reyes"), bucket: bucket("412"), already: true } }) });
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await user.click(await screen.findByRole("button", { name: "Move to Morgan Reyes" }));
+    await screen.findByText("Already moved");
+    expect(screen.getByText("Moved to Morgan Reyes, in 412, by an earlier confirm. Nothing changed this time.")).toBeTruthy();
+    // The page re-reads the booking, which may still show the advisor it had before.
+    expect(onChanged).toHaveBeenCalled();
   });
 
   it("never offers nothing as success when the request did not complete", async () => {

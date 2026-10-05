@@ -337,6 +337,18 @@ async function main() {
     const out = await confirmReroute(deps, { bookingId: "K1", holdId: "H1", bucketCode: null, note: null, actor });
     assert(out.kind === "moved" && out.advisor.name === "Morgan Reyes" && out.bucket.code === "512", "a consumed hold answers the stored move");
     eq(calls.reassign.length, 0, "without moving anything again");
+    // #3307: a manager told the first confirm failed presses again, and the first
+    // had landed. The answer says the earlier confirm moved it, so they do not read
+    // this press as a second move, and nothing else is touched.
+    eq(out.kind === "moved" ? out.already : null, true, "and says an earlier confirm made the move, not this one");
+    eq(calls.verify.length, 0, "no calendar is read again for a move already made");
+    eq(calls.release.length, 0, "and no hold is let go, since the consumed one is the record of the move");
+  }
+  // The control for the line above: a move this confirm made is not "already" made.
+  {
+    const { deps } = fake({});
+    const out = await confirmReroute(deps, { bookingId: "K1", holdId: "H1", bucketCode: null, note: null, actor });
+    eq(out.kind === "moved" ? out.already : null, false, "a move this confirm made says so");
   }
 
   // --- confirm: the hold ran out ---

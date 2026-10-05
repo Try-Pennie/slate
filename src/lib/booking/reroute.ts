@@ -130,7 +130,17 @@ export type RerouteProposal =
 
 /** What a confirm did. */
 export type RerouteOutcome =
-  | { kind: "moved"; advisor: RerouteAdvisor; bucket: RerouteBucket }
+  | {
+      kind: "moved";
+      advisor: RerouteAdvisor;
+      bucket: RerouteBucket;
+      /**
+       * True when an EARLIER confirm of this hold made the move and this one changed
+       * nothing (#3307): it read the consumed hold's stored result. Required, so a
+       * move this confirm made says so rather than leaving it to a missing field.
+       */
+      already: boolean;
+    }
   | { kind: "kept"; bucket: RerouteBucket }
   | { kind: "expired" }
   | { kind: "taken"; previous: RerouteAdvisor; proposal: RerouteProposal };
@@ -353,14 +363,18 @@ export async function confirmReroute(
 
   const claim = await deps.claimHold(booking.org_id, booking.id, input.holdId);
   if (claim.refused === "hold_consumed") {
-    // A repeated confirm: answer what the first one did rather than "expired".
+    // A repeated confirm: answer what the first one did rather than "expired", and
+    // say it was the first one (#3307). The swap consumed this hold under its row
+    // lock, so a hold is moved at most once whoever confirms it; this confirm reads
+    // the stored result and touches nothing, no calendar read and no release, since
+    // the consumed row is the record of the move.
     const r = claim.result ?? {};
     const agentId = typeof r.agent_user_id === "string" ? r.agent_user_id : null;
     const bucketId = typeof r.bucket_id === "string" ? r.bucket_id : null;
     const code = typeof r.bucket_code === "string" ? r.bucket_code : null;
     if (!agentId || !code) throw new Error("reroute: a consumed hold carried no readable result");
     const bucket = bucketId ? bucketView(await bucketOrThrow(deps, bucketId)) : { id: "", code, name: code };
-    return { kind: "moved", advisor: await advisorView(deps, agentId), bucket };
+    return { kind: "moved", advisor: await advisorView(deps, agentId), bucket, already: true };
   }
   if (claim.refused === "hold_expired" || claim.refused === "hold_not_found") return { kind: "expired" };
   if (claim.refused) throw new RerouteRefusedError(claim.refused);
@@ -439,7 +453,7 @@ async function moveOnClaimedHold(
     throw err;
   }
   if (moved === "over_cap") return searchAgain();
-  return { kind: "moved", advisor, bucket: bucketView(target) };
+  return { kind: "moved", advisor, bucket: bucketView(target), already: false };
 }
 
 async function confirmKeep(
