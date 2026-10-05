@@ -19,6 +19,7 @@
  */
 import { log } from "@/lib/log";
 import { refusalLogFields, refusalTraceOf } from "@/lib/booking/refusal-trace";
+import type { LineServed } from "@/lib/booking/shared-confirm-line";
 
 /** What a route learns while handling the request that the line should say. */
 export interface ConfirmLineFacts {
@@ -30,6 +31,12 @@ export interface ConfirmLineFacts {
    * looked up by time and traced. Counts and codes only.
    */
   refusal?: Record<string, string | number>;
+  /**
+   * #3325: which confirm line served it (shared, its own isolate's, or a fallback),
+   * why, which kind of key it joined, and the milliseconds the line added. Recorded
+   * by the line's client, so a fallback rate and the line's cost can be counted.
+   */
+  line?: LineServed;
 }
 
 /**
@@ -56,6 +63,14 @@ export async function answerTimed(
       status,
       ...(opts.facts?.dryRun ? { dry_run: true } : {}),
       ...(opts.facts?.refusal ?? {}),
+      ...(opts.facts?.line
+        ? {
+            line: opts.facts.line.line,
+            line_reason: opts.facts.line.reason,
+            line_key: opts.facts.line.key,
+            line_ms: Math.round(opts.facts.line.lineMs),
+          }
+        : {}),
     });
   try {
     const res = await handle();
