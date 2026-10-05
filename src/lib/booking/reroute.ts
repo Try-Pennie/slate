@@ -435,9 +435,9 @@ async function confirmKeep(
 ): Promise<RerouteOutcome> {
   const { booking, bucket: fromBucket } = await reroutableBooking(deps, input.bookingId);
   const kept = await requestedBucket(deps, input.bucketCode);
-  // A cascaded keep records what was asked for and the drop, as the move does. The
-  // drop is the tier distance between the two codes, derived here rather than taken
-  // from the request (the move reads its drop off the hold the server placed).
+  // A cascaded keep records what was asked for and the drop, as the move does,
+  // derived here rather than taken from the request (the move reads its drop off
+  // the hold the server placed).
   const asked = input.requestedBucketCode ? await requestedBucket(deps, input.requestedBucketCode) : kept;
   // The drop is the kept bucket's position on the ladder the search walks from the
   // bucket asked for, the same measure a move records, so a keep and a move of the

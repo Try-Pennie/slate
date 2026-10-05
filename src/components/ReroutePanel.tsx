@@ -185,9 +185,13 @@ export default function ReroutePanel({
     if (!changed) return;
     apply();
     if (shown?.kind === "proposal" || shown?.kind === "taken") {
-      if (proposal?.kind === "move") release();
+      const held = proposal?.kind === "move";
       setShown(null);
       setError(null);
+      // Through `run`, so the panel is busy until it lands: the release frees the
+      // booking's hold whatever it is, and one landing after a new search had held
+      // somebody would free that hold instead.
+      if (held) void run(() => deleteJson(`${base}/hold`, { timeoutMs: REQUEST_TIMEOUT_MS }), () => {});
     }
   }
 

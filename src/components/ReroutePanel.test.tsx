@@ -217,6 +217,22 @@ describe("ReroutePanel, as an admin (codes)", () => {
     expect(sent(fn, "/reroute/hold", "DELETE")).toHaveLength(1);
   });
 
+  it("holds off a new search until the release a changed choice sent has landed", async () => {
+    // The release frees the booking's hold whatever it is, so one landing after a
+    // new search placed its hold would free the new one and strand its Move button.
+    const user = userEvent.setup();
+    const fn = mockFetch({});
+    render(<ReroutePanel bookingId="bk1" currentCode="100" showCodes onChanged={onChanged} />);
+    await user.click(screen.getByRole("button", { name: "Find an advisor" }));
+    await screen.findByText("One tier down, in 412");
+    const finishRelease = holdReply(fn, "/reroute/hold", "DELETE");
+    await user.click(screen.getByRole("combobox", { name: "Correct bucket" }));
+    await user.click(screen.getByRole("option", { name: "512" }));
+    expect((screen.getByRole("button", { name: "Find an advisor" }) as HTMLButtonElement).disabled).toBe(true);
+    await settle(finishRelease);
+    expect((screen.getByRole("button", { name: "Find an advisor" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("keeps the result and its hold when the same bucket is picked again", async () => {
     const user = userEvent.setup();
     const fn = mockFetch({});
