@@ -310,7 +310,9 @@ async function main() {
 
     const second = await q.enter("slot");
     assert(second.kind === "lead", "lease: the next confirm leads at once (the first handed on)");
-    if (second.kind !== "lead") return;
+    // Thrown, never returned: a return here would skip the held scenario below and
+    // finish(), and the run would exit 0 having reported nothing (L184).
+    if (second.kind !== "lead") throw new Error(`lease: the second confirm must lead to be tested (got ${second.kind})`);
     assert(second.seat.claimedByOthers().has("x"), "lease: inside the lease the abandoned claim still excludes x");
 
     now += CONFIRM_CLAIM_LEASE_MS - 1;
