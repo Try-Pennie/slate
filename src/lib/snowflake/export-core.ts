@@ -100,6 +100,12 @@ export const MIRROR_TABLES: TableSpec[] = [
       v("id"), v("booking_id"), v("action"), v("initiator"), v("reason_code"), v("reason_detail"),
       ts("from_starts_at"), ts("to_starts_at"), v("from_agent_user_id"), v("to_agent_user_id"),
       v("actor_user_id"), v("acting_as_user_id"), n("lead_time_minutes"), n("reschedule_seq"),
+      // #3261: the buckets a reroute moved the booking from and to (migration 0166).
+      // The warehouse ALTER in docs/snowflake-setup.sql must have run before this
+      // deploys, or every booking_events MERGE fails on an unknown column; #3261
+      // records it running. Events already exported without them are re-sent once by
+      // rewinding this table's cursor after the deploy (docs/migrations-runbook.md).
+      v("from_bucket_id"), v("to_bucket_id"),
       ts("created_at"),
     ],
   },

@@ -116,6 +116,19 @@ async function main() {
     assert(!res.leaseLost, "lease held: nothing reported lost");
   }
 
+  // --- #3261: a rerouted booking's bucket history reaches the warehouse ---------------
+  // Migration 0166 records which bucket a reroute moved a booking from and to; without
+  // these two columns the warehouse knows a booking's bucket today but never that a
+  // correction moved it. That the warehouse table HAS them is held separately, by
+  // scripts/test-snowflake-mirror-columns.ts, which checks every exported column
+  // against docs/snowflake-setup.sql and its ALTER.
+  {
+    const events = MIRROR_TABLES.find((t) => t.table === "booking_events");
+    const col = (name: string) => events?.cols.find((c) => c.name === name);
+    eq(col("from_bucket_id")?.type, "varchar", "booking_events exports the bucket a reroute moved from");
+    eq(col("to_bucket_id")?.type, "varchar", "and the bucket it moved to");
+  }
+
   finish();
 }
 

@@ -65,12 +65,7 @@ export const UNMIRRORED_COLUMNS: Record<string, Record<string, string>> = {
     lead_id: "null on an inserted decision",
   },
   booking_outbox: {},
-  booking_events: {
-    // #3247: held out of the export until the Snowsight ALTER in
-    // docs/snowflake-setup.sql has run; the bucket itself is restored on the booking.
-    from_bucket_id: "null on an inserted event; the corrected bucket is restored on bookings.bucket_id",
-    to_bucket_id: "null on an inserted event; the corrected bucket is restored on bookings.bucket_id",
-  },
+  booking_events: {},
   audit_log: {
     chain_seq:
       "assigned by the hash chain trigger (#3090) on insert, so a restored row is appended at the end of the chain rather than at its original place",
