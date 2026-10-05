@@ -255,22 +255,18 @@ export async function loadMembersAvailability(
   // busy_blocks over the whole pool + window is an aggregate; a large pool crosses
   // PostgREST's 1,000-row cap, so page past it (#828) or a silent truncation drops busy
   // blocks and an agent looks free and gets overbooked (#35 / #166). selectAllPages
-  // throws on a read error (fail-loud).
+  // orders the pages by id, without which OFFSET paging skipped rows and offered a
+  // sold out Monday (#3273), and throws on a read error (fail-loud).
   const busyP = selectAllPages<{ user_id: string; starts_at: string; ends_at: string; source: string }>(
     "busy_blocks",
-    (pageFrom, pageTo) =>
+    "id",
+    () =>
       db
         .from("busy_blocks")
         .select("user_id, starts_at, ends_at, source")
         .in("user_id", userIds)
         .lt("starts_at", to)
-        .gt("ends_at", from)
-        // #3273: a total order, or OFFSET paging skips rows. Postgres owes no order to
-        // a query that asks for none, so each page could come back in its own order:
-        // measured 2026-10-05, a 43 advisor pool read 2,392 rows of which only 1,826
-        // were distinct, and the skipped meetings offered a sold out Monday as open.
-        .order("id")
-        .range(pageFrom, pageTo),
+        .gt("ends_at", from),
   );
 
   // Fail loud on the schedules read (#277). availability_rules is embedded via the

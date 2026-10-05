@@ -85,7 +85,8 @@ export async function readRaceRateBookings(nowMs: number): Promise<TierBooking[]
   const db = supabaseAdmin();
   const rows = await selectAllPages<{ created_at: string; buckets: { code: string } | { code: string }[] | null }>(
     "race rate bookings",
-    (from, to) =>
+    "id",
+    () =>
       db
         .from("bookings")
         .select("created_at, buckets!inner(code, is_test)")
@@ -93,9 +94,7 @@ export async function readRaceRateBookings(nowMs: number): Promise<TierBooking[]
         .eq("kind", "routed")
         .gte("created_at", sinceIso)
         .lt("created_at", untilIso)
-        .order("created_at")
-        .order("id")
-        .range(from, to),
+        .order("created_at"),
   );
   return rows.map((r) => {
     const createdMs = parseStampMs(r.created_at);

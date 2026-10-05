@@ -107,15 +107,14 @@ export default async function BucketsPage({
   let membersUnreadable = bucketsUnreadable;
   if (!bucketsUnreadable) {
     try {
-      members = await selectAllPages<BucketMember>("bucket members", (from, to) =>
+      members = await selectAllPages<BucketMember>("bucket members", "id", () =>
         db
           .from("bucket_members")
           .select("*")
           .in(
             "bucket_id",
             buckets.map((b) => b.id),
-          )
-          .range(from, to),
+          ),
       );
     } catch (err) {
       membersUnreadable = true;

@@ -161,15 +161,14 @@ export async function loadTierCauseReads(input: {
       // a few hundred rows, but a truncated page would read a booked agent as free.
       selectAllPages<{ user_id: string; starts_at: string; ends_at: string; booking_id: string | null }>(
         "tier cause busy blocks",
-        (from, to) =>
+        "id",
+        () =>
           db
             .from("busy_blocks")
             .select("user_id, starts_at, ends_at, booking_id")
             .in("user_id", ids)
             .lt("starts_at", new Date(input.windowEndMs + padMs).toISOString())
-            .gt("ends_at", new Date(input.nowMs - padMs).toISOString())
-            .order("id")
-            .range(from, to),
+            .gt("ends_at", new Date(input.nowMs - padMs).toISOString()),
       ),
     ]);
     calendars.push(...(cals ?? []));

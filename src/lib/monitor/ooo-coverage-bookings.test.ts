@@ -37,6 +37,7 @@ function fakeDb(rows: unknown[] = []) {
       eq: (c: string, v: unknown) => (rec.eq.push([c, v]), chain),
       in: (c: string, v: unknown) => (rec.in.push([c, v]), chain),
       gte: (c: string, v: unknown) => (rec.gte.push([c, v]), chain),
+      order: () => chain,
       range: (a: number, b: number) => (rec.range.push([a, b]), chain),
       then: (res: (v: unknown) => unknown) => Promise.resolve({ data: rows, error: null }).then(res),
     };
@@ -51,10 +52,12 @@ const NOW = "2026-09-16T12:00:00.000Z";
 beforeEach(() => {
   vi.clearAllMocks();
   // Run the page callback once, the way the real paginator does for a first page.
-  paginate.selectAllPages.mockImplementation(async (_label: string, page: (f: number, t: number) => unknown) => {
-    const res = (await page(0, 999)) as { data: unknown[] | null };
+  paginate.selectAllPages.mockImplementation(
+    async (_label: string, key: string, build: () => { order: (k: string) => { range: (f: number, t: number) => unknown } }) => {
+    const res = (await build().order(key).range(0, 999)) as { data: unknown[] | null };
     return res.data ?? [];
-  });
+  },
+  );
 });
 
 describe("the query it builds", () => {

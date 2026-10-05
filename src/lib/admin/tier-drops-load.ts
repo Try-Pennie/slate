@@ -1,5 +1,5 @@
 import type { supabaseAdmin } from "@/lib/supabase/admin";
-import { selectAllPages } from "@/lib/supabase/paginate";
+import { selectAllPages, type PageableQuery } from "@/lib/supabase/paginate";
 import { unwrapCount } from "@/lib/db/result";
 import {
   TIER_DROP_WINDOW_DAYS,
@@ -44,7 +44,7 @@ export async function loadTierDropReport(
       .gte("created_at", since(days));
 
   const [rows, weekRes, monthRes] = await Promise.all([
-    selectAllPages<TierDropRow>("admin tier drops", (from, to) =>
+    selectAllPages<TierDropRow>("admin tier drops", "id", () =>
       db
         .from("bookings")
         .select("id, created_at, routing_trace, buckets!inner(is_test)")
@@ -53,12 +53,7 @@ export async function loadTierDropReport(
         .eq("kind", "routed")
         .eq("routing_trace->>tier_fallback", "true")
         .gte("created_at", since(TIER_DROP_WINDOW_DAYS.month))
-        .order("created_at", { ascending: false })
-        .order("id", { ascending: true })
-        .range(from, to) as unknown as PromiseLike<{
-        data: unknown[] | null;
-        error?: { message: string } | null;
-      }>,
+        .order("created_at", { ascending: false }) as unknown as PageableQuery,
     ),
     routedSince(TIER_DROP_WINDOW_DAYS.week),
     routedSince(TIER_DROP_WINDOW_DAYS.month),

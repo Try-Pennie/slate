@@ -15,7 +15,9 @@
 //     carries `.single()`/`.maybeSingle()`/`.limit()`/`.range()`/`.csv()`, a
 //     `head: true` count, or a primary-key `.eq("id", …)`/`.in("id", …)` (the
 //     key column is per table, see PRIMARY_KEYS);
-//   - a `// cap-safe:` opt-out sits on / above the `.from(` line.
+//   - a `// cap-safe:` opt-out sits on / above the `.from(` line;
+//   - the chain sits inside a `selectAllPages(...)` call (#3273), which orders
+//     it by a unique key and pages it, so the chain itself carries no `.range()`.
 //
 // TABLE-AWARE by decision (Dan, 2026-07-16): a table NOT on SAFE_TABLES defaults
 // to a growth table (flagged), so a brand-new table must be justified rather than
@@ -26,6 +28,7 @@
 // from false-flagging the legitimately-narrow lookups.
 
 import { hasOptOutAtOffset } from "./opt-out.ts";
+import { isInsidePagedCall, pagedCallSpans } from "./scan-paged-calls.ts";
 
 export interface SrcCappedReadFinding {
   file: string;
@@ -201,6 +204,7 @@ function isSelect(window: string): boolean {
 
 export function scanSrcCappedReads(source: string, file = "<source>"): SrcCappedReadFinding[] {
   const findings: SrcCappedReadFinding[] = [];
+  const paged = pagedCallSpans(source);
   for (const m of source.matchAll(FROM_SITE)) {
     const table = m[2];
     if (SAFE_TABLES.has(table)) continue; // roster-bounded / config / singleton
@@ -208,6 +212,7 @@ export function scanSrcCappedReads(source: string, file = "<source>"): SrcCapped
     const fromIndex = m.index as number;
     const window = readWindow(source, fromIndex);
     if (!isSelect(window)) continue; // a write, not a list read
+    if (isInsidePagedCall(paged, fromIndex)) continue; // selectAllPages orders and pages it
     if (isCapSafe(window, table)) continue; // bounded / paginated / single-row / count
     if (hasOptOut(source, fromIndex)) continue; // documented as one-page-max
 

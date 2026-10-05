@@ -150,16 +150,14 @@ try {
     status: string;
     agent_email: string | null;
     source: string | null;
-  }>("pilot compare bookings", (lo, hi) =>
+  }>("pilot compare bookings", "id", () =>
     db
       .from("bookings")
       .select("id, prefill, created_at, starts_at, status, agent_email, source, buckets!inner(is_test)")
       .eq("buckets.is_test", false)
       .eq("kind", "routed")
       .gte("created_at", new Date(window.startMs).toISOString())
-      .lt("created_at", new Date(window.readEndMs).toISOString())
-      .order("id")
-      .range(lo, hi),
+      .lt("created_at", new Date(window.readEndMs).toISOString()),
   );
   slate = rows.map((r) => ({
     id: r.id,
@@ -257,15 +255,15 @@ try {
     const chunk = keys.slice(i, i + 200);
     const rows = await selectAllPages<{ lead_key: string; started_at: string; talk_time_s: number; is_ai_agent: boolean }>(
       "pilot compare calls",
-      (lo, hi) =>
+      "id",
+      () =>
         db
           .from("regal_call_outcomes")
           .select("lead_key, started_at, talk_time_s, is_ai_agent")
           .in("lead_key", chunk)
           .gte("started_at", from)
           .lt("started_at", to)
-          .order("event_id")
-          .range(lo, hi),
+          .order("event_id"),
     );
     calls.push(...rows.map((r) => ({ leadKey: r.lead_key, startedAt: r.started_at, talkTimeS: r.talk_time_s, isAiAgent: r.is_ai_agent })));
   }

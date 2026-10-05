@@ -30,9 +30,9 @@ export async function userIdsOnApprovedTimeOff(
   endIso: string,
 ): Promise<Set<string>> {
   if (userIds.length === 0) return new Set();
-  const rows = await selectAllPages<{ user_id: string }>("coverage-approved-time-off", (from, to) =>
+  const rows = await selectAllPages<{ user_id: string }>("coverage-approved-time-off", "id", () =>
     supabaseAdmin()
-      // cap-safe: read every page via selectAllPages (.range below). `ooo_requests`
+      // cap-safe: read every page via selectAllPages, which orders and pages it. `ooo_requests`
       // is a growth table and correctly NOT in SAFE_TABLES: one agent accumulates
       // requests over time, so a roster-sized `in` filter is not by itself a bound.
       .from("ooo_requests")
@@ -40,8 +40,7 @@ export async function userIdsOnApprovedTimeOff(
       .in("user_id", userIds)
       .eq("status", "approved")
       .lt("starts_at", endIso)
-      .gt("ends_at", startIso)
-      .range(from, to),
+      .gt("ends_at", startIso),
   );
   return new Set(rows.map((r) => r.user_id));
 }
@@ -74,16 +73,16 @@ export async function approvedTimeOffIntervals(
   }
   const rows = await selectAllPages<{ user_id: string; starts_at: string; ends_at: string }>(
     "grid-approved-time-off",
-    (from, to) =>
+    "id",
+    () =>
       supabaseAdmin()
-        // cap-safe: read every page via selectAllPages (.range below); ooo_requests
+        // cap-safe: read every page via selectAllPages, which orders and pages it; ooo_requests
         // is a growth table, deliberately not in SAFE_TABLES.
         .from("ooo_requests")
         .select("user_id, starts_at, ends_at")
         .eq("status", "approved")
         .lt("starts_at", endIso)
-        .gt("ends_at", startIso)
-        .range(from, to),
+        .gt("ends_at", startIso),
   );
   const byUser = new Map<string, { startMs: number; endMs: number }[]>();
   for (const r of rows) {

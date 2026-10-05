@@ -110,7 +110,7 @@ const fx = (source: string, file = "fixture.ts"): ScanInput[] => [{ file, source
 
 {
   const bad = `
-    const rows = await selectAllPages<Row>("x", (from, to) => q.range(from, to));
+    const rows = await selectAllPages<Row>("x", "id", () => q);
     const res = await db.from("t").select("id").in("id", rows.map((r) => r.id));
   `;
   eq(scanUnchunkedInFilters(fx(bad)).length, 1, "a paginated read feeding an in filter is caught");
@@ -119,7 +119,7 @@ const fx = (source: string, file = "fixture.ts"): ScanInput[] => [{ file, source
 {
   // The same list one alias further away, which is how it actually reads in the wild.
   const bad = `
-    const rows = await selectAllPages<Row>("x", (from, to) => q.range(from, to));
+    const rows = await selectAllPages<Row>("x", "id", () => q);
     const ids = rows.map((r) => r.id);
     const res = await db.from("t").select("id").in("id", ids);
   `;
@@ -128,7 +128,7 @@ const fx = (source: string, file = "fixture.ts"): ScanInput[] => [{ file, source
 
 {
   const bad = `
-    const rows = await selectAllPages<Row>("x", (from, to) => q.range(from, to));
+    const rows = await selectAllPages<Row>("x", "id", () => q);
     const ids = [...new Set(rows.map((r) => r.user_id))];
     const res = await db.from("t").select("id").in("id", ids);
   `;
@@ -138,7 +138,7 @@ const fx = (source: string, file = "fixture.ts"): ScanInput[] => [{ file, source
 {
   // The chain broken over several lines, which no single line regex could read.
   const bad = `
-    const rows = await selectAllPages<Row>("x", (from, to) => q.range(from, to));
+    const rows = await selectAllPages<Row>("x", "id", () => q);
     const res = await db
       .from("t")
       .select("id")
@@ -156,7 +156,7 @@ const fx = (source: string, file = "fixture.ts"): ScanInput[] => [{ file, source
     {
       file: "reader.ts",
       source: `export async function loadEverything() {
-        return selectAllPages<Row>("x", (from, to) => q.range(from, to));
+        return selectAllPages<Row>("x", "id", () => q);
       }`,
     },
     {
@@ -172,7 +172,7 @@ const fx = (source: string, file = "fixture.ts"): ScanInput[] => [{ file, source
 
 {
   const good = `
-    const rows = await selectAllPages<Row>("x", (from, to) => q.range(from, to));
+    const rows = await selectAllPages<Row>("x", "id", () => q);
     for (const chunk of chunkIdsByUrlBudget(rows.map((r) => r.id))) {
       await db.from("t").delete().in("id", chunk);
     }
@@ -182,7 +182,7 @@ const fx = (source: string, file = "fixture.ts"): ScanInput[] => [{ file, source
 
 {
   const good = `
-    const rows = await selectAllPages<Row>("x", (from, to) => q.range(from, to));
+    const rows = await selectAllPages<Row>("x", "id", () => q);
     await inIdChunks("label", rows.map((r) => r.id), async (batch) => {
       return db.from("t").select("id").in("id", batch);
     });
@@ -192,7 +192,7 @@ const fx = (source: string, file = "fixture.ts"): ScanInput[] => [{ file, source
 
 {
   const good = `
-    const rows = await selectAllPages<Row>("x", (from, to) => q.range(from, to));
+    const rows = await selectAllPages<Row>("x", "id", () => q);
     const res = await db.from("t").select("id").in("status", ["confirmed", "rescheduled"]);
   `;
   eq(
@@ -213,14 +213,14 @@ const fx = (source: string, file = "fixture.ts"): ScanInput[] => [{ file, source
 {
   // The escape hatch, and the refusal of one that says nothing (L675).
   const excused = `
-    const rows = await selectAllPages<Row>("x", (from, to) => q.range(from, to));
+    const rows = await selectAllPages<Row>("x", "id", () => q);
     // in-chunk-ok: rows is one org's buckets, capped at sixty by the routing matrix
     const res = await db.from("t").select("id").in("id", rows.map((r) => r.id));
   `;
   eq(scanUnchunkedInFilters(fx(excused)).length, 0, "a reasoned in-chunk-ok excuses the site");
 
   const empty = `
-    const rows = await selectAllPages<Row>("x", (from, to) => q.range(from, to));
+    const rows = await selectAllPages<Row>("x", "id", () => q);
     // in-chunk-ok:
     const res = await db.from("t").select("id").in("id", rows.map((r) => r.id));
   `;
@@ -234,7 +234,7 @@ const fx = (source: string, file = "fixture.ts"): ScanInput[] => [{ file, source
   // guard nor satisfies it (L103).
   const prose = `
     // A note about .in("id", rows.map((r) => r.id)) and why it would be wrong.
-    const rows = await selectAllPages<Row>("x", (from, to) => q.range(from, to));
+    const rows = await selectAllPages<Row>("x", "id", () => q);
   `;
   eq(scanUnchunkedInFilters(fx(prose)).length, 0, "prose naming the bad pattern is not a finding");
 }

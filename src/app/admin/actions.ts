@@ -2819,13 +2819,13 @@ export async function setBusinessHoursException(
     const nowIso = new Date().toISOString();
     const rows = await selectAllPages<{ starts_at: string }>(
       "business hours exception closure check",
-      (from, to) =>
+      "id",
+      () =>
         db
           .from("bookings")
           .select("starts_at")
           .in("status", ["confirmed", "rescheduled"])
-          .gte("starts_at", nowIso)
-          .range(from, to),
+          .gte("starts_at", nowIso),
     );
     const affected = countBookingsOnDate(rows.map((r) => r.starts_at), BUSINESS_ZONE, row.on_date);
     if (affected > 0) {
@@ -2992,13 +2992,13 @@ export async function setBusinessHours(
     const nowIso = new Date().toISOString();
     const rows = await selectAllPages<{ starts_at: string }>(
       "business hours closure check",
-      (from, to) =>
+      "id",
+      () =>
         db
           .from("bookings")
           .select("starts_at")
           .in("status", ["confirmed", "rescheduled"])
-          .gte("starts_at", nowIso)
-          .range(from, to),
+          .gte("starts_at", nowIso),
     );
     const affected = countBookingsOnWeekdays(
       rows.map((r) => r.starts_at),

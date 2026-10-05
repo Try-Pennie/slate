@@ -228,6 +228,9 @@ class FakeQuery implements PromiseLike<DbResult> {
     this.filters.push({ kind: "claimOr", column: m[1], staleBefore: m[2] });
     return this;
   }
+  order(): this {
+    return this;
+  }
   range(from: number, to: number): this {
     this.rangeFrom = from;
     this.rangeTo = to;

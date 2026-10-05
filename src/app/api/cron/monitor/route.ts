@@ -1964,22 +1964,24 @@ export async function GET(req: NextRequest) {
       const [agents, scheds, ruleRows] = await Promise.all([
         selectAllPages<ScheduleLessAgent>(
           "monitor schedule-coverage bookable agents",
-          (from, to) =>
+          "id",
+          () =>
             db
               .from("users")
               .select("id, name, email, org_id")
               .eq("bookable", true)
               .is("deactivated_at", null)
-              .eq("is_test", false)
-              .range(from, to),
+              .eq("is_test", false),
         ),
         selectAllPages<{ id: string; user_id: string }>(
           "monitor schedule-coverage schedules",
-          (from, to) => db.from("availability_schedules").select("id, user_id").range(from, to),
+          "id",
+          () => db.from("availability_schedules").select("id, user_id"),
         ),
         selectAllPages<{ schedule_id: string }>(
           "monitor schedule-coverage rules",
-          (from, to) => db.from("availability_rules").select("schedule_id").range(from, to),
+          "id",
+          () => db.from("availability_rules").select("schedule_id"),
         ),
       ]);
       return missingScheduleAgents(
@@ -2020,14 +2022,13 @@ export async function GET(req: NextRequest) {
       runUnsetHoursCheck({
         load: async () => {
           const [agents, scheds, rules, orgRow] = await Promise.all([
-            selectAllPages<UnsetHoursAgent>("monitor unset-hours bookable agents", (from, to) =>
+            selectAllPages<UnsetHoursAgent>("monitor unset-hours bookable agents", "id", () =>
               db
                 .from("users")
                 .select("id, name, email")
                 .eq("bookable", true)
                 .is("deactivated_at", null)
-                .eq("is_test", false)
-                .range(from, to),
+                .eq("is_test", false),
             ),
             selectAllPages<{
               id: string;
@@ -2036,16 +2037,16 @@ export async function GET(req: NextRequest) {
               hours_source: HoursSource | null;
               hours_set_at: string | null;
               created_at: string;
-            }>("monitor unset-hours schedules", (from, to) =>
+            }>("monitor unset-hours schedules", "id", () =>
               db
                 .from("availability_schedules")
-                .select("id, user_id, timezone, hours_source, hours_set_at, created_at")
-                .range(from, to),
+                .select("id, user_id, timezone, hours_source, hours_set_at, created_at"),
             ),
             selectAllPages<{ schedule_id: string; weekday: number; start_minute: number; end_minute: number }>(
               "monitor unset-hours rules",
-              (from, to) =>
-                db.from("availability_rules").select("schedule_id, weekday, start_minute, end_minute").range(from, to),
+              "id",
+              () =>
+                db.from("availability_rules").select("schedule_id, weekday, start_minute, end_minute"),
             ),
             db
               .from("organizations")
@@ -2098,13 +2099,12 @@ export async function GET(req: NextRequest) {
         ? null
         : runAwaitingActivationCheck({
         load: () =>
-          selectAllPages<AwaitingActivationRow>("monitor awaiting-activation roster", (from, to) =>
+          selectAllPages<AwaitingActivationRow>("monitor awaiting-activation roster", "id", () =>
             db
               .from("users")
               .select("id, name, email, bookable, deactivated_at, bookable_pending_since")
               .not("bookable_pending_since", "is", null)
-              .eq("is_test", false)
-              .range(from, to),
+              .eq("is_test", false),
           ),
         armed: settings!.awaitingActivationArmed,
         // alert-key: agents_awaiting_activation
@@ -2137,36 +2137,33 @@ export async function GET(req: NextRequest) {
     const strandedHires = await steps.run("stranded_hires", null, () =>
       runStrandedHiresCheck({
         loadCandidates: () =>
-          selectAllPages<StrandedHireRow>("monitor stranded-hires roster", (from, to) =>
+          selectAllPages<StrandedHireRow>("monitor stranded-hires roster", "id", () =>
             db
               .from("users")
               .select("id, name, email, attributes, bookable, deactivated_at, bookable_pending_since, auth_user_id")
               .eq("bookable", false)
               .is("deactivated_at", null)
               .not("auth_user_id", "is", null)
-              .eq("is_test", false)
-              .range(from, to),
+              .eq("is_test", false),
           ),
         loadSyncedCalendarUserIds: async (ids) => {
-          const rows = await selectAllPages<{ user_id: string }>("monitor stranded-hires calendars", (from, to) =>
+          const rows = await selectAllPages<{ user_id: string }>("monitor stranded-hires calendars", "id", () =>
             db
               .from("agent_calendars")
               .select("user_id")
               .in("user_id", ids)
-              .not("last_success_at", "is", null)
-              .range(from, to),
+              .not("last_success_at", "is", null),
           );
           return new Set(rows.map((r) => r.user_id));
         },
         loadDecidedUserIds: async (ids) => {
-          const rows = await selectAllPages<{ target_id: string }>("monitor stranded-hires audit", (from, to) =>
+          const rows = await selectAllPages<{ target_id: string }>("monitor stranded-hires audit", "id", () =>
             db
               .from("audit_log")
               .select("target_id")
               .eq("action", "agent.bookable")
               .in("target_id", ids)
-              .not("actor_id", "is", null)
-              .range(from, to),
+              .not("actor_id", "is", null),
           );
           return new Set(rows.map((r) => r.target_id));
         },
@@ -2399,26 +2396,23 @@ export async function GET(req: NextRequest) {
         ? null
         : runRegalCallCheck({
         loadCandidates: (sinceIso) =>
-          selectAllPages<RegalCandidate>("monitor regal call candidates", (from, to) =>
+          selectAllPages<RegalCandidate>("monitor regal call candidates", "id", () =>
             db
               .from("regal_call_events")
               .select("agent_email, occurred_at")
               .eq("reason", "candidate")
               .gte("received_at", sinceIso)
-              .order("received_at", { ascending: true })
-              .range(from, to),
+              .order("received_at", { ascending: true }),
           ),
         loadUsers: () =>
-          selectAllPages<RegalCaller>("monitor regal call roster", (from, to) =>
+          selectAllPages<RegalCaller>("monitor regal call roster", "id", () =>
             db
               .from("users")
-              .select("id, name, email, role, bookable, deactivated_at, is_test, attributes")
-              .order("id", { ascending: true })
-              .range(from, to),
+              .select("id, name, email, role, bookable, deactivated_at, is_test, attributes"),
           ),
         loadIgnores: () =>
-          selectAllPages<RegalIgnore>("monitor regal call ignore list", (from, to) =>
-            db.from("regal_call_ignores").select("user_id, reason").order("user_id").range(from, to),
+          selectAllPages<RegalIgnore>("monitor regal call ignore list", "user_id", () =>
+            db.from("regal_call_ignores").select("user_id, reason"),
           ),
         loadFiringUserIds: () => firingFamilyMembers(REGAL_CALL_ALERT_PREFIX),
         armed: settings!.regalCallsArmed,
@@ -2582,19 +2576,20 @@ export async function GET(req: NextRequest) {
           attributes: Attributes | null;
         }>(
           "monitor attribute-coverage bookable agents",
-          (from, to) =>
+          "id",
+          () =>
             db
               .from("users")
               .select("id, name, email, attributes")
               .eq("bookable", true)
               .is("deactivated_at", null)
-              .eq("is_test", false)
-              .range(from, to),
+              .eq("is_test", false),
         ),
         selectAllPages<{ user_id: string }>(
           "monitor attribute-coverage manual members",
-          (from, to) =>
-            db.from("bucket_members").select("user_id").eq("active", true).range(from, to),
+          "id",
+          () =>
+            db.from("bucket_members").select("user_id").eq("active", true),
         ),
       ]);
       return findUnroutableAgents(agents, new Set(members.map((m) => m.user_id)));
@@ -2621,14 +2616,14 @@ export async function GET(req: NextRequest) {
       const [agents, cals] = await Promise.all([
         selectAllPages<{ id: string; name: string | null; email: string | null; last_synced_at: string | null }>(
           "monitor sync-staleness agents",
-          (from, to) =>
+          "id",
+          () =>
             db
               .from("users")
               .select("id, name, email, last_synced_at")
               .eq("bookable", true)
               .is("deactivated_at", null)
-              .eq("is_test", false)
-              .range(from, to),
+              .eq("is_test", false),
         ),
         // #2299: created_at and the sync failure columns come back with the row,
         // because the first-run grace is judged on when the calendar joined the
@@ -2640,11 +2635,11 @@ export async function GET(req: NextRequest) {
           last_sync_error: string | null;
         }>(
           "monitor sync-staleness calendars",
-          (from, to) =>
+          "id",
+          () =>
             db
               .from("agent_calendars")
-              .select("user_id, created_at, consecutive_failures, last_sync_error")
-              .range(from, to),
+              .select("user_id, created_at, consecutive_failures, last_sync_error"),
         ),
       ]);
       return syncRotationCandidates(agents, cals);
@@ -2698,7 +2693,8 @@ export async function GET(req: NextRequest) {
       // bookings between them, and a truncated page would under-report the gap.
       const bookings = await selectAllPages<{ assigned_user_id: string | null }>(
         "monitor inactive-agent bookings",
-        (from, to) =>
+        "id",
+        () =>
           db
             // agent-link-ok: an upcoming call held by somebody who has left needs
             // a person however it was booked, including through their own link (#2073).
@@ -2706,8 +2702,7 @@ export async function GET(req: NextRequest) {
             .select("assigned_user_id")
             .in("assigned_user_id", outOfPool.map((a) => a.id))
             .in("status", ACTIVE_BOOKING_STATUSES)
-            .gte("starts_at", new Date(now).toISOString())
-            .range(from, to),
+            .gte("starts_at", new Date(now).toISOString()),
       );
       return inactiveHoldersFromBookings(outOfPool, bookings);
     };
@@ -2729,12 +2724,12 @@ export async function GET(req: NextRequest) {
     const loadStrandedHolders = async () => {
       const items = await selectAllPages<{ booking_id: string; status: string; job_id: string }>(
         "monitor stranded coverage items",
-        (from, to) =>
+        "id",
+        () =>
           db
             .from("bulk_reassign_items")
             .select("booking_id, status, job_id")
-            .in("status", ACTIONABLE_ITEM_STATUSES)
-            .range(from, to),
+            .in("status", ACTIONABLE_ITEM_STATUSES),
       );
       if (items.length === 0) return [];
       // Only an UPCOMING appointment needs a person: a stranded one that has passed
@@ -2829,15 +2824,14 @@ export async function GET(req: NextRequest) {
         display_tz_label: string | null;
         agent_event_id: string | null;
         side_effects: Record<string, string> | null;
-      }>("monitor approved time off", (from, to) =>
+      }>("monitor approved time off", "id", () =>
         db
           .from("ooo_requests")
           .select(
             "id, user_id, starts_at, ends_at, display_tz_id, display_tz_label, agent_event_id, side_effects",
           )
           .eq("status", "approved")
-          .gte("ends_at", new Date(now).toISOString())
-          .range(from, to),
+          .gte("ends_at", new Date(now).toISOString()),
       );
       if (requests.length === 0) return { requests: [], blocks: [] };
       // DEDUPED agent ids, so every filter below is bounded by the roster rather than
@@ -2865,15 +2859,14 @@ export async function GET(req: NextRequest) {
         user_id: string;
         starts_at: string;
         ends_at: string;
-      }>("monitor time off busy blocks", (from, to) =>
+      }>("monitor time off busy blocks", "id", () =>
         db
           .from("busy_blocks")
           .select("user_id, starts_at, ends_at")
           // in-chunk-ok: bounded by the roster, see the note on userIds above.
           .in("user_id", userIds)
           .gte("ends_at", new Date(now).toISOString())
-          .lte("starts_at", lastEnd)
-          .range(from, to),
+          .lte("starts_at", lastEnd),
       );
       return {
         requests: requests.map((r) => ({
@@ -2941,14 +2934,13 @@ export async function GET(req: NextRequest) {
         user_id: string;
         starts_at: string;
         ends_at: string;
-      }>("monitor ooo coverage absences", (from, to) =>
+      }>("monitor ooo coverage absences", "id", () =>
         db
           .from("ooo_requests")
           .select("id, user_id, starts_at, ends_at")
           .eq("status", "approved")
           .is("cancelled_at", null)
-          .gte("ends_at", nowIso)
-          .range(from, to),
+          .gte("ends_at", nowIso),
       );
       if (absences.length === 0) return [];
       // DEDUPED agent ids, so every filter below is bounded by the roster rather than
@@ -2974,14 +2966,14 @@ export async function GET(req: NextRequest) {
       // precisely the false alarm the suppression exists to prevent.
       const activeJobs = await selectAllPages<{ out_user_id: string }>(
         "monitor ooo coverage active jobs",
-        (from, to) =>
+        "id",
+        () =>
           db
             .from("bulk_reassign_jobs")
             .select("out_user_id")
             .eq("status", "active")
             // in-chunk-ok: bounded by the roster, see the note on userIds above.
-            .in("out_user_id", userIds)
-            .range(from, to),
+            .in("out_user_id", userIds),
       );
       const agents = (unwrap(
         await db
@@ -3126,14 +3118,13 @@ export async function GET(req: NextRequest) {
             user_id: string;
             starts_at: string;
             ends_at: string;
-          }>("busy drift cached blocks", (fromRow, toRow) =>
+          }>("busy drift cached blocks", "id", () =>
             db
               .from("busy_blocks")
               .select("user_id, starts_at, ends_at")
               .in("user_id", userIds)
               .lt("starts_at", to)
-              .gt("ends_at", from)
-              .range(fromRow, toRow),
+              .gt("ends_at", from),
           );
           const byUser = new Map<string, DriftInterval[]>();
           for (const r of rows) {

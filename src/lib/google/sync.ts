@@ -287,14 +287,14 @@ export async function loadSlateBookingEventIds(userId: string): Promise<Set<stri
   const db = supabaseAdmin();
   const rows = await selectAllPages<{ gcal_event_id: string | null }>(
     "sync slate booking event ids",
-    (from, to) =>
+    "id",
+    () =>
       db
         .from("bookings")
         .select("gcal_event_id")
         .eq("assigned_user_id", userId)
         .in("status", ["confirmed", "rescheduled"])
-        .not("gcal_event_id", "is", null)
-        .range(from, to),
+        .not("gcal_event_id", "is", null),
   );
   return new Set(
     rows.map((r) => r.gcal_event_id).filter((id): id is string => !!id),
@@ -405,7 +405,7 @@ export async function purgeVanished(
     gcal_event_id: string | null;
     starts_at: string;
     ends_at: string;
-  }>("sync purge vanished busy_blocks", (from, to) =>
+  }>("sync purge vanished busy_blocks", "id", () =>
     db
       .from("busy_blocks")
       .select("id, gcal_event_id, starts_at, ends_at")
@@ -413,8 +413,7 @@ export async function purgeVanished(
       .eq("calendar_id", calendarId)
       .eq("source", "gcal")
       .gt("ends_at", window.timeMinIso)
-      .lt("starts_at", window.timeMaxIso)
-      .range(from, to),
+      .lt("starts_at", window.timeMaxIso),
   );
   // The window is applied AGAIN, in the pure judge. Not redundant defensively: the filter
   // above bounds the READ (and its cost), while this is the rule that decides a DELETE, and

@@ -242,19 +242,15 @@ export default async function AlertSettingsPage({
   try {
     const db = supabaseAdmin();
     const [ignores, roster] = await Promise.all([
-      selectAllPages<IgnoreRow>("alerts page regal ignore list", (from, to) =>
+      selectAllPages<IgnoreRow>("alerts page regal ignore list", "user_id", () =>
         db
           .from("regal_call_ignores")
-          .select("user_id, reason, added_by, added_at")
-          .order("user_id", { ascending: true })
-          .range(from, to),
+          .select("user_id, reason, added_by, added_at"),
       ),
-      selectAllPages<IgnoreRosterUser>("alerts page roster", (from, to) =>
+      selectAllPages<IgnoreRosterUser>("alerts page roster", "id", () =>
         db
           .from("users")
-          .select("id, name, email, role, is_test, deactivated_at")
-          .order("id", { ascending: true })
-          .range(from, to),
+          .select("id, name, email, role, is_test, deactivated_at"),
       ),
     ]);
     regalIgnores = { rows: ignoreListRows(ignores, roster), options: ignorePickerOptions(roster, ignores) };

@@ -52,15 +52,15 @@ const rpcCounts = new Map<string, number>(Object.entries((rpcJson ?? {}) as Reco
 // as the app used to, keyed identically to the RPC ("<user_id>|<local_date>").
 const rows = await selectAllPages<{ assigned_user_id: string; starts_at: string }>(
   "bookings",
-  (pageFrom, pageTo) =>
+  "id",
+  () =>
     db
       .from("bookings")
       .select("assigned_user_id, starts_at")
       .in("assigned_user_id", userIds)
       .in("status", ["confirmed", "rescheduled"])
       .gte("starts_at", cap.from)
-      .lte("starts_at", cap.to)
-      .range(pageFrom, pageTo),
+      .lte("starts_at", cap.to),
 );
 const luxonCounts = new Map<string, number>();
 for (const r of rows) {

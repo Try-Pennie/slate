@@ -1,5 +1,5 @@
 import type { supabaseAdmin } from "@/lib/supabase/admin";
-import { selectAllPages } from "@/lib/supabase/paginate";
+import { selectAllPages, type PageableQuery } from "@/lib/supabase/paginate";
 import { inIdChunks } from "@/lib/db/id-batch";
 import { ACTIVE_BOOKING_STATUSES } from "@/lib/booking/bulk-reassign-store";
 import type { RoutingRecord, UpcomingBooking } from "@/lib/monitor/below-lead-tier";
@@ -31,7 +31,7 @@ export async function loadUpcomingBookingsInBuckets(
   nowIso: string,
 ): Promise<UpcomingBooking[]> {
   if (bucketIds.length === 0) return [];
-  return selectAllPages<UpcomingBooking>("monitor below lead tier bookings", (from, to) =>
+  return selectAllPages<UpcomingBooking>("monitor below lead tier bookings", "id", () =>
     db
       .from("bookings")
       .select("id, bucket_id, starts_at, salesforce_id, external_id, agent_name, agent_email, prefill, referrer_origin")
@@ -40,12 +40,7 @@ export async function loadUpcomingBookingsInBuckets(
       // #2073: a booking through an agent's own link was booked with the agent the
       // lead already has, not routed below their tier.
       .eq("kind", "routed")
-      .gte("starts_at", nowIso)
-      .order("id")
-      .range(from, to) as unknown as PromiseLike<{
-      data: unknown[] | null;
-      error?: { message: string } | null;
-    }>,
+      .gte("starts_at", nowIso) as unknown as PageableQuery,
   );
 }
 
@@ -86,17 +81,12 @@ export async function loadRoutingContextByBooking(
       tier_fallback: boolean;
       rungs_dropped: number;
       created_at: string;
-    }>("monitor below lead tier routing", (from, to) =>
+    }>("monitor below lead tier routing", "id", () =>
       db
         .from("routing_decisions")
         .select("id, booking_id, catchall_applied, requested_code, tier_fallback, rungs_dropped, created_at")
         .in("booking_id", batch)
-        .order("created_at", { ascending: true })
-        .order("id", { ascending: true })
-        .range(from, to) as unknown as PromiseLike<{
-        data: unknown[] | null;
-        error?: { message: string } | null;
-      }>,
+        .order("created_at", { ascending: true }) as unknown as PageableQuery,
     ),
   );
   const newest = new Map<string, { createdAt: string; id: string }>();

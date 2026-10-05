@@ -32,18 +32,17 @@ async function loadAllDayOutUserIds(
   const [blocks, schedules] = await Promise.all([
     // Google-sourced blocks covering `now` (starts_at <= now < ends_at). Scoped
     // to the roster's agents, which also keeps this org-scoped.
-    selectAllPages<BlockRow>("staffing depth busy_blocks", (from, to) =>
+    selectAllPages<BlockRow>("staffing depth busy_blocks", "id", () =>
       db
         .from("busy_blocks")
         .select("user_id, starts_at, ends_at")
         .eq("source", "gcal")
         .in("user_id", agentIds)
         .lte("starts_at", nowIso)
-        .gt("ends_at", nowIso)
-        .range(from, to),
+        .gt("ends_at", nowIso),
     ),
-    selectAllPages<ScheduleRow>("staffing depth availability_schedules", (from, to) =>
-      db.from("availability_schedules").select("user_id, timezone").in("user_id", agentIds).range(from, to),
+    selectAllPages<ScheduleRow>("staffing depth availability_schedules", "id", () =>
+      db.from("availability_schedules").select("user_id, timezone").in("user_id", agentIds),
     ),
   ]);
 

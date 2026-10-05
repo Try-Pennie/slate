@@ -59,6 +59,7 @@ vi.mock("@/lib/supabase/admin", () => ({
           eq: () => q,
           lt: () => q,
           gt: () => q,
+          order: () => q,
           range: async () => ({ data: ooo.rows, error: ooo.error }),
         };
         return q;

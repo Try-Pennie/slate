@@ -79,9 +79,9 @@ export async function coverageBookings(
     { startIso: rangeStartIso, endIso: rangeEndIso },
     new Date().toISOString(),
   );
-  return selectAllPages<CoverageBookingRow>("bulk-reassign-coverage-bookings", (from, to) => {
+  return selectAllPages<CoverageBookingRow>("bulk-reassign-coverage-bookings", "id", () => {
     let q = supabaseAdmin()
-      // cap-safe: read every page via selectAllPages (.range below), so an out
+      // cap-safe: read every page via selectAllPages, which orders and pages it, so an out
       // agent with more than one page of upcoming bookings is fully snapshotted.
       .from("bookings")
       .select("id, starts_at, ends_at, attendee_name")
@@ -91,10 +91,9 @@ export async function coverageBookings(
       .gt("starts_at", bounds.startsAfterIso)
       // Still running when the absence begins. The bound that was missing.
       .gt("ends_at", bounds.endsAfterIso)
-      .order("starts_at", { ascending: true })
-      .order("id", { ascending: true });
+      .order("starts_at", { ascending: true });
     if (bounds.startsBeforeIso) q = q.lt("starts_at", bounds.startsBeforeIso);
-    return q.range(from, to);
+    return q;
   });
 }
 
@@ -506,13 +505,12 @@ export async function loadBulkReassignJob(jobId: string): Promise<BulkReassignJo
 
 /** Every item of a job, paginated so a large job is fully summarized (#974). */
 export async function loadBulkReassignItems(jobId: string): Promise<BulkReassignItem[]> {
-  return selectAllPages<BulkReassignItem>("bulk-reassign-job-items", (from, to) =>
+  return selectAllPages<BulkReassignItem>("bulk-reassign-job-items", "id", () =>
     supabaseAdmin()
       .from("bulk_reassign_items")
       .select("*")
       .eq("job_id", jobId)
-      .order("created_at", { ascending: true })
-      .range(from, to),
+      .order("created_at", { ascending: true }),
   );
 }
 

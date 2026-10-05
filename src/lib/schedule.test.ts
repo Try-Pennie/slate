@@ -29,6 +29,7 @@ const from = vi.hoisted(() =>
       eq: () => b,
       // `range` resolves the whole (small) fixture in one page, which is what
       // selectAllPages sees when a first page comes back short.
+      order: () => b,
       range: res,
       single: res,
       maybeSingle: res,

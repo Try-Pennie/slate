@@ -84,15 +84,11 @@ export default async function EmbeddingPage({
     // Up to 200 sites a day for 14 days can pass one page, so this pages. A failed
     // read is its own state, never an empty table, which would read as nobody framing
     // the booker (L10).
-    selectAllPages<FrameOriginRow>("frame_origin_daily", (from, to) =>
+    selectAllPages<FrameOriginRow>("frame_origin_daily", ["day", "origin", "surface"], () =>
       db
         .from("frame_origin_daily")
         .select("day, origin, surface, loads, last_seen")
-        .gte("day", sinceIso())
-        .order("day", { ascending: true })
-        .order("origin", { ascending: true })
-        .order("surface", { ascending: true })
-        .range(from, to),
+        .gte("day", sinceIso()),
     ).then(
       (rows) => ({ ok: true as const, rows }),
       (err: unknown) => ({ ok: false as const, message: err instanceof Error ? err.message : String(err) }),

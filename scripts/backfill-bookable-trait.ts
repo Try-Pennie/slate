@@ -67,8 +67,8 @@ let report;
 try {
   report = await runBookableTraitBackfill({
     listUsers: () =>
-      selectAllPages<RoutableStateRow>("users", (from, to) =>
-        db.from("users").select(ROUTABLE_STATE_COLUMNS).order("id").range(from, to),
+      selectAllPages<RoutableStateRow>("users", "id", () =>
+        db.from("users").select(ROUTABLE_STATE_COLUMNS),
       ),
     // Inline, not deferred: a script has no response to outlive, and each send
     // finishing before the next keeps the run's own count honest.

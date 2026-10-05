@@ -180,16 +180,14 @@ async function readSlate(dates: string[]): Promise<SlateCheckInput> {
     const from = new Date(Date.parse(`${dates[0]}T00:00:00Z`) - DAY).toISOString();
     const to = new Date(Date.parse(`${dates[dates.length - 1]}T00:00:00Z`) + 2 * DAY).toISOString();
     const db = supabaseAdmin();
-    const rows = await selectAllPages<{ id: string; prefill: Record<string, unknown> | null }>("pilot split bookings", (lo, hi) =>
+    const rows = await selectAllPages<{ id: string; prefill: Record<string, unknown> | null }>("pilot split bookings", "id", () =>
       db
         .from("bookings")
         .select("id, prefill, buckets!inner(is_test)")
         .eq("buckets.is_test", false)
         .eq("kind", "routed")
         .gte("created_at", from)
-        .lt("created_at", to)
-        .order("id")
-        .range(lo, hi),
+        .lt("created_at", to),
     );
     const submissionIds = rows
       .map((r) => partnerKeysFrom(r.prefill).submissionId)
@@ -220,15 +218,12 @@ async function readOffers(dates: string[]): Promise<PilotOffersRead> {
       const from = new Date(Date.parse(`${dates[0]}T00:00:00Z`) - DAY).toISOString();
       const to = new Date(Date.parse(`${dates[dates.length - 1]}T00:00:00Z`) + 2 * DAY).toISOString();
       const db = supabaseAdmin();
-      return selectAllPages<PilotOfferRow>("pilot offer samples", (lo, hi) =>
+      return selectAllPages<PilotOfferRow>("pilot offer samples", ["sampled_at", "system"], () =>
         db
           .from("pilot_offer_samples")
           .select("sampled_at, system, bucket_code, ok, earliest_offered_at, offered_24h, error, calcom_time_zone")
           .gte("sampled_at", from)
-          .lt("sampled_at", to)
-          .order("sampled_at")
-          .order("system")
-          .range(lo, hi),
+          .lt("sampled_at", to),
       );
     },
   });

@@ -26,14 +26,13 @@ export async function loadAllWorkingHours(
   db: ReturnType<typeof supabaseAdmin>,
 ): Promise<{ schedules: WorkingHoursSchedule[]; rules: WorkingHoursRule[] }> {
   const [schedules, rules] = await Promise.all([
-    selectAllPages<WorkingHoursSchedule>("availability_schedules", (from, to) =>
-      db.from("availability_schedules").select("id, user_id, timezone").range(from, to),
+    selectAllPages<WorkingHoursSchedule>("availability_schedules", "id", () =>
+      db.from("availability_schedules").select("id, user_id, timezone"),
     ),
-    selectAllPages<WorkingHoursRule>("availability_rules", (from, to) =>
+    selectAllPages<WorkingHoursRule>("availability_rules", "id", () =>
       db
         .from("availability_rules")
-        .select("schedule_id, weekday, start_minute, end_minute")
-        .range(from, to),
+        .select("schedule_id, weekday, start_minute, end_minute"),
     ),
   ]);
   return { schedules, rules };

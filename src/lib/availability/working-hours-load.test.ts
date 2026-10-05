@@ -15,6 +15,7 @@ function fakeDb(tables: Record<string, unknown[]>): ReturnType<typeof supabaseAd
     let range: [number, number] | null = null;
     const b: Record<string, unknown> = {
       select: () => b,
+      order: () => b,
       range: (from: number, to: number) => {
         range = [from, to];
         return b;
@@ -50,6 +51,7 @@ describe("loadAllWorkingHours (#828)", () => {
       from: () => {
         const b: Record<string, unknown> = {
           select: () => b,
+          order: () => b,
           range: () => b,
           then: (resolve: (v: { data: null; error: { message: string } }) => unknown) =>
             Promise.resolve({ data: null, error: { message: "read timeout" } }).then(resolve),

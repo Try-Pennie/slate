@@ -33,7 +33,8 @@ export async function listBookingStampsBetween(
 ): Promise<SlateBookingRow[]> {
   const rows = await selectAllPages<{ created_at: string; buckets: { is_test: boolean; code: string | null } | null }>(
     "volume learning bookings",
-    (from, to) =>
+    "id",
+    () =>
       db
         .from("bookings")
         // #2874: the bucket's code too, whose first digit is the booking's tier.
@@ -46,9 +47,7 @@ export async function listBookingStampsBetween(
         .or(pageTrafficFilter())
         .gte("created_at", sinceIso)
         .lt("created_at", untilIso)
-        .order("created_at", { ascending: true })
-        .order("id", { ascending: true })
-        .range(from, to),
+        .order("created_at", { ascending: true }),
   ).catch((err: unknown) => {
     log.error("monitor", { msg: "volume learning read failed", since: sinceIso }, err instanceof Error ? err : undefined);
     throw err;

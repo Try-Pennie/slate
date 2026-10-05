@@ -109,7 +109,7 @@ export async function GET(req: NextRequest) {
         external_id: string | null;
         gcal_event_id: string | null;
         assigned_user_id: string | null;
-      }>("bookings due a reminder", (from, to) =>
+      }>("bookings due a reminder", "id", () =>
         db
           .from("bookings")
           .select(
@@ -127,9 +127,7 @@ export async function GET(req: NextRequest) {
           // A keyset the pages can be cut on. A read with no order is in whatever
           // order came back (L343), and page two of an unordered read can repeat or
           // skip rows from page one.
-          .order("starts_at", { ascending: true })
-          .order("id", { ascending: true })
-          .range(from, to),
+          .order("starts_at", { ascending: true }),
       );
       for (const r of rows) rowsSeen.set(r.id, r.reminder_sent_for);
       return rows

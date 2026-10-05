@@ -18,6 +18,7 @@ function fakeDb(tables: Rows): ReturnType<typeof supabaseAdmin> {
       lte: () => b,
       gt: () => b,
       in: () => b,
+      order: () => b,
       range: () => b,
       then: (resolve: (v: { data: unknown[] }) => unknown) => Promise.resolve({ data: rows }).then(resolve),
     };
@@ -42,6 +43,7 @@ function fakeDbFailing(tables: Rows, failingTable: string): ReturnType<typeof su
       lte: () => b,
       gt: () => b,
       in: () => b,
+      order: () => b,
       range: () => b,
       then: (resolve: (v: unknown) => unknown) => Promise.resolve(result).then(resolve),
     };
@@ -212,6 +214,7 @@ describe("loadTierDepths", () => {
           lte: () => b,
           gt: () => b,
           in: () => b,
+          order: () => b,
           range: () => b,
           then: (resolve: (v: { data: null; error: { message: string } }) => unknown) =>
             Promise.resolve({ data: null, error: { message: "read timeout" } }).then(resolve),

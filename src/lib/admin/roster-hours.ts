@@ -49,13 +49,11 @@ export async function loadRosterHours(db: Db, orgId: string, userIds: string[]):
       hours_source: HoursSource | null;
       hours_set_at: string | null;
       created_at: string;
-    }>("roster hours schedules", (from, to) =>
+    }>("roster hours schedules", "id", () =>
       db
         .from("availability_schedules")
         .select("id, user_id, timezone, hours_source, hours_set_at, created_at")
-        .in("user_id", userIds)
-        .order("id")
-        .range(from, to),
+        .in("user_id", userIds),
     ),
   ]);
   const org = unwrap(orgRow, "roster hours org defaults") as OrgDefaults | null;
@@ -65,13 +63,12 @@ export async function loadRosterHours(db: Db, orgId: string, userIds: string[]):
       ? []
       : await selectAllPages<{ schedule_id: string; weekday: number; start_minute: number; end_minute: number }>(
           "roster hours rules",
-          (from, to) =>
+          "id",
+          () =>
             db
               .from("availability_rules")
               .select("schedule_id, weekday, start_minute, end_minute")
-              .in("schedule_id", scheds.map((s) => s.id))
-              .order("id")
-              .range(from, to),
+              .in("schedule_id", scheds.map((s) => s.id)),
         );
   const rulesBySchedule = groupRulesBySchedule(rules);
   const byUser = rosterHoursByUser(
