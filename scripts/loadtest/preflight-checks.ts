@@ -788,6 +788,67 @@ export function faultModeVerdict(
   };
 }
 
+/** What the branch said about the shared confirm line's stored switch (#3325). */
+export type SharedLineSwitchVerdict = { ok: true } | { ok: false; why: string };
+
+/**
+ * Whether the branch's shared confirm line switch is on, from its answer to
+ * `booking_settings?select=shared_confirm_line&id=eq.1`.
+ *
+ * The run exists to prove the shared confirm line before production uses it. A branch
+ * with the switch off would line every confirm up on its own server, and the burst would
+ * then measure the line the run was built to replace while the report read as the shared
+ * line failing (L98). The seed writes the switch on (`SEED_BOOKING_SETTINGS`), so every
+ * refusal here is a branch the current seed did not finish, and each cause is said in
+ * its own words because they send somebody to different places (L11). Asked before the
+ * preflight writes anything, so a refusal costs the branch nothing.
+ */
+export function sharedLineSwitchVerdict(status: number, body: unknown): SharedLineSwitchVerdict {
+  if (status < 200 || status > 299) {
+    return {
+      ok: false,
+      why:
+        `reading booking_settings.shared_confirm_line from the branch answered ${status}, so ` +
+        `whether the shared confirm line is on could not be established. A 400 here usually ` +
+        `means the branch predates migration 0169. Nothing was written.`,
+    };
+  }
+  if (!Array.isArray(body)) {
+    return {
+      ok: false,
+      why:
+        "the branch's answer about booking_settings could not be read as a list of rows, so " +
+        "whether the shared confirm line is on could not be established. Nothing was written.",
+    };
+  }
+  if (body.length === 0) {
+    return {
+      ok: false,
+      why:
+        "the branch holds no settings row, so its shared confirm line is off. The seed writes " +
+        "one with the line on (scripts/loadtest/seed.ts), so this branch was not seeded by the " +
+        "current seed. Re-run the seed. Nothing was written.",
+    };
+  }
+  const value = (body[0] as { shared_confirm_line?: unknown } | null)?.shared_confirm_line;
+  if (value === true) return { ok: true };
+  if (value === false) {
+    return {
+      ok: false,
+      why:
+        "the branch's shared confirm line switch is off, so every confirm would wait in its " +
+        "server's own line and the burst would measure the line the run exists to replace. The " +
+        "seed writes it on: re-run the seed. Nothing was written.",
+    };
+  }
+  return {
+    ok: false,
+    why:
+      `the branch's settings row carries shared_confirm_line=${JSON.stringify(value)}, which ` +
+      `is neither on nor off as far as this preflight can tell. Nothing was written.`,
+  };
+}
+
 /**
  * How long to keep asking a freshly redeployed Worker, and when to stop (#2261).
  *

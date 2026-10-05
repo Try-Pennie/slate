@@ -14,6 +14,7 @@
  * writes six hundred bookings.
  */
 import { allLaneNames } from "../../worker/lanes-disabled.ts";
+import { parseSharedLineDefault } from "../../src/lib/booking/shared-line-switch-core.ts";
 
 /** The fault switch's two settings (#3104), which the fault leg adds with --var and
  *  nothing commits. */
@@ -71,6 +72,39 @@ export interface WranglerLike {
   triggers?: { crons?: string[] } | null;
   limits?: { cpu_ms?: number } | null;
 }
+
+/**
+ * Vars the load test is MEANT to set differently from production, each held to the
+ * value the run needs rather than exempted from the check (#3325).
+ *
+ * The reason an entry belongs here: the var is a deployment DEFAULT for a capability the
+ * load run proves before production turns it on, so the run must exercise the
+ * capability while production does not yet. Every other var must match production,
+ * because the run is meant to exercise production's configuration.
+ */
+const LOADTEST_DIFFERS: Record<
+  string,
+  {
+    /** The value env.loadtest must resolve. */
+    loadtest: string;
+    /** Whether production's value is one the app reads, judged by the app's own parser. */
+    readable: (value: string) => boolean;
+    /** What production's value must be, in words. */
+    vocabulary: string;
+    /** What a wrong load test value would do to the run. */
+    why: string;
+  }
+> = {
+  SHARED_CONFIRM_LINE_DEFAULT: {
+    loadtest: "on",
+    readable: (value) => parseSharedLineDefault(value).problem === null,
+    vocabulary: "on or off",
+    why:
+      "it is the shared confirm line's answer before an isolate has read the stored switch, " +
+      "so cold isolates would read the shared line as off and the burst would be measured on " +
+      "the per isolate line the run exists to replace",
+  },
+};
 
 /** Vars that must never be committed for either environment, with why. */
 const BUILD_INLINED: Record<string, string> = {
@@ -190,6 +224,7 @@ export function loadtestEnvFaults(top: WranglerLike, env: WranglerLike): string[
   const topVars = top.vars ?? {};
   const envVars = env.vars ?? {};
   for (const [key, value] of Object.entries(topVars)) {
+    if (key in LOADTEST_DIFFERS) continue;
     if (!(key in envVars)) {
       faults.push(
         `env.loadtest is missing the ${key} var. vars do NOT inherit, so it resolves absent and ` +
@@ -199,6 +234,25 @@ export function loadtestEnvFaults(top: WranglerLike, env: WranglerLike): string[
       faults.push(
         `env.loadtest sets ${key} to ${JSON.stringify(envVars[key])} where production sets ` +
           `${JSON.stringify(value)}. The load run is meant to exercise production's configuration.`,
+      );
+    }
+  }
+  for (const [key, want] of Object.entries(LOADTEST_DIFFERS)) {
+    if (envVars[key] !== want.loadtest) {
+      faults.push(
+        `env.loadtest sets ${key} to ${JSON.stringify(envVars[key])} where the load run needs ` +
+          `${JSON.stringify(want.loadtest)} (vars do NOT inherit): ${want.why}.`,
+      );
+    }
+    if (!(key in topVars)) {
+      faults.push(
+        `the top level does not set ${key}, so production reports it missing on every cold ` +
+          `isolate and treats it as off. Set it explicitly, to ${want.vocabulary}.`,
+      );
+    } else if (!want.readable(String(topVars[key]))) {
+      faults.push(
+        `the top level sets ${key} to ${JSON.stringify(topVars[key])}, which is not ` +
+          `${want.vocabulary}, so production reports it on every cold isolate and treats it as off.`,
       );
     }
   }

@@ -62,6 +62,20 @@ const env = read("loadtest");
 }
 
 {
+  // #3325: the shared confirm line's deployment default, the answer an isolate gives
+  // before it has read the stored switch. It is the one var the two environments are
+  // MEANT to disagree on: the load run proves the shared line before production uses
+  // it, so the load test's cold isolates must not silently read OFF. Asserted as
+  // wrangler RESOLVES it, in both environments (vars do not inherit).
+  //
+  // Production's "off" is pinned on purpose: the activation issue that switches the
+  // line on in production also flips this to "on", and that change should have to
+  // touch this line.
+  eq(top.vars?.SHARED_CONFIRM_LINE_DEFAULT, "off", "production resolves SHARED_CONFIRM_LINE_DEFAULT off until activation");
+  eq(env.vars?.SHARED_CONFIRM_LINE_DEFAULT, "on", "env.loadtest resolves SHARED_CONFIRM_LINE_DEFAULT on");
+}
+
+{
   // Inheritance, measured in BOTH directions on the same config, so this file
   // records what wrangler actually does rather than what its docs say.
   eq(
@@ -167,6 +181,36 @@ control("crons that stopped inheriting", "measures recompute freshness", (e) => 
 control("a different CPU ceiling", "a different ceiling", (e) => {
   e.limits = { cpu_ms: 30000 };
 });
+// #3325: the load test's shared line default, in each way it can be wrong.
+control("the shared line default off in the load test", "cold isolates would read the shared line as off", (e) => {
+  e.vars!.SHARED_CONFIRM_LINE_DEFAULT = "off";
+});
+control("the shared line default missing from the load test", "cold isolates would read the shared line as off", (e) => {
+  delete e.vars!.SHARED_CONFIRM_LINE_DEFAULT;
+});
+
+{
+  // #3325: the one var allowed to differ is held to its own value rather than exempted.
+  // A load test default equal to production's "off" is the fault, not agreement.
+  const faults = loadtestEnvFaults(top, env);
+  assert(
+    !faults.some((f) => f.includes("SHARED_CONFIRM_LINE_DEFAULT")),
+    "the shared line default differing between the environments is not reported as drift",
+  );
+  // And production's value has to be a word the reader understands, or every cold
+  // production isolate would log a warning and read the line as off.
+  for (const [label, mutate, needle] of [
+    ["a production default that is no word", (t: WranglerLike) => (t.vars!.SHARED_CONFIRM_LINE_DEFAULT = "true"), "is not on or off"],
+    ["a production default that is missing", (t: WranglerLike) => delete t.vars!.SHARED_CONFIRM_LINE_DEFAULT, "does not set SHARED_CONFIRM_LINE_DEFAULT"],
+  ] as const) {
+    const brokenTop = clone(top);
+    mutate(brokenTop);
+    assert(
+      loadtestEnvFaults(brokenTop, env).some((f) => f.includes(needle)),
+      `a control catches ${label}`,
+    );
+  }
+}
 
 {
   // The other direction on the two settings that must exist ONLY here (L159): the

@@ -374,6 +374,11 @@ export interface BookingSettings {
    *  moves to inside its frame a `frame-ancestors` of Slate plus the allow list.
    *  NOT NULL DEFAULT false: a row that predates it frames exactly as before. */
   frame_lock_enabled: boolean;
+  /** #3325, migration 0169: the shared confirm line. True puts every confirm for one
+   *  time in one line shared by every isolate. NOT NULL DEFAULT false: a row that
+   *  predates it confirms exactly as before. Read through the cached switch in
+   *  `src/lib/booking/shared-line-switch-core.ts`. */
+  shared_confirm_line: boolean;
   updated_at: string;
   updated_by: string | null;
 }
