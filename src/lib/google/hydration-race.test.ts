@@ -41,6 +41,8 @@ interface Fault {
   table: string;
   mode: Mode;
   times: number;
+  /** Matching operations to let through before failing. */
+  skip?: number;
   message: string;
 }
 
@@ -63,12 +65,17 @@ class FakeDb {
     return (this.tables[table] ??= []);
   }
   /** Make the next `times` matching operations fail the way PostgREST does. */
-  fail(table: string, mode: Mode, times = 1, message = "injected failure"): void {
-    this.faults.push({ table, mode, times, message });
+  /** Fail the next `times` matching operations, after letting `skip` of them through. */
+  fail(table: string, mode: Mode, times = 1, message = "injected failure", skip = 0): void {
+    this.faults.push({ table, mode, times, message, skip });
   }
   private takeFault(table: string, mode: Mode): Fault | null {
     const hit = this.faults.find((f) => f.table === table && f.mode === mode && f.times > 0);
     if (!hit) return null;
+    if ((hit.skip ?? 0) > 0) {
+      hit.skip! -= 1;
+      return null;
+    }
     hit.times -= 1;
     return hit;
   }
@@ -328,6 +335,7 @@ vi.mock("@/lib/env", () => ({
 }));
 vi.mock("@/lib/availability/slot-cache", () => ({
   recomputeBucketsForAgent: vi.fn(async () => {}),
+  refreshAgentPoolsAfterPush: vi.fn(async () => null),
   recomputeBucketSlotsForToday: vi.fn(async () => {}),
 }));
 vi.mock("@/lib/after-response", () => ({
@@ -374,7 +382,7 @@ vi.mock("@/lib/google/calendar", async () => {
 
 import { hydrateCalendar, syncByChannel, runIncrementalSync } from "@/lib/google/sync";
 import { calendarsDueForHydration, type HydrationCandidate } from "@/lib/google/hydration";
-import { recomputeBucketsForAgent } from "@/lib/availability/slot-cache";
+import { refreshAgentPoolsAfterPush } from "@/lib/availability/slot-cache";
 import type { AgentCalendar } from "@/lib/db/types";
 
 // ---------------------------------------------------------------------------
@@ -813,7 +821,7 @@ describe("a push sync waits for its slot refresh (#2922)", () => {
 
     let release!: () => void;
     let claimDuringRefresh: string | null | undefined;
-    vi.mocked(recomputeBucketsForAgent).mockImplementationOnce(async (userId) => {
+    vi.mocked(refreshAgentPoolsAfterPush).mockImplementationOnce(async (userId) => {
       expect(userId).toBe(USER_ID);
       claimDuringRefresh = cal().sync_claimed_at;
       await new Promise<void>((r) => (release = r));
@@ -835,5 +843,220 @@ describe("a push sync waits for its slot refresh (#2922)", () => {
     release();
     await expect(pending).resolves.toBe("synced");
     expect(blockFor("evt-new")).toBeTruthy();
+  });
+});
+
+// #3258: a push whose sync changed no busy time refreshes nothing. Production
+// (2026-10-05) measured the push path at two thirds of the Worker's CPU, about
+// 10s a push, and every push refreshed every pool of its agent even when Google's
+// delta held nothing that moves busy time: a title edit, or the echo of the event
+// Slate itself created for a booking, whose pool the booking already refreshed.
+describe("a push refreshes slots only when its sync changed busy time (#3258)", () => {
+  it("refreshes nothing when the delta carried no change", async () => {
+    await bootstrap();
+    vi.mocked(refreshAgentPoolsAfterPush).mockClear();
+    await expect(syncByChannel(CHANNEL)).resolves.toBe("synced");
+    expect(refreshAgentPoolsAfterPush).not.toHaveBeenCalled();
+  });
+
+  it("refreshes nothing when the only change was the event Slate itself created", async () => {
+    await bootstrap();
+    (db.current as FakeDb).seed("bookings", [
+      { id: "bk-1", assigned_user_id: USER_ID, status: "confirmed", gcal_event_id: "evt-slate" },
+    ]);
+    (google.current as FakeGoogle).put("evt-slate", at(DAY + 3), at(DAY + 4));
+    vi.mocked(refreshAgentPoolsAfterPush).mockClear();
+    await expect(syncByChannel(CHANNEL)).resolves.toBe("synced");
+    expect(blockFor("evt-slate")).toBeUndefined();
+    expect(refreshAgentPoolsAfterPush).not.toHaveBeenCalled();
+  });
+
+  it("refreshes nothing when a meeting's title changed and its times did not", async () => {
+    await bootstrap();
+    const g = google.current as FakeGoogle;
+    g.put("evt-renamed", at(DAY + 2), at(DAY + 3));
+    await syncByChannel(CHANNEL);
+    expect(blockFor("evt-renamed")).toBeTruthy();
+    // Google redelivers the event for a title or description edit: same times.
+    g.put("evt-renamed", at(DAY + 2), at(DAY + 3));
+    vi.mocked(refreshAgentPoolsAfterPush).mockClear();
+    await expect(syncByChannel(CHANNEL)).resolves.toBe("synced");
+    expect(refreshAgentPoolsAfterPush).not.toHaveBeenCalled();
+  });
+
+  it("fails the pass, with its token unadvanced, when the read before the upsert fails", async () => {
+    await bootstrap();
+    const tokenBefore = cal().sync_token;
+    const g = google.current as FakeGoogle;
+    g.put("evt-later", at(DAY + 6), at(DAY + 7));
+    (db.current as FakeDb).fail("busy_blocks", "select", 1, "read refused");
+    vi.mocked(refreshAgentPoolsAfterPush).mockClear();
+    await expect(syncByChannel(CHANNEL)).rejects.toThrow(/read before upsert failed/);
+    expect(cal().sync_token).toBe(tokenBefore);
+    expect(blockFor("evt-later")).toBeUndefined();
+    expect(refreshAgentPoolsAfterPush).not.toHaveBeenCalled();
+    // The next pass re-reads the same delta and lands it, refreshing once.
+    await expect(syncByChannel(CHANNEL)).resolves.toBe("synced");
+    expect(blockFor("evt-later")).toBeTruthy();
+    expect(refreshAgentPoolsAfterPush).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes when a meeting kept its id and moved (positive control for the edit case)", async () => {
+    await bootstrap();
+    const g = google.current as FakeGoogle;
+    g.put("evt-moved", at(DAY + 2), at(DAY + 3));
+    await syncByChannel(CHANNEL);
+    g.put("evt-moved", at(DAY + 4), at(DAY + 5));
+    vi.mocked(refreshAgentPoolsAfterPush).mockClear();
+    await syncByChannel(CHANNEL);
+    expect(refreshAgentPoolsAfterPush).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes the agent's pools once when the sync moved busy time (positive control)", async () => {
+    await bootstrap();
+    (google.current as FakeGoogle).put("evt-meeting", at(DAY + 5), at(DAY + 6));
+    vi.mocked(refreshAgentPoolsAfterPush).mockClear();
+    await expect(syncByChannel(CHANNEL)).resolves.toBe("synced");
+    expect(blockFor("evt-meeting")).toBeTruthy();
+    expect(refreshAgentPoolsAfterPush).toHaveBeenCalledTimes(1);
+    expect(refreshAgentPoolsAfterPush).toHaveBeenCalledWith(USER_ID);
+  });
+
+  it("refreshes when a meeting was cancelled, since that frees time", async () => {
+    await bootstrap();
+    const g = google.current as FakeGoogle;
+    g.put("evt-gone", at(DAY + 7), at(DAY + 8));
+    await syncByChannel(CHANNEL);
+    g.cancel("evt-gone");
+    vi.mocked(refreshAgentPoolsAfterPush).mockClear();
+    await syncByChannel(CHANNEL);
+    expect(blockFor("evt-gone")).toBeUndefined();
+    expect(refreshAgentPoolsAfterPush).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #3302 review: the read that tells a retimed row from a redelivered one is paid
+// ONLY by the incremental push sync, the one caller that uses the count. A full
+// resync counts as a change whatever it wrote, and hydration ignores the count, so a
+// bootstrap reading before every upsert batch would be a subrequest bought for nothing.
+describe("only the incremental push sync reads before its upserts (#3302 review)", () => {
+  /** Selects on busy_blocks filtered by event id: the pre upsert read's shape. */
+  function countPreReads(): () => number {
+    const fake = db.current as FakeDb;
+    const original = fake.run.bind(fake);
+    let n = 0;
+    fake.run = (q: FakeQuery) => {
+      if (
+        q.table === "busy_blocks" &&
+        q.mode === "select" &&
+        q.filters.some((f) => f.kind === "in" && f.column === "gcal_event_id")
+      ) {
+        n += 1;
+      }
+      return original(q);
+    };
+    return () => n;
+  }
+
+  it("hydration makes no pre read", async () => {
+    (db.current as FakeDb).seed("agent_calendars", [calendarRow()]);
+    (google.current as FakeGoogle).put("evt-a", at(DAY + 1), at(DAY + 2));
+    const reads = countPreReads();
+    expect((await hydrateCalendar(cal())).ok).toBe(true);
+    expect(reads()).toBe(0);
+  });
+
+  it("a full resync (no token yet) makes no pre read", async () => {
+    (db.current as FakeDb).seed("agent_calendars", [calendarRow()]);
+    (google.current as FakeGoogle).put("evt-b", at(DAY + 1), at(DAY + 2));
+    const reads = countPreReads();
+    await expect(syncByChannel(CHANNEL)).resolves.toBe("synced");
+    expect(blockFor("evt-b")).toBeTruthy();
+    expect(reads()).toBe(0);
+  });
+
+  it("the cron's incremental sync makes no pre read", async () => {
+    await bootstrap();
+    (google.current as FakeGoogle).put("evt-c", at(DAY + 1), at(DAY + 2));
+    const reads = countPreReads();
+    await runIncrementalSync(USER_ID);
+    expect(blockFor("evt-c")).toBeTruthy();
+    expect(reads()).toBe(0);
+  });
+
+  it("the incremental push sync does make it (positive control)", async () => {
+    await bootstrap();
+    (google.current as FakeGoogle).put("evt-d", at(DAY + 1), at(DAY + 2));
+    const reads = countPreReads();
+    await syncByChannel(CHANNEL);
+    expect(reads()).toBe(1);
+  });
+});
+
+// #3302 lessons review: a push sync whose first pass moved busy time and whose
+// second pass then threw used to lose the refresh, because the throw left the
+// function before the refresh ran. Busy time that moved must still be refreshed.
+describe("a push sync refreshes what moved even when a later pass throws (#3302)", () => {
+  it("refreshes once, then rethrows", async () => {
+    await bootstrap();
+    const g = google.current as FakeGoogle;
+    g.put("evt-first", at(DAY + 1), at(DAY + 2));
+    g.midFetch = async () => {
+      // A second push lands during pass 1, so a second pass runs, and Google
+      // fails that second fetch.
+      const row = (db.current as FakeDb).rows("agent_calendars").find((r) => r.id === CAL_ID)!;
+      row.sync_pending = true;
+      g.midFetch = async () => {
+        throw new Error("google down on pass 2");
+      };
+    };
+    vi.mocked(refreshAgentPoolsAfterPush).mockClear();
+    await expect(syncByChannel(CHANNEL)).rejects.toThrow(/google down on pass 2/);
+    expect(blockFor("evt-first")).toBeTruthy();
+    expect(refreshAgentPoolsAfterPush).toHaveBeenCalledTimes(1);
+    expect(cal().sync_claimed_at).toBeNull();
+  });
+
+  it("refreshes nothing when the pass that threw was the only one (control)", async () => {
+    await bootstrap();
+    const g = google.current as FakeGoogle;
+    g.put("evt-x", at(DAY + 1), at(DAY + 2));
+    g.midFetch = async () => {
+      throw new Error("google down on pass 1");
+    };
+    vi.mocked(refreshAgentPoolsAfterPush).mockClear();
+    await expect(syncByChannel(CHANNEL)).rejects.toThrow(/pass 1/);
+    expect(refreshAgentPoolsAfterPush).not.toHaveBeenCalled();
+  });
+});
+
+// #3302 lessons review: a pass that throws after it began writing busy time may have
+// moved some, and a retry would find those rows already stored and count zero, so
+// it is treated as having moved: the refresh runs, and the error is rethrown.
+describe("a pass that fails part way through its writes still refreshes (#3302)", () => {
+  it("refreshes once and rethrows when the second upsert chunk fails", async () => {
+    await bootstrap();
+    const g = google.current as FakeGoogle;
+    // More than one upsert chunk (500 rows each).
+    for (let i = 0; i < 501; i++) g.put(`evt-bulk-${i}`, at(DAY + 1 + (i % 50) / 10), at(DAY + 2 + (i % 50) / 10));
+    (db.current as FakeDb).fail("busy_blocks", "upsert", 1, "chunk 2 refused", 1);
+    vi.mocked(refreshAgentPoolsAfterPush).mockClear();
+    await expect(syncByChannel(CHANNEL)).rejects.toThrow(/chunk 2 refused/);
+    expect(blockFor("evt-bulk-0")).toBeTruthy();
+    expect(refreshAgentPoolsAfterPush).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes once and rethrows when the delete after the upserts fails", async () => {
+    await bootstrap();
+    const g = google.current as FakeGoogle;
+    g.put("evt-keep", at(DAY + 1), at(DAY + 2));
+    g.put("evt-drop", at(DAY + 3), at(DAY + 4));
+    await syncByChannel(CHANNEL);
+    g.put("evt-new", at(DAY + 5), at(DAY + 6));
+    g.cancel("evt-drop");
+    (db.current as FakeDb).fail("busy_blocks", "delete", 1, "delete refused");
+    vi.mocked(refreshAgentPoolsAfterPush).mockClear();
+    await expect(syncByChannel(CHANNEL)).rejects.toThrow(/delete refused/);
+    expect(refreshAgentPoolsAfterPush).toHaveBeenCalledTimes(1);
   });
 });

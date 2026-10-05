@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // FAILS rather than reading as done.
 
 const precompute = vi.hoisted(() => ({
-  bucketsForAgent: vi.fn(async (): Promise<string[]> => []),
+  bucketsForAgent: vi.fn(async (_userId?: string): Promise<string[]> => []),
   listPoolBuckets: vi.fn(async (): Promise<unknown[]> => []),
   computeBucketSlotsForWindow: vi.fn(async (code: string): Promise<unknown> => ({
     bucket: { code },
@@ -29,7 +29,13 @@ vi.mock("@/lib/booking/settings", () => ({ loadBookingHorizonDays: vi.fn(async (
 const log = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }));
 vi.mock("@/lib/log", () => ({ log }));
 
-import { refreshPoolAfterBooking, readPoolInputsAfterBooking, resetBookingRefreshesForTests } from "./slot-cache";
+import {
+  refreshPoolAfterBooking,
+  readPoolInputsAfterBooking,
+  resetBookingRefreshesForTests,
+  refreshAgentPoolsAfterPush,
+  MAX_PUSH_POOLS_PER_CALL,
+} from "./slot-cache";
 import { searchWindowDays } from "./bookable-days";
 
 function pooled(code: string, debtTeam: string) {
@@ -188,5 +194,105 @@ describe("resetBookingRefreshesForTests clears the reads only arm (#3258)", () =
     await vi.advanceTimersByTimeAsync(0);
     expect(service.loadBucketSlotInputs).toHaveBeenCalledTimes(2);
     await second;
+  });
+});
+
+// #3258: the Google push path's refresh, measured in production at two thirds of
+// the Worker's CPU beside every lead facing confirm timeout, goes through the SAME
+// per pool coalescing as the booking refresh, and is bounded per push.
+describe("refreshAgentPoolsAfterPush (#3258)", () => {
+  const HIGH = ["311", "312"].map((c) => pooled(c, "high"));
+
+  it("shares the booking refresh's window: a push right after a booking computes nothing of its own yet", async () => {
+    precompute.bucketsForAgent.mockResolvedValue(["211"]);
+    const booking = refreshPoolAfterBooking("212");
+    await vi.advanceTimersByTimeAsync(0);
+    await booking;
+    expect(precompute.computeBucketSlotsForWindow).toHaveBeenCalledTimes(1);
+    const push = refreshAgentPoolsAfterPush("agent-1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(precompute.computeBucketSlotsForWindow).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const out = await push;
+    expect(precompute.computeBucketSlotsForWindow).toHaveBeenCalledTimes(2);
+    expect(out).toEqual({ refreshed: 1, deferred: 0, failed: 0, debounced: 0 });
+  });
+
+  it("computes at most MAX_PUSH_POOLS_PER_CALL pools and leaves the rest to the recompute lane", async () => {
+    precompute.listPoolBuckets.mockResolvedValue([...LOW, ...MID, ...HIGH]);
+    precompute.bucketsForAgent.mockResolvedValue(["111", "211", "311"]);
+    const push = refreshAgentPoolsAfterPush("agent-1");
+    await vi.advanceTimersByTimeAsync(0);
+    const out = await push;
+    expect(MAX_PUSH_POOLS_PER_CALL).toBeLessThan(3);
+    expect(precompute.computeBucketSlotsForWindow).toHaveBeenCalledTimes(MAX_PUSH_POOLS_PER_CALL);
+    expect(out).toEqual({ refreshed: MAX_PUSH_POOLS_PER_CALL, deferred: 3 - MAX_PUSH_POOLS_PER_CALL, failed: 0, debounced: 0 });
+    expect(log.info).toHaveBeenCalledWith(
+      "slot-cache",
+      expect.objectContaining({ msg: "agent pools refreshed after push", deferred: 3 - MAX_PUSH_POOLS_PER_CALL }),
+    );
+  });
+
+  // #3302 lessons review: the bound must not starve the same pools forever.
+  it("rotates which pools a bounded push refreshes, so every pool gets its turn", async () => {
+    precompute.listPoolBuckets.mockResolvedValue([...LOW, ...MID, ...HIGH]);
+    precompute.bucketsForAgent.mockResolvedValue(["111", "211", "311"]);
+    const seen = new Set<string>();
+    const picks: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      precompute.storeBucketSlotsRow.mockClear();
+      const push = refreshAgentPoolsAfterPush("agent-1");
+      await vi.advanceTimersByTimeAsync(0);
+      await push;
+      // The tier digit names the pool here: LOW is 1xx, MID 2xx, HIGH 3xx.
+      const pools = [...new Set(precompute.storeBucketSlotsRow.mock.calls.map((c) => String(c[0]).charAt(0)))].sort();
+      picks.push(pools.join(","));
+      pools.forEach((tier) => seen.add(tier));
+      await vi.advanceTimersByTimeAsync(20_000); // past the window, so nothing joins
+    }
+    expect([...seen].sort()).toEqual(["1", "2", "3"]);
+    expect(new Set(picks).size).toBeGreaterThan(1);
+  });
+
+  // #3302 advisory review: one isolate wide counter, stepped by pushes from agents
+  // with different pool counts, can leave one agent's offset stuck. Three agents
+  // interleaved step it by three a round, which pins an agent with three pools to
+  // the same two forever. Rotation is per agent.
+  it("covers every pool of an agent when pushes from agents with different pool counts interleave", async () => {
+    precompute.listPoolBuckets.mockResolvedValue([...LOW, ...MID, ...HIGH]);
+    const pools: Record<string, string[]> = {
+      "agent-1": ["111", "211", "311"],
+      "agent-2": ["111", "211"],
+      "agent-3": ["311"],
+    };
+    precompute.bucketsForAgent.mockImplementation(async (userId?: string) => pools[userId ?? ""] ?? []);
+    const seen = new Set<string>();
+    for (let round = 0; round < 3; round++) {
+      for (const agent of ["agent-1", "agent-2", "agent-3"]) {
+        precompute.storeBucketSlotsRow.mockClear();
+        const push = refreshAgentPoolsAfterPush(agent);
+        await vi.advanceTimersByTimeAsync(0);
+        await push;
+        if (agent === "agent-1") {
+          precompute.storeBucketSlotsRow.mock.calls.forEach((c) => seen.add(String(c[0]).charAt(0)));
+        }
+        await vi.advanceTimersByTimeAsync(20_000);
+      }
+    }
+    expect([...seen].sort()).toEqual(["1", "2", "3"]);
+  });
+
+  it("never throws: a failed pool is counted and the push carries on", async () => {
+    precompute.bucketsForAgent.mockResolvedValue(["211"]);
+    precompute.computeBucketSlotsForWindow.mockResolvedValueOnce(null);
+    const push = refreshAgentPoolsAfterPush("agent-1");
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(push).resolves.toEqual({ refreshed: 0, deferred: 0, failed: 1, debounced: 0 });
+  });
+
+  it("answers null, and logs, when the agent's buckets cannot be read", async () => {
+    precompute.bucketsForAgent.mockRejectedValueOnce(new Error("users read refused"));
+    await expect(refreshAgentPoolsAfterPush("agent-1")).resolves.toBeNull();
+    expect(log.error).toHaveBeenCalled();
   });
 });

@@ -140,6 +140,35 @@ export type BusyBlockRow = {
 };
 
 /**
+ * How many of `upserts` MOVE busy time against the rows already stored (#3258): a
+ * row with no stored counterpart, or one whose start or end differs. Google
+ * redelivers an event for a title or description edit with the same times, and an
+ * upsert of it changes nothing any slot compute reads. Compared as instants, never
+ * as strings, because the store answers `+00:00` where the event wrote `Z`; an
+ * unreadable or missing stamp on either side counts as moved, the side that never
+ * under refreshes.
+ */
+export function movedBusyRows(
+  upserts: BusyBlockRow[],
+  stored: { gcal_event_id: string | null; starts_at: string | null; ends_at: string | null }[],
+): number {
+  const byEvent = new Map(stored.map((r) => [r.gcal_event_id, r]));
+  let moved = 0;
+  for (const u of upserts) {
+    const was = byEvent.get(u.gcal_event_id);
+    const same =
+      was !== undefined &&
+      (() => {
+        const a = [parseStampMs(u.starts_at), parseStampMs(u.ends_at)];
+        const b = [parseStampMs(was.starts_at), parseStampMs(was.ends_at)];
+        return a.every((v) => v !== null) && a[0] === b[0] && a[1] === b[1];
+      })();
+    if (!same) moved += 1;
+  }
+  return moved;
+}
+
+/**
  * Split a batch of events into the busy-block rows to upsert and the event ids
  * to delete (cancelled/free/timeless). Pure, so `applyEvents` can persist them
  * in BULK — one batched DB call per chunk instead of one write per event. The

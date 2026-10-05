@@ -222,15 +222,20 @@ Measured on 2026-09-30: 145 of 165 Google pushes in one hour were cancelled, eac
 invocation running 28 to 34 seconds of wall time and 15 to 24 seconds of CPU. The
 calendar sync finished (no `sync_claimed_at` claim was left behind, which a sync
 cut off mid pass would leave); the slot refresh after it recomputed every bucket
-CODE the agent is in, one after another, at about four seconds each. It now
-computes once per pool and stops starting pools after `AGENT_RECOMPUTE_BUDGET_MS`
-(`src/lib/availability/slot-cache.ts`), leaving the rest to the every minute
-recompute lane.
+CODE the agent is in, one after another, at about four seconds each. #2923 made it
+compute once per pool inside a time budget. Since #3258 (production, 2026-10-05:
+the push path was two thirds of the Worker's CPU and overlapped every lead facing
+confirm timeout) it refreshes only when the sync actually moved busy time, goes
+through the booking refresh's per pool coalescing window, and refreshes at most
+`MAX_PUSH_POOLS_PER_CALL` pools a push (`refreshAgentPoolsAfterPush` in
+`src/lib/availability/slot-cache.ts`), leaving the rest to the every minute
+recompute lane, which refreshes every pool within its four minute window.
 
 **Measuring it.** A push whose work finished logs
 `tag=google-push msg="push work finished"` with its outcome and elapsed `ms`, and
-each agent refresh logs `tag=slot-cache msg="agent pools recomputed"` with how
-many pools it refreshed, deferred, failed and debounced. The cancel rate is the
+each push refresh logs `tag=slot-cache msg="agent pools refreshed after push"` with
+how many pools it refreshed, deferred and failed. A push whose sync moved no busy
+time logs no refresh line at all. The cancel rate is the
 count of cancellation warnings on invocations whose `$metadata.message` includes
 `/api/google/push`, against the count of `push work finished` lines over the same
 window. Both sides are needed: the finished count alone cannot tell a quiet hour
