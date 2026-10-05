@@ -997,6 +997,9 @@ export interface BookingContext {
   agentWorkingHours?: { timezone: string; rules: WorkingRule[] };
 }
 
+/** A booked call as the slot refresh needs it: who holds it, and when (#3324). */
+export type BookedWindow = { userId: string; startsAt: string; endsAt: string };
+
 /** Every side effect the orchestration needs. `service.ts` wires the real ones. */
 export interface BookingDeps {
   // availability / routing
@@ -1647,13 +1650,12 @@ export interface BookingDeps {
   /**
    * Best-effort clear of a bucket's cached availability after a booking changes it.
    * A create passes the booked advisor and window (#3324), once its busy block has
-   * committed, so the time can be spliced out of every pool that advisor serves;
-   * the cancel, reschedule and reassign steps pass none and refresh the code's pool.
+   * committed, so the time can be spliced out of every pool that advisor serves. A
+   * reschedule or reassign also passes the window the booking LEFT (`freed`, #3334),
+   * which goes back on offer in every pool the old advisor serves. The cancel step
+   * passes none and refreshes the code's pool.
    */
-  invalidateSlots(
-    bucketCode: string,
-    booked?: { userId: string; startsAt: string; endsAt: string },
-  ): Promise<void>;
+  invalidateSlots(bucketCode: string, booked?: BookedWindow & { freed?: BookedWindow }): Promise<void>;
   /**
    * Persist one routing decision to the decision log and fire a misroute alert if
    * warranted (#504). Injected (rather than called as a module function) so tests
@@ -3006,6 +3008,44 @@ async function removeOwnerAlert(deps: BookingDeps, alert: OwnerAlertEvent): Prom
   await deps.markOwnerAlertRemoved(alert.id);
 }
 
+/**
+ * What a reschedule's or reassign's slot refresh hands the splice (#3334): the call
+ * as the booking now holds it, and the call as it was before the move.
+ *
+ * The step runs after the commit, so the booking row already holds the NEW time and
+ * advisor; the old ones come from the payload the move recorded at enqueue. The
+ * payload records where the old call STARTED, not where it ended, so its end is the
+ * start plus the call's length, which a move keeps (a reschedule takes the event
+ * type's duration and a reassign never touches the time). Were the length ever to
+ * differ, the freed window would be narrower by the difference, and the starts it
+ * missed would wait for the lane: withheld, the safe side.
+ *
+ * `undefined` means the code's pool refresh runs instead, for a row that cannot say
+ * where the call was (nothing to judge as freed, and a half splice would leave the
+ * old time withheld in the booked code's pool too) or a booking with nobody on it.
+ * An old advisor of null means nobody held the call, so only the time taken is
+ * spliced.
+ */
+function movedWindows(
+  booking: Booking,
+  payload: BookingOutbox["payload"],
+): (BookedWindow & { freed?: BookedWindow }) | undefined {
+  if (!booking.assigned_user_id || !payload.fromStartsIso || payload.fromAgentUserId === undefined) return undefined;
+  const taken = { userId: booking.assigned_user_id, startsAt: booking.starts_at, endsAt: booking.ends_at };
+  if (payload.fromAgentUserId === null) return taken;
+  const fromMs = Date.parse(payload.fromStartsIso);
+  const lengthMs = Date.parse(booking.ends_at) - Date.parse(booking.starts_at);
+  if (!Number.isFinite(fromMs) || !Number.isFinite(lengthMs)) return undefined;
+  return {
+    ...taken,
+    freed: {
+      userId: payload.fromAgentUserId,
+      startsAt: payload.fromStartsIso,
+      endsAt: new Date(fromMs + lengthMs).toISOString(),
+    },
+  };
+}
+
 export const OUTBOX_HANDLERS: OutboxHandlers = {
   [CANCEL_STEPS.GCAL_DELETE]: async (deps, row) => {
     if (!row.booking_id) return;
@@ -3093,7 +3133,9 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
   [RESCHEDULE_STEPS.RECOMPUTE]: async (deps, row) => {
     if (!row.booking_id) return;
     const ctx = await deps.loadBookingById(row.booking_id);
-    if (ctx) await deps.invalidateSlots(ctx.bucket.code);
+    // #3334: both windows, so the new time leaves, and the old one returns to, every
+    // pool the advisors serve rather than only this code's.
+    if (ctx) await deps.invalidateSlots(ctx.bucket.code, movedWindows(ctx.booking, row.payload));
   },
   /**
    * #2371: the call moved, so the warning moves with it. The advisor keeps it, which
@@ -3216,7 +3258,8 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
   [REASSIGN_STEPS.RECOMPUTE]: async (deps, row) => {
     if (!row.booking_id) return;
     const ctx = await deps.loadBookingById(row.booking_id);
-    if (ctx) await deps.invalidateSlots(ctx.bucket.code);
+    // #3334: the same time, taken by the new advisor and left by the old one.
+    if (ctx) await deps.invalidateSlots(ctx.bucket.code, movedWindows(ctx.booking, row.payload));
   },
   [REASSIGN_STEPS.NOTIFY]: async (deps, row) => {
     if (!row.booking_id) return;

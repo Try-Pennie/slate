@@ -27,8 +27,8 @@ export const ALLOWED_PER_CODE_RECOMPUTE: Record<string, { count: number; why: st
     count: 1,
     why:
       "invalidateSlots on the cron drains: ONE booking's own bucket, the #503 float, " +
-      "debounced per bucket. The user facing paths splice a create's window (#3324) or " +
-      "refresh the POOL, coalesced (#3258)",
+      "debounced per bucket. The user facing paths splice a create's window (#3324) and " +
+      "a move's two (#3334), or refresh the POOL for a cancel, coalesced (#3258)",
   },
   "src/app/api/cron/monitor/route.ts": {
     count: 1,

@@ -7,7 +7,7 @@ import {
   splicePayload,
   windowsOverlap,
   type SlotLists,
-  type SpliceWindow,
+  type SplicePart,
 } from "./slot-splice.ts";
 
 /**
@@ -265,7 +265,7 @@ export const FENCE_PATH = "payload->splice->>fenceAt";
 /** What a splice did. `recompute` means its answer may predate something that has
  *  landed since (a settings save, or another booking overlapping its window), so the
  *  caller computes the window again rather than splicing a stale answer in.
- *  `unchanged` means the booking removed nothing this row offers, so nothing was
+ *  `unchanged` means the splice changed nothing this row offers, so nothing was
  *  written (#3324 review: a write per code is the part of a splice that scales). */
 export type SpliceRowOutcome = "spliced" | "unchanged" | "no-row" | "recompute" | "failed";
 
@@ -275,38 +275,47 @@ export type SpliceRowOutcome = "spliced" | "unchanged" | "no-row" | "recompute" 
  * `changed` when the row moved since that read; the caller then reads it afresh
  * through `spliceSlotRow`.
  *
- * A splice that removes nothing is not written. Its only other effect would be the
- * fence, and the fence protects times a splice REMOVED: with none removed, the row
- * already agrees with the booking inside the window. (The one residue: a row that
- * was already missing a time a stale full compute would re-add. That time was free
- * when that compute began, verify on book re-checks it live, and the next compute
- * past the booking corrects it.)
+ * A splice that changes nothing is not written. Its only other effect would be the
+ * fence, and the fence protects what a splice changed: with nothing changed, the row
+ * already agrees with the fresh answer inside every window. (The one residue: a row
+ * that was already missing a time a stale writer would add back, a full compute that
+ * began before a booking or, since #3334, a move's re-offer computed before one. That
+ * time was free when that writer began, verify on book re-checks it live, and the
+ * next compute past the booking corrects it.)
+ *
+ * A move passes two windows (#3334): the one it took and the one it left. Both land
+ * in one compare and swap, a fresh fence overlapping EITHER sends it back to compute
+ * again, and each window gets a fence of its own.
  */
 export async function spliceFromRead(
   db: SlotRowDb,
   code: string,
   row: StoredSlotRow,
-  w: SpliceWindow,
-  judge: SlotLists,
+  parts: SplicePart[],
   fenceAtMs: number,
   computeStartedMs: number,
 ): Promise<SpliceRowOutcome | "changed"> {
   const p = row.payload as (Record<string, unknown> & SlotLists) | null;
   if (!p || typeof p !== "object" || !Array.isArray(p.slots)) return "no-row";
+  if (parts.length === 0) return "unchanged";
   const invalidatedMs = row.invalidated_at ? Date.parse(row.invalidated_at) : Number.NaN;
   if (Number.isFinite(invalidatedMs) && invalidatedMs >= computeStartedMs) return "recompute";
-  if (freshFences(spliceMetaOf(p), computeStartedMs).some((f) => windowsOverlap(f, w))) return "recompute";
+  const fresh = freshFences(spliceMetaOf(p), computeStartedMs);
+  if (fresh.some((f) => parts.some((part) => windowsOverlap(f, part.w)))) return "recompute";
   // parse-ok: an unreadable stamp keeps every fence (0 drops none), the safe direction.
   const storedMs = Date.parse(row.computed_at);
-  const next = splicePayload(p, w, judge, fenceAtMs, Number.isFinite(storedMs) ? storedMs : 0);
-  // A splice only removes, so equal lengths mean equal lists.
-  const removedNothing =
-    next.slots.length === p.slots.length &&
-    (next.slotsWithoutLow?.length ?? 0) === (Array.isArray(p.slotsWithoutLow) ? p.slotsWithoutLow.length : 0);
-  if (removedNothing) return "unchanged";
+  const next = splicePayload(p, parts, fenceAtMs, Number.isFinite(storedMs) ? storedMs : 0);
+  // Compared by content, not length: a move's freed window can put a time back
+  // while its taken window drops one (#3334).
+  const unchanged =
+    sameList(next.slots, p.slots) &&
+    sameList(next.slotsWithoutLow ?? [], Array.isArray(p.slotsWithoutLow) ? p.slotsWithoutLow : []);
+  if (unchanged) return "unchanged";
   const swapped = await swapRow(db, code, row, { payload: next });
   return swapped === "swapped" ? "spliced" : swapped;
 }
+
+const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
 
 /** Every listed code's row in ONE read (#3324 review), keyed by code. A code with
  *  no row is absent. Throws on a read error, which is "could not tell", never "no
@@ -341,8 +350,7 @@ export async function readSlotRows(db: SlotRowDb, codes: string[]): Promise<Map<
 export async function spliceSlotRow(
   db: SlotRowDb,
   code: string,
-  w: SpliceWindow,
-  judge: SlotLists,
+  parts: SplicePart[],
   fenceAtMs: number,
   computeStartedMs: number,
 ): Promise<SpliceRowOutcome> {
@@ -353,7 +361,7 @@ export async function spliceSlotRow(
       return "failed";
     }
     if (!row) return "no-row";
-    const result = await spliceFromRead(db, code, row, w, judge, fenceAtMs, computeStartedMs);
+    const result = await spliceFromRead(db, code, row, parts, fenceAtMs, computeStartedMs);
     if (result !== "changed") return result;
   }
   log.warn("precompute", { msg: "slot row kept changing under a splice; left to the lane", bucket: code });

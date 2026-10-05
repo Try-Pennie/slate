@@ -47,9 +47,10 @@ export function bookedSpliceIo(
 
     // Three reads for every pool together: the buckets with their event types, the
     // active manual members, and the bookable advisors with their attributes. The
-    // advisor's pools, and who each routes to, are then worked out in memory by the
+    // advisors' pools, and who each routes to, are then worked out in memory by the
     // same judges the live reads use (`bucketsMatchingAgent`, `eligibleFromRoster`).
-    loadPlan: async (userId) => {
+    // Still three for a move's two advisors (#3334): both are judged from one roster.
+    loadPlan: async (userIds) => {
       const [bucketsRes, membersRes, usersRes, businessHours] = await Promise.all([
         db.from("buckets").select("*, event_types(*)"),
         db.from("bucket_members").select("bucket_id, user_id").eq("active", true),
@@ -68,56 +69,66 @@ export function bookedSpliceIo(
         attributes: Attributes | null;
       }[];
 
-      const advisor = users.find((u) => u.id === userId);
-      // Not bookable any more, so no pool routes to them and no row offers their time.
-      if (!advisor) return [];
-
       const manualByBucket = new Map<string, string[]>();
       for (const m of members) manualByBucket.set(m.bucket_id, [...(manualByBucket.get(m.bucket_id) ?? []), m.user_id]);
-      const orgBuckets = buckets.filter((b) => b.org_id === advisor.org_id);
-      const mine = new Set(
-        bucketsMatchingAgent(
-          advisor.id,
-          advisor.attributes ?? {},
-          orgBuckets.map((b) => ({
-            code: b.code,
-            criteria: b.criteria ?? {},
-            manualMemberIds: manualByBucket.get(b.id) ?? [],
-            fallbackUserId: b.fallback_user_id,
-          })),
-        ),
-      );
-      const orgAgents = users
-        .filter((u) => u.org_id === advisor.org_id)
-        .map((u) => ({ id: u.id, attributes: u.attributes ?? {} }));
 
-      const pooled = orgBuckets.map((b) => ({
-        code: b.code,
-        bucket: b,
-        orgId: b.org_id,
-        eventTypeId: b.event_type_id,
-        criteria: b.criteria ?? null,
-        fallbackUserId: b.fallback_user_id,
-        memberIds: manualByBucket.get(b.id) ?? [],
-      }));
-      const plans: PoolPlan<SplicePoolCtx>[] = [];
-      for (const group of groupByPool(pooled).values()) {
-        if (!group.some((m) => mine.has(m.code))) continue;
-        const rep = group[0]!;
-        const { event_types: eventType, ...bucket } = rep.bucket;
-        if (!eventType) {
-          log.warn("slot-cache", { msg: "splice skipped a pool with no event type", bucket: rep.code, context });
-          continue;
+      // Keyed by the pool's representative code, so a pool both advisors serve is
+      // planned once and names both of them.
+      const plans = new Map<string, PoolPlan<SplicePoolCtx>>();
+      for (const userId of new Set(userIds)) {
+        const advisor = users.find((u) => u.id === userId);
+        // Not bookable any more, so no pool routes to them and no row offers their time.
+        if (!advisor) continue;
+        const orgBuckets = buckets.filter((b) => b.org_id === advisor.org_id);
+        const mine = new Set(
+          bucketsMatchingAgent(
+            advisor.id,
+            advisor.attributes ?? {},
+            orgBuckets.map((b) => ({
+              code: b.code,
+              criteria: b.criteria ?? {},
+              manualMemberIds: manualByBucket.get(b.id) ?? [],
+              fallbackUserId: b.fallback_user_id,
+            })),
+          ),
+        );
+        const orgAgents = users
+          .filter((u) => u.org_id === advisor.org_id)
+          .map((u) => ({ id: u.id, attributes: u.attributes ?? {} }));
+
+        const pooled = orgBuckets.map((b) => ({
+          code: b.code,
+          bucket: b,
+          orgId: b.org_id,
+          eventTypeId: b.event_type_id,
+          criteria: b.criteria ?? null,
+          fallbackUserId: b.fallback_user_id,
+          memberIds: manualByBucket.get(b.id) ?? [],
+        }));
+        for (const group of groupByPool(pooled).values()) {
+          if (!group.some((m) => mine.has(m.code))) continue;
+          const rep = group[0]!;
+          const planned = plans.get(rep.code);
+          if (planned) {
+            planned.servedBy.push(advisor.id);
+            continue;
+          }
+          const { event_types: eventType, ...bucket } = rep.bucket;
+          if (!eventType) {
+            log.warn("slot-cache", { msg: "splice skipped a pool with no event type", bucket: rep.code, context });
+            continue;
+          }
+          const eligible = eligibleFromRoster(bucket, orgAgents, new Set(rep.memberIds));
+          plans.set(rep.code, {
+            codes: group.map((m) => m.code),
+            servedBy: [advisor.id],
+            eventType,
+            memberIds: eligible.ids,
+            ctx: { bucket, eventType, lowIds: eligible.lowIds, businessHours },
+          });
         }
-        const eligible = eligibleFromRoster(bucket, orgAgents, new Set(rep.memberIds));
-        plans.push({
-          codes: group.map((m) => m.code),
-          eventType,
-          memberIds: eligible.ids,
-          ctx: { bucket, eventType, lowIds: eligible.lowIds, businessHours },
-        });
       }
-      return plans;
+      return [...plans.values()];
     },
 
     loadSchedules: async (userIds) => {
@@ -150,11 +161,17 @@ export function bookedSpliceIo(
     },
 
     // busy_blocks is a growth table, so it is paged past PostgREST's 1,000 row cap
-    // (#828), ordered by id (#3273), and throws on a read error.
-    loadBusy: (userIds, from, to) =>
-      selectAllPages<{ user_id: string; starts_at: string; ends_at: string }>("splice busy_blocks", "id", () =>
-        db.from("busy_blocks").select("user_id, starts_at, ends_at").in("user_id", userIds).lt("starts_at", to).gt("ends_at", from),
-      ),
+    // (#828), ordered by id (#3273), and throws on a read error. A move's two
+    // windows are one statement too (#3334): an `or` of one overlap test per span,
+    // so two times days apart read their own blocks and not every block between.
+    loadBusy: async (userIds, spans) => {
+      if (spans.length === 0) return [];
+      return selectAllPages<{ user_id: string; starts_at: string; ends_at: string }>("splice busy_blocks", "id", () => {
+        const q = db.from("busy_blocks").select("user_id, starts_at, ends_at").in("user_id", userIds);
+        if (spans.length === 1) return q.lt("starts_at", spans[0]!.to).gt("ends_at", spans[0]!.from);
+        return q.or(spans.map((s) => `and(starts_at.lt.${s.to},ends_at.gt.${s.from})`).join(","));
+      });
+    },
 
     compute: (pool, members, range, nowMs) =>
       computeSlotsFromInputs(
@@ -172,9 +189,8 @@ export function bookedSpliceIo(
       ),
 
     readRows: (codes) => readSlotRows(db, codes),
-    writeFromRead: (code, row, w, judge, fenceAtMs, startedMs) =>
-      spliceFromRead(db, code, row, w, judge, fenceAtMs, startedMs),
-    writeSplice: (code, w, judge, fenceAtMs, startedMs) => spliceSlotRow(db, code, w, judge, fenceAtMs, startedMs),
+    writeFromRead: (code, row, parts, fenceAtMs, startedMs) => spliceFromRead(db, code, row, parts, fenceAtMs, startedMs),
+    writeSplice: (code, parts, fenceAtMs, startedMs) => spliceSlotRow(db, code, parts, fenceAtMs, startedMs),
     // Set by the caller, which owns the edge cache.
     invalidate: async () => {},
     warn: (msg, err) => log.warn("slot-cache", { msg, bucket: context }, err),
