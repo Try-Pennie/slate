@@ -323,18 +323,70 @@ node --experimental-strip-types scripts/loadtest/book.ts
   under `SLATE_LOADTEST` only. A CI runner sits behind egress NAT, so it cannot work
   out for itself which address the ceiling was keyed on, and a run that assumed its
   own would report the limiter refusing IT when something else spent the budget.
+- **What the deployment says about each confirm is recorded too** (#3325), on five
+  more headers sent under `SLATE_LOADTEST` only: which confirm line served it
+  (`x-loadtest-confirm-line`: `shared`, `isolate` or `fallback`), why
+  (`x-loadtest-confirm-line-reason`), under which kind of key
+  (`x-loadtest-confirm-line-key`: `ladder`, `code`, `link` or `none`), the whole
+  milliseconds the confirm spent in calls to the line (`x-loadtest-confirm-line-ms`),
+  and the deployment's own epoch milliseconds when it built the answer
+  (`x-loadtest-answered-at`). The names, the allowed values, the builders the
+  deployment writes through and the parser the driver reads through are ONE
+  definition in `src/lib/loadtest-echo.ts`. Each field is recorded as read, as
+  **unreadable** with what was sent (a value the contract does not know), or as
+  **absent**, so a header that never arrived is never recorded as a value, least of
+  all as a zero. The answer stamp is on every answer the booking route gives,
+  stamped where the handler is wrapped; the line headers come from the shared
+  confirm line itself.
 - **A bucket offering nothing is RECORDED**, with an outcome of its own, rather than
   skipped in silence. An offered-nothing run and a run nobody drove otherwise
   produce the same empty file.
 
 ### The burst
 
-`MODE=burst` with `START_AT` (epoch ms), `BURST_SLOT` and `BURST_CODE_OVERRIDE`,
-all chosen **once** by the setup step (`scripts/loadtest/burst-setup.ts`) and
-handed to every driver, because a burst whose drivers each chose their own time is
-not a burst: nothing contends and everything succeeds. The code is passed through
-rather than re-derived in the driver, so the two cannot fire at different pools
-while each reads as correct (L70).
+`MODE=burst` with `BURST_PLAN`, ONE value chosen **once** by the setup step
+(`scripts/loadtest/burst-setup.ts`) and handed to every driver: the burst's code and
+its sibling, and for each of the run's **three** bursts one slot and one moment
+(#3325). A burst whose drivers each chose their own time is not a burst: nothing
+contends and everything succeeds. The plan is passed through rather than re-derived
+in the driver, so the two cannot fire at different codes, slots or moments while
+each reads as correct (L70). The driver reads it strictly (`readBurstPlan` in
+`book-plan.ts`) and refuses a plan it cannot read by name.
+
+```
+SLATE_BASE=https://<loadtest>.workers.dev BOOKING_API_KEY=<key> RUN_ID=<run> \
+DRIVER=0 OUT=results/burst-0.json MODE=burst BURST_PLAN='<the setup step's burst_plan>' \
+node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/book.ts
+```
+
+**Three bursts, each judged on its own** (#3325). One burst is one spread of
+simultaneous requests over the deployment's isolates, and one lucky spread can pass
+a run that a second would fail (L395). So the setup picks three slots at least an
+hour apart (`BURST_SLOT_GAP_MS`, longer than any appointment plus its buffers, so no
+burst's bookings overlap another burst's slot) and three moments a minute apart
+(`BURST_SPACING_MS`, twice a request's own abort bound, so one burst is over before
+the next fires). Each driver fires all three and writes **one file per burst**,
+`burst-<driver>-leg-<k>.json`, each carrying which burst it holds. A driver that
+wakes late for one burst fires nothing for THAT burst, writes it as missed, fires the
+others, and exits non-zero, so a late wake costs the run one burst rather than three.
+The burst job's timeout is held against the lead, all three bursts and the runner's
+setup by `scripts/test-loadtest-driver-deadline.ts`.
+
+**Each burst is split across two sibling codes** (#3325). The shared confirm line
+keys a crowd on the whole fallback LADDER, so a follower is only told "taken" by a
+leader who walked the same pools at every rung. Two codes qualify when every rung of
+their ladders (`tierLadder`) resolves to the same pool (`poolKeyFor`: criteria, hand
+named members, fallback advisor, event type) with the same Low exclusion
+(`rungExcludesLow`), and the setup MEASURES that from the branch's own bucket rows,
+read through the app's own pool reader (`listPoolBuckets`), rather than assuming the
+legal digit is inert. On the seeded roster the pair is `120` and `121` (Low, Beyond,
+legal digits 0 and 1), whose ladders `120, 130, 110` and `121, 131, 111` are the same
+pools at every rung; a bucket given a hand named member or a fallback advisor splits
+off its siblings at once. Each driver alternates its requests between the two codes,
+opening on a different one per driver, so a burst of four drivers is fifty fifty.
+Each sibling is asked what it offers too, and the slots are chosen from the times
+BOTH offer, because a time only one offers would be refused for the other half of the
+burst for a reason that is not contention.
 
 **The pool is MEASURED, not a constant** (#2278). The whole control rests on the
 burst's pool being one agent deep, and for months that was a hand written code
@@ -344,54 +396,58 @@ control. It rotted too, and did, when production's Low plus Beyond pool emptied
 (#2152) and the constant had to be moved by hand the morning of the next run
 (#2319). The setup now reads every pool's depth through the booker's own predicate
 (`poolDepthsFrom`, shared with `pnpm loadtest:export-shape` so the two cannot
-disagree about one roster), asks the shallowest six what they are offering, and
-fires at the first that offers anything. Depth alone cannot choose: a pool one
-agent deep whose agent has no free time offers nothing.
+disagree about one roster), and walks the shallowest six LADDERS that have a sibling,
+one pair per ladder, asking each pair what both codes offer, and fires at the first
+offering three times an hour apart. Depth alone cannot choose: a pool one agent deep
+whose agent has no free time offers nothing.
 
 **It never fails on depth**, and that is deliberate. The judge asks for one winner
 per AGENT (#2273), which holds at any depth, so a run red because the roster has
 no one deep pool would be red for a property of the roster, which is how a check
 stops being read (L36). What it DOES do is report the depth it ran at, so a reader
 knows what the control was worth. A depth it could not measure exits on its own
-code rather than guessing, and a hand run that names the code with
-`BURST_CODE_OVERRIDE` is reported as **unmeasured** rather than as one deep.
+code rather than guessing, and a hand run that names the codes with
+`BURST_CODE_OVERRIDE` and `BURST_SIBLING_OVERRIDE` (both, or it refuses) is reported
+as **unmeasured** rather than as one deep.
 
 **It runs BEFORE the steady pass, and alone** (#2262). That is a decision rather
-than an ordering accident: the steady mix can include whichever code the burst
-picked, so a steady driver that happened to take the burst's slot first would make
+than an ordering accident: the steady mix can include whichever codes the burst
+picked, so a steady driver that happened to take a burst's slot first would make
 every burst request `SLOT_TAKEN`, and the winner bar would fail for a reason that
-has nothing to do with the unique index it exists to test. Twenty five
-simultaneous requests on one slot is the contention being measured either way.
+has nothing to do with the unique index it exists to test. A hundred simultaneous
+requests on one slot is the contention being measured either way.
 
-The setup step picks the **last** offered time rather than the first, for the same
+The setup picks the **last** offered time first and walks back from it, for the same
 class of reason: the preflight books the first time ITS bucket offers, minutes
-earlier, and the two buckets can share an agent. It sorts before taking the last,
-because a list read out of a response carries no order unless something declares
-one (L343). A bucket offering nothing exits on its own code and says so, since an
-empty burst file and a run with no burst leg are otherwise the same thing (L98).
-Four refusals, each its own code: `2` availability answered for none of the
-candidates (the deployment), `3` they answered and none offered a usable time (the
-seed), `4` the pools could not be measured at all, `5` not one pool has an agent
-in it.
+earlier, and the two buckets can share an agent. It sorts before choosing, because a
+list read out of a response carries no order unless something declares one (L343).
+Five refusals, each its own code: `2` availability answered for none of the
+candidates (the deployment), `3` they answered and none offered three usable times
+both codes share (the seed), `4` the pools could not be measured at all, `5` not one
+pool has an agent in it, and `6` no staffed code shares its whole fallback ladder
+with another, so a burst cannot be split across two codes of one line (the bucket
+rows). An empty burst file and a run with no burst leg are otherwise the same thing
+(L98).
 
-It also emits the DRIVER COUNT, from the app's own `DRIVERS` constant, and both the
-matrix size and the judge's expectation read it from there. Two places holding one
-number is how a matrix grows to five while the judge goes on expecting four and
-calls every run incomplete.
+It also emits the DRIVER COUNT, from the app's own `DRIVERS` constant, and the BURST
+COUNT, from `BURST_LEGS`, and both the matrix and the judge's expectations read them
+from there. Two places holding one number is how a matrix grows to five while the
+judge goes on expecting four and calls every run incomplete.
 
 `burst_lead_seconds` (default 300) is how long the burst drivers have to be queued,
-checked out and installed before the shared moment. A driver that wakes late fires
-nothing, and the judge calls the run incomplete: raise the lead rather than
-re-running and hoping.
+checked out and installed before the FIRST burst's moment. A driver that wakes late
+fires nothing for that burst, and the judge fails that burst: raise the lead rather
+than re-running and hoping.
 
-It runs against `122`, a real code real leads arrive on, whose pool is exactly one
-agent deep. The control is **exactly one 200 and the rest SLOT_TAKEN**, which is
-`bookings_active_slot_uniq` doing its job.
+The control on each burst is **one winner per agent and the rest SLOT_TAKEN**, which
+is `bookings_active_slot_uniq` doing its job, plus the two shared line clauses below
+(every confirm on the shared line, every SLOT_TAKEN within two seconds of the last
+winner on the deployment's clock).
 
-A driver that wakes up **late exits without firing** and says so, in the file and on
-a non-zero exit. A late request meets an already taken slot and records a SLOT_TAKEN
-indistinguishable from the contention the control is counting, so the judge would be
-handed a staggered burst wearing a simultaneous one's clothes.
+A driver that wakes up **late for a burst does not fire it** and says so, in that
+burst's file and on a non-zero exit. A late request meets an already taken slot and
+records a SLOT_TAKEN indistinguishable from the contention the control is counting,
+so the judge would be handed a staggered burst wearing a simultaneous one's clothes.
 
 ## The isolated deployment the run drives (#2242)
 
@@ -843,11 +899,13 @@ missing driver is a quarter down, and nothing in the numbers says which. So
 `incomplete` is its own verdict on its own exit code and **nothing is measured at
 all** (L288).
 
-**A burst that did not happen as configured FAILS the burst instead (#3222).** A
+**A burst that did not happen as configured FAILS that burst instead (#3222).** A
 burst driver that missed its moment, a burst file that never arrived, or a driver
-that fired part of its plan is a `the burst` finding with its reason, and the
-contention question is not asked of it ("exactly one 200" would be answered by
-however many drivers happened to arrive). It used to be incompleteness, and since a
+that fired part of its plan is a `the burst` finding with its reason, naming WHICH of
+the three bursts (#3325), and the contention question is not asked of that burst
+("exactly one 200" would be answered by however many drivers happened to arrive).
+The other bursts are still asked it. Two files claiming one driver inside ONE burst
+is incomplete; the same driver across three bursts is the plan. It used to be incompleteness, and since a
 late burst driver exits non-zero by design, the burst job failed and the steady
 pass, freshness and the archive (and the ceiling and fault legs behind them) were
 skipped: one late driver cost the run every figure. Those jobs now run on an
@@ -886,13 +944,22 @@ arrived). The fault drivers' files get the same file checks as the steady ones.
 | 5xx and no reply | counted **separately** and both fail: a request answered badly and one never answered send two different people to two different places |
 | double bookings | no two run-scoped ACTIVE bookings overlap on one agent in `[starts_at, ends_at)`, read through a **paginating** list, and the preflight must have seen `bookings_active_slot_uniq` actually REFUSE a planted duplicate (without that, an absence of overlaps proves nothing). The count is printed in the measured section on EVERY run, with its denominator and the same-slot count beside it, because a measured zero and a check that never ran read the same when neither prints (#2323) |
 | every 200 left a row | a booking row carrying the request's external id, an idempotency key, and a `busy_blocks` row |
-| the burst | one winner **per agent** (#2273), every other answer `SLOT_TAKEN`, and each winner really exists. A leg that was configured and produced fewer driver files than fired, a driver that missed its moment, or one that fired part of its plan **fails** this bar with its reason (#3222), never a skipped bar. The report states the measured depth the control ran at, since one deep and three deep prove different amounts (#2278) |
+| the burst | judged **per burst**, three a run (#3325), and any one failing fails the run; every finding names its burst, and the report opens with a line naming each burst that failed. Per burst: one winner **per agent** (#2273), every other answer `SLOT_TAKEN`, and each winner really exists. A burst that was configured and produced fewer driver files than fired, a driver that missed its moment, or one that fired part of its plan **fails** that burst with its reason (#3222), never a skipped bar. The report states the measured depth the control ran at, since one deep and three deep prove different amounts (#2278) |
+| the burst's line | every answered confirm in the burst carried `x-loadtest-confirm-line: shared` (#3325). Otherwise it fails naming the counts by line and reason (`shared/ok 96, fallback/reach-timeout 3, no line header 1`). A deployment that says nothing at all fails as "the deployment did not say which line served the burst", which is every run until the shared line ships: nothing to object to is never a pass (L98). The share of the burst's confirms that took a `ladder` key is **reported**, not barred |
+| the burst's speed | every `SLOT_TAKEN` was answered within `BURST_LOSER_LAG_MS` (2,000ms) of the burst's **last** 200, both read on the deployment's own `x-loadtest-answered-at` stamps rather than four runners' clocks (#3325). The last winner, not the first, because a crowd walking a ladder produces one winner per free advisor at different moments. It **fails as unmeasured**, never passes, when any burst answer carries no readable stamp, when nobody won (no winner to measure against), and when nobody lost (nothing tested) |
 | freshness | the worst oldest-bucket age across the window under 6 minutes |
 | the per address ceiling | its own step, run AFTER the steady pass so it has the API key's budget to itself, sends from one address until the deployment CREDITS a refusal to the per address ceiling, up to past the exact 1,200 an hour cap. It reads back both echoes: the address it was keyed on (unidentified, several, or unechoed each get their own conclusion) and WHICH ceiling refused, so a per key refusal is never counted as proof of the per address one (#2339) |
 | confirm startup | what a lead waits BEFORE the confirm begins, read from the run's own archived log and judged only on the confirms that were the FIRST on their isolate, under `REQUEST_STARTUP_P95_MS` (what is left of the latency bar once the confirm's own CPU share is taken out). Three ways it FAILS without a slow start: no archive at all, an archive holding nothing readable (the stream is written under a `wrangler tail` timeout, so its last line is routinely half written), and a reading in which nothing was ever the first on its isolate. Each has its own sentence, because nothing to check is never a pass (#2340, L98) |
 | platform | CPU p99 under the REQUEST budget (`REQUEST_CPU_P99_MS`, half the latency bar, and applied only to a window with no cron in it), the cron half under `limits.cpu_ms`, and **no invocation outcome other than `ok`**. The cron half is reconciled against the run's own archived log (#2352): `workersInvocationsScheduled` has never once reported a tick for a load test Worker, so a zero from it alone is the reader being blind and the window may only be called empty when BOTH sources say so. It used to borrow the 200ms LANE budget, which is a different question about a scheduled tick (#2321). The finding NAMES the startup split beside it, because this percentile counts the isolate's own startup as the confirm's compute (#2340) |
 | the fault pass | at `SLATE_LOADTEST_FAULT_PCT=10` on the systems in `fault_targets` (calendar reads by default), zero 5xx while every faulted system is one the path degrades around, and a pass that made no requests fails rather than passing on an empty sample. With `google-write` or `supabase` faulted the 5xx count is reported, not barred, because a failure there is a 5xx by design (#3104). A pass whose deployment reported a DIFFERENT percentage or different systems is incomplete, and zero is the case that matters: it passes the bar having injected nothing |
 | the cron lanes under fault | sampled every 15 seconds for the whole faulted window by `fault-lane-sampler.ts` and scored by `fault-lanes.ts` (#3104): no lane the deployment runs goes past its stale bound at any reading, every one minute lane stamps inside the window, the lane watchdog records no stale page, and, when calendar reads are faulted, the `sync_failures` page is recorded exactly once. A missing lane file, or a series with a hole in it, is incomplete rather than healthy |
+
+**The steady pass's line is reported, never barred** (#3325): the share of its
+answered confirms per line and reason, and `x-loadtest-confirm-line-ms` p50 and p95,
+labelled as the absolute time the line added per confirm. It sits beside the speed
+ratio bar because the ratio alone hides an overhead the at rest baseline pays too. A
+confirm with no readable time is counted as unread, never scored zero, and with no
+readable time anywhere the percentile is null rather than 0.
 
 **Subrequests are deliberately not a bar**, and that is a decision rather than an
 omission. Cloudflare's observability exposes **no subrequest counter**

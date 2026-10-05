@@ -17,7 +17,20 @@ vi.hoisted(() => {
   process.env.SLATE_LOADTEST = "true";
 });
 
-import { stampSeenIp, SEEN_IP_HEADER, stampRefusedBy, REFUSED_BY_HEADER } from "./loadtest-echo";
+import {
+  stampSeenIp,
+  SEEN_IP_HEADER,
+  stampRefusedBy,
+  REFUSED_BY_HEADER,
+  stampAnsweredAt,
+  stampConfirmLine,
+  readLoadtestEcho,
+  ANSWERED_AT_HEADER,
+  CONFIRM_LINE_HEADER,
+  CONFIRM_LINE_REASON_HEADER,
+  CONFIRM_LINE_KEY_HEADER,
+  CONFIRM_LINE_MS_HEADER,
+} from "./loadtest-echo";
 
 function headers(init: Record<string, string>): Headers {
   return new Headers(init);
@@ -138,6 +151,106 @@ describe("the refused-by echo with the flag OFF", () => {
       const off = await import("./loadtest-echo");
       const res = off.stampRefusedBy(new Response("no", { status: 429 }), "throttled_ip");
       expect(res.headers.get(REFUSED_BY_HEADER)).toBeNull();
+    } finally {
+      process.env.SLATE_LOADTEST = "true";
+      vi.resetModules();
+    }
+  });
+});
+
+// #3325: when the deployment built the answer, and which confirm line served it.
+//
+// The burst's speed clause compares every SLOT_TAKEN against the last winner on ONE
+// clock, the deployment's, because four runners' clocks disagree by more than the
+// bound being judged. And the line clause needs the deployment to say which line ran,
+// because a SLOT_TAKEN reads the same whichever line produced it. Both are gated like
+// the address echo, so BOTH directions are here (L1).
+describe("the answer stamp under SLATE_LOADTEST", () => {
+  it("stamps the deployment's own epoch milliseconds", () => {
+    const at = Date.parse("2026-10-05T18:00:00.250Z");
+    const res = stampAnsweredAt(new Response("ok"), at);
+    expect(res.headers.get(ANSWERED_AT_HEADER)).toBe(String(at));
+  });
+
+  it("reads the clock when no time is handed in", () => {
+    const before = Date.now();
+    const res = stampAnsweredAt(new Response("ok"));
+    const after = Date.now();
+    const stamped = Number(res.headers.get(ANSWERED_AT_HEADER));
+    expect(stamped).toBeGreaterThanOrEqual(before);
+    expect(stamped).toBeLessThanOrEqual(after);
+  });
+
+  it("returns the same response, so a call site can wrap a return", () => {
+    const original = new Response("taken", { status: 409 });
+    const returned = stampAnsweredAt(original, 1);
+    expect(returned).toBe(original);
+    expect(returned.status).toBe(409);
+  });
+
+  it("does not fail a booking when the response head cannot be written", () => {
+    const res = new Response("ok");
+    Object.defineProperty(res, "headers", {
+      value: {
+        set() {
+          throw new TypeError("immutable");
+        },
+      },
+    });
+    expect(() => stampAnsweredAt(res, 1)).not.toThrow();
+  });
+});
+
+describe("the confirm line echo under SLATE_LOADTEST", () => {
+  it("stamps all four facts, and the run's own reader reads them back", () => {
+    const res = stampConfirmLine(new Response("ok"), {
+      line: "shared",
+      reason: "ok",
+      key: "ladder",
+      lineMs: 41,
+    });
+    expect(res.headers.get(CONFIRM_LINE_HEADER)).toBe("shared");
+    expect(res.headers.get(CONFIRM_LINE_REASON_HEADER)).toBe("ok");
+    expect(res.headers.get(CONFIRM_LINE_KEY_HEADER)).toBe("ladder");
+    expect(res.headers.get(CONFIRM_LINE_MS_HEADER)).toBe("41");
+    const read = readLoadtestEcho(res.headers);
+    expect(read.line).toEqual({ state: "read", value: "shared" });
+    expect(read.lineMs).toEqual({ state: "read", value: 41 });
+  });
+
+  it("does not fail a booking when the response head cannot be written", () => {
+    const res = new Response("ok");
+    Object.defineProperty(res, "headers", {
+      value: {
+        set() {
+          throw new TypeError("immutable");
+        },
+      },
+    });
+    expect(() =>
+      stampConfirmLine(res, { line: "fallback", reason: "reach-timeout", key: "code", lineMs: 1500 }),
+    ).not.toThrow();
+  });
+});
+
+describe("the answer stamp and the line echo with the flag OFF", () => {
+  it("add nothing at all", async () => {
+    // The control (L1). Without it every case above is satisfied by helpers that
+    // always stamp, and our own shaping would ship on production responses.
+    vi.resetModules();
+    process.env.SLATE_LOADTEST = "false";
+    try {
+      const off = await import("./loadtest-echo");
+      const stamped = off.stampAnsweredAt(new Response("ok"), 1_759_687_200_000);
+      expect(stamped.headers.get(ANSWERED_AT_HEADER)).toBeNull();
+      const lined = off.stampConfirmLine(new Response("ok"), {
+        line: "shared",
+        reason: "ok",
+        key: "ladder",
+        lineMs: 41,
+      });
+      expect(lined.headers.get(CONFIRM_LINE_HEADER)).toBeNull();
+      expect(lined.headers.get(CONFIRM_LINE_MS_HEADER)).toBeNull();
     } finally {
       process.env.SLATE_LOADTEST = "true";
       vi.resetModules();

@@ -49,6 +49,7 @@ import {
   DEADLINE_WORST_CASE_SHARE,
   PER_DRIVER_PER_MINUTE,
   RUN_MINUTES,
+  burstJobMinutesNeeded,
   type DriverResult,
 } from "./loadtest/book-plan.ts";
 import { OK_P95_MS } from "./loadtest/judge-booking-run.ts";
@@ -108,6 +109,28 @@ const PLAN = { total: TOTAL, perMinute: PER_DRIVER_PER_MINUTE };
     999,
     "control: a changed timeout is read as changed",
   );
+}
+
+// --- the burst job outlives its three bursts (#3325) -----------------------------
+//
+// The burst job now fires three bursts a minute apart, so its work is the lead, two
+// spacings, one burst's longest life and the runner's setup. Its timeout is kept, and
+// held against that derived duration at the workflow's own default lead, so a change
+// to the spacing or the number of bursts cannot quietly push the last burst past the
+// point the job is killed (L743).
+{
+  const yml = readFileSync(join(ROOT, ".github/workflows/loadtest.yml"), "utf8");
+  const lead = Number(/burst_lead_seconds:[\s\S]*?default:\s*"(\d+)"/.exec(yml)?.[1] ?? NaN);
+  assert(Number.isFinite(lead) && lead > 0, `the workflow declares a default burst lead (got ${lead})`);
+  const burst = /^ {2}burst:\n([\s\S]*?)(?=^ {2}\S)/m.exec(yml)?.[1] ?? "";
+  const declared = Number(/^ {4}timeout-minutes:\s*(\d+)/m.exec(burst)?.[1] ?? NaN);
+  const needed = burstJobMinutesNeeded(lead);
+  assert(
+    declared >= needed,
+    `the burst job's ${declared} minutes cover the lead, all three bursts and the setup (${needed} needed)`,
+  );
+  // Control: a lead long enough to need more than the job has is read as too long (L1).
+  assert(burstJobMinutesNeeded(declared * 60) > declared, "control: a lead as long as the job is caught");
 }
 
 // --- the log archive covers the whole drive it records ---------------------------

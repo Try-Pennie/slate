@@ -178,6 +178,16 @@ describe("POST /api/bookings (auth skeleton)", () => {
     expect(res.status).toBe(200);
   });
 
+  // #3325: the load run's answer stamp is our own shaping, and this file runs the
+  // route WITHOUT SLATE_LOADTEST, so it is the control for
+  // route-loadtest-echo.test.ts: a stamp that always fired would ship on production.
+  it("carries no load test answer stamp when the flag is off", async () => {
+    regalKey.primary.mockReturnValue("real-secret");
+    const res = await post("Bearer real-secret", VALID_BODY);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-loadtest-answered-at")).toBeNull();
+  });
+
   it("trips 429 when the per-key ceiling is exceeded", async () => {
     regalKey.primary.mockReturnValue("real-secret");
     rateLimit.allowRequest.mockResolvedValue(false);
