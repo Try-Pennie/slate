@@ -7,6 +7,7 @@
 // ordering that makes it safe is asserted rather than assumed.
 import {
   REMINDER_CALLING_NUMBER_DEADLINE_MS,
+  REMINDER_PAGES_PER_TICK,
   runBookingReminders,
   type ReminderDeps,
   type DueBooking,
@@ -1061,6 +1062,53 @@ const failingWith = (err: unknown) => async () => {
   eq(store.reminderSentFor, startsAtIso, "and the store records the start it was sent about");
   const third = await runBookingReminders(s.deps);
   eq(third.attempted, 0, "a third tick finds nothing due");
+}
+
+// --- an outage pages a few bookings by name and folds the rest into one page -----
+//
+// Each lost reminder pages under its own key, so one cannot silence the next. The
+// cost is that an outage which fails every send (Gmail down for every mailbox)
+// would post one page per lead. So a tick names at most REMINDER_PAGES_PER_TICK
+// bookings and folds the rest into ONE page that lists every one of them, keyed on
+// the first folded booking: nobody unreminded goes unnamed, and the wave is still
+// said once by the share (Dan, 2026-10-05).
+{
+  const ids = ["bk-1", "bk-2", "bk-3", "bk-4", "bk-5"];
+  const s = spy({
+    loadDue: async () => ids.map((id) => due({ id })),
+    send: async () => {
+      throw new Error("Gmail send failed: 503 backendError");
+    },
+  });
+  const run = await runBookingReminders(s.deps);
+  eq(run.failed, 5, "every send failed");
+  eq(s.alerts.length, REMINDER_PAGES_PER_TICK + 1, "the named pages plus one folded page");
+  eq(s.alertIds, ["bk-1", "bk-2", "bk-3", "bk-4"], "the folded page is keyed on the first folded booking");
+  const folded = s.alerts[REMINDER_PAGES_PER_TICK]!;
+  assert(folded.includes("bk-4") && folded.includes("bk-5"), "the folded page names every folded booking");
+  assert(!folded.includes("bk-1"), "and not the bookings already paged by name");
+  assert(folded.includes("2 more"), "and says how many it folded");
+  eq(run.pagesFolded, 2, "the run reports how many pages it folded");
+  for (const id of ["bk-4", "bk-5"]) {
+    assert(
+      s.warned.some((w) => w.bookingId === id && w.msg === "reminder send failed"),
+      `a folded booking still gets its own log line (${id})`,
+    );
+  }
+}
+
+// The control: at the cap, nothing is folded, so the fold is not firing on every run.
+{
+  const ids = ["bk-1", "bk-2", "bk-3"];
+  const s = spy({
+    loadDue: async () => ids.map((id) => due({ id })),
+    send: async () => {
+      throw new Error("Gmail send failed: 503 backendError");
+    },
+  });
+  const run = await runBookingReminders(s.deps);
+  eq(s.alertIds, ids, "three failures page three bookings by name");
+  eq(run.pagesFolded, 0, "and fold nothing");
 }
 
 finish();

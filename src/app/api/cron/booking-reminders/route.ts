@@ -266,6 +266,7 @@ export async function GET(req: NextRequest) {
     sent: run.sent,
     failed: run.failed,
     retrying: run.retrying,
+    pages_folded: run.pagesFolded,
     skipped: run.skipped,
     held: run.held,
     lost: run.lost,

@@ -509,7 +509,7 @@ import {
 } from "@/lib/handoffs/copy";
 import { HANDOFF_UNDELIVERED_AFTER_MS } from "@/lib/handoffs/check";
 import { formatOwnerReassignNotice } from "@/lib/booking/owner-notice-copy";
-import { reminderFailedAlert } from "@/lib/booking/reminder-send";
+import { reminderFailedAlert, reminderFoldedAlert } from "@/lib/booking/reminder-send";
 import {
   photosDeadlineAlert,
   photosHeldAlert,
@@ -3988,6 +3988,15 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "alert" as const,
     text: reminderFailedAlert("b7f1c2e4-9a3d-4c88-b0f2-15ac7d9e6431", disposition, shortErrorReason(err), err.outcome),
   })),
+  {
+    key: "booking_reminder_failed:*",
+    state: "more lost reminders in one run than are paged by name",
+    channel: "alert",
+    text: reminderFoldedAlert([
+      "c2d8e1f0-4b7a-4e19-9c3d-7f1a2b6e8d40",
+      "e9a4b7c1-2f6d-4a83-b5e0-3c8d1f7a9b62",
+    ]),
+  },
   // #2496. The one above and the three below are the whole point of the issue: they
   // are the same fault at two very different sizes, and they have to READ that way
   // side by side or the second says nothing the first did not.

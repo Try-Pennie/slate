@@ -70,6 +70,15 @@ export const REMINDER_RETRY_MARGIN_MS = 10 * 60_000;
 /** The sender name a reminder carries when the advisor has no real name on record (#2985). */
 export const SENDER_NAME_FALLBACK = "Pennie";
 
+/**
+ * How many lost reminders one tick pages about BY NAME (Dan, 2026-10-05). The page is
+ * keyed per booking so one lost reminder cannot silence the next, which means an
+ * outage that fails every send would otherwise post a page per lead. Past this many,
+ * the rest of the tick's lost reminders are folded into ONE page that lists them all,
+ * so nobody unreminded goes unnamed and the wave is still said once by the share.
+ */
+export const REMINDER_PAGES_PER_TICK = 3;
+
 export interface DueBooking {
   id: string;
   startsAtIso: string;
@@ -226,6 +235,11 @@ export interface ReminderRun {
    * it covers every card, so the two always sum to `withCallingNumber`.
    */
   withLogo: number;
+  /**
+   * Lost reminders this tick that were past `REMINDER_PAGES_PER_TICK` and so went
+   * into the one folded page rather than a page of their own.
+   */
+  pagesFolded: number;
 }
 
 /**
@@ -317,7 +331,11 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
     withPhoto: 0,
     photoUnread: 0,
     withLogo: 0,
+    pagesFolded: 0,
   };
+  // The bookings paged by name this tick, and the ones folded past the cap.
+  let pagedByName = 0;
+  const folded: string[] = [];
 
   // Judged first, so the one Salesforce read below asks only about the bookings
   // this tick will actually try to send.
@@ -500,6 +518,11 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
         // remaining lead's reminder to report one that already failed. The send
         // failure is still returned in `run.failed`, which the caller logs and the
         // lane's heartbeat is judged against, so the tick is never silent about it.
+        if (pagedByName >= REMINDER_PAGES_PER_TICK) {
+          folded.push(row.id);
+          return;
+        }
+        pagedByName += 1;
         await deps.alert(row.id, reminderFailedAlert(row.id, disposition, shortErrorReason(err), outcome)).catch(() => {});
       };
 
@@ -565,7 +588,30 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
     }
   }
 
+  if (folded.length > 0) {
+    run.pagesFolded = folded.length;
+    // alert-text-ok: built from booking ids only; each booking's reason is in its own
+    // log line, written above whether or not it was paged by name.
+    // swallow-ok: the same reasoning as `page`: this is the failure path's reporter,
+    // and the failures are still counted in `run.failed` and the share.
+    await deps.alert(folded[0]!, reminderFoldedAlert(folded)).catch(() => {});
+  }
+
   return run;
+}
+
+/**
+ * The one page for the lost reminders past `REMINDER_PAGES_PER_TICK` in a tick. It
+ * names every one of them, so a lead whose reminder was lost in an outage is still
+ * findable from Slack, and sends the reader to the log for each one's reason rather
+ * than repeating five reasons that are usually the same one.
+ */
+export function reminderFoldedAlert(bookingIds: string[]): string {
+  return (
+    `${bookingIds.length} more 24 hour reminder emails in the same run did not go out, or may not have, ` +
+    `beyond the ${REMINDER_PAGES_PER_TICK} named separately: bookings ${bookingIds.join(", ")}. Why each one failed, and ` +
+    `whether anything will try it again, is in its booking-reminder log line.`
+  );
 }
 
 /**
