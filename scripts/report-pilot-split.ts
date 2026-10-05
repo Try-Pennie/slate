@@ -37,12 +37,18 @@
 //   4. Share, Download file, CSV. That file is PILOT_SPLIT_CSV; several files, one
 //      per week, are read together.
 //
-// The export must hold ONLY PILOT leads (see scripts/lib/pilot-split.ts, rule 4):
-// either an xbc column (the third custom dimension, which trypennie sends with
-// booking_assignment since #517), or PILOT_SPLIT_PERCENT so the hash can find
-// the leads that were never in the pilot. A lead is counted once per submission,
-// only if it has a booking_assignment event, and a lead seen under both providers
-// is left out of both halves and counted.
+// Every lead is counted on the side the split ASSIGNED it, slateBucket under the
+// percentage, whichever booker it was later seen in (intention to treat, #3327; see
+// scripts/lib/pilot-split.ts, rule 3). So the percentage is always needed:
+// PILOT_SPLIT_PERCENT, or SlatePilotPercent__c read from Salesforce as it is now when
+// that is unset and Salesforce credentials are here. A lead seen under both providers
+// is counted on its side and named as leakage, by direction. A lead is counted once
+// per submission, and only if it has a booking_assignment event.
+//
+// The export must hold ONLY PILOT leads (rule 4): an xbc column (the third custom
+// dimension, which trypennie sends with booking_assignment since #517) filters them
+// directly; without one, the hash finds the leads that were never in the pilot only
+// where their bucket is under the percentage.
 //
 // PILOT_SPLIT_LIFT, when set outside planning mode, adds a days estimate at the
 // volume and cal.com rate the export measured.
@@ -50,7 +56,8 @@
 // THE SLATE CROSS CHECK. With the Supabase secret key in .env.local it reads
 // Slate's own routed, real bookings over the export's dates (a day either side,
 // since GA4 dates are in the property's zone) and compares their submission ids
-// with the Slate half's GA4 bookings. Without the key it says it was skipped.
+// with the Slate side leads whose complete_booking GA4 labelled slate (a booking
+// made on cal.com has no Slate row to find). Without the key it says it was skipped.
 // It writes nothing anywhere.
 //
 // Only a comparison made exits 0. Every way of learning nothing exits on its own
@@ -65,7 +72,7 @@
 // | 4 | a date or event count cannot be read, line named |
 // | 5 | PILOT_SPLIT_PERCENT is not a number from 0 to 100 |
 // | 6 | no booking_assignment event at all: the GTM tag is not sending it |
-// | 7 | no xbc column and no PILOT_SPLIT_PERCENT: the population cannot be checked |
+// | 7 | retired by #3327 (no xbc and no percentage); every run now needs the percentage, so that is 17 |
 // | 8 | the export holds leads outside the pilot and nothing can remove them |
 // | 9 | one half has no leads |
 // | 10 | plenty of leads and not one booker event in the export |
@@ -75,6 +82,7 @@
 // | 14 | an export ends exactly on a GA4 row limit, so it was probably cut off; export fewer days per file |
 // | 15 | two exports cover the same day, so its leads would be read twice |
 // | 16 | the export has an xbc column and no pilot tiers are known (PILOT_SPLIT_TIERS, or SlatePilotTiers__c read from Salesforce) |
+// | 17 | no split percentage is known (PILOT_SPLIT_PERCENT, or SlatePilotPercent__c read from Salesforce), so no lead has a side |
 //
 // It is deliberately NOT named `test-*.ts`: that glob is the offline unit suite.
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -93,6 +101,7 @@ import {
   PILOT_SPLIT_EXIT,
   type SlateCheckInput,
   type SalesforceTiers,
+  type SalesforcePercent,
   type ExportFile,
 } from "./lib/pilot-split.ts";
 
@@ -144,22 +153,31 @@ if (named.length > 0) {
 // Judge once without Slate; only a comparison that stands is worth a Slate read.
 let first = judgePilotSplit({ exports: exportFiles, env });
 
-// The pilot tiers (#2946): PILOT_SPLIT_TIERS when set, otherwise SlatePilotTiers__c as
-// Salesforce holds it NOW, read only when the judgement asks (an export with an xbc
-// column and no PILOT_SPLIT_TIERS). Salesforce keeps no history of it, so today's value
-// stands for every day in the export; set PILOT_SPLIT_TIERS for an export from before a
-// change. The value is handed to the judgement AS Salesforce's, which validates it and
-// names SlatePilotTiers__c in any refusal, never as a setting the person did not set.
+// The pilot tiers (#2946) and the split percentage (#3327): PILOT_SPLIT_TIERS and
+// PILOT_SPLIT_PERCENT when set, otherwise SlatePilotTiers__c and SlatePilotPercent__c
+// as Salesforce holds them NOW, read once, only when the judgement asks (tiers for an
+// export with an xbc column; the percentage for every export, since it decides each
+// lead's side). Salesforce keeps no history of either, so today's values stand for
+// every day in the export; set the variables for an export from before a change. Each
+// value is handed to the judgement AS Salesforce's, which validates it and names the
+// Salesforce field in any refusal, never as a setting the person did not set.
 let salesforceTiers: SalesforceTiers | undefined;
-if (first.needsTiers && ["SF_CLIENT_ID", "SF_CLIENT_SECRET", "SF_INSTANCE_URL"].every((n) => env[n]?.trim())) {
+let salesforcePercent: SalesforcePercent | undefined;
+if ((first.needsTiers || first.needsPercent) && ["SF_CLIENT_ID", "SF_CLIENT_SECRET", "SF_INSTANCE_URL"].every((n) => env[n]?.trim())) {
+  const askedTiers = first.needsTiers;
   try {
     const { readPilotSettings } = await import("./lib/pilot-settings-read.ts");
-    salesforceTiers = { ok: true, value: (await readPilotSettings()).tiers };
+    const settings = await readPilotSettings();
+    salesforceTiers = { ok: true, value: settings.tiers };
+    salesforcePercent = { ok: true, value: settings.percent };
   } catch (err) {
-    salesforceTiers = { ok: false, message: err instanceof Error ? err.message : String(err) };
+    const message = err instanceof Error ? err.message : String(err);
+    salesforceTiers = { ok: false, message };
+    salesforcePercent = { ok: false, message };
   }
-  first = judgePilotSplit({ exports: exportFiles, env, salesforceTiers });
-  if (salesforceTiers.ok && first.exit !== PILOT_SPLIT_EXIT.tiersUnknown) {
+  first = judgePilotSplit({ exports: exportFiles, env, salesforceTiers, salesforcePercent });
+  // The percentage's source is in the report itself; the tiers' is said here.
+  if (askedTiers && salesforceTiers.ok && first.exit !== PILOT_SPLIT_EXIT.tiersUnknown) {
     console.error(`Pilot tiers from SlatePilotTiers__c as it is now: ${salesforceTiers.value}.`);
   }
 }
@@ -230,6 +248,6 @@ async function readOffers(dates: string[]): Promise<PilotOffersRead> {
 }
 
 const slateCheck = await readSlate(first.dates);
-const final = judgePilotSplit({ exports: exportFiles, env, slateCheck, salesforceTiers });
+const final = judgePilotSplit({ exports: exportFiles, env, slateCheck, salesforceTiers, salesforcePercent });
 const offers = await readOffers(first.dates);
 print([...final.lines, "", ...pilotOffersReportLines(offers)], final.exit);
