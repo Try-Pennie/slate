@@ -356,6 +356,40 @@ async function main() {
     }
   }
 
+  // --- #3274 review: expiry found by a waiter's own timer still hands the line on --
+  //
+  // The abandoned holder can be expired by ANY path that reads the line, here the
+  // first follower's wait running out (its timer drops it and checks whether the
+  // line is idle). If that path expired the holder without handing on, the second
+  // follower would sit behind nobody until its own wait ran out too, and be answered
+  // retryably for no reason. It must lead at once.
+  {
+    let now = 9_000_000;
+    const t = manualTimer();
+    const q = makeConfirmQueue<string>({ timer: t.timer, now: () => now });
+    const abandoned = await q.enter("slot");
+    assert(abandoned.kind === "lead", "timer expiry: the first confirm leads, then is abandoned holding the line");
+    let firstTurn: QueueTurn<string> | null = null;
+    let secondTurn: QueueTurn<string> | null = null;
+    void q.enter("slot").then((turn) => (firstTurn = turn));
+    void q.enter("slot").then((turn) => (secondTurn = turn));
+    await tick();
+    assert(firstTurn === null && secondTurn === null, "timer expiry: both followers wait behind the holder");
+
+    now += CONFIRM_CLAIM_LEASE_MS;
+    const firstTimer = t.pending[0];
+    if (!firstTimer) throw new Error("timer expiry: the first follower armed no wait timer");
+    firstTimer.fire(); // only the FIRST follower's wait runs out
+    await tick();
+    assert((firstTurn as QueueTurn<string> | null)?.kind === "unqueued", "timer expiry: the follower whose wait ran out is answered retryably");
+    const second = secondTurn as QueueTurn<string> | null;
+    assert(
+      second?.kind === "lead",
+      `timer expiry: the next follower leads at once rather than waiting out its own bound (got ${second?.kind ?? "still waiting"})`,
+    );
+    if (second?.kind === "lead") second.done({ full: false });
+  }
+
   finish();
 }
 

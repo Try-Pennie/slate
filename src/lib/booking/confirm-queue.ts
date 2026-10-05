@@ -219,10 +219,18 @@ export function makeConfirmQueue<T>(
     return heldExpired;
   };
 
+  // The one way any path expires leases (#3274 review): expire, and when that
+  // released the holder, hand the line on at once. Expiring without handing on
+  // left anybody waiting behind nobody until their own wait ran out. Every caller
+  // goes through this, so none can forget the second half.
+  const expireAndHandOn = (key: string, line: Line<T>): void => {
+    if (expire(line)) promoteNext(key, line);
+  };
+
   // The one test for a line nobody needs any more: nobody leading it without
   // having handed on, nobody waiting, no claim in flight, no lookahead out.
   const dropIfIdle = (key: string, line: Line<T>) => {
-    expire(line);
+    expireAndHandOn(key, line);
     if (line.holder === null && line.waiting.length === 0 && line.claims.size === 0 && line.looking === 0) {
       drop(key, line);
     }
@@ -257,19 +265,19 @@ export function makeConfirmQueue<T>(
       waiting: () => line.waiting.length,
       seat: {
         claimedByOthers() {
-          if (expire(line)) promoteNext(key, line);
+          expireAndHandOn(key, line);
           const others = new Set<string>();
           for (const [who, c] of line.claims) if (who !== me && c.userId !== null) others.add(c.userId);
           return others;
         },
         claim(userId, othersRemain) {
-          if (expire(line)) promoteNext(key, line);
+          expireAndHandOn(key, line);
           if (!live()) return;
           line.claims.set(me, { userId, until });
           if (othersRemain) handOn();
         },
         pass() {
-          if (expire(line)) promoteNext(key, line);
+          expireAndHandOn(key, line);
           if (!live()) return;
           line.claims.set(me, { userId: null, until });
           handOn();
@@ -278,7 +286,7 @@ export function makeConfirmQueue<T>(
       done(verdict) {
         if (reported) return;
         reported = true;
-        expire(line);
+        expireAndHandOn(key, line);
         line.claims.delete(me);
         if (line.holder === me) line.holder = null;
         // A full verdict settles the slot for the waiting only when no other
@@ -302,8 +310,8 @@ export function makeConfirmQueue<T>(
       // #3274: an abandoned leader past its lease no longer holds the line. Handing
       // on serves whoever was already waiting first, in order, before this arrival,
       // and a line left with nobody in it is dropped, so this arrival opens a new one.
-      if (existing && expire(existing)) {
-        promoteNext(key, existing);
+      if (existing) {
+        expireAndHandOn(key, existing);
         existing = lines.get(key);
       }
       if (!existing) {
@@ -339,7 +347,7 @@ export function makeConfirmQueue<T>(
     },
     lookahead(key) {
       const found = lines.get(key);
-      if (found && expire(found)) promoteNext(key, found);
+      if (found) expireAndHandOn(key, found);
       const line = lines.get(key);
       // An idle line, or one whose leaders have all handed on: entering leads at
       // once, so there is nothing to look ahead of.
