@@ -142,6 +142,29 @@ describe("runOooEventMismatchCheck", () => {
     expect(resolveAlert.mock.calls[0]![1]).toContain("name of u-gone");
   });
 
+  it("never clears an agent whose event could not be read: nothing was compared", async () => {
+    // An unreadable stamp is "could not tell", not agreement (L11, #1152). Without
+    // this, a firing agent drops out of the found set and is sent an all-clear off a
+    // comparison that never happened.
+    firingFamilyMembers.mockImplementation(async () => ["u-heather"]);
+    const res = await run(async () => ({
+      requests: [request()],
+      mirrors: [mirror({ startsAt: "not a timestamp" })],
+    }));
+    expect(resolveAlert).not.toHaveBeenCalled();
+    expect(clearFailureStreak).not.toHaveBeenCalled();
+    expect(res.cleared).toBe(0);
+  });
+
+  it("still clears an agent once every one of their windows reads and agrees", async () => {
+    // The control for the case above: the same agent with a readable, matching event
+    // is cleared, so the refusal above is about the unreadable stamp, nothing else.
+    firingFamilyMembers.mockImplementation(async () => ["u-heather"]);
+    const res = await run(async () => ({ requests: [request()], mirrors: [matching()] }));
+    expect(resolveAlert).toHaveBeenCalledTimes(1);
+    expect(res.cleared).toBe(1);
+  });
+
   it("never clears an agent who still disagrees", async () => {
     firingFamilyMembers.mockImplementation(async () => ["u-heather"]);
     await run(async () => ({ requests: [request()], mirrors: [mirror()] }));

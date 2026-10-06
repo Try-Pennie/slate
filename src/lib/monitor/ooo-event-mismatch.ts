@@ -118,6 +118,20 @@ export function eventMismatchesByAgent(
   mirrors: EventMirror[],
   nowMs: number,
 ): Map<string, { agentName: string; found: OooEventMismatch[] }> {
+  return judgeEventsByAgent(requests, mirrors, nowMs).found;
+}
+
+/**
+ * The same judgement, also naming the agents with a window that could not be READ.
+ * An unreadable stamp is "could not tell", never agreement (L11), so the all-clear
+ * must hold those agents back rather than read their absence from `found` as health.
+ */
+function judgeEventsByAgent(
+  requests: ApprovedEventRequest[],
+  mirrors: EventMirror[],
+  nowMs: number,
+): { found: Map<string, { agentName: string; found: OooEventMismatch[] }>; unmeasured: Set<string> } {
+  const unmeasured = new Set<string>();
   const byEvent = new Map<string, EventMirror[]>();
   for (const m of mirrors) {
     const k = `${m.userId}\u0000${m.gcalEventId}`;
@@ -130,12 +144,13 @@ export function eventMismatchesByAgent(
     if (!r.agentEventId || !r.inPool) continue;
     const cover = byEvent.get(`${r.userId}\u0000${r.agentEventId}`) ?? null;
     const verdict = judgeEventCoverage({ startsAt: r.startsAt, endsAt: r.endsAt, nowMs, cover });
+    if (verdict.kind === "unreadable") unmeasured.add(r.userId);
     if (verdict.kind !== "uncovered" && verdict.kind !== "not-blocking") continue;
     const entry = out.get(r.userId) ?? { agentName: nameOf(r), found: [] };
     entry.found.push(finding(r, verdict));
     out.set(r.userId, entry);
   }
-  return out;
+  return { found: out, unmeasured };
 }
 
 export interface OooEventMismatchResult {
@@ -172,7 +187,7 @@ export async function runOooEventMismatchCheck(deps: {
     return { status: "unreadable", scanned: 0, mismatchedAgents: 0, cleared: 0, reachedVerdict: false };
   }
 
-  const found = eventMismatchesByAgent(requests, mirrors, deps.nowMs);
+  const { found, unmeasured } = judgeEventsByAgent(requests, mirrors, deps.nowMs);
 
   for (const [agentId, { agentName, found: list }] of found) {
     const key = oooEventMismatchKey(agentId);
@@ -199,7 +214,9 @@ export async function runOooEventMismatchCheck(deps: {
   } catch (err) {
     log.warn("ooo-event-mismatch", { msg: "firing markers unreadable; all-clears deferred" }, err);
   }
-  const recovered = firing.filter((id) => !found.has(id));
+  // An agent with any window this tick could not read measured nothing, so it is
+  // neither disagreeing nor recovered: its page stands until a later tick reads it.
+  const recovered = firing.filter((id) => !found.has(id) && !unmeasured.has(id));
   if (recovered.length > 0) {
     const known = new Map(requests.map((r) => [r.userId, nameOf(r)]));
     const missing = recovered.filter((id) => !known.has(id));

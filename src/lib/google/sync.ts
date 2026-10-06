@@ -428,8 +428,10 @@ async function noticeEditedTimeOff(
   timeZone: string,
 ): Promise<void> {
   if (events.length === 0) return;
-  const db = supabaseAdmin();
   try {
+    // Built inside the try: a throw constructing the client must not escape and fail
+    // the sync, which is the promise this function's doc makes (L62).
+    const db = supabaseAdmin();
     await noticeSyncedOooEvents({
       userId,
       events,
