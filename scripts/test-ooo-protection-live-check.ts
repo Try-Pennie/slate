@@ -319,6 +319,22 @@ function judge(...args: Parameters<typeof judgeRequest>): ReturnType<typeof judg
   eq(v.code, "event-window-uncovered", "an event that stops short leaves part of the window open");
   assert(!v.ok, "which fails");
   assert(/60|minute/i.test(v.detail), "and the detail says how much is uncovered");
+  // This check reads Google only, never Slate's busy block, so it may not say what
+  // Slate holds (L11); it says what it DID read, Google's free/busy (L440).
+  assert(!/Slate still holds/i.test(v.detail), `the detail claims nothing about Slate's block it never read (got: ${v.detail})`);
+  assert(/Google reports the window as fully occupied/.test(v.detail), `and states what Google's free/busy said (got: ${v.detail})`);
+  assert(/not read here|not checked here/i.test(v.detail), `and says Slate's own block is not what this check read (got: ${v.detail})`);
+}
+{
+  // The same shape with the window partly free in Google: the free/busy half of the
+  // detail follows what was read, rather than a fixed sentence.
+  const v = judge(
+    request(),
+    reading({ event: { state: "found", event: event({ end: { dateTime: iso(180) } }) }, busy: [] }),
+    judgeOpts,
+  );
+  eq(v.code, "event-window-uncovered", "an uncovered event over a partly free window is still uncovered");
+  assert(/Google reports part of the window as free/.test(v.detail), `and says the window reads partly free (got: ${v.detail})`);
 }
 {
   const v = judge(

@@ -20,6 +20,7 @@ import {
   modifyAgentDm,
   modifyManagerHeading,
   modifyManagerNote,
+  type HeldOnEarlier,
   type ModifyOutcome,
 } from "./modify-copy.ts";
 import {
@@ -65,6 +66,7 @@ import { roleLabel } from "../auth/roles.ts";
 import { isRetiredSkip } from "../calcom/outcomes.ts";
 import { reachabilityFromError } from "../google/reachability-classify.ts";
 import { deterministicEventId } from "../booking/core.ts";
+import { log } from "../log.ts";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
 
 /**
@@ -315,6 +317,17 @@ export interface OooDeps {
     startIso: string;
     endIso: string;
   }): Promise<boolean>;
+  /**
+   * The window a request's held block REALLY covers (#3365). After a failed
+   * narrowing it is the earlier, wider window, not the one the request row carries,
+   * and a later change is judged against it. Null when no row with that id belongs to
+   * the request; THROWS on a failed read, which the caller turns into a refusal,
+   * because a read that never ran cannot say what is held.
+   */
+  loadHeldWindow(args: {
+    id: string;
+    requestId: string;
+  }): Promise<{ startIso: string; endIso: string } | null>;
 
   /** Returns the inserted busy block id (null on failure — alerted inside). */
   insertBusyBlock(block: OooBusyBlockInsert): Promise<string | null>;
@@ -489,6 +502,10 @@ async function findOverlap(
  */
 export const OVERLAP_UNREADABLE_MESSAGE =
   "We could not check your existing time off just now. Please try again in a moment.";
+
+/** #3365: a change to a held request whose block could not be read. Nothing was changed. */
+export const HELD_WINDOW_UNREADABLE_MESSAGE =
+  "We could not check what this time off is blocking just now, so nothing was changed. Please try again in a moment.";
 
 function overlapError(r: OverlapCandidate): string {
   return (
@@ -1522,7 +1539,22 @@ export async function modifyOoo(
   const held = holdsApprovalArtifacts(request);
   const reapproval = wasApproved || held;
   const newWindow = { startIso: input.startIso, endIso: input.endIso };
-  const heldWindow = { startIso: request.starts_at, endIso: request.ends_at };
+  // Judged against the window the held block REALLY covers, never the row's own: after
+  // a failed narrowing the block (and the agent's event with it) is still on the
+  // earlier, wider window while the row carries the narrower one, so judging the row
+  // would release hours the block still holds. The request's window when it holds no
+  // block (only calendar events, which follow the row).
+  let heldWindow = { startIso: request.starts_at, endIso: request.ends_at };
+  if (held && request.busy_block_id) {
+    let blockWindow: { startIso: string; endIso: string } | null;
+    try {
+      blockWindow = await deps.loadHeldWindow({ id: request.busy_block_id, requestId });
+    } catch (e) {
+      log.error("ooo", { msg: "held window unreadable; change refused", request_id: requestId }, e);
+      return fail(HELD_WINDOW_UNREADABLE_MESSAGE);
+    }
+    if (blockWindow) heldWindow = blockWindow;
+  }
   const keeps = held && windowWithin(newWindow, heldWindow);
   const sameWindow = keeps && windowWithin(heldWindow, newWindow);
 
@@ -1582,7 +1614,7 @@ export async function modifyOoo(
   });
 
   let current = flipped.request;
-  let calendarMatched = true;
+  let stillEarlier: HeldOnEarlier | null = null;
   if (keeps) {
     const effects: Record<string, string> = { ...keptEffects };
     const patch: Partial<OooRequest> = {};
@@ -1596,7 +1628,14 @@ export async function modifyOoo(
     patch.side_effects = effects;
     await deps.patchRequest(requestId, patch);
     current = { ...flipped.request, ...patch };
-    calendarMatched = !(effects[EFFECTS.agentEvent] ?? "").startsWith(EARLIER_WINDOW);
+    // What is REALLY held, so neither message says the removed hours reopened while a
+    // block still covers them (L11). The event first: when it did not move, the block
+    // was deliberately left with it, and the calendar is what needs repairing.
+    stillEarlier = (effects[EFFECTS.agentEvent] ?? "").startsWith(EARLIER_WINDOW)
+      ? "calendar"
+      : (effects[EFFECTS.busyBlock] ?? "").startsWith(EARLIER_WINDOW)
+        ? "block"
+        : null;
   }
 
   // The same gap as the cancel (#1665), and it is worse here rather than milder.
@@ -1620,7 +1659,7 @@ export async function modifyOoo(
   await updateManagerStatus(request, agent, deps, "superseded", coverageNote);
 
   const outcome: ModifyOutcome = keeps
-    ? { kind: "kept", shortened: !sameWindow, calendarMatched }
+    ? { kind: "kept", shortened: !sameWindow, stillEarlier }
     : reapproval
       ? { kind: "released" }
       : { kind: "edited" };

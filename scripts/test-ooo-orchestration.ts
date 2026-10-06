@@ -178,6 +178,10 @@ interface World {
   goneEvents: Set<string>;
   /** #3365: make resizing the held block fail, so its failure path is reachable. */
   failHold: boolean;
+  /** #3365: make reading the held block's window throw, so the refusal is reachable. */
+  failHeldRead: boolean;
+  /** #3365: every held block window a change read, by block id. */
+  heldReads: string[];
 }
 
 function makeWorld(): World {
@@ -218,6 +222,8 @@ function makeWorld(): World {
     failMoveCalendars: new Set(),
     goneEvents: new Set(),
     failHold: false,
+    failHeldRead: false,
+    heldReads: [],
     /** The roster getUser reads, exposed so a test can add its own fixture user. */
     users: new Map<string, User>(
       [agent, namelessAgent, manager, admin, superAdmin, teamLead, stranger].map(
@@ -338,6 +344,13 @@ function makeWorld(): World {
       if (world.failHold || !b || b.ooo_request_id !== requestId) return false;
       world.busyBlocks.set(id, { ...b, source: "ooo", starts_at: startIso, ends_at: endIso });
       return true;
+    },
+    loadHeldWindow: async ({ id, requestId }) => {
+      world.heldReads.push(id);
+      if (world.failHeldRead) throw new Error("PostgREST 500 on busy_blocks");
+      const b = world.busyBlocks.get(id);
+      if (!b || b.ooo_request_id !== requestId) return null;
+      return { startIso: b.starts_at, endIso: b.ends_at };
     },
     insertBusyBlock: async (block) => {
       const id = `blk-${++blockSeq}`;
@@ -2243,6 +2256,57 @@ async function approvedWorld() {
   eq(block.starts_at, input.startIso, "#3365 hold failure: the block keeps the earlier, wider window");
   assert(/^failed: still on the earlier window/.test(r.side_effects.busy_block ?? ""), "#3365 hold failure: recorded");
   assert(w.alerts.some((a) => a.key === "busy_block_write_through" && a.message.includes(id)), "#3365 hold failure: ops is told");
+  // The event moved, the block did not, so the removed hours are still NOT bookable:
+  // neither person may be told they reopened, or that only the new window is held (L11).
+  const agentDm = w.dms.find((d) => d.email === agent.email)?.text ?? "";
+  assert(!/open for bookings again/.test(agentDm), `#3365 hold failure: the agent is not told the removed hours reopened (got: ${agentDm})`);
+  assert(/earlier window is still blocked/.test(agentDm), `#3365 hold failure: the agent is told the earlier window is still blocked (got: ${agentDm})`);
+  const notice = latestManagerNotice(w);
+  assert(!/new window stays blocked/.test(notice), `#3365 hold failure: the manager is not told only the new window is held (got: ${notice})`);
+  assert(/earlier window is still blocked/.test(notice), `#3365 hold failure: the manager is told the earlier window is still blocked (got: ${notice})`);
+}
+
+{
+  // A change after a failed narrowing is judged against what the block still HOLDS,
+  // not the narrower window the request row now carries. The block is on the approved
+  // 9 to 5; the row says 1 to 5; moving the start to noon is inside what is held, so it
+  // keeps holding rather than releasing everything until re-approval.
+  const { w, id, approved } = await approvedWorld();
+  w.failHold = true;
+  await modifyOoo(id, agent, narrowed, w.deps);
+  w.failHold = false;
+  w.deletedEvents.length = 0;
+  const noon = { ...input, startIso: "2026-07-01T16:00:00Z" };
+  const res = await modifyOoo(id, agent, noon, w.deps);
+  assert(res.ok, "#3365 held window: the second change succeeds");
+  const r = w.requests.get(id)!;
+  eq(r.busy_block_id, approved.busy_block_id, "#3365 held window: the block is kept, since noon to 5 is inside what it holds");
+  eq(w.deletedEvents.length, 0, "#3365 held window: no event is deleted");
+  eq(w.busyBlocks.get(r.busy_block_id!)!.starts_at, noon.startIso, "#3365 held window: and the block now narrows to the new window");
+  assert(w.heldReads.includes(approved.busy_block_id!), "#3365 held window: the change read the block's own window");
+
+  // CONTROL: wider than what the block holds still releases everything.
+  const c = await approvedWorld();
+  c.w.failHold = true;
+  await modifyOoo(c.id, agent, narrowed, c.w.deps);
+  c.w.failHold = false;
+  await modifyOoo(c.id, agent, widened, c.w.deps);
+  const cr = c.w.requests.get(c.id)!;
+  assert(cr.busy_block_id === null && c.w.busyBlocks.size === 0, "#3365 held window CONTROL: wider than the held block releases it");
+}
+
+{
+  // The held block's window cannot be read: the change is REFUSED before anything is
+  // written, because judging it against the row's window could release hours a block
+  // still holds, and nothing may be decided off a read that never ran (L11).
+  const { w, id, approved } = await approvedWorld();
+  w.failHeldRead = true;
+  const res = await modifyOoo(id, agent, narrowed, w.deps);
+  assert(!res.ok, "#3365 held read failure: the change is refused");
+  const r = w.requests.get(id)!;
+  eq(r.status, "approved", "#3365 held read failure: the request is untouched");
+  eq(r.starts_at, approved.starts_at, "#3365 held read failure: its window too");
+  eq(w.movedEvents.length + w.deletedEvents.length, 0, "#3365 held read failure: no calendar write");
 }
 
 {
