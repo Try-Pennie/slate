@@ -31,6 +31,11 @@ export const COLD_SAMPLE_SECONDS = 90;
 export const COLD_JOB_SETUP_MINUTES = 10;
 /** How long after a deploy returns before its confirm is sent, so the new version is the one serving. */
 export const COLD_SETTLE_MS = 8_000;
+/**
+ * The most one `wrangler deploy` may take before it is a failed sample (L110): about
+ * 20s measured, so a hung deploy costs one sample rather than the whole job's timeout.
+ */
+export const COLD_DEPLOY_TIMEOUT_MS = 50_000;
 
 /** The `cold_samples` input: 0 (off) when unset, or a whole number up to the most it takes. */
 export function readColdSamples(raw: string | undefined): { ok: true; n: number } | { ok: false; why: string } {
@@ -64,7 +69,9 @@ export interface ColdSlot {
 
 /**
  * `n` distinct times, taken across the codes in turn so no one bucket is emptied
- * first. Fewer offered times than samples is refused with both counts rather than
+ * first. Distinct by the INSTANT, not by code and instant: buckets can share an
+ * advisor, so the same time under a second code would be refused as taken rather than
+ * measured. Fewer offered times than samples is refused with both counts rather than
  * running a shorter leg that reads as the one asked for (L98).
  */
 export function chooseColdSlots(
@@ -79,9 +86,8 @@ export function chooseColdSlots(
       const start = o.slots[round];
       if (start === undefined) continue;
       any = true;
-      const key = `${o.code}@${start}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
+      if (seen.has(start)) continue;
+      seen.add(start);
       picked.push({ code: o.code, start });
       if (picked.length === n) break;
     }
@@ -147,4 +153,54 @@ export async function runColdLeg(deps: {
     attempts.push({ i, slot, deployOk: true, version: deployedVersionOf(d.output), sentAtMs, status: answer.status, outcome: answer.outcome });
   }
   return { ok: true, result: { mode: "cold", planned: deps.n, attempts } };
+}
+
+/**
+ * What the leg exits with, and its one line. A sample counts as taken when its deploy
+ * made a version and its confirm got an HTTP answer, whatever the answer: a refused
+ * confirm still started on a fresh version, so its wait before the profile is still a
+ * reading. A failed deploy and a confirm that got no answer each lose a sample, and are
+ * named apart because they send a reader to different places (L11).
+ */
+export function coldLegOutcome(result: ColdLegResult): { exit: 0 | 1; text: string } {
+  const answered = result.attempts.filter((a) => a.status !== null && a.status >= 100);
+  const created = answered.filter((a) => a.outcome === "created").length;
+  const deployFailed = result.attempts.filter((a) => !a.deployOk).length;
+  const noAnswer = result.attempts.filter((a) => a.deployOk && (a.status === null || a.status < 100)).length;
+  const lost = [
+    deployFailed > 0 ? `${deployFailed} deploy${deployFailed === 1 ? "" : "s"} failed` : null,
+    noAnswer > 0 ? `${noAnswer} confirm${noAnswer === 1 ? "" : "s"} got no answer` : null,
+  ].filter((t): t is string => t !== null);
+  const text =
+    `cold leg: ${answered.length} of ${result.planned} samples answered after a fresh deploy ` +
+    `(${created} created, ${answered.length - created} refused)` +
+    (lost.length > 0 ? `; ${lost.join(", ")}` : "");
+  return { exit: answered.length === result.planned ? 0 : 1, text };
+}
+
+/** The part of `spawnSync` a deploy uses, so a test can drive the real step. */
+export type DeploySpawn = (
+  cmd: string,
+  args: string[],
+  opts: { encoding: "utf8"; maxBuffer: number; timeout: number },
+) => { status: number | null; stdout?: string | null; stderr?: string | null; error?: { code?: string; message: string } };
+
+/**
+ * One deploy of the load test Worker, keeping the run's recompute arm (`--var` MERGES
+ * with env.loadtest's vars block, as the fault leg's deploy does), under its own
+ * deadline (L110). A deploy that hits the deadline is a failed sample that SAYS it
+ * timed out, apart from one that failed with its own error (L11).
+ */
+export function makeColdDeploy(deps: { arm: string; spawn: DeploySpawn }): () => Promise<{ ok: boolean; output: string }> {
+  return async () => {
+    const r = deps.spawn("npx", ["wrangler", "deploy", "--env", "loadtest", "--var", `SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE:${deps.arm}`], {
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+      timeout: COLD_DEPLOY_TIMEOUT_MS,
+    });
+    const timedOut = r.error !== undefined && /ETIMEDOUT/.test(`${r.error.code ?? ""} ${r.error.message}`);
+    const output =
+      `${r.stdout ?? ""}\n${r.stderr ?? ""}` + (timedOut ? `\nthe deploy did not finish within ${COLD_DEPLOY_TIMEOUT_MS}ms` : "");
+    return { ok: r.status === 0, output };
+  };
 }

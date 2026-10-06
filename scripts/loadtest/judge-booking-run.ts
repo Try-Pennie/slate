@@ -794,13 +794,18 @@ export function coldAfterDeployText(input: {
   reading: ConfirmStartupReading | null;
 }): string {
   const head = "- cold after deploy (diagnostic, not a bar)";
-  if (input.expected === 0) return `${head}: not asked for (cold_samples was 0)`;
+  // Results that arrived are reported whatever the run said it asked for, so a setting
+  // the judge could not read never hides a leg that ran.
+  if (input.expected === 0 && input.result === null) return `${head}: not asked for (cold_samples was 0)`;
   if (input.result === null) {
     return `${head}: asked for ${input.expected} samples and the leg's results never arrived, so nothing was measured`;
   }
   const deployed = input.result.attempts.filter((a) => a.deployOk).length;
+  const failed = input.result.planned - deployed;
   const sent = input.result.attempts.filter((a) => a.status !== null).length;
-  const asked = `asked for ${input.result.planned}; ${deployed} of ${input.result.planned} deploys made a version and ${sent} confirms sent`;
+  const asked =
+    `asked for ${input.result.planned}; ${deployed} of ${input.result.planned} deploys made a version` +
+    `${failed > 0 ? ` (${failed} failed)` : ""} and ${sent} confirms sent`;
   const r = input.reading;
   if (r === null) return `${head}: ${asked}; its log was not archived or not read, so their startup was not measured`;
   const versions = new Set(Object.keys(r.byVersion));
@@ -814,7 +819,7 @@ export function coldAfterDeployText(input: {
     `${head}: ${asked}; the log read ${r.samples} of them, ${onOwn} on the version just deployed, ` +
     `${r.cold} the first on their isolate (${r.firstRequests} the Worker's first request)` +
     (p === null ? "; no cold confirm, so nothing to report on the wait" : `; before the profile p50 ${p.p50}ms p95 ${p.p95}ms max ${p.max}ms`) +
-    (r.cold < COLD_SAMPLES_TARGET ? `, short of the ${COLD_SAMPLES_TARGET} cold samples the plan asked for` : "") +
+    (r.cold < COLD_SAMPLES_TARGET ? `, short of the ${COLD_SAMPLES_TARGET} a startup change is judged against` : "") +
     (spans.length > 0 ? `; by span ${spans.join(", ")}` : "")
   );
 }

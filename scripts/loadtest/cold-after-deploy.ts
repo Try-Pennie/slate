@@ -18,7 +18,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { bookingBody, bookingRequestHeaders, externalIdFor, offeredSlots, REQUEST_TIMEOUT_MS } from "./book-plan.ts";
 import { MEASURED_CODE_MIX } from "./code-mix.ts";
-import { readColdSamples, runColdLeg } from "./cold-plan.ts";
+import { coldLegOutcome, makeColdDeploy, readColdSamples, runColdLeg } from "./cold-plan.ts";
 import { PRODUCTION_HOST, PRODUCTION_SUPABASE_REF } from "../../src/lib/loadtest-guard.ts";
 
 function need(name: string): string {
@@ -57,6 +57,9 @@ const COLD_DRIVER = 90;
 /** The busiest codes, which offer the most times; read once, before the first deploy. */
 const CODES = MEASURED_CODE_MIX.slice(0, 5).map((c) => c.code);
 
+// The load test Worker only, keeping the run's arm, under the deploy's own deadline.
+const deploy = makeColdDeploy({ arm: ARM, spawn: (cmd, args, opts) => spawnSync(cmd, args, opts) });
+
 const leg = await runColdLeg({
   n: samples.n,
   codes: CODES,
@@ -69,15 +72,9 @@ const leg = await runColdLeg({
     return offeredSlots(await res.json());
   },
   deploy: async () => {
-    // `--var` MERGES with the vars block, as the fault leg's deploy does, so every
-    // setting in env.loadtest survives and the run's own arm (#3258) is kept.
-    const r = spawnSync("npx", ["wrangler", "deploy", "--env", "loadtest", "--var", `SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE:${ARM}`], {
-      encoding: "utf8",
-      maxBuffer: 16 * 1024 * 1024,
-    });
-    const output = `${r.stdout ?? ""}\n${r.stderr ?? ""}`;
-    process.stdout.write(output);
-    return { ok: r.status === 0, output };
+    const d = await deploy();
+    process.stdout.write(d.output);
+    return d;
   },
   sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
   confirm: async (slot, i) => {
@@ -104,7 +101,7 @@ if (!leg.ok) {
 }
 mkdirSync(dirname(OUT), { recursive: true });
 writeFileSync(OUT, JSON.stringify(leg.result, null, 2));
-const confirmed = leg.result.attempts.filter((a) => a.status !== null).length;
-console.log(`cold leg: ${confirmed} of ${leg.result.planned} samples confirmed after a deploy; wrote ${OUT}`);
-// Every failed deploy is a sample lost, so the job reads red and the judge names it.
-process.exit(confirmed === leg.result.planned ? 0 : 1);
+const outcome = coldLegOutcome(leg.result);
+console.log(`${outcome.text}; wrote ${OUT}`);
+// A lost sample (a failed deploy, or a confirm with no answer) reads red, and the judge names it.
+process.exit(outcome.exit);

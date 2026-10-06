@@ -2515,13 +2515,15 @@ const legAttempts = (i: JudgeInput, leg: number) =>
   const result = { mode: "cold" as const, planned: 4, attempts: [attempt(1, "aaaa1111-x", 200), attempt(2, "bbbb2222-x", 200), attempt(3, null, null), attempt(4, "cccc3333-x", 200)] };
   const text = coldAfterDeployText({ expected: 4, result, reading: withVersions });
   assert(/diagnostic, not a bar/.test(text), `it says it is not a bar (got: ${text})`);
-  assert(/3 of 4 deploys made a version/.test(text), `how many deploys worked (got: ${text})`);
+  assert(/3 of 4 deploys made a version \(1 failed\)/.test(text), `how many deploys worked, and the failed one by name (got: ${text})`);
   assert(/3 confirms sent/.test(text), `and how many confirms went (got: ${text})`);
   assert(/2 on the version just deployed/.test(text), `and how many landed on the version their deploy made, from the tail's own version (got: ${text})`);
   assert(/2 the first on their isolate/.test(text), `and how many read cold (got: ${text})`);
   const p = percentiles([1_800, 2_100])!;
   assert(text.includes(`before the profile p50 ${p.p50}ms p95 ${p.p95}ms max ${p.max}ms`), `with the cold wait through the judge's own percentile (got: ${text})`);
-  assert(/short of the 30/.test(text), `and says a sample under the target is short of it (got: ${text})`);
+  assert(/short of the 30 a startup change is judged against/.test(text), `and says a sample under the target is short of it (got: ${text})`);
+  const unexpected = coldAfterDeployText({ expected: 0, result, reading: withVersions });
+  assert(!/not asked for/.test(unexpected) && /3 of 4 deploys/.test(unexpected), `a leg whose results arrived is reported even when the run did not say it asked for one (got: ${unexpected})`);
   const unread = coldAfterDeployText({ expected: 4, result, reading: null });
   assert(/not archived|not read/.test(unread) && /3 confirms sent/.test(unread), `a leg whose log was not read says what it sent and that nothing was measured (got: ${unread})`);
 }

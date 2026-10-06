@@ -14,7 +14,10 @@ import {
   deployedVersionOf,
   chooseColdSlots,
   runColdLeg,
+  coldLegOutcome,
+  makeColdDeploy,
   COLD_SETTLE_MS,
+  COLD_DEPLOY_TIMEOUT_MS,
   COLD_SAMPLES_MAX,
   COLD_SAMPLES_TARGET,
   COLD_SAMPLE_SECONDS,
@@ -52,7 +55,10 @@ import { assert, eq, finish } from "./lib/harness.ts";
   assert(COLD_SAMPLES_MAX >= COLD_SAMPLES_TARGET, "and the most it takes is at least the target");
   // One sample is a deploy (about 20s measured on run 37390071571's fault leg), the
   // settle and one confirm under its 30s request timeout, so its share holds all three.
-  assert(COLD_SAMPLE_SECONDS * 1_000 >= 20_000 + COLD_SETTLE_MS + 30_000, "a sample's share holds a deploy, the settle and a confirm's whole timeout");
+  assert(COLD_SAMPLE_SECONDS * 1_000 >= COLD_DEPLOY_TIMEOUT_MS + COLD_SETTLE_MS + 30_000, "a sample's share holds a deploy at its own deadline, the settle and a confirm's whole timeout");
+  // A deploy has a deadline of its own (L110): one that hangs is a failed sample, not
+  // the whole leg waiting on the job's timeout. Measured at about 20s, so 2.5 times that.
+  assert(COLD_DEPLOY_TIMEOUT_MS >= 2 * 20_000, "the deploy deadline leaves room over the measured 20s");
 }
 
 // --- which version each deploy made ----------------------------------------------------
@@ -85,6 +91,10 @@ import { assert, eq, finish } from "./lib/harness.ts";
     eq(new Set(picked.slots.map((s) => `${s.code}@${s.start}`)).size, 3, "every one distinct");
     eq(picked.slots[1]?.code, "221", "taken across codes in turn, so no one bucket is emptied first");
   }
+  // The same instant under two codes is ONE slot: buckets can share an advisor, so a
+  // second confirm there would be refused as taken rather than measured.
+  const shared = chooseColdSlots([{ code: "112", slots: ["t1", "t2"] }, { code: "212", slots: ["t1", "t3"] }], 3);
+  assert(shared.ok && new Set(shared.slots.map((x) => x.start)).size === 3, `a time offered under two codes is taken once (got ${JSON.stringify(shared)})`);
   const short = chooseColdSlots(offered, 4);
   assert(!short.ok && short.why.includes("3") && short.why.includes("4"), `fewer offered times than samples is refused, saying both counts (got ${JSON.stringify(short)})`);
 }
@@ -166,6 +176,42 @@ function coldWiringProblems(yml: string): string[] {
     assert(broken !== yml, `control (${what}): the copy really was broken`);
     assert(coldWiringProblems(broken).some((p) => says.test(p)), `control (${what}): caught (got ${JSON.stringify(coldWiringProblems(broken))})`);
   }
+}
+
+// --- what the leg exits with: every sample deployed AND answered, or it says what failed ---
+{
+  const a = (i: number, deployOk: boolean, status: number | null, outcome: string | null) => ({
+    i, slot: { code: "112", start: `s${i}` }, deployOk, version: deployOk ? `v${i}` : null, sentAtMs: status === null ? null : i, status, outcome,
+  });
+  const all = coldLegOutcome({ mode: "cold", planned: 3, attempts: [a(1, true, 200, "created"), a(2, true, 409, "SLOT_TAKEN"), a(3, true, 200, "created")] });
+  eq(all.exit, 0, "every sample deployed and got an answer, so the leg passed, whatever the answer was");
+  assert(/3 of 3 samples answered/.test(all.text) && /2 created/.test(all.text) && /1 refused/.test(all.text), `and it says how many were created and refused (got ${all.text})`);
+  const lost = coldLegOutcome({ mode: "cold", planned: 3, attempts: [a(1, true, 0, "transport: TimeoutError"), a(2, false, null, null), a(3, true, 200, "created")] });
+  eq(lost.exit, 1, "a sample with no answer, or no deploy, fails the leg");
+  assert(/1 of 3 samples answered/.test(lost.text) && /1 deploy failed/.test(lost.text) && /1 confirm got no answer/.test(lost.text), `naming each way a sample was lost (got ${lost.text})`);
+}
+
+// --- one deploy: the load test Worker only, the run's arm kept, under its own deadline ---
+{
+  const calls: { cmd: string; args: string[]; timeout: number | undefined }[] = [];
+  const answer = (r: { status: number | null; stdout?: string; stderr?: string; error?: { code?: string; message: string } }) => {
+    const deploy = makeColdDeploy({
+      arm: "reads-only",
+      spawn: (cmd, args, opts) => {
+        calls.push({ cmd, args, timeout: opts.timeout });
+        return { stdout: "", stderr: "", ...r };
+      },
+    });
+    return deploy();
+  };
+  const ok = await answer({ status: 0, stdout: "Current Version ID: 5239f06d-1c2e-4b8a-9f3d-0a1b2c3d4e5f" });
+  assert(ok.ok && ok.output.includes("Current Version ID"), "a deploy that exits 0 is a deploy, carrying wrangler's output");
+  eq(calls[0]?.args.join(" "), "wrangler deploy --env loadtest --var SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE:reads-only", "it deploys the load test Worker only, keeping the run's arm");
+  eq(calls[0]?.timeout, COLD_DEPLOY_TIMEOUT_MS, "under the deploy's own deadline (L110)");
+  const hung = await answer({ status: null, error: { code: "ETIMEDOUT", message: "spawnSync npx ETIMEDOUT" } });
+  assert(!hung.ok && hung.output.includes(`did not finish within ${COLD_DEPLOY_TIMEOUT_MS}ms`), `a deploy that hits its deadline is a failed sample that says so (got ${JSON.stringify(hung)})`);
+  const refused = await answer({ status: 1, stderr: "Error: the upload was refused" });
+  assert(!refused.ok && refused.output.includes("upload was refused") && !refused.output.includes("did not finish"), "a deploy that fails is a failed sample carrying its own error, not called a timeout");
 }
 
 (async () => {
