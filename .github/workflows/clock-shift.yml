@@ -40,7 +40,10 @@ name: Shifted clock test run
 # suite's own process, and vitest runs its files in worker threads that do not
 # re-read it, so pretending to cover them would be false assurance. The measured
 # exposure in #2503 was in the node suites (9 of 432 read the real clock), and the
-# vitest half needs a seam of its own rather than this one stretched over it.
+# vitest half needs a seam of its own rather than this one stretched over it. A node
+# process a suite STARTS is shifted too (#3361: the runner hands the hook on through
+# NODE_OPTIONS), but a non node child such as `date` or `git log` reads the real
+# clock, so a suite that asks one of those for the date is not measured here.
 #
 # NO HEARTBEAT, deliberately, which is the one place this departs from the other
 # scheduled lanes (L13). GitHub drops scheduled runs, and every lane that must not go
