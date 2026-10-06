@@ -62,6 +62,23 @@ export const CONFIRM_LINE_HEARTBEAT_MS = 1_500;
 /** How long an attempt's answer is remembered, for a retried enter or an abandon. */
 export const CONFIRM_LINE_ATTEMPT_TTL_MS = 30_000;
 
+/** The tag and message a traced call is logged on, which the load run's reader matches (#3354). */
+export const CONFIRM_LINE_TRACE_TAG = "confirm-line-object";
+export const TRACED_CALL_MSG = "line call";
+
+/** The two stages the client stamps a traced call with (#3354). */
+export const TRACED_STAGES = ["wait", "turn"] as const;
+/**
+ * One traced call as the object reports it: the op, the confirm's trace, and whether
+ * the client sent it while the confirm waited for its turn or during the turn. A stage
+ * the client never sends is `unknown`, never one of the two (L11).
+ */
+export interface TracedCall {
+  op: string;
+  trace: string;
+  stage: (typeof TRACED_STAGES)[number] | "unknown";
+}
+
 type Answer = Record<string, unknown>;
 type LeadTurn = Extract<QueueTurn<unknown>, { kind: "lead" }>;
 
@@ -95,6 +112,13 @@ export function makeConfirmLineHost(deps: {
   /** The lines' leases. */
   leaseTimer: ScheduleTimer;
   newId: () => string;
+  /**
+   * #3354: told of each call that carries a trace, so a load run can join the
+   * object's side of a confirm to the confirm's own line. Only the load test's client
+   * sends a trace, so production calls report nothing. The time a call spent here is
+   * the runtime's own `wallTime` on the same event, so none is measured twice.
+   */
+  onTrace?: (call: TracedCall) => void;
 }): { handle(message: unknown): Promise<string> } {
   const { now, timer, newId } = deps;
   const line = makeConfirmQueue<unknown>({
@@ -234,6 +258,11 @@ export function makeConfirmLineHost(deps: {
   const handle = async (message: unknown): Promise<string> => {
     if (!message || typeof message !== "object" || Array.isArray(message)) return bad("not a message");
     const m = message as Record<string, unknown>;
+    // Before the version check, so a call refused for its version is still seen.
+    if (deps.onTrace && isString(m.trace) && isString(m.op)) {
+      const stage = (TRACED_STAGES as readonly unknown[]).includes(m.stage) ? (m.stage as TracedCall["stage"]) : "unknown";
+      deps.onTrace({ op: m.op, trace: m.trace, stage });
+    }
     if (m.v !== CONFIRM_LINE_PROTOCOL) return gone("version");
     sweep();
     switch (m.op) {

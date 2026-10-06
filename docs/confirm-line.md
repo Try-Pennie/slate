@@ -77,6 +77,17 @@ follower's 10s wait. Followers poll in 1.5s long polls, so a deploy, which leave
 calls already held on the old instance until their own timeout, strands a follower
 for at most one poll. The relations are pinned by `scripts/test-confirm-line-object.ts`.
 
+## Traced calls (load test only, #3354)
+
+Under SLATE_LOADTEST the route mints a trace for each confirm, and the client adds
+it to every message with the stage it was sent in: `wait` until `enter` hands back a
+turn, `turn` after. The object logs each traced call (`tag=confirm-line-object
+msg="line call"`, with the op, trace and stage) and the runtime records the call's
+`wallTime` on the same event, so the load run joins the object's side of a confirm to
+the confirm's own `confirm answered` line (`line_trace`). Production confirms carry
+no trace, so the object logs nothing for them. Nothing in the protocol depends on it:
+an object that ignored both fields would answer every call the same.
+
 ## Tests
 
 `test-confirm-queue.ts` (the rules), `test-confirm-line-object.ts` (the protocol,
@@ -85,7 +96,8 @@ client against the real host through a transport that can fail each message, or
 swap the host for a deploy), `test-confirm-contention.ts` (fifty isolates: per
 isolate lines leave dozens told to retry, one shared line answers the whole crowd),
 `test-unawaited-line-calls.ts` (no unawaited line call), `test-confirm-line-binding.ts`
-(bound, created and exported in production and the load test).
+(bound, created and exported in production and the load test, and the deployed class
+logging a traced call).
 
 ## Measured before it was built (2026-10-05)
 

@@ -25,7 +25,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { planVerifiedDeploy } from "./lib/deploy-verified.ts";
+import { makeStep, planVerifiedDeploy } from "./lib/deploy-verified.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const BUILD_INFO = join(ROOT, "src", "lib", "build-info.ts");
@@ -78,14 +78,9 @@ if (process.env.ALLOW_DIRTY_DEPLOY === "1") {
 
 console.log(`\n  Deploying ${plan.commit} to ${plan.appUrl}, then verifying it.\n`);
 
-/** Run a step, inheriting stdio so its own output is the output. */
-function step(name: string, cmd: string, args: string[]): void {
-  console.log(`  --- ${name}`);
-  const res = spawnSync(cmd, args, { cwd: ROOT, stdio: "inherit", env: process.env });
-  if (res.status !== 0) {
-    throw new Error(`${name} failed (exit ${res.status ?? "signal"})`);
-  }
-}
+// Each step inherits stdio and this process's environment, with its own `env` added
+// (`makeStep`, driven by scripts/test-deploy-verified.ts).
+const step = makeStep({ spawn: spawnSync, root: ROOT, baseEnv: process.env, log: (line) => console.log(line) });
 
 const original = readFileSync(BUILD_INFO, "utf8");
 let failure: unknown = null;
@@ -98,10 +93,11 @@ try {
   // pnpm appends these to the script's last command, `opennextjs-cloudflare deploy`,
   // which hands unrecognised flags through to `wrangler deploy`.
   step("build and deploy", "pnpm", ["run", "cf:deploy", ...plan.deployArgs]);
+  // #3363: told which commit was stamped, since outside CI there is no GITHUB_SHA.
   step("post-deploy probe", "node", [
     "--experimental-strip-types",
     "scripts/post-deploy-probe.ts",
-  ]);
+  ], plan.probeEnv);
 } catch (err) {
   failure = err;
 } finally {

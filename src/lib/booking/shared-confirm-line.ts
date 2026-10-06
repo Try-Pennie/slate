@@ -92,8 +92,19 @@ export function makeSharedConfirmLine<T>(deps: {
   now: () => number;
   timer: ScheduleTimer;
   newId: () => string;
+  /**
+   * #3354: this confirm's trace, set by the load test only. Every call then carries it
+   * and the stage it was sent in, so the run can join the object's side of the
+   * confirm to the confirm's own line. Null sends neither, which is every production
+   * confirm.
+   */
+  trace?: string | null;
 }): ConfirmLine<T> {
   const { now, timer } = deps;
+  // Whether a call is sent while this confirm waits for its turn or during it. The
+  // turn begins when `enter` hands one back; one client serves one confirm.
+  let stage: "wait" | "turn" = "wait";
+  const traced = (): Answer => (deps.trace ? { trace: deps.trace, stage } : {});
   // A lead or a ticket found while looking ahead, kept for the `enter` that follows
   // it in the same confirm, so an idle line costs one call rather than two.
   const stash = new Map<string, Stashed>();
@@ -102,7 +113,7 @@ export function makeSharedConfirmLine<T>(deps: {
   const call = async (stub: LineStub, message: Answer, ms: number): Promise<{ answer: Answer | null; err: unknown; ms: number }> => {
     let err: unknown = null;
     const t0 = now();
-    const answer = await readWithinDeadline(() => stub.send({ v: CONFIRM_LINE_PROTOCOL, ...message }), ms, (e) => (err = e), timer);
+    const answer = await readWithinDeadline(() => stub.send({ v: CONFIRM_LINE_PROTOCOL, ...message, ...traced() }), ms, (e) => (err = e), timer);
     return { answer, err, ms: now() - t0 };
   };
   const timedOut = (err: unknown) => err instanceof Error && /no answer within/.test(err.message);
@@ -269,18 +280,26 @@ export function makeSharedConfirmLine<T>(deps: {
     return { use: "shared" };
   };
 
+  const enterOnce = async (key: LineKey, waitMs: number | undefined): Promise<LineTurn<T>> => {
+    const served: LineServed = { line: "shared", reason: "ok", key: keyKindOf(key.group), lineMs: 0 };
+    const stashed = stash.get(isolateKeyOf(key)) ?? null;
+    stash.delete(isolateKeyOf(key));
+    const how = await decide(key);
+    if (how.use !== "shared") {
+      if (how.use === "fallback") return fallBack(key, waitMs, { ...served, line: "fallback", reason: how.reason }, null);
+      deps.record({ ...served, line: "isolate", reason: how.reason });
+      return deps.fallback.enter(key, waitMs);
+    }
+    return enterShared(key, waitMs ?? 0, served, CONFIRM_LINE_GONE_RETRIES, stashed);
+  };
+
   return {
     async enter(key, waitMs) {
-      const served: LineServed = { line: "shared", reason: "ok", key: keyKindOf(key.group), lineMs: 0 };
-      const stashed = stash.get(isolateKeyOf(key)) ?? null;
-      stash.delete(isolateKeyOf(key));
-      const how = await decide(key);
-      if (how.use !== "shared") {
-        if (how.use === "fallback") return fallBack(key, waitMs, { ...served, line: "fallback", reason: how.reason }, null);
-        deps.record({ ...served, line: "isolate", reason: how.reason });
-        return deps.fallback.enter(key, waitMs);
-      }
-      return enterShared(key, waitMs ?? 0, served, CONFIRM_LINE_GONE_RETRIES, stashed);
+      const turn = await enterOnce(key, waitMs);
+      // Everything sent from here on (claims, the report, the heartbeat, a permit
+      // given back) is sent during the turn.
+      stage = "turn";
+      return turn;
     },
     async lookahead(key, waitMs) {
       const how = await decide(key);

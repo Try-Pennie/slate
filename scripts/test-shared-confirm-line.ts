@@ -55,11 +55,14 @@ function world() {
   /** What the transport does to the next messages, by op. */
   const faults = new Map<string, "throw" | "late" | "hang">();
   const sent: string[] = [];
+  /** Every message as sent, for what a call carries beside its op (#3354). */
+  const messages: Record<string, unknown>[] = [];
   const namespace: LineNamespace = {
     stubFor: () => ({
       async send(message) {
         const op = String(message.op);
         sent.push(op);
+        messages.push({ ...message });
         const fault = faults.get(op);
         if (fault) faults.delete(op);
         if (fault === "throw") throw new Error("the object refused");
@@ -71,7 +74,7 @@ function world() {
       },
     }),
   };
-  const client = (opts: { on?: SwitchReading; bound?: boolean } = {}) => {
+  const client = (opts: { on?: SwitchReading; bound?: boolean; trace?: string | null } = {}) => {
     const served: LineServed[] = [];
     const reach: string[] = [];
     const fallback = isolateLine(makeConfirmQueue<string>({ timer, now: () => now }));
@@ -84,6 +87,7 @@ function world() {
       now: () => now,
       timer,
       newId,
+      trace: opts.trace ?? null,
     });
     return { line, served, reach };
   };
@@ -99,7 +103,7 @@ function world() {
     await tick();
     return out;
   };
-  return { now: () => now, advance, settle, client, faults, sent, deploy: () => (host = makeHost()) };
+  return { now: () => now, advance, settle, client, faults, sent, messages, deploy: () => (host = makeHost()) };
 }
 
 const KEY = { group: "code:521", instant: "1791230400000" };
@@ -167,6 +171,43 @@ async function main() {
     const r = (await w.settle(follower)) as LineTurn<string>;
     assert(r.kind === "refused" && r.settled === "A booked p0", `two isolates: B, on another isolate, is refused from A's verdict (got ${JSON.stringify(r)})`);
     assert(lastServed(b.served)?.line === "shared", "two isolates: B was served by the shared line");
+  }
+
+  // --- #3354: a traced confirm stamps every call, by the stage it was sent in -------
+  // The load run joins the object's side of a confirm to the confirm's own line by this
+  // trace, and splits the wait from the turn by the stage. Everything sent before the
+  // turn is handed back is `wait` (the lookahead, the enter, every poll, the ack);
+  // everything after is `turn` (the claims, the report, the heartbeat).
+  {
+    const w = world();
+    const a = w.client({ trace: "tA" });
+    const b = w.client({ trace: "tB" });
+    const plain = w.client();
+    const of = (trace: string) => w.messages.filter((m) => m.trace === trace).map((m) => `${String(m.op)}:${String(m.stage)}`);
+    await w.settle(a.line.lookahead(KEY, 10_000));
+    const lead = (await w.settle(a.line.enter(KEY, 10_000))) as LineTurn<string>;
+    if (lead.kind !== "lead") throw new Error("trace: A did not lead");
+    const follower = b.line.enter(KEY, 10_000);
+    await w.advance(CONFIRM_LINE_HEARTBEAT_MS + 10);
+    await w.settle(lead.seat.claimFirst(["p0"]));
+    await w.settle(lead.done({ full: true, refusal: "race", settled: "A booked p0" }));
+    await w.settle(follower);
+    const aCalls = of("tA");
+    assert(
+      aCalls.slice(0, 2).join(",") === "enter:wait,ack:wait" && aCalls.includes("renew:turn") && aCalls.includes("claimFirst:turn") && aCalls[aCalls.length - 1] === "done:turn",
+      `trace: the leader's lookahead and ack are sent waiting, its heartbeat, claims and report during its turn (got ${JSON.stringify(aCalls)})`,
+    );
+    const bCalls = of("tB");
+    assert(bCalls[0] === "enter:wait" && bCalls.slice(1).every((c) => c === "poll:wait") && bCalls.length >= 2, `trace: a follower's enter and polls are all sent waiting (got ${JSON.stringify(bCalls)})`);
+    assert(aCalls.length + bCalls.length === w.messages.length, "trace: every call either confirm sent carries its own trace");
+    const before = w.messages.length;
+    const own = (await w.settle(plain.line.enter({ ...KEY, instant: "9" }, 10_000))) as LineTurn<string>;
+    if (own.kind === "lead") await w.settle(own.done({ full: false }));
+    const untraced = w.messages.slice(before);
+    assert(
+      untraced.length > 0 && untraced.every((m) => !("trace" in m) && !("stage" in m)),
+      `trace: a confirm with no trace sends neither field, which is every production confirm (got ${JSON.stringify(untraced)})`,
+    );
   }
 
   // --- an enter answered after its caller gave up leaves no phantom behind ----------

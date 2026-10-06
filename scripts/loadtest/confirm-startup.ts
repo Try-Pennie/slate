@@ -38,6 +38,48 @@
  * depth, and the fixtures are pretty printed the way the real file is.
  */
 
+import { CONFIRM_LINE_TRACE_TAG, TRACED_CALL_MSG } from "../../src/lib/booking/confirm-line-object.ts";
+
+/**
+ * #3354: a confirm's wait in the shared line, split by the object's own log of each
+ * call the confirm sent while it waited. `wait_line_ms` is the client's view; the
+ * object logs each traced call and the runtime records its `wallTime`, so the wait
+ * splits into three:
+ *
+ *   held      polls, which the object holds until the confirm's turn or a timeout:
+ *             time spent behind a leader
+ *   object    the object's own work on every other call sent while waiting (the
+ *             lookahead, the enter, the ack)
+ *   outside   the rest: network both ways, the object starting, and the client's own
+ *             work between calls, the switch read among it
+ *
+ * Calls sent during the turn (claims, the report, the heartbeat) are not part of the
+ * wait and are left out. A wait the object over accounts for is `impossible` rather
+ * than a negative outside, and a traced confirm whose calls never reached the archive
+ * is `missing` rather than a split of zeroes (L98).
+ */
+export interface LineSplit {
+  /** Confirms on the shared line whose answer line carried a trace and a line span. */
+  traced: number;
+  /** Of those, the ones with at least one call found, which give a reading. */
+  joined: number;
+  /** Traced confirms none of whose calls are in the archive. */
+  missing: number;
+  /** Traced confirms whose calls took longer in the object than the whole wait. */
+  impossible: number;
+  /** Traced confirms with a call sent while waiting whose event carried no `wallTime`. */
+  unreadable: number;
+  heldMs: number[];
+  objectMs: number[];
+  outsideMs: number[];
+}
+
+/** The wait before the profile, cold and warm, for one script version or one leg. */
+export interface SideWaits {
+  cold: number[];
+  warm: number[];
+}
+
 /** What one archived run says about the confirms in it. */
 export interface ConfirmStartupReading {
   /** How many confirm profiles were read in full. */
@@ -137,6 +179,12 @@ export interface ConfirmStartupReading {
    * cold population the startup bar judges (L457).
    */
   firstRequestsReadWarm: number;
+  /** #3354: the shared line's wait, split by the object's own log, cold and warm. */
+  lineSplit: { cold: LineSplit; warm: LineSplit; orphanCalls: number };
+  /** #3354: the wait before the profile by the Worker version that served it (`unknown` when the event named none). */
+  byVersion: Record<string, SideWaits>;
+  /** #3354: and by the load run leg that sent it (`none` when it named none). */
+  byLeg: Record<string, SideWaits>;
 }
 
 /** The spans `wait-marks.ts` writes, in the order a confirm passes them. */
@@ -172,6 +220,8 @@ interface TailEvent {
    */
   cpuTime?: unknown;
   wallTime?: unknown;
+  /** #3354: the Worker version that served the invocation. */
+  scriptVersion?: { id?: unknown } | null;
 }
 
 /**
@@ -268,8 +318,15 @@ export function readConfirmStartup(archive: string): ConfirmStartupReading | nul
     invocationIndexKnown: 0,
     firstRequests: 0,
     firstRequestsReadWarm: 0,
+    lineSplit: { cold: emptySplit(), warm: emptySplit(), orphanCalls: 0 },
+    byVersion: {},
+    byLeg: {},
   };
   let sawAny = false;
+  // #3354: the object's traced calls by trace, and the confirms that may own them,
+  // joined once the whole archive is read (an object's calls usually arrive first).
+  const objectCalls = new Map<string, { stage: string; op: string; wallMs: number | null }[]>();
+  const tracedConfirms: { side: "cold" | "warm"; trace: string; shared: boolean; waitLineMs: number | null }[] = [];
 
   for (const raw of tailObjects(archive)) {
     let event: TailEvent;
@@ -287,6 +344,16 @@ export function readConfirmStartup(archive: string): ConfirmStartupReading | nul
     // #3354: this invocation's own answer line, which carries its marks and the
     // Worker's invocation index; read once per invocation and paired with its profile.
     const answerText = logs.map((l) => messageText(l.message)).find((t) => t.includes(ANSWER_MSG)) ?? null;
+    // #3354: one of the shared line object's traced calls, logged by the object itself.
+    for (const entry of logs) {
+      const text = messageText(entry.message);
+      if (!text.includes(OBJECT_TAG) || !text.includes(OBJECT_MSG)) continue;
+      const trace = textField(text, "trace");
+      if (!trace) continue;
+      const calls = objectCalls.get(trace) ?? [];
+      calls.push({ stage: textField(text, "stage") ?? "unknown", op: textField(text, "op") ?? "unknown", wallMs: num(event.wallTime) });
+      objectCalls.set(trace, calls);
+    }
     for (const entry of logs) {
       const text = messageText(entry.message);
       if (!text.includes(TAG)) continue;
@@ -330,6 +397,15 @@ export function readConfirmStartup(archive: string): ConfirmStartupReading | nul
         reading.warmPreProfileMs.push(preProfileMs);
         if (cpuMs !== null) reading.warmCpuMs.push(cpuMs);
       }
+      const side = cold ? "cold" : "warm";
+      const version = typeof event.scriptVersion?.id === "string" && event.scriptVersion.id ? event.scriptVersion.id : "unknown";
+      const leg = (answerText !== null ? textField(answerText, "loadtest_leg") : null) || "none";
+      (reading.byVersion[version] ??= { cold: [], warm: [] })[side].push(preProfileMs);
+      (reading.byLeg[leg] ??= { cold: [], warm: [] })[side].push(preProfileMs);
+      const lineTrace = answerText !== null ? textField(answerText, "line_trace") : null;
+      if (lineTrace) {
+        tracedConfirms.push({ side, trace: lineTrace, shared: textField(answerText ?? "", "line") === "shared", waitLineMs: field(answerText ?? "", "wait_line_ms") });
+      }
       if (answerText !== null) {
         const invocationIndex = field(answerText, "isolate_invocation_index");
         const spans = reading.waitSpans[cold ? "cold" : "warm"];
@@ -354,7 +430,54 @@ export function readConfirmStartup(archive: string): ConfirmStartupReading | nul
       }
     }
   }
+  joinLineCalls(reading, tracedConfirms, objectCalls);
   return sawAny ? reading : null;
+}
+
+const OBJECT_TAG = `tag=${CONFIRM_LINE_TRACE_TAG}`;
+const OBJECT_MSG = `msg="${TRACED_CALL_MSG}"`;
+
+function emptySplit(): LineSplit {
+  return { traced: 0, joined: 0, missing: 0, impossible: 0, unreadable: 0, heldMs: [], objectMs: [], outsideMs: [] };
+}
+
+/** #3354: each traced shared confirm's wait, split by the calls the object logged for it. */
+function joinLineCalls(
+  reading: ConfirmStartupReading,
+  confirms: { side: "cold" | "warm"; trace: string; shared: boolean; waitLineMs: number | null }[],
+  calls: Map<string, { stage: string; op: string; wallMs: number | null }[]>,
+): void {
+  const owned = new Set(confirms.map((c) => c.trace));
+  for (const [trace, list] of calls) if (!owned.has(trace)) reading.lineSplit.orphanCalls += list.length;
+  for (const c of confirms) {
+    // Only the shared line calls the object, and a split needs the client's own span.
+    if (!c.shared || c.waitLineMs === null || c.waitLineMs < 0) continue;
+    const split = reading.lineSplit[c.side];
+    split.traced += 1;
+    const mine = calls.get(c.trace) ?? [];
+    if (mine.length === 0) {
+      split.missing += 1;
+      continue;
+    }
+    const waiting = mine.filter((m) => m.stage === "wait");
+    // A call with no readable wall time cannot be apportioned, so the split is not
+    // made rather than made short (L98), and counted apart from a missing one (L11).
+    if (waiting.some((m) => m.wallMs === null)) {
+      split.unreadable += 1;
+      continue;
+    }
+    const held = waiting.filter((m) => m.op === "poll").reduce((a, m) => a + (m.wallMs ?? 0), 0);
+    const object = waiting.filter((m) => m.op !== "poll").reduce((a, m) => a + (m.wallMs ?? 0), 0);
+    const outside = c.waitLineMs - held - object;
+    if (outside < 0) {
+      split.impossible += 1;
+      continue;
+    }
+    split.joined += 1;
+    split.heldMs.push(held);
+    split.objectMs.push(object);
+    split.outsideMs.push(outside);
+  }
 }
 
 /**

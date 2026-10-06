@@ -4,7 +4,7 @@ import { withinBookingCleanupBudget, withinBookingRequest } from "@/lib/booking/
 import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import { authorizeBookingApi } from "@/lib/booking/route-auth";
 import { answerTimed, noteRefusal, type ConfirmLineFacts } from "@/lib/booking/confirm-latency";
-import { makeWaitMarks, readEntryMarks } from "@/lib/booking/wait-marks";
+import { makeWaitMarks, readEntryMarks, readLoadtestLeg } from "@/lib/booking/wait-marks";
 import { isLoadtest } from "@/lib/loadtest-guard";
 import { parseDirectBookingRequest, parseLookupQuery, parseCancelQuery, parseListQuery, LIST_ONLY_PARAMS } from "@/lib/booking/api-request";
 import { respondToDirectCancel, apiErrorBody, mapLookupError } from "@/lib/booking/direct-cancel-http";
@@ -102,7 +102,15 @@ export async function POST(req: NextRequest) {
 function waitFactsFor(req: NextRequest): ConfirmLineFacts {
   if (!isLoadtest()) return {};
   const entry = readEntryMarks(req.headers);
-  return { marks: makeWaitMarks(() => Date.now(), entry.entryAtMs), isolateInvocationIndex: entry.invocationIndex };
+  const leg = readLoadtestLeg(req.headers);
+  return {
+    marks: makeWaitMarks(() => Date.now(), entry.entryAtMs),
+    isolateInvocationIndex: entry.invocationIndex,
+    // #3354: the shared line's calls carry this, so the object's log of them joins
+    // this confirm's own line; minted here, never taken from the request.
+    lineTrace: crypto.randomUUID(),
+    ...(leg ? { loadtestLeg: leg } : {}),
+  };
 }
 
 async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
