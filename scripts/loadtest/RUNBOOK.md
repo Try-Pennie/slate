@@ -449,6 +449,73 @@ burst's file and on a non-zero exit. A late request meets an already taken slot 
 records a SLOT_TAKEN indistinguishable from the contention the control is counting,
 so the judge would be handed a staggered burst wearing a simultaneous one's clothes.
 
+#### The burst tail, and where each burst's time went (#3416)
+
+Run 37520312761 failed two of its three bursts: every burst confirm took about ten
+seconds, against three to four on run 37390071571, and the slowest losers were refused
+`503 VERIFY_UNAVAILABLE` instead of `409 SLOT_TAKEN`. Nobody could say which stage
+took the time, because no burst confirm's log line was kept: the `archive` job needs
+the burst job, so its tail starts after the bursts.
+
+So the **`burst-tail` job** streams `wrangler tail --env loadtest --format json` across
+the bursts. It needs only `setup-burst`, so it starts beside the burst drivers and is
+streaming well inside the five minute lead, and it stops at a moment DERIVED from the
+plan (`burstTailStopAtMs` in `book-plan.ts`): the LAST burst's moment, plus the
+lateness a driver may still fire at (2s), a burst request's own abort bound (30s, so
+no answer the driver records comes later), the work the platform allows after an
+answer (an invocation's event is written when it ENDS, and Cloudflare cancels deferred
+work 30s after the response), and the stream's own lag (10s). The slowest burst answer
+seen, 14119ms, is inside that by construction. It copies the cold job's tail pattern
+(`setsid`, a `timeout` ceiling, the stream backgrounded, stderr to its own file, the
+stop sent to the process group) for the same reasons. `scripts/loadtest/burst-tail-wait.ts`
+holds it open and exits 0 when the window covered every burst, 1 when the plan or the
+ceiling could not be read, and 3 when it could not cover every burst (it started after
+the first moment, or `BURST_TAIL_CEILING_MINUTES` ends before the stop: raise both with
+the lead). The upload is always made, as the `burst-tail` artifact.
+
+**It is its own file, `burst-tail.jsonl`, read for the burst section only.** A crowd
+of a hundred confirms on one slot is a different load shape from the steady pass, so
+its confirms must never join the startup bar's population, which comes from the
+archive's `tail.jsonl` alone. The cold leg's `cold-tail.jsonl` is kept out the same
+way. `scripts/test-loadtest-burst-tail.ts` holds the wiring: the job's needs, its
+ceiling and timeout against the default lead, its artifact, the judge waiting for it
+and downloading it, the archive still needing the burst job, and `run-judge.ts` never
+handing the burst tail to a reader of the startup population.
+
+**The report's "where each burst's time went" lines** (`scripts/loadtest/burst-breakdown.ts`,
+never a bar) match every burst request to its own confirm's log lines and then say,
+per burst, where the winner's, the SLOT_TAKEN losers' and every other refusal's time
+went: the driver's wall time and the route's own answer time, the invocation's CPU,
+the wait before the profile by span, the stage profile a slow or timed out confirm's
+`confirm answered` line carries (#3300), and the refusing stage. For SLOT_TAKEN the
+stage is tallied by name; for every other refusal it carries its per rung counts
+(`code:members/read/claimed/checked`, #3272), and a refusal whose line names no stage
+(a dependency timeout) is said to have none and whether it timed out.
+
+The pairing of a confirm's lines with each other is the archive's ONE reader,
+`tailInvocations` in `confirm-startup.ts`, the same the startup split uses. What is
+added is tying each request in the driver's burst files to its invocation, by the
+deployment's own answer stamp: the route writes `confirm answered` and then stamps
+`x-loadtest-answered-at` with no I/O between, and a Worker's clock moves only at I/O,
+so the line's timestamp IS the stamp the driver recorded. Checked against run
+37520312761's steady pass: all 528 answer lines its archive held matched one request
+each, none ambiguously, every invocation starting within two seconds of its request
+being sent, and a control with every stamp moved by one millisecond matched none. The
+72 requests left unmatched were all missing from the archive (70 sent before its
+tail connected, 2 in its first seconds while it attached). A burst answers many
+requests on one millisecond (32 of burst 1's 100 share address, stamp and status
+with another), so the key also carries what the deployment echoed about the line
+(which line, why, which key, its milliseconds), which leaves 2 and 4 in a hundred
+sharing a key. Requests with an identical key, as many as the confirms carrying it,
+all ending the same way, are matched as one block, since which is whose cannot change
+a figure reported per outcome. Anything else sharing a key is counted as ambiguous
+and left out, never assigned by a guess (L521).
+
+Every way of learning nothing is **UNMEASURED** in its own words, never a quiet burst
+(L98): the burst tail never arriving, arriving unreadable or empty, holding no burst
+confirm's answer line, and a burst none of whose requests matched (with when the tail
+ran and when the burst fired). A run that was not judged still prints the section.
+
 ## The isolated deployment the run drives (#2242)
 
 There is no staging environment (ADR 0007), so the run gets one for its own
@@ -1200,6 +1267,12 @@ agreed with it because they were written by the same hand that assumed the shape
 event carries a request URL, and the fixtures are pretty printed the way the real
 file is. Proven against that artifact: 1,336 objects, 613 confirm profiles, none
 unparsable.
+
+Every tail a run keeps (the archive's `tail.jsonl`, the cold leg's `cold-tail.jsonl`
+and the burst tail's `burst-tail.jsonl`, #3416) has its confirms read through one
+reader, `tailInvocations` in `confirm-startup.ts`, so a confirm's answer line, its
+profile and its marks are paired one way wherever they are read. (The cron tick count
+reads the same objects through `tailObjects`, the brace scan underneath it.)
 
 The same reading is where `cpuTime` and `wallTime` came from. The archive carries
 the runtime's own per invocation numbers, which is what makes the three way split

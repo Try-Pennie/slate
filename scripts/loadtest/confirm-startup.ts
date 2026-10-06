@@ -221,6 +221,72 @@ interface TailEvent {
   wallTime?: unknown;
   /** #3354: the Worker version that served the invocation. */
   scriptVersion?: { id?: unknown } | null;
+  /** #3416: the request that started it, as the runtime archives it. */
+  event?: { request?: { headers?: Record<string, unknown> | null } | null } | null;
+}
+
+/** One log line of one invocation, as text, with the Worker's clock when it was written. */
+export interface TailLogLine {
+  text: string;
+  timestamp: number | null;
+}
+
+/**
+ * One invocation of the archive and every line it logged (#3416).
+ *
+ * The ONE way the archive is read into requests: a confirm's answer line, its profile
+ * line and its marks are paired by being in the same invocation (L420), and the
+ * startup reading and the burst breakdown both read through this rather than each
+ * parsing events of its own.
+ */
+export interface TailInvocation {
+  /** The invocation's start, on the Worker's clock. */
+  eventTimestamp: number | null;
+  cpuTime: number | null;
+  wallTime: number | null;
+  /** The Worker version that served it, or null when the event named none. */
+  scriptVersion: string | null;
+  /**
+   * The address the request came from (`cf-connecting-ip`), which is what the
+   * deployment echoes to a load run as the address it saw. Null for a cron tick, a
+   * Durable Object call, or an event that carried no request headers.
+   */
+  requestIp: string | null;
+  logs: TailLogLine[];
+}
+
+/** One object out of the archive: an invocation, or a stretch that is not readable JSON. */
+export type TailItem = { kind: "invocation"; invocation: TailInvocation } | { kind: "unparsable" };
+
+/** Every invocation in an archived `wrangler tail --format json` file, in order. */
+export function* tailInvocations(archive: string): Generator<TailItem> {
+  for (const raw of tailObjects(archive)) {
+    let event: TailEvent;
+    try {
+      event = JSON.parse(raw) as TailEvent;
+    } catch {
+      yield { kind: "unparsable" };
+      continue;
+    }
+    const logs = Array.isArray(event.logs) ? (event.logs as TailLog[]) : [];
+    const ip = event.event?.request?.headers?.["cf-connecting-ip"];
+    yield {
+      kind: "invocation",
+      invocation: {
+        eventTimestamp: num(event.eventTimestamp),
+        cpuTime: num(event.cpuTime),
+        wallTime: num(event.wallTime),
+        scriptVersion: typeof event.scriptVersion?.id === "string" && event.scriptVersion.id ? event.scriptVersion.id : null,
+        requestIp: typeof ip === "string" && ip !== "" ? ip : null,
+        logs: logs.map((l) => ({ text: messageText(l.message), timestamp: num(l.timestamp) })),
+      },
+    };
+  }
+}
+
+/** The invocation's own `confirm answered` line, or null when it wrote none. */
+export function answerLineOf(inv: TailInvocation): TailLogLine | null {
+  return inv.logs.find((l) => l.text.includes(ANSWER_MSG)) ?? null;
 }
 
 /**
@@ -273,7 +339,7 @@ function num(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
-/** A `key=value` field out of a line Slate's own formatter wrote. */
+/** A `key=value` field out of a line Slate's own formatter wrote. Exported as `logNumber`. */
 function field(line: string, key: string): number | null {
   const m = new RegExp(`(?:^|\\s)${key}=(-?\\d+(?:\\.\\d+)?)(?:\\s|$)`).exec(line);
   // Through the same guard as every other reading (L50). The pattern admits a
@@ -331,11 +397,8 @@ export function readConfirmStartup(archive: string, opts?: { leg?: LoadtestLeg }
   // out with them rather than counted as orphans of a confirm the archive does hold.
   const otherLegTraces = new Set<string>();
 
-  for (const raw of tailObjects(archive)) {
-    let event: TailEvent;
-    try {
-      event = JSON.parse(raw) as TailEvent;
-    } catch {
+  for (const item of tailInvocations(archive)) {
+    if (item.kind === "unparsable") {
       // Counted rather than skipped. A truncated line is a reading this could not
       // make, and one dropped in silence leaves a reader taking the samples it did
       // read for the whole run (L10, L11).
@@ -343,22 +406,22 @@ export function readConfirmStartup(archive: string, opts?: { leg?: LoadtestLeg }
       sawAny = true;
       continue;
     }
-    const logs = Array.isArray(event.logs) ? (event.logs as TailLog[]) : [];
+    const inv = item.invocation;
     // #3354: this invocation's own answer line, which carries its marks and the
     // Worker's invocation index; read once per invocation and paired with its profile.
-    const answerText = logs.map((l) => messageText(l.message)).find((t) => t.includes(ANSWER_MSG)) ?? null;
+    const answerText = answerLineOf(inv)?.text ?? null;
     // #3354: one of the shared line object's traced calls, logged by the object itself.
-    for (const entry of logs) {
-      const text = messageText(entry.message);
+    for (const entry of inv.logs) {
+      const text = entry.text;
       if (!text.includes(OBJECT_TAG) || !text.includes(OBJECT_MSG)) continue;
       const trace = textField(text, "trace");
       if (!trace) continue;
       const calls = objectCalls.get(trace) ?? [];
-      calls.push({ stage: textField(text, "stage") ?? "unknown", op: textField(text, "op") ?? "unknown", wallMs: num(event.wallTime) });
+      calls.push({ stage: textField(text, "stage") ?? "unknown", op: textField(text, "op") ?? "unknown", wallMs: inv.wallTime });
       objectCalls.set(trace, calls);
     }
-    for (const entry of logs) {
-      const text = messageText(entry.message);
+    for (const entry of inv.logs) {
+      const text = entry.text;
       if (!text.includes(TAG)) continue;
       sawAny = true;
       // The leg that sent it, from the same invocation's answer line. A reading scoped
@@ -372,8 +435,8 @@ export function readConfirmStartup(archive: string, opts?: { leg?: LoadtestLeg }
         if (trace) otherLegTraces.add(trace);
         continue;
       }
-      const startedAt = num(event.eventTimestamp);
-      const loggedAt = num(entry.timestamp);
+      const startedAt = inv.eventTimestamp;
+      const loggedAt = entry.timestamp;
       const totalMs = field(text, "total_ms");
       const isolateAgeMs = field(text, "isolate_age_ms");
       if (startedAt === null || loggedAt === null || totalMs === null || isolateAgeMs === null) {
@@ -397,11 +460,11 @@ export function readConfirmStartup(archive: string, opts?: { leg?: LoadtestLeg }
       // The runtime's own reading, kept only when the archive carried one: a
       // missing cpuTime is a shorter list, never a zero, because a zero would be
       // the cheapest possible confirm and pull every percentile down (L98).
-      const cpuMs = num(event.cpuTime);
+      const cpuMs = inv.cpuTime;
       // Everything the invocation did after this line was written. Never negative:
       // a wall shorter than the span to the log line is an archive that disagrees
       // with itself, and it is already counted as impossible below.
-      const wallMs = num(event.wallTime);
+      const wallMs = inv.wallTime;
       if (wallMs !== null) reading.afterProfileMs.push(Math.max(0, wallMs - (loggedAt - startedAt)));
       if (cold) {
         reading.cold += 1;
@@ -412,7 +475,7 @@ export function readConfirmStartup(archive: string, opts?: { leg?: LoadtestLeg }
         if (cpuMs !== null) reading.warmCpuMs.push(cpuMs);
       }
       const side = cold ? "cold" : "warm";
-      const version = typeof event.scriptVersion?.id === "string" && event.scriptVersion.id ? event.scriptVersion.id : "unknown";
+      const version = inv.scriptVersion ?? "unknown";
       (reading.byVersion[version] ??= { cold: [], warm: [] })[side].push(preProfileMs);
       (reading.byLeg[leg] ??= { cold: [], warm: [] })[side].push(preProfileMs);
       const lineTrace = answerText !== null ? textField(answerText, "line_trace") : null;
@@ -531,7 +594,7 @@ export interface DeferredSpanReading {
 
 const DEFERRED_TAG = "tag=after-response-profile";
 
-/** The `key=value` text of a field written by Slate's own formatter. */
+/** The `key=value` text of a field written by Slate's own formatter. Exported as `logText`. */
 function textField(line: string, key: string): string | null {
   const m = new RegExp(`(?:^|\\s)${key}=("[^"]*"|\\S+)`).exec(line);
   if (!m) return null;
@@ -539,21 +602,22 @@ function textField(line: string, key: string): string | null {
   return raw.startsWith('"') ? raw.slice(1, -1) : raw;
 }
 
+/**
+ * #3416: the field readers, exported so every reader of the archive reads a field the
+ * one way (L41): a number through the same finite guard, a text with its quotes off.
+ */
+export { field as logNumber, textField as logText };
+
 export function readDeferredSpans(archive: string): Record<string, DeferredSpanReading> | null {
   const byContext: Record<string, DeferredSpanReading> = {};
   let sawAny = false;
-  for (const raw of tailObjects(archive)) {
-    let event: TailEvent;
-    try {
-      event = JSON.parse(raw) as TailEvent;
-    } catch {
-      // Counted by `readConfirmStartup`'s own `unparsable`, which reads the same
-      // archive: counting it twice would report one truncated line as two faults.
-      continue;
-    }
-    const logs = Array.isArray(event.logs) ? (event.logs as TailLog[]) : [];
-    for (const entry of logs) {
-      const text = messageText(entry.message);
+  for (const item of tailInvocations(archive)) {
+    // An unparsable stretch is counted by `readConfirmStartup`'s own `unparsable`,
+    // which reads the same archive: counting it twice would report one truncated
+    // line as two faults.
+    if (item.kind === "unparsable") continue;
+    for (const entry of item.invocation.logs) {
+      const text = entry.text;
       if (!text.includes(DEFERRED_TAG)) continue;
       sawAny = true;
       // An unnamed job is still a job. Dropping it would understate the span this

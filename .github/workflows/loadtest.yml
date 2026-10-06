@@ -32,6 +32,10 @@ name: Booking path load run
 #               mix can include the burst's codes, so a steady driver taking a burst
 #               slot first would make every burst request SLOT_TAKEN and fail the
 #               control for a reason that has nothing to do with the index.
+#   burst-tail  `wrangler tail` from before the first burst's moment until the last
+#               burst's lines are in (#3416), so the judge can say where each burst's
+#               time went. Its own file, read for the burst section only, so no
+#               burst confirm joins the startup bar's population.
 #   drivers     four of them, fifteen a minute for ten minutes, which is exactly
 #               the per address write ceiling.
 #   freshness   the existing soak sampler, one sample a minute, so recompute is
@@ -379,6 +383,66 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: burst-${{ matrix.driver }}
+          path: results/
+
+  # The bursts' own log (#3416). The archive below needs the burst job, so its tail
+  # starts after the bursts, and on run 37520312761 no burst confirm's log line was
+  # kept: every confirm took about ten seconds and nobody could say which stage took
+  # it. This starts beside the burst drivers, from the same plan, so it is streaming
+  # before the first shared moment (the lead is five minutes), and stops at a moment
+  # DERIVED from the plan's last one (`burstTailStopAtMs` in book-plan.ts: a driver's
+  # lateness, a request's own abort bound, the work allowed after an answer, the
+  # stream's lag), never a constant.
+  #
+  # Its own file, read by the judge for the burst section only. A crowd on one slot
+  # is a different load shape, so its confirms must not join the startup bar's
+  # population, which the archive's tail alone feeds; the cold leg's tail is kept out
+  # of it the same way.
+  burst-tail:
+    needs: setup-burst
+    if: ${{ !cancelled() && needs.setup-burst.result == 'success' }}
+    runs-on: ubuntu-latest
+    # The ceiling below plus the runner's setup. scripts/test-loadtest-burst-tail.ts
+    # holds the ceiling at or above `burstTailMinutesNeeded` at the default lead, and
+    # this at or above the ceiling plus the setup.
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # The cold job's pattern, and for its reasons. `setsid` makes the tail its own
+      # process group, so the stop reaches wrangler itself rather than only the
+      # `timeout` wrapping it, which would leave the stream holding the step open
+      # (L321). The ceiling is a backstop for a stop that never comes. Nothing waits
+      # for the tail to connect: in json format wrangler prints no "Connected" line.
+      # stderr goes to its own file so the stream holds only events, and the wait's
+      # exit is kept so a refusal still stops the tail before the step ends.
+      - name: Stream the Worker's logs across every burst
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          BURST_PLAN: ${{ needs.setup-burst.outputs.burst_plan }}
+          BURST_TAIL_CEILING_MINUTES: "10"
+        run: |
+          mkdir -p results
+          setsid timeout "${BURST_TAIL_CEILING_MINUTES}m" npx wrangler tail --env loadtest --format json > results/burst-tail.jsonl 2> results/burst-tail.err &
+          tail_pid=$!
+          rc=0
+          node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/burst-tail-wait.ts || rc=$?
+          kill -TERM -- -"$tail_pid" 2>/dev/null || true
+          wait "$tail_pid" 2>/dev/null || true
+          wc -l results/burst-tail.jsonl
+          exit "$rc"
+      # ALWAYS: a tail that could not cover every burst still holds what it caught,
+      # and the judge reports which requests it matched.
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: burst-tail
           path: results/
 
   drive:
@@ -738,7 +802,7 @@ jobs:
     # `preflight` is here only so this job can SAY the environment is still
     # standing when the preflight refused (#2347); every other leg already depends
     # on it, so it adds no ordering.
-    needs: [preflight, baseline, setup-burst, drive, burst, freshness, ceiling, archive, fault, cold]
+    needs: [preflight, baseline, setup-burst, drive, burst, burst-tail, freshness, ceiling, archive, fault, cold]
     # Judged even when a driver failed: the judge's own job is to say the run was
     # incomplete, and skipping it would leave that unsaid.
     if: always()

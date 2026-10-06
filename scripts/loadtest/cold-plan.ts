@@ -14,6 +14,7 @@
  * version ahead of its confirm would start that version's isolate and the confirm
  * would no longer be its first.
  */
+import { readOptionalText } from "./read-optional.ts";
 
 /** How many cold samples the plan asked for (#3354): enough for a p95 that is not the max. */
 export const COLD_SAMPLES_TARGET = 30;
@@ -158,13 +159,10 @@ export function coldRefusalResult(planned: number, why: string): ColdLegResult {
 export function readColdResult(
   readText: () => string,
 ): { kind: "absent" } | { kind: "read"; result: ColdLegResult } | { kind: "unreadable"; why: string } {
-  let text: string;
-  try {
-    text = readText();
-  } catch (err) {
-    if ((err as { code?: unknown }).code === "ENOENT") return { kind: "absent" };
-    return { kind: "unreadable", why: err instanceof Error ? err.message : String(err) };
-  }
+  // Absent and unreadable are told apart by the one reader every optional artifact uses.
+  const file = readOptionalText(readText);
+  if (file.kind !== "read") return file;
+  const text = file.text;
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);

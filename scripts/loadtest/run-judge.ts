@@ -42,7 +42,9 @@ import {
   startupOriginText,
   lineSplitText,
   coldAfterDeployText,
+  burstLegGroups,
 } from "./judge-booking-run.ts";
+import { BURST_TAIL_FILE, burstBreakdownLines, readBurstTailFile } from "./burst-breakdown.ts";
 import {
   INVOCATIONS_QUERY,
   SCHEDULED_QUERY,
@@ -454,6 +456,14 @@ try {
   if ((err as { code?: unknown }).code !== "ENOENT") console.error(`note: the cold leg's log could not be read: ${err instanceof Error ? err.message : String(err)}`);
 }
 
+// #3416: the bursts' own log, streamed by the burst-tail job from before the first
+// burst's moment until the last burst's lines were in. Read for the burst section
+// ONLY: a crowd on one slot is a different load shape, so its confirms never join the
+// startup bar's population above, which the archive's `tail.jsonl` alone feeds. A
+// file that never arrived and one that could not be read are told apart (L11), and
+// either is reported as an UNMEASURED breakdown rather than left out.
+const burstTail = readBurstTailFile(() => readFileSync(join(RESULTS, BURST_TAIL_FILE), "utf8"));
+
 // A MISSING artifact is judged by the same function as a present one, from an
 // empty status list, so "the step never ran" gets its own conclusion rather than
 // being hand assembled here into something that looks like a reading (L98).
@@ -676,6 +686,9 @@ const input: JudgeInput = {
 };
 
 const result = judgeBookingRun(input);
+// #3416: where each burst's time went, matched request by request against the burst
+// tail. A report, never a bar: it is built after the verdict and feeds nothing into it.
+const burstBreakdown = burstBreakdownLines({ groups: burstLegGroups(input), tail: burstTail });
 
 /**
  * What the burst's pool depth was, for the report (#2278).
@@ -723,6 +736,12 @@ if (result.incomplete.length > 0) {
   );
   lines.push("");
   for (const why of result.incomplete) lines.push(`- ${why}`);
+  // #3416: a run that was not judged still says where its bursts' time went, since a
+  // burst that ran slow is often why somebody is reading an unjudged run at all.
+  if (!result.measurements) {
+    lines.push("");
+    lines.push(...burstBreakdown);
+  }
 }
 const m = result.measurements;
 if (m) {
@@ -846,6 +865,7 @@ if (m) {
   const burstsSummary = burstsSummaryText(m.bursts);
   if (burstsSummary) lines.push(`- ${burstsSummary}`);
   for (const leg of m.bursts) lines.push(`  - ${burstLegText(leg)}`);
+  lines.push(...burstBreakdown);
   // #3325: which line the steady pass took and the absolute time it added, reported
   // beside the speed ratio because the ratio hides an overhead the baseline pays too.
   lines.push(`- ${steadyLineText(m.steadyLine)}`);
