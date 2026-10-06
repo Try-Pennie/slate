@@ -214,6 +214,7 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   inactive_agent_bookings: "time-off-cover-or-protection-is-in-doubt",
   ooo_protection_lost: "time-off-cover-or-protection-is-in-doubt",
   ooo_busy_block_fallback: "time-off-cover-or-protection-is-in-doubt",
+  ooo_event_mismatch: "time-off-cover-or-protection-is-in-doubt",
   ooo_calcom: "time-off-cover-or-protection-is-in-doubt",
   ooo_calcom_unprotected: "time-off-cover-or-protection-is-in-doubt",
   ooo_calendar_create: "time-off-cover-or-protection-is-in-doubt",

@@ -39,8 +39,18 @@ const service = vi.hoisted(() => {
       this.zone = zone;
     }
   }
+  // #3373: Google refused to invite the address stored on the booking.
+  class AttendeeEmailRefusedError extends Error {
+    readonly field = "email" as const;
+    constructor(cause: unknown) {
+      super("Enter a valid email address");
+      this.name = "AttendeeEmailRefusedError";
+      this.cause = cause;
+    }
+  }
   return {
     ContactRefusedError,
+    AttendeeEmailRefusedError,
     OutsideCallingWindowError,
     rescheduleBooking: vi.fn(),
     pageBookingFailure: vi.fn(async (_err: unknown) => {}),
@@ -427,6 +437,23 @@ describe("POST /bookings/[token]/reschedule", () => {
     );
     expect(res.status).toBe(400);
     expect((await res.json()).error).toBe("Enter a valid email address");
+  });
+
+  // #3373: the move's invite was refused by Google for the address the booking
+  // already holds. A refusal about the email, counted under its own code, never
+  // reschedule_internal and a page, and not a 409 that would open the alternatives.
+  it("answers Google refusing the stored email as a 422 about the email, not an internal error", async () => {
+    service.rescheduleBooking.mockRejectedValueOnce(new service.AttendeeEmailRefusedError(new Error("google 400")));
+    const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.error).toBe(BOOKING_ERROR_COPY.moveEmailRefused);
+    expect(body.reason).toBe("reschedule_attendee_email_refused");
+    expect(recordApiOutcome).toHaveBeenCalledWith("error", "", "reschedule_attendee_email_refused", {
+      by: "manageToken",
+      token: "tok1",
+    });
+    expect(recordApiOutcome).not.toHaveBeenCalledWith("error", "", "reschedule_internal", expect.anything());
   });
 
   it("refuses a multi-megabyte detail before the booking layer sees it (#1034)", async () => {

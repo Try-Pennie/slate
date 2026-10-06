@@ -1,5 +1,6 @@
 import type { SelectionOutcome } from "@/lib/booking/core";
 import type { Booking, BulkReassignItem, BulkReassignItemStatus, BulkReassignJob } from "@/lib/db/types";
+import { AttendeeEmailRefusedError, ATTENDEE_EMAIL_REFUSED_STAFF } from "@/lib/booking/attendee-email-refused";
 
 /** The item statuses that stay on the out agent and need a manual force-override
  *  (#974): no covering agent could be placed, or the move exhausted its retries. */
@@ -182,6 +183,13 @@ export async function processBulkReassignItem(
       await deps.reassign(item.booking_id, selection.assignment.email, job);
       return { status: "moved", targetUserId: selection.assignment.userId, detail: null };
     } catch (err) {
+      // #3373: Google will never invite this lead's address, so no retry can move
+      // the booking: failed at once, saying why, rather than retried to the cap and
+      // then shown as "Reassign failed: Enter a valid email address", a sentence
+      // meant for the lead's own form.
+      if (err instanceof AttendeeEmailRefusedError) {
+        return { status: "failed", targetUserId: null, detail: ATTENDEE_EMAIL_REFUSED_STAFF };
+      }
       return retryOrFail(item.attempts, `Reassign failed: ${errMessage(err)}`);
     }
   }

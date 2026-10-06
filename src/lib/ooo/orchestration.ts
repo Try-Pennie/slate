@@ -110,9 +110,14 @@ export type OooBusyBlockInsert = {
   user_id: string;
   starts_at: string;
   ends_at: string;
-  source: "slate" | "gcal";
-  gcal_event_id: string | null;
-  calendar_id: string | null;
+  /**
+   * Always a Slate written row (#3360). Typed to the one shape so nothing can go
+   * back to writing a source='gcal' row keyed on the agent event, which is the
+   * row the calendar sync treats as that event's mirror and rewrites.
+   */
+  source: "slate";
+  gcal_event_id: null;
+  calendar_id: null;
   /**
    * The request this row was written for (#1464). Required, not optional: it is
    * what tells the reconcile sweep and the pool-exit prune that an approved time
@@ -253,8 +258,6 @@ export interface OooDeps {
     endIso: string;
   }): Promise<number | null>;
 
-  /** The agent's primary calendar id from agent_calendars (fallback "primary"). */
-  agentPrimaryCalendarId(userId: string): Promise<string>;
   /**
    * Create an event on `calendarId` impersonating `actorEmail`; returns event id.
    *
@@ -825,9 +828,27 @@ async function runPostApproval(
   }
 
   // 3. busy_blocks write-through so the embed stops offering the window now.
-  //    With the agent event in hand we insert source='gcal' + its event id so
-  //    the next sync pass upserts onto this same row (no double-counting);
-  //    without it we fall back to a slate-source block.
+  //
+  //    The APPROVED window is held by a block the calendar sync can never write
+  //    (#3360): source='slate', no gcal_event_id, no calendar_id, owned through
+  //    `ooo_request_id`. It used to be a source='gcal' row carrying the agent
+  //    event's id, so the sync's upsert on (user_id, calendar_id, gcal_event_id)
+  //    treated it as that event's mirror and rewrote it to whatever span the event
+  //    had. On 2026-10-06 one hand edit in Google cut 690 minutes off an approved
+  //    day this way, the block followed, and a lead was booked into the morning
+  //    the edit opened. An approval is the record of what was agreed, so its
+  //    protection must not depend on the event staying as it was written.
+  //
+  //    The event gets its own ordinary mirror row from the sync, like any other
+  //    event, so a WIDER event still blocks its extra hours. When the two
+  //    disagree, the sync pages (src/lib/ooo/event-coverage.ts) and asks a person
+  //    to make them agree, in whichever direction is true.
+  //
+  //    Every sweep already spares this shape: the reconcile sweep keeps a slate
+  //    row whose owner is still approved, both pool exit prunes keep any row with
+  //    an `ooo_request_id`, and nothing on the sync path touches a slate row
+  //    (its upsert and deletes match on gcal_event_id and calendar_id, its
+  //    reconcile and the nightly prune on source='gcal').
   //
   //    The condition is `busy_block_id` alone, deliberately (#1464, L121). It used
   //    to also skip whenever `side_effects.busy_block` began with "ok", which made
@@ -837,28 +858,9 @@ async function runPostApproval(
   //    the retry that exists to repair exactly this request skipped the only step
   //    that was broken, permanently. The id is the artifact's own existence, so a
   //    null id with an "ok" effect is damage and gets re-created.
+  const agentEventId = patch.agent_event_id ?? request.agent_event_id;
   if (!request.busy_block_id) {
-    const agentEventId = patch.agent_event_id ?? request.agent_event_id;
-    const block: OooBusyBlockInsert = agentEventId
-      ? {
-          user_id: agent.id,
-          starts_at: request.starts_at,
-          ends_at: request.ends_at,
-          source: "gcal",
-          gcal_event_id: agentEventId,
-          calendar_id: await deps.agentPrimaryCalendarId(agent.id),
-          ooo_request_id: request.id,
-        }
-      : {
-          user_id: agent.id,
-          starts_at: request.starts_at,
-          ends_at: request.ends_at,
-          source: "slate",
-          gcal_event_id: null,
-          calendar_id: null,
-          ooo_request_id: request.id,
-        };
-    const blockId = await deps.insertBusyBlock(block);
+    const blockId = await deps.insertBusyBlock(heldWindowBlock(request, agent.id));
     if (blockId) {
       patch.busy_block_id = blockId;
       effects[EFFECTS.busyBlock] = agentEventId ? "ok" : "ok (slate fallback)";
@@ -871,37 +873,13 @@ async function runPostApproval(
     } else {
       effects[EFFECTS.busyBlock] = "failed";
     }
-  } else if (
-    // 3b. Converge a slate fallback once a retry creates the missing agent
-    //     event (#78): the slate-source block stays, but sync would now also
-    //     mirror the new Google event into a second, overlapping gcal block.
-    //     Replace the slate block with a gcal-linked one so the next sync
-    //     upserts onto it. Insert the replacement before deleting the old block
-    //     so availability is never momentarily unblocked.
-    request.busy_block_id &&
-    patch.agent_event_id &&
-    effects[EFFECTS.busyBlock] === "ok (slate fallback)"
-  ) {
-    const convergedId = await deps.insertBusyBlock({
-      user_id: agent.id,
-      starts_at: request.starts_at,
-      ends_at: request.ends_at,
-      source: "gcal",
-      gcal_event_id: patch.agent_event_id,
-      calendar_id: await deps.agentPrimaryCalendarId(agent.id),
-      ooo_request_id: request.id,
-    });
-    if (convergedId) {
-      await deps.deleteBusyBlock({
-        id: request.busy_block_id,
-        userId: agent.id,
-        gcalEventId: null,
-      });
-      patch.busy_block_id = convergedId;
-      effects[EFFECTS.busyBlock] = "ok";
-    }
-    // If the converging insert failed, keep the slate block (still blocking)
-    // and leave the effect as the fallback so a later retry tries again.
+  } else if (agentEventId && effects[EFFECTS.busyBlock] === "ok (slate fallback)") {
+    // 3b. A retry created the agent event a fallback approval was missing. The
+    //     held block is already the final shape, so it stays exactly as it is and
+    //     only the record changes: protection no longer rests on this row alone.
+    //     #78 used to re-key the block onto the new event here, which is the very
+    //     link #3360 removed.
+    effects[EFFECTS.busyBlock] = "ok";
   }
 
   // 4. Cal.com dual-write (transition only; "skipped" when the flag is off).
@@ -994,6 +972,26 @@ async function runPostApproval(
   patch.side_effects = effects;
   await deps.patchRequest(request.id, patch);
   return { request: { ...request, ...patch }, coverage };
+}
+
+/**
+ * The row that holds an approved window (#3360): Slate written, keyed on nothing
+ * the calendar sync writes, owned by the request. One constructor, so approval,
+ * retry and a narrowing change (#3365) can never write two different shapes.
+ */
+export function heldWindowBlock(
+  request: Pick<OooRequest, "id" | "starts_at" | "ends_at">,
+  agentId: string,
+): OooBusyBlockInsert {
+  return {
+    user_id: agentId,
+    starts_at: request.starts_at,
+    ends_at: request.ends_at,
+    source: "slate",
+    gcal_event_id: null,
+    calendar_id: null,
+    ooo_request_id: request.id,
+  };
 }
 
 /** One line, no stack: side_effects is read by a person in an admin panel, and a pasted
