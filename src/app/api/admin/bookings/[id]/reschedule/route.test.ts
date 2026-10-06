@@ -54,6 +54,7 @@ vi.mock("@/lib/auth", () => auth);
 vi.mock("@/lib/booking/service", () => service);
 
 import { POST } from "./route";
+import { AttendeeEmailRefusedError, ATTENDEE_EMAIL_REFUSED_STAFF } from "@/lib/booking/attendee-email-refused";
 import { NotAuthorizedError } from "@/lib/auth/http";
 
 /** Same-origin headers, which is what Slate's own UI sends. The route refuses a
@@ -118,6 +119,17 @@ describe("POST /admin/bookings/[id]/reschedule", () => {
     const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
     expect(res.status).toBe(409);
     expect((await res.json()).error).toBe("This booking was just changed. Refresh and try again.");
+  });
+
+  // #3373: the move's new invite was refused for the lead's stored address. The
+  // same staff answer the reassign routes give, never the generic 500.
+  it("maps Google refusing the lead's email to a 422 that names the email", async () => {
+    service.adminRescheduleBooking.mockRejectedValueOnce(new AttendeeEmailRefusedError(new Error("google 400")));
+    const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.code).toBe("ATTENDEE_EMAIL_REFUSED");
+    expect(body.error).toBe(ATTENDEE_EMAIL_REFUSED_STAFF);
   });
 
   it("maps NoEligibleAgentsError to 409 (a full slot, not a crash) (#484)", async () => {

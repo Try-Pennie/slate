@@ -695,6 +695,19 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
       "so it belongs with the other shape refusals rather than in a rate that pages.",
   },
   {
+    id: "reschedule_attendee_email_refused",
+    surface: "manage page",
+    outcome: "422, told the invite could not go to the email we hold, with the call left where it is",
+    counting: { kind: "error", code: "reschedule_attendee_email_refused" },
+    rateSignal: { kind: "covered" },
+    why:
+      "The move-side twin of attendee_email_refused (#3373): Google refused to invite the address " +
+      "the booking already holds, on the invite the move writes. It used to arrive as " +
+      "reschedule_internal and a page about a fault of ours. One is a lead whose stored address " +
+      "predates the tightened rule; a wave means our rule and Google's have drifted apart, which the " +
+      "share names under its own code rather than burying it under internal.",
+  },
+  {
     id: "reschedule_verify_unavailable",
     surface: "manage page",
     outcome: "503, told it is temporary and to retry",

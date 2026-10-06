@@ -12,6 +12,10 @@ import {
   OutsideCallingWindowError,
 } from "@/lib/booking/service";
 import { callingWindowLabel } from "@/lib/booking/lead-calling-window";
+import {
+  AttendeeEmailRefusedError,
+  ATTENDEE_EMAIL_REFUSED_STAFF_ANSWER,
+} from "@/lib/booking/attendee-email-refused";
 import { validateReason } from "@/lib/booking/core";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { internalErrorResponse } from "@/lib/api/errors";
@@ -77,6 +81,14 @@ export async function POST(
         },
         { status: 422 },
       );
+    }
+    // #3373: Google refused to invite the lead's stored address, so the move's
+    // invite was never written and the booking is where it was. The same staff
+    // answer the reassign routes give, never the generic 500.
+    if (err instanceof AttendeeEmailRefusedError) {
+      return NextResponse.json(ATTENDEE_EMAIL_REFUSED_STAFF_ANSWER.body, {
+        status: ATTENDEE_EMAIL_REFUSED_STAFF_ANSWER.status,
+      });
     }
     if (err instanceof VerifyUnavailableError) {
       return NextResponse.json({ error: err.message }, { status: 503 });

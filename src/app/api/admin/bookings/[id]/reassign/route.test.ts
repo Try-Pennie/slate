@@ -66,6 +66,7 @@ vi.mock("@/lib/booking/service", () => service);
 
 import { POST } from "./route";
 import { AgentHeldError } from "@/lib/booking/reroute";
+import { AttendeeEmailRefusedError, ATTENDEE_EMAIL_REFUSED_STAFF } from "@/lib/booking/attendee-email-refused";
 import { NotAuthorizedError } from "@/lib/auth/http";
 
 /** Same-origin headers, which is what Slate's own UI sends. The route refuses a
@@ -145,6 +146,20 @@ describe("POST /admin/bookings/[id]/reassign", () => {
     expect(body.code).toBe("HELD");
     expect(body.error).toBe("This advisor is held for a bucket correction until 3:04pm ET.");
     expect(body.heldUntil).toBe("2026-10-05T19:04:00Z");
+  });
+
+  // #3373: Google refused to invite the lead's stored address, so the target's
+  // invite was never written. A 422 naming the email, never the generic 500, so a
+  // manager stops retrying a move that cannot succeed. The class is the real one:
+  // the shared mapper reads it from its own module, not through the service.
+  it("maps Google refusing the lead's email to a 422 that names the email", async () => {
+    service.adminReassignBooking.mockRejectedValueOnce(new AttendeeEmailRefusedError(new Error("google 400")));
+    const res = await POST(req({ agentEmail: "b@x.com", reason: "owner_reassignment" }), params);
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.code).toBe("ATTENDEE_EMAIL_REFUSED");
+    expect(body.error).toBe(ATTENDEE_EMAIL_REFUSED_STAFF);
+    expect(body.error).toMatch(/email address/);
   });
 
   // #2660: the refusal is a genuine conflict (retrying changes nothing), so it is
