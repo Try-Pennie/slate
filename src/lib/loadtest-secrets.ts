@@ -254,12 +254,54 @@ export function loadtestEntryRefusal(args: {
   if (args.pathname !== undefined && LOADTEST_DIAGNOSTIC_PATHS.includes(normalisePath(args.pathname))) {
     return null;
   }
-  const mode = args.bindings.NEXTJS_ENV;
-  const carried = {
-    ...bakedSettingsForMode(args.baked, typeof mode === "string" ? mode : undefined),
-    // Bindings win, exactly as `populateProcessEnv` applies them: a name set BOTH
-    // ways is one setting, and counting it twice would say two.
-    ...args.bindings,
-  };
-  return loadtestCarryingProductionSecrets({ loadtest: true, env: carried });
+  return loadtestCarryingProductionSecrets({ loadtest: true, env: carriedSettings(args.bindings, args.baked) });
+}
+
+/**
+ * The settings the app will read, as `populateProcessEnv` builds them: the baked file
+ * for the deployment's mode, then the bindings over it. Bindings win, exactly as the
+ * adapter applies them: a name set BOTH ways is one setting, and counting it twice
+ * would say two.
+ */
+function carriedSettings(bindings: Record<string, unknown>, baked: unknown): Record<string, unknown> {
+  const mode = bindings.NEXTJS_ENV;
+  return { ...bakedSettingsForMode(baked, typeof mode === "string" ? mode : undefined), ...bindings };
+}
+
+/** The `error` an idle load test deployment answers with (#3310), so a reader can tell it apart. */
+export const LOADTEST_IDLE_ERROR = "loadtest deployment idle";
+
+/**
+ * Which of its own three secrets a load test deployment is missing, or null when it
+ * holds them all or is not a load test deployment (#3310).
+ *
+ * The load test Worker lives on between runs, because Cloudflare has taken up to 105
+ * minutes to deliver the first cron to a newly created Worker, and teardown takes its
+ * secrets away instead of deleting it. A deployment missing ANY of them is idle: it
+ * answers nothing and runs no lane. Without this, an idle Worker would run every lane
+ * each minute, each would throw on the missing secret, and its logs would fill with
+ * failures nobody should read (L36). And a run provisioned with one secret short stops
+ * at the preflight with the name, rather than waiting out the cron deadline for lanes
+ * that cannot run.
+ *
+ * Asked AFTER `loadtestEntryRefusal`, which is the louder finding. A value that is not
+ * a non-blank string is not a credential, so a blanked secret counts as missing.
+ */
+export function loadtestIdle(args: {
+  loadtest: boolean;
+  bindings: Record<string, unknown>;
+  baked: unknown;
+}): string[] | null {
+  if (!args.loadtest) return null;
+  const carried = carriedSettings(args.bindings, args.baked);
+  const missing = LOADTEST_ALLOWED_SECRETS.filter((name) => {
+    const v = carried[name];
+    return typeof v !== "string" || v.trim() === "";
+  });
+  return missing.length > 0 ? [...missing] : null;
+}
+
+/** What an idle deployment answers every request with: the names it lacks, never a value. */
+export function loadtestIdleBody(missing: readonly string[]): { error: string; missing: string[] } {
+  return { error: LOADTEST_IDLE_ERROR, missing: [...missing] };
 }

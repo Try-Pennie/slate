@@ -25,7 +25,7 @@ import { cronStandby } from "./cron-standby";
 import { forwardReceipt } from "./log-shipping-receipt";
 import { laneDecision } from "./lanes-disabled";
 import { loadtestServingProductionHost } from "@/lib/loadtest-guard";
-import { loadtestEntryRefusal } from "@/lib/loadtest-secrets";
+import { loadtestEntryRefusal, loadtestIdle, loadtestIdleBody } from "@/lib/loadtest-secrets";
 import { httpsRedirect } from "@/lib/http/https-redirect";
 import { countedApp } from "./app-invocations";
 import { log } from "@/lib/log";
@@ -125,6 +125,14 @@ const worker = {
         headers: { "content-type": "text/plain; charset=utf-8" },
       });
     }
+    // #3310: the load test Worker lives on between runs holding none of its secrets,
+    // and answers nothing until a run has put all three. JSON, so the preflight's own
+    // read of /api/smoke/version can name the missing ones rather than a bare 503.
+    const idle = loadtestIdle({ loadtest, bindings: env as unknown as Record<string, unknown>, baked: bakedEnv });
+    if (idle) {
+      log.info("loadtest-idle", { msg: "idle between runs, so this request was not served", missing: idle.join(",") });
+      return Response.json(loadtestIdleBody(idle), { status: 503 });
+    }
     return httpsRedirect(request) ?? app.fetch(request, env, ctx, { loadtest, enteredAtMs });
   },
 
@@ -145,6 +153,14 @@ const worker = {
     });
     if (credentials) {
       log.error("loadtest-guard", { msg: "refusing every lane", why: credentials });
+      return;
+    }
+    // #3310: an idle load test Worker runs no lane. One line per tick, so a
+    // `wrangler tail` between runs shows Cloudflare still delivering the crons, which
+    // is the whole reason the Worker is kept.
+    const idle = loadtestIdle({ loadtest: env.SLATE_LOADTEST === "true", bindings: env as unknown as Record<string, unknown>, baked: bakedEnv });
+    if (idle) {
+      log.info("loadtest-idle", { msg: "idle between runs, so no lane ran", cron: controller.cron, missing: idle.join(",") });
       return;
     }
     // #3095: a canary of a gradual deploy runs no lane. Two versions serve during the
