@@ -11,7 +11,7 @@ const built = vi.hoisted(() => ({ traces: [] as unknown[] }));
 vi.mock("@/lib/booking/confirm-line-live", () => ({
   confirmLineFor: (_fallback: unknown, _record: unknown, trace: unknown) => {
     built.traces.push(trace);
-    return { enter: async () => ({ kind: "unqueued" }), lookahead: async () => null };
+    return { enter: async () => ({ kind: "unqueued" }), lookahead: async () => null, release: async () => {} };
   },
   lineGroupOfLive: () => null,
 }));

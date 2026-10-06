@@ -107,6 +107,7 @@ export const CONFIRM_LINE_REASONS = [
   "reach-timeout",
   "enter-error",
   "gone",
+  "bad-answer",
   "abandoned",
 ] as const;
 export type ConfirmLineReason = (typeof CONFIRM_LINE_REASONS)[number];
