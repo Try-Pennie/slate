@@ -22,6 +22,7 @@ import {
   REGAL_CALLS_VERDICT_LANE,
   BURST_COUNTER_VERDICT_LANE,
   KILL_SWITCH_VERDICT_LANE,
+  CONFIRM_LINE_VERDICT_LANE,
   AVAILABILITY_LATENCY_VERDICT_LANE,
   BELOW_LEAD_TIER_VERDICT_LANE,
   CROSS_SYSTEM_BOOKINGS_VERDICT_LANE,
@@ -518,6 +519,19 @@ const VERDICT_SUBJECT: Record<DetectorVerdictLane, VerdictSubject> = {
     look:
       "whether the nightly kill-switch workflow ran at all in the Actions tab, then what its " +
       "last run said, since it ends on a different exit code for each way the check can fail",
+  },
+  [CONFIRM_LINE_VERDICT_LANE]: {
+    what: "the daily proof that the shared confirm line every isolate uses really answers the confirm path",
+    cost:
+      "nothing is confirming that a crowd for one slot would form ONE line, and a line that is bound and " +
+      "silent reads as healthy everywhere else because every confirm quietly falls back to its own " +
+      "isolate, so the first sign would be the database saturating under a crowd again",
+    // WHETHER IT RAN comes first, for the burst counter's reason above: every bad reading of
+    // the object stamps, so this page means a run that could not reach the deployment or a run
+    // that never happened, and the run's own exit code then says which.
+    look:
+      "whether the daily burst-counter workflow ran its confirm line step at all in the Actions tab, " +
+      "then what that step said, since it ends on a different exit code for each way the check can fail",
   },
   [AVAILABILITY_LATENCY_VERDICT_LANE]: {
     what: "the smoke canary's check on how fast the booker's availability read answers",

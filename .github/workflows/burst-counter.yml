@@ -34,6 +34,15 @@ name: Burst counter
 # parity sweep (src/lib/monitor/canary-trigger.ts): the staleness bound below is set to
 # survive one dropped run instead, which is the router-replay choice. Adding a fourth
 # entry to that dispatch table is #2466's question rather than this change's.
+#
+# A SECOND proof runs here too (#3340): `pnpm verify:confirm-line`, the daily check that
+# the shared confirm line object (#3325) answers the confirm path's own client. It is the
+# same shape of thing for the same reason (calling a Durable Object is what the monitor
+# lane must not do), so it shares this schedule, preflight and key, and it has its OWN
+# proof step, summary file, reporter and `verdict:confirm-line` stamp, so neither proof's
+# outcome can stand in for the other's (L53). It writes leads and verdicts on one fixed
+# monitor group no real line key can name, and checks it left nothing held. It cannot
+# prove two isolates share one object; only a load run can.
 on:
   schedule:
     # 10:50 UTC daily, which is early morning Eastern: a bad deploy from yesterday is
@@ -54,8 +63,9 @@ jobs:
   burst:
     # The work is two HTTP requests. What takes any time at all is the command waiting out
     # the end of the current one minute window so both reports land inside one, which is at
-    # most a minute. Ten covers the install and that wait with room, and an explicit
-    # timeout is required of every job here (L313).
+    # most a minute. The confirm line proof below is one request the command cuts off at a
+    # minute, and a few seconds when healthy. Ten covers the install and both with room,
+    # and an explicit timeout is required of every job here (L313).
     timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
@@ -148,4 +158,45 @@ jobs:
         run: |
           base="${SLATE_BASE_URL:-https://slate.trypennie.app}"
           curl -fsS -X POST "${base%/}/api/smoke/heartbeat?lane=verdict:burst-counter" \
+            -H "authorization: Bearer $BOOKING_API_KEY_CANARY"
+
+      # The shared confirm line proof (#3340). Its own step, so the burst counter's outcome
+      # never stands in for it, and `continue-on-error` for the same reason as the burst
+      # counter's: the exit code is the FINDING, and the reporter below decides what is said.
+      # `!cancelled()` rather than the implicit success(): the burst counter's reporter exits
+      # non-zero when its Slack post fails, and that must not skip this proof (L53).
+      - name: Prove the shared confirm line answers
+        id: confirm_line
+        continue-on-error: true
+        if: ${{ !cancelled() && steps.pre.outputs.configured == '1' }}
+        env:
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
+          SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
+          # A literal handoff between two steps of this job, never the burst counter's file.
+          CONFIRM_LINE_SUMMARY_FILE: confirm-line-summary.json
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-confirm-line-live.ts
+
+      # Runs whatever the proof did: an absent summary file is a run that died before a
+      # verdict, which no exit code could say on its own. Bare node, no alias hook.
+      - name: Say what the confirm line proof found
+        id: confirm_line_report
+        if: always() && steps.pre.outputs.configured == '1'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_ALERTS_CHANNEL: ${{ vars.SLACK_ALERTS_CHANNEL }}
+          CONFIRM_LINE_SUMMARY_FILE: confirm-line-summary.json
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node --experimental-strip-types scripts/notify-confirm-line.ts
+
+      # Stamped ONLY when the object was asked and answered, from THIS proof's reporter,
+      # never the burst counter's. `always()` for the burst counter's reason: whether the
+      # proof concluded is a fact about the line, whether Slack heard is a fact about Slack.
+      - name: Stamp the confirm line verdict (a measured verdict only)
+        if: always() && steps.pre.outputs.configured == '1' && steps.confirm_line_report.outputs.concluded == '1'
+        env:
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
+          SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
+        run: |
+          base="${SLATE_BASE_URL:-https://slate.trypennie.app}"
+          curl -fsS -X POST "${base%/}/api/smoke/heartbeat?lane=verdict:confirm-line" \
             -H "authorization: Bearer $BOOKING_API_KEY_CANARY"

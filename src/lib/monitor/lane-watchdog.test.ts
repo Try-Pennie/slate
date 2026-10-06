@@ -131,6 +131,9 @@ const healthy = () => ({
   // GitHub workflow like the line above and carrying the same 52h bound. A healthy
   // fleet has last night's run in it.
   "verdict:kill-switch": ago(24 * 60 * MIN),
+  // #3340: the daily proof that the shared confirm line answers, stamped by the same
+  // workflow as the burst counter's and carrying the same 52h bound.
+  "verdict:confirm-line": ago(24 * 60 * MIN),
   // #1700: the canary's latency reading, stamped from the 30 minute canary workflow
   // whenever it read a real median, so a healthy fleet has one well inside the hour.
   "verdict:availability-latency": ago(40 * MIN),

@@ -254,6 +254,13 @@ for (const [mapName, bounds] of Object.entries(BOUNDS)) {
       file: "kill-switch.yml",
       call: /lane=verdict:kill-switch(?![\w:-])/,
     },
+    // #3340: the shared confirm line's proof, stamped from the same daily workflow as
+    // the burst counter's, by its own step and only on its own measured verdict.
+    {
+      lane: "verdict:confirm-line",
+      file: "burst-counter.yml",
+      call: /lane=verdict:confirm-line(?![\w:-])/,
+    },
     // #1700: the canary's latency check, stamped only when it read a real median.
     {
       lane: "verdict:availability-latency",

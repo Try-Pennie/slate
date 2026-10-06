@@ -263,6 +263,105 @@ one is a rare fault somebody fixes the day they read it, so the message says wha
 silence means instead: it repeats once a day until a run passes, and a run that
 passes says nothing.
 
+# Proving the shared confirm line answers (`pnpm verify:confirm-line`)
+
+The burst counter's shape, on the shared confirm line (#3325, #3340).
+
+The confirm path falls back to its isolate's own line whenever the shared one
+cannot be used, deliberately: correctness never rests on the line, the bookings
+indexes decide. The cost is that a `CONFIRM_LINE` object which is **bound and does
+not answer reads as healthy everywhere**. Every confirm quietly uses its own
+isolate's line, and nothing says so until a crowd for one slot arrives, each
+isolate forms its own line again, and the database saturates, which is load run
+37333201026, the run the shared line was built after. Between load runs nothing
+asked the object anything (L557), and a fake cannot stand in for it (L52).
+
+**`pnpm verify:confirm-line` is the proof.** It calls `POST /api/smoke/confirm-line`,
+which runs the probe (`src/lib/monitor/confirm-line-probe.ts`) inside the deployment
+with the confirm path's OWN client (`makeSharedConfirmLine`) and its own transport
+(`durableLineNamespace`), against the real object. Four checks, each in both
+directions and each on its own named outcome:
+
+- **full**: B, queued behind A, is REFUSED as taken once A reports a full verdict,
+  and receives A's settlement intact.
+- **notFull**: B LEADS once A reports a not full verdict, within one call of the
+  report, so a hand on by the verdict is told apart from a lease running out.
+- **abandoned**: A takes the lead and never acknowledges it (every call its client
+  makes after the enter is lost), and B leads within the acknowledgement window
+  rather than after the whole lease.
+- **nothingHeld**: afterwards a newcomer on each instant the probe used leads at
+  once, so leaving nothing held is measured rather than assumed.
+
+It uses the shared line **whatever the stored switch says**: the switch decides
+whether real confirms use it, and a probe that stood down while the switch is off
+would prove nothing for exactly as long as nothing relies on the line.
+
+**What it cannot prove, said plainly:** every participant runs inside the one
+invocation that serves the request, so a pass shows the object answers and keeps
+the line's rules, and **cannot prove that two isolates reach the same object**.
+Only the load run, whose confirms spread across isolates, can show that.
+
+It writes leads, tickets and verdicts on ONE object, the group
+`monitor:confirm-line-verify`, which no real line key can name: a real group is
+`link:`, `code:` or `ladder:` and the object is named from the whole group.
+`scripts/test-confirm-line-live-control.ts` walks `confirmQueueKey`, the one place
+the booking path builds a line key, with inputs chosen to try to reach it. The
+group is a **constant in the route and nothing is taken from the request**, and
+each run mints fresh instants, so two runs never meet.
+
+```
+BOOKING_API_KEY_CANARY=<the canary key the deployment holds> pnpm verify:confirm-line
+```
+
+`SLATE_BASE_URL` picks the deployment (default prod). Only four passed checks pass
+(L98), and every other ending exits on **its own code** with its own opening
+sentence. When several checks fail, the worst names the run and the message still
+lists every check's outcome.
+
+| exit | what it met | what to do |
+|---|---|---|
+| 0 | every check answered as the line's rules say | nothing |
+| 1 | no base URL or no `BOOKING_API_KEY_CANARY` here | set them; nothing was attempted |
+| 2 | no reply at all, or none within a minute | check the base URL and that the deployment serves |
+| 3 | a reply this command cannot read | something other than the endpoint answered |
+| 4 | the key was refused | the deployment does not hold this key |
+| 5 | the endpoint is disabled | the deployment has no booking API key configured |
+| 6 | not found | the deployment predates this endpoint; deploy and re-run |
+| 7 | the Worker could not read its own context | not a missing binding; a local dev server reads like this |
+| 8 | `CONFIRM_LINE` is not bound | a deploy shipped without the `durable_objects` entry |
+| 9 | bound, and the confirm path's client fell back | **the state nothing else can see**; every confirm is on its isolate's line |
+| 10 | the reply lacked a check or carried an unknown outcome | the deployed probe and this command disagree; deploy |
+| 11 | the probe threw inside a check | a fault in the probe, not the object; read its detail |
+| 12 | the first confirm on an unused slot was not given the lead | the object holds something it should not |
+| 13 | a second confirm led beside the first | **the line excludes nobody**; a crowd would stampede |
+| 14 | a full verdict did not refuse the waiting confirm | taken slots would each run the whole confirm |
+| 15 | a not full verdict did not hand the lead on within one call | confirms for a slot with room are held up |
+| 16 | an unacknowledged lead was freed only by its lease | the acknowledgement window is not enforced |
+| 17 | an unacknowledged lead was never freed | one lost answer holds every confirm behind it |
+| 18 | something the probe used was still held afterwards | the object keeps a line it should have dropped |
+
+Its decision logic is pinned offline by `scripts/test-confirm-line-live-control.ts`,
+which drives the probe against the real object host (`makeConfirmLineHost`) on a
+virtual clock, plants a defect for every outcome a check can name, and asserts no
+two endings share a code or an opening sentence.
+
+## It runs DAILY, beside the burst counter's proof
+
+**`.github/workflows/burst-counter.yml` runs it every day at 10:50 UTC**, as its own
+`continue-on-error` step after the burst counter's, with its own summary file
+(`confirm-line-summary.json`), its own bare node reporter
+(`scripts/notify-confirm-line.ts`) and its own stamp, so neither proof's outcome
+can stand in for the other's (L53).
+
+**It stamps `verdict:confirm-line`**, in `VERDICT_STALE_BOUNDS_MS` with
+`neverIsStale` ON, at the burst counter's 52 hours for the same derived reasons
+(`scripts/test-confirm-line-schedule.ts` re-derives it from the workflow file).
+**Only a run that measured how the object answers may stamp it**: exits 0, 9 and 12
+to 18 conclude, and every bad one of those is also posted to Slack. Exit 8 (nothing
+bound) deliberately does not, because nothing exercised the answering half; the
+daily message still says so and the lapsing stamp pages as a blind detector, so
+nothing about it is quieter. The mapping is `scripts/lib/confirm-line-run-outcome.ts`.
+
 # Proving an approved time off blocks (`pnpm verify:ooo-protection`)
 
 The third command in this family, and the closest mirror of the truth probe two

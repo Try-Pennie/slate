@@ -27,6 +27,7 @@ import {
   CROSS_SYSTEM_BOOKINGS_VERDICT_LANE,
   BURST_COUNTER_VERDICT_LANE,
   KILL_SWITCH_VERDICT_LANE,
+  CONFIRM_LINE_VERDICT_LANE,
   AVAILABILITY_LATENCY_VERDICT_LANE,
   REGAL_CALLS_VERDICT_LANE,
   ROSTER_COVERAGE_VERDICT_LANE,
@@ -66,6 +67,9 @@ export type WorkerStampedVerdictLane = Exclude<
   DetectorVerdictLane,
   | typeof BURST_COUNTER_VERDICT_LANE
   | typeof KILL_SWITCH_VERDICT_LANE
+  // #3340: the shared confirm line's proof has to CALL the confirm line object and take
+  // leads on it, so like the burst counter's it runs in that GitHub workflow instead.
+  | typeof CONFIRM_LINE_VERDICT_LANE
   // #1700: measured by the smoke canary on a GitHub runner, where the reads it times
   // happen, so there is nothing for the Worker to stamp.
   | typeof AVAILABILITY_LATENCY_VERDICT_LANE

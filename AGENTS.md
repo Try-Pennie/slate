@@ -793,6 +793,7 @@ one's bound, are in `docs/verify-commands.md`.
 | `verify:ooo-protection` | an approved time off is really BLOCKING the agent, read as the event itself plus free/busy, because busy periods merge |
 | `verify:pool-entry` | the activation gate's calendar reads work against real Google both ways: a readable agent hydrates every calendar, an unlicensed account is refused as not provisioned |
 | `verify:burst-counter` | the `BURST_LIMITER` object is not merely bound but answers AND counts, which the monitor lane deliberately cannot ask |
+| `verify:confirm-line` | the `CONFIRM_LINE` object answers the confirm path's client by its rules; it cannot prove isolates share it, only the load run can |
 | `verify:kill-switch` | the booking kill switch really refuses on the deployed Worker, the one gate here that fails CLOSED |
 | `verify:calcom-parity` | Slate and cal.com hold the same roster and the same week per agent, which is invisible from inside Slate alone |
 | `verify:twilio-parity` | Slate holds the routing facts Twilio is the source of truth for, and notices a `Redistribute` agent still bookable |

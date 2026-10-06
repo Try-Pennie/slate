@@ -99,6 +99,13 @@ isolate lines leave dozens told to retry, one shared line answers the whole crow
 (bound, created and exported in production and the load test, and the deployed class
 logging a traced call).
 
+Against production, `pnpm verify:confirm-line` (#3340) runs daily in
+`burst-counter.yml` and stamps `verdict:confirm-line`: the confirm path's own client
+against the live object, a follower refused after a full verdict, handed the lead
+after a not full one, freed behind an unacknowledged lead, and nothing left held. It
+cannot prove two isolates share one object; only the load run can. Exit codes and
+decisions: `docs/verify-commands.md`.
+
 ## Measured before it was built (2026-10-05)
 
 A throwaway Worker, deleted after, timed calls from inside an invocation:
