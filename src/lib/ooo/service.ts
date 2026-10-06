@@ -181,6 +181,21 @@ export function realDeps(): OooDeps {
       }
       return written;
     },
+    // #3365: what the held block really covers, so a change is judged against it.
+    // Matched on the id AND the owner, like the narrowing above. unwrap, because a
+    // failed read must refuse the change rather than read as "nothing held".
+    loadHeldWindow: async ({ id, requestId }) => {
+      const row = unwrap(
+        await db()
+          .from("busy_blocks")
+          .select("starts_at, ends_at")
+          .eq("id", id)
+          .eq("ooo_request_id", requestId)
+          .maybeSingle(),
+        "ooo.loadHeldWindow",
+      ) as { starts_at: string; ends_at: string } | null;
+      return row ? { startIso: row.starts_at, endIso: row.ends_at } : null;
+    },
 
     // Same retry-once + throttled-alert posture as the booking write-through:
     // the approval already happened, so a cache failure must not fail it, but

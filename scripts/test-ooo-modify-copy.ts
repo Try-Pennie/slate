@@ -20,9 +20,10 @@ const APPROVED = "Wed, Oct 7 2026 all day MT";
 const outcomes: { name: string; o: ModifyOutcome }[] = [
   { name: "edited", o: { kind: "edited" } },
   { name: "released", o: { kind: "released" } },
-  { name: "kept shortened", o: { kind: "kept", shortened: true, calendarMatched: true } },
-  { name: "kept same window", o: { kind: "kept", shortened: false, calendarMatched: true } },
-  { name: "kept, calendar not moved", o: { kind: "kept", shortened: true, calendarMatched: false } },
+  { name: "kept shortened", o: { kind: "kept", shortened: true, stillEarlier: null } },
+  { name: "kept same window", o: { kind: "kept", shortened: false, stillEarlier: null } },
+  { name: "kept, calendar not moved", o: { kind: "kept", shortened: true, stillEarlier: "calendar" } },
+  { name: "kept, block not narrowed", o: { kind: "kept", shortened: true, stillEarlier: "block" } },
 ];
 
 // Headings: only a real shortening is called one, and only a held request needs re-approval.
@@ -49,6 +50,21 @@ assert(!/hours you removed/.test(same), "kept same window: claims no removed hou
 const stuck = modifyAgentDm(outcomes[4]!.o, WHEN)!;
 assert(/could not be updated to match yet/.test(stuck), "calendar not moved: says so");
 assert(!/open for bookings again/.test(stuck), "calendar not moved: never claims the removed hours reopened");
+// The block could not be narrowed: the event moved, so the calendar is NOT the cause,
+// and the removed hours are still held (L11: a distinct cause, a distinct sentence).
+const blockStuck = modifyAgentDm(outcomes[5]!.o, WHEN)!;
+assert(/earlier window is still blocked/.test(blockStuck), "block not narrowed: says the earlier window is still blocked");
+assert(!/open for bookings again/.test(blockStuck), "block not narrowed: never claims the removed hours reopened");
+assert(!/calendar could not be updated/.test(blockStuck), "block not narrowed: does not blame the calendar");
+for (const i of [4, 5]) {
+  const note = modifyManagerNote(outcomes[i]!.o, APPROVED)!;
+  assert(note.includes(APPROVED) && /earlier window is still blocked/.test(note), `${outcomes[i]!.name}: the manager is told the earlier window is still held`);
+  assert(!/new window stays blocked/.test(note), `${outcomes[i]!.name}: and never that only the new window is held`);
+}
+assert(
+  modifyManagerNote(outcomes[4]!.o, APPROVED) !== modifyManagerNote(outcomes[5]!.o, APPROVED),
+  "the two causes read differently to the manager",
+);
 
 assert(/no longer blocked/.test(declinedReleasedLine()), "a decline that released a held window says so");
 
