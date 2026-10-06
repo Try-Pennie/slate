@@ -22,6 +22,7 @@ import {
   burstsSummaryText,
   burstLegText,
   steadyLineText,
+  waitSpanText,
   type JudgeInput,
   type JudgedBooking,
 } from "./loadtest/judge-booking-run.ts";
@@ -70,7 +71,7 @@ const LANES_T0 = Date.parse("2026-10-03T12:00:00Z");
  * which is which from the isolate's age; these just supply ages that make it so.
  */
 function startupReading(
-  rows: { handlerMs: number; beforeMs: number; cold: boolean; afterMs?: number }[],
+  rows: { handlerMs: number; beforeMs: number; cold: boolean; afterMs?: number; answer?: Record<string, number | string> }[],
 ) {
   const lines = rows.map((r) =>
     JSON.stringify({
@@ -92,6 +93,10 @@ function startupReading(
             }),
           ],
         },
+        // #3354: the invocation's own answer line, when the fixture carries one.
+        ...(r.answer
+          ? [{ level: "info", timestamp: r.beforeMs + r.handlerMs + 1, message: [formatLine("booking-api", { msg: "confirm answered", response_ms: 2_000, status: 200, ...r.answer })] }]
+          : []),
       ],
     }, null, 4),
   );
@@ -782,6 +787,34 @@ function slowRun(made = 100): JudgeInput {
     /warm/.test(slowDetail),
     "beside the warm number, because the gap between the two is the whole reading",
   );
+  // #3354: the finding used to name the cause ("the server bundle being evaluated")
+  // without having measured it, and run 37390071571 showed the confirm line and auth
+  // in that wait too (L11). It now points at the measured split instead.
+  assert(!/server bundle/.test(slowDetail), `and it claims no cause it did not measure (got: ${slowDetail})`);
+  assert(/span line/.test(slowDetail), `and it points at the report's span line, which splits the wait (got: ${slowDetail})`);
+
+  // #3354: a confirm the Worker counted as its isolate's FIRST request cannot have
+  // found the confirm module already evaluated, so the module stamp calling it warm
+  // means the cold population the bar judges is missing it (L457).
+  const misread = broken((i) => {
+    i.confirmStartup = startupReading([
+      ...Array.from({ length: 40 }, () => ({ handlerMs: 900, beforeMs: 500, cold: false, answer: { isolate_fetch_index: 9 } })),
+      ...Array.from({ length: 3 }, () => ({ handlerMs: 900, beforeMs: 1_200, cold: true, answer: { isolate_fetch_index: 0 } })),
+      { handlerMs: 900, beforeMs: 1_400, cold: false, answer: { isolate_fetch_index: 0 } },
+    ]);
+  });
+  const misreadDetail = misread.findings.find((f) => f.bar === "confirm startup")?.detail ?? "";
+  assert(
+    /1 confirm was its isolate's first request/.test(misreadDetail),
+    `a first request read as warm is a finding about the cold count itself (got: ${misreadDetail})`,
+  );
+  const agreed = broken((i) => {
+    i.confirmStartup = startupReading([
+      ...Array.from({ length: 40 }, () => ({ handlerMs: 900, beforeMs: 500, cold: false, answer: { isolate_fetch_index: 9 } })),
+      ...Array.from({ length: 3 }, () => ({ handlerMs: 900, beforeMs: 1_200, cold: true, answer: { isolate_fetch_index: 0 } })),
+    ]);
+  });
+  assert(!bars(agreed).includes("confirm startup"), "and when the two counts agree there is no such finding");
 
   // The other direction, and the one that matters: a confirm that is itself slow
   // must NOT be reported as a startup problem. Same total wall time, other half.
@@ -2367,6 +2400,30 @@ const legAttempts = (i: JudgeInput, leg: number) =>
     old.findings.some((f) => f.bar === "the burst's speed" && f.detail.includes("could not be measured")),
     "and the speed clause as unmeasured",
   );
+}
+
+// --- #3354: the report's span line, which splits the wait before the profile -------
+{
+  const reading = startupReading([
+    ...Array.from({ length: 20 }, () => ({
+      handlerMs: 900,
+      beforeMs: 500,
+      cold: false,
+      answer: { wait_auth_ms: 100, wait_line_ms: 200, wait_total_ms: 400, isolate_fetch_index: 5 },
+    })),
+    { handlerMs: 900, beforeMs: 1_500, cold: true, answer: { wait_route_ms: 600, wait_auth_ms: 300, wait_line_ms: 500, wait_total_ms: 1_500, isolate_fetch_index: 0 } },
+    { handlerMs: 900, beforeMs: 1_100, cold: true },
+  ]);
+  const text = waitSpanText(reading);
+  assert(/cold n=2, 1 marked/.test(text), `the cold confirms are counted, and how many carried marks (got: ${text})`);
+  assert(/route p50 600ms/.test(text), `a cold confirm's route span is reported (got: ${text})`);
+  assert(/warm n=20, 20 marked/.test(text), `and the warm ones (got: ${text})`);
+  assert(/auth p50 100ms p95 100ms/.test(text), `with each span's median and p95, through the judge's own percentile (got: ${text})`);
+  assert(/1 of 21 confirms with a fetch index were their isolate's first request/.test(text), `and the Worker's own first request count (got: ${text})`);
+
+  const unmarked = waitSpanText(startupReading([{ handlerMs: 900, beforeMs: 500, cold: false }]));
+  assert(/no confirm carried marks/.test(unmarked), `a run with no marks says the wait was not split, never a zero (got: ${unmarked})`);
+  assert(/not read/.test(waitSpanText(null)), "and a run with no archive says so");
 }
 
 finish();

@@ -23,7 +23,7 @@ import { HEALTHY_INVOCATION_STATUS, type ScheduledReading } from "./platform-rea
 import { CEILING_CONCLUSION, type CeilingVerdict } from "./preflight-checks.ts";
 // Type-only (erased under --experimental-strip-types), so the judge never pulls
 // the reader in at runtime and the two stay one direction apart.
-import type { ConfirmStartupReading } from "./confirm-startup.ts";
+import { WAIT_SPAN_FIELDS, type ConfirmStartupReading } from "./confirm-startup.ts";
 import { CRON_BUDGET_WARN_SHARE } from "../../src/lib/monitor/cron-budget.ts";
 import type { SoakSample } from "./invariants.ts";
 import {
@@ -664,6 +664,49 @@ export function steadyLineReading(attempts: readonly BookingAttempt[]): SteadyLi
     lineMs: percentiles(ms),
     lineMsUnread: answered.length - ms.length,
   };
+}
+
+/** The span names as a report reads them, in the order a confirm passes them. */
+const WAIT_SPAN_LABELS: Record<(typeof WAIT_SPAN_FIELDS)[number], string> = {
+  wait_route_ms: "route",
+  wait_auth_ms: "auth",
+  wait_pre_line_ms: "before the line",
+  wait_line_ms: "line",
+  wait_decide_ms: "person decision",
+  wait_to_profile_ms: "to the profile",
+  wait_total_ms: "whole",
+};
+
+/**
+ * #3354: the wait before the confirm's profile, by span, as one report line. A
+ * report line, never a bar: it says where the wait the confirm startup bar judges
+ * went, so a fix can be aimed at the span that moved. Each span's median and p95
+ * come through the judge's own `percentiles` (L41), cold and warm apart, with how
+ * many confirms carried marks, because a span read from a few of them is not the
+ * whole population (L712).
+ */
+export function waitSpanText(cs: ConfirmStartupReading | null): string {
+  const head = "- the wait before the profile, by span";
+  if (cs === null) return `${head}: the archived log was not read, so the wait was not split`;
+  if (cs.markedSamples === 0) {
+    return (
+      `${head}: no confirm carried marks, so the wait was not split (the marks are written under ` +
+      "SLATE_LOADTEST by a deployment that has #3354)"
+    );
+  }
+  const side = (label: "cold" | "warm", n: number, spans: Record<string, number[]>) => {
+    const marked = Math.max(0, ...WAIT_SPAN_FIELDS.map((f) => spans[f]?.length ?? 0));
+    const parts = WAIT_SPAN_FIELDS.flatMap((f) => {
+      const p = percentiles(spans[f] ?? []);
+      return p === null ? [] : [`${WAIT_SPAN_LABELS[f]} p50 ${p.p50}ms p95 ${p.p95}ms`];
+    });
+    return `${label} n=${n}, ${marked} marked${parts.length > 0 ? `: ${parts.join(", ")}` : ""}`;
+  };
+  return (
+    `${head}: ${side("cold", cs.cold, cs.waitSpans.cold)}; ` +
+    `${side("warm", cs.samples - cs.cold, cs.waitSpans.warm)}; ` +
+    `${cs.firstRequests} of ${cs.fetchIndexKnown} confirms with a fetch index were their isolate's first request`
+  );
 }
 
 /** The steady line reading as one report line, so the report never re-derives it (L41). */
@@ -1509,10 +1552,25 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
       `a lead landing on a cold isolate waited p95 ${m.confirmColdStartup.p95}ms (max ` +
         `${m.confirmColdStartup.max}ms) before the confirm began, over the ` +
         `${REQUEST_STARTUP_P95_MS}ms left of the ${OK_P95_MS}ms latency bar once the confirm's ` +
-        `own share is taken out. That is the server bundle being evaluated, charged in full to ` +
-        `whichever request the isolate served first: ${cs.cold} of ${cs.samples} confirms here, ` +
-        `against ${m.confirmWarmStartup === null ? "no" : `p95 ${m.confirmWarmStartup.p95}ms`} ` +
-        "on a warm one. The confirm itself is judged separately",
+        `own share is taken out: ${cs.cold} of ${cs.samples} confirms here were the first on ` +
+        `their isolate, against ${m.confirmWarmStartup === null ? "no" : `p95 ${m.confirmWarmStartup.p95}ms`} ` +
+        "on a warm one. The report's span line says where that wait went (#3354: route, auth, " +
+        "the confirm line, the person decision); nothing here assumes which. The confirm itself " +
+        "is judged separately",
+    );
+  }
+  // #3354: a confirm the Worker counted as its isolate's FIRST request cannot have
+  // found the confirm module already evaluated. The module stamp calling one warm
+  // means the cold population the bar above judged is missing it, so a pass there
+  // could be a smaller population rather than a faster one (L457).
+  if (cs !== null && cs.firstRequestsReadWarm > 0) {
+    fail(
+      "confirm startup",
+      `${cs.firstRequestsReadWarm} confirm${cs.firstRequestsReadWarm === 1 ? " was its isolate's first request" : "s were their isolate's first request"} ` +
+        "by the Worker's own count and the startup reading called " +
+        `${cs.firstRequestsReadWarm === 1 ? "it" : "them"} warm, so the cold population this bar judges is ` +
+        `missing ${cs.firstRequestsReadWarm === 1 ? "it" : "them"} (${cs.firstRequests} first requests among ` +
+        `${cs.fetchIndexKnown} confirms with a fetch index, ${cs.cold} read as cold)`,
     );
   }
 

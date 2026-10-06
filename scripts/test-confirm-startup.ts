@@ -43,6 +43,8 @@ function tailLine(opts: {
   totalMs: number;
   isolateAgeMs: number;
   cpuTime?: number;
+  /** #3354: the same invocation's `confirm answered` fields, when it logged that line. */
+  answer?: Record<string, number | string>;
 }): string {
   return JSON.stringify({
     cpuTime: opts.cpuTime ?? 400,
@@ -65,6 +67,15 @@ function tailLine(opts: {
           }),
         ],
       },
+      ...(opts.answer
+        ? [
+            {
+              level: "info",
+              timestamp: opts.logTimestamp + 5,
+              message: [formatLine("booking-api", { msg: "confirm answered", response_ms: 2_000, status: 200, ...opts.answer })],
+            },
+          ]
+        : []),
     ],
     // PRETTY PRINTED, four spaces, exactly as `wrangler tail --format json`
     // writes it. Measured on run 34889873261's own artifact: 1,336 invocations
@@ -513,6 +524,51 @@ function otherLine(msg: string): string {
   eq(r?.["booking-webhook"]?.calls, 1, "a deferred line with no readable time is still a job");
   eq(r?.["booking-webhook"]?.ms.length, 0, "contributing no reading rather than a zero");
   eq(r?.["booking-webhook"]?.unreadable, 1, "and counted, so a thin sample is not read as a cheap one");
+}
+
+// --- #3354: the wait before the profile, split by the confirm's own marks -----------
+// Read from the `confirm answered` line of the SAME invocation as the profile, so a
+// span and the cold or warm call it is filed under describe one request (L420).
+{
+  const spans = { wait_route_ms: 400, wait_auth_ms: 150, wait_pre_line_ms: 5, wait_line_ms: 300, wait_decide_ms: 200, wait_to_profile_ms: 10, wait_total_ms: 1_065 };
+  const archive = [
+    // Cold: the module is no older than the time since the invocation began, and the
+    // Worker counted it as the isolate's first request.
+    tailLine({ eventTimestamp: 0, logTimestamp: 2_000, totalMs: 900, isolateAgeMs: 1_000, answer: { ...spans, isolate_fetch_index: 0 } }),
+    // Warm, and the isolate's eighth request.
+    tailLine({ eventTimestamp: 10_000, logTimestamp: 11_000, totalMs: 800, isolateAgeMs: 60_000, answer: { wait_auth_ms: 90, wait_line_ms: 120, isolate_fetch_index: 7 } }),
+    // A profile whose invocation logged no answer line: counted, contributing nothing.
+    tailLine({ eventTimestamp: 20_000, logTimestamp: 21_000, totalMs: 800, isolateAgeMs: 60_000 }),
+  ].join("\n");
+  const r = readConfirmStartup(archive)!;
+  eq(r.samples, 3, "every profile is still a sample");
+  eq(r.markedSamples, 2, "two of them carried an answer line with marks or a fetch index");
+  eq(r.waitSpans.cold.wait_auth_ms?.join(","), "150", "a cold confirm's auth span is filed under cold");
+  eq(r.waitSpans.cold.wait_line_ms?.join(","), "300", "and so is its line span");
+  eq(r.waitSpans.warm.wait_auth_ms?.join(","), "90", "a warm confirm's under warm");
+  eq(r.waitSpans.warm.wait_decide_ms, undefined, "a span a confirm did not carry contributes nothing, never a zero (L90)");
+  eq(r.firstRequests, 1, "one confirm was its isolate's first request by the Worker's count");
+  eq(r.fetchIndexKnown, 2, "and the fetch index was known on two");
+  eq(r.firstRequestsReadWarm, 0, "and the module stamp agreed it was cold");
+}
+
+{
+  // A confirm the Worker counted as its isolate's FIRST request cannot have found the
+  // confirm module already evaluated. If the module stamp calls it warm anyway, the
+  // cold population the bar judges is missing it, which has to be said (L457).
+  const archive = tailLine({ eventTimestamp: 0, logTimestamp: 1_500, totalMs: 900, isolateAgeMs: 90_000, answer: { isolate_fetch_index: 0 } });
+  const r = readConfirmStartup(archive)!;
+  eq(r.cold, 0, "the module stamp reads it as warm");
+  eq(r.firstRequests, 1, "while the Worker counted it as the first request");
+  eq(r.firstRequestsReadWarm, 1, "and the disagreement is counted");
+}
+
+{
+  // An answer line with an unreadable span or fetch index contributes nothing for it.
+  const archive = tailLine({ eventTimestamp: 0, logTimestamp: 1_500, totalMs: 900, isolateAgeMs: 1_000, answer: { wait_auth_ms: "soon", isolate_fetch_index: "first" } });
+  const r = readConfirmStartup(archive)!;
+  eq(r.waitSpans.cold.wait_auth_ms, undefined, "an unreadable span is no reading (L50)");
+  eq(r.fetchIndexKnown, 0, "and an unreadable fetch index is not known");
 }
 
 
