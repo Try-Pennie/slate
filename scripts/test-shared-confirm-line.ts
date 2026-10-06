@@ -249,6 +249,19 @@ async function main() {
     assert(w.now() - started < CONFIRM_LINE_ACK_MS + CONFIRM_LINE_POLL_MS, `late enter: and does not wait out a phantom lead (waited ${w.now() - started}ms)`);
   }
 
+  {
+    // The give back after an unanswered enter is a call too, and its time comes out of
+    // the wait the isolate's line is handed, as the enter's own time already did.
+    const w = world();
+    const c = w.client();
+    w.faults.set("enter", "hang");
+    w.faults.set("abandon", "hang");
+    const t = (await w.settle(c.line.enter(KEY, 10_000))) as LineTurn<string>;
+    const handed = c.fallbackWaits[c.fallbackWaits.length - 1] ?? Infinity;
+    assert(handed <= 10_000 - CONFIRM_LINE_REACH_MS - CONFIRM_LINE_CALL_MS, `unanswered enter: both calls come out of the wait (handed ${handed}ms of 10000)`);
+    if (t.kind === "lead") await w.settle(t.done({ full: false }));
+  }
+
   // --- a deploy mid wait: the follower re-enters the new instance ------------------
   {
     const w = world();

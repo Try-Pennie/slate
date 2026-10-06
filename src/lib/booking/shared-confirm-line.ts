@@ -306,11 +306,13 @@ export function makeSharedConfirmLine<T>(deps: {
     }
     const stub = deps.namespace!.stubFor(key.group);
     const attempt = deps.newId();
+    const t0 = now();
     const r = await call(stub, { op: "enter", attempt, line: key.instant, waitMs }, CONFIRM_LINE_REACH_MS);
     served.lineMs += r.ms;
     if (!r.answer) {
       await abandon(stub, attempt);
-      return fallBack(key, Math.max(0, waitMs - r.ms), { ...served, line: "fallback", reason: timedOut(r.err) ? "reach-timeout" : "enter-error" }, r.err);
+      // The enter and the give back both come out of the wait the isolate's line gets.
+      return fallBack(key, Math.max(0, waitMs - (now() - t0)), { ...served, line: "fallback", reason: timedOut(r.err) ? "reach-timeout" : "enter-error" }, r.err);
     }
     return onEntered(key, stub, attempt, r.answer, Math.max(0, waitMs - r.ms), served, goneLeft);
   };
