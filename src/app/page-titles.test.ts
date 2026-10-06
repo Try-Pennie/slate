@@ -66,8 +66,9 @@ function pageTitle(src: string): Title {
 }
 
 /** Lead facing routes. Their titles were chosen for a lead and must not be
- *  rewritten by the staff template. */
-const isPublic = (file: string) => /^(book|booking)\//.test(relative(APP, file));
+ *  rewritten by the staff template. `/demo` (#3424) is the booker shown to somebody
+ *  outside Pennie, so it carries the booker's own title too. */
+const isPublic = (file: string) => /^(book|booking|demo)\//.test(relative(APP, file));
 
 const all = pages(APP);
 const rendering = all.filter((f) => renders(readFileSync(f, "utf8")));

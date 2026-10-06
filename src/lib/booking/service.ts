@@ -15,6 +15,8 @@ import { loadCurrentAgentPicture } from "@/lib/availability/service";
 import { reportWriteFailure } from "@/lib/db/result";
 import { nanoid } from "nanoid";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { DEMO_BUCKET_CODE } from "@/lib/embed/public-test-bucket";
+import { cancelDueDemoBookings, DEMO_AUTO_CANCEL_REASON } from "@/lib/booking/demo-auto-cancel";
 import {
   leaseOutboxRow,
   saveOutboxStepsRow,
@@ -3429,6 +3431,40 @@ export function completePastBookings(): Promise<{
   backlogRemains: boolean;
 }> {
   return orchestration.completePastBookings(realDeps());
+}
+
+/**
+ * Cancel the demo bookings that have run their 30 minutes (#3424), on the complete
+ * lane. The rule and its failure handling live in `demo-auto-cancel.ts`; this is
+ * the read and the cancel it is handed. The cancel is the ordinary one, initiated
+ * by the system, so the calendar event and busy block go exactly as they would for
+ * a visitor's own cancel.
+ */
+export function cancelDueDemoBookingsNow(nowMs: number = Date.now()) {
+  return cancelDueDemoBookings(
+    {
+      listDue: async (cutoffIso, limit) => {
+        const rows = unwrap(
+          await supabaseAdmin()
+            .from("bookings")
+            .select("id, manage_token, buckets!inner(code)")
+            .eq("buckets.code", DEMO_BUCKET_CODE)
+            .in("status", ["confirmed", "rescheduled"])
+            .lte("created_at", cutoffIso)
+            .order("created_at", { ascending: true })
+            .order("id", { ascending: true })
+            .limit(limit),
+          "demo auto cancel due",
+        ) as { id: string; manage_token: string }[];
+        return rows.map((r) => ({ id: r.id, manageToken: r.manage_token }));
+      },
+      cancel: async (token) => (await cancelBooking(token, DEMO_AUTO_CANCEL_REASON, "system")).claimed,
+      reportFailure: (bookingId, err) => {
+        log.error("complete", { msg: "demo auto cancel failed for a booking", booking_id: bookingId }, err);
+      },
+    },
+    nowMs,
+  );
 }
 
 export function getBookingByToken(token: string): Promise<BookingContext | null> {

@@ -13,7 +13,7 @@
 
 import { getDelegatedToken } from "@/lib/google/dwd";
 import { sendWithTokenRetry } from "@/lib/google/token-retry";
-import { PUBLIC_TEST_EVENT_TYPE_NAME } from "../smoke-seed.ts";
+import { DEMO_EVENT_TYPE_NAME, PUBLIC_TEST_EVENT_TYPE_NAME } from "../smoke-seed.ts";
 
 /** Minimal shape of a Google Calendar event, with the fields the filter needs. */
 export interface CalEvent {
@@ -35,8 +35,11 @@ const SMOKE_ATTENDEE = /^smoketest\d*\+[^@]*@/i;
 // the same mailbox, with the tester's own address as attendee, so neither marker
 // above sees it and a cancelled one would sit on the calendar for ever. The event
 // type name is read from the seed rather than restated, so the two cannot drift.
+// #3424: and a demo call, `<demo event type> with Demo Lead`, whose attendee is a
+// demo+ alias that the smoke alias marker does not match.
+const escapeRe = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const PUBLIC_TEST_SUMMARY = new RegExp(
-  `\\b${PUBLIC_TEST_EVENT_TYPE_NAME.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
+  `\\b(?:${escapeRe(PUBLIC_TEST_EVENT_TYPE_NAME)}|${escapeRe(DEMO_EVENT_TYPE_NAME)})\\b`,
   "i",
 );
 

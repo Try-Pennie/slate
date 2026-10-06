@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
+import { DEMO_BUCKET_CODE, PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
 import { CATCHALL_CODE } from "@/lib/routing/catchall";
 
 // #2660: `/book?xbc=<public test code>` renders the Booker AGAINST THE TEST
@@ -211,6 +211,18 @@ describe("/book gates the public test bucket on the host's origin (#2666)", () =
     expect(refusal(el)).toMatchObject({ sentence: TEST_ACCESS_COPY.noReferer });
     expect(log.warn).toHaveBeenCalledWith("embed-test", expect.objectContaining({ reason: "no-referer" }));
     // Nothing about any lead is read for a page that is not going to be drawn.
+    expect(admin.supabaseAdmin).not.toHaveBeenCalled();
+  });
+
+  // #3424: the demo bucket opens from Slate's own /demo page only. Through /book it
+  // is refused even from an approved website, in its own words, and before anything
+  // about any lead is read.
+  it("refuses the demo bucket from an approved website, pointing back at the demo link", async () => {
+    testRows();
+    const el = await BookEntry({ searchParams: Promise.resolve({ xbc: DEMO_BUCKET_CODE }) });
+    expect(findByType(el, Booker as unknown)).toBeNull();
+    expect(refusal(el)).toMatchObject({ sentence: TEST_ACCESS_COPY.demoPageOnly });
+    expect(log.warn).toHaveBeenCalledWith("embed-test", expect.objectContaining({ reason: "demo-page-only" }));
     expect(admin.supabaseAdmin).not.toHaveBeenCalled();
   });
 

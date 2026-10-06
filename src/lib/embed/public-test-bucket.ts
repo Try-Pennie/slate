@@ -33,14 +33,24 @@
 export const HIDDEN_TEST_BUCKET_CODES = ["SMOKE", "SMOKE2"] as const;
 
 /**
- * The ONE test bucket the public paths serve. One stable code for any host page
- * (a partner's staging, a flipped live page being checked, a future partner),
- * chosen by Dan on 2026-09-24. Which websites may open it is `EMBED_TEST_ORIGINS`
- * (#2666), judged in `test-pass.ts`.
+ * The test buckets the public paths serve, the partner one FIRST (the canary and
+ * the reroute check lead with it).
+ *
+ *  - PARTNER: one stable code for any host page (a partner's staging, a flipped
+ *    live page being checked, a future partner), chosen by Dan on 2026-09-24.
+ *    Which websites may open it is `EMBED_TEST_ORIGINS` (#2666), judged in
+ *    `test-pass.ts`.
+ *  - DEMO (#3424): the booker shown to somebody outside Pennie through Slate's own
+ *    `/demo` page. It is opened by that page and by no host page, and its bookings
+ *    cancel themselves 30 minutes after they are made, so a link passed around
+ *    cannot fill the test agent's day.
  */
-export const PUBLIC_TEST_BUCKET_CODES = ["PARTNER"] as const;
+export const PUBLIC_TEST_BUCKET_CODES = ["PARTNER", "DEMO"] as const;
 
 export type PublicTestBucketCode = (typeof PUBLIC_TEST_BUCKET_CODES)[number];
+
+/** The demo bucket (#3424). */
+export const DEMO_BUCKET_CODE: PublicTestBucketCode = "DEMO";
 
 /**
  * Whether a requested code is the public test bucket. EXACT and case sensitive:
@@ -49,4 +59,19 @@ export type PublicTestBucketCode = (typeof PUBLIC_TEST_BUCKET_CODES)[number];
  */
 export function isPublicTestBucket(code: string): code is PublicTestBucketCode {
   return (PUBLIC_TEST_BUCKET_CODES as readonly string[]).includes(code);
+}
+
+/** Whether a code is the demo bucket (#3424). Exact, like the predicate above. */
+export function isDemoBucket(code: string): boolean {
+  return code === DEMO_BUCKET_CODE;
+}
+
+/**
+ * Whether a host page on an approved website may open this bucket through `/book`
+ * (#3424). Every public test bucket except the demo one, which only Slate's own
+ * `/demo` page opens: a demo booking cancels itself, which is right for a visitor
+ * looking around and wrong for a partner checking their embed.
+ */
+export function opensFromHostPage(code: string): boolean {
+  return isPublicTestBucket(code) && !isDemoBucket(code);
 }
