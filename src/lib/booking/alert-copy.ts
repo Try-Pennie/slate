@@ -479,10 +479,11 @@ export function dependencyTimeoutAlert(timeout: {
   // asked, so pointing at its health is a claim nothing measured (L11): on
   // 2026-10-06 at 13:54 ET Google and Supabase were both healthy and this sent the
   // reader to them. The time went earlier in the request, so the advice points at
-  // the request's own log lines. Only a booking writes a confirm answered line (a
-  // time change has none), which is why it is named as the booking's.
+  // the request's confirm answered line, which every confirm writes, a time change
+  // included (#3401), and which carries where a slow or timed out one spent its
+  // time (#3300).
   if (spentBeforeAsked(found)) {
-    return `${head}. The time went inside Slate before that call, so start from that request's own log lines (the confirm answered line, for a booking) rather than Google Calendar API and Supabase health.`;
+    return `${head}. The time went inside Slate before that call, so start from that request's confirm answered log line rather than Google Calendar API and Supabase health.`;
   }
   return `${head}, and Google Calendar API and Supabase health.`;
 }
