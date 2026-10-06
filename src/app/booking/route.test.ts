@@ -120,6 +120,12 @@ vi.mock("@/lib/booking/settings", () => bookingSettings);
 const agentLinkStore = vi.hoisted(() => ({ resolveAgentLink: vi.fn() }));
 vi.mock("@/lib/agent-link/store", () => agentLinkStore);
 
+// #3366: the stored row check after a refusal. Its decision and read are pinned by
+// scripts/test-refusal-stored-offer.ts; here it is a seam, so the route is proven to
+// hand it every refusal without a test ever reaching the real table.
+const storedOffer = vi.hoisted(() => ({ scheduleStoredOfferCheck: vi.fn() }));
+vi.mock("@/lib/booking/refusal-stored-offer-live", () => storedOffer);
+
 import { POST } from "./route";
 import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
 import { deadlineWithinBudget } from "@/lib/call-budget";
@@ -430,6 +436,16 @@ describe("POST /booking (embed) error mapping", () => {
     expect(lines[0]).toContain("status=409");
     expect(lines[0]).not.toContain("dana");
     expect(lines[0]).not.toContain("2155550100");
+  });
+
+  // #3366: a refused confirm hands its error to the stored row check, which runs
+  // after the response, and the lead's 409 is exactly what it was.
+  it("hands a refusal to the stored row check and still answers 409 (#3366)", async () => {
+    const err = new service.SlotUnavailableError("taken");
+    service.createBooking.mockRejectedValueOnce(err);
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(409);
+    expect(storedOffer.scheduleStoredOfferCheck).toHaveBeenCalledWith(err);
   });
 
   it("refunds the IP cap AND both contact keys on a taken-slot 409, which isn't the lead's fault (#1089)", async () => {
