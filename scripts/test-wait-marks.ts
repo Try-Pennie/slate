@@ -16,6 +16,7 @@ import {
   LOADTEST_LEG_HEADER,
   LOADTEST_LEGS,
   readLoadtestLeg,
+  WAIT_SPAN_FIELDS,
 } from "../src/lib/booking/wait-marks.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -92,6 +93,38 @@ function clock(start: number) {
   eq(f.wait_out_of_order, "decided", "a point earlier than the one before it in the sequence is named");
   eq(f.wait_decide_ms, undefined, "and the span ending at it is withheld rather than reported negative");
 }
+{
+  // And the span STARTING at an out of order point is withheld too: its stamp is the
+  // one the sequence says is wrong, so a span measured from it is wrong as well
+  // (#3358 review: decided at 200 after line_turn at 300 made the profile span 200).
+  const c = clock(100);
+  const m = makeWaitMarks(c.now, 100);
+  m.mark("handler");
+  c.to(300); m.mark("line_turn");
+  c.to(200);
+  m.mark("decided");
+  c.to(400); m.mark("profile");
+  const f = m.fields();
+  eq(f.wait_out_of_order, "decided", "the out of order point is named");
+  eq(f.wait_to_profile_ms, undefined, "and the span from it to the next point is withheld, not measured from a stamp known to be wrong");
+}
+
+// --- one list of span names, derived from the points (L41) ---------------------------
+{
+  eq(
+    [...WAIT_SPAN_FIELDS].join(","),
+    "wait_route_ms,wait_auth_ms,wait_pre_line_ms,wait_line_ms,wait_decide_ms,wait_to_profile_ms,wait_total_ms",
+    "the span names are the points' spans in order, then the whole, from the module that writes them",
+  );
+  const c = clock(100);
+  const m = makeWaitMarks(c.now, 100);
+  for (const [i, p] of WAIT_POINTS.slice(1).entries()) {
+    c.to(200 + i * 10);
+    m.mark(p);
+  }
+  const written = Object.keys(m.fields()).filter((k) => k.startsWith("wait_"));
+  eq(written.sort().join(","), [...WAIT_SPAN_FIELDS].sort().join(","), "and every span the marks write is in the list, and nothing else");
+}
 
 // --- the points are the fixed sequence the request runs through -----------------
 {
@@ -107,8 +140,9 @@ function clock(start: number) {
 
 // --- the Worker's entry stamp and invocation count, carried to the route ---------
 // The Worker runs before Next, so its two facts travel on the request: when it was
-// entered, and how many requests this isolate had served before this one (0 is a
-// fresh isolate's first, counted independently of any module's evaluation).
+// entered, and how many times this isolate had run the app before this request,
+// counting cron ticks and receipts too (0 is a fresh isolate's first run, counted
+// independently of any module's evaluation).
 {
   const req = withEntryMarks(new Request("https://x.test/api/bookings"), { loadtest: true, nowMs: 1_234, invocationIndex: 0 });
   const read = readEntryMarks(req.headers);
@@ -134,7 +168,7 @@ function clock(start: number) {
 
 // --- #3354: which leg of the run sent a confirm, as its driver names it ------------
 {
-  eq([...LOADTEST_LEGS], ["steady", "burst", "fault", "baseline", "preflight", "ceiling"], "the legs are the driver's four modes and the two controls that also confirm");
+  eq([...LOADTEST_LEGS], ["steady", "burst", "fault", "baseline", "preflight", "ceiling", "cold"], "the legs are the driver's four modes, the two controls that also confirm, and the cold leg");
   eq(LOADTEST_LEG_HEADER, "x-loadtest-leg", "the leg header's name");
   for (const leg of LOADTEST_LEGS) eq(readLoadtestLeg(new Headers({ [LOADTEST_LEG_HEADER]: leg })), leg, `a confirm sent by the ${leg} leg reads as that leg`);
   eq(readLoadtestLeg(new Headers()), null, "a confirm that named no leg reads as absent, which a hand run's are");

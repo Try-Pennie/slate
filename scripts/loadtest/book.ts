@@ -22,7 +22,6 @@ import {
   requestSchedule,
   availabilityRefreshMs,
   offeredSlots,
-  loadtestPhone,
   idPrefix,
   burstReadiness,
   waitForBurstMoment,
@@ -38,6 +37,7 @@ import {
   burstLegOut,
   readDriverMode,
   bookingRequestHeaders,
+  bookingBody,
   BURST_REQUESTS_DEFAULT,
   BURST_GRACE_DEFAULT_MS,
   DRIVERS,
@@ -205,20 +205,7 @@ async function book(req: {
       method: "POST",
       // #3354: the leg rides on every confirm, so the run can say where each cold one came from.
       headers: bookingRequestHeaders(API_KEY, MODE),
-      body: JSON.stringify({
-        bucketCode: req.code,
-        start: req.startIso,
-        timezone: TIMEZONE,
-        externalId: req.externalId,
-        attendee: {
-          name: `Loadtest Lead ${req.externalId}`,
-          email: `${req.externalId}@loadtest.local`,
-          // Its OWN number (#2261). A weak dedupe match is email OR phone, so one
-          // shared number makes every booking after the first a `confirm_required`
-          // refusal of the same person calling again.
-          phone: loadtestPhone(req.externalId),
-        },
-      }),
+      body: JSON.stringify(bookingBody({ code: req.code, startIso: req.startIso, externalId: req.externalId, timezone: TIMEZONE })),
     });
     status = res.status;
     // The address Slate SAW, echoed on the loadtest path only. Attributing a write

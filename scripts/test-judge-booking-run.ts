@@ -25,6 +25,7 @@ import {
   waitSpanText,
   lineSplitText,
   startupOriginText,
+  coldAfterDeployText,
   type JudgeInput,
   type JudgedBooking,
 } from "./loadtest/judge-booking-run.ts";
@@ -79,6 +80,7 @@ const LANES_T0 = Date.parse("2026-10-03T12:00:00Z");
  */
 function startupReading(
   rows: { handlerMs: number; beforeMs: number; cold: boolean; afterMs?: number; answer?: Record<string, number | string> }[],
+  opts?: Parameters<typeof readConfirmStartup>[1],
 ) {
   const lines = rows.map((r) =>
     JSON.stringify({
@@ -107,7 +109,7 @@ function startupReading(
       ],
     }, null, 4),
   );
-  return readConfirmStartup(lines.join("\n"));
+  return readConfirmStartup(lines.join("\n"), opts);
 }
 
 /** The app's own exact per address bound, so these fixtures cannot describe a
@@ -2488,6 +2490,99 @@ const legAttempts = (i: JudgeInput, leg: number) =>
   assert(text.indexOf("8fb6133b") < text.indexOf("5239f06d"), `the version with more confirms first (got: ${text})`);
   assert(text.indexOf("burst") < text.indexOf("preflight") && text.indexOf("preflight") < text.indexOf("none"), `legs in the run's own order, the unnamed last (got: ${text})`);
   assert(/not read/.test(startupOriginText(null)), "and a run with no archive says so");
+}
+
+// --- #3354: the diagnostic cold leg, one confirm after each of N deploys --------------
+{
+  const attempt = (i: number, version: string | null, status: number | null) => ({
+    i,
+    slot: { code: "112", start: `s${i}` },
+    deployOk: version !== null,
+    version,
+    sentAtMs: status === null ? null : 1_000 * i,
+    status,
+    outcome: status === 200 ? "created" : null,
+  });
+  assert(/not asked for/.test(coldAfterDeployText({ expected: 0, result: null, reading: null })), "a run that did not ask for the leg says so");
+  // A value the judge cannot read started the job (the workflow stands down only on "0"
+  // and ""), so it is never reported as not asked for (L11).
+  const mistyped = coldAfterDeployText({ expected: 0, expectedUnreadable: 'cold_samples "abc" is not a whole number from 0 to 30', result: null, reading: null });
+  assert(!/not asked for/.test(mistyped) && /cold_samples "abc"/.test(mistyped) && /nothing was measured/.test(mistyped), `an unreadable cold_samples is named, never read as not asked for (got: ${mistyped})`);
+  const lost = coldAfterDeployText({ expected: 30, result: null, reading: null });
+  assert(/asked for 30/.test(lost) && /never arrived/.test(lost), `a leg asked for whose results never arrived says so, never a zero (got: ${lost})`);
+
+  const reading = startupReading([
+    { handlerMs: 900, beforeMs: 1_800, cold: true, answer: { wait_route_ms: 1_000, wait_line_ms: 300, isolate_invocation_index: 0 } },
+    { handlerMs: 900, beforeMs: 2_100, cold: true, answer: { wait_route_ms: 1_200, wait_line_ms: 350, isolate_invocation_index: 0 } },
+    { handlerMs: 900, beforeMs: 600, cold: false, answer: { isolate_invocation_index: 3 } },
+  ])!;
+  // The cold leg's own confirms are the ones under its leg; a straggler from another
+  // leg in the same tail window is in the archive and is not one of its samples.
+  const withVersions = {
+    ...reading,
+    byVersion: { "aaaa1111-x": { cold: [1_800], warm: [] }, "bbbb2222-x": { cold: [2_100], warm: [600] } },
+    byLeg: { cold: { cold: [1_800, 2_100], warm: [600] }, fault: { cold: [3_900], warm: [] } },
+    // The archive as a whole also holds the straggler: four profiles, three of them cold.
+    samples: 4,
+    cold: 3,
+    coldPreProfileMs: [1_800, 2_100, 3_900],
+  };
+  const result = {
+    mode: "cold" as const,
+    planned: 5,
+    attempts: [attempt(1, "aaaa1111-x", 200), attempt(2, "bbbb2222-x", 200), attempt(3, null, null), attempt(4, "cccc3333-x", 200), attempt(5, "bbbb2222-x", 0)],
+  };
+  const text = coldAfterDeployText({ expected: 5, result, reading: withVersions });
+  assert(/diagnostic, not a bar/.test(text), `it says it is not a bar (got: ${text})`);
+  assert(/4 of 5 deploys made a version \(1 failed\)/.test(text), `how many deploys worked, and the failed one by name (got: ${text})`);
+  assert(/3 confirms answered/.test(text), `and how many confirms got an answer, counted the way the leg counts them (got: ${text})`);
+  // Sample 5 deployed bbbb2222 and got no answer: it served nothing, so it is not
+  // counted as landing on its version, the same rule the leg's exit line uses.
+  assert(/2 on the version just deployed/.test(text), `and how many landed on the version their deploy made, counting only answered confirms (got: ${text})`);
+  assert(/the log read 3 of them/.test(text), `counting only the cold leg's own confirms in its log, not a straggler from another leg (got: ${text})`);
+  assert(/2 the first on their isolate/.test(text), `and how many read cold (got: ${text})`);
+  assert(!text.includes("3900"), `a straggler's wait is not in the cold leg's figures (got: ${text})`);
+  const p = percentiles([1_800, 2_100])!;
+  assert(text.includes(`before the profile p50 ${p.p50}ms p95 ${p.p95}ms max ${p.max}ms`), `with the cold wait through the judge's own percentile (got: ${text})`);
+  assert(/short of the 30 a startup change is judged against/.test(text), `and says a sample under the target is short of it (got: ${text})`);
+  const unexpected = coldAfterDeployText({ expected: 0, result, reading: withVersions });
+  assert(!/not asked for/.test(unexpected) && /4 of 5 deploys/.test(unexpected), `a leg whose results arrived is reported even when the run did not say it asked for one (got: ${unexpected})`);
+  const corrupt = coldAfterDeployText({ expected: 5, result: null, unreadable: "Unexpected end of JSON input", reading: withVersions });
+  assert(
+    /results file could not be read \(Unexpected end of JSON input\)/.test(corrupt) && !/never arrived/.test(corrupt),
+    `a results file that is there and unreadable is said apart from one that never arrived (got: ${corrupt})`,
+  );
+  const refusedLeg = coldAfterDeployText({ expected: 30, result: { mode: "cold", planned: 30, attempts: [], refused: "the offered times for code 212 could not be read (answered 429)" }, reading: null });
+  assert(
+    /refused before any deploy/.test(refusedLeg) && refusedLeg.includes("answered 429") && !/never arrived/.test(refusedLeg),
+    `a leg that refused before deploying says so, with its reason (got: ${refusedLeg})`,
+  );
+  const unread = coldAfterDeployText({ expected: 5, result, reading: null });
+  assert(/not archived|not read/.test(unread) && /3 confirms answered/.test(unread), `a leg whose log was not read says what it sent and that nothing was measured (got: ${unread})`);
+
+  // Every figure on the line is the cold leg's own (L629): the first request count, the
+  // span medians and the versions too, not only the waits. A straggler from another leg
+  // in the tail window is left out of the reading itself, and the line says how many.
+  const mixed = [
+    { handlerMs: 900, beforeMs: 1_800, cold: true, answer: { wait_route_ms: 1_000, isolate_invocation_index: 0, loadtest_leg: "cold" } },
+    { handlerMs: 900, beforeMs: 3_900, cold: true, answer: { wait_route_ms: 3_333, isolate_invocation_index: 0, loadtest_leg: "fault" } },
+  ];
+  const whole = startupReading(mixed)!;
+  eq(whole.firstRequests, 2, "control: read whole, the archive holds two first requests");
+  const own = startupReading(mixed, { leg: "cold" })!;
+  eq(own.firstRequests, 1, "read for the cold leg, only its own confirm is a first request");
+  eq(own.otherLegs, 1, "and the straggler is counted as left out, never dropped in silence");
+  assert(!JSON.stringify(own.waitSpans).includes("3333"), `the straggler's spans are not in the reading (got ${JSON.stringify(own.waitSpans)})`);
+  const one = { mode: "cold" as const, planned: 1, attempts: [attempt(1, "unknown", 200)] };
+  const ownText = coldAfterDeployText({ expected: 1, result: one, reading: own });
+  assert(/\(1 the Worker's first request\)/.test(ownText) && !ownText.includes("3333"), `the line carries the cold leg's own figures (got: ${ownText})`);
+  assert(/1 confirm from another leg left out/.test(ownText), `and says how many it left out (got: ${ownText})`);
+
+  // A sample refused rather than booked still started on a fresh version, so it stays a
+  // sample, but the line says how many were refused so a run of SLOT_TAKEN is visible.
+  const refusedRun = { mode: "cold" as const, planned: 2, attempts: [attempt(1, "aaaa1111-x", 200), { ...attempt(2, "bbbb2222-x", 409), outcome: "SLOT_TAKEN" }] };
+  const refusedText = coldAfterDeployText({ expected: 2, result: refusedRun, reading: withVersions });
+  assert(/2 confirms answered \(1 refused rather than booked\)/.test(refusedText), `a refused confirm is named on the line (got: ${refusedText})`);
 }
 
 finish();
