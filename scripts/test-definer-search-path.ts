@@ -289,6 +289,9 @@ const EXPECTED_PINNED = [
   // #3248: the live reroute holds the booker skips, judged on the database clock.
   "live_reroute_holds",
   "move_busy_block",
+  // #3365: releases a time off's held 'ooo' block when its request ends or stops
+  // pointing at it. A trigger, Security DEFINER, pinned to public, no extensions.
+  "ooo_release_held_window",
   // #3247: holds an advisor at a booking's buffered window for a bucket correction.
   "place_reroute_hold",
   // #3248: removes expired reroute holds' busy blocks, on the self heal lane.

@@ -170,6 +170,14 @@ interface World {
   /** The answers to serve those reads, in order. `null` is the unreadable case, and
    *  an exhausted queue answers 0 (the ordinary "nothing to move" state). */
   countAnswers: (number | null)[];
+  /** #3365: every calendar event a narrowing (or a re-approval) moved, with its new times. */
+  movedEvents: { actor: string; calendarId: string; eventId: string; start: string; end: string }[];
+  /** #3365: calendars whose event move THROWS, so the failed-move path is reachable. */
+  failMoveCalendars: Set<string>;
+  /** #3365: event ids Google answers 404 for on a move (the typed "gone"). */
+  goneEvents: Set<string>;
+  /** #3365: make resizing the held block fail, so its failure path is reachable. */
+  failHold: boolean;
 }
 
 function makeWorld(): World {
@@ -206,6 +214,10 @@ function makeWorld(): World {
     stopResult: { stopped: 0, alreadyMoved: 0 },
     countReads: [],
     countAnswers: [],
+    movedEvents: [],
+    failMoveCalendars: new Set(),
+    goneEvents: new Set(),
+    failHold: false,
     /** The roster getUser reads, exposed so a test can add its own fixture user. */
     users: new Map<string, User>(
       [agent, namelessAgent, manager, admin, superAdmin, teamLead, stranger].map(
@@ -314,6 +326,18 @@ function makeWorld(): World {
     },
     deleteCalendarEvent: async (actorEmail, calendarId, eventId) => {
       world.deletedEvents.push({ actor: actorEmail, calendarId, eventId });
+    },
+    moveCalendarEvent: async (actorEmail, calendarId, eventId, args) => {
+      if (world.failMoveCalendars.has(calendarId)) throw new Error(`503 backendError on ${calendarId}`);
+      if (world.goneEvents.has(eventId)) return "gone";
+      world.movedEvents.push({ actor: actorEmail, calendarId, eventId, start: args.start, end: args.end });
+      return "moved";
+    },
+    holdNarrowedWindow: async ({ id, requestId, startIso, endIso }) => {
+      const b = world.busyBlocks.get(id);
+      if (world.failHold || !b || b.ooo_request_id !== requestId) return false;
+      world.busyBlocks.set(id, { ...b, source: "ooo", starts_at: startIso, ends_at: endIso });
+      return true;
     },
     insertBusyBlock: async (block) => {
       const id = `blk-${++blockSeq}`;
@@ -834,8 +858,8 @@ const input = {
   // edit cut off opened to bookings. The event gets its own ordinary mirror row
   // from the sync; this row keeps the APPROVED window whatever the event says.
   assert(
-    block.source === "slate" && block.gcal_event_id === null && block.calendar_id === null,
-    "#3360: the approved window is held by a slate block no sync upsert can match",
+    block.source === "ooo" && block.gcal_event_id === null && block.calendar_id === null,
+    "#3360: the approved window is held by a block no sync upsert can match (source ooo since #3365)",
   );
   assert(block.ooo_request_id === r.id, "#3360: the held block names the request that owns it");
   assert(
@@ -875,7 +899,7 @@ const input = {
   assert(r.agent_event_id === null, "no agent event id");
   assert(r.side_effects.agent_event.startsWith("failed"), "agent_event recorded failed");
   const block = w.busyBlocks.get(r.busy_block_id!)!;
-  assert(block.source === "slate" && block.gcal_event_id === null, "slate fallback block");
+  assert(block.source === "ooo" && block.gcal_event_id === null, "the fallback writes the same held block");
   assert(w.alerts.some((a) => a.key === "ooo_agent_calendar"), "ops alerted");
   assert(
     w.alerts.some((a) => a.key === "ooo_busy_block_fallback"),
@@ -1263,7 +1287,7 @@ const input = {
   assert(r.busy_block_id === heldBlockId, "#3360: the retry keeps the held block it already had");
   const heldBlock = w.busyBlocks.get(r.busy_block_id!)!;
   assert(
-    heldBlock.source === "slate" && heldBlock.gcal_event_id === null,
+    heldBlock.source === "ooo" && heldBlock.gcal_event_id === null,
     "#3360: the held block is never re-keyed onto the agent event",
   );
   assert(r.side_effects.busy_block === "ok", "the fallback marker clears once the event exists");
@@ -1352,8 +1376,8 @@ const input = {
   const r = w.requests.get(id)!;
   const block = w.busyBlocks.get(r.busy_block_id!)!;
   assert(
-    block.source === "slate",
-    "#3360: the happy path writes the held slate block too, not a gcal-linked one",
+    block.source === "ooo",
+    "#3360: the happy path writes the held block too, not a gcal-linked one",
   );
   assert(
     block.ooo_request_id === id,
@@ -1394,7 +1418,7 @@ const input = {
   );
   const rebuilt = w.busyBlocks.get(r.busy_block_id!)!;
   assert(
-    rebuilt.source === "slate" && rebuilt.ooo_request_id === id,
+    rebuilt.source === "ooo" && rebuilt.ooo_request_id === id,
     "#1464: the re-created block is owned, so the sweep will not take it again",
   );
   assert(w.busyBlocks.size === 1, "#1464: exactly one block, not a duplicate");
@@ -2053,6 +2077,242 @@ function latestManagerNotice(w: World): string {
       "record refused: not sent on ooo_calcom, which the sweep's all-clear would end",
     );
   }
+}
+
+// --- #3365: narrowing an approved time off keeps the narrower window blocked ------
+//
+// `modifyOoo` used to undo EVERY approval artifact on any change to an approved
+// request, so shrinking a window opened the whole of it to bookings until a manager
+// re-approved. On 2026-10-06 Heather was working Wednesday morning, so her all day
+// request was to be narrowed to the afternoon, which she was still taking off: that
+// afternoon would have been bookable until her manager acted. A window INSIDE the
+// approved one asks for nothing new, so it stays blocked (calendar events moved to
+// match) while it waits; a change that widens or moves keeps today's behaviour.
+const narrowed = { ...input, startIso: "2026-07-01T17:00:00Z" }; // 1 PM to 5 PM ET of the approved 9 to 5
+const widened = { ...input, startIso: "2026-07-01T12:00:00Z" };
+const moved = { ...input, startIso: "2026-07-02T13:00:00Z", endIso: "2026-07-02T21:00:00Z" };
+
+async function approvedWorld() {
+  const w = makeWorld();
+  w.calcomOutcome = "ok";
+  w.calcomRemoveOutcome = "ok";
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  const approved = w.requests.get(id)!;
+  w.dms.length = 0;
+  w.edits.length = 0;
+  w.alerts.length = 0;
+  w.deletedEvents.length = 0;
+  return { w, id, approved };
+}
+
+{
+  const { w, id, approved } = await approvedWorld();
+  // The change must be PENDING before the calendar moves: the sync pages a shortened
+  // event of an APPROVED request (#3360), so moving it first would page about Slate's
+  // own edit.
+  const statusAtMove: string[] = [];
+  const realMove = w.deps.moveCalendarEvent;
+  w.deps.moveCalendarEvent = async (...args) => {
+    statusAtMove.push(w.requests.get(id)!.status);
+    return realMove(...args);
+  };
+  const createdBefore = w.createdEvents.length;
+
+  const res = await modifyOoo(id, agent, narrowed, w.deps);
+  assert(res.ok, "#3365: narrowing an approved request succeeds");
+  const r = w.requests.get(id)!;
+  eq(r.status, "pending", "#3365: it still goes back to the manager");
+  eq(r.starts_at, narrowed.startIso, "#3365: the request carries the narrower window");
+  assert(
+    r.busy_block_id === approved.busy_block_id &&
+      r.agent_event_id === approved.agent_event_id &&
+      r.manager_event_id === approved.manager_event_id,
+    "#3365: the held block and both calendar events are KEPT",
+  );
+  const block = w.busyBlocks.get(r.busy_block_id!)!;
+  eq(
+    [block.starts_at, block.ends_at, block.source],
+    [narrowed.startIso, narrowed.endIso, "ooo"],
+    "#3365: the held block now covers exactly the narrower window",
+  );
+  eq(w.deletedEvents.length, 0, "#3365: no calendar event is deleted");
+  eq(w.createdEvents.length, createdBefore, "#3365: and none is created");
+  assert(
+    w.movedEvents.some((m) => m.calendarId === "primary" && m.eventId === approved.agent_event_id && m.start === narrowed.startIso && m.end === narrowed.endIso),
+    "#3365: the agent's own event is moved to the narrower window",
+  );
+  assert(
+    w.movedEvents.some((m) => m.eventId === approved.manager_event_id && m.start === narrowed.startIso),
+    "#3365: the manager's calendar copy is moved too",
+  );
+  assert(statusAtMove.length > 0 && statusAtMove.every((s) => s === "pending"), "#3365: every move happens after the request is pending");
+  eq(r.side_effects.agent_dm, undefined, "#3365: the approval DM marker is cleared, so re-approval tells the agent");
+  eq(r.side_effects.agent_event, "ok", "#3365: the moved event is recorded as matching");
+  assert(w.calcomRemovals.length === 1 && r.calcom_synced === false, "#3365: cal.com is undone as before, and re-added on re-approval");
+  eq(w.sweepStops, [id], "#3365: the old window's coverage sweep is stopped, as before");
+  eq(w.alerts.length, 0, "#3365: nothing pages");
+
+  const notice = latestManagerNotice(w);
+  assert(/Shortened time off request \(needs re-approval\)/.test(notice), `#3365: the manager is asked to re-approve a SHORTENED request (got: ${notice})`);
+  assert(/Already approved for/.test(notice) && /stays blocked while you decide/.test(notice), `#3365: and told the shorter window stays blocked meanwhile (got: ${notice})`);
+  assert(/declining ends the time off/i.test(notice), "#3365: and what declining does");
+  const agentDm = w.dms.find((d) => d.email === agent.email)?.text ?? "";
+  assert(/stays blocked meanwhile/.test(agentDm) && /hours you removed are open for bookings again/.test(agentDm), `#3365: the agent is told what is still blocked (got: ${agentDm})`);
+
+  // Re-approval: nothing is recreated, the agent is told, cal.com and the sweep follow
+  // the narrower window.
+  const createdAtReapproval = w.createdEvents.length;
+  const again = await approveOoo(id, manager, w.deps);
+  assert(again.ok, "#3365: the narrowed request can be re-approved");
+  const ra = w.requests.get(id)!;
+  eq(ra.status, "approved", "#3365: approved again");
+  eq(w.createdEvents.length, createdAtReapproval, "#3365: re-approval creates no second event");
+  eq(ra.busy_block_id, approved.busy_block_id, "#3365: and keeps the same held block");
+  assert(w.dms.some((d) => d.email === agent.email && /approved/.test(d.text)), "#3365: the agent is told it was approved");
+  assert(ra.calcom_synced === true, "#3365: cal.com is put back for the narrower window");
+  const lastSweep = w.sweeps[w.sweeps.length - 1]!;
+  eq([lastSweep.startIso, lastSweep.endIso], [narrowed.startIso, narrowed.endIso], "#3365: the coverage sweep runs over the narrower window");
+}
+
+{
+  // Widening keeps today's behaviour: nothing new may be blocked before a manager
+  // agrees to it, so everything the approval wrote comes down.
+  const { w, id } = await approvedWorld();
+  const res = await modifyOoo(id, agent, widened, w.deps);
+  assert(res.ok, "#3365: widening succeeds");
+  const r = w.requests.get(id)!;
+  assert(r.status === "pending" && r.busy_block_id === null && r.agent_event_id === null && r.manager_event_id === null, "#3365: widening releases every artifact, as before");
+  eq(w.deletedEvents.length, 2, "#3365: both events are deleted");
+  eq(w.busyBlocks.size, 0, "#3365: the held block is gone");
+  eq(w.movedEvents.length, 0, "#3365: nothing is moved");
+  assert(/Changed time off request \(needs re-approval\)/.test(latestManagerNotice(w)), "#3365: the manager gets the ordinary change notice");
+  assert(/Nothing is blocked until you approve/.test(latestManagerNotice(w)), "#3365: and is told nothing is blocked meanwhile");
+  const agentDm = w.dms.find((d) => d.email === agent.email)?.text ?? "";
+  assert(/none of that time is blocked/.test(agentDm), `#3365: the agent is told nothing is blocked until approval (got: ${agentDm})`);
+}
+
+{
+  // Moving to another day is not a narrowing either.
+  const { w, id } = await approvedWorld();
+  await modifyOoo(id, agent, moved, w.deps);
+  const r = w.requests.get(id)!;
+  assert(r.busy_block_id === null && w.busyBlocks.size === 0 && w.deletedEvents.length === 2, "#3365: a moved window releases everything, as before");
+}
+
+{
+  // FAILURE PATH: the agent's calendar cannot be updated while narrowing. The held
+  // block stays on the EARLIER window, so Slate and the calendar still agree about
+  // what is blocked, and the failure is said out loud; re-approval retries the move.
+  const { w, id, approved } = await approvedWorld();
+  w.failMoveCalendars.add("primary");
+  const res = await modifyOoo(id, agent, narrowed, w.deps);
+  assert(res.ok, "#3365 failure: the change itself still goes through");
+  const r = w.requests.get(id)!;
+  eq(r.status, "pending", "#3365 failure: it is pending re-approval");
+  eq(r.agent_event_id, approved.agent_event_id, "#3365 failure: the event id is kept, since the event is still there");
+  const block = w.busyBlocks.get(r.busy_block_id!)!;
+  eq([block.starts_at, block.ends_at], [input.startIso, input.endIso], "#3365 failure: the held block keeps the EARLIER window the calendar still shows");
+  assert(/^failed: still on the earlier window/.test(r.side_effects.agent_event ?? ""), `#3365 failure: the record says the event was not moved (got ${r.side_effects.agent_event})`);
+  assert(/^failed: still on the earlier window/.test(r.side_effects.busy_block ?? ""), "#3365 failure: and that the block was deliberately left with it");
+  const page = w.alerts.find((a) => a.key === "ooo_agent_calendar");
+  assert(page !== undefined && page.message.includes(id) && /503 backendError/.test(page.message), `#3365 failure: ops is told which request and why (got ${page?.message})`);
+  assert(/Shortened time off request/.test(latestManagerNotice(w)), "#3365 failure: the manager is still asked");
+  const agentDm = w.dms.find((d) => d.email === agent.email)?.text ?? "";
+  assert(/could not be updated to match yet/.test(agentDm) && !/hours you removed are open/.test(agentDm), `#3365 failure: the agent is not told hours reopened that did not (got: ${agentDm})`);
+
+  // Re-approval with Google back: the move is retried and the block follows it.
+  w.failMoveCalendars.clear();
+  await approveOoo(id, manager, w.deps);
+  const ra = w.requests.get(id)!;
+  assert(w.movedEvents.some((m) => m.eventId === approved.agent_event_id && m.start === narrowed.startIso), "#3365 failure: re-approval moves the event");
+  const after = w.busyBlocks.get(ra.busy_block_id!)!;
+  eq([after.starts_at, after.ends_at], [narrowed.startIso, narrowed.endIso], "#3365 failure: and then narrows the held block");
+  eq([ra.side_effects.agent_event, ra.side_effects.busy_block], ["ok", "ok"], "#3365 failure: both recorded as matching");
+}
+
+{
+  // A failed BLOCK resize after a good move is said too, and leaves the wider block
+  // (over-blocking is the safe direction).
+  const { w, id } = await approvedWorld();
+  w.failHold = true;
+  await modifyOoo(id, agent, narrowed, w.deps);
+  const r = w.requests.get(id)!;
+  const block = w.busyBlocks.get(r.busy_block_id!)!;
+  eq(block.starts_at, input.startIso, "#3365 hold failure: the block keeps the earlier, wider window");
+  assert(/^failed: still on the earlier window/.test(r.side_effects.busy_block ?? ""), "#3365 hold failure: recorded");
+  assert(w.alerts.some((a) => a.key === "busy_block_write_through" && a.message.includes(id)), "#3365 hold failure: ops is told");
+}
+
+{
+  // The event was deleted in Google meanwhile: nothing to move, so the id is cleared
+  // and re-approval creates a fresh one; the block narrows, since it is now the only
+  // thing blocking the window.
+  const { w, id, approved } = await approvedWorld();
+  w.goneEvents.add(approved.agent_event_id!);
+  await modifyOoo(id, agent, narrowed, w.deps);
+  const r = w.requests.get(id)!;
+  eq(r.agent_event_id, null, "#3365 gone: a vanished event's id is cleared");
+  eq(w.busyBlocks.get(r.busy_block_id!)!.starts_at, narrowed.startIso, "#3365 gone: the block narrows");
+  const created = w.createdEvents.length;
+  await approveOoo(id, manager, w.deps);
+  assert(w.createdEvents.length === created + 1 && w.requests.get(id)!.agent_event_id !== null, "#3365 gone: re-approval creates the missing event");
+}
+
+{
+  // Declining the narrowed request releases what it held: the time off is over.
+  const { w, id, approved } = await approvedWorld();
+  await modifyOoo(id, agent, narrowed, w.deps);
+  const res = await rejectOoo(id, manager, "", w.deps);
+  assert(res.ok, "#3365 decline: succeeds");
+  const r = w.requests.get(id)!;
+  assert(r.busy_block_id === null && r.agent_event_id === null && r.manager_event_id === null, "#3365 decline: artifact ids cleared");
+  eq(w.busyBlocks.size, 0, "#3365 decline: the held block is gone");
+  assert(w.deletedEvents.some((e) => e.eventId === approved.agent_event_id), "#3365 decline: the agent's event is deleted");
+  const dm = [...w.dms].reverse().find((d) => d.email === agent.email)?.text ?? "";
+  assert(/declined/.test(dm) && /no longer blocked/.test(dm), `#3365 decline: the agent is told it is no longer blocked (got: ${dm})`);
+
+  // CONTROL: declining an ordinary pending request still undoes nothing.
+  const c = makeWorld();
+  const csub = await submitOoo(agent, input, c.deps);
+  await rejectOoo(csub.ok ? csub.request.id : "", manager, "", c.deps);
+  eq(c.deletedEvents.length, 0, "#3365 decline CONTROL: nothing to delete for a never approved request");
+  assert(!/no longer blocked/.test(c.dms[c.dms.length - 1]?.text ?? ""), "#3365 decline CONTROL: and says nothing about blocking");
+}
+
+{
+  // Withdrawing the narrowed request while it waits releases what it held too.
+  const { w, id } = await approvedWorld();
+  await modifyOoo(id, agent, narrowed, w.deps);
+  const res = await cancelOoo(id, agent, w.deps);
+  assert(res.ok, "#3365 withdraw: succeeds");
+  assert(w.busyBlocks.size === 0 && w.requests.get(id)!.agent_event_id === null, "#3365 withdraw: the held block and event are released");
+}
+
+{
+  // A second change while pending is judged against what is HELD now: narrower again
+  // keeps holding, wider than what is held releases it.
+  const { w, id, approved } = await approvedWorld();
+  await modifyOoo(id, agent, narrowed, w.deps);
+  const narrower = { ...input, startIso: "2026-07-01T18:00:00Z" };
+  await modifyOoo(id, agent, narrower, w.deps);
+  let r = w.requests.get(id)!;
+  eq(r.busy_block_id, approved.busy_block_id, "#3365 twice: narrowing again keeps the held block");
+  eq(w.busyBlocks.get(r.busy_block_id!)!.starts_at, narrower.startIso, "#3365 twice: now at the narrower window");
+  await modifyOoo(id, agent, input, w.deps);
+  r = w.requests.get(id)!;
+  assert(r.busy_block_id === null && w.busyBlocks.size === 0, "#3365 twice: widening past what is held releases it");
+}
+
+{
+  // Changing only the reason of an approved request keeps everything held, and says
+  // "changed", not "shortened".
+  const { w, id, approved } = await approvedWorld();
+  await modifyOoo(id, agent, { ...input, reason: "Doctor" }, w.deps);
+  const r = w.requests.get(id)!;
+  eq(r.busy_block_id, approved.busy_block_id, "#3365 same window: still held");
+  assert(/Changed time off request \(needs re-approval\)/.test(latestManagerNotice(w)), "#3365 same window: not called shortened");
 }
 
 finish();

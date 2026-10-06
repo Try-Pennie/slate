@@ -53,6 +53,39 @@ export function oooBusyBlockFallbackAlert(requestId: string): string {
   );
 }
 
+/**
+ * Time-off orchestration incident (#3365): a narrowed request's calendar event could
+ * not be moved to the narrower window. The event and Slate's held block both stay on
+ * the earlier, wider window, which is the safe direction, and re-approving the
+ * request retries the move.
+ */
+export function oooNarrowCalendarAlert(
+  requestId: string,
+  which: "agent" | "manager",
+  reason: string,
+): string {
+  const whose = which === "agent" ? "the agent's own calendar" : "the manager's OOO calendar";
+  return (
+    `Time off request ${requestId} was shortened, but its event on ${whose} could not be ` +
+    `moved to match (${reason}). It still shows the earlier, wider window` +
+    (which === "agent" ? ", and Slate keeps blocking that window too" : "") +
+    `. Re-approving the request retries the move.`
+  );
+}
+
+/**
+ * Time-off orchestration incident (#3365): a narrowed request's held busy block could
+ * not be narrowed, so Slate keeps blocking the earlier, wider window. Over-blocking is
+ * the safe direction; re-approving the request retries it.
+ */
+export function oooNarrowHoldAlert(requestId: string): string {
+  return (
+    `Time off request ${requestId} was shortened, but Slate's busy block for it could not ` +
+    `be narrowed, so the hours removed from it are still blocked. Re-approving the request ` +
+    `retries it.`
+  );
+}
+
 /** Time-off orchestration incident: oooCalcomAlert. */
 export function oooCalcomAlert(requestId: string, outcome: string): string {
   return `The Cal.com availability override for request ${requestId} failed (${outcome}).`;
