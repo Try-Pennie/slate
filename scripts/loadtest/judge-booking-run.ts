@@ -23,7 +23,8 @@ import { HEALTHY_INVOCATION_STATUS, type ScheduledReading } from "./platform-rea
 import { CEILING_CONCLUSION, type CeilingVerdict } from "./preflight-checks.ts";
 // Type-only (erased under --experimental-strip-types), so the judge never pulls
 // the reader in at runtime and the two stay one direction apart.
-import { WAIT_SPAN_FIELDS, type ConfirmStartupReading } from "./confirm-startup.ts";
+import { WAIT_SPAN_FIELDS, type ConfirmStartupReading, type LineSplit, type SideWaits } from "./confirm-startup.ts";
+import { LOADTEST_LEGS } from "../../src/lib/booking/wait-marks.ts";
 import { CRON_BUDGET_WARN_SHARE } from "../../src/lib/monitor/cron-budget.ts";
 import type { SoakSample } from "./invariants.ts";
 import {
@@ -709,6 +710,72 @@ export function waitSpanText(cs: ConfirmStartupReading | null): string {
     `${side("warm", cs.samples - cs.cold, cs.waitSpans.warm)}; ` +
     `${cs.firstRequests} of ${cs.invocationIndexKnown} confirms with an invocation index were their isolate's first request`
   );
+}
+
+/**
+ * #3354: the shared line's wait, split by the object's own log of the calls each
+ * confirm sent while it waited (`confirm-startup.ts`, `LineSplit`), as one report line.
+ * A report line, never a bar: it says whether a line wait is time behind a leader,
+ * the object's own work, or everything outside the object, so a fix is aimed at the
+ * part that moved. Every count that is not a reading is named, never folded in (L98).
+ */
+export function lineSplitText(cs: ConfirmStartupReading | null): string {
+  const head = "- the shared line's wait, by where it went";
+  if (cs === null) return `${head}: the archived log was not read, so the line's wait was not split`;
+  const { cold, warm, orphanCalls } = cs.lineSplit;
+  if (cold.traced + warm.traced === 0) {
+    return (
+      `${head}: no confirm on the shared line carried a trace, so the line's wait was not split ` +
+      "(traces are sent under SLATE_LOADTEST by a deployment that has #3354's line object log)"
+    );
+  }
+  const p = (xs: number[]) => {
+    const q = percentiles(xs);
+    return q === null ? "n/a" : `p50 ${q.p50}ms p95 ${q.p95}ms`;
+  };
+  const side = (label: string, x: LineSplit) => {
+    const lost = [
+      x.missing > 0 ? `${x.missing} missing` : null,
+      x.impossible > 0 ? `${x.impossible} impossible` : null,
+      x.unreadable > 0 ? `${x.unreadable} unreadable` : null,
+    ].filter((t): t is string => t !== null);
+    const reading =
+      x.joined === 0
+        ? "nothing to split"
+        : `behind a leader ${p(x.heldMs)}, in the object ${p(x.objectMs)}, outside the object ${p(x.outsideMs)}`;
+    return `${label} ${x.joined} of ${x.traced} traced${lost.length > 0 ? ` (${lost.join(", ")})` : ""}: ${reading}`;
+  };
+  return (
+    `${head}: ${side("cold", cold)}; ${side("warm", warm)}` +
+    (orphanCalls > 0 ? `; ${orphanCalls} object calls matched no confirm in the archive` : "")
+  );
+}
+
+/**
+ * #3354: the wait before the profile, by the Worker version that served each confirm
+ * and by the load run leg that sent it, as one report line. A run's cold confirms come
+ * from different places (a fresh deploy's first requests, the burst's crowd, the fault
+ * leg's redeploy), and the startup bar's one figure cannot say which. The slowest cold
+ * confirm is given because, at the handful of cold confirms a run has, it IS the p95.
+ */
+export function startupOriginText(cs: ConfirmStartupReading | null): string {
+  const head = "- the wait before the profile, by origin";
+  if (cs === null) return `${head}: the archived log was not read, so the confirms were not split`;
+  const group = (name: string, w: SideWaits) => {
+    const warm = percentiles(w.warm);
+    return (
+      `${name} cold n=${w.cold.length}${w.cold.length > 0 ? ` max ${Math.max(...w.cold)}ms` : ""}, ` +
+      `warm n=${w.warm.length}${warm === null ? "" : ` p95 ${warm.p95}ms`}`
+    );
+  };
+  const versions = Object.entries(cs.byVersion)
+    .sort(([, a], [, b]) => b.cold.length + b.warm.length - (a.cold.length + a.warm.length))
+    .map(([v, w]) => group(v.slice(0, 8), w));
+  const order = [...LOADTEST_LEGS, "unreadable", "none"] as string[];
+  const legs = Object.entries(cs.byLeg)
+    .sort(([a], [b]) => (order.indexOf(a) === -1 ? order.length : order.indexOf(a)) - (order.indexOf(b) === -1 ? order.length : order.indexOf(b)))
+    .map(([l, w]) => group(l, w));
+  return `${head}: by script version ${versions.join("; ") || "none read"}; by leg ${legs.join("; ") || "none read"}`;
 }
 
 /** The steady line reading as one report line, so the report never re-derives it (L41). */

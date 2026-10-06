@@ -31,7 +31,13 @@
  * branch node-natively. The read lives in slo-budget-store.ts.
  */
 import type { ThrottledNotify } from "./alert-deps";
-import { AVAILABILITY_TARGET_PCT, BOOKING_SUCCESS_TARGET_PCT, sloArithmetic } from "./slo-targets.ts";
+import {
+  AVAILABILITY_TARGET_PCT,
+  BOOKING_SUCCESS_TARGET_PCT,
+  SERVER_FAULT_ERROR_CODES,
+  SLOT_TAKEN_ERROR_CODES,
+  sloArithmetic,
+} from "./slo-targets.ts";
 
 /** Page once this share of a month's budget is spent. */
 export const BUDGET_WARN_SHARE = 0.5;
@@ -54,6 +60,17 @@ export interface MonthToDate {
   errors: number;
   /** The errors whose code is a server fault (`SERVER_FAULT_ERROR_CODES`). */
   serverFaults: number;
+  /**
+   * The month's errors by code, from the same read (#3374), so the page can say which
+   * codes spent the budget. An error recorded with no code is not in it (the mix RPC
+   * leaves an empty code out), so these can add up to LESS than `errors` and never to more.
+   */
+  errorCodes: ErrorCount[];
+}
+
+export interface ErrorCount {
+  code: string;
+  count: number;
 }
 
 export interface BudgetSpend {
@@ -65,6 +82,53 @@ export interface BudgetSpend {
   /** `spent / allowed`. */
   share: number;
   requests: number;
+  /** The codes that spent THIS budget, largest first: every error code for booking
+   *  success, the server fault codes alone for availability. */
+  byCode: ErrorCount[];
+}
+
+/** Largest first, ties by code, so the code a page names never depends on read order. */
+function largestFirst(codes: readonly ErrorCount[]): ErrorCount[] {
+  return [...codes].sort((a, b) => b.count - a.count || a.code.localeCompare(b.code));
+}
+
+/**
+ * The booking success errors split into a time that had gone before the lead confirmed
+ * (`SLOT_TAKEN_ERROR_CODES`, usually another lead booking it first) and everything else
+ * (#3374). Those are different things to whoever reads the page: one is a month that
+ * sold out, the other a month where something needs looking at.
+ *
+ * `taken` is only what was measured under a taken code; an error with no code belongs to
+ * the rest. The split is `unmeasured` when the codes cannot be the errors' own breakdown
+ * (more than the errors, a negative count) or when there are errors and no codes at all,
+ * where a taken count of zero would be a claim nobody measured (L622).
+ */
+export type TakenSplit =
+  | { kind: "measured"; taken: number; takenTop: ErrorCount | null; rest: number; restTop: ErrorCount | null }
+  | { kind: "unmeasured"; reason: string };
+
+export function splitTakenTimes(errors: number, byCode: readonly ErrorCount[]): TakenSplit {
+  if (!byCode.every((e) => Number.isFinite(e.count) && e.count >= 0)) {
+    return { kind: "unmeasured", reason: "an error code count came back that is not a count" };
+  }
+  const coded = byCode.reduce((sum, e) => sum + e.count, 0);
+  if (coded > errors) {
+    return { kind: "unmeasured", reason: `the error codes add up to ${count(coded)}, more than the errors` };
+  }
+  if (errors > 0 && coded === 0) {
+    return { kind: "unmeasured", reason: "the read carried no error codes for them" };
+  }
+  const sorted = largestFirst(byCode).filter((e) => e.count > 0);
+  const takenCodes = sorted.filter((e) => SLOT_TAKEN_ERROR_CODES.includes(e.code));
+  const restCodes = sorted.filter((e) => !SLOT_TAKEN_ERROR_CODES.includes(e.code));
+  const taken = takenCodes.reduce((sum, e) => sum + e.count, 0);
+  return {
+    kind: "measured",
+    taken,
+    takenTop: takenCodes[0] ?? null,
+    rest: errors - taken,
+    restTop: restCodes[0] ?? null,
+  };
 }
 
 export type BudgetVerdict =
@@ -96,34 +160,88 @@ export function judgeBudgets(
     return { success: unmeasured, availability: unmeasured };
   }
   const monthRequests = Math.max(projectedRequestsPerMonth, m.requests);
-  const judge = (name: BudgetName, targetPct: number, spent: number): BudgetVerdict => {
+  const judge = (name: BudgetName, targetPct: number, spent: number, byCode: ErrorCount[]): BudgetVerdict => {
     // At least one, so a budget can never be zero and every error read as all of it.
     const allowed = Math.max(1, Math.floor((monthRequests * (100 - targetPct)) / 100));
-    const spend: BudgetSpend = { name, targetPct, allowed, spent, share: spent / allowed, requests: m.requests };
+    const spend: BudgetSpend = {
+      name,
+      targetPct,
+      allowed,
+      spent,
+      share: spent / allowed,
+      requests: m.requests,
+      byCode: largestFirst(byCode),
+    };
     return spend.share >= BUDGET_WARN_SHARE ? { kind: "half-spent", spend } : { kind: "within", spend };
   };
   return {
-    success: judge("success", BOOKING_SUCCESS_TARGET_PCT, m.errors),
-    availability: judge("availability", AVAILABILITY_TARGET_PCT, m.serverFaults),
+    success: judge("success", BOOKING_SUCCESS_TARGET_PCT, m.errors, m.errorCodes),
+    availability: judge(
+      "availability",
+      AVAILABILITY_TARGET_PCT,
+      m.serverFaults,
+      m.errorCodes.filter((e) => SERVER_FAULT_ERROR_CODES.includes(e.code)),
+    ),
   };
 }
 
-const WHAT: Record<BudgetName, { spentOn: string; target: string; next: string }> = {
+const WHAT: Record<BudgetName, { budget: string; spentOn: string; target: string }> = {
   success: {
+    budget: "booking error budget",
     spentOn: "booking requests ended in an error",
-    target: "booking success",
-    next:
-      "Nothing is necessarily down: it says the month is running worse than the pilot. " +
-      "The error codes that spent it are in the booking outcome panel (/admin/booking-outcomes).",
+    target: "success target",
   },
   availability: {
+    budget: "availability error budget",
     spentOn: "booking requests ended in a server fault",
-    target: "availability",
-    next:
-      "Each of these is a lead turned away by a fault of ours, not of theirs. " +
-      "The error codes are in the booking outcome panel (/admin/booking-outcomes), and the faults themselves in the Worker logs.",
+    target: "availability target",
   },
 };
+
+/**
+ * What spending the budget does, which is nothing (#3374). The 2026-10-06 page left its
+ * reader asking twice what it meant and what happens when it runs out; the answers lived
+ * only in docs/slo.md (Dan, 2026-10-03: internal measures, not promises).
+ */
+const NOT_A_GATE =
+  "Nothing is blocked, slowed or switched off when the budget runs out: it compares this month with the pilot, " +
+  "and is an internal measure, not a promise.";
+
+const WHERE = "Every code is in the booking outcome panel (/admin/booking-outcomes).";
+
+const TAKEN = "a time that had gone before the lead confirmed";
+const WHY_TAKEN = "usually because another lead booked it first";
+
+const largest = (e: ErrorCount): string => `largest code ${e.code}, ${count(e.count)}`;
+
+/** The second line of the booking success page: taken times against everything else. */
+function takenLine(spent: number, byCode: readonly ErrorCount[]): string {
+  const split = splitTakenTimes(spent, byCode);
+  const n = count(spent);
+  if (split.kind === "unmeasured") {
+    return `Could not tell how many of the ${n} were ${TAKEN}: ${split.reason}.`;
+  }
+  const restTop = split.restTop ? ` (${largest(split.restTop)})` : ", though none of them carried an error code";
+  if (split.taken === 0) {
+    return `None of the ${n} was ${TAKEN}, so every one is worth a look${restTop}.`;
+  }
+  const takenTop = split.takenTop ? ` (${largest(split.takenTop)})` : "";
+  if (split.rest === 0) {
+    return `All ${n} were ${TAKEN}, ${WHY_TAKEN}${takenTop}.`;
+  }
+  const taken = `${count(split.taken)} of the ${n} ${split.taken === 1 ? "was" : "were"} ${TAKEN}, ${WHY_TAKEN}${takenTop}.`;
+  const rest = split.rest === 1 ? "The other one is worth a look" : `The other ${count(split.rest)} are worth a look`;
+  return `${taken} ${rest}${restTop}.`;
+}
+
+/** The second line of the availability page: every error there is a fault of ours. */
+function faultLine(byCode: readonly ErrorCount[]): string {
+  const top = byCode.find((e) => e.count > 0);
+  return (
+    `Each was a lead turned away by a fault of ours, not of theirs${top ? ` (${largest(top)})` : ""}. ` +
+    "The faults themselves are in the Worker logs."
+  );
+}
 
 const MONTHS = [
   "January", "February", "March", "April", "May", "June",
@@ -139,19 +257,24 @@ function monthName(month: string): string {
 const pct = (share: number): string => `${Math.round(share * 100)}%`;
 const count = (n: number): string => n.toLocaleString("en-US");
 
-/** What the page says: what was spent, against what, and where to look. */
+/**
+ * What the page says, one line each so it reads on a phone: what was spent against what;
+ * what spent it (for booking success, a taken time against everything else); and what
+ * spending it does, which is nothing, with where to look.
+ */
 export function sloBudgetPageText(s: BudgetSpend, month: string): string {
   const w = WHAT[s.name];
-  return (
-    `${pct(s.share)} of the ${w.target} error budget for ${monthName(month)} is spent: ` +
-    `${count(s.spent)} ${w.spentOn}, of about ${count(s.allowed)} the ${s.targetPct}% target allows this month ` +
-    `(${count(s.requests)} requests so far). ${w.next}`
-  );
+  const spent =
+    `${pct(s.share)} of the ${monthName(month)} ${w.budget} is spent: ` +
+    `${count(s.spent)} ${w.spentOn}, of about ${count(s.allowed)} the ${s.targetPct}% ${w.target} allows ` +
+    `this month (${count(s.requests)} requests so far).`;
+  const what = s.name === "success" ? takenLine(s.spent, s.byCode) : faultLine(s.byCode);
+  return `${spent}\n${what}\n${NOT_A_GATE} ${WHERE}`;
 }
 
 /** What the all-clear says. A condition, so it owes one. */
 export function sloBudgetClearText(name: BudgetName, month: string): string {
-  return `The ${WHAT[name].target} error budget for ${monthName(month)} is under half spent.`;
+  return `The ${monthName(month)} ${WHAT[name].budget} is under half spent.`;
 }
 
 export interface SloBudgetDeps {

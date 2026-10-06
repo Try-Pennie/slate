@@ -20,6 +20,14 @@
 // single process's globals. The class the run exists to find is a JS date fixture
 // judged against a JS reading of now, and that is what moves.
 //
+// A NODE child process IS moved (#3361). The runner also hands the hook to every
+// node process a suite starts, through NODE_OPTIONS, because a suite that computes
+// a moment on its own clock and passes it to a child is only tested at the shifted
+// date if the child reads the same clock. Without that, the burst driver's child
+// waited for a moment a day away on the real clock and the run blamed the suite.
+// So a suite process can be handed the hook twice (on its argv and in NODE_OPTIONS),
+// and the second evaluation must not shift it again: see the guard below.
+//
 // IT REFUSES RATHER THAN RUNNING UNSHIFTED. A bad spec throws on load, so the
 // suite never starts. A run whose shift quietly did not apply is identical to an
 // ordinary run, and a clean result then means nothing at all (L98), which is the
@@ -49,7 +57,12 @@ declare global {
 
 const spec = process.env[CLOCK_SHIFT_ENV]?.trim() ?? "";
 
-if (spec !== "") {
+// Already shifted means the hook was loaded twice under two spellings of its path
+// (a relative argv specifier and the runner's file URL resolve to one module only
+// while no symlink sits between them). Applying it again would put the process
+// twice the offset ahead, which reads as a date dependent suite rather than a hook
+// fault, so the first application stands.
+if (spec !== "" && globalThis.__slateShiftedClock === undefined) {
   const RealDate = Date;
   const realNow = () => RealDate.now();
   const parsed = parseClockShift(spec, realNow());

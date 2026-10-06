@@ -34,6 +34,9 @@ import {
   burstCodeFor,
   burstLegOut,
   readBurstPlan,
+  readDriverMode,
+  bookingRequestHeaders,
+  DRIVER_MODES,
   BURST_LEGS,
   BURST_REQUESTS_DEFAULT,
   BURST_SPACING_MS,
@@ -45,6 +48,9 @@ import {
   AVAILABILITY_LIMITER,
   BOOKING_API_IP_LIMITER,
 } from "../src/lib/rate-limit-core.ts";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { LOADTEST_LEGS, LOADTEST_LEG_HEADER } from "../src/lib/booking/wait-marks.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 // --- the ceilings come from the app, not from a copy --------------------------
@@ -576,6 +582,39 @@ const T0 = Date.parse("2026-09-15T14:00:00.000Z");
     const r = readBurstPlan(raw);
     assert(!r.ok && r.why.includes(says), `refused, saying "${says}" (got: ${JSON.stringify(r)})`);
   }
+}
+
+// --- #3354: the driver says which leg it is on every confirm it sends ---------------
+// The route logs it on the confirm's own line, so the run can say which leg each cold
+// confirm came from. The mode is the leg, read from the one vocabulary the route
+// reads (L41), and a mode the driver does not know is refused by name rather than
+// cast into one it does.
+{
+  for (const mode of DRIVER_MODES) {
+    const r = readDriverMode(mode);
+    assert(r.ok && r.mode === mode, `the ${mode} mode is read as itself`);
+    assert((LOADTEST_LEGS as readonly string[]).includes(mode), `the ${mode} mode is a leg the route reads`);
+  }
+  for (const leg of LOADTEST_LEGS) {
+    const h = bookingRequestHeaders("k", leg);
+    assert(h[LOADTEST_LEG_HEADER] === leg, `a ${leg} sender names its leg on the request (got ${JSON.stringify(h)})`);
+    assert(h.Authorization === "Bearer k" && h["content-type"] === "application/json", "and still sends its key and its body's type");
+  }
+  const unset = readDriverMode(undefined);
+  assert(unset.ok && unset.mode === "steady", "no mode is the steady pass, as before");
+  const typo = readDriverMode("Burst");
+  assert(!typo.ok && typo.why.includes("Burst"), `a mode outside the four is refused by name (got ${JSON.stringify(typo)})`);
+  const control = readDriverMode("preflight");
+  assert(!control.ok, "a control's leg is not a mode this driver runs, so it is refused rather than run as the steady pass");
+
+  // One vocabulary, written once (L41). The mode list was first added beside a hand
+  // written DriverMode union, which declared the type twice; only tsc over scripts/
+  // reports that, and the build gate there fails on undefined names alone.
+  const declaresMode = (source: string) => source.match(/^export type DriverMode\b.*$/gm) ?? [];
+  const planSource = readFileSync(join(import.meta.dirname, "loadtest", "book-plan.ts"), "utf8");
+  eq(declaresMode(planSource), ["export type DriverMode = (typeof DRIVER_MODES)[number];"], "DriverMode is declared once, derived from the mode list");
+  const twice = planSource.replace(/^(export type DriverMode = \(typeof DRIVER_MODES\)\[number\];)$/m, '$1\nexport type DriverMode = "steady" | "burst" | "fault" | "baseline";');
+  assert(twice !== planSource && declaresMode(twice).length === 2, "control: a second, hand written union beside it is caught");
 }
 
 finish();

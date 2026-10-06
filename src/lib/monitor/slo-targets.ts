@@ -58,6 +58,16 @@ export const SERVER_FAULT_ERROR_CODES: readonly string[] = REFUSAL_CATALOG.flatM
   path.counting.kind === "error" && /^5\d\d\b/.test(path.outcome) ? [path.counting.code] : [],
 );
 
+/**
+ * Every error code recorded when the time a lead picked had already gone, usually because another
+ * lead booked it first (#3374). The booking success budget page counts these apart from the rest,
+ * so a month spent on contention reads differently from one spent on faults. Derived from the
+ * catalog's `slotTaken` mark, never listed by hand (L41).
+ */
+export const SLOT_TAKEN_ERROR_CODES: readonly string[] = REFUSAL_CATALOG.flatMap((path) =>
+  path.slotTaken && path.counting.kind === "error" ? [path.counting.code] : [],
+);
+
 function sum(values: readonly number[]): number {
   return values.reduce((a, b) => a + b, 0);
 }

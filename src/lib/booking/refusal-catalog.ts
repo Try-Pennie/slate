@@ -106,6 +106,15 @@ export interface RefusalPath {
    * path must be visible, not exempt by default.
    */
   codeFrom?: "route" | "mapped" | "authorizer";
+  /**
+   * The lead was told the time they picked had already gone (#3374). Usually another
+   * lead booked it first, which is ordinary contention on a time we offered rather than
+   * a fault, and the monthly error budget page counts these apart from everything else
+   * so a reader can tell a sold out month from a broken one. Derived into
+   * `SLOT_TAKEN_ERROR_CODES` (`src/lib/monitor/slo-targets.ts`), so a new path that
+   * answers "the time has gone" joins that count by being marked here.
+   */
+  slotTaken?: true;
   rateSignal: RefusalRateSignal;
   /** The reasoning that produced the decision. Required, including for a "no". */
   why: string;
@@ -291,6 +300,7 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
     surface: "embed booker",
     outcome: "409, told the time has gone",
     counting: { kind: "error", code: "slot_unavailable" },
+    slotTaken: true,
     rateSignal: { kind: "covered" },
     why:
       "The headline case #1313 was built for. One lost race is ordinary contention on a slot we " +
@@ -432,6 +442,7 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
     outcome: "409 SLOT_TAKEN, telling the caller to pick another time",
     counting: { kind: "error", code: "SLOT_TAKEN" },
     codeFrom: "mapped",
+    slotTaken: true,
     rateSignal: { kind: "covered" },
     why: "The API-side twin of slot_unavailable, and it needs the same rate signal for the same reason.",
   },
@@ -632,6 +643,7 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
     surface: "manage page",
     outcome: "409, told the time has gone",
     counting: { kind: "error", code: "reschedule_slot_taken" },
+    slotTaken: true,
     rateSignal: { kind: "covered" },
     why:
       "A lead moving their call and being told the time went is the same shape as being refused " +

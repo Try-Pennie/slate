@@ -13,6 +13,9 @@ import {
   readEntryMarks,
   ENTRY_AT_HEADER,
   INVOCATION_INDEX_HEADER,
+  LOADTEST_LEG_HEADER,
+  LOADTEST_LEGS,
+  readLoadtestLeg,
 } from "../src/lib/booking/wait-marks.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -127,6 +130,16 @@ function clock(start: number) {
   const none = readEntryMarks(new Headers());
   eq(none.entryAtMs, null, "no stamp reads as absent");
   eq(none.invocationIndex, null, "no invocation index reads as absent, not as a first request");
+}
+
+// --- #3354: which leg of the run sent a confirm, as its driver names it ------------
+{
+  eq([...LOADTEST_LEGS], ["steady", "burst", "fault", "baseline", "preflight", "ceiling"], "the legs are the driver's four modes and the two controls that also confirm");
+  eq(LOADTEST_LEG_HEADER, "x-loadtest-leg", "the leg header's name");
+  for (const leg of LOADTEST_LEGS) eq(readLoadtestLeg(new Headers({ [LOADTEST_LEG_HEADER]: leg })), leg, `a confirm sent by the ${leg} leg reads as that leg`);
+  eq(readLoadtestLeg(new Headers()), null, "a confirm that named no leg reads as absent, which a hand run's are");
+  eq(readLoadtestLeg(new Headers({ [LOADTEST_LEG_HEADER]: "Steady" })), "unreadable", "a leg outside the vocabulary reads as unreadable, never as one of the legs (L11)");
+  eq(readLoadtestLeg(new Headers({ [LOADTEST_LEG_HEADER]: "" })), "unreadable", "and so does an empty one, which a driver did send");
 }
 
 finish();

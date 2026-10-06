@@ -15,10 +15,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  makeStep,
   planVerifiedDeploy,
   DEFAULT_APP_URL,
   HAND_RELEASE_MESSAGE_PREFIX,
 } from "./lib/deploy-verified.ts";
+import { normalizeCommit } from "./stamp-build-info.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const CLEAN = {
@@ -241,6 +243,107 @@ for (const [what, plan] of refusals) {
     deployDoc.includes("cf:deploy:verified"),
     "DEPLOY.md names the verified command",
   );
+}
+
+// --- #3363: the probe is told which commit was deployed ----------------------------
+// The probe reads its expected commit from PROBE_COMMIT or GITHUB_SHA, and outside CI
+// neither is set. On 2026-10-05, the first real hand deploy (#3344, version b92b44cc)
+// went live and its probe refused at once with `refusing to stamp "" as a commit`,
+// having checked nothing. So the plan carries the commit the stamp step writes, and
+// the probe step runs with it.
+{
+  const plan = planVerifiedDeploy(CLEAN);
+  assert(plan.ok, "a clean tree plans a deploy");
+  if (plan.ok) {
+    eq(plan.probeEnv.PROBE_COMMIT, plan.commit, "the probe is told the commit the stamp step writes");
+  }
+  const viaCi = planVerifiedDeploy({ ...CLEAN, githubSha: "1111111111111111111111111111111111111111" });
+  assert(viaCi.ok && viaCi.probeEnv.PROBE_COMMIT === "111111111111", "and under CI it is the same commit the stamp uses");
+
+  // The command must hand that environment to the probe step itself. Read only that
+  // step's own call, so a mention elsewhere in the file cannot answer for it (L135).
+  const script = readFileSync(join(import.meta.dirname, "deploy-verified.ts"), "utf8");
+  const probeCall = (source: string): string => {
+    const at = source.indexOf('step("post-deploy probe"');
+    return at === -1 ? "" : source.slice(at, source.indexOf(");", at) + 2);
+  };
+  assert(probeCall(script) !== "", "the probe step is found in the command");
+  assert(probeCall(script).includes("plan.probeEnv"), `and it runs with the plan's probe environment (got: ${probeCall(script)})`);
+  const unwired = script.replace(/,\s*plan\.probeEnv/, "");
+  assert(unwired !== script, "positive control: the wiring was removed from a copy of the real command");
+  assert(!probeCall(unwired).includes("plan.probeEnv"), "positive control: a probe step without it is caught (L1)");
+
+  // The step must ADD that environment to the one it inherits. A step that dropped
+  // its `env` argument would leave the probe without PROBE_COMMIT exactly as before,
+  // while the call above still read as wired. So the real helper is driven through a
+  // spawn that records what it was given, rather than its spelling being matched
+  // (L103): an equivalent rewrite must pass and a dropped env must not.
+  // What a step implementation does wrong, as findings, so the same check runs on the
+  // real helper AND on a broken one (L1): a check never seen failing proves nothing.
+  const stepProblems = (impl: typeof makeStep): string[] => {
+    const out: string[] = [];
+    const seen: (Record<string, string | undefined> | undefined)[] = [];
+    const step = impl({
+      spawn: (_cmd, _args, opts) => {
+        seen.push(opts.env);
+        return { status: 0 };
+      },
+      root: "/repo",
+      baseEnv: { PATH: "/usr/bin", GITHUB_SHA: undefined },
+      log: () => {},
+    });
+    step("post-deploy probe", "node", ["scripts/post-deploy-probe.ts"], { PROBE_COMMIT: "abcdef123456" });
+    if (seen[0]?.PROBE_COMMIT !== "abcdef123456") out.push("the probe is not handed the commit it was given");
+    if (seen[0]?.PATH !== "/usr/bin") out.push("the step does not inherit this process's environment");
+    step("stamp the deploying commit", "node", ["scripts/stamp-build-info.ts"]);
+    if (seen[1]?.PROBE_COMMIT !== undefined) out.push("a step given nothing adds something");
+    let threw = "";
+    try {
+      impl({ spawn: () => ({ status: 2 }), root: "/repo", baseEnv: {}, log: () => {} })("build and deploy", "pnpm", []);
+    } catch (err) {
+      threw = err instanceof Error ? err.message : String(err);
+    }
+    if (!threw.includes("build and deploy failed (exit 2)")) out.push("a failing step does not stop the command naming itself and its exit");
+    return out;
+  };
+  eq(stepProblems(makeStep), [], "the step helper hands each step its env on top of the inherited one, and stops on a failure");
+  const dropsEnv: typeof makeStep = (deps) => (name, cmd, args) => {
+    const res = deps.spawn(cmd, args, { cwd: deps.root, stdio: "inherit", env: { ...deps.baseEnv } });
+    if (res.status !== 0) throw new Error(`${name} failed (exit ${res.status ?? "signal"})`);
+  };
+  assert(stepProblems(dropsEnv).includes("the probe is not handed the commit it was given"), "positive control: a step that drops its env is caught (L1)");
+
+  // And the command must hand the helper the real spawn, the repo root and its OWN
+  // environment: `baseEnv: {}` would drop PATH and every credential from every step
+  // while the helper's own test stayed green. Read only the call's own arguments.
+  const stepCall = (source: string): string => {
+    const at = source.indexOf("const step = makeStep(");
+    return at === -1 ? "" : source.slice(at, source.indexOf(");", at) + 2);
+  };
+  const callProblems = (source: string): string[] => {
+    const call = stepCall(source);
+    if (call === "") return ["the command does not run its steps through makeStep"];
+    return [
+      [/\bspawn:\s*spawnSync\b/, "the command does not hand the helper the real spawn"],
+      [/\broot:\s*ROOT\b/, "the command does not run steps from the repo root"],
+      [/\bbaseEnv:\s*process\.env\b/, "the command does not hand its steps its own environment"],
+    ].flatMap(([re, why]) => ((re as RegExp).test(call) ? [] : [why as string]));
+  };
+  eq(callProblems(script), [], `the command runs its steps through the helper with the real spawn, root and environment (got: ${stepCall(script)})`);
+  const emptied = script.replace(/baseEnv:\s*process\.env/, "baseEnv: {}");
+  assert(emptied !== script && callProblems(emptied).includes("the command does not hand its steps its own environment"), "positive control: a command handing its steps an empty environment is caught (L1)");
+
+  // And the probe must read that commit as the one it expects. It prefers
+  // PROBE_COMMIT to GITHUB_SHA and normalises with the stamp's own function, so the
+  // commit handed over has to survive that normalisation unchanged.
+  for (const p of [plan, viaCi]) {
+    if (p.ok) eq(normalizeCommit(p.probeEnv.PROBE_COMMIT), p.commit, `the probe's normaliser reads the handed commit as the stamped one (${p.commit})`);
+  }
+  const probe = readFileSync(join(import.meta.dirname, "post-deploy-probe.ts"), "utf8");
+  const reads = /normalizeCommit\(process\.env\.PROBE_COMMIT \?\? process\.env\.GITHUB_SHA\)/;
+  assert(reads.test(probe), "the probe reads PROBE_COMMIT before GITHUB_SHA, so a hand run's commit is the one it checks");
+  const swapped = probe.replace(reads, "normalizeCommit(process.env.GITHUB_SHA ?? process.env.PROBE_COMMIT)");
+  assert(swapped !== probe && !reads.test(swapped), "positive control: a probe preferring GITHUB_SHA is caught (L1)");
 }
 
 finish();

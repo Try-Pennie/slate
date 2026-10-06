@@ -45,8 +45,11 @@ function tailLine(opts: {
   cpuTime?: number;
   /** #3354: the same invocation's `confirm answered` fields, when it logged that line. */
   answer?: Record<string, number | string>;
+  /** #3354: the Worker version that served it, as the tail names it. */
+  scriptVersion?: string;
 }): string {
   return JSON.stringify({
+    ...(opts.scriptVersion ? { scriptVersion: { id: opts.scriptVersion } } : {}),
     cpuTime: opts.cpuTime ?? 400,
     wallTime: opts.logTimestamp - opts.eventTimestamp,
     outcome: "ok",
@@ -82,6 +85,34 @@ function tailLine(opts: {
     // over 179,056 lines. A compact fixture is the one that agreed with the
     // reader's first, wrong, assumption about the shape (L52).
   }, null, 4);
+}
+
+/**
+ * #3354: one call to the shared line's object, as the tail archives it: its own
+ * event, with the runtime's `wallTime` for the call and the object's own log line
+ * naming the op, the confirm's trace and the stage, written with the app's formatter.
+ */
+function objectLine(opts: { eventTimestamp: number; wallTime: number; op: string; trace: string; stage: string }): string {
+  return JSON.stringify(
+    {
+      wallTime: opts.wallTime,
+      cpuTime: 0,
+      executionModel: "durableObject",
+      outcome: "ok",
+      entrypoint: "ConfirmLine",
+      eventTimestamp: opts.eventTimestamp,
+      event: { request: { url: "https://confirm-line/", method: "POST" }, response: { status: 200 } },
+      logs: [
+        {
+          level: "info",
+          timestamp: opts.eventTimestamp,
+          message: [formatLine("confirm-line-object", { msg: "line call", op: opts.op, trace: opts.trace, stage: opts.stage })],
+        },
+      ],
+    },
+    null,
+    4,
+  );
 }
 
 /** An invocation carrying something that is not a confirm profile. */
@@ -571,5 +602,91 @@ function otherLine(msg: string): string {
   eq(r.invocationIndexKnown, 0, "and an unreadable invocation index is not known");
 }
 
+
+// --- #3354: the line's wait, split by the object's own log of each call ------------
+// A confirm's `wait_line_ms` is its client's view. The object logs every traced call
+// with the runtime's `wallTime`, so the wait splits into the time held behind a
+// leader (polls), the object's own work on the other calls sent while waiting, and
+// what is left: everything outside the object. Calls sent during the turn are not
+// part of the wait and are left out.
+{
+  const archive = [
+    objectLine({ eventTimestamp: 100, wallTime: 30, op: "enter", trace: "tc", stage: "wait" }),
+    objectLine({ eventTimestamp: 200, wallTime: 500, op: "poll", trace: "tc", stage: "wait" }),
+    objectLine({ eventTimestamp: 700, wallTime: 200, op: "poll", trace: "tc", stage: "wait" }),
+    objectLine({ eventTimestamp: 900, wallTime: 20, op: "ack", trace: "tc", stage: "wait" }),
+    objectLine({ eventTimestamp: 1_200, wallTime: 15, op: "done", trace: "tc", stage: "turn" }),
+    tailLine({ eventTimestamp: 0, logTimestamp: 2_000, totalMs: 900, isolateAgeMs: 1_000, answer: { line: "shared", line_trace: "tc", wait_line_ms: 900 } }),
+    tailLine({ eventTimestamp: 10_000, logTimestamp: 11_000, totalMs: 800, isolateAgeMs: 60_000, answer: { line: "shared", line_trace: "tw", wait_line_ms: 100 } }),
+    objectLine({ eventTimestamp: 10_010, wallTime: 10, op: "enter", trace: "tw", stage: "wait" }),
+    objectLine({ eventTimestamp: 10_030, wallTime: 5, op: "ack", trace: "tw", stage: "wait" }),
+  ].join("\n");
+  const r = readConfirmStartup(archive)!;
+  const c = r.lineSplit.cold;
+  eq(c.traced, 1, "one cold confirm was traced on the shared line");
+  eq(c.joined, 1, "and its object calls were found");
+  eq(c.heldMs.join(","), "700", "held behind a leader is its polls' time in the object");
+  eq(c.objectMs.join(","), "50", "the object's own work is the rest of what it spent on calls sent while waiting");
+  eq(c.outsideMs.join(","), "150", "and outside the object is whatever of the wait the object did not account for");
+  const w = r.lineSplit.warm;
+  eq(`${w.joined} ${w.heldMs.join(",")} ${w.objectMs.join(",")} ${w.outsideMs.join(",")}`, "1 0 15 85", "a confirm that never polled held for zero, measured, since its calls were found");
+  eq(r.lineSplit.orphanCalls, 0, "every object call belonged to a confirm in the archive");
+}
+
+{
+  // A traced shared confirm whose calls never reached the archive is MISSING, never a
+  // zero split (L98); a confirm on its isolate's own line calls no object and is not
+  // traced on it at all; an object call whose confirm is not in the archive is counted;
+  // and an object that accounts for more than the whole wait is an impossible reading.
+  const archive = [
+    tailLine({ eventTimestamp: 0, logTimestamp: 2_000, totalMs: 900, isolateAgeMs: 1_000, answer: { line: "shared", line_trace: "lost", wait_line_ms: 400 } }),
+    tailLine({ eventTimestamp: 3_000, logTimestamp: 5_000, totalMs: 900, isolateAgeMs: 1_000, answer: { line: "isolate", line_trace: "own", wait_line_ms: 4 } }),
+    tailLine({ eventTimestamp: 6_000, logTimestamp: 8_000, totalMs: 900, isolateAgeMs: 1_000, answer: { line: "shared", line_trace: "over", wait_line_ms: 50 } }),
+    objectLine({ eventTimestamp: 6_010, wallTime: 80, op: "enter", trace: "over", stage: "wait" }),
+    objectLine({ eventTimestamp: 9_000, wallTime: 10, op: "enter", trace: "nobody", stage: "wait" }),
+  ].join("\n");
+  const r = readConfirmStartup(archive)!;
+  const c = r.lineSplit.cold;
+  eq(c.traced, 2, "only the shared line's confirms are traced on it");
+  eq(c.missing, 1, "the confirm whose calls never arrived is missing");
+  eq(c.impossible, 1, "the one the object over accounts for is impossible");
+  eq(c.joined, 0, "neither is a reading");
+  eq(c.heldMs.length + c.objectMs.length + c.outsideMs.length, 0, "and neither contributes a number");
+  eq(r.lineSplit.orphanCalls, 1, "the call whose confirm is not in the archive is counted");
+}
+
+{
+  // A call the archive carried with no wall time cannot be apportioned: counted as
+  // unreadable, apart from a missing one, and contributing no number.
+  const noWall = JSON.parse(objectLine({ eventTimestamp: 10, wallTime: 0, op: "enter", trace: "nw", stage: "wait" })) as Record<string, unknown>;
+  delete noWall.wallTime;
+  const archive = [
+    tailLine({ eventTimestamp: 0, logTimestamp: 2_000, totalMs: 900, isolateAgeMs: 1_000, answer: { line: "shared", line_trace: "nw", wait_line_ms: 400 } }),
+    JSON.stringify(noWall, null, 4),
+  ].join("\n");
+  const c = readConfirmStartup(archive)!.lineSplit.cold;
+  eq(`${c.traced} ${c.unreadable} ${c.missing} ${c.joined}`, "1 1 0 0", "a call with no wall time makes the confirm unreadable, never missing and never a reading");
+}
+
+// --- #3354: the wait before the profile, by script version and by leg -----------------
+// A run's cold confirms come from different places: a fresh deploy's first requests, the
+// burst's crowd, the fault leg's redeploy. Split both ways so a reader can see which.
+{
+  const archive = [
+    tailLine({ eventTimestamp: 0, logTimestamp: 2_000, totalMs: 900, isolateAgeMs: 1_000, scriptVersion: "v1", answer: { loadtest_leg: "burst" } }),
+    tailLine({ eventTimestamp: 3_000, logTimestamp: 5_500, totalMs: 900, isolateAgeMs: 1_000, scriptVersion: "v2", answer: { loadtest_leg: "fault" } }),
+    tailLine({ eventTimestamp: 10_000, logTimestamp: 11_000, totalMs: 800, isolateAgeMs: 60_000, scriptVersion: "v1", answer: { loadtest_leg: "steady" } }),
+    tailLine({ eventTimestamp: 20_000, logTimestamp: 21_000, totalMs: 800, isolateAgeMs: 60_000 }),
+  ].join("\n");
+  const r = readConfirmStartup(archive)!;
+  eq(r.byVersion.v1?.cold.join(","), "1100", "a cold confirm on v1 is filed under v1");
+  eq(r.byVersion.v2?.cold.join(","), "1600", "and one on v2 under v2");
+  eq(r.byVersion.v1?.warm.join(","), "200", "a warm one beside it");
+  eq(r.byVersion.unknown?.warm.join(","), "200", "a confirm whose event named no version is filed as unknown, never dropped");
+  eq(r.byLeg.burst?.cold.join(","), "1100", "the burst's cold confirm under burst");
+  eq(r.byLeg.fault?.cold.join(","), "1600", "the fault leg's under fault");
+  eq(r.byLeg.steady?.warm.join(","), "200", "the steady pass's under steady");
+  eq(r.byLeg.none?.warm.join(","), "200", "and one that named no leg under none");
+}
 
 finish();
