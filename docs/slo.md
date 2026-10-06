@@ -130,18 +130,20 @@ The first sample is always discarded: the first request after an idle period pay
 isolate startup, so counting it measures how quiet the morning was. The median of the
 rest is judged, so one unlucky sample is not a regression.
 
-**The booking confirm has no latency budget yet, because it has never been measured in
-production.** Every confirm times its own stages (`src/lib/booking/confirm-profile.ts`)
-and logs them only for a slow or timed out one (#3300), so they explain an outlier rather
-than measure the distribution; the only distribution reading is the load run's (wall p95
-4,025ms on 2026-09-14), against a stubbed Google, which says nothing about a real
-verify-on-book call. A budget set from that would be a guess.
+**The booking confirm has no latency budget yet, because nobody has read the
+production distribution and set one from it.** The data is there: every confirm, a
+time change included (#3401), writes a `confirm answered` line with its `response_ms`
+(#3221), so a production p95 is readable from Workers Logs. Its stages
+(`src/lib/booking/confirm-profile.ts`) are logged only for a slow or timed out confirm
+(#3300), so they explain an outlier rather than measure the distribution. The load run's
+reading (wall p95 4,025ms on 2026-09-14) was against a stubbed Google and says nothing
+about a real verify-on-book call.
 
-How it will be measured, passively, from traffic that already exists: every real
-confirm is a `POST /booking` invocation, and Cloudflare's Workers Observability records
-each invocation's wall time. A week of pilot traffic read as a p95 over those
-invocations (filtered to that path, with the recompute line as the positive control the
-logs section of `AGENTS.md` requires) is the measurement; the budget is then set a little
+How it will be measured, passively, from traffic that already exists: a week of
+`confirm answered` lines read as a p95 of `response_ms` (the time the lead waits, which
+an invocation's wall time is not, since that runs on through work deferred past the
+response), with the recompute line as the positive control the logs section of
+`AGENTS.md` requires, is the measurement; the budget is then set a little
 above that p95, the same "from pilot data" rule as the targets above, and recorded here
 with the reading it came from. It needs an account token with Observability read, which
 the deployment does not hold, so it is a hand read like the CPU table in the platform
