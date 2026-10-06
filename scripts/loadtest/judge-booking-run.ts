@@ -810,6 +810,9 @@ export function coldAfterDeployText(input: {
   if (input.result === null) {
     return `${head}: asked for ${input.expected} samples and the leg's results never arrived, so nothing was measured`;
   }
+  if (input.result.refused !== undefined) {
+    return `${head}: asked for ${input.result.planned}; the leg refused before any deploy (${input.result.refused}), so nothing was measured`;
+  }
   // Counted the way the leg's own exit line counts them, from one helper (L41).
   const c = coldSampleCounts(input.result);
   const asked =

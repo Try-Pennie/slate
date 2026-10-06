@@ -18,7 +18,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { bookingBody, bookingRequestHeaders, externalIdFor, idPrefix, offeredSlots, REQUEST_TIMEOUT_MS } from "./book-plan.ts";
 import { MEASURED_CODE_MIX } from "./code-mix.ts";
-import { coldLegOutcome, makeColdDeploy, readColdSamples, runColdLeg } from "./cold-plan.ts";
+import { coldLegOutcome, coldRefusalResult, makeColdDeploy, readColdSamples, runColdLeg } from "./cold-plan.ts";
 import { PRODUCTION_HOST, PRODUCTION_SUPABASE_REF } from "../../src/lib/loadtest-guard.ts";
 
 function need(name: string): string {
@@ -101,7 +101,10 @@ const leg = await runColdLeg({
 });
 
 if (!leg.ok) {
-  console.error(`FAILED: ${leg.why}, so no version was deployed.`);
+  // The refusal leaves its file too, so the judge names it rather than results that never arrived.
+  mkdirSync(dirname(OUT), { recursive: true });
+  writeFileSync(OUT, JSON.stringify(coldRefusalResult(samples.n, leg.why), null, 2));
+  console.error(`FAILED: ${leg.why}, so no version was deployed; wrote ${OUT}.`);
   process.exit(1);
 }
 mkdirSync(dirname(OUT), { recursive: true });

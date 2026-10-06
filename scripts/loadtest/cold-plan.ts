@@ -136,6 +136,17 @@ export interface ColdLegResult {
   mode: "cold";
   planned: number;
   attempts: ColdAttempt[];
+  /** Why the leg refused before its first deploy, when it did; then there are no attempts. */
+  refused?: string;
+}
+
+/**
+ * The file a leg that refused before deploying leaves (a failed slot read, too few
+ * offered times), so the judge reports the refusal and its reason rather than results
+ * that never arrived (L11).
+ */
+export function coldRefusalResult(planned: number, why: string): ColdLegResult {
+  return { mode: "cold", planned, attempts: [], refused: why };
 }
 
 /**
@@ -161,7 +172,14 @@ export function readColdResult(
     return { kind: "unreadable", why: err instanceof Error ? err.message : String(err) };
   }
   const r = parsed as Partial<ColdLegResult> | null;
-  if (r === null || typeof r !== "object" || r.mode !== "cold" || typeof r.planned !== "number" || !Array.isArray(r.attempts)) {
+  if (
+    r === null ||
+    typeof r !== "object" ||
+    r.mode !== "cold" ||
+    typeof r.planned !== "number" ||
+    !Array.isArray(r.attempts) ||
+    (r.refused !== undefined && typeof r.refused !== "string")
+  ) {
     return { kind: "unreadable", why: "not a cold leg result (no cold mode, planned count and attempts)" };
   }
   // Each attempt carries the two fields every count reads, or the counting throws or
@@ -301,8 +319,11 @@ export function makeColdDeploy(deps: {
       timeout: COLD_DEPLOY_TIMEOUT_MS,
     });
     const timedOut = r.error !== undefined && /ETIMEDOUT/.test(`${r.error.code ?? ""} ${r.error.message}`);
+    // A spawn that failed some other way (no binary, a signal) prints nothing of its own,
+    // so its error is the only cause there is.
+    const spawnError = r.error !== undefined && !timedOut ? `\nthe deploy could not run: ${r.error.message}` : "";
     const output =
-      `${r.stdout ?? ""}\n${r.stderr ?? ""}` + (timedOut ? `\nthe deploy did not finish within ${COLD_DEPLOY_TIMEOUT_MS}ms` : "");
+      `${r.stdout ?? ""}\n${r.stderr ?? ""}` + (timedOut ? `\nthe deploy did not finish within ${COLD_DEPLOY_TIMEOUT_MS}ms` : "") + spawnError;
     return { ok: r.status === 0, output };
   };
 }

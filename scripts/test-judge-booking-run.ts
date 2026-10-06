@@ -2552,6 +2552,11 @@ const legAttempts = (i: JudgeInput, leg: number) =>
     /results file could not be read \(Unexpected end of JSON input\)/.test(corrupt) && !/never arrived/.test(corrupt),
     `a results file that is there and unreadable is said apart from one that never arrived (got: ${corrupt})`,
   );
+  const refusedLeg = coldAfterDeployText({ expected: 30, result: { mode: "cold", planned: 30, attempts: [], refused: "the offered times for code 212 could not be read (answered 429)" }, reading: null });
+  assert(
+    /refused before any deploy/.test(refusedLeg) && refusedLeg.includes("answered 429") && !/never arrived/.test(refusedLeg),
+    `a leg that refused before deploying says so, with its reason (got: ${refusedLeg})`,
+  );
   const unread = coldAfterDeployText({ expected: 5, result, reading: null });
   assert(/not archived|not read/.test(unread) && /3 confirms answered/.test(unread), `a leg whose log was not read says what it sent and that nothing was measured (got: ${unread})`);
 

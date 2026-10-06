@@ -25,6 +25,7 @@ import {
   COLD_SAMPLE_SECONDS,
   COLD_JOB_SETUP_MINUTES,
   readColdResult,
+  coldRefusalResult,
 } from "./loadtest/cold-plan.ts";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -90,6 +91,10 @@ import { assert, eq, finish } from "./lib/harness.ts";
     const r = readColdResult(() => JSON.stringify({ mode: "cold", planned: 1, attempts: bad }));
     assert(r.kind === "unreadable" && /attempt/.test(r.why), `attempts ${JSON.stringify(bad)} are refused by name (got ${JSON.stringify(r)})`);
   }
+  // A leg that refused before deploying still leaves its file, saying why, so the judge
+  // never reads it as results that never arrived.
+  const refusedLeg = readColdResult(() => JSON.stringify(coldRefusalResult(30, "only 12 offered times across the codes are 60 minutes apart, for 30 cold samples")));
+  assert(refusedLeg.kind === "read" && refusedLeg.result.refused?.includes("only 12 offered times") === true && refusedLeg.result.attempts.length === 0, `a refusal file reads, with its reason (got ${JSON.stringify(refusedLeg)})`);
   const ok = readColdResult(() =>
     JSON.stringify({ mode: "cold", planned: 2, attempts: [{ i: 1, deployOk: true, status: 200 }, { i: 2, deployOk: false, status: null }] }),
   );
@@ -324,6 +329,10 @@ function coldWiringProblems(yml: string): string[] {
   assert(!hung.ok && hung.output.includes(`did not finish within ${COLD_DEPLOY_TIMEOUT_MS}ms`), `a deploy that hits its deadline is a failed sample that says so (got ${JSON.stringify(hung)})`);
   const refused = await answer({ status: 1, stderr: "Error: the upload was refused" });
   assert(!refused.ok && refused.output.includes("upload was refused") && !refused.output.includes("did not finish"), "a deploy that fails is a failed sample carrying its own error, not called a timeout");
+  // A spawn that failed in another way prints nothing of its own, so its error is the
+  // only cause there is, and an empty output would hide it.
+  const missing = await answer({ status: null, error: { code: "ENOENT", message: "spawnSync /repo/node_modules/.bin/wrangler ENOENT" } });
+  assert(!missing.ok && missing.output.includes("ENOENT") && !missing.output.includes("did not finish"), `a deploy that could not start says why (got ${JSON.stringify(missing)})`);
 }
 
 (async () => {
