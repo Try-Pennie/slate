@@ -619,6 +619,31 @@ export function burstStartAt(nowMs: number, leadSeconds: number): number {
 }
 
 /**
+ * One driver's view of a bucket's offered times (#3348): the times, or null when they
+ * have never been read, and when the view was last refreshed. An unread view is kept
+ * like any other, so a refused first read is not asked again on every request.
+ */
+export interface SlotView {
+  fetchedAtMs: number;
+  slots: string[] | null;
+}
+
+/** Whether a view is recent enough to use without another read, at the refresh pace. */
+export function slotViewIsFresh(view: SlotView | undefined, nowMs: number, refreshMs: number): boolean {
+  return view !== undefined && nowMs - view.fetchedAtMs < refreshMs;
+}
+
+/**
+ * The view after a read: the times it answered, else the last good times (a refused
+ * or failed read keeps them, #2261), else unread. Always stamped now, so a failure is
+ * paced like a success: four drivers share one 30 a minute ceiling, and a 429 asked
+ * again at once is only another 429.
+ */
+export function slotViewAfterRead(view: SlotView | undefined, answered: string[] | null, nowMs: number): SlotView {
+  return { fetchedAtMs: nowMs, slots: answered ?? view?.slots ?? null };
+}
+
+/**
  * The times a bucket is offering, read from `/api/availability` (#2261).
  *
  * ONE reader, because there were three and every one of them was wrong the same

@@ -19,6 +19,7 @@ import {
   type LatencyJudgement,
 } from "./latency-bar.ts";
 import type { BookingAttempt, DriverResult } from "./book-plan.ts";
+import { AVAILABILITY_UNREAD, NO_SLOTS_OFFERED, TIMED_OUT } from "./outcomes.ts";
 import { HEALTHY_INVOCATION_STATUS, type ScheduledReading } from "./platform-reading.ts";
 import { CEILING_CONCLUSION, type CeilingVerdict } from "./preflight-checks.ts";
 // The judge reads the reader's span list at runtime; the reader never imports the
@@ -189,6 +190,14 @@ export interface JudgeInput {
    */
   faultPass?: {
     attempts: number;
+    /**
+     * How many of `attempts` were never sent because their bucket's times could not be
+     * read (#3348). The fault drivers run the steady loop, so they record these too, and
+     * a pass is judged on the requests it SENT: a pass whose attempts were all unsent
+     * proved nothing however many it counted. Required, so a construction site that
+     * never counted them fails `tsc` rather than reading as none.
+     */
+    availabilityUnread: number;
     fiveXx: number;
     faultPct: number;
     faultTargets: string[];
@@ -1047,6 +1056,12 @@ export interface RunMeasurements {
    * that failed are two different findings (L11).
    */
   timedOut: number;
+  /**
+   * #3348: requests never sent because their bucket's times could not be read at all.
+   * Kept apart from `noReply` (nothing was sent to go unanswered) and from a bucket
+   * offering nothing (the bucket never answered).
+   */
+  availabilityUnread: number;
   writeRefusals: number;
   /** Write refusals grouped by the address Slate said it saw. */
   refusalsByIp: Record<string, number>;
@@ -1184,9 +1199,10 @@ export function measure(input: JudgeInput): RunMeasurements {
     ok: percentiles(attempts.filter((a) => a.status === 200).map((a) => a.wallMs)),
     fiveXx: attempts.filter((a) => a.status >= 500).length,
     noReply: attempts.filter(
-      (a) => a.status === 0 && a.outcome !== "no-slots-offered" && a.outcome !== "timed-out",
+      (a) => a.status === 0 && a.outcome !== NO_SLOTS_OFFERED && a.outcome !== TIMED_OUT && a.outcome !== AVAILABILITY_UNREAD,
     ).length,
-    timedOut: attempts.filter((a) => a.status === 0 && a.outcome === "timed-out").length,
+    availabilityUnread: attempts.filter((a) => a.outcome === AVAILABILITY_UNREAD).length,
+    timedOut: attempts.filter((a) => a.status === 0 && a.outcome === TIMED_OUT).length,
     writeRefusals: attempts.filter((a) => a.status === 429).length,
     refusalsByIp,
     freshnessMaxSec: Math.max(0, ...input.freshnessSamples.map((s) => s.maxAgeSec)),
@@ -1323,6 +1339,37 @@ export function faultPassKeepsFiveXxBar(targets: readonly string[]): boolean {
   const parsed = parseFaultTargets(targets.join(","));
   if (parsed.unknown.length > 0) return true;
   return everyTargetDegrades(parsed.targets);
+}
+
+/**
+ * The fault pass's counts, from the fault drivers' own attempts (#3348). Here rather
+ * than in run-judge so the count the judge is handed is the one the tests pin: an
+ * unsent attempt is counted by its outcome, a 5xx by its status.
+ */
+export function faultPassCounts(attempts: readonly BookingAttempt[]): { attempts: number; availabilityUnread: number; fiveXx: number } {
+  return {
+    attempts: attempts.length,
+    availabilityUnread: attempts.filter((a) => a.outcome === AVAILABILITY_UNREAD).length,
+    fiveXx: attempts.filter((a) => a.status >= 500 && a.status <= 599).length,
+  };
+}
+
+/**
+ * The report's fault pass line (#3104), said on every faulted run, including the ones
+ * whose 5xx are reported rather than barred, so a database fault pass's errors are still
+ * in front of the reader with the reason they did not fail the run beside them. It counts
+ * requests SENT, and names the unsent ones when there are any (#3348).
+ */
+export function faultPassReportLine(fp: Pick<NonNullable<JudgeInput["faultPass"]>, "attempts" | "availabilityUnread" | "fiveXx" | "faultPct" | "faultTargets">): string {
+  return (
+    `- fault pass: ${fp.faultTargets.join(", ") || "unrecorded systems"} failing ` +
+    `${fp.faultPct} percent of calls; ${fp.attempts - fp.availabilityUnread} requests sent, ` +
+    (fp.availabilityUnread > 0 ? `${fp.availabilityUnread} never sent because their bucket's times could not be read, ` : "") +
+    `${fp.fiveXx} 5xx ` +
+    (faultPassKeepsFiveXxBar(fp.faultTargets)
+      ? "(held to no 5xx)"
+      : "(reported, not barred: a failure of one of these systems is a 5xx by design)")
+  );
 }
 
 /** Why the speed verdict is void, read off the latency judgement, or null (#3258). */
@@ -1540,6 +1587,13 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
   // to two different places (L11).
   if (m.fiveXx > 0) fail("server errors", `${m.fiveXx} responses were 5xx`);
   if (m.noReply > 0) fail("unanswered requests", `${m.noReply} requests got no reply at all`);
+  if (m.availabilityUnread > 0) {
+    fail(
+      "requests never sent",
+      `${m.availabilityUnread} request${m.availabilityUnread === 1 ? " was" : "s were"} never sent because the bucket's times ` +
+        "could not be read (its first availability read was refused, timed out or failed), so the run did not drive the load it planned",
+    );
+  }
   if (m.timedOut > 0) {
     fail(
       "timed out requests",
@@ -1712,19 +1766,44 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
 
   // --- the fault pass ---------------------------------------------------------
   if (input.faultPass) {
-    if (input.faultPass.attempts === 0) {
+    const fp = input.faultPass;
+    // Judged on the requests it SENT (#3348): an attempt whose bucket's times could not
+    // be read never reached the booking path, so it says nothing about how that path
+    // held up under the fault.
+    const sent = fp.attempts - fp.availabilityUnread;
+    const keepsBar = faultPassKeepsFiveXxBar(fp.faultTargets);
+    // Written as "not more than zero" so a count that never arrived (NaN) lands on the
+    // refusal, never on the pass (L50).
+    if (!(sent > 0)) {
       fail(
         "the fault pass",
-        `it was configured at ${input.faultPass.faultPct} percent and made no requests, so it ` +
-          "proved nothing",
+        `it was configured at ${fp.faultPct} percent and sent no requests` +
+          (fp.availabilityUnread > 0
+            ? ` (all ${fp.availabilityUnread} were never sent because their bucket's times could not be read)`
+            : "") +
+          ", so it proved nothing",
       );
-    } else if (input.faultPass.fiveXx > 0 && faultPassKeepsFiveXxBar(input.faultPass.faultTargets)) {
-      fail(
-        "the fault pass",
-        `${input.faultPass.fiveXx} of ${input.faultPass.attempts} requests were 5xx with ` +
-          `${input.faultPass.faultTargets.join(", ")} failing ${input.faultPass.faultPct} percent of ` +
-          "calls; the path must degrade, not error",
-      );
+    } else {
+      if (fp.fiveXx > 0 && keepsBar) {
+        fail(
+          "the fault pass",
+          `${fp.fiveXx} of ${sent} requests were 5xx with ` +
+            `${fp.faultTargets.join(", ")} failing ${fp.faultPct} percent of ` +
+            "calls; the path must degrade, not error",
+        );
+      }
+      // With only systems the path degrades around failing, the availability read must
+      // still answer, exactly as it must in steady load. With one that fails loud by
+      // design in the mix, the read meets that same designed failure, so the count is
+      // reported beside the 5xx count instead (run-judge's fault pass line).
+      if (fp.availabilityUnread > 0 && keepsBar) {
+        fail(
+          "fault pass requests never sent",
+          `${fp.availabilityUnread} request${fp.availabilityUnread === 1 ? " was" : "s were"} never sent because ` +
+            `the bucket's times could not be read with ${fp.faultTargets.join(", ")} failing ${fp.faultPct} ` +
+            "percent of calls; the availability read must degrade, not fail",
+        );
+      }
     }
     // Cut short at the fault driver's own deadline (#3222): fewer requests than the
     // bar was sized for, so a clean count would read as a smaller clean pass.
