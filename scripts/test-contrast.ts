@@ -125,8 +125,10 @@ atLeast(blue, white, 4.5, "blue text-on-white"); // 4.91
 // One paint in both themes, deliberately, like the hazard stripe: the sentence
 // is graphite on mint, which does not depend on the page behind it. What DOES
 // depend on the page is whether the band reads as a band at all, and that is
-// carried by a different edge in each theme: the graphite edge against a light
-// card, and the mint fill itself against a dark one. Both halves measured, and
+// carried by a different part in each theme: the band's graphite chip (the
+// word on the band) against a light card, and the mint fill itself against a
+// dark one. The band had a graphite left edge as well until 2026-10-06, removed
+// because the card's rounded corner clipped it into a stray line. Both halves measured, and
 // the pair asserted in both themes, so a token edit cannot leave the tester's
 // sentence unreadable on the embed's dark theme.
 for (const [theme, read] of [
@@ -134,11 +136,11 @@ for (const [theme, read] of [
   ["dark", rDark],
 ] as [string, (n: string) => RGB][]) {
   atLeast(read("--test-mode-fg"), read("--test-mode-bg"), 4.5, `test mode sentence on its band (${theme})`);
-  const edge = ratio(read("--test-mode-fg"), read("--surface"));
+  const chip = ratio(read("--test-mode-fg"), read("--surface"));
   const fill = ratio(read("--test-mode-bg"), read("--surface"));
   assert(
-    Math.max(edge, fill) + 1e-9 >= 3,
-    `the test mode band is told from the card behind it (${theme}): edge ${edge.toFixed(2)}:1, fill ${fill.toFixed(2)}:1, one of them >= 3`,
+    Math.max(chip, fill) + 1e-9 >= 3,
+    `the test mode band is told from the card behind it (${theme}): chip ${chip.toFixed(2)}:1, fill ${fill.toFixed(2)}:1, one of them >= 3`,
   );
 }
 
