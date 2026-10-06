@@ -9,6 +9,7 @@ import {
   buildSmokeSeed,
   PUBLIC_TEST_DAILY_CAP,
   PUBLIC_TEST_EVENT_TYPE_NAME,
+  DEMO_EVENT_TYPE_NAME,
 } from "./smoke-seed.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 import { SEED_START_MINUTE, SEED_END_MINUTE } from "../src/lib/schedule-core.ts";
@@ -117,8 +118,8 @@ assert(
   const publicBucket = seed.buckets.find((b) => b.code === PUBLIC);
   assert(!!publicBucket, "the public test bucket is built");
   assert(publicBucket?.is_test === true, "and it is flagged is_test, which is what keeps it off Regal");
-  eq(seed.eventTypes.length, 1, "one event type row is built, for the public test bucket");
-  const et = seed.eventTypes[0]!;
+  eq(seed.eventTypes.length, 2, "two event type rows are built: the partner test one and the demo one");
+  const et = seed.eventTypes.find((e) => e.name === PUBLIC_TEST_EVENT_TYPE_NAME)!;
   eq(publicBucket?.event_type_id, et.id, "the public test bucket points at its own event type");
   assert(et.id !== "evt-smoke", "which is not the org's event type");
   eq(et.name, PUBLIC_TEST_EVENT_TYPE_NAME, "its name says it is a test, so the invite title does too");
@@ -142,6 +143,30 @@ assert(
   seed.buckets.every((b) => b.is_test === true),
   "buckets are flagged is_test (hidden from public availability/book, unbookable by real leads)",
 );
+
+// --- The demo bucket's OWN event type (#3424) ---
+// The booker draws the event type's name as its heading, so the demo, shown to
+// somebody outside Pennie, must not read "Partner test call". Everything else is
+// the same as the partner one, and the daily cap is the same number: the cap is
+// counted per agent across every event type, so a second row could not give the
+// demo a separate allowance anyway; the 30 minute auto cancel is what bounds it.
+{
+  const demoBucket = seed.buckets.find((b) => b.code === DEMO_BUCKET_CODE);
+  const partnerEt = seed.eventTypes.find((e) => e.name === PUBLIC_TEST_EVENT_TYPE_NAME)!;
+  const demoEt = seed.eventTypes.find((e) => e.name === DEMO_EVENT_TYPE_NAME);
+  assert(!!demoEt, "the demo event type is built");
+  eq(demoBucket?.event_type_id, demoEt?.id, "the demo bucket points at the demo event type");
+  assert(demoEt?.id !== partnerEt.id, "which is a different row from the partner one");
+  eq(DEMO_EVENT_TYPE_NAME, "Demo call", "its name reads as a demo on the booker's heading");
+  eq(demoEt?.daily_cap, PUBLIC_TEST_DAILY_CAP, "same cap number as the partner one");
+  eq(demoEt?.duration_min, template.duration_min, "same duration as the org's event type");
+  eq(demoEt?.description, template.description, "same description");
+  eq(seed.buckets.find((b) => b.code === PUBLIC)?.event_type_id, partnerEt.id, "the partner bucket keeps the partner event type");
+  assert(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$/.test(demoEt?.id ?? ""),
+    "the demo event type id is deterministic too, so a re-run upserts in place",
+  );
+}
 
 // --- Membership: the primary agent is in EVERY bucket; the reassign target is
 // a bookable fallback in the FIRST bucket (SMOKE) only (#464). ---

@@ -20,7 +20,7 @@ import {
   type CalEvent,
   type CalendarClient,
 } from "./lib/smoke-event-cleanup.ts";
-import { PUBLIC_TEST_EVENT_TYPE_NAME } from "./smoke-seed.ts";
+import { DEMO_EVENT_TYPE_NAME, PUBLIC_TEST_EVENT_TYPE_NAME } from "./smoke-seed.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 // Fixed reference clock so the test never touches Date.now().
@@ -92,6 +92,19 @@ assert(
     NOW,
   ),
   "a partner test call still to come is never swept: the tester may be about to join it",
+);
+// #3424: a demo call is `<demo event type> with Demo Lead` on the same mailbox, and
+// its attendee is a demo+ alias, so only its title marks it.
+assert(
+  isStaleSmokeEvent(
+    timed({ id: "d", summary: `${DEMO_EVENT_TYPE_NAME} with Demo Lead`, attendees: [{ email: "demo+k3f9q2@trypennie.com" }] }),
+    NOW,
+  ),
+  "a past demo call left on the calendar is a stale orphan",
+);
+assert(
+  !isStaleSmokeEvent(timed({ id: "d2", summary: "Demo calling plan review" }), NOW),
+  "a real meeting that merely starts with the word demo is kept",
 );
 assert(
   !isStaleSmokeEvent(timed({ id: "r", summary: "Partner review with the agency" }), NOW),

@@ -21,6 +21,13 @@ import { SEED_START_MINUTE, SEED_END_MINUTE } from "../src/lib/schedule-core.ts"
 export const PUBLIC_TEST_EVENT_TYPE_NAME = "Partner test call";
 
 /**
+ * The demo bucket's event type (#3424). The booker draws the event type's name as
+ * its heading, and the demo is shown to somebody outside Pennie, so it must not
+ * read "Partner test call". The orphan sweep matches this name too.
+ */
+export const DEMO_EVENT_TYPE_NAME = "Demo call";
+
+/**
  * How many partner test calls the smoke agent takes a day (#2660).
  *
  * The public test bucket shares smoketest@ with the canary, and anyone who knows
@@ -145,6 +152,10 @@ const REASSIGN_TARGET_SCHEDULE_ID = "d0000000-0000-4000-8000-000000000002";
 // The public test bucket's event type (#2660), its own row so it can carry a
 // daily cap the org's does not, keyed like the rest so a re-run upserts in place.
 const PUBLIC_TEST_EVENT_TYPE_ID = "e0000000-0000-4000-8000-000000000001";
+// #3424: the demo bucket's own row, for its name only. The cap is the same number:
+// it is counted per agent across every event type, so a row of its own could not
+// give the demo a separate allowance; the demo's 30 minute auto cancel bounds it.
+const DEMO_EVENT_TYPE_ID = "e0000000-0000-4000-8000-000000000002";
 
 /**
  * Mon-Fri working-hours rules for one schedule, on the SAME seeded day the real
@@ -188,6 +199,12 @@ export function buildSmokeSeed(p: SmokeSeedParams): SmokeSeed {
     ...p.eventTypeTemplate,
   };
 
+  const demoEventType: SmokeSeedEventType = {
+    ...publicEventType,
+    id: DEMO_EVENT_TYPE_ID,
+    name: DEMO_EVENT_TYPE_NAME,
+  };
+
   const buckets: SmokeSeedBucket[] = [
     ...p.bucketCodes.map(
       (code): SmokeSeedBucket => ({
@@ -209,7 +226,7 @@ export function buildSmokeSeed(p: SmokeSeedParams): SmokeSeed {
         // #3424: the demo bucket is named as one, so the admin never reads a
         // visitor's demo booking as a partner's test.
         name: isDemoBucket(code) ? `Demo (${code})` : `Partner Test (${code})`,
-        event_type_id: publicEventType.id,
+        event_type_id: isDemoBucket(code) ? demoEventType.id : publicEventType.id,
         assignment: "round_robin",
         criteria: {},
         is_test: true,
@@ -259,7 +276,10 @@ export function buildSmokeSeed(p: SmokeSeedParams): SmokeSeed {
 
   return {
     user,
-    eventTypes: p.publicBucketCodes.length > 0 ? [publicEventType] : [],
+    eventTypes: [
+      ...(p.publicBucketCodes.some((c) => !isDemoBucket(c)) ? [publicEventType] : []),
+      ...(p.publicBucketCodes.some(isDemoBucket) ? [demoEventType] : []),
+    ],
     schedules,
     rules,
     buckets,
