@@ -23,6 +23,7 @@ import {
   burstLegText,
   steadyLineText,
   waitSpanText,
+  confirmWallText,
   lineSplitText,
   startupOriginText,
   coldAfterDeployText,
@@ -74,16 +75,33 @@ const LANES_T0 = Date.parse("2026-10-03T12:00:00Z");
  * A confirm startup reading built by the REAL reader from REAL shaped tail lines,
  * so no fixture here can describe a state the reader cannot produce (L48).
  *
- * `cold` is the wall time before the confirm began on an isolate that became ready
- * inside that request, and `warm` the same on one that did not. The reader decides
- * which is which from the isolate's age; these just supply ages that make it so.
+ * `cold` is a confirm that was its isolate's first request, and `warm` one that was
+ * not. The reader decides which from the Worker's invocation index on the answer line
+ * (#3418), so a row writes that index (0 cold, 6 warm) and a module stamp that agrees,
+ * as a real first request's does. `stampCold` makes the stamp disagree, `index` sets
+ * the count (null writes none, as an older deployment's line does), and an `answer`
+ * carrying its own `isolate_invocation_index` keeps it.
  */
 function startupReading(
-  rows: { handlerMs: number; beforeMs: number; cold: boolean; afterMs?: number; answer?: Record<string, number | string> }[],
+  rows: {
+    handlerMs: number;
+    beforeMs: number;
+    cold: boolean;
+    stampCold?: boolean;
+    index?: number | null;
+    afterMs?: number;
+    answer?: Record<string, number | string>;
+  }[],
   opts?: Parameters<typeof readConfirmStartup>[1],
 ) {
-  const lines = rows.map((r) =>
-    JSON.stringify({
+  const lines = rows.map((r) => {
+    const index = r.index === undefined ? (r.cold ? 0 : 6) : r.index;
+    const answer =
+      index === null
+        ? r.answer
+        : { isolate_invocation_index: index, ...(r.answer ?? {}) };
+    const stampCold = r.stampCold ?? r.cold;
+    return JSON.stringify({
       outcome: "ok",
       eventTimestamp: 0,
       cpuTime: r.handlerMs,
@@ -98,17 +116,17 @@ function startupReading(
             formatLine("confirm-profile", {
               msg: "where the confirm spent its wall time",
               total_ms: r.handlerMs,
-              isolate_age_ms: r.cold ? Math.max(0, r.beforeMs - 1) : r.beforeMs + 1,
+              isolate_age_ms: stampCold ? Math.max(0, r.beforeMs - 1) : r.beforeMs + 1,
             }),
           ],
         },
         // #3354: the invocation's own answer line, when the fixture carries one.
-        ...(r.answer
-          ? [{ level: "info", timestamp: r.beforeMs + r.handlerMs + 1, message: [formatLine("booking-api", { msg: "confirm answered", response_ms: 2_000, status: 200, ...r.answer })] }]
+        ...(answer
+          ? [{ level: "info", timestamp: r.beforeMs + r.handlerMs + 1, message: [formatLine("booking-api", { msg: "confirm answered", response_ms: 2_000, status: 200, ...answer })] }]
           : []),
       ],
-    }, null, 4),
-  );
+    }, null, 4);
+  });
   return readConfirmStartup(lines.join("\n"), opts);
 }
 
@@ -816,28 +834,44 @@ function slowRun(made = 100): JudgeInput {
   assert(!/server bundle/.test(slowDetail), `and it claims no cause it did not measure (got: ${slowDetail})`);
   assert(/span line/.test(slowDetail), `and it points at the report's span line, which splits the wait (got: ${slowDetail})`);
 
-  // #3354: a confirm the Worker counted as its isolate's FIRST request cannot have
-  // found the confirm module already evaluated, so the module stamp calling it warm
-  // means the cold population the bar judges is missing it (L457).
-  const misread = broken((i) => {
-    i.confirmStartup = startupReading([
-      ...Array.from({ length: 40 }, () => ({ handlerMs: 900, beforeMs: 500, cold: false, answer: { isolate_invocation_index: 9 } })),
-      ...Array.from({ length: 3 }, () => ({ handlerMs: 900, beforeMs: 1_200, cold: true, answer: { isolate_invocation_index: 0 } })),
-      { handlerMs: 900, beforeMs: 1_400, cold: false, answer: { isolate_invocation_index: 0 } },
-    ]);
+  // #3418: the bar judges the confirms the WORKER counted as their isolate's first
+  // request, never the module stamp's. A slow confirm the stamp alone calls cold (the
+  // first confirm on an isolate that had already run the app) is warm, so it cannot fail
+  // the bar; the same confirm counted 0 by the Worker does.
+  const plainWarm = Array.from({ length: 40 }, () => ({ handlerMs: 900, beforeMs: 500, cold: false }));
+  const firstThree = Array.from({ length: 3 }, () => ({ handlerMs: 900, beforeMs: 1_200, cold: true }));
+  const stampOnly = broken((i) => {
+    i.confirmStartup = startupReading([...plainWarm, ...firstThree, { handlerMs: 900, beforeMs: 4_000, cold: false, stampCold: true, index: 1 }]);
   });
-  const misreadDetail = misread.findings.find((f) => f.bar === "confirm startup")?.detail ?? "";
   assert(
-    /1 confirm was its isolate's first request/.test(misreadDetail),
-    `a first request read as warm is a finding about the cold count itself (got: ${misreadDetail})`,
+    !bars(stampOnly).includes("confirm startup"),
+    "a slow confirm only the module stamp calls cold is not judged as a cold isolate",
   );
-  const agreed = broken((i) => {
-    i.confirmStartup = startupReading([
-      ...Array.from({ length: 40 }, () => ({ handlerMs: 900, beforeMs: 500, cold: false, answer: { isolate_invocation_index: 9 } })),
-      ...Array.from({ length: 3 }, () => ({ handlerMs: 900, beforeMs: 1_200, cold: true, answer: { isolate_invocation_index: 0 } })),
-    ]);
+  const counted = broken((i) => {
+    i.confirmStartup = startupReading([...plainWarm, ...firstThree, { handlerMs: 900, beforeMs: 4_000, cold: true, index: 0 }]);
   });
-  assert(!bars(agreed).includes("confirm startup"), "and when the two counts agree there is no such finding");
+  assert(bars(counted).includes("confirm startup"), "control: the same confirm counted as its isolate's first request fails the bar");
+  // A first request the stamp reads warm is still the request that started its isolate,
+  // so it is IN the population and its wait is judged: no separate finding about it.
+  const stampWarm = broken((i) => {
+    i.confirmStartup = startupReading([...plainWarm, ...firstThree, { handlerMs: 900, beforeMs: 4_000, cold: true, stampCold: false }]);
+  });
+  const stampWarmDetail = stampWarm.findings.find((f) => f.bar === "confirm startup")?.detail ?? "";
+  assert(/p95 4000ms/.test(stampWarmDetail), `a first request the stamp reads warm is judged with the cold ones (got: ${stampWarmDetail})`);
+  eq(stampWarm.findings.filter((f) => f.bar === "confirm startup").length, 1, "and is one finding, about its wait");
+
+  // #3418: a confirm with no invocation index is on neither side, so the cold population
+  // may be missing a first request among them; a pass then could be a smaller population
+  // rather than a faster one (L457), and it is said by name.
+  const someUnknown = broken((i) => {
+    i.confirmStartup = startupReading([...plainWarm, ...firstThree, { handlerMs: 900, beforeMs: 600, cold: false, index: null }]);
+  });
+  const unknownDetail = someUnknown.findings.find((f) => f.bar === "confirm startup")?.detail ?? "";
+  assert(
+    /1 of 44 confirms carried no invocation index/.test(unknownDetail),
+    `a confirm with no invocation index is named as a gap in the cold population (got: ${unknownDetail})`,
+  );
+  assert(!bars(broken(() => {})).includes("confirm startup"), "control: with every index read there is no such finding");
 
   // The other direction, and the one that matters: a confirm that is itself slow
   // must NOT be reported as a startup problem. Same total wall time, other half.
@@ -905,12 +939,107 @@ function slowRun(made = 100): JudgeInput {
     "and so does a reading in which nothing was ever the first on its isolate, since that is " +
       "the shape of a reading that broke rather than of a lucky run",
   );
-  const three = new Set(
-    [empty, noCold, broken((i) => { i.confirmStartup = null; })].map(
-      (r) => r.findings.find((f) => f.bar === "confirm startup")!.detail,
+  // #3418: no first request, while the stamp shows confirms that loaded the confirm's code
+  // on an isolate already running. Still nothing measured (L98), but isolates DID start,
+  // so the sentence must not call the reading broken; it names what was seen instead.
+  const noFirstButStamp = broken((i) => {
+    i.confirmStartup = startupReading([
+      ...Array.from({ length: 40 }, () => ({ handlerMs: 900, beforeMs: 500, cold: false })),
+      ...Array.from({ length: 2 }, () => ({ handlerMs: 900, beforeMs: 900, cold: false, stampCold: true, index: 1 })),
+    ]);
+  });
+  const noFirstDetail = noFirstButStamp.findings.find((f) => f.bar === "confirm startup")?.detail ?? "";
+  assert(/2 were the first confirm on an isolate that had already run the app/.test(noFirstDetail), `a run whose isolates started on other requests says so (got: ${noFirstDetail})`);
+  assert(!/broke/.test(noFirstDetail), `and does not call that reading broken (got: ${noFirstDetail})`);
+  // #3418: an archive whose confirms carry no invocation index at all cannot say which
+  // were first, which is its own state: an older deployment, not a run with no cold start.
+  const noIndex = broken((i) => {
+    i.confirmStartup = startupReading(
+      Array.from({ length: 40 }, (_, n) => ({ handlerMs: 900, beforeMs: 500, cold: n < 3, index: null })),
+    );
+  });
+  const noIndexDetail = noIndex.findings.find((f) => f.bar === "confirm startup")?.detail ?? "";
+  assert(/none of the 40 confirms read carried the Worker's invocation index/.test(noIndexDetail), `a reading with no index anywhere says so (got: ${noIndexDetail})`);
+  eq(noIndex.findings.filter((f) => f.bar === "confirm startup").length, 1, "as one finding, not also as some confirms lacking it");
+  // A state with no finding at all collapses to one shared placeholder, so it fails the
+  // count below rather than throwing and hiding every block after this one.
+  const distinct = new Set(
+    [empty, noCold, noFirstButStamp, noIndex, broken((i) => { i.confirmStartup = null; })].map(
+      (r) => r.findings.find((f) => f.bar === "confirm startup")?.detail ?? "(no finding)",
     ),
   );
-  eq(three.size, 3, "and no two of the three share a sentence");
+  eq(distinct.size, 5, "and no two of the five share a sentence");
+}
+
+// --- #3418: run 37520312761's startup bar, under each definition ---------------------
+{
+  // The pre-profile waits of the 8 confirms that run's report called "the first on their
+  // isolate" (the module stamp), read from its archived tail (artifact 11443066359), with
+  // the Worker's own count for each, beside ordinary warm confirms at its warm median.
+  // `scripts/test-confirm-startup.ts` holds the same 8 at full detail.
+  const real = [
+    { beforeMs: 2_483, index: 1 },
+    { beforeMs: 1_107, index: 1 },
+    { beforeMs: 859, index: 2 },
+    { beforeMs: 1_121, index: 0 },
+    { beforeMs: 1_482, index: 0 },
+    { beforeMs: 1_502, index: 0 },
+    { beforeMs: 2_801, index: 0 },
+    { beforeMs: 1_078, index: 1 },
+  ];
+  // Every one of the 8 has a module younger than its wait, which is what made the stamp call it cold.
+  const rows = [
+    ...real.map((c) => ({ handlerMs: 3_500, beforeMs: c.beforeMs, cold: c.index === 0, stampCold: true, index: c.index })),
+    ...Array.from({ length: 40 }, () => ({ handlerMs: 3_700, beforeMs: 1_664, cold: false })),
+  ];
+  const cs = startupReading(rows)!;
+  const old = percentiles(real.map((c) => c.beforeMs))!;
+  const corrected = percentiles(real.filter((c) => c.index === 0).map((c) => c.beforeMs))!;
+  eq(`${old.p95} ${corrected.p95}`, "2801 2801", "the old cold p95 over 8 and the corrected one over 4 are both the slowest first request");
+  eq(cs.cold, 4, "the reading's cold population is the Worker's 4");
+  eq(percentiles(cs.coldPreProfileMs)!.p95, corrected.p95, "and the bar judges the corrected figure");
+  const verdict = broken((i) => {
+    i.confirmStartup = cs;
+  });
+  const detail = verdict.findings.find((f) => f.bar === "confirm startup")?.detail ?? "";
+  assert(/p95 2801ms/.test(detail) && /over the 2500ms/.test(detail), `the bar still fails at 2801ms against 2500ms (got: ${detail})`);
+  assert(/4 of 48 confirms here were their isolate's first request/.test(detail), `and names the 4, not the stamp's 8 (got: ${detail})`);
+  assert(!/\b8 of 48\b/.test(detail), `the stamp's count is not printed as the bar's population (got: ${detail})`);
+
+  // The report's wall time line states ONE count of first requests, and names the 4 the
+  // stamp alone called cold as what they were rather than as a second count (#3418).
+  const wall = confirmWallText(verdict.measurements!, cs);
+  assert(/over 48 confirms \(4 of them their isolate's first request/.test(wall), `the wall time line says 4 (got: ${wall})`);
+  assert(/4 more loaded the confirm's code on an isolate that had already run the app and are counted warm/.test(wall), `and names the 4 the stamp alone called cold (got: ${wall})`);
+  assert(!/first on their isolate/.test(wall), `with no second phrasing of the same count (got: ${wall})`);
+  assert(wall.includes(`cold p95 ${corrected.p95}ms`), `and the cold p95 it prints is the bar's (got: ${wall})`);
+}
+
+// --- #3418: the wall time line names every way the two counts can differ ---------------
+{
+  const cs = startupReading([
+    ...Array.from({ length: 10 }, () => ({ handlerMs: 900, beforeMs: 500, cold: false })),
+    { handlerMs: 900, beforeMs: 1_400, cold: true, stampCold: false },
+    { handlerMs: 900, beforeMs: 600, cold: false, index: null },
+  ])!;
+  const r = broken((i) => {
+    i.confirmStartup = cs;
+  });
+  const wall = confirmWallText(r.measurements!, cs);
+  assert(/over 12 confirms \(1 of them their isolate's first request/.test(wall), `one count of first requests (got: ${wall})`);
+  assert(/1 carried no invocation index and is on neither side/.test(wall), `a confirm with no index is named (got: ${wall})`);
+  assert(/1 of those first requests found the confirm's code already loaded/.test(wall), `a first request the stamp read warm is named (got: ${wall})`);
+  assert(!/more loaded the confirm's code/.test(wall), `and a difference that did not occur is not mentioned (got: ${wall})`);
+  const agreeing = startupReading([
+    ...Array.from({ length: 10 }, () => ({ handlerMs: 900, beforeMs: 500, cold: false })),
+    { handlerMs: 900, beforeMs: 1_400, cold: true },
+  ])!;
+  const plain = confirmWallText(broken((i) => { i.confirmStartup = agreeing; }).measurements!, agreeing);
+  assert(/over 11 confirms \(1 of them their isolate's first request\): inside/.test(plain), `with nothing to name, the count stands alone (got: ${plain})`);
+  const none = broken((i) => {
+    i.confirmStartup = null;
+  });
+  assert(/carried no confirm profile/.test(confirmWallText(none.measurements!, null)), "and a run with no archive says so");
 }
 
 // --- the CPU finding says which half moved -------------------------------------------
@@ -921,7 +1050,7 @@ function slowRun(made = 100): JudgeInput {
     i.platform = { ...i.platform, cpuMsP99: 2_988 };
   });
   const cpuDetail = cpu.findings.find((f) => f.bar === "Worker CPU on the request path")!.detail;
-  assert(/first on their isolate/.test(cpuDetail), "the CPU finding names how many were cold starts");
+  assert(/their isolate.s first request/.test(cpuDetail), "the CPU finding names how many were cold starts");
   assert(/inside it/.test(cpuDetail), "and the confirm's own share beside it");
   assert(
     /AFTER the response had gone/.test(cpuDetail),
@@ -2509,13 +2638,18 @@ const legAttempts = (i: JudgeInput, leg: number) =>
     })),
     { handlerMs: 900, beforeMs: 1_500, cold: true, answer: { wait_route_ms: 600, wait_auth_ms: 300, wait_line_ms: 500, wait_total_ms: 1_500, isolate_invocation_index: 0 } },
     { handlerMs: 900, beforeMs: 1_100, cold: true },
+    // #3418: no invocation index, so on neither side.
+    { handlerMs: 900, beforeMs: 700, cold: false, index: null },
   ]);
   const text = waitSpanText(reading);
-  assert(/cold n=2, 1 marked/.test(text), `the cold confirms are counted, and how many carried marks (got: ${text})`);
+  assert(/cold n=2, 2 marked/.test(text), `the cold confirms are the Worker's first requests, and how many carried marks (got: ${text})`);
   assert(/route p50 600ms/.test(text), `a cold confirm's route span is reported (got: ${text})`);
   assert(/warm n=20, 20 marked/.test(text), `and the warm ones (got: ${text})`);
   assert(/auth p50 100ms p95 100ms/.test(text), `with each span's median and p95, through the judge's own percentile (got: ${text})`);
-  assert(/1 of 21 confirms with an invocation index were their isolate's first request/.test(text), `and the Worker's own first request count (got: ${text})`);
+  // #3418: the cold n IS the first request count, so the line no longer prints it a
+  // second time in other words; a confirm on neither side is named instead.
+  assert(!/invocation index were their isolate's first request/.test(text), `the first request count is not printed twice (got: ${text})`);
+  assert(/1 with no invocation index on neither side/.test(text), `a confirm with no index is named (got: ${text})`);
 
   // "marked" counts the confirms that carried marks, not the longest span list: a
   // confirm that carried only an invocation index is marked too (#3358 review).
@@ -2529,7 +2663,7 @@ const legAttempts = (i: JudgeInput, leg: number) =>
   assert(/cold n=2, 2 marked/.test(partly), `both cold confirms carried marks, one of them only an index (got: ${partly})`);
   assert(/warm n=1, 1 marked/.test(partly), `and the warm one is counted on its own side (got: ${partly})`);
 
-  const unmarked = waitSpanText(startupReading([{ handlerMs: 900, beforeMs: 500, cold: false }]));
+  const unmarked = waitSpanText(startupReading([{ handlerMs: 900, beforeMs: 500, cold: false, index: null }]));
   assert(/no confirm carried marks/.test(unmarked), `a run with no marks says the wait was not split, never a zero (got: ${unmarked})`);
   assert(/not read/.test(waitSpanText(null)), "and a run with no archive says so");
 }
@@ -2569,13 +2703,18 @@ const legAttempts = (i: JudgeInput, leg: number) =>
   const base = startupReading([{ handlerMs: 900, beforeMs: 1_500, cold: true }])!;
   const text = startupOriginText({
     ...base,
-    byVersion: { "8fb6133b-c85f": { cold: [1_145, 2_782], warm: [200, 300] }, "5239f06d-aaaa": { cold: [1_500], warm: [] } },
-    byLeg: { none: { cold: [900], warm: [] }, burst: { cold: [2_782], warm: [250] }, preflight: { cold: [1_145], warm: [] } },
+    byVersion: { "8fb6133b-c85f": { cold: [1_145, 2_782], warm: [200, 300], unknown: [] }, "5239f06d-aaaa": { cold: [1_500], warm: [], unknown: [] } },
+    byLeg: { none: { cold: [900], warm: [], unknown: [] }, burst: { cold: [2_782], warm: [250], unknown: [] }, preflight: { cold: [1_145], warm: [], unknown: [] } },
   });
   assert(/8fb6133b cold n=2 max 2782ms, warm n=2 p95 300ms/.test(text), `each version's cold confirms and their slowest, beside its warm p95 (got: ${text})`);
   assert(/5239f06d cold n=1 max 1500ms, warm n=0/.test(text), `a version with no warm confirm says so rather than a zero (got: ${text})`);
   assert(text.indexOf("8fb6133b") < text.indexOf("5239f06d"), `the version with more confirms first (got: ${text})`);
   assert(text.indexOf("burst") < text.indexOf("preflight") && text.indexOf("preflight") < text.indexOf("none"), `legs in the run's own order, the unnamed last (got: ${text})`);
+  assert(!/no index/.test(text), `a group with every index read says nothing about it (got: ${text})`);
+  // #3418: a confirm with no invocation index is filed under its version and leg on
+  // neither side, and counted there, so a group's total is never short in silence.
+  const unknown = startupOriginText({ ...base, byVersion: { "8fb6133b-c85f": { cold: [], warm: [200], unknown: [700] } }, byLeg: {} });
+  assert(/8fb6133b cold n=0, warm n=1 p95 200ms, no index n=1/.test(unknown), `a group's confirms with no index are counted (got: ${unknown})`);
   assert(/not read/.test(startupOriginText(null)), "and a run with no archive says so");
 }
 
@@ -2607,8 +2746,8 @@ const legAttempts = (i: JudgeInput, leg: number) =>
   // leg in the same tail window is in the archive and is not one of its samples.
   const withVersions = {
     ...reading,
-    byVersion: { "aaaa1111-x": { cold: [1_800], warm: [] }, "bbbb2222-x": { cold: [2_100], warm: [600] } },
-    byLeg: { cold: { cold: [1_800, 2_100], warm: [600] }, fault: { cold: [3_900], warm: [] } },
+    byVersion: { "aaaa1111-x": { cold: [1_800], warm: [], unknown: [] }, "bbbb2222-x": { cold: [2_100], warm: [600], unknown: [] } },
+    byLeg: { cold: { cold: [1_800, 2_100], warm: [600], unknown: [] }, fault: { cold: [3_900], warm: [], unknown: [] } },
     // The archive as a whole also holds the straggler: four profiles, three of them cold.
     samples: 4,
     cold: 3,
@@ -2627,7 +2766,8 @@ const legAttempts = (i: JudgeInput, leg: number) =>
   // counted as landing on its version, the same rule the leg's exit line uses.
   assert(/2 on the version just deployed/.test(text), `and how many landed on the version their deploy made, counting only answered confirms (got: ${text})`);
   assert(/the log read 3 of them/.test(text), `counting only the cold leg's own confirms in its log, not a straggler from another leg (got: ${text})`);
-  assert(/2 the first on their isolate/.test(text), `and how many read cold (got: ${text})`);
+  assert(/2 of them their isolate's first request/.test(text), `and how many were their isolate's first request, said once (got: ${text})`);
+  assert(!/Worker's first request/.test(text), `with no second count of the same thing beside it (got: ${text})`);
   assert(!text.includes("3900"), `a straggler's wait is not in the cold leg's figures (got: ${text})`);
   const p = percentiles([1_800, 2_100])!;
   assert(text.includes(`before the profile p50 ${p.p50}ms p95 ${p.p95}ms max ${p.max}ms`), `with the cold wait through the judge's own percentile (got: ${text})`);
@@ -2655,14 +2795,20 @@ const legAttempts = (i: JudgeInput, leg: number) =>
     { handlerMs: 900, beforeMs: 3_900, cold: true, answer: { wait_route_ms: 3_333, isolate_invocation_index: 0, loadtest_leg: "fault" } },
   ];
   const whole = startupReading(mixed)!;
-  eq(whole.firstRequests, 2, "control: read whole, the archive holds two first requests");
+  eq(whole.cold, 2, "control: read whole, the archive holds two first requests");
   const own = startupReading(mixed, { leg: "cold" })!;
-  eq(own.firstRequests, 1, "read for the cold leg, only its own confirm is a first request");
+  eq(own.cold, 1, "read for the cold leg, only its own confirm is a first request");
   eq(own.otherLegs, 1, "and the straggler is counted as left out, never dropped in silence");
   assert(!JSON.stringify(own.waitSpans).includes("3333"), `the straggler's spans are not in the reading (got ${JSON.stringify(own.waitSpans)})`);
   const one = { mode: "cold" as const, planned: 1, attempts: [attempt(1, "unknown", 200)] };
   const ownText = coldAfterDeployText({ expected: 1, result: one, reading: own });
-  assert(/\(1 the Worker's first request\)/.test(ownText) && !ownText.includes("3333"), `the line carries the cold leg's own figures (got: ${ownText})`);
+  assert(/1 of them their isolate's first request/.test(ownText) && !ownText.includes("3333"), `the line carries the cold leg's own figures (got: ${ownText})`);
+  // #3418: a cold leg confirm with no invocation index is on neither side and named, so
+  // "the log read N" never counts it while "first request" silently does not.
+  const noIndex = startupReading([{ handlerMs: 900, beforeMs: 1_800, cold: true, index: null, answer: { loadtest_leg: "cold" } }], { leg: "cold" })!;
+  const noIndexText = coldAfterDeployText({ expected: 1, result: one, reading: noIndex });
+  assert(/the log read 1 of them/.test(noIndexText) && /0 of them their isolate's first request/.test(noIndexText), `a confirm with no index is read and not counted first (got: ${noIndexText})`);
+  assert(/1 with no invocation index/.test(noIndexText), `and is named (got: ${noIndexText})`);
   assert(/1 confirm from another leg left out/.test(ownText), `and says how many it left out (got: ${ownText})`);
 
   // A sample refused rather than booked still started on a fresh version, so it stays a

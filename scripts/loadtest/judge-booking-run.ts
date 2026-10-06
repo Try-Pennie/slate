@@ -715,10 +715,64 @@ export function waitSpanText(cs: ConfirmStartupReading | null): string {
     });
     return `${label} n=${n}, ${marked} marked${parts.length > 0 ? `: ${parts.join(", ")}` : ""}`;
   };
+  // #3418: cold n IS the count of first requests, so it is not printed again in other
+  // words; a confirm on neither side is named, since its spans are on neither list.
   return (
     `${head}: ${side("cold", cs.cold, cs.waitSpans.cold)}; ` +
-    `${side("warm", cs.samples - cs.cold, cs.waitSpans.warm)}; ` +
-    `${cs.firstRequests} of ${cs.invocationIndexKnown} confirms with an invocation index were their isolate's first request`
+    `${side("warm", cs.warm, cs.waitSpans.warm)}` +
+    (cs.indexUnknown > 0 ? `; ${cs.indexUnknown} with no invocation index on neither side` : "")
+  );
+}
+
+/**
+ * #3418: the ways the module stamp and the Worker's count of first requests differ, as
+ * one clause the report's count of first requests carries, so the two are never printed
+ * as two numbers for one thing. Empty when there is nothing to name.
+ */
+function firstRequestDifferences(cs: ConfirmStartupReading): string[] {
+  const parts: string[] = [];
+  if (cs.stampColdNotFirst > 0) {
+    parts.push(`${cs.stampColdNotFirst} more loaded the confirm's code on an isolate that had already run the app and are counted warm`);
+  }
+  if (cs.stampWarmFirst > 0) {
+    parts.push(`${cs.stampWarmFirst} of those first requests found the confirm's code already loaded`);
+  }
+  if (cs.indexUnknown > 0) {
+    parts.push(`${cs.indexUnknown} carried no invocation index and ${cs.indexUnknown === 1 ? "is" : "are"} on neither side`);
+  }
+  return parts;
+}
+
+/**
+ * The two halves of a confirm's wall time, as the report's one line (#2340), with ONE
+ * count of the confirms that were their isolate's first request (#3418): the Worker's
+ * own count, which is the population the startup bar judges. Run 37520312761 printed 8
+ * here (the module stamp) and 4 on the span line (the Worker); where the two differ the
+ * difference is named on this line rather than printed as a second count.
+ */
+export function confirmWallText(m: RunMeasurements, cs: ConfirmStartupReading | null): string {
+  if (m.confirmSamples === null || cs === null) {
+    return (
+      "- confirm wall time: the archived log carried no confirm profile, so the confirm's own " +
+      "time and the isolate's startup were not told apart"
+    );
+  }
+  const differences = firstRequestDifferences(cs);
+  return (
+    `- confirm wall time over ${m.confirmSamples} confirms (${m.confirmCold} of them their isolate's ` +
+    `first request${differences.length > 0 ? `; ${differences.join("; ")}` : ""}): ` +
+    `inside the confirm p50 ${m.confirmHandler?.p50 ?? "n/a"}ms, ` +
+    `p95 ${m.confirmHandler?.p95 ?? "n/a"}ms; before it started, cold p95 ` +
+    `${m.confirmColdStartup?.p95 ?? "n/a"}ms (max ${m.confirmColdStartup?.max ?? "n/a"}ms), ` +
+    `warm p95 ${m.confirmWarmStartup?.p95 ?? "n/a"}ms; after the response had gone, ` +
+    `p95 ${m.confirmAfterResponse?.p95 ?? "n/a"}ms ` +
+    `(max ${m.confirmAfterResponse?.max ?? "n/a"}ms), which no lead waits for` +
+    // What the archive itself lost, so a thin sample is never read as a quiet run. The
+    // stream is written under a timeout, so its last line is routinely half written.
+    (cs.unreadable + cs.unparsable > 0
+      ? ` (${cs.unreadable} profiles unreadable, ${cs.unparsable} lines not readable JSON)`
+      : "") +
+    (cs.impossible > 0 ? `; ${cs.impossible} readings could not be right and were floored at zero` : "")
   );
 }
 
@@ -775,11 +829,15 @@ export function startupOriginText(cs: ConfirmStartupReading | null): string {
     const warm = percentiles(w.warm);
     return (
       `${name} cold n=${w.cold.length}${w.cold.length > 0 ? ` max ${Math.max(...w.cold)}ms` : ""}, ` +
-      `warm n=${w.warm.length}${warm === null ? "" : ` p95 ${warm.p95}ms`}`
+      `warm n=${w.warm.length}${warm === null ? "" : ` p95 ${warm.p95}ms`}` +
+      // #3418: confirms with no invocation index are on neither side, and counted here
+      // so a group's total is never short in silence.
+      (w.unknown.length > 0 ? `, no index n=${w.unknown.length}` : "")
     );
   };
+  const total = (w: SideWaits) => w.cold.length + w.warm.length + w.unknown.length;
   const versions = Object.entries(cs.byVersion)
-    .sort(([, a], [, b]) => b.cold.length + b.warm.length - (a.cold.length + a.warm.length))
+    .sort(([, a], [, b]) => total(b) - total(a))
     .map(([v, w]) => group(v.slice(0, 8), w));
   const order = [...LOADTEST_LEGS, "unreadable", "none"] as string[];
   const legs = Object.entries(cs.byLeg)
@@ -837,7 +895,7 @@ export function coldAfterDeployText(input: {
   // here cannot pass another leg's waits off as this leg's.
   const versions = new Set(Object.keys(r.byVersion));
   const onOwn = input.result.attempts.filter((a) => isAnsweredSample(a) && a.version !== null && versions.has(a.version)).length;
-  const own = r.byLeg.cold ?? { cold: [], warm: [] };
+  const own = r.byLeg.cold ?? { cold: [], warm: [], unknown: [] };
   const otherLegs = r.otherLegs ?? 0;
   const leftOut = otherLegs > 0 ? ` (${otherLegs} confirm${otherLegs === 1 ? "" : "s"} from another leg left out)` : "";
   const p = percentiles(own.cold);
@@ -845,9 +903,13 @@ export function coldAfterDeployText(input: {
     const q = percentiles(r.waitSpans.cold[f] ?? []);
     return q === null ? [] : [`${WAIT_SPAN_LABELS[f]} p50 ${q.p50}ms`];
   });
+  // #3418: one count of first requests, the Worker's, which is how `own.cold` is filed;
+  // a confirm with no invocation index is read, on neither side, and named.
+  const noIndex = own.unknown.length;
   return (
-    `${head}: ${asked}; the log read ${own.cold.length + own.warm.length} of them${leftOut}, ${onOwn} on the version just deployed, ` +
-    `${own.cold.length} the first on their isolate (${r.firstRequests} the Worker's first request)` +
+    `${head}: ${asked}; the log read ${own.cold.length + own.warm.length + noIndex} of them${leftOut}, ${onOwn} on the version just deployed, ` +
+    `${own.cold.length} of them their isolate's first request` +
+    (noIndex > 0 ? ` (${noIndex} with no invocation index, on neither side)` : "") +
     (p === null ? "; no cold confirm, so nothing to report on the wait" : `; before the profile p50 ${p.p50}ms p95 ${p.p95}ms max ${p.max}ms`) +
     (own.cold.length < COLD_SAMPLES_TARGET ? `, short of the ${COLD_SAMPLES_TARGET} a startup change is judged against` : "") +
     (spans.length > 0 ? `; by span ${spans.join(", ")}` : "")
@@ -1100,11 +1162,12 @@ export interface RunMeasurements {
    *
    * `confirmHandler` is the confirm's OWN wall time, from the profile it logs.
    * The startup pair is everything before that profile started, split by whether
-   * the isolate became ready inside that very request. The cold one is what a lead
-   * unlucky enough to be first on an isolate waits through before the booking
-   * begins; the warm one is the framework's per request overhead.
+   * the Worker counted the request as its isolate's first (#3418). The cold one is
+   * what a lead unlucky enough to be first on an isolate waits through before the
+   * booking begins; the warm one is the framework's per request overhead.
    */
   confirmSamples: number | null;
+  /** The confirms that were their isolate's first request, by the Worker's own count. */
   confirmCold: number | null;
   confirmHandler: ReturnType<typeof percentiles>;
   confirmColdStartup: ReturnType<typeof percentiles>;
@@ -1726,15 +1789,33 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
         "time and the isolate's startup could not be told apart. The archive is written by a " +
         "`wrangler tail` under a timeout, so its last line is routinely half written",
     );
-  } else if (cs.cold === 0) {
-    // Nothing to judge, which is never a pass (L98). Measured on 2026-09-14, 32 of
-    // 757 confirms were the first on their isolate, so zero over a full run is the
-    // shape of a broken reading rather than of a run that got lucky.
+  } else if (cs.cold + cs.warm === 0) {
+    // #3418: the population is the Worker's own count of first requests, so a reading
+    // in which no confirm carried that count cannot say which were cold. Its own
+    // sentence: an older deployment or a lost answer line, not a run with no cold start.
     fail(
       "confirm startup",
-      `none of the ${cs.samples} confirms read was the first on its isolate, so what a lead ` +
-        "landing on a cold one waits for was not measured. A ten minute run spins up dozens of " +
-        "isolates, so zero is the shape of a reading that broke rather than of a lucky run",
+      `none of the ${cs.samples} confirms read carried the Worker's invocation index, so which of ` +
+        "them were their isolate's first request is unknown and what a lead landing on a cold " +
+        "isolate waits for was not measured. The index is written on the direct booking API's " +
+        "`confirm answered` line under SLATE_LOADTEST by a deployment that has #3354",
+    );
+  } else if (cs.cold === 0) {
+    // Nothing to judge, which is never a pass (L98). Counted by the Worker, run
+    // 37520312761 had 4 of 522 confirms that were their isolate's first request (#3418),
+    // so zero is possible on a run whose isolates each started on another request first.
+    // When the stamp shows that happened, the sentence says so rather than calling the
+    // reading broken; otherwise zero is still the shape of a reading that broke.
+    fail(
+      "confirm startup",
+      `none of the ${cs.warm} confirms with an invocation index was its isolate's first request, so ` +
+        "what a lead landing on a cold isolate waits for was not measured. " +
+        (cs.stampColdNotFirst > 0
+          ? `${cs.stampColdNotFirst} were the first confirm on an isolate that had already run the app, ` +
+            "so isolates did start this run, each on another request first; the cold after deploy " +
+            "leg measures this wait on purpose"
+          : "A ten minute run spins up dozens of isolates, so zero is the shape of a reading that " +
+            "broke rather than of a lucky run"),
     );
   } else if (m.confirmColdStartup !== null && m.confirmColdStartup.p95 > REQUEST_STARTUP_P95_MS) {
     fail(
@@ -1742,25 +1823,26 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
       `a lead landing on a cold isolate waited p95 ${m.confirmColdStartup.p95}ms (max ` +
         `${m.confirmColdStartup.max}ms) before the confirm began, over the ` +
         `${REQUEST_STARTUP_P95_MS}ms left of the ${OK_P95_MS}ms latency bar once the confirm's ` +
-        `own share is taken out: ${cs.cold} of ${cs.samples} confirms here were the first on ` +
-        `their isolate, against ${m.confirmWarmStartup === null ? "no" : `p95 ${m.confirmWarmStartup.p95}ms`} ` +
+        `own share is taken out: ${cs.cold} of ${cs.samples} confirms here were their isolate's ` +
+        `first request, by the Worker's own count, against ` +
+        `${m.confirmWarmStartup === null ? "no" : `p95 ${m.confirmWarmStartup.p95}ms`} ` +
         "on a warm one. The report's span line says where that wait went (#3354: route, auth, " +
         "the confirm line, the person decision); nothing here assumes which. The confirm itself " +
         "is judged separately",
     );
   }
-  // #3354: a confirm the Worker counted as its isolate's FIRST request cannot have
-  // found the confirm module already evaluated. The module stamp calling one warm
-  // means the cold population the bar above judged is missing it, so a pass there
-  // could be a smaller population rather than a faster one (L457).
-  if (cs !== null && cs.firstRequestsReadWarm > 0) {
+  // #3418: a confirm with no invocation index is on neither side, so a first request
+  // among them is missing from the population judged above, and a pass there could be a
+  // smaller population rather than a faster one (L457). Said only when some confirms DID
+  // carry the index; a reading where none did has its own sentence above.
+  if (cs !== null && cs.indexUnknown > 0 && cs.cold + cs.warm > 0) {
     fail(
       "confirm startup",
-      `${cs.firstRequestsReadWarm} confirm${cs.firstRequestsReadWarm === 1 ? " was its isolate's first request" : "s were their isolate's first request"} ` +
-        "by the Worker's own count and the startup reading called " +
-        `${cs.firstRequestsReadWarm === 1 ? "it" : "them"} warm, so the cold population this bar judges is ` +
-        `missing ${cs.firstRequestsReadWarm === 1 ? "it" : "them"} (${cs.firstRequests} first requests among ` +
-        `${cs.invocationIndexKnown} confirms with an invocation index, ${cs.cold} read as cold)`,
+      `${cs.indexUnknown} of ${cs.samples} confirms carried no invocation index, so whether ` +
+        `${cs.indexUnknown === 1 ? "it was its" : "any of them was their"} isolate's first request ` +
+        `is unknown and the cold population this bar judges may be missing ` +
+        `${cs.indexUnknown === 1 ? "it" : "them"}. The index is written on the direct booking ` +
+        "API's `confirm answered` line under SLATE_LOADTEST",
     );
   }
 
@@ -1908,7 +1990,7 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
             "is the confirm and how much is the isolate starting up is unknown"
           : ` Of ${cs.samples} confirms read from this run's log: ` +
             `${m.confirmColdStartup === null ? "an unmeasured time" : `p95 ${m.confirmColdStartup.p95}ms`} ` +
-            `before the confirm began (${cs.cold} were the first on their isolate), ` +
+            `before the confirm began (${cs.cold} of them their isolate's first request), ` +
             `${m.confirmHandler === null ? "an unmeasured time" : `p95 ${m.confirmHandler.p95}ms`} ` +
             `inside it, and ${m.confirmAfterResponse === null ? "an unmeasured time" : `p95 ${m.confirmAfterResponse.p95}ms`} ` +
             "AFTER the response had gone, the work deferred to after the response; the report's " +
