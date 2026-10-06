@@ -1021,8 +1021,8 @@ cost matters; see `docs/cloudflare-platform-notes.md`.
 
 ## Smoke and probe routes (key-authed)
 
-Four endpoints that exist for the deploy probe and the canary rather than for
-any integrator. All four take `Authorization: Bearer <BOOKING_API_KEY_CANARY>`,
+These endpoints exist for the deploy probe, the canary and the scheduled proofs
+rather than for any integrator. Each takes `Authorization: Bearer <BOOKING_API_KEY_CANARY>`,
 which every canary lane, the deploy probe and the load test send (#2822). A
 partner's key is refused (#2854), because a partner that could stamp the canary's
 heartbeat could keep a dead canary looking alive. They answer `503` when the
