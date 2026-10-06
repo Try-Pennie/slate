@@ -27,6 +27,7 @@ import { laneDecision } from "./lanes-disabled";
 import { loadtestServingProductionHost } from "@/lib/loadtest-guard";
 import { loadtestEntryRefusal } from "@/lib/loadtest-secrets";
 import { httpsRedirect } from "@/lib/http/https-redirect";
+import { withEntryMarks } from "@/lib/booking/wait-marks";
 import { log } from "@/lib/log";
 import { laneTimingFields, type LaneRun } from "@/lib/monitor/lane-timing";
 import {
@@ -76,6 +77,8 @@ interface Env {
   [key: string]: unknown;
 }
 
+/** #3354: fetches this isolate has served, so the first one can be told apart. */
+let fetchesServed = 0;
 
 const worker = {
   // #1024: bounce plaintext to https BEFORE the app sees the request, so a lead
@@ -93,6 +96,12 @@ const worker = {
   // happens when somebody deploys a load test build over production by hand.
   // Judged on the request's own host, which is the only thing available here.
   fetch: (request: Request, env: Env, ctx: ExecutionContext) => {
+    // #3354: taken first, before anything else this handler does, so the route can
+    // tell how long the request spent before Next reached it and whether it was this
+    // isolate's first. Counted for every fetch; stamped onto the request only under
+    // the load test (`withEntryMarks`).
+    const enteredAtMs = Date.now();
+    const fetchIndex = fetchesServed++;
     const loadtest = env.SLATE_LOADTEST === "true";
     const refusal =
       loadtestServingProductionHost({ loadtest, url: request.url }) ??
@@ -115,7 +124,10 @@ const worker = {
         headers: { "content-type": "text/plain; charset=utf-8" },
       });
     }
-    return httpsRedirect(request) ?? handler.fetch(request, env, ctx);
+    return (
+      httpsRedirect(request) ??
+      handler.fetch(withEntryMarks(request, { loadtest, nowMs: enteredAtMs, fetchIndex }), env, ctx)
+    );
   },
 
   async scheduled(

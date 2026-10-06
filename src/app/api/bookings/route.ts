@@ -4,6 +4,8 @@ import { withinBookingCleanupBudget, withinBookingRequest } from "@/lib/booking/
 import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import { authorizeBookingApi } from "@/lib/booking/route-auth";
 import { answerTimed, noteRefusal, type ConfirmLineFacts } from "@/lib/booking/confirm-latency";
+import { makeWaitMarks, readEntryMarks } from "@/lib/booking/wait-marks";
+import { isLoadtest } from "@/lib/loadtest-guard";
 import { parseDirectBookingRequest, parseLookupQuery, parseCancelQuery, parseListQuery, LIST_ONLY_PARAMS } from "@/lib/booking/api-request";
 import { respondToDirectCancel, apiErrorBody, mapLookupError } from "@/lib/booking/direct-cancel-http";
 import {
@@ -61,7 +63,7 @@ export const dynamic = "force-dynamic";
 export async function POST(req: NextRequest) {
   // #3221: one line per call with how long the caller waited for the answer, kept
   // apart from the work deferred past the response; a dry run says so on it.
-  const facts: ConfirmLineFacts = {};
+  const facts: ConfirmLineFacts = waitFactsFor(req);
   // #3102: one budget for the whole request; see `confirm-budget.ts`. A deadline
   // from a read before the booking's own try (the key ceilings, the hourly cap) is
   // the same outage the booking path answers with VERIFY_UNAVAILABLE, rather than
@@ -90,7 +92,20 @@ export async function POST(req: NextRequest) {
   return stampAnsweredAt(facts.line ? stampConfirmLine(res, facts.line) : res);
 }
 
+/**
+ * #3354: under the load test, the marks that split the wait before the confirm's
+ * profile, seeded with the Worker's entry stamp and its fetch count. Off the load
+ * test there are none, so a production confirm reads no extra clock and nothing a
+ * caller sent in those headers is ever read.
+ */
+function waitFactsFor(req: NextRequest): ConfirmLineFacts {
+  if (!isLoadtest()) return {};
+  const entry = readEntryMarks(req.headers);
+  return { marks: makeWaitMarks(() => Date.now(), entry.entryAtMs), isolateFetchIndex: entry.fetchIndex };
+}
+
 async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
+  facts.marks?.mark("handler");
   // Three refusals, decided apart (#1429). The authorizer reports WHICH one it was
   // and records it according to the catalog, so a rotated key and a noisy caller no
   // longer raise the same number:
@@ -99,6 +114,7 @@ async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
   //   refusal: api_rate_limited     429, deliberately uncounted (it would dilute the share)
   const authd = await authorizeBookingApi(req);
   if (!authd.ok) return authd.response;
+  facts.marks?.mark("authed");
   log.info("booking-api", { msg: "authenticated request", key: authd.keyId });
 
   const parsed = parseDirectBookingRequest(await req.json().catch(() => null));

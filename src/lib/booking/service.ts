@@ -1095,6 +1095,9 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
     }),
     // #3325: sibling codes that walk the same pools share one line.
     lineGroupOf: lineGroupOfLive,
+    // #3354: the points of the wait before the confirm's profile, when the route
+    // keeps marks (the load test only); absent, nothing is stamped.
+    mark: lineFacts?.marks ? (point) => lineFacts.marks?.mark(point) : undefined,
     enqueueEventDeletion: async (calendarEmail, gcalEventId, bookingId) => {
       // THROWS (#2482). This row IS the record that a Google event still has to be
       // deleted, and nothing else holds that fact: a refused upsert leaves the event

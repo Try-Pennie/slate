@@ -109,6 +109,7 @@ import { findDeadlineExceeded, type DeadlineFound } from "../fetch-within-deadli
 import { GoogleBreakerOpenError } from "../google/breaker.ts";
 import { withinOwedCleanup } from "./cleanup-allowance.ts";
 import { confirmLineWaitMs, type ConfirmLine, type LeaderVerdict, type LineKey, type SharedSeat } from "./confirm-queue.ts";
+import type { WaitPoint } from "./wait-marks.ts";
 import { budgetLeftMs } from "../call-budget.ts";
 import { log } from "@/lib/log";
 import { readBookingSource } from "./booking-source.ts";
@@ -1216,6 +1217,12 @@ export interface BookingDeps {
    * keys every line by code, which is what a cold isolate does.
    */
   lineGroupOf?: (code: string) => string | null;
+  /**
+   * #3354: stamp a point of the wait before the confirm's profile (`wait-marks.ts`),
+   * so the request's `confirm answered` line can say where that wait went. Set by
+   * the wiring under SLATE_LOADTEST only; absent, nothing reads the clock for it.
+   */
+  mark?: (point: WaitPoint) => void;
   /**
    * #3257: every ACTIVE booking that starts at this instant, in any bucket and
    * either world. Read once by a confirm whose verdict settles its slot, so the
@@ -3860,6 +3867,9 @@ async function inConfirmTurn<R>(
    */
   ahead?: () => Promise<R | null>,
 ): Promise<{ result: R; verdict: LeaderVerdict<ConfirmTaker> }> {
+  // #3354: before the FIRST call into the line, which on the API path is the
+  // lookahead: that is where the switch read and the first round trip happen.
+  deps.mark?.("line_start");
   const giveBack = ahead ? await deps.confirmQueue.lookahead(line.key, confirmLineWaitMs(budgetLeftMs())) : null;
   if (giveBack && ahead) {
     let early: R | null = null;
@@ -3878,10 +3888,15 @@ async function inConfirmTurn<R>(
       await giveBack();
     }
     // Answered without the line, so it settles nothing for anybody in it.
-    if (early !== null) return { result: early, verdict: { full: false } };
+    if (early !== null) {
+      deps.mark?.("line_turn");
+      return { result: early, verdict: { full: false } };
+    }
   }
   const waitMs = confirmLineWaitMs(budgetLeftMs());
   const turn = await deps.confirmQueue.enter(line.key, waitMs);
+  // #3354: the line has answered, whether with a turn, a refusal or a timeout.
+  deps.mark?.("line_turn");
   if (turn.kind === "refused") {
     const settled = turn.settled;
     // A double submit queued behind its own first submit gets that booking back,
@@ -4066,6 +4081,8 @@ async function createChecked(
     now: () => Date.now(),
     isolateReadyAtMs: ISOLATE_READY_AT_MS,
   });
+  // #3354: the end of the wait the confirm startup bar measures.
+  deps.mark?.("profile");
 
   // Fast path: a double-click / retry of the same submit returns the existing
   // active booking instead of creating a second one (+ a second gcal event).
@@ -5523,6 +5540,7 @@ async function bookViaApiDecided(
   held: HeldTurn | undefined,
 ): Promise<{ result: ApiBookingResult; verdict: LeaderVerdict<ConfirmTaker> }> {
   const { decision, requested } = await resolvePersonDecision(input, deps);
+  deps.mark?.("decided");
   if (decision.action === "create") {
     const { result: res, verdict } = await createBookingWithVerdict(input, deps, { requested, held });
     return {

@@ -61,6 +61,7 @@ vi.mock("@/lib/monitor/record-api-outcome", () => ({ recordApiOutcome: vi.fn() }
 
 import { POST } from "./route";
 import { ANSWERED_AT_HEADER, CONFIRM_LINE_HEADER, SEEN_IP_HEADER, readLoadtestEcho } from "@/lib/loadtest-echo";
+import { ENTRY_AT_HEADER, FETCH_INDEX_HEADER } from "@/lib/booking/wait-marks";
 
 const BODY = {
   bucketCode: "411",
@@ -148,6 +149,37 @@ describe("POST /api/bookings under SLATE_LOADTEST", () => {
     expect(res.headers.get(CONFIRM_LINE_HEADER)).toBe("shared");
     expect(echo.line).toMatchObject({ state: "read", value: "shared" });
     expect(echo.lineMs).toMatchObject({ state: "read", value: 41 });
+  });
+
+  // #3354: the wait before the confirm's profile is split by marks this request
+  // carries. The route stamps its own two points before the booking path runs, and
+  // takes the Worker's entry stamp and fetch count from the request.
+  it("hands the booking path marks already stamped at the Worker entry, the handler and auth", async () => {
+    let seen: { marks?: { fields(): Record<string, number | string> }; isolateFetchIndex?: number | null } | undefined;
+    service.bookViaApi.mockImplementation(async (_input: unknown, facts?: typeof seen) => {
+      seen = facts;
+      throw new service.SlotUnavailableError("taken");
+    });
+    const entered = Date.now() - 50;
+    const res = await POST(
+      new Request("http://localhost/api/bookings", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer real-secret",
+          "content-type": "application/json",
+          "cf-connecting-ip": "203.0.113.9",
+          [ENTRY_AT_HEADER]: String(entered),
+          [FETCH_INDEX_HEADER]: "0",
+        },
+        body: JSON.stringify(BODY),
+      }) as never,
+    );
+    expect(res.status).toBe(409);
+    const fields = seen?.marks?.fields() ?? {};
+    expect(typeof fields.wait_route_ms).toBe("number");
+    expect(typeof fields.wait_auth_ms).toBe("number");
+    expect(String(fields.wait_missing)).toBe("line_start,line_turn,decided,profile");
+    expect(seen?.isolateFetchIndex).toBe(0);
   });
 
   it("leaves the line unsaid when the confirm recorded none, so the run reads it as not said", async () => {
