@@ -63,7 +63,7 @@ interface Scenario {
   start: VersionShare[] | null;
   /** "class-change" is the refusal Cloudflare gives a release with a pending Durable Object migration (#3352). */
   canaryUpload: boolean | "class-change";
-  releaseUpload: boolean;
+  releaseUpload: boolean | "class-change";
   split: boolean;
   canaryProbe: ProbeFault;
   promote: boolean;
@@ -147,7 +147,7 @@ async function drive(s: Scenario): Promise<Run> {
       boom("upload");
       if (s.interfereDuring === "upload") deployment = [{ versionId: THEIRS, percentage: 100 }];
       if (kind === "canary") return s.canaryUpload === "class-change" ? { refused: "pending-do-migration" as const } : s.canaryUpload ? CANARY : null;
-      return s.releaseUpload ? RELEASE : null;
+      return s.releaseUpload === "class-change" ? { refused: "pending-do-migration" as const } : s.releaseUpload ? RELEASE : null;
     },
     deploy: async (specs) => {
       calls.push(`deploy:${specs.join(" ")}`);
@@ -334,6 +334,13 @@ for (const bad of [
     /Durable Object class/.test(r.result.message) && r.result.message.includes("pnpm cf:deploy:verified") && /every later deploy/i.test(r.result.message),
     `and it names the cause, the hand deploy and the cost of waiting (got ${r.result.message})`,
   );
+}
+// The release upload can be the one refused, and it ends the same way.
+{
+  const r = await drive({ ...HAPPY, releaseUpload: "class-change" });
+  eq(r.result.exit, EXIT.classChange, "a class change refused at the release upload is the same ending");
+  eq(r.result.end, "unchanged", "and nothing changed");
+  assert(!r.calls.some((c) => c.startsWith("deploy")), "no deployment was touched");
 }
 // The refusal is read from wrangler's own output file: the `command-failed` record it writes,
 // with the message measured in run 37389636410 (the #3344 merge, 2026-10-05).

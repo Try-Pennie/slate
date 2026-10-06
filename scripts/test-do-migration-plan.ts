@@ -32,8 +32,11 @@ const config = (top: string[], loadtest: string[] = top) =>
   eq(migrationTagsOf("{ not json"), null, "a file that does not parse is unreadable, never no migrations");
   eq(migrationTagsOf('{ "migrations": [{ "new_sqlite_classes": ["X"] }] }'), null, "an entry with no tag is unreadable");
   // Positive control on the real file: the two classes Slate ships are found, so a
-  // reader that found nothing anywhere could not pass as one that found nothing new.
-  eq(migrationTagsOf(REAL), ["v1", "v2"], "the real wrangler.jsonc lists BurstLimiter's v1 and ConfirmLine's v2");
+  // reader that found nothing anywhere could not pass as one that found nothing new. A
+  // prefix, not the whole list: the next class change adds v3, and this must not be
+  // what that pull request has to edit to go green (L373).
+  const real = migrationTagsOf(REAL);
+  assert(real !== null && real[0] === "v1" && real[1] === "v2", `the real wrangler.jsonc lists BurstLimiter's v1 and ConfirmLine's v2 first (got ${JSON.stringify(real)})`);
 }
 
 // --- the verdict ------------------------------------------------------------------------
