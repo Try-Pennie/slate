@@ -112,6 +112,7 @@ import { isInvalidAttendeeEmailRefusal } from "../google/http-error.ts";
 import { AttendeeEmailRefusedError } from "./attendee-email-refused.ts";
 import { withinOwedCleanup } from "./cleanup-allowance.ts";
 import { confirmLineWaitMs, type ConfirmLine, type LeaderVerdict, type LineKey, type SharedSeat } from "./confirm-queue.ts";
+import { budgetCovers, expectedCommitMs, type CommitCostLog } from "./commit-cost.ts";
 import type { WaitPoint } from "./wait-marks.ts";
 import { budgetLeftMs } from "../call-budget.ts";
 import { log } from "@/lib/log";
@@ -324,12 +325,16 @@ export class DependencyTimeoutError extends VerifyUnavailableError {
   readonly timeoutMs: number;
   /** The request's budget, when that is what cut the call short. */
   readonly budget: { label: string; totalMs: number } | null;
+  /** #3338: what the work Slate did not start was measured to need, when that is
+   *  why it was not started (`DeadlineFound.neededMs`). */
+  readonly neededMs: number | undefined;
   constructor(found: DeadlineFound, cause: unknown) {
     super();
     this.name = "DependencyTimeoutError";
     this.dependency = found.label;
     this.timeoutMs = found.timeoutMs;
     this.budget = found.budget;
+    this.neededMs = found.neededMs;
     this.cause = cause;
   }
 }
@@ -1247,6 +1252,13 @@ export interface BookingDeps {
    * share a turn. Every call is awaited: a shared line answers over the network.
    */
   confirmQueue: ConfirmLine<SlotSettlement>;
+  /**
+   * #3338: what this isolate's recent commit chains cost (`commit-cost.ts`), so a
+   * confirm never starts a reservation, an event and an insert it cannot finish
+   * inside its budget. One per isolate in production, like the line; a suite hands
+   * its own, so no two suites share a measurement.
+   */
+  commitCosts: CommitCostLog;
   /**
    * #3325: the LADDER group a code's confirms share, from what this isolate already
    * holds, or null to keep the code's own line. Optional: a suite that does not set it
@@ -4382,14 +4394,31 @@ async function createHeld(
           .time("displayed-tier", () => deps.displayedTier(input.bucketCode))
           .catch(() => null);
 
+  // #3338: this confirm's slowest Google call so far, its live checks, measured
+  // where they are made. A floor for what its commit chain's Google write will
+  // cost (`expectedCommitMs`), so even a confirm on an isolate that has run no
+  // chain yet is not judged against nothing. Every check below goes through these
+  // deps.
+  let slowestGoogleMs = 0;
+  const checked: BookingDeps = {
+    ...deps,
+    verifyFree: async (emails, fromIso, toIso) => {
+      const from = Date.now();
+      try {
+        return await deps.verifyFree(emails, fromIso, toIso);
+      } finally {
+        slowestGoogleMs = Math.max(slowestGoogleMs, Date.now() - from);
+      }
+    },
+  };
   // Fresh create: cascade down the tier ladder if the requested bucket has no
   // agent free for the slot. A crash before the reservation strands nothing.
   let tier: TierAssignResult;
   try {
     tier = await profile.time("assign-and-verify", () =>
       agentLinkUserId !== undefined
-        ? assignNamedAgent(deps, { bucket, eventType }, input.startIso, agentLinkUserId)
-        : assignAgentWithTierFallback(deps, { bucket, eventType }, input.startIso, input.allowTestBuckets ?? false, false, seat),
+        ? assignNamedAgent(checked, { bucket, eventType }, input.startIso, agentLinkUserId)
+        : assignAgentWithTierFallback(checked, { bucket, eventType }, input.startIso, input.allowTestBuckets ?? false, false, seat),
     );
   } catch (err) {
     // #2073: a named link records no routing decision, refused or not: the
@@ -4492,6 +4521,33 @@ async function createHeld(
   let result: BookingResult;
   for (;;) {
     const { userId, email } = chosen;
+    // #3338: never START the commit chain (the reservation, the calendar event, the
+    // insert) without the budget to finish it. A confirm cut off part way through
+    // leaves a reservation and an event the drain later turns into a booking for a
+    // lead who was told to try again (L12). What the chain costs is measured
+    // (`commit-cost.ts`): this isolate's recent chains, and never less than this
+    // confirm's own slowest Google call. Short of it, the lead is told to retry
+    // with nothing started: no event, no reservation, and the claim on the advisor
+    // is let go when the line hears the refusal.
+    const commitNeededMs = expectedCommitMs({
+      slowestRecentChainMs: deps.commitCosts.slowestRecentMs(Date.now()),
+      slowestGoogleCallMs: slowestGoogleMs,
+    });
+    const commitLeftMs = budgetLeftMs();
+    if (!budgetCovers(commitLeftMs, commitNeededMs)) {
+      const leftMs = Math.max(0, commitLeftMs ?? 0);
+      log.warn("booking", {
+        msg: "confirm has too little of its budget left to write the booking and its calendar event; answering retryably with nothing started",
+        user_id: userId,
+        bucket_code: bookedBucket.code,
+        needed_ms: commitNeededMs,
+        left_ms: leftMs,
+      });
+      throw new DependencyTimeoutError(
+        { label: "writing the booking and its calendar event", timeoutMs: leftMs, budget: null, neededMs: commitNeededMs },
+        null,
+      );
+    }
     const agent = await profile.time("load-advisor", () => deps.getUser(userId));
     const gcalClientId = await deterministicEventId(idempotencyKey, userId);
     const bookingInsert: BookingInsert = {
@@ -4563,6 +4619,9 @@ async function createHeld(
       attendeeName: input.attendee.name,
     };
 
+    // #3338: the commit chain starts here, and is measured from here to the
+    // insert's answer, so the next confirm in this isolate knows what one costs.
+    const chainFromMs = Date.now();
     // The UNIQUE(idempotency_key) on the reservation is the concurrency arbiter:
     // a same-key racer that already won is returned here, so we adopt ITS pin.
     const reservation = await profile.time("reserve", () =>
@@ -4583,13 +4642,30 @@ async function createHeld(
     // The insert, the exclusion index write and the cache write through, which is
     // where the overlap constraint (#2280) and the in request pool recompute both
     // land: two of the three candidates #2321 names.
+    // #3338: the insert's answer closes the chain's measurement; the work after a
+    // commit is the drain's if it is cut off (#3263), so it is not part of what a
+    // confirm must have the time for. Only a chain that COMMITTED with budget still
+    // left is what a chain costs: one cut off at the insert, failed, lost to a race
+    // or answered after the budget was spent measured only what a budget allowed,
+    // and recording it could hold every later confirm on this isolate out (L465).
+    let committedChainMs: number | null = null;
+    const measured: BookingDeps = {
+      ...deps,
+      insertBooking: async (row) => {
+        const answer = await deps.insertBooking(row);
+        const leftMs = budgetLeftMs();
+        if (answer.ok && (leftMs === null || leftMs > 0)) committedChainMs = Date.now() - chainFromMs;
+        return answer;
+      },
+    };
     try {
       result = answerCommitted(
-        await profile.time("complete-reservation", () => completeReservation(deps, reservation)),
+        await profile.time("complete-reservation", () => completeReservation(measured, reservation)),
       );
+      if (committedChainMs !== null) deps.commitCosts.record(committedChainMs, Date.now());
       break;
     } catch (err) {
-      const next = await profile.time("race-reassign", () => nextAdvisorAfterLostRace(deps, {
+      const next = await profile.time("race-reassign", () => nextAdvisorAfterLostRace(checked, {
         err,
         named: agentLinkUserId !== undefined,
         reservation,

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { makeConfirmQueue, isolateLine } from "@/lib/booking/confirm-queue";
+import { makeCommitCostLog } from "@/lib/booking/commit-cost";
 
 // Asserts which tier-drop bookings dispatch a throttled Slack alert via
 // sendThrottledAlert: only a drop of two or more debt tiers does
@@ -271,6 +272,7 @@ function makeTierDropDeps(requested = "511", lower = "411"): BookingDeps {
     },
     // #3221: a line of this fake's own, never the isolate's.
     confirmQueue: isolateLine(makeConfirmQueue()),
+    commitCosts: makeCommitCostLog(),
   };
 }
 

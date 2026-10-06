@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { makeConfirmQueue, isolateLine } from "@/lib/booking/confirm-queue";
+import { makeCommitCostLog } from "@/lib/booking/commit-cost";
 
 // Asserts the runtime half of AUD-061 (#827): on a fresh confirm, when the tier
 // the availability cache currently DISPLAYS for the requested bucket differs from
@@ -267,6 +268,7 @@ function makeDeps(): BookingDeps {
     },
     // #3221: a line of this fake's own, never the isolate's.
     confirmQueue: isolateLine(makeConfirmQueue()),
+    commitCosts: makeCommitCostLog(),
   };
 }
 
