@@ -500,6 +500,22 @@ function isNoKeyConfigured(status: number, body: unknown): boolean {
   );
 }
 
+/**
+ * The `error` an idle load test Worker answers every request with (#3310): it lives on
+ * between runs holding none of its secrets. Copied for the same reason as the one
+ * above; `scripts/test-loadtest-preflight-checks.ts` builds the body with the Worker's
+ * own `loadtestIdleBody`, so a reworded answer fails that test.
+ */
+const LOADTEST_IDLE = "loadtest deployment idle";
+
+/** The secrets an idle Worker said it lacks, or null when this is not its answer. */
+function idleMissing(status: number, body: unknown): string[] | null {
+  if (status !== 503 || typeof body !== "object" || body === null) return null;
+  const b = body as { error?: unknown; missing?: unknown };
+  if (b.error !== LOADTEST_IDLE) return null;
+  return Array.isArray(b.missing) ? b.missing.filter((m): m is string => typeof m === "string") : [];
+}
+
 /** What `/api/smoke/version` said about the deployment the run is about to drive. */
 export type LoadtestModeVerdict =
   | { ok: true; commit: string | null }
@@ -526,6 +542,17 @@ export function loadtestModeVerdict(
   body: unknown,
 ): LoadtestModeVerdict {
   if (status !== 200) {
+    const idle = idleMissing(status, body);
+    if (idle) {
+      return {
+        ok: false,
+        why:
+          "the load test Worker is idle: it holds none of a run's secrets between runs" +
+          (idle.length > 0 ? ` (missing ${idle.join(", ")})` : "") +
+          ". Put the run's secrets with `wrangler secret put <NAME> --env loadtest` (scripts/loadtest/RUNBOOK.md, the section \"Its secrets are its own\") " +
+          "and dispatch again. Nothing was written.",
+      };
+    }
     // #2854: the smoke endpoints take the canary's key and nothing else, so a Worker
     // given only the shared BOOKING_API_KEY answers 503, and one whose canary key
     // differs from the drivers' answers 401. Both are the same provisioning step.
@@ -652,8 +679,9 @@ export function faultModeVerdict(
     // and which passes; every other refusal here (a wrong key, a missing endpoint,
     // a build that is not in load test mode) is a state waiting cannot change.
     // The route's own "no key configured" 503 is the exception: it is a missing
-    // secret, and waiting cannot supply one.
-    const retriable = status >= 500 && status <= 599 && !isNoKeyConfigured(status, body);
+    // secret, and waiting cannot supply one. So is an idle Worker's (#3310), for the
+    // same reason.
+    const retriable = status >= 500 && status <= 599 && !isNoKeyConfigured(status, body) && idleMissing(status, body) === null;
     return { ok: false, why: mode.why, retriable };
   }
   const payload =

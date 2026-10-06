@@ -625,6 +625,18 @@ The lanes that page Slack are held back below, but the kept ones still alert
 agents fail on purpose), which is why the refusal is in the notifier itself rather
 than in the lane list.
 
+**Between runs the Worker holds none of them, and is idle (#3310).** The load test
+Worker is kept between runs, and teardown takes all three secrets away rather than
+deleting it. A deployment missing ANY of the three is idle (`loadtestIdle` in
+`src/lib/loadtest-secrets.ts`): every request is answered with a 503 whose body names
+what is missing, `{"error":"loadtest deployment idle","missing":[...]}`, before the
+app is reached, and every cron tick runs no lane and logs one `loadtest-idle` line.
+That line is how you see, between runs, that Cloudflare is still delivering the
+Worker's crons (`npx wrangler tail --env loadtest`). So provisioning a run means
+putting all three with `wrangler secret put <NAME> --env loadtest`, which prompts for
+the value. A run dispatched one short stops at the preflight, which names what is
+missing rather than waiting out the cron deadline for lanes that cannot run.
+
 ### A fresh branch has no secret key, so two grants have to be run by hand (#2324)
 
 This section exists because the two steps below are needed on EVERY run, are in
@@ -718,6 +730,15 @@ six hundred bookings behind, and the next run seeded on top of them would report
 clashes this one created. Every job carries a timeout.
 
 ### A freshly created deployment is not warm, and the preflight waits for it (#2347)
+
+**Since #3310 the cron wait below is paid once, not on every run.** Teardown keeps
+the Worker and takes its secrets, so its crons go on arriving between runs, and a
+run's deploy is a redeploy of a Worker that is already ticking: a redeploy kept
+delivery flowing on 2026-10-05. Before that, every teardown deleted the Worker and
+every run created a new one, and Cloudflare took 27, 28, 33, 38 to 50, and 105
+minutes to deliver a new Worker's first cron. The wait now applies only when the
+Worker is first created, or after somebody deletes it, and the preflight still waits
+for it whenever it does.
 
 **A Worker that was created a minute ago will offer no times, and nothing is
 wrong.** Run 34974744173 failed preflight forty seconds after the deploy on
@@ -1022,12 +1043,9 @@ recompute fix, are what should confirm or move it.
 ### The report outlives the branch
 
 The judge writes ONE dated report and uploads it `if: always()`. Teardown `needs`
-the judge, so it cannot race the read; it deletes the deployment and then
-**confirms the listing is empty**, because a zero exit from `wrangler delete` is
-not the same as the deployment being gone. That confirmation checks the listing's
-own exit status before its content: piping straight into `grep` reports the
-parser's status, so a listing that failed matches nothing and the step prints "no
-deployment remains" (L183).
+the judge, so it cannot race the read. It then deletes the branch and takes the
+Worker's secrets, confirming each by reading the result rather than trusting the
+command that did it (see Tearing down).
 
 ### One hand-off before the first run
 
@@ -1445,8 +1463,9 @@ The sequence, every dispatch from the same commit the deployment was built from:
 
 ## Tearing down (#2322)
 
-`teardown` deletes **two** things now, and for months it said so while deleting one.
-The job removed the Worker and nothing in it touched the Supabase branch; the
+`teardown` does **two** things: it takes the load test Worker's secrets, keeping the
+Worker (#3310), and it deletes the Supabase branch. For months it said it deleted two
+things while deleting one. The job removed the Worker and nothing in it touched the Supabase branch; the
 workflow had no token to. On 2026-09-14 the run finished, teardown reported
 success, and `loadtest-2284` was still ACTIVE_HEALTHY and billing until somebody
 deleted it by hand twenty minutes later: a success report about work never
@@ -1484,9 +1503,53 @@ with no token. Two hazards it holds off, both measured rather than imagined:
 | 10 | the delete was accepted and the listing could not be re-read, so it is unconfirmed |
 | 11 | the delete was accepted and the branch is still in the listing |
 
-Exits 10 and 11 exist for the same reason the Worker half re-reads the account
-listing (#2277): the teardown is done when the thing is GONE, never when the delete
-command exited.
+Exits 10 and 11 exist for the same reason the Worker half re-reads the Worker's
+secrets: the teardown is done when the reads say so, never when the delete command
+exited.
+
+### The Worker is kept, idle (#3310)
+
+The Worker half used to `wrangler delete` the Worker and confirm it was gone (#2277).
+Every run's deploy then created a new Worker, and Cloudflare has taken up to 105
+minutes to deliver a new Worker's first cron, so every run waited and a slow delivery
+lost the run. Now `scripts/loadtest/keep-worker-idle.ts` keeps it and takes its
+secrets:
+
+1. It checks which Worker it may touch. It deletes by name, so `LOADTEST_WORKER_NAME`
+   must equal the Worker `wrangler deploy --env loadtest` deploys, read from
+   `wrangler.jsonc`, and production's own name is refused whatever else is true.
+2. It deletes every secret the Worker lists, plus the three a run puts. A secret
+   already gone answers 404 and counts as done, so the step is safe to run twice, and
+   one failed delete does not stop the others.
+3. It reads the secrets listing again and the cron schedules. Idle is what those reads
+   say, never what the deletes answered: only a positively readable empty listing
+   counts as holding nothing, and a kept Worker with no schedules is a finding,
+   because keeping it bought nothing.
+
+With no secrets and the branch deleted, the idle Worker can reach nothing. It costs
+nothing extra: about 2,000 cron invocations a day, mostly the every minute schedule,
+which is about 60,000 a month against the 10 million the plan includes. Each answers
+in the Worker entry before the app loads.
+
+Every outcome is pinned offline in `scripts/test-loadtest-idle-worker.ts`:
+
+| exit | what it met |
+|---|---|
+| 0 | kept, holding no secrets, with its cron schedules |
+| 1 | no API token, account id or Worker name here; nothing was touched |
+| 2 | the name is not the load test Worker `wrangler.jsonc` deploys, or is production's; nothing was touched |
+| 3 | Cloudflare never answered, so whether it is idle is unknown |
+| 4 | a 404: the Worker is not on this account (deleted, or the account id is wrong), so the next run waits for a first delivery |
+| 5 | Cloudflare answered with another status |
+| 6 | a 200 this cannot read, which is never read as holding nothing |
+| 7 | a secret delete failed; it is named with its reason |
+| 8 | a secret is still listed after every delete answered |
+| 9 | holds nothing and has no cron schedules; redeploy it with `wrangler deploy --env loadtest` |
+
+A Worker that lives on keeps its Durable Object migration history the way production
+does, so the pull request check from #3352 (`scripts/lib/do-migration-plan.ts`)
+refuses an edit to, or the removal of, a tag in `env.loadtest.migrations` as well.
+Adding one still needs no label, because the load test deploys whole.
 
 ## Backstop retention decision (#440: retire #401 / #428 only if fully subsumed)
 **Decision: keep both `#401` and `#428` running. Neither is subsumed by the outbox.**
