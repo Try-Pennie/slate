@@ -55,7 +55,9 @@ export function makeReachFailureReporter(deps: {
   page: (text: string) => void;
 }): (reason: LineReason, err: unknown) => void {
   let recent: number[] = [];
-  let paged = false;
+  // #3349: when this isolate last paged, so it waits out the alert's cooldown and then
+  // can page about a later, separate outage. It used to latch for the isolate's life.
+  let lastPagedAt: number | null = null;
   return (reason, err) => {
     deps.log({
       msg: "a confirm could not use the shared confirm line and used its isolate's own",
@@ -65,8 +67,9 @@ export function makeReachFailureReporter(deps: {
     if (NEVER_PAGES.has(reason) || !deps.onWorkers()) return;
     const t = deps.now();
     recent = [...recent.filter((at) => t - at < CONFIRM_LINE_PAGE_WINDOW_MS), t];
-    if (recent.length < CONFIRM_LINE_PAGE_AFTER || paged) return;
-    paged = true;
+    if (recent.length < CONFIRM_LINE_PAGE_AFTER) return;
+    if (lastPagedAt !== null && t - lastPagedAt < CONFIRM_LINE_ALERT_COOLDOWN_MS) return;
+    lastPagedAt = t;
     deps.page(confirmLineUnreachableAlert(reason));
   };
 }
