@@ -19,6 +19,7 @@ import {
   DEFAULT_APP_URL,
   HAND_RELEASE_MESSAGE_PREFIX,
 } from "./lib/deploy-verified.ts";
+import { normalizeCommit } from "./stamp-build-info.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const CLEAN = {
@@ -270,6 +271,31 @@ for (const [what, plan] of refusals) {
   const unwired = script.replace(/,\s*plan\.probeEnv/, "");
   assert(unwired !== script, "positive control: the wiring was removed from a copy of the real command");
   assert(!probeCall(unwired).includes("plan.probeEnv"), "positive control: a probe step without it is caught (L1)");
+
+  // The step must ADD that environment to the one it inherits. A step that dropped
+  // its `env` argument would leave the probe without PROBE_COMMIT exactly as before,
+  // while the call above still read as wired. Read only the step helper's own body.
+  const stepBody = (source: string): string => {
+    const at = source.indexOf("function step(");
+    return at === -1 ? "" : source.slice(at, source.indexOf("\n}\n", at));
+  };
+  assert(stepBody(script) !== "", "the step helper is found in the command");
+  assert(/env:\s*\{\s*\.\.\.process\.env,\s*\.\.\.env\s*\}/.test(stepBody(script)), `and it runs each step with its env added to this process's own (got: ${stepBody(script)})`);
+  const dropped = script.replace(/env:\s*\{\s*\.\.\.process\.env,\s*\.\.\.env\s*\}/, "env: process.env");
+  assert(dropped !== script, "positive control: the merge was removed from a copy of the real command");
+  assert(!/env:\s*\{\s*\.\.\.process\.env,\s*\.\.\.env\s*\}/.test(stepBody(dropped)), "positive control: a step that ignores its env is caught (L1)");
+
+  // And the probe must read that commit as the one it expects. It prefers
+  // PROBE_COMMIT to GITHUB_SHA and normalises with the stamp's own function, so the
+  // commit handed over has to survive that normalisation unchanged.
+  for (const p of [plan, viaCi]) {
+    if (p.ok) eq(normalizeCommit(p.probeEnv.PROBE_COMMIT), p.commit, `the probe's normaliser reads the handed commit as the stamped one (${p.commit})`);
+  }
+  const probe = readFileSync(join(import.meta.dirname, "post-deploy-probe.ts"), "utf8");
+  const reads = /normalizeCommit\(process\.env\.PROBE_COMMIT \?\? process\.env\.GITHUB_SHA\)/;
+  assert(reads.test(probe), "the probe reads PROBE_COMMIT before GITHUB_SHA, so a hand run's commit is the one it checks");
+  const swapped = probe.replace(reads, "normalizeCommit(process.env.GITHUB_SHA ?? process.env.PROBE_COMMIT)");
+  assert(swapped !== probe && !reads.test(swapped), "positive control: a probe preferring GITHUB_SHA is caught (L1)");
 }
 
 finish();
