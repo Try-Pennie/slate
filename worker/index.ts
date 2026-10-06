@@ -127,12 +127,11 @@ const worker = {
     }
     // #3310: the load test Worker lives on between runs holding none of its secrets,
     // and answers nothing until a run has put all three. JSON, so the preflight's own
-    // read of /api/smoke/version can name the missing ones rather than a bare 503.
+    // read of /api/smoke/version can name the missing ones rather than a bare 503. No
+    // log line: the Worker is public, so a line per request is volume any caller
+    // controls (L498), and the answer already says it. A cron tick logs instead.
     const idle = loadtestIdle({ loadtest, bindings: env as unknown as Record<string, unknown>, baked: bakedEnv, pathname: safePathname(request.url) });
-    if (idle) {
-      log.info("loadtest-idle", { msg: "idle between runs, so this request was not served", missing: idle.join(",") });
-      return Response.json(loadtestIdleBody(idle), { status: 503 });
-    }
+    if (idle) return Response.json(loadtestIdleBody(idle), { status: 503 });
     return httpsRedirect(request) ?? app.fetch(request, env, ctx, { loadtest, enteredAtMs });
   },
 

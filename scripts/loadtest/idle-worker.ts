@@ -20,6 +20,7 @@
 // readable empty listing counts as holding nothing (L98), and a kept Worker with no
 // schedules is a finding, because keeping it bought nothing.
 import { stripJsonComments } from "../lib/gradual-deploy.ts";
+import { LOADTEST_ALLOWED_SECRETS } from "../../src/lib/loadtest-secrets.ts";
 
 /**
  * Every way the teardown can end, and the exit code it ends on. One code per cause,
@@ -251,4 +252,65 @@ export function idleVerdict(input: VerdictInput): IdleVerdict {
       `${workerName} is kept idle: it holds no secrets (${deleted.length === 0 ? "none were left to delete" : `deleted ${deleted.join(", ")}`}) ` +
       `and keeps its ${crons.length} cron schedules, so the next run's lanes start within a minute of its secrets being put.`,
   };
+}
+
+/** One request's outcome: the status and body text, or the error that stopped it. */
+export type CallResult = { status: number; bodyText: string } | { failed: string };
+
+/**
+ * The whole teardown, with the request injected so its ORDER is tested against a fake
+ * Cloudflare, not only each judgement.
+ *
+ * The first listing only widens what is deleted: a secret nobody expected is deleted
+ * too. It never gates the deletes. A first listing that cannot be read must not leave
+ * the Worker holding a run's live secrets while its crons keep arriving, so the three a
+ * run puts are always attempted, and the SECOND listing, after the deletes, is what
+ * decides. A delete that fails does not stop the others.
+ */
+export async function keepWorkerIdle(args: {
+  settings: { token: string; account: string; configured: string };
+  wranglerJsonc: string | null;
+  call: (method: "GET" | "DELETE", url: string) => Promise<CallResult>;
+}): Promise<IdleVerdict> {
+  const { token, account, configured } = args.settings;
+  const missing: string[] = [];
+  if (!token) missing.push("CLOUDFLARE_API_TOKEN");
+  if (!account) missing.push("CLOUDFLARE_ACCOUNT_ID");
+  if (!configured) missing.push("LOADTEST_WORKER_NAME");
+  if (missing.length > 0) return idleVerdict({ misconfigured: missing });
+
+  const names = args.wranglerJsonc === null ? null : loadtestWorkerName(args.wranglerJsonc);
+  const refusal = targetRefusal({ configured, names });
+  if (refusal !== null || names === null) return idleVerdict({ wrongTarget: refusal ?? "no load test Worker name" });
+  const workerName = names.loadtest;
+
+  const before = await args.call("GET", secretsUrl(account, workerName));
+  const listed = "failed" in before ? null : readSecretNames(before.status, before.bodyText);
+  const extra = listed !== null && "names" in listed ? listed.names : [];
+
+  const deleted: string[] = [];
+  const failedDeletes: { name: string; why: string }[] = [];
+  for (const name of [...new Set([...extra, ...LOADTEST_ALLOWED_SECRETS])]) {
+    const res = await args.call("DELETE", secretUrl(account, workerName, name));
+    if ("failed" in res) {
+      failedDeletes.push({ name, why: `no answer, ${res.failed}` });
+      continue;
+    }
+    const outcome = readDeleteSecret(res.status, res.bodyText);
+    if (outcome === "deleted") deleted.push(name);
+    else if (outcome !== "absent") failedDeletes.push({ name, why: outcome.why });
+  }
+
+  // Idle is what the Worker LISTS afterwards, never what the deletes answered.
+  const after = await args.call("GET", secretsUrl(account, workerName));
+  if ("failed" in after) return idleVerdict({ noAnswer: after.failed });
+  const remaining = readSecretNames(after.status, after.bodyText);
+  if ("exitCode" in remaining) return idleVerdict({ read: remaining });
+
+  const sched = await args.call("GET", schedulesUrl(account, workerName));
+  if ("failed" in sched) return idleVerdict({ noAnswer: sched.failed });
+  const schedules = readSchedules(sched.status, sched.bodyText);
+  if ("exitCode" in schedules) return idleVerdict({ read: schedules });
+
+  return idleVerdict({ workerName, remaining: remaining.names, crons: schedules.crons, deleted, failedDeletes });
 }

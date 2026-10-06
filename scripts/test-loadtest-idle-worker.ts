@@ -15,6 +15,7 @@ import { readFileSync } from "node:fs";
 import {
   IDLE_EXIT,
   idleVerdict,
+  keepWorkerIdle,
   loadtestWorkerName,
   readDeleteSecret,
   readSchedules,
@@ -150,6 +151,65 @@ const seen = (v: IdleVerdict) => {
   eq(both.exitCode, IDLE_EXIT.stillHoldsSecrets, "a secret still held outranks missing schedules");
 }
 
+// --- the whole flow, against a fake Cloudflare -------------------------------------------
+//
+// The flow lives in `keepWorkerIdle` with the request injected, so the order of what it
+// does is tested, not only each judgement. The case that matters most: a first listing
+// that cannot be read must not stop the deletes. Returning early there would leave the
+// Worker holding the run's live secrets while its crons go on arriving.
+
+type Req = { method: "GET" | "DELETE"; url: string };
+function fakeCloudflare(opts: { firstList: { status: number; bodyText: string } | { failed: string }; held: string[]; crons?: string[] }) {
+  const held = new Set(opts.held);
+  const calls: Req[] = [];
+  let lists = 0;
+  const call = async (method: "GET" | "DELETE", url: string) => {
+    calls.push({ method, url });
+    if (method === "DELETE") {
+      const name = decodeURIComponent(url.slice(url.lastIndexOf("/") + 1));
+      if (!held.has(name)) return { status: 404, bodyText: "{}" };
+      held.delete(name);
+      return { status: 200, bodyText: envelope(null) };
+    }
+    if (url.endsWith("/schedules")) return { status: 200, bodyText: envelope({ schedules: (opts.crons ?? ["* * * * *"]).map((cron) => ({ cron })) }) };
+    lists += 1;
+    if (lists === 1) return opts.firstList;
+    return { status: 200, bodyText: envelope([...held].map((name) => ({ name, type: "secret_text" }))) };
+  };
+  return { call, calls, held };
+}
+const settings = { token: "t", account: "acc", configured: "slate-loadtest" };
+const realConfig = readFileSync("wrangler.jsonc", "utf8");
+
+{
+  const cf = fakeCloudflare({ firstList: { status: 200, bodyText: envelope([{ name: "CRON_SECRET" }, { name: "EXTRA" }]) }, held: ["CRON_SECRET", "EXTRA"] });
+  const v = await keepWorkerIdle({ settings, wranglerJsonc: realConfig, call: cf.call });
+  assert(v.idle && v.exitCode === IDLE_EXIT.idle, `a listed secret, known or not, is deleted and the Worker confirmed idle (got ${v.message})`);
+  eq(cf.held.size, 0, "nothing is left held");
+  assert(cf.calls.every((c) => c.url.includes("/scripts/slate-loadtest/")), "and every request was to the load test Worker");
+}
+for (const [why, firstList] of [
+  ["never answers", { failed: "fetch failed" }],
+  ["is refused", { status: 503, bodyText: "busy" }],
+  ["is unreadable", { status: 200, bodyText: "<html>" }],
+] as const) {
+  const cf = fakeCloudflare({ firstList, held: ["SUPABASE_SECRET_KEY", "CRON_SECRET", "BOOKING_API_KEY_CANARY"] });
+  const v = await keepWorkerIdle({ settings, wranglerJsonc: realConfig, call: cf.call });
+  eq(cf.held.size, 0, `a first listing that ${why} still has the run's three secrets deleted`);
+  assert(v.idle, `and the second listing, which reads, decides it is idle (got ${v.message})`);
+}
+{
+  // The target guard comes before ANY request.
+  const cf = fakeCloudflare({ firstList: { status: 200, bodyText: envelope([]) }, held: [] });
+  const v = await keepWorkerIdle({ settings: { ...settings, configured: "slate" }, wranglerJsonc: realConfig, call: cf.call });
+  assert(v.exitCode === IDLE_EXIT.wrongTarget && cf.calls.length === 0, "production's name is refused before a single request is made");
+}
+{
+  const cf = fakeCloudflare({ firstList: { status: 200, bodyText: envelope([]) }, held: [] });
+  const v = await keepWorkerIdle({ settings: { ...settings, token: "" }, wranglerJsonc: realConfig, call: cf.call });
+  assert(v.exitCode === IDLE_EXIT.misconfigured && v.message.includes("CLOUDFLARE_API_TOKEN") && cf.calls.length === 0, "a missing setting is named before any request");
+}
+
 // --- every declared ending is reachable (L151) --------------------------------------------
 {
   const misconfigured = seen(idleVerdict({ misconfigured: ["CLOUDFLARE_API_TOKEN"] }));
@@ -163,6 +223,19 @@ const seen = (v: IdleVerdict) => {
     assert(produced.has(code), `the ${name} ending (exit ${code}) is produced by some case`);
   }
   eq(new Set(Object.values(IDLE_EXIT)).size, Object.keys(IDLE_EXIT).length, "no two endings share a code");
+}
+
+// --- the idle Worker's fetch path does not log (L498) ------------------------------------
+//
+// An idle Worker is public on workers.dev, so a log line per request is volume any caller
+// controls. The 503 body already says it is idle; only a cron tick, which Cloudflare
+// sends and nobody else can, logs a line.
+{
+  const entry = readFileSync("worker/index.ts", "utf8");
+  const fetchHalf = entry.slice(entry.indexOf("fetch:"), entry.indexOf("async scheduled"));
+  const idleBranch = fetchHalf.slice(fetchHalf.indexOf("loadtestIdle("), fetchHalf.indexOf("loadtestIdleBody("));
+  assert(idleBranch.length > 0, "the fetch path's idle branch was found");
+  assert(!/\blog\./.test(idleBranch), "and it writes no log line for a request an unauthenticated caller can send");
 }
 
 // --- and the workflow runs it, never `wrangler delete` (L3) -----------------------------
