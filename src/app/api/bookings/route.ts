@@ -21,6 +21,7 @@ import {
   NoEligibleAgentsError,
   UnknownBucketError,
   OutsideCallingWindowError,
+  AttendeeEmailRefusedError,
   RaceLostRefusalError,
 } from "@/lib/booking/service";
 import { raceOutcomeForRefusal } from "@/lib/monitor/race-contention";
@@ -305,7 +306,11 @@ async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
         });
       }
       return NextResponse.json(
-        await apiErrorBody(err, code, "book", "Booking failed"),
+        {
+          ...(await apiErrorBody(err, code, "book", "Booking failed")),
+          // #3359: the field to change, in the shape a VALIDATION refusal carries it.
+          ...(err instanceof AttendeeEmailRefusedError ? { fieldErrors: { [err.field]: err.message } } : {}),
+        },
         { status },
       );
     });
@@ -442,6 +447,7 @@ function mapBookingError(err: unknown): {
     | "SLOT_TAKEN"
     | "VERIFY_UNAVAILABLE"
     | "OUTSIDE_CALLING_WINDOW"
+    | "ATTENDEE_EMAIL_REFUSED"
     | "INTERNAL";
 } {
   // Each branch names its decision (#1318). The caller records every one of these as an
@@ -456,6 +462,10 @@ function mapBookingError(err: unknown): {
   if (err instanceof VerifyUnavailableError) return { status: 503, code: "VERIFY_UNAVAILABLE" };
   // refusal: api_outside_calling_window
   if (err instanceof OutsideCallingWindowError) return { status: 422, code: "OUTSIDE_CALLING_WINDOW" };
+  // #3359: Google refused to invite the attendee's address. The caller asks the lead
+  // for another one; retrying the same body can never succeed.
+  // refusal: api_attendee_email_refused
+  if (err instanceof AttendeeEmailRefusedError) return { status: 400, code: "ATTENDEE_EMAIL_REFUSED" };
   // refusal: api_internal
   return { status: 500, code: "INTERNAL" };
 }

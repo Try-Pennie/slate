@@ -100,13 +100,14 @@ import {
   MANAGE_PHONE_NOT_CHANGEABLE,
   MANAGE_PHONE_NOT_FOUND,
 } from "./manage-copy.ts";
-import { storedFirstName, validateAttendee } from "../attendee.ts";
+import { INVALID_EMAIL, storedFirstName, validateAttendee } from "../attendee.ts";
 import { leadCallingZone, withinLeadCallingWindow } from "./lead-calling-window.ts";
 import { shortErrorReason } from "../notify/error-text.ts";
 import { callingNumberWithinDeadline } from "../salesforce/lead-calling-number.ts";
 import type { ScheduleTimer } from "../read-within-deadline.ts";
 import { findDeadlineExceeded, type DeadlineFound } from "../fetch-within-deadline.ts";
 import { GoogleBreakerOpenError } from "../google/breaker.ts";
+import { isInvalidAttendeeEmailRefusal } from "../google/http-error.ts";
 import { withinOwedCleanup } from "./cleanup-allowance.ts";
 import { confirmLineWaitMs, type ConfirmLine, type LeaderVerdict, type LineKey, type SharedSeat } from "./confirm-queue.ts";
 import type { WaitPoint } from "./wait-marks.ts";
@@ -538,6 +539,27 @@ export class ContactRefusedError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ContactRefusedError";
+  }
+}
+
+/**
+ * Google refused to invite the lead's email address on a create (#3359), so no
+ * booking was made and none ever can be with that address.
+ *
+ * Our own check (`validateAttendee`) is meant to refuse everything Google does,
+ * so this is the backstop for a shape the two still disagree on. It carries the
+ * lead's own sentence, the one the email field already shows, so every route
+ * answers it as a refusal about that field rather than as an unexpected fault:
+ * on 2026-10-06 it was a 500, and the lead tried four more times without ever
+ * learning their email was the problem. Google's answer rides along as `cause`.
+ */
+export class AttendeeEmailRefusedError extends Error {
+  /** The field the lead has to change. */
+  readonly field = "email" as const;
+  constructor(cause: unknown) {
+    super(INVALID_EMAIL);
+    this.name = "AttendeeEmailRefusedError";
+    this.cause = cause;
   }
 }
 
@@ -4804,7 +4826,17 @@ async function completeReservation(
         reservation.gcal_client_id = fresh;
       },
     },
-  );
+  ).catch(async (err: unknown): Promise<never> => {
+    if (!isInvalidAttendeeEmailRefusal(err)) throw err;
+    // #3359: Google will never invite this address, so the reservation can never
+    // complete and nothing was written to the calendar. Terminal, exactly like a
+    // taken slot below: the row goes now, under the cleanup allowance, so neither
+    // the drain nor the lead's own retry re-sends a create Google has refused. A
+    // failed delete throws ITS error instead, and the row stays on the drain's
+    // ordinary retry, where it backs off and pages rather than looping silently.
+    await withinOwedCleanup(() => deps.deleteReservation(reservation.id));
+    throw new AttendeeEmailRefusedError(err);
+  });
 
   const inserted = await deps.insertBooking({ ...bookingInsert, gcal_event_id: gcalEventId });
   if (!inserted.ok) {
@@ -4994,7 +5026,16 @@ export async function processBookingReservations(
       // alert pointing on-call at a deleted row. Only a TRANSIENT failure leaves
       // the row pending: bump attempts + last_error with backoff (#445) so we
       // don't re-hit it every tick; past the alert threshold it's reported stuck.
-      if (!(err instanceof SlotUnavailableError)) {
+      if (err instanceof AttendeeEmailRefusedError) {
+        // #3359: terminal for the same reason, and completeReservation has already
+        // deleted the row. Said in the log because the row, and its last_error, are
+        // gone: this line is the only record of why. No address, which is contact data.
+        log.warn("reservations", {
+          msg: "reservation deleted: Google refused the attendee email, which no retry can change",
+          reservation_id: reservation.id,
+          attempts: reservation.attempts + 1,
+        });
+      } else if (!(err instanceof SlotUnavailableError)) {
         const attempts = reservation.attempts + 1;
         const lastError = err instanceof Error ? err.message : String(err);
         await deps.bumpReservationAttempt(reservation.id, attempts, lastError);

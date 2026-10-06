@@ -46,9 +46,18 @@ const service = vi.hoisted(() => {
       this.zone = zone;
     }
   }
+  // #3359: Google refused the lead's address on the create.
+  class AttendeeEmailRefusedError extends Error {
+    readonly field = "email" as const;
+    constructor(cause: unknown) {
+      super("Enter a valid email address");
+      this.cause = cause;
+    }
+  }
   return {
     UnknownBucketError,
     OutsideCallingWindowError,
+    AttendeeEmailRefusedError,
     createBooking: vi.fn(),
     bookingDetailExtras: vi.fn((_booking: unknown) => ({
       contact: { name: "Kris", email: "k@x.com", phone: "+12035615295" },
@@ -123,6 +132,7 @@ import { TEST_PASS_HEADER, TEST_PASS_REFUSAL_CODES } from "@/lib/embed/test-pass
 import { TEST_PASS_TTL_MS, mintTestPass } from "@/lib/embed/test-pass";
 import { HIDDEN_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
 import { REFERRER_ORIGIN_MAX_CHARS } from "@/lib/embed/referrer-origin";
+import { INVALID_EMAIL } from "@/lib/attendee";
 
 const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
 // #2666: the public test bucket is booked only with the pass `/book` handed an
@@ -450,6 +460,26 @@ describe("POST /booking (embed) error mapping", () => {
       code: "411",
       host: { prefill: null, referrer_origin: null },
     });
+  });
+
+  // #3359: on 2026-10-06 this answered 500 internal five times, and the lead never
+  // learned the email was the problem. It is a refusal about one field.
+  it("answers Google refusing the attendee email as a 400 against the email field, never internal (#3359)", async () => {
+    service.createBooking.mockRejectedValueOnce(new service.AttendeeEmailRefusedError(new Error("google 400")));
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.fieldErrors).toEqual({ email: INVALID_EMAIL });
+    expect(body.error).toBe(BOOKING_ERROR_COPY.checkContactDetails);
+    expect(recordApiOutcome).toHaveBeenCalledWith("error", "411", "attendee_email_refused", {
+      by: "bucket",
+      code: "411",
+      host: { prefill: null, referrer_origin: null },
+    });
+    expect(recordApiOutcome).not.toHaveBeenCalledWith("error", "411", "internal", expect.anything());
+    // Our check arriving late is not an attempt the lead should pay for: the
+    // corrected retry must not meet a rate limit.
+    expect(rateLimit.refundRequest).toHaveBeenCalledTimes(3);
   });
 
   it("passes the zone the booker sent through to the booking (#2310)", async () => {

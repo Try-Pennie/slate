@@ -296,6 +296,19 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
       "indistinguishable without a count.",
   },
   {
+    id: "attendee_email_refused",
+    surface: "embed booker",
+    outcome: "400, with the email field told to enter a valid address",
+    counting: { kind: "error", code: "attendee_email_refused" },
+    rateSignal: { kind: "covered" },
+    why:
+      "Google refused to invite the address the lead typed (#3359), after our own check passed " +
+      "it. One is a lead's typo our rule did not yet know about. A wave means our rule and " +
+      "Google's have drifted apart and every lead typing that shape is being turned away, which " +
+      "the share sees and names under its own code rather than burying it under internal, " +
+      "where it used to arrive as a 500 and a page.",
+  },
+  {
     id: "outside_calling_window",
     surface: "embed booker",
     outcome: "422 OUTSIDE_CALLING_WINDOW, told we only call between 8 AM and 8 PM their time",
@@ -440,6 +453,19 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
       "The API-side twin of outside_calling_window (#2310), judged in the zone the caller sent. A " +
       "caller that keeps sending such times is refusing every lead it books, which is a share worth " +
       "seeing rather than one stray call.",
+  },
+  {
+    id: "api_attendee_email_refused",
+    surface: "booking API",
+    outcome: "400 ATTENDEE_EMAIL_REFUSED, with the email field error, telling the caller to ask for another address",
+    counting: { kind: "error", code: "ATTENDEE_EMAIL_REFUSED" },
+    codeFrom: "mapped",
+    rateSignal: { kind: "covered" },
+    why:
+      "The API-side twin of attendee_email_refused (#3359). Its own code rather than VALIDATION, " +
+      "because the body parsed and passed our rules and Google refused it at the calendar: a wave " +
+      "of VALIDATION means the caller's shape changed, a wave of this means our rule and Google's " +
+      "disagree, and those send different people to fix different things (L11).",
   },
   {
     id: "api_internal",
