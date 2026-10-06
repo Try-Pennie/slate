@@ -124,10 +124,8 @@ const worker = {
         headers: { "content-type": "text/plain; charset=utf-8" },
       });
     }
-    return (
-      httpsRedirect(request) ??
-      handler.fetch(withEntryMarks(request, { loadtest, nowMs: enteredAtMs, fetchIndex }), env, ctx)
-    );
+    const appRequest = withEntryMarks(request, { loadtest, nowMs: enteredAtMs, fetchIndex });
+    return httpsRedirect(request) ?? handler.fetch(appRequest, env, ctx);
   },
 
   async scheduled(
