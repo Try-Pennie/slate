@@ -22,6 +22,7 @@ import { dirname, resolve, relative } from "node:path";
 import { availableParallelism } from "node:os";
 import { discoverSuiteNames } from "./lib/suite-discovery.ts";
 import { formatRunSummary } from "./lib/run-summary.ts";
+import { nodeOptionsWithHook } from "./lib/clock-shift.ts";
 import {
   formatTripwireFindings,
   resolveTripwireMode,
@@ -37,8 +38,13 @@ const repoRoot = resolve(here, "..");
 // The shifted run (#2503). `SLATE_CLOCK_SHIFT=+1d pnpm test:node` asks every suite
 // what it will do on a day that has not happened yet, which is the only way a test
 // whose meaning is a relationship between a fixture and today is found before it
-// goes red on main by itself. The hook goes on the CHILD's argv rather than into
-// NODE_OPTIONS so the shift is visible in the command the runner actually ran.
+// goes red on main by itself. The hook goes on the CHILD's argv so the shift is
+// visible in the command the runner actually ran, AND into NODE_OPTIONS (#3361) so
+// every node process a suite starts is on the same shifted clock as the suite. A
+// child left on the real clock made the run blame suites that hand a child a moment
+// computed on their own clock (the burst driver waited a day for a burst and fired
+// nothing). Only the shifted run touches NODE_OPTIONS; an ordinary run passes it
+// through exactly as it found it.
 const clockShiftSpec = process.env.SLATE_CLOCK_SHIFT?.trim() ?? "";
 
 const NODE_ARGS = [
@@ -60,7 +66,13 @@ const watchRoot = tripwireWatchRoot(process.env, repoRoot);
 // Every suite is told an outer run covers the tree, so a suite that starts this
 // runner again (test-run-tests.ts does) does not arm a second watcher that would
 // see its concurrent siblings' writes and blame them on itself.
-const childEnv: NodeJS.ProcessEnv = { ...process.env, SLATE_TREE_TRIPWIRE: "nested" };
+const childEnv: NodeJS.ProcessEnv = {
+  ...process.env,
+  SLATE_TREE_TRIPWIRE: "nested",
+  ...(clockShiftSpec
+    ? { NODE_OPTIONS: nodeOptionsWithHook(process.env.NODE_OPTIONS, resolve(here, "shift-clock.ts")) }
+    : {}),
+};
 const SUSPECT_GRACE_MS = 2_000;
 
 function discover(): string[] {

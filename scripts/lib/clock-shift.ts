@@ -28,7 +28,8 @@
 //
 // It is deliberately dependency free (no Luxon), because the hook that uses it
 // loads before anything else in the process and must not drag the app's module
-// graph in ahead of the code under test.
+// graph in ahead of the code under test. A node builtin is the one import it takes.
+import { pathToFileURL } from "node:url";
 
 export interface ClockShift {
   /** The offset in milliseconds, added to every real reading. Never zero. */
@@ -126,6 +127,24 @@ export function parseClockShift(spec: string, fromMs: number): ClockShiftResult 
     };
   }
   return { ok: true, shift: { ms, spec: trimmed, targetMs } };
+}
+
+/**
+ * NODE_OPTIONS that load `hookPath` into every node process started under them,
+ * keeping whatever options were already set ahead of it (#3361).
+ *
+ * The hook is named by its file URL rather than its path, because NODE_OPTIONS is
+ * split on whitespace and the real checkout sits under a folder whose name holds
+ * spaces and a curly apostrophe. A file URL percent encodes both (and every other
+ * character NODE_OPTIONS would read specially), so the reference is one token
+ * wherever the checkout lives, and being absolute it resolves from any cwd a child
+ * is started in. Quoting the plain path also parses, but leaves the result
+ * depending on Node's quoting rules for a value nobody reads by eye.
+ */
+export function nodeOptionsWithHook(existing: string | undefined, hookPath: string): string {
+  const hook = `--import=${pathToFileURL(hookPath).href}`;
+  const kept = (existing ?? "").trim();
+  return kept === "" ? hook : `${kept} ${hook}`;
 }
 
 /** A one line description for a log, naming both the spec and where it lands. */
