@@ -8,7 +8,9 @@ import {
 import {
   createEventOnCalendar,
   deleteEventOnCalendar,
+  updateEventTimeOnCalendar,
 } from "@/lib/google/calendar";
+import { EventGone } from "@/lib/booking/core";
 import { syncCalcomOverrides } from "@/lib/ooo/calcom-sync";
 import {
   previewBulkReassign,
@@ -143,6 +145,57 @@ export function realDeps(): OooDeps {
       createEventOnCalendar(actorEmail, calendarId, args, clientId),
     deleteCalendarEvent: (actorEmail, calendarId, eventId) =>
       deleteEventOnCalendar(actorEmail, calendarId, eventId),
+    // #3365: a narrowed request's events move rather than being recreated. A 404/410
+    // is the typed EventGone, answered as "gone" so the orchestration clears the id
+    // and the next approval creates it afresh; anything else throws.
+    moveCalendarEvent: async (actorEmail, calendarId, eventId, args) => {
+      try {
+        await updateEventTimeOnCalendar(actorEmail, calendarId, eventId, args.start, args.end, args.timezone);
+        return "moved";
+      } catch (e) {
+        if (e instanceof EventGone) return "gone";
+        throw e;
+      }
+    },
+    // #3365: narrow the held block in place, one write, so there is never a moment
+    // with no block or with two. Matched on the id AND the owner, and counted, so a
+    // write that matched nothing reads as the failure it is rather than as done.
+    // Sets source 'ooo' too, which converts a held block an older deploy wrote as
+    // 'slate' (a 'gcal' shaped one is refused by the 0172 shape check, and reported).
+    holdNarrowedWindow: async ({ id, requestId, userId, startIso, endIso }) => {
+      const { data, error } = await db()
+        .from("busy_blocks")
+        .update({ starts_at: startIso, ends_at: endIso, source: "ooo" })
+        .eq("id", id)
+        .eq("ooo_request_id", requestId)
+        .select("id");
+      if (error) {
+        log.error("ooo", { msg: "held window could not be narrowed", request_id: requestId }, error);
+        return false;
+      }
+      const written = (data ?? []).length === 1;
+      if (written) {
+        // The removed hours are bookable again: refresh the agent's buckets, through
+        // after() (#503) like every other OOO block write; cron backstops it.
+        afterResponse("ooo-recompute", () => recomputeBucketsForAgent(userId));
+      }
+      return written;
+    },
+    // #3365: what the held block really covers, so a change is judged against it.
+    // Matched on the id AND the owner, like the narrowing above. unwrap, because a
+    // failed read must refuse the change rather than read as "nothing held".
+    loadHeldWindow: async ({ id, requestId }) => {
+      const row = unwrap(
+        await db()
+          .from("busy_blocks")
+          .select("starts_at, ends_at")
+          .eq("id", id)
+          .eq("ooo_request_id", requestId)
+          .maybeSingle(),
+        "ooo.loadHeldWindow",
+      ) as { starts_at: string; ends_at: string } | null;
+      return row ? { startIso: row.starts_at, endIso: row.ends_at } : null;
+    },
 
     // Same retry-once + throttled-alert posture as the booking write-through:
     // the approval already happened, so a cache failure must not fail it, but

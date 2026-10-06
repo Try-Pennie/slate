@@ -12,7 +12,17 @@ import {
   oooUndoManagerAlert,
   oooUndoAgentAlert,
   oooCoverageStopAlert,
+  oooNarrowCalendarAlert,
+  oooNarrowHoldAlert,
 } from "./alert-copy.ts";
+import {
+  declinedReleasedLine,
+  modifyAgentDm,
+  modifyManagerHeading,
+  modifyManagerNote,
+  type HeldOnEarlier,
+  type ModifyOutcome,
+} from "./modify-copy.ts";
 import {
   cancelActPerformed,
   cancelAgentDm,
@@ -43,10 +53,12 @@ import {
   DUPLICATE_REQUEST_MESSAGE,
   formatRequestWhenAndReason,
   formatWhenLine,
+  holdsApprovalArtifacts,
   overlaps,
   shortDate,
   stripModifiedMarkers,
   validateWindow,
+  windowWithin,
 } from "./core.ts";
 // Relative value import, per this file's header: a "@/" VALUE import is not
 // erased and breaks the node --experimental-strip-types suites.
@@ -54,6 +66,7 @@ import { roleLabel } from "../auth/roles.ts";
 import { isRetiredSkip } from "../calcom/outcomes.ts";
 import { reachabilityFromError } from "../google/reachability-classify.ts";
 import { deterministicEventId } from "../booking/core.ts";
+import { log } from "../log.ts";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
 
 /**
@@ -111,11 +124,14 @@ export type OooBusyBlockInsert = {
   starts_at: string;
   ends_at: string;
   /**
-   * Always a Slate written row (#3360). Typed to the one shape so nothing can go
+   * Always a held window (#3360, #3365). Typed to the one shape so nothing can go
    * back to writing a source='gcal' row keyed on the agent event, which is the
-   * row the calendar sync treats as that event's mirror and rewrites.
+   * row the calendar sync treats as that event's mirror and rewrites. Its own
+   * source since 0172, because the reconcile sweep frees every 'slate' row with no
+   * booking unless its owner is APPROVED, and a narrowed request keeps its window
+   * held while it waits for re-approval as pending.
    */
-  source: "slate";
+  source: "ooo";
   gcal_event_id: null;
   calendar_id: null;
   /**
@@ -278,6 +294,40 @@ export interface OooDeps {
     calendarId: string,
     eventId: string,
   ): Promise<void>;
+  /**
+   * Move an existing event to new times (#3365, a narrowed request). "gone" when
+   * Google no longer has the event (404/410), so the caller can tell "moved" from
+   * "nothing was there"; any other failure THROWS.
+   */
+  moveCalendarEvent(
+    actorEmail: string,
+    calendarId: string,
+    eventId: string,
+    args: { start: string; end: string; timezone: string },
+  ): Promise<"moved" | "gone">;
+  /**
+   * Narrow a request's held block in place to a new window (#3365). Matches on the
+   * block id AND its owner, so it can never resize a row another request holds.
+   * True only when exactly that row was written.
+   */
+  holdNarrowedWindow(args: {
+    id: string;
+    requestId: string;
+    userId: string;
+    startIso: string;
+    endIso: string;
+  }): Promise<boolean>;
+  /**
+   * The window a request's held block REALLY covers (#3365). After a failed
+   * narrowing it is the earlier, wider window, not the one the request row carries,
+   * and a later change is judged against it. Null when no row with that id belongs to
+   * the request; THROWS on a failed read, which the caller turns into a refusal,
+   * because a read that never ran cannot say what is held.
+   */
+  loadHeldWindow(args: {
+    id: string;
+    requestId: string;
+  }): Promise<{ startIso: string; endIso: string } | null>;
 
   /** Returns the inserted busy block id (null on failure — alerted inside). */
   insertBusyBlock(block: OooBusyBlockInsert): Promise<string | null>;
@@ -453,6 +503,10 @@ async function findOverlap(
 export const OVERLAP_UNREADABLE_MESSAGE =
   "We could not check your existing time off just now. Please try again in a moment.";
 
+/** #3365: a change to a held request whose block could not be read. Nothing was changed. */
+export const HELD_WINDOW_UNREADABLE_MESSAGE =
+  "We could not check what this time off is blocking just now, so nothing was changed. Please try again in a moment.";
+
 function overlapError(r: OverlapCandidate): string {
   return (
     `This overlaps a request you already have for ` +
@@ -550,10 +604,14 @@ function managerNotice(
    *  coverage-notice-copy.ts, never assembled here, so every state is readable in
    *  one place (L41). */
   coverage?: string | null,
+  /** What is blocked while the manager decides a changed request (#3365), built by
+   *  `modifyManagerNote`; null when there is nothing to say. */
+  note?: string | null,
 ): string {
   return (
     `*${heading}* from ${agentDisplayName(agent)}\n` +
     `${STATUS_LINE[status]}\n` +
+    (note ? `${note}\n` : "") +
     `${formatRequestWhenAndReason(request)}` +
     (request.notes ? `\nNotes: ${request.notes}` : "") +
     (coverage ? `\n${coverage}` : "") +
@@ -566,6 +624,7 @@ async function notifyManagerOfPending(
   agent: User,
   heading: string,
   deps: OooDeps,
+  note: string | null = null,
 ): Promise<void> {
   // Read here rather than at the call sites, so the fresh notice `modifyOoo` posts
   // recomputes by construction: an edited request carrying the submit-time number
@@ -582,6 +641,7 @@ async function notifyManagerOfPending(
     heading,
     "pending",
     pendingCoverageLine(willMove),
+    note,
   );
   const namedManager = request.manager_id
     ? await deps.getUser(request.manager_id)
@@ -749,8 +809,18 @@ async function runPostApproval(
     timezone: request.display_tz_id,
   };
 
+  // 0. A narrowed request (#3365) whose calendar events or held block could not be
+  //    moved to its narrower window when it was changed: try again now. Only what is
+  //    recorded as still on the earlier window is touched, so a fresh approval and an
+  //    ordinary retry do nothing here. A vanished event's id is cleared, so the steps
+  //    below create it afresh.
+  await narrowHeldArtifacts(request, agent, deps, effects, patch, { onlyWhereEarlier: true });
+  const managerEventNow =
+    "manager_event_id" in patch ? patch.manager_event_id : request.manager_event_id;
+  const agentEventNow = "agent_event_id" in patch ? patch.agent_event_id : request.agent_event_id;
+
   // 1. Manager OOO calendar event (per-manager calendar, main fallback).
-  if (!request.manager_event_id) {
+  if (!managerEventNow) {
     const manager = request.manager_id
       ? await deps.getUser(request.manager_id)
       : null;
@@ -802,7 +872,7 @@ async function runPostApproval(
 
   // 2. Agent-calendar event (best-effort) — this is what blocks availability
   //    once synced, and the busy block below makes it immediate.
-  if (!request.agent_event_id && !effects[EFFECTS.agentEvent]?.startsWith("ok")) {
+  if (!agentEventNow && !effects[EFFECTS.agentEvent]?.startsWith("ok")) {
     try {
       patch.agent_event_id = await createEventWithRetry(
         deps,
@@ -830,8 +900,8 @@ async function runPostApproval(
   // 3. busy_blocks write-through so the embed stops offering the window now.
   //
   //    The APPROVED window is held by a block the calendar sync can never write
-  //    (#3360): source='slate', no gcal_event_id, no calendar_id, owned through
-  //    `ooo_request_id`. It used to be a source='gcal' row carrying the agent
+  //    (#3360): source='ooo' (#3365), no gcal_event_id, no calendar_id, owned
+  //    through `ooo_request_id`. It used to be a source='gcal' row carrying the agent
   //    event's id, so the sync's upsert on (user_id, calendar_id, gcal_event_id)
   //    treated it as that event's mirror and rewrote it to whatever span the event
   //    had. On 2026-10-06 one hand edit in Google cut 690 minutes off an approved
@@ -844,11 +914,13 @@ async function runPostApproval(
   //    disagree, the sync pages (src/lib/ooo/event-coverage.ts) and asks a person
   //    to make them agree, in whichever direction is true.
   //
-  //    Every sweep already spares this shape: the reconcile sweep keeps a slate
-  //    row whose owner is still approved, both pool exit prunes keep any row with
-  //    an `ooo_request_id`, and nothing on the sync path touches a slate row
-  //    (its upsert and deletes match on gcal_event_id and calendar_id, its
-  //    reconcile and the nightly prune on source='gcal').
+  //    No sweep can see this shape: the reconcile sweep and the missing block
+  //    check read only 'slate' rows, both pool exit prunes keep any row with an
+  //    `ooo_request_id`, and nothing on the sync path touches it (its upsert and
+  //    deletes match on gcal_event_id and calendar_id, its reconcile and the
+  //    nightly prune on source='gcal'). It ends with its request instead: the
+  //    undo below deletes it, and a trigger (0172) deletes it whenever the
+  //    request is cancelled or declined or stops pointing at it.
   //
   //    The condition is `busy_block_id` alone, deliberately (#1464, L121). It used
   //    to also skip whenever `side_effects.busy_block` began with "ok", which made
@@ -858,7 +930,9 @@ async function runPostApproval(
   //    the retry that exists to repair exactly this request skipped the only step
   //    that was broken, permanently. The id is the artifact's own existence, so a
   //    null id with an "ok" effect is damage and gets re-created.
-  const agentEventId = patch.agent_event_id ?? request.agent_event_id;
+  // Read through the patch with `in`, never `??`: a vanished event's id is cleared to
+  // null in the patch (#3365), and `??` would fall back to the stale id.
+  const agentEventId = "agent_event_id" in patch ? patch.agent_event_id : request.agent_event_id;
   if (!request.busy_block_id) {
     const blockId = await deps.insertBusyBlock(heldWindowBlock(request, agent.id));
     if (blockId) {
@@ -976,8 +1050,9 @@ async function runPostApproval(
 
 /**
  * The row that holds an approved window (#3360): Slate written, keyed on nothing
- * the calendar sync writes, owned by the request. One constructor, so approval,
- * retry and a narrowing change (#3365) can never write two different shapes.
+ * the calendar sync writes, owned by the request, with a source of its own that no
+ * sweep of 'slate' or 'gcal' rows can see (#3365, migration 0172). One constructor,
+ * so approval and retry can never write two different shapes.
  */
 export function heldWindowBlock(
   request: Pick<OooRequest, "id" | "starts_at" | "ends_at">,
@@ -987,7 +1062,7 @@ export function heldWindowBlock(
     user_id: agentId,
     starts_at: request.starts_at,
     ends_at: request.ends_at,
-    source: "slate",
+    source: "ooo",
     gcal_event_id: null,
     calendar_id: null,
     ooo_request_id: request.id,
@@ -1032,6 +1107,103 @@ async function stopCoverage(
   }
 }
 
+/**
+ * Recorded on an artifact that still shows the window a request had before it was
+ * narrowed (#3365), so re-approval knows exactly what to move and nothing else.
+ */
+export const EARLIER_WINDOW = "failed: still on the earlier window";
+
+/**
+ * Move what an approval holds to the request's current, narrower window (#3365).
+ *
+ * The agent's own event first, because the held block FOLLOWS it: if the event could
+ * not be moved, the block is deliberately left on the earlier window too, so Slate and
+ * the agent's calendar go on agreeing about what is blocked (over-blocking is the safe
+ * direction), and the failure is said out loud. A vanished event (404) has its id
+ * cleared, so the next approval or retry creates it afresh, and the block then narrows,
+ * since it is the only thing blocking the window.
+ *
+ * `onlyWhereEarlier` is the re-approval form: touch only what was recorded as still on
+ * the earlier window. Writes into `effects` and `patch`; the caller persists them.
+ * Never throws.
+ */
+async function narrowHeldArtifacts(
+  request: OooRequest,
+  agent: User,
+  deps: OooDeps,
+  effects: Record<string, string>,
+  patch: Partial<OooRequest>,
+  opts: { onlyWhereEarlier: boolean },
+): Promise<void> {
+  const due = (key: string) =>
+    !opts.onlyWhereEarlier || (effects[key] ?? "").startsWith(EARLIER_WINDOW);
+  const times = {
+    start: request.starts_at,
+    end: request.ends_at,
+    timezone: request.display_tz_id,
+  };
+
+  if (request.agent_event_id && due(EFFECTS.agentEvent)) {
+    try {
+      const out = await deps.moveCalendarEvent(agent.email, "primary", request.agent_event_id, times);
+      if (out === "moved") {
+        effects[EFFECTS.agentEvent] = "ok";
+      } else {
+        patch.agent_event_id = null;
+        effects[EFFECTS.agentEvent] = "failed: the calendar event was gone";
+      }
+    } catch (e) {
+      const reason = shortReason(e);
+      effects[EFFECTS.agentEvent] = `${EARLIER_WINDOW} (${reason})`;
+      await deps.alertOps("ooo_agent_calendar", oooNarrowCalendarAlert(request.id, "agent", reason));
+    }
+  }
+
+  if (request.manager_event_id && due(EFFECTS.managerEvent)) {
+    const calendarId = request.manager_event_calendar_id ?? deps.mainOooCalendarId();
+    try {
+      const out = await deps.moveCalendarEvent(
+        deps.oooCalendarActorEmail(),
+        calendarId,
+        request.manager_event_id,
+        times,
+      );
+      if (out === "moved") {
+        effects[EFFECTS.managerEvent] = "ok";
+      } else {
+        patch.manager_event_id = null;
+        patch.manager_event_calendar_id = null;
+        effects[EFFECTS.managerEvent] = "failed: the calendar event was gone";
+      }
+    } catch (e) {
+      const reason = shortReason(e);
+      effects[EFFECTS.managerEvent] = `${EARLIER_WINDOW} (${reason})`;
+      await deps.alertOps("ooo_manager_calendar", oooNarrowCalendarAlert(request.id, "manager", reason));
+    }
+  }
+
+  if (request.busy_block_id && due(EFFECTS.busyBlock)) {
+    if ((effects[EFFECTS.agentEvent] ?? "").startsWith(EARLIER_WINDOW)) {
+      effects[EFFECTS.busyBlock] = `${EARLIER_WINDOW} (kept with the calendar event)`;
+    } else {
+      const narrowed = await deps.holdNarrowedWindow({
+        id: request.busy_block_id,
+        requestId: request.id,
+        userId: request.user_id,
+        startIso: request.starts_at,
+        endIso: request.ends_at,
+      });
+      if (narrowed) {
+        const before = effects[EFFECTS.busyBlock] ?? "";
+        effects[EFFECTS.busyBlock] = before.startsWith("ok") ? before : "ok";
+      } else {
+        effects[EFFECTS.busyBlock] = `${EARLIER_WINDOW} (the block could not be narrowed)`;
+        await deps.alertOps("busy_block_write_through", oooNarrowHoldAlert(request.id));
+      }
+    }
+  }
+}
+
 /** Undo of every approval artifact (cancel + modify-of-approved share this). */
 async function undoPostApproval(
   request: OooRequest,
@@ -1072,52 +1244,7 @@ async function undoPostApproval(
     userId: agent.id,
     gcalEventId: request.agent_event_id,
   });
-  if (request.calcom_synced) {
-    // #2417 / L100: the removal recomputes the dates from the agent's REMAINING
-    // approved absences, so it can find that the override it was meant to undo
-    // was never there. That is not success and it is not silent: cal.com is left
-    // correct and somebody is told the two systems had disagreed.
-    const outcome = await deps.calcomRemoveOverrides({
-      requestId: request.id,
-      agentUserId: agent.id,
-      agentEmail: agent.email,
-      startIso: request.starts_at,
-      endIso: request.ends_at,
-    });
-    if (outcome.startsWith("failed")) {
-      await deps.alertOps("ooo_calcom", oooCalcomAlert(request.id, outcome));
-    } else if (isRetiredSkip(outcome)) {
-      // #2890: cal.com is retired, so the block stays in cal.com, and this request
-      // is about to forget the window (calcom_synced goes false below, and a change
-      // replaces the dates). Recorded, so putting cal.com back can take it out.
-      try {
-        await deps.recordCalcomRemovalPending({
-          requestId: request.id,
-          agentUserId: agent.id,
-          startIso: request.starts_at,
-          endIso: request.ends_at,
-          reason: outcome,
-        });
-      } catch (e) {
-        // Its own key, an INCIDENT (#2890 review). Never `ooo_calcom`: the override
-        // sweep ends that page with "all in place" as soon as no override is
-        // failing, which would clear this while the block is still in cal.com. And
-        // there is no healthy state to observe: the window was never recorded, so
-        // nothing in Slate can tell when somebody has taken the block out.
-        // Keyed per AGENT (#2890 review): the cooldown is per key, so one shared key
-        // silenced every second unrecorded block inside the window. Per agent rather
-        // than per request because the suffix must be bounded (alert-catalog.ts):
-        // agents are bounded by the roster, requests grow forever with nothing to
-        // prune their rows. Nothing is lost when one agent's second block collapses
-        // into the first page, because that page sends the reader to the agent's
-        // whole cal.com schedule, not to one window.
-        await deps.alertOps(
-          `ooo_calcom_stale_unrecorded:${agent.id}`,
-          oooCalcomStaleUnrecordedAlert(request.id, agent.email, shortReason(e)),
-        );
-      }
-    }
-  }
+  if (request.calcom_synced) await undoCalcom(request, agent, deps);
   return {
     manager_event_id: null,
     manager_event_calendar_id: null,
@@ -1125,6 +1252,59 @@ async function undoPostApproval(
     busy_block_id: null,
     calcom_synced: false,
   };
+}
+
+/**
+ * Take a request's cal.com override out for the window it holds (#2417, #2890).
+ * Shared by the undo and by a narrowing change (#3365), which keeps Slate's held
+ * block but treats cal.com exactly as every change did before: removed now, put
+ * back for the new window on re-approval.
+ */
+async function undoCalcom(request: OooRequest, agent: User, deps: OooDeps): Promise<void> {
+  // #2417 / L100: the removal recomputes the dates from the agent's REMAINING
+  // approved absences, so it can find that the override it was meant to undo
+  // was never there. That is not success and it is not silent: cal.com is left
+  // correct and somebody is told the two systems had disagreed.
+  const outcome = await deps.calcomRemoveOverrides({
+    requestId: request.id,
+    agentUserId: agent.id,
+    agentEmail: agent.email,
+    startIso: request.starts_at,
+    endIso: request.ends_at,
+  });
+  if (outcome.startsWith("failed")) {
+    await deps.alertOps("ooo_calcom", oooCalcomAlert(request.id, outcome));
+  } else if (isRetiredSkip(outcome)) {
+    // #2890: cal.com is retired, so the block stays in cal.com, and this request
+    // is about to forget the window (the caller sets calcom_synced false, and a
+    // change replaces the dates). Recorded, so putting cal.com back can take it out.
+    try {
+      await deps.recordCalcomRemovalPending({
+        requestId: request.id,
+        agentUserId: agent.id,
+        startIso: request.starts_at,
+        endIso: request.ends_at,
+        reason: outcome,
+      });
+    } catch (e) {
+      // Its own key, an INCIDENT (#2890 review). Never `ooo_calcom`: the override
+      // sweep ends that page with "all in place" as soon as no override is
+      // failing, which would clear this while the block is still in cal.com. And
+      // there is no healthy state to observe: the window was never recorded, so
+      // nothing in Slate can tell when somebody has taken the block out.
+      // Keyed per AGENT (#2890 review): the cooldown is per key, so one shared key
+      // silenced every second unrecorded block inside the window. Per agent rather
+      // than per request because the suffix must be bounded (alert-catalog.ts):
+      // agents are bounded by the roster, requests grow forever with nothing to
+      // prune their rows. Nothing is lost when one agent's second block collapses
+      // into the first page, because that page sends the reader to the agent's
+      // whole cal.com schedule, not to one window.
+      await deps.alertOps(
+        `ooo_calcom_stale_unrecorded:${agent.id}`,
+        oooCalcomStaleUnrecordedAlert(request.id, agent.email, shortReason(e)),
+      );
+    }
+  }
 }
 
 export async function approveOoo(
@@ -1210,14 +1390,26 @@ export async function rejectOoo(
   });
 
   const agent = await deps.getUser(request.user_id);
+  // #3365: declining a narrowed request ends the time off, so what its approval held
+  // comes down now. After the transition, so a decline that lost the race undoes
+  // nothing; the 0172 trigger releases the held block on `rejected` even if this
+  // cannot run (no agent row to address the calendar by).
+  const released = agent !== null && holdsApprovalArtifacts(request);
+  let decided = flipped.request;
+  if (released) {
+    const undoPatch = await undoPostApproval(request, agent, deps);
+    await deps.patchRequest(requestId, undoPatch);
+    decided = { ...decided, ...undoPatch };
+  }
   if (agent) {
     await deps.dmUserByEmail(
       agent.email,
-      `:x: Your time off request for ${whenLineFor(request)} was *declined*.\n\n*Note from your manager:* ${rejectionNote}`,
+      `:x: Your time off request for ${whenLineFor(request)} was *declined*.\n\n*Note from your manager:* ${rejectionNote}` +
+        (released ? `\n\n${declinedReleasedLine()}` : ""),
     );
     await updateManagerStatus(request, agent, deps, "rejected");
   }
-  return { ok: true, request: flipped.request };
+  return { ok: true, request: decided };
 }
 
 export async function cancelOoo(
@@ -1236,9 +1428,12 @@ export async function cancelOoo(
   const agent = await deps.getUser(request.user_id);
   if (!agent) return fail("The requesting agent no longer exists.");
 
-  const undoPatch = wasApproved
-    ? await undoPostApproval(request, agent, deps)
-    : {};
+  // #3365: a narrowed request waits for re-approval as PENDING while still holding its
+  // window, so what to undo is decided by what is held, never by the status.
+  const undoPatch =
+    wasApproved || holdsApprovalArtifacts(request)
+      ? await undoPostApproval(request, agent, deps)
+      : {};
   const flipped = await deps.transitionRequest(requestId, ["pending", "approved"], {
       status: "cancelled",
       cancelled_at: deps.nowIso(),
@@ -1298,8 +1493,16 @@ export interface ModifyOooInput extends SubmitOooInput {
 
 /**
  * Port of handleModifyOOO_: the requester replaces the window (and optionally
- * reason/notes). A pending request just updates; an approved one has its
- * artifacts undone and returns to pending for re-approval.
+ * reason/notes). A pending request just updates. One that holds an approval goes
+ * back to pending for re-approval, and what happens to what it holds depends on the
+ * new window (#3365):
+ *
+ *  - INSIDE what is held (narrower, or the same): nothing new is being asked for, so
+ *    the held block and both calendar events are KEPT and moved to the new window,
+ *    and stay in force while the manager decides. Before #3365 every change undid
+ *    them, so shortening a day opened all of it to bookings until re-approval.
+ *  - anything else (wider, or moved): everything comes down, as before, because a
+ *    manager has not agreed to the new hours.
  */
 export async function modifyOoo(
   requestId: string,
@@ -1330,16 +1533,49 @@ export async function modifyOoo(
   const agent = await deps.getUser(request.user_id);
   if (!agent) return fail("The requesting agent no longer exists.");
 
-  const undoPatch = wasApproved
-    ? await undoPostApproval(request, agent, deps)
-    : {};
+  // What it holds, not its status, decides (#3365): a narrowed request is pending and
+  // still holds its window. `reapproval` keeps today's meaning for an approved request
+  // that holds nothing at all (one imported from the old tool, #1485).
+  const held = holdsApprovalArtifacts(request);
+  const reapproval = wasApproved || held;
+  const newWindow = { startIso: input.startIso, endIso: input.endIso };
+  // Judged against the window the held block REALLY covers, never the row's own: after
+  // a failed narrowing the block (and the agent's event with it) is still on the
+  // earlier, wider window while the row carries the narrower one, so judging the row
+  // would release hours the block still holds. The request's window when it holds no
+  // block (only calendar events, which follow the row).
+  let heldWindow = { startIso: request.starts_at, endIso: request.ends_at };
+  if (held && request.busy_block_id) {
+    let blockWindow: { startIso: string; endIso: string } | null;
+    try {
+      blockWindow = await deps.loadHeldWindow({ id: request.busy_block_id, requestId });
+    } catch (e) {
+      log.error("ooo", { msg: "held window unreadable; change refused", request_id: requestId }, e);
+      return fail(HELD_WINDOW_UNREADABLE_MESSAGE);
+    }
+    if (blockWindow) heldWindow = blockWindow;
+  }
+  const keeps = held && windowWithin(newWindow, heldWindow);
+  const sameWindow = keeps && windowWithin(heldWindow, newWindow);
+
+  const undoPatch = reapproval && !keeps ? await undoPostApproval(request, agent, deps) : {};
+  // A kept request keeps its record of what was written for it, minus what re-approval
+  // must do again: tell the agent, put cal.com back, and run the coverage sweep over
+  // the new window.
+  const keptEffects: Record<string, string> = keeps ? { ...request.side_effects } : {};
+  delete keptEffects[EFFECTS.agentDm];
+  delete keptEffects[EFFECTS.calcom];
+  delete keptEffects[EFFECTS.coverage];
 
   const stamp = shortDate(deps.nowIso());
-  const marker = wasApproved
+  const marker = reapproval
     ? `[Modified ${stamp}, requires re-approval]`
     : `[Modified ${stamp}]`;
   // Strip any prior marker so repeated edits don't stack them in the notes.
   const baseNotes = stripModifiedMarkers(input.notes?.trim() ?? request.notes ?? "");
+  // The transition comes FIRST for a kept request too: the calendar sync pages a
+  // shortened event of an APPROVED request (#3360), so the events must not move
+  // until this request reads pending.
   const flipped = await deps.transitionRequest(requestId, ["pending", "approved"], {
       status: "pending",
       starts_at: input.startIso,
@@ -1352,7 +1588,7 @@ export async function modifyOoo(
       decided_by: null,
       decided_at: null,
       rejection_note: null,
-      side_effects: {},
+      side_effects: keptEffects,
       ...undoPatch,
     });
   if (!flipped.ok) {
@@ -1373,8 +1609,34 @@ export async function modifyOoo(
       was_approved: wasApproved,
       starts_at: input.startIso,
       ends_at: input.endIso,
+      kept_window: keeps,
     },
   });
+
+  let current = flipped.request;
+  let stillEarlier: HeldOnEarlier | null = null;
+  if (keeps) {
+    const effects: Record<string, string> = { ...keptEffects };
+    const patch: Partial<OooRequest> = {};
+    await narrowHeldArtifacts(flipped.request, agent, deps, effects, patch, {
+      onlyWhereEarlier: false,
+    });
+    if (request.calcom_synced) {
+      await undoCalcom(request, agent, deps);
+      patch.calcom_synced = false;
+    }
+    patch.side_effects = effects;
+    await deps.patchRequest(requestId, patch);
+    current = { ...flipped.request, ...patch };
+    // What is REALLY held, so neither message says the removed hours reopened while a
+    // block still covers them (L11). The event first: when it did not move, the block
+    // was deliberately left with it, and the calendar is what needs repairing.
+    stillEarlier = (effects[EFFECTS.agentEvent] ?? "").startsWith(EARLIER_WINDOW)
+      ? "calendar"
+      : (effects[EFFECTS.busyBlock] ?? "").startsWith(EARLIER_WINDOW)
+        ? "block"
+        : null;
+  }
 
   // The same gap as the cancel (#1665), and it is worse here rather than milder.
   // A modification returns the request to PENDING, so the agent is bookable again
@@ -1391,26 +1653,26 @@ export async function modifyOoo(
 
   // notifyManagerOfPending posts a fresh message and overwrites the stored
   // slack ref, so first mark the prior manager message (an 'Approved' or
-  // earlier 'Pending') as superseded — once the ref is overwritten its location
+  // earlier 'Pending') as superseded, once the ref is overwritten its location
   // is lost and it can never be edited again, leaving a stale status forever.
   // Uses the pre-modify `request` (old window + old ref); a no-op when none.
   await updateManagerStatus(request, agent, deps, "superseded", coverageNote);
 
+  const outcome: ModifyOutcome = keeps
+    ? { kind: "kept", shortened: !sameWindow, stillEarlier }
+    : reapproval
+      ? { kind: "released" }
+      : { kind: "edited" };
   await notifyManagerOfPending(
-    flipped.request,
+    current,
     agent,
-    wasApproved
-      ? "Changed time off request (needs re-approval)"
-      : "Changed time off request",
+    modifyManagerHeading(outcome),
     deps,
+    modifyManagerNote(outcome, whenLineFor(request)),
   );
-  if (wasApproved) {
-    await deps.dmUserByEmail(
-      agent.email,
-      `Your changed time off request for ${whenLineFor(flipped.request)} was sent to your manager for re-approval.`,
-    );
-  }
-  return { ok: true, request: flipped.request };
+  const agentDm = modifyAgentDm(outcome, whenLineFor(current));
+  if (agentDm) await deps.dmUserByEmail(agent.email, agentDm);
+  return { ok: true, request: current };
 }
 
 /**
