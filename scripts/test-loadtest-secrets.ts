@@ -16,7 +16,10 @@ import {
   PRODUCTION_ONLY_SECRETS,
   bakedSettingsForMode,
   loadtestCarryingProductionSecrets,
+  LOADTEST_IDLE_ERROR,
   loadtestEntryRefusal,
+  loadtestIdle,
+  loadtestIdleBody,
   productionSecretsPresent,
 } from "../src/lib/loadtest-secrets.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -298,6 +301,59 @@ const BAKED_WITH_SECRET = {
   eq(Object.keys(bakedSettingsForMode("nonsense", "production")).length, 0, "and so is a broken one");
 }
 
+// --- idle between runs (#3310) --------------------------------------------------
+//
+// The load test Worker lives on between runs so Cloudflare keeps delivering its crons,
+// and teardown takes its three secrets away instead of deleting it. A deployment
+// missing ANY of them is idle: it answers nothing and runs no lane, rather than
+// running every lane each minute for each one to fail on the missing secret. Judged
+// on the same view of the settings `populateProcessEnv` builds: the baked file, then
+// the bindings over it.
+
+{
+  const all = { SUPABASE_SECRET_KEY: "k", CRON_SECRET: "c", BOOKING_API_KEY_CANARY: "b" };
+  const none = { production: {}, development: {}, test: {} };
+  eq(loadtestIdle({ loadtest: false, bindings: {}, baked: none }), null, "production is never idle, whatever it holds");
+  eq(loadtestIdle({ loadtest: true, bindings: all, baked: none }), null, "a load test deployment holding all three is serving a run");
+  eq(loadtestIdle({ loadtest: true, bindings: {}, baked: none }), [...LOADTEST_ALLOWED_SECRETS], "one holding none is idle and names all three");
+  eq(
+    loadtestIdle({ loadtest: true, bindings: { SUPABASE_SECRET_KEY: "k", CRON_SECRET: "c" }, baked: none }),
+    ["BOOKING_API_KEY_CANARY"],
+    "a half provisioned one is idle too, naming only what it lacks, so a run cannot start on it",
+  );
+  eq(loadtestIdle({ loadtest: true, bindings: { ...all, CRON_SECRET: "" }, baked: none }), ["CRON_SECRET"], "an empty value is no credential");
+  eq(loadtestIdle({ loadtest: true, bindings: { ...all, CRON_SECRET: "  " }, baked: none }), ["CRON_SECRET"], "nor is one of only spaces");
+  eq(loadtestIdle({ loadtest: true, bindings: { ...all, CRON_SECRET: {} }, baked: none }), ["CRON_SECRET"], "nor a binding that is not a string");
+  eq(
+    loadtestIdle({ loadtest: true, bindings: { SUPABASE_SECRET_KEY: "k", CRON_SECRET: "c" }, baked: { production: { BOOKING_API_KEY_CANARY: "b" }, development: {}, test: {} } }),
+    null,
+    "a value the build baked counts, exactly as the app will read it",
+  );
+  // The diagnostic path is exempt from the production refusal so a contaminated
+  // deployment can still SAY which production secrets it holds, on a key authed
+  // endpoint. Idle must not take that away: a deployment holding production secrets
+  // and missing a run secret is a contamination first, so the endpoint answers it.
+  const contaminated = { SLACK_BOT_TOKEN: "production's", SUPABASE_SECRET_KEY: "k", BOOKING_API_KEY_CANARY: "b" };
+  eq(
+    loadtestIdle({ loadtest: true, bindings: contaminated, baked: none, pathname: "/api/smoke/version" }),
+    null,
+    "a contaminated deployment is not answered as idle on the diagnostic path, which then names the contamination",
+  );
+  eq(
+    loadtestIdle({ loadtest: true, bindings: { SUPABASE_SECRET_KEY: "k", BOOKING_API_KEY_CANARY: "b" }, baked: none, pathname: "/api/smoke/version" }),
+    ["CRON_SECRET"],
+    "a clean one missing a run secret is still idle there, so a run one secret short stops with the name",
+  );
+  eq(
+    loadtestIdle({ loadtest: true, bindings: contaminated, baked: none, pathname: "/api/smoke//version/" }),
+    null,
+    "spelled with stray slashes, as the production refusal reads it",
+  );
+  const body = loadtestIdleBody(["CRON_SECRET"]);
+  eq(body, { error: LOADTEST_IDLE_ERROR, missing: ["CRON_SECRET"] }, "the idle answer names what is missing, for the preflight to quote");
+  assert(!JSON.stringify(body).includes("=c"), "and carries names, never a value");
+}
+
 // --- and it is WIRED into the entry (L3) ---------------------------------------
 //
 // The entry cannot be imported here: it imports two build artifacts that only exist
@@ -320,6 +376,30 @@ const BAKED_WITH_SECRET = {
   const scheduledHalf = entry.slice(entry.indexOf("async scheduled"));
   assert(fetchHalf.includes("loadtestEntryRefusal"), "the fetch handler asks it");
   assert(scheduledHalf.includes("loadtestEntryRefusal"), "and so does the scheduled handler");
+  // #3310: idle on both surfaces too, and asked AFTER the production refusal, which is
+  // the louder finding: a deployment holding production's secrets is an incident
+  // whatever else it lacks.
+  for (const [half, name] of [[fetchHalf, "fetch"], [scheduledHalf, "scheduled"]] as const) {
+    const refusal = half.indexOf("loadtestEntryRefusal(");
+    const idle = half.indexOf("loadtestIdle(");
+    assert(idle > -1, `the ${name} handler asks whether the deployment is idle`);
+    assert(refusal > -1 && idle > refusal, `and asks it after the production refusal in ${name}`);
+  }
+  // The fetch path hands idle the request's path, or the diagnostic path's exemption
+  // for a contaminated deployment never applies (#3310).
+  const fetchIdleCall = fetchHalf.slice(fetchHalf.indexOf("loadtestIdle("), fetchHalf.indexOf(");", fetchHalf.indexOf("loadtestIdle(")));
+  assert(/pathname: safePathname\(request\.url\)/.test(fetchIdleCall), `the fetch handler passes the request path to idle (got ${fetchIdleCall})`);
+  // Before the app is reached, or an idle request pays for Next's start and a lane runs.
+  assert(fetchHalf.indexOf("loadtestIdle(") < fetchHalf.indexOf("app.fetch("), "the idle answer comes before the app is reached");
+  assert(scheduledHalf.indexOf("loadtestIdle(") < scheduledHalf.indexOf("routesForCron("), "and before any lane is resolved");
+  // The log shipping receipt is the third surface that reaches the app (#3182). It got
+  // the production refusal with the lanes, and an idle Worker must not run it either:
+  // it would reach a heartbeat write with no secret to authorise it.
+  const receipt = entry.slice(entry.indexOf("class LogShippingReceipt"));
+  const receiptRefusal = receipt.indexOf("loadtestEntryRefusal(");
+  const receiptIdle = receipt.indexOf("loadtestIdle(");
+  assert(receiptIdle > -1 && receiptIdle > receiptRefusal, "the log shipping receipt asks whether the deployment is idle, after the production refusal");
+  assert(receiptIdle < receipt.indexOf("forwardReceipt("), "and before it forwards anything to the app");
 }
 
 finish();
