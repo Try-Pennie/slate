@@ -602,6 +602,13 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // so editing the cron or the timeout without revisiting this fails the build, and it
   // also refuses a bound with days of slack in it.
   "verdict:kill-switch": 52 * 60 * MIN,
+  // The daily proof that the shared confirm line answers (#3340). It runs as its own step
+  // of the burst counter's workflow, so it shares that workflow's cron and timeout and the
+  // same arithmetic: 24h of cadence, doubled so one dropped run does not page, plus the 3h
+  // worst lateness measured here, plus the job's 10 minute timeout. That is 51h10m, and 52
+  // clears it by under an hour. `scripts/test-confirm-line-schedule.ts` re-derives it FROM
+  // the workflow file.
+  "verdict:confirm-line": 52 * 60 * MIN,
   // The smoke canary's latency reading (#1700), stamped by the 30 minute canary
   // workflow whenever the check read a real median.
   //

@@ -17,7 +17,8 @@
 // Fails loud: a Slack post that errors, or Slack being unconfigured while there is
 // something to say, exits non-zero so the job goes visibly red rather than pretending it
 // warned anyone.
-import { readFileSync, appendFileSync } from "node:fs";
+import { appendFileSync } from "node:fs";
+import { readRunSummary } from "./lib/run-summary-file.ts";
 import { runAlerter } from "./lib/run-alerter.ts";
 import { postConcludedDecision } from "./lib/post-decision.ts";
 import {
@@ -38,19 +39,8 @@ export type PostFn = (msg: {
  * them means the run has to be looked at and the message says so.
  */
 export function readSummary(path: string): KillSwitchSummaryFile | null {
-  if (!path.trim()) return null;
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
-    if (typeof parsed !== "object" || parsed === null) return null;
-    const { exit, detail } = parsed as Record<string, unknown>;
-    // The exit code is the whole judgement, so a missing or unreadable one is NOT
-    // defaulted to anything: a default would pick some other ending's meaning, and "no
-    // verdict got here" is the honest reading of a file that cannot say which.
-    if (typeof exit !== "number" || !Number.isFinite(exit)) return null;
-    return { exit, detail: typeof detail === "string" ? detail : "" };
-  } catch {
-    return null;
-  }
+  // One reader for every scheduled proof (scripts/lib/run-summary-file.ts, #3340).
+  return readRunSummary(path);
 }
 
 export async function run(

@@ -114,6 +114,18 @@ export const BURST_COUNTER_VERDICT_LANE = "verdict:burst-counter";
  */
 export const KILL_SWITCH_VERDICT_LANE = "verdict:kill-switch";
 /**
+ * The daily proof that the shared confirm line answers (#3340), the third member of this
+ * family stamped from OUTSIDE the Worker, by its own step of the burst counter's workflow.
+ *
+ * The confirm path falls back to the isolate's own line whenever the shared one cannot be
+ * used (#3325), so a `CONFIRM_LINE` object that is bound and does not answer reads as
+ * healthy until a crowd for one slot arrives, which is the load run the shared line was
+ * built after. `pnpm verify:confirm-line` drives the confirm path's own client against the
+ * live object; this lane is stamped only on a run where the object was asked and answered.
+ * Which endings those are is decided in `scripts/lib/confirm-line-run-outcome.ts`.
+ */
+export const CONFIRM_LINE_VERDICT_LANE = "verdict:confirm-line";
+/**
  * The booking below the lead's Salesforce tier check (#2593).
  *
  * Silent on a healthy day AND on a broken one, like the tier staffing alarm: two
@@ -279,6 +291,7 @@ export type DetectorVerdictLane =
   | typeof LANE_WATCHDOG_VERDICT_LANE
   | typeof BURST_COUNTER_VERDICT_LANE
   | typeof KILL_SWITCH_VERDICT_LANE
+  | typeof CONFIRM_LINE_VERDICT_LANE
   | typeof BELOW_LEAD_TIER_VERDICT_LANE
   | typeof CROSS_SYSTEM_BOOKINGS_VERDICT_LANE
   | typeof REGAL_CALLS_VERDICT_LANE
