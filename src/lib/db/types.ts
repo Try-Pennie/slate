@@ -1102,6 +1102,12 @@ export type BookingInsert = {
 export interface ReservationEventInput {
   summary: string;
   description: string;
+  /**
+   * #3376: the invite's location, the lead's phone as stored. Optional because a
+   * reservation written before it existed has none, and the drain must resume
+   * that row rather than refuse it.
+   */
+  location?: string | null;
   start: string;
   end: string;
   timezone: string;

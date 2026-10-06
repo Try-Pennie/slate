@@ -20,6 +20,7 @@ import {
   deleteEvent,
   deleteEventOnCalendar,
   updateEventDescription,
+  updateEventContact,
   syncEvents,
   createEvent,
   freeBusyMany,
@@ -396,6 +397,54 @@ describe("createEventOnCalendar transparency and colour (#2371)", () => {
     // OOO writes have always sent.
     expect("transparency" in sent).toBe(false);
     expect("colorId" in sent).toBe(false);
+  });
+});
+
+// #3376: the booking invite's LOCATION is the lead's phone, which is what the
+// advisor's calendar shows after the time. Sent on the insert and on the contact
+// patch, absent rather than empty when there is none, and cleared with "" when the
+// lead removed their number.
+describe("the invite's location (#3376)", () => {
+  beforeEach(() => dwd.getDelegatedToken.mockResolvedValue("tok"));
+  afterEach(() => vi.unstubAllGlobals());
+
+  function capture() {
+    const calls: { url: string; init: RequestInit }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify({ id: "evt-1" }), { status: 200 });
+    });
+    return calls;
+  }
+
+  it("sends the location on the booking insert", async () => {
+    const calls = capture();
+    await createEvent("a@b.com", { ...event, location: "+12155550100", attendeeEmail: "lead@x.com" }, "slateabc");
+    expect(JSON.parse(String(calls[0].init.body)).location).toBe("+12155550100");
+  });
+
+  it("OMITS it when the booking has no number, rather than sending an empty one", async () => {
+    const calls = capture();
+    await createEvent("a@b.com", { ...event, attendeeEmail: "lead@x.com" }, "slateabc");
+    expect("location" in JSON.parse(String(calls[0].init.body))).toBe(false);
+  });
+
+  it("patches the location with the lead's correction, and only what moved", async () => {
+    const calls = capture();
+    await updateEventContact("agent@trypennie.com", "evt-1", { location: "+12155559999" });
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ location: "+12155559999" });
+  });
+
+  it("clears it with an empty string when the number was removed", async () => {
+    const calls = capture();
+    await updateEventContact("agent@trypennie.com", "evt-1", { location: "" });
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ location: "" });
+  });
+
+  it("leaves it alone when the patch does not name it", async () => {
+    const calls = capture();
+    await updateEventContact("agent@trypennie.com", "evt-1", { summary: "x" });
+    expect("location" in JSON.parse(String(calls[0].init.body))).toBe(false);
   });
 });
 
