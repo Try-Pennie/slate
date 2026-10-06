@@ -47,6 +47,22 @@ export const BOOKING_CONTACT_HOURLY_RATE_RULES: RateLimitRule[] = [
 ];
 
 /**
+ * The retry credit behind the public booking's edge minute window (#3364), as two
+ * `rate_limits` keys per address: what a taken time refusal EARNED, and what a request
+ * the native window refused has SPENT. `src/lib/rate-limit-retry-credit.ts` holds the
+ * decision and the reasoning for the bound; these are here so the prune derives them like
+ * every other limiter row (L41). Earned first, spent second, which the module relies on.
+ *
+ * The `max` on both is the cap (`RETRY_CREDIT_CAP`, three), restated as a literal because
+ * this module imports nothing at runtime; scripts/test-booking-retry-credit.ts pins them
+ * equal.
+ */
+export const BOOKING_RETRY_CREDIT_RULES: RateLimitRule[] = [
+  { prefix: "book:retry:earned", windowSeconds: 60, max: 3 },
+  { prefix: "book:retry:spent", windowSeconds: 60, max: 3 },
+];
+
+/**
  * Normalize an attendee into stable, discriminated rate-limit keys so the SAME
  * person maps to one counter regardless of formatting: email lowercased+trimmed,
  * phone reduced to digits (mirroring how numbers are normalized for webhooks, so
@@ -208,6 +224,7 @@ export const LANDING_IDENTITY_HOURLY_RATE_RULES: RateLimitRule[] = [
 const DB_RATE_LIMIT_RULE_SETS: readonly RateLimitRule[][] = [
   BOOKING_HOURLY_RATE_RULES,
   BOOKING_CONTACT_HOURLY_RATE_RULES,
+  BOOKING_RETRY_CREDIT_RULES,
   DIRECT_BOOKING_API_HOURLY_RATE_RULES,
   DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
   DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES,

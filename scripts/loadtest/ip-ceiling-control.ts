@@ -27,7 +27,7 @@
 // a finding.
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { BOOKING_WRITES_PER_MINUTE, offeredSlots } from "./book-plan.ts";
+import { BOOKING_WRITES_PER_MINUTE, bookingRequestHeaders, offeredSlots } from "./book-plan.ts";
 import {
   ceilingVerdict,
   ceilingControlBudget,
@@ -104,7 +104,8 @@ async function attempt(n: number, code: string, startIso: string): Promise<Ceili
   try {
     const res = await fetch(`${SLATE_BASE}/api/bookings`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${API_KEY}`, "content-type": "application/json" },
+      // #3354: named, so its dry runs are never counted as another leg's confirms.
+      headers: bookingRequestHeaders(API_KEY, "ceiling"),
       body: JSON.stringify({
         bucketCode: code,
         start: startIso,

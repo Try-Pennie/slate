@@ -28,7 +28,7 @@
 //
 // Every wait here takes an injected clock and sleep, so all of it is driven offline
 // with nothing waiting for real (L524).
-import { offeredSlots } from "./book-plan.ts";
+import { bookingRequestHeaders, offeredSlots } from "./book-plan.ts";
 import { SLOT_TTL_SECONDS } from "../../src/lib/availability/slot-cache.ts";
 import { RECOMPUTE_FRESH_MS } from "../../src/lib/availability/precompute-cron.ts";
 import { parseStampMs } from "../../src/lib/date/stamp.ts";
@@ -224,7 +224,8 @@ export async function bookControlSlot(
     deps.log?.(`control booking attempt ${n}: bucket ${deps.bucketCode} at ${start}`);
     const res = await deps.fetch(`${deps.baseUrl}/api/bookings`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${deps.apiKey}`, "content-type": "application/json" },
+      // #3354: often the first confirm a fresh deploy serves, so it names its leg.
+      headers: bookingRequestHeaders(deps.apiKey, "preflight"),
       body: JSON.stringify(deps.bodyFor(start)),
     });
     return { status: res.status, text: await res.text() };

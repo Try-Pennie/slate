@@ -340,6 +340,16 @@ export const BOOKING_ERROR_COPY = {
     const { from, to } = callingWindowLabel();
     return `We only call between ${from} and ${to} your time. Please pick another time.`;
   })(),
+  /**
+   * #3364: the confirm's minute window turned this one away. It is the refusal a lead meets
+   * after being refused for taken times and picking again, so it must not read as a dead end:
+   * it says how long (the window clears inside a minute) and what to do then. "Your network",
+   * never "you", because the window is per address and a shared office counts as one.
+   */
+  tooManyTriesJustNow: "Too many tries from your network just now. Please wait a minute, then try again.",
+  /** The hourly and per contact caps, whose windows are longer, so this one does not promise
+   *  a minute (L11). The wording the route carried inline before #3364, unchanged. */
+  tooManyTries: "Too many booking attempts from your network. Please try again in a few minutes.",
   generic: "Something went wrong. Please try again.",
   /** A detail the lead typed was refused, said once above the form while the field
    *  itself carries what to change. Shared by our own check and by Google refusing

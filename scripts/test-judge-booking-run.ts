@@ -23,6 +23,8 @@ import {
   burstLegText,
   steadyLineText,
   waitSpanText,
+  lineSplitText,
+  startupOriginText,
   type JudgeInput,
   type JudgedBooking,
 } from "./loadtest/judge-booking-run.ts";
@@ -53,7 +55,12 @@ import {
   type CeilingAttempt,
 } from "./loadtest/preflight-checks.ts";
 import { DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES } from "../src/lib/rate-limit-core.ts";
-import { readConfirmStartup } from "./loadtest/confirm-startup.ts";
+import { readConfirmStartup, type LineSplit } from "./loadtest/confirm-startup.ts";
+
+/** A line split with nothing in it, which a case then fills in. */
+function emptySplit(): LineSplit {
+  return { traced: 0, joined: 0, missing: 0, impossible: 0, unreadable: 0, heldMs: [], objectMs: [], outsideMs: [] };
+}
 import { formatLine } from "../src/lib/log.ts";
 import { healthyFaultLanes, fixtureLaneExpectations } from "./lib/fault-lanes-fixture.ts";
 import { SYNC_FAILURE_ALERT_KEY } from "./loadtest/fault-lanes.ts";
@@ -2436,6 +2443,51 @@ const legAttempts = (i: JudgeInput, leg: number) =>
   const unmarked = waitSpanText(startupReading([{ handlerMs: 900, beforeMs: 500, cold: false }]));
   assert(/no confirm carried marks/.test(unmarked), `a run with no marks says the wait was not split, never a zero (got: ${unmarked})`);
   assert(/not read/.test(waitSpanText(null)), "and a run with no archive says so");
+}
+
+// --- #3354: the shared line's wait, split by the object's own log of its calls --------
+{
+  const base = startupReading([{ handlerMs: 900, beforeMs: 1_500, cold: true }])!;
+  const none = lineSplitText(base);
+  assert(/no confirm on the shared line carried a trace/.test(none), `a run with no traced confirm says the wait was not split, never a zero (got: ${none})`);
+  assert(/not read/.test(lineSplitText(null)), "and a run with no archive says so");
+
+  const split = (o: Partial<ReturnType<typeof emptySplit>>) => ({ ...emptySplit(), ...o });
+  const text = lineSplitText({
+    ...base,
+    lineSplit: {
+      cold: split({ traced: 3, joined: 2, missing: 1, heldMs: [700, 100], objectMs: [50, 30], outsideMs: [150, 400] }),
+      warm: split({ traced: 4, joined: 4, impossible: 0, unreadable: 0, heldMs: [0, 0, 0, 10], objectMs: [15, 15, 15, 15], outsideMs: [85, 85, 90, 95] }),
+      orphanCalls: 2,
+    },
+  });
+  assert(/cold 2 of 3 traced/.test(text), `the cold confirms joined, of those traced (got: ${text})`);
+  // The expected figures come through the judge's own percentile, as the line's do (L41).
+  const pp = (xs: number[]) => {
+    const q = percentiles(xs)!;
+    return `p50 ${q.p50}ms p95 ${q.p95}ms`;
+  };
+  assert(text.includes(`behind a leader ${pp([700, 100])}`), `with the time held behind a leader, through the judge's own percentile (got: ${text})`);
+  assert(text.includes(`in the object ${pp([50, 30])}`), `the object's own work (got: ${text})`);
+  assert(text.includes(`outside the object ${pp([150, 400])}`), `and the time outside the object (got: ${text})`);
+  assert(/1 missing/.test(text), `a traced confirm whose calls never arrived is named, not dropped (got: ${text})`);
+  assert(/warm 4 of 4 traced/.test(text), `and the warm side on its own (got: ${text})`);
+  assert(/2 object calls matched no confirm/.test(text), `and calls whose confirm is not in the archive are counted (got: ${text})`);
+}
+
+// --- #3354: the wait before the profile, by the version that served it and by leg -----
+{
+  const base = startupReading([{ handlerMs: 900, beforeMs: 1_500, cold: true }])!;
+  const text = startupOriginText({
+    ...base,
+    byVersion: { "8fb6133b-c85f": { cold: [1_145, 2_782], warm: [200, 300] }, "5239f06d-aaaa": { cold: [1_500], warm: [] } },
+    byLeg: { none: { cold: [900], warm: [] }, burst: { cold: [2_782], warm: [250] }, preflight: { cold: [1_145], warm: [] } },
+  });
+  assert(/8fb6133b cold n=2 max 2782ms, warm n=2 p95 300ms/.test(text), `each version's cold confirms and their slowest, beside its warm p95 (got: ${text})`);
+  assert(/5239f06d cold n=1 max 1500ms, warm n=0/.test(text), `a version with no warm confirm says so rather than a zero (got: ${text})`);
+  assert(text.indexOf("8fb6133b") < text.indexOf("5239f06d"), `the version with more confirms first (got: ${text})`);
+  assert(text.indexOf("burst") < text.indexOf("preflight") && text.indexOf("preflight") < text.indexOf("none"), `legs in the run's own order, the unnamed last (got: ${text})`);
+  assert(/not read/.test(startupOriginText(null)), "and a run with no archive says so");
 }
 
 finish();

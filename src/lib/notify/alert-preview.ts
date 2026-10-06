@@ -819,7 +819,7 @@ function previewPhotoPlan(over: Partial<RefreshPlan>): RefreshPlan {
  *  is not actually half spent, so a preview can never show a page the check would not send. */
 function previewBudgetSpend(
   name: "success" | "availability",
-  counts: { requests: number; errors: number; serverFaults: number },
+  counts: { requests: number; errors: number; serverFaults: number; errorCodes: { code: string; count: number }[] },
 ) {
   const v = judgeBudgets({ month: "2026-10", ...counts })[name];
   if (v.kind !== "half-spent" || v.spend.share < BUDGET_WARN_SHARE) {
@@ -1348,21 +1348,80 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   // budget figures in the copy are the ones docs/slo.md quotes.
   {
     key: "booking_budget:*",
-    state: "half the month's booking success budget spent on ordinary errors",
+    // #3374: the counts and the error mix of the page that fired on 2026-10-06.
+    state: "half the month's booking success budget spent, mostly on times another lead took first",
     channel: "alert",
-    text: sloBudgetPageText(previewBudgetSpend("success", { requests: 6200, errors: 104, serverFaults: 0 }), "2026-10"),
+    text: sloBudgetPageText(
+      previewBudgetSpend("success", {
+        requests: 2577,
+        errors: 102,
+        serverFaults: 0,
+        errorCodes: [
+          { code: "slot_unavailable", count: 78 },
+          { code: "invalid_request", count: 14 },
+          { code: "no_eligible_agents", count: 5 },
+          { code: "invalid_contact", count: 3 },
+          { code: "reschedule_slot_taken", count: 2 },
+        ],
+      }),
+      "2026-10",
+    ),
+  },
+  {
+    key: "booking_budget:*",
+    state: "half the booking success budget spent, none of it on taken times",
+    channel: "alert",
+    text: sloBudgetPageText(
+      previewBudgetSpend("success", {
+        requests: 6200,
+        errors: 104,
+        serverFaults: 0,
+        errorCodes: [
+          { code: "invalid_request", count: 70 },
+          { code: "no_eligible_agents", count: 34 },
+        ],
+      }),
+      "2026-10",
+    ),
+  },
+  {
+    key: "booking_budget:*",
+    state: "half the booking success budget spent, and the codes could not be read to split it",
+    channel: "alert",
+    text: sloBudgetPageText(
+      previewBudgetSpend("success", { requests: 2577, errors: 102, serverFaults: 0, errorCodes: [] }),
+      "2026-10",
+    ),
   },
   {
     key: "booking_budget:*",
     state: "server faults have spent half the availability budget",
     channel: "alert",
-    text: sloBudgetPageText(previewBudgetSpend("availability", { requests: 6200, errors: 41, serverFaults: 35 }), "2026-10"),
+    text: sloBudgetPageText(
+      previewBudgetSpend("availability", {
+        requests: 6200,
+        errors: 41,
+        serverFaults: 35,
+        errorCodes: [
+          { code: "internal", count: 30 },
+          { code: "slot_unavailable", count: 6 },
+          { code: "verify_unavailable", count: 5 },
+        ],
+      }),
+      "2026-10",
+    ),
   },
   {
     key: "booking_budget:*",
-    state: "a new month, back under half",
+    state: "a new month, the booking success budget back under half",
     channel: "recovery",
     text: sloBudgetClearText("success", "2026-11"),
+  },
+  {
+    key: "booking_budget:*",
+    state: "a new month, the availability budget back under half",
+    channel: "recovery",
+    text: sloBudgetClearText("availability", "2026-11"),
   },
   // #2593. The 2026-09-21 incident's shape: an Ultra High lead (XBC 512) with a
   // Low only agent. One state per catch-all reading, because each sends the reader
