@@ -276,6 +276,13 @@ export class LogShippingReceipt extends WorkerEntrypoint<Env> {
       log.error("loadtest-guard", { msg: "refusing the log shipping receipt", why: refusal });
       return { stamped: false };
     }
+    // #3310: an idle load test Worker holds no secrets between runs, so it forwards
+    // nothing to the app, the same as its lanes.
+    const idle = loadtestIdle({ loadtest: this.env.SLATE_LOADTEST === "true", bindings: this.env as unknown as Record<string, unknown>, baked: bakedEnv });
+    if (idle) {
+      log.info("loadtest-idle", { msg: "idle between runs, so the log shipping receipt was not forwarded", missing: idle.join(",") });
+      return { stamped: false };
+    }
     return forwardReceipt({
       fetch: (request) => app.fetch(request, this.env, this.ctx),
       cronSecret: this.env.CRON_SECRET ?? "",

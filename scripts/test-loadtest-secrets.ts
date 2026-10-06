@@ -368,6 +368,14 @@ const BAKED_WITH_SECRET = {
   // Before the app is reached, or an idle request pays for Next's start and a lane runs.
   assert(fetchHalf.indexOf("loadtestIdle(") < fetchHalf.indexOf("app.fetch("), "the idle answer comes before the app is reached");
   assert(scheduledHalf.indexOf("loadtestIdle(") < scheduledHalf.indexOf("routesForCron("), "and before any lane is resolved");
+  // The log shipping receipt is the third surface that reaches the app (#3182). It got
+  // the production refusal with the lanes, and an idle Worker must not run it either:
+  // it would reach a heartbeat write with no secret to authorise it.
+  const receipt = entry.slice(entry.indexOf("class LogShippingReceipt"));
+  const receiptRefusal = receipt.indexOf("loadtestEntryRefusal(");
+  const receiptIdle = receipt.indexOf("loadtestIdle(");
+  assert(receiptIdle > -1 && receiptIdle > receiptRefusal, "the log shipping receipt asks whether the deployment is idle, after the production refusal");
+  assert(receiptIdle < receipt.indexOf("forwardReceipt("), "and before it forwards anything to the app");
 }
 
 finish();

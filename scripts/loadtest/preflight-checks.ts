@@ -549,7 +549,7 @@ export function loadtestModeVerdict(
         why:
           "the load test Worker is idle: it holds none of a run's secrets between runs" +
           (idle.length > 0 ? ` (missing ${idle.join(", ")})` : "") +
-          ". Put the run's secrets with `wrangler secret put <NAME> --env loadtest` (RUNBOOK, Provisioning a run) " +
+          ". Put the run's secrets with `wrangler secret put <NAME> --env loadtest` (scripts/loadtest/RUNBOOK.md, the section \"Its secrets are its own\") " +
           "and dispatch again. Nothing was written.",
       };
     }
