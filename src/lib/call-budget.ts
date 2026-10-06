@@ -48,7 +48,19 @@ interface Budget {
    * request's cleanup allowance is opened ONCE and every later cleanup reuses
    * it, even one opened after the first has returned.
    */
-  readonly request: { cleanup?: Budget; closed?: boolean };
+  readonly request: { cleanup?: Budget; closed?: boolean; observer?: CallObserver };
+}
+
+/**
+ * Told about every budgeted call one request makes (#3300): the call's label and
+ * its own span on the budget's clock. Held on the REQUEST, which every budget
+ * opened inside it shares (a Google call's nested budget, the cleanup allowance),
+ * so a confirm's profile sees all of its calls and none of another request's, and
+ * nothing once the request has answered, since a closed request is no budget at
+ * all (`current`). `ConfirmProfile.call` is the one in production.
+ */
+export interface CallObserver {
+  call(label: string, startedAt: number, endedAt: number): void;
 }
 
 /** The two methods of Node's AsyncLocalStorage this module uses. */
@@ -120,16 +132,19 @@ function store(): ContextStore<Budget | undefined> {
 
 /**
  * Run `work` with every budgeted call inside it sharing one expiry, `ms` from now,
- * or the enclosing budget's expiry if that comes first.
+ * or the enclosing budget's expiry if that comes first. `observer`, on the ROOT
+ * budget of a request, is told about every call made inside it (#3300); a nested
+ * budget is already inside a request and keeps that request's observer.
  */
 export function withinCallBudget<T>(
   ms: number,
   label: string,
   work: () => Promise<T>,
   now: () => number = () => Date.now(),
+  observer?: CallObserver,
 ): Promise<T> {
   const outer = current();
-  const own: Budget = { expiresAt: now() + ms, label, totalMs: ms, request: outer?.request ?? {} };
+  const own: Budget = { expiresAt: now() + ms, label, totalMs: ms, request: outer?.request ?? { observer } };
   const ran = store().run(outer && outer.expiresAt <= own.expiresAt ? outer : own, work);
   if (outer) return ran;
   // The ROOT of a request closes it when its work settles, success or failure. A
@@ -252,8 +267,22 @@ export async function fetchWithinBudget(
   timer: ScheduleTimer = realTimer,
   now: () => number = () => Date.now(),
 ): Promise<Response> {
+  // Read before the call, so the request this call belongs to is the one charged
+  // even when it answers after the request has closed.
+  const observer = current()?.request.observer;
   const { waitMs, reportAs } = deadlineWithinBudget(deadline, label, now);
-  return fetchWithinDeadline(fetchImpl, input, init, waitMs, label, timer, reportAs);
+  if (!observer) return fetchWithinDeadline(fetchImpl, input, init, waitMs, label, timer, reportAs);
+  // A call refused before it started (a spent budget) threw above and is not a
+  // call. One that started is charged however it ends, a failure included, since a
+  // call that failed slowly is exactly what a profile of a failed confirm needs.
+  // The span ends when the RESPONSE arrives; reading its body happens after, in
+  // the caller, and is not in it.
+  const from = now();
+  try {
+    return await fetchWithinDeadline(fetchImpl, input, init, waitMs, label, timer, reportAs);
+  } finally {
+    observer.call(label, from, now());
+  }
 }
 
 /** A fetch-shaped `fetchWithinBudget`, for a client that takes a `fetch` option. */

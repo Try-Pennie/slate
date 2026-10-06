@@ -1,6 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { withinBookingCleanupBudget, withinBookingRequest } from "@/lib/booking/confirm-budget";
 import { answerTimed, noteRefusal, type ConfirmLineFacts } from "@/lib/booking/confirm-latency";
+import { timeStage } from "@/lib/booking/confirm-profile";
+import { refusedLeadId } from "@/lib/booking/refusal-trace";
 import { scheduleStoredOfferCheck } from "@/lib/booking/refusal-stored-offer-live";
 import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import { z } from "zod";
@@ -190,26 +192,37 @@ export async function POST(req: NextRequest) {
       withinBookingRequest(
         () => handlePost(req, progress),
         async (timeout) => {
-          await refundSpent(progress);
-          await pageBookingFailure(timeout);
-          if (!progress.agentLink) {
-            recordApiOutcome(
-              "error",
-              progress.source?.code ?? "",
-              "verify_unavailable",
-              progress.source ?? { by: "unidentifiable", why: "a dependency timed out before the body named a bucket" },
-            );
-          }
-          // refusal: verify_unavailable
-          return NextResponse.json({ error: timeout.message }, { status: 503 });
+          // #3300: the line says it timed out, and carries the profile and the lead.
+          noteRefusal(progress.facts, timeout);
+          return timeStage(progress.facts.profile, "failure-path", async () => {
+            await refundSpent(progress);
+            await pageBookingFailure(timeout);
+            if (!progress.agentLink) {
+              recordApiOutcome(
+                "error",
+                progress.source?.code ?? "",
+                "verify_unavailable",
+                progress.source ?? { by: "unidentifiable", why: "a dependency timed out before the body named a bucket" },
+              );
+            }
+            // refusal: verify_unavailable
+            return NextResponse.json({ error: timeout.message }, { status: 503 });
+          });
         },
+        // #3300: every Supabase and Google call this request makes, for its profile.
+        // Read when the request starts, after `answerTimed` has opened the profile.
+        progress.facts.profile?.observeCalls(),
       ),
-      { facts: progress.facts },
+      { facts: progress.facts, kind: "new" },
     ),
   );
 }
 
 async function handlePost(req: NextRequest, progress: ConfirmProgress) {
+  // #3300: everything the route does before the service, as one stage: the rate
+  // limits, the pause flag, reading the body, an advisor link. Ended where the
+  // booking starts; a refusal on the way is charged up to its answer.
+  const endChecks = progress.facts.profile?.begin("route-checks");
   const ip = clientIp(req.headers);
   // #1557: the address ceilings on this endpoint SERVE a caller they cannot identify rather
   // than counting them into one shared bucket. Refusing one refuses a customer at the last
@@ -338,6 +351,8 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
   const code = parsed.data.bucketCode ?? "";
   progress.source = { by: "bucket", code, host };
   progress.agentLink = agentLinkKey !== undefined;
+  // #3300: the lead's Salesforce id, which the line carries if this confirm times out.
+  progress.facts.leadId = refusedLeadId({ salesforceId: parsed.data.salesforceId });
 
   // #2666: the public test bucket is booked only with the pass `/book` handed a page
   // on an approved website. Checked before anything about the attendee, so a pass
@@ -442,6 +457,7 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
     (parsed.data.requestedCode === undefined ||
       resolveRequestedCode(parsed.data.requestedCode).kind === "valid");
 
+  endChecks?.();
   try {
     const { booking, manageUrl, newlyInserted } = await createBooking({
       // One call per person, enforced here and only here (#1337): the direct
@@ -479,7 +495,7 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
     // or any later change to that function still returns the booking that was made.
     const duplicateWarning = agentLink
       ? null
-      : await findDuplicateBookingWarning({
+      : await timeStage(progress.facts.profile, "duplicate-warning", () => findDuplicateBookingWarning({
           excludeBookingId: booking.id,
           salesforceId: parsed.data.salesforceId ?? null,
           attendee: {
@@ -492,7 +508,7 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
         }).catch((err: unknown) => {
           log.error("booking", { msg: "duplicate warning unreadable after the booking was made", booking_id: booking.id }, err);
           return null;
-        });
+        }));
 
     recordRoutedOutcome("created", code, null, { by: "bucket", code, host });
     // #2838: a booking made after its first advisor lost the overlap race is
@@ -537,7 +553,8 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
     // #3366: after the response, read the stored row for a candidate_read_empty
     // refusal and log whether it still offers the refused time. Nothing changes here.
     scheduleStoredOfferCheck(err);
-    return withinBookingCleanupBudget(async () => {
+    // #3300: the refunds, the tally and any page, charged to the profile as one stage.
+    return timeStage(progress.facts.profile, "failure-path", () => withinBookingCleanupBudget(async () => {
       // The lead already has an active call, so nothing was created (#1337). Refund
       // the rate-limit hit: being declined is not an attempt they should pay for,
       // and the Move they are about to make is a separate request.
@@ -661,6 +678,6 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
       recordRoutedOutcome("error", code, "internal", { by: "bucket", code, host });
       // refusal: internal
       return internalErrorResponse(err, "booking");
-    });
+    }));
   }
 }
