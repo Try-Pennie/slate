@@ -521,7 +521,8 @@ export function judgeRequest(
     return at(
       "event-window-uncovered",
       `the event does not cover the approved window: ${minutes(openStart)} at the start and ` +
-        `${minutes(openEnd)} at the end are left open. A lead can be booked into the open part`,
+        `${minutes(openEnd)} at the end are left open. Slate still holds the approved window ` +
+        "(#3360), so the calendar and the request disagree: make them agree, either way",
     );
   }
 
