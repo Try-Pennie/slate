@@ -158,6 +158,7 @@ import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
 import { emitWebhook, type WebhookSendScheduler } from "@/lib/webhooks/emit";
 import { afterResponse, deferWebhookSend } from "@/lib/after-response";
 import { withinBookingCleanupBudget } from "@/lib/booking/confirm-budget";
+import { DeadlineExceededError, findDeadlineExceeded, isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import { sendThrottledAlert, sendThrottledInfo, resolveRecovered } from "@/lib/notify/dispatch";
 import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import {
@@ -266,10 +267,31 @@ export { FREEBUSY_MAX_ITEMS } from "@/lib/booking/core";
 const VERIFY_CONCURRENCY = 6;
 
 /**
+ * #3313: a read refused because a deadline ran out is not a read that failed.
+ *
+ * PostgREST never throws, so a Supabase call cut short by the confirm's budget
+ * comes back as an `error` like any other, and the calendar lookups below answer
+ * every error with `readFailed`, which verify on book scores as an unverified
+ * agent and pages as "likely a Google/DB outage". With no time left, nothing a
+ * fallback asks can answer either, so the deadline itself is thrown, and the
+ * booking path classifies it as the dependency timeout it is
+ * (`timeoutAsRetryable`). Any other error is left to the caller's own path.
+ */
+function throwIfDeadline(error: unknown): void {
+  if (!error) return;
+  const found = findDeadlineExceeded(error);
+  if (!found) return;
+  const deadline = new DeadlineExceededError(found.label, found.timeoutMs, found.budget);
+  deadline.cause = error;
+  throw deadline;
+}
+
+/**
  * Calendar ids whose busy blocks an agent, looked up by their email (#314).
  * Reports `readFailed` so verify-on-book can tell a real DB error apart from a
  * genuine empty: on an error we must NOT silently fall back to checking only the
  * primary calendar (it could miss a conflict on a secondary one and double-book).
+ * A deadline is thrown instead (`throwIfDeadline`, #3313).
  */
 export async function calendarIdsForEmail(
   email: string,
@@ -280,12 +302,14 @@ export async function calendarIdsForEmail(
     .select("id")
     .eq("email", email)
     .maybeSingle();
+  throwIfDeadline(userRes.error);
   if (userRes.error) return { readFailed: true, ids: [] };
   if (!userRes.data) return { readFailed: false, ids: [] };
   const calsRes = await db
     .from("agent_calendars")
     .select("calendar_id")
     .eq("user_id", (userRes.data as { id: string }).id);
+  throwIfDeadline(calsRes.error);
   return calendarIdsFromResult(calsRes);
 }
 
@@ -314,6 +338,7 @@ export async function calendarsForEmails(
     .from("users")
     .select("id, email")
     .in("email", emails);
+  throwIfDeadline(usersRes.error);
   if (usersRes.error) {
     // Can't map any agent to their calendars — fall back per agent for all.
     for (const e of emails) readFailed.add(e);
@@ -329,6 +354,7 @@ export async function calendarsForEmails(
       "user_id",
       userRows.map((r) => r.id),
     );
+  throwIfDeadline(calsRes.error);
   if (calsRes.error) {
     for (const e of emails) readFailed.add(e);
     return { byEmail, readFailed };
@@ -1051,6 +1077,11 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
           for (const e of res.free) free.add(e);
           for (const e of res.needsFallback) fallback.add(e);
         } catch (err) {
+          // #3313: a deadline is not a bulk failure. The confirm's budget is spent
+          // (or this call's own limit is), so the per agent reads would meet the
+          // same deadline and score every candidate unverified, paging a Google
+          // or database outage about Slate's own clock. It goes up as itself.
+          if (isDeadlineExceeded(err)) throw err;
           // Total bulk failure (e.g. the subject's delegated token couldn't be
           // minted) — verify everyone directly per agent rather than fail.
           log.error("booking", { msg: "verify-on-book bulk freeBusy failed, falling back to per-agent" }, err);
