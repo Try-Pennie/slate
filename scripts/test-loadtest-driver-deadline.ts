@@ -229,8 +229,8 @@ async function runDriver(
   answer: "slow" | "hang" | "stall-body",
   extraEnv: Record<string, string> = {},
   out = "driver-2.json",
-  /** #3348: how the availability read answers. "ok" offers two times. */
-  availability: "ok" | "refused" | "stall" | "empty" = "ok",
+  /** #3348: how the availability read answers. "ok" offers two times; "late" offers them after 600ms. */
+  availability: "ok" | "refused" | "stall" | "empty" | "late" = "ok",
 ): Promise<{ code: number; stderr: string; result: DriverResult | null; bookingsSeen: number; versionSeen: number }> {
   let bookingsSeen = 0;
   let versionSeen = 0;
@@ -251,8 +251,14 @@ async function runDriver(
       }
       // "stall" never answers; the driver's own availability abort is the way out.
       if (availability === "stall") return;
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ slots: availability === "empty" ? [] : ["2026-10-05T14:00:00.000Z", "2026-10-05T15:00:00.000Z"] }));
+      const offer = () => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ slots: availability === "empty" ? [] : ["2026-10-05T14:00:00.000Z", "2026-10-05T15:00:00.000Z"] }));
+      };
+      // "late" answers after twice the 300ms booking request override, so a read bounded
+      // by THAT override gives up first and one bounded by its own does not.
+      if (availability === "late") setTimeout(offer, 600);
+      else offer();
       return;
     }
     if (req.url === "/api/bookings" && req.method === "POST") {
@@ -345,6 +351,18 @@ async function runDriver(
   eq(code, 0, `a driver whose response body stalled still exits zero ${stderr.slice(0, 300)}`);
   eq(r?.attempts[0]?.outcome, TIMED_OUT, "a stalled body is recorded as timed out");
   eq(r?.attempts[0]?.status, 0, "and not as the 200 its headers claimed");
+}
+
+{
+  // #3348, the half the first fix missed: shortening the BOOKING request's bound must
+  // not shorten the availability read's. The read's own override was passed as
+  // undefined when unset, and a default parameter replaced that undefined with the
+  // booking override (L394), so a test setting only DRIVE_REQUEST_TIMEOUT_MS still
+  // raced the slot read against 300ms on a loaded runner. Here the read answers after
+  // 600ms: bounded by its own deadline it is read and the hung booking times out; bounded
+  // by the booking's, it is recorded as unread and the booking is never sent.
+  const { result: r } = await runDriver("hang", { DRIVE_REQUEST_TIMEOUT_MS: "300" }, "driver-2.json", "late");
+  eq(r?.attempts[0]?.outcome, TIMED_OUT, "a slow availability read is waited for when only the booking's bound is shortened");
 }
 
 // --- #3348: a first availability read that fails is not a bucket offering nothing ------

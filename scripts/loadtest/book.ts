@@ -119,8 +119,14 @@ const AVAILABILITY_TIMEOUT_OVERRIDE = process.env.DRIVE_AVAILABILITY_TIMEOUT_MS;
  * The abort signal for one request (#3222). Bounded by its own timeout and by the
  * driver's deadline plus the overrun, so a request that never answers cannot keep
  * the driver from writing its file before the job's timeout kills it.
+ *
+ * The override is REQUIRED, with no default: each request's own seam is passed
+ * explicitly. A default parameter would replace the availability read's override with
+ * the booking request's whenever the first is unset, because a default applies to an
+ * argument passed as undefined (L394), and that put the slot read back on the booking's
+ * 300ms test bound (#3348).
  */
-function requestSignal(deadlineAtMs: number, override: string | undefined = REQUEST_TIMEOUT_OVERRIDE): AbortSignal {
+function requestSignal(deadlineAtMs: number, override: string | undefined): AbortSignal {
   return AbortSignal.timeout(effectiveDeadlineMs(requestAbortMs({ nowMs: Date.now(), deadlineAtMs }), override));
 }
 
@@ -208,7 +214,7 @@ async function book(req: {
   let echo: LoadtestEcho | null = null;
   try {
     const res = await fetch(`${SLATE_BASE}/api/bookings`, {
-      signal: requestSignal(req.deadlineAtMs),
+      signal: requestSignal(req.deadlineAtMs, REQUEST_TIMEOUT_OVERRIDE),
       method: "POST",
       // #3354: the leg rides on every confirm, so the run can say where each cold one came from.
       headers: bookingRequestHeaders(API_KEY, MODE),
@@ -427,7 +433,7 @@ async function fault(): Promise<void> {
     try {
       const res = await fetch(`${SLATE_BASE}/api/smoke/version`, {
         headers: { Authorization: `Bearer ${API_KEY}` },
-        signal: requestSignal(pollDeadlineAtMs),
+        signal: requestSignal(pollDeadlineAtMs, REQUEST_TIMEOUT_OVERRIDE),
       });
       const body = await res.json().catch((err: unknown) => {
         if (timedOut(err)) throw err;
