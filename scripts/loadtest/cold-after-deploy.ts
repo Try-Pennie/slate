@@ -1,6 +1,7 @@
 // The diagnostic cold leg (#3354 item 4): deploy a new version, let it settle, send
 // ONE confirm, and repeat, so each confirm is a fresh version's first request. A load
-// run yields about ten cold confirms; this yields as many as it is asked for, all taken
+// run yields a handful of cold confirms (4 of 522 on run 37520312761, counted by the
+// Worker, #3418); this yields as many as it is asked for, all taken
 // the same way, to judge a startup change against. Not a bar.
 //
 // The decisions (how many, which slots, the order of deploy, settle and confirm) live
