@@ -74,4 +74,16 @@ for (const cls of ["pn-test-mode", "pn-test-mode-glyph", "pn-test-mode-say", "pn
   assert(importers.length >= 4, `the marker is drawn by the surfaces that show a test booking (${importers.length} importers)`);
 }
 
+// --- the band has no edge stripe (Dan, 2026-10-06) ----------------------------
+// It carried a 6px graphite left edge, which the booker card's rounded corner
+// clipped into what read as a stray black line. On a light card the band is now
+// told from the card by its graphite chip (`scripts/test-contrast.ts`), not by
+// an edge, so no border may come back on the band's own rule.
+{
+  const rule = /\.pn-test-mode\s*\{([^}]*)\}/.exec(css);
+  assert(rule !== null, "found the band's own rule to judge");
+  assert(!/border/.test(rule?.[1] ?? ""), "the band carries no border or edge stripe");
+  assert(!/--test-mode-edge/.test(css), "and the edge token is gone with it");
+}
+
 finish();
