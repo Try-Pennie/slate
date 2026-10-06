@@ -24,6 +24,7 @@ import {
   matchBurstAttempts,
   burstBreakdowns,
   burstBreakdownLines,
+  readBurstTailFile,
   type BurstTailFile,
 } from "./loadtest/burst-breakdown.ts";
 import type { BurstLegGroup } from "./loadtest/judge-booking-run.ts";
@@ -374,6 +375,22 @@ const archive = [cronTick, ...built.map((b) => b.event), steadyStray.event].join
   }
   const none = burstBreakdownLines({ groups: [], tail: { kind: "absent" } as BurstTailFile }).join("\n");
   assert(/no burst leg/.test(none), `a run with no burst leg says so rather than leaving the section out (got ${none})`);
+}
+
+// --- the file itself: never arrived, could not be read, read -----------------------------------
+// Two different facts (L11): a burst tail that never arrived sends a reader to the
+// burst-tail job, one that could not be read sends them to the file.
+{
+  const absent = readBurstTailFile(() => {
+    throw Object.assign(new Error("ENOENT: no such file or directory, open 'results/burst-tail.jsonl'"), { code: "ENOENT" });
+  });
+  eq(absent.kind, "absent", "no file is absent");
+  const denied = readBurstTailFile(() => {
+    throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+  });
+  assert(denied.kind === "unreadable" && denied.why.includes("EACCES"), `any other failure is unreadable, carrying its cause (got ${JSON.stringify(denied)})`);
+  const read = readBurstTailFile(() => archive);
+  assert(read.kind === "read" && read.text === archive, "a file that reads is handed on whole");
 }
 
 // --- a stream killed mid write is counted, not a crash -------------------------------------------

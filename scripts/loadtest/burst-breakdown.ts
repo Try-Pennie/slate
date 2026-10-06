@@ -44,6 +44,7 @@ import { WAIT_SPAN_FIELDS, type WaitSpanField } from "../../src/lib/booking/wait
 import { isSlotTaken, percentiles, refusalLabel, WAIT_SPAN_LABELS, type BurstLegGroup } from "./judge-booking-run.ts";
 import type { BookingAttempt } from "./book-plan.ts";
 import type { EchoField } from "../../src/lib/loadtest-echo.ts";
+import { readOptionalText, type OptionalText } from "./read-optional.ts";
 
 /** The burst tail's file name, which the workflow writes and the judge reads. */
 export const BURST_TAIL_FILE = "burst-tail.jsonl";
@@ -448,17 +449,13 @@ export function burstBreakdowns(groups: readonly BurstLegGroup[], tail: BurstTai
 }
 
 /** The burst tail as the judge found it: absent, unreadable, or read. */
-export type BurstTailFile = { kind: "absent" } | { kind: "unreadable"; why: string } | { kind: "read"; text: string };
+export type BurstTailFile = OptionalText;
 
-/** Read the burst tail, telling a file that never arrived from one that could not be read (L11). */
-export function readBurstTailFile(read: () => string): BurstTailFile {
-  try {
-    return { kind: "read", text: read() };
-  } catch (err) {
-    if ((err as { code?: unknown }).code === "ENOENT") return { kind: "absent" };
-    return { kind: "unreadable", why: err instanceof Error ? err.message : String(err) };
-  }
-}
+/**
+ * Read the burst tail, telling a file that never arrived from one that could not be
+ * read (L11), through the reader the cold leg's results use too.
+ */
+export const readBurstTailFile: (read: () => string) => BurstTailFile = readOptionalText;
 
 /** One value or a spread, through the judge's own percentiles (L41); null when there is none. */
 function spread(xs: number[]): string | null {
@@ -477,6 +474,11 @@ function tally(counts: Record<string, number>): string {
 
 function iso(ms: number | null): string {
   return ms === null ? "an unknown time" : new Date(ms).toISOString();
+}
+
+/** Named timings, the highest median first, so a reader meets the expensive one first. */
+function dearestFirst(a: [string, number[]], b: [string, number[]]): number {
+  return (percentiles(b[1])?.p50 ?? 0) - (percentiles(a[1])?.p50 ?? 0) || a[0].localeCompare(b[0]);
 }
 
 function outcomeText(o: OutcomeBreakdown): string {
@@ -501,10 +503,10 @@ function outcomeText(o: OutcomeBreakdown): string {
     );
   } else {
     const stages = Object.entries(o.stages)
-      .sort((a, b) => (percentiles(b[1])?.p50 ?? 0) - (percentiles(a[1])?.p50 ?? 0) || a[0].localeCompare(b[0]))
+      .sort(dearestFirst)
       .map(([name, ms]) => `${name} ${spread(ms)}${ms.length < o.profiled ? ` in ${ms.length}` : ""}`);
     const deps = Object.entries(o.callsBy)
-      .sort((a, b) => (percentiles(b[1])?.p50 ?? 0) - (percentiles(a[1])?.p50 ?? 0) || a[0].localeCompare(b[0]))
+      .sort(dearestFirst)
       .map(([name, ms]) => `${name} ${spread(ms)}`);
     const unattributed = spread(o.unattributedMs);
     parts.push(
