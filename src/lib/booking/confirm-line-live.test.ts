@@ -34,7 +34,7 @@ const KEY = { group: "code:521", instant: "1791230400000" };
 
 function line() {
   const served: LineServed[] = [];
-  const l = confirmLineFor(isolateLine(makeConfirmQueue<string>()), (s) => served.push({ ...s }));
+  const l = confirmLineFor(isolateLine(makeConfirmQueue<string>()), (s) => served.push({ ...s }), null);
   return { l, served };
 }
 
@@ -91,6 +91,34 @@ describe("confirmLineFor (#3325)", () => {
     expect(names).toContain("confirm-line:v1:code:521");
     expect(served.at(-1)).toMatchObject({ line: "shared", reason: "ok", key: "code" });
     if (turn.kind === "lead") await turn.done({ full: false });
+  });
+
+  it("stamps every call to the bound object with the confirm's trace when it has one (#3354)", async () => {
+    switchReading.value = { on: true, source: "read" };
+    const bodies: Record<string, unknown>[] = [];
+    env.value = {
+      CONFIRM_LINE: {
+        idFromName: (name: string) => ({ name }),
+        get: () => ({
+          fetch: async (_url: string, init: { body?: string }) => {
+            const m = JSON.parse(init.body ?? "{}") as Record<string, unknown>;
+            bodies.push(m);
+            return new Response(JSON.stringify(m.op === "enter" ? { kind: "lead", turn: "t1" } : { ok: true }));
+          },
+        }),
+      },
+    };
+    const traced = confirmLineFor(isolateLine(makeConfirmQueue<string>()), () => {}, "t-7");
+    const turn = await traced.enter(KEY, 1_000);
+    if (turn.kind === "lead") await turn.done({ full: false });
+    expect(bodies.length).toBeGreaterThan(0);
+    expect(bodies.every((b) => b.trace === "t-7")).toBe(true);
+    bodies.length = 0;
+    const plain = line();
+    const own = await plain.l.enter({ ...KEY, instant: "2" }, 1_000);
+    if (own.kind === "lead") await own.done({ full: false });
+    expect(bodies.length).toBeGreaterThan(0);
+    expect(bodies.some((b) => "trace" in b)).toBe(false);
   });
 
   it("names a code's ladder from what the isolate holds, and warms it after the response when it does not know", async () => {

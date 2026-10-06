@@ -65,6 +65,25 @@ export function readEntryMarks(headers: Headers): { entryAtMs: number | null; in
   return { entryAtMs: whole(headers.get(ENTRY_AT_HEADER)), invocationIndex: whole(headers.get(INVOCATION_INDEX_HEADER)) };
 }
 
+/**
+ * #3354: which leg of a load run sent a confirm, named by its sender. A run's cold
+ * confirms come from different places (the preflight's control booking on a fresh
+ * deploy, the burst's crowd spinning up isolates, the steady pass, the fault leg's
+ * redeploy), and one number over all of them cannot say which. The four driver modes
+ * plus the preflight's control booking and the address ceiling's dry runs. Read
+ * under SLATE_LOADTEST only; a label, never a permission.
+ */
+export const LOADTEST_LEG_HEADER = "x-loadtest-leg";
+export const LOADTEST_LEGS = ["steady", "burst", "fault", "baseline", "preflight", "ceiling"] as const;
+export type LoadtestLeg = (typeof LOADTEST_LEGS)[number];
+
+/** The leg as the route reads it: null when none was named, `unreadable` when one outside the vocabulary was. */
+export function readLoadtestLeg(headers: Headers): LoadtestLeg | "unreadable" | null {
+  const raw = headers.get(LOADTEST_LEG_HEADER);
+  if (raw === null) return null;
+  return (LOADTEST_LEGS as readonly string[]).includes(raw) ? (raw as LoadtestLeg) : "unreadable";
+}
+
 export const WAIT_POINTS = ["entry", "handler", "authed", "line_start", "line_turn", "decided", "profile"] as const;
 export type WaitPoint = (typeof WAIT_POINTS)[number];
 

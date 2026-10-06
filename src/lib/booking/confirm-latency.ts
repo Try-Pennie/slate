@@ -20,7 +20,7 @@
 import { log } from "@/lib/log";
 import { refusalLogFields, refusalTraceOf } from "@/lib/booking/refusal-trace";
 import type { LineServed } from "@/lib/booking/shared-confirm-line";
-import type { WaitMarks } from "@/lib/booking/wait-marks";
+import type { LoadtestLeg, WaitMarks } from "@/lib/booking/wait-marks";
 
 /** What a route learns while handling the request that the line should say. */
 export interface ConfirmLineFacts {
@@ -50,6 +50,13 @@ export interface ConfirmLineFacts {
    * never read as a first request.
    */
   isolateInvocationIndex?: number | null;
+  /**
+   * #3354: the trace every call this confirm made to the shared line carried, so the
+   * run can join the object's own log of those calls to this line. Load test only.
+   */
+  lineTrace?: string;
+  /** #3354: which leg of the load run sent this confirm, as its driver named it. */
+  loadtestLeg?: LoadtestLeg | "unreadable";
 }
 
 /**
@@ -86,6 +93,8 @@ export async function answerTimed(
         : {}),
       ...(opts.facts?.marks ? opts.facts.marks.fields() : {}),
       ...(typeof opts.facts?.isolateInvocationIndex === "number" ? { isolate_invocation_index: opts.facts.isolateInvocationIndex } : {}),
+      ...(opts.facts?.lineTrace ? { line_trace: opts.facts.lineTrace } : {}),
+      ...(opts.facts?.loadtestLeg ? { loadtest_leg: opts.facts.loadtestLeg } : {}),
     });
   try {
     const res = await handle();

@@ -34,6 +34,7 @@ import {
 } from "./loadtest/preflight-control.ts";
 import { SLOT_TTL_SECONDS } from "../src/lib/availability/slot-cache.ts";
 import { RECOMPUTE_FRESH_MS } from "../src/lib/availability/precompute-cron.ts";
+import { LOADTEST_LEG_HEADER } from "../src/lib/booking/wait-marks.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 // --- an id the stub really produced is recognised -----------------------------
@@ -656,6 +657,8 @@ function fakeWorld(opts: {
 }) {
   const events: string[] = [];
   const posted: string[] = [];
+  /** The leg each control booking named (#3354). */
+  const postedLegs: (string | null)[] = [];
   let t = T0;
   let a = 0;
   let b = 0;
@@ -671,6 +674,7 @@ function fakeWorld(opts: {
     }
     if (url.endsWith("/api/bookings") && method === "POST") {
       posted.push(String((JSON.parse(String(init?.body)) as { start?: unknown }).start));
+      postedLegs.push(new Headers(init?.headers as Record<string, string> | undefined).get(LOADTEST_LEG_HEADER));
       events.push("book");
       const reply = bookings[b++];
       // An unplanned booking answers a status nothing treats as success, rather than
@@ -683,6 +687,7 @@ function fakeWorld(opts: {
   const world = {
     events,
     posted,
+    postedLegs,
     fetch,
     now: () => t,
     sleep: async (ms: number) => {
@@ -903,6 +908,8 @@ function sleptLongEnoughBeforeEachRead(events: string[]): boolean {
   const out = await bookControlSlot([NINE], bookingDeps(w));
   assert(out.ok, "the retry waits past a row computed just before the refusal");
   eq(w.count("row"), 2, "polling again rather than trusting it");
+  // #3354: often the first confirm a fresh deploy serves, so its cold start is named.
+  eq(w.postedLegs.join(","), "preflight,preflight", "every control booking names the preflight as its leg");
 }
 
 {
