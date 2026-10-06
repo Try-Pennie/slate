@@ -265,6 +265,10 @@
 		{
 			"tag": "v2",
 			"new_sqlite_classes": ["ConfirmLine"]
+		},
+		{
+			"tag": "v3",
+			"new_sqlite_classes": ["TrialOnly"]
 		}
 	],
 	// --- the load test environment (#2242) ----------------------------------
