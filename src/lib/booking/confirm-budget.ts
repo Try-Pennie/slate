@@ -28,7 +28,7 @@
  * response's trip back. Pinned by `confirm-budget.test.ts`, which drives the real
  * clients against a dependency that answers just inside every limit.
  */
-import { withinCallBudget } from "@/lib/call-budget";
+import { withinCallBudget, type CallObserver } from "@/lib/call-budget";
 import { DependencyTimeoutError, timeoutAsRetryable } from "@/lib/booking/orchestration";
 import { BOOKING_CLEANUP_BUDGET_MS, withinBookingCleanupBudget } from "@/lib/booking/cleanup-allowance";
 
@@ -39,9 +39,13 @@ export { BOOKING_CLEANUP_BUDGET_MS, withinBookingCleanupBudget };
 export const BOOKING_CONFIRM_BUDGET_MS = 12_000;
 export const BOOKING_CONFIRM_WORST_CASE_MS = BOOKING_CONFIRM_BUDGET_MS + BOOKING_CLEANUP_BUDGET_MS;
 
-/** Run a lead facing booking request under the confirm budget. */
-export function withinBookingConfirmBudget<T>(work: () => Promise<T>): Promise<T> {
-  return withinCallBudget(BOOKING_CONFIRM_BUDGET_MS, "the booking confirm", work);
+/**
+ * Run a lead facing booking request under the confirm budget. `observer` is told
+ * about every Supabase and Google call the request makes, the confirm's profile
+ * in production (#3300).
+ */
+export function withinBookingConfirmBudget<T>(work: () => Promise<T>, observer?: CallObserver): Promise<T> {
+  return withinCallBudget(BOOKING_CONFIRM_BUDGET_MS, "the booking confirm", work, undefined, observer);
 }
 
 /**
@@ -60,6 +64,8 @@ export function withinBookingConfirmBudget<T>(work: () => Promise<T>): Promise<T
 export function withinBookingRequest<T>(
   handle: () => Promise<T>,
   onTimeout: (timeout: DependencyTimeoutError) => Promise<T>,
+  /** #3300: told about every budgeted call; see `withinBookingConfirmBudget`. */
+  observer?: CallObserver,
 ): Promise<T> {
   return withinBookingConfirmBudget(async () => {
     try {
@@ -69,5 +75,5 @@ export function withinBookingRequest<T>(
       if (!(timeout instanceof DependencyTimeoutError)) throw err;
       return withinBookingCleanupBudget(() => onTimeout(timeout));
     }
-  });
+  }, observer);
 }

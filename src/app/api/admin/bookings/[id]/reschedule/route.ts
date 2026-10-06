@@ -19,6 +19,7 @@ import {
 import { validateReason } from "@/lib/booking/core";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { internalErrorResponse } from "@/lib/api/errors";
+import { answerTimed, noteRefusal, type ConfirmLineFacts } from "@/lib/booking/confirm-latency";
 import { crossOriginRefusal } from "@/lib/api/same-origin";
 
 export const dynamic = "force-dynamic";
@@ -29,11 +30,28 @@ const schema = z.object({
   reasonDetail: z.string().optional(),
 });
 
-/** Admin reschedule by booking id (#326). Manager+ gated (#544); initiator='admin'. */
+/**
+ * Admin reschedule by booking id (#326). Manager+ gated (#544); initiator='admin'.
+ *
+ * #3401: answered through the same `confirm answered` line a booking writes,
+ * saying it was a staff move, so its wait is measurable and a slow or timed out
+ * one carries the stage profile (#3300). This route runs under no confirm budget,
+ * so no call is reported to the profile and its line carries no call counts.
+ */
 export async function POST(
   req: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
+  ctx: { params: Promise<{ id: string }> },
 ) {
+  const facts: ConfirmLineFacts = {};
+  return answerTimed("booking", () => handlePost(req, ctx, facts), { facts, kind: "admin_move" });
+}
+
+async function handlePost(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+  facts: ConfirmLineFacts,
+) {
+  const endChecks = facts.profile?.begin("route-checks");
   // #1046: this route's only credential is the session cookie, so refuse a request
   // that says it came from somewhere else, before the auth check and before the body
   // is read. See src/lib/api/same-origin.ts for why silence is allowed through.
@@ -61,14 +79,17 @@ export async function POST(
     return NextResponse.json({ error: reason.error }, { status: 400 });
   }
 
+  endChecks?.();
   try {
-    const { booking } = await adminRescheduleBooking(id, parsed.data.start, reason.reason, actor);
+    const { booking } = await adminRescheduleBooking(id, parsed.data.start, reason.reason, actor, facts);
     return NextResponse.json({
       id: booking.id,
       startsAt: booking.starts_at,
       status: booking.status,
     });
   } catch (err) {
+    // #3300: a timeout, said on the line with the profile and the lead.
+    noteRefusal(facts, err);
     // #2310: the new time is outside the LEAD's calling window, judged in the
     // zone the booking was made in (not the admin's own). Named, so a manager
     // moving a Honolulu lead's call knows why 9am Eastern was refused.

@@ -157,6 +157,7 @@ import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
 import { emitWebhook, type WebhookSendScheduler } from "@/lib/webhooks/emit";
 import { afterResponse, deferWebhookSend } from "@/lib/after-response";
 import { withinBookingCleanupBudget } from "@/lib/booking/confirm-budget";
+import { DeadlineExceededError, findDeadlineExceeded, isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import { sendThrottledAlert, sendThrottledInfo, resolveRecovered } from "@/lib/notify/dispatch";
 import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import {
@@ -265,10 +266,31 @@ export { FREEBUSY_MAX_ITEMS } from "@/lib/booking/core";
 const VERIFY_CONCURRENCY = 6;
 
 /**
+ * #3313: a read refused because a deadline ran out is not a read that failed.
+ *
+ * PostgREST never throws, so a Supabase call cut short by the confirm's budget
+ * comes back as an `error` like any other, and the calendar lookups below answer
+ * every error with `readFailed`, which verify on book scores as an unverified
+ * agent and pages as "likely a Google/DB outage". With no time left, nothing a
+ * fallback asks can answer either, so the deadline itself is thrown, and the
+ * booking path classifies it as the dependency timeout it is
+ * (`timeoutAsRetryable`). Any other error is left to the caller's own path.
+ */
+function throwIfDeadline(error: unknown): void {
+  if (!error) return;
+  const found = findDeadlineExceeded(error);
+  if (!found) return;
+  const deadline = new DeadlineExceededError(found.label, found.timeoutMs, found.budget);
+  deadline.cause = error;
+  throw deadline;
+}
+
+/**
  * Calendar ids whose busy blocks an agent, looked up by their email (#314).
  * Reports `readFailed` so verify-on-book can tell a real DB error apart from a
  * genuine empty: on an error we must NOT silently fall back to checking only the
  * primary calendar (it could miss a conflict on a secondary one and double-book).
+ * A deadline is thrown instead (`throwIfDeadline`, #3313).
  */
 export async function calendarIdsForEmail(
   email: string,
@@ -279,12 +301,14 @@ export async function calendarIdsForEmail(
     .select("id")
     .eq("email", email)
     .maybeSingle();
+  throwIfDeadline(userRes.error);
   if (userRes.error) return { readFailed: true, ids: [] };
   if (!userRes.data) return { readFailed: false, ids: [] };
   const calsRes = await db
     .from("agent_calendars")
     .select("calendar_id")
     .eq("user_id", (userRes.data as { id: string }).id);
+  throwIfDeadline(calsRes.error);
   return calendarIdsFromResult(calsRes);
 }
 
@@ -313,6 +337,7 @@ export async function calendarsForEmails(
     .from("users")
     .select("id, email")
     .in("email", emails);
+  throwIfDeadline(usersRes.error);
   if (usersRes.error) {
     // Can't map any agent to their calendars — fall back per agent for all.
     for (const e of emails) readFailed.add(e);
@@ -328,6 +353,7 @@ export async function calendarsForEmails(
       "user_id",
       userRows.map((r) => r.id),
     );
+  throwIfDeadline(calsRes.error);
   if (calsRes.error) {
     for (const e of emails) readFailed.add(e);
     return { byEmail, readFailed };
@@ -486,6 +512,7 @@ import { loadPhotoRecords, loadUserSignInPhoto } from "@/lib/advisor-photos/stor
 import { makeConfirmQueue, isolateLine } from "@/lib/booking/confirm-queue";
 import { confirmLineFor, lineGroupOfLive } from "@/lib/booking/confirm-line-live";
 import type { ConfirmLineFacts } from "@/lib/booking/confirm-latency";
+import { timeStage } from "@/lib/booking/confirm-profile";
 export type { BookingResult, CreateBookingInput };
 export type { ExistingCall } from "@/lib/booking/orchestration";
 export type { BookingActor } from "@/lib/booking/core";
@@ -1050,6 +1077,11 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
           for (const e of res.free) free.add(e);
           for (const e of res.needsFallback) fallback.add(e);
         } catch (err) {
+          // #3313: a deadline is not a bulk failure. The confirm's budget is spent
+          // (or this call's own limit is), so the per agent reads would meet the
+          // same deadline and score every candidate unverified, paging a Google
+          // or database outage about Slate's own clock. It goes up as itself.
+          if (isDeadlineExceeded(err)) throw err;
           // Total bulk failure (e.g. the subject's delegated token couldn't be
           // minted) — verify everyone directly per agent rather than fail.
           log.error("booking", { msg: "verify-on-book bulk freeBusy failed, falling back to per-agent" }, err);
@@ -1105,6 +1137,15 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
     // #3354: the points of the wait before the confirm's profile, when the route
     // keeps marks (the load test only); absent, nothing is stamped.
     mark: lineFacts?.marks ? (point) => lineFacts.marks?.mark(point) : undefined,
+    // #3300: the request's stage profile, opened by the route's `answerTimed`, so
+    // the confirm's stages and ladder rungs reach its `confirm answered` line.
+    profile: lineFacts?.profile,
+    // #3401: a time change learns its lead off the booking it loads, for the line.
+    noteLeadId: lineFacts
+      ? (leadId) => {
+          lineFacts.leadId = leadId;
+        }
+      : undefined,
     enqueueEventDeletion: async (calendarEmail, gcalEventId, bookingId) => {
       // THROWS (#2482). This row IS the record that a Google event still has to be
       // deleted, and nothing else holds that fact: a refused upsert leaves the event
@@ -2448,11 +2489,16 @@ async function rescheduleWithLog(
   actor?: BookingActor,
   contact?: { name?: string; firstName?: string; email?: string; phone?: string },
   leadZone?: string | null,
+  lineFacts?: ConfirmLineFacts,
 ): Promise<BookingResult> {
   try {
-    const res = await orchestration.rescheduleBooking(
-      token, newStartIso, reason, initiator, realDeps(deferWebhookSend), Date.now(), actor, contact,
-      { leadZone },
+    // #3401: the whole move as one stage of the request's profile; a reroute's
+    // ladder rungs are timed inside it.
+    const res = await timeStage(lineFacts?.profile, "reschedule", () =>
+      orchestration.rescheduleBooking(
+        token, newStartIso, reason, initiator, realDeps(deferWebhookSend, lineFacts), Date.now(), actor, contact,
+        { leadZone },
+      ),
     );
     logRescheduleSuccess(res.booking.id, initiator, res.rescheduleDecline);
     return res;
@@ -2802,9 +2848,11 @@ export function rescheduleBooking(
   /** #2310: the zone the lead is viewing the new time in; absent means the
    *  booking's own zone is judged instead. */
   leadZone?: string | null,
+  /** #3401: the route's `confirm answered` facts: the profile, and the lead it names. */
+  lineFacts?: ConfirmLineFacts,
 ): Promise<BookingResult> {
   return alertOnBookingFailure(() =>
-    rescheduleWithLog(token, newStartIso, reason, initiator, undefined, contact, leadZone),
+    rescheduleWithLog(token, newStartIso, reason, initiator, undefined, contact, leadZone, lineFacts),
   );
 }
 
@@ -2935,11 +2983,13 @@ export async function adminRescheduleBooking(
   newStartIso: string,
   reason: ValidatedReason,
   actor: BookingActor,
+  /** #3401: the route's `confirm answered` facts: the profile, and the lead it names. */
+  lineFacts?: ConfirmLineFacts,
 ): Promise<BookingResult> {
-  const token = await manageTokenForBooking(bookingId);
+  const token = await timeStage(lineFacts?.profile, "load-token", () => manageTokenForBooking(bookingId));
   if (!token) throw new Error("Booking not found");
   return alertOnBookingFailure(() =>
-    rescheduleWithLog(token, newStartIso, reason, "admin", actor),
+    rescheduleWithLog(token, newStartIso, reason, "admin", actor, undefined, undefined, lineFacts),
   );
 }
 

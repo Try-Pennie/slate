@@ -327,10 +327,34 @@ to fail for a cause the CPU bar can name first.
 Measured against it on 2026-09-14 (run 34862015419): **CPU p99 4,908ms over 1,364
 invocations with no cron in the window**, against a wall p95 of 4,025ms. CPU
 roughly equals wall, so the confirm path is compute bound rather than waiting on
-anything. Which part of it is the open half of #2321, and the path now times its
-own named stages under `SLATE_LOADTEST` (`src/lib/booking/confirm-profile.ts`), so
-the next run answers it from a measurement rather than from reading the code. That
-is WALL time, apportioned only because this run measured the two as roughly equal.
+anything. Which part of it is the open half of #2321, and the path times its own
+named stages (`src/lib/booking/confirm-profile.ts`), so the next run answers it
+from a measurement rather than from reading the code. That is WALL time,
+apportioned only because this run measured the two as roughly equal.
+
+**Reading a slow or timed out confirm in production (#3300, #3401).** Every
+confirm, a booking or a time change, collects that profile, and its
+`tag=booking` (or `tag=booking-api`) `msg="confirm answered"` line carries it
+when the confirm timed out (`timed_out=true`) or took 8 seconds or more
+(`CONFIRM_PROFILE_SLOW_MS`). `confirm_kind` says which confirm it was (`new`,
+`move`, `admin_move`). The fields, counts and milliseconds only:
+
+- `stages_run`, `stages` (`name:ms/runs`, dearest first) and `staged_ms`, the time
+  at least one stage was running, overlapping stages counted once;
+- `unattributed_ms`, the wall no stage covers, split into
+  `unattributed_before_ms`, `_between_ms` and `_after_ms` by where it fell: time in
+  the gaps is this confirm computing, or waiting for the isolate to resume it, with
+  nothing named in flight. The stages plus the remainder are exactly `response_ms`;
+- `rungs_walked` and `rung_ms` (`code:ms`, ladder order), the tier ladder;
+- `calls_made`, `calls_ms` and `calls_by` (`dependency:ms/calls/slowest_ms`), every
+  budgeted Supabase and Google request. Absent on the admin time change, which runs
+  no confirm budget, rather than a zero.
+
+A span runs to the moment the confirm RESUMES after the call, so a stage or call
+far longer than Supabase's or Google's own log of the same request is the isolate
+being slow to get back to this confirm, not the dependency. A timed out line also
+carries `lead_id`, the 15 character Salesforce lead key, so the same lead booking
+again can be matched; never a name, email or phone.
 
 **The GraphQL analytics lag is MINUTES, not hours.** Measured 2026-09-13 at **1.9
 minutes** behind. The three hour figure recorded elsewhere in this document belongs

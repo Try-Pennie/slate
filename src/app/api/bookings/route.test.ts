@@ -410,6 +410,36 @@ describe("POST /api/bookings (auth skeleton)", () => {
     service.pageBookingFailure.mockClear();
   });
 
+  // #3300: a call that timed out says where its time went and whose it was, on its
+  // own `confirm answered` line; the service is handed the request's profile.
+  it("logs where a timed out call's time went, with the lead's Salesforce id (#3300)", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    regalKey.primary.mockReturnValue("real-secret");
+    service.bookViaApi.mockImplementationOnce((async (
+      _input: unknown,
+      facts?: { profile?: { time: (s: string, fn: () => Promise<unknown>) => Promise<unknown> } },
+    ) => {
+      await facts?.profile?.time("assign-and-verify", async () => {});
+      // As the service throws it: the retryable outage, carrying the deadline as its cause.
+      throw Object.assign(new service.VerifyUnavailableError("try again"), {
+        cause: new DeadlineExceededError("supabase", 0, { label: "the booking confirm", totalMs: 12_000 }),
+      });
+    }) as never);
+    const res = await post("Bearer real-secret", { ...VALID_BODY, salesforceId: "00QUi00000zhEUPMA2" });
+    const lines = info.mock.calls.map((c) => c.map(String).join(" ")).filter((l) => l.includes('msg="confirm answered"'));
+    info.mockRestore();
+    expect(res.status).toBe(503);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("timed_out=true");
+    expect(lines[0]).toContain('lead_id="00QUi00000zhEUP"');
+    expect(lines[0]).toMatch(/stages="[^"]*assign-and-verify:\d+\/1/);
+    expect(lines[0]).toMatch(/stages="[^"]*route-checks:\d+\/1/);
+    // The confirm budget reported its calls to this profile (none here: the service is a fake).
+    expect(lines[0]).toContain("calls_made=0");
+    expect(lines[0]).not.toMatch(/dana|2155550100/i);
+  });
+
   it("answers a dry run that times out the same way, not as INTERNAL (#3102)", async () => {
     regalKey.primary.mockReturnValue("real-secret");
     service.previewBooking.mockRejectedValueOnce(new DeadlineExceededError("google freeBusy.many", 8000));
