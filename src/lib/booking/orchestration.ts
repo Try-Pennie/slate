@@ -1517,11 +1517,12 @@ export interface BookingDeps {
   /**
    * Gated reschedule commit (#615). Applies the move ONLY while the booking is
    * still the one we started moving: status still active AND assignee + gcal
-   * event id unchanged since we read them. Returns true iff THIS update
-   * transitioned the row. A concurrent cancel (flips status) or reassign (swaps
-   * assignee + event id) makes it touch 0 rows, so the reschedule can roll back
-   * instead of resurrecting a cancelled booking or clobbering the reassign.
-   * Same gated-update shape as `claimCancellation` / `completeBookingsIfDue`.
+   * event id unchanged since we read them. Answers the id of the outbox row the
+   * same transaction wrote when THIS call applied the move (#3265), or null when
+   * the guard matched nothing. A concurrent cancel (flips status) or reassign
+   * (swaps assignee + event id) answers null, so the reschedule can roll back
+   * instead of resurrecting a cancelled booking or clobbering the reassign. A
+   * refused call throws as a write failure and is never read as null (#2373).
    */
   commitReschedule(
     bookingId: string,
