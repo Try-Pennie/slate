@@ -15,6 +15,51 @@ reaches as the same instance. Correctness never rests on it: the bookings indexe
 and verify on book still decide who gets a slot. The line is capacity and fairness,
 so a crowd gets one booking per free advisor and fast "taken" answers.
 
+## When a verdict is "full" (#3338)
+
+A leader's verdict settles the confirms waiting behind it only when its whole tier
+LADDER is spent: it booked the last advisor the ladder's LAST rung had free, or it
+was refused after every rung (a lost insert race included, once nobody below the
+rung it was lost on was free either). Sales ops decided on 2026-10-02 that a lead
+whose tier has nobody free at confirm keeps their time with the next tier down, and
+Dan settled on 2026-10-06 that a confirm in a crowd walks the ladder "Same as a
+normal confirm". Before this a leader that booked the last advisor of ANY rung
+told everybody waiting "taken" while the tier below had people free.
+
+So a leader that books the last advisor of a rung above the last reports "not
+full", and the line's existing hand on makes the next confirm the leader. It walks
+from the top like any confirm: the advisor just booked reads as busy in the write
+through cache, so it drops that rung for one candidate read, and on a rung with
+unclaimed advisors the #3257 hand on lets the confirms behind it lead at once, one
+per unclaimed advisor. Nothing about the line itself changed: no new verdict field,
+no start rung, no protocol change, no release of the whole crowd at once (each of
+those would bring back #3221 or run 37333201026). It is the same on the per isolate
+line, which production runs, and on the shared line.
+
+A confirm whose insert loses the race walks on down the same way, from the rung it
+lost on, but only when what its budget has left covers what the attempt that lost
+cost it. With less left it is told to retry (the dependency timeout, 503).
+
+The honest limit: each step down costs the next confirm its reads before the line,
+and the confirm booking a rung's last advisor holds the line for its whole confirm
+(it may yet fail and free that advisor, #3257). At production speed (about eight
+seconds a confirm) a crowd arriving together behind the top rung's last advisor
+cannot reach the rung below inside its 12 second budget, so it is told to retry
+rather than "taken"; a lead arriving a few seconds behind the first books below.
+Counted on /admin/routing beside the tier drops (`routing_trace.dropped_behind`).
+
+Told to retry means nothing was started. Any confirm, a follower promoted late
+above all, first asks whether its budget covers what its commit chain (the
+reservation, the calendar event, the insert) costs, and starts none of it
+otherwise (`src/lib/booking/commit-cost.ts`). A chain cut off part way would leave a
+reservation the drain later finishes into a booking for a lead told it failed
+(L12). The cost is measured, never typed: the slowest of this isolate's last 8
+chains that committed inside their budget (reservation write to the insert's
+answer) and are under 14 seconds old, and never less than the confirm's own slowest
+Google call. The age bound is what stops one slow chain holding an isolate's later
+confirms out for good, since a refused confirm records nothing (L465). In the simulation, a crowd of 100 at production
+speed: 1 booked, 99 told to retry, 0 told taken, 0 reservations or events left.
+
 ## Where the code is
 
 | piece | file |
@@ -38,8 +83,9 @@ booking. The group is:
 - `link:<userId>` for a named advisor's link, whatever code it came through;
 - `ladder:<fingerprint>` when this isolate knows the pool of every rung of the code's
   fallback ladder (`src/lib/booking/line-key.ts`). A leader's "full" verdict means
-  nobody in any rung of ITS ladder was free, so it may settle only followers that
-  would walk the same pools at every rung. Today 510, 511, 500 and 501 share one;
+  nobody in any rung of ITS ladder was free (since #3338 that is what the verdict
+  says, see above), so it may settle only followers that would walk the same pools
+  at every rung. Today 510, 511, 500 and 501 share one;
   a bucket that gains a hand named member splits off by itself (Dan, 2026-10-05);
 - `code:<code>` otherwise, which is what a cold isolate uses. The pool grouping is
   read without waiting (`peekPoolKey` in `slot-cache.ts`) and warmed after the
@@ -94,7 +140,9 @@ an object that ignored both fields would answer every call the same.
 every lost, late, repeated or outlived message), `test-shared-confirm-line.ts` (the
 client against the real host through a transport that can fail each message, or
 swap the host for a deploy), `test-confirm-contention.ts` (fifty isolates: per
-isolate lines leave dozens told to retry, one shared line answers the whole crowd),
+isolate lines leave dozens told to retry, one shared line answers the whole crowd;
+and since #3338 a crowd behind a rung's last advisor walking the ladder, on both
+lines, at production speed, with the one hop a spent ladder costs measured),
 `test-unawaited-line-calls.ts` (no unawaited line call), `test-confirm-line-binding.ts`
 (bound, created and exported in production and the load test, and the deployed class
 logging a traced call).

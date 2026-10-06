@@ -1,8 +1,8 @@
 // #2838: confirms losing the overlap race (#2274), counted once a day and
 // whispered when the share of confirms that lost one is above what ordinary
 // traffic can produce. Since #2281 a lost race is handed to the next free advisor
-// in the same rung, up to MAX_RACE_REASSIGNS, and nothing counted it anywhere a
-// person would read.
+// in the same rung (since #3338 on down the tier ladder too), up to
+// MAX_RACE_REASSIGNS in all, and nothing counted it anywhere a person would read.
 //
 // #2867: a cross bucket move rescued after a lost race records its own row, so
 // the verdict counts it as a confirm AND a loser without a `created` behind it.
@@ -557,6 +557,9 @@ function traffic(code: string, perHour: number, hours: number, startHoursAgo = 1
   assert(text.includes("1.8%"), "names the threshold it is judged against");
   assert(text.includes("a fixture"), "a fallback threshold says why it was used");
   assert(text.includes("4 were booked with the next free advisor"), "says how many were rescued");
+  // #3338: a rescue can now be a tier below, which the tally does not tell apart,
+  // so the sentence claims neither on its own (L11).
+  assert(text.includes("or a tier below it"), "says a rescue may be in a tier below the one asked for");
   assert(text.includes("2 were refused"), "says how many leads were turned away");
   assert(text.includes("1 of them"), "separates the bound hits");
   assert(/race_lost/.test(text), "points at where the rescued ones are recorded");
@@ -593,19 +596,27 @@ function traffic(code: string, perHour: number, hours: number, startHoursAgo = 1
   assert(!text.includes("The refused ones"), "and does not then point at refusals that did not happen");
 }
 {
-  const text = raceBoundHitPageText({ bucketCode: "311", startIso: "2026-09-28T18:00:00.000Z", lostRaces: 4 });
+  const text = raceBoundHitPageText({ requestedCode: "311", bucketCode: "311", startIso: "2026-09-28T18:00:00.000Z", lostRaces: 4 });
   assert(text.includes("311"), "the page names the bucket");
   assert(text.includes("2026-09-28 18:00 UTC"), "and the time, readably");
   assert(text.includes("4 advisors"), "and how many were tried");
   assert(/What to do/.test(text), "names what a reader should do");
   assert(!/[\u2014\u2013]/.test(text), "no dashes in the page");
-  const raw = raceBoundHitPageText({ bucketCode: "311", startIso: "not a time", lostRaces: 4 });
+  // #3338: the bound counts every advisor across the rungs the confirm walked, so
+  // the page says so, and names the bucket the lead was confirming into.
+  assert(/every tier/.test(text), "says the count is across every tier the confirm walked down");
+  assert(!/down to bucket/.test(text), "a refusal on the requested rung names no other bucket");
+  const raw = raceBoundHitPageText({ requestedCode: "311", bucketCode: "311", startIso: "not a time", lostRaces: 4 });
   assert(raw.includes("not a time"), "an unreadable time is shown as given rather than as Invalid Date");
+  // #3338: refused on a lower rung after walking down: both buckets, the requested first.
+  const lower = raceBoundHitPageText({ requestedCode: "411", bucketCode: "311", startIso: "2026-09-28T18:00:00.000Z", lostRaces: 4 });
+  assert(lower.includes("in bucket 411") && lower.includes("down to bucket 311"), `a refusal below names both buckets (got ${lower})`);
+  assert(lower.indexOf("411") < lower.indexOf("311"), "the bucket the lead asked for first");
 }
 
 // --- whether the confirm path pages a refusal ---------------------------------
 {
-  const base = { boundHit: true, isTest: false, loadtest: false, bucketCode: "311", startIso: "2026-09-28T18:00:00.000Z", lostRaces: 4 };
+  const base = { boundHit: true, isTest: false, loadtest: false, requestedCode: "311", bucketCode: "311", startIso: "2026-09-28T18:00:00.000Z", lostRaces: 4 };
   const page = raceBoundHitPage(base);
   assert(page !== null, "a real lead refused at the bound is paged");
   if (page) {

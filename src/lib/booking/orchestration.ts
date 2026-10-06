@@ -94,7 +94,7 @@ import {
 } from "./refusal-trace.ts";
 import { calendarLinks, icsDocument, icsUrl, leadCalendarEvent, type CalendarLinks } from "./calendar-links.ts";
 import type { RecordRoutingDecisionInput } from "../routing/record.ts";
-import { rungExcludesLow, tierKeyOf } from "../routing/tiers.ts";
+import { rungExcludesLow, tierKeyOf, tierLadder } from "../routing/tiers.ts";
 import { walkTierLadder, type RungOutcome } from "../routing/tier-fallback.ts";
 import { tierFallbackAlert } from "../routing/tier-alert.ts";
 import {
@@ -193,25 +193,36 @@ export class SlotUnavailableError extends Error {
 
 /**
  * #2838: a confirm refused AFTER its insert lost the overlap race (#2274) and no
- * further advisor in the same rung took it (#2281). A SlotUnavailableError, so every
+ * further advisor took it: none after the loser in the same rung (#2281), and
+ * since #3338 none on any rung below it either. A SlotUnavailableError, so every
  * caller keeps answering the same 409 with the same sentence; the subclass exists
  * so the booker can count it apart from a time already taken at the free check,
  * which is the only way a refusal after a race reaches any counter at all (it
  * writes no booking and no routing decision).
  *
- * `lostRaces` is how many advisors this confirm lost in a row. `boundHit` says the
- * refusal came from `MAX_RACE_REASSIGNS`, not from nobody after the loser being
- * free: the rung was not asked about a further advisor, so nothing may claim it
- * had none.
+ * `lostRaces` is how many advisors this confirm lost in a row, across every rung it
+ * walked. `boundHit` says the refusal came from `MAX_RACE_REASSIGNS`, not from
+ * nobody after the loser being free: the rung was not asked about a further
+ * advisor, so nothing may claim it had none.
+ *
+ * `ladderExhausted` (#3338) says every rung the ladder had left was asked and
+ * nobody on it could take the time: the race was lost on the last rung with
+ * nobody after the loser, the walk down found nobody, or the confirm was a named
+ * link, whose one advisor is its whole ladder. Only then does the refusal settle
+ * the confirms waiting behind it (`verdictForRefusal`). A bound hit, a check that
+ * could not answer and an adopted pin all leave it false: they learnt nothing
+ * about the rest of the ladder, so nothing may say it is full (L11).
  */
 export class RaceLostRefusalError extends SlotUnavailableError {
   readonly lostRaces: number;
   readonly boundHit: boolean;
-  constructor(lostRaces: number, boundHit: boolean) {
+  readonly ladderExhausted: boolean;
+  constructor(lostRaces: number, boundHit: boolean, ladderExhausted: boolean) {
     super();
     this.name = "RaceLostRefusalError";
     this.lostRaces = lostRaces;
     this.boundHit = boundHit;
+    this.ladderExhausted = ladderExhausted;
   }
 }
 
@@ -2318,46 +2329,63 @@ const VERIFY_WAVE_SIZE = 20;
  * costs a live free check, a calendar event and its removal, all on the lead's
  * confirm tap, and a confirm losing to several racers in a row is a burst the
  * lead is better told about than kept waiting through.
+ *
+ * #3338: counted per CONFIRM, across every rung it walks, so walking down the
+ * ladder after a lost race never resets it.
  */
 export const MAX_RACE_REASSIGNS = 3;
 
 /**
+ * Why the search for the next advisor after a lost race found nobody (#3338).
+ * Typed so exactly ONE of them, `rung-exhausted`, lets the confirm walk on down
+ * the ladder; a refusal that merely failed to find somebody must never be read as
+ * the rung having nobody (L35, L11).
+ *
+ *  - `not-a-race`: the failure was not a lost race (a transient insert failure
+ *    keeps its own path, which leaves the reservation for the drain);
+ *  - `named-link`: a named advisor link (#2073), which must never fall to anybody;
+ *  - `not-chosen-here`: the advisor that lost was not one this confirm chose from
+ *    the rung: a same key racer's pin was adopted, so choosing again under it would
+ *    be a second request's decision;
+ *  - `bound`: `MAX_RACE_REASSIGNS`;
+ *  - `rung-exhausted`: nobody after the loser on this rung is free;
+ *  - `check-failed`: the live check could not answer, by error or for any advisor.
+ *    A check that cannot answer is never read as free, nor as busy;
+ *  - `deadline`: the live check ran out of time (#3402), carrying the deadline.
+ */
+export type NoNextAdvisor = "not-a-race" | "named-link" | "not-chosen-here" | "bound" | "rung-exhausted" | "check-failed";
+
+export type NextAfterLostRace =
+  | { kind: "advisor"; assignment: AssignResult }
+  | { kind: "none"; reason: NoNextAdvisor }
+  | { kind: "none"; reason: "deadline"; err: unknown };
+
+/**
  * #2281: when a confirm's insert loses the overlap race (#2274), the advisor to
- * hand it to instead, or null to refuse the time exactly as before.
+ * hand it to instead, or WHY there is none (#3338, `NoNextAdvisor`).
  *
- * Dan's boundary: another advisor "in the correct bucket/routing rules" is fine;
- * anything that "would require cascading" is not. So the only advisors this can
- * return are the ones AFTER the loser in the candidate list the booked rung
- * already resolved for this instant, in round robin order, confirmed free by the
- * same live check verify on book uses. It never resolves the pool again, never
- * walks the tier ladder, and never books a named link's lead with anybody else.
+ * The only advisors this can return are the ones AFTER the loser in the candidate
+ * list the booked rung already resolved for this instant, in round robin order,
+ * confirmed free by the same live check verify on book uses. It never resolves the
+ * pool again and never books a named link's lead with anybody else. Walking on down
+ * the ladder when the rung is spent is the CALLER's step (`createHeld`), taken
+ * only on `rung-exhausted`, and only when the confirm has the time for it.
  *
- * It refuses (returns null) on:
- *  - any failure that is not a lost race: a transient insert failure keeps its
- *    own path, which leaves the reservation for the drain;
- *  - a named advisor link (#2073), which must never fall to another advisor;
- *  - a reservation this request did not pin: a same key racer's pin was adopted,
- *    and choosing again under it would be a second request's decision;
- *  - the bound, `MAX_RACE_REASSIGNS`;
- *  - nobody after the loser free, or the free check itself failing. A check that
- *    cannot answer is never read as free, and the lead is told what they were
- *    told before this existed, rather than an outage replacing a taken time.
- *
- * It THROWS on one thing: a deadline from that free check (#3402). The time was
- * not learned to be taken, the budget ran out, so the lead gets the retryable
- * answer and the page names the timeout.
+ * A deadline from the free check comes back as `deadline` with the error itself
+ * (#3402): the time was not learned to be taken, the budget ran out, so the lead
+ * gets the retryable answer and the page names the timeout.
  *
  * The lost attempt's calendar event is already gone by the time this runs:
  * `completeReservation` removes it (and the reservation) before it raises the
  * refusal, and a new attempt pins its own event id, since the id is derived from
  * the advisor as well as the idempotency key.
  */
-async function nextAdvisorAfterLostRace(
-  deps: BookingDeps,
+export async function nextAdvisorAfterLostRace(
+  deps: Pick<BookingDeps, "loadEmails" | "verifyFree">,
   lost: {
     err: unknown;
     named: boolean;
-    reservation: BookingReservation;
+    reservation: Pick<BookingReservation, "pinned_user_id">;
     lostUserId: string;
     candidates: string[];
     lostSoFar: number;
@@ -2368,17 +2396,20 @@ async function nextAdvisorAfterLostRace(
      *  nobody beside it is booking. */
     seat: SharedSeat | null;
   },
-): Promise<AssignResult | null> {
-  if (!(lost.err instanceof SlotUnavailableError)) return null;
-  if (lost.named) return null;
-  if (lost.reservation.pinned_user_id !== lost.lostUserId) return null;
-  if (lost.lostSoFar >= MAX_RACE_REASSIGNS) return null;
+): Promise<NextAfterLostRace> {
+  const none = (reason: NoNextAdvisor): NextAfterLostRace => ({ kind: "none", reason });
+  if (!(lost.err instanceof SlotUnavailableError)) return none("not-a-race");
+  if (lost.named) return none("named-link");
+  if (lost.reservation.pinned_user_id !== lost.lostUserId) return none("not-chosen-here");
+  if (lost.lostSoFar >= MAX_RACE_REASSIGNS) return none("bound");
   const at = lost.candidates.indexOf(lost.lostUserId);
-  if (at < 0) return null;
+  // Unreachable while every pick comes from the rung's own candidates; said as
+  // what it would mean rather than guessed at, and never a reason to walk down.
+  if (at < 0) return none("not-chosen-here");
   const { pool: remaining } = await unclaimedFirst(lost.seat, lost.candidates.slice(at + 1));
-  if (remaining.length === 0) return null;
+  if (remaining.length === 0) return none("rung-exhausted");
   try {
-    const { assignment } = await selectAgent(
+    const { assignment, anyUnverified } = await selectAgent(
       remaining,
       (userIds) => deps.loadEmails(userIds),
       (emails) => {
@@ -2387,20 +2418,23 @@ async function nextAdvisorAfterLostRace(
       },
       VERIFY_WAVE_SIZE,
     );
-    return assignment;
+    if (assignment) return { kind: "advisor", assignment };
+    // Somebody after the loser could not be checked, so the rung is not known to
+    // be spent: it is never dropped for an advisor nobody could ask about.
+    return none(anyUnverified ? "check-failed" : "rung-exhausted");
   } catch (err) {
     // #3402: a deadline is not a check that failed. The confirm's budget ran out
     // (or the call's own limit did), so nothing about the slot was learned and the
     // lead can retry: refusing it as a taken time would tell them something
-    // nobody measured, and nobody would be paged (L11). It goes up as itself and
-    // becomes the dependency timeout (`timeoutAsRetryable`).
-    if (findDeadlineExceeded(err)) throw err;
+    // nobody measured, and nobody would be paged (L11). The caller raises it as
+    // itself, and it becomes the dependency timeout (`timeoutAsRetryable`).
+    if (findDeadlineExceeded(err)) return { kind: "none", reason: "deadline", err };
     log.warn(
       "booking",
       { msg: "could not check the next advisor after a lost race; refusing the time", lost_user_id: lost.lostUserId },
       err,
     );
-    return null;
+    return none("check-failed");
   }
 }
 
@@ -2430,6 +2464,13 @@ async function assignAgent(
    * found booked or at their daily cap at confirm).
    */
   reroute?: { excludeUserId: string; forBookingId: string; alsoExclude?: readonly string[] },
+  /**
+   * #3338: advisors this confirm already knows cannot take the time, left out of
+   * the read as if the cache had not offered them: on a walk down after a lost
+   * race, those who lost a race at this instant (the overlap index says they hold
+   * it) and, on the rung the race was lost on, those it already asked there.
+   */
+  exclude: readonly string[] = [],
 ): Promise<AssignResult & { candidates: string[]; read: string[] }> {
   const { candidates: ranked, memberCount } = await deps.roundRobinCandidates(
     bucket,
@@ -2440,9 +2481,11 @@ async function assignAgent(
     excludeLow,
     reroute ? { fixedTime: true, forBookingId: reroute.forBookingId } : undefined,
   );
-  const read = reroute
-    ? ranked.filter((id) => id !== reroute.excludeUserId && !(reroute.alsoExclude ?? []).includes(id))
-    : ranked;
+  const read = (
+    reroute
+      ? ranked.filter((id) => id !== reroute.excludeUserId && !(reroute.alsoExclude ?? []).includes(id))
+      : ranked
+  ).filter((id) => !exclude.includes(id));
   const candidates = await claimFromLine(seat, read);
 
   const { assignment, anyUnverified, checked } = await selectAgent(
@@ -2743,9 +2786,35 @@ interface TierAssignResult {
    */
   read: string[];
   rungsDropped: number;
+  /** #3338: when the walk reached the rung that took it (`Date.now()`), so a lost
+   *  race can measure that one rung's cost apart from the rungs dropped above it. */
+  rungStartedAtMs: number;
   /** #2158: the bucket's legal rule matched nobody, so it was dropped and the
    *  tier's whole pool was used. Carried out here rather than recomputed, so the
    *  trace and the notice describe the pool this booking actually came from. */
+}
+
+/**
+ * Where a walk down the ladder after a lost race picks up (#3338).
+ *
+ * `rung` is the index (into the requested code's ladder) of the rung the race was
+ * lost on; rungs above it are not read again. That rung IS read again, with every
+ * advisor this confirm already asked there left out (`askedOnRung`), so the only
+ * ones it can offer are advisors this confirm left alone because another confirm
+ * in its line had claimed them (#3257). Those are tried exactly as a normal confirm
+ * meeting them would try them, which is the rule that a rung is never dropped for
+ * advisors that are merely claimed. Nobody left there, the walk drops the rung like
+ * any confirm's. `taken` (the advisors who lost a race at this instant) is left out
+ * of every rung, since an advisor can sit in more than one rung's pool.
+ *
+ * The same walk as an ordinary confirm's (`assignAgentWithTierFallback`), picked up
+ * part way down, so a lost race walks the ladder exactly as any confirm does: one
+ * per rung predicate, one rungs-dropped measure from the requested code.
+ */
+interface LadderResume {
+  rung: number;
+  askedOnRung: readonly string[];
+  taken: readonly string[];
 }
 
 /**
@@ -2767,6 +2836,8 @@ async function assignAgentWithTierFallback(
   preview = false,
   /** #3257: the real book's claim in its slot's line; read only paths pass none. */
   seat: SharedSeat | null = null,
+  /** #3338: pick the walk up after a lost race (`LadderResume`); absent for an ordinary confirm. */
+  resume: LadderResume | null = null,
 ): Promise<TierAssignResult> {
   // Shares walkTierLadder with the availability display cascade (#499), so the two
   // can never drift on the ladder or the rungs-dropped accounting; only the per-rung
@@ -2784,22 +2855,26 @@ async function assignAgentWithTierFallback(
   // ran out of time while dropping tiers says which rung it was on and what each
   // one cost. A rung skipped before any read (no bucket row) still counts as walked.
   const timeRung = <R>(code: string, fn: () => Promise<R>): Promise<R> => (deps.profile ? deps.profile.rung(code, fn) : fn());
+  // #3338: rungs above the one a lost race happened on were walked already.
+  const skipped: RungOutcome<Omit<TierAssignResult, "rungsDropped">> = { hit: false };
   const winner = await walkTierLadder<Omit<TierAssignResult, "rungsDropped">>(
     requested.bucket.code,
-    (rungCode, i) => timeRung(rungCode, async (): Promise<RungOutcome<Omit<TierAssignResult, "rungsDropped">>> => {
+    (rungCode, i) => resume && i < resume.rung ? Promise.resolve(skipped) : timeRung(rungCode, async (): Promise<RungOutcome<Omit<TierAssignResult, "rungsDropped">>> => {
+      const rungStartedAtMs = Date.now();
       const resolved = i === 0 ? requested : await deps.resolveBucketByCode(rungCode);
       if (!resolved) return { hit: false }; // a lower tier with no bucket row: skip
       if (resolved.bucket.is_test && !allowTestBuckets) return { hit: false };
       const { startIso, endIso } = bookingWindow(startInstantIso, resolved.eventType.duration_min);
       // The same rule the display cascade judged this rung by (#2842).
       const excludeLow = rungExcludesLow(requested.bucket.code, rungCode);
+      const exclude = !resume ? [] : i === resume.rung ? [...resume.askedOnRung, ...resume.taken] : resume.taken;
       try {
         const { userId, email, candidates, read } = await assignAgent(
-          deps, resolved.bucket, resolved.eventType, startIso, endIso, preview, undefined, excludeLow, seat,
+          deps, resolved.bucket, resolved.eventType, startIso, endIso, preview, undefined, excludeLow, seat, undefined, exclude,
         );
         return {
           hit: true,
-          value: { bucket: resolved.bucket, eventType: resolved.eventType, startIso, endIso, userId, email, candidates, read },
+          value: { bucket: resolved.bucket, eventType: resolved.eventType, startIso, endIso, userId, email, candidates, read, rungStartedAtMs },
         };
       } catch (err) {
         const rung = rungOf(err);
@@ -2826,6 +2901,38 @@ async function assignAgentWithTierFallback(
 }
 
 /**
+ * The step a confirm takes when its insert lost the overlap race and nobody after
+ * the loser on that rung is free (#3338): the ordinary ladder walk, picked up at
+ * that rung (`LadderResume`), so the rest of the ladder is walked exactly as any
+ * confirm walks it. Gives back the rung that can take the time, rebuilt whole
+ * (bucket, event type, window, candidates, read and rungs dropped from the
+ * requested code), or the rungs it asked when none can, for the refusal's trace.
+ *
+ * Only a rung genuinely spent ends the walk. An outage on a rung below (a live
+ * check that could not answer) and a deadline go up as themselves, the retryable
+ * answer, exactly as they do from an ordinary confirm's walk: a rung nobody could
+ * ask about is never read as having nobody (L11).
+ */
+async function walkDownAfterLostRace(
+  deps: BookingDeps,
+  requested: { bucket: Bucket; eventType: EventType },
+  input: Pick<CreateBookingInput, "startIso" | "allowTestBuckets">,
+  seat: SharedSeat | null,
+  resume: LadderResume,
+): Promise<{ tier: TierAssignResult } | { refusedOn: RungTrace[] }> {
+  try {
+    return {
+      tier: await assignAgentWithTierFallback(deps, requested, input.startIso, input.allowTestBuckets ?? false, false, seat, resume),
+    };
+  } catch (err) {
+    if (err instanceof SlotUnavailableError || err instanceof NoEligibleAgentsError) {
+      return { refusedOn: refusalTraceOf(err)?.rungs ?? [] };
+    }
+    throw err;
+  }
+}
+
+/**
  * Assign the ONE agent a named link books (#2073), through the same `assignAgent`
  * the pool uses, narrowed to them: the same candidate predicate (every
  * availability gate) and the same verify on book, with nothing to fall back to.
@@ -2840,6 +2947,7 @@ async function assignNamedAgent(
   startInstantIso: string,
   agentUserId: string,
 ): Promise<TierAssignResult> {
+  const rungStartedAtMs = Date.now();
   const { startIso, endIso } = bookingWindow(startInstantIso, resolved.eventType.duration_min);
   let assigned: AssignResult & { candidates: string[]; read: string[] };
   try {
@@ -2867,6 +2975,7 @@ async function assignNamedAgent(
     candidates: assigned.candidates,
     read: assigned.read,
     rungsDropped: 0,
+    rungStartedAtMs,
   };
 }
 
@@ -4013,7 +4122,7 @@ async function inConfirmTurn<R>(
         bucket_code: line.bucketCode,
         seated_known: Boolean(settled?.seated),
       });
-      return work({ seat: null });
+      return work({ seat: null, queued: true });
     }
     log.info("booking", {
       msg: "confirm waited behind one that settled the slot, refused without running",
@@ -4025,7 +4134,10 @@ async function inConfirmTurn<R>(
     // decision row: writing one would put a bucket read and an insert on every one
     // of a crowd waiting behind a full slot, the very reads the line exists to keep
     // off it (#3257, test-confirm-contention). The leader's row is the slot's record.
-    throw traced(turn.refusal === "race" ? new RaceLostRefusalError(1, false) : new SlotUnavailableError(), {
+    // #3338: a leader settles the line only when its whole ladder was spent
+    // (`verdictForRefusal`, and the booked case in `createHeld`), so a follower
+    // answered from that verdict was refused with the ladder spent too.
+    throw traced(turn.refusal === "race" ? new RaceLostRefusalError(1, false, true) : new SlotUnavailableError(), {
       requestedStart: line.startIso,
       bucketCode: line.bucketCode,
       stage: "follower",
@@ -4058,7 +4170,7 @@ async function inConfirmTurn<R>(
     });
   let done: { result: R; verdict: LeaderVerdict<ConfirmTaker> };
   try {
-    done = await work({ seat: turn.seat });
+    done = await work({ seat: turn.seat, queued: turn.queued });
   } catch (err) {
     await report(verdictForRefusal(err));
     throw err;
@@ -4106,6 +4218,8 @@ async function settleSlot(
  */
 export interface HeldTurn {
   seat: SharedSeat | null;
+  /** #3338: the confirm waited behind another for this turn (`LineTurn.queued`). */
+  queued: boolean;
 }
 
 /**
@@ -4249,8 +4363,8 @@ async function createChecked(
   // #3257: most confirms joined the line before any of the reads above
   // (`createBookingWithVerdict`) and already hold their turn here. Only a booker
   // link Salesforce routed joins now, once its bucket is known.
-  const ctx: HeldCreate = { input, stableKey, agentLinkUserId, codeSource, bucket, eventType, profile, loadtestWindow, seat: null };
-  if (held !== "late") return createHeld({ ...ctx, seat: held.seat }, deps);
+  const ctx: HeldCreate = { input, stableKey, agentLinkUserId, codeSource, bucket, eventType, profile, loadtestWindow, seat: null, queued: false };
+  if (held !== "late") return createHeld({ ...ctx, seat: held.seat, queued: held.queued }, deps);
   return inConfirmTurn(
     deps,
     {
@@ -4260,7 +4374,7 @@ async function createChecked(
       startIso: input.startIso,
       person: personIdentityOf(input),
     },
-    (turn) => createHeld({ ...ctx, seat: turn.seat }, deps),
+    (turn) => createHeld({ ...ctx, seat: turn.seat, queued: turn.queued }, deps),
     bookingFromTaker,
   );
 }
@@ -4278,6 +4392,8 @@ interface HeldCreate {
   loadtestWindow: { read(): ConfirmProfileReading } | null;
   /** #3257: this confirm's claim on an advisor in its slot's line, or none. */
   seat: SharedSeat | null;
+  /** #3338: it waited behind another confirm for its turn (`LineTurn.queued`). */
+  queued: boolean;
 }
 
 /**
@@ -4331,14 +4447,20 @@ export function confirmQueueKey(
 
 /**
  * What a confirm that FAILED shows the confirms waiting behind it. Only a refusal
- * as taken settles the slot for them, because they asked the same question of the
- * same slot: a plain refusal means nobody in any rung was free, a lost race that
- * nobody else in the rung was. Anything else (an outage, a person already holding
- * a call, the lead's own calling window) says nothing about them, so the next one
- * runs.
+ * that spent the whole LADDER settles the slot for them (#3338), because they
+ * asked the same question of the same slot and walk the same pools at every rung:
+ * a plain refusal means nobody on any rung was free, and a lost race settles them
+ * only when nothing was left below it either (`ladderExhausted`), never at the
+ * bound, which stopped while the rung was still handing out advisors (L11).
+ * Anything else (an outage, a person already holding a call, the lead's own
+ * calling window, a lost race that could not ask the rest of the ladder) says
+ * nothing about them, so the next one runs, from the top of the ladder like any
+ * confirm.
  */
 function verdictForRefusal(err: unknown): LeaderVerdict<ConfirmTaker> {
-  if (err instanceof RaceLostRefusalError) return { full: true, refusal: "race", settled: null };
+  if (err instanceof RaceLostRefusalError) {
+    return err.ladderExhausted && !err.boundHit ? { full: true, refusal: "race", settled: null } : { full: false };
+  }
   if (err instanceof SlotUnavailableError) return { full: true, refusal: "taken", settled: null };
   return { full: false };
 }
@@ -4347,7 +4469,7 @@ async function createHeld(
   ctx: HeldCreate,
   deps: BookingDeps,
 ): Promise<{ result: BookingResult; verdict: LeaderVerdict<ConfirmTaker> }> {
-  const { input, stableKey, agentLinkUserId, codeSource, bucket, eventType, profile, loadtestWindow, seat } = ctx;
+  const { input, stableKey, agentLinkUserId, codeSource, bucket, eventType, profile, loadtestWindow, seat, queued } = ctx;
 
   // One call per person, ENFORCED (#1337), not reported after the fact. Runs
   // AFTER the idempotency fast path above on purpose: a double-click's second
@@ -4394,11 +4516,14 @@ async function createHeld(
           .time("displayed-tier", () => deps.displayedTier(input.bucketCode))
           .catch(() => null);
 
+  // #3338: how many rungs this confirm's ladder has. A named link has no ladder:
+  // its one advisor is its only rung.
+  const ladderRungs = agentLinkUserId !== undefined ? 1 : tierLadder(bucket.code).length;
   // #3338: this confirm's slowest Google call so far, its live checks, measured
   // where they are made. A floor for what its commit chain's Google write will
   // cost (`expectedCommitMs`), so even a confirm on an isolate that has run no
-  // chain yet is not judged against nothing. Every check below goes through these
-  // deps.
+  // chain yet is not judged against nothing. Every walk and check below goes
+  // through these deps.
   let slowestGoogleMs = 0;
   const checked: BookingDeps = {
     ...deps,
@@ -4480,28 +4605,34 @@ async function createHeld(
     }
     throw err;
   }
-  const bookedBucket = tier.bucket;
-  const bookedEventType = tier.eventType;
-  const startIso = tier.startIso;
-  const endIso = tier.endIso;
-  const { candidates } = tier;
+  // #3338: when the attempt this confirm is on began: the start of the rung that
+  // took it, never the start of the walk, so a lost race measures what ONE rung
+  // costs (its read, its live check and its commit chain), not the rungs above it
+  // the walk had already dropped (L224).
+  let attemptFromMs = tier.rungStartedAtMs;
   // #2281: who this attempt is booking. Starts as the rung's first free advisor
-  // and moves, at most MAX_RACE_REASSIGNS times, to the next advisor the SAME
-  // rung already resolved when an insert loses the overlap race (#2274).
+  // and moves, at most MAX_RACE_REASSIGNS times in all, to the next advisor the
+  // SAME rung already resolved when an insert loses the overlap race (#2274), and
+  // since #3338 on down the ladder when nobody after it on that rung is free.
   let chosen: AssignResult = { userId: tier.userId, email: tier.email };
   const raceLost: string[] = [];
-  let traceExtras: ReturnType<typeof buildRoutingTraceExtras> = {
-    considered: candidates,
-    excluded: [],
-  };
-  if (agentLinkUserId === undefined) {
+  // #3338: the routing trace's considered and excluded lists belong to the rung
+  // being booked, so they are rebuilt with it when a lost race walks the confirm
+  // down. Best-effort: a transient pool read failure must not fail the booking.
+  const traceExtrasFor = async (t: TierAssignResult): Promise<ReturnType<typeof buildRoutingTraceExtras>> => {
+    if (agentLinkUserId !== undefined) return { considered: t.candidates, excluded: [] };
     try {
-      const pool = await profile.time("routing-trace", () => deps.resolveBucketPool(bookedBucket));
-      traceExtras = buildRoutingTraceExtras(pool, candidates);
+      const pool = await profile.time("routing-trace", () => deps.resolveBucketPool(t.bucket));
+      return buildRoutingTraceExtras(pool, t.candidates);
     } catch {
-      // best-effort: a transient pool-resolve failure must not fail the booking
+      return { considered: t.candidates, excluded: [] };
     }
-  }
+  };
+  let traceExtras = await traceExtrasFor(tier);
+  // #3338: whether the rung being booked was reached by walking down after a lost
+  // race, recorded on the booking so that branch is counted where tier drops are
+  // (`tier-drop-counts.ts`), and seen when it never fires (L551).
+  let walkedDownAfterRace = false;
   const phone = toE164(input.attendee.phone);
   const manageToken = deps.newManageToken();
   // #2072: where the lead booked from, read off the link on the SERVER. An
@@ -4520,15 +4651,20 @@ async function createHeld(
 
   let result: BookingResult;
   for (;;) {
+    // #3338: read off the rung being booked on every attempt, never kept from the
+    // first one, since a lost race can walk the confirm down to another rung with
+    // its own bucket, event type and call length (L14, L510).
+    const { bucket: bookedBucket, eventType: bookedEventType, startIso, endIso, candidates } = tier;
     const { userId, email } = chosen;
     // #3338: never START the commit chain (the reservation, the calendar event, the
     // insert) without the budget to finish it. A confirm cut off part way through
     // leaves a reservation and an event the drain later turns into a booking for a
-    // lead who was told to try again (L12). What the chain costs is measured
-    // (`commit-cost.ts`): this isolate's recent chains, and never less than this
-    // confirm's own slowest Google call. Short of it, the lead is told to retry
-    // with nothing started: no event, no reservation, and the claim on the advisor
-    // is let go when the line hears the refusal.
+    // lead who was told to try again (L12), which is what a confirm promoted late
+    // in a crowd did once a crowd walked the ladder. What the chain costs is
+    // measured (`commit-cost.ts`): this isolate's recent chains, and never less
+    // than this confirm's own slowest Google call. Short of it, the lead is told to
+    // retry with nothing started: no event, no reservation, and the claim on the
+    // advisor is let go when the line hears the refusal.
     const commitNeededMs = expectedCommitMs({
       slowestRecentChainMs: deps.commitCosts.slowestRecentMs(Date.now()),
       slowestGoogleCallMs: slowestGoogleMs,
@@ -4606,6 +4742,16 @@ async function createHeld(
         // booking, in the order tried. Present only when that happened, so the
         // trace never reads as though the first choice took the call.
         ...(raceLost.length > 0 ? { race_lost: [...raceLost] } : {}),
+        // #3338: the drop was made BEHIND other confirms for this same time, by
+        // losing the insert race on a rung above, or by waiting in this slot's line
+        // while the ones ahead booked it. Present only then, so each branch is
+        // counted apart where tier drops are (`tier-drop-counts.ts`) and seen when
+        // it never fires (L551).
+        ...(walkedDownAfterRace
+          ? { dropped_behind: "race" as const }
+          : queued && tier.rungsDropped > 0
+            ? { dropped_behind: "line" as const }
+            : {}),
       },
     };
     const event: ReservationPayload["event"] = {
@@ -4665,6 +4811,10 @@ async function createHeld(
       if (committedChainMs !== null) deps.commitCosts.record(committedChainMs, Date.now());
       break;
     } catch (err) {
+      // When this attempt learnt it had lost, before the search below spends any
+      // more of the budget: the attempt's own cost is measured up to here.
+      const lostAtMs = Date.now();
+      const reassignFromMs = lostAtMs;
       const next = await profile.time("race-reassign", () => nextAdvisorAfterLostRace(checked, {
         err,
         named: agentLinkUserId !== undefined,
@@ -4677,95 +4827,170 @@ async function createHeld(
         eventType: bookedEventType,
         seat,
       }));
-      if (!next) {
-        if (!(err instanceof SlotUnavailableError)) throw err;
-        // #2838: refused after a lost race. Said apart so it can be counted, and
-        // a bound hit paged at once: a lead turned away while the rung was still
-        // handing out advisors, which ordinary traffic cannot produce.
-        const boundHit = raceLost.length >= MAX_RACE_REASSIGNS;
-        log.warn("booking", {
-          msg: "confirm lost the overlap race and was refused",
+      if (next.kind === "advisor") {
+        log.info("booking", {
+          msg: "confirm lost the overlap race, handed to the next advisor in the same rung",
           lost_user_id: userId,
+          next_user_id: next.assignment.userId,
           bucket_code: bookedBucket.code,
-          lost_races: raceLost.length + 1,
-          bound_hit: boundHit,
+          attempt: raceLost.length + 2,
         });
-        const page = raceBoundHitPage({
-          boundHit,
-          isTest: bookedBucket.is_test,
-          loadtest: isLoadtest(),
-          bucketCode: bookedBucket.code,
-          startIso,
-          lostRaces: raceLost.length + 1,
-        });
-        // Handed to the injected dispatcher, never sent from here: production
-        // defers it past the response, and a test supplies a fake (L2).
-        // A dispatcher that throws is logged and the lead still gets the 409:
-        // the refusal is their answer, and a page must never turn it into a 500.
-        if (page) {
-          try {
-            deps.pageRaceBoundHit(page);
-          } catch (pageErr) {
-            log.warn("booking", { msg: "could not hand off a race bound hit page; the refusal stands" }, pageErr);
-          }
-        }
-        const raceTrace: RefusalTrace = {
-          requestedStart: input.startIso,
-          bucketCode: input.bucketCode,
-          stage: "race_lost",
-          rungs: [
-            {
-              code: bookedBucket.code,
-              members: null,
-              read: tier.read.length,
-              claimed: null,
-              checked: null,
-              stage: "race_lost",
-            },
-          ],
-          lostRaces: raceLost.length + 1,
-          leadId: refusedLeadId(input),
-        };
-        // #3272: a lost race wrote no routing decision at all, so it was the one
-        // refusal nothing could look up. Best effort, like the refusal record above.
-        if (agentLinkUserId === undefined) {
-          try {
-            await deps.recordRoutingDecision({
-              orgId: bookedBucket.org_id,
-              bookingId: null,
-              bucketCode: bookedBucket.code,
-              bucketId: bookedBucket.id,
-              criteria: bookedBucket.criteria,
-              considered: traceExtras.considered,
-              excluded: traceExtras.excluded,
-              chosenUserId: null,
-              chosenAttributes: null,
-              emptyPoolFallback: false,
-              tierFallback: tier.rungsDropped > 0,
-              rungsDropped: tier.rungsDropped,
-              requestedTier: bucket.criteria.debt_team ? String(bucket.criteria.debt_team) : null,
-              bookedTier: null,
-              ...catchallRecord(input.requestedCode, bookedBucket.code, codeSource),
-              ...refusalRecord(raceTrace, input.startIso, input),
-              outcome: "no_availability",
-            });
-          } catch {
-            // best-effort: never change the refusal
-          }
-        }
-        throw traced(new RaceLostRefusalError(raceLost.length + 1, boundHit), raceTrace);
+        raceLost.push(userId);
+        chosen = next.assignment;
+        attemptFromMs = reassignFromMs;
+        // #3257: the confirms beside it in line must not pick this one next.
+        await seat?.claim(next.assignment.userId, false);
+        continue;
       }
-      log.info("booking", {
-        msg: "confirm lost the overlap race, handed to the next advisor in the same rung",
+      // Anything that was not a lost race keeps its own path, and a deadline is the
+      // retryable outage, never a taken time (#3402).
+      if (next.reason === "not-a-race") throw err;
+      if (next.reason === "deadline") throw next.err;
+      // #3338: nobody after the loser on this rung is free, so the confirm walks on
+      // down the ladder, "Same as a normal confirm" (Dan, 2026-10-06). It is the ONE
+      // reason that does: every other one learnt nothing about the rest of the
+      // ladder and refuses exactly as before.
+      let walkedPast: RungTrace[] = [];
+      // Nowhere left to walk: the race was on the ladder's last rung, and every
+      // advisor this confirm read there it also asked (none was passed over for
+      // another confirm's claim, #3257). Then the ladder is spent, whatever the
+      // budget, and the refusal below says so.
+      const nothingLeftToWalk =
+        tier.rungsDropped >= ladderRungs - 1 && tier.read.every((id) => candidates.includes(id));
+      if (next.reason === "rung-exhausted" && !nothingLeftToWalk) {
+        // Only with the time to finish it. One rung costs what the attempt that
+        // just lost cost, measured on this confirm (L224): its live check, its
+        // reservation, its calendar event and its insert. Starting the next rung
+        // with less left would cut it off part way, after a live check and a
+        // calendar event nobody can use, so the lead is told to retry instead,
+        // never that the time is taken while a rung below may have somebody free.
+        // A budget already spent starts nothing, however cheap the attempt was.
+        const neededMs = lostAtMs - attemptFromMs;
+        const walkLeftMs = budgetLeftMs();
+        if (!budgetCovers(walkLeftMs, neededMs)) {
+          // Clamped where it is read, so the page can never say a negative time.
+          const leftMs = Math.max(0, walkLeftMs ?? 0);
+          log.warn("booking", {
+            msg: "confirm lost the overlap race on its rung's last advisor and has too little time left to walk down the ladder; answering retryably",
+            lost_user_id: userId,
+            bucket_code: bookedBucket.code,
+            needed_ms: neededMs,
+            left_ms: leftMs,
+          });
+          throw new DependencyTimeoutError({ label: "the tier below a lost race", timeoutMs: leftMs, budget: null, neededMs }, err);
+        }
+        const below = await profile.time("race-walk-down", () =>
+          walkDownAfterLostRace(checked, { bucket, eventType }, input, seat, {
+            rung: tier.rungsDropped,
+            askedOnRung: candidates,
+            taken: [...raceLost, userId],
+          }),
+        );
+        if ("tier" in below) {
+          log.info("booking", {
+            msg: "confirm lost the overlap race with nobody after it on its rung, and walked down the ladder",
+            lost_user_id: userId,
+            next_user_id: below.tier.userId,
+            bucket_code: bookedBucket.code,
+            next_bucket_code: below.tier.bucket.code,
+            rungs_dropped: below.tier.rungsDropped,
+            attempt: raceLost.length + 2,
+          });
+          raceLost.push(userId);
+          if (below.tier.rungsDropped > tier.rungsDropped) walkedDownAfterRace = true;
+          tier = below.tier;
+          // The next attempt is measured from the rung that took it.
+          attemptFromMs = tier.rungStartedAtMs;
+          traceExtras = await traceExtrasFor(tier);
+          chosen = { userId: tier.userId, email: tier.email };
+          continue;
+        }
+        walkedPast = below.refusedOn;
+      }
+      // #2838: refused after a lost race. Said apart so it can be counted, and
+      // a bound hit paged at once: a lead turned away while the rung was still
+      // handing out advisors, which ordinary traffic cannot produce.
+      const boundHit = next.reason === "bound";
+      // #3338: the ladder is spent only when the walk below found nobody (or the
+      // race was on the last rung, where there was no walk to take), or for a
+      // named link, whose one advisor is its whole ladder. Only that settles the
+      // confirms waiting behind this one (`verdictForRefusal`).
+      const ladderExhausted = next.reason === "rung-exhausted" || next.reason === "named-link";
+      log.warn("booking", {
+        msg: "confirm lost the overlap race and was refused",
         lost_user_id: userId,
-        next_user_id: next.userId,
         bucket_code: bookedBucket.code,
-        attempt: raceLost.length + 2,
+        lost_races: raceLost.length + 1,
+        bound_hit: boundHit,
+        why: next.reason,
       });
-      raceLost.push(userId);
-      chosen = next;
-      // #3257: the confirms beside it in line must not pick this one next.
-      await seat?.claim(next.userId, false);
+      const page = raceBoundHitPage({
+        boundHit,
+        isTest: bookedBucket.is_test,
+        loadtest: isLoadtest(),
+        requestedCode: input.bucketCode,
+        bucketCode: bookedBucket.code,
+        startIso,
+        lostRaces: raceLost.length + 1,
+      });
+      // Handed to the injected dispatcher, never sent from here: production
+      // defers it past the response, and a test supplies a fake (L2).
+      // A dispatcher that throws is logged and the lead still gets the 409:
+      // the refusal is their answer, and a page must never turn it into a 500.
+      if (page) {
+        try {
+          deps.pageRaceBoundHit(page);
+        } catch (pageErr) {
+          log.warn("booking", { msg: "could not hand off a race bound hit page; the refusal stands" }, pageErr);
+        }
+      }
+      const raceTrace: RefusalTrace = {
+        requestedStart: input.startIso,
+        bucketCode: input.bucketCode,
+        stage: "race_lost",
+        rungs: [
+          {
+            code: bookedBucket.code,
+            members: null,
+            read: tier.read.length,
+            claimed: null,
+            checked: null,
+            stage: "race_lost",
+          },
+          // #3338: and every rung the walk down asked after it, in ladder order.
+          ...walkedPast,
+        ],
+        lostRaces: raceLost.length + 1,
+        leadId: refusedLeadId(input),
+      };
+      // #3272: a lost race wrote no routing decision at all, so it was the one
+      // refusal nothing could look up. Best effort, like the refusal record above.
+      if (agentLinkUserId === undefined) {
+        try {
+          await deps.recordRoutingDecision({
+            orgId: bookedBucket.org_id,
+            bookingId: null,
+            bucketCode: bookedBucket.code,
+            bucketId: bookedBucket.id,
+            criteria: bookedBucket.criteria,
+            considered: traceExtras.considered,
+            excluded: traceExtras.excluded,
+            chosenUserId: null,
+            chosenAttributes: null,
+            emptyPoolFallback: false,
+            tierFallback: tier.rungsDropped > 0,
+            rungsDropped: tier.rungsDropped,
+            requestedTier: bucket.criteria.debt_team ? String(bucket.criteria.debt_team) : null,
+            bookedTier: null,
+            ...catchallRecord(input.requestedCode, bookedBucket.code, codeSource),
+            ...refusalRecord(raceTrace, input.startIso, input),
+            outcome: "no_availability",
+          });
+        } catch {
+          // best-effort: never change the refusal
+        }
+      }
+      throw traced(new RaceLostRefusalError(raceLost.length + 1, boundHit, ladderExhausted), raceTrace);
     }
   }
 
@@ -4794,7 +5019,7 @@ async function createHeld(
   // (do not alert) each divergence; a spike flags cache staleness or a routing
   // problem. Best-effort: never affect the booking result.
   try {
-    const bookedTier = tierKeyOf(bookedBucket.code);
+    const bookedTier = tierKeyOf(tier.bucket.code);
     if (displayedTier && bookedTier && displayedTier !== bookedTier) {
       log.info("tier-divergence", {
         msg: "displayed tier differs from booked tier at confirm",
@@ -4819,9 +5044,19 @@ async function createHeld(
   // confirm, and the confirm holding it may have failed and freed it since, so any
   // advisor skipped that way leaves the slot open: the next in line reads for
   // itself, which costs it one candidate read when the claim did book.
+  //
+  // #3338: and only when that rung is the LADDER's last. The confirms waiting are
+  // in the same line because they walk the same pools at every rung, so a rung
+  // above the last one spent leaves them the rungs below it, which they walk as
+  // any confirm does (Dan, 2026-10-06: "Same as a normal confirm"). The next in
+  // line leads and walks from the top; the advisor just booked reads as busy in the
+  // write through cache, so it drops that rung for the price of one candidate read.
+  // A named link has no ladder: its one advisor is its last rung.
+  const { candidates } = tier;
+  const lastRung = tier.rungsDropped >= ladderRungs - 1;
   const at = candidates.indexOf(result.booking.assigned_user_id ?? chosen.userId);
   const skippedForClaims = tier.read.some((id) => !candidates.includes(id));
-  const full = at >= 0 && at === candidates.length - 1 && !skippedForClaims;
+  const full = lastRung && at >= 0 && at === candidates.length - 1 && !skippedForClaims;
   return {
     result,
     verdict: full ? { full: true, refusal: "race", settled: { idempotencyKey, result } } : { full: false },

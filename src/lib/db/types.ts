@@ -774,8 +774,15 @@ export interface RoutingTrace {
   code_source?: RoutingCodeRecord;
   /** #2281: advisors this confirm was first given whose insert lost the overlap
    *  race (#2274), in the order tried, before `chosen_user_id` took the booking.
-   *  All from the same rung's candidates. Absent when the first choice won. */
+   *  From the rung it booked and, since #3338, from rungs above it it walked down
+   *  from. Absent when the first choice won. */
   race_lost?: string[];
+  /** #3338: the confirm dropped a rung BEHIND other confirms for the same time:
+   *  `race` when it walked down after losing the insert race on a rung above,
+   *  `line` when it waited in the slot's confirm line while the ones ahead of it
+   *  booked and then dropped. Absent for any other booking, so each branch is
+   *  counted apart among the drops on /admin/routing (`tier-drop-counts.ts`). */
+  dropped_behind?: "race" | "line";
   /** #3247: one entry per bucket correction, holding the values the top level
    *  carried BEFORE it, so the original routing is never lost when the trace is
    *  rewritten to name the corrected bucket. Written only by reassign_booking_swap. */

@@ -10,10 +10,21 @@
  *
  * So the confirms for one slot form a line. The first leads and runs as it always
  * did; the rest wait, costing nothing while they do. When the leader's own confirm
- * shows the slot is FULL (it booked the last advisor its rung had free, or it was
- * refused as taken), everybody waiting is answered at once with what took it and
- * does none of the work. Otherwise the next one leads with what the leader left,
+ * shows the slot is FULL, everybody waiting is answered at once with what took it
+ * and does none of the work. Otherwise the next one leads with what the leader left,
  * so a pool of two books two and then answers the rest.
+ *
+ * FULL means the leader's whole tier LADDER is spent (#3338): it booked the last
+ * advisor the ladder's last rung had free, or it was refused after every rung (a
+ * lost race included, once nobody below it was free either). A leader that booked
+ * the last advisor of a rung ABOVE the last leaves the rungs below it to the
+ * confirms waiting, who walk them exactly as any confirm does (Dan, 2026-10-06:
+ * "Same as a normal confirm"): the next one leads, walks from the top, finds the
+ * booked rung spent in the write through cache, and books below. Before #3338 that
+ * leader told everybody waiting the time was taken while the tier below had people
+ * free. The rule for a full verdict is the confirm path's (`createHeld`,
+ * `verdictForRefusal`); this module only honours it, under the same gate as
+ * always: no other confirm still booking in the slot (`done`).
  *
  * A leader that has claimed an advisor while another unclaimed one remains hands
  * the line on at once (#3257, `LineSeat`), so concurrent confirms for a time in a
@@ -95,9 +106,11 @@ export type LeaderVerdict<T> =
   /** Nothing that settles the slot for anybody else: the next in line leads. */
   | { full: false }
   /**
-   * The slot is full for everybody in line. `refusal` says how the leader learnt
-   * it: `race` when it booked the last free advisor (the followers lost a race to
-   * it), `taken` when it was itself refused as taken. `settled` is what the leader
+   * The slot is full for everybody in line: the leader's whole ladder is spent
+   * (#3338). `refusal` says how the leader learnt it: `race` when it booked the
+   * last free advisor of the ladder's last rung (the followers lost a race to it),
+   * or lost the insert race with nobody left below, `taken` when it was itself
+   * refused as taken on every rung. `settled` is what the leader
    * hands its followers so each can tell whether the verdict really is about them:
    * its own booking for a double submit, who already sits at the instant for a lead
    * who holds the time (#3257).
@@ -115,7 +128,9 @@ export type LeaderVerdict<T> =
  * leader CLAIMS the advisor it is about to book, and as soon as it has claimed one
  * while another unclaimed advisor remains, it hands the line on: the next confirm
  * leads at once and books from the advisors nobody in flight has claimed. A crowd
- * for the LAST advisor never hands on, so it still has exactly one winner.
+ * for the LAST advisor never hands on, so it still has exactly one winner on that
+ * rung; since #3338 the confirm behind it then walks to the rung below, if the
+ * ladder has one, where the same rule hands on once per unclaimed advisor.
  */
 export interface LineSeat {
   /** Advisors other confirms in this line have claimed and not yet finished with. */
@@ -561,7 +576,19 @@ export interface SharedSeat {
 
 /** `QueueTurn` as the confirm path holds it (#3325). */
 export type LineTurn<T> =
-  | { kind: "lead"; seat: SharedSeat; waiting(): Promise<number>; done(verdict: LeaderVerdict<T>): Promise<void> }
+  | {
+      kind: "lead";
+      seat: SharedSeat;
+      waiting(): Promise<number>;
+      done(verdict: LeaderVerdict<T>): Promise<void>;
+      /**
+       * #3338: whether this confirm WAITED behind another for its turn, rather than
+       * leading at once or being handed the line at once. A confirm that waited and
+       * then drops a tier dropped behind what the ones ahead of it booked, which is
+       * counted apart on /admin/routing (`tier-drop-counts.ts`). Only the line knows.
+       */
+      queued: boolean;
+    }
   | { kind: "refused"; refusal: "race" | "taken"; settled: T | null }
   | { kind: "unqueued" };
 
@@ -586,12 +613,14 @@ export interface ConfirmLine<T> {
   release(): Promise<void>;
 }
 
-/** A lead turn from the in memory rules, as the confirm path holds it. */
-export function asLineTurn<T>(turn: QueueTurn<T>): LineTurn<T> {
+/** A lead turn from the in memory rules, as the confirm path holds it. `queued`
+ *  says whether it came after waiting (#3338). */
+export function asLineTurn<T>(turn: QueueTurn<T>, queued: boolean): LineTurn<T> {
   if (turn.kind !== "lead") return turn;
   const seat = turn.seat;
   return {
     kind: "lead",
+    queued,
     waiting: async () => turn.waiting(),
     done: async (verdict) => turn.done(verdict),
     seat: {
@@ -611,7 +640,9 @@ export function asLineTurn<T>(turn: QueueTurn<T>): LineTurn<T> {
 export function isolateLine<T>(host: ConfirmQueue<T>): ConfirmLine<T> {
   return {
     async enter(key, waitMs) {
-      return asLineTurn(await host.enter(isolateKeyOf(key), waitMs));
+      // #3338: entered at once or after waiting, which only this answer can tell.
+      const entered = host.enterNow(isolateKeyOf(key), waitMs);
+      return entered.kind === "lead" ? asLineTurn(entered.turn, false) : asLineTurn(await entered.turn, true);
     },
     async lookahead(key) {
       const giveBack = host.lookahead(isolateKeyOf(key));

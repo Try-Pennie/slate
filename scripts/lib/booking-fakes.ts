@@ -138,6 +138,10 @@ export interface FakeOpts {
    *  bucket carrying the code asked for, and roundRobinCandidates reads the list
    *  for that code (empty when absent), so a test can tell rungs apart. */
   candidatesByCode?: Record<string, string[]>;
+  /** #3338: a rung's own bucket id and event type, by code, so a booking made on
+   *  a lower rung can be told apart from one on the requested rung by the bucket,
+   *  the event type and the call's length it carries. Needs `candidatesByCode`. */
+  rungBuckets?: Record<string, { id: string; eventType?: EventType }>;
   existingByKey?: Booking | null; // idempotency hit on the pre-check
   conflictWinner?: Booking | null; // booking found by key AFTER an insert conflict
   reservation?: BookingReservation | null; // loadReservationByKey (re-submit resume)
@@ -329,6 +333,8 @@ export function makeDeps(opts: FakeOpts) {
     agentWorkingHours: [] as string[],
     businessHours: 0,
     verifyFree: [] as string[][],
+    /** #3338: the window each live check asked about, beside `verifyFree`. */
+    verifyFreeWindows: [] as { fromIso: string; toIso: string }[],
     /** `args` is what the invite was written WITH (#3376: its title and location). */
     createEvent: [] as { email: string; clientId?: string; args: CreateEventArgs }[],
     /**
@@ -616,8 +622,9 @@ export function makeDeps(opts: FakeOpts) {
             bucket: {
               ...(opts.testBucket ? ({ ...bucket, is_test: true } as Bucket) : bucket),
               ...(opts.candidatesByCode ? { code } : {}),
+              ...(opts.rungBuckets?.[code] ? { id: opts.rungBuckets[code].id } : {}),
             } as Bucket,
-            eventType: opts.eventType ?? eventType,
+            eventType: opts.rungBuckets?.[code]?.eventType ?? opts.eventType ?? eventType,
           },
     roundRobinCandidates: async (b, _e, _ms, preview, onlyUserId) => {
       calls.roundRobinPreview.push(preview);
@@ -668,6 +675,7 @@ export function makeDeps(opts: FakeOpts) {
     // subset plus any emails that couldn't be checked. Mirrors the real dep.
     verifyFree: async (emails, startIso, endIso) => {
       calls.verifyFree.push(emails);
+      calls.verifyFreeWindows.push({ fromIso: startIso, toIso: endIso });
       const unverified = opts.unverifiedEmails ?? new Set<string>();
       const s = Date.parse(startIso);
       const e = Date.parse(endIso);

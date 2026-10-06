@@ -227,9 +227,18 @@ async function run() {
   }
   // A conflict deletes the reservation (the slot is gone), so the event is
   // deleted live, and that delete must not be refused by the spent budget.
-  {
+  //
+  // #3338: what the lead is then told depends on whether the ladder has anywhere
+  // left to go. On its LAST rung there is nothing to walk down to, so the lost race
+  // is still refused as a taken slot. With rungs below it, a confirm whose budget
+  // is spent cannot ask them, and is told to retry rather than that the time is
+  // taken while a rung below may have somebody free (Dan, 2026-10-06).
+  for (const { label, code, lastRung } of [
+    { label: "on the ladder's last rung", code: "110", lastRung: true },
+    { label: "with rungs below it", code: input.bucketCode, lastRung: false },
+  ]) {
     const { deps, calls } = makeDeps({
-      candidates: ["a"],
+      candidatesByCode: { [code]: ["a"] },
       freeEmails: new Set(["a@x.com"]),
       insertBookingConflict: true,
     });
@@ -244,11 +253,18 @@ async function run() {
         await deps.enqueueEventDeletion(email, eventId, bookingId);
       },
     };
-    const err = await caught(() => spentByTheEventWrite(d, (spending) => createBooking(input, spending)));
-    assert(err instanceof SlotUnavailableError, "spent budget, conflict: still refused as slot unavailable");
+    const err = await caught(() => spentByTheEventWrite(d, (spending) => createBooking({ ...input, bucketCode: code }, spending)));
+    if (lastRung) {
+      assert(err instanceof SlotUnavailableError, `spent budget, conflict ${label}: still refused as slot unavailable (got ${String(err)})`);
+    } else {
+      assert(
+        timeoutAsRetryable(err) instanceof DependencyTimeoutError && !(err instanceof SlotUnavailableError),
+        `spent budget, conflict ${label}: told to retry, never that the time is taken (got ${String(err)})`,
+      );
+    }
     assert(
       calls.deleteEvent.length === 1 && calls.deleteEvent[0].id === "gcal-1",
-      "spent budget, conflict: the rollback delete runs under the cleanup allowance and lands",
+      `spent budget, conflict ${label}: the rollback delete runs under the cleanup allowance and lands`,
     );
   }
 

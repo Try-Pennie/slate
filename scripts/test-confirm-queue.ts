@@ -704,6 +704,34 @@ async function main() {
     assert((await line.lookahead(key)) === null, "adapter: an idle line offers none");
   }
 
+  // --- #3338: a lead turn says whether it waited behind another confirm ----------
+  //
+  // A confirm that waited while the one ahead of it booked, and then drops a tier,
+  // dropped BEHIND that booking, which is counted on /admin/routing apart from a
+  // drop nobody contended. Only the line knows it waited, so the turn says.
+  {
+    const { timer } = manualTimer();
+    const line = isolateLine(makeConfirmQueue<string>({ timer }));
+    const key = { group: "code:521", instant: "1791232000000" };
+    const first = await line.enter(key);
+    assert(first.kind === "lead" && first.queued === false, "queued: a confirm that leads at once did not wait");
+    if (first.kind !== "lead") throw new Error("queued: unexpected");
+    const behind = line.enter(key);
+    await tick();
+    await first.done({ full: false });
+    const promoted = await behind;
+    assert(promoted.kind === "lead" && promoted.queued === true, "queued: a confirm promoted after waiting says it waited");
+    if (promoted.kind === "lead") await promoted.done({ full: false });
+    // Handed on at once by a leader that claimed one of several advisors: it never waited.
+    const a = await line.enter(key);
+    if (a.kind !== "lead") throw new Error("queued: unexpected");
+    await a.seat.claimFirst(["p0", "p1"]);
+    const b = await line.enter(key);
+    assert(b.kind === "lead" && b.queued === false, "queued: a confirm handed the line at once did not wait");
+    await a.done({ full: false });
+    if (b.kind === "lead") await b.done({ full: false });
+  }
+
   finish();
 }
 

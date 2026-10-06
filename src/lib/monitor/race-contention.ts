@@ -2,8 +2,9 @@
  * Confirms losing the overlap race, counted and whispered (#2838).
  *
  * Since #2281 a confirm whose insert loses the overlap race (#2274) is handed to
- * the next free advisor in the same rung, up to `MAX_RACE_REASSIGNS`, before the
- * lead is asked to pick another time. Until this, the loss was recorded only in
+ * the next free advisor in the same rung, and since #3338 on down the tier ladder
+ * when nobody after it in that rung is free, up to `MAX_RACE_REASSIGNS` advisors in
+ * all, before the lead is asked to pick another time. Until this, the loss was recorded only in
  * `routing_trace.race_lost` and a log line kept for seven days that nothing reads,
  * so the same slot being handed to several leads at once, or leads being refused
  * at the bound, would have been invisible after cutover.
@@ -58,8 +59,9 @@
  * a proportion floor that silences noise also silences a total failure (L139).
  *
  * A BOUND HIT IS LOUDER. A lead refused after `MAX_RACE_REASSIGNS + 1` advisors in
- * a row were taken by other confirms is a lead turned away while the rung was still
- * handing out advisors, and five confirms converging on one time inside a couple of
+ * a row were taken by other confirms (counted across every rung it walked, #3338)
+ * is a lead turned away while the ladder was still handing out advisors, and five
+ * confirms converging on one time inside a couple of
  * seconds is two orders of magnitude past the derived share. So it is paged at the
  * moment it happens (`raceBoundHitPageText`, sent from the confirm path), as an
  * INCIDENT on the alerts channel: that lead has gone and there is no healthy state
@@ -95,12 +97,22 @@ export const RACE_BOUND_HIT_COOLDOWN_MS = 60 * 60 * 1000;
 /**
  * The tally rows a race records, beside the ordinary outcome of the same confirm:
  *  - `race_reassigned`: a booking made on the create arm after its first advisor
- *    lost the race, so a `created` row always sits beside it;
+ *    lost the race, so a `created` row always sits beside it. Since #3338 the
+ *    booking can be on a rung below the one the race was lost on;
  *  - `race_reassigned_move`: a cross bucket move made after its first advisor
  *    lost the race (#2867). Its ordinary outcome row is `rescheduled` or
  *    `deduped`, never `created`, so it counts as a confirm AND a loser itself;
- *  - `race_refused`: refused after a lost race with nobody after the loser free;
+ *  - `race_refused`: refused after a lost race below the bound. Since #3338 that
+ *    means nobody after the loser was free on its rung OR on any rung below it, or
+ *    the rest could not be asked (a live check that could not answer, a named
+ *    link, an adopted pin). Before #3338 it also counted leads refused while a
+ *    rung below still had somebody free, so a day either side of the change is not
+ *    the same measure;
  *  - `race_refused_bound`: refused at `MAX_RACE_REASSIGNS`, the bound hit.
+ *
+ * A confirm that lost a race and had too little of its budget left to walk down
+ * (#3338) is answered with the retryable dependency timeout, and counted there,
+ * not here: it was not refused, and no row above describes it.
  */
 export const RACE_TALLY_OUTCOMES = [
   "race_reassigned",
@@ -555,7 +567,7 @@ export function raceContentionNoticeText(v: Extract<RaceContentionVerdict, { kin
   return (
     `Confirms losing the overlap race on ${w.day} (Eastern): ${v.losers} of ${v.confirms} (${pct(v.share)}) ` +
     `lost their advisor to another lead confirming the same time, above the ${pct(t.share)} ${basis} ` +
-    `${rescued} ${wasWere(rescued)} booked with the next free advisor in the bucket they were confirming into. ${refusedLine} ` +
+    `${rescued} ${wasWere(rescued)} booked with the next free advisor, in the bucket they were confirming into or a tier below it. ${refusedLine} ` +
     `What to do: look at today's bookings whose routing_trace carries race_lost, by start time and bucket. ` +
     `Many leads confirming one time points at a booking link being replayed or a burst from one source; ` +
     `races spread across many times points at slow confirms widening the race, so check verify on book ` +
@@ -564,13 +576,18 @@ export function raceContentionNoticeText(v: Extract<RaceContentionVerdict, { kin
   );
 }
 
-/** The bound hit page, sent from the confirm path the moment a lead is refused at the bound. */
-export function raceBoundHitPageText(p: { bucketCode: string; startIso: string; lostRaces: number }): string {
+/**
+ * The bound hit page, sent from the confirm path the moment a lead is refused at the
+ * bound. `requestedCode` is the bucket the lead was confirming into and `bucketCode`
+ * the one it was refused on, which differ when it walked down the ladder (#3338).
+ */
+export function raceBoundHitPageText(p: { requestedCode: string; bucketCode: string; startIso: string; lostRaces: number }): string {
   const ms = parseStampMs(p.startIso);
   const when = ms === null ? p.startIso : `${new Date(ms).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+  const down = p.bucketCode === p.requestedCode ? "" : `, down to bucket ${p.bucketCode},`;
   return (
-    `A lead confirming ${when} in bucket ${p.bucketCode} was refused after ${p.lostRaces} advisors in a row ` +
-    `were taken by other leads confirming the same time, the most a confirm is handed on before it gives up. ` +
+    `A lead confirming ${when} in bucket ${p.requestedCode} was refused after ${p.lostRaces} advisors in a row${down} ` +
+    `were taken by other leads confirming the same time, the most a confirm is handed on, across every tier it walks, before it gives up. ` +
     `That many confirms on one time inside a couple of seconds is far past ordinary traffic, and the lead was ` +
     `asked to pick another time, so they may have gone. What to do: look at bookings in that bucket starting ` +
     `then, created within a few seconds of each other. One source replaying a booking link, or a burst the ` +
@@ -589,6 +606,7 @@ export function raceBoundHitPage(p: {
   boundHit: boolean;
   isTest: boolean;
   loadtest: boolean;
+  requestedCode: string;
   bucketCode: string;
   startIso: string;
   lostRaces: number;
@@ -597,6 +615,6 @@ export function raceBoundHitPage(p: {
   return {
     key: RACE_BOUND_HIT_ALERT_KEY,
     cooldownMs: RACE_BOUND_HIT_COOLDOWN_MS,
-    text: raceBoundHitPageText({ bucketCode: p.bucketCode, startIso: p.startIso, lostRaces: p.lostRaces }),
+    text: raceBoundHitPageText({ requestedCode: p.requestedCode, bucketCode: p.bucketCode, startIso: p.startIso, lostRaces: p.lostRaces }),
   };
 }

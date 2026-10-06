@@ -60,11 +60,17 @@ export function tierFallbackAlert(input: {
   // allowed tier full, is a different event with its own signal (#2841), and it
   // must not page twice.
   if (tiersDropped > 0 && isTopTierCode(requestedCode)) return null;
+  // #3338: the reason says only what the walk measured, the one time the lead
+  // asked for. It used to say every tier above "had no availability across the
+  // booking window", which was never measured here and is false for a drop at
+  // confirm: since #3338 a lead who loses the insert race on a tier above, or waits
+  // behind other leads confirming the same time, walks on down like any confirm,
+  // while the tiers above still have times on show (L11, L680).
   if (tiersDropped >= 2) {
     return {
       key: `tier_fallback_deep:${requestedCode}`,
       cooldownMs: 5 * 60 * 1000,
-      text: `Routing alert: a booking for bucket ${requestedCode} dropped ${tiersDropped} debt tiers to ${effectiveCode} because every tier above it had no availability across the booking window. This should almost never happen. Check for a capacity crunch, mass time off, or a roster or availability problem.`,
+      text: `Routing alert: a booking for bucket ${requestedCode} dropped ${tiersDropped} debt tiers to ${effectiveCode} because no tier above it could take that time when the lead confirmed. This should almost never happen. Check for a capacity crunch, mass time off, a roster or availability problem, or many leads confirming the same time.`,
     };
   }
 
