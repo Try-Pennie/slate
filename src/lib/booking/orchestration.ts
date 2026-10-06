@@ -2295,6 +2295,10 @@ export const MAX_RACE_REASSIGNS = 3;
  *    cannot answer is never read as free, and the lead is told what they were
  *    told before this existed, rather than an outage replacing a taken time.
  *
+ * It THROWS on one thing: a deadline from that free check (#3402). The time was
+ * not learned to be taken, the budget ran out, so the lead gets the retryable
+ * answer and the page names the timeout.
+ *
  * The lost attempt's calendar event is already gone by the time this runs:
  * `completeReservation` removes it (and the reservation) before it raises the
  * refusal, and a new attempt pins its own event id, since the id is derived from
@@ -2337,6 +2341,12 @@ async function nextAdvisorAfterLostRace(
     );
     return assignment;
   } catch (err) {
+    // #3402: a deadline is not a check that failed. The confirm's budget ran out
+    // (or the call's own limit did), so nothing about the slot was learned and the
+    // lead can retry: refusing it as a taken time would tell them something
+    // nobody measured, and nobody would be paged (L11). It goes up as itself and
+    // becomes the dependency timeout (`timeoutAsRetryable`).
+    if (findDeadlineExceeded(err)) throw err;
     log.warn(
       "booking",
       { msg: "could not check the next advisor after a lost race; refusing the time", lost_user_id: lost.lostUserId },
