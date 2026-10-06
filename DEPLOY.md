@@ -336,7 +336,9 @@ lead can meet both versions across page loads. Then it is one version at 100% ag
   stops at exit 25 too, so it is planned at PR time (#3352): the
   `do-migration-plan` workflow fails a pull request that adds a top level `migrations`
   entry unless it carries the `deploy/hand` label, which says its merge is planned with
-  the hand deploy. Merge it, then run the hand deploy straight away.
+  the hand deploy. Merge it, then run the hand deploy straight away. It also refuses, with
+  no label able to pass it, a pull request that edits or removes an existing `migrations`
+  entry: Cloudflare never applies a tag twice, so the change belongs in a new tag.
 - **Cost.** Two uploads, a split and a second probe add roughly a minute to each deploy,
   plus the cron window wait when a merge lands just before the hour (about one deploy in
   ten). At the 530 deploys of the 30 days to 2026-10-03, that is an estimated 500 to 600

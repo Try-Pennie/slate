@@ -22,7 +22,13 @@ jobs:
     timeout-minutes: 5  # a checkout, one fetch and a file compare
     runs-on: ubuntu-latest
     steps:
+      # The checkout is the merge commit CI tests; its first parent is the base it was
+      # built on. That, not the event's base.sha (which can be older), is what this pull
+      # request is compared against, so a class change landing on main meanwhile is
+      # never blamed on it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -30,9 +36,9 @@ jobs:
 
       - name: Refuse an unplanned Durable Object class change
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: |
           set -euo pipefail
-          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          BASE_SHA="$(git rev-parse HEAD^1)"
+          export BASE_SHA
           node --experimental-strip-types scripts/check-do-migration-planned.ts

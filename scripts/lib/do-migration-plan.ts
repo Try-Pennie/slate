@@ -17,8 +17,18 @@ import { stripJsonComments } from "./gradual-deploy.ts";
 /** The label that says a class change's merge is planned with its hand deploy. */
 export const HAND_DEPLOY_LABEL = "deploy/hand";
 
-/** The top level migration tags, in order, or null when the file cannot be read as one. */
-export function migrationTagsOf(jsonc: string): string[] | null {
+/** A value as JSON with its object keys sorted, so two equal entries compare equal. */
+function canonical(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
+  if (v !== null && typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    return `{${Object.keys(o).sort().map((k) => `${JSON.stringify(k)}:${canonical(o[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(v);
+}
+
+/** The top level migration entries, in order, each with its tag and its whole content. */
+export function migrationEntriesOf(jsonc: string): { tag: string; content: string }[] | null {
   let json: { migrations?: unknown };
   try {
     // Trailing commas are legal JSONC and not JSON.
@@ -29,13 +39,18 @@ export function migrationTagsOf(jsonc: string): string[] | null {
   if (json === null || typeof json !== "object") return null;
   if (json.migrations === undefined) return [];
   if (!Array.isArray(json.migrations)) return null;
-  const tags: string[] = [];
+  const entries: { tag: string; content: string }[] = [];
   for (const m of json.migrations) {
     const tag = (m as { tag?: unknown } | null)?.tag;
     if (typeof tag !== "string" || tag === "") return null;
-    tags.push(tag);
+    entries.push({ tag, content: canonical(m) });
   }
-  return tags;
+  return entries;
+}
+
+/** The top level migration tags, in order, or null when the file cannot be read as one. */
+export function migrationTagsOf(jsonc: string): string[] | null {
+  return migrationEntriesOf(jsonc)?.map((e) => e.tag) ?? null;
 }
 
 /**
@@ -46,11 +61,25 @@ export function doMigrationVerdict(input: { base: string | null; head: string; l
   if (input.base === null) {
     return { ok: false, message: "the base commit's wrangler.jsonc could not be read, so a Durable Object class change cannot be ruled out" };
   }
-  const before = migrationTagsOf(input.base);
-  const after = migrationTagsOf(input.head);
-  if (before === null) return { ok: false, message: "the base commit's wrangler.jsonc could not be read as a migrations list, so a Durable Object class change cannot be ruled out" };
-  if (after === null) return { ok: false, message: "this pull request's wrangler.jsonc could not be read as a migrations list, so a Durable Object class change cannot be ruled out" };
-  const added = after.filter((t) => !before.includes(t));
+  const beforeEntries = migrationEntriesOf(input.base);
+  const afterEntries = migrationEntriesOf(input.head);
+  if (beforeEntries === null) return { ok: false, message: "the base commit's wrangler.jsonc could not be read as a migrations list, so a Durable Object class change cannot be ruled out" };
+  if (afterEntries === null) return { ok: false, message: "this pull request's wrangler.jsonc could not be read as a migrations list, so a Durable Object class change cannot be ruled out" };
+  // A tag Cloudflare has applied is never applied again, so an edit to its entry never
+  // takes effect, and removing one rewrites a history the platform keeps. Neither can be
+  // planned around with a label: the change belongs in a new tag.
+  const afterByTag = new Map(afterEntries.map((e) => [e.tag, e.content]));
+  const removed = beforeEntries.filter((e) => !afterByTag.has(e.tag)).map((e) => e.tag);
+  const edited = beforeEntries.filter((e) => afterByTag.has(e.tag) && afterByTag.get(e.tag) !== e.content).map((e) => e.tag);
+  if (removed.length > 0 || edited.length > 0) {
+    const what = [
+      edited.length > 0 ? `edits Durable Object migration ${edited.join(", ")}, which Cloudflare has already applied and will not apply again` : null,
+      removed.length > 0 ? `removes Durable Object migration ${removed.join(", ")} from the history Cloudflare keeps` : null,
+    ].filter((w): w is string => w !== null);
+    return { ok: false, message: `this pull request ${what.join(" and ")}. Put the change in a new tag instead` };
+  }
+  const before = beforeEntries.map((e) => e.tag);
+  const added = afterEntries.map((e) => e.tag).filter((t) => !before.includes(t));
   if (added.length === 0) return { ok: true, message: "no Durable Object class change: the gradual deploy can ship this" };
   const which = `Durable Object migration ${added.join(", ")}`;
   const ship = "ship it by hand with `pnpm cf:deploy:verified` (DEPLOY.md, Deploying by hand, verified) as soon as it merges, since every deploy after it stops until it ships";

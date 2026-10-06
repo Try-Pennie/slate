@@ -54,6 +54,18 @@ const config = (top: string[], loadtest: string[] = top) =>
   const planned = doMigrationVerdict({ base: config(["v1", "v2"]), head: config(["v1", "v2", "v3"]), labels: ["changelog/none", HAND_DEPLOY_LABEL] });
   assert(planned.ok && planned.message.includes("v3") && planned.message.includes("pnpm cf:deploy:verified"), `with the label it passes, still saying what to run (got ${planned.message})`);
 
+  // A tag Cloudflare has applied is never applied again, so editing its entry (a class
+  // added to v2) silently never takes effect, and removing one rewrites history. Both
+  // are refused whatever the labels say: the change belongs in a new tag.
+  const edited = doMigrationVerdict({
+    base: config(["v1", "v2"]),
+    head: config(["v1", "v2"]).replace('"new_sqlite_classes": ["Cv2"]', '"new_sqlite_classes": ["Cv2", "Extra"]'),
+    labels: [HAND_DEPLOY_LABEL],
+  });
+  assert(!edited.ok && /v2/.test(edited.message) && /new tag/.test(edited.message), `an edited applied migration is refused even with the label (got ${edited.message})`);
+  const removed = doMigrationVerdict({ base: config(["v1", "v2"]), head: config(["v1"]), labels: [HAND_DEPLOY_LABEL] });
+  assert(!removed.ok && /removes/.test(removed.message) && /v2/.test(removed.message), `a removed migration is refused (got ${removed.message})`);
+
   // Only the production Worker deploys gradually; the load test Worker deploys whole.
   const loadtestOnly = doMigrationVerdict({ base: config(["v1"], ["v1"]), head: config(["v1"], ["v1", "v9"]), labels: [] });
   assert(loadtestOnly.ok, `a migration added only to env.loadtest is not a production class change (got ${loadtestOnly.message})`);
@@ -74,8 +86,12 @@ function wiringProblems(yml: string): string[] {
   if (!/paths:\s*\n\s*- wrangler\.jsonc/.test(yml)) out.push("is not limited to pull requests that touch wrangler.jsonc");
   if (!/timeout-minutes:\s*\d+/.test(yml)) out.push("has no job timeout");
   if (!yml.includes("PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}")) out.push("is not handed the pull request's labels");
-  if (!yml.includes("BASE_SHA: ${{ github.event.pull_request.base.sha }}")) out.push("is not handed the base commit");
-  if (!/git fetch[^\n]*"\$BASE_SHA"/.test(yml)) out.push("does not fetch the base commit it compares against");
+  // The base is the tested merge commit's first parent, which is the base it was built
+  // on. The event's base.sha can be older, and a class change landing on main since
+  // would then be blamed on this pull request.
+  if (!/fetch-depth:\s*2/.test(yml)) out.push("does not fetch the merge commit's parents");
+  if (!/BASE_SHA="\$\(git rev-parse HEAD\^1\)"/.test(yml)) out.push("does not compare against the merge commit's first parent");
+  if (/pull_request\.base\.sha/.test(yml)) out.push("still reads the event's base.sha, which can be older than the base the merge was built on");
   if (!yml.includes("scripts/check-do-migration-planned.ts")) out.push("does not run the check");
   return out;
 }
@@ -85,7 +101,8 @@ function wiringProblems(yml: string): string[] {
   const controls: [string, string, RegExp][] = [
     ["no labeled trigger", yml.replace(/, labeled/, ""), /labeled/],
     ["labels not passed", yml.replace("PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}", ""), /labels/],
-    ["base not fetched", yml.replace(/git fetch[^\n]*\n/, "\n"), /fetch the base/],
+    ["no parents fetched", yml.replace(/fetch-depth:\s*2/, "fetch-depth: 1"), /parents/],
+    ["the event's base", yml.replace('BASE_SHA="$(git rev-parse HEAD^1)"', 'BASE_SHA="${{ github.event.pull_request.base.sha }}"'), /first parent|older/],
   ];
   for (const [what, broken, says] of controls) {
     assert(broken !== yml, `control (${what}): the copy really was broken`);
