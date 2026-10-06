@@ -319,6 +319,13 @@ export function bookerCopyScreens(): CopyScreen[] {
         { state: "a detail they typed was refused", text: BOOKING_ERROR_COPY.checkContactDetails },
         { state: "the email field, when the address cannot be invited", text: INVALID_EMAIL },
         { state: "moving an existing call failed", text: BOOKING_ERROR_COPY.moveFailed },
+        // #3373: a move refused because Google will not invite the address the
+        // booking already holds. Shown on the manage page too, which has no email
+        // field, so it names the reason and offers no action.
+        {
+          state: "a move whose invite Google refused for the stored email",
+          text: BOOKING_ERROR_COPY.moveEmailRefused,
+        },
         // #2297: the two refusals the kill switch produces. They share a status code
         // and must not share a sentence: one is somebody holding bookings on purpose
         // and cannot be waited out, the other clears itself.
