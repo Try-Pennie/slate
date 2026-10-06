@@ -131,8 +131,9 @@ isolate startup, so counting it measures how quiet the morning was. The median o
 rest is judged, so one unlucky sample is not a regression.
 
 **The booking confirm has no latency budget yet, because it has never been measured in
-production.** The confirm path times its own stages only under `SLATE_LOADTEST`
-(`src/lib/booking/confirm-profile.ts`), and the only reading is the load run's (wall p95
+production.** Every confirm times its own stages (`src/lib/booking/confirm-profile.ts`)
+and logs them only for a slow or timed out one (#3300), so they explain an outlier rather
+than measure the distribution; the only distribution reading is the load run's (wall p95
 4,025ms on 2026-09-14), against a stubbed Google, which says nothing about a real
 verify-on-book call. A budget set from that would be a guess.
 

@@ -56,6 +56,7 @@ vi.mock("@/lib/booking/service", () => service);
 import { POST } from "./route";
 import { AttendeeEmailRefusedError, ATTENDEE_EMAIL_REFUSED_STAFF } from "@/lib/booking/attendee-email-refused";
 import { NotAuthorizedError } from "@/lib/auth/http";
+import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
 
 /** Same-origin headers, which is what Slate's own UI sends. The route refuses a
  *  request that says it came from elsewhere (#1046), so every fake carries them;
@@ -111,7 +112,49 @@ describe("POST /admin/bookings/[id]/reschedule", () => {
       "2026-07-01T15:00:00.000Z",
       expect.anything(),
       { userId: "admin1", actingAsUserId: "mgr2" },
+      // #3401: the request's confirm line facts, carrying its profile.
+      expect.objectContaining({ profile: expect.anything() }),
     );
+  });
+
+  // #3401: a staff time change writes the same `confirm answered` line a booking
+  // does, saying it was a staff move.
+  it("writes the confirm answered line for a staff time change (#3401)", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    service.adminRescheduleBooking.mockResolvedValueOnce({
+      booking: { id: "bk1", starts_at: "2026-07-01T15:00:00.000Z", status: "rescheduled" },
+    });
+    const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
+    const lines = info.mock.calls.map((c) => c.map(String).join(" ")).filter((l) => l.includes('msg="confirm answered"'));
+    info.mockRestore();
+    expect(res.status).toBe(200);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("tag=booking ");
+    expect(lines[0]).toContain('confirm_kind="admin_move"');
+    expect(lines[0]).toContain("status=200");
+    expect(lines[0]).not.toContain("stages_run");
+  });
+
+  it("logs where a timed out staff time change's time went, with the booking's lead id (#3401)", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    service.adminRescheduleBooking.mockImplementationOnce((async (...args: unknown[]) => {
+      const facts = args[4] as { leadId?: string | null; profile?: { time: (s: string, fn: () => Promise<unknown>) => Promise<unknown> } };
+      facts.leadId = "00QUi00000zhEUP";
+      await facts.profile?.time("reschedule", async () => {});
+      throw Object.assign(new service.VerifyUnavailableError("try again"), {
+        cause: new DeadlineExceededError("google freeBusy", 8_000, null),
+      });
+    }) as never);
+    const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
+    const lines = info.mock.calls.map((c) => c.map(String).join(" ")).filter((l) => l.includes('msg="confirm answered"'));
+    info.mockRestore();
+    expect(res.status).toBe(503);
+    expect(lines[0]).toContain('confirm_kind="admin_move"');
+    expect(lines[0]).toContain("timed_out=true");
+    expect(lines[0]).toContain('lead_id="00QUi00000zhEUP"');
+    expect(lines[0]).toMatch(/stages="[^"]*reschedule:\d+\/1/);
+    // This route runs no confirm budget, so nothing reported its calls: absent, never zero.
+    expect(lines[0]).not.toContain("calls_made");
   });
 
   it("maps RescheduleConflictError to 409 with the conflict message", async () => {

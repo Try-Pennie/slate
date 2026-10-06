@@ -521,6 +521,57 @@ describe("POST /booking (embed) error mapping", () => {
     expect(lines[0]).not.toContain("2155550100");
   });
 
+  // #3300: a confirm that ran out of time says where it went, and whose it was. The
+  // service is handed the request's own profile, charges a stage to it, and runs
+  // out of budget; the line carries the profile, the timeout and the lead's id.
+  it("logs where a timed out confirm's time went, with the lead's Salesforce id (#3300)", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    service.createBooking.mockImplementationOnce((async (
+      _input: unknown,
+      facts?: { profile?: { time: (s: string, fn: () => Promise<unknown>) => Promise<unknown> } },
+    ) => {
+      await facts?.profile?.time("assign-and-verify", async () => {});
+      // As the service throws it: the retryable outage, carrying the deadline as its cause.
+      throw Object.assign(new service.VerifyUnavailableError("try again"), {
+        cause: new DeadlineExceededError("supabase", 0, { label: "the booking confirm", totalMs: 12_000 }),
+      });
+    }) as never);
+    const res = await post({ ...VALID_BODY, salesforceId: "00QUi00000zhEUPMA2" });
+    const lines = info.mock.calls.map((c) => c.map(String).join(" ")).filter((l) => l.includes('msg="confirm answered"'));
+    info.mockRestore();
+    expect(res.status).toBe(503);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("timed_out=true");
+    // The 15 character key, which both spellings of one lead share.
+    expect(lines[0]).toContain('lead_id="00QUi00000zhEUP"');
+    expect(lines[0]).toMatch(/stages_run=\d+/);
+    expect(lines[0]).toMatch(/stages="[^"]*assign-and-verify:\d+\/1/);
+    expect(lines[0]).toMatch(/stages="[^"]*route-checks:\d+\/1/);
+    // The confirm budget reported its calls to this profile (none here: the service is a fake).
+    expect(lines[0]).toContain("calls_made=0");
+    expect(lines[0]).toMatch(/unattributed_ms=\d+/);
+    // Never anything else about the lead.
+    expect(lines[0]).not.toMatch(/dana|2155550100/i);
+  });
+
+  // The other half (L1): the same route with an ordinary quick answer keeps its line short.
+  it("keeps an ordinary fast confirm's line to the wait and the status (#3300)", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    service.createBooking.mockResolvedValueOnce({
+      booking: { id: "b1", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z", agent_name: "Jane", prefill: null, salesforce_id: null, external_id: null },
+      manageUrl: "https://x.test/m/t",
+      newlyInserted: true,
+    });
+    const res = await post({ ...VALID_BODY, salesforceId: "00QUi00000zhEUPMA2" });
+    const lines = info.mock.calls.map((c) => c.map(String).join(" ")).filter((l) => l.includes('msg="confirm answered"'));
+    info.mockRestore();
+    expect(res.status).toBe(200);
+    expect(lines[0]).not.toContain("stages_run");
+    expect(lines[0]).not.toContain("lead_id");
+    expect(lines[0]).not.toContain("timed_out");
+  });
+
   // #3366: a refused confirm hands its error to the stored row check, which runs
   // after the response, and the lead's 409 is exactly what it was.
   it("hands a refusal to the stored row check and still answers 409 (#3366)", async () => {
