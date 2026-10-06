@@ -49,6 +49,13 @@ name: Booking path load run
 #               are deployment wide: overlapping them with the steady pass would
 #               make that pass's own 5xx bar a measurement of the faults this run
 #               injected on purpose.
+#   cold        a diagnostic, off unless cold_samples is above 0 (#3354): it deploys a
+#               new version, waits for it to settle and sends ONE confirm, N times, so
+#               each confirm is a fresh version's first request. A run's own cold
+#               confirms number about ten, so its cold p95 is its slowest; this gives a
+#               distribution to judge a startup change against. It runs after the
+#               archive's tail has stopped and streams its own, so none of its confirms
+#               join the startup bar's population. Reported, never a bar.
 #   judge       reads all of it and writes ONE dated report.
 #   teardown    runs only after the judge, so the evidence outlives the branch.
 #
@@ -116,6 +123,13 @@ on:
           - "off"
           - reads-only
         default: "on"
+      cold_samples:
+        description: >-
+          How many cold samples the diagnostic cold leg takes (#3354), each one a
+          redeploy followed by one confirm, at about a minute each. 0 skips the leg.
+          30 is what a startup change is judged against, and the most it takes.
+        type: string
+        default: "0"
       burst_lead_seconds:
         description: >-
           How long the burst drivers have to be queued, checked out and installed
@@ -642,11 +656,87 @@ jobs:
           name: fault-0
           path: results/
 
+  # #3354 item 4: the diagnostic cold leg. Off unless cold_samples is above 0.
+  #
+  # It deploys a new version, waits for it to settle and sends ONE confirm, N times,
+  # so each confirm is a fresh version's first request (scripts/loadtest/cold-plan.ts).
+  # It waits for the archive, so the main tail has stopped and none of its confirms
+  # join the startup bar's population, and for the fault leg, which redeploys too. It
+  # streams its OWN tail as cold-tail.jsonl, which the judge reads apart.
+  cold:
+    needs: [preflight, archive, fault]
+    if: ${{ !cancelled() && inputs.cold_samples != '0' && inputs.cold_samples != '' && needs.preflight.result == 'success' }}
+    runs-on: ubuntu-latest
+    # DERIVED: `coldJobTimeoutMinutes(COLD_SAMPLES_MAX)` in cold-plan.ts, held equal by
+    # scripts/test-loadtest-cold-plan.ts. An expression cannot compute it from the
+    # input, so it is the ceiling for the most samples the leg takes.
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+      # The `if:` above can only compare strings, so a value the leg would refuse ("31",
+      # "00") still starts this job. Checked on bare node before the install and build.
+      - name: Check cold_samples before installing anything
+        env:
+          COLD_SAMPLES: ${{ inputs.cold_samples }}
+        run: node --experimental-strip-types scripts/loadtest/check-cold-samples.ts
+      - run: pnpm install --frozen-lockfile
+      # The same stamp and build inputs as the fault leg, so every version this leg
+      # deploys is the bundle the run measured.
+      - name: Stamp the commit this leg is deploying
+        run: node --experimental-strip-types scripts/stamp-build-info.ts "$GITHUB_SHA"
+      - name: Build against the branch
+        env:
+          NEXT_PUBLIC_APP_URL: ${{ vars.LOADTEST_BASE_URL }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.LOADTEST_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.LOADTEST_SUPABASE_PUBLISHABLE_KEY }}
+          NEXT_PUBLIC_GOOGLE_HOSTED_DOMAIN: trypennie.com
+        run: pnpm cf:build
+      # The tail is started before the first deploy and stopped once the last
+      # confirm's lines have had time to arrive. `setsid` makes it its own process
+      # group, so the stop reaches wrangler itself rather than only the `timeout`
+      # wrapping it, which would leave the stream holding the step open (L321).
+      - name: Deploy and confirm, one sample at a time, under the leg's own tail
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SLATE_BASE: ${{ vars.LOADTEST_BASE_URL }}
+          BOOKING_API_KEY: ${{ secrets.LOADTEST_BOOKING_API_KEY }}
+          COLD_SAMPLES: ${{ inputs.cold_samples }}
+          # The run's own arm (#3258), kept on every version this leg deploys.
+          RECOMPUTE_ARM: ${{ inputs.post_confirm_recompute }}
+          OUT: results/cold-0.json
+        run: |
+          mkdir -p results
+          setsid timeout 58m npx wrangler tail --env loadtest --format json > results/cold-tail.jsonl 2> results/cold-tail.err &
+          tail_pid=$!
+          # No wait for the tail to connect: in json format wrangler prints no
+          # "Connected" line (it does only in pretty format), so there is nothing to
+          # wait on, and the leg's slot reads plus its first deploy (about 20s) plus
+          # the settle come before the first confirm anyway.
+          rc=0
+          node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/cold-after-deploy.ts || rc=$?
+          # The last confirm's events reach the stream a few seconds after it answers.
+          sleep 30
+          kill -TERM -- -"$tail_pid" 2>/dev/null || true
+          wait "$tail_pid" 2>/dev/null || true
+          wc -l results/cold-tail.jsonl
+          exit "$rc"
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cold-0
+          path: results/
+
   judge:
     # `preflight` is here only so this job can SAY the environment is still
     # standing when the preflight refused (#2347); every other leg already depends
     # on it, so it adds no ordering.
-    needs: [preflight, baseline, setup-burst, drive, burst, freshness, ceiling, archive, fault]
+    needs: [preflight, baseline, setup-burst, drive, burst, freshness, ceiling, archive, fault, cold]
     # Judged even when a driver failed: the judge's own job is to say the run was
     # incomplete, and skipping it would leave that unsaid.
     if: always()
@@ -707,6 +797,9 @@ jobs:
           EXPECT_BASELINE: "1"
           # The post confirm recompute arm, named in the report's header (#3258).
           EXPECT_POST_CONFIRM_RECOMPUTE: ${{ inputs.post_confirm_recompute }}
+          # How many cold samples the diagnostic leg was asked for (#3354), so the
+          # report can tell "not asked for" from "asked for and never arrived".
+          EXPECT_COLD_SAMPLES: ${{ inputs.cold_samples }}
           # The lanes env.loadtest holds back, so the judge knows which lanes should
           # have kept running under fault without reading wrangler.jsonc itself (#3104).
           # A copy, held equal to wrangler's resolved value by scripts/test-fault-lanes.ts.

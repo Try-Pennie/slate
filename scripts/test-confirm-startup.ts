@@ -656,6 +656,25 @@ function otherLine(msg: string): string {
 }
 
 {
+  // A reading scoped to one leg leaves another leg's confirms out, and their object calls
+  // with them: those calls belong to a confirm the archive does hold, so counting them
+  // as orphans would report a fault in a run that had none.
+  const archive = [
+    objectLine({ eventTimestamp: 100, wallTime: 30, op: "enter", trace: "tc", stage: "wait" }),
+    tailLine({ eventTimestamp: 0, logTimestamp: 2_000, totalMs: 900, isolateAgeMs: 1_000, answer: { line: "shared", line_trace: "tc", wait_line_ms: 300, loadtest_leg: "cold" } }),
+    objectLine({ eventTimestamp: 5_100, wallTime: 20, op: "enter", trace: "tf", stage: "wait" }),
+    objectLine({ eventTimestamp: 5_200, wallTime: 10, op: "ack", trace: "tf", stage: "wait" }),
+    tailLine({ eventTimestamp: 5_000, logTimestamp: 7_000, totalMs: 900, isolateAgeMs: 1_000, answer: { line: "shared", line_trace: "tf", wait_line_ms: 200, loadtest_leg: "fault" } }),
+  ].join("\n");
+  const whole = readConfirmStartup(archive)!;
+  eq(`${whole.lineSplit.cold.joined} ${whole.lineSplit.orphanCalls}`, "2 0", "control: read whole, both confirms join their calls");
+  const cold = readConfirmStartup(archive, { leg: "cold" })!;
+  eq(cold.otherLegs, 1, "scoped to the cold leg, the fault confirm is left out");
+  eq(cold.lineSplit.cold.joined, 1, "the cold confirm still joins its own calls");
+  eq(cold.lineSplit.orphanCalls, 0, "and the fault confirm's calls are left out with it, not counted as orphans");
+}
+
+{
   // A call the archive carried with no wall time cannot be apportioned: counted as
   // unreadable, apart from a missing one, and contributing no number.
   const noWall = JSON.parse(objectLine({ eventTimestamp: 10, wallTime: 0, op: "enter", trace: "nw", stage: "wait" })) as Record<string, unknown>;
