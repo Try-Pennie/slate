@@ -3459,6 +3459,9 @@ export function cancelDueDemoBookingsNow(nowMs: number = Date.now()) {
         return rows.map((r) => ({ id: r.id, manageToken: r.manage_token }));
       },
       cancel: async (token) => (await cancelBooking(token, DEMO_AUTO_CANCEL_REASON, "system")).claimed,
+      reportFailure: (bookingId, err) => {
+        log.error("complete", { msg: "demo auto cancel failed for a booking", booking_id: bookingId }, err);
+      },
     },
     nowMs,
   );

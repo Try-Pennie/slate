@@ -24,7 +24,11 @@ function deps(
 ) {
   const asked: { cutoffIso: string; limit: number }[] = [];
   const cancelled: string[] = [];
+  const reported: { id: string; err: unknown }[] = [];
   const d: DemoAutoCancelDeps = {
+    reportFailure: (id, err) => {
+      reported.push({ id, err });
+    },
     listDue: async (cutoffIso, limit) => {
       asked.push({ cutoffIso, limit });
       return due.slice(0, limit);
@@ -34,7 +38,7 @@ function deps(
       return cancel(token);
     },
   };
-  return { d, asked, cancelled };
+  return { d, asked, cancelled, reported };
 }
 
 const rows = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `b${i}`, manageToken: `t${i}` }));
@@ -82,7 +86,7 @@ await (async () => {
 
   // --- a failure is loud, and does not stop the rest ---------------------------------
   {
-    const { d, cancelled } = deps(rows(3), async (t) => {
+    const { d, cancelled, reported } = deps(rows(3), async (t) => {
       if (t === "t1") throw new Error("google said no");
       return true;
     });
@@ -98,11 +102,17 @@ await (async () => {
     eq(e.failedIds, ["b1"], "naming the booking that failed, by id and never by token");
     eq(e.cancelled, 2, "and how many did go through");
     assert(!e.message.includes("t1"), "the message never carries a manage token, which can cancel the booking");
+    // The CAUSE reaches the log with the booking it belongs to, so a failing sweep
+    // says whether Google, the database or something else refused it.
+    eq(reported.length, 1, "each failed cancel is reported once");
+    eq(reported[0]!.id, "b1", "with the booking's id");
+    assert(reported[0]!.err instanceof Error && (reported[0]!.err as Error).message === "google said no", "and the error itself, not a summary of it");
   }
 
   // --- a read that fails is loud too --------------------------------------------------
   {
     const d: DemoAutoCancelDeps = {
+      reportFailure: () => {},
       listDue: async () => {
         throw new Error("read refused");
       },

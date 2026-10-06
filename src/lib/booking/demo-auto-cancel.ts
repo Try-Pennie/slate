@@ -39,6 +39,10 @@ export interface DemoAutoCancelDeps {
   /** Cancel one by its manage token: true when this call made the transition,
    *  false when somebody else cancelled it first. */
   cancel(manageToken: string): Promise<boolean>;
+  /** Record why one booking's cancel failed, with the error itself, so the log
+   *  says whether Google, the database or something else refused it. Must not
+   *  throw. */
+  reportFailure(bookingId: string, err: unknown): void;
 }
 
 export interface DemoAutoCancelResult {
@@ -75,8 +79,9 @@ export async function cancelDueDemoBookings(
     try {
       if (await deps.cancel(b.manageToken)) cancelled++;
       else alreadyGone++;
-    } catch {
+    } catch (err) {
       failedIds.push(b.id);
+      deps.reportFailure(b.id, err);
     }
   }
   if (failedIds.length > 0) throw new DemoAutoCancelError(failedIds, cancelled);
