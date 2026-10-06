@@ -48,8 +48,17 @@ const service = vi.hoisted(() => {
   class NoEligibleAgentsError extends Error {}
   class UnknownBucketError extends Error {}
   class OutsideCallingWindowError extends Error {}
+  // #3359: Google refused the attendee's address at the calendar.
+  class AttendeeEmailRefusedError extends Error {
+    readonly field = "email" as const;
+    constructor(cause: unknown) {
+      super("Enter a valid email address");
+      this.cause = cause;
+    }
+  }
   return {
     OutsideCallingWindowError,
+    AttendeeEmailRefusedError,
     bookViaApi: vi.fn(),
     previewBooking: vi.fn(),
     pageBookingFailure: vi.fn(async (_err: unknown) => {}),
@@ -418,6 +427,28 @@ describe("POST /api/bookings (auth skeleton)", () => {
       expect(res.status).toBe(status);
       expect(await res.json()).toMatchObject({ code });
     }
+  });
+
+  // #3359: Google refusing the attendee email is the caller's to fix (ask the lead
+  // for another address), never an unexpected INTERNAL that pages and tells the
+  // caller nothing. Its own code, with the field error in the shape VALIDATION uses.
+  it("answers Google refusing the attendee email as 400 ATTENDEE_EMAIL_REFUSED naming the field (#3359)", async () => {
+    regalKey.primary.mockReturnValue("real-secret");
+    service.bookViaApi.mockRejectedValueOnce(new service.AttendeeEmailRefusedError(new Error("google 400")));
+    const res = await post("Bearer real-secret", VALID_BODY);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body).toMatchObject({
+      code: "ATTENDEE_EMAIL_REFUSED",
+      error: "Enter a valid email address",
+      fieldErrors: { email: "Enter a valid email address" },
+    });
+    expect(monitor.recordApiOutcome).toHaveBeenCalledWith(
+      "error",
+      VALID_BODY.bucketCode,
+      "ATTENDEE_EMAIL_REFUSED",
+      expect.anything(),
+    );
   });
 
   it("tags an invalid body with the VALIDATION code", async () => {

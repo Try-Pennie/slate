@@ -15,6 +15,7 @@ import {
   NoEligibleAgentsError,
   UnknownBucketError,
   OutsideCallingWindowError,
+  AttendeeEmailRefusedError,
   RaceLostRefusalError,
 } from "@/lib/booking/service";
 import { raceOutcomeForConfirm, raceOutcomeForRefusal } from "@/lib/monitor/race-contention";
@@ -345,7 +346,7 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
     // upstream source still sending one fails every time (#1318).
     recordRoutedOutcome("error", code, "invalid_contact", { by: "bucket", code, host });
     return NextResponse.json(
-      { error: "Please check your contact details.", fieldErrors: attendeeErrors },
+      { error: BOOKING_ERROR_COPY.checkContactDetails, fieldErrors: attendeeErrors },
       { status: 400 },
     );
   }
@@ -617,6 +618,20 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
         return NextResponse.json(
           { error: BOOKING_ERROR_COPY.unknownBucket, code: "UNKNOWN_BUCKET" },
           { status: 422 },
+        );
+      }
+      // #3359: Google refused to invite the address the lead typed, so nothing was
+      // booked and nothing was left reserved. Theirs to change, so it is said the way
+      // our own check says it, against the email field, never as the 500 it was on
+      // 2026-10-06. Refunded: our check should have caught it before any budget was
+      // spent, and the corrected retry must not meet a rate limit.
+      if (err instanceof AttendeeEmailRefusedError) {
+        await refundAll();
+        recordRoutedOutcome("error", code, "attendee_email_refused", { by: "bucket", code, host });
+        // refusal: attendee_email_refused
+        return NextResponse.json(
+          { error: BOOKING_ERROR_COPY.checkContactDetails, fieldErrors: { [err.field]: err.message } },
+          { status: 400 },
         );
       }
       recordRoutedOutcome("error", code, "internal", { by: "bucket", code, host });

@@ -40,6 +40,7 @@ const service = vi.hoisted(() => {
   class NoEligibleAgentsError extends Error {}
   class UnknownBucketError extends Error {}
   class OutsideCallingWindowError extends Error {}
+  class AttendeeEmailRefusedError extends Error {}
   return {
     bookViaApi: vi.fn(),
     previewBooking: vi.fn(),
@@ -54,6 +55,7 @@ const service = vi.hoisted(() => {
     NoEligibleAgentsError,
     UnknownBucketError,
     OutsideCallingWindowError,
+    AttendeeEmailRefusedError,
   };
 });
 vi.mock("@/lib/booking/service", () => service);

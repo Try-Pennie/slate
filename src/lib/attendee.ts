@@ -123,7 +123,25 @@ export function nameFieldErrors(fields: NameFields): NameFieldErrors {
   return errors;
 }
 
-const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+/**
+ * An address shaped the way Google Calendar will take it as a guest (#3359).
+ *
+ * Both halves are dot separated runs of characters, so neither may start or end
+ * with a dot or carry two in a row, and the domain ends in a label of two or more
+ * characters. The old shape (`[^\s@]+@[^\s@]+\.[^\s@]{2,}`) let a dot sit directly
+ * before the `@`, and on 2026-10-06 a lead's `xxxxxxxxxx.@xxxxx.xxx` was accepted
+ * here and refused by `events.insert` with `400 invalid: Invalid attendee email.`,
+ * after the confirm had already reserved a slot. A writer must accept only what
+ * its reader can consume (L150).
+ *
+ * Deliberately no stricter than that: plus tags, underscores, hyphens and long
+ * TLDs all reach Google today. This one function is the rule for the booker's
+ * form, the embed route, the booking API and the manage page's contact edits, so
+ * the form can never refuse what the server would take, nor the reverse (L99).
+ */
+const EMAIL_SHAPE = /^[^\s@.]+(?:\.[^\s@.]+)*@[^\s@.]+(?:\.[^\s@.]+)*\.[^\s@.]{2,}$/;
+/** The lead's own sentence for an address we, or Google, will not take. */
+export const INVALID_EMAIL = "Enter a valid email address";
 // Contact length cap (#1034): reject a multi-MB blob before it reaches Postgres /
 // gcal event bodies / webhook payloads. Checked before the shape regex so a huge
 // string is rejected on length rather than scanned.
@@ -143,7 +161,7 @@ export function validateAttendee(attendee: AttendeeInput): AttendeeErrors {
   if (!email) {
     errors.email = "Enter your email";
   } else if (email.length > MAX || !EMAIL_SHAPE.test(email)) {
-    errors.email = "Enter a valid email address";
+    errors.email = INVALID_EMAIL;
   }
 
   const phone = attendee.phone?.trim() ?? "";

@@ -7,6 +7,7 @@ import {
   nameFieldErrors,
   storedFirstName,
   prefillNameFields,
+  INVALID_EMAIL,
 } from "../src/lib/attendee.ts";
 import { US_ONLY_PHONE_NOTICE } from "../src/lib/booking/booker-copy.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -36,6 +37,36 @@ assert(
   Object.keys(validateAttendee({ ...valid, email: "  dana@example.com  " })).length === 0,
   "email is trimmed before checking",
 );
+
+// #3359: the rule Google applies. A lead at 2:32 AM ET on 2026-10-06 typed an
+// address whose local part ended in a dot; Slate took it, Google's events.insert
+// refused it ("400 invalid: Invalid attendee email."), and the lead was answered
+// with a 500 five times. Each shape below is one Google refuses, so the form must
+// say so at the field rather than let the confirm fail at the calendar.
+for (const [email, why] of [
+  ["dana.@example.com", "a local part ending in a dot (the production address's shape)"],
+  [".dana@example.com", "a local part starting with a dot"],
+  ["da..na@example.com", "consecutive dots in the local part"],
+  ["dana@example..com", "an empty label in the domain"],
+  ["dana@.example.com", "a domain starting with a dot"],
+] as const) {
+  eq(
+    validateAttendee({ ...valid, email }).email,
+    INVALID_EMAIL,
+    `${why} is refused with the lead's own sentence`,
+  );
+}
+// And the rule is no stricter than it has to be: a dot inside the local part, a
+// plus tag, a subdomain and a long TLD all reach Google and are booked today.
+for (const email of [
+  "dana.lead@example.com",
+  "d.a.n.a@example.com",
+  "dana+slate@example.com",
+  "dana@mail.example.co.uk",
+  "dana_lead-1@example.travel",
+]) {
+  eq(validateAttendee({ ...valid, email }).email, undefined, `${email} is still accepted`);
+}
 
 // phone
 assert(!!validateAttendee({ ...valid, phone: "" }).phone, "empty phone rejected");

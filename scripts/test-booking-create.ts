@@ -10,6 +10,7 @@ import {
   VerifyUnavailableError,
   NoEligibleAgentsError,
   UnknownBucketError,
+  AttendeeEmailRefusedError,
   type CreateBookingInput,
 } from "../src/lib/booking/orchestration.ts";
 import type {
@@ -21,6 +22,8 @@ import {
   makeBooking,
   input,
 } from "./lib/booking-fakes.ts";
+import { GoogleHttpError } from "../src/lib/google/http-error.ts";
+import { INVALID_EMAIL } from "../src/lib/attendee.ts";
 
 const { assert, finish } = createAsserter();
 
@@ -412,6 +415,34 @@ async function run() {
       "create-conflict: rolls back the calendar event",
     );
     assert(calls.moveBusyBlock.length === 0 && calls.webhooks.length === 0, "create-conflict: no busy block / webhook");
+  }
+
+  // --- #3359: Google refuses the attendee's address on the create ---
+  // The lead must be told about THEIR email, not handed a 500, and nothing may
+  // be left behind for the drain to retry: no retry can change the address.
+  {
+    const { deps, calls } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
+    const google = new GoogleHttpError(
+      'events.insert failed: 400 {"error":{"errors":[{"domain":"global","reason":"invalid","message":"Invalid attendee email."}],"code":400}}',
+      400,
+      "invalid",
+    );
+    deps.createEvent = async () => {
+      throw google;
+    };
+    let err: unknown;
+    try {
+      await createBooking(input, deps);
+    } catch (e) {
+      err = e;
+    }
+    assert(err instanceof AttendeeEmailRefusedError, "refused-email: the create throws the typed refusal, not the raw Google error");
+    assert(
+      err instanceof AttendeeEmailRefusedError && err.message === INVALID_EMAIL && err.cause === google,
+      "refused-email: it carries the lead's own sentence and keeps Google's answer as its cause",
+    );
+    assert(calls.deletedReservations.length === 1, "refused-email: the reservation is deleted at once, so the drain never retries it");
+    assert(calls.insertBooking.length === 0, "refused-email: no booking row is written");
   }
 
   // --- idempotency: double-submit returns the existing booking (fast path) ---

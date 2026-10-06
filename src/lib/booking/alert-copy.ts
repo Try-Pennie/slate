@@ -403,11 +403,18 @@ export function reservationDrainStuckAlert(stuckCount: number, after: number, id
   );
 }
 
-/** The all-clear for the reservation backlog (#1151). */
+/**
+ * The all-clear for the reservation backlog (#1151).
+ *
+ * #3359: sent when the table holds no pending reservation at the threshold, which
+ * is all that was measured. A reservation leaves that state by completing OR by
+ * being removed (a refused email, a slot taken, the 24 hour retention), so the
+ * sentence says both rather than claiming every one completed.
+ */
 export function reservationDrainRecovery(): string {
   return (
-    "The crash-recovered booking reservations that were backing off have completed, so " +
-    "no half-made booking is stuck retrying. No action is needed."
+    "No crash-recovered booking reservation is stuck retrying any more: each one that " +
+    "was backing off has completed or been removed. No action is needed."
   );
 }
 

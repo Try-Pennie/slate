@@ -153,6 +153,13 @@ function formErrorsFromServer(errors: AttendeeErrors): FormFieldErrors {
   return name ? { ...rest, firstName: name } : rest;
 }
 
+/** Move focus to the first refused field, in the order the form shows them, so a
+ *  refusal from our check and one from the server land the lead in the same place. */
+function focusFirstFieldError(errors: FormFieldErrors): void {
+  const first = ATTENDEE_FIELDS.find((f) => errors[f]);
+  if (first) document.getElementById(`booker-${first}`)?.focus();
+}
+
 /**
  * The confirm's `referrerOrigin` field (#2728), spread into the body so it is
  * ABSENT rather than null when there is nothing to send. Read at confirm time, off
@@ -802,8 +809,7 @@ export default function Booker({
     };
     setFieldErrors(errors);
     if (Object.keys(errors).length > 0) {
-      const first = ATTENDEE_FIELDS.find((f) => errors[f]);
-      if (first) document.getElementById(`booker-${first}`)?.focus();
+      focusFirstFieldError(errors);
       return;
     }
 
@@ -886,7 +892,13 @@ export default function Booker({
         // rather than left tappable with a time that has gone.
         picker.retry();
       } else {
-        if (data.fieldErrors) setFieldErrors(formErrorsFromServer(data.fieldErrors));
+        if (data.fieldErrors) {
+          const refused = formErrorsFromServer(data.fieldErrors);
+          setFieldErrors(refused);
+          // #3359: taken to the field to change, as the form's own check does. A
+          // refusal Google made at the calendar arrives here, after our check passed.
+          focusFirstFieldError(refused);
+        }
         setError(data.error ?? BOOKING_ERROR_COPY.generic);
       }
     } finally {

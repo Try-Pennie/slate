@@ -9,6 +9,7 @@ import {
 import type {
   BookingReservation,
 } from "../src/lib/db/types.ts";
+import { GoogleHttpError } from "../src/lib/google/http-error.ts";
 import {
   createAsserter,
   makeDeps,
@@ -286,6 +287,64 @@ async function run() {
     assert(tCalls.deletedReservations.includes("resv-terminal"), "drain: terminal SlotUnavailable deletes the reservation");
     assert(tCalls.reservationBumps.length === 0, "drain: a terminal slot-taken reservation is NOT bumped (no backoff on a deleted row)");
     assert(tRes.stuck.length === 0, "drain: a terminal slot-taken reservation does NOT fire a stuck alert");
+
+    // #3359: Google refusing the attendee's address is just as terminal. On
+    // 2026-10-06 reservation 71d4bb58 sat at 13 attempts on the hourly backoff,
+    // re-asking Google to invite an address it had already said it never would,
+    // and paging on the way. No retry can change the address, so the row goes.
+    const refusedEmail = () =>
+      new GoogleHttpError(
+        'events.insert failed: 400 {"error":{"errors":[{"domain":"global","reason":"invalid","message":"Invalid attendee email."}],"code":400}}',
+        400,
+        "invalid",
+      );
+    const refused: BookingReservation = { ...reservation, id: "resv-refused-email", attempts: 4 };
+    const { deps: rDeps, calls: rCalls } = makeDeps({ drainableReservations: [refused] });
+    rDeps.createEvent = async () => {
+      throw refusedEmail();
+    };
+    const rRes = await processBookingReservations(rDeps, 15);
+    assert(rRes.failed === 1 && rRes.completed === 0, "drain: a refused attendee email is counted failed, never completed");
+    assert(
+      rCalls.deletedReservations.includes("resv-refused-email"),
+      "drain: a refused attendee email deletes the reservation (#3359)",
+    );
+    assert(rCalls.reservationBumps.length === 0, "drain: a refused attendee email is NOT bumped onto a backoff");
+    assert(rRes.stuck.length === 0, "drain: a refused attendee email does NOT fire a stuck alert");
+    assert(rCalls.insertBooking.length === 0, "drain: and no booking row is written for it");
+
+    // Failure path: the delete itself fails. The row must then stay on the
+    // ordinary retry (bumped, and reported once past the threshold), because a
+    // row left pending with no backoff would be re-sent to Google every tick and
+    // never reach anybody's attention.
+    const { deps: fDeps, calls: fCalls } = makeDeps({
+      drainableReservations: [{ ...refused, id: "resv-refused-undeletable" }],
+    });
+    fDeps.createEvent = async () => {
+      throw refusedEmail();
+    };
+    fDeps.deleteReservation = async () => {
+      throw new Error("supabase 503");
+    };
+    const fRes = await processBookingReservations(fDeps, 15);
+    assert(fCalls.reservationBumps.length === 1, "drain: a refused email whose delete failed is bumped, so it backs off and retries");
+    assert(fRes.stuck.length === 1, "drain: and it is reported once past the alert threshold, never left silent");
+
+    // Narrowness: a different 400 from Google is a fault of OURS (a field we
+    // built), so it stays on the retry and reaches the stuck alert like any other.
+    const { deps: oDeps, calls: oCalls } = makeDeps({
+      drainableReservations: [{ ...refused, id: "resv-other-400" }],
+    });
+    oDeps.createEvent = async () => {
+      throw new GoogleHttpError(
+        'events.insert failed: 400 {"error":{"errors":[{"domain":"global","reason":"invalid","message":"Invalid start time."}],"code":400}}',
+        400,
+        "invalid",
+      );
+    };
+    const oRes = await processBookingReservations(oDeps, 15);
+    assert(oCalls.deletedReservations.length === 0, "drain: another Google 400 does NOT delete the reservation");
+    assert(oCalls.reservationBumps.length === 1 && oRes.stuck.length === 1, "drain: another Google 400 is bumped and reported");
   }
 
 }
