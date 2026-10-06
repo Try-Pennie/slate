@@ -276,4 +276,98 @@ t = 0;
   t = 0;
 }
 
+// #3300: the request's observer is told about every budgeted call it made, with the
+// call's label and its own span, including one that failed, and nothing outside it.
+{
+  const timer: ScheduleTimer = () => () => {};
+  const seen: { who: string; label: string; from: number; to: number }[] = [];
+  const observer = (who: string) => ({
+    call: (label: string, from: number, to: number) => seen.push({ who, label, from, to }),
+  });
+  // A fetch that takes time on the shared clock, so a span has a length.
+  const slow = (ms: number, fail = false) => async () => {
+    t += ms;
+    if (fail) throw new Error("connection reset");
+    return new Response("ok");
+  };
+  t = 1_000;
+  await withinCallBudget(
+    14_000,
+    "the booking confirm",
+    async () => {
+      await fetchWithinBudget(slow(300), "https://x.test", {}, 15_000, "supabase", timer, now);
+      // A Google call opens its own nested budget, and is still this request's.
+      await withinCallBudget(8_000, "google freeBusy", () =>
+        fetchWithinBudget(slow(500), "https://x.test", {}, 8_000, "google freeBusy", timer, now), now);
+      await fetchWithinBudget(slow(200, true), "https://x.test", {}, 15_000, "supabase", timer, now).catch(() => null);
+      // The failure path's allowance belongs to the same request.
+      await withinCleanupBudget(2_000, "cleanup", () =>
+        fetchWithinBudget(slow(50), "https://x.test", {}, 15_000, "supabase", timer, now), now);
+    },
+    now,
+    observer("one"),
+  );
+  eq(
+    seen,
+    [
+      { who: "one", label: "supabase", from: 1_000, to: 1_300 },
+      { who: "one", label: "google freeBusy", from: 1_300, to: 1_800 },
+      { who: "one", label: "supabase", from: 1_800, to: 2_000 },
+      { who: "one", label: "supabase", from: 2_000, to: 2_050 },
+    ],
+    "observer: every call the request made, a failed one included, each with its own span",
+  );
+
+  // A call outside any budget, and a call deferred past the answer, belong to no
+  // request's profile.
+  seen.length = 0;
+  await fetchWithinBudget(slow(10), "https://x.test", {}, 15_000, "supabase", timer, now);
+  let deferred: Promise<unknown> | null = null;
+  await withinCallBudget(
+    14_000,
+    "the booking confirm",
+    async () => {
+      deferred = Promise.resolve().then(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+        return fetchWithinBudget(slow(10), "https://x.test", {}, 15_000, "supabase", timer, now);
+      });
+    },
+    now,
+    observer("two"),
+  );
+  await deferred;
+  eq(seen, [], "observer: nothing outside the request's own scope is charged to it");
+
+  // L748: two requests in flight in one isolate each see only their own calls.
+  seen.length = 0;
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  const a = withinCallBudget(
+    14_000,
+    "the booking confirm",
+    async () => {
+      await held;
+      await fetchWithinBudget(slow(1), "https://a.test", {}, 15_000, "supabase", timer, now);
+    },
+    now,
+    observer("a"),
+  );
+  const b = withinCallBudget(
+    14_000,
+    "the booking confirm",
+    () => fetchWithinBudget(slow(1), "https://b.test", {}, 15_000, "google freeBusy", timer, now),
+    now,
+    observer("b"),
+  );
+  await b;
+  release();
+  await a;
+  eq(
+    seen.map((s) => `${s.who}:${s.label}`),
+    ["b:google freeBusy", "a:supabase"],
+    "observer: two requests interleaved in one isolate never see each other's calls",
+  );
+  t = 0;
+}
+
 finish();

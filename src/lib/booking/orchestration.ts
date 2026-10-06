@@ -94,7 +94,7 @@ import {
 import { calendarLinks, icsDocument, icsUrl, leadCalendarEvent, type CalendarLinks } from "./calendar-links.ts";
 import type { RecordRoutingDecisionInput } from "../routing/record.ts";
 import { rungExcludesLow, tierKeyOf } from "../routing/tiers.ts";
-import { walkTierLadder } from "../routing/tier-fallback.ts";
+import { walkTierLadder, type RungOutcome } from "../routing/tier-fallback.ts";
 import { tierFallbackAlert } from "../routing/tier-alert.ts";
 import {
   MANAGE_PHONE_NOT_CHANGEABLE,
@@ -122,6 +122,9 @@ import {
   makeConfirmProfile,
   confirmProfileLine,
   ISOLATE_READY_AT_MS,
+  timeStage,
+  type ConfirmProfile,
+  type ConfirmProfileReading,
 } from "@/lib/booking/confirm-profile";
 import { isLoadtest } from "@/lib/loadtest-guard";
 import { sendThrottledAlert } from "../notify/dispatch.ts";
@@ -1252,6 +1255,21 @@ export interface BookingDeps {
    * the wiring under SLATE_LOADTEST only; absent, nothing reads the clock for it.
    */
   mark?: (point: WaitPoint) => void;
+  /**
+   * #3300: this request's stage profile, opened by the route's `answerTimed`, so a
+   * slow or timed out confirm's `confirm answered` line says where its time went:
+   * the confirm line, each stage, each ladder rung. Absent (a cron drain, a suite
+   * that does not care), a confirm keeps a profile of its own that nothing reads
+   * outside the load test.
+   */
+  profile?: ConfirmProfile;
+  /**
+   * #3401: told the Salesforce lead id (the 15 character key, or null) of the
+   * booking a time change loads, so a time change that times out names its lead
+   * on the route's `confirm answered` line as a new booking does. Absent, nothing
+   * is told.
+   */
+  noteLeadId?: (leadId: string | null) => void;
   /**
    * #3257: every ACTIVE booking that starts at this instant, in any bucket and
    * either world. Read once by a confirm whose verdict settles its slot, so the
@@ -2729,9 +2747,13 @@ async function assignAgentWithTierFallback(
     stage,
     rungs,
   });
+  // #3300: each rung walked is timed on the request's profile, so a confirm that
+  // ran out of time while dropping tiers says which rung it was on and what each
+  // one cost. A rung skipped before any read (no bucket row) still counts as walked.
+  const timeRung = <R>(code: string, fn: () => Promise<R>): Promise<R> => (deps.profile ? deps.profile.rung(code, fn) : fn());
   const winner = await walkTierLadder<Omit<TierAssignResult, "rungsDropped">>(
     requested.bucket.code,
-    async (rungCode, i) => {
+    (rungCode, i) => timeRung(rungCode, async (): Promise<RungOutcome<Omit<TierAssignResult, "rungsDropped">>> => {
       const resolved = i === 0 ? requested : await deps.resolveBucketByCode(rungCode);
       if (!resolved) return { hit: false }; // a lower tier with no bucket row: skip
       if (resolved.bucket.is_test && !allowTestBuckets) return { hit: false };
@@ -2764,7 +2786,7 @@ async function assignAgentWithTierFallback(
         // rung measured carries the ladder so far.
         throw rung ? traced(err, trace(rung.stage)) : err;
       }
-    },
+    }),
   );
   if (winner) return { ...winner.value, rungsDropped: winner.rungsDropped };
   throw traced(lastErr ?? new SlotUnavailableError(), trace(ladderStage(rungs)));
@@ -3899,11 +3921,15 @@ async function inConfirmTurn<R>(
   // #3354: before the FIRST call into the line, which on the API path is the
   // lookahead: that is where the switch read and the first round trip happen.
   deps.mark?.("line_start");
-  const giveBack = ahead ? await deps.confirmQueue.lookahead(line.key, confirmLineWaitMs(budgetLeftMs())) : null;
+  // #3300: the line's own calls and the wait for a turn, as stages of the profile,
+  // so a confirm that spent its budget waiting in line says so.
+  const giveBack = ahead
+    ? await timeStage(deps.profile, "line-lookahead", () => deps.confirmQueue.lookahead(line.key, confirmLineWaitMs(budgetLeftMs())))
+    : null;
   if (giveBack && ahead) {
     let early: R | null = null;
     try {
-      early = await ahead();
+      early = await timeStage(deps.profile, "line-ahead-read", ahead);
     } catch (err) {
       // The lookahead is a shortcut, never a gate: a read that fails here is
       // treated as finding nothing, and the confirm joins the line, where the
@@ -3923,7 +3949,7 @@ async function inConfirmTurn<R>(
     }
   }
   const waitMs = confirmLineWaitMs(budgetLeftMs());
-  const turn = await deps.confirmQueue.enter(line.key, waitMs);
+  const turn = await timeStage(deps.profile, "confirm-line", () => deps.confirmQueue.enter(line.key, waitMs));
   // #3354: the line has answered, whether with a turn, a refusal or a timeout.
   deps.mark?.("line_turn");
   if (turn.kind === "refused") {
@@ -3973,14 +3999,15 @@ async function inConfirmTurn<R>(
   }
   // The turn's end is reported however the work ends, and however the settling read
   // ends: a report that never arrives holds the line until its lease runs out (#3325).
-  const report = async (verdict: LeaderVerdict<ConfirmTaker>) => {
-    let settled: LeaderVerdict<SlotSettlement> = { full: false };
-    try {
-      settled = await settleSlot(deps, line, verdict, await turn.waiting());
-    } finally {
-      await turn.done(settled);
-    }
-  };
+  const report = (verdict: LeaderVerdict<ConfirmTaker>) =>
+    timeStage(deps.profile, "line-report", async () => {
+      let settled: LeaderVerdict<SlotSettlement> = { full: false };
+      try {
+        settled = await settleSlot(deps, line, verdict, await turn.waiting());
+      } finally {
+        await turn.done(settled);
+      }
+    });
   let done: { result: R; verdict: LeaderVerdict<ConfirmTaker> };
   try {
     done = await work({ seat: turn.seat });
@@ -4094,22 +4121,23 @@ async function createChecked(
   held: HeldTurn | "late",
 ): Promise<{ result: BookingResult; verdict: LeaderVerdict<ConfirmTaker> }> {
   /**
-   * Where this confirm's time went (#2321), under SLATE_LOADTEST only.
+   * Where this confirm's time went (#2321, #3300).
    *
-   * The 2026-09-14 load run measured the request path at a CPU p99 of 4,908ms
-   * against a wall p95 of 4,025ms with no cron in the window, so the path is
-   * compute bound and nothing in the run could say which part of it. Reading the
-   * code names candidates and cannot rank them (L355). This is WALL time and is
-   * apportioned only because that run measured the two as roughly equal.
+   * The request's own profile, opened by the route (`answerTimed`), so a slow or
+   * timed out confirm's `confirm answered` line can say where its time went. A
+   * caller with none (a suite, a path no route times) gets one of its own.
    *
-   * With the flag unset it never reads the clock at all, so a production confirm
-   * pays nothing rather than paying a little and discarding it.
+   * Under SLATE_LOADTEST the confirm's apportionment is ALSO logged on its own
+   * `confirm-profile` line, as it was before #3300, over a window opened HERE: the
+   * load run's judges read its `total_ms` and `isolate_age_ms` as measured from
+   * this point (#2340, #3354), and a window keeps that meaning now that the
+   * profile itself starts at the route. The 2026-09-14 load run measured the
+   * request path at a CPU p99 of 4,908ms against a wall p95 of 4,025ms with no cron
+   * in the window; this is WALL time, apportioned only because that run measured
+   * the two as roughly equal (L355).
    */
-  const profile = makeConfirmProfile({
-    enabled: isLoadtest(),
-    now: () => Date.now(),
-    isolateReadyAtMs: ISOLATE_READY_AT_MS,
-  });
+  const profile = deps.profile ?? makeConfirmProfile({ now: () => Date.now() });
+  const loadtestWindow = isLoadtest() ? profile.window(ISOLATE_READY_AT_MS) : null;
   // #3354: the end of the wait the confirm startup bar measures.
   deps.mark?.("profile");
 
@@ -4137,7 +4165,7 @@ async function createChecked(
   const { input, codeSource } =
     agentLinkUserId !== undefined
       ? { input: { ...requestedInput, requestedCode: undefined }, codeSource: undefined }
-      : await routeOnLeadCode(requestedInput, deps);
+      : await profile.time("lead-code", () => routeOnLeadCode(requestedInput, deps));
 
   // #2310: the lead's calling window, judged in the zone the booker was using.
   // AFTER the idempotency fast path, so a retry of a booking that already exists
@@ -4173,7 +4201,7 @@ async function createChecked(
   // #3257: most confirms joined the line before any of the reads above
   // (`createBookingWithVerdict`) and already hold their turn here. Only a booker
   // link Salesforce routed joins now, once its bucket is known.
-  const ctx: HeldCreate = { input, stableKey, agentLinkUserId, codeSource, bucket, eventType, profile, seat: null };
+  const ctx: HeldCreate = { input, stableKey, agentLinkUserId, codeSource, bucket, eventType, profile, loadtestWindow, seat: null };
   if (held !== "late") return createHeld({ ...ctx, seat: held.seat }, deps);
   return inConfirmTurn(
     deps,
@@ -4197,7 +4225,9 @@ interface HeldCreate {
   codeSource: RoutingCodeRecord | undefined;
   bucket: Bucket;
   eventType: EventType;
-  profile: ReturnType<typeof makeConfirmProfile>;
+  profile: ConfirmProfile;
+  /** The load test's window over this confirm (#2321), or null off the load test. */
+  loadtestWindow: { read(): ConfirmProfileReading } | null;
   /** #3257: this confirm's claim on an advisor in its slot's line, or none. */
   seat: SharedSeat | null;
 }
@@ -4269,7 +4299,7 @@ async function createHeld(
   ctx: HeldCreate,
   deps: BookingDeps,
 ): Promise<{ result: BookingResult; verdict: LeaderVerdict<ConfirmTaker> }> {
-  const { input, stableKey, agentLinkUserId, codeSource, bucket, eventType, profile, seat } = ctx;
+  const { input, stableKey, agentLinkUserId, codeSource, bucket, eventType, profile, loadtestWindow, seat } = ctx;
 
   // One call per person, ENFORCED (#1337), not reported after the fact. Runs
   // AFTER the idempotency fast path above on purpose: a double-click's second
@@ -4298,10 +4328,10 @@ async function createHeld(
   // could land on a different agent and duplicate the calendar event). Only a
   // stable key can name a prior in-flight reservation.
   if (stableKey) {
-    const inFlight = await deps.loadReservationByKey(stableKey);
+    const inFlight = await profile.time("inflight-lookup", () => deps.loadReservationByKey(stableKey));
     // A resumed reservation was pinned by an earlier request, so it says nothing
     // about who else the slot has room for: the next confirm in line runs.
-    if (inFlight) return { result: answerCommitted(await completeReservation(deps, inFlight)), verdict: { full: false } };
+    if (inFlight) return { result: answerCommitted(await profile.time("complete-reservation", () => completeReservation(deps, inFlight))), verdict: { full: false } };
   }
 
   // The tier the availability cache shows for the requested bucket RIGHT NOW,
@@ -4346,36 +4376,38 @@ async function createHeld(
       if (trace) trace.leadId = refusedLeadId(input);
       const requestedRung = trace?.rungs.find((r) => r.code === bucket.code);
       try {
-        const pool = await deps.resolveBucketPool(bucket);
-        await deps.recordRoutingDecision({
-          orgId: bucket.org_id,
-          bookingId: null,
-          bucketCode: bucket.code,
-          bucketId: bucket.id,
-          criteria: pool.criteria,
-          // The requested rung's cached read is the real free set: those advisors
-          // were considered and refused later (the stage says where), and only the
-          // rest were unavailable in the cache. Labelling the whole pool
-          // no_availability, as an empty free set did, read as "everyone busy"
-          // whatever refused them (#3272). With no read to go on (the read itself
-          // failed), both lists stay empty rather than claim anything.
-          ...(requestedRung?.readIds
-            ? buildRoutingTraceExtras(pool, requestedRung.readIds)
-            : { considered: [], excluded: [] }),
-          ...refusalRecord(trace, input.startIso, input),
-          chosenUserId: null,
-          chosenAttributes: null,
-          emptyPoolFallback: false,
-          tierFallback: false,
-          rungsDropped: 0,
-          requestedTier: pool.criteria.debt_team ? String(pool.criteria.debt_team) : null,
-          bookedTier: null,
-          // No booking was made, so the subject is the bucket that was TRIED. A
-          // rescued lead who then found no times is still a rescued lead, and
-          // leaving it off here would undercount exactly the population whose
-          // rescue did not work.
-          ...catchallRecord(input.requestedCode, bucket.code, codeSource),
-          outcome,
+        await profile.time("record-refusal", async () => {
+          const pool = await deps.resolveBucketPool(bucket);
+          await deps.recordRoutingDecision({
+            orgId: bucket.org_id,
+            bookingId: null,
+            bucketCode: bucket.code,
+            bucketId: bucket.id,
+            criteria: pool.criteria,
+            // The requested rung's cached read is the real free set: those advisors
+            // were considered and refused later (the stage says where), and only the
+            // rest were unavailable in the cache. Labelling the whole pool
+            // no_availability, as an empty free set did, read as "everyone busy"
+            // whatever refused them (#3272). With no read to go on (the read itself
+            // failed), both lists stay empty rather than claim anything.
+            ...(requestedRung?.readIds
+              ? buildRoutingTraceExtras(pool, requestedRung.readIds)
+              : { considered: [], excluded: [] }),
+            ...refusalRecord(trace, input.startIso, input),
+            chosenUserId: null,
+            chosenAttributes: null,
+            emptyPoolFallback: false,
+            tierFallback: false,
+            rungsDropped: 0,
+            requestedTier: pool.criteria.debt_team ? String(pool.criteria.debt_team) : null,
+            bookedTier: null,
+            // No booking was made, so the subject is the bucket that was TRIED. A
+            // rescued lead who then found no times is still a rescued lead, and
+            // leaving it off here would undercount exactly the population whose
+            // rescue did not work.
+            ...catchallRecord(input.requestedCode, bucket.code, codeSource),
+            outcome,
+          });
         });
       } catch {
         // best-effort: never change the thrown booking error
@@ -4399,7 +4431,7 @@ async function createHeld(
   };
   if (agentLinkUserId === undefined) {
     try {
-      const pool = await deps.resolveBucketPool(bookedBucket);
+      const pool = await profile.time("routing-trace", () => deps.resolveBucketPool(bookedBucket));
       traceExtras = buildRoutingTraceExtras(pool, candidates);
     } catch {
       // best-effort: a transient pool-resolve failure must not fail the booking
@@ -4424,7 +4456,7 @@ async function createHeld(
   let result: BookingResult;
   for (;;) {
     const { userId, email } = chosen;
-    const agent = await deps.getUser(userId);
+    const agent = await profile.time("load-advisor", () => deps.getUser(userId));
     const gcalClientId = await deterministicEventId(idempotencyKey, userId);
     const bookingInsert: BookingInsert = {
       org_id: bookedBucket.org_id,
@@ -4520,7 +4552,7 @@ async function createHeld(
       );
       break;
     } catch (err) {
-      const next = await nextAdvisorAfterLostRace(deps, {
+      const next = await profile.time("race-reassign", () => nextAdvisorAfterLostRace(deps, {
         err,
         named: agentLinkUserId !== undefined,
         reservation,
@@ -4531,7 +4563,7 @@ async function createHeld(
         endIso,
         eventType: bookedEventType,
         seat,
-      });
+      }));
       if (!next) {
         if (!(err instanceof SlotUnavailableError)) throw err;
         // #2838: refused after a lost race. Said apart so it can be counted, and
@@ -4626,8 +4658,9 @@ async function createHeld(
 
   // The apportionment, once, at the end. It carries no contact data: the stage
   // names and their durations, plus what they do NOT account for. Under
-  // SLATE_LOADTEST only, so nothing is written on a production confirm.
-  const reading = profile.read();
+  // SLATE_LOADTEST only (the window); in production the same stages reach the
+  // route's `confirm answered` line instead, when the confirm was slow (#3300).
+  const reading = loadtestWindow?.read();
   if (reading) {
     log.info("confirm-profile", {
       msg: "where the confirm spent its wall time",
@@ -5587,7 +5620,7 @@ async function bookViaApiDecided(
    *  undefined when it is outside the line (a link whose bucket is not known yet). */
   held: HeldTurn | undefined,
 ): Promise<{ result: ApiBookingResult; verdict: LeaderVerdict<ConfirmTaker> }> {
-  const { decision, requested } = await resolvePersonDecision(input, deps);
+  const { decision, requested } = await timeStage(deps.profile, "person-decision", () => resolvePersonDecision(input, deps));
   deps.mark?.("decided");
   if (decision.action === "create") {
     const { result: res, verdict } = await createBookingWithVerdict(input, deps, { requested, held });
@@ -6036,6 +6069,8 @@ export async function rescheduleBooking(
   // it costs no extra round-trip on the hot reschedule path.
   const ctx = await deps.loadBookingContext(token, { withWorkingHours: true });
   assertReschedulable(ctx);
+  // #3401: whose call this is, for the line if the move then times out.
+  deps.noteLeadId?.(refusedLeadId({ salesforceId: ctx.booking.salesforce_id, externalId: ctx.booking.external_id }));
   const { booking, eventType } = ctx;
 
   const { startIso, endIso } = bookingWindow(

@@ -486,6 +486,7 @@ import { loadPhotoRecords, loadUserSignInPhoto } from "@/lib/advisor-photos/stor
 import { makeConfirmQueue, isolateLine } from "@/lib/booking/confirm-queue";
 import { confirmLineFor, lineGroupOfLive } from "@/lib/booking/confirm-line-live";
 import type { ConfirmLineFacts } from "@/lib/booking/confirm-latency";
+import { timeStage } from "@/lib/booking/confirm-profile";
 export type { BookingResult, CreateBookingInput };
 export type { ExistingCall } from "@/lib/booking/orchestration";
 export type { BookingActor } from "@/lib/booking/core";
@@ -1105,6 +1106,15 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
     // #3354: the points of the wait before the confirm's profile, when the route
     // keeps marks (the load test only); absent, nothing is stamped.
     mark: lineFacts?.marks ? (point) => lineFacts.marks?.mark(point) : undefined,
+    // #3300: the request's stage profile, opened by the route's `answerTimed`, so
+    // the confirm's stages and ladder rungs reach its `confirm answered` line.
+    profile: lineFacts?.profile,
+    // #3401: a time change learns its lead off the booking it loads, for the line.
+    noteLeadId: lineFacts
+      ? (leadId) => {
+          lineFacts.leadId = leadId;
+        }
+      : undefined,
     enqueueEventDeletion: async (calendarEmail, gcalEventId, bookingId) => {
       // THROWS (#2482). This row IS the record that a Google event still has to be
       // deleted, and nothing else holds that fact: a refused upsert leaves the event
@@ -2448,11 +2458,16 @@ async function rescheduleWithLog(
   actor?: BookingActor,
   contact?: { name?: string; firstName?: string; email?: string; phone?: string },
   leadZone?: string | null,
+  lineFacts?: ConfirmLineFacts,
 ): Promise<BookingResult> {
   try {
-    const res = await orchestration.rescheduleBooking(
-      token, newStartIso, reason, initiator, realDeps(deferWebhookSend), Date.now(), actor, contact,
-      { leadZone },
+    // #3401: the whole move as one stage of the request's profile; a reroute's
+    // ladder rungs are timed inside it.
+    const res = await timeStage(lineFacts?.profile, "reschedule", () =>
+      orchestration.rescheduleBooking(
+        token, newStartIso, reason, initiator, realDeps(deferWebhookSend, lineFacts), Date.now(), actor, contact,
+        { leadZone },
+      ),
     );
     logRescheduleSuccess(res.booking.id, initiator, res.rescheduleDecline);
     return res;
@@ -2802,9 +2817,11 @@ export function rescheduleBooking(
   /** #2310: the zone the lead is viewing the new time in; absent means the
    *  booking's own zone is judged instead. */
   leadZone?: string | null,
+  /** #3401: the route's `confirm answered` facts: the profile, and the lead it names. */
+  lineFacts?: ConfirmLineFacts,
 ): Promise<BookingResult> {
   return alertOnBookingFailure(() =>
-    rescheduleWithLog(token, newStartIso, reason, initiator, undefined, contact, leadZone),
+    rescheduleWithLog(token, newStartIso, reason, initiator, undefined, contact, leadZone, lineFacts),
   );
 }
 
@@ -2935,11 +2952,13 @@ export async function adminRescheduleBooking(
   newStartIso: string,
   reason: ValidatedReason,
   actor: BookingActor,
+  /** #3401: the route's `confirm answered` facts: the profile, and the lead it names. */
+  lineFacts?: ConfirmLineFacts,
 ): Promise<BookingResult> {
-  const token = await manageTokenForBooking(bookingId);
+  const token = await timeStage(lineFacts?.profile, "load-token", () => manageTokenForBooking(bookingId));
   if (!token) throw new Error("Booking not found");
   return alertOnBookingFailure(() =>
-    rescheduleWithLog(token, newStartIso, reason, "admin", actor),
+    rescheduleWithLog(token, newStartIso, reason, "admin", actor, undefined, undefined, lineFacts),
   );
 }
 

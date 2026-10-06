@@ -139,6 +139,51 @@ describe("POST /bookings/[token]/reschedule", () => {
     }
   });
 
+  // #3401: a lead's time change writes the same `confirm answered` line a booking
+  // does, saying it was a move, so its wait is measurable and a page about it has a
+  // line to send its reader to.
+  it("writes the confirm answered line for a time change (#3401)", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    service.rescheduleBooking.mockRejectedValueOnce(new service.RescheduleConflictError());
+    const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
+    const lines = info.mock.calls.map((c) => c.map(String).join(" ")).filter((l) => l.includes('msg="confirm answered"'));
+    info.mockRestore();
+    expect(res.status).toBe(409);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("tag=booking ");
+    expect(lines[0]).toContain('confirm_kind="move"');
+    expect(lines[0]).toContain("status=409");
+    expect(lines[0]).toMatch(/response_ms=\d+/);
+    // Quick and not a timeout: no profile.
+    expect(lines[0]).not.toContain("stages_run");
+  });
+
+  // #3401 with #3300: a time change that runs out of time says where it went, and
+  // whose call it was, from the lead id the service learns off the booking.
+  it("logs where a timed out time change's time went, with the booking's lead id (#3401)", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    service.rescheduleBooking.mockImplementationOnce((async (...args: unknown[]) => {
+      // The service is handed the request's facts last, as the booker's create is.
+      const facts = args[6] as { leadId?: string | null; profile?: { time: (s: string, fn: () => Promise<unknown>) => Promise<unknown> } };
+      facts.leadId = "00QUi00000zhEUP";
+      await facts.profile?.time("reschedule", async () => {});
+      throw Object.assign(new service.VerifyUnavailableError("try again"), {
+        cause: new DeadlineExceededError("supabase", 0, { label: "the booking confirm", totalMs: 12_000 }),
+      });
+    }) as never);
+    const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
+    const lines = info.mock.calls.map((c) => c.map(String).join(" ")).filter((l) => l.includes('msg="confirm answered"'));
+    info.mockRestore();
+    expect(res.status).toBe(503);
+    expect(lines[0]).toContain('confirm_kind="move"');
+    expect(lines[0]).toContain("timed_out=true");
+    expect(lines[0]).toContain('lead_id="00QUi00000zhEUP"');
+    expect(lines[0]).toMatch(/stages="[^"]*reschedule:\d+\/1/);
+    expect(lines[0]).toMatch(/stages="[^"]*route-checks:\d+\/1/);
+    expect(lines[0]).toContain("calls_made=0");
+  });
+
   it("leaves any other failure before the try exactly as it was", async () => {
     reasonOptions.fail = new Error("boom");
     try {
@@ -389,6 +434,8 @@ describe("POST /bookings/[token]/reschedule", () => {
       // #2310: no zone on this request, so the booking layer judges the zone
       // the booking was made in.
       undefined,
+      // #3401: the request's confirm line facts, carrying its profile.
+      expect.objectContaining({ profile: expect.anything() }),
     );
     // Said back, so the screen can tell the lead what else this move changed.
     expect((await res.json()).contactChanged).toEqual({ name: false, email: true, phone: true });
