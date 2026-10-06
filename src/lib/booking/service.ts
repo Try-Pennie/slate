@@ -27,6 +27,7 @@ import { unwrap, unwrapCount, isSlotClash, type DbResult } from "@/lib/db/result
 import { settleDrainStuckAlert } from "@/lib/booking/drain-stuck-alert";
 import { whereStillInPool } from "@/lib/bookable/left-pool";
 import { gatedWriteApplied, gatedWriteRows } from "@/lib/booking/gated-write";
+import { commitRescheduleArgs, readCommitReschedule } from "@/lib/booking/reschedule-commit";
 import { appUrl } from "@/lib/env";
 import {
   resolveBucketByCode,
@@ -1920,30 +1921,15 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
       }
     },
 
-    commitReschedule: async (bookingId, patch, guard) => {
-      // Gated commit (#615): apply the move only while the booking is still
-      // active AND its assignee + event id are unchanged since we read them.
-      // A concurrent cancel (status flip) or reassign (assignee + event id swap)
-      // makes this touch 0 rows; `.select` returns a row only when THIS UPDATE
-      // transitioned it. Same shape as claimCancellation / completeBookingsIfDue.
-      const base = supabaseAdmin()
-        .from("bookings")
-        .update(patch)
-        .eq("id", bookingId)
-        .in("status", ["confirmed", "rescheduled"]);
-      const withAssignee =
-        guard.assignedUserId === null
-          ? base.is("assigned_user_id", null)
-          : base.eq("assigned_user_id", guard.assignedUserId);
-      const gated =
-        guard.gcalEventId === null
-          ? withAssignee.is("gcal_event_id", null)
-          : withAssignee.eq("gcal_event_id", guard.gcalEventId);
-      // #2373: `false` here means the booking is no longer the one we started
-      // moving. A statement Postgres REFUSED used to produce the same false, and
-      // the caller turned that into a conflict telling the lead to refresh and
-      // pick again, which is advice that cannot work when nothing ran.
-      return gatedWriteApplied("reschedule_commit", await gated.select("id"));
+    commitReschedule: async (bookingId, patch, guard, outbox) => {
+      // #3265: the gated move (#615: only while the booking is still active AND its
+      // assignee + event id are unchanged since we read them) and its outbox work, in
+      // ONE transaction (migration 0171). The id of the outbox row it wrote means the
+      // move applied; null means the guard matched nothing. A refused call throws as a
+      // write failure rather than reading as a lost race (#2373).
+      return readCommitReschedule(
+        await supabaseAdmin().rpc("commit_reschedule", commitRescheduleArgs(bookingId, patch, guard, outbox)),
+      );
     },
 
     claimCancellation: async (bookingId) => {

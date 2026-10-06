@@ -53,6 +53,7 @@ import {
   type DriverResult,
 } from "./loadtest/book-plan.ts";
 import { OK_P95_MS } from "./loadtest/judge-booking-run.ts";
+import { AVAILABILITY_UNREAD, NO_SLOTS_OFFERED, TIMED_OUT } from "./loadtest/outcomes.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -228,6 +229,8 @@ async function runDriver(
   answer: "slow" | "hang" | "stall-body",
   extraEnv: Record<string, string> = {},
   out = "driver-2.json",
+  /** #3348: how the availability read answers. "ok" offers two times. */
+  availability: "ok" | "refused" | "stall" | "empty" = "ok",
 ): Promise<{ code: number; stderr: string; result: DriverResult | null; bookingsSeen: number; versionSeen: number }> {
   let bookingsSeen = 0;
   let versionSeen = 0;
@@ -241,8 +244,15 @@ async function runDriver(
       return;
     }
     if (req.url?.startsWith("/api/availability")) {
+      if (availability === "refused") {
+        res.writeHead(429, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "rate_limited" }));
+        return;
+      }
+      // "stall" never answers; the driver's own availability abort is the way out.
+      if (availability === "stall") return;
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ slots: ["2026-10-05T14:00:00.000Z", "2026-10-05T15:00:00.000Z"] }));
+      res.end(JSON.stringify({ slots: availability === "empty" ? [] : ["2026-10-05T14:00:00.000Z", "2026-10-05T15:00:00.000Z"] }));
       return;
     }
     if (req.url === "/api/bookings" && req.method === "POST") {
@@ -324,7 +334,7 @@ async function runDriver(
   eq(code, 0, `a driver whose request hung still exits zero ${stderr.slice(0, 300)}`);
   assert(r !== null, "and still writes its file");
   eq(r?.attempts[0]?.status, 0, "the hung request has no status");
-  eq(r?.attempts[0]?.outcome, "timed-out", "and is recorded as timed out, not as any other failure");
+  eq(r?.attempts[0]?.outcome, TIMED_OUT, "and is recorded as timed out, not as any other failure");
   assert(r?.cutShort !== undefined, "and the driver then stops at its deadline as before");
 }
 
@@ -333,8 +343,29 @@ async function runDriver(
   // body, so the attempt read as a 200 with no outcome: a success nobody saw.
   const { code, stderr, result: r } = await runDriver("stall-body", { DRIVE_REQUEST_TIMEOUT_MS: "300" });
   eq(code, 0, `a driver whose response body stalled still exits zero ${stderr.slice(0, 300)}`);
-  eq(r?.attempts[0]?.outcome, "timed-out", "a stalled body is recorded as timed out");
+  eq(r?.attempts[0]?.outcome, TIMED_OUT, "a stalled body is recorded as timed out");
   eq(r?.attempts[0]?.status, 0, "and not as the 200 its headers claimed");
+}
+
+// --- #3348: a first availability read that fails is not a bucket offering nothing ------
+// With no earlier view to fall back on, a refused or timed out read used to come back as
+// an empty list and be recorded as no-slots-offered: a request never sent, reported as a
+// dead bucket. Each of the three answers now has its own outcome.
+{
+  const { code, stderr, result: r, bookingsSeen } = await runDriver("slow", {}, "driver-2.json", "refused");
+  eq(code, 0, `a driver whose availability reads are refused still exits zero ${stderr.slice(0, 300)}`);
+  eq(r?.attempts[0]?.outcome, AVAILABILITY_UNREAD, "a refused first read is recorded as unread, not as no times offered");
+  eq(r?.attempts[0]?.status, 0, "with no status, since no booking was sent");
+  eq(bookingsSeen, 0, "and no booking was sent");
+}
+{
+  const { result: r } = await runDriver("slow", { DRIVE_AVAILABILITY_TIMEOUT_MS: "300" }, "driver-2.json", "stall");
+  eq(r?.attempts[0]?.outcome, AVAILABILITY_UNREAD, "a first read that times out is recorded as unread too");
+}
+{
+  const { result: r, bookingsSeen } = await runDriver("slow", {}, "driver-2.json", "empty");
+  eq(r?.attempts[0]?.outcome, NO_SLOTS_OFFERED, "a read that answers with no times is the bucket offering nothing");
+  eq(bookingsSeen, 0, "and nothing was booked");
 }
 
 {

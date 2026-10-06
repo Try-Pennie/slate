@@ -210,7 +210,7 @@ function makeTierDropDeps(requested = "511", lower = "411"): BookingDeps {
     releaseReservationLease: noop,
     bumpReservationAttempt: noop,
     deleteExpiredReservations: noop,
-    commitReschedule: async () => true,
+    commitReschedule: async () => "ob-1",
     claimCancellation: async () => true,
     completeBookingsIfDue: async () => [] as string[],
     claimReschedule: async () => ({ outcome: "won" as const }),

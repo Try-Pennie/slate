@@ -502,6 +502,29 @@ export interface Database {
         Returns: number;
       };
       /**
+       * #3265, migration 0171: the gated reschedule and its outbox row in one transaction.
+       * Returns the outbox row's id when the move applied; null when the guard matched nothing.
+       */
+      commit_reschedule: {
+        Args: {
+          p_booking_id: string;
+          p_guard_assigned: string | null;
+          p_guard_event: string | null;
+          p_starts_at: string;
+          p_ends_at: string;
+          p_assigned_user_id: string;
+          p_agent_name: string | null;
+          p_agent_email: string | null;
+          p_gcal_event_id: string;
+          p_reschedule_seq: number;
+          p_set_routing_trace: boolean;
+          p_routing_trace: unknown;
+          p_steps: unknown;
+          p_payload: unknown;
+        };
+        Returns: string | null;
+      };
+      /**
        * Decide whether a named booking is really a duplicate and, when it is, cancel
        * it and enqueue its cancel outbox row in ONE transaction (#2369, migration
        * 0124). Checking and cancelling as two steps could leave a lead with no call
