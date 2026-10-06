@@ -119,8 +119,18 @@ export function shortFailureReason(
 export function deadlineReason(found: DeadlineFound): string {
   const { label, timeoutMs, budget } = found;
   if (!budget) return `${label} did not answer within ${span(timeoutMs)}`;
-  if (timeoutMs === 0) return `${budget.label} had used up its ${span(budget.totalMs)} before Slate asked ${label}`;
+  if (spentBeforeAsked(found)) return `${budget.label} had used up its ${span(budget.totalMs)} before Slate asked ${label}`;
   return `${label} was still running when ${budget.label} ran out of its ${span(budget.totalMs)}`;
+}
+
+/**
+ * The first of `deadlineReason`'s three cases: the enclosing budget was already
+ * spent, so the call was refused before it reached the dependency. One predicate,
+ * so a page's ADVICE (#3313: look inside Slate, not at the dependency) can never
+ * disagree with its reason about which case it is.
+ */
+export function spentBeforeAsked(found: DeadlineFound): boolean {
+  return found.budget !== null && found.timeoutMs === 0;
 }
 
 /** A duration in the unit a person would say it in. */

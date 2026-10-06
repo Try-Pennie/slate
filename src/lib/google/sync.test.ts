@@ -56,6 +56,14 @@ const logSpy = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/log", () => ({ log: logSpy }));
 
+// #3360: the page for an edited time off event rides on the sync. Mocked so each
+// case can see WHAT the sync handed it and that a throw inside it cannot fail the
+// pass; its own decisions are pinned in src/lib/monitor/ooo-event-mismatch.test.ts.
+const oooNotice = vi.hoisted(() => ({
+  noticeSyncedOooEvents: vi.fn(async (_deps: { userId: string; events: unknown[] }) => 0),
+}));
+vi.mock("@/lib/monitor/ooo-event-mismatch", () => oooNotice);
+
 import {
   applyEvents,
   loadSlateBookingEventIds,
@@ -1465,6 +1473,49 @@ describe("hydrateCalendar write ordering (#1261)", () => {
     expect(windowWrites(updates)).toHaveLength(0);
     // A failed hydration does not take the lane down with it.
     expect(res.events).toBe(0);
+  });
+
+  it("#3360: hands the events it applied to the time off edit check", async () => {
+    const ev = {
+      id: "evt-ooo",
+      status: "confirmed",
+      start: { dateTime: "2026-10-07T11:30:00-06:00" },
+      end: { dateTime: "2026-10-07T23:59:00-06:00" },
+    };
+    calMock.syncEvents.mockResolvedValue({ events: [ev], nextSyncToken: "new-tok", truncated: false } as never);
+    const { db } = recordingDb("old-tok");
+    admin.current = db;
+
+    await hydrateCalendar(cal("old-tok"));
+
+    expect(oooNotice.noticeSyncedOooEvents).toHaveBeenCalledTimes(1);
+    const deps = oooNotice.noticeSyncedOooEvents.mock.calls[0]![0];
+    expect(deps.userId).toBe("agent-1");
+    expect(deps.events).toEqual([ev]);
+    // The booking ids the pass already loaded, so the check can skip the agent's own
+    // Slate bookings without a read of its own.
+    expect((deps as { bookingEventIds?: unknown }).bookingEventIds).toBeInstanceOf(Set);
+  });
+
+  it("#3360: a failing time off check never fails the pass or holds back its token", async () => {
+    calMock.syncEvents.mockResolvedValue({
+      events: [{ id: "evt-ooo", status: "confirmed", start: { dateTime: "2026-10-07T11:30:00Z" }, end: { dateTime: "2026-10-07T23:59:00Z" } }],
+      nextSyncToken: "new-tok",
+      truncated: false,
+    } as never);
+    oooNotice.noticeSyncedOooEvents.mockRejectedValueOnce(new Error("ooo_requests unreadable"));
+    const { db, updates } = recordingDb("old-tok");
+    admin.current = db;
+
+    const res = await hydrateCalendar(cal("old-tok"));
+
+    expect(res.ok).toBe(true);
+    expect(tokenWrites(updates)).toHaveLength(1);
+    expect(logSpy.error).toHaveBeenCalledWith(
+      "google-sync",
+      expect.objectContaining({ msg: "time off event check failed" }),
+      expect.any(Error),
+    );
   });
 
   it("records coverage only on success, in its OWN write, never coupled to the token", async () => {
