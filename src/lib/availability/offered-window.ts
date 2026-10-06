@@ -10,22 +10,54 @@
  *
  * Pure (luxon and relative imports only), so the node suite drives it directly.
  */
+import { DateTime } from "luxon";
 import { openDaysWindowEndMs, type BusinessWindow, type BusinessHoursException } from "../booking/business-hours.ts";
 import { OFFERED_OPEN_DAYS } from "./bookable-days.ts";
 import { rungExcludesLow } from "../routing/tiers.ts";
 
 /**
+ * The wall clock time after which today stops counting toward the offered days
+ * (#3438, Dan, 2026-10-06): 6:00pm in New York. Advisors' shifts end before the
+ * business closes at 8pm, so in the evening today had no times left and still
+ * spent one of the three days, leaving an evening visitor two. Held as a zone and
+ * a wall clock minute, never an offset from UTC, so daylight saving moves it
+ * with the clock.
+ */
+export const TODAY_COUNTS_UNTIL = { zone: "America/New_York", minute: 18 * 60 } as const;
+
+/** The cutoff in words, for the admin page that states the rule ("6pm New York
+ *  time"), built from the constant so the page cannot drift from it. */
+export function todayCountsUntilLabel(): string {
+  const h = Math.floor(TODAY_COUNTS_UNTIL.minute / 60);
+  const m = TODAY_COUNTS_UNTIL.minute % 60;
+  const hour12 = h % 12 === 0 ? 12 : h % 12;
+  const clock = m === 0 ? `${hour12}` : `${hour12}:${String(m).padStart(2, "0")}`;
+  const city = TODAY_COUNTS_UNTIL.zone.split("/").pop()!.replace(/_/g, " ");
+  return `${clock}${h < 12 ? "am" : "pm"} ${city} time`;
+}
+
+/**
  * When the offered window closes (#2840): the end of the `OFFERED_OPEN_DAYS`th
- * open day, counting today only while a booking can still start before it
- * closes (now plus the event's minimum notice). Null when the org's week holds
- * no such day, and then the booker imposes no window at all.
+ * open day. Today counts only before `TODAY_COUNTS_UNTIL` (#3438), and before
+ * that only while a booking can still start before it closes (now plus the
+ * event's minimum notice). After the cutoff the count starts from tomorrow's
+ * start in New York, so a strip opened at 6:30pm offers the next three open
+ * days; any time today still holds is still served, since the window bounds
+ * only how far ahead the strip reaches. Null when the org's week holds no such
+ * day, and then the booker imposes no window at all.
  */
 export function offeredWindowEndFor(
   hours: { zone: string; rules: BusinessWindow[]; exceptions: BusinessHoursException[] },
   nowMs: number,
   minNoticeMin: number,
 ): number | null {
-  return openDaysWindowEndMs(hours, nowMs + minNoticeMin * 60_000, OFFERED_OPEN_DAYS);
+  const earliestStartMs = nowMs + minNoticeMin * 60_000;
+  const local = DateTime.fromMillis(nowMs, { zone: TODAY_COUNTS_UNTIL.zone });
+  const pastCutoff = local.hour * 60 + local.minute >= TODAY_COUNTS_UNTIL.minute;
+  const countFromMs = pastCutoff
+    ? Math.max(earliestStartMs, local.plus({ days: 1 }).startOf("day").toMillis())
+    : earliestStartMs;
+  return openDaysWindowEndMs(hours, countFromMs, OFFERED_OPEN_DAYS);
 }
 
 /**

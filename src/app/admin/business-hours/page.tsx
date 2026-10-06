@@ -49,6 +49,7 @@ import { SharedConfirmLineSwitch } from "@/components/admin/SharedConfirmLineSwi
 import { readSharedConfirmLineSetting } from "@/lib/booking/shared-line-switch";
 import { btnCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
 import { OFFERED_OPEN_DAYS } from "@/lib/availability/bookable-days";
+import { todayCountsUntilLabel } from "@/lib/availability/offered-window";
 
 export const metadata = { title: "Hours" };
 
@@ -309,7 +310,8 @@ export default async function BusinessHoursPage({
         <h2 className="mb-1 text-sm font-semibold">Days offered</h2>
         <p className={`mb-4 ${proseCls} text-xs text-fg-muted`}>
           A lead is offered the next {OFFERED_OPEN_DAYS} days the business is open,
-          and a lower tier before a later day. Only when every tier they may use is
+          with today counting only before {todayCountsUntilLabel()}, and a lower tier
+          before a later day. Only when every tier they may use is
           full for those days are later days offered. This number is how far that
           can reach, counted from today in days that actually have times, so a
           closed day does not use one up: with Sundays closed, four days can reach
