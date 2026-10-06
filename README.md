@@ -248,6 +248,14 @@ text. What a
 tester will see is in the `slate-embed-contract` skill; seeding it is in
 `DEPLOY.md`, beside the canary's hidden `SMOKE` buckets.
 
+To show the booker to somebody outside Pennie, send `https://slate.trypennie.app/demo`
+(#3424). It opens the booker directly on a second public test bucket, `DEMO`, on the
+same test agent, prefilled with a made up person per visit (`demo+<code>@trypennie.com`
+and a 555-01xx number, so two visitors never read as one person). Every screen shows a
+Demo band, and each booking cancels itself 30 minutes after it is made, on the complete
+lane (`src/lib/booking/demo-auto-cancel.ts`). `/book` refuses the `DEMO` code from every
+website, so the demo page is the only way in. The seed that creates `PARTNER` creates it too.
+
 ## Layout
 
 ```
@@ -282,6 +290,7 @@ src/app/api            availability, bookings, auth callback, google push, cron/
 src/app/admin          admin: agents, hours, event types, buckets, webhook, settings, monitor tuning
 src/app/booking        public booking page + self-serve manage page
 src/app/book           short-code booking entry
+src/app/demo           the demo link for outside viewers (DEMO test bucket, auto cancelled after 30 min)
 src/app/advisor-photo  the public, content addressed advisor photo route
 src/app/me             agent self-serve (hours, calendar, OOO)
 src/app/login          Google SSO

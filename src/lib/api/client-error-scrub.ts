@@ -259,7 +259,7 @@ export function isHarmlessBrowserMessage(message: string): boolean {
  * fails when the two disagree in EITHER direction, so a new top level page cannot
  * silently report under `other`, and a removed one cannot linger (L41, L96).
  */
-export const CLIENT_ERROR_SURFACES = ["admin", "book", "booking", "login", "me", "root"] as const;
+export const CLIENT_ERROR_SURFACES = ["admin", "book", "booking", "demo", "login", "me", "root"] as const;
 
 export type ClientErrorSurface = (typeof CLIENT_ERROR_SURFACES)[number] | "other";
 

@@ -33,7 +33,7 @@ run hours behind (#1533). Filter on `tag=` (see `AGENTS.md`).
 ## A lane or schedule has gone quiet
 
 Keys: `cron_lane_stale:*`, `monitor_step_failing:*`, `completion_sweep_failing`,
-`webhook_retry_sweep_failing`, `sync_staleness`, `detector_parked`, `detector_unpark:*`,
+`webhook_retry_sweep_failing`, `demo_auto_cancel_failing`, `sync_staleness`, `detector_parked`, `detector_unpark:*`,
 `migration_version_lag`, `volume_count_unreadable`, `audit_write_failed`.
 
 **What fired it.** A lane stamps a heartbeat on every run and one has not stamped

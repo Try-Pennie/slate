@@ -30,6 +30,9 @@ export const COMPLETION_SWEEP_FAILING_KEY = "completion_sweep_failing";
 /** alert-key: webhook_retry_sweep_failing */
 export const WEBHOOK_RETRY_SWEEP_FAILING_KEY = "webhook_retry_sweep_failing";
 
+/** alert-key: demo_auto_cancel_failing */
+export const DEMO_AUTO_CANCEL_FAILING_KEY = "demo_auto_cancel_failing";
+
 /**
  * The outbox lane's three secondary jobs (#3077), which had the same silence one
  * lane over: each was `.catch(() => null)` with no log line, the heartbeat stamped
@@ -96,6 +99,15 @@ const SWEEP_SUBJECT: Record<
       "A delivery that failed once is never re-attempted, so events sit in the queue until " +
       "they dead letter instead of reaching Regal.",
     back: "Failed webhook deliveries are being re-attempted again, so the queue that had stopped draining is moving",
+  },
+  [DEMO_AUTO_CANCEL_FAILING_KEY]: {
+    tag: "complete",
+    afterRuns: SWEEP_FAILURE_ALERT_AFTER_RUNS,
+    what: "The demo booking auto cancel on the complete cron lane",
+    cost:
+      "Calls booked through the /demo link are not being cancelled after their 30 minutes, so " +
+      "they stay on the test agent's calendar and the demo offers fewer times to the next visitor.",
+    back: "Demo bookings are being cancelled after their 30 minutes again",
   },
   [RESERVATION_DRAIN_FAILING_KEY]: {
     tag: "outbox",
@@ -183,6 +195,7 @@ export async function reportSweepFailures(outcomes: SweepRunOutcome[]): Promise<
     // list, so a failed tick can never announce recovery (#1134, #1152).
     // alert-key: completion_sweep_failing
     // alert-key: webhook_retry_sweep_failing
+    // alert-key: demo_auto_cancel_failing
     // alert-key: reservation_drain_failing
     // alert-key: reschedule_pin_sweep_failing
     // alert-key: reassign_intent_sweep_failing
@@ -200,6 +213,7 @@ export async function reportSweepFailures(outcomes: SweepRunOutcome[]): Promise<
     if (!sustained) continue;
     // alert-key: completion_sweep_failing
     // alert-key: webhook_retry_sweep_failing
+    // alert-key: demo_auto_cancel_failing
     // alert-key: reservation_drain_failing
     // alert-key: reschedule_pin_sweep_failing
     // alert-key: reassign_intent_sweep_failing

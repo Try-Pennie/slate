@@ -11,6 +11,7 @@ const locks = vi.hoisted(() => ({
 }));
 const service = vi.hoisted(() => ({
   completePastBookings: vi.fn(async () => ({ completed: 0, backlogRemains: false })),
+  cancelDueDemoBookingsNow: vi.fn(async () => ({ cancelled: 0, alreadyGone: 0, backlogRemains: false })),
 }));
 const emit = vi.hoisted(() => ({ retryFailedDeliveries: vi.fn(async () => 0) }));
 const heartbeat = vi.hoisted(() => ({ recordHeartbeat: vi.fn(async () => {}) }));
@@ -19,6 +20,7 @@ const sweepFailure = vi.hoisted(() => ({
   reportSweepFailures: vi.fn(async (_outcomes: { key: string; ok: boolean }[]) => {}),
   COMPLETION_SWEEP_FAILING_KEY: "completion_sweep_failing",
   WEBHOOK_RETRY_SWEEP_FAILING_KEY: "webhook_retry_sweep_failing",
+  DEMO_AUTO_CANCEL_FAILING_KEY: "demo_auto_cancel_failing",
 }));
 
 vi.mock("@/lib/cron", () => cron);
@@ -43,6 +45,7 @@ describe("GET /api/cron/complete", () => {
     expect(locks.acquireLock).not.toHaveBeenCalled();
     expect(service.completePastBookings).not.toHaveBeenCalled();
     expect(emit.retryFailedDeliveries).not.toHaveBeenCalled();
+    expect(service.cancelDueDemoBookingsNow).not.toHaveBeenCalled();
     expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
   });
 
@@ -125,6 +128,7 @@ describe("GET /api/cron/complete", () => {
     expect(sweepFailure.reportSweepFailures).toHaveBeenCalledWith([
       { key: "completion_sweep_failing", ok: true },
       { key: "webhook_retry_sweep_failing", ok: true },
+      { key: "demo_auto_cancel_failing", ok: true },
     ]);
   });
 
@@ -139,6 +143,7 @@ describe("GET /api/cron/complete", () => {
     expect(sweepFailure.reportSweepFailures).toHaveBeenCalledWith([
       { key: "completion_sweep_failing", ok: false },
       { key: "webhook_retry_sweep_failing", ok: true },
+      { key: "demo_auto_cancel_failing", ok: true },
     ]);
   });
 
@@ -149,7 +154,42 @@ describe("GET /api/cron/complete", () => {
     expect(sweepFailure.reportSweepFailures).toHaveBeenCalledWith([
       { key: "completion_sweep_failing", ok: true },
       { key: "webhook_retry_sweep_failing", ok: false },
+      { key: "demo_auto_cancel_failing", ok: true },
     ]);
+  });
+
+  // #3424: demo bookings cancel themselves 30 minutes after they are made, on this
+  // lane. A cancel that fails is a failing sweep like the other two, and it must
+  // neither stop them nor be stopped by them.
+  it("cancels due demo bookings on every tick and reports the count", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    service.cancelDueDemoBookingsNow.mockResolvedValueOnce({ cancelled: 2, alreadyGone: 0, backlogRemains: false });
+    const res = await GET(req());
+    expect(service.cancelDueDemoBookingsNow).toHaveBeenCalledTimes(1);
+    expect((await res.json()).demoCancelled).toBe(2);
+  });
+
+  it("reports the demo cancel as failing on its own when it throws, and still runs the others", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    service.cancelDueDemoBookingsNow.mockRejectedValueOnce(new Error("demo boom"));
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect((await res.json()).demoCancelled).toBe("error");
+    expect(service.completePastBookings).toHaveBeenCalled();
+    expect(emit.retryFailedDeliveries).toHaveBeenCalled();
+    expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("complete");
+    expect(sweepFailure.reportSweepFailures).toHaveBeenCalledWith([
+      { key: "completion_sweep_failing", ok: true },
+      { key: "webhook_retry_sweep_failing", ok: true },
+      { key: "demo_auto_cancel_failing", ok: false },
+    ]);
+  });
+
+  it("still cancels demo bookings when the completion sweep throws", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    service.completePastBookings.mockRejectedValueOnce(new Error("completion boom"));
+    await GET(req());
+    expect(service.cancelDueDemoBookingsNow).toHaveBeenCalledTimes(1);
   });
 
   // Monitoring must never take down the lane it watches (L71).

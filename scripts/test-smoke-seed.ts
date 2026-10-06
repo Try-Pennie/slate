@@ -13,6 +13,7 @@ import {
 import { assert, eq, finish } from "./lib/harness.ts";
 import { SEED_START_MINUTE, SEED_END_MINUTE } from "../src/lib/schedule-core.ts";
 import {
+  DEMO_BUCKET_CODE,
   HIDDEN_TEST_BUCKET_CODES,
   PUBLIC_TEST_BUCKET_CODES,
 } from "../src/lib/embed/public-test-bucket.ts";
@@ -39,6 +40,7 @@ const params = {
 };
 const seed = buildSmokeSeed(params);
 const PUBLIC = PUBLIC_TEST_BUCKET_CODES[0];
+const ALL_PUBLIC = [...PUBLIC_TEST_BUCKET_CODES];
 const HIDDEN = [...HIDDEN_TEST_BUCKET_CODES];
 
 // --- Agent ---
@@ -79,12 +81,16 @@ assert(
 );
 
 // --- Buckets (isolated, empty-criteria, round-robin) ---
-assert(seed.buckets.length === 3, "one bucket per requested code, hidden and public alike");
+eq(seed.buckets.length, HIDDEN.length + ALL_PUBLIC.length, "one bucket per requested code, hidden and public alike");
 eq(
   seed.buckets.map((b) => b.code).join(","),
-  [...HIDDEN, PUBLIC].join(","),
-  "buckets carry the hidden codes and then the public one, each read from the shared constant",
+  [...HIDDEN, ...ALL_PUBLIC].join(","),
+  "buckets carry the hidden codes and then the public ones, each read from the shared constant",
 );
+// #3424: the demo bucket is named as one in the admin, so nobody reads a demo
+// booking as a partner's test; the partner bucket keeps its name.
+eq(seed.buckets.find((b) => b.code === DEMO_BUCKET_CODE)?.name, `Demo (${DEMO_BUCKET_CODE})`, "the demo bucket is named as the demo");
+eq(seed.buckets.find((b) => b.code === PUBLIC)?.name, `Partner Test (${PUBLIC})`, "the partner bucket keeps its name");
 assert(
   seed.buckets.every((b) => Object.keys(b.criteria).length === 0),
   "buckets have EMPTY criteria so the lone member always matches",
@@ -139,20 +145,23 @@ assert(
 
 // --- Membership: the primary agent is in EVERY bucket; the reassign target is
 // a bookable fallback in the FIRST bucket (SMOKE) only (#464). ---
-assert(
-  seed.members.filter((m) => m.user_id === seed.user.id).length === 3,
-  "primary agent is a member of all three buckets",
+eq(
+  seed.members.filter((m) => m.user_id === seed.user.id).length,
+  HIDDEN.length + ALL_PUBLIC.length,
+  "primary agent is a member of every bucket",
 );
 assert(
-  [...HIDDEN, PUBLIC].every((code) =>
+  [...HIDDEN, ...ALL_PUBLIC].every((code) =>
     seed.members.some((m) => m.bucketCode === code && m.user_id === seed.user.id),
   ),
   "the primary agent is a member of every bucket, the public one included",
 );
-assert(
-  seed.members.filter((m) => m.bucketCode === PUBLIC).length === 1,
-  "the public test bucket is served by the primary agent ONLY, so the canary's fallback agent is never a partner's advisor",
-);
+for (const code of ALL_PUBLIC) {
+  assert(
+    seed.members.filter((m) => m.bucketCode === code).length === 1,
+    `the public test bucket ${code} is served by the primary agent ONLY, so the canary's fallback agent is never a partner's or a visitor's advisor`,
+  );
+}
 
 // --- Reassign target (#450) + SMOKE fallback agent (#464): a SECOND bookable
 // test agent. It is the explicit target of the reassign scenario AND a bookable

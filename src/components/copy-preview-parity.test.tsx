@@ -62,8 +62,10 @@ import {
   MOVE_COPY,
   movedContactNote,
   TEST_MODE_COPY,
+  DEMO_MODE_COPY,
   BOOKER_BOUNDARY_COPY,
 } from "@/lib/booking/booker-copy";
+import { DEMO_BUCKET_CODE } from "@/lib/embed/public-test-bucket";
 import {
   BEFORE_COPY,
   CANCEL_COPY,
@@ -202,6 +204,39 @@ describe("the preview shows what the booker actually renders (#1343)", () => {
     await act(async () => {});
     expect(screen.getAllByTestId("test-mode-band")).toHaveLength(1);
     expect(pageText()).toContain(TEST_MODE_COPY.line);
+  });
+
+  // #3424: the demo bucket is a test bucket shown to somebody outside Pennie, and its
+  // bookings cancel themselves, so the band says THAT in its own words, on the picker
+  // and on the confirmation, and never the partner tester's sentence beside it.
+  it("draws the demo line, not the test line, on a demo booking's picker and confirmation", async () => {
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ startsAt: slotIso, manageUrl: "https://slate.example/manage/tok1", isTest: true }),
+      } as Response;
+    }) as unknown as typeof fetch;
+
+    render(<Booker {...bookerProps} bucketCode={DEMO_BUCKET_CODE} isTest />);
+    await act(async () => {});
+    expect(screen.getAllByTestId("test-mode-band")).toHaveLength(1);
+    expect(pageText()).toContain(DEMO_MODE_COPY.line);
+    expect(pageText()).not.toContain(TEST_MODE_COPY.line);
+
+    fireEvent.click(screen.getByRole("button", { name: /^(TODAY|MON|TUE|WED|THU|FRI|SAT|SUN)/ }));
+    fireEvent.click(screen.getByRole("button", { name: /:\d{2}/ }));
+    fireEvent.change(screen.getByLabelText(DETAILS_COPY.fields.firstName), { target: { value: "Demo" } });
+    fireEvent.change(screen.getByLabelText(DETAILS_COPY.fields.lastName), { target: { value: "Lead" } });
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "demo+abc123@trypennie.com" } });
+    fireEvent.change(screen.getByLabelText("Phone"), { target: { value: "(212) 555-0142" } });
+    fireEvent.click(screen.getByRole("button", { name: DETAILS_COPY.confirm }));
+    expect(await screen.findByText(CONFIRMED_COPY.heading)).toBeTruthy();
+    expect(pageText()).toContain(DEMO_MODE_COPY.line);
+    expect(pageText()).not.toContain(TEST_MODE_COPY.line);
   });
 
   it("draws no test line at all on a real booking", async () => {
@@ -410,6 +445,14 @@ describe("the preview shows what the manage page actually renders (#1343)", () =
   // #2660: the manage page is the one screen a tester keeps a link to, and the
   // one a stray lead would come back to from the invite, so it carries the same
   // line the booker does, and none of it for a real booking.
+  it("draws the demo line on a demo booking's manage page", async () => {
+    render(<ManageBooking {...manageProps} bucketCode={DEMO_BUCKET_CODE} isTest />);
+    await act(async () => {});
+    expect(screen.getAllByTestId("test-mode-band")).toHaveLength(1);
+    expect(pageText()).toContain(DEMO_MODE_COPY.line);
+    expect(pageText()).not.toContain(TEST_MODE_COPY.line);
+  });
+
   it("draws the test line on a test booking's manage page, and not on a real one", async () => {
     const { unmount } = render(<ManageBooking {...manageProps} isTest />);
     await act(async () => {});

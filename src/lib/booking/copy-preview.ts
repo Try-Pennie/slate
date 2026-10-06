@@ -60,6 +60,7 @@ import {
   timesAvailableAnnouncement,
   NEAREST_TIMES_COPY,
   TEST_MODE_COPY,
+  DEMO_MODE_COPY,
   TEST_ACCESS_COPY,
   AGENT_LINK_COPY,
   BOOKER_BOUNDARY_COPY,
@@ -376,6 +377,9 @@ export function bookerCopyScreens(): CopyScreen[] {
       lines: [
         { state: "the mark beside a test booking", text: TEST_MODE_COPY.label },
         { state: "the sentence on every screen", text: TEST_MODE_COPY.line },
+        // #3424: the demo bucket draws the same band in its own words.
+        { state: "the word on a demo booking's band", text: DEMO_MODE_COPY.label },
+        { state: "the sentence on every screen of a demo booking", text: DEMO_MODE_COPY.line },
       ],
     },
     {
@@ -405,6 +409,7 @@ export function bookerCopyScreens(): CopyScreen[] {
         "button, ask us to add the website, reload, or tell us it is switched off.",
       lines: [
         { state: "the heading over every refusal on the page", text: TEST_ACCESS_COPY.heading },
+        { state: "a demo link opened through somebody's website (#3424)", text: TEST_ACCESS_COPY.demoPageOnly },
         { state: "the page arrived with no referer", text: TEST_ACCESS_COPY.noReferer },
         {
           state: "a website that is not on the approved list",

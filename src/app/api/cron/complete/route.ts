@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
 import { refuseCronSecret } from "@/lib/bearer-failure";
-import { completePastBookings } from "@/lib/booking/service";
+import { cancelDueDemoBookingsNow, completePastBookings } from "@/lib/booking/service";
 import { retryFailedDeliveries } from "@/lib/webhooks/emit";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { CRON_LOCK_TTL_MS } from "@/lib/google/sync-coalesce";
@@ -11,6 +11,7 @@ import {
   reportSweepFailures,
   COMPLETION_SWEEP_FAILING_KEY,
   WEBHOOK_RETRY_SWEEP_FAILING_KEY,
+  DEMO_AUTO_CANCEL_FAILING_KEY,
 } from "@/lib/monitor/sweep-failure";
 import { log } from "@/lib/log";
 
@@ -21,7 +22,8 @@ export const dynamic = "force-dynamic";
 // log-only signal that pages nobody and expires in 7 days.
 const COMPLETION_SATURATED_KEY = "completion_sweep_saturated";
 
-/** Marks finished bookings complete and retries failed webhook deliveries. */
+/** Marks finished bookings complete, retries failed webhook deliveries, and
+ *  cancels demo bookings past their 30 minutes (#3424). */
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
@@ -51,6 +53,13 @@ export async function GET(req: NextRequest) {
       log.error("complete", { msg: "delivery retry failed" }, err);
       return null;
     });
+    // #3424: demo bookings cancel themselves 30 minutes after they are made. Its
+    // own boundary like the two above, so a failing cancel neither stops them nor
+    // is stopped by them, and it reports through the same failing streak.
+    const demo = await cancelDueDemoBookingsNow().catch((err) => {
+      log.error("complete", { msg: "demo auto cancel failed" }, err);
+      return null;
+    });
     // Dead-man's switch (#420/#685): prove this lane ran this tick. Best-effort.
     // Stamped even when a job failed above (those log/alert on their own path);
     // the heartbeat only proves the lane executed.
@@ -73,11 +82,13 @@ export async function GET(req: NextRequest) {
     const sweepOutcomes = [
       { key: COMPLETION_SWEEP_FAILING_KEY, ok: completion !== null },
       { key: WEBHOOK_RETRY_SWEEP_FAILING_KEY, ok: retried !== null },
+      { key: DEMO_AUTO_CANCEL_FAILING_KEY, ok: demo !== null },
     ];
     await reportSweepFailures(sweepOutcomes).catch(() => {});
     return NextResponse.json({
       completed: completion?.completed ?? "error",
       retried: retried ?? "error",
+      demoCancelled: demo?.cancelled ?? "error",
     });
   } finally {
     await releaseLock("cron_complete", lock);

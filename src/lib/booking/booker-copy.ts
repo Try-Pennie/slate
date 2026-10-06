@@ -702,6 +702,17 @@ export const TEST_MODE_COPY = {
   line: "This is a test booking. It reaches a test calendar only and sends no texts.",
 } as const;
 
+/**
+ * The same band on the demo bucket (#3424), which somebody outside Pennie reaches
+ * through the `/demo` link. Its bookings cancel themselves 30 minutes after they
+ * are made, so the sentence says that, and a visitor who opens the manage page to
+ * a cancelled call has already been told why. Wording agreed with Dan, 2026-10-06.
+ */
+export const DEMO_MODE_COPY = {
+  label: "Demo",
+  line: "This is a demo. Your booking is cancelled automatically and nobody is contacted.",
+} as const;
+
 // --- who may open a test booking (#2666) ------------------------------------------
 //
 // The public test bucket is served only to host pages on an approved website, and
@@ -721,6 +732,9 @@ export const TEST_ACCESS_COPY = {
    *  tell us exactly which one to add. */
   unlistedOrigin: (origin: string) =>
     `Test bookings are not turned on for ${origin}. Ask Pennie to add this website.`,
+  /** The demo bucket (#3424), asked for through a host page. It opens only from
+   *  its own link, so that is what the reader is sent back to. */
+  demoPageOnly: "This demo opens only from its own link. Open the demo link you were sent.",
   /** The deployment approves no website at all. */
   listEmpty: "No website is approved for test bookings yet. Ask Pennie to add yours.",
   /** The deployment holds no signing secret, so no pass can be made or checked. */

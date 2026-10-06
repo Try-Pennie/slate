@@ -456,7 +456,7 @@ export default function ManageBooking({
             beside the actions, driven by the move itself. */}
         <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-xs">
           {/* #2660: the test line, first, on a test booking's page. */}
-          {isTest && <TestModeBand />}
+          {isTest && <TestModeBand bucketCode={bucketCode} />}
           {/* One column, in reading order: who and what state it is in, then the
               detail, then what a lead can do about it. There is no narrow layout
               to order separately any more, which is what the two column grid

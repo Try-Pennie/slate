@@ -8,6 +8,7 @@
 // Salesforce). The buckets carry EMPTY criteria so the lone member always
 // matches, keeping the smoke test off the production round-robin and its
 // fairness data. Ids are deterministic so re-seeding upserts in place.
+import { isDemoBucket } from "../src/lib/embed/public-test-bucket.ts";
 import { SEED_START_MINUTE, SEED_END_MINUTE } from "../src/lib/schedule-core.ts";
 
 /**
@@ -205,7 +206,9 @@ export function buildSmokeSeed(p: SmokeSeedParams): SmokeSeed {
       (code): SmokeSeedBucket => ({
         org_id: p.orgId,
         code,
-        name: `Partner Test (${code})`,
+        // #3424: the demo bucket is named as one, so the admin never reads a
+        // visitor's demo booking as a partner's test.
+        name: isDemoBucket(code) ? `Demo (${code})` : `Partner Test (${code})`,
         event_type_id: publicEventType.id,
         assignment: "round_robin",
         criteria: {},

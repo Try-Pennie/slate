@@ -143,6 +143,14 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "never re-attempted. It ends when a run comes back with a result (#2544).",
   },
   {
+    key: "demo_auto_cancel_failing",
+    kind: "condition",
+    why:
+      "The demo booking auto cancel is throwing, so calls booked through the /demo link " +
+      "stay on the test agent's calendar past their 30 minutes. It ends when a run comes " +
+      "back with a result, which the lane measures every five minutes (#3424).",
+  },
+  {
     key: "reservation_drain_failing",
     kind: "condition",
     why:

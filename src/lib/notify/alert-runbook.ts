@@ -74,6 +74,8 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // cap, and neither exists when the sweep never ran.
   completion_sweep_failing: "a-lane-or-schedule-has-gone-quiet",
   webhook_retry_sweep_failing: "a-lane-or-schedule-has-gone-quiet",
+  // #3424. The same family, for the demo booking auto cancel on the same lane.
+  demo_auto_cancel_failing: "a-lane-or-schedule-has-gone-quiet",
   // #3077. The same family on the outbox lane.
   reservation_drain_failing: "a-lane-or-schedule-has-gone-quiet",
   reschedule_pin_sweep_failing: "a-lane-or-schedule-has-gone-quiet",

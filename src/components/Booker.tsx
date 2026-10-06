@@ -1237,7 +1237,7 @@ export default function Booker({
   //
   // #2748: framed, the band stops short of the corner the host's close control
   // sits in, so the control never sits on it.
-  const testBand = isTest ? <TestModeBand framed={embedded} /> : null;
+  const testBand = isTest ? <TestModeBand framed={embedded} bucketCode={bucketCode} /> : null;
 
   // #1337: declined because this person already has an active call. Nothing was
   // created. No policy voice: the rule is not explained (that makes the panel

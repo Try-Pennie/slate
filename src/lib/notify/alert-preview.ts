@@ -449,6 +449,7 @@ import {
   formatSweepFailureRecovery,
   COMPLETION_SWEEP_FAILING_KEY,
   WEBHOOK_RETRY_SWEEP_FAILING_KEY,
+  DEMO_AUTO_CANCEL_FAILING_KEY,
   SWEEP_FAILURE_ALERT_AFTER_RUNS,
   RESERVATION_DRAIN_FAILING_KEY,
   RESCHEDULE_PIN_SWEEP_FAILING_KEY,
@@ -2278,6 +2279,18 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "running again",
     channel: "recovery",
     text: formatSweepFailureRecovery(WEBHOOK_RETRY_SWEEP_FAILING_KEY),
+  },
+  {
+    key: DEMO_AUTO_CANCEL_FAILING_KEY,
+    state: "throwing on consecutive runs",
+    channel: "alert",
+    text: formatSweepFailureAlert(DEMO_AUTO_CANCEL_FAILING_KEY, SWEEP_FAILURE_ALERT_AFTER_RUNS),
+  },
+  {
+    key: DEMO_AUTO_CANCEL_FAILING_KEY,
+    state: "running again",
+    channel: "recovery",
+    text: formatSweepFailureRecovery(DEMO_AUTO_CANCEL_FAILING_KEY),
   },
   // --- the same on the outbox lane's three secondary jobs (#3077) ---
   ...[

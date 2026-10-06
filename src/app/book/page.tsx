@@ -88,6 +88,7 @@ export default async function BookEntry({
   if (isPublicTestBucket(bucketCode)) {
     const secret = embedTestPassSecret();
     const gate = judgeTestOrigin({
+      code: bucketCode,
       referer: (await headers()).get("referer"),
       approvedOrigins: embedTestOrigins(),
       secret,

@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto";
 import { timingSafeEqual } from "../bearer-auth.ts";
 import { TEST_ACCESS_COPY } from "../booking/booker-copy.ts";
-import { isPublicTestBucket } from "./public-test-bucket.ts";
+import { isPublicTestBucket, opensFromHostPage } from "./public-test-bucket.ts";
 import { TEST_PASS_REFUSAL_CODES, type TestPassRefusalCode } from "./test-pass-header.ts";
 
 /**
@@ -127,7 +127,13 @@ export function testPassForBucket(input: { code: string; secret: string; nowMs: 
 // --- the page's origin gate ----------------------------------------------------------
 
 /** Every way `/book` refuses to open the public test bucket. */
-export const TEST_ORIGIN_REFUSALS = ["secret-unset", "list-empty", "no-referer", "unlisted-origin"] as const;
+export const TEST_ORIGIN_REFUSALS = [
+  "demo-page-only",
+  "secret-unset",
+  "list-empty",
+  "no-referer",
+  "unlisted-origin",
+] as const;
 export type TestOriginRefusal = (typeof TEST_ORIGIN_REFUSALS)[number];
 
 /**
@@ -137,8 +143,14 @@ export type TestOriginRefusal = (typeof TEST_ORIGIN_REFUSALS)[number];
  *
  * An unreadable Referer counts as none: either way we cannot tell which website
  * framed the page, and the sentence says exactly that.
+ *
+ * The demo bucket (#3424) is refused before all of that: it is opened by Slate's
+ * own `/demo` page and by no host page however approved, so what the reader needs
+ * to hear is about the link, not the website.
  */
 export function judgeTestOrigin(input: {
+  /** The public test bucket the page is opening. */
+  code: string;
   referer: string | null;
   approvedOrigins: readonly string[];
   secret: string;
@@ -154,6 +166,7 @@ export function judgeTestOrigin(input: {
       origin = null;
     }
   }
+  if (!opensFromHostPage(input.code)) return { allow: false, reason: "demo-page-only", origin };
   if (!input.secret) return { allow: false, reason: "secret-unset", origin };
   if (input.approvedOrigins.length === 0) return { allow: false, reason: "list-empty", origin };
   if (origin === null) return { allow: false, reason: "no-referer", origin };
@@ -164,6 +177,8 @@ export function judgeTestOrigin(input: {
 /** The page's sentence for each refusal. */
 export function testOriginRefusalSentence(reason: TestOriginRefusal, origin: string | null): string {
   switch (reason) {
+    case "demo-page-only":
+      return TEST_ACCESS_COPY.demoPageOnly;
     case "secret-unset":
       return TEST_ACCESS_COPY.secretUnset;
     case "list-empty":

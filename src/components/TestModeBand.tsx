@@ -1,4 +1,5 @@
-import { TEST_MODE_COPY } from "@/lib/booking/booker-copy";
+import { DEMO_MODE_COPY, TEST_MODE_COPY } from "@/lib/booking/booker-copy";
+import { isDemoBucket } from "@/lib/embed/public-test-bucket";
 
 /**
  * The test mode marker (#2660): the one treatment in Slate that says "this
@@ -20,7 +21,16 @@ import { TEST_MODE_COPY } from "@/lib/booking/booker-copy";
  * `role="note"`, not `status`: it is a standing fact about the screen, not an
  * update, so it is read in place and never announced on top of the content.
  */
-export function TestModeBand({ framed = false }: { framed?: boolean } = {}) {
+export function TestModeBand({
+  framed = false,
+  bucketCode,
+}: {
+  framed?: boolean;
+  /** The booking's bucket. The demo bucket (#3424) draws the same band in its own
+   *  words, because its bookings cancel themselves. */
+  bucketCode?: string;
+} = {}) {
+  const copy = bucketCode !== undefined && isDemoBucket(bucketCode) ? DEMO_MODE_COPY : TEST_MODE_COPY;
   // #2748: `framed` is the booker inside the widget's iframe, where the host's
   // close control sits over the frame's top right corner. The band stops short of
   // it (64px: the control's 12px inset, its 44px width and its 8px focus ring), so
@@ -34,9 +44,9 @@ export function TestModeBand({ framed = false }: { framed?: boolean } = {}) {
       data-testid="test-mode-band"
     >
       <span aria-hidden="true" className="pn-test-mode-glyph">
-        {TEST_MODE_COPY.label}
+        {copy.label}
       </span>
-      <span className="pn-test-mode-say">{TEST_MODE_COPY.line}</span>
+      <span className="pn-test-mode-say">{copy.line}</span>
     </div>
   );
 }

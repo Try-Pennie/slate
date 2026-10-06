@@ -25,6 +25,7 @@ import {
   testPassRefusalSentence,
 } from "../src/lib/embed/test-pass-header.ts";
 import {
+  DEMO_BUCKET_CODE,
   HIDDEN_TEST_BUCKET_CODES,
   PUBLIC_TEST_BUCKET_CODES,
 } from "../src/lib/embed/public-test-bucket.ts";
@@ -108,8 +109,8 @@ const NOW = Date.UTC(2026, 8, 25, 15, 0, 0);
 // --- the origin gate -------------------------------------------------------------------
 {
   const APPROVED = ["https://dev.example.com", "https://example.com"];
-  const judge = (referer: string | null, over: Partial<{ approvedOrigins: string[]; secret: string }> = {}) =>
-    judgeTestOrigin({ referer, approvedOrigins: APPROVED, secret: SECRET, ...over });
+  const judge = (referer: string | null, over: Partial<{ approvedOrigins: string[]; secret: string; code: string }> = {}) =>
+    judgeTestOrigin({ code: CODE, referer, approvedOrigins: APPROVED, secret: SECRET, ...over });
 
   eq(judge("https://dev.example.com/"), { allow: true, origin: "https://dev.example.com" }, "an approved origin is allowed");
   eq(judge("https://example.com/landing/offers?x=1"), { allow: true, origin: "https://example.com" }, "a full URL on an approved origin is judged by its origin");
@@ -124,7 +125,22 @@ const NOW = Date.UTC(2026, 8, 25, 15, 0, 0);
   eq(judge("https://example.com/", { approvedOrigins: [] }), { allow: false, reason: "list-empty", origin: "https://example.com" }, "an empty list turns the path off");
   eq(judge("https://example.com/", { secret: "" }), { allow: false, reason: "secret-unset", origin: "https://example.com" }, "no secret turns the path off, even for an approved origin");
 
-  const produced = new Set(["no-referer", "unlisted-origin", "list-empty", "secret-unset"]);
+  // #3424: the demo bucket opens from Slate's own /demo page and from no host page,
+  // however approved. Judged first, so the sentence is about the link rather than
+  // the website, and in the same fixture where the partner code IS allowed (L159).
+  eq(
+    judge("https://example.com/", { code: DEMO_BUCKET_CODE }),
+    { allow: false, reason: "demo-page-only", origin: "https://example.com" },
+    "the demo bucket is refused even from an approved website",
+  );
+  eq(
+    judge(null, { code: DEMO_BUCKET_CODE, secret: "" }).allow === false &&
+      (judge(null, { code: DEMO_BUCKET_CODE, secret: "" }) as { reason: string }).reason,
+    "demo-page-only",
+    "and refused for that reason before any configuration question",
+  );
+
+  const produced = new Set(["no-referer", "unlisted-origin", "list-empty", "secret-unset", "demo-page-only"]);
   for (const r of TEST_ORIGIN_REFUSALS) assert(produced.has(r), `the origin refusal ${r} is produced by a case above`);
 
   const sentences = TEST_ORIGIN_REFUSALS.map((r) => testOriginRefusalSentence(r, "https://x.example"));
