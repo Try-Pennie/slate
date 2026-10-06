@@ -125,7 +125,9 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
   {
     id: "rate_limit_ip_minute",
     surface: "embed booker",
-    outcome: "429, asked to try again in a few minutes",
+    // #3364: and not reached at all by a lead's retry after a taken time while the address
+    // holds a retry credit (at most three a minute).
+    outcome: "429, asked to wait a minute and try again",
     counting: { kind: "none" },
     rateSignal: { kind: "none" },
     why:

@@ -28,7 +28,10 @@ import {
   LANDING_LIMITER,
   LANDING_IDENTITY_HOURLY_RATE_RULES,
   BEARER_FAILURE_LIMITER,
+  BOOKING_RETRY_CREDIT_RULES,
 } from "@/lib/rate-limit-core";
+import { RetryCredits, type RetryCreditVerdict } from "@/lib/rate-limit-retry-credit";
+import { parseStampMs } from "@/lib/date/stamp";
 
 export {
   clientIp,
@@ -201,6 +204,96 @@ async function withinBurstCeiling(
  */
 export async function bookingWithinLimit(ip: string): Promise<boolean> {
   return edgeWithinLimit(ip, BOOKING_LIMITER);
+}
+
+/**
+ * The retry credit behind the booking confirm's edge minute window (#3364). The decision and
+ * the bound it keeps (at most three retries a minute per address, each earned by a taken time
+ * refusal) live in `@/lib/rate-limit-retry-credit`; this is its store and its failure handling.
+ *
+ * One instance per isolate, because its in-memory gate is what stops a flood the native window
+ * is shedding from buying a database read per request.
+ */
+const retryCredits = new RetryCredits({
+  earn: async (key) => {
+    const { error } = await supabaseAdmin().rpc("rate_limit_hit", {
+      p_key: key,
+      p_window_seconds: BOOKING_RETRY_CREDIT_RULES[0].windowSeconds,
+      p_max: BOOKING_RETRY_CREDIT_RULES[0].max,
+    });
+    if (error) throw new Error(`rate_limit_hit failed: ${error.message}`);
+  },
+  readEarned: async (key) => {
+    const { data, error } = await supabaseAdmin()
+      .from("rate_limits")
+      .select("count, window_start")
+      .eq("key", key)
+      .maybeSingle();
+    if (error) throw new Error(`rate_limits read failed: ${error.message}`);
+    if (!data) return null;
+    const row = data as { count: unknown; window_start: unknown };
+    const windowStartMs = parseStampMs(typeof row.window_start === "string" ? row.window_start : null);
+    // An unreadable stamp is neither live nor expired, so it is refused by name rather than
+    // guessed at (#1169): the caller keeps the 429, which is the safe side for an exemption.
+    if (windowStartMs === null || typeof row.count !== "number") {
+      throw new Error("rate_limits row for a retry credit is unreadable");
+    }
+    return { count: row.count, windowStartMs };
+  },
+  spend: async (key, max) => {
+    const { data, error } = await supabaseAdmin().rpc("rate_limit_hit", {
+      p_key: key,
+      p_window_seconds: BOOKING_RETRY_CREDIT_RULES[1].windowSeconds,
+      p_max: max,
+    });
+    if (error) throw new Error(`rate_limit_hit failed: ${error.message}`);
+    if (typeof data !== "boolean") throw new Error("rate_limit_hit answered with no verdict");
+    return data;
+  },
+});
+
+/** Report a credit we could not earn or check, once per cooldown, raw cause to the logs. Under
+ *  the refund alert, because to the lead it is the same loss: allowance they were owed. */
+function retryCreditBroken(prefix: string, msg: string, err: unknown): void {
+  log.error("rate-limit", { msg, rule: prefix }, err);
+  alertBestEffort(
+    `rate_limit_refund_broken:${prefix}`,
+    refundFailedAlert(friendlyRateArea(prefix)),
+    prefix,
+  );
+}
+
+/**
+ * A confirm from this address was refused because the time was taken: earn it one retry past
+ * the edge minute window. Never throws, because the lead's 409 must reach them whatever this
+ * does; a failure is logged and paged instead, and leaves them exactly where they were before.
+ */
+export async function grantBookingRetryCredit(ip: string): Promise<void> {
+  // Never counted, so never credited: crediting the fallback would share one credit among
+  // every caller we could not identify (#1557).
+  if (judgeCaller(BOOKING_LIMITER, ip) !== "identified") return;
+  try {
+    await retryCredits.earn(ip);
+  } catch (err) {
+    retryCreditBroken(BOOKING_RETRY_CREDIT_RULES[0].prefix, "retry credit not earned", err);
+  }
+}
+
+/**
+ * The native minute window refused this address: may an earned credit carry it through?
+ * Only `"allowed"` lets it through. Every other answer keeps the 429, including a store we
+ * could not read (`"unreadable"`), because an exemption we cannot check is not granted.
+ */
+export async function bookingRetryCredit(
+  ip: string,
+): Promise<RetryCreditVerdict | "unreadable" | "unjudged"> {
+  if (judgeCaller(BOOKING_LIMITER, ip) !== "identified") return "unjudged";
+  try {
+    return await retryCredits.judge(ip, Date.now());
+  } catch (err) {
+    retryCreditBroken(BOOKING_RETRY_CREDIT_RULES[1].prefix, "retry credit unreadable", err);
+    return "unreadable";
+  }
 }
 
 /**

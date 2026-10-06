@@ -85,6 +85,10 @@ const rateLimit = vi.hoisted(() => ({
   allowRequest: vi.fn(async (_caller: unknown, _rules?: unknown) => true),
   refundRequest: vi.fn(async (_caller: unknown, _rules?: unknown) => {}),
   bookingWithinLimit: vi.fn(async () => true),
+  // #3364: the retry credit. No credit by default, so every older case that blocks at the
+  // edge still sees the 429 it always did.
+  bookingRetryCredit: vi.fn(async (_ip: string): Promise<string> => "no-credit"),
+  grantBookingRetryCredit: vi.fn(async (_ip: string) => {}),
   clientIp: () => "203.0.113.1",
   BOOKING_HOURLY_RATE_RULES: [{ prefix: "book:h", windowSeconds: 3600, max: 10 }],
   BOOKING_CONTACT_HOURLY_RATE_RULES: [{ prefix: "book:contact:h", windowSeconds: 3600, max: 5 }],
@@ -184,6 +188,85 @@ describe("POST /booking (embed) error mapping", () => {
     // Edge block short-circuits before the hourly DB cap and the booking itself.
     expect(rateLimit.allowRequest).not.toHaveBeenCalled();
     expect(service.createBooking).not.toHaveBeenCalled();
+  });
+
+  // #3364: the 2026-10-06 dead end. A lead refused for a taken time three times was then
+  // refused at the edge minute window when they picked the next time along.
+  describe("a retry after a taken time (#3364)", () => {
+    beforeEach(() => {
+      rateLimit.bookingRetryCredit.mockReset();
+      rateLimit.bookingRetryCredit.mockResolvedValue("no-credit");
+      rateLimit.grantBookingRetryCredit.mockClear();
+    });
+
+    it("lets a confirm the edge window refused through when the address has an earned credit", async () => {
+      const info = vi.spyOn(console, "info").mockImplementation(() => {});
+      rateLimit.bookingWithinLimit.mockResolvedValueOnce(false);
+      rateLimit.bookingRetryCredit.mockResolvedValueOnce("allowed");
+      service.createBooking.mockResolvedValueOnce({
+        booking: { id: "bk-r", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z" },
+        manageUrl: "https://slate.test/booking/manage/tok",
+      });
+      const res = await post(VALID_BODY);
+      expect(res.status).toBe(200);
+      expect(rateLimit.bookingRetryCredit).toHaveBeenCalledWith("203.0.113.1");
+      // Still under every other cap: the credit replaces the minute window only.
+      expect(rateLimit.allowRequest).toHaveBeenCalled();
+      const line = info.mock.calls.map(String).find((l) => l.includes('msg="retry after a taken time"'));
+      expect(line).toContain("tag=booking-rate-limit");
+      info.mockRestore();
+    });
+
+    it("keeps the 429, with the builder's wait-a-minute sentence, when there is no credit to spend", async () => {
+      const info = vi.spyOn(console, "info").mockImplementation(() => {});
+      rateLimit.bookingWithinLimit.mockResolvedValueOnce(false);
+      rateLimit.bookingRetryCredit.mockResolvedValueOnce("spent");
+      const res = await post(VALID_BODY);
+      expect(res.status).toBe(429);
+      expect((await res.json()).error).toBe(BOOKING_ERROR_COPY.tooManyTriesJustNow);
+      expect(rateLimit.allowRequest).not.toHaveBeenCalled();
+      expect(service.createBooking).not.toHaveBeenCalled();
+      // The throttle line says why the credit did not carry it, so a cluster can be read.
+      const line = info.mock.calls.map(String).find((l) => l.includes('msg="throttled"'));
+      expect(line).toContain('retry="spent"');
+      info.mockRestore();
+    });
+
+    it("never consults the credit when the edge window allows the confirm", async () => {
+      service.createBooking.mockRejectedValueOnce(new service.NoEligibleAgentsError("none"));
+      await post(VALID_BODY);
+      expect(rateLimit.bookingRetryCredit).not.toHaveBeenCalled();
+    });
+
+    it("earns a credit for the address when the time was taken, a lost race included", async () => {
+      service.createBooking.mockRejectedValueOnce(new service.SlotUnavailableError("taken"));
+      expect((await post(VALID_BODY)).status).toBe(409);
+      expect(rateLimit.grantBookingRetryCredit).toHaveBeenCalledWith("203.0.113.1");
+      service.createBooking.mockRejectedValueOnce(new service.RaceLostRefusalError(2, false));
+      expect((await post(VALID_BODY)).status).toBe(409);
+      expect(rateLimit.grantBookingRetryCredit).toHaveBeenCalledTimes(2);
+    });
+
+    it("earns nothing for any refusal that is not a taken time", async () => {
+      for (const err of [
+        new service.NoEligibleAgentsError("none"),
+        new service.ExistingCallError({ disclose: false }),
+        new service.VerifyUnavailableError("outage"),
+        new service.OutsideCallingWindowError("Pacific/Honolulu"),
+        new service.UnknownBucketError("nope"),
+      ]) {
+        service.createBooking.mockRejectedValueOnce(err);
+        await post(VALID_BODY);
+      }
+      expect(rateLimit.grantBookingRetryCredit).not.toHaveBeenCalled();
+    });
+
+    it("keeps the longer wait sentence for the hourly and contact caps", async () => {
+      rateLimit.allowRequest.mockResolvedValueOnce(false);
+      const res = await post(VALID_BODY);
+      expect(res.status).toBe(429);
+      expect((await res.json()).error).toBe(BOOKING_ERROR_COPY.tooManyTries);
+    });
   });
 
   it("returns 429 when the hourly DB cap blocks (checked after the edge limiter)", async () => {
