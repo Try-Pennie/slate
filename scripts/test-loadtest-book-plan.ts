@@ -48,6 +48,8 @@ import {
   AVAILABILITY_LIMITER,
   BOOKING_API_IP_LIMITER,
 } from "../src/lib/rate-limit-core.ts";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { LOADTEST_LEGS, LOADTEST_LEG_HEADER } from "../src/lib/booking/wait-marks.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -604,6 +606,15 @@ const T0 = Date.parse("2026-09-15T14:00:00.000Z");
   assert(!typo.ok && typo.why.includes("Burst"), `a mode outside the four is refused by name (got ${JSON.stringify(typo)})`);
   const control = readDriverMode("preflight");
   assert(!control.ok, "a control's leg is not a mode this driver runs, so it is refused rather than run as the steady pass");
+
+  // One vocabulary, written once (L41). The mode list was first added beside a hand
+  // written DriverMode union, which declared the type twice; only tsc over scripts/
+  // reports that, and the build gate there fails on undefined names alone.
+  const declaresMode = (source: string) => source.match(/^export type DriverMode\b.*$/gm) ?? [];
+  const planSource = readFileSync(join(import.meta.dirname, "loadtest", "book-plan.ts"), "utf8");
+  eq(declaresMode(planSource), ["export type DriverMode = (typeof DRIVER_MODES)[number];"], "DriverMode is declared once, derived from the mode list");
+  const twice = planSource.replace(/^(export type DriverMode = \(typeof DRIVER_MODES\)\[number\];)$/m, '$1\nexport type DriverMode = "steady" | "burst" | "fault" | "baseline";');
+  assert(twice !== planSource && declaresMode(twice).length === 2, "control: a second, hand written union beside it is caught");
 }
 
 finish();

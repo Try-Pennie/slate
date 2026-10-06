@@ -428,7 +428,14 @@ export interface BurstLegRecord {
  *  path must not 5xx would then be measuring the faults the run injected on
  *  purpose. `baseline` (#3258) is the same day measurement at rest that the steady
  *  pass's latency is judged against, and is kept apart for the same reason. */
-export type DriverMode = "steady" | "burst" | "fault" | "baseline";
+export type DriverMode = (typeof DRIVER_MODES)[number];
+
+/**
+ * #3354: the modes a driver runs, each one a leg the route reads (`LOADTEST_LEGS`),
+ * so the two vocabularies cannot drift. The preflight and the address ceiling are
+ * legs too, sent by their own scripts, and are not modes here.
+ */
+export const DRIVER_MODES = ["steady", "burst", "fault", "baseline"] as const satisfies readonly LoadtestLeg[];
 
 export interface DriverResult {
   runId: string;
@@ -722,14 +729,6 @@ export function idPrefix(runId: string, mode: DriverMode): string {
   if (mode === "burst") return `${runId}-b`;
   return runId;
 }
-
-/**
- * #3354: the modes this driver runs, each one a leg the route reads
- * (`LOADTEST_LEGS`), so the two vocabularies cannot drift. The preflight and the
- * address ceiling are legs too, sent by their own scripts, and are not modes here.
- */
-export const DRIVER_MODES = ["steady", "burst", "fault", "baseline"] as const satisfies readonly LoadtestLeg[];
-export type DriverMode = (typeof DRIVER_MODES)[number];
 
 /**
  * Which mode this driver runs, from its MODE. One outside the four is refused by
