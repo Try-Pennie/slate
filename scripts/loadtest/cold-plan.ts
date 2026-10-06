@@ -164,6 +164,13 @@ export function readColdResult(
   if (r === null || typeof r !== "object" || r.mode !== "cold" || typeof r.planned !== "number" || !Array.isArray(r.attempts)) {
     return { kind: "unreadable", why: "not a cold leg result (no cold mode, planned count and attempts)" };
   }
+  // Each attempt carries the two fields every count reads, or the counting throws or
+  // miscounts; one that does not is refused here, by its position.
+  const badAt = r.attempts.findIndex((a: unknown) => {
+    const x = a as Partial<ColdAttempt> | null;
+    return x === null || typeof x !== "object" || typeof x.deployOk !== "boolean" || (x.status !== null && typeof x.status !== "number");
+  });
+  if (badAt !== -1) return { kind: "unreadable", why: `attempt ${badAt + 1} is not a sample record (no deployOk or status)` };
   return { kind: "read", result: r as ColdLegResult };
 }
 

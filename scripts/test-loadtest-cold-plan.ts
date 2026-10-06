@@ -84,8 +84,16 @@ import { assert, eq, finish } from "./lib/harness.ts";
   assert(denied.kind === "unreadable" && /EACCES/.test(denied.why), `a file that is there and cannot be read is unreadable, never absent (got ${JSON.stringify(denied)})`);
   const wrong = readColdResult(() => JSON.stringify({ mode: "steady", planned: 3, attempts: [] }));
   assert(wrong.kind === "unreadable" && /not a cold leg result/.test(wrong.why), `a file of another shape is refused by name (got ${JSON.stringify(wrong)})`);
-  const ok = readColdResult(() => JSON.stringify({ mode: "cold", planned: 1, attempts: [] }));
-  assert(ok.kind === "read" && ok.result.planned === 1, "a cold leg result is read");
+  // Attempts that are not sample records would throw in the counting, or miscount, so they
+  // are refused at the read, by name.
+  for (const bad of [[null], [{ i: 1 }], [{ i: 1, deployOk: "yes", status: 200 }], [{ i: 1, deployOk: true, status: "200" }]]) {
+    const r = readColdResult(() => JSON.stringify({ mode: "cold", planned: 1, attempts: bad }));
+    assert(r.kind === "unreadable" && /attempt/.test(r.why), `attempts ${JSON.stringify(bad)} are refused by name (got ${JSON.stringify(r)})`);
+  }
+  const ok = readColdResult(() =>
+    JSON.stringify({ mode: "cold", planned: 2, attempts: [{ i: 1, deployOk: true, status: 200 }, { i: 2, deployOk: false, status: null }] }),
+  );
+  assert(ok.kind === "read" && ok.result.planned === 2, "a cold leg result is read");
 }
 
 // --- how long the job may run --------------------------------------------------------
