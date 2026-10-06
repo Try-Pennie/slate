@@ -78,10 +78,11 @@ if (process.env.ALLOW_DIRTY_DEPLOY === "1") {
 
 console.log(`\n  Deploying ${plan.commit} to ${plan.appUrl}, then verifying it.\n`);
 
-/** Run a step, inheriting stdio so its own output is the output. */
-function step(name: string, cmd: string, args: string[]): void {
+/** Run a step, inheriting stdio so its own output is the output. `env` is added to
+ *  this process's own environment for that step only. */
+function step(name: string, cmd: string, args: string[], env: Record<string, string> = {}): void {
   console.log(`  --- ${name}`);
-  const res = spawnSync(cmd, args, { cwd: ROOT, stdio: "inherit", env: process.env });
+  const res = spawnSync(cmd, args, { cwd: ROOT, stdio: "inherit", env: { ...process.env, ...env } });
   if (res.status !== 0) {
     throw new Error(`${name} failed (exit ${res.status ?? "signal"})`);
   }
@@ -98,10 +99,11 @@ try {
   // pnpm appends these to the script's last command, `opennextjs-cloudflare deploy`,
   // which hands unrecognised flags through to `wrangler deploy`.
   step("build and deploy", "pnpm", ["run", "cf:deploy", ...plan.deployArgs]);
+  // #3363: told which commit was stamped, since outside CI there is no GITHUB_SHA.
   step("post-deploy probe", "node", [
     "--experimental-strip-types",
     "scripts/post-deploy-probe.ts",
-  ]);
+  ], plan.probeEnv);
 } catch (err) {
   failure = err;
 } finally {

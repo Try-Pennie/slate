@@ -243,4 +243,33 @@ for (const [what, plan] of refusals) {
   );
 }
 
+// --- #3363: the probe is told which commit was deployed ----------------------------
+// The probe reads its expected commit from PROBE_COMMIT or GITHUB_SHA, and outside CI
+// neither is set. On 2026-10-05, the first real hand deploy (#3344, version b92b44cc)
+// went live and its probe refused at once with `refusing to stamp "" as a commit`,
+// having checked nothing. So the plan carries the commit the stamp step writes, and
+// the probe step runs with it.
+{
+  const plan = planVerifiedDeploy(CLEAN);
+  assert(plan.ok, "a clean tree plans a deploy");
+  if (plan.ok) {
+    eq(plan.probeEnv.PROBE_COMMIT, plan.commit, "the probe is told the commit the stamp step writes");
+  }
+  const viaCi = planVerifiedDeploy({ ...CLEAN, githubSha: "1111111111111111111111111111111111111111" });
+  assert(viaCi.ok && viaCi.probeEnv.PROBE_COMMIT === "111111111111", "and under CI it is the same commit the stamp uses");
+
+  // The command must hand that environment to the probe step itself. Read only that
+  // step's own call, so a mention elsewhere in the file cannot answer for it (L135).
+  const script = readFileSync(join(import.meta.dirname, "deploy-verified.ts"), "utf8");
+  const probeCall = (source: string): string => {
+    const at = source.indexOf('step("post-deploy probe"');
+    return at === -1 ? "" : source.slice(at, source.indexOf(");", at) + 2);
+  };
+  assert(probeCall(script) !== "", "the probe step is found in the command");
+  assert(probeCall(script).includes("plan.probeEnv"), `and it runs with the plan's probe environment (got: ${probeCall(script)})`);
+  const unwired = script.replace(/,\s*plan\.probeEnv/, "");
+  assert(unwired !== script, "positive control: the wiring was removed from a copy of the real command");
+  assert(!probeCall(unwired).includes("plan.probeEnv"), "positive control: a probe step without it is caught (L1)");
+}
+
 finish();

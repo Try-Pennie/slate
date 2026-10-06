@@ -393,7 +393,10 @@ exactly when an unverified release is most expensive, so use:
      decision it makes before deploying, and that it drives CI's own two scripts in
      CI's own order rather than a second implementation:
      scripts/test-deploy-verified.ts. The deploy and probe steps themselves are the
-     same ones the deploy job executes several times a week. -->
+     same ones the deploy job executes several times a week. Its first real run
+     (2026-10-05, #3344's Durable Object class) deployed correctly and then its probe
+     refused, because it was never told the commit outside CI (#3363); the probe is
+     now handed PROBE_COMMIT by the plan, and that wiring is pinned by the same test. -->
 
 ```bash
 BOOKING_API_KEY_CANARY=<the key the deployment holds> pnpm cf:deploy:verified

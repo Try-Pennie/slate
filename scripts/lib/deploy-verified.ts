@@ -48,6 +48,13 @@ export type DeployPlan =
       appUrl: string;
       /** Handed through `pnpm run cf:deploy` to `wrangler deploy` (#3178). */
       deployArgs: string[];
+      /**
+       * #3363: the environment the post-deploy probe runs with, carrying the commit
+       * the stamp step writes. The probe reads PROBE_COMMIT or GITHUB_SHA, and outside
+       * CI neither is set, so without this a hand deploy's probe refused before it
+       * read anything (the first real one, #3344 on 2026-10-05).
+       */
+      probeEnv: { PROBE_COMMIT: string };
     }
   | { ok: false; code: number; reason: string };
 
@@ -154,5 +161,5 @@ export function planVerifiedDeploy(env: DeployEnvironment): DeployPlan {
     };
   }
   const commit = sha.slice(0, 12);
-  return { ok: true, commit, appUrl, deployArgs: deployArgsFor(commit, env.dirty === false) };
+  return { ok: true, commit, appUrl, deployArgs: deployArgsFor(commit, env.dirty === false), probeEnv: { PROBE_COMMIT: commit } };
 }
