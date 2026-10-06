@@ -89,6 +89,40 @@ describe("a timeout on the confirm path (#3102)", () => {
     expect(page).not.toContain("was not started");
   });
 
+  // #3313: when the budget was spent before Slate asked, the dependency was never
+  // asked, so sending the reader to Google and Supabase health is a claim the
+  // check never measured (L11). On 2026-10-06 at 13:54 ET both were healthy and
+  // the page sent Dan there. The advice points inside Slate instead, at the line
+  // that reads the request's time; the pending row check stays.
+  describe("what the page tells the reader to check (#3313)", () => {
+    const BUDGET = { label: "the booking confirm", totalMs: 12_000 };
+    const page = (timeoutMs: number, budget: typeof BUDGET | null) =>
+      bookingFailureAlert(timeoutAsRetryable(new DeadlineExceededError("supabase", timeoutMs, budget)))?.message ?? "";
+    const PENDING = "Check booking_reservations for a pending row before asking them to rebook";
+    const DEPENDENCIES = "Google Calendar API and Supabase health.";
+
+    it("points inside Slate, not at the dependencies, when the budget was spent before the call", () => {
+      const spent = page(0, BUDGET);
+      expect(spent).toContain(PENDING);
+      expect(spent).toContain("The time went inside Slate before that call");
+      expect(spent).toContain("start from that request's own log lines (the confirm answered line, for a booking)");
+      expect(spent).not.toContain(`, and ${DEPENDENCIES}`);
+      expect(spent).not.toMatch(/check[^.]*(Google|Supabase)[^.]*health/i);
+    });
+
+    it("still points at the dependency when the budget ran out while the call was running", () => {
+      const running = page(3000, BUDGET);
+      expect(running).toContain(`${PENDING}, and ${DEPENDENCIES}`);
+      expect(running).not.toContain("confirm answered");
+    });
+
+    it("still points at the dependency when the call ran out of its own limit", () => {
+      const ownLimit = page(15_000, null);
+      expect(ownLimit).toContain(`${PENDING}, and ${DEPENDENCIES}`);
+      expect(ownLimit).not.toContain("confirm answered");
+    });
+  });
+
   // L11: the page may claim only what was measured. Nothing at the moment of the
   // page knows whether the reservation was written or whether the drain will
   // finish it, so it must not promise either.

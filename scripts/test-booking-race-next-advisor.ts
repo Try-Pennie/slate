@@ -13,8 +13,11 @@ import {
   SlotUnavailableError,
   RaceLostRefusalError,
   MAX_RACE_REASSIGNS,
+  DependencyTimeoutError,
+  timeoutAsRetryable,
   type CreateBookingInput,
 } from "../src/lib/booking/orchestration.ts";
+import { DeadlineExceededError } from "../src/lib/fetch-within-deadline.ts";
 import { tierLadder } from "../src/lib/routing/tiers.ts";
 import type { BookingReservation, RoutingTrace } from "../src/lib/db/types.ts";
 import { createAsserter, makeDeps, makeBooking, input } from "./lib/booking-fakes.ts";
@@ -151,6 +154,52 @@ async function main() {
     const err = await refusal(() => createBooking(input, deps));
     assert(err instanceof SlotUnavailableError, "race, check throws: the lead gets the taken time answer they got before");
     assert(calls.insertBooking.length === 1, "race, check throws: nobody unchecked is booked");
+    assert(
+      !(timeoutAsRetryable(err) instanceof DependencyTimeoutError),
+      "race, check throws: an ordinary failure is not called a timeout",
+    );
+  }
+
+  // --- #3402: the confirm's budget runs out while checking the next advisor ----
+  // That is not a taken time: the lead can retry, and nothing about the slot was
+  // learned. So the deadline goes up as itself and becomes the dependency timeout
+  // (retryable 503, `dependencyTimeoutAlert`), never the lost race refusal. Both
+  // shapes a deadline arrives in: the error itself, and one `unwrap` has quoted
+  // inside its own message after PostgREST folded it into `error.message`.
+  for (const [shape, deadline] of [
+    ["thrown", new DeadlineExceededError("supabase", 0, { label: "the booking confirm", totalMs: 12_000 })],
+    [
+      "quoted",
+      new Error(
+        "read failed [users]: DeadlineExceededError: supabase did not answer within 0ms, when the booking confirm ran out of its 12000ms",
+      ),
+    ],
+  ] as const) {
+    const { deps, calls } = makeDeps({
+      candidates: ["a", "b"],
+      freeEmails: new Set(["a@x.com", "b@x.com"]),
+      insertBookingConflictFor: new Set(["a"]),
+    });
+    const realVerify = deps.verifyFree;
+    let verifies = 0;
+    deps.verifyFree = async (emails, s, e) => {
+      verifies += 1;
+      if (verifies > 1) throw deadline;
+      return realVerify(emails, s, e);
+    };
+    const err = await refusal(() => createBooking(input, deps));
+    assert(err === deadline, `race, deadline (${shape}): the deadline escapes as itself (got ${String(err)})`);
+    assert(
+      !(err instanceof SlotUnavailableError),
+      `race, deadline (${shape}): the lead is not told the time was taken`,
+    );
+    const mapped = timeoutAsRetryable(err);
+    assert(
+      mapped instanceof DependencyTimeoutError && mapped.dependency === "supabase" && mapped.timeoutMs === 0,
+      `race, deadline (${shape}): it maps to the dependency timeout the page names`,
+    );
+    assert(calls.insertBooking.length === 1, `race, deadline (${shape}): nobody unchecked is booked`);
+    assert(calls.raceBoundHitPages.length === 0, `race, deadline (${shape}): no race page is handed off`);
   }
 
   // --- a lower rung is never used ---------------------------------------------

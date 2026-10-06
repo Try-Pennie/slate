@@ -77,6 +77,7 @@ import {
   OwnerReassignRefusedError,
   OwnerReassignUnavailableError,
 } from "@/lib/booking/owner-reassign-guard";
+import { AttendeeEmailRefusedError } from "@/lib/booking/attendee-email-refused";
 import { POST } from "./route";
 
 function req(opts: { auth?: string; body?: unknown }) {
@@ -226,6 +227,15 @@ describe("POST /api/bookings/reassign", () => {
     service.reassignBooking.mockRejectedValueOnce(new service.BookingNotChangeableError());
     const res = await POST(req(ok));
     expect(res.status).toBe(409);
+  });
+
+  // #3373: the machine caller is told the lead's email is why, under a code it can
+  // branch on, and a 4xx so it stops retrying a reassign Google will always refuse.
+  it("maps Google refusing the lead's email to a 422 ATTENDEE_EMAIL_REFUSED, not a retryable 5xx", async () => {
+    service.reassignBooking.mockRejectedValueOnce(new AttendeeEmailRefusedError(new Error("google 400")));
+    const res = await POST(req(ok));
+    expect(res.status).toBe(422);
+    expect((await res.json()).code).toBe("ATTENDEE_EMAIL_REFUSED");
   });
 
   it("maps the daily-cap conflict to a distinct 409 with a machine-readable code", async () => {

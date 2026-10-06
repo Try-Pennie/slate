@@ -8,6 +8,12 @@ import {
 } from "@/lib/booking/service";
 import { internalErrorResponse, reportInternalError } from "@/lib/api/errors";
 import { AgentHeldError } from "@/lib/booking/reroute";
+// From its own module rather than through the service, like AgentHeldError above,
+// so the route tests that mock the service still throw the class this checks.
+import {
+  AttendeeEmailRefusedError,
+  ATTENDEE_EMAIL_REFUSED_STAFF_ANSWER,
+} from "@/lib/booking/attendee-email-refused";
 import {
   OWNER_REFUSAL_CODE,
   OWNER_REFUSAL_STATUS,
@@ -92,6 +98,16 @@ export async function mapReassignError(
       { error: err.message, code: "HELD", heldUntil: err.heldUntilIso },
       { status: 503, headers: { "Retry-After": String(retryAfter) } },
     );
+  }
+  // Google refused to invite the lead's stored address (#3373), so the target's
+  // invite was never written and the booking was left as it was. A 4xx because no
+  // retry can succeed, with its own code so a machine caller can tell it from a
+  // conflict, and the staff sentence, since the lead's "Enter a valid email
+  // address" names a field nobody here has.
+  if (err instanceof AttendeeEmailRefusedError) {
+    return NextResponse.json(ATTENDEE_EMAIL_REFUSED_STAFF_ANSWER.body, {
+      status: ATTENDEE_EMAIL_REFUSED_STAFF_ANSWER.status,
+    });
   }
   // Genuine not-found (bad/stale booking id or target agent): do not retry.
   if (err instanceof BookingNotFoundError || err instanceof AgentNotAvailableError) {
