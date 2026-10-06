@@ -265,7 +265,7 @@ exits, and the exit code says which (`EXIT` in `scripts/lib/gradual-deploy.ts`, 
 |---|---|---|
 | 0 | passed at 10% and at 100% | new |
 | 10 | could not read what is serving, the cron schedule, or the canary key | unchanged |
-| 11 | an upload failed (including a Durable Object class change, which Cloudflare refuses to upload as a version) | unchanged |
+| 11 | an upload failed for a reason the run cannot name (a Durable Object class change wrangler did not report as one reads like this too) | unchanged |
 | 12 | the split call failed | old (restored) |
 | 13 | **the canary failed its probe at 10%** | old (restored) |
 | 14 | the promotion call failed | old (restored) |
@@ -279,6 +279,7 @@ exits, and the exit code says which (`EXIT` in `scripts/lib/gradual-deploy.ts`, 
 | 22 | production was changed by something else mid-run (a rollback, a hand deploy); this run stopped and touched nothing more | unknown: whatever that change left, which this run does not undo |
 | 23 | promoted and healthy, and the log tail worker (`slate-log-tail`) could not be deployed after it; Slate is not rolled back | new |
 | 24 | the deploy script itself failed outside its own handling | unknown: the settle step reads what the run recorded |
+| 25 | the release changes a Durable Object class, which Cloudflare refuses to upload as a version (#3352); ship it by hand, and until then every later deploy ends here too | unchanged |
 
 Any non-zero exit fails the job, and a failed job on a push to `main` posts a Slack alert
 (`.github/workflows/deploy-alert.yml`). A job cancelled or timed out mid-run cannot end the
@@ -329,8 +330,15 @@ lead can meet both versions across page loads. Then it is one version at 100% ag
   its version changes; the count lives in storage, so nothing is lost. Keep the
   BurstLimiter request shape compatible across one release, because old Worker code can
   call a new object and the other way round. A change to a Durable Object CLASS (a
-  `migrations` entry) cannot ship gradually at all: the upload refuses (exit 11, nothing
-  changed), and that release ships by hand with `pnpm cf:deploy:verified`.
+  `migrations` entry) cannot ship gradually at all: the upload refuses (exit 25, nothing
+  changed, recognised from the `command-failed` record wrangler writes), and that release
+  ships by hand with `pnpm cf:deploy:verified`. Until it does, every later merge's deploy
+  stops at exit 25 too, so it is planned at PR time (#3352): the
+  `do-migration-plan` workflow fails a pull request that adds a top level `migrations`
+  entry unless it carries the `deploy/hand` label, which says its merge is planned with
+  the hand deploy. Merge it, then run the hand deploy straight away. It also refuses, with
+  no label able to pass it, a pull request that edits or removes an existing `migrations`
+  entry: Cloudflare never applies a tag twice, so the change belongs in a new tag.
 - **Cost.** Two uploads, a split and a second probe add roughly a minute to each deploy,
   plus the cron window wait when a merge lands just before the hour (about one deploy in
   ten). At the 530 deploys of the 30 days to 2026-10-03, that is an estimated 500 to 600
@@ -385,8 +393,9 @@ slots, `PARTNER` answers the same 404 a typo does:
 `pnpm cf:deploy` on its own skips the stamp and the probe, so the live site reports
 commit `dev` and the next CI deploy is the first thing to confirm a version again. The
 occasion for a hand deploy is an urgent fix when the pipeline is unavailable or too slow,
-or a release that changes a Durable Object class (which cannot ship gradually), which is
-exactly when an unverified release is most expensive, so use:
+or a release that changes a Durable Object class (which cannot ship gradually, and whose
+pull request carries the `deploy/hand` label, #3352), which is exactly when an unverified
+release is most expensive, so use:
 
 <!-- runbook-unverified: it deploys production, so running it to prove the command
      would ship whatever happened to be checked out. What IS proven offline is every
