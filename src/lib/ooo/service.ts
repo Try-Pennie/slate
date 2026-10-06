@@ -161,7 +161,7 @@ export function realDeps(): OooDeps {
     // with no block or with two. Matched on the id AND the owner, and counted, so a
     // write that matched nothing reads as the failure it is rather than as done.
     // Sets source 'ooo' too, which converts a held block an older deploy wrote as
-    // 'slate' (a 'gcal' shaped one is refused by the 0171 shape check, and reported).
+    // 'slate' (a 'gcal' shaped one is refused by the 0172 shape check, and reported).
     holdNarrowedWindow: async ({ id, requestId, userId, startIso, endIso }) => {
       const { data, error } = await db()
         .from("busy_blocks")

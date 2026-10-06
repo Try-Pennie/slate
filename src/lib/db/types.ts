@@ -10,7 +10,7 @@ import type { RecordedRefusalStage } from "../booking/refusal-trace.ts";
 export type Role = "super_admin" | "admin" | "team_lead" | "manager" | "agent";
 /** `hold` (#3248, migration 0167): written by a reroute hold's trigger, carrying
  *  `hold_id`, so the slot cache keeps a held advisor's time off the offer. */
-/** `ooo` (#3365, migration 0171): a time off's held window, owned by its request
+/** `ooo` (#3365, migration 0172): a time off's held window, owned by its request
  *  through `ooo_request_id` and released with it by a trigger. Its own source so
  *  no sweep of 'slate' booking rows or 'gcal' mirrors can take it. */
 export type BusySource = "slate" | "gcal" | "hold" | "ooo";

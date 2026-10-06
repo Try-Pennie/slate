@@ -127,7 +127,7 @@ export type OooBusyBlockInsert = {
    * Always a held window (#3360, #3365). Typed to the one shape so nothing can go
    * back to writing a source='gcal' row keyed on the agent event, which is the
    * row the calendar sync treats as that event's mirror and rewrites. Its own
-   * source since 0171, because the reconcile sweep frees every 'slate' row with no
+   * source since 0172, because the reconcile sweep frees every 'slate' row with no
    * booking unless its owner is APPROVED, and a narrowed request keeps its window
    * held while it waits for re-approval as pending.
    */
@@ -919,7 +919,7 @@ async function runPostApproval(
   //    `ooo_request_id`, and nothing on the sync path touches it (its upsert and
   //    deletes match on gcal_event_id and calendar_id, its reconcile and the
   //    nightly prune on source='gcal'). It ends with its request instead: the
-  //    undo below deletes it, and a trigger (0171) deletes it whenever the
+  //    undo below deletes it, and a trigger (0172) deletes it whenever the
   //    request is cancelled or declined or stops pointing at it.
   //
   //    The condition is `busy_block_id` alone, deliberately (#1464, L121). It used
@@ -1051,7 +1051,7 @@ async function runPostApproval(
 /**
  * The row that holds an approved window (#3360): Slate written, keyed on nothing
  * the calendar sync writes, owned by the request, with a source of its own that no
- * sweep of 'slate' or 'gcal' rows can see (#3365, migration 0171). One constructor,
+ * sweep of 'slate' or 'gcal' rows can see (#3365, migration 0172). One constructor,
  * so approval and retry can never write two different shapes.
  */
 export function heldWindowBlock(
@@ -1392,7 +1392,7 @@ export async function rejectOoo(
   const agent = await deps.getUser(request.user_id);
   // #3365: declining a narrowed request ends the time off, so what its approval held
   // comes down now. After the transition, so a decline that lost the race undoes
-  // nothing; the 0171 trigger releases the held block on `rejected` even if this
+  // nothing; the 0172 trigger releases the held block on `rejected` even if this
   // cannot run (no agent row to address the calendar by).
   const released = agent !== null && holdsApprovalArtifacts(request);
   let decided = flipped.request;
