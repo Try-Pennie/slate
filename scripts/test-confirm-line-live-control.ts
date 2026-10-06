@@ -27,6 +27,7 @@ import {
   VERDICT_REACHES_FOLLOWER_WITHIN_MS,
   PROBE_SWITCH,
   runConfirmLineProbe,
+  judgeHandOn,
   type ConfirmLineCheck,
   type CheckOutcome,
   type ProbeReport,
@@ -41,6 +42,7 @@ import {
   makeConfirmLineHost,
   CONFIRM_LINE_ACK_MS,
   CONFIRM_LINE_LEASE_MS,
+  CONFIRM_LINE_HEARTBEAT_MS,
   CONFIRM_LINE_PROTOCOL,
 } from "../src/lib/booking/confirm-line-object.ts";
 import { keyKindOf, CONFIRM_LINE_CALL_MS, type LineNamespace } from "../src/lib/booking/shared-confirm-line.ts";
@@ -199,8 +201,15 @@ const outcomes = (r: ProbeReport | "unsettled") =>
     PROBE_FOLLOWER_WAIT_MS > CONFIRM_LINE_LEASE_MS + CONFIRM_LINE_CALL_MS,
     "the follower waits past the lease, so a lead freed late is seen as late rather than as never",
   );
-  eq(VERDICT_REACHES_FOLLOWER_WITHIN_MS, CONFIRM_LINE_CALL_MS, "a verdict reaches the follower within one call's deadline");
-  assert(VERDICT_REACHES_FOLLOWER_WITHIN_MS < CONFIRM_LINE_LEASE_MS, "which is well inside a lease, so a hand on by the lease is not read as a hand on by the verdict");
+  // The leader's client retries a report once, so a verdict whose first send was lost
+  // still hands on by the verdict, within two calls of that first send. Anything later is
+  // a lease, and the earliest a lease can end after the report leaves is the lease less
+  // one heartbeat (the last renewal can be up to a heartbeat before the report).
+  eq(VERDICT_REACHES_FOLLOWER_WITHIN_MS, 2 * CONFIRM_LINE_CALL_MS, "a verdict reaches the follower within the report's own two calls");
+  assert(
+    VERDICT_REACHES_FOLLOWER_WITHIN_MS < CONFIRM_LINE_LEASE_MS - CONFIRM_LINE_HEARTBEAT_MS,
+    "which is before the earliest a lease can end after the report leaves, so a hand on by the lease is never read as one by the verdict",
+  );
   // The probe never reads the stored switch: the switch decides real confirms, and a
   // probe that stood down whenever it was off would prove nothing while the line is off.
   eq(PROBE_SWITCH.on, true, "the probe uses the shared line whatever the stored switch says");
@@ -287,6 +296,23 @@ async function main() {
     { full: "not-settled", notFull: "not-handed-on", nothingHeld: "held" },
   );
 
+  // The same lost verdict, sent late in the lease. Every enter answers just inside its
+  // deadline, so most of the leader's lease is spent before it reports, and the report
+  // is lost both times the client tries it, which takes two call deadlines. The lease
+  // then frees the follower moments after the report call gives up. The hand on is timed
+  // from when the verdict was SENT: timed from the report call's RETURN, a lease running
+  // out reads as a prompt hand on.
+  await plant(
+    "a lost verdict sent late in the lease",
+    (w) => async (m) => {
+      if (m.op === "done") return new Promise<Message>(() => {});
+      const a = await w.handle(w.host, m);
+      if (m.op === "enter") await new Promise<void>((r) => w.timer(CONFIRM_LINE_CALL_MS - 50, r));
+      return a;
+    },
+    { notFull: "not-handed-on" },
+  );
+
   // No acknowledgement window: something acks every lead on the caller's behalf, so an
   // abandoned leader holds the line for a whole lease.
   await plant(
@@ -356,6 +382,60 @@ async function main() {
     [...CHECK_OUTCOMES].sort().join(","),
     "and every outcome in the vocabulary belongs to some check",
   );
+
+  // --- the hand on is timed from when the report LEFT the leader ---------------------
+  // The leader's client retries a report that is not answered within one call, so the
+  // report can return long after the line was handed on. Timed from its return, a hand on
+  // that took a second and a half reads as instant (review of #3340).
+  const millis = (detail: string) => Number(detail.match(/(\d+)ms/)?.[1] ?? NaN);
+  {
+    // The first report reaches the object 1500ms after it was sent, past one call, so the
+    // client gives up on it and sends a second; the follower leads at 1500ms, while the
+    // report is still being awaited. That is the verdict handing on inside the report's own
+    // two calls, so it passes, and it must be measured as the 1500ms it took.
+    const w = world();
+    const later = (ms: number) => new Promise<void>((resolve) => w.timer(ms, () => resolve()));
+    w.setSend(async (m) => {
+      if (m.op === "done") await later(1500);
+      return w.handle(w.host, m);
+    });
+    const report = await w.run();
+    assert(report !== "unsettled", "a slow report: the probe finishes");
+    if (report !== "unsettled") {
+      eq(report.notFull.outcome, "passed", `a slow report: a verdict that arrived late, inside the report's two calls, still handed the line on (${report.notFull.detail})`);
+      const ms = millis(report.notFull.detail);
+      assert(ms >= 1450 && ms <= 1600, `and the time it measures is the hand on's own, about 1500ms, not zero (measured ${ms}ms)`);
+      eq(report.full.outcome, "passed", "a slow report: the full verdict still refuses the follower, since that check has no clock");
+    }
+  }
+  {
+    // The counterpart: the object acts on the report at once and only its ANSWER is late.
+    // The hand on lands during the report await, and is measured as the instant it was.
+    const w = world();
+    const later = (ms: number) => new Promise<void>((resolve) => w.timer(ms, () => resolve()));
+    w.setSend(async (m) => {
+      const answer = await w.handle(w.host, m);
+      if (m.op === "done") await later(600);
+      return answer;
+    });
+    const report = await w.run();
+    assert(report !== "unsettled", "a slow answer: the probe finishes");
+    if (report !== "unsettled") {
+      eq(report.notFull.outcome, "passed", `a slow ANSWER to a report the object acted on at once is a prompt hand on (${report.notFull.detail})`);
+      const ms = millis(report.notFull.detail);
+      assert(ms >= 0 && ms <= 50, `and it measures the hand on from the report leaving, not from the answer coming back (measured ${ms}ms)`);
+    }
+  }
+  {
+    // The decision itself, at its edges, including the one the probe's own sequencing makes
+    // rare: a follower led BEFORE the report left, which no verdict can explain.
+    eq(judgeHandOn(5_000, 5_000).outcome, "passed", "a hand on at the moment the report left is prompt");
+    eq(judgeHandOn(5_000 + VERDICT_REACHES_FOLLOWER_WITHIN_MS, 5_000).outcome, "passed", "and so is one exactly the report's two calls after");
+    eq(judgeHandOn(5_001 + VERDICT_REACHES_FOLLOWER_WITHIN_MS, 5_000).outcome, "not-handed-on", "one past that is a lease, not the verdict");
+    const early = judgeHandOn(4_900, 5_000);
+    eq(early.outcome, "led-beside", "a follower led before the report left was led beside a holder, never clamped to a prompt hand on");
+    eq(millis(early.detail), 100, "and says by how much");
+  }
 
   // --- reading the endpoint's reply ------------------------------------------------
   const allPassed = Object.fromEntries(CONFIRM_LINE_CHECKS.map((c) => [c, { outcome: "passed", detail: `${c} answered as the rules say` }]));

@@ -133,7 +133,7 @@ export const FAILED_CHECK: Record<Failed, { exit: number; says: string }> = {
   },
   "not-handed-on": {
     exit: CONFIRM_LINE_EXIT.notFullNotHandedOn,
-    says: "After a leader reported the slot NOT full, the confirm waiting behind it was not handed the lead within one call, so confirms for a slot with room are held up or turned away.",
+    says: "After a leader reported the slot NOT full, the confirm waiting behind it was not handed the lead within the report's own two calls, so confirms for a slot with room are held up or turned away.",
   },
   "freed-late": {
     exit: CONFIRM_LINE_EXIT.abandonedFreedLate,

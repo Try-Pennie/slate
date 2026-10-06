@@ -54,7 +54,7 @@ export const CONFIRM_LINE_EXIT = {
   ledBeside: 13,
   /** A full verdict did not refuse the confirm waiting behind it. */
   fullNotSettled: 14,
-  /** A not full verdict did not hand the line on within one call. */
+  /** A not full verdict did not hand the line on within the report's own two calls. */
   notFullNotHandedOn: 15,
   /** An abandoned lead was freed only after its acknowledgement window. */
   abandonedFreedLate: 16,

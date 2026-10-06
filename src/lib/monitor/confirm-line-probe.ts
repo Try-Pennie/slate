@@ -21,8 +21,9 @@
  *
  *  - `full`: B, queued behind A, is REFUSED as taken once A reports a full verdict, and
  *    receives A's settlement intact.
- *  - `notFull`: B LEADS once A reports a not full verdict, within one call of it, so a
- *    hand on by the verdict is told apart from one by a lease running out.
+ *  - `notFull`: B LEADS once A reports a not full verdict, within the report's own two
+ *    calls (it is retried once) of the report leaving A, so a hand on by the verdict is
+ *    told apart from one by a lease running out.
  *  - `abandoned`: A takes the lead and never acknowledges it (its client's every call
  *    after the enter is lost, as when an answer never reaches its caller), and B leads
  *    within the acknowledgement window rather than after the whole lease.
@@ -81,7 +82,7 @@ export const CHECK_OUTCOMES = [
   "led-beside",
   /** A full verdict did not refuse the follower as taken with the settlement intact. */
   "not-settled",
-  /** A not full verdict did not hand the follower the lead within one call. */
+  /** A not full verdict did not hand the follower the lead within the report's two calls. */
   "not-handed-on",
   /** An abandoned lead was freed, but only after its acknowledgement window. */
   "freed-late",
@@ -121,8 +122,14 @@ export const PROBE_FOLLOWER_WAIT_MS = CONFIRM_LINE_LEASE_MS + 2_000;
  */
 export const ABANDONED_LEAD_FREED_WITHIN_MS = CONFIRM_LINE_ACK_MS + CONFIRM_LINE_CALL_MS;
 
-/** How soon after a leader's report the follower must have its answer: one call. */
-export const VERDICT_REACHES_FOLLOWER_WITHIN_MS = CONFIRM_LINE_CALL_MS;
+/**
+ * How soon after a leader's report LEAVES it the follower must have the lead: the report's
+ * own two calls, because the client retries a report it got no answer to, so a verdict
+ * whose first send was lost still hands the line on by the verdict. Below the earliest a
+ * lease can end after the report leaves (the lease less one heartbeat, since the last
+ * renewal can be a heartbeat before the report), so a lease is never read as the verdict.
+ */
+export const VERDICT_REACHES_FOLLOWER_WITHIN_MS = 2 * CONFIRM_LINE_CALL_MS;
 
 /**
  * The switch reading every participant is given. The stored switch decides whether REAL
@@ -155,6 +162,8 @@ type Turn = LineTurn<unknown>;
 /** A client of the shared line as one isolate would hold it, with its calls recorded. */
 function participant(deps: ConfirmLineProbeDeps, opts: { severAfterEnter?: boolean } = {}) {
   const seen: Seen[] = [];
+  /** When each call left, in order, recorded before it is answered or given up on. */
+  const sends: { op: string; at: number }[] = [];
   const watching: { want: (s: Seen) => boolean; found: (s: Seen) => void }[] = [];
   let served: LineServed | null = null;
   let reach = "";
@@ -172,6 +181,7 @@ function participant(deps: ConfirmLineProbeDeps, opts: { severAfterEnter?: boole
         async send(message) {
           const op = String(message.op);
           const sentAt = deps.now();
+          sends.push({ op, at: sentAt });
           if (opts.severAfterEnter && op !== "enter") {
             note({ op, kind: null, sentAt, at: sentAt });
             throw new Error(SEVERED);
@@ -214,6 +224,10 @@ function participant(deps: ConfirmLineProbeDeps, opts: { severAfterEnter?: boole
       const s = served as LineServed | null;
       if (s === null || s.line === "shared") return null;
       return reach || `${s.line}, ${s.reason}`;
+    },
+    /** When the first call of `op` left this client, or null when none was sent. */
+    firstSent(op: string): number | null {
+      return sends.find((s) => s.op === op)?.at ?? null;
     },
     /** The first call matching `want`, made already or still to come. */
     first(want: (s: Seen) => boolean): Promise<Seen> {
@@ -301,7 +315,7 @@ async function queuedBehindLeader(
   deps: ConfirmLineProbeDeps,
   key: LineKey,
   held: ReturnType<typeof holdings>,
-): Promise<CheckResult | { lead: Turn; follower: Promise<Turn>; b: Participant }> {
+): Promise<CheckResult | { lead: Turn; follower: Promise<Turn>; a: Participant; b: Participant }> {
   const a = participant(deps);
   const b = participant(deps);
   const lead = await held.track(a.line.enter(key, 0));
@@ -314,7 +328,7 @@ async function queuedBehindLeader(
   if (entered?.kind === "lead") {
     return { outcome: "led-beside", detail: "The second confirm was given the lead while the first still held the line, so the line excluded nobody" };
   }
-  return { lead, follower, b };
+  return { lead, follower, a, b };
 }
 
 async function checkFull(deps: ConfirmLineProbeDeps, key: LineKey, run: string): Promise<CheckResult> {
@@ -344,8 +358,8 @@ async function checkNotFull(deps: ConfirmLineProbeDeps, key: LineKey): Promise<C
   try {
     const queued = await queuedBehindLeader(deps, key, held);
     if ("outcome" in queued) return queued;
+    const asked = deps.now();
     await held.report(queued.lead, { full: false });
-    const reportedAt = deps.now();
     const turn = await queued.follower;
     const late = queued.b.fellBack();
     if (late) return unreachable("The second confirm", late);
@@ -353,14 +367,12 @@ async function checkNotFull(deps: ConfirmLineProbeDeps, key: LineKey): Promise<C
     if (turn.kind !== "lead" || !led) {
       return { outcome: "not-handed-on", detail: `After the first confirm reported the slot NOT full, the one waiting behind it was given ${describe(turn)} rather than the lead` };
     }
-    const afterMs = Math.max(0, led.at - reportedAt);
-    if (afterMs > VERDICT_REACHES_FOLLOWER_WITHIN_MS) {
-      return {
-        outcome: "not-handed-on",
-        detail: `The waiting confirm led only ${afterMs}ms after the not full report, which is a lease running out rather than the verdict handing the line on`,
-      };
-    }
-    return passed(`The confirm waiting behind a not full verdict was handed the lead ${afterMs}ms after the report`);
+    // Timed from when the report LEFT the leader, never from when the report call returned:
+    // the client retries a report not answered within one call, so the call can return long
+    // after the line was handed on, and timing from there reads a slow hand on as instant.
+    // A leader whose client sent no report at all (it had already lost its turn) is timed
+    // from the moment it was asked to.
+    return judgeHandOn(led.at, queued.a.firstSent("done") ?? asked);
   } finally {
     await held.releaseAll();
   }
@@ -435,6 +447,30 @@ async function checkNothingHeld(deps: ConfirmLineProbeDeps, keys: readonly LineK
     return { outcome: "held", detail: `After the checks, the instant used by ${stillHeld.join(" and ")} was still held, so a newcomer there could not lead at once` };
   }
   return passed(`After the checks, a newcomer led at once on each of the ${keys.length} instants they used`);
+}
+
+/**
+ * Was the follower handed the lead BY the not full verdict? `ledAt` is when its lead
+ * answer arrived and `reportSentAt` when the leader's report left. Within the report's two
+ * calls is the verdict; later is a lease running out. EARLIER is not clamped to zero: a
+ * follower led before the report even left was led while the first still held the line,
+ * which no verdict explains.
+ */
+export function judgeHandOn(ledAt: number, reportSentAt: number): CheckResult {
+  const afterMs = ledAt - reportSentAt;
+  if (afterMs < 0) {
+    return {
+      outcome: "led-beside",
+      detail: `The waiting confirm was handed the lead ${-afterMs}ms before the first confirm's not full report had even been sent, so the line let it lead while the first still held it`,
+    };
+  }
+  if (afterMs > VERDICT_REACHES_FOLLOWER_WITHIN_MS) {
+    return {
+      outcome: "not-handed-on",
+      detail: `The waiting confirm led only ${afterMs}ms after the not full report was sent, which is a lease running out rather than the verdict handing the line on`,
+    };
+  }
+  return passed(`The confirm waiting behind a not full verdict was handed the lead ${afterMs}ms after the report was sent`);
 }
 
 /** A check that threw is the probe's own fault, said as such and never as the object's. */

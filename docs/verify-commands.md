@@ -284,8 +284,10 @@ directions and each on its own named outcome:
 
 - **full**: B, queued behind A, is REFUSED as taken once A reports a full verdict,
   and receives A's settlement intact.
-- **notFull**: B LEADS once A reports a not full verdict, within one call of the
-  report, so a hand on by the verdict is told apart from a lease running out.
+- **notFull**: B LEADS once A reports a not full verdict, within the report's own
+  two calls (the client retries it once) of the report LEAVING A, so a hand on by the
+  verdict is told apart from a lease running out. It is timed from the send, never from
+  the report call's return, which a retry can delay past the lease.
 - **abandoned**: A takes the lead and never acknowledges it (every call its client
   makes after the enter is lost), and B leads within the acknowledgement window
   rather than after the whole lease.
@@ -335,7 +337,7 @@ lists every check's outcome.
 | 12 | the first confirm on an unused slot was not given the lead | the object holds something it should not |
 | 13 | a second confirm led beside the first | **the line excludes nobody**; a crowd would stampede |
 | 14 | a full verdict did not refuse the waiting confirm | taken slots would each run the whole confirm |
-| 15 | a not full verdict did not hand the lead on within one call | confirms for a slot with room are held up |
+| 15 | a not full verdict did not hand the lead on within the report's two calls | confirms for a slot with room are held up |
 | 16 | an unacknowledged lead was freed only by its lease | the acknowledgement window is not enforced |
 | 17 | an unacknowledged lead was never freed | one lost answer holds every confirm behind it |
 | 18 | something the probe used was still held afterwards | the object keeps a line it should have dropped |
