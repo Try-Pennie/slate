@@ -62,10 +62,13 @@ const reportReachFailure = makeReachFailureReporter({
 /**
  * The confirm line one request uses: the shared line when the switch is on and the
  * binding answers, else `fallback`, the isolate's own line. `record` receives how each
- * turn was served, for the `confirm answered` line.
+ * turn was served, for the `confirm answered` line. `trace` (#3354) is the load
+ * test's trace for this confirm, which every call to the object then carries, or null
+ * for every production confirm. Required, so no call site leaves it out by accident.
  */
-export function confirmLineFor<T>(fallback: ConfirmLine<T>, record: (served: LineServed) => void): ConfirmLine<T> {
+export function confirmLineFor<T>(fallback: ConfirmLine<T>, record: (served: LineServed) => void, trace: string | null): ConfirmLine<T> {
   return makeSharedConfirmLine<T>({
+    trace,
     namespace: lineNamespace(),
     fallback,
     enabled: readSharedConfirmLine,

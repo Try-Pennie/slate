@@ -235,6 +235,48 @@ async function main() {
     assert(junk.kind === "bad", "malformed: something that is not a message is refused");
   }
 
+  // --- #3354: a traced call says it arrived, so the load run can join it ----------
+  // The client sends a trace only under the load test, so the object stays silent for
+  // every production call. A call it reports names the op, the confirm's trace and the
+  // client's stage; the time it spent is the runtime's own `wallTime` on that event.
+  {
+    const c = clockAndTimers();
+    let n = 0;
+    const calls: Record<string, unknown>[] = [];
+    const h = makeConfirmLineHost({
+      now: c.now,
+      timer: c.timer,
+      leaseTimer: c.timer,
+      newId: () => `id${++n}`,
+      onTrace: (call) => calls.push({ ...call }),
+    });
+    const send = async (req: Record<string, unknown>) => JSON.parse(await h.handle({ v, ...req })) as Record<string, unknown>;
+    const lead = await send({ op: "enter", attempt: "A", line: "100", waitMs: 10_000, trace: "t-1", stage: "wait" });
+    assert(lead.kind === "lead", "trace: a traced enter is answered exactly as an untraced one");
+    await send({ op: "ack", turn: lead.turn, trace: "t-1", stage: "wait" });
+    await send({ op: "done", turn: lead.turn, verdict: { full: false }, trace: "t-1", stage: "turn" });
+    assert(
+      JSON.stringify(calls) ===
+        JSON.stringify([
+          { op: "enter", trace: "t-1", stage: "wait" },
+          { op: "ack", trace: "t-1", stage: "wait" },
+          { op: "done", trace: "t-1", stage: "turn" },
+        ]),
+      `trace: each traced call is reported with its op, trace and stage (got ${JSON.stringify(calls)})`,
+    );
+    calls.length = 0;
+    await send({ op: "enter", attempt: "B", line: "200", waitMs: 10_000 });
+    assert(calls.length === 0, "trace: a call carrying no trace reports nothing, which is every production call");
+    await send({ op: "enter", attempt: "C", line: "300", waitMs: 10_000, trace: 7, stage: "wait" });
+    await send({ op: "enter", attempt: "D", line: "400", waitMs: 10_000, trace: "", stage: "wait" });
+    assert(calls.length === 0, `trace: a trace that is not a non empty string reports nothing (got ${JSON.stringify(calls)})`);
+    await send({ op: "enter", attempt: "E", line: "500", waitMs: 10_000, trace: "t-2", stage: "elsewhere" });
+    assert(calls[0]?.stage === "unknown", `trace: a stage outside the two the client sends is reported as unknown, never as one of them (got ${JSON.stringify(calls)})`);
+    calls.length = 0;
+    const old = JSON.parse(await h.handle({ v: v + 1, op: "enter", attempt: "F", line: "600", waitMs: 0, trace: "t-3", stage: "wait" })) as Record<string, unknown>;
+    assert(old.kind === "gone" && calls.length === 1 && calls[0]?.op === "enter", "trace: a call on another protocol version is still reported, so a load run can see it was refused");
+  }
+
   finish();
 }
 

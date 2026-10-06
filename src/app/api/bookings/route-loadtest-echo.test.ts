@@ -63,7 +63,7 @@ vi.mock("@/lib/monitor/record-api-outcome", () => ({ recordApiOutcome: vi.fn() }
 
 import { POST } from "./route";
 import { ANSWERED_AT_HEADER, CONFIRM_LINE_HEADER, SEEN_IP_HEADER, readLoadtestEcho } from "@/lib/loadtest-echo";
-import { ENTRY_AT_HEADER, INVOCATION_INDEX_HEADER } from "@/lib/booking/wait-marks";
+import { ENTRY_AT_HEADER, INVOCATION_INDEX_HEADER, LOADTEST_LEG_HEADER } from "@/lib/booking/wait-marks";
 
 const BODY = {
   bucketCode: "411",
@@ -157,7 +157,9 @@ describe("POST /api/bookings under SLATE_LOADTEST", () => {
   // carries. The route stamps its own two points before the booking path runs, and
   // takes the Worker's entry stamp and invocation count from the request.
   it("hands the booking path marks already stamped at the Worker entry, the handler and auth", async () => {
-    let seen: { marks?: { fields(): Record<string, number | string> }; isolateInvocationIndex?: number | null } | undefined;
+    let seen:
+      | { marks?: { fields(): Record<string, number | string> }; isolateInvocationIndex?: number | null; lineTrace?: string; loadtestLeg?: string }
+      | undefined;
     service.bookViaApi.mockImplementation(async (_input: unknown, facts?: typeof seen) => {
       seen = facts;
       throw new service.SlotUnavailableError("taken");
@@ -172,6 +174,7 @@ describe("POST /api/bookings under SLATE_LOADTEST", () => {
           "cf-connecting-ip": "203.0.113.9",
           [ENTRY_AT_HEADER]: String(entered),
           [INVOCATION_INDEX_HEADER]: "0",
+          [LOADTEST_LEG_HEADER]: "burst",
         },
         body: JSON.stringify(BODY),
       }) as never,
@@ -182,6 +185,9 @@ describe("POST /api/bookings under SLATE_LOADTEST", () => {
     expect(typeof fields.wait_auth_ms).toBe("number");
     expect(String(fields.wait_missing)).toBe("line_start,line_turn,decided,profile");
     expect(seen?.isolateInvocationIndex).toBe(0);
+    // #3354: a trace for this confirm's shared line calls, and the leg its driver named.
+    expect(seen?.lineTrace).toMatch(/^[0-9a-f-]{36}$/);
+    expect(seen?.loadtestLeg).toBe("burst");
   });
 
   it("leaves the line unsaid when the confirm recorded none, so the run reads it as not said", async () => {

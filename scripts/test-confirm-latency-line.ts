@@ -109,6 +109,19 @@ async function main() {
     assert(!(lines[2] ?? "x").includes("isolate_invocation_index"), `invocation index: an unknown one is absent, never 0 (got ${lines[2]})`);
   }
 
+  // --- #3354: the trace its line calls carried, and the leg that sent it ---------
+  {
+    const cap = captureInfo();
+    await answerTimed("booking-api", async () => new Response("{}", { status: 200 }), { now: () => 0, facts: { lineTrace: "t-9", loadtestLeg: "burst" } });
+    await answerTimed("booking-api", async () => new Response("{}", { status: 200 }), { now: () => 0, facts: { loadtestLeg: "unreadable" } });
+    await answerTimed("booking-api", async () => new Response("{}", { status: 200 }), { now: () => 0, facts: {} });
+    cap.restore();
+    const lines = cap.lines.filter((l) => l.includes('msg="confirm answered"'));
+    assert((lines[0] ?? "").includes('line_trace="t-9"') && (lines[0] ?? "").includes('loadtest_leg="burst"'), `trace and leg: both are on the confirm's own line (got ${lines[0]})`);
+    assert((lines[1] ?? "").includes('loadtest_leg="unreadable"'), `trace and leg: a leg the route could not read says so (got ${lines[1]})`);
+    assert(!(lines[2] ?? "x").includes("line_trace") && !(lines[2] ?? "x").includes("loadtest_leg"), `trace and leg: a production confirm carries neither (got ${lines[2]})`);
+  }
+
   // --- a dry run says so, so it never mixes into the confirm latency -----------
   {
     const cap = captureInfo();

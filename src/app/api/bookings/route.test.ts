@@ -202,10 +202,15 @@ describe("POST /api/bookings (auth skeleton)", () => {
   it("keeps no wait marks and no invocation count when the flag is off", async () => {
     regalKey.primary.mockReturnValue("real-secret");
     await post("Bearer real-secret", VALID_BODY);
-    const facts = service.bookViaApi.mock.calls.at(-1)?.[1] as { marks?: unknown; isolateInvocationIndex?: unknown } | undefined;
+    const facts = service.bookViaApi.mock.calls.at(-1)?.[1] as
+      | { marks?: unknown; isolateInvocationIndex?: unknown; lineTrace?: unknown; loadtestLeg?: unknown }
+      | undefined;
     expect(facts).toBeDefined();
     expect(facts?.marks).toBeUndefined();
     expect(facts?.isolateInvocationIndex).toBeUndefined();
+    // Nor a trace for the shared line's calls, so the object logs nothing for them.
+    expect(facts?.lineTrace).toBeUndefined();
+    expect(facts?.loadtestLeg).toBeUndefined();
   });
 
   it("trips 429 when the per-key ceiling is exceeded", async () => {

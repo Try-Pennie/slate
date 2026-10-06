@@ -1092,9 +1092,14 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
     pageRaceBoundHit: pageRaceBoundHitAfterResponse,
     // #3325: the shared line when its switch is on and its binding answers, else
     // the isolate's own line, exactly as before.
-    confirmQueue: confirmLineFor(ISOLATE_LINE, (served) => {
-      if (lineFacts) lineFacts.line = served;
-    }),
+    confirmQueue: confirmLineFor(
+      ISOLATE_LINE,
+      (served) => {
+        if (lineFacts) lineFacts.line = served;
+      },
+      // #3354: the load test's trace for this confirm, so the object logs its calls.
+      lineFacts?.lineTrace ?? null,
+    ),
     // #3325: sibling codes that walk the same pools share one line.
     lineGroupOf: lineGroupOfLive,
     // #3354: the points of the wait before the confirm's profile, when the route
