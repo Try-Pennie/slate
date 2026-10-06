@@ -293,7 +293,6 @@ function makeWorld(): World {
       if (current) world.requests.set(id, { ...current, ...patch } as OooRequest);
     },
     getUser: async (userId) => users.get(userId) ?? null,
-    agentPrimaryCalendarId: async () => "agent-cal-id",
     createCalendarEvent: async (actorEmail, calendarId, args, clientId) => {
       if (calendarId === "primary") world.clientIds.push(clientId);
       if (world.failCalendars.has(calendarId)) {
@@ -828,11 +827,26 @@ const input = {
   );
   assert(r.agent_event_id !== null && r.busy_block_id !== null, "artifact ids stored");
   const block = w.busyBlocks.get(r.busy_block_id!)!;
+  // #3360: the approved window is held by a block the calendar sync never writes.
+  // It used to be a source=gcal row keyed on the agent event's id, so the sync's
+  // upsert on (user_id, calendar_id, gcal_event_id) rewrote it to whatever span
+  // the event had after somebody edited it in Google, and the approved hours the
+  // edit cut off opened to bookings. The event gets its own ordinary mirror row
+  // from the sync; this row keeps the APPROVED window whatever the event says.
   assert(
-    block.source === "gcal" && block.gcal_event_id === r.agent_event_id,
-    "busy block converges with the agent event (source=gcal)",
+    block.source === "slate" && block.gcal_event_id === null && block.calendar_id === null,
+    "#3360: the approved window is held by a slate block no sync upsert can match",
   );
-  assert(block.calendar_id === "agent-cal-id", "busy block carries the synced calendar id");
+  assert(block.ooo_request_id === r.id, "#3360: the held block names the request that owns it");
+  assert(
+    block.starts_at === r.starts_at && block.ends_at === r.ends_at,
+    "#3360: the held block covers exactly the approved window",
+  );
+  assert(r.side_effects.busy_block === "ok", "an approval WITH an agent event is not a fallback");
+  assert(
+    !w.alerts.some((a) => a.key === "ooo_busy_block_fallback"),
+    "#3360: the fallback page stays for the case with no calendar event at all",
+  );
   assert(r.side_effects.manager_event === "ok", "manager_event effect ok");
   assert(r.side_effects.calcom === "skipped", "calcom skipped when flag off");
   assert(
@@ -1237,19 +1251,22 @@ const input = {
     w.createdEvents.length === createdBefore + 1,
     "manager event NOT recreated on retry",
   );
-  // #78: the slate fallback block converges to a gcal-linked one pointing at
-  // the now-created agent event (so the next sync upserts onto it instead of
-  // adding a second, overlapping block) — still exactly one block.
+  // #3360 replaces #78's convergence: the held block is already the final shape
+  // (slate, keyed on nothing the sync writes), so the retry keeps the SAME row and
+  // only records that an event now exists beside it. Converging it onto the event
+  // id is what let the sync rewrite an approved window from a Google edit.
   assert(
     w.busyBlocks.size === blocksAfterApprove,
-    "still exactly one busy block (converged, not duplicated)",
+    "still exactly one busy block (kept, not duplicated)",
   );
-  const convergedBlock = w.busyBlocks.get(r.busy_block_id!)!;
+  const heldBlockId = [...w.busyBlocks.keys()][0];
+  assert(r.busy_block_id === heldBlockId, "#3360: the retry keeps the held block it already had");
+  const heldBlock = w.busyBlocks.get(r.busy_block_id!)!;
   assert(
-    convergedBlock.source === "gcal" &&
-      convergedBlock.gcal_event_id === r.agent_event_id,
-    "slate fallback converged to a gcal-linked block on retry",
+    heldBlock.source === "slate" && heldBlock.gcal_event_id === null,
+    "#3360: the held block is never re-keyed onto the agent event",
   );
+  assert(r.side_effects.busy_block === "ok", "the fallback marker clears once the event exists");
   assert(w.dms.length === 0, "silent retry sends no DMs");
   assertAudited(w, "ooo.retry", agent.id, id);
 }
@@ -1325,19 +1342,22 @@ const input = {
 }
 
 {
-  // The happy path writes a gcal-linked block instead, and it needs the same
+  // The happy path writes the same held shape since #3360, and it needs the same
   // owner: the pool-exit prune deletes by user_id regardless of source (#1471),
-  // so an unowned gcal block is just as losable.
+  // so an unowned block is just as losable.
   const w = makeWorld();
   const sub = await submitOoo(agent, input, w.deps);
   const id = sub.ok ? sub.request.id : "";
   await approveOoo(id, manager, w.deps);
   const r = w.requests.get(id)!;
   const block = w.busyBlocks.get(r.busy_block_id!)!;
-  assert(block.source === "gcal", "the happy path still writes a gcal-linked block");
+  assert(
+    block.source === "slate",
+    "#3360: the happy path writes the held slate block too, not a gcal-linked one",
+  );
   assert(
     block.ooo_request_id === id,
-    "#1464: the gcal-linked block names its owner too",
+    "#1464: the happy path block names its owner too",
   );
 }
 

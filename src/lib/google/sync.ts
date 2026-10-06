@@ -50,7 +50,7 @@ import {
   type FailingCalendarRow,
 } from "@/lib/notify/alerts";
 import { reachabilityFromError } from "@/lib/google/reachability-classify";
-import { googlePushUrl } from "@/lib/env";
+import { appUrl, googlePushUrl } from "@/lib/env";
 import { parseStampMs } from "@/lib/date/stamp";
 import type { AgentCalendar } from "@/lib/db/types";
 import { unwrap, unwrapCount } from "@/lib/db/result";
@@ -58,6 +58,10 @@ import { hasLeftPool, POOL_STATE_COLUMNS, type PoolStateRow } from "@/lib/bookab
 import { chunkIdsByUrlBudget } from "@/lib/db/id-batch";
 import { log } from "@/lib/log";
 import { gatedWriteRows } from "@/lib/booking/gated-write";
+import {
+  noticeSyncedOooEvents,
+  type SyncedApprovedRequest,
+} from "@/lib/monitor/ooo-event-mismatch";
 
 // Renew well before Google's ~7-day watch TTL so a cron outage can't drop push.
 const WATCH_RENEW_THRESHOLD_MS = 3 * 24 * 60 * 60 * 1000;
@@ -407,6 +411,79 @@ export async function applyEvents(
 }
 
 /**
+ * Page the moment this pass sees an approved time off's event shortened (#3360).
+ *
+ * The approved window itself is held by a block this sync never writes, so nothing
+ * here changes what is bookable; it tells a person the record and the calendar now
+ * disagree. Runs after the writes, and NEVER throws: a detector must not be able to
+ * fail the sync it rides on and leave the token unadvanced. A failed read is logged
+ * and the monitor lane, which re-measures every 5 minutes, still sees the
+ * disagreement, so nothing is lost but the immediacy.
+ *
+ * Reads nothing for an empty batch, which is the common incremental tick.
+ */
+async function noticeEditedTimeOff(
+  userId: string,
+  events: GoogleEvent[],
+  timeZone: string,
+): Promise<void> {
+  if (events.length === 0) return;
+  const db = supabaseAdmin();
+  try {
+    await noticeSyncedOooEvents({
+      userId,
+      events,
+      timeZone,
+      nowMs: Date.now(),
+      appBaseUrl: appUrl(),
+      loadApproved: async (id) => {
+        const rows = (unwrap(
+          await db
+            .from("ooo_requests")
+            .select("id, user_id, starts_at, ends_at, display_tz_id, display_tz_label, agent_event_id")
+            .eq("user_id", id)
+            .eq("status", "approved")
+            .gt("ends_at", new Date().toISOString())
+            .not("agent_event_id", "is", null)
+            // One agent's approved time off still ahead: a handful. The bound is a
+            // ceiling nobody can reach, not a page that could truncate a real set.
+            .limit(200),
+          "sync approved time off",
+        ) ?? []) as {
+          id: string;
+          user_id: string;
+          starts_at: string;
+          ends_at: string;
+          display_tz_id: string;
+          display_tz_label: string | null;
+          agent_event_id: string | null;
+        }[];
+        return rows.map(
+          (r): SyncedApprovedRequest => ({
+            id: r.id,
+            userId: r.user_id,
+            startsAt: r.starts_at,
+            endsAt: r.ends_at,
+            displayTzId: r.display_tz_id,
+            displayTzLabel: r.display_tz_label,
+            agentEventId: r.agent_event_id,
+          }),
+        );
+      },
+      loadAgentName: async (id) => {
+        const u = unwrap(
+          await db.from("users").select("name, email").eq("id", id).maybeSingle(),
+          "sync time off agent name",
+        ) as { name: string | null; email: string | null } | null;
+        return u?.name?.trim() || u?.email || id;
+      },
+    });
+  } catch (err) {
+    log.error("google-sync", { msg: "time off event check failed", user_id: userId }, err);
+  }
+}
+
+/**
  * After a FULL resync, drop cached gcal blocks for this calendar whose event no
  * longer exists. Incremental syncs carry per-event cancellations, but a full
  * resync (bootstrap or expired token) just returns the current set, so events
@@ -639,6 +716,7 @@ async function syncCalendar(
         beganWriting = true;
       },
     });
+    await noticeEditedTimeOff(cal.user_id, result.events, timeZone);
     // Never reconcile against a PARTIAL event set (#1259). A page-capped pass read only
     // the first MAX_SYNC_PAGES pages, so every event on the pages it never fetched
     // looks vanished and its cached busy time would be deleted, leaving the agent
@@ -889,6 +967,7 @@ export async function hydrateCalendar(cal: AgentCalendar): Promise<HydrateResult
           ? await loadSlateBookingEventIds(cal.user_id)
           : new Set<string>();
       await applyEvents(cal.user_id, cal.calendar_id, result.events, slateEventIds, timeZone);
+      await noticeEditedTimeOff(cal.user_id, result.events, timeZone);
       // Never reconcile against a PARTIAL set (#1259): a page-capped pass read only the first
       // pages, so everything beyond them looks vanished and its cached busy time would be
       // deleted, leaving the agent looking free during real meetings.

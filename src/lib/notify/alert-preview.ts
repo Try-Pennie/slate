@@ -293,6 +293,8 @@ import {
   oooAgentCalendarAlert,
   oooAgentDmAlert,
   oooBusyBlockFallbackAlert,
+  oooEventMismatchAlert,
+  oooEventMismatchRecovery,
   oooCalcomAlert,
   oooCalcomStaleUnrecordedAlert,
   oooCalendarCreateAlert,
@@ -4894,6 +4896,25 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   // on a fallback, and by the time this sends there are none.
   { key: "ooo_busy_block_fallback", state: "nothing is relying on the fallback any more",
     channel: "recovery", text: formatFallbackClearedRecovery() },
+  // #3360: the 2026-10-06 shape, an all day request whose event was edited to begin
+  // at 11:30 AM MT. The edit was the true one that day, so the page must ask for
+  // the two to agree rather than for the event to be put back.
+  { key: "ooo_event_mismatch:*", state: "the event was shortened", channel: "alert",
+    text: oooEventMismatchAlert("Heather McLellen", [{
+      requestId: "req_9f2", startsAt: "2026-10-07T06:00:00.000Z", endsAt: "2026-10-08T05:59:00.000Z",
+      displayTzId: "America/Denver", displayTzLabel: "MT",
+      coverage: { kind: "uncovered", spans: [{ startMs: 1791352800000, endMs: 1791394200000 }] },
+    }], "https://slate.trypennie.app") },
+  { key: "ooo_event_mismatch:*", state: "two requests, one event gone", channel: "alert",
+    text: oooEventMismatchAlert("Heather McLellen", [
+      { requestId: "req_9f2", startsAt: "2026-10-07T06:00:00.000Z", endsAt: "2026-10-08T05:59:00.000Z",
+        displayTzId: "America/Denver", displayTzLabel: "MT",
+        coverage: { kind: "uncovered", spans: [{ startMs: 1791352800000, endMs: 1791394200000 }] } },
+      { requestId: "req_a41", startsAt: "2026-10-09T06:00:00.000Z", endsAt: "2026-10-10T05:59:00.000Z",
+        displayTzId: "America/Denver", displayTzLabel: "MT", coverage: { kind: "not-blocking" } },
+    ], "https://slate.trypennie.app") },
+  { key: "ooo_event_mismatch:*", state: "the calendar and the request agree again", channel: "recovery",
+    text: oooEventMismatchRecovery("Heather McLellen") },
   { key: "ooo_calcom", state: "the override failed at approval", channel: "alert",
     text: oooCalcomAlert("req_9f2", "409 conflict") },
   // #2890: a block left in cal.com while it was retired, whose record failed.

@@ -1,6 +1,7 @@
 // Relative value import so this module runs under `node --experimental-strip-types`
 // in tests (a "@/" value import is not erased).
 import { coveragePanelWhere } from "../booking/coverage-panel-copy.ts";
+import { formatWhenLine } from "./core.ts";
 
 /**
  * The words the time-off orchestration's alerts say (#1153).
@@ -103,5 +104,83 @@ export function oooCoverageStopAlert(requestId: string, reason: string): string 
     `The coverage sweep for time off request ${requestId} could not be stopped after the ` +
     `request was closed (${reason}). Its remaining appointments may still move to other ` +
     `advisors. Stop them from ${coveragePanelWhere()}.`
+  );
+}
+
+/**
+ * One approved time off whose calendar event no longer covers it (#3360), as the
+ * page names it. `coverage` is the judge's own verdict (`event-coverage.ts`), so the
+ * words can never describe a different disagreement than the one measured.
+ */
+export interface OooEventMismatch {
+  requestId: string;
+  startsAt: string;
+  endsAt: string;
+  displayTzId: string;
+  displayTzLabel: string | null;
+  coverage:
+    | { kind: "uncovered"; spans: { startMs: number; endMs: number }[] }
+    | { kind: "not-blocking" };
+}
+
+function mismatchLine(f: OooEventMismatch, appBaseUrl: string): string {
+  const label = f.displayTzLabel ?? undefined;
+  const approved = formatWhenLine(f.startsAt, f.endsAt, f.displayTzId, label);
+  const calendar =
+    f.coverage.kind === "not-blocking"
+      ? "The calendar shows no busy time off event inside that window (it was deleted, cancelled, marked free or moved)."
+      : `The calendar event leaves ${f.coverage.spans
+          .map((s) =>
+            formatWhenLine(
+              new Date(s.startMs).toISOString(),
+              new Date(s.endMs).toISOString(),
+              f.displayTzId,
+              label,
+            ),
+          )
+          .join(" and ")} open.`;
+  return `Approved: ${approved}. ${calendar} ${appBaseUrl}/admin/ooo?request=${f.requestId}`;
+}
+
+/**
+ * Condition (#3360): an agent's Google Calendar and their approved time off
+ * disagree.
+ *
+ * It deliberately does not say which one is wrong. On 2026-10-06 the edit in
+ * Google was the true one (the agent was working that morning) and the request was
+ * stale, so a page insisting the event be put back would have told somebody to
+ * reverse a real schedule. It says what Slate does meanwhile (holds the approved
+ * window, so nobody rushes to protect it), and offers both repairs.
+ *
+ * Who is told is #3372's job; this goes to the alerts channel until then.
+ */
+export function oooEventMismatchAlert(
+  agentName: string,
+  found: OooEventMismatch[],
+  appBaseUrl: string,
+): string {
+  const one = found.length === 1;
+  return (
+    `${agentName}'s Google Calendar no longer matches ` +
+    `${one ? "an approved time off" : `${found.length} approved time off requests`}, ` +
+    `and only a person can say which is right. Slate is still blocking the whole approved ` +
+    `window, so no lead can be booked into it meanwhile. Make the two agree: if those ` +
+    `hours are being worked, change the request in My time off (it goes back to the ` +
+    `manager to approve); if they are not, put the calendar event back to the approved ` +
+    `times.\n` +
+    found.map((f) => mismatchLine(f, appBaseUrl)).join("\n")
+  );
+}
+
+/**
+ * The all-clear. Claims only what the monitor lane measured: nothing approved ahead
+ * for this agent disagrees with the calendar any more, whether because the two were
+ * made to agree, the request was changed or cancelled, or its window passed.
+ */
+export function oooEventMismatchRecovery(agentName: string): string {
+  return (
+    `${agentName}'s Google Calendar and approved time off no longer disagree: every ` +
+    `approved window still ahead matches the calendar, or the request was changed or ` +
+    `has passed. No action is needed.`
   );
 }
