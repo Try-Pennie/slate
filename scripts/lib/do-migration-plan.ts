@@ -9,8 +9,11 @@
  * gradual-deploy.ts), and until somebody ships it by hand every later merge's deploy stops
  * the same way. Dan, 2026-10-06: plan these at PR time. So a pull request adding one is
  * refused unless it carries `HAND_DEPLOY_LABEL`, which says the merge is planned together
- * with `pnpm cf:deploy:verified`. Only the TOP LEVEL list counts: the load test Worker
- * deploys whole with `wrangler deploy`, which applies a migration itself.
+ * with `pnpm cf:deploy:verified`. Only the TOP LEVEL list needs the label for an
+ * ADDED tag: the load test Worker deploys whole with `wrangler deploy`, which applies a
+ * migration itself. Editing or removing an applied tag is refused in BOTH lists, because
+ * the load test Worker lives on between runs (#3310) and keeps its history as
+ * production does.
  */
 import { stripJsonComments } from "./gradual-deploy.ts";
 
@@ -27,20 +30,24 @@ function canonical(v: unknown): string {
   return JSON.stringify(v);
 }
 
-/** The top level migration entries, in order, each with its tag and its whole content. */
-export function migrationEntriesOf(jsonc: string): { tag: string; content: string }[] | null {
-  let json: { migrations?: unknown };
+/** Which Worker's migration list: production's top level one, or the load test's (#3310). */
+export type MigrationScope = "production" | "loadtest";
+
+/** A scope's migration entries, in order, each with its tag and its whole content. */
+export function migrationEntriesOf(jsonc: string, scope: MigrationScope = "production"): { tag: string; content: string }[] | null {
+  let json: { migrations?: unknown; env?: { loadtest?: { migrations?: unknown } } };
   try {
     // Trailing commas are legal JSONC and not JSON.
-    json = JSON.parse(stripJsonComments(jsonc).replace(/,(\s*[}\]])/g, "$1")) as { migrations?: unknown };
+    json = JSON.parse(stripJsonComments(jsonc).replace(/,(\s*[}\]])/g, "$1")) as typeof json;
   } catch {
     return null;
   }
   if (json === null || typeof json !== "object") return null;
-  if (json.migrations === undefined) return [];
-  if (!Array.isArray(json.migrations)) return null;
+  const list = scope === "production" ? json.migrations : json.env?.loadtest?.migrations;
+  if (list === undefined) return [];
+  if (!Array.isArray(list)) return null;
   const entries: { tag: string; content: string }[] = [];
-  for (const m of json.migrations) {
+  for (const m of list) {
     const tag = (m as { tag?: unknown } | null)?.tag;
     if (typeof tag !== "string" || tag === "") return null;
     entries.push({ tag, content: canonical(m) });
@@ -53,6 +60,17 @@ export function migrationTagsOf(jsonc: string): string[] | null {
   return migrationEntriesOf(jsonc)?.map((e) => e.tag) ?? null;
 }
 
+/** What a pull request does to tags already applied, one clause per kind, or none. */
+function historyRewrites(before: { tag: string; content: string }[], after: { tag: string; content: string }[], what: string): string[] {
+  const afterByTag = new Map(after.map((e) => [e.tag, e.content]));
+  const removed = before.filter((e) => !afterByTag.has(e.tag)).map((e) => e.tag);
+  const edited = before.filter((e) => afterByTag.has(e.tag) && afterByTag.get(e.tag) !== e.content).map((e) => e.tag);
+  return [
+    edited.length > 0 ? `edits ${what} ${edited.join(", ")}, which Cloudflare has already applied and will not apply again` : null,
+    removed.length > 0 ? `removes ${what} ${removed.join(", ")} from the history Cloudflare keeps` : null,
+  ].filter((w): w is string => w !== null);
+}
+
 /**
  * The check's verdict and its one line. Fails closed: a wrangler.jsonc that cannot be read
  * on either side cannot rule a class change out, so it is refused by name (L42).
@@ -63,20 +81,21 @@ export function doMigrationVerdict(input: { base: string | null; head: string; l
   }
   const beforeEntries = migrationEntriesOf(input.base);
   const afterEntries = migrationEntriesOf(input.head);
-  if (beforeEntries === null) return { ok: false, message: "the base commit's wrangler.jsonc could not be read as a migrations list, so a Durable Object class change cannot be ruled out" };
-  if (afterEntries === null) return { ok: false, message: "this pull request's wrangler.jsonc could not be read as a migrations list, so a Durable Object class change cannot be ruled out" };
+  const beforeLoadtest = migrationEntriesOf(input.base, "loadtest");
+  const afterLoadtest = migrationEntriesOf(input.head, "loadtest");
+  if (beforeEntries === null || beforeLoadtest === null) return { ok: false, message: "the base commit's wrangler.jsonc could not be read as a migrations list, so a Durable Object class change cannot be ruled out" };
+  if (afterEntries === null || afterLoadtest === null) return { ok: false, message: "this pull request's wrangler.jsonc could not be read as a migrations list, so a Durable Object class change cannot be ruled out" };
   // A tag Cloudflare has applied is never applied again, so an edit to its entry never
   // takes effect, and removing one rewrites a history the platform keeps. Neither can be
-  // planned around with a label: the change belongs in a new tag.
-  const afterByTag = new Map(afterEntries.map((e) => [e.tag, e.content]));
-  const removed = beforeEntries.filter((e) => !afterByTag.has(e.tag)).map((e) => e.tag);
-  const edited = beforeEntries.filter((e) => afterByTag.has(e.tag) && afterByTag.get(e.tag) !== e.content).map((e) => e.tag);
-  if (removed.length > 0 || edited.length > 0) {
-    const what = [
-      edited.length > 0 ? `edits Durable Object migration ${edited.join(", ")}, which Cloudflare has already applied and will not apply again` : null,
-      removed.length > 0 ? `removes Durable Object migration ${removed.join(", ")} from the history Cloudflare keeps` : null,
-    ].filter((w): w is string => w !== null);
-    return { ok: false, message: `this pull request ${what.join(" and ")}. Put the change in a new tag instead` };
+  // planned around with a label: the change belongs in a new tag. That holds for the
+  // load test Worker too since it lives on between runs (#3310), so it keeps its
+  // history exactly as production does.
+  const rewritten = [
+    ...historyRewrites(beforeEntries, afterEntries, "Durable Object migration"),
+    ...historyRewrites(beforeLoadtest, afterLoadtest, "the load test Worker's Durable Object migration"),
+  ];
+  if (rewritten.length > 0) {
+    return { ok: false, message: `this pull request ${rewritten.join(" and ")}. Put the change in a new tag instead` };
   }
   const before = beforeEntries.map((e) => e.tag);
   const added = afterEntries.map((e) => e.tag).filter((t) => !before.includes(t));

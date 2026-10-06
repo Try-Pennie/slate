@@ -75,8 +75,9 @@ name: Booking path load run
 #   LOADTEST_BOOKING_API_KEY, LOADTEST_CRON_SECRET, LOADTEST_SUPABASE_URL,
 #   LOADTEST_SUPABASE_SECRET_KEY, LOADTEST_SUPABASE_PUBLISHABLE_KEY
 #   because each one is created by whoever dispatches a run, against a throwaway
-#   Supabase branch and a Worker deployment the teardown job deletes, so between
-#   runs their absence is the normal state rather than a misconfiguration. Every
+#   Supabase branch the teardown job deletes and the load test Worker whose secrets
+#   it takes (#3310), so between runs their absence is the normal state rather than
+#   a misconfiguration. Every
 #   script this workflow runs refuses an empty value BY NAME, so a run dispatched
 #   before they are created stops rather than booking against production.
 on:
@@ -96,10 +97,11 @@ on:
         default: "google-read"
       teardown:
         description: >-
-          Delete the Worker deployment, and the Supabase branch named in
-          branch_name, when the judge is done. With no branch_name the run says so
-          rather than reporting a clean teardown over a branch that is still
-          billing (#2322).
+          Take the load test Worker's secrets and delete the Supabase branch named
+          in branch_name, when the judge is done. The Worker itself is kept, so
+          the next run's crons are already arriving (#3310). With no branch_name
+          the run says so rather than reporting a clean teardown over a branch
+          that is still billing (#2322).
         type: boolean
         default: true
       branch_name:
@@ -828,11 +830,10 @@ jobs:
           {
             echo "## The preflight refused, so nothing was torn down"
             echo
-            echo "The load test Worker and the Supabase branch are still there. Nothing was"
-            echo "measured, so there is nothing to keep: read the preflight job's own message,"
-            echo "fix what it names, and dispatch this workflow again against the same"
-            echo "deployment. Rebuilding the environment is about fifteen minutes and is not"
-            echo "needed."
+            echo "The load test Worker still holds this run's secrets and the Supabase branch"
+            echo "is still there. Nothing was measured, so there is nothing to keep: read the"
+            echo "preflight job's own message, fix what it names, and dispatch this workflow"
+            echo "again against the same deployment. Nothing needs provisioning again."
           } >> "$GITHUB_STEP_SUMMARY"
 
   teardown:
@@ -842,8 +843,9 @@ jobs:
     #
     # And NOT when the preflight refused (#2347). A preflight refusal means nothing
     # was measured: the run never booked anything, so there is no evidence for the
-    # teardown to outlive, and destroying the Worker and the branch costs about
-    # fifteen minutes to rebuild before the same dispatch can be tried again. That
+    # teardown to outlive, and deleting the branch and taking the Worker's secrets
+    # costs about fifteen minutes to provision again before the same dispatch can be
+    # tried. That
     # is exactly what happened on 2026-09-15, when a preflight that failed on a
     # cold cache forty seconds after the deploy tore down the environment it was
     # about to test. The deployment is left standing to be re-dispatched, and the
@@ -860,50 +862,33 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Delete the deployment
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx wrangler delete --env loadtest --force
-      # The teardown is only done when the deployment is GONE, not when the delete
-      # command exited. The Worker's absence from the account's listing is the
-      # assertion; a zero exit is not.
+      # #3310: the Worker is KEPT, and only its secrets are taken. Cloudflare has taken 27
+      # to 105 minutes to deliver the first cron to a newly created Worker, and deleting
+      # it here is what made every run's deploy a new one, so every run waited for its
+      # lanes and a slow delivery lost the run. A kept Worker goes on receiving its
+      # crons; with none of its secrets the entry answers nothing and runs no lane
+      # (loadtestIdle), and with the branch deleted below it has nothing left to reach.
       #
-      # This used to ask `wrangler deployments list --env loadtest`, checking the
-      # listing's own exit status before its content, because piping straight into
-      # grep reports the PARSER's status and a listing that failed (expired
-      # credentials, a network blip) matches nothing and reads as a clean teardown
-      # (#1433, L183). That care was right and is kept; the command under it was
-      # wrong. Once the Worker is deleted that listing ERRORS, so a successful
-      # teardown took the "could not list" branch and failed the job for having
-      # cleaned up correctly (#2277), and a step that is red for doing its job is one
-      # nobody reads (L36).
-      #
-      # The outcomes are separated now, each with its own wording and exit code, in
-      # scripts/loadtest/teardown-verdict.ts. The same #1433 care carries over, as TWO
-      # reads that each close the other's ambiguity: the account's Worker listing, which
-      # is trusted only when POSITIVELY readable (HTTP 200, a Cloudflare envelope saying
-      # success, a result array, every entry named), and then, on an absence only, a read
-      # of the Worker BY NAME. Neither answers alone. A bare 404 by name cannot tell
-      # "gone" from "wrong account id", and an absence from the listing would rest on
-      # that listing being complete, which nobody here has measured (L82): if it ever
-      # truncated, a live deployment would read as a confirmed teardown, which is worse
-      # than the red step this replaces. Absent AND 404 is the only pass; absent but
-      # present by name is its own outcome, because the Worker is still there and the
-      # listing cannot be trusted either.
-      - name: Confirm nothing is left deployed
+      # The step deletes by Worker name, so it first checks the configured name is the
+      # Worker `wrangler deploy --env loadtest` deploys, read from wrangler.jsonc, and
+      # never production's. Idle is then confirmed by READS, never by the deletes'
+      # answers: the secrets listing again, trusted only when positively readable, and
+      # the cron schedules, because a kept Worker with none bought nothing. Every
+      # outcome has its own exit code, driven offline in
+      # scripts/test-loadtest-idle-worker.ts.
+      - name: Take the Worker's secrets and confirm it is idle
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           LOADTEST_WORKER_NAME: ${{ vars.LOADTEST_WORKER_NAME }}
-        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/confirm-teardown.ts
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/keep-worker-idle.ts
       # THE BRANCH, which this job claimed to delete for months and never touched
       # (#2322). A Supabase branch is billed while it exists, and the 2026-09-14 run
       # left `loadtest-2284` ACTIVE_HEALTHY for twenty minutes past a teardown that
       # reported success: a success report about work never attempted (L98).
       #
-      # `if: always()`, so a Worker that would not delete does not leave the branch
-      # standing as well. They are two separate resources and one failing says
+      # `if: always()`, so a Worker whose secrets would not delete does not leave the
+      # branch standing as well. They are two separate resources and one failing says
       # nothing about the other.
       #
       # Every refusal is its own exit code and every decision is pinned offline in

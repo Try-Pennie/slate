@@ -21,6 +21,7 @@ import { readFileSync } from "node:fs";
 import { stubCreateEvent } from "../src/lib/google/loadtest-stub.ts";
 import { deterministicEventId } from "../src/lib/booking/core.ts";
 import { authenticateBearer } from "../src/lib/booking/api-auth.ts";
+import { LOADTEST_IDLE_ERROR, loadtestIdleBody } from "../src/lib/loadtest-secrets.ts";
 import {
   needsPostWarmupRefresh,
   refreshAfterWarmup,
@@ -192,6 +193,26 @@ import { assert, eq, finish } from "./lib/harness.ts";
   // Control: a plain 503 with no such body is still a blip, and still waited out.
   const blip = faultModeVerdict(503, {}, { faultPct: 10 });
   assert(!blip.ok && blip.retriable && !blip.why.includes("BOOKING_API_KEY_CANARY"), "an ordinary 503 is still retried, with no key advice");
+}
+
+{
+  // #3310: the load test Worker lives on between runs holding none of its secrets, and
+  // answers every request with its idle body until a run has put all three. A run
+  // dispatched before they were put meets it here, so it names the missing ones and
+  // the command that puts them, and the fault poll does not wait it out: waiting cannot
+  // supply a secret. The body is the Worker's own, so a reworded answer cannot quietly
+  // turn this back into an unexplained 503.
+  const body = loadtestIdleBody(["CRON_SECRET", "BOOKING_API_KEY_CANARY"]);
+  const mode = loadtestModeVerdict(503, body);
+  assert(
+    !mode.ok && /idle/.test(mode.why) && mode.why.includes("CRON_SECRET") && mode.why.includes("BOOKING_API_KEY_CANARY") && mode.why.includes("wrangler secret put"),
+    `an idle deployment is named, with what it lacks and how to put it (got ${mode.ok ? "ok" : mode.why})`,
+  );
+  const fault = faultModeVerdict(503, body, { faultPct: 10 });
+  assert(!fault.ok && !fault.retriable && /idle/.test(fault.why), "and the fault poll does not wait it out");
+  // A body naming no secrets is still idle, and names none rather than guessing.
+  const bare = loadtestModeVerdict(503, { error: LOADTEST_IDLE_ERROR });
+  assert(!bare.ok && /idle/.test(bare.why) && !bare.why.includes("CRON_SECRET"), `an idle body with no list is still idle (got ${bare.ok ? "ok" : bare.why})`);
 }
 
 // --- the deployment is really injecting faults (#2262) ------------------------

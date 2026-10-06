@@ -70,6 +70,29 @@ const config = (top: string[], loadtest: string[] = top) =>
   const loadtestOnly = doMigrationVerdict({ base: config(["v1"], ["v1"]), head: config(["v1"], ["v1", "v9"]), labels: [] });
   assert(loadtestOnly.ok, `a migration added only to env.loadtest is not a production class change (got ${loadtestOnly.message})`);
 
+  // #3310: the load test Worker now lives on between runs, so it keeps its migration
+  // history exactly as production does. An applied tag is never applied again, and a
+  // deploy whose history lost one is refused, so editing or removing one is refused
+  // here too, whatever the labels say. ADDING one still needs no label: the load test
+  // deploys whole with `wrangler deploy --env loadtest`, which applies it.
+  const ltEdited = doMigrationVerdict({
+    base: config(["v1"], ["v1"]),
+    head: config(["v1"], ["v1"]).replace('"migrations": [{ "tag": "v1" }]', '"migrations": [{ "tag": "v1", "deleted_classes": ["X"] }]'),
+    labels: [HAND_DEPLOY_LABEL],
+  });
+  assert(!ltEdited.ok && /load test/.test(ltEdited.message) && /v1/.test(ltEdited.message) && /new tag/.test(ltEdited.message), `an edited load test migration is refused (got ${ltEdited.message})`);
+  const ltRemoved = doMigrationVerdict({ base: config(["v1"], ["v1", "v2"]), head: config(["v1"], ["v1"]), labels: [] });
+  assert(!ltRemoved.ok && /load test/.test(ltRemoved.message) && /removes/.test(ltRemoved.message) && /v2/.test(ltRemoved.message), `a removed load test migration is refused (got ${ltRemoved.message})`);
+  // Control: the same edit to production's list is still named as production's.
+  const prodEdited = doMigrationVerdict({
+    base: config(["v1"], ["v1"]),
+    head: config(["v1"], ["v1"]).replace('"new_sqlite_classes": ["Cv1"]', '"new_sqlite_classes": ["Cv1", "Y"]'),
+    labels: [],
+  });
+  assert(!prodEdited.ok && !/load test/.test(prodEdited.message), `production's edit is not blamed on the load test Worker (got ${prodEdited.message})`);
+  const ltUnreadable = doMigrationVerdict({ base: config(["v1"], ["v1"]), head: config(["v1"], ["v1"]).replace('{ "tag": "v1" }]', '{ "no_tag": 1 }]'), labels: [] });
+  assert(!ltUnreadable.ok && /could not be read/.test(ltUnreadable.message), `an unreadable load test list is refused, never read as none (got ${ltUnreadable.message})`);
+
   // Fail closed: a file that cannot be read cannot rule a class change out (L42).
   const unreadableHead = doMigrationVerdict({ base: config(["v1"]), head: "{ broken", labels: [] });
   assert(!unreadableHead.ok && /could not be read/.test(unreadableHead.message), `an unreadable head is refused by name (got ${unreadableHead.message})`);
