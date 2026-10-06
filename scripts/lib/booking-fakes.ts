@@ -369,7 +369,13 @@ export function makeDeps(opts: FakeOpts) {
       id: string;
       patch: Record<string, unknown>;
       guard: { assignedUserId: string | null; gcalEventId: string | null };
+      /** #3265: the outbox work the commit was handed, written in the same transaction. */
+      outbox?: { steps: unknown; payload: unknown };
     }[],
+    /** #3265: the reschedule outbox work a commit recorded, by booking and ordinal. */
+    rescheduleOutbox: [] as { bookingId: string; seq: unknown }[],
+    /** #3265: outbox rows written by a SEPARATE enqueue, after the fact. */
+    enqueuedOutbox: [] as { booking_id: string | null; action: string }[],
     claimCancellation: [] as string[],
     completeBookingsIfDue: [] as string[][],
     reservations: [] as { idempotency_key: string; pinned_user_id: string; gcal_client_id: string }[],
@@ -904,21 +910,23 @@ export function makeDeps(opts: FakeOpts) {
     // (assignee + event id) that changed it since we read makes this touch 0 rows.
     // On success mirrors production by persisting the patch so a later
     // loadBookingById (outbox re-read) sees the committed booking.
-    commitReschedule: async (id, patch, guard) => {
-      calls.commitReschedule.push({ id, patch: patch as Record<string, unknown>, guard });
+    commitReschedule: async (id, patch, guard, outbox) => {
+      calls.commitReschedule.push({ id, patch: patch as Record<string, unknown>, guard, outbox });
       const live =
         opts.existing?.booking?.id === id
           ? opts.existing.booking
           : [opts.bookingById].find((c) => c?.booking?.id === id)?.booking;
-      if (!live) return false;
+      if (!live) return null;
       const active = live.status === "confirmed" || live.status === "rescheduled";
       const assigneeOk = (live.assigned_user_id ?? null) === guard.assignedUserId;
       const gcalOk = (live.gcal_event_id ?? null) === guard.gcalEventId;
-      if (!(active && assigneeOk && gcalOk)) return false;
+      if (!(active && assigneeOk && gcalOk)) return null;
       for (const c of [opts.bookingById, opts.existing]) {
         if (c?.booking && c.booking.id === id) Object.assign(c.booking, patch);
       }
-      return true;
+      // #3265: the outbox work is written in the same transaction as the move.
+      calls.rescheduleOutbox.push({ bookingId: id, seq: (patch as Record<string, unknown>).reschedule_seq });
+      return `ob-commit-${calls.rescheduleOutbox.length}`;
     },
     // Atomic cancel claim (#413): the FIRST call for an id wins (flips
     // active->cancelled), every later call loses, models the conditional UPDATE.
@@ -1038,7 +1046,10 @@ export function makeDeps(opts: FakeOpts) {
       );
       return e === -1 ? null : `evt-${e + 1}`;
     },
-    enqueueOutbox: async () => "ob-test",
+    enqueueOutbox: async (row) => {
+      calls.enqueuedOutbox.push({ booking_id: row.booking_id ?? null, action: row.action });
+      return "ob-test";
+    },
     // #1048: the lease is a token, and the writes it guards report whether they
     // landed. "written" is the healthy answer; the stand-down paths are driven in
     // scripts/test-booking-outbox.ts.

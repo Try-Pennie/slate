@@ -153,6 +153,7 @@ import type {
   BookingStatus,
   BookingOutbox,
   BookingOutboxInsert,
+  OutboxPayload,
   BookingReservation,
   BookingReservationInsert,
   Bucket,
@@ -1526,7 +1527,13 @@ export interface BookingDeps {
     bookingId: string,
     patch: BookingUpdate,
     guard: { assignedUserId: string | null; gcalEventId: string | null },
-  ): Promise<boolean>;
+    /**
+     * #3265: the move's outbox work, written in the SAME transaction as the move
+     * (migration 0171), so a committed reschedule always has a durable record of its
+     * slot move and rescheduled webhook.
+     */
+    outbox: { steps: OutboxStep[]; payload: OutboxPayload },
+  ): Promise<string | null>;
   /**
    * Atomic cancel claim (#413): conditionally flips a booking active->cancelled in
    * one statement, returning true only if THIS call made the transition. A second
@@ -6383,6 +6390,20 @@ async function applyReschedule(
   // row through the `alreadyCommitted` branch below. Rolling the event back on a
   // failed write would be wrong for the same reason it is wrong on a crash: the
   // next attempt is going to reuse it.
+  // #3265: the move's outbox work goes INTO the commit, so the move and its record of
+  // the slot move and webhook land together or not at all.
+  const rescheduleOutbox = {
+    steps: rescheduleOutboxSteps(),
+    payload: {
+      reasonCode: reason.code,
+      reasonDetail: reason.detail,
+      initiator,
+      fromStartsIso,
+      fromAgentUserId,
+      actorUserId: actor?.userId,
+      actingAsUserId: actor?.actingAsUserId,
+    },
+  };
   const committed = await deps.commitReschedule(
     booking.id,
     {
@@ -6404,7 +6425,12 @@ async function applyReschedule(
         : {}),
     },
     { assignedUserId: fromAgentUserId, gcalEventId: fromGcalEventId },
+    rescheduleOutbox,
   );
+  // The outbox row the commit wrote, or null when this attempt's commit touched
+  // nothing: either a real conflict (thrown below) or an earlier attempt that already
+  // committed this exact pin, whose own commit wrote the row the drain will run.
+  const outboxId = committed;
   if (!committed) {
     // 0 rows: the booking is no longer the one we started moving. Two cases:
     //  - a crash-resume whose prior attempt already committed THIS exact pin
@@ -6460,27 +6486,43 @@ async function applyReschedule(
     status: "rescheduled" as const,
   };
 
-  // The booking is committed (updateBooking above) at the NEW time/agent. Deliver
-  // the post-commit side effects (slot move, recompute, rescheduled webhook)
-  // through the idempotent outbox executor (#429 P3), so a crash here resumes via
-  // the drain instead of dropping the webhook or stranding the old slot. Leased
-  // around the inline run so a drain tick can't double-run it.
-  const steps = rescheduleOutboxSteps();
-  const payload = {
-    reasonCode: reason.code,
-    reasonDetail: reason.detail,
-    initiator,
-    fromStartsIso,
-    fromAgentUserId,
-    actorUserId: actor?.userId,
-    actingAsUserId: actor?.actingAsUserId,
+  // The booking is committed at the NEW time/agent, and its post-commit side effects
+  // (slot move, recompute, rescheduled webhook) were recorded in the same transaction
+  // (#3265). Run them now through the idempotent outbox executor (#429 P3), leased so
+  // a drain tick can't double-run them. Nothing here may become the lead's error: the
+  // move happened, and whatever is cut off here the drain finishes from the row.
+  if (outboxId !== null) {
+    const unfinished = await finishCommitted(() => runCommittedRescheduleOutbox(deps, booking.id, outboxId, rescheduleOutbox));
+    if (unfinished !== null) {
+      log.error(
+        "booking",
+        {
+          msg: "the reschedule committed and the work after it did not finish; answering the move, and the outbox drain finishes the rest",
+          booking_id: booking.id,
+        },
+        unfinished,
+      );
+    }
+  }
+
+  return {
+    booking: updated,
+    manageUrl: manageUrl(deps, token),
+    rescheduleDecline: inPlaceDeclineReason ?? undefined,
   };
-  const outboxId = await deps.enqueueOutbox({
-    booking_id: booking.id,
-    action: "reschedule",
-    steps,
-    payload,
-  });
+}
+
+/**
+ * Run a committed reschedule's recorded outbox work inline (#3265), leased so a drain
+ * tick cannot run it alongside.
+ */
+async function runCommittedRescheduleOutbox(
+  deps: BookingDeps,
+  bookingId: string,
+  outboxId: string,
+  outbox: { steps: OutboxStep[]; payload: OutboxPayload },
+): Promise<void> {
+  const { steps, payload } = outbox;
   // #1048: honour the lease answer. A null means a drain tick already holds this
   // row and is running the very steps we would run, so the right thing is to leave
   // it alone rather than run them alongside it. The row is durable, so nothing is
@@ -6492,7 +6534,7 @@ async function applyReschedule(
         deps,
         {
           id: outboxId,
-          booking_id: booking.id,
+          booking_id: bookingId,
           action: "reschedule",
           status: "pending",
           steps,
@@ -6512,12 +6554,6 @@ async function applyReschedule(
       await deps.releaseOutboxLease(outboxId, lease);
     }
   }
-
-  return {
-    booking: updated,
-    manageUrl: manageUrl(deps, token),
-    rescheduleDecline: inPlaceDeclineReason ?? undefined,
-  };
 }
 
 /**
