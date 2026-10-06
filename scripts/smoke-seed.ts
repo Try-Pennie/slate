@@ -179,7 +179,9 @@ export function buildSmokeSeed(p: SmokeSeedParams): SmokeSeed {
     id: AGENT_ID,
     org_id: p.orgId,
     email: p.agentEmail,
-    name: "Smoke Test Agent",
+    // #3424: read out on the booker's confirmation, which the /demo link shows
+    // to people outside Pennie, so a neutral advisor name, not the canary's label.
+    name: "Demo Advisor",
     role: "agent",
     attributes: {},
     bookable: true,
