@@ -15,6 +15,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  makeStep,
   planVerifiedDeploy,
   DEFAULT_APP_URL,
   HAND_RELEASE_MESSAGE_PREFIX,
@@ -274,16 +275,34 @@ for (const [what, plan] of refusals) {
 
   // The step must ADD that environment to the one it inherits. A step that dropped
   // its `env` argument would leave the probe without PROBE_COMMIT exactly as before,
-  // while the call above still read as wired. Read only the step helper's own body.
-  const stepBody = (source: string): string => {
-    const at = source.indexOf("function step(");
-    return at === -1 ? "" : source.slice(at, source.indexOf("\n}\n", at));
-  };
-  assert(stepBody(script) !== "", "the step helper is found in the command");
-  assert(/env:\s*\{\s*\.\.\.process\.env,\s*\.\.\.env\s*\}/.test(stepBody(script)), `and it runs each step with its env added to this process's own (got: ${stepBody(script)})`);
-  const dropped = script.replace(/env:\s*\{\s*\.\.\.process\.env,\s*\.\.\.env\s*\}/, "env: process.env");
-  assert(dropped !== script, "positive control: the merge was removed from a copy of the real command");
-  assert(!/env:\s*\{\s*\.\.\.process\.env,\s*\.\.\.env\s*\}/.test(stepBody(dropped)), "positive control: a step that ignores its env is caught (L1)");
+  // while the call above still read as wired. So the real helper is driven through a
+  // spawn that records what it was given, rather than its spelling being matched
+  // (L103): an equivalent rewrite must pass and a dropped env must not.
+  {
+    const seen: { cmd: string; args: string[]; env: Record<string, string | undefined> | undefined }[] = [];
+    const step = makeStep({
+      spawn: (cmd, args, opts) => {
+        seen.push({ cmd, args, env: opts.env });
+        return { status: 0 };
+      },
+      root: "/repo",
+      baseEnv: { PATH: "/usr/bin", GITHUB_SHA: undefined },
+      log: () => {},
+    });
+    step("post-deploy probe", "node", ["scripts/post-deploy-probe.ts"], { PROBE_COMMIT: "abcdef123456" });
+    eq(seen[0]?.env?.PROBE_COMMIT, "abcdef123456", "the step hands the probe the commit it was given");
+    eq(seen[0]?.env?.PATH, "/usr/bin", "on top of the environment this process already has");
+    step("stamp the deploying commit", "node", ["scripts/stamp-build-info.ts"]);
+    eq(seen[1]?.env?.PROBE_COMMIT, undefined, "and a step given nothing adds nothing");
+    let threw = "";
+    try {
+      makeStep({ spawn: () => ({ status: 2 }), root: "/repo", baseEnv: {}, log: () => {} })("build and deploy", "pnpm", []);
+    } catch (err) {
+      threw = err instanceof Error ? err.message : String(err);
+    }
+    assert(threw.includes("build and deploy failed (exit 2)"), `a step that fails stops the command, naming itself and its exit (got: ${threw})`);
+  }
+  assert(/const step = makeStep\(/.test(script), "and the command runs its steps through that helper, not a copy of it");
 
   // And the probe must read that commit as the one it expects. It prefers
   // PROBE_COMMIT to GITHUB_SHA and normalises with the stamp's own function, so the

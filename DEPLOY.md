@@ -392,11 +392,13 @@ exactly when an unverified release is most expensive, so use:
      would ship whatever happened to be checked out. What IS proven offline is every
      decision it makes before deploying, and that it drives CI's own two scripts in
      CI's own order rather than a second implementation:
-     scripts/test-deploy-verified.ts. The deploy and probe steps themselves are the
-     same ones the deploy job executes several times a week. Its first real run
+     scripts/test-deploy-verified.ts. The deploy and probe SCRIPTS are the ones the
+     deploy job runs several times a week, but CI hands the probe its commit through
+     GITHUB_SHA and this command must hand it PROBE_COMMIT itself. Its first real run
      (2026-10-05, #3344's Durable Object class) deployed correctly and then its probe
-     refused, because it was never told the commit outside CI (#3363); the probe is
-     now handed PROBE_COMMIT by the plan, and that wiring is pinned by the same test. -->
+     refused, because it was never told the commit (#3363). The plan now hands it
+     PROBE_COMMIT, and the same test drives the step helper to prove it reaches the
+     probe's environment. -->
 
 ```bash
 BOOKING_API_KEY_CANARY=<the key the deployment holds> pnpm cf:deploy:verified

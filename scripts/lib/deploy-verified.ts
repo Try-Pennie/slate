@@ -163,3 +163,29 @@ export function planVerifiedDeploy(env: DeployEnvironment): DeployPlan {
   const commit = sha.slice(0, 12);
   return { ok: true, commit, appUrl, deployArgs: deployArgsFor(commit, env.dirty === false), probeEnv: { PROBE_COMMIT: commit } };
 }
+
+/** The part of `spawnSync` a step uses, so a test can drive the real helper. */
+export type StepSpawn = (
+  cmd: string,
+  args: string[],
+  opts: { cwd: string; stdio: "inherit"; env: Record<string, string | undefined> },
+) => { status: number | null };
+
+/**
+ * #3363: one step of the verified deploy: run a command, inheriting stdio so its own
+ * output is the output, with `env` ADDED to this process's environment for that step
+ * only. The probe's commit reaches it this way, outside CI where nothing else would
+ * set it. A step that exits non-zero throws, naming itself and its exit.
+ */
+export function makeStep(deps: {
+  spawn: StepSpawn;
+  root: string;
+  baseEnv: Record<string, string | undefined>;
+  log: (line: string) => void;
+}): (name: string, cmd: string, args: string[], env?: Record<string, string>) => void {
+  return (name, cmd, args, env = {}) => {
+    deps.log(`  --- ${name}`);
+    const res = deps.spawn(cmd, args, { cwd: deps.root, stdio: "inherit", env: { ...deps.baseEnv, ...env } });
+    if (res.status !== 0) throw new Error(`${name} failed (exit ${res.status ?? "signal"})`);
+  };
+}
