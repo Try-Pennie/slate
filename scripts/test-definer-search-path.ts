@@ -279,6 +279,8 @@ const EXPECTED_PINNED = [
   "cancel_duplicate_named_refusal",
   // #3247: the first step of a reroute confirm.
   "claim_reroute_hold",
+  // #3265: the gated reschedule and its outbox row in one transaction.
+  "commit_reschedule",
   "count_bookings_per_local_day",
   // #2447: reports which definer functions the web roles can execute. Security INVOKER
   // itself, deliberately, so it adds no row to the list it reports on.
