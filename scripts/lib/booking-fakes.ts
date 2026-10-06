@@ -13,6 +13,7 @@ import {
   type AbandonedReassignIntent,
   type CreateBookingInput,
   type PendingEventDeletion,
+  type CreateEventArgs,
 } from "../../src/lib/booking/orchestration.ts";
 import type { WorkingRule, BusinessHoursRules } from "../../src/lib/availability/compute.ts";
 import type { RecordRoutingDecisionInput } from "../../src/lib/routing/record.ts";
@@ -327,7 +328,8 @@ export function makeDeps(opts: FakeOpts) {
     agentWorkingHours: [] as string[],
     businessHours: 0,
     verifyFree: [] as string[][],
-    createEvent: [] as { email: string; clientId?: string }[],
+    /** `args` is what the invite was written WITH (#3376: its title and location). */
+    createEvent: [] as { email: string; clientId?: string; args: CreateEventArgs }[],
     /**
      * Every booking row the run tried to WRITE (#1641). `createEvent` is the
      * proxy a lead would notice, but a booking row is the thing "a second
@@ -353,7 +355,7 @@ export function makeDeps(opts: FakeOpts) {
     updateEventContact: [] as {
       email: string;
       id: string;
-      patch: { summary?: string; description?: string; attendeeEmail?: string; attendeeName?: string };
+      patch: { summary?: string; description?: string; location?: string; attendeeEmail?: string; attendeeName?: string };
     }[],
     updateBookingContact: [] as {
       bookingId: string;
@@ -671,8 +673,8 @@ export function makeDeps(opts: FakeOpts) {
         unverified: new Set(emails.filter((em) => unverified.has(em))),
       };
     },
-    createEvent: async (email, _args, clientId) => {
-      calls.createEvent.push({ email, clientId });
+    createEvent: async (email, args, clientId) => {
+      calls.createEvent.push({ email, clientId, args });
       fireConcurrent(); // #615: a concurrent cancel/reassign lands mid-create
       if (clientId) {
         const reused = gcalByClientId.get(clientId);

@@ -763,16 +763,54 @@ export function busyBlockFor(
  * whole week before the call and on the day (#1421).
  *
  * One builder, because it was assembled inline at four separate call sites (the
- * booking, both reschedule paths and the reassign), and a payload with no single
+ * booking, both reschedule paths and the reassign; the contact correction is a
+ * fifth), and a payload with no single
  * place its shape can be seen is one where a difference between two of them is
  * invisible to a reader of either (L94). It is also what lets the invite copy be
  * READ before it ships, through `pnpm preview:booker`.
  *
- * The name is optional because a booking can reach here without one; the title
- * then names the appointment alone rather than trailing an empty "with".
+ * #3376: it names BOTH people, the way cal.com's invite does ("Senior Loan
+ * Advisor Call between David Menjivar and Brad Jones"), so the advisor sees who
+ * the call is with, and the lead who will ring them, from the calendar view.
+ *
+ * Either name can be missing (a booking can arrive without the lead's, a profile
+ * without the advisor's), and the title never trails a dangling word:
+ *   - both:           "{type} between {advisor} and {lead}"
+ *   - the lead only:  "{type} with {lead}", the shape before #3376
+ *   - otherwise:      "{type}" alone. An advisor name with no lead is NOT written
+ *     as "with {advisor}": on the advisor's own calendar that names the owner,
+ *     and "with X" has always meant the lead, so flipping who X is by case would
+ *     mislead whoever reads it.
+ * A blank or whitespace name is a missing one.
+ *
+ * Named fields rather than positions, because both names are strings and a
+ * transposed call would put the advisor where the lead belongs with nothing to
+ * notice it (L455).
  */
-export function eventSummary(eventTypeName: string, attendeeName: string | null): string {
-  return `${eventTypeName}${attendeeName ? ` with ${attendeeName}` : ""}`;
+export function eventSummary(names: {
+  eventType: string;
+  advisor: string | null;
+  lead: string | null;
+}): string {
+  const advisor = names.advisor?.trim() || null;
+  const lead = names.lead?.trim() || null;
+  if (advisor && lead) return `${names.eventType} between ${advisor} and ${lead}`;
+  if (lead) return `${names.eventType} with ${lead}`;
+  return names.eventType;
+}
+
+/**
+ * The invite's LOCATION: the lead's phone, written AS STORED (`+1XXXXXXXXXX`),
+ * for the same reason the description's phone line is (#2616): the advisor taps
+ * it to dial, and E.164 is the form a dialler handles most reliably (#3376). It is
+ * what cal.com's invite shows after the time, so the advisor has the number
+ * without opening the event.
+ *
+ * Null when the booking has no number, and the caller then sends NO location
+ * rather than an empty one.
+ */
+export function eventLocation(phone: string | null | undefined): string | null {
+  return phone?.trim() || null;
 }
 
 /**
