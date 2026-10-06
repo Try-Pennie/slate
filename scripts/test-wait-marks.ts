@@ -107,8 +107,9 @@ function clock(start: number) {
 
 // --- the Worker's entry stamp and invocation count, carried to the route ---------
 // The Worker runs before Next, so its two facts travel on the request: when it was
-// entered, and how many requests this isolate had served before this one (0 is a
-// fresh isolate's first, counted independently of any module's evaluation).
+// entered, and how many times this isolate had run the app before this request,
+// counting cron ticks and receipts too (0 is a fresh isolate's first run, counted
+// independently of any module's evaluation).
 {
   const req = withEntryMarks(new Request("https://x.test/api/bookings"), { loadtest: true, nowMs: 1_234, invocationIndex: 0 });
   const read = readEntryMarks(req.headers);
@@ -134,7 +135,7 @@ function clock(start: number) {
 
 // --- #3354: which leg of the run sent a confirm, as its driver names it ------------
 {
-  eq([...LOADTEST_LEGS], ["steady", "burst", "fault", "baseline", "preflight", "ceiling"], "the legs are the driver's four modes and the two controls that also confirm");
+  eq([...LOADTEST_LEGS], ["steady", "burst", "fault", "baseline", "preflight", "ceiling", "cold"], "the legs are the driver's four modes, the two controls that also confirm, and the cold leg");
   eq(LOADTEST_LEG_HEADER, "x-loadtest-leg", "the leg header's name");
   for (const leg of LOADTEST_LEGS) eq(readLoadtestLeg(new Headers({ [LOADTEST_LEG_HEADER]: leg })), leg, `a confirm sent by the ${leg} leg reads as that leg`);
   eq(readLoadtestLeg(new Headers()), null, "a confirm that named no leg reads as absent, which a hand run's are");

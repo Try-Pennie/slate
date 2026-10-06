@@ -1275,6 +1275,33 @@ The platform half is reported `unmeasured` on every run so far: the analytics AP
 returns no rows for a window minutes old, which is the lag this repo already
 documents (#1533). That is the judge's control working as designed, not a pass.
 
+## The diagnostic cold leg (#3354)
+
+A run yields about ten confirms that are the first on their isolate, so the startup
+bar's cold p95 is its slowest one, and under the three run rule chosen on 2026-10-06
+one slow cold confirm in any of the three fails the set. Re-read on 2026-10-06, four
+runs' cold maxima were 2219, 2365, 2232 and 2782ms over 7, 24, 7 and 10 cold confirms.
+That is too few to tell a startup change from noise.
+
+Dispatch with `cold_samples` set (30 is the target and the most, which is what fits in the 60 minute bound every job is held to) and the `cold` job
+runs after the archive and the fault leg. It reads every code's offered times once,
+then for each sample deploys a new version (`wrangler deploy --env loadtest`, keeping
+the run's recompute arm), waits `COLD_SETTLE_MS` and sends ONE confirm with the
+`cold` leg, so each confirm is a fresh version's first request. A deploy that fails
+sends no confirm, because one sent then would land on the old version and read warm.
+The job streams its own tail as `cold-tail.jsonl`, separate from the main archive,
+so none of these confirms join the startup bar's population.
+
+The report's "cold after deploy" line says how many deploys made a version, how many
+confirms went, how many the tail shows on the version just deployed, how many read
+cold, their wait before the profile (p50, p95 and max) and the median of each span.
+A cold count under 30 is called short. It is a diagnostic and never fails the run.
+At 0 (the default) the job is skipped and the line says it was not asked for.
+
+It costs about a minute of runner time per sample on top of one build: about 35
+billed minutes at 30 samples. Its decisions are pinned by
+`scripts/test-loadtest-cold-plan.ts`, including the workflow wiring above.
+
 ## The post confirm recompute arms (#3258)
 
 Every booking on a user facing path schedules a recompute of the booked bucket's

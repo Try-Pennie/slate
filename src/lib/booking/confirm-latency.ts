@@ -45,9 +45,10 @@ export interface ConfirmLineFacts {
    */
   marks?: WaitMarks;
   /**
-   * #3354: how many requests this isolate had served before this one, counted at
-   * the Worker (0 is a fresh isolate's first). Null or absent when unknown, which is
-   * never read as a first request.
+   * #3354: how many times this isolate had run the app before this request, counted
+   * at the Worker over HTTP requests, cron ticks and log shipping receipts alike
+   * (`worker/app-invocations.ts`; 0 is a fresh isolate's first run). Null or absent
+   * when unknown, which is never read as a first request.
    */
   isolateInvocationIndex?: number | null;
   /**

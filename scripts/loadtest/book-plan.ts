@@ -745,3 +745,25 @@ export function readDriverMode(raw: string | undefined): { ok: true; mode: Drive
 export function bookingRequestHeaders(apiKey: string, leg: LoadtestLeg): Record<string, string> {
   return { Authorization: `Bearer ${apiKey}`, "content-type": "application/json", [LOADTEST_LEG_HEADER]: leg };
 }
+
+/**
+ * #3354: the body of one confirm, for every sender that drives the booking path (the
+ * steady, burst, fault and baseline drivers, and the cold leg), so they all send the
+ * same lead. Each carries its own external id, an address on the load test's own
+ * domain and its OWN number (#2261): a weak dedupe match is email OR phone, so one
+ * shared number makes every booking after the first a `confirm_required` refusal of
+ * the same person calling again.
+ */
+export function bookingBody(req: { code: string; startIso: string; externalId: string; timezone: string }): Record<string, unknown> {
+  return {
+    bucketCode: req.code,
+    start: req.startIso,
+    timezone: req.timezone,
+    externalId: req.externalId,
+    attendee: {
+      name: `Loadtest Lead ${req.externalId}`,
+      email: `${req.externalId}@loadtest.local`,
+      phone: loadtestPhone(req.externalId),
+    },
+  };
+}

@@ -69,12 +69,13 @@ export function readEntryMarks(headers: Headers): { entryAtMs: number | null; in
  * #3354: which leg of a load run sent a confirm, named by its sender. A run's cold
  * confirms come from different places (the preflight's control booking on a fresh
  * deploy, the burst's crowd spinning up isolates, the steady pass, the fault leg's
- * redeploy), and one number over all of them cannot say which. The four driver modes
- * plus the preflight's control booking and the address ceiling's dry runs. Read
- * under SLATE_LOADTEST only; a label, never a permission.
+ * redeploy), and one number over all of them cannot say which. The four driver modes,
+ * the preflight's control booking, the address ceiling's dry runs and the diagnostic
+ * cold leg's one confirm per deploy. Read under SLATE_LOADTEST only; a label, never a
+ * permission.
  */
 export const LOADTEST_LEG_HEADER = "x-loadtest-leg";
-export const LOADTEST_LEGS = ["steady", "burst", "fault", "baseline", "preflight", "ceiling"] as const;
+export const LOADTEST_LEGS = ["steady", "burst", "fault", "baseline", "preflight", "ceiling", "cold"] as const;
 export type LoadtestLeg = (typeof LOADTEST_LEGS)[number];
 
 /** The leg as the route reads it: null when none was named, `unreadable` when one outside the vocabulary was. */

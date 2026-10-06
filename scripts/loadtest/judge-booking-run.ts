@@ -21,10 +21,11 @@ import {
 import type { BookingAttempt, DriverResult } from "./book-plan.ts";
 import { HEALTHY_INVOCATION_STATUS, type ScheduledReading } from "./platform-reading.ts";
 import { CEILING_CONCLUSION, type CeilingVerdict } from "./preflight-checks.ts";
-// Type-only (erased under --experimental-strip-types), so the judge never pulls
-// the reader in at runtime and the two stay one direction apart.
+// The judge reads the reader's span list at runtime; the reader never imports the
+// judge, so the two stay one direction apart.
 import { WAIT_SPAN_FIELDS, type ConfirmStartupReading, type LineSplit, type SideWaits } from "./confirm-startup.ts";
 import { LOADTEST_LEGS } from "../../src/lib/booking/wait-marks.ts";
+import { COLD_SAMPLES_TARGET, type ColdLegResult } from "./cold-plan.ts";
 import { CRON_BUDGET_WARN_SHARE } from "../../src/lib/monitor/cron-budget.ts";
 import type { SoakSample } from "./invariants.ts";
 import {
@@ -776,6 +777,46 @@ export function startupOriginText(cs: ConfirmStartupReading | null): string {
     .sort(([a], [b]) => (order.indexOf(a) === -1 ? order.length : order.indexOf(a)) - (order.indexOf(b) === -1 ? order.length : order.indexOf(b)))
     .map(([l, w]) => group(l, w));
   return `${head}: by script version ${versions.join("; ") || "none read"}; by leg ${legs.join("; ") || "none read"}`;
+}
+
+/**
+ * #3354: the diagnostic cold leg as one report line. A load run's own cold confirms
+ * number about ten, so its cold p95 is its slowest; this leg deploys a version and
+ * sends one confirm, N times, for a distribution a startup change can be judged
+ * against. Never a bar. Every way it can come back short is said in its own words: not
+ * asked for, its results never arriving, its log not read, a deploy that made no
+ * version, a confirm that landed on an older version, and fewer cold samples than the
+ * plan asked for (L98).
+ */
+export function coldAfterDeployText(input: {
+  expected: number;
+  result: ColdLegResult | null;
+  reading: ConfirmStartupReading | null;
+}): string {
+  const head = "- cold after deploy (diagnostic, not a bar)";
+  if (input.expected === 0) return `${head}: not asked for (cold_samples was 0)`;
+  if (input.result === null) {
+    return `${head}: asked for ${input.expected} samples and the leg's results never arrived, so nothing was measured`;
+  }
+  const deployed = input.result.attempts.filter((a) => a.deployOk).length;
+  const sent = input.result.attempts.filter((a) => a.status !== null).length;
+  const asked = `asked for ${input.result.planned}; ${deployed} of ${input.result.planned} deploys made a version and ${sent} confirms sent`;
+  const r = input.reading;
+  if (r === null) return `${head}: ${asked}; its log was not archived or not read, so their startup was not measured`;
+  const versions = new Set(Object.keys(r.byVersion));
+  const onOwn = input.result.attempts.filter((a) => a.status !== null && a.version !== null && versions.has(a.version)).length;
+  const p = percentiles(r.coldPreProfileMs);
+  const spans = WAIT_SPAN_FIELDS.flatMap((f) => {
+    const q = percentiles(r.waitSpans.cold[f] ?? []);
+    return q === null ? [] : [`${WAIT_SPAN_LABELS[f]} p50 ${q.p50}ms`];
+  });
+  return (
+    `${head}: ${asked}; the log read ${r.samples} of them, ${onOwn} on the version just deployed, ` +
+    `${r.cold} the first on their isolate (${r.firstRequests} the Worker's first request)` +
+    (p === null ? "; no cold confirm, so nothing to report on the wait" : `; before the profile p50 ${p.p50}ms p95 ${p.p95}ms max ${p.max}ms`) +
+    (r.cold < COLD_SAMPLES_TARGET ? `, short of the ${COLD_SAMPLES_TARGET} cold samples the plan asked for` : "") +
+    (spans.length > 0 ? `; by span ${spans.join(", ")}` : "")
+  );
 }
 
 /** The steady line reading as one report line, so the report never re-derives it (L41). */

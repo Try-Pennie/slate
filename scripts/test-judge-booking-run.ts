@@ -25,6 +25,7 @@ import {
   waitSpanText,
   lineSplitText,
   startupOriginText,
+  coldAfterDeployText,
   type JudgeInput,
   type JudgedBooking,
 } from "./loadtest/judge-booking-run.ts";
@@ -2488,6 +2489,41 @@ const legAttempts = (i: JudgeInput, leg: number) =>
   assert(text.indexOf("8fb6133b") < text.indexOf("5239f06d"), `the version with more confirms first (got: ${text})`);
   assert(text.indexOf("burst") < text.indexOf("preflight") && text.indexOf("preflight") < text.indexOf("none"), `legs in the run's own order, the unnamed last (got: ${text})`);
   assert(/not read/.test(startupOriginText(null)), "and a run with no archive says so");
+}
+
+// --- #3354: the diagnostic cold leg, one confirm after each of N deploys --------------
+{
+  const attempt = (i: number, version: string | null, status: number | null) => ({
+    i,
+    slot: { code: "112", start: `s${i}` },
+    deployOk: version !== null,
+    version,
+    sentAtMs: status === null ? null : 1_000 * i,
+    status,
+    outcome: status === 200 ? "created" : null,
+  });
+  assert(/not asked for/.test(coldAfterDeployText({ expected: 0, result: null, reading: null })), "a run that did not ask for the leg says so");
+  const lost = coldAfterDeployText({ expected: 30, result: null, reading: null });
+  assert(/asked for 30/.test(lost) && /never arrived/.test(lost), `a leg asked for whose results never arrived says so, never a zero (got: ${lost})`);
+
+  const reading = startupReading([
+    { handlerMs: 900, beforeMs: 1_800, cold: true, answer: { wait_route_ms: 1_000, wait_line_ms: 300, isolate_invocation_index: 0 } },
+    { handlerMs: 900, beforeMs: 2_100, cold: true, answer: { wait_route_ms: 1_200, wait_line_ms: 350, isolate_invocation_index: 0 } },
+    { handlerMs: 900, beforeMs: 600, cold: false, answer: { isolate_invocation_index: 3 } },
+  ])!;
+  const withVersions = { ...reading, byVersion: { "aaaa1111-x": { cold: [1_800], warm: [] }, "bbbb2222-x": { cold: [2_100], warm: [600] } } };
+  const result = { mode: "cold" as const, planned: 4, attempts: [attempt(1, "aaaa1111-x", 200), attempt(2, "bbbb2222-x", 200), attempt(3, null, null), attempt(4, "cccc3333-x", 200)] };
+  const text = coldAfterDeployText({ expected: 4, result, reading: withVersions });
+  assert(/diagnostic, not a bar/.test(text), `it says it is not a bar (got: ${text})`);
+  assert(/3 of 4 deploys made a version/.test(text), `how many deploys worked (got: ${text})`);
+  assert(/3 confirms sent/.test(text), `and how many confirms went (got: ${text})`);
+  assert(/2 on the version just deployed/.test(text), `and how many landed on the version their deploy made, from the tail's own version (got: ${text})`);
+  assert(/2 the first on their isolate/.test(text), `and how many read cold (got: ${text})`);
+  const p = percentiles([1_800, 2_100])!;
+  assert(text.includes(`before the profile p50 ${p.p50}ms p95 ${p.p95}ms max ${p.max}ms`), `with the cold wait through the judge's own percentile (got: ${text})`);
+  assert(/short of the 30/.test(text), `and says a sample under the target is short of it (got: ${text})`);
+  const unread = coldAfterDeployText({ expected: 4, result, reading: null });
+  assert(/not archived|not read/.test(unread) && /3 confirms sent/.test(unread), `a leg whose log was not read says what it sent and that nothing was measured (got: ${unread})`);
 }
 
 finish();
