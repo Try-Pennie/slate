@@ -847,8 +847,9 @@ export function startupOriginText(cs: ConfirmStartupReading | null): string {
 }
 
 /**
- * #3354: the diagnostic cold leg as one report line. A load run's own cold confirms
- * number about ten, so its cold p95 is its slowest; this leg deploys a version and
+ * #3354: the diagnostic cold leg as one report line. A load run yields a handful of
+ * confirms that are their isolate's first request (4 of 522 on run 37520312761, #3418),
+ * so its cold p95 is its slowest; this leg deploys a version and
  * sends one confirm, N times, for a distribution a startup change can be judged
  * against. Never a bar. Every way it can come back short is said in its own words: not
  * asked for, its results never arriving, its log not read, a deploy that made no
