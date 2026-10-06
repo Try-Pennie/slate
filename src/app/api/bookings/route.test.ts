@@ -188,6 +188,17 @@ describe("POST /api/bookings (auth skeleton)", () => {
     expect(res.headers.get("x-loadtest-answered-at")).toBeNull();
   });
 
+  // #3354: the wait marks are the load test's only, so a production confirm reads no
+  // extra clock and carries no entry stamp or invocation count a caller could have sent.
+  it("keeps no wait marks and no invocation count when the flag is off", async () => {
+    regalKey.primary.mockReturnValue("real-secret");
+    await post("Bearer real-secret", VALID_BODY);
+    const facts = service.bookViaApi.mock.calls.at(-1)?.[1] as { marks?: unknown; isolateInvocationIndex?: unknown } | undefined;
+    expect(facts).toBeDefined();
+    expect(facts?.marks).toBeUndefined();
+    expect(facts?.isolateInvocationIndex).toBeUndefined();
+  });
+
   it("trips 429 when the per-key ceiling is exceeded", async () => {
     regalKey.primary.mockReturnValue("real-secret");
     rateLimit.allowRequest.mockResolvedValue(false);

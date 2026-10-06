@@ -20,6 +20,7 @@
 import { log } from "@/lib/log";
 import { refusalLogFields, refusalTraceOf } from "@/lib/booking/refusal-trace";
 import type { LineServed } from "@/lib/booking/shared-confirm-line";
+import type { WaitMarks } from "@/lib/booking/wait-marks";
 
 /** What a route learns while handling the request that the line should say. */
 export interface ConfirmLineFacts {
@@ -37,6 +38,18 @@ export interface ConfirmLineFacts {
    * by the line's client, so a fallback rate and the line's cost can be counted.
    */
   line?: LineServed;
+  /**
+   * #3354: the wait before the confirm's profile, as marks at fixed points of this
+   * request (`wait-marks.ts`). Set by the route under SLATE_LOADTEST only, so a
+   * production confirm reads no extra clock; absent means no wait fields.
+   */
+  marks?: WaitMarks;
+  /**
+   * #3354: how many requests this isolate had served before this one, counted at
+   * the Worker (0 is a fresh isolate's first). Null or absent when unknown, which is
+   * never read as a first request.
+   */
+  isolateInvocationIndex?: number | null;
 }
 
 /**
@@ -71,6 +84,8 @@ export async function answerTimed(
             line_ms: Math.round(opts.facts.line.lineMs),
           }
         : {}),
+      ...(opts.facts?.marks ? opts.facts.marks.fields() : {}),
+      ...(typeof opts.facts?.isolateInvocationIndex === "number" ? { isolate_invocation_index: opts.facts.isolateInvocationIndex } : {}),
     });
   try {
     const res = await handle();

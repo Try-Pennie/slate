@@ -115,7 +115,42 @@ export interface ConfirmStartupReading {
    * drop a reading and say nothing (L10).
    */
   unparsable: number;
+  /**
+   * #3354: the wait before the profile, by span, from each confirm's own marks
+   * (`src/lib/booking/wait-marks.ts`), filed under the same cold or warm call as its
+   * profile. Read from the `confirm answered` line of the SAME invocation, so a span
+   * and its classification describe one request (L420). A span a confirm did not
+   * carry, or carried unreadably, contributes nothing rather than a zero (L90).
+   */
+  waitSpans: { cold: Record<string, number[]>; warm: Record<string, number[]> };
+  /** Profiles whose invocation logged a `confirm answered` line with marks or an invocation index. */
+  markedSamples: number;
+  /** The same, split by the cold or warm call, so each side says how many carried marks. */
+  markedBySide: { cold: number; warm: number };
+  /** Profiles whose invocation carried a readable Worker invocation index. */
+  invocationIndexKnown: number;
+  /** Of those, the confirms that were their isolate's FIRST run of the app (invocation index 0). */
+  firstRequests: number;
+  /**
+   * First requests the module stamp read as warm. Such a request cannot have found
+   * the confirm module already evaluated, so each one is a confirm missing from the
+   * cold population the startup bar judges (L457).
+   */
+  firstRequestsReadWarm: number;
 }
+
+/** The spans `wait-marks.ts` writes, in the order a confirm passes them. */
+export const WAIT_SPAN_FIELDS = [
+  "wait_route_ms",
+  "wait_auth_ms",
+  "wait_pre_line_ms",
+  "wait_line_ms",
+  "wait_decide_ms",
+  "wait_to_profile_ms",
+  "wait_total_ms",
+] as const;
+
+const ANSWER_MSG = 'msg="confirm answered"';
 
 /** One log entry inside a tail event. */
 interface TailLog {
@@ -227,6 +262,12 @@ export function readConfirmStartup(archive: string): ConfirmStartupReading | nul
     impossible: 0,
     unreadable: 0,
     unparsable: 0,
+    waitSpans: { cold: {}, warm: {} },
+    markedSamples: 0,
+    markedBySide: { cold: 0, warm: 0 },
+    invocationIndexKnown: 0,
+    firstRequests: 0,
+    firstRequestsReadWarm: 0,
   };
   let sawAny = false;
 
@@ -243,6 +284,9 @@ export function readConfirmStartup(archive: string): ConfirmStartupReading | nul
       continue;
     }
     const logs = Array.isArray(event.logs) ? (event.logs as TailLog[]) : [];
+    // #3354: this invocation's own answer line, which carries its marks and the
+    // Worker's invocation index; read once per invocation and paired with its profile.
+    const answerText = logs.map((l) => messageText(l.message)).find((t) => t.includes(ANSWER_MSG)) ?? null;
     for (const entry of logs) {
       const text = messageText(entry.message);
       if (!text.includes(TAG)) continue;
@@ -285,6 +329,28 @@ export function readConfirmStartup(archive: string): ConfirmStartupReading | nul
       } else {
         reading.warmPreProfileMs.push(preProfileMs);
         if (cpuMs !== null) reading.warmCpuMs.push(cpuMs);
+      }
+      if (answerText !== null) {
+        const invocationIndex = field(answerText, "isolate_invocation_index");
+        const spans = reading.waitSpans[cold ? "cold" : "warm"];
+        let marked = invocationIndex !== null;
+        for (const name of WAIT_SPAN_FIELDS) {
+          const v = field(answerText, name);
+          if (v === null || v < 0) continue;
+          (spans[name] ??= []).push(v);
+          marked = true;
+        }
+        if (marked) {
+          reading.markedSamples += 1;
+          reading.markedBySide[cold ? "cold" : "warm"] += 1;
+        }
+        if (invocationIndex !== null && invocationIndex >= 0) {
+          reading.invocationIndexKnown += 1;
+          if (invocationIndex === 0) {
+            reading.firstRequests += 1;
+            if (!cold) reading.firstRequestsReadWarm += 1;
+          }
+        }
       }
     }
   }

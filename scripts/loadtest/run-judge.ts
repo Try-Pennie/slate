@@ -37,6 +37,7 @@ import {
   burstLegText,
   burstsSummaryText,
   steadyLineText,
+  waitSpanText,
 } from "./judge-booking-run.ts";
 import {
   INVOCATIONS_QUERY,
@@ -773,6 +774,9 @@ if (m) {
             ? `; ${confirmStartup.impossible} readings could not be right and were floored at zero`
             : ""),
   );
+  // #3354: where the wait before the profile went, by span, from each confirm's
+  // own marks. Built by the judge so the report never re-derives it (L41).
+  lines.push(waitSpanText(confirmStartup));
   // The deferred span, APPORTIONED by job (#2353). The line above reports the
   // whole span; this says which job it was, which is the question somebody
   // optimising it actually has. WALL, like every number a Worker can produce
