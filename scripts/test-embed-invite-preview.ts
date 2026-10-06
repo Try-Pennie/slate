@@ -163,12 +163,18 @@ const screens = inviteCopyScreens();
 }
 
 // The title must not trail an empty "with" when we never got a name, which is the
-// case a preview built only from a happy-path fixture would never show.
+// case a preview built only from a happy-path fixture would never show. #3376: it
+// names both people when it can, so the preview shows that shape, the lead-only
+// shape, and the appointment alone.
 {
   const titles = screens[0]!.lines.filter((l) => l.state.includes("title")).map((l) => l.text);
-  assert(titles.length === 2, "both title states are previewed");
+  assert(titles.length === 3, `all three title states are previewed (got ${titles.length})`);
   assert(
-    titles.some((t) => /\bwith\b/.test(t)) && titles.some((t) => !/\bwith\b/.test(t)),
+    titles.some((t) => /\bbetween\b.+\band\b/.test(t)),
+    `the title names the advisor and the lead when both are known (got: ${titles.join(" | ")})`,
+  );
+  assert(
+    titles.some((t) => /\bwith\b/.test(t)) && titles.some((t) => !/\b(with|between)\b/.test(t)),
     `a nameless booking's title names the appointment alone (got: ${titles.join(" | ")})`,
   );
 }

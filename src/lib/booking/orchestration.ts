@@ -32,6 +32,7 @@ import {
   withCallingNumberLine,
   withPhoneLine,
   eventSummary,
+  eventLocation,
   idempotencyKeyFor,
   selectAgent,
   MAX_COMPLETION_DRAIN_BATCHES,
@@ -975,6 +976,8 @@ export function rescheduleFailureContext(err: unknown): RescheduleFailureContext
 export interface CreateEventArgs {
   summary: string;
   description?: string;
+  /** #3376: the lead's phone as stored (`eventLocation`); absent when there is none. */
+  location?: string;
   start: string;
   end: string;
   timezone: string;
@@ -1339,7 +1342,7 @@ export interface BookingDeps {
   updateEventContact(
     email: string,
     eventId: string,
-    patch: { summary?: string; description?: string; attendeeEmail?: string; attendeeName?: string },
+    patch: { summary?: string; description?: string; location?: string; attendeeEmail?: string; attendeeName?: string },
   ): Promise<void>;
   // db
   getUser(userId: string): Promise<User>;
@@ -4542,8 +4545,9 @@ async function createHeld(
       },
     };
     const event: ReservationPayload["event"] = {
-      summary: eventSummary(bookedEventType.name, input.attendee.name ?? null),
+      summary: eventSummary({ eventType: bookedEventType.name, advisor: agent.name, lead: input.attendee.name ?? null }),
       description: eventDescription(phone, manageUrl(deps, manageToken), { isTest: bookedBucket.is_test }),
+      location: eventLocation(phone),
       start: startIso,
       end: endIso,
       timezone: input.timezone,
@@ -4878,6 +4882,7 @@ async function completeReservation(
     {
       summary: event.summary,
       description: event.description,
+      location: event.location ?? undefined,
       start: event.start,
       end: event.end,
       timezone: event.timezone,
@@ -6348,12 +6353,19 @@ async function applyReschedule(
     await deps.writeReschedulePin(booking.id, pin);
   }
 
+  // Who takes the call after this move: the advisor already on it in place, or the
+  // one the reroute pinned. Read BEFORE the event is built, because the invite's
+  // title names them (#3376), and a reroute hands the call to somebody else.
+  const agentName =
+    pin.branch === "in_place" ? booking.agent_name : (await deps.getUser(pin.pinned_user_id)).name;
+
   // The event either branch below may have to CREATE, built once: the in place
   // branch creates it only when the PATCH target is gone, the reassign branch
   // always does, and the two must describe the same call the same way.
   const movedEvent = {
-    summary: eventSummary(eventType.name, booking.attendee_name),
+    summary: eventSummary({ eventType: eventType.name, advisor: agentName, lead: booking.attendee_name }),
     description: eventDescription(booking.attendee_phone, manageUrl(deps, token), { isTest: bucket.is_test }),
+    location: eventLocation(booking.attendee_phone) ?? undefined,
     start: startIso,
     end: endIso,
     timezone: booking.timezone,
@@ -6425,8 +6437,6 @@ async function applyReschedule(
     recreated = true;
   }
 
-  const agentName =
-    pin.branch === "in_place" ? booking.agent_name : (await deps.getUser(pin.pinned_user_id)).name;
   const agentEmail = pin.pinned_agent_email;
   const assigned = pin.pinned_user_id;
 
@@ -6705,7 +6715,8 @@ export async function reassignBooking(
     newEventId = await deps.createEvent(
       agent.email,
       {
-        summary: eventSummary(eventType.name, booking.attendee_name),
+        summary: eventSummary({ eventType: eventType.name, advisor: agent.name, lead: booking.attendee_name }),
+        location: eventLocation(booking.attendee_phone) ?? undefined,
         // #969: this invite is the ONE notification the customer gets on a reassign
         // (the old event is removed silently below). Explain the swap so a fresh
         // invite for an appointment they already have does not read as a mistake.
@@ -7406,7 +7417,13 @@ export async function updateBookingContact(
       // Each field is sent only when it moved, so the PATCH says exactly what
       // changed and `sendUpdates` is decided by whether the invitee did.
       ...(description !== undefined ? { description } : {}),
-      ...(changed.name ? { summary: eventSummary(eventType.name, nextName ?? null) } : {}),
+      ...(changed.name
+        ? { summary: eventSummary({ eventType: eventType.name, advisor: booking.agent_name, lead: nextName ?? null }) }
+        : {}),
+      // #3376: the location is SET from the stored number, never edited, so unlike
+      // the description it needs no read and moves even when the body could not be
+      // read. A number the lead removed clears it.
+      ...(changed.phone ? { location: eventLocation(stored) ?? "" } : {}),
       ...(changed.email ? { attendeeEmail: nextEmail ?? undefined, attendeeName: nextName ?? undefined } : {}),
     };
     let patchFailed = false;
