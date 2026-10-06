@@ -12,7 +12,7 @@ import { createAsserter, makeDeps, input } from "./lib/booking-fakes.ts";
 
 const { assert, finish } = createAsserter();
 
-function watched(deps: ReturnType<typeof makeDeps>["deps"], opts: { enterThrows?: boolean } = {}) {
+function watched(deps: ReturnType<typeof makeDeps>["deps"], opts: { enterThrows?: boolean; releaseThrows?: boolean } = {}) {
   const seen: string[] = [];
   const line = deps.confirmQueue;
   deps.confirmQueue = {
@@ -28,6 +28,7 @@ function watched(deps: ReturnType<typeof makeDeps>["deps"], opts: { enterThrows?
     },
     release: async () => {
       seen.push("release");
+      if (opts.releaseThrows) throw new Error("the give back failed");
       return line.release();
     },
   };
@@ -56,6 +57,27 @@ async function run() {
     }
     assert(threw === "the line could not be entered", `the failure still reaches the caller (got ${threw})`);
     assert(seen.includes("release") && seen.indexOf("release") > seen.indexOf("lookahead"), `and whatever the lookahead kept is released (got ${seen.join(",")})`);
+  }
+
+  // --- a give back that fails never hides the confirm's own outcome -----------------
+  // It is best effort, so it can neither replace the entry's real error nor fail a
+  // confirm that booked.
+  {
+    const { deps } = makeDeps({ personBookings: [] });
+    watched(deps, { releaseThrows: true });
+    const res = await bookViaApi({ ...input, externalId: "ext-release-fails", confirmReschedule: false } as ApiBookingInput, deps);
+    assert(res.outcome === "created", `a failed give back does not fail a confirm that booked (got ${res.outcome})`);
+  }
+  {
+    const { deps } = makeDeps({ personBookings: [] });
+    watched(deps, { enterThrows: true, releaseThrows: true });
+    let threw = "";
+    try {
+      await bookViaApi({ ...input, externalId: "ext-release-fails-too", confirmReschedule: false } as ApiBookingInput, deps);
+    } catch (err) {
+      threw = err instanceof Error ? err.message : String(err);
+    }
+    assert(threw === "the line could not be entered", `and the entry's own error is the one the caller sees (got ${threw})`);
   }
 
   finish();

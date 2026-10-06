@@ -329,8 +329,10 @@ export function makeSharedConfirmLine<T>(deps: {
   const enterOnce = async (key: LineKey, waitMs: number | undefined): Promise<LineTurn<T>> => {
     const served: LineServed = { line: "shared", reason: "ok", key: keyKindOf(key.group), lineMs: 0 };
     const stashed = stash.get(isolateKeyOf(key)) ?? null;
-    stash.delete(isolateKeyOf(key));
+    // Cleared only once the switch has been read: a read that throws leaves what the
+    // lookahead kept where `release` will find it (#3351).
     const how = await decide(key);
+    stash.delete(isolateKeyOf(key));
     if (how.use !== "shared") {
       // #3351: the switch or binding changed since the lookahead kept a lead or ticket
       // for this enter. It is given back before the other line is taken, or the

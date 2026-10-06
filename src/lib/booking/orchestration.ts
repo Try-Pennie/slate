@@ -3924,7 +3924,13 @@ async function inConfirmTurn<R>(
     // #3351: a lookahead on the shared line can keep a lead or a ticket for the enter
     // that follows. Whatever way this entry ends, anything it kept is given back, so
     // the line is never held for a confirm that left; once the enter came, nothing.
-    await deps.confirmQueue.release();
+    // Best effort: a give back that fails is logged and never replaces the entry's own
+    // outcome, an error included.
+    try {
+      await deps.confirmQueue.release();
+    } catch (err) {
+      log.warn("booking", { msg: "giving back what a lookahead kept on the confirm line failed", bucket_code: line.bucketCode }, err);
+    }
   }
   // #3354: the line has answered, whether with a turn, a refusal or a timeout.
   deps.mark?.("line_turn");

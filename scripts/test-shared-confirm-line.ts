@@ -87,7 +87,7 @@ function world() {
       },
     }),
   };
-  const client = (opts: { on?: SwitchReading; bound?: boolean; trace?: string | null } = {}) => {
+  const client = (opts: { on?: SwitchReading; bound?: boolean; trace?: string | null; enabled?: () => Promise<SwitchReading> } = {}) => {
     const served: LineServed[] = [];
     const reach: string[] = [];
     const own = isolateLine(makeConfirmQueue<string>({ timer, now: () => now }));
@@ -103,7 +103,7 @@ function world() {
     const line = makeSharedConfirmLine<string>({
       namespace: opts.bound === false ? null : namespace,
       fallback,
-      enabled: async () => opts.on ?? { on: true, source: "read" },
+      enabled: opts.enabled ?? (async () => opts.on ?? { on: true, source: "read" }),
       record: (s) => served.push({ ...s }),
       onReachFailure: (reason) => reach.push(reason),
       now: () => now,
@@ -398,6 +398,31 @@ async function main() {
     const t = (await w.settle(a.line.enter(KEY, 10_000))) as LineTurn<string>;
     const handed = a.fallbackWaits[a.fallbackWaits.length - 1] ?? Infinity;
     assert(handed <= 10_000 - CONFIRM_LINE_CALL_MS, `switched off: a slow give back is taken out of the wait (handed ${handed}ms of 10000)`);
+    if (t.kind === "lead") await w.settle(t.done({ full: false }));
+  }
+
+  {
+    // An enter that throws before it uses what the lookahead kept (the switch read
+    // failing, say) leaves it in place, so the confirm path's `release` still finds it.
+    const w = world();
+    let reads = 0;
+    const a = w.client({
+      enabled: async () => {
+        reads += 1;
+        if (reads > 1) throw new Error("the switch could not be read");
+        return { on: true, source: "read" };
+      },
+    });
+    const b = w.client();
+    await w.settle(a.line.lookahead(KEY, 10_000));
+    let threw = "";
+    await w.settle(a.line.enter(KEY, 10_000).catch((err: unknown) => void (threw = err instanceof Error ? err.message : String(err))));
+    assert(threw === "the switch could not be read", `enter throws: the failure reaches the caller (got ${threw})`);
+    await w.settle(a.line.release());
+    assert(w.sent.includes("abandon"), `enter throws: release still gives back the kept lead (sent ${JSON.stringify(w.sent)})`);
+    const started = w.now();
+    const t = (await w.settle(b.line.enter(KEY, 10_000))) as LineTurn<string>;
+    assert(t.kind === "lead" && w.now() - started < CONFIRM_LINE_ACK_MS / 4, `enter throws: the next confirm leads at once (waited ${w.now() - started}ms)`);
     if (t.kind === "lead") await w.settle(t.done({ full: false }));
   }
 
