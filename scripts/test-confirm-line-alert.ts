@@ -86,6 +86,30 @@ function reporter(onWorkers = true) {
   assert(r.pages[0]!.includes("binding"), `unbound: and says it is the binding (got ${r.pages[0]})`);
 }
 
+// --- #3351: an answer the client cannot read pages on the same rule ------------------
+// It is a protocol fault, not a deploy, so it is never folded into `gone`.
+{
+  const r = reporter();
+  for (let i = 0; i < CONFIRM_LINE_PAGE_AFTER; i++) r.report("bad-answer", null);
+  assert(r.pages.length === 1, `bad answer: repeated answers the client cannot read page (got ${r.pages.length})`);
+}
+
+// --- #3351: a page worded from the WHOLE window, never only the failure that tipped it --
+// Two timeouts and one unreadable reply must not page as "replies they cannot read",
+// which claims a cause only one of the three showed (L11).
+{
+  const r = reporter();
+  r.report("reach-timeout", null);
+  r.report("reach-timeout", null);
+  r.report("bad-answer", null);
+  assert(r.pages.length === 1, "mixed: three failures of two kinds page once");
+  const text = r.pages[0] ?? "";
+  assert(/2 could not reach it/.test(text) && /1 got a reply it could not read/.test(text), `mixed: the page counts each kind (got ${text})`);
+  const same = reporter();
+  for (let i = 0; i < CONFIRM_LINE_PAGE_AFTER; i++) same.report("reach-timeout", null);
+  assert(same.pages[0] === confirmLineUnreachableAlert("reach-timeout"), "uniform: one kind keeps that kind's own wording");
+}
+
 // --- off the Workers runtime nothing pages ------------------------------------------
 {
   const r = reporter(false);
@@ -100,7 +124,10 @@ function reporter(onWorkers = true) {
   const timeout = confirmLineUnreachableAlert("reach-timeout");
   assert(!/^Slate/.test(timeout), "copy: does not open with the app's own name");
   assert(/still/i.test(timeout) && /double book/i.test(timeout), `copy: says bookings still go through and nothing is double booked (got ${timeout})`);
-  assert(!DASHES.test(timeout + confirmLineUnreachableAlert("unbound")), "copy: no dashes");
+  assert(!DASHES.test(timeout + confirmLineUnreachableAlert("unbound") + confirmLineUnreachableAlert("bad-answer")), "copy: no dashes");
+  // #3351: the line answered, so the page must not claim it could not be reached (L11).
+  const unreadable = confirmLineUnreachableAlert("bad-answer");
+  assert(!/cannot reach/i.test(unreadable) && /cannot read/i.test(unreadable), `copy: a bad answer says the replies could not be read, not that the line was unreachable (got ${unreadable})`);
 }
 
 finish();

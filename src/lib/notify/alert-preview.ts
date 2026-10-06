@@ -338,7 +338,7 @@ import {
   CLIENT_ERROR_ADDRESS_POLICY,
   refundFailedAlert,
 } from "@/lib/rate-limit-core";
-import { confirmLineUnreachableAlert } from "@/lib/booking/confirm-line-alert";
+import { confirmLineUnreachableAlert, confirmLineAlertFor } from "@/lib/booking/confirm-line-alert";
 import { evaluateRecon } from "@/lib/snowflake/reconcile-core";
 import { evaluateExportLag } from "@/lib/snowflake/export-lag-core";
 import {
@@ -4877,6 +4877,10 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: confirmLineUnreachableAlert("reach-timeout") },
   { key: "confirm_line_unreachable", state: "switched on with no binding", channel: "alert",
     text: confirmLineUnreachableAlert("unbound") },
+  { key: "confirm_line_unreachable", state: "answers the client cannot read", channel: "alert",
+    text: confirmLineUnreachableAlert("bad-answer") },
+  { key: "confirm_line_unreachable", state: "a mix of failures in one window", channel: "alert",
+    text: confirmLineAlertFor(["reach-timeout", "reach-timeout", "bad-answer"]) },
   { key: "rate_limit_refund_broken:*", state: "a refund of a counted hit failed", channel: "alert",
     text: refundFailedAlert(friendlyRateArea("book")) },
 

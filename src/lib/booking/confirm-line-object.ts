@@ -83,6 +83,8 @@ type Answer = Record<string, unknown>;
 type LeadTurn = Extract<QueueTurn<unknown>, { kind: "lead" }>;
 
 interface Ticket {
+  /** The enter attempt that made it, so a lead its poll hands out stays abandonable (#3351). */
+  attempt: string;
   wait: Extract<EnteredNow<unknown>, { kind: "wait" }>;
   result: QueueTurn<unknown> | null;
   lastSeenAt: number;
@@ -146,9 +148,12 @@ export function makeConfirmLineHost(deps: {
     return id;
   };
 
-  /** What a settled ticket answers its poll, serialising a settlement once. */
-  const answerFor = (result: QueueTurn<unknown>): string => {
-    if (result.kind === "lead") return json({ kind: "lead", turn: registerLead(result) });
+  /**
+   * What a settled ticket answers its poll when it did not lead, serialising a
+   * settlement once. A lead is answered by `poll` itself, which also points the attempt
+   * at the turn (#3351).
+   */
+  const answerFor = (result: Exclude<QueueTurn<unknown>, { kind: "lead" }>): string => {
     if (result.kind === "unqueued") return json({ kind: "unqueued" });
     const s = result.settled;
     if (s === null || typeof s !== "object") return json({ kind: "refused", refusal: result.refusal, settled: s ?? null });
@@ -208,7 +213,7 @@ export function makeConfirmLineHost(deps: {
       return answer;
     }
     const id = newId();
-    const ticket: Ticket = { wait: entered, result: null, lastSeenAt: now(), polling: 0 };
+    const ticket: Ticket = { attempt, wait: entered, result: null, lastSeenAt: now(), polling: 0 };
     tickets.set(id, ticket);
     void entered.turn.then((r) => {
       ticket.result = r;
@@ -239,6 +244,15 @@ export function makeConfirmLineHost(deps: {
     if (!tickets.has(id)) return gone(); // dropped meanwhile
     if (!ticket.result) return json({ kind: "pending" });
     tickets.delete(id);
+    if (ticket.result.kind === "lead") {
+      // #3351: the attempt now leads to the turn rather than the ticket just deleted, so
+      // a caller whose answer was lost on the way back can still abandon what it was
+      // given, and the line is handed on at once rather than after the ack window.
+      const turn = registerLead(ticket.result);
+      const a = attempts.get(ticket.attempt);
+      if (a) a.ref = { kind: "lead", turn };
+      return json({ kind: "lead", turn });
+    }
     return answerFor(ticket.result);
   };
 

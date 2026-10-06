@@ -69,12 +69,13 @@ export function readEntryMarks(headers: Headers): { entryAtMs: number | null; in
  * #3354: which leg of a load run sent a confirm, named by its sender. A run's cold
  * confirms come from different places (the preflight's control booking on a fresh
  * deploy, the burst's crowd spinning up isolates, the steady pass, the fault leg's
- * redeploy), and one number over all of them cannot say which. The four driver modes
- * plus the preflight's control booking and the address ceiling's dry runs. Read
- * under SLATE_LOADTEST only; a label, never a permission.
+ * redeploy), and one number over all of them cannot say which. The four driver modes,
+ * the preflight's control booking, the address ceiling's dry runs and the diagnostic
+ * cold leg's one confirm per deploy. Read under SLATE_LOADTEST only; a label, never a
+ * permission.
  */
 export const LOADTEST_LEG_HEADER = "x-loadtest-leg";
-export const LOADTEST_LEGS = ["steady", "burst", "fault", "baseline", "preflight", "ceiling"] as const;
+export const LOADTEST_LEGS = ["steady", "burst", "fault", "baseline", "preflight", "ceiling", "cold"] as const;
 export type LoadtestLeg = (typeof LOADTEST_LEGS)[number];
 
 /** The leg as the route reads it: null when none was named, `unreadable` when one outside the vocabulary was. */
@@ -88,14 +89,25 @@ export const WAIT_POINTS = ["entry", "handler", "authed", "line_start", "line_tu
 export type WaitPoint = (typeof WAIT_POINTS)[number];
 
 /** The span named for the point it ENDS at, from the point before it. */
-const SPAN_ENDING_AT: Record<Exclude<WaitPoint, "entry">, string> = {
+const SPAN_ENDING_AT = {
   handler: "wait_route_ms",
   authed: "wait_auth_ms",
   line_start: "wait_pre_line_ms",
   line_turn: "wait_line_ms",
   decided: "wait_decide_ms",
   profile: "wait_to_profile_ms",
-};
+} as const satisfies Record<Exclude<WaitPoint, "entry">, string>;
+
+/** Every span the marks write, in the order a confirm passes them, then the whole. */
+export type WaitSpanField = (typeof SPAN_ENDING_AT)[keyof typeof SPAN_ENDING_AT] | "wait_total_ms";
+/**
+ * The span names, derived from the points so the reader and the report can never hold
+ * a copy that drifts from what is written (L41).
+ */
+export const WAIT_SPAN_FIELDS: readonly WaitSpanField[] = [
+  ...(WAIT_POINTS.slice(1) as Exclude<WaitPoint, "entry">[]).map((p) => SPAN_ENDING_AT[p]),
+  "wait_total_ms",
+];
 
 export interface WaitMarks {
   /** Stamp a point now. The first stamp of a point wins; later ones are counted. */
@@ -137,7 +149,10 @@ export function makeWaitMarks(now: () => number, entryAtMs: number | null | unde
         if (i === 0) continue;
         const prev = at.get(WAIT_POINTS[i - 1]!);
         const name = SPAN_ENDING_AT[point as Exclude<WaitPoint, "entry">];
-        if (prev !== undefined && t >= prev && !outOfOrder.includes(point)) out[name] = t - prev;
+        // Withheld when either end is out of order: a span measured from or to a stamp
+        // the sequence says is wrong is wrong too.
+        const prevPoint = WAIT_POINTS[i - 1]!;
+        if (prev !== undefined && t >= prev && !outOfOrder.includes(point) && !outOfOrder.includes(prevPoint)) out[name] = t - prev;
       }
       const first = WAIT_POINTS.map((p) => at.get(p)).find((t) => t !== undefined);
       const end = at.get("profile");

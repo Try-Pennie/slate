@@ -193,6 +193,34 @@ async function main() {
     assert(unknown.ok === true, "abandon: an attempt the object never saw is a no op");
   }
 
+  // --- #3351: abandon reaches a lead whose poll was answered and the answer lost ---
+  // A follower's poll hands it the lead, and the answer never reaches it (a timeout on
+  // the way back). It falls back and abandons its attempt. The attempt must lead to the
+  // turn the poll registered, not only to the ticket the poll already deleted, or the
+  // line waits out the ack window behind a lead nobody holds.
+  {
+    const { send, advance } = host();
+    const lead = await send({ op: "enter", attempt: "A", line: "100", waitMs: 10_000 });
+    await send({ op: "ack", turn: lead.turn });
+    const b = await send({ op: "enter", attempt: "B", line: "100", waitMs: 10_000 });
+    const c = await send({ op: "enter", attempt: "C", line: "100", waitMs: 10_000 });
+    await send({ op: "done", turn: lead.turn, verdict: { full: false } });
+    const handed = await send({ op: "poll", ticket: b.ticket }); // answered; lost on the way back
+    assert(handed.kind === "lead", `lost lead: B's poll hands it the lead (got ${JSON.stringify(handed)})`);
+    await send({ op: "abandon", attempt: "B" });
+    let answered = false;
+    const p = send({ op: "poll", ticket: c.ticket }).then((r) => {
+      answered = true;
+      return r;
+    });
+    await tick();
+    await tick();
+    assert(answered, "lost lead: abandoning B hands the line to C at once, not after the ack window");
+    await advance(CONFIRM_LINE_ACK_MS + CONFIRM_LINE_POLL_MS);
+    const r = await p;
+    assert(r.kind === "lead", `lost lead: and C leads (got ${JSON.stringify(r)})`);
+  }
+
   // --- a deploy: the new instance knows nothing, and says so ----------------------
   {
     const { send } = host();

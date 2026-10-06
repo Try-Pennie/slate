@@ -36,6 +36,7 @@ import {
   readBurstPlan,
   readDriverMode,
   bookingRequestHeaders,
+  bookingBody,
   DRIVER_MODES,
   BURST_LEGS,
   BURST_REQUESTS_DEFAULT,
@@ -615,6 +616,28 @@ const T0 = Date.parse("2026-09-15T14:00:00.000Z");
   eq(declaresMode(planSource), ["export type DriverMode = (typeof DRIVER_MODES)[number];"], "DriverMode is declared once, derived from the mode list");
   const twice = planSource.replace(/^(export type DriverMode = \(typeof DRIVER_MODES\)\[number\];)$/m, '$1\nexport type DriverMode = "steady" | "burst" | "fault" | "baseline";');
   assert(twice !== planSource && declaresMode(twice).length === 2, "control: a second, hand written union beside it is caught");
+}
+
+// --- #3354: the cold leg's bookings carry their own prefix, like every other leg's -----
+{
+  const prefixes = (["steady", "burst", "fault", "baseline", "cold"] as const).map((m) => idPrefix("run-9", m));
+  eq(new Set(prefixes).size, prefixes.length, `every leg's external ids carry a prefix of their own (got ${prefixes.join(", ")})`);
+  eq(idPrefix("run-9", "cold"), "run-9-c", "the cold leg's is run-c, so its bookings never read as a steady driver's");
+}
+
+// --- #3354: one booking body for every sender that drives a confirm -----------------
+// The steady drivers and the cold leg both book through it, so a lead the cold leg
+// sends is the same lead the run measures everywhere else (L41).
+{
+  const body = bookingBody({ code: "112", startIso: "2026-10-08T14:00:00Z", externalId: "run-1-9-3", timezone: "America/New_York" });
+  eq(body.bucketCode, "112", "the code it asks for");
+  eq(body.start, "2026-10-08T14:00:00Z", "the time");
+  eq(body.timezone, "America/New_York", "the lead's zone");
+  eq(body.externalId, "run-1-9-3", "its own external id, so the booker never dedupes it onto another");
+  const attendee = body.attendee as { name: string; email: string; phone: string };
+  eq(attendee.email, "run-1-9-3@loadtest.local", "an address on the load test's own domain");
+  eq(attendee.phone, loadtestPhone("run-1-9-3"), "and its OWN number, since a weak match is email OR phone (#2261)");
+  assert(attendee.name.includes("run-1-9-3"), "named for its id, so a row can be traced to the request");
 }
 
 finish();

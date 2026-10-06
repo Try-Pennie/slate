@@ -36,7 +36,33 @@ export function confirmLineUnreachableAlert(reason: LineReason): string {
   const what =
     reason === "unbound"
       ? "The shared confirm line is switched on, but this deployment has no ConfirmLine binding to reach it through"
-      : "Confirms cannot reach the shared confirm line right now";
+      : reason === "bad-answer"
+        ? "The shared confirm line is answering confirms with replies they cannot read"
+        : "Confirms cannot reach the shared confirm line right now";
+  return pageAround(what);
+}
+
+/**
+ * The wording for the failures a page was raised over (#3351): one kind keeps that
+ * kind's own sentence, and a mix says how many of each, so a page is never worded from
+ * the one failure that happened to cross the threshold (L11).
+ */
+export function confirmLineAlertFor(reasons: readonly LineReason[]): string {
+  const kinds = new Set(reasons);
+  if (kinds.size === 1) return confirmLineUnreachableAlert(reasons[0]!);
+  const count = (pick: (r: LineReason) => boolean) => reasons.filter(pick).length;
+  const unbound = count((r) => r === "unbound");
+  const unreadable = count((r) => r === "bad-answer");
+  const unreachable = reasons.length - unbound - unreadable;
+  const parts = [
+    unreachable > 0 ? `${unreachable} could not reach it` : null,
+    unreadable > 0 ? `${unreadable} got a reply ${unreadable === 1 ? "it" : "they"} could not read` : null,
+    unbound > 0 ? `${unbound} found no ConfirmLine binding to reach it through` : null,
+  ].filter((p): p is string => p !== null);
+  return pageAround(`Confirms cannot use the shared confirm line right now (of the last ${reasons.length} that failed, ${parts.join(" and ")})`);
+}
+
+function pageAround(what: string): string {
   return (
     `${what}, so each server is using its own line for confirms, as it did before the shared line existed. ` +
     "Bookings still go through and nothing can be double booked, but a crowd of leads asking for the same time " +
@@ -54,7 +80,7 @@ export function makeReachFailureReporter(deps: {
   log: (fields: Record<string, string | number | boolean | null | undefined>) => void;
   page: (text: string) => void;
 }): (reason: LineReason, err: unknown) => void {
-  let recent: number[] = [];
+  let recent: { at: number; reason: LineReason }[] = [];
   // #3349: when this isolate last paged, so it waits out the alert's cooldown and then
   // can page about a later, separate outage. It used to latch for the isolate's life.
   let lastPagedAt: number | null = null;
@@ -66,10 +92,10 @@ export function makeReachFailureReporter(deps: {
     });
     if (NEVER_PAGES.has(reason) || !deps.onWorkers()) return;
     const t = deps.now();
-    recent = [...recent.filter((at) => t - at < CONFIRM_LINE_PAGE_WINDOW_MS), t];
+    recent = [...recent.filter((f) => t - f.at < CONFIRM_LINE_PAGE_WINDOW_MS), { at: t, reason }];
     if (recent.length < CONFIRM_LINE_PAGE_AFTER) return;
     if (lastPagedAt !== null && t - lastPagedAt < CONFIRM_LINE_ALERT_COOLDOWN_MS) return;
     lastPagedAt = t;
-    deps.page(confirmLineUnreachableAlert(reason));
+    deps.page(confirmLineAlertFor(recent.map((f) => f.reason)));
   };
 }

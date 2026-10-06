@@ -722,8 +722,15 @@ export function loadtestPhone(seed: string): string {
  * Every prefix stays rooted at RUN_ID, because the judge scopes its database reads
  * to `external_id=like.<run>-*` and an id outside that is a row the run cannot see.
  */
-export function idPrefix(runId: string, mode: DriverMode): string {
+export function idPrefix(runId: string, mode: DriverMode | "cold"): string {
   if (mode === "fault") return `${runId}-f`;
+  // #3354: the diagnostic cold leg's bookings, apart from every driver's. Deliberately
+  // inside the run's scope: the judge's checks on every booking (no two overlap on one
+  // agent, each has an idempotency key and a busy block) must hold for these too, and a
+  // cold booking that double booked would be a real fault. Its one reconciliation
+  // against the drivers' files walks their attempts, not the rows, so these never read
+  // as rows no driver accounts for.
+  if (mode === "cold") return `${runId}-c`;
   // #3258: the baseline runs first on the same driver number, so it needs its own.
   if (mode === "baseline") return `${runId}-r`;
   if (mode === "burst") return `${runId}-b`;
@@ -744,4 +751,26 @@ export function readDriverMode(raw: string | undefined): { ok: true; mode: Drive
 /** The headers every confirm a driver sends carries, its leg among them (#3354). */
 export function bookingRequestHeaders(apiKey: string, leg: LoadtestLeg): Record<string, string> {
   return { Authorization: `Bearer ${apiKey}`, "content-type": "application/json", [LOADTEST_LEG_HEADER]: leg };
+}
+
+/**
+ * #3354: the body of one confirm, for every sender that drives the booking path (the
+ * steady, burst, fault and baseline drivers, and the cold leg), so they all send the
+ * same lead. Each carries its own external id, an address on the load test's own
+ * domain and its OWN number (#2261): a weak dedupe match is email OR phone, so one
+ * shared number makes every booking after the first a `confirm_required` refusal of
+ * the same person calling again.
+ */
+export function bookingBody(req: { code: string; startIso: string; externalId: string; timezone: string }): Record<string, unknown> {
+  return {
+    bucketCode: req.code,
+    start: req.startIso,
+    timezone: req.timezone,
+    externalId: req.externalId,
+    attendee: {
+      name: `Loadtest Lead ${req.externalId}`,
+      email: `${req.externalId}@loadtest.local`,
+      phone: loadtestPhone(req.externalId),
+    },
+  };
 }

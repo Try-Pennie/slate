@@ -578,6 +578,12 @@ export interface ConfirmLine<T> {
    * here with the lead or the ticket that `enter` then uses, saving a call.
    */
   lookahead(key: LineKey, waitMs?: number): Promise<(() => Promise<void>) | null>;
+  /**
+   * Gives back anything a `lookahead` kept for an `enter` that never came (#3351), so a
+   * confirm that ends between the two leaves nothing held. A no op when the `enter`
+   * came, and on a line that keeps nothing between the two.
+   */
+  release(): Promise<void>;
 }
 
 /** A lead turn from the in memory rules, as the confirm path holds it. */
@@ -611,5 +617,7 @@ export function isolateLine<T>(host: ConfirmQueue<T>): ConfirmLine<T> {
       const giveBack = host.lookahead(isolateKeyOf(key));
       return giveBack ? async () => giveBack() : null;
     },
+    // The isolate's line keeps nothing between a lookahead and an enter.
+    async release() {},
   };
 }
