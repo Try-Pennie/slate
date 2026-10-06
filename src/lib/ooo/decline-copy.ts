@@ -8,10 +8,11 @@
  *
  * The consequence is what `rejectOoo` actually does, rather than a generic
  * warning: the request is marked declined, the agent gets a Slack message about
- * it, and because a PENDING request never had a calendar event, a busy block or
- * an override behind it, nothing has to be undone and the agent simply stays
- * bookable for those days. Nothing is claimed about the note, which is optional
- * and which this control cannot see.
+ * it, and the agent is bookable on those days. Worded to be true of both kinds
+ * of pending request: an ordinary one never had anything blocked (the agent stays
+ * bookable), and a narrowed one waiting for re-approval keeps its window blocked
+ * until this decline releases it (#3365). Nothing is claimed about the note, which
+ * is optional and which this control cannot see.
  *
  * Here rather than inline in the component so the wording can be read in one
  * place and pinned by `scripts/test-ooo-decline-copy.ts`, the same way the
@@ -27,7 +28,7 @@ export function declineConfirmCopy(
       ? `Decline ${span} ${agentName} asked for?`
       : `Decline ${agentName}'s request?`,
     consequence: span
-      ? `${agentName} is told in Slack, and stays bookable on those days.`
-      : `${agentName} is told in Slack, and stays bookable then.`,
+      ? `${agentName} is told in Slack, and is bookable on those days.`
+      : `${agentName} is told in Slack, and is bookable then.`,
   };
 }

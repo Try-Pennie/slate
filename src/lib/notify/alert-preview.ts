@@ -295,6 +295,8 @@ import {
   oooBusyBlockFallbackAlert,
   oooEventMismatchAlert,
   oooEventMismatchRecovery,
+  oooNarrowCalendarAlert,
+  oooNarrowHoldAlert,
   oooCalcomAlert,
   oooCalcomStaleUnrecordedAlert,
   oooCalendarCreateAlert,
@@ -4889,6 +4891,14 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: oooCalendarCreateBothFailedAlert("req_9f2", "503 backendError") },
   { key: "ooo_agent_calendar", state: "agent calendar event failed", channel: "alert",
     text: oooAgentCalendarAlert("req_9f2", "503 backendError") },
+  // #3365: a shortened request whose events could not be moved, and whose held block
+  // could not be narrowed. Both leave the earlier, wider window blocked.
+  { key: "ooo_agent_calendar", state: "a shortened request's event could not be moved", channel: "alert",
+    text: oooNarrowCalendarAlert("req_9f2", "agent", "503 backendError") },
+  { key: "ooo_manager_calendar", state: "a shortened request's manager copy could not be moved", channel: "alert",
+    text: oooNarrowCalendarAlert("req_9f2", "manager", "503 backendError") },
+  { key: "busy_block_write_through", state: "a shortened request's held block could not be narrowed", channel: "alert",
+    text: oooNarrowHoldAlert("req_9f2") },
   { key: "ooo_busy_block_fallback", state: "fell back to a native block", channel: "alert",
     text: oooBusyBlockFallbackAlert("req_9f2") },
   // #1470: the ending this one never had. It names no request id, for the same

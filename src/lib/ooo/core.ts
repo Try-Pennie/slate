@@ -193,6 +193,36 @@ export function overlaps(
   );
 }
 
+/**
+ * Does `inner` lie entirely inside `outer`? (#3365) Equal bounds count as inside: a
+ * change that keeps the window asks for nothing new either. An unreadable bound is
+ * NOT inside, so a change Slate cannot judge falls back to releasing everything and
+ * asking again, the behaviour every change had before #3365.
+ */
+export function windowWithin(
+  inner: { startIso: string; endIso: string },
+  outer: { startIso: string; endIso: string },
+): boolean {
+  const is = Date.parse(inner.startIso);
+  const ie = Date.parse(inner.endIso);
+  const os = Date.parse(outer.startIso);
+  const oe = Date.parse(outer.endIso);
+  if (![is, ie, os, oe].every(Number.isFinite)) return false;
+  return is >= os && ie <= oe;
+}
+
+/**
+ * Does this request still hold anything an approval wrote? (#3365) Not the same
+ * question as "is it approved": a narrowed request waits for re-approval as PENDING
+ * while keeping its held block and calendar events, so every path that ends or
+ * changes a request asks this, never the status, before deciding what to undo.
+ */
+export function holdsApprovalArtifacts(
+  r: Pick<OooRequest, "busy_block_id" | "agent_event_id" | "manager_event_id" | "calcom_synced">,
+): boolean {
+  return Boolean(r.busy_block_id || r.agent_event_id || r.manager_event_id || r.calcom_synced);
+}
+
 /** Upper bound on a single request's length. */
 export const MAX_OOO_DAYS = 90;
 

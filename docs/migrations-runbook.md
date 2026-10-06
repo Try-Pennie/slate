@@ -387,6 +387,27 @@ own post-state and rolls back on a surprise. The statement was proved on a throw
 Postgres 17 before it shipped, including a run with its detach step broken, which
 raised and left every row as it was.
 
+`0171_ooo_held_window_source.sql` (#3365) then gives those held blocks a source of
+their own, `ooo`, so the reconcile sweep (which frees every `slate` row with no
+booking unless its owner is approved) cannot take the window a narrowed request keeps
+while it waits for re-approval. A trigger releases a request's `ooo` block when it is
+cancelled or declined or stops pointing at it, and deleting the request cascades. The
+same window applies: an approval by the code deployed before #3365 writes `slate`.
+After that deploy, read back:
+
+<!-- runbook-unverified: a read against production, which only means anything once
+     0171 is applied and its deploy lands. 0171 counts the same predicate itself; on
+     a throwaway Postgres 17 seeded through 0170 it read 3 before and 0 after, and a
+     copy with its conversion broken raised and rolled back the whole migration. -->
+```sql
+select count(*) from ooo_requests r
+  join busy_blocks b on b.id = r.busy_block_id
+ where r.status = 'approved' and b.source <> 'ooo';
+```
+
+It must be 0. Anything else is re-run with the conversion block at the end of 0171
+(the `do $$ ... $$` block), which selects only `slate` held rows of approved requests.
+
 ## Changing an event type by hand: the marker, then the invalidation (#1435)
 
 The event type rides **inside** the cached `bucket_slots` payload the booker serves.
