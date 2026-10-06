@@ -39,6 +39,7 @@ import {
   runGradualDeploy,
   uploadArgs,
   versionIdFromUploadOutput,
+  uploadRefusalFromOutput,
   workerNameFor,
   type GradualOps,
 } from "./lib/gradual-deploy.ts";
@@ -161,13 +162,14 @@ const ops: GradualOps = {
       ["exec", "opennextjs-cloudflare", "upload", ...uploadArgs(kind, commit), ...wranglerEnv],
       { WRANGLER_OUTPUT_FILE_PATH: out },
     );
-    if (!ok) return null;
     let text = "";
     try {
       text = readFileSync(out, "utf8");
     } catch {
       return null;
     }
+    // #3352: a refusal the run can name, from the record wrangler writes on a failure.
+    if (!ok) return uploadRefusalFromOutput(text) === "pending-do-migration" ? { refused: "pending-do-migration" } : null;
     const id = versionIdFromUploadOutput(text);
     console.log(`  ${kind} version: ${id ?? "UNREADABLE"}`);
     return id;

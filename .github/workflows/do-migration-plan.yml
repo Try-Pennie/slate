@@ -1,0 +1,38 @@
+name: Durable Object class change plan
+
+# #3352: a pull request that adds a Durable Object migration to wrangler.jsonc cannot ship
+# through the gradual deploy (Cloudflare refuses to upload it as a version), and until it
+# ships by hand every later merge's deploy stops the same way. So such a pull request is
+# refused here unless it carries the deploy/hand label, which says its merge is planned
+# together with `pnpm cf:deploy:verified` (DEPLOY.md). Dan, 2026-10-06: plan these at PR
+# time. Runs only for pull requests that touch wrangler.jsonc, and again when a label is
+# added or removed, so adding the label is what turns it green.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    paths:
+      - wrangler.jsonc
+
+permissions:
+  contents: read
+
+jobs:
+  do-migration-plan:
+    timeout-minutes: 5  # a checkout, one fetch and a file compare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Refuse an unplanned Durable Object class change
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          node --experimental-strip-types scripts/check-do-migration-planned.ts

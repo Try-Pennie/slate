@@ -15,6 +15,7 @@ import {
   CRON_STANDBY_VAR,
   EXIT,
   EXIT_END,
+  uploadRefusalFromOutput,
   shouldDeployTailWorker,
   RESTORE_ATTEMPTS,
   SPLIT_BUDGET_MS,
@@ -60,7 +61,8 @@ function outcome(fault: ProbeFault): ProbeOutcome {
 
 interface Scenario {
   start: VersionShare[] | null;
-  canaryUpload: boolean;
+  /** "class-change" is the refusal Cloudflare gives a release with a pending Durable Object migration (#3352). */
+  canaryUpload: boolean | "class-change";
   releaseUpload: boolean;
   split: boolean;
   canaryProbe: ProbeFault;
@@ -144,7 +146,7 @@ async function drive(s: Scenario): Promise<Run> {
       calls.push(`upload:${kind}`);
       boom("upload");
       if (s.interfereDuring === "upload") deployment = [{ versionId: THEIRS, percentage: 100 }];
-      if (kind === "canary") return s.canaryUpload ? CANARY : null;
+      if (kind === "canary") return s.canaryUpload === "class-change" ? { refused: "pending-do-migration" as const } : s.canaryUpload ? CANARY : null;
       return s.releaseUpload ? RELEASE : null;
     },
     deploy: async (specs) => {
@@ -320,6 +322,32 @@ for (const bad of [
   const r = await drive({ ...HAPPY, releaseUpload: false });
   eq(r.result.exit, EXIT.uploadFailed, "a failed release upload refuses before any split");
   assert(!r.calls.some((c) => c.startsWith("deploy")), "and no deployment was touched");
+}
+// #3352: a release that changes a Durable Object class is named as that, not as a failed
+// upload, and says what to run, because every later deploy fails the same way until it ships.
+{
+  const r = await drive({ ...HAPPY, canaryUpload: "class-change" });
+  eq(r.result.exit, EXIT.classChange, "a class change is its own ending");
+  eq(r.result.end, "unchanged", "and nothing changed");
+  assert(!r.calls.some((c) => c.startsWith("deploy") || c === "upload:release"), "nothing else was uploaded or deployed");
+  assert(
+    /Durable Object class/.test(r.result.message) && r.result.message.includes("pnpm cf:deploy:verified") && /every later deploy/i.test(r.result.message),
+    `and it names the cause, the hand deploy and the cost of waiting (got ${r.result.message})`,
+  );
+}
+// The refusal is read from wrangler's own output file: the `command-failed` record it writes,
+// with the message measured in run 37389636410 (the #3344 merge, 2026-10-05).
+{
+  const refused = JSON.stringify({
+    type: "command-failed",
+    version: 1,
+    message:
+      "This Worker has a pending Durable Object migration, which cannot be applied by `wrangler versions upload`. Durable Object migrations must be applied with `wrangler deploy`. Run `wrangler deploy` to apply the migration, then retry `wrangler versions upload`.",
+  });
+  eq(uploadRefusalFromOutput(`{"type":"wrangler-session","version":1}\n${refused}\n`), "pending-do-migration", "the pending migration refusal is recognised");
+  eq(uploadRefusalFromOutput(JSON.stringify({ type: "command-failed", version: 1, message: "Authentication error [code: 10000]" })), null, "any other failure is not a class change");
+  eq(uploadRefusalFromOutput("not json\n"), null, "an output file that does not read is no refusal");
+  eq(uploadRefusalFromOutput(""), null, "and nor is an empty one");
 }
 
 // --- the canary fails: the old version is restored, the release never ships ------

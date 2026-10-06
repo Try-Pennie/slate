@@ -220,6 +220,34 @@ export function versionIdFromUploadOutput(ndjson: string): string | null {
   return found;
 }
 
+/**
+ * Why an upload was refused, read from the same output file: the `command-failed`
+ * record wrangler writes when a command fails (#3352). A release that changes a Durable
+ * Object class is refused with "This Worker has a pending Durable Object migration"
+ * (measured in run 37389636410, the #3344 merge). Anything else, or a file that does not
+ * read, is no recognised refusal, and the run reports a plain failed upload, whose own
+ * message still names this case as the likely one.
+ */
+export function uploadRefusalFromOutput(ndjson: string): "pending-do-migration" | null {
+  for (const line of ndjson.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const rec = JSON.parse(line) as { type?: unknown; message?: unknown };
+      if (rec.type === "command-failed" && typeof rec.message === "string" && /pending Durable Object migration/i.test(rec.message)) {
+        return "pending-do-migration";
+      }
+    } catch {
+      // A line that is not JSON is not a record.
+    }
+  }
+  return null;
+}
+
+/** An upload Cloudflare refused for a reason the run can name. */
+export interface UploadRefusal {
+  refused: "pending-do-migration";
+}
+
 // --- the cron window -----------------------------------------------------------------
 
 /** Strip `//` and block comments from JSONC, leaving string contents untouched. */
@@ -434,6 +462,10 @@ export const EXIT = {
   scriptFailed: 24,
   /** A restore failed: production may still be split. */
   restoreFailed: 20,
+  /** The release changes a Durable Object class, which Cloudflare refuses to upload as a
+   *  version (#3352). Nothing changed; it ships by hand, and until it does every later
+   *  deploy ends here too. */
+  classChange: 25,
 } as const;
 
 export type EndState = "new" | "old" | "unchanged" | "unknown";
@@ -460,6 +492,7 @@ export const EXIT_END: Record<keyof typeof EXIT, EndState> = {
   interfered: "unknown",
   tailWorkerFailed: "new",
   scriptFailed: "unknown",
+  classChange: "unchanged",
 };
 
 export interface GradualResult {
@@ -471,8 +504,8 @@ export interface GradualResult {
 export interface GradualOps {
   /** `wrangler deployments status --json`, parsed; null when unreadable. */
   status(): Promise<VersionShare[] | null>;
-  /** Upload one version; its id, or null when the upload failed. */
-  upload(kind: UploadKind): Promise<string | null>;
+  /** Upload one version; its id, a refusal the run can name, or null when it failed otherwise. */
+  upload(kind: UploadKind): Promise<string | UploadRefusal | null>;
   /** `wrangler versions deploy <specs> -y`; true when it succeeded. */
   deploy(specs: string[], message: string): Promise<boolean>;
   /** Probe the canary through the override header, or production as a whole. */
@@ -604,6 +637,18 @@ export async function runGradualDeploy(ops: GradualOps): Promise<GradualResult> 
   }
 }
 
+const isRefusal = (u: string | UploadRefusal | null): u is UploadRefusal => typeof u === "object" && u !== null;
+
+/** #3352: the release changes a Durable Object class, so it cannot ship gradually at all. */
+function classChangeResult(): GradualResult {
+  return {
+    exit: EXIT.classChange,
+    end: "unchanged",
+    message:
+      "Not deployed: this release changes a Durable Object class (wrangler reported a pending Durable Object migration), which Cloudflare refuses to upload as a version, so nothing changed and the previous version is still serving 100%. Ship it by hand with `pnpm cf:deploy:verified` (DEPLOY.md, Deploying by hand, verified). Until it ships, every later deploy stops here the same way.",
+  };
+}
+
 async function runUntilSplit(ops: GradualOps): Promise<GradualResult> {
   const start = planStart(await ops.status());
   if (start.kind === "refuse") {
@@ -641,6 +686,7 @@ async function runUntilSplit(ops: GradualOps): Promise<GradualResult> {
   // Both versions are uploaded BEFORE the split opens, so the split lasts only as long as
   // the probe, and a failed upload has changed nothing anybody is served.
   const canary = await ops.upload("canary");
+  if (isRefusal(canary)) return classChangeResult();
   if (canary === null) {
     return {
       exit: EXIT.uploadFailed,
@@ -650,6 +696,7 @@ async function runUntilSplit(ops: GradualOps): Promise<GradualResult> {
     };
   }
   const release = await ops.upload("release");
+  if (isRefusal(release)) return classChangeResult();
   if (release === null) {
     return {
       exit: EXIT.uploadFailed,
