@@ -12,7 +12,7 @@
  */
 import type { FailureKind } from "@/lib/google/sync-health";
 import { OFFERED_OPEN_DAYS } from "@/lib/availability/bookable-days";
-import { deadlineReason } from "@/lib/notify/error-text";
+import { deadlineReason, spentBeforeAsked } from "@/lib/notify/error-text";
 import { normalizeEmail } from "@/lib/auth/email";
 import { formatSlotDay, formatSlotTime } from "@/lib/booking/slot-label";
 
@@ -472,8 +472,19 @@ export function dependencyTimeoutAlert(timeout: {
   // #3263: one wording for a missed deadline across every alert. A call refused
   // because the budget was already spent says the budget was used up before
   // Slate asked, never that the dependency "was not started".
-  const what = deadlineReason({ label: timeout.dependency, timeoutMs: timeout.timeoutMs, budget: timeout.budget });
-  return `A booking failed because ${what}, not because the slot was full. The lead saw a retryable error. Check booking_reservations for a pending row before asking them to rebook, and Google Calendar API and Supabase health.`;
+  const found = { label: timeout.dependency, timeoutMs: timeout.timeoutMs, budget: timeout.budget };
+  const what = deadlineReason(found);
+  const head = `A booking failed because ${what}, not because the slot was full. The lead saw a retryable error. Check booking_reservations for a pending row before asking them to rebook`;
+  // #3313: a budget spent before Slate asked means the dependency was never
+  // asked, so pointing at its health is a claim nothing measured (L11): on
+  // 2026-10-06 at 13:54 ET Google and Supabase were both healthy and this sent the
+  // reader to them. The time went earlier in the request, so the advice points at
+  // the request's own log lines. Only a booking writes a confirm answered line (a
+  // time change has none), which is why it is named as the booking's.
+  if (spentBeforeAsked(found)) {
+    return `${head}. The time went inside Slate before that call, so start from that request's own log lines (the confirm answered line, for a booking) rather than Google Calendar API and Supabase health.`;
+  }
+  return `${head}, and Google Calendar API and Supabase health.`;
 }
 
 /** A reschedule failed closed because the lock claim hit a DB error. */
