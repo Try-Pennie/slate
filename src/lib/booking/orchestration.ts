@@ -3936,33 +3936,48 @@ async function inConfirmTurn<R>(
   deps.mark?.("line_start");
   // #3300: the line's own calls and the wait for a turn, as stages of the profile,
   // so a confirm that spent its budget waiting in line says so.
-  const giveBack = ahead
-    ? await timeStage(deps.profile, "line-lookahead", () => deps.confirmQueue.lookahead(line.key, confirmLineWaitMs(budgetLeftMs())))
-    : null;
-  if (giveBack && ahead) {
-    let early: R | null = null;
-    try {
-      early = await timeStage(deps.profile, "line-ahead-read", ahead);
-    } catch (err) {
-      // The lookahead is a shortcut, never a gate: a read that fails here is
-      // treated as finding nothing, and the confirm joins the line, where the
-      // leader's own reads (or its own, when it leads) answer it properly.
-      log.warn(
-        "booking",
-        { msg: "the replay check ahead of the confirm line failed; joining the line instead", bucket_code: line.bucketCode },
-        err,
-      );
-    } finally {
-      await giveBack();
+  let waitMs: number;
+  let turn: Awaited<ReturnType<BookingDeps["confirmQueue"]["enter"]>>;
+  try {
+    const giveBack = ahead
+      ? await timeStage(deps.profile, "line-lookahead", () => deps.confirmQueue.lookahead(line.key, confirmLineWaitMs(budgetLeftMs())))
+      : null;
+    if (giveBack && ahead) {
+      let early: R | null = null;
+      try {
+        early = await timeStage(deps.profile, "line-ahead-read", ahead);
+      } catch (err) {
+        // The lookahead is a shortcut, never a gate: a read that fails here is
+        // treated as finding nothing, and the confirm joins the line, where the
+        // leader's own reads (or its own, when it leads) answer it properly.
+        log.warn(
+          "booking",
+          { msg: "the replay check ahead of the confirm line failed; joining the line instead", bucket_code: line.bucketCode },
+          err,
+        );
+      } finally {
+        await giveBack();
+      }
+      // Answered without the line, so it settles nothing for anybody in it.
+      if (early !== null) {
+        deps.mark?.("line_turn");
+        return { result: early, verdict: { full: false } };
+      }
     }
-    // Answered without the line, so it settles nothing for anybody in it.
-    if (early !== null) {
-      deps.mark?.("line_turn");
-      return { result: early, verdict: { full: false } };
+    waitMs = confirmLineWaitMs(budgetLeftMs());
+    turn = await timeStage(deps.profile, "confirm-line", () => deps.confirmQueue.enter(line.key, waitMs));
+  } finally {
+    // #3351: a lookahead on the shared line can keep a lead or a ticket for the enter
+    // that follows. Whatever way this entry ends, anything it kept is given back, so
+    // the line is never held for a confirm that left; once the enter came, nothing.
+    // Best effort: a give back that fails is logged and never replaces the entry's own
+    // outcome, an error included.
+    try {
+      await deps.confirmQueue.release();
+    } catch (err) {
+      log.warn("booking", { msg: "giving back what a lookahead kept on the confirm line failed", bucket_code: line.bucketCode }, err);
     }
   }
-  const waitMs = confirmLineWaitMs(budgetLeftMs());
-  const turn = await timeStage(deps.profile, "confirm-line", () => deps.confirmQueue.enter(line.key, waitMs));
   // #3354: the line has answered, whether with a turn, a refusal or a timeout.
   deps.mark?.("line_turn");
   if (turn.kind === "refused") {
