@@ -3892,31 +3892,40 @@ async function inConfirmTurn<R>(
   // #3354: before the FIRST call into the line, which on the API path is the
   // lookahead: that is where the switch read and the first round trip happen.
   deps.mark?.("line_start");
-  const giveBack = ahead ? await deps.confirmQueue.lookahead(line.key, confirmLineWaitMs(budgetLeftMs())) : null;
-  if (giveBack && ahead) {
-    let early: R | null = null;
-    try {
-      early = await ahead();
-    } catch (err) {
-      // The lookahead is a shortcut, never a gate: a read that fails here is
-      // treated as finding nothing, and the confirm joins the line, where the
-      // leader's own reads (or its own, when it leads) answer it properly.
-      log.warn(
-        "booking",
-        { msg: "the replay check ahead of the confirm line failed; joining the line instead", bucket_code: line.bucketCode },
-        err,
-      );
-    } finally {
-      await giveBack();
+  let waitMs: number;
+  let turn: Awaited<ReturnType<BookingDeps["confirmQueue"]["enter"]>>;
+  try {
+    const giveBack = ahead ? await deps.confirmQueue.lookahead(line.key, confirmLineWaitMs(budgetLeftMs())) : null;
+    if (giveBack && ahead) {
+      let early: R | null = null;
+      try {
+        early = await ahead();
+      } catch (err) {
+        // The lookahead is a shortcut, never a gate: a read that fails here is
+        // treated as finding nothing, and the confirm joins the line, where the
+        // leader's own reads (or its own, when it leads) answer it properly.
+        log.warn(
+          "booking",
+          { msg: "the replay check ahead of the confirm line failed; joining the line instead", bucket_code: line.bucketCode },
+          err,
+        );
+      } finally {
+        await giveBack();
+      }
+      // Answered without the line, so it settles nothing for anybody in it.
+      if (early !== null) {
+        deps.mark?.("line_turn");
+        return { result: early, verdict: { full: false } };
+      }
     }
-    // Answered without the line, so it settles nothing for anybody in it.
-    if (early !== null) {
-      deps.mark?.("line_turn");
-      return { result: early, verdict: { full: false } };
-    }
+    waitMs = confirmLineWaitMs(budgetLeftMs());
+    turn = await deps.confirmQueue.enter(line.key, waitMs);
+  } finally {
+    // #3351: a lookahead on the shared line can keep a lead or a ticket for the enter
+    // that follows. Whatever way this entry ends, anything it kept is given back, so
+    // the line is never held for a confirm that left; once the enter came, nothing.
+    await deps.confirmQueue.release();
   }
-  const waitMs = confirmLineWaitMs(budgetLeftMs());
-  const turn = await deps.confirmQueue.enter(line.key, waitMs);
   // #3354: the line has answered, whether with a turn, a refusal or a timeout.
   deps.mark?.("line_turn");
   if (turn.kind === "refused") {

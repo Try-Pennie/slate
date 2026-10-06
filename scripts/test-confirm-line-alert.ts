@@ -86,6 +86,14 @@ function reporter(onWorkers = true) {
   assert(r.pages[0]!.includes("binding"), `unbound: and says it is the binding (got ${r.pages[0]})`);
 }
 
+// --- #3351: an answer the client cannot read pages on the same rule ------------------
+// It is a protocol fault, not a deploy, so it is never folded into `gone`.
+{
+  const r = reporter();
+  for (let i = 0; i < CONFIRM_LINE_PAGE_AFTER; i++) r.report("bad-answer", null);
+  assert(r.pages.length === 1, `bad answer: repeated answers the client cannot read page (got ${r.pages.length})`);
+}
+
 // --- off the Workers runtime nothing pages ------------------------------------------
 {
   const r = reporter(false);
@@ -100,7 +108,10 @@ function reporter(onWorkers = true) {
   const timeout = confirmLineUnreachableAlert("reach-timeout");
   assert(!/^Slate/.test(timeout), "copy: does not open with the app's own name");
   assert(/still/i.test(timeout) && /double book/i.test(timeout), `copy: says bookings still go through and nothing is double booked (got ${timeout})`);
-  assert(!DASHES.test(timeout + confirmLineUnreachableAlert("unbound")), "copy: no dashes");
+  assert(!DASHES.test(timeout + confirmLineUnreachableAlert("unbound") + confirmLineUnreachableAlert("bad-answer")), "copy: no dashes");
+  // #3351: the line answered, so the page must not claim it could not be reached (L11).
+  const unreadable = confirmLineUnreachableAlert("bad-answer");
+  assert(!/cannot reach/i.test(unreadable) && /cannot read/i.test(unreadable), `copy: a bad answer says the replies could not be read, not that the line was unreachable (got ${unreadable})`);
 }
 
 finish();

@@ -94,6 +94,7 @@ const NO_QUEUE: ConfirmLine<never> = {
     },
   }),
   lookahead: async () => null,
+  release: async () => {},
 };
 
 function lead(i: number, over: Partial<CreateBookingInput> = {}): CreateBookingInput {

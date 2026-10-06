@@ -21,6 +21,15 @@
  * - A poll answers `gone` (a deploy replaced the instance, measured on 2026-10-05 to
  *   leave held calls on the old one): the follower re-enters the SHARED line, on the
  *   new instance, rather than falling back (`shared`, `gone`).
+ * - An answer the client has no meaning for (a `bad`, an unknown kind, a shape that
+ *   does not read): the isolate's line, a reach failure reported, and the attempt
+ *   abandoned. It is a protocol fault, never folded into `gone`, which is the one
+ *   reason that never pages (`fallback`, `bad-answer`, #3351).
+ * - Polls stop being answered mid wait: the isolate's line, and the attempt abandoned,
+ *   because its ticket may have been promoted to lead meanwhile, and a lead nobody
+ *   collects holds the line for the ack window (#3351).
+ * - The confirm ends before the `enter` a lookahead kept an answer for: `release`
+ *   abandons it, for the same reason (#3351).
  * - A leader's call fails mid turn: it carries on, since the insert decides; claims
  *   answer locally (no exclusion), and the object's short lease frees the line in time
  *   for the followers behind it.
@@ -49,7 +58,16 @@ export const CONFIRM_LINE_POLL_MARGIN_MS = 1_000;
 export const CONFIRM_LINE_GONE_RETRIES = 2;
 
 export type LineMode = "shared" | "isolate" | "fallback";
-export type LineReason = "ok" | "off" | "unread-default" | "unbound" | "reach-timeout" | "enter-error" | "gone" | "abandoned";
+export type LineReason =
+  | "ok"
+  | "off"
+  | "unread-default"
+  | "unbound"
+  | "reach-timeout"
+  | "enter-error"
+  | "gone"
+  | "bad-answer"
+  | "abandoned";
 export type LineKeyKind = "ladder" | "code" | "link" | "none";
 
 /** How one confirm's turn was served, for the `confirm answered` line and the load run. */
@@ -121,6 +139,17 @@ export function makeSharedConfirmLine<T>(deps: {
   /** Best effort: undo whatever the object gave an attempt its caller gave up on. */
   const abandon = async (stub: LineStub, attempt: string) => {
     await call(stub, { op: "abandon", attempt }, CONFIRM_LINE_CALL_MS);
+  };
+
+  /**
+   * An answer the client cannot act on. `gone` after the re-entries are spent is still a
+   * deploy, counted and never paged; anything else is a protocol fault, which pages and
+   * gives the attempt back, since the object may have given it something (#3351).
+   */
+  const unusable = async (stub: LineStub, attempt: string, a: Answer): Promise<LineReason> => {
+    if (a.kind === "gone") return "gone";
+    await abandon(stub, attempt);
+    return "bad-answer";
   };
 
   const fallBack = async (key: LineKey, waitMs: number | undefined, served: LineServed, err: unknown): Promise<LineTurn<T>> => {
@@ -210,6 +239,7 @@ export function makeSharedConfirmLine<T>(deps: {
   const follow = async (
     key: LineKey,
     stub: LineStub,
+    attempt: string,
     ticket: string,
     deadline: number,
     served: LineServed,
@@ -223,7 +253,10 @@ export function makeSharedConfirmLine<T>(deps: {
         failures++;
         if (failures < 2) continue;
         // The object stopped answering mid wait: what is left of the wait goes to the
-        // isolate's own line. The object drops the abandoned ticket when it stops being polled.
+        // isolate's own line. The attempt is given back first, because its ticket may
+        // have been promoted to lead meanwhile, and nobody will collect that lead
+        // (#3351); the sweep would only drop it after the ack window.
+        await abandon(stub, attempt);
         return fallBack(key, Math.max(0, deadline - now()), { ...served, line: "fallback", reason: timedOut(r.err) ? "reach-timeout" : "enter-error" }, r.err);
       }
       failures = 0;
@@ -240,25 +273,36 @@ export function makeSharedConfirmLine<T>(deps: {
       if (a.kind === "gone" && goneLeft > 0) {
         return enterShared(key, Math.max(0, deadline - now()), { ...served, reason: "gone" }, goneLeft - 1, null);
       }
-      return fallBack(key, Math.max(0, deadline - now()), { ...served, line: "fallback", reason: "gone" }, new Error(`the shared line answered ${JSON.stringify(a).slice(0, 80)}`));
+      const reason = await unusable(stub, attempt, a);
+      return fallBack(key, Math.max(0, deadline - now()), { ...served, line: "fallback", reason }, new Error(`the shared line answered ${JSON.stringify(a).slice(0, 80)}`));
     }
     deps.record({ ...served });
     return { kind: "unqueued" };
   };
 
   /** Act on the object's answer to an enter. */
-  const onEntered = async (key: LineKey, stub: LineStub, answer: Answer, waitMs: number, served: LineServed, goneLeft: number): Promise<LineTurn<T>> => {
+  const onEntered = async (
+    key: LineKey,
+    stub: LineStub,
+    attempt: string,
+    answer: Answer,
+    waitMs: number,
+    served: LineServed,
+    goneLeft: number,
+  ): Promise<LineTurn<T>> => {
     if (answer.kind === "lead" && typeof answer.turn === "string") return leadOn(stub, answer.turn, served);
-    if (answer.kind === "wait" && typeof answer.ticket === "string") return follow(key, stub, answer.ticket, now() + waitMs, served, goneLeft);
+    if (answer.kind === "wait" && typeof answer.ticket === "string") return follow(key, stub, attempt, answer.ticket, now() + waitMs, served, goneLeft);
     if (answer.kind === "gone" && goneLeft > 0) return enterShared(key, waitMs, { ...served, reason: "gone" }, goneLeft - 1, null);
-    return fallBack(key, waitMs, { ...served, line: "fallback", reason: "enter-error" }, new Error(`the shared line answered ${JSON.stringify(answer).slice(0, 80)}`));
+    const t0 = now();
+    const reason = await unusable(stub, attempt, answer);
+    return fallBack(key, Math.max(0, waitMs - (now() - t0)), { ...served, line: "fallback", reason }, new Error(`the shared line answered ${JSON.stringify(answer).slice(0, 80)}`));
   };
 
   const enterShared = async (key: LineKey, waitMs: number, served: LineServed, goneLeft: number, stashed: Stashed | null): Promise<LineTurn<T>> => {
     if (stashed?.kind === "fallback") return fallBack(key, waitMs, { ...served, line: "fallback", reason: stashed.reason }, null);
     if (stashed?.kind === "answer") {
       served.lineMs += stashed.spentMs;
-      return onEntered(key, stashed.stub, stashed.answer, waitMs, served, goneLeft);
+      return onEntered(key, stashed.stub, stashed.attempt, stashed.answer, waitMs, served, goneLeft);
     }
     const stub = deps.namespace!.stubFor(key.group);
     const attempt = deps.newId();
@@ -268,7 +312,7 @@ export function makeSharedConfirmLine<T>(deps: {
       await abandon(stub, attempt);
       return fallBack(key, Math.max(0, waitMs - r.ms), { ...served, line: "fallback", reason: timedOut(r.err) ? "reach-timeout" : "enter-error" }, r.err);
     }
-    return onEntered(key, stub, r.answer, Math.max(0, waitMs - r.ms), served, goneLeft);
+    return onEntered(key, stub, attempt, r.answer, Math.max(0, waitMs - r.ms), served, goneLeft);
   };
 
   /** Which line this confirm uses, before any call to the object. */
@@ -322,6 +366,14 @@ export function makeSharedConfirmLine<T>(deps: {
       // follows uses this answer rather than asking again.
       stash.set(isolateKeyOf(key), { kind: "answer", stub, attempt, answer: r.answer, spentMs: r.ms });
       return null;
+    },
+    async release() {
+      // #3351: a lead or ticket a lookahead kept for an enter that never came. Left on
+      // the object, a lead nobody collects holds the line for the ack window. After
+      // the enter collected it, the stash is empty and nothing is sent.
+      const left = [...stash.values()];
+      stash.clear();
+      for (const s of left) if (s.kind === "answer") await abandon(s.stub, s.attempt);
     },
   };
 }

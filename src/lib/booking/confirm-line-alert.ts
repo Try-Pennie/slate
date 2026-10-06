@@ -36,7 +36,9 @@ export function confirmLineUnreachableAlert(reason: LineReason): string {
   const what =
     reason === "unbound"
       ? "The shared confirm line is switched on, but this deployment has no ConfirmLine binding to reach it through"
-      : "Confirms cannot reach the shared confirm line right now";
+      : reason === "bad-answer"
+        ? "The shared confirm line is answering confirms with replies they cannot read"
+        : "Confirms cannot reach the shared confirm line right now";
   return (
     `${what}, so each server is using its own line for confirms, as it did before the shared line existed. ` +
     "Bookings still go through and nothing can be double booked, but a crowd of leads asking for the same time " +
