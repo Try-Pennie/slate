@@ -105,7 +105,9 @@ describe("a timeout on the confirm path (#3102)", () => {
       const spent = page(0, BUDGET);
       expect(spent).toContain(PENDING);
       expect(spent).toContain("The time went inside Slate before that call");
-      expect(spent).toContain("start from that request's own log lines (the confirm answered line, for a booking)");
+      expect(spent).toContain("start from that request's confirm answered log line");
+      // #3401: a time change writes that line too, so the advice names no kind of confirm.
+      expect(spent).not.toContain("for a booking");
       expect(spent).not.toContain(`, and ${DEPENDENCIES}`);
       expect(spent).not.toMatch(/check[^.]*(Google|Supabase)[^.]*health/i);
     });
