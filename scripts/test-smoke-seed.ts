@@ -46,6 +46,10 @@ const HIDDEN = [...HIDDEN_TEST_BUCKET_CODES];
 
 // --- Agent ---
 assert(seed.user.email === "smoketest@trypennie.com", "agent email is the smoketest mailbox");
+// #3424: the agent's name is read out on the booker's confirmation ("Your loan
+// advisor, <name>, will call you then"), which the /demo link shows to people
+// outside Pennie, so it is a neutral advisor name rather than the canary's label.
+eq(seed.user.name, "Demo Advisor", "the agent's name reads as an advisor on a visitor's confirmation");
 assert(seed.user.role === "agent", "agent row has role 'agent'");
 assert(seed.user.org_id === "org-smoke", "agent is in the target org");
 assert(seed.user.bookable === true, "agent is bookable (in the round-robin pool)");

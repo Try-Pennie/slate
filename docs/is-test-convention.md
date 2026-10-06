@@ -118,7 +118,7 @@ real project.
 
 Every synthetic row the builder emits carries `is_test: true`:
 
-- **The smoke-test agent** (`Smoke Test Agent`): a bookable, non-Salesforce
+- **The smoke-test agent** (`Demo Advisor`, named for the `/demo` confirmation, #3424): a bookable, non-Salesforce
   mailbox with Mon-Fri working hours. The roster sync never deactivates it
   because it is not in Salesforce.
 - **The isolated buckets** (`Smoke Test (CODE)`): `round_robin` with **empty**
