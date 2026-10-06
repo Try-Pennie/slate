@@ -362,6 +362,31 @@ A table created by a backfill script is outside `scripts/test-migrations.ts`'s R
 scan, so check it by hand: `availability_rules_backup_1255` came out with RLS
 enabled and no policies, which is default-deny and correct.
 
+## Held time off windows: the read-back after 0170 (#3360)
+
+`0170_ooo_held_window_blocks.sql` converts every approved time off's busy block from
+the old shape (a `source='gcal'` row keyed on the agent event, which the calendar sync
+rewrote from Google) to the held shape (a `source='slate'` row the sync never writes).
+It runs ahead of the code that stops writing the old shape, so a request approved
+between `supabase db push` and the deploy is still written the old way. After the
+deploy, read back:
+
+<!-- runbook-unverified: a read against production, which only means anything in the
+     window after 0170 is applied and its deploy lands. 0170 counts this same
+     predicate itself; on a throwaway Postgres 17 seeded with the old shape it read
+     2 before and 0 after. -->
+```sql
+select count(*) from busy_blocks b
+  join ooo_requests r on r.id = b.ooo_request_id
+ where b.source = 'gcal' and r.status = 'approved';
+```
+
+It must be 0. Anything else is an approval from that window: re-run the body of 0170
+(the `do $$ ... $$` block) once, which only ever selects old shaped rows, asserts its
+own post-state and rolls back on a surprise. The statement was proved on a throwaway
+Postgres 17 before it shipped, including a run with its detach step broken, which
+raised and left every row as it was.
+
 ## Changing an event type by hand: the marker, then the invalidation (#1435)
 
 The event type rides **inside** the cached `bucket_slots` payload the booker serves.

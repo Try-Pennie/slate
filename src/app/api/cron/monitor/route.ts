@@ -353,6 +353,7 @@ import {
   type StrandedStatus,
 } from "@/lib/monitor/coverage-needs-human";
 import { runOooProtectionCheck } from "@/lib/monitor/ooo-protection";
+import { runOooEventMismatchCheck } from "@/lib/monitor/ooo-event-mismatch";
 import {
   runOooCoverageGapCheck,
   oooCoverageHolders,
@@ -2841,7 +2842,26 @@ export async function GET(req: NextRequest) {
     // unread list comes back empty and an empty result here is indistinguishable
     // from "every time off is protected", which would post an all-clear over a
     // window a lead can be booked into. ---
-    const loadOooProtection = async () => {
+    // ONE read serves two checks (#3360): this one, and whether the calendar still
+    // agrees with each approved window. Memoised for the tick, so the second check
+    // costs no subrequest on the budget four lanes share; a failed read fails both,
+    // which is the right answer for both (neither may page or clear off it).
+    type ApprovedTimeOffAgent = {
+      id: string;
+      name: string | null;
+      email: string | null;
+      bookable: boolean;
+      deactivated_at: string | null;
+    };
+    type ApprovedTimeOffBlock = {
+      user_id: string;
+      starts_at: string;
+      ends_at: string;
+      source: string;
+      gcal_event_id: string | null;
+    };
+    let approvedTimeOffRead: ReturnType<typeof readApprovedTimeOff> | null = null;
+    const readApprovedTimeOff = async () => {
       const requests = await selectAllPages<{
         id: string;
         user_id: string;
@@ -2860,7 +2880,13 @@ export async function GET(req: NextRequest) {
           .eq("status", "approved")
           .gte("ends_at", new Date(now).toISOString()),
       );
-      if (requests.length === 0) return { requests: [], blocks: [] };
+      if (requests.length === 0) {
+        return {
+          requests,
+          byId: new Map<string, ApprovedTimeOffAgent>(),
+          blocks: [] as ApprovedTimeOffBlock[],
+        };
+      }
       // DEDUPED agent ids, so every filter below is bounded by the roster rather than
       // by the unbounded request list they came from: at the 200 agent design target
       // that is 7,520 bytes against a 10,000 byte budget and the 14,878 smallest size
@@ -2870,11 +2896,11 @@ export async function GET(req: NextRequest) {
         await db
           .from("users")
           // cap-safe: primary-key lookup of the (few) agents with approved time off.
-          .select("id, name, email")
+          .select("id, name, email, bookable, deactivated_at")
           // in-chunk-ok: bounded by the roster, see the note on userIds above.
           .in("id", userIds),
         "monitor approved time off agents",
-      ) ?? []) as { id: string; name: string | null; email: string | null }[];
+      ) ?? []) as ApprovedTimeOffAgent[];
       const byId = new Map(agents.map((a) => [a.id, a]));
       // The whole cached window for those agents, from now to the last time off
       // end, so coverage is judged against every row that could contribute to it.
@@ -2882,19 +2908,20 @@ export async function GET(req: NextRequest) {
         .map((r) => r.ends_at)
         .sort()
         .slice(-1)[0] as string;
-      const blocks = await selectAllPages<{
-        user_id: string;
-        starts_at: string;
-        ends_at: string;
-      }>("monitor time off busy blocks", "id", () =>
+      const blocks = await selectAllPages<ApprovedTimeOffBlock>("monitor time off busy blocks", "id", () =>
         db
           .from("busy_blocks")
-          .select("user_id, starts_at, ends_at")
+          .select("user_id, starts_at, ends_at, source, gcal_event_id")
           // in-chunk-ok: bounded by the roster, see the note on userIds above.
           .in("user_id", userIds)
           .gte("ends_at", new Date(now).toISOString())
           .lte("starts_at", lastEnd),
       );
+      return { requests, byId, blocks };
+    };
+    const approvedTimeOff = () => (approvedTimeOffRead ??= readApprovedTimeOff());
+    const loadOooProtection = async () => {
+      const { requests, byId, blocks } = await approvedTimeOff();
       return {
         requests: requests.map((r) => ({
           id: r.id,
@@ -2916,6 +2943,37 @@ export async function GET(req: NextRequest) {
         })),
       };
     };
+    // The mirror rows are the gcal rows the sync wrote for each request's own event.
+    // A mirror lying wholly outside [now, last end] is not read, and is judged as the
+    // calendar blocking nothing inside the approved window, which is what it is.
+    const loadOooEventMismatch = async () => {
+      const { requests, byId, blocks } = await approvedTimeOff();
+      return {
+        requests: requests.map((r) => {
+          const agent = byId.get(r.user_id);
+          return {
+            id: r.id,
+            userId: r.user_id,
+            agentName: agent?.name ?? null,
+            agentEmail: agent?.email ?? null,
+            startsAt: r.starts_at,
+            endsAt: r.ends_at,
+            displayTzId: r.display_tz_id,
+            displayTzLabel: r.display_tz_label,
+            agentEventId: r.agent_event_id,
+            inPool: agent !== undefined && agent.bookable && agent.deactivated_at === null,
+          };
+        }),
+        mirrors: blocks
+          .filter((b) => b.source === "gcal" && b.gcal_event_id !== null)
+          .map((b) => ({
+            userId: b.user_id,
+            gcalEventId: b.gcal_event_id as string,
+            startsAt: b.starts_at,
+            endsAt: b.ends_at,
+          })),
+      };
+    };
     const oooProtection = await steps.run(
       "ooo_protection",
       {
@@ -2933,6 +2991,34 @@ export async function GET(req: NextRequest) {
           cooldownMs: cooldownMs.ooo_protection_lost,
           log: (fields) => log.info("ooo-protection", { msg: "tick", ...fields }),
         }),
+    );
+
+    // --- An approved time off whose calendar event no longer covers it (#3360).
+    // Slate holds the approved window whatever the event says, so this is a record
+    // and a calendar disagreeing rather than hours left open; it asks a person to
+    // make them agree. The sync pages a shortened event at once; this pages what
+    // the sync cannot see (a deleted event) after two ticks, and is the only place
+    // the all-clear is decided. Shares the read above, so it costs no subrequest
+    // unless a page has to end for an agent no longer in the approved set. ---
+    await steps.run("ooo_event_mismatch", null, () =>
+      runOooEventMismatchCheck({
+        load: loadOooEventMismatch,
+        loadAgentNames: async (ids) => {
+          const rows = (unwrap(
+            await db
+              .from("users")
+              // cap-safe: primary-key lookup of the few agents whose page is ending.
+              .select("id, name, email")
+              // in-chunk-ok: bounded by the roster, these are agents with an open page.
+              .in("id", ids),
+            "monitor time off mismatch names",
+          ) ?? []) as { id: string; name: string | null; email: string | null }[];
+          return new Map(rows.map((u) => [u.id, u.name?.trim() || u.email || u.id]));
+        },
+        nowMs: now,
+        appBaseUrl: appUrl(),
+        log: (fields) => log.info("ooo-event-mismatch", { msg: "tick", ...fields }),
+      }),
     );
 
     // --- An approved absence still holding an appointment NO sweep ever saw (#1238).

@@ -139,24 +139,6 @@ export function realDeps(): OooDeps {
         "ooo.getUser",
       ) as User | null) ?? null,
 
-    // #1674: a swallowed error here silently falls back to "primary", i.e. it
-    // writes the time off block to a DIFFERENT calendar than the one the agent
-    // is actually booked against, so the absence would not block anything. The
-    // fallback is only correct for an agent with no agent_calendars row, which
-    // is a null data with a null error and still passes through unwrap.
-    agentPrimaryCalendarId: async (userId) =>
-      (
-        unwrap(
-          await db()
-            .from("agent_calendars")
-            .select("calendar_id")
-            .eq("user_id", userId)
-            .limit(1)
-            .maybeSingle(),
-          "ooo.agentPrimaryCalendarId",
-        ) as { calendar_id: string } | null
-      )?.calendar_id ?? "primary",
-
     createCalendarEvent: (actorEmail, calendarId, args, clientId) =>
       createEventOnCalendar(actorEmail, calendarId, args, clientId),
     deleteCalendarEvent: (actorEmail, calendarId, eventId) =>
