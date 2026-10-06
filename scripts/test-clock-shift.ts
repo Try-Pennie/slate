@@ -263,6 +263,9 @@ const ANCHOR = Date.UTC(2026, 0, 31, 12, 0, 0);
         "const wanted = process.env.PLANTED_EXPECT_OPTIONS ?? '';",
         "console.log('own offset error ' + own + 'ms, child offset error ' + child + 'ms, NODE_OPTIONS=' + JSON.stringify(options));",
         "if (!Number.isFinite(childNow)) { console.error('FAIL: the child printed no clock'); process.exit(1); }",
+        // An unreadable anchor or expectation is NaN, which every comparison below
+        // would read as within tolerance (L50), so it refuses here instead.
+        "if (!Number.isFinite(own) || !Number.isFinite(child)) { console.error('FAIL: the plant could not read its anchor or expectations'); process.exit(1); }",
         "if (Math.abs(own) > 60_000) { console.error('FAIL: the suite itself is off its expected clock'); process.exit(1); }",
         "if (Math.abs(child) > 60_000) { console.error('FAIL: the child is not on the expected clock'); process.exit(1); }",
         "const optionsOk = process.env.PLANTED_OPTIONS_MATCH === 'prefix' ? options.startsWith(wanted + ' ') : options === wanted;",
