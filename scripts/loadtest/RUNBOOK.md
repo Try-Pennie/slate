@@ -933,7 +933,7 @@ and exits zero so the ceiling check and the fault pass still run. Every request 
 carries its own abort (`requestAbortMs`: thirty seconds, and never more than a minute
 past the deadline, inside the grace before the job's timeout), so a request that never
 answers is recorded as `timed-out` and fails its own **timed out requests** bar rather
-than keeping the driver from writing its file. The same abort covers a body that stalls after its headers and the fault leg's version polling. The archive's log window is derived too (`archiveTailMinutes`, one minute past the drive job's timeout), so a slow run keeps its last log lines. The judge scores
+than keeping the driver from writing its file. The same abort covers a body that stalls after its headers and the fault leg's version polling. A FIRST availability read for a code that is refused (a 429 from the shared per address ceiling), times out or fails leaves the driver with no view of the bucket's times, so the request is recorded as `availability-unread` and fails its own **requests never sent** bar (#3348); it used to read as `no-slots-offered`, a bucket offering nothing, for a request never sent. Later reads that fail keep the last view, as before. The availability read has its own test seam, `DRIVE_AVAILABILITY_TIMEOUT_MS`, apart from the booking request's `DRIVE_REQUEST_TIMEOUT_MS`. The archive's log window is derived too (`archiveTailMinutes`, one minute past the drive job's timeout), so a slow run keeps its last log lines. The judge scores
 that file: the latency bar on what ran, and a failing **planned bookings completed**
 bar naming the driver, how far it got and the share of the run that completed. The
 drive job's `timeout-minutes` is derived from the same deadline plus setup and grace

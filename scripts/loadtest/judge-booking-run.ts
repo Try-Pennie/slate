@@ -19,6 +19,7 @@ import {
   type LatencyJudgement,
 } from "./latency-bar.ts";
 import type { BookingAttempt, DriverResult } from "./book-plan.ts";
+import { AVAILABILITY_UNREAD } from "./outcomes.ts";
 import { HEALTHY_INVOCATION_STATUS, type ScheduledReading } from "./platform-reading.ts";
 import { CEILING_CONCLUSION, type CeilingVerdict } from "./preflight-checks.ts";
 // The judge reads the reader's span list at runtime; the reader never imports the
@@ -1047,6 +1048,12 @@ export interface RunMeasurements {
    * that failed are two different findings (L11).
    */
   timedOut: number;
+  /**
+   * #3348: requests never sent because their bucket's times could not be read at all.
+   * Kept apart from `noReply` (nothing was sent to go unanswered) and from a bucket
+   * offering nothing (the bucket never answered).
+   */
+  availabilityUnread: number;
   writeRefusals: number;
   /** Write refusals grouped by the address Slate said it saw. */
   refusalsByIp: Record<string, number>;
@@ -1184,8 +1191,9 @@ export function measure(input: JudgeInput): RunMeasurements {
     ok: percentiles(attempts.filter((a) => a.status === 200).map((a) => a.wallMs)),
     fiveXx: attempts.filter((a) => a.status >= 500).length,
     noReply: attempts.filter(
-      (a) => a.status === 0 && a.outcome !== "no-slots-offered" && a.outcome !== "timed-out",
+      (a) => a.status === 0 && a.outcome !== "no-slots-offered" && a.outcome !== "timed-out" && a.outcome !== AVAILABILITY_UNREAD,
     ).length,
+    availabilityUnread: attempts.filter((a) => a.outcome === AVAILABILITY_UNREAD).length,
     timedOut: attempts.filter((a) => a.status === 0 && a.outcome === "timed-out").length,
     writeRefusals: attempts.filter((a) => a.status === 429).length,
     refusalsByIp,
@@ -1540,6 +1548,13 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
   // to two different places (L11).
   if (m.fiveXx > 0) fail("server errors", `${m.fiveXx} responses were 5xx`);
   if (m.noReply > 0) fail("unanswered requests", `${m.noReply} requests got no reply at all`);
+  if (m.availabilityUnread > 0) {
+    fail(
+      "requests never sent",
+      `${m.availabilityUnread} request${m.availabilityUnread === 1 ? " was" : "s were"} never sent because the bucket's times ` +
+        "could not be read (its first availability read was refused, timed out or failed), so the run did not drive the load it planned",
+    );
+  }
   if (m.timedOut > 0) {
     fail(
       "timed out requests",

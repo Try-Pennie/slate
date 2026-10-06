@@ -46,6 +46,7 @@ import {
   type BookingAttempt,
   type DriverResult,
 } from "./book-plan.ts";
+import { AVAILABILITY_UNREAD } from "./outcomes.ts";
 import {
   faultModeVerdict,
   faultPollStep,
@@ -106,16 +107,18 @@ const DEADLINE_OVERRIDE = process.env.DRIVE_DEADLINE_MS;
 // env-ok: DRIVE_REQUEST_TIMEOUT_MS (optional; a test seam that can only SHORTEN one
 // request's abort bound, so a test can watch a hung request time out in milliseconds)
 const REQUEST_TIMEOUT_OVERRIDE = process.env.DRIVE_REQUEST_TIMEOUT_MS;
+// env-ok: DRIVE_AVAILABILITY_TIMEOUT_MS (optional; the same seam for the availability
+// read alone, #3348, so a test shortening the booking request's bound does not also
+// race the slot read against a loaded runner)
+const AVAILABILITY_TIMEOUT_OVERRIDE = process.env.DRIVE_AVAILABILITY_TIMEOUT_MS;
 
 /**
  * The abort signal for one request (#3222). Bounded by its own timeout and by the
  * driver's deadline plus the overrun, so a request that never answers cannot keep
  * the driver from writing its file before the job's timeout kills it.
  */
-function requestSignal(deadlineAtMs: number): AbortSignal {
-  return AbortSignal.timeout(
-    effectiveDeadlineMs(requestAbortMs({ nowMs: Date.now(), deadlineAtMs }), REQUEST_TIMEOUT_OVERRIDE),
-  );
+function requestSignal(deadlineAtMs: number, override: string | undefined = REQUEST_TIMEOUT_OVERRIDE): AbortSignal {
+  return AbortSignal.timeout(effectiveDeadlineMs(requestAbortMs({ nowMs: Date.now(), deadlineAtMs }), override));
 }
 
 /** Whether a fetch failed because its own abort bound fired. */
@@ -148,17 +151,22 @@ const slotCache = new Map<string, SlotView>();
 const REFRESH_MS = availabilityRefreshMs(DRIVERS);
 
 /**
- * The times a bucket is offering, cached per code.
+ * The times a bucket is offering, cached per code, or null when they could not be
+ * read at all (#3348).
  *
  * Cached because the availability ceiling is 30 a minute PER ADDRESS and four
  * drivers share one, so a read before every booking would spend four times the
  * budget and the run would be measuring the limiter. The cache is refreshed on a
  * pace derived from that same ceiling.
+ *
+ * Null only when a read failed with no earlier view to fall back on: a refused, timed
+ * out or failed FIRST read is not a bucket offering nothing, and is recorded as its
+ * own outcome. Nothing is cached then, so the next request reads again.
  */
-async function slotsFor(code: string, nowMs: number, deadlineAtMs: number): Promise<string[]> {
+async function slotsFor(code: string, nowMs: number, deadlineAtMs: number): Promise<string[] | null> {
   const cached = slotCache.get(code);
   if (cached && nowMs - cached.fetchedAtMs < REFRESH_MS) return cached.slots;
-  let slots: string[] = cached?.slots ?? [];
+  let slots: string[] | null = cached?.slots ?? null;
   // The PARSE is deliberately outside the catch below. A read that failed and a
   // response whose shape we cannot read are different facts: the first is a 429 or
   // a blip the run should ride out on its cached view, and the second is a defect
@@ -167,7 +175,7 @@ async function slotsFor(code: string, nowMs: number, deadlineAtMs: number): Prom
   let payload: unknown = null;
   try {
     const res = await fetch(`${SLATE_BASE}/api/availability?bucket=${encodeURIComponent(code)}`, {
-      signal: requestSignal(deadlineAtMs),
+      signal: requestSignal(deadlineAtMs, AVAILABILITY_TIMEOUT_OVERRIDE),
     });
     if (res.ok) payload = await res.json();
     // A refused or unreadable read KEEPS the previous view rather than emptying it.
@@ -181,6 +189,7 @@ async function slotsFor(code: string, nowMs: number, deadlineAtMs: number): Prom
   // read, and that must end the driver rather than resolve to the empty list every
   // caller treats as "this bucket offers nothing".
   if (payload !== null) slots = offeredSlots(payload);
+  if (slots === null) return null;
   slotCache.set(code, { fetchedAtMs: nowMs, slots });
   return slots;
 }
@@ -300,6 +309,25 @@ async function steady(
     if (wait > 0) await sleep(wait);
     const now = Date.now();
     const slots = await slotsFor(req.code, now, deadlineAtMs);
+    if (slots === null) {
+      // #3348: the bucket's times could not be read at all (a refused, timed out or
+      // failed first read). No booking was sent, and the bucket is not known to offer
+      // nothing, so this has its own outcome rather than no-slots-offered (L11).
+      attempts.push({
+        driver: DRIVER,
+        n: req.n,
+        code: req.code,
+        externalId: externalIdFor(idPrefix(RUN_ID, mode), DRIVER, req.n),
+        sentAtMs: now,
+        wallMs: 0,
+        status: 0,
+        outcome: AVAILABILITY_UNREAD,
+        startIso: null,
+        seenIp: null,
+        echo: null,
+      });
+      continue;
+    }
     const startIso = pickSlot(slots);
     if (startIso === null) {
       // A bucket offering nothing is RECORDED rather than skipped in silence, with a

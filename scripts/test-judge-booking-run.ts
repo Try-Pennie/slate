@@ -612,6 +612,19 @@ function slowRun(made = 100): JudgeInput {
     !bars(noSlots).includes("unanswered requests"),
     "a bucket that offered nothing is not an unanswered request",
   );
+
+  // #3348: a request never sent because its bucket's times could not be read at all
+  // is neither an unanswered request nor a bucket offering nothing. It fails on its
+  // own bar: the run did not drive the load it planned, and says why.
+  const unread = broken((i) => {
+    i.driverResults[0]!.attempts[0]!.status = 0;
+    i.driverResults[0]!.attempts[0]!.outcome = "availability-unread";
+    i.bookings = i.bookings.filter((b) => b.external_id !== `${RUN}-0-0`);
+    i.bookingIdsWithBusyBlock = i.bookings.map((b) => b.id);
+  });
+  assert(!bars(unread).includes("unanswered requests"), "an unread availability read is not an unanswered request");
+  assert(bars(unread).includes("requests never sent"), `it fails on its own bar (got ${JSON.stringify(bars(unread))})`);
+  assert(!bars(noSlots).includes("requests never sent"), "and a bucket offering nothing does not trip it");
 }
 
 // --- the invariant the run exists to protect ------------------------------------
