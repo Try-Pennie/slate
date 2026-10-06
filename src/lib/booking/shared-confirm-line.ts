@@ -330,6 +330,10 @@ export function makeSharedConfirmLine<T>(deps: {
     stash.delete(isolateKeyOf(key));
     const how = await decide(key);
     if (how.use !== "shared") {
+      // #3351: the switch or binding changed since the lookahead kept a lead or ticket
+      // for this enter. It is given back before the other line is taken, or the
+      // object holds it for the ack window with nobody to collect it.
+      if (stashed?.kind === "answer") await abandon(stashed.stub, stashed.attempt);
       if (how.use === "fallback") return fallBack(key, waitMs, { ...served, line: "fallback", reason: how.reason }, null);
       deps.record({ ...served, line: "isolate", reason: how.reason });
       return deps.fallback.enter(key, waitMs);

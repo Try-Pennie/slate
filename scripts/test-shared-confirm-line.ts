@@ -329,7 +329,7 @@ async function main() {
     assert(w.sent.includes("abandon"), `release: the uncollected lead is abandoned (sent ${JSON.stringify(w.sent)})`);
     const started = w.now();
     const t = (await w.settle(b.line.enter(KEY, 10_000))) as LineTurn<string>;
-    assert(t.kind === "lead" && w.now() - started < CONFIRM_LINE_ACK_MS, `release: the next confirm leads at once (waited ${w.now() - started}ms)`);
+    assert(t.kind === "lead" && w.now() - started < CONFIRM_LINE_ACK_MS / 4, `release: the next confirm leads at once (waited ${w.now() - started}ms)`);
     if (t.kind === "lead") await w.settle(t.done({ full: false }));
     const c = w.client();
     const other = { ...KEY, instant: "42" };
@@ -339,6 +339,29 @@ async function main() {
     await w.settle(c.line.release());
     assert(w.sent.length === before, "release: after an enter collected the lookahead's answer, nothing is sent");
     if (ct.kind === "lead") await w.settle(ct.done({ full: false }));
+  }
+
+  // --- #3351: a kept answer is given back when the enter does not use the shared line --
+  // The switch can read off (or the binding go) between the lookahead and its enter. The
+  // enter then takes the isolate's line, and the lead the lookahead kept must not be
+  // left held on the object.
+  {
+    const w = world();
+    const reading: SwitchReading = { on: true, source: "read" };
+    const a = w.client({ on: reading });
+    const b = w.client();
+    assert((await w.settle(a.line.lookahead(KEY, 10_000))) === null, "switched off: the lookahead keeps its lead");
+    reading.on = false;
+    const t = (await w.settle(a.line.enter(KEY, 10_000))) as LineTurn<string>;
+    assert(lastServed(a.served)?.line === "isolate", `switched off: the enter takes the isolate's line (got ${JSON.stringify(lastServed(a.served))})`);
+    assert(w.sent.includes("abandon"), `switched off: and the kept lead is abandoned (sent ${JSON.stringify(w.sent)})`);
+    if (t.kind === "lead") await w.settle(t.done({ full: false }));
+    const started = w.now();
+    const next = (await w.settle(b.line.enter(KEY, 10_000))) as LineTurn<string>;
+    // A quarter of the ack window: a lead kept a few hundred milliseconds earlier only
+    // needs the rest of the window, so the whole window would pass without the abandon.
+    assert(next.kind === "lead" && w.now() - started < CONFIRM_LINE_ACK_MS / 4, `switched off: the next shared confirm leads at once (waited ${w.now() - started}ms)`);
+    if (next.kind === "lead") await w.settle(next.done({ full: false }));
   }
 
   // --- lookahead: an idle line costs one enter, a busy one hands out a place --------
