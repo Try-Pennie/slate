@@ -10,7 +10,14 @@
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-confirm-line-binding.ts
 import { readFileSync } from "node:fs";
 import { unstable_readConfig } from "wrangler";
-import { CONFIRM_LINE_BINDING, CONFIRM_LINE_CLASS } from "../src/lib/booking/confirm-line-object.ts";
+import {
+  CONFIRM_LINE_BINDING,
+  CONFIRM_LINE_CLASS,
+  CONFIRM_LINE_PROTOCOL,
+  CONFIRM_LINE_TRACE_TAG,
+  TRACED_CALL_MSG,
+} from "../src/lib/booking/confirm-line-object.ts";
+import { ConfirmLine } from "../worker/confirm-line.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 interface Resolved {
@@ -32,5 +39,36 @@ assert(
   new RegExp(`export\\s*\\{\\s*${CONFIRM_LINE_CLASS}\\s*\\}\\s*from\\s*"\\./confirm-line"`).test(entry),
   `worker/index.ts exports ${CONFIRM_LINE_CLASS} from ./confirm-line`,
 );
+
+// #3354: the deployed shell reports a traced call, on the tag and message the load
+// run's reader looks for. Driven through the real class rather than a scan of its
+// text, because a host that accepts `onTrace` proves nothing when the shell never
+// passes it (L3), and a scan would pass on a mention in a comment (L135).
+async function shellReports(message: Record<string, unknown>): Promise<string[]> {
+  const lines: string[] = [];
+  const real = console.info;
+  console.info = (...args: unknown[]) => {
+    lines.push(args.map(String).join(" "));
+  };
+  try {
+    const res = await new ConfirmLine().fetch(
+      new Request("https://confirm-line/", { method: "POST", body: JSON.stringify({ v: CONFIRM_LINE_PROTOCOL, ...message }) }),
+    );
+    await res.text();
+  } finally {
+    console.info = real;
+  }
+  return lines;
+}
+{
+  const traced = await shellReports({ op: "enter", attempt: "A", line: "100", waitMs: 0, trace: "t-1", stage: "wait" });
+  const line = traced.find((l) => l.includes(`tag=${CONFIRM_LINE_TRACE_TAG}`));
+  assert(
+    line !== undefined && line.includes(`msg="${TRACED_CALL_MSG}"`) && line.includes('op="enter"') && line.includes('trace="t-1"') && line.includes('stage="wait"'),
+    `the ConfirmLine shell logs a traced call with its op, trace and stage (got ${JSON.stringify(traced)})`,
+  );
+  const untraced = await shellReports({ op: "enter", attempt: "B", line: "200", waitMs: 0 });
+  assert(untraced.length === 0, `and logs nothing for a call with no trace, which is every production call (got ${JSON.stringify(untraced)})`);
+}
 
 finish();

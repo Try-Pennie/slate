@@ -3,12 +3,13 @@
  * line per instant inside it.
  *
  * Deliberately a shell, like `burst-limiter.ts`: every decision lives in
- * `@/lib/booking/confirm-line-object`, which the node tests drive, because `worker/`
- * is reachable from neither test harness. What is left here is the request envelope
- * and the real clock and timers. Nothing is written to storage: the line is memory
+ * `@/lib/booking/confirm-line-object`, which the node tests drive. What is left here
+ * is the request envelope, the real clock and timers, and the log a traced call is
+ * written to, which `scripts/test-confirm-line-binding.ts` drives through this class. Nothing is written to storage: the line is memory
  * only, so no input gate closes and held polls interleave at every await.
  */
-import { makeConfirmLineHost } from "@/lib/booking/confirm-line-object";
+import { makeConfirmLineHost, CONFIRM_LINE_TRACE_TAG, TRACED_CALL_MSG } from "@/lib/booking/confirm-line-object";
+import { log } from "@/lib/log";
 
 const realTimer = (ms: number, fire: () => void): (() => void) => {
   const t = setTimeout(fire, ms);
@@ -21,6 +22,9 @@ export class ConfirmLine {
     timer: realTimer,
     leaseTimer: realTimer,
     newId: () => crypto.randomUUID(),
+    // #3354: a traced call (sent by the load test's client only) is logged, so the
+    // run can join this object's side of a confirm to the confirm's own line.
+    onTrace: (call) => log.info(CONFIRM_LINE_TRACE_TAG, { msg: TRACED_CALL_MSG, ...call }),
   });
 
   async fetch(request: Request): Promise<Response> {

@@ -36,6 +36,8 @@ import {
   readBurstPlan,
   burstCodeFor,
   burstLegOut,
+  readDriverMode,
+  bookingRequestHeaders,
   BURST_REQUESTS_DEFAULT,
   BURST_GRACE_DEFAULT_MS,
   DRIVERS,
@@ -74,7 +76,12 @@ const OUT = need("OUT");
 // are declared rather than wired because the steady job never sets them: a step
 // carrying five variables it does not use reads as configuration somebody chose.
 // env-ok: MODE (optional; defaults to steady; only the burst, fault and baseline jobs set it)
-const MODE = (process.env.MODE ?? "steady") as "steady" | "burst" | "fault" | "baseline";
+const modeRead = readDriverMode(process.env.MODE);
+if (!modeRead.ok) {
+  console.error(`FAILED: ${modeRead.why}, so nothing was attempted.`);
+  process.exit(1);
+}
+const MODE = modeRead.mode;
 // env-ok: BURST_REQUESTS (optional; defaults to 25, which is what one burst driver
 // fires in each burst)
 const BURST_REQUESTS = Number(process.env.BURST_REQUESTS ?? String(BURST_REQUESTS_DEFAULT));
@@ -196,7 +203,8 @@ async function book(req: {
     const res = await fetch(`${SLATE_BASE}/api/bookings`, {
       signal: requestSignal(req.deadlineAtMs),
       method: "POST",
-      headers: { Authorization: `Bearer ${API_KEY}`, "content-type": "application/json" },
+      // #3354: the leg rides on every confirm, so the run can say where each cold one came from.
+      headers: bookingRequestHeaders(API_KEY, MODE),
       body: JSON.stringify({
         bucketCode: req.code,
         start: req.startIso,

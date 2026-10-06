@@ -17,6 +17,7 @@ import { OK_P95_MS } from "./judge-booking-run.ts";
 // Type only, erased under --experimental-strip-types: the attempt carries the echo the
 // deployment sent, read through the one parser both sides share (#3325, L41).
 import type { LoadtestEcho } from "../../src/lib/loadtest-echo.ts";
+import { LOADTEST_LEG_HEADER, type LoadtestLeg } from "../../src/lib/booking/wait-marks.ts";
 
 /** Availability reads a single address may make in a minute (30, from the app). */
 export const AVAILABILITY_PER_MINUTE = AVAILABILITY_LIMITER.perMinute;
@@ -720,4 +721,28 @@ export function idPrefix(runId: string, mode: DriverMode): string {
   if (mode === "baseline") return `${runId}-r`;
   if (mode === "burst") return `${runId}-b`;
   return runId;
+}
+
+/**
+ * #3354: the modes this driver runs, each one a leg the route reads
+ * (`LOADTEST_LEGS`), so the two vocabularies cannot drift. The preflight and the
+ * address ceiling are legs too, sent by their own scripts, and are not modes here.
+ */
+export const DRIVER_MODES = ["steady", "burst", "fault", "baseline"] as const satisfies readonly LoadtestLeg[];
+export type DriverMode = (typeof DRIVER_MODES)[number];
+
+/**
+ * Which mode this driver runs, from its MODE. One outside the four is refused by
+ * name rather than cast into one (it used to be a bare cast, and the dispatch runs
+ * the steady pass for anything it does not recognise). Unset is the steady pass.
+ */
+export function readDriverMode(raw: string | undefined): { ok: true; mode: DriverMode } | { ok: false; why: string } {
+  if (raw === undefined || raw === "") return { ok: true, mode: "steady" };
+  if ((DRIVER_MODES as readonly string[]).includes(raw)) return { ok: true, mode: raw as DriverMode };
+  return { ok: false, why: `MODE "${raw}" is not one of ${DRIVER_MODES.join(", ")}` };
+}
+
+/** The headers every confirm a driver sends carries, its leg among them (#3354). */
+export function bookingRequestHeaders(apiKey: string, leg: LoadtestLeg): Record<string, string> {
+  return { Authorization: `Bearer ${apiKey}`, "content-type": "application/json", [LOADTEST_LEG_HEADER]: leg };
 }
