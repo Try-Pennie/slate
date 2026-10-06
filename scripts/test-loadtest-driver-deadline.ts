@@ -526,6 +526,14 @@ function baselineWiringProblems(yml: string, runJudge: string): string[] {
     ["burst is skipped behind a failed baseline"],
     "control: burst drivers that would be skipped behind a failed baseline are caught, and only that",
   );
+  // And the same for the burst tail, so its half of the check is seen to fire too (L1).
+  const tailBare = yml.replace(/(\n  burst-tail:\n    needs: setup-burst\n)    if: .*\n/, "$1");
+  assert(tailBare !== yml, "control setup: the burst tail's condition was really removed");
+  eq(
+    baselineWiringProblems(tailBare, runJudge),
+    ["burst-tail is skipped behind a failed baseline"],
+    "control: a burst tail that would be skipped behind a failed baseline is caught, and only that",
+  );
   const noPass = runJudge.replace(/baseline: expectBaseline,/, "baseline: false,");
   eq(
     baselineWiringProblems(yml, noPass),
