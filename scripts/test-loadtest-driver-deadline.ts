@@ -53,7 +53,7 @@ import {
   type DriverResult,
 } from "./loadtest/book-plan.ts";
 import { OK_P95_MS } from "./loadtest/judge-booking-run.ts";
-import { AVAILABILITY_UNREAD, NO_SLOTS_OFFERED } from "./loadtest/outcomes.ts";
+import { AVAILABILITY_UNREAD, NO_SLOTS_OFFERED, TIMED_OUT } from "./loadtest/outcomes.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -334,7 +334,7 @@ async function runDriver(
   eq(code, 0, `a driver whose request hung still exits zero ${stderr.slice(0, 300)}`);
   assert(r !== null, "and still writes its file");
   eq(r?.attempts[0]?.status, 0, "the hung request has no status");
-  eq(r?.attempts[0]?.outcome, "timed-out", "and is recorded as timed out, not as any other failure");
+  eq(r?.attempts[0]?.outcome, TIMED_OUT, "and is recorded as timed out, not as any other failure");
   assert(r?.cutShort !== undefined, "and the driver then stops at its deadline as before");
 }
 
@@ -343,7 +343,7 @@ async function runDriver(
   // body, so the attempt read as a 200 with no outcome: a success nobody saw.
   const { code, stderr, result: r } = await runDriver("stall-body", { DRIVE_REQUEST_TIMEOUT_MS: "300" });
   eq(code, 0, `a driver whose response body stalled still exits zero ${stderr.slice(0, 300)}`);
-  eq(r?.attempts[0]?.outcome, "timed-out", "a stalled body is recorded as timed out");
+  eq(r?.attempts[0]?.outcome, TIMED_OUT, "a stalled body is recorded as timed out");
   eq(r?.attempts[0]?.status, 0, "and not as the 200 its headers claimed");
 }
 

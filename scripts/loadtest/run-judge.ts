@@ -33,7 +33,8 @@ import { recomputeArmLine } from "../../src/lib/booking/post-confirm-recompute-m
 import {
   REQUEST_CPU_P99_MS,
   cronCpuShareText,
-  faultPassKeepsFiveXxBar,
+  faultPassCounts,
+  faultPassReportLine,
   burstLegText,
   burstsSummaryText,
   steadyLineText,
@@ -509,8 +510,7 @@ if (faultDrivers.length > 0) {
     console.error(`note: fault drivers reported different fault targets (${targetLists.join(" | ")})`);
   }
   faultPass = {
-    attempts: attempts.length,
-    fiveXx: attempts.filter((a) => a.status >= 500 && a.status <= 599).length,
+    ...faultPassCounts(attempts),
     faultPct: Math.min(...reported),
     faultTargets: targetLists.length === 1 && targetLists[0] !== "" ? targetLists[0]!.split(",") : [],
     // The files themselves, and the plan each was meant to run, so the judge gives
@@ -752,18 +752,7 @@ if (m) {
       `(same slot pairs: ${m.sameSlotPairs})`,
   );
   lines.push(`- worst recompute age: ${m.freshnessMaxSec}s`);
-  // #3104: said on every faulted run, including the ones whose 5xx are reported
-  // rather than barred, so a database fault pass's errors are still in front of the
-  // reader, with the reason they did not fail the run beside them.
-  if (faultPass) {
-    lines.push(
-      `- fault pass: ${faultPass.faultTargets.join(", ") || "unrecorded systems"} failing ` +
-        `${faultPass.faultPct} percent of calls; ${faultPass.attempts} requests, ${faultPass.fiveXx} 5xx ` +
-        (faultPassKeepsFiveXxBar(faultPass.faultTargets)
-          ? "(held to no 5xx)"
-          : "(reported, not barred: a failure of one of these systems is a 5xx by design)"),
-    );
-  }
+  if (faultPass) lines.push(faultPassReportLine(faultPass));
   const laneX = faultLanes?.expectations;
   if (faultLanes?.evidence && laneX && !("why" in laneX)) {
     const e = faultLanes.evidence;

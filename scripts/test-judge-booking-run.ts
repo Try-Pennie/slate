@@ -48,7 +48,7 @@ import {
   verdictText,
   expectBaselineFrom,
 } from "./loadtest/latency-bar.ts";
-import { REQUEST_CPU_P99_MS, REQUEST_STARTUP_P95_MS } from "./loadtest/judge-booking-run.ts";
+import { REQUEST_CPU_P99_MS, REQUEST_STARTUP_P95_MS, faultPassCounts, faultPassReportLine } from "./loadtest/judge-booking-run.ts";
 import {
   ceilingVerdict,
   exactAddressBound,
@@ -273,7 +273,7 @@ function passing(): JudgeInput {
       cron: { invocations: 0, worstCpuMs: 0, byCron: {} },
       cronSource: "agreed-empty" as const,
     },
-    faultPass: { attempts: 100, fiveXx: 0, faultPct: 10, faultTargets: ["google-read"] },
+    faultPass: { attempts: 100, availabilityUnread: 0, fiveXx: 0, faultPct: 10, faultTargets: ["google-read"] },
     // #3104: the lanes kept running and the sync page fired once while faulted.
     faultLanes: { evidence: healthyFaultLanes(LANES_T0, RUN), expectations: fixtureLaneExpectations(LANES_T0) },
     expectedLegs: { burstDrivers: burstResults.length, bursts: 1, faultPct: 10 },
@@ -1062,7 +1062,7 @@ function slowRun(made = 100): JudgeInput {
 
 {
   const errored = broken((i) => {
-    i.faultPass = { attempts: 100, fiveXx: 4, faultPct: 10, faultTargets: ["google-read"] };
+    i.faultPass = { attempts: 100, availabilityUnread: 0, fiveXx: 4, faultPct: 10, faultTargets: ["google-read"] };
   });
   assert(
     bars(errored).includes("the fault pass"),
@@ -1070,7 +1070,7 @@ function slowRun(made = 100): JudgeInput {
   );
 
   const empty = broken((i) => {
-    i.faultPass = { attempts: 0, fiveXx: 0, faultPct: 10, faultTargets: ["google-read"] };
+    i.faultPass = { attempts: 0, availabilityUnread: 0, fiveXx: 0, faultPct: 10, faultTargets: ["google-read"] };
   });
   assert(
     bars(empty).includes("the fault pass"),
@@ -1081,6 +1081,63 @@ function slowRun(made = 100): JudgeInput {
     delete i.faultPass;
   });
   assert(!bars(none).includes("the fault pass"), "a run with no fault pass is judged on the rest");
+
+  // #3348: the fault drivers run the steady drivers' loop, so a request whose bucket's
+  // times could not be read is counted as an attempt without ever being sent. A pass
+  // that sent nothing proved nothing, however many attempts it counted (L98).
+  const allUnread = broken((i) => {
+    i.faultPass = { attempts: 100, availabilityUnread: 100, fiveXx: 0, faultPct: 10, faultTargets: ["google-read"] };
+  });
+  assert(
+    bars(allUnread).includes("the fault pass"),
+    `a fault pass whose every request went unsent made no requests (got ${JSON.stringify(bars(allUnread))})`,
+  );
+  // With only systems the path degrades around failing, the availability read must still
+  // answer, so one unsent request is a finding, on its own bar, as it is in steady load.
+  const someUnread = broken((i) => {
+    i.faultPass = { attempts: 100, availabilityUnread: 3, fiveXx: 0, faultPct: 10, faultTargets: ["google-read"] };
+  });
+  assert(
+    bars(someUnread).includes("fault pass requests never sent"),
+    `an unsent request while Google reads are failing is a finding (got ${JSON.stringify(bars(someUnread))})`,
+  );
+  const said = someUnread.findings.find((f) => f.bar === "fault pass requests never sent")?.detail ?? "";
+  assert(/3 requests were never sent/.test(said), `naming how many (got ${said})`);
+  // Control (L159): the same pass with every request sent trips neither bar.
+  const allSent = broken((i) => {
+    i.faultPass = { attempts: 100, availabilityUnread: 0, fiveXx: 0, faultPct: 10, faultTargets: ["google-read"] };
+  });
+  assert(
+    !bars(allSent).includes("the fault pass") && !bars(allSent).includes("fault pass requests never sent"),
+    `control: a fault pass that sent every request trips neither (got ${JSON.stringify(bars(allSent))})`,
+  );
+}
+
+// --- what the fault drivers' files are counted as (#3348) --------------------------------
+
+{
+  // The counts run-judge hands the judge, from the fault drivers' own attempts. An unsent
+  // attempt has no status, so it is neither a 5xx nor, once subtracted, a request sent.
+  const like = passing().driverResults[0]!.attempts[0]!;
+  const at = (status: number, outcome: typeof like.outcome) => ({ ...like, status, outcome });
+  const counts = faultPassCounts([
+    at(201, like.outcome),
+    at(0, AVAILABILITY_UNREAD),
+    at(503, like.outcome),
+    at(0, AVAILABILITY_UNREAD),
+    at(500, like.outcome),
+  ]);
+  eq(counts, { attempts: 5, availabilityUnread: 2, fiveXx: 2 }, "unsent attempts and 5xx are counted from the attempts' own outcome and status");
+
+  // The report line says how many were sent, and how many were not when any were not.
+  const loud = faultPassReportLine({ ...counts, faultPct: 10, faultTargets: ["supabase"] });
+  assert(
+    /3 requests sent/.test(loud) && /2 never sent because their bucket's times could not be read/.test(loud) && /2 5xx/.test(loud),
+    `the fault pass line names sent, unsent and 5xx (got ${loud})`,
+  );
+  assert(/reported, not barred/.test(loud), `and says a database fault's 5xx are not barred (got ${loud})`);
+  const clean = faultPassReportLine({ attempts: 4, availabilityUnread: 0, fiveXx: 0, faultPct: 10, faultTargets: ["google-read"] });
+  assert(/4 requests sent/.test(clean) && !/never sent/.test(clean) && /held to no 5xx/.test(clean), `a pass that sent everything says so plainly (got ${clean})`);
 }
 
 // --- which systems failed decides the bar (#3104) ----------------------------------------
@@ -1090,15 +1147,31 @@ function slowRun(made = 100): JudgeInput {
   // mix the 5xx count measures the percentage, not the code. It is not barred.
   for (const loud of [["google-read", "supabase"], ["google-write"]]) {
     const r = broken((i) => {
-      i.faultPass = { attempts: 100, fiveXx: 7, faultPct: 10, faultTargets: loud };
+      i.faultPass = { attempts: 100, availabilityUnread: 0, fiveXx: 7, faultPct: 10, faultTargets: loud };
       i.expectedLegs = { ...i.expectedLegs, faultTargets: loud };
     });
     assert(!bars(r).includes("the fault pass"), `5xx with ${loud.join(", ")} failing is not barred`);
+    // #3348: the availability read meets the same designed failure, so an unsent
+    // request is reported beside the 5xx count rather than barred...
+    const someUnread = broken((i) => {
+      i.faultPass = { attempts: 100, availabilityUnread: 3, fiveXx: 7, faultPct: 10, faultTargets: loud };
+      i.expectedLegs = { ...i.expectedLegs, faultTargets: loud };
+    });
+    assert(
+      !bars(someUnread).includes("fault pass requests never sent") && !bars(someUnread).includes("the fault pass"),
+      `an unsent request with ${loud.join(", ")} failing is not barred (got ${JSON.stringify(bars(someUnread))})`,
+    );
+    // ...but a pass that sent nothing still proved nothing, whatever failed (L98).
+    const allUnread = broken((i) => {
+      i.faultPass = { attempts: 100, availabilityUnread: 100, fiveXx: 0, faultPct: 10, faultTargets: loud };
+      i.expectedLegs = { ...i.expectedLegs, faultTargets: loud };
+    });
+    assert(bars(allUnread).includes("the fault pass"), `a pass with ${loud.join(", ")} failing that sent nothing is refused`);
   }
   // Control (L159): the same count with only degrading systems failing IS a finding.
   for (const soft of [["google-read", "webhook", "salesforce"]]) {
     const r = broken((i) => {
-      i.faultPass = { attempts: 100, fiveXx: 7, faultPct: 10, faultTargets: soft };
+      i.faultPass = { attempts: 100, availabilityUnread: 0, fiveXx: 7, faultPct: 10, faultTargets: soft };
       i.expectedLegs = { ...i.expectedLegs, faultTargets: soft };
     });
     assert(bars(r).includes("the fault pass"), `5xx with ${soft.join(", ")} failing is still a finding`);
@@ -1106,14 +1179,14 @@ function slowRun(made = 100): JudgeInput {
 }
 {
   const i = passing();
-  i.faultPass = { attempts: 100, fiveXx: 0, faultPct: 10, faultTargets: ["google-read"] };
+  i.faultPass = { attempts: 100, availabilityUnread: 0, fiveXx: 0, faultPct: 10, faultTargets: ["google-read"] };
   i.expectedLegs = { ...i.expectedLegs, faultTargets: ["google-read", "supabase"] };
   assert(
     incompleteness(i).some((w) => w.includes("not the google-read, supabase it was configured for")),
     "a pass whose deployment failed different systems from the ones asked for is incomplete",
   );
   const j = passing();
-  j.faultPass = { attempts: 100, fiveXx: 0, faultPct: 10, faultTargets: [] };
+  j.faultPass = { attempts: 100, availabilityUnread: 0, fiveXx: 0, faultPct: 10, faultTargets: [] };
   assert(
     incompleteness(j).some((w) => w.includes("did not record which systems")),
     "and so is one whose driver never recorded them",
@@ -1296,7 +1369,7 @@ function slowRun(made = 100): JudgeInput {
   // answers every request perfectly, so `fiveXx: 0` would PASS the bar having
   // injected nothing at all.
   const i = passing();
-  i.faultPass = { attempts: 120, fiveXx: 0, faultPct: 0, faultTargets: ["google-read"] };
+  i.faultPass = { attempts: 120, availabilityUnread: 0, fiveXx: 0, faultPct: 0, faultTargets: ["google-read"] };
   const why = incompleteness(i);
   assert(
     why.some((r) => r.includes("reporting 0 percent")),
@@ -1305,7 +1378,7 @@ function slowRun(made = 100): JudgeInput {
   // The other direction (L159): the same pass at the configured percentage is
   // complete, so this is about the percentage rather than about the shape.
   const ok = passing();
-  ok.faultPass = { attempts: 120, fiveXx: 0, faultPct: 10, faultTargets: ["google-read"] };
+  ok.faultPass = { attempts: 120, availabilityUnread: 0, fiveXx: 0, faultPct: 10, faultTargets: ["google-read"] };
   eq(incompleteness(ok).length, 0, "and the same pass at ten percent is complete");
 }
 
@@ -1316,7 +1389,7 @@ function slowRun(made = 100): JudgeInput {
   // percentage it chose.
   const i = passing();
   i.expectedLegs = { burstDrivers: i.burstResults.length, faultPct: 0 };
-  i.faultPass = { attempts: 50, fiveXx: 0, faultPct: 25, faultTargets: ["google-read"] };
+  i.faultPass = { attempts: 50, availabilityUnread: 0, fiveXx: 0, faultPct: 25, faultTargets: ["google-read"] };
   eq(incompleteness(i).length, 0, "an unasked-for fault pass does not make a run incomplete");
 }
 
@@ -1329,7 +1402,7 @@ function slowRun(made = 100): JudgeInput {
   // real, and the report said nothing but "the analytics API did not report".
   const r = broken((i) => {
     i.platform = { invocations: null, cpuMsP99: null, subrequests: null, statuses: null, cron: null };
-    i.faultPass = { attempts: 30, fiveXx: 3, faultPct: 10, faultTargets: ["google-read"] };
+    i.faultPass = { attempts: 30, availabilityUnread: 0, fiveXx: 3, faultPct: 10, faultTargets: ["google-read"] };
   });
   assert(
     r.findings.some((f) => f.bar === "the fault pass"),
@@ -1362,7 +1435,7 @@ function slowRun(made = 100): JudgeInput {
   // measured failure either.
   const r = broken((i) => {
     i.platform = { invocations: 1, cpuMsP99: 10, subrequests: 8, statuses: { success: 1 }, cron: { invocations: 0, worstCpuMs: 0, byCron: {} }, cronSource: "agreed-empty" };
-    i.faultPass = { attempts: 30, fiveXx: 3, faultPct: 10, faultTargets: ["google-read"] };
+    i.faultPass = { attempts: 30, availabilityUnread: 0, fiveXx: 3, faultPct: 10, faultTargets: ["google-read"] };
   });
   assert(
     r.findings.some((f) => f.bar === "the fault pass"),
