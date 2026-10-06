@@ -22,7 +22,19 @@ const isWorkersRuntime = vi.hoisted(() => vi.fn(() => true));
 // would log.
 const workersRuntimeMarker = vi.hoisted(() => () => globalThis.navigator?.userAgent ?? null);
 
-vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ rpc }) }));
+// #3364: the retry credit reads its earned row directly, so the client also answers
+// `from(...).select(...).eq(...).maybeSingle()`, resolving to whatever `earnedRow` says.
+const earnedRow = vi.hoisted(() => ({
+  read: vi.fn(async (_key: string): Promise<{ data: unknown; error: unknown }> => ({ data: null, error: null })),
+}));
+const from = vi.hoisted(() =>
+  vi.fn((_table: string) => ({
+    select: (_cols: string) => ({
+      eq: (_col: string, key: string) => ({ maybeSingle: () => earnedRow.read(key) }),
+    }),
+  })),
+);
+vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ rpc, from }) }));
 vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert }));
 vi.mock("@opennextjs/cloudflare", () => ({ getCloudflareContext }));
 // #1525: the fail-open ALERT is gated on actually running on the Workers runtime,
@@ -72,6 +84,8 @@ import {
   manageWithinLimit,
   landingIdentityAllowed,
   bearerFailureWithinLimit,
+  grantBookingRetryCredit,
+  bookingRetryCredit,
 } from "./rate-limit";
 import type { RateLimitRule } from "@/lib/rate-limit-core";
 import { BURST_ESCALATE_AT, burstEscalateAt } from "@/lib/rate-limit-burst";
@@ -270,6 +284,100 @@ describe("a caller with no address (#1557)", () => {
 // for a reason that is NOT the customer's fault, Slate hands back their rate-limit budget so
 // a server fault cannot eat their allowance (#319). If that refund fails, the customer
 // quietly loses budget because of OUR fault and nobody finds out.
+// #3364: a lead refused for a taken time earns a bounded retry past the edge minute window.
+// The decision and its bound are pinned in scripts/test-booking-retry-credit.ts; what is
+// driven here is the wiring to rate_limits and the failure paths, which must keep the 429
+// (the behaviour before this existed) and say so.
+describe("the booking retry credit (#3364)", () => {
+  const nowIso = () => new Date().toISOString();
+
+  it("earns a credit through rate_limit_hit under the address's earned key", async () => {
+    await grantBookingRetryCredit("198.51.100.20");
+    expect(rpc).toHaveBeenCalledWith("rate_limit_hit", {
+      p_key: "book:retry:earned:198.51.100.20",
+      p_window_seconds: 60,
+      p_max: 3,
+    });
+  });
+
+  it("lets a refused address through by spending a live credit", async () => {
+    earnedRow.read.mockResolvedValueOnce({ data: { count: 2, window_start: nowIso() }, error: null });
+    rpc.mockResolvedValueOnce({ data: true, error: null });
+    await expect(bookingRetryCredit("198.51.100.21")).resolves.toBe("allowed");
+    expect(from).toHaveBeenCalledWith("rate_limits");
+    expect(earnedRow.read).toHaveBeenCalledWith("book:retry:earned:198.51.100.21");
+    // The spend ceiling is what was earned, never more.
+    expect(rpc).toHaveBeenCalledWith("rate_limit_hit", {
+      p_key: "book:retry:spent:198.51.100.21",
+      p_window_seconds: 60,
+      p_max: 2,
+    });
+  });
+
+  it("refuses an address with no credit, and spends nothing", async () => {
+    earnedRow.read.mockResolvedValueOnce({ data: null, error: null });
+    await expect(bookingRetryCredit("198.51.100.22")).resolves.toBe("no-credit");
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("refuses once every credit is spent", async () => {
+    earnedRow.read.mockResolvedValueOnce({ data: { count: 3, window_start: nowIso() }, error: null });
+    rpc.mockResolvedValueOnce({ data: false, error: null });
+    await expect(bookingRetryCredit("198.51.100.23")).resolves.toBe("spent");
+  });
+
+  // The failure paths: the exemption fails CLOSED, so the lead keeps the 429 they would
+  // have had anyway, and LOUD, so a credit that has quietly stopped working is heard.
+  it("keeps the 429 and alerts, raw error to the logs only, when the earned row cannot be read", async () => {
+    earnedRow.read.mockResolvedValueOnce({ data: null, error: { message: "permission denied for rate_limits" } });
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    await expect(bookingRetryCredit("198.51.100.24")).resolves.toBe("unreadable");
+    await flushAfter();
+    expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
+    const [key, , text] = sendThrottledAlert.mock.calls[0]!;
+    expect(key).toBe("rate_limit_refund_broken:book:retry:spent");
+    expect(text).not.toMatch(/permission denied/);
+    // An Error serializes to {} under JSON.stringify, so its message is spelled out.
+    const logged = JSON.stringify(consoleErr.mock.calls, (_k, v: unknown) =>
+      v instanceof Error ? `Error: ${v.message}` : v,
+    );
+    expect(logged).toMatch(/permission denied/);
+    consoleErr.mockRestore();
+  });
+
+  it("keeps the 429 when the stored window stamp is unreadable, rather than counting it live", async () => {
+    earnedRow.read.mockResolvedValueOnce({ data: { count: 3, window_start: "not a time" }, error: null });
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    await expect(bookingRetryCredit("198.51.100.25")).resolves.toBe("unreadable");
+    expect(rpc).not.toHaveBeenCalled();
+    consoleErr.mockRestore();
+  });
+
+  it("keeps the 429 when the spend fails", async () => {
+    earnedRow.read.mockResolvedValueOnce({ data: { count: 1, window_start: nowIso() }, error: null });
+    rpc.mockResolvedValueOnce({ data: null, error: { message: "db down" } });
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    await expect(bookingRetryCredit("198.51.100.26")).resolves.toBe("unreadable");
+    consoleErr.mockRestore();
+  });
+
+  it("never throws when earning fails, and alerts on the earned key", async () => {
+    rpc.mockResolvedValueOnce({ data: null, error: { message: "db down" } });
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    await expect(grantBookingRetryCredit("198.51.100.27")).resolves.toBeUndefined();
+    await flushAfter();
+    expect(sendThrottledAlert.mock.calls[0]?.[0]).toBe("rate_limit_refund_broken:book:retry:earned");
+    consoleErr.mockRestore();
+  });
+
+  it("neither earns nor spends for a caller with no address, who was never counted", async () => {
+    await grantBookingRetryCredit(UNIDENTIFIED_IP);
+    await expect(bookingRetryCredit(UNIDENTIFIED_IP)).resolves.toBe("unjudged");
+    expect(rpc).not.toHaveBeenCalled();
+    expect(earnedRow.read).not.toHaveBeenCalled();
+  });
+});
+
 describe("refundRequest (#796)", () => {
   const RULES2: RateLimitRule[] = [{ prefix: "book:m", windowSeconds: 60, max: 3 }];
 
