@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { withinBookingCleanupBudget, withinBookingRequest } from "@/lib/booking/confirm-budget";
 import { answerTimed, noteRefusal, type ConfirmLineFacts } from "@/lib/booking/confirm-latency";
+import { scheduleStoredOfferCheck } from "@/lib/booking/refusal-stored-offer-live";
 import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import { z } from "zod";
 import {
@@ -517,6 +518,9 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
     // budget, which a timeout has already spent; its outcome and report would
     // otherwise fail at once and the failure would go unrecorded.
     noteRefusal(progress.facts, err);
+    // #3366: after the response, read the stored row for a candidate_read_empty
+    // refusal and log whether it still offers the refused time. Nothing changes here.
+    scheduleStoredOfferCheck(err);
     return withinBookingCleanupBudget(async () => {
       // The lead already has an active call, so nothing was created (#1337). Refund
       // the rate-limit hit: being declined is not an attempt they should pay for,

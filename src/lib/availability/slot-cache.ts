@@ -1,5 +1,5 @@
 import { getBucketSlots, loadBucketSlotInputs, type EligibleResolver } from "./service";
-import { slotCacheKey } from "./cache-key";
+import { slotCacheEntryKey, slotCacheKey } from "./cache-key";
 import {
   resolveBucketSlots,
   SUPERSEDED_BY_SAVE,
@@ -153,8 +153,9 @@ export async function recomputeBucketSlotsForToday(
   const nowIso = new Date().toISOString();
   const horizon = horizonDays ?? (await loadBookingHorizonDays());
   const { fromIso, toIso } = slotCacheKey(code, nowIso, horizon);
-  // L1 key on the fixed namespace so read/invalidate always agree.
-  const { key } = slotCacheKey(code, nowIso, HORIZON_DAYS);
+  // L1 key on the fixed namespace so read/invalidate always agree. It carries no
+  // day (#3366), so this drops the entry every reader wrote, whatever `from` they sent.
+  const key = slotCacheEntryKey(code, HORIZON_DAYS);
   // The horizon is a count of BOOKABLE days (#1326), so it is passed through as the
   // trim target rather than being implied by the window, which is deliberately wider.
   // A refused row now THROWS (#3119) and reaches the caller's failure path. The L1
@@ -826,12 +827,15 @@ async function offeredWindowEndMs(nowMs: number, minNoticeMin: number): Promise<
  * Best-effort clear of a bucket's L1 cache key (per-datacenter, no prefix-list).
  * Retained for callers that only need to drop the cache; prefer
  * recomputeBucketSlotsForToday when the underlying availability changed.
+ *
+ * One key per bucket (#3366): it used to delete only the key for today's UTC day,
+ * while an evening US lead's entry sat under yesterday's. Still this colo only:
+ * every other colo's entry ages out on `SLOT_TTL_SECONDS`.
  */
 export async function invalidateBucketSlots(code: string): Promise<void> {
   const cache = slotCache();
   if (!cache) return;
   try {
-    const { key } = slotCacheKey(code, new Date().toISOString(), HORIZON_DAYS);
-    await cache.delete(keyRequest(key));
+    await cache.delete(keyRequest(slotCacheEntryKey(code, HORIZON_DAYS)));
   } catch { /* ignore */ }
 }

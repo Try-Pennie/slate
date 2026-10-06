@@ -690,3 +690,54 @@ describe("GET /api/availability: the fourth day was opened", () => {
     expect(res.status).toBe(200);
   });
 });
+
+// #3366: on 2026-10-06 leads were re-offered times that had been full for hours,
+// and nothing said which layer served them. Every pooled read now logs which tier
+// answered (`x-slot-cache`), how old the slots are, the UTC day the caller's `from`
+// anchors to (an evening US lead's is yesterday's) and the colo, so the next
+// occurrence names its layer instead of being reconstructed.
+describe("GET /api/availability names the layer that served it (#3366)", () => {
+  beforeEach(() => vi.clearAllMocks());
+  const servedLine = () =>
+    vi.mocked(log.info).mock.calls.find(([tag, fields]) => tag === "availability" && fields.msg === "slots served");
+
+  it("logs the tier, the freshness stamp, the from anchor and the colo", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue({ ...slotsFor(false), source: "hit" });
+    const headers = new Headers({ "cf-ray": "a46585f9ef25e56c-DEN" });
+    const res = await GET(
+      new NextRequest("http://localhost/api/availability?bucket=411&from=2026-10-05T07%3A00%3A00.000Z", { headers }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-slot-cache")).toBe("hit");
+    expect(servedLine()?.[1]).toMatchObject({
+      bucket: "411",
+      slot_cache: "hit",
+      computed_at: "2026-07-20T12:00:00.000Z",
+      from_anchor: "2026-10-05",
+      colo: "DEN",
+      slots: 1,
+    });
+  });
+
+  it("says the row tier and today's anchor when no from is sent", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue({ ...slotsFor(false), source: "row" });
+    const res = await get("411");
+    expect(res.status).toBe(200);
+    expect(servedLine()?.[1]).toMatchObject({ slot_cache: "miss", from_anchor: new Date().toISOString().slice(0, 10) });
+    // No cf-ray and no Cloudflare context: unknown, never a guessed colo.
+    expect(servedLine()?.[1].colo ?? null).toBeNull();
+  });
+
+  it("logs an unreadable from as unreadable rather than throwing", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(slotsFor(false));
+    const res = await GET(new NextRequest("http://localhost/api/availability?bucket=411&from=not-a-date"));
+    expect(res.status).toBe(200);
+    expect(servedLine()?.[1]).toMatchObject({ from_anchor: "unreadable" });
+  });
+
+  it("logs nothing about a bucket it could not find", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(null);
+    await get("NOPE");
+    expect(servedLine()).toBeUndefined();
+  });
+});
