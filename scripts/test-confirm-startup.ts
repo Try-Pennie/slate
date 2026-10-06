@@ -17,12 +17,16 @@
 // say WHICH number moved. Two things it has to get right:
 //
 //   - cold and warm are told apart by a MEASUREMENT, not by a threshold somebody
-//     picked off a histogram (L203). The confirm profile carries how long before
-//     it started that this isolate evaluated the confirm module, so the isolate
-//     became ready inside this request exactly when that age is no greater than
-//     the time since the invocation began. No magic number.
+//     picked off a histogram (L203). Since #3418 that measurement is the Worker's
+//     own count of how many times the isolate had run the app before this request
+//     (`isolate_invocation_index`, 0 for its first). The module stamp it replaced
+//     also called a confirm cold when it was the first CONFIRM on an isolate that
+//     had already run the app, which loads the confirm's code without the isolate
+//     starting: run 37520312761 counted 8 cold by the stamp and 4 by the Worker.
+//     The stamp is kept only to name where the two disagree.
 //   - a reading it could not make is reported as one, never folded into the
-//     numbers as a zero (L98).
+//     numbers as a zero (L98). A confirm with no readable invocation index is on
+//     NEITHER side, and counted as such.
 //
 // Run: node --experimental-strip-types scripts/test-confirm-startup.ts
 import { readConfirmStartup, readDeferredSpans } from "./loadtest/confirm-startup.ts";
@@ -45,9 +49,19 @@ function tailLine(opts: {
   cpuTime?: number;
   /** #3354: the same invocation's `confirm answered` fields, when it logged that line. */
   answer?: Record<string, number | string>;
+  /**
+   * #3418: how many times the isolate had run the app before this request, written on
+   * the answer line as the route writes it. Given, the invocation logs an answer line
+   * even with no other `answer` field; absent, the index is not on the line at all.
+   */
+  index?: number;
   /** #3354: the Worker version that served it, as the tail names it. */
   scriptVersion?: string;
 }): string {
+  const answer =
+    opts.answer !== undefined || opts.index !== undefined
+      ? { ...(opts.answer ?? {}), ...(opts.index !== undefined ? { isolate_invocation_index: opts.index } : {}) }
+      : undefined;
   return JSON.stringify({
     ...(opts.scriptVersion ? { scriptVersion: { id: opts.scriptVersion } } : {}),
     cpuTime: opts.cpuTime ?? 400,
@@ -70,12 +84,12 @@ function tailLine(opts: {
           }),
         ],
       },
-      ...(opts.answer
+      ...(answer
         ? [
             {
               level: "info",
               timestamp: opts.logTimestamp + 5,
-              message: [formatLine("booking-api", { msg: "confirm answered", response_ms: 2_000, status: 200, ...opts.answer })],
+              message: [formatLine("booking-api", { msg: "confirm answered", response_ms: 2_000, status: 200, ...answer })],
             },
           ]
         : []),
@@ -146,48 +160,52 @@ function otherLine(msg: string): string {
   // Invocation received at 1,000. The profile is logged at 2,500 having measured
   // 900ms of its own, so 600ms passed before it started.
   const r = readConfirmStartup(
-    tailLine({ eventTimestamp: 1_000, logTimestamp: 2_500, totalMs: 900, isolateAgeMs: 120_000 }),
+    tailLine({ eventTimestamp: 1_000, logTimestamp: 2_500, totalMs: 900, isolateAgeMs: 120_000, index: 4 }),
   )!;
   eq(r.samples, 1, "one confirm was read");
   eq(r.handlerMs, [900], "the handler's own wall time comes from the profile");
   eq(r.preProfileMs, [600], "and what came before it is the invocation's wall minus that");
-  eq(r.cold, 0, "an isolate two minutes old did not become ready inside this request");
-  eq(r.warmPreProfileMs, [600], "so the reading is a warm one");
+  eq(r.cold, 0, "an isolate that had run the app four times before was not started by this request");
+  eq(r.warm, 1, "so the confirm is counted warm");
+  eq(r.warmPreProfileMs, [600], "and the reading is a warm one");
   eq(r.coldPreProfileMs, [], "with nothing on the cold side");
 }
 
-// --- cold is a measurement, not a threshold -------------------------------------------
+// --- cold is the Worker's own count, not a threshold (#3418) ------------------------------
 {
-  // The module became ready 200ms before the confirm started, and the invocation
-  // began 3,100ms before it. 200 is no greater than 3,100, so the module was
-  // evaluated inside THIS request: this is the isolate's first.
+  // The invocation began 3,100ms before the confirm started, and the Worker counted
+  // it as the isolate's FIRST run of the app: this request started the isolate.
   const cold = readConfirmStartup(
-    tailLine({ eventTimestamp: 0, logTimestamp: 4_400, totalMs: 1_300, isolateAgeMs: 200 }),
+    tailLine({ eventTimestamp: 0, logTimestamp: 4_400, totalMs: 1_300, isolateAgeMs: 200, index: 0 }),
   )!;
-  eq(cold.cold, 1, "the isolate became ready inside this request");
+  eq(cold.cold, 1, "the isolate's first request is cold");
   eq(cold.coldPreProfileMs, [3_100], "and its startup is reported on its own");
   eq(cold.warmPreProfileMs, [], "and not mixed into the warm ones");
 
-  // The same shape with the module older than the invocation. Nothing about the
-  // DURATIONS changed; only which side of the split it lands on, which is the
-  // point of measuring rather than thresholding.
+  // The same durations, and the same module stamp, on an isolate that had already run
+  // the app once. Nothing about the DURATIONS decides the side; the count does, which
+  // is the point of measuring rather than thresholding.
   const warm = readConfirmStartup(
-    tailLine({ eventTimestamp: 0, logTimestamp: 4_400, totalMs: 1_300, isolateAgeMs: 3_101 }),
+    tailLine({ eventTimestamp: 0, logTimestamp: 4_400, totalMs: 1_300, isolateAgeMs: 200, index: 1 }),
   )!;
-  eq(warm.cold, 0, "a module older than the invocation was evaluated before it");
+  eq(warm.cold, 0, "an isolate that had already run the app was not started by this request");
   eq(warm.warmPreProfileMs, [3_100], "so the same 3,100ms is a warm reading");
 }
 
-// --- the boundary, stated rather than left to a rounding accident ----------------------
+// --- the module stamp's boundary, which now decides only a disagreement count ---------------
 {
+  // The stamp reads the confirm's code as evaluated inside this request exactly when it
+  // is no older than the time since the invocation began. At the boundary that is
+  // still inside, so on an isolate already running it is a disagreement to name.
   const exactly = readConfirmStartup(
-    tailLine({ eventTimestamp: 0, logTimestamp: 1_500, totalMs: 500, isolateAgeMs: 1_000 }),
+    tailLine({ eventTimestamp: 0, logTimestamp: 1_500, totalMs: 500, isolateAgeMs: 1_000, index: 2 }),
   )!;
+  eq(exactly.cold, 0, "the Worker's count says the isolate was already running");
   eq(
-    exactly.cold,
+    exactly.stampColdNotFirst,
     1,
-    "an age exactly equal to the time since the invocation began is the module having been " +
-      "evaluated at the very start of it, which is this isolate's first request",
+    "and an age exactly equal to the time since the invocation began is the stamp reading the " +
+      "confirm's code as loaded inside this request, which is named as the stamp disagreeing",
   );
 }
 
@@ -196,9 +214,9 @@ function otherLine(msg: string): string {
   const r = readConfirmStartup(
     [
       otherLine("cycle"),
-      tailLine({ eventTimestamp: 0, logTimestamp: 5_000, totalMs: 1_000, isolateAgeMs: 100 }),
-      tailLine({ eventTimestamp: 0, logTimestamp: 900, totalMs: 400, isolateAgeMs: 60_000 }),
-      tailLine({ eventTimestamp: 0, logTimestamp: 950, totalMs: 450, isolateAgeMs: 60_000 }),
+      tailLine({ eventTimestamp: 0, logTimestamp: 5_000, totalMs: 1_000, isolateAgeMs: 100, index: 0 }),
+      tailLine({ eventTimestamp: 0, logTimestamp: 900, totalMs: 400, isolateAgeMs: 60_000, index: 6 }),
+      tailLine({ eventTimestamp: 0, logTimestamp: 950, totalMs: 450, isolateAgeMs: 60_000, index: 9 }),
     ].join("\n"),
   )!;
   eq(r.samples, 3, "every confirm profile is read and nothing else is");
@@ -383,8 +401,8 @@ function otherLine(msg: string): string {
   // which is exactly why a run could not tell a slow confirm from a cold isolate.
   const r = readConfirmStartup(
     [
-      tailLine({ eventTimestamp: 0, logTimestamp: 5_000, totalMs: 1_000, isolateAgeMs: 100, cpuTime: 2_900 }),
-      tailLine({ eventTimestamp: 0, logTimestamp: 900, totalMs: 400, isolateAgeMs: 60_000, cpuTime: 380 }),
+      tailLine({ eventTimestamp: 0, logTimestamp: 5_000, totalMs: 1_000, isolateAgeMs: 100, cpuTime: 2_900, index: 0 }),
+      tailLine({ eventTimestamp: 0, logTimestamp: 900, totalMs: 400, isolateAgeMs: 60_000, cpuTime: 380, index: 5 }),
     ].join("\n"),
   )!;
   eq(r.coldCpuMs, [2_900], "the cold confirm's own CPU");
@@ -409,6 +427,9 @@ function otherLine(msg: string): string {
             }),
           ],
         },
+        // The invocation index puts it on the warm side, so the empty list below is the
+        // CPU reading being absent, not the confirm being on neither side.
+        { timestamp: 1_005, message: [formatLine("booking-api", { msg: "confirm answered", status: 200, isolate_invocation_index: 3 })] },
       ],
     },
     null,
@@ -416,6 +437,7 @@ function otherLine(msg: string): string {
   );
   const r = readConfirmStartup(noCpu)!;
   eq(r.samples, 1, "the confirm is still a sample");
+  eq(r.warm, 1, "on the warm side");
   eq(r.warmCpuMs, [], "and its missing CPU reading is absent rather than zero");
 }
 
@@ -578,20 +600,8 @@ function otherLine(msg: string): string {
   eq(r.waitSpans.cold.wait_line_ms?.join(","), "300", "and so is its line span");
   eq(r.waitSpans.warm.wait_auth_ms?.join(","), "90", "a warm confirm's under warm");
   eq(r.waitSpans.warm.wait_decide_ms, undefined, "a span a confirm did not carry contributes nothing, never a zero (L90)");
-  eq(r.firstRequests, 1, "one confirm was its isolate's first request by the Worker's count");
-  eq(r.invocationIndexKnown, 2, "and the invocation index was known on two");
-  eq(r.firstRequestsReadWarm, 0, "and the module stamp agreed it was cold");
-}
-
-{
-  // A confirm the Worker counted as its isolate's FIRST request cannot have found the
-  // confirm module already evaluated. If the module stamp calls it warm anyway, the
-  // cold population the bar judges is missing it, which has to be said (L457).
-  const archive = tailLine({ eventTimestamp: 0, logTimestamp: 1_500, totalMs: 900, isolateAgeMs: 90_000, answer: { isolate_invocation_index: 0 } });
-  const r = readConfirmStartup(archive)!;
-  eq(r.cold, 0, "the module stamp reads it as warm");
-  eq(r.firstRequests, 1, "while the Worker counted it as the first request");
-  eq(r.firstRequestsReadWarm, 1, "and the disagreement is counted");
+  eq(`${r.cold} ${r.warm} ${r.indexUnknown}`, "1 1 1", "one first request, one warm, and the profile with no answer line on neither side");
+  eq(r.stampColdNotFirst + r.stampWarmFirst, 0, "and the module stamp agreed with the Worker on both it could judge");
 }
 
 {
@@ -599,7 +609,88 @@ function otherLine(msg: string): string {
   const archive = tailLine({ eventTimestamp: 0, logTimestamp: 1_500, totalMs: 900, isolateAgeMs: 1_000, answer: { wait_auth_ms: "soon", isolate_invocation_index: "first" } });
   const r = readConfirmStartup(archive)!;
   eq(r.waitSpans.cold.wait_auth_ms, undefined, "an unreadable span is no reading (L50)");
-  eq(r.invocationIndexKnown, 0, "and an unreadable invocation index is not known");
+  eq(r.indexUnknown, 1, "and an unreadable invocation index is not known");
+}
+
+// --- #3418: cold is the Worker's own count, and where the stamp disagrees is named ----------
+// Run 37520312761's report counted a fresh server's first confirms two ways: 8 "the first
+// on their isolate" by the module stamp, and 4 "their isolate's first request" by the
+// Worker's invocation index. The startup bar judged the 8. These are those 8 confirms,
+// every figure copied from that run's archived tail (artifact 11443066359): when the
+// invocation began, when the profile was logged, the profile's own total, the module's
+// age, the Worker's count and the marks' whole span.
+//
+// The four the Worker counted 1, 1, 2 and 1 had NO gap between the invocation starting
+// and the Worker's handler being entered (their `wait_total_ms` equals the whole wait),
+// while the four it counted 0 waited 585 to 1,021ms there: the isolate starting. Across
+// all 518 confirms the Worker counted above 0 that gap was never over 2ms. So the four
+// were the first CONFIRM on an isolate that had already run the app, loading the
+// confirm's code inside the request without the isolate starting, and are warm.
+const RUN_37520312761_STAMP_COLD = [
+  { eventTimestamp: 1_791_317_165_528, logOffset: 7_437, totalMs: 4_954, isolateAgeMs: 2_483, index: 1, wholeMs: 2_483 },
+  { eventTimestamp: 1_791_317_172_484, logOffset: 4_545, totalMs: 3_438, isolateAgeMs: 1_107, index: 1, wholeMs: 1_107 },
+  { eventTimestamp: 1_791_317_225_009, logOffset: 4_493, totalMs: 3_634, isolateAgeMs: 859, index: 2, wholeMs: 859 },
+  { eventTimestamp: 1_791_317_361_194, logOffset: 3_158, totalMs: 2_037, isolateAgeMs: 510, index: 0, wholeMs: 510 },
+  { eventTimestamp: 1_791_317_449_032, logOffset: 3_309, totalMs: 1_827, isolateAgeMs: 897, index: 0, wholeMs: 897 },
+  { eventTimestamp: 1_791_317_576_423, logOffset: 5_195, totalMs: 3_693, isolateAgeMs: 864, index: 0, wholeMs: 864 },
+  { eventTimestamp: 1_791_317_932_424, logOffset: 7_993, totalMs: 5_192, isolateAgeMs: 1_780, index: 0, wholeMs: 1_780 },
+  { eventTimestamp: 1_791_317_943_164, logOffset: 5_561, totalMs: 4_483, isolateAgeMs: 1_078, index: 1, wholeMs: 1_078 },
+];
+{
+  const archive = [
+    ...RUN_37520312761_STAMP_COLD.map((c) =>
+      tailLine({
+        eventTimestamp: c.eventTimestamp,
+        logTimestamp: c.eventTimestamp + c.logOffset,
+        totalMs: c.totalMs,
+        isolateAgeMs: c.isolateAgeMs,
+        index: c.index,
+        answer: { wait_total_ms: c.wholeMs },
+      }),
+    ),
+    // And one ordinary warm confirm from the same run, at its warm median.
+    tailLine({ eventTimestamp: 1_791_317_500_000, logTimestamp: 1_791_317_504_000, totalMs: 2_336, isolateAgeMs: 600_000, index: 37, answer: { wait_total_ms: 1_664 } }),
+  ].join("\n");
+  const r = readConfirmStartup(archive)!;
+  // Positive control: the stamp still reads all eight as cold, so the fixture holds the
+  // disagreement the report printed rather than a set where the two happen to agree.
+  eq(r.cold - r.stampWarmFirst + r.stampColdNotFirst, 8, "control: the module stamp reads the 8 as cold, as the report's wall time line did");
+  eq(r.cold, 4, "only the 4 the Worker counted as their isolate's first run of the app are cold");
+  eq([...r.coldPreProfileMs].sort((a, b) => a - b).join(","), "1121,1482,1502,2801", "and the cold waits are theirs");
+  eq(r.stampColdNotFirst, 4, "the 4 the stamp alone called cold are counted as the stamp disagreeing");
+  eq(r.warm, 5, "and they are warm, beside the ordinary warm confirm");
+  eq(
+    [...r.warmPreProfileMs].sort((a, b) => a - b).join(","),
+    "859,1078,1107,1664,2483",
+    "with their waits on the warm side",
+  );
+  eq(r.indexUnknown, 0, "every one carried the Worker's count");
+  eq(r.samples, r.cold + r.warm + r.indexUnknown, "and every sample is on exactly one side or counted as on neither");
+}
+
+{
+  // A confirm the Worker counted as its isolate's FIRST request is cold even when the
+  // module stamp calls it warm: it is the request that started the isolate whatever the
+  // stamp read. It is in the cold population, and the disagreement is named (L457).
+  const archive = tailLine({ eventTimestamp: 0, logTimestamp: 1_500, totalMs: 900, isolateAgeMs: 90_000, index: 0 });
+  const r = readConfirmStartup(archive)!;
+  eq(r.cold, 1, "the Worker's first request is cold");
+  eq(r.coldPreProfileMs, [600], "and its wait is judged with the cold ones");
+  eq(r.stampWarmFirst, 1, "and the stamp reading it warm is counted");
+}
+
+{
+  // A confirm whose invocation carried no invocation index is on NEITHER side. Filing it
+  // by the module stamp instead would put a second definition into the same population
+  // (L93), so it is counted, and the stamp reading it cold changes nothing.
+  const unknown = readConfirmStartup(tailLine({ eventTimestamp: 0, logTimestamp: 2_000, totalMs: 900, isolateAgeMs: 100 }))!;
+  eq(`${unknown.cold} ${unknown.warm} ${unknown.indexUnknown}`, "0 0 1", "no index: neither cold nor warm, and counted");
+  eq(unknown.coldPreProfileMs.length + unknown.warmPreProfileMs.length, 0, "contributing to neither side's waits");
+  eq(unknown.byVersion.unknown?.unknown.join(","), "1100", "while its wait is still filed, under no side, never dropped");
+  // Control: the same confirm with the Worker's count of 0 is cold, so the fixture is
+  // not one the reader could never call cold.
+  const counted = readConfirmStartup(tailLine({ eventTimestamp: 0, logTimestamp: 2_000, totalMs: 900, isolateAgeMs: 100, index: 0 }))!;
+  eq(`${counted.cold} ${counted.indexUnknown}`, "1 0", "control: with an index of 0 it is cold");
 }
 
 
@@ -616,8 +707,8 @@ function otherLine(msg: string): string {
     objectLine({ eventTimestamp: 700, wallTime: 200, op: "poll", trace: "tc", stage: "wait" }),
     objectLine({ eventTimestamp: 900, wallTime: 20, op: "ack", trace: "tc", stage: "wait" }),
     objectLine({ eventTimestamp: 1_200, wallTime: 15, op: "done", trace: "tc", stage: "turn" }),
-    tailLine({ eventTimestamp: 0, logTimestamp: 2_000, totalMs: 900, isolateAgeMs: 1_000, answer: { line: "shared", line_trace: "tc", wait_line_ms: 900 } }),
-    tailLine({ eventTimestamp: 10_000, logTimestamp: 11_000, totalMs: 800, isolateAgeMs: 60_000, answer: { line: "shared", line_trace: "tw", wait_line_ms: 100 } }),
+    tailLine({ eventTimestamp: 0, logTimestamp: 2_000, totalMs: 900, isolateAgeMs: 1_000, index: 0, answer: { line: "shared", line_trace: "tc", wait_line_ms: 900 } }),
+    tailLine({ eventTimestamp: 10_000, logTimestamp: 11_000, totalMs: 800, isolateAgeMs: 60_000, index: 6, answer: { line: "shared", line_trace: "tw", wait_line_ms: 100 } }),
     objectLine({ eventTimestamp: 10_010, wallTime: 10, op: "enter", trace: "tw", stage: "wait" }),
     objectLine({ eventTimestamp: 10_030, wallTime: 5, op: "ack", trace: "tw", stage: "wait" }),
   ].join("\n");
@@ -639,9 +730,9 @@ function otherLine(msg: string): string {
   // traced on it at all; an object call whose confirm is not in the archive is counted;
   // and an object that accounts for more than the whole wait is an impossible reading.
   const archive = [
-    tailLine({ eventTimestamp: 0, logTimestamp: 2_000, totalMs: 900, isolateAgeMs: 1_000, answer: { line: "shared", line_trace: "lost", wait_line_ms: 400 } }),
-    tailLine({ eventTimestamp: 3_000, logTimestamp: 5_000, totalMs: 900, isolateAgeMs: 1_000, answer: { line: "isolate", line_trace: "own", wait_line_ms: 4 } }),
-    tailLine({ eventTimestamp: 6_000, logTimestamp: 8_000, totalMs: 900, isolateAgeMs: 1_000, answer: { line: "shared", line_trace: "over", wait_line_ms: 50 } }),
+    tailLine({ eventTimestamp: 0, logTimestamp: 2_000, totalMs: 900, isolateAgeMs: 1_000, index: 0, answer: { line: "shared", line_trace: "lost", wait_line_ms: 400 } }),
+    tailLine({ eventTimestamp: 3_000, logTimestamp: 5_000, totalMs: 900, isolateAgeMs: 1_000, index: 0, answer: { line: "isolate", line_trace: "own", wait_line_ms: 4 } }),
+    tailLine({ eventTimestamp: 6_000, logTimestamp: 8_000, totalMs: 900, isolateAgeMs: 1_000, index: 0, answer: { line: "shared", line_trace: "over", wait_line_ms: 50 } }),
     objectLine({ eventTimestamp: 6_010, wallTime: 80, op: "enter", trace: "over", stage: "wait" }),
     objectLine({ eventTimestamp: 9_000, wallTime: 10, op: "enter", trace: "nobody", stage: "wait" }),
   ].join("\n");
@@ -661,10 +752,10 @@ function otherLine(msg: string): string {
   // as orphans would report a fault in a run that had none.
   const archive = [
     objectLine({ eventTimestamp: 100, wallTime: 30, op: "enter", trace: "tc", stage: "wait" }),
-    tailLine({ eventTimestamp: 0, logTimestamp: 2_000, totalMs: 900, isolateAgeMs: 1_000, answer: { line: "shared", line_trace: "tc", wait_line_ms: 300, loadtest_leg: "cold" } }),
+    tailLine({ eventTimestamp: 0, logTimestamp: 2_000, totalMs: 900, isolateAgeMs: 1_000, index: 0, answer: { line: "shared", line_trace: "tc", wait_line_ms: 300, loadtest_leg: "cold" } }),
     objectLine({ eventTimestamp: 5_100, wallTime: 20, op: "enter", trace: "tf", stage: "wait" }),
     objectLine({ eventTimestamp: 5_200, wallTime: 10, op: "ack", trace: "tf", stage: "wait" }),
-    tailLine({ eventTimestamp: 5_000, logTimestamp: 7_000, totalMs: 900, isolateAgeMs: 1_000, answer: { line: "shared", line_trace: "tf", wait_line_ms: 200, loadtest_leg: "fault" } }),
+    tailLine({ eventTimestamp: 5_000, logTimestamp: 7_000, totalMs: 900, isolateAgeMs: 1_000, index: 0, answer: { line: "shared", line_trace: "tf", wait_line_ms: 200, loadtest_leg: "fault" } }),
   ].join("\n");
   const whole = readConfirmStartup(archive)!;
   eq(`${whole.lineSplit.cold.joined} ${whole.lineSplit.orphanCalls}`, "2 0", "control: read whole, both confirms join their calls");
@@ -680,7 +771,7 @@ function otherLine(msg: string): string {
   const noWall = JSON.parse(objectLine({ eventTimestamp: 10, wallTime: 0, op: "enter", trace: "nw", stage: "wait" })) as Record<string, unknown>;
   delete noWall.wallTime;
   const archive = [
-    tailLine({ eventTimestamp: 0, logTimestamp: 2_000, totalMs: 900, isolateAgeMs: 1_000, answer: { line: "shared", line_trace: "nw", wait_line_ms: 400 } }),
+    tailLine({ eventTimestamp: 0, logTimestamp: 2_000, totalMs: 900, isolateAgeMs: 1_000, index: 0, answer: { line: "shared", line_trace: "nw", wait_line_ms: 400 } }),
     JSON.stringify(noWall, null, 4),
   ].join("\n");
   const c = readConfirmStartup(archive)!.lineSplit.cold;
@@ -692,10 +783,12 @@ function otherLine(msg: string): string {
 // burst's crowd, the fault leg's redeploy. Split both ways so a reader can see which.
 {
   const archive = [
-    tailLine({ eventTimestamp: 0, logTimestamp: 2_000, totalMs: 900, isolateAgeMs: 1_000, scriptVersion: "v1", answer: { loadtest_leg: "burst" } }),
-    tailLine({ eventTimestamp: 3_000, logTimestamp: 5_500, totalMs: 900, isolateAgeMs: 1_000, scriptVersion: "v2", answer: { loadtest_leg: "fault" } }),
-    tailLine({ eventTimestamp: 10_000, logTimestamp: 11_000, totalMs: 800, isolateAgeMs: 60_000, scriptVersion: "v1", answer: { loadtest_leg: "steady" } }),
-    tailLine({ eventTimestamp: 20_000, logTimestamp: 21_000, totalMs: 800, isolateAgeMs: 60_000 }),
+    tailLine({ eventTimestamp: 0, logTimestamp: 2_000, totalMs: 900, isolateAgeMs: 1_000, scriptVersion: "v1", index: 0, answer: { loadtest_leg: "burst" } }),
+    tailLine({ eventTimestamp: 3_000, logTimestamp: 5_500, totalMs: 900, isolateAgeMs: 1_000, scriptVersion: "v2", index: 0, answer: { loadtest_leg: "fault" } }),
+    tailLine({ eventTimestamp: 10_000, logTimestamp: 11_000, totalMs: 800, isolateAgeMs: 60_000, scriptVersion: "v1", index: 6, answer: { loadtest_leg: "steady" } }),
+    tailLine({ eventTimestamp: 20_000, logTimestamp: 21_000, totalMs: 800, isolateAgeMs: 60_000, index: 3 }),
+    // #3418: no answer line at all, so no invocation index: filed under neither side.
+    tailLine({ eventTimestamp: 30_000, logTimestamp: 31_500, totalMs: 800, isolateAgeMs: 60_000 }),
   ].join("\n");
   const r = readConfirmStartup(archive)!;
   eq(r.byVersion.v1?.cold.join(","), "1100", "a cold confirm on v1 is filed under v1");
@@ -706,6 +799,20 @@ function otherLine(msg: string): string {
   eq(r.byLeg.fault?.cold.join(","), "1600", "the fault leg's under fault");
   eq(r.byLeg.steady?.warm.join(","), "200", "the steady pass's under steady");
   eq(r.byLeg.none?.warm.join(","), "200", "and one that named no leg under none");
+  eq(r.byLeg.none?.unknown.join(","), "700", "a confirm with no invocation index is filed under neither side, never dropped");
+}
+
+{
+  // #3418: a traced confirm with no invocation index is on neither side of the line's
+  // split, and its object calls still belong to a confirm the archive holds, so they are
+  // not counted as orphans of one it does not.
+  const archive = [
+    objectLine({ eventTimestamp: 100, wallTime: 30, op: "enter", trace: "nx", stage: "wait" }),
+    tailLine({ eventTimestamp: 0, logTimestamp: 2_000, totalMs: 900, isolateAgeMs: 1_000, answer: { line: "shared", line_trace: "nx", wait_line_ms: 300 } }),
+  ].join("\n");
+  const r = readConfirmStartup(archive)!;
+  eq(r.lineSplit.cold.traced + r.lineSplit.warm.traced, 0, "split on neither side");
+  eq(r.lineSplit.orphanCalls, 0, "and its calls are not orphans");
 }
 
 finish();

@@ -74,18 +74,47 @@ export interface LineSplit {
   outsideMs: number[];
 }
 
-/** The wait before the profile, cold and warm, for one script version or one leg. */
+/**
+ * The wait before the profile, cold and warm, for one script version or one leg, and
+ * the confirms that carried no invocation index and so are on neither side (#3418),
+ * kept so a group's total is never short in silence.
+ */
 export interface SideWaits {
   cold: number[];
   warm: number[];
+  unknown: number[];
 }
 
 /** What one archived run says about the confirms in it. */
 export interface ConfirmStartupReading {
   /** How many confirm profiles were read in full. */
   samples: number;
-  /** How many of those were on an isolate that became ready inside that request. */
+  /**
+   * How many of those were their isolate's FIRST request: the Worker counted no earlier
+   * run of the app on that isolate (`isolate_invocation_index=0` on the confirm's own
+   * answer line, `worker/app-invocations.ts`). This is the cold population, and every
+   * cold list below is filed by it (#3418).
+   *
+   * It used to be the module stamp's call (the confirm module evaluated inside this
+   * request), which also counts the first CONFIRM on an isolate that had already run the
+   * app for something else: that request loads the confirm's code without the isolate
+   * starting. Run 37520312761 counted 8 cold by the stamp and 4 by the Worker. The four
+   * the Worker counted 1, 1, 2 and 1 had no gap at all between the invocation starting
+   * and the Worker's handler being entered, while the four it counted 0 waited 585 to
+   * 1,021ms there, which is the isolate starting; across the run's 518 confirms counted
+   * above 0 that gap was never over 2ms. The startup bar judges a lead landing on an
+   * isolate that is starting, so it is judged on this count.
+   */
   cold: number;
+  /** Confirms the Worker counted as a later request on an isolate already running. */
+  warm: number;
+  /**
+   * Confirms whose invocation carried no readable invocation index: an answer line
+   * missing or unreadable, or a deployment older than #3354. On NEITHER side rather than
+   * filed by the module stamp, because filing them by a second definition would put two
+   * meanings into one population (L93). `samples` is always `cold + warm + indexUnknown`.
+   */
+  indexUnknown: number;
   /** Each confirm's own wall time, from the profile itself. */
   handlerMs: number[];
   /** Each confirm's wall time before the profile started. */
@@ -169,16 +198,22 @@ export interface ConfirmStartupReading {
   markedSamples: number;
   /** The same, split by the cold or warm call, so each side says how many carried marks. */
   markedBySide: { cold: number; warm: number };
-  /** Profiles whose invocation carried a readable Worker invocation index. */
-  invocationIndexKnown: number;
-  /** Of those, the confirms that were their isolate's FIRST run of the app (invocation index 0). */
-  firstRequests: number;
   /**
-   * First requests the module stamp read as warm. Such a request cannot have found
-   * the confirm module already evaluated, so each one is a confirm missing from the
-   * cold population the startup bar judges (L457).
+   * #3418: where the module stamp disagrees with the Worker's count, named rather than
+   * printed as a second count of the same thing. The stamp reads the confirm's code as
+   * evaluated inside the request when the module is no older than the time since the
+   * invocation began.
+   *
+   * `stampColdNotFirst`: the stamp read the code as loaded inside the request on an
+   * isolate the Worker had already run the app on. The first confirm on that isolate,
+   * counted warm, because the isolate did not start for it (4 in run 37520312761).
+   *
+   * `stampWarmFirst`: a first request whose code the stamp read as already loaded. It is
+   * cold whatever the stamp read, since nothing ran on that isolate before it; the count
+   * says the stamp disagreed, which a reader of the stamp's own figures needs to know.
    */
-  firstRequestsReadWarm: number;
+  stampColdNotFirst: number;
+  stampWarmFirst: number;
   /** #3354: the shared line's wait, split by the object's own log, cold and warm. */
   lineSplit: { cold: LineSplit; warm: LineSplit; orphanCalls: number };
   /** #3354: the wait before the profile by the Worker version that served it (`unknown` when the event named none). */
@@ -367,6 +402,8 @@ export function readConfirmStartup(archive: string, opts?: { leg?: LoadtestLeg }
   const reading: ConfirmStartupReading = {
     samples: 0,
     cold: 0,
+    warm: 0,
+    indexUnknown: 0,
     handlerMs: [],
     preProfileMs: [],
     coldPreProfileMs: [],
@@ -380,9 +417,8 @@ export function readConfirmStartup(archive: string, opts?: { leg?: LoadtestLeg }
     waitSpans: { cold: {}, warm: {} },
     markedSamples: 0,
     markedBySide: { cold: 0, warm: 0 },
-    invocationIndexKnown: 0,
-    firstRequests: 0,
-    firstRequestsReadWarm: 0,
+    stampColdNotFirst: 0,
+    stampWarmFirst: 0,
     lineSplit: { cold: emptySplit(), warm: emptySplit(), orphanCalls: 0 },
     byVersion: {},
     byLeg: {},
@@ -392,7 +428,7 @@ export function readConfirmStartup(archive: string, opts?: { leg?: LoadtestLeg }
   // #3354: the object's traced calls by trace, and the confirms that may own them,
   // joined once the whole archive is read (an object's calls usually arrive first).
   const objectCalls = new Map<string, { stage: string; op: string; wallMs: number | null }[]>();
-  const tracedConfirms: { side: "cold" | "warm"; trace: string; shared: boolean; waitLineMs: number | null }[] = [];
+  const tracedConfirms: { side: Side | null; trace: string; shared: boolean; waitLineMs: number | null }[] = [];
   // The traces of confirms a scoped reading left out, so their object calls are left
   // out with them rather than counted as orphans of a confirm the archive does hold.
   const otherLegTraces = new Set<string>();
@@ -448,12 +484,18 @@ export function readConfirmStartup(archive: string, opts?: { leg?: LoadtestLeg }
       const sinceInvocation = loggedAt - startedAt - totalMs;
       const preProfileMs = Math.max(0, sinceInvocation);
       if (sinceInvocation < 0) reading.impossible += 1;
-      // The isolate became ready INSIDE this request exactly when the module is no
-      // older than the time since the invocation began. That is a measurement, not
-      // a threshold somebody picked off a histogram (L203): every other way of
-      // saying "this one was cold" is an inference from the distribution being
-      // bimodal, which is the very thing the split is meant to explain.
-      const cold = isolateAgeMs <= preProfileMs;
+      // #3418: cold is the Worker's own count, read from this invocation's answer line:
+      // no earlier run of the app on this isolate means this request started it. A
+      // measurement, not a threshold somebody picked off a histogram (L203). With no
+      // readable count the confirm is on neither side, never filed by another rule.
+      const invocationIndex = sideIndex(answerText);
+      const side: Side | null = invocationIndex === null ? null : invocationIndex === 0 ? "cold" : "warm";
+      // The module stamp: the confirm's code was evaluated inside this request when the
+      // module is no older than the time since the invocation began. It decides nothing
+      // any more; it names where it and the Worker disagree (see the reading's fields).
+      const stampCold = isolateAgeMs <= preProfileMs;
+      if (side === "warm" && stampCold) reading.stampColdNotFirst += 1;
+      if (side === "cold" && !stampCold) reading.stampWarmFirst += 1;
       reading.samples += 1;
       reading.handlerMs.push(totalMs);
       reading.preProfileMs.push(preProfileMs);
@@ -466,42 +508,40 @@ export function readConfirmStartup(archive: string, opts?: { leg?: LoadtestLeg }
       // with itself, and it is already counted as impossible below.
       const wallMs = inv.wallTime;
       if (wallMs !== null) reading.afterProfileMs.push(Math.max(0, wallMs - (loggedAt - startedAt)));
-      if (cold) {
+      if (side === "cold") {
         reading.cold += 1;
         reading.coldPreProfileMs.push(preProfileMs);
         if (cpuMs !== null) reading.coldCpuMs.push(cpuMs);
-      } else {
+      } else if (side === "warm") {
+        reading.warm += 1;
         reading.warmPreProfileMs.push(preProfileMs);
         if (cpuMs !== null) reading.warmCpuMs.push(cpuMs);
+      } else {
+        reading.indexUnknown += 1;
       }
-      const side = cold ? "cold" : "warm";
+      // Filed under its version and leg on whichever side it is, or on neither, so a
+      // group's total is every confirm in it (L629).
+      const group = side ?? "unknown";
       const version = inv.scriptVersion ?? "unknown";
-      (reading.byVersion[version] ??= { cold: [], warm: [] })[side].push(preProfileMs);
-      (reading.byLeg[leg] ??= { cold: [], warm: [] })[side].push(preProfileMs);
+      (reading.byVersion[version] ??= { cold: [], warm: [], unknown: [] })[group].push(preProfileMs);
+      (reading.byLeg[leg] ??= { cold: [], warm: [], unknown: [] })[group].push(preProfileMs);
       const lineTrace = answerText !== null ? textField(answerText, "line_trace") : null;
       if (lineTrace) {
         tracedConfirms.push({ side, trace: lineTrace, shared: textField(answerText ?? "", "line") === "shared", waitLineMs: field(answerText ?? "", "wait_line_ms") });
       }
       if (answerText !== null) {
-        const invocationIndex = field(answerText, "isolate_invocation_index");
-        const spans = reading.waitSpans[cold ? "cold" : "warm"];
-        let marked = invocationIndex !== null;
+        let marked = field(answerText, "isolate_invocation_index") !== null;
         for (const name of WAIT_SPAN_FIELDS) {
           const v = field(answerText, name);
           if (v === null || v < 0) continue;
-          (spans[name] ??= []).push(v);
+          // A span is filed on the confirm's side; one on neither side has no list to
+          // join, and is still counted as marked below.
+          if (side !== null) (reading.waitSpans[side][name] ??= []).push(v);
           marked = true;
         }
         if (marked) {
           reading.markedSamples += 1;
-          reading.markedBySide[cold ? "cold" : "warm"] += 1;
-        }
-        if (invocationIndex !== null && invocationIndex >= 0) {
-          reading.invocationIndexKnown += 1;
-          if (invocationIndex === 0) {
-            reading.firstRequests += 1;
-            if (!cold) reading.firstRequestsReadWarm += 1;
-          }
+          if (side !== null) reading.markedBySide[side] += 1;
         }
       }
     }
@@ -514,6 +554,21 @@ export function readConfirmStartup(archive: string, opts?: { leg?: LoadtestLeg }
 const OBJECT_TAG = `tag=${CONFIRM_LINE_TRACE_TAG}`;
 const OBJECT_MSG = `msg="${TRACED_CALL_MSG}"`;
 
+/** Which side of the startup split a confirm is on. */
+type Side = "cold" | "warm";
+
+/**
+ * #3418: the Worker's count of this isolate's earlier runs of the app, from the
+ * invocation's own answer line, or null when the line is absent or the count is not a
+ * whole number of zero or more (`readEntryMarks` writes nothing else, so anything else
+ * is a line this cannot trust, L50).
+ */
+function sideIndex(answerText: string | null): number | null {
+  if (answerText === null) return null;
+  const n = field(answerText, "isolate_invocation_index");
+  return n !== null && Number.isInteger(n) && n >= 0 ? n : null;
+}
+
 function emptySplit(): LineSplit {
   return { traced: 0, joined: 0, missing: 0, impossible: 0, unreadable: 0, heldMs: [], objectMs: [], outsideMs: [] };
 }
@@ -521,14 +576,17 @@ function emptySplit(): LineSplit {
 /** #3354: each traced shared confirm's wait, split by the calls the object logged for it. */
 function joinLineCalls(
   reading: ConfirmStartupReading,
-  confirms: { side: "cold" | "warm"; trace: string; shared: boolean; waitLineMs: number | null }[],
+  confirms: { side: Side | null; trace: string; shared: boolean; waitLineMs: number | null }[],
   calls: Map<string, { stage: string; op: string; wallMs: number | null }[]>,
 ): void {
+  // Every confirm in the archive owns its calls, including one on neither side (#3418),
+  // so a missing invocation index never turns its calls into orphans.
   const owned = new Set(confirms.map((c) => c.trace));
   for (const [trace, list] of calls) if (!owned.has(trace)) reading.lineSplit.orphanCalls += list.length;
   for (const c of confirms) {
-    // Only the shared line calls the object, and a split needs the client's own span.
-    if (!c.shared || c.waitLineMs === null || c.waitLineMs < 0) continue;
+    // Only the shared line calls the object, and a split needs the client's own span
+    // and a side to be filed on; a confirm on neither side is counted in `indexUnknown`.
+    if (c.side === null || !c.shared || c.waitLineMs === null || c.waitLineMs < 0) continue;
     const split = reading.lineSplit[c.side];
     split.traced += 1;
     const mine = calls.get(c.trace) ?? [];

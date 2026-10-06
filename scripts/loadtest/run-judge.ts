@@ -38,6 +38,7 @@ import {
   burstLegText,
   burstsSummaryText,
   steadyLineText,
+  confirmWallText,
   waitSpanText,
   startupOriginText,
   lineSplitText,
@@ -783,29 +784,9 @@ if (m) {
   }
   // The two halves of a confirm's wall time, reported APART (#2340). The platform
   // CPU percentile below counts them as one number, and the run that failed on it
-  // was failing on the half the confirm does not control.
-  lines.push(
-    m.confirmSamples === null
-      ? "- confirm wall time: the archived log carried no confirm profile, so the confirm's own " +
-          "time and the isolate's startup were not told apart"
-      : `- confirm wall time over ${m.confirmSamples} confirms (${m.confirmCold} of them the ` +
-          `first on their isolate): inside the confirm p50 ${m.confirmHandler?.p50 ?? "n/a"}ms, ` +
-          `p95 ${m.confirmHandler?.p95 ?? "n/a"}ms; before it started, cold p95 ` +
-          `${m.confirmColdStartup?.p95 ?? "n/a"}ms (max ${m.confirmColdStartup?.max ?? "n/a"}ms), ` +
-          `warm p95 ${m.confirmWarmStartup?.p95 ?? "n/a"}ms; after the response had gone, ` +
-          `p95 ${m.confirmAfterResponse?.p95 ?? "n/a"}ms ` +
-          `(max ${m.confirmAfterResponse?.max ?? "n/a"}ms), which no lead waits for` +
-          // What the archive itself lost, so a thin sample is never read as a
-          // quiet run. The stream is written under a timeout, so its last line is
-          // routinely half written.
-          (confirmStartup && confirmStartup.unreadable + confirmStartup.unparsable > 0
-            ? ` (${confirmStartup.unreadable} profiles unreadable, ` +
-              `${confirmStartup.unparsable} lines not readable JSON)`
-            : "") +
-          (confirmStartup && confirmStartup.impossible > 0
-            ? `; ${confirmStartup.impossible} readings could not be right and were floored at zero`
-            : ""),
-  );
+  // was failing on the half the confirm does not control. Built by the judge, so the
+  // count of first requests it prints is the one the startup bar judged (#3418).
+  lines.push(confirmWallText(m, confirmStartup));
   // #3354: where the wait before the profile went, by span, from each confirm's
   // own marks. Built by the judge so the report never re-derives it (L41).
   lines.push(waitSpanText(confirmStartup));

@@ -1,7 +1,8 @@
 /**
  * The diagnostic cold leg's pure parts (#3354 item 4).
  *
- * A load run yields about ten confirms that are the first on their isolate, so its
+ * A load run yields a handful of confirms that are their isolate's first request (4 of
+ * 522 on run 37520312761, by the Worker's own count, #3418), so its
  * cold p95 is its slowest one (`percentiles` takes `s[floor(0.95 n)]`), and one slow
  * confirm decides a run. Under the three run rule Dan chose on 2026-10-06 that is
  * three chances for one slow confirm to fail the set. This leg takes thirty or more
