@@ -1492,6 +1492,9 @@ describe("hydrateCalendar write ordering (#1261)", () => {
     const deps = oooNotice.noticeSyncedOooEvents.mock.calls[0]![0];
     expect(deps.userId).toBe("agent-1");
     expect(deps.events).toEqual([ev]);
+    // The booking ids the pass already loaded, so the check can skip the agent's own
+    // Slate bookings without a read of its own.
+    expect((deps as { bookingEventIds?: unknown }).bookingEventIds).toBeInstanceOf(Set);
   });
 
   it("#3360: a failing time off check never fails the pass or holds back its token", async () => {

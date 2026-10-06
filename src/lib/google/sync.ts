@@ -420,11 +420,15 @@ export async function applyEvents(
  * and the monitor lane, which re-measures every 5 minutes, still sees the
  * disagreement, so nothing is lost but the immediacy.
  *
- * Reads nothing for an empty batch, which is the common incremental tick.
+ * Reads nothing for an empty batch, which is the common incremental tick, nor for a
+ * batch with no event that could be a time off event (`noticeSyncedOooEvents`
+ * filters on the id shape and on `bookingEventIds`, the agent's Slate bookings this
+ * pass already loaded), so a pass that only moved meetings spends no subrequest.
  */
 async function noticeEditedTimeOff(
   userId: string,
   events: GoogleEvent[],
+  bookingEventIds: Set<string>,
   timeZone: string,
 ): Promise<void> {
   if (events.length === 0) return;
@@ -435,6 +439,7 @@ async function noticeEditedTimeOff(
     await noticeSyncedOooEvents({
       userId,
       events,
+      bookingEventIds,
       timeZone,
       nowMs: Date.now(),
       appBaseUrl: appUrl(),
@@ -718,7 +723,7 @@ async function syncCalendar(
         beganWriting = true;
       },
     });
-    await noticeEditedTimeOff(cal.user_id, result.events, timeZone);
+    await noticeEditedTimeOff(cal.user_id, result.events, slateEventIds, timeZone);
     // Never reconcile against a PARTIAL event set (#1259). A page-capped pass read only
     // the first MAX_SYNC_PAGES pages, so every event on the pages it never fetched
     // looks vanished and its cached busy time would be deleted, leaving the agent
@@ -969,7 +974,7 @@ export async function hydrateCalendar(cal: AgentCalendar): Promise<HydrateResult
           ? await loadSlateBookingEventIds(cal.user_id)
           : new Set<string>();
       await applyEvents(cal.user_id, cal.calendar_id, result.events, slateEventIds, timeZone);
-      await noticeEditedTimeOff(cal.user_id, result.events, timeZone);
+      await noticeEditedTimeOff(cal.user_id, result.events, slateEventIds, timeZone);
       // Never reconcile against a PARTIAL set (#1259): a page-capped pass read only the first
       // pages, so everything beyond them looks vanished and its cached busy time would be
       // deleted, leaving the agent looking free during real meetings.

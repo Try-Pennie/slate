@@ -4914,7 +4914,9 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
         displayTzId: "America/Denver", displayTzLabel: "MT", coverage: { kind: "not-blocking" } },
     ], "https://slate.trypennie.app") },
   { key: "ooo_event_mismatch:*", state: "the calendar and the request agree again", channel: "recovery",
-    text: oooEventMismatchRecovery("Heather McLellen") },
+    text: oooEventMismatchRecovery("Heather McLellen", { kind: "agreed", compared: 2 }) },
+  { key: "ooo_event_mismatch:*", state: "nothing approved is ahead any more", channel: "recovery",
+    text: oooEventMismatchRecovery("Heather McLellen", { kind: "nothing-ahead" }) },
   { key: "ooo_calcom", state: "the override failed at approval", channel: "alert",
     text: oooCalcomAlert("req_9f2", "409 conflict") },
   // #2890: a block left in cal.com while it was retired, whose record failed.

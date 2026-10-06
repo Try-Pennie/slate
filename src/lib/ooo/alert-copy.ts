@@ -173,14 +173,38 @@ export function oooEventMismatchAlert(
 }
 
 /**
- * The all-clear. Claims only what the monitor lane measured: nothing approved ahead
- * for this agent disagrees with the calendar any more, whether because the two were
- * made to agree, the request was changed or cancelled, or its window passed.
+ * What the monitor lane measured when it ended an agent's page. Two different facts,
+ * so two different sentences (L11): a comparison that found every window agreeing,
+ * and an agent with nothing approved ahead, where nothing was compared at all. An
+ * agent with any window the lane did not compare (unreadable, out of the pool, no
+ * calendar event) is never cleared, so there is no third kind.
  */
-export function oooEventMismatchRecovery(agentName: string): string {
+export type OooEventMismatchCleared =
+  | { kind: "agreed"; compared: number }
+  | { kind: "nothing-ahead" };
+
+/**
+ * The all-clear. Claims only what the monitor lane measured, and says what that was
+ * (L440): how many approved windows it compared and found matching, or that no
+ * approved time off is left ahead for the agent at all.
+ */
+export function oooEventMismatchRecovery(
+  agentName: string,
+  measured: OooEventMismatchCleared,
+): string {
+  if (measured.kind === "nothing-ahead") {
+    return (
+      `${agentName} has no approved time off still ahead (the request was changed, ` +
+      `cancelled or has passed), so their Google Calendar has nothing left to disagree ` +
+      `with. No action is needed.`
+    );
+  }
+  const windows =
+    measured.compared === 1
+      ? "the one approved window still ahead was"
+      : `the ${measured.compared} approved windows still ahead were`;
   return (
-    `${agentName}'s Google Calendar and approved time off no longer disagree: every ` +
-    `approved window still ahead matches the calendar, or the request was changed or ` +
-    `has passed. No action is needed.`
+    `${agentName}'s Google Calendar agrees with their approved time off again: ` +
+    `${windows} compared with the calendar and match. No action is needed.`
   );
 }

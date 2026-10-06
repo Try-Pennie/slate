@@ -21,6 +21,7 @@ vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert, resolveAlert, firi
 
 import {
   eventMismatchesByAgent,
+  isTimeOffEventIdShape,
   noticeSyncedOooEvents,
   oooEventMismatchKey,
   runOooEventMismatchCheck,
@@ -30,6 +31,7 @@ import {
   type EventMirror,
 } from "./ooo-event-mismatch";
 import { oooEventMismatchAlert, oooEventMismatchRecovery } from "@/lib/ooo/alert-copy";
+import { deterministicEventId, freshEventId, TOMBSTONE_FRESH_IDS } from "@/lib/booking/core";
 
 const NOW = Date.parse("2026-10-06T09:00:00.000Z");
 const APP = "https://slate.example.com";
@@ -156,6 +158,54 @@ describe("runOooEventMismatchCheck", () => {
     expect(res.cleared).toBe(0);
   });
 
+  it("never clears an agent whose only request ahead is out of the pool: nothing was compared", async () => {
+    // Skipped is "not compared", exactly like unreadable (L11). The page stands until
+    // the request leaves the approved set, which is then a measured "nothing ahead".
+    firingFamilyMembers.mockImplementation(async () => ["u-heather"]);
+    const res = await run(async () => ({ requests: [request({ inPool: false })], mirrors: [] }));
+    expect(resolveAlert).not.toHaveBeenCalled();
+    expect(clearFailureStreak).not.toHaveBeenCalled();
+    expect(res.cleared).toBe(0);
+  });
+
+  it("never clears an agent whose only request ahead has no calendar event to compare", async () => {
+    firingFamilyMembers.mockImplementation(async () => ["u-heather"]);
+    const res = await run(async () => ({ requests: [request({ agentEventId: null })], mirrors: [] }));
+    expect(resolveAlert).not.toHaveBeenCalled();
+    expect(res.cleared).toBe(0);
+  });
+
+  it("never clears an agent beside an uncompared request, even when the compared one agrees", async () => {
+    // The page names request ids the lane does not remember, so the one it could not
+    // compare may be the one it paged about.
+    firingFamilyMembers.mockImplementation(async () => ["u-heather"]);
+    const res = await run(async () => ({
+      requests: [request(), request({ id: "r-imported", agentEventId: null })],
+      mirrors: [matching()],
+    }));
+    expect(resolveAlert).not.toHaveBeenCalled();
+    expect(res.cleared).toBe(0);
+  });
+
+  it("the all-clear after a comparison says how many windows were compared and agree", async () => {
+    firingFamilyMembers.mockImplementation(async () => ["u-heather"]);
+    await run(async () => ({
+      requests: [request(), request({ id: "r2", agentEventId: "evt-2" })],
+      mirrors: [matching(), mirror({ gcalEventId: "evt-2", startsAt: request().startsAt })],
+    }));
+    expect(resolveAlert.mock.calls[0]![1]).toBe(
+      oooEventMismatchRecovery("Heather McLellen", { kind: "agreed", compared: 2 }),
+    );
+  });
+
+  it("the all-clear with nothing approved ahead claims no comparison at all", async () => {
+    firingFamilyMembers.mockImplementation(async () => ["u-gone"]);
+    await run(async () => ({ requests: [], mirrors: [] }));
+    expect(resolveAlert.mock.calls[0]![1]).toBe(
+      oooEventMismatchRecovery("name of u-gone", { kind: "nothing-ahead" }),
+    );
+  });
+
   it("still clears an agent once every one of their windows reads and agrees", async () => {
     // The control for the case above: the same agent with a readable, matching event
     // is cleared, so the refusal above is about the unreadable stamp, nothing else.
@@ -192,8 +242,10 @@ describe("runOooEventMismatchCheck", () => {
 });
 
 describe("noticeSyncedOooEvents (the page at the moment the sync sees the edit)", () => {
+  // The shape Slate mints for every agent time off event (#1469, #3217).
+  const OOO_ID = `slate${"a1".repeat(32)}`;
   const event = (over: Record<string, unknown> = {}) => ({
-    id: "evt-ooo",
+    id: OOO_ID,
     status: "confirmed",
     start: { dateTime: "2026-10-07T11:30:00-06:00" },
     end: { dateTime: "2026-10-07T23:59:00-06:00" },
@@ -205,7 +257,8 @@ describe("noticeSyncedOooEvents (the page at the moment the sync sees the edit)"
     timeZone: "America/Denver",
     nowMs: NOW,
     appBaseUrl: APP,
-    loadApproved: vi.fn(async () => [request()]),
+    bookingEventIds: new Set<string>(),
+    loadApproved: vi.fn(async () => [request({ agentEventId: OOO_ID })]),
     loadAgentName: vi.fn(async () => "Heather McLellen"),
     ...over,
   });
@@ -234,15 +287,66 @@ describe("noticeSyncedOooEvents (the page at the moment the sync sees the edit)"
   });
 
   it("ignores events that belong to no approved time off", async () => {
-    const d = deps({ events: [event({ id: "a-meeting" })] });
+    const d = deps({ events: [event({ id: `slate${"b2".repeat(32)}` })] });
     expect(await noticeSyncedOooEvents(d)).toBe(0);
     expect(d.loadAgentName).not.toHaveBeenCalled();
+  });
+
+  it("reads nothing when no event in the pass could be a time off event", async () => {
+    // The agent's own meetings (Google minted ids), a Slate booking the sync already
+    // knows, and a cancelled Slate event: none can be a SHORTENED time off, so the
+    // pass spends no subrequest on the budget four cron lanes share.
+    const booking = `slate${"c3".repeat(32)}`;
+    const d = deps({
+      events: [
+        event({ id: "4k2j9h1abc0def" }),
+        event({ id: booking }),
+        event({ status: "cancelled" }),
+      ],
+      bookingEventIds: new Set([booking]),
+    });
+    expect(await noticeSyncedOooEvents(d)).toBe(0);
+    expect(d.loadApproved).not.toHaveBeenCalled();
+  });
+
+  it("reads exactly once when one event could be a time off event", async () => {
+    const d = deps({ events: [event({ id: "4k2j9h1abc0def" }), event()] });
+    expect(await noticeSyncedOooEvents(d)).toBe(1);
+    expect(d.loadApproved).toHaveBeenCalledTimes(1);
+  });
+
+  it("still reads for a time off event on a fresh id past a tombstone", async () => {
+    const fresh = freshEventId(OOO_ID, 2);
+    const d = deps({
+      events: [event({ id: fresh })],
+      loadApproved: vi.fn(async () => [request({ agentEventId: fresh })]),
+    });
+    expect(await noticeSyncedOooEvents(d)).toBe(1);
+    expect(d.loadApproved).toHaveBeenCalledTimes(1);
   });
 
   it("reads nothing at all for an empty batch", async () => {
     const d = deps({ events: [] });
     await noticeSyncedOooEvents(d);
     expect(d.loadApproved).not.toHaveBeenCalled();
+  });
+});
+
+describe("isTimeOffEventIdShape", () => {
+  it("accepts every id Slate can mint for a time off event", async () => {
+    // Derived from the minting functions themselves, so a change to either fails here
+    // rather than silently skipping the read for every real event.
+    const minted = await deterministicEventId("ooo-agent:13137fb6", "u-heather");
+    expect(isTimeOffEventIdShape(minted)).toBe(true);
+    for (let n = 1; n <= TOMBSTONE_FRESH_IDS; n++) {
+      expect(isTimeOffEventIdShape(freshEventId(minted, n))).toBe(true);
+    }
+  });
+
+  it("refuses an id Google minted itself", () => {
+    expect(isTimeOffEventIdShape("4k2j9h1abc0def")).toBe(false);
+    expect(isTimeOffEventIdShape("slate")).toBe(false);
+    expect(isTimeOffEventIdShape(`slate${"a1".repeat(32)}_20261007T060000Z`)).toBe(false);
   });
 });
 
@@ -292,9 +396,20 @@ describe("the copy", () => {
     expect(text.startsWith("Slate")).toBe(false);
   });
 
-  it("the all-clear names the agent and claims only what was measured", () => {
-    const r = oooEventMismatchRecovery("Heather McLellen");
+  it("the all-clear after a comparison names the agent and the count compared", () => {
+    const r = oooEventMismatchRecovery("Heather McLellen", { kind: "agreed", compared: 2 });
     expect(r).toContain("Heather McLellen");
+    expect(r).toContain("2 approved windows");
     expect(r).toContain("No action is needed");
+    const one = oooEventMismatchRecovery("Heather McLellen", { kind: "agreed", compared: 1 });
+    expect(one).toContain("the one approved window");
+  });
+
+  it("the all-clear with nothing ahead never claims a comparison (L11, L440)", () => {
+    const r = oooEventMismatchRecovery("Heather McLellen", { kind: "nothing-ahead" });
+    expect(r).toContain("Heather McLellen");
+    expect(r).toContain("no approved time off still ahead");
+    expect(r.toLowerCase()).not.toContain("match");
+    expect(r.toLowerCase()).not.toContain("compared");
   });
 });

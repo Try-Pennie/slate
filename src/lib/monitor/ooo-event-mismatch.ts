@@ -8,6 +8,7 @@ import {
   oooEventMismatchAlert,
   oooEventMismatchRecovery,
   type OooEventMismatch,
+  type OooEventMismatchCleared,
 } from "@/lib/ooo/alert-copy";
 import { log } from "@/lib/log";
 
@@ -122,16 +123,31 @@ export function eventMismatchesByAgent(
 }
 
 /**
- * The same judgement, also naming the agents with a window that could not be READ.
- * An unreadable stamp is "could not tell", never agreement (L11), so the all-clear
- * must hold those agents back rather than read their absence from `found` as health.
+ * The same judgement, also saying what was MEASURED per agent, which is what the
+ * all-clear may claim.
+ *
+ *  - `unmeasured`: agents with an approved window ahead that was NOT compared. An
+ *    unreadable stamp, an agent out of the pool and a request with no calendar event
+ *    are all "could not tell", never agreement (L11), so the all-clear holds those
+ *    agents back rather than read their absence from `found` as health. A skipped
+ *    request is held back like an unreadable one because the lane does not remember
+ *    which request it paged about, so the one it skipped may be that one. It does not
+ *    re-page; the page simply stands until the request leaves the approved set.
+ *  - `compared`: how many windows still ahead were compared and agree, per agent,
+ *    which the all-clear states (L440). An agent absent here with nothing unmeasured
+ *    has nothing approved ahead at all.
  */
 function judgeEventsByAgent(
   requests: ApprovedEventRequest[],
   mirrors: EventMirror[],
   nowMs: number,
-): { found: Map<string, { agentName: string; found: OooEventMismatch[] }>; unmeasured: Set<string> } {
+): {
+  found: Map<string, { agentName: string; found: OooEventMismatch[] }>;
+  unmeasured: Set<string>;
+  compared: Map<string, number>;
+} {
   const unmeasured = new Set<string>();
+  const compared = new Map<string, number>();
   const byEvent = new Map<string, EventMirror[]>();
   for (const m of mirrors) {
     const k = `${m.userId}\u0000${m.gcalEventId}`;
@@ -141,16 +157,22 @@ function judgeEventsByAgent(
   }
   const out = new Map<string, { agentName: string; found: OooEventMismatch[] }>();
   for (const r of requests) {
-    if (!r.agentEventId || !r.inPool) continue;
+    // Skipped, so not compared: the fallback page owns a request with no event, and
+    // an agent out of the pool has no synced calendar to compare against.
+    if (!r.agentEventId || !r.inPool) {
+      unmeasured.add(r.userId);
+      continue;
+    }
     const cover = byEvent.get(`${r.userId}\u0000${r.agentEventId}`) ?? null;
     const verdict = judgeEventCoverage({ startsAt: r.startsAt, endsAt: r.endsAt, nowMs, cover });
     if (verdict.kind === "unreadable") unmeasured.add(r.userId);
+    if (verdict.kind === "covered") compared.set(r.userId, (compared.get(r.userId) ?? 0) + 1);
     if (verdict.kind !== "uncovered" && verdict.kind !== "not-blocking") continue;
     const entry = out.get(r.userId) ?? { agentName: nameOf(r), found: [] };
     entry.found.push(finding(r, verdict));
     out.set(r.userId, entry);
   }
-  return { found: out, unmeasured };
+  return { found: out, unmeasured, compared };
 }
 
 export interface OooEventMismatchResult {
@@ -187,7 +209,7 @@ export async function runOooEventMismatchCheck(deps: {
     return { status: "unreadable", scanned: 0, mismatchedAgents: 0, cleared: 0, reachedVerdict: false };
   }
 
-  const { found, unmeasured } = judgeEventsByAgent(requests, mirrors, deps.nowMs);
+  const { found, unmeasured, compared } = judgeEventsByAgent(requests, mirrors, deps.nowMs);
 
   for (const [agentId, { agentName, found: list }] of found) {
     const key = oooEventMismatchKey(agentId);
@@ -206,7 +228,8 @@ export async function runOooEventMismatchCheck(deps: {
   }
 
   // The all-clear, only for agents with an outstanding page and only off this
-  // tick's measured read: nothing approved ahead for them disagrees any more.
+  // tick's measured read: every window ahead was compared and agrees, or nothing
+  // approved is ahead at all. The copy says which.
   let cleared = 0;
   let firing: string[] = [];
   try {
@@ -214,8 +237,9 @@ export async function runOooEventMismatchCheck(deps: {
   } catch (err) {
     log.warn("ooo-event-mismatch", { msg: "firing markers unreadable; all-clears deferred" }, err);
   }
-  // An agent with any window this tick could not read measured nothing, so it is
-  // neither disagreeing nor recovered: its page stands until a later tick reads it.
+  // An agent with any window this tick did not compare (unreadable or skipped)
+  // measured nothing about it, so it is neither disagreeing nor recovered: its page
+  // stands until a later tick compares it or it leaves the approved set.
   const recovered = firing.filter((id) => !found.has(id) && !unmeasured.has(id));
   if (recovered.length > 0) {
     const known = new Map(requests.map((r) => [r.userId, nameOf(r)]));
@@ -229,8 +253,11 @@ export async function runOooEventMismatchCheck(deps: {
     for (const id of recovered) {
       const key = oooEventMismatchKey(id);
       const name = known.get(id) ?? looked.get(id) ?? "An agent";
+      const n = compared.get(id) ?? 0;
+      const measured: OooEventMismatchCleared =
+        n > 0 ? { kind: "agreed", compared: n } : { kind: "nothing-ahead" };
       // alert-key: ooo_event_mismatch:*
-      const sent = await resolveAlert(key, oooEventMismatchRecovery(name)).catch(
+      const sent = await resolveAlert(key, oooEventMismatchRecovery(name, measured)).catch(
         logResolveFailure(key),
       );
       if (sent) {
@@ -245,13 +272,35 @@ export async function runOooEventMismatchCheck(deps: {
   return { status, scanned: requests.length, mismatchedAgents: found.size, cleared, reachedVerdict: true };
 }
 
+/**
+ * Could this calendar event id be one Slate minted for an agent's time off?
+ *
+ * Every agent time off event is created with a deterministic client id
+ * (`deterministicEventId`, `slate` plus 64 hex, since #1469), walked to
+ * `<id>v<n>` past a cancelled tombstone (`freshEventId`, #3217), and Google keeps a
+ * client supplied id. So an id of any other shape is an event Google minted, which
+ * no approved request can name. Measured on 2026-10-06: all 21 approved requests
+ * still ahead carry this shape; the 150 that do not were all created before
+ * 2026-08-13 and all have passed. The test derives its positive cases from the two
+ * minting functions, so a change to either fails there rather than here in silence.
+ */
+const TIME_OFF_EVENT_ID = /^slate[0-9a-f]{64}(v[0-9]+)?$/;
+
+export function isTimeOffEventIdShape(id: string): boolean {
+  return TIME_OFF_EVENT_ID.test(id);
+}
+
 /** One approved request the sync may hold an event for. */
 export type SyncedApprovedRequest = Omit<ApprovedEventRequest, "inPool" | "agentName" | "agentEmail">;
 
 /**
  * The page at the moment the sync sees an edited time off event (#3360). Reads
- * nothing for an empty batch, and asks for the agent's name only when there is
- * something to say. Pages a SHORTENED event only (see the module header for why a
+ * nothing unless the batch holds a CANDIDATE: a busy event (only a shortened busy
+ * event pages here) whose id has the time off shape and is not one of the agent's
+ * Slate bookings the sync already loaded. Nearly every pass that applies events
+ * applies none, and the read would otherwise spend a subrequest on every active
+ * calendar's pass from the budget four cron lanes share. Asks for the agent's name
+ * only when there is something to say. Pages a SHORTENED event only (see the module header for why a
  * deleted one waits for the monitor lane), and never clears: the all-clear needs
  * every approved request of the agent judged, which only the monitor lane does.
  * Returns how many requests it paged about. Throws on a failed read; the sync's
@@ -263,18 +312,28 @@ export async function noticeSyncedOooEvents(deps: {
   timeZone: string;
   nowMs: number;
   appBaseUrl: string;
+  /**
+   * The agent's Slate booking event ids the sync already loaded. They share the id
+   * shape, so excluding them is what keeps a pass that touched a booking from paying
+   * for the read. Required, so no caller can forget it and quietly read every time.
+   */
+  bookingEventIds: Set<string>;
   loadApproved: (userId: string) => Promise<SyncedApprovedRequest[]>;
   loadAgentName: (userId: string) => Promise<string>;
 }): Promise<number> {
-  if (deps.events.length === 0) return 0;
+  const byEvent = new Map<string, GoogleEvent>();
+  for (const ev of deps.events) {
+    if (!ev.id || !isBusyEvent(ev)) continue;
+    if (!isTimeOffEventIdShape(ev.id) || deps.bookingEventIds.has(ev.id)) continue;
+    byEvent.set(ev.id, ev);
+  }
+  if (byEvent.size === 0) return 0;
   const approved = await deps.loadApproved(deps.userId);
   if (approved.length === 0) return 0;
-  const byEvent = new Map<string, GoogleEvent>();
-  for (const ev of deps.events) if (ev.id) byEvent.set(ev.id, ev);
   const found: OooEventMismatch[] = [];
   for (const r of approved) {
     const ev = r.agentEventId ? byEvent.get(r.agentEventId) : undefined;
-    if (!ev || !isBusyEvent(ev)) continue;
+    if (!ev) continue;
     const win = eventWindow(ev, deps.timeZone);
     if (!win) continue;
     const verdict = judgeEventCoverage({
