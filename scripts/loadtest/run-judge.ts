@@ -447,7 +447,7 @@ try {
   // Absent is the normal state when the leg was not asked for; the line says which.
 }
 try {
-  coldReading = readConfirmStartup(readFileSync(join(RESULTS, "cold-tail.jsonl"), "utf8"));
+  coldReading = readConfirmStartup(readFileSync(join(RESULTS, "cold-tail.jsonl"), "utf8"), { leg: "cold" });
 } catch {
   // Likewise; a leg that ran and left no log is named by the line, not here.
 }

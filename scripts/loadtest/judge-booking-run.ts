@@ -805,20 +805,26 @@ export function coldAfterDeployText(input: {
   const asked =
     `asked for ${c.planned}; ${c.deployed} of ${c.planned} deploys made a version` +
     `${c.deployFailed > 0 ? ` (${c.deployFailed} failed)` : ""} and ${c.answered} confirms answered` +
+    `${c.created < c.answered ? ` (${c.answered - c.created} refused rather than booked)` : ""}` +
     `${c.noAnswer > 0 ? ` (${c.noAnswer} got no answer)` : ""}`;
   const r = input.reading;
   if (r === null) return `${head}: ${asked}; its log was not archived or not read, so their startup was not measured`;
+  // The reading is the cold leg's own (run-judge reads the tail with `leg: "cold"`), so
+  // the versions, the first requests and the spans below describe the same confirms as
+  // the waits. `byLeg.cold` is still read, so a reading of a whole archive handed in
+  // here cannot pass another leg's waits off as this leg's.
   const versions = new Set(Object.keys(r.byVersion));
   const onOwn = input.result.attempts.filter((a) => isAnsweredSample(a) && a.version !== null && versions.has(a.version)).length;
-  // Only the cold leg's own confirms: a straggler from another leg can land in its tail.
   const own = r.byLeg.cold ?? { cold: [], warm: [] };
+  const otherLegs = r.otherLegs ?? 0;
+  const leftOut = otherLegs > 0 ? ` (${otherLegs} confirm${otherLegs === 1 ? "" : "s"} from another leg left out)` : "";
   const p = percentiles(own.cold);
   const spans = WAIT_SPAN_FIELDS.flatMap((f) => {
     const q = percentiles(r.waitSpans.cold[f] ?? []);
     return q === null ? [] : [`${WAIT_SPAN_LABELS[f]} p50 ${q.p50}ms`];
   });
   return (
-    `${head}: ${asked}; the log read ${own.cold.length + own.warm.length} of them, ${onOwn} on the version just deployed, ` +
+    `${head}: ${asked}; the log read ${own.cold.length + own.warm.length} of them${leftOut}, ${onOwn} on the version just deployed, ` +
     `${own.cold.length} the first on their isolate (${r.firstRequests} the Worker's first request)` +
     (p === null ? "; no cold confirm, so nothing to report on the wait" : `; before the profile p50 ${p.p50}ms p95 ${p.p95}ms max ${p.max}ms`) +
     (own.cold.length < COLD_SAMPLES_TARGET ? `, short of the ${COLD_SAMPLES_TARGET} a startup change is judged against` : "") +

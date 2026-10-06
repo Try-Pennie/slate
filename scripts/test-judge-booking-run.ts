@@ -80,6 +80,7 @@ const LANES_T0 = Date.parse("2026-10-03T12:00:00Z");
  */
 function startupReading(
   rows: { handlerMs: number; beforeMs: number; cold: boolean; afterMs?: number; answer?: Record<string, number | string> }[],
+  opts?: Parameters<typeof readConfirmStartup>[1],
 ) {
   const lines = rows.map((r) =>
     JSON.stringify({
@@ -108,7 +109,7 @@ function startupReading(
       ],
     }, null, 4),
   );
-  return readConfirmStartup(lines.join("\n"));
+  return readConfirmStartup(lines.join("\n"), opts);
 }
 
 /** The app's own exact per address bound, so these fixtures cannot describe a
@@ -2544,6 +2545,30 @@ const legAttempts = (i: JudgeInput, leg: number) =>
   assert(!/not asked for/.test(unexpected) && /4 of 5 deploys/.test(unexpected), `a leg whose results arrived is reported even when the run did not say it asked for one (got: ${unexpected})`);
   const unread = coldAfterDeployText({ expected: 5, result, reading: null });
   assert(/not archived|not read/.test(unread) && /3 confirms answered/.test(unread), `a leg whose log was not read says what it sent and that nothing was measured (got: ${unread})`);
+
+  // Every figure on the line is the cold leg's own (L629): the first request count, the
+  // span medians and the versions too, not only the waits. A straggler from another leg
+  // in the tail window is left out of the reading itself, and the line says how many.
+  const mixed = [
+    { handlerMs: 900, beforeMs: 1_800, cold: true, answer: { wait_route_ms: 1_000, isolate_invocation_index: 0, loadtest_leg: "cold" } },
+    { handlerMs: 900, beforeMs: 3_900, cold: true, answer: { wait_route_ms: 3_333, isolate_invocation_index: 0, loadtest_leg: "fault" } },
+  ];
+  const whole = startupReading(mixed)!;
+  eq(whole.firstRequests, 2, "control: read whole, the archive holds two first requests");
+  const own = startupReading(mixed, { leg: "cold" })!;
+  eq(own.firstRequests, 1, "read for the cold leg, only its own confirm is a first request");
+  eq(own.otherLegs, 1, "and the straggler is counted as left out, never dropped in silence");
+  assert(!JSON.stringify(own.waitSpans).includes("3333"), `the straggler's spans are not in the reading (got ${JSON.stringify(own.waitSpans)})`);
+  const one = { mode: "cold" as const, planned: 1, attempts: [attempt(1, "unknown", 200)] };
+  const ownText = coldAfterDeployText({ expected: 1, result: one, reading: own });
+  assert(/\(1 the Worker's first request\)/.test(ownText) && !ownText.includes("3333"), `the line carries the cold leg's own figures (got: ${ownText})`);
+  assert(/1 confirm from another leg left out/.test(ownText), `and says how many it left out (got: ${ownText})`);
+
+  // A sample refused rather than booked still started on a fresh version, so it stays a
+  // sample, but the line says how many were refused so a run of SLOT_TAKEN is visible.
+  const refusedRun = { mode: "cold" as const, planned: 2, attempts: [attempt(1, "aaaa1111-x", 200), { ...attempt(2, "bbbb2222-x", 409), outcome: "SLOT_TAKEN" }] };
+  const refusedText = coldAfterDeployText({ expected: 2, result: refusedRun, reading: withVersions });
+  assert(/2 confirms answered \(1 refused rather than booked\)/.test(refusedText), `a refused confirm is named on the line (got: ${refusedText})`);
 }
 
 finish();

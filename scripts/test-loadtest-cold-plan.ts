@@ -13,6 +13,7 @@ import {
   coldJobTimeoutMinutes,
   deployedVersionOf,
   chooseColdSlots,
+  COLD_SLOT_GAP_MS,
   runColdLeg,
   coldLegOutcome,
   coldSampleCounts,
@@ -81,7 +82,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
 // first deploy, so no read warms a new version's isolate ahead of its confirm.
 {
   const offered = [
-    { code: "112", slots: ["2026-10-08T14:00:00Z", "2026-10-08T14:30:00Z"] },
+    { code: "112", slots: ["2026-10-08T14:00:00Z", "2026-10-08T16:00:00Z"] },
     { code: "221", slots: ["2026-10-08T15:00:00Z"] },
     { code: "331", slots: [] },
   ];
@@ -94,18 +95,55 @@ import { assert, eq, finish } from "./lib/harness.ts";
   }
   // The same instant under two codes is ONE slot: buckets can share an advisor, so a
   // second confirm there would be refused as taken rather than measured.
-  const shared = chooseColdSlots([{ code: "112", slots: ["t1", "t2"] }, { code: "212", slots: ["t1", "t3"] }], 3);
+  const shared = chooseColdSlots(
+    [
+      { code: "112", slots: ["2026-10-08T14:00:00Z", "2026-10-08T15:00:00Z"] },
+      { code: "212", slots: ["2026-10-08T14:00:00Z", "2026-10-08T16:00:00Z"] },
+    ],
+    3,
+  );
   assert(shared.ok && new Set(shared.slots.map((x) => x.start)).size === 3, `a time offered under two codes is taken once (got ${JSON.stringify(shared)})`);
   const short = chooseColdSlots(offered, 4);
   assert(!short.ok && short.why.includes("3") && short.why.includes("4"), `fewer offered times than samples is refused, saying both counts (got ${JSON.stringify(short)})`);
+
+  // Two samples closer together than a call and its buffers can land on one advisor, so
+  // the later one is refused as taken and measures a refusal rather than the confirm
+  // path. The picked times are held COLD_SLOT_GAP_MS apart across every code, since
+  // buckets can share an advisor.
+  const near = [
+    { code: "112", slots: ["2026-10-08T14:00:00Z", "2026-10-08T14:10:00Z", "2026-10-08T15:00:00Z"] },
+    { code: "212", slots: ["2026-10-08T14:20:00Z"] },
+  ];
+  const spaced = chooseColdSlots(near, 2);
+  assert(
+    spaced.ok && spaced.slots.map((x) => x.start).join(" ") === "2026-10-08T14:00:00Z 2026-10-08T15:00:00Z",
+    `times closer than the gap are passed over, on every code (got ${JSON.stringify(spaced)})`,
+  );
+  if (spaced.ok) {
+    const ms = spaced.slots.map((x) => Date.parse(x.start));
+    assert(ms[1]! - ms[0]! >= COLD_SLOT_GAP_MS, "and the two picked are at least the gap apart");
+  }
+  const tooFew = chooseColdSlots(near, 3);
+  assert(
+    !tooFew.ok && tooFew.why.includes(`${COLD_SLOT_GAP_MS / 60_000} minutes apart`),
+    `too few times far enough apart is refused, naming the gap (got ${JSON.stringify(tooFew)})`,
+  );
+  const unreadable = chooseColdSlots([{ code: "112", slots: ["not a time", "2026-10-08T14:00:00Z"] }], 2);
+  assert(!unreadable.ok, `an offered time that does not parse is never picked, so it cannot stand in for a sample (got ${JSON.stringify(unreadable)})`);
+  // The gap clears the seed's 20 minute call on its 10 minute grid (scripts/loadtest/seed.ts),
+  // and production's 20 minute call with 10 minutes either side (#2989), should the
+  // seed ever take production's buffers.
+  assert(COLD_SLOT_GAP_MS >= (20 + 10 + 10) * 60_000, "the gap is at least a call and both its buffers");
 }
 
 // --- the leg itself: read once, then deploy, settle and one confirm, N times -----------
 // Nothing may reach a new version between its deploy and its confirm, or the confirm is
 // no longer that version's first request: the events are pinned in order.
+// Offered times an hour apart, so the chooser's gap passes over none of them.
+const [s1, s2, s3, s4, s5] = [14, 16, 18, 15, 17].map((h) => `2026-10-08T${h}:00:00Z`);
 async function legWith(opts: { n: number; failDeploys?: number[]; offered?: Record<string, string[]> }) {
   const events: string[] = [];
-  const offered = opts.offered ?? { "112": ["s1", "s2", "s3"], "212": ["s4", "s5"] };
+  const offered = opts.offered ?? { "112": [s1!, s2!, s3!], "212": [s4!, s5!] };
   let deploys = 0;
   const result = await runColdLeg({
     n: opts.n,
@@ -229,7 +267,7 @@ function coldWiringProblems(yml: string): string[] {
     const { events, result } = await legWith({ n: 3 });
     eq(
       events.join(" "),
-      `read:112 read:212 deploy:1 sleep:${COLD_SETTLE_MS} confirm:1:112@s1 deploy:2 sleep:${COLD_SETTLE_MS} confirm:2:212@s4 deploy:3 sleep:${COLD_SETTLE_MS} confirm:3:112@s2`,
+      `read:112 read:212 deploy:1 sleep:${COLD_SETTLE_MS} confirm:1:112@${s1} deploy:2 sleep:${COLD_SETTLE_MS} confirm:2:212@${s4} deploy:3 sleep:${COLD_SETTLE_MS} confirm:3:112@${s2}`,
       "every slot is read before the first deploy, and each deploy is followed by nothing but the settle and its one confirm",
     );
     assert(result.ok, "a leg that ran every sample is ok");
@@ -241,7 +279,7 @@ function coldWiringProblems(yml: string): string[] {
   }
   {
     const { events, result } = await legWith({ n: 3, failDeploys: [2] });
-    assert(!events.includes("confirm:2:212@s4"), "a deploy that failed sends no confirm, since it would land on the old version and read warm");
+    assert(!events.includes(`confirm:2:212@${s4}`), "a deploy that failed sends no confirm, since it would land on the old version and read warm");
     assert(result.ok, "the leg carries on past one failed deploy");
     if (result.ok) {
       const second = result.result.attempts[1];

@@ -185,11 +185,17 @@ export interface ConfirmStartupReading {
   byVersion: Record<string, SideWaits>;
   /** #3354: and by the load run leg that sent it (`none` when it named none). */
   byLeg: Record<string, SideWaits>;
+  /**
+   * Profiles left out because they were sent by another leg than the one asked for,
+   * so a reading scoped to one leg says how much of its archive it set aside (L629).
+   * Always 0 for a reading of the whole archive.
+   */
+  otherLegs: number;
 }
 
 /** The spans `wait-marks.ts` writes, in the order a confirm passes them. */
 export { WAIT_SPAN_FIELDS } from "../../src/lib/booking/wait-marks.ts";
-import { WAIT_SPAN_FIELDS } from "../../src/lib/booking/wait-marks.ts";
+import { WAIT_SPAN_FIELDS, type LoadtestLeg } from "../../src/lib/booking/wait-marks.ts";
 
 const ANSWER_MSG = 'msg="confirm answered"';
 
@@ -291,7 +297,7 @@ function messageText(message: unknown): string {
  * run whose archive never arrived and a run whose confirms cost nothing would
  * otherwise render the same (L98).
  */
-export function readConfirmStartup(archive: string): ConfirmStartupReading | null {
+export function readConfirmStartup(archive: string, opts?: { leg?: LoadtestLeg }): ConfirmStartupReading | null {
   const reading: ConfirmStartupReading = {
     samples: 0,
     cold: 0,
@@ -314,6 +320,7 @@ export function readConfirmStartup(archive: string): ConfirmStartupReading | nul
     lineSplit: { cold: emptySplit(), warm: emptySplit(), orphanCalls: 0 },
     byVersion: {},
     byLeg: {},
+    otherLegs: 0,
   };
   let sawAny = false;
   // #3354: the object's traced calls by trace, and the confirms that may own them,
@@ -351,6 +358,15 @@ export function readConfirmStartup(archive: string): ConfirmStartupReading | nul
       const text = messageText(entry.message);
       if (!text.includes(TAG)) continue;
       sawAny = true;
+      // The leg that sent it, from the same invocation's answer line. A reading scoped
+      // to one leg sets every other profile aside BEFORE anything is counted, so each
+      // figure it reports (the first requests, the spans, the versions) describes one
+      // population rather than the waits alone (L629).
+      const leg = (answerText !== null ? textField(answerText, "loadtest_leg") : null) || "none";
+      if (opts?.leg !== undefined && leg !== opts.leg) {
+        reading.otherLegs += 1;
+        continue;
+      }
       const startedAt = num(event.eventTimestamp);
       const loggedAt = num(entry.timestamp);
       const totalMs = field(text, "total_ms");
@@ -392,7 +408,6 @@ export function readConfirmStartup(archive: string): ConfirmStartupReading | nul
       }
       const side = cold ? "cold" : "warm";
       const version = typeof event.scriptVersion?.id === "string" && event.scriptVersion.id ? event.scriptVersion.id : "unknown";
-      const leg = (answerText !== null ? textField(answerText, "loadtest_leg") : null) || "none";
       (reading.byVersion[version] ??= { cold: [], warm: [] })[side].push(preProfileMs);
       (reading.byLeg[leg] ??= { cold: [], warm: [] })[side].push(preProfileMs);
       const lineTrace = answerText !== null ? textField(answerText, "line_trace") : null;

@@ -1284,8 +1284,11 @@ runs' cold maxima were 2219, 2365, 2232 and 2782ms over 7, 24, 7 and 10 cold con
 That is too few to tell a startup change from noise.
 
 Dispatch with `cold_samples` set (30 is the target and the most, which is what fits in the 60 minute bound every job is held to) and the `cold` job
-runs after the archive and the fault leg. It reads every code's offered times once,
-then for each sample deploys a new version (`wrangler deploy --env loadtest`, keeping
+runs after the archive and the fault leg. It reads every code's offered times once
+and picks times at least `COLD_SLOT_GAP_MS` (an hour) apart across every code, since
+buckets can share an advisor and two neighbouring times on the seed's 10 minute grid
+can land on one advisor, the later confirm then refused as taken. Then for each sample
+it deploys a new version (`wrangler deploy --env loadtest`, keeping
 the run's recompute arm), waits `COLD_SETTLE_MS` and sends ONE confirm with the
 `cold` leg, so each confirm is a fresh version's first request. A deploy that fails
 sends no confirm, because one sent then would land on the old version and read warm.
@@ -1293,8 +1296,11 @@ The job streams its own tail as `cold-tail.jsonl`, separate from the main archiv
 so none of these confirms join the startup bar's population.
 
 The report's "cold after deploy" line says how many deploys made a version, how many
-confirms went, how many the tail shows on the version just deployed, how many read
-cold, their wait before the profile (p50, p95 and max) and the median of each span.
+confirms went and how many of those were refused rather than booked, how many the tail
+shows on the version just deployed, how many read cold, their wait before the profile
+(p50, p95 and max) and the median of each span. Every figure is read from the cold
+leg's own confirms only: the tail is read with `leg: "cold"`, and a confirm another leg
+sent into the same window is left out and counted on the line.
 A cold count under 30 is called short. It is a diagnostic and never fails the run.
 At 0 (the default) the job is skipped and the line says it was not asked for.
 

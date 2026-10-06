@@ -68,35 +68,49 @@ export interface ColdSlot {
 }
 
 /**
- * `n` distinct times, taken across the codes in turn so no one bucket is emptied
- * first. Distinct by the INSTANT, not by code and instant: buckets can share an
- * advisor, so the same time under a second code would be refused as taken rather than
- * measured. Fewer offered times than samples is refused with both counts rather than
- * running a shorter leg that reads as the one asked for (L98).
+ * How far apart any two cold samples' times are held, across every code. Buckets can
+ * share an advisor, and the seed offers a 20 minute call on a 10 minute grid, so two
+ * neighbouring times can land on one advisor and the later confirm is refused as taken:
+ * a reading of a refusal rather than of the confirm path. An hour clears the seed's
+ * call and production's call with 10 minutes either side (#2989), the same gap the
+ * burst planner holds its moments apart by.
+ */
+export const COLD_SLOT_GAP_MS = 60 * 60_000;
+
+/**
+ * `n` times, taken across the codes in turn so no one bucket is emptied first, and
+ * each at least `COLD_SLOT_GAP_MS` from every other one picked, whatever code offered
+ * it: buckets can share an advisor, so a time near another sample's would be refused
+ * as taken rather than measured. A time that does not parse is never picked. Too few
+ * qualifying times is refused with both counts rather than running a shorter leg that
+ * reads as the one asked for (L98).
  */
 export function chooseColdSlots(
   offered: readonly { code: string; slots: readonly string[] }[],
   n: number,
 ): { ok: true; slots: ColdSlot[] } | { ok: false; why: string } {
-  const picked: ColdSlot[] = [];
-  const seen = new Set<string>();
+  const picked: (ColdSlot & { ms: number })[] = [];
   for (let round = 0; picked.length < n; round++) {
     let any = false;
     for (const o of offered) {
       const start = o.slots[round];
       if (start === undefined) continue;
       any = true;
-      if (seen.has(start)) continue;
-      seen.add(start);
-      picked.push({ code: o.code, start });
+      const ms = Date.parse(start);
+      if (!Number.isFinite(ms)) continue;
+      if (picked.some((p) => Math.abs(p.ms - ms) < COLD_SLOT_GAP_MS)) continue;
+      picked.push({ code: o.code, start, ms });
       if (picked.length === n) break;
     }
     if (!any) break;
   }
   if (picked.length < n) {
-    return { ok: false, why: `only ${picked.length} offered times across the codes, for ${n} cold samples` };
+    return {
+      ok: false,
+      why: `only ${picked.length} offered times across the codes are ${COLD_SLOT_GAP_MS / 60_000} minutes apart, for ${n} cold samples`,
+    };
   }
-  return { ok: true, slots: picked };
+  return { ok: true, slots: picked.map(({ code, start }) => ({ code, start })) };
 }
 
 /** One sample: the deploy, the version it made, and its one confirm's answer. */
