@@ -341,6 +341,10 @@ export const BOOKING_ERROR_COPY = {
     return `We only call between ${from} and ${to} your time. Please pick another time.`;
   })(),
   generic: "Something went wrong. Please try again.",
+  /** A detail the lead typed was refused, said once above the form while the field
+   *  itself carries what to change. Shared by our own check and by Google refusing
+   *  the address at the calendar (#3359), because to the lead they are one thing. */
+  checkContactDetails: "Please check your contact details.",
   moveFailed: "Could not move your call. Please try again.",
   /** #2297: bookings are deliberately held.
    *

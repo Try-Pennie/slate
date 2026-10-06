@@ -65,6 +65,7 @@ import {
   BOOKER_BOUNDARY_COPY,
 } from "@/lib/booking/booker-copy";
 import { boundaryReference } from "@/lib/errors/boundary-copy";
+import { INVALID_EMAIL } from "@/lib/attendee";
 import {
   BEFORE_COPY,
   CANCEL_COPY,
@@ -313,6 +314,10 @@ export function bookerCopyScreens(): CopyScreen[] {
           text: BOOKING_ERROR_COPY.outsideCallingHours,
         },
         { state: "anything else", text: BOOKING_ERROR_COPY.generic },
+        // #3359: a detail they typed was refused, by our check or by Google at the
+        // calendar. The banner, and the sentence the email field shows under it.
+        { state: "a detail they typed was refused", text: BOOKING_ERROR_COPY.checkContactDetails },
+        { state: "the email field, when the address cannot be invited", text: INVALID_EMAIL },
         { state: "moving an existing call failed", text: BOOKING_ERROR_COPY.moveFailed },
         // #2297: the two refusals the kill switch produces. They share a status code
         // and must not share a sentence: one is somebody holding bookings on purpose

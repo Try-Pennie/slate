@@ -30,6 +30,7 @@ import { CONFIRMATION_MARK } from "@/lib/booking/confirmation-mark";
 import { EMBED_MESSAGE, LINK_FAILED } from "@/lib/embed/lifecycle-events";
 import { REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { NEXT_DAYS_TIMEOUT_MS } from "@/lib/availability/next-available";
+import { INVALID_EMAIL } from "@/lib/attendee";
 
 // The confirmation mark's dotLottie player, stood down for this file (#2560).
 // It is a wasm runtime: jsdom has no IntersectionObserver for it to observe with
@@ -177,6 +178,61 @@ describe("Booker confirm", () => {
     await fillAndConfirm();
 
     expect(await screen.findByText("You're all set")).toBeTruthy();
+  });
+
+  // #3359: the production address's shape (a dot right before the @) is refused
+  // at the field, before anything is posted, by the same rule the server applies.
+  it("refuses an email Google will not invite at the field, and posts nothing (#3359)", async () => {
+    const posted: string[] = [];
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      posted.push(String(url));
+      return { ok: true, status: 200, json: async () => ({ startsAt: slotIso }) } as Response;
+    }) as unknown as typeof fetch;
+
+    render(<Booker {...baseProps} />);
+    await pickFirstDay();
+    await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+    await userEvent.type(screen.getByLabelText("First name"), "Dana");
+    await userEvent.type(screen.getByLabelText("Email"), "dana.@example.com");
+    await userEvent.type(screen.getByLabelText("Phone"), "(203) 561-5295");
+    await userEvent.click(screen.getByRole("button", { name: /confirm booking/i }));
+
+    const email = screen.getByLabelText("Email");
+    expect(email.getAttribute("aria-invalid")).toBe("true");
+    expect(screen.getByText(INVALID_EMAIL)).toBeTruthy();
+    expect(document.activeElement).toBe(email);
+    expect(posted).toEqual([]);
+  });
+
+  // #3359: and when the server (or Google, at the calendar) refuses the address,
+  // the lead is pointed at the email field rather than left reading a banner.
+  it("puts a server refusal of the email on the email field and moves focus there (#3359)", async () => {
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      return {
+        ok: false,
+        status: 400,
+        json: async () => ({
+          error: BOOKING_ERROR_COPY.checkContactDetails,
+          fieldErrors: { email: INVALID_EMAIL },
+        }),
+      } as Response;
+    }) as unknown as typeof fetch;
+
+    render(<Booker {...baseProps} />);
+    await fillAndConfirm();
+
+    const email = screen.getByLabelText("Email");
+    await waitFor(() => expect(email.getAttribute("aria-invalid")).toBe("true"));
+    expect(screen.getByText(INVALID_EMAIL)).toBeTruthy();
+    expect(screen.getByText(BOOKING_ERROR_COPY.checkContactDetails)).toBeTruthy();
+    expect(document.activeElement).toBe(email);
+    expect(screen.queryByText("You're all set")).toBeNull();
   });
 
   it("moves from the first moment, says 'still working' at 10s, and becomes a retryable error at the timeout", async () => {

@@ -23,7 +23,8 @@ import {
   leaseReservationRow,
   releaseReservationLeaseRow,
 } from "@/lib/booking/outbox-lease";
-import { unwrap, isSlotClash, type DbResult } from "@/lib/db/result";
+import { unwrap, unwrapCount, isSlotClash, type DbResult } from "@/lib/db/result";
+import { settleDrainStuckAlert } from "@/lib/booking/drain-stuck-alert";
 import { whereStillInPool } from "@/lib/bookable/left-pool";
 import { gatedWriteApplied, gatedWriteRows } from "@/lib/booking/gated-write";
 import { appUrl } from "@/lib/env";
@@ -462,6 +463,7 @@ export {
   ExistingCallCheckUnavailableError,
   RescheduleConflictError,
   ContactRefusedError,
+  AttendeeEmailRefusedError,
   VerifyUnavailableError,
   RescheduleLockUnavailableError,
   NoEligibleAgentsError,
@@ -3618,6 +3620,29 @@ export async function reconcileMissingBusyBlocks(limit: number, offset = 0) {
 }
 
 /**
+ * How many pending rows a durable drain holds at or past the stuck-alert threshold
+ * (#3359), read from the table rather than from one tick's batch. A server side
+ * count, so no rows (and no attendee payload) come back. THROWS on a failed read:
+ * the caller treats that as unmeasured and clears nothing, where a 0 would announce
+ * a recovery nobody measured (#1165).
+ */
+async function countStoredStuckRows(table: "booking_outbox" | "booking_reservations"): Promise<number> {
+  try {
+    return unwrapCount(
+      await supabaseAdmin()
+        .from(table)
+        .select("id", { count: "exact", head: true })
+        .eq("status", "pending")
+        .gte("attempts", DRAIN_ALERT_AFTER),
+      `${table} stuck rows`,
+    );
+  } catch (err) {
+    log.warn("outbox", { msg: "stuck row count unreadable; the stuck all-clear waits for a tick that can read it", table }, err);
+    throw err;
+  }
+}
+
+/**
  * #429 P2 drain: resume any undelivered booking-outbox row, re-running only its
  * not-done steps idempotently. Driven by the dedicated /api/cron/outbox lane. A
  * no-op until producers (P3/P4) write rows and register handlers.
@@ -3654,23 +3679,30 @@ export async function drainBookingOutbox() {
     await clearFailureStreak(OUTBOX_HANDOFF_STREAK_KEY);
   }
 
-  if (result.stuck.length > 0) {
-    const ids = result.stuck.map((r) => r.id).slice(0, 10).join(", ");
-    await sendThrottledAlert(
-      "outbox_drain_stuck",
-      DRAIN_ALERT_COOLDOWN_MS,
-      outboxDrainStuckAlert(result.stuck.length, DRAIN_ALERT_AFTER, ids),
-    ).catch(logAlertSendFailure("outbox_drain_stuck"));
-  } else if (!allHandedOff) {
-    // #1151: a backing-off outbox is a CONDITION (the side effects of real
-    // bookings are not completing), so say when it drains. Measured, not assumed:
-    // a drain that threw never gets here, and neither does one that stood every
-    // row down.
-    await resolveRecovered([
-      { key: "outbox_drain_stuck", text: outboxDrainRecovery() },
-      { key: OUTBOX_HANDOFF_STREAK_KEY, text: outboxHandoffRecovery() },
-    ]);
-  }
+  // #1151: a backing-off outbox is a CONDITION (the side effects of real bookings
+  // are not completing), so say when it drains. #3359: and say it from the STORED
+  // rows. A backing-off row is not loaded on most ticks, so "this batch held nothing
+  // stuck" is not "nothing is stuck", and clearing on it paged and all-cleared in
+  // turn about a row that never moved. The hand-off streak is cleared beside it only
+  // on a tick that did not stand every row down, which is what measures it.
+  await settleDrainStuckAlert(
+    result.stuck,
+    { key: "outbox_drain_stuck", text: outboxDrainRecovery() },
+    {
+      countStoredStuck: () => countStoredStuckRows("booking_outbox"),
+      page: (count, ids) =>
+        sendThrottledAlert(
+          "outbox_drain_stuck",
+          DRAIN_ALERT_COOLDOWN_MS,
+          outboxDrainStuckAlert(count, DRAIN_ALERT_AFTER, ids),
+        ).catch(logAlertSendFailure("outbox_drain_stuck")),
+      // alert-key: outbox_drain_stuck
+      // alert-key: outbox_all_handed_off
+      // all-clear-proof: scripts/test-drain-stuck-alert.ts - an unreadable store, or one still holding a stuck row, never announces recovery.
+      resolve: (entries) => resolveRecovered(entries).then(() => undefined),
+    },
+    allHandedOff ? [] : [{ key: OUTBOX_HANDOFF_STREAK_KEY, text: outboxHandoffRecovery() }],
+  );
   // #1048: a handed-off row means a run stood down because its lease had moved on
   // (or a gated write failed). Under normal operation this is zero, so a non-zero
   // count is worth a line: it says a holder overran the two minute lease while a
@@ -3702,22 +3734,24 @@ export async function drainBookingReservations() {
     deps,
     RESERVATION_DRAIN_LIMIT,
   );
-  if (result.stuck.length > 0) {
-    const ids = result.stuck.map((r) => r.id).slice(0, 10).join(", ");
-    await sendThrottledAlert(
-      "reservation_drain_stuck",
-      DRAIN_ALERT_COOLDOWN_MS,
-      reservationDrainStuckAlert(result.stuck.length, DRAIN_ALERT_AFTER, ids),
-    ).catch(logAlertSendFailure("reservation_drain_stuck"));
-  } else {
-    // #1151: same CONDITION on the reservation side, same measured-only rule.
-    await resolveRecovered([
-      {
-        key: "reservation_drain_stuck",
-        text: reservationDrainRecovery(),
-      },
-    ]);
-  }
+  // #1151: same CONDITION on the reservation side, and #3359: the same stored-state
+  // rule. This is the drain that alternated page and all-clear on 2026-10-06.
+  await settleDrainStuckAlert(
+    result.stuck,
+    { key: "reservation_drain_stuck", text: reservationDrainRecovery() },
+    {
+      countStoredStuck: () => countStoredStuckRows("booking_reservations"),
+      page: (count, ids) =>
+        sendThrottledAlert(
+          "reservation_drain_stuck",
+          DRAIN_ALERT_COOLDOWN_MS,
+          reservationDrainStuckAlert(count, DRAIN_ALERT_AFTER, ids),
+        ).catch(logAlertSendFailure("reservation_drain_stuck")),
+      // alert-key: reservation_drain_stuck
+      // all-clear-proof: scripts/test-drain-stuck-alert.ts - an unreadable store, or one still holding a stuck row, never announces recovery.
+      resolve: (entries) => resolveRecovered(entries).then(() => undefined),
+    },
+  );
   // Retention: delete up to a batch of pending reservations older than the TTL.
   const cutoff = new Date(Date.now() - RESERVATION_RETENTION_MS).toISOString();
   await deps
