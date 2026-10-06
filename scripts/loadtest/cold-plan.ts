@@ -37,10 +37,15 @@ export const COLD_SETTLE_MS = 8_000;
  */
 export const COLD_DEPLOY_TIMEOUT_MS = 50_000;
 
-/** The `cold_samples` input: 0 (off) when unset, or a whole number up to the most it takes. */
+/**
+ * The `cold_samples` input: 0 (off) when unset, or a whole number up to the most it
+ * takes, written without a leading zero. The workflow stands the cold job down only on
+ * the exact string "0", so "00" read here as off would be a job started for nothing;
+ * it is refused by name instead.
+ */
 export function readColdSamples(raw: string | undefined): { ok: true; n: number } | { ok: false; why: string } {
   if (raw === undefined || raw === "") return { ok: true, n: 0 };
-  if (!/^\d+$/.test(raw) || Number(raw) > COLD_SAMPLES_MAX) {
+  if (!/^(0|[1-9]\d*)$/.test(raw) || Number(raw) > COLD_SAMPLES_MAX) {
     return { ok: false, why: `cold_samples ${JSON.stringify(raw)} is not a whole number from 0 to ${COLD_SAMPLES_MAX}` };
   }
   return { ok: true, n: Number(raw) };

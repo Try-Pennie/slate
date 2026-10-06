@@ -38,7 +38,10 @@ import { assert, eq, finish } from "./lib/harness.ts";
   const thirty = readColdSamples("30");
   assert(thirty.ok && thirty.n === 30, "30 is thirty samples");
   eq(COLD_SAMPLES_TARGET, 30, "the target is the thirty the plan asked for");
-  for (const bad of ["-1", "3.5", "lots", " 30", `${COLD_SAMPLES_MAX + 1}`]) {
+  // A leading zero is refused, never read as the number: the workflow stands the cold
+  // job down only on the exact string "0", so "00" would start the job while the leg
+  // read it as off, a whole job's charge for nothing.
+  for (const bad of ["-1", "3.5", "lots", " 30", `${COLD_SAMPLES_MAX + 1}`, "00", "030"]) {
     const r = readColdSamples(bad);
     assert(!r.ok && r.why.includes(JSON.stringify(bad)), `${JSON.stringify(bad)} is refused by name rather than guessed at (got ${JSON.stringify(r)})`);
   }
