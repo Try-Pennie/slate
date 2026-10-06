@@ -11,6 +11,7 @@
  * number, so that is the rule, held in one place.
  */
 import { INPUT_LIMITS } from "./booking/input-limits.ts";
+import { INVALID_EMAIL } from "./booking/attendee-email-refused.ts";
 import { US_ONLY_PHONE_NOTICE } from "./booking/booker-copy.ts";
 import { isUsPhone, PHONE_DIGITS, splitPhoneExtension } from "./phone-format.ts";
 
@@ -140,8 +141,10 @@ export function nameFieldErrors(fields: NameFields): NameFieldErrors {
  * the form can never refuse what the server would take, nor the reverse (L99).
  */
 const EMAIL_SHAPE = /^[^\s@.]+(?:\.[^\s@.]+)*@[^\s@.]+(?:\.[^\s@.]+)*\.[^\s@.]{2,}$/;
-/** The lead's own sentence for an address we, or Google, will not take. */
-export const INVALID_EMAIL = "Enter a valid email address";
+/** The lead's own sentence for an address we, or Google, will not take. Defined
+ *  beside Google's refusal (#3373), which carries it, so that module stays free of
+ *  this one's imports; re-exported here, where every form reads it. */
+export { INVALID_EMAIL };
 // Contact length cap (#1034): reject a multi-MB blob before it reaches Postgres /
 // gcal event bodies / webhook payloads. Checked before the shape regex so a huge
 // string is rejected on length rather than scanned.

@@ -356,6 +356,18 @@ export const BOOKING_ERROR_COPY = {
    *  the address at the calendar (#3359), because to the lead they are one thing. */
   checkContactDetails: "Please check your contact details.",
   moveFailed: "Could not move your call. Please try again.",
+  /**
+   * #3373: a move refused because Google will not invite the email address the
+   * booking already holds.
+   *
+   * Noun free like `writeFailed` below, because the booker's move panel and the
+   * manage page share the endpoint. It says nothing changed, which is the fact the
+   * reader needs (their call still stands), and names the address as the reason.
+   * It offers no action: the manage page has no email field, and "try again"
+   * would meet the same refusal (L111).
+   */
+  moveEmailRefused:
+    "We could not send a calendar invite to the email address we have for you, so nothing changed.",
   /** #2297: bookings are deliberately held.
    *
    *  It does NOT say "in a moment", because a pause is lifted by a person deciding to
