@@ -93,13 +93,17 @@ async function run() {
     assert(d.includes(FROM_219), "and the calling number line is kept");
   }
 
-  // An invite that cannot be read is never overwritten blind: the save stands and the
-  // stale invite is reported, exactly as a failed invite write is.
+  // An invite whose body cannot be read never has that body overwritten blind: the
+  // save stands and the stale invite is reported, exactly as a failed invite write
+  // is. The LOCATION still moves (#3376), because it is set from the stored number
+  // rather than edited, so there is nothing in it to lose.
   {
     const { deps, calls } = world({ inviteReadThrows: true, callingNumber: "+12197588170" });
     const res = await updateBookingPhone(TOKEN, "(215) 555-9999", deps);
     assert(res.ok, "the lead's correction is still saved");
-    assert(calls.updateEventContact.length === 0, "nothing is written to an invite nobody could read");
+    const patch = calls.updateEventContact[0]?.patch;
+    assert(patch?.description === undefined, "the body nobody could read is not written");
+    assert(patch?.location === "+12155559999", "while the location carries the corrected number");
     assert(!!(res as { staleInvite?: unknown }).staleInvite, "and the stale invite is reported");
   }
 

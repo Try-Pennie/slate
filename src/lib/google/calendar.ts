@@ -460,6 +460,8 @@ function withFreshIdOnTombstone(
 export interface CreateEventInput {
   summary: string;
   description?: string;
+  /** #3376: the lead's phone, shown after the time in the advisor's calendar. */
+  location?: string;
   start: string;
   end: string;
   timezone: string;
@@ -500,6 +502,9 @@ export async function createEvent(
           ...(id ? { id } : {}),
           summary: input.summary,
           description: input.description,
+          // Conditional so a booking with no number sends no location at all,
+          // rather than an empty one Google would store as a value.
+          ...(input.location ? { location: input.location } : {}),
           start: { dateTime: input.start, timeZone: input.timezone },
           end: { dateTime: input.end, timeZone: input.timezone },
           attendees: input.attendeeEmail
@@ -540,7 +545,7 @@ export async function createEvent(
  */
 export type CreateCalendarEventInput = Omit<
   CreateEventInput,
-  "attendeeEmail" | "attendeeName"
+  "attendeeEmail" | "attendeeName" | "location"
 > & {
   transparency?: "transparent" | "opaque";
   colorId?: string;
@@ -953,7 +958,8 @@ export async function updateEventDescription(
 }
 
 /**
- * The lead's own details on the invite: the summary, the body, and WHO is invited
+ * The lead's own details on the invite: the summary, the body, the location (the
+ * lead's phone, #3376), and WHO is invited
  * (#2164).
  *
  * One PATCH rather than one per field, because they change together: a lead who
@@ -977,7 +983,7 @@ export async function updateEventDescription(
 export async function updateEventContact(
   email: string,
   eventId: string,
-  patch: { summary?: string; description?: string; attendeeEmail?: string; attendeeName?: string },
+  patch: { summary?: string; description?: string; location?: string; attendeeEmail?: string; attendeeName?: string },
 ): Promise<void> {
   // #2241: the lead's own corrections on the way to a reschedule, which `realDeps`
   // reaches and so a booking path run can drive. `updateEventDescription` delegates
@@ -986,6 +992,9 @@ export async function updateEventContact(
   const body: Record<string, unknown> = {};
   if (patch.summary !== undefined) body.summary = patch.summary;
   if (patch.description !== undefined) body.description = patch.description;
+  // #3376: an empty string CLEARS the location, which is what a number the lead
+  // removed must do; undefined leaves it as it is.
+  if (patch.location !== undefined) body.location = patch.location;
   if (patch.attendeeEmail !== undefined) {
     body.attendees = [{ email: patch.attendeeEmail, displayName: patch.attendeeName }];
   }
