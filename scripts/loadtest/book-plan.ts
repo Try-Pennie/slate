@@ -186,6 +186,107 @@ export function burstJobMinutesNeeded(leadSeconds: number): number {
 }
 
 /**
+ * #3416: how long after a burst answer its invocation's log lines can still be on
+ * their way. `wrangler tail` writes an invocation's event when the invocation ENDS,
+ * which is after the work deferred past the response, and the platform cancels that
+ * work 30 seconds after the response ends (docs/cloudflare-platform-notes.md, #2922).
+ */
+export const AFTER_RESPONSE_CANCEL_MS = 30_000;
+
+/**
+ * #3416: the stream's own lag behind an invocation ending. The cold job's tail meets
+ * it as "a few seconds" (the workflow's comment where that job waits past its last
+ * confirm before stopping its tail); ten is room above that.
+ */
+export const TAIL_DELIVERY_MARGIN_MS = 10_000;
+
+/**
+ * #3416: how long past the LAST burst's moment the burst tail keeps streaming. Derived
+ * rather than read off one run: the lateness a driver may still fire at, a burst
+ * request's own abort bound (the driver records no answer later than that), the work
+ * the platform allows after an answer, and the stream's lag. The slowest burst answer
+ * seen (14119ms on run 37520312761) is inside it by construction.
+ */
+export const BURST_TAIL_AFTER_LAST_MOMENT_MS =
+  BURST_GRACE_DEFAULT_MS + REQUEST_TIMEOUT_MS + AFTER_RESPONSE_CANCEL_MS + TAIL_DELIVERY_MARGIN_MS;
+
+/** #3416: when the burst tail stops: the plan's last moment plus the margin above. */
+export function burstTailStopAtMs(plan: BurstPlan): number {
+  return plan.bursts[plan.bursts.length - 1]!.startAtMs + BURST_TAIL_AFTER_LAST_MOMENT_MS;
+}
+
+/**
+ * #3416: the whole minutes the burst tail can stream at a given lead: from the moment
+ * the setup chose the plan (the tail starts after it) to the stop. The job's ceiling
+ * on the tail is held at or above this at the workflow's default lead.
+ */
+export function burstTailMinutesNeeded(leadSeconds: number): number {
+  return Math.ceil((leadSeconds * 1000 + (BURST_LEGS - 1) * BURST_SPACING_MS + BURST_TAIL_AFTER_LAST_MOMENT_MS) / 60_000);
+}
+
+/** #3416: how long the burst tail is held open, and what it could not cover. */
+export type BurstTailWait =
+  | {
+      ok: true;
+      /** How long to keep the tail open from now. */
+      waitMs: number;
+      stopAtMs: number;
+      /** 0 when the window covers every burst; 3 when it cannot, which is said in `lines`. */
+      exit: 0 | 3;
+      lines: string[];
+    }
+  | { ok: false; why: string };
+
+/**
+ * #3416: the burst tail's wait, from the plan the drivers fire and the ceiling the tail
+ * runs under. A tail that starts after the first burst's moment, or whose ceiling ends
+ * before the stop, cannot cover every burst; it still streams what it can, and says
+ * so with exit 3 rather than reading as a whole window (L98). An unreadable plan or
+ * ceiling is refused by name, never read as a NaN wait (L50).
+ */
+export function burstTailWait(opts: { rawPlan: string; rawCeilingMinutes: string; nowMs: number }): BurstTailWait {
+  const read = readBurstPlan(opts.rawPlan);
+  if (!read.ok) return { ok: false, why: `${read.why}, so the burst tail has no moment to stop at` };
+  const rawCeiling = opts.rawCeilingMinutes.trim();
+  if (!/^\d+$/.test(rawCeiling) || Number(rawCeiling) <= 0) {
+    return { ok: false, why: `BURST_TAIL_CEILING_MINUTES is not a whole number of minutes above 0: ${JSON.stringify(opts.rawCeilingMinutes)}` };
+  }
+  const ceilingMs = Number(rawCeiling) * 60_000;
+  const plan = read.plan;
+  const stopAtMs = burstTailStopAtMs(plan);
+  const first = plan.bursts[0]!.startAtMs;
+  const lines: string[] = [];
+  let exit: 0 | 3 = 0;
+  if (opts.nowMs >= first) {
+    exit = 3;
+    lines.push(
+      `the burst tail started ${Math.round((opts.nowMs - first) / 1000)}s after burst 1's moment ` +
+        `(${new Date(first).toISOString()}), so that burst's first confirms may be missing from it; ` +
+        "raise burst_lead_seconds",
+    );
+  }
+  let waitMs = Math.max(0, stopAtMs - opts.nowMs);
+  if (waitMs > ceilingMs) {
+    exit = 3;
+    waitMs = ceilingMs;
+    lines.push(
+      `the tail's ceiling, BURST_TAIL_CEILING_MINUTES (${rawCeiling}), ends before the last burst's lines are in ` +
+        `(${new Date(stopAtMs).toISOString()}), so the last burst is cut short; raise it with the lead`,
+    );
+  }
+  const last = new Date(plan.bursts[plan.bursts.length - 1]!.startAtMs).toISOString();
+  if (stopAtMs <= opts.nowMs) {
+    lines.push(`the burst tail started after its stop moment (${new Date(stopAtMs).toISOString()}), so it covered no burst`);
+  } else {
+    lines.push(
+      `streaming until ${new Date(opts.nowMs + waitMs).toISOString()}, ` +
+        `${Math.round(BURST_TAIL_AFTER_LAST_MOMENT_MS / 1000)}s past burst ${plan.bursts.length}'s moment (${last})`,
+    );
+  }
+  return { ok: true, waitMs, stopAtMs, exit, lines };
+}
+
+/**
  * The abort bound for a request sent now: its own timeout, or the time left until
  * the deadline plus the overrun, whichever is sooner. Never below one millisecond,
  * because a zero or negative bound would abort before the request was sent and

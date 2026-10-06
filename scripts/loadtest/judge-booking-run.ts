@@ -329,13 +329,13 @@ function attemptsOf(results: DriverResult[]): BookingAttempt[] {
  * outcome" when the response carried none. One helper for every burst finding, so a
  * missing outcome can never render as "undefined" in one of them (#3103).
  */
-function refusalLabel(a: BookingAttempt): string {
+export function refusalLabel(a: BookingAttempt): string {
   const outcome = a.outcome ?? "";
   return `${a.status} ${outcome === "" ? "no outcome" : outcome}`;
 }
 
 /** Whether a request was refused because the slot was taken, read the same way. */
-function isSlotTaken(a: BookingAttempt): boolean {
+export function isSlotTaken(a: BookingAttempt): boolean {
   return a.status === 409 && (a.outcome ?? "") === "SLOT_TAKEN";
 }
 
@@ -678,7 +678,7 @@ export function steadyLineReading(attempts: readonly BookingAttempt[]): SteadyLi
 }
 
 /** The span names as a report reads them, in the order a confirm passes them. */
-const WAIT_SPAN_LABELS: Record<WaitSpanField, string> = {
+export const WAIT_SPAN_LABELS: Record<WaitSpanField, string> = {
   wait_route_ms: "route",
   wait_auth_ms: "auth",
   wait_pre_line_ms: "before the line",

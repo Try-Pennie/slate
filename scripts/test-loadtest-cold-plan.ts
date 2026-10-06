@@ -270,7 +270,9 @@ function coldWiringProblems(yml: string): string[] {
   const controls: [string, string, RegExp][] = [
     ["no archive dependency", yml.replace(/^( {4}needs: \[preflight, )archive, (fault\])/m, "$1$2"), /wait for archive/],
     ["a fixed timeout", yml.replace(/(^ {2}cold:\n[\s\S]*?^ {4}timeout-minutes:\s*)\d+/m, "$11"), /timeout/],
-    ["the tail killed by its pid alone", yml.replace(/kill -TERM -- -"\$tail_pid"/, 'kill -TERM "$tail_pid"'), /process group/],
+    // Scoped to the cold job: the burst tail (#3416) stops its own stream the same way,
+    // earlier in the file, and a whole file replace broke that one instead (L135).
+    ["the tail killed by its pid alone", yml.replace(/(^ {2}cold:\n[\s\S]*?)kill -TERM -- -"\$tail_pid"/m, '$1kill -TERM "$tail_pid"'), /process group/],
     ["a judge never told", yml.replace("EXPECT_COLD_SAMPLES: ${{ inputs.cold_samples }}", ""), /not told/],
     ["no early check", yml.replace("scripts/loadtest/check-cold-samples.ts", "scripts/loadtest/nothing.ts"), /before it installs/],
   ];
