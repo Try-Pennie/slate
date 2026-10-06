@@ -284,16 +284,28 @@ export const LOADTEST_IDLE_ERROR = "loadtest deployment idle";
  * at the preflight with the name, rather than waiting out the cron deadline for lanes
  * that cannot run.
  *
- * Asked AFTER `loadtestEntryRefusal`, which is the louder finding. A value that is not
- * a non-blank string is not a credential, so a blanked secret counts as missing.
+ * Asked AFTER `loadtestEntryRefusal`, which is the louder finding. That refusal exempts
+ * the diagnostic path so a contaminated deployment can still say which production
+ * secrets it holds, so idle stands aside there too for a deployment carrying any: it is
+ * a contamination first. A value that is not a non-blank string is not a credential,
+ * so a blanked secret counts as missing.
  */
 export function loadtestIdle(args: {
   loadtest: boolean;
   bindings: Record<string, unknown>;
   baked: unknown;
+  /** The request's path, or undefined for a scheduled tick or a binding call. */
+  pathname?: string;
 }): string[] | null {
   if (!args.loadtest) return null;
   const carried = carriedSettings(args.bindings, args.baked);
+  if (
+    args.pathname !== undefined &&
+    LOADTEST_DIAGNOSTIC_PATHS.includes(normalisePath(args.pathname)) &&
+    loadtestCarryingProductionSecrets({ loadtest: true, env: carried }) !== null
+  ) {
+    return null;
+  }
   const missing = LOADTEST_ALLOWED_SECRETS.filter((name) => {
     const v = carried[name];
     return typeof v !== "string" || v.trim() === "";

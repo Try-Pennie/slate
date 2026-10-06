@@ -329,6 +329,26 @@ const BAKED_WITH_SECRET = {
     null,
     "a value the build baked counts, exactly as the app will read it",
   );
+  // The diagnostic path is exempt from the production refusal so a contaminated
+  // deployment can still SAY which production secrets it holds, on a key authed
+  // endpoint. Idle must not take that away: a deployment holding production secrets
+  // and missing a run secret is a contamination first, so the endpoint answers it.
+  const contaminated = { SLACK_BOT_TOKEN: "production's", SUPABASE_SECRET_KEY: "k", BOOKING_API_KEY_CANARY: "b" };
+  eq(
+    loadtestIdle({ loadtest: true, bindings: contaminated, baked: none, pathname: "/api/smoke/version" }),
+    null,
+    "a contaminated deployment is not answered as idle on the diagnostic path, which then names the contamination",
+  );
+  eq(
+    loadtestIdle({ loadtest: true, bindings: { SUPABASE_SECRET_KEY: "k", BOOKING_API_KEY_CANARY: "b" }, baked: none, pathname: "/api/smoke/version" }),
+    ["CRON_SECRET"],
+    "a clean one missing a run secret is still idle there, so a run one secret short stops with the name",
+  );
+  eq(
+    loadtestIdle({ loadtest: true, bindings: contaminated, baked: none, pathname: "/api/smoke//version/" }),
+    null,
+    "spelled with stray slashes, as the production refusal reads it",
+  );
   const body = loadtestIdleBody(["CRON_SECRET"]);
   eq(body, { error: LOADTEST_IDLE_ERROR, missing: ["CRON_SECRET"] }, "the idle answer names what is missing, for the preflight to quote");
   assert(!JSON.stringify(body).includes("=c"), "and carries names, never a value");
@@ -365,6 +385,10 @@ const BAKED_WITH_SECRET = {
     assert(idle > -1, `the ${name} handler asks whether the deployment is idle`);
     assert(refusal > -1 && idle > refusal, `and asks it after the production refusal in ${name}`);
   }
+  // The fetch path hands idle the request's path, or the diagnostic path's exemption
+  // for a contaminated deployment never applies (#3310).
+  const fetchIdleCall = fetchHalf.slice(fetchHalf.indexOf("loadtestIdle("), fetchHalf.indexOf(");", fetchHalf.indexOf("loadtestIdle(")));
+  assert(/pathname: safePathname\(request\.url\)/.test(fetchIdleCall), `the fetch handler passes the request path to idle (got ${fetchIdleCall})`);
   // Before the app is reached, or an idle request pays for Next's start and a lane runs.
   assert(fetchHalf.indexOf("loadtestIdle(") < fetchHalf.indexOf("app.fetch("), "the idle answer comes before the app is reached");
   assert(scheduledHalf.indexOf("loadtestIdle(") < scheduledHalf.indexOf("routesForCron("), "and before any lane is resolved");
