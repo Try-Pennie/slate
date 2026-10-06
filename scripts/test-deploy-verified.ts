@@ -278,11 +278,14 @@ for (const [what, plan] of refusals) {
   // while the call above still read as wired. So the real helper is driven through a
   // spawn that records what it was given, rather than its spelling being matched
   // (L103): an equivalent rewrite must pass and a dropped env must not.
-  {
-    const seen: { cmd: string; args: string[]; env: Record<string, string | undefined> | undefined }[] = [];
-    const step = makeStep({
-      spawn: (cmd, args, opts) => {
-        seen.push({ cmd, args, env: opts.env });
+  // What a step implementation does wrong, as findings, so the same check runs on the
+  // real helper AND on a broken one (L1): a check never seen failing proves nothing.
+  const stepProblems = (impl: typeof makeStep): string[] => {
+    const out: string[] = [];
+    const seen: (Record<string, string | undefined> | undefined)[] = [];
+    const step = impl({
+      spawn: (_cmd, _args, opts) => {
+        seen.push(opts.env);
         return { status: 0 };
       },
       root: "/repo",
@@ -290,19 +293,45 @@ for (const [what, plan] of refusals) {
       log: () => {},
     });
     step("post-deploy probe", "node", ["scripts/post-deploy-probe.ts"], { PROBE_COMMIT: "abcdef123456" });
-    eq(seen[0]?.env?.PROBE_COMMIT, "abcdef123456", "the step hands the probe the commit it was given");
-    eq(seen[0]?.env?.PATH, "/usr/bin", "on top of the environment this process already has");
+    if (seen[0]?.PROBE_COMMIT !== "abcdef123456") out.push("the probe is not handed the commit it was given");
+    if (seen[0]?.PATH !== "/usr/bin") out.push("the step does not inherit this process's environment");
     step("stamp the deploying commit", "node", ["scripts/stamp-build-info.ts"]);
-    eq(seen[1]?.env?.PROBE_COMMIT, undefined, "and a step given nothing adds nothing");
+    if (seen[1]?.PROBE_COMMIT !== undefined) out.push("a step given nothing adds something");
     let threw = "";
     try {
-      makeStep({ spawn: () => ({ status: 2 }), root: "/repo", baseEnv: {}, log: () => {} })("build and deploy", "pnpm", []);
+      impl({ spawn: () => ({ status: 2 }), root: "/repo", baseEnv: {}, log: () => {} })("build and deploy", "pnpm", []);
     } catch (err) {
       threw = err instanceof Error ? err.message : String(err);
     }
-    assert(threw.includes("build and deploy failed (exit 2)"), `a step that fails stops the command, naming itself and its exit (got: ${threw})`);
-  }
-  assert(/const step = makeStep\(/.test(script), "and the command runs its steps through that helper, not a copy of it");
+    if (!threw.includes("build and deploy failed (exit 2)")) out.push("a failing step does not stop the command naming itself and its exit");
+    return out;
+  };
+  eq(stepProblems(makeStep), [], "the step helper hands each step its env on top of the inherited one, and stops on a failure");
+  const dropsEnv: typeof makeStep = (deps) => (name, cmd, args) => {
+    const res = deps.spawn(cmd, args, { cwd: deps.root, stdio: "inherit", env: { ...deps.baseEnv } });
+    if (res.status !== 0) throw new Error(`${name} failed (exit ${res.status ?? "signal"})`);
+  };
+  assert(stepProblems(dropsEnv).includes("the probe is not handed the commit it was given"), "positive control: a step that drops its env is caught (L1)");
+
+  // And the command must hand the helper the real spawn, the repo root and its OWN
+  // environment: `baseEnv: {}` would drop PATH and every credential from every step
+  // while the helper's own test stayed green. Read only the call's own arguments.
+  const stepCall = (source: string): string => {
+    const at = source.indexOf("const step = makeStep(");
+    return at === -1 ? "" : source.slice(at, source.indexOf(");", at) + 2);
+  };
+  const callProblems = (source: string): string[] => {
+    const call = stepCall(source);
+    if (call === "") return ["the command does not run its steps through makeStep"];
+    return [
+      [/\bspawn:\s*spawnSync\b/, "the command does not hand the helper the real spawn"],
+      [/\broot:\s*ROOT\b/, "the command does not run steps from the repo root"],
+      [/\bbaseEnv:\s*process\.env\b/, "the command does not hand its steps its own environment"],
+    ].flatMap(([re, why]) => ((re as RegExp).test(call) ? [] : [why as string]));
+  };
+  eq(callProblems(script), [], `the command runs its steps through the helper with the real spawn, root and environment (got: ${stepCall(script)})`);
+  const emptied = script.replace(/baseEnv:\s*process\.env/, "baseEnv: {}");
+  assert(emptied !== script && callProblems(emptied).includes("the command does not hand its steps its own environment"), "positive control: a command handing its steps an empty environment is caught (L1)");
 
   // And the probe must read that commit as the one it expects. It prefers
   // PROBE_COMMIT to GITHUB_SHA and normalises with the stamp's own function, so the
