@@ -35,6 +35,26 @@ import { assert, finish } from "./lib/harness.ts";
   assert(clean.length === 0, `controls: awaited, returned and commented calls are left alone (got ${JSON.stringify(clean)})`);
 }
 
+// --- #3350: `//` inside a string is not a comment --------------------------------------
+// The scan cut every line at its first `//`, so a URL in a string hid an unawaited call
+// written after it on the same line, and the guard passed while the bug shipped.
+{
+  const hidden = unawaitedLineCalls(
+    "x.ts",
+    [
+      '  const u = "https://x.test/a"; seat.claim(userId, false);',
+      "  const v = `//${host}/b`; turn.done({ full: false });",
+      "  const w = '//'; seat.pass();",
+    ].join("\n"),
+  );
+  assert(hidden.length === 3, `an unawaited call after a // inside a string is still caught (got ${hidden.length}: ${JSON.stringify(hidden)})`);
+  const stillComments = unawaitedLineCalls(
+    "x.ts",
+    ["  await seat.pass(); // and then seat.claim(x) in a trailing comment", "  /* seat.claim(x) in a block comment */ await seat.pass();", "  /*", "   * seat.claim(x) on a block comment line", "   */"].join("\n"),
+  );
+  assert(stillComments.length === 0, `a call written only in a real comment is still not a call (got ${JSON.stringify(stillComments)})`);
+}
+
 // --- the real tree ---------------------------------------------------------------
 function walk(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
