@@ -327,6 +327,9 @@ export function readConfirmStartup(archive: string, opts?: { leg?: LoadtestLeg }
   // joined once the whole archive is read (an object's calls usually arrive first).
   const objectCalls = new Map<string, { stage: string; op: string; wallMs: number | null }[]>();
   const tracedConfirms: { side: "cold" | "warm"; trace: string; shared: boolean; waitLineMs: number | null }[] = [];
+  // The traces of confirms a scoped reading left out, so their object calls are left
+  // out with them rather than counted as orphans of a confirm the archive does hold.
+  const otherLegTraces = new Set<string>();
 
   for (const raw of tailObjects(archive)) {
     let event: TailEvent;
@@ -365,6 +368,8 @@ export function readConfirmStartup(archive: string, opts?: { leg?: LoadtestLeg }
       const leg = (answerText !== null ? textField(answerText, "loadtest_leg") : null) || "none";
       if (opts?.leg !== undefined && leg !== opts.leg) {
         reading.otherLegs += 1;
+        const trace = answerText !== null ? textField(answerText, "line_trace") : null;
+        if (trace) otherLegTraces.add(trace);
         continue;
       }
       const startedAt = num(event.eventTimestamp);
@@ -438,6 +443,7 @@ export function readConfirmStartup(archive: string, opts?: { leg?: LoadtestLeg }
       }
     }
   }
+  for (const trace of otherLegTraces) objectCalls.delete(trace);
   joinLineCalls(reading, tracedConfirms, objectCalls);
   return sawAny ? reading : null;
 }
