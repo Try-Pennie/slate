@@ -19,7 +19,7 @@ import {
   type LatencyJudgement,
 } from "./latency-bar.ts";
 import type { BookingAttempt, DriverResult } from "./book-plan.ts";
-import { AVAILABILITY_UNREAD } from "./outcomes.ts";
+import { AVAILABILITY_UNREAD, NO_SLOTS_OFFERED, TIMED_OUT } from "./outcomes.ts";
 import { HEALTHY_INVOCATION_STATUS, type ScheduledReading } from "./platform-reading.ts";
 import { CEILING_CONCLUSION, type CeilingVerdict } from "./preflight-checks.ts";
 // The judge reads the reader's span list at runtime; the reader never imports the
@@ -1191,10 +1191,10 @@ export function measure(input: JudgeInput): RunMeasurements {
     ok: percentiles(attempts.filter((a) => a.status === 200).map((a) => a.wallMs)),
     fiveXx: attempts.filter((a) => a.status >= 500).length,
     noReply: attempts.filter(
-      (a) => a.status === 0 && a.outcome !== "no-slots-offered" && a.outcome !== "timed-out" && a.outcome !== AVAILABILITY_UNREAD,
+      (a) => a.status === 0 && a.outcome !== NO_SLOTS_OFFERED && a.outcome !== TIMED_OUT && a.outcome !== AVAILABILITY_UNREAD,
     ).length,
     availabilityUnread: attempts.filter((a) => a.outcome === AVAILABILITY_UNREAD).length,
-    timedOut: attempts.filter((a) => a.status === 0 && a.outcome === "timed-out").length,
+    timedOut: attempts.filter((a) => a.status === 0 && a.outcome === TIMED_OUT).length,
     writeRefusals: attempts.filter((a) => a.status === 429).length,
     refusalsByIp,
     freshnessMaxSec: Math.max(0, ...input.freshnessSamples.map((s) => s.maxAgeSec)),

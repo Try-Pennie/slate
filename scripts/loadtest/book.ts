@@ -45,8 +45,11 @@ import {
   RUN_MINUTES,
   type BookingAttempt,
   type DriverResult,
+  slotViewIsFresh,
+  slotViewAfterRead,
+  type SlotView,
 } from "./book-plan.ts";
-import { AVAILABILITY_UNREAD } from "./outcomes.ts";
+import { AVAILABILITY_UNREAD, NO_SLOTS_OFFERED, TIMED_OUT } from "./outcomes.ts";
 import {
   faultModeVerdict,
   faultPollStep,
@@ -143,10 +146,6 @@ for (const host of PROD_HOSTS) {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-interface SlotView {
-  fetchedAtMs: number;
-  slots: string[];
-}
 const slotCache = new Map<string, SlotView>();
 const REFRESH_MS = availabilityRefreshMs(DRIVERS);
 
@@ -159,14 +158,14 @@ const REFRESH_MS = availabilityRefreshMs(DRIVERS);
  * budget and the run would be measuring the limiter. The cache is refreshed on a
  * pace derived from that same ceiling.
  *
- * Null only when a read failed with no earlier view to fall back on: a refused, timed
- * out or failed FIRST read is not a bucket offering nothing, and is recorded as its
- * own outcome. Nothing is cached then, so the next request reads again.
+ * Null when no read has answered yet: a refused, timed out or failed FIRST read is not
+ * a bucket offering nothing, and is recorded as its own outcome. That unread view is
+ * cached and refreshed at the same pace as any other (`slotViewAfterRead`), so one 429
+ * against the shared ceiling is not followed by a read on every request.
  */
 async function slotsFor(code: string, nowMs: number, deadlineAtMs: number): Promise<string[] | null> {
   const cached = slotCache.get(code);
-  if (cached && nowMs - cached.fetchedAtMs < REFRESH_MS) return cached.slots;
-  let slots: string[] | null = cached?.slots ?? null;
+  if (slotViewIsFresh(cached, nowMs, REFRESH_MS)) return cached!.slots;
   // The PARSE is deliberately outside the catch below. A read that failed and a
   // response whose shape we cannot read are different facts: the first is a 429 or
   // a blip the run should ride out on its cached view, and the second is a defect
@@ -188,10 +187,9 @@ async function slotsFor(code: string, nowMs: number, deadlineAtMs: number): Prom
   // Outside the catch ON PURPOSE: `offeredSlots` throws on a payload it cannot
   // read, and that must end the driver rather than resolve to the empty list every
   // caller treats as "this bucket offers nothing".
-  if (payload !== null) slots = offeredSlots(payload);
-  if (slots === null) return null;
-  slotCache.set(code, { fetchedAtMs: nowMs, slots });
-  return slots;
+  const view = slotViewAfterRead(cached, payload !== null ? offeredSlots(payload) : null, nowMs);
+  slotCache.set(code, view);
+  return view.slots;
 }
 
 async function book(req: {
@@ -242,7 +240,7 @@ async function book(req: {
     // A request the driver gave up on at its own bound is `timed-out`, its own
     // outcome, so the judge reports it apart from a reply that never came for any
     // other reason (#3222).
-    outcome = timedOut(err) ? "timed-out" : `transport: ${(err as Error).name}`;
+    outcome = timedOut(err) ? TIMED_OUT : `transport: ${(err as Error).name}`;
     // A body that stalled after its headers leaves the header status behind; the
     // request was not answered, so it carries no status either, and no echo.
     status = 0;
@@ -341,7 +339,7 @@ async function steady(
         sentAtMs: now,
         wallMs: 0,
         status: 0,
-        outcome: "no-slots-offered",
+        outcome: NO_SLOTS_OFFERED,
         startIso: null,
         seenIp: null,
         echo: null,

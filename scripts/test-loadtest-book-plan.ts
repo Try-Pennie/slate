@@ -15,6 +15,8 @@
 import {
   requestSchedule,
   availabilityRefreshMs,
+  slotViewIsFresh,
+  slotViewAfterRead,
   burstReadiness,
   waitForBurstMoment,
   externalIdFor,
@@ -638,6 +640,26 @@ const T0 = Date.parse("2026-09-15T14:00:00.000Z");
   eq(attendee.email, "run-1-9-3@loadtest.local", "an address on the load test's own domain");
   eq(attendee.phone, loadtestPhone("run-1-9-3"), "and its OWN number, since a weak match is email OR phone (#2261)");
   assert(attendee.name.includes("run-1-9-3"), "named for its id, so a row can be traced to the request");
+}
+
+// --- #3348: a failed first read is remembered, so it is not re-asked on every request ---
+// Four drivers share one address and its 30 a minute availability ceiling. A first read
+// refused with 429 used to cache nothing, so every following request read again, and one
+// refusal became a stream of them. An unread view is kept like any other, at the refresh
+// pace, and a later good answer replaces it.
+{
+  const REFRESH = 10_000;
+  const unread = slotViewAfterRead(undefined, null, 1_000);
+  eq(unread.slots, null, "a failed first read leaves a view that says the times are unread");
+  assert(slotViewIsFresh(unread, 1_000 + REFRESH - 1, REFRESH), "and it is used, unread, until the refresh pace allows another read");
+  assert(!slotViewIsFresh(unread, 1_000 + REFRESH, REFRESH), "after which the next request reads again");
+  const read = slotViewAfterRead(unread, ["2026-10-05T14:00:00.000Z"], 12_000);
+  eq(read.slots, ["2026-10-05T14:00:00.000Z"], "a later answer replaces the unread view");
+  const kept = slotViewAfterRead(read, null, 23_000);
+  eq(kept.slots, ["2026-10-05T14:00:00.000Z"], "and a later failed read keeps the last good times, as before");
+  eq(kept.fetchedAtMs, 23_000, "stamped now, so the failure is not re-asked at once either");
+  eq(slotViewAfterRead(read, [], 34_000).slots, [], "an answer with no times is a bucket offering nothing");
+  assert(!slotViewIsFresh(undefined, 0, REFRESH), "and with no view at all, the first request reads");
 }
 
 finish();

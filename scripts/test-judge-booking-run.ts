@@ -115,6 +115,7 @@ function startupReading(
 /** The app's own exact per address bound, so these fixtures cannot describe a
  *  state the control can never produce (L48). */
 const CEILING_EXACT_BOUND = exactAddressBound(DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES)!;
+import { AVAILABILITY_UNREAD, NO_SLOTS_OFFERED } from "./loadtest/outcomes.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const RUN = "run-1";
@@ -604,7 +605,7 @@ function slowRun(made = 100): JudgeInput {
   // counted as an unanswered request: nothing was ever sent.
   const noSlots = broken((i) => {
     i.driverResults[0]!.attempts[0]!.status = 0;
-    i.driverResults[0]!.attempts[0]!.outcome = "no-slots-offered";
+    i.driverResults[0]!.attempts[0]!.outcome = NO_SLOTS_OFFERED;
     i.bookings = i.bookings.filter((b) => b.external_id !== `${RUN}-0-0`);
     i.bookingIdsWithBusyBlock = i.bookings.map((b) => b.id);
   });
@@ -618,7 +619,7 @@ function slowRun(made = 100): JudgeInput {
   // own bar: the run did not drive the load it planned, and says why.
   const unread = broken((i) => {
     i.driverResults[0]!.attempts[0]!.status = 0;
-    i.driverResults[0]!.attempts[0]!.outcome = "availability-unread";
+    i.driverResults[0]!.attempts[0]!.outcome = AVAILABILITY_UNREAD;
     i.bookings = i.bookings.filter((b) => b.external_id !== `${RUN}-0-0`);
     i.bookingIdsWithBusyBlock = i.bookings.map((b) => b.id);
   });

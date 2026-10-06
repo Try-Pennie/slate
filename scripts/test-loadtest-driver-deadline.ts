@@ -53,6 +53,7 @@ import {
   type DriverResult,
 } from "./loadtest/book-plan.ts";
 import { OK_P95_MS } from "./loadtest/judge-booking-run.ts";
+import { AVAILABILITY_UNREAD, NO_SLOTS_OFFERED } from "./loadtest/outcomes.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -353,17 +354,17 @@ async function runDriver(
 {
   const { code, stderr, result: r, bookingsSeen } = await runDriver("slow", {}, "driver-2.json", "refused");
   eq(code, 0, `a driver whose availability reads are refused still exits zero ${stderr.slice(0, 300)}`);
-  eq(r?.attempts[0]?.outcome, "availability-unread", "a refused first read is recorded as unread, not as no times offered");
+  eq(r?.attempts[0]?.outcome, AVAILABILITY_UNREAD, "a refused first read is recorded as unread, not as no times offered");
   eq(r?.attempts[0]?.status, 0, "with no status, since no booking was sent");
   eq(bookingsSeen, 0, "and no booking was sent");
 }
 {
   const { result: r } = await runDriver("slow", { DRIVE_AVAILABILITY_TIMEOUT_MS: "300" }, "driver-2.json", "stall");
-  eq(r?.attempts[0]?.outcome, "availability-unread", "a first read that times out is recorded as unread too");
+  eq(r?.attempts[0]?.outcome, AVAILABILITY_UNREAD, "a first read that times out is recorded as unread too");
 }
 {
   const { result: r, bookingsSeen } = await runDriver("slow", {}, "driver-2.json", "empty");
-  eq(r?.attempts[0]?.outcome, "no-slots-offered", "a read that answers with no times is the bucket offering nothing");
+  eq(r?.attempts[0]?.outcome, NO_SLOTS_OFFERED, "a read that answers with no times is the bucket offering nothing");
   eq(bookingsSeen, 0, "and nothing was booked");
 }
 

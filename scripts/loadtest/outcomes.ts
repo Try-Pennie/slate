@@ -11,3 +11,9 @@
  * an unanswered request, since no booking was ever sent.
  */
 export const AVAILABILITY_UNREAD = "availability-unread";
+
+/** A bucket that answered with no times to offer: a real state, recorded rather than skipped. */
+export const NO_SLOTS_OFFERED = "no-slots-offered";
+
+/** A booking request the driver gave up on at its own per request bound (#3222). */
+export const TIMED_OUT = "timed-out";
