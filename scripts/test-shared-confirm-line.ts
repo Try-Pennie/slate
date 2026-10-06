@@ -14,6 +14,7 @@ import {
   durableLineNamespace,
   keyKindOf,
   CONFIRM_LINE_REACH_MS,
+  CONFIRM_LINE_CALL_MS,
   type LineServed,
   type LineNamespace,
   type SwitchReading,
@@ -89,7 +90,16 @@ function world() {
   const client = (opts: { on?: SwitchReading; bound?: boolean; trace?: string | null } = {}) => {
     const served: LineServed[] = [];
     const reach: string[] = [];
-    const fallback = isolateLine(makeConfirmQueue<string>({ timer, now: () => now }));
+    const own = isolateLine(makeConfirmQueue<string>({ timer, now: () => now }));
+    /** The wait each enter on the isolate's line was handed, so time spent first is seen. */
+    const fallbackWaits: (number | undefined)[] = [];
+    const fallback = {
+      ...own,
+      enter: (key: typeof KEY, waitMs?: number) => {
+        fallbackWaits.push(waitMs);
+        return own.enter(key, waitMs);
+      },
+    };
     const line = makeSharedConfirmLine<string>({
       namespace: opts.bound === false ? null : namespace,
       fallback,
@@ -101,7 +111,7 @@ function world() {
       newId,
       trace: opts.trace ?? null,
     });
-    return { line, served, reach };
+    return { line, served, reach, fallbackWaits };
   };
   /** Runs `work` while moving the clock, until it settles or `limitMs` passes. */
   const settle = async <R>(work: Promise<R>, limitMs = 30_000, step = 100): Promise<R | "unsettled"> => {
@@ -362,6 +372,20 @@ async function main() {
     // needs the rest of the window, so the whole window would pass without the abandon.
     assert(next.kind === "lead" && w.now() - started < CONFIRM_LINE_ACK_MS / 4, `switched off: the next shared confirm leads at once (waited ${w.now() - started}ms)`);
     if (next.kind === "lead") await w.settle(next.done({ full: false }));
+  }
+  {
+    // The give back is a call with its own deadline, and the time it takes comes out of
+    // the wait the isolate's line is handed, as everywhere else a call precedes a fallback.
+    const w = world();
+    const reading: SwitchReading = { on: true, source: "read" };
+    const a = w.client({ on: reading });
+    await w.settle(a.line.lookahead(KEY, 10_000));
+    reading.on = false;
+    w.faults.set("abandon", "hang");
+    const t = (await w.settle(a.line.enter(KEY, 10_000))) as LineTurn<string>;
+    const handed = a.fallbackWaits[a.fallbackWaits.length - 1] ?? Infinity;
+    assert(handed <= 10_000 - CONFIRM_LINE_CALL_MS, `switched off: a slow give back is taken out of the wait (handed ${handed}ms of 10000)`);
+    if (t.kind === "lead") await w.settle(t.done({ full: false }));
   }
 
   // --- lookahead: an idle line costs one enter, a busy one hands out a place --------
