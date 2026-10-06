@@ -155,13 +155,11 @@ export async function runColdLeg(deps: {
   return { ok: true, result: { mode: "cold", planned: deps.n, attempts } };
 }
 
-/**
- * What the leg exits with, and its one line. A sample counts as taken when its deploy
- * made a version and its confirm got an HTTP answer, whatever the answer: a refused
- * confirm still started on a fresh version, so its wait before the profile is still a
- * reading. A failed deploy and a confirm that got no answer each lose a sample, and are
- * named apart because they send a reader to different places (L11).
- */
+/** A sample whose deploy made a version and whose confirm got an HTTP answer. */
+export function isAnsweredSample(a: ColdAttempt): boolean {
+  return a.deployOk && a.status !== null && a.status >= 100;
+}
+
 /**
  * What each sample came to, counted once: a deploy that failed, a confirm that got no
  * HTTP answer, or an answer (created or refused). The leg's exit line and the judge's
@@ -175,7 +173,7 @@ export function coldSampleCounts(result: ColdLegResult): {
   created: number;
   noAnswer: number;
 } {
-  const answeredRows = result.attempts.filter((a) => a.deployOk && a.status !== null && a.status >= 100);
+  const answeredRows = result.attempts.filter(isAnsweredSample);
   const deployed = result.attempts.filter((a) => a.deployOk).length;
   return {
     planned: result.planned,
@@ -187,6 +185,13 @@ export function coldSampleCounts(result: ColdLegResult): {
   };
 }
 
+/**
+ * What the leg exits with, and its one line. A sample counts as taken when its deploy
+ * made a version and its confirm got an HTTP answer, whatever the answer: a refused
+ * confirm still started on a fresh version, so its wait before the profile is still a
+ * reading. A failed deploy and a confirm that got no answer each lose a sample, and are
+ * named apart because they send a reader to different places (L11).
+ */
 export function coldLegOutcome(result: ColdLegResult): { exit: 0 | 1; text: string } {
   const { answered, created, deployFailed, noAnswer } = coldSampleCounts(result);
   const lost = [
@@ -213,11 +218,16 @@ export type DeploySpawn = (
  * deadline (L110). A deploy that hits the deadline is a failed sample that SAYS it
  * timed out, apart from one that failed with its own error (L11).
  */
-export function makeColdDeploy(deps: { arm: string; spawn: DeploySpawn }): () => Promise<{ ok: boolean; output: string }> {
+export function makeColdDeploy(deps: {
+  arm: string;
+  /** wrangler's own binary, as an absolute path, so the leg works from any directory. */
+  wranglerBin: string;
+  spawn: DeploySpawn;
+}): () => Promise<{ ok: boolean; output: string }> {
   return async () => {
     // wrangler's own binary rather than `npx wrangler`: the deadline kills the process
     // it started, and through npx that is only the wrapper (L321).
-    const r = deps.spawn("node_modules/.bin/wrangler", ["deploy", "--env", "loadtest", "--var", `SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE:${deps.arm}`], {
+    const r = deps.spawn(deps.wranglerBin, ["deploy", "--env", "loadtest", "--var", `SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE:${deps.arm}`], {
       encoding: "utf8",
       maxBuffer: 16 * 1024 * 1024,
       timeout: COLD_DEPLOY_TIMEOUT_MS,

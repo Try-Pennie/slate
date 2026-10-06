@@ -188,15 +188,8 @@ export interface ConfirmStartupReading {
 }
 
 /** The spans `wait-marks.ts` writes, in the order a confirm passes them. */
-export const WAIT_SPAN_FIELDS = [
-  "wait_route_ms",
-  "wait_auth_ms",
-  "wait_pre_line_ms",
-  "wait_line_ms",
-  "wait_decide_ms",
-  "wait_to_profile_ms",
-  "wait_total_ms",
-] as const;
+export { WAIT_SPAN_FIELDS } from "../../src/lib/booking/wait-marks.ts";
+import { WAIT_SPAN_FIELDS } from "../../src/lib/booking/wait-marks.ts";
 
 const ANSWER_MSG = 'msg="confirm answered"';
 

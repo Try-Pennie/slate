@@ -202,6 +202,7 @@ function coldWiringProblems(yml: string): string[] {
   const answer = (r: { status: number | null; stdout?: string; stderr?: string; error?: { code?: string; message: string } }) => {
     const deploy = makeColdDeploy({
       arm: "reads-only",
+      wranglerBin: "/repo/node_modules/.bin/wrangler",
       spawn: (cmd, args, opts) => {
         calls.push({ cmd, args, timeout: opts.timeout });
         return { stdout: "", stderr: "", ...r };
@@ -215,7 +216,7 @@ function coldWiringProblems(yml: string): string[] {
   // wrangler's own binary, not `npx wrangler`: a deadline kills the process it started,
   // and through npx that is only the wrapper, leaving wrangler deploying into the next
   // sample with the pipes held open (L321).
-  eq(calls[0]?.cmd, "node_modules/.bin/wrangler", "it runs wrangler itself, so the deadline stops wrangler and not a wrapper around it");
+  eq(calls[0]?.cmd, "/repo/node_modules/.bin/wrangler", "it runs wrangler itself, so the deadline stops wrangler and not a wrapper around it, at the path it is handed rather than one relative to wherever it was started");
   eq(calls[0]?.timeout, COLD_DEPLOY_TIMEOUT_MS, "under the deploy's own deadline (L110)");
   const hung = await answer({ status: null, error: { code: "ETIMEDOUT", message: "spawnSync npx ETIMEDOUT" } });
   assert(!hung.ok && hung.output.includes(`did not finish within ${COLD_DEPLOY_TIMEOUT_MS}ms`), `a deploy that hits its deadline is a failed sample that says so (got ${JSON.stringify(hung)})`);

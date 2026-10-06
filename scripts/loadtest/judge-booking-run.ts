@@ -24,8 +24,8 @@ import { CEILING_CONCLUSION, type CeilingVerdict } from "./preflight-checks.ts";
 // The judge reads the reader's span list at runtime; the reader never imports the
 // judge, so the two stay one direction apart.
 import { WAIT_SPAN_FIELDS, type ConfirmStartupReading, type LineSplit, type SideWaits } from "./confirm-startup.ts";
-import { LOADTEST_LEGS } from "../../src/lib/booking/wait-marks.ts";
-import { COLD_SAMPLES_TARGET, coldSampleCounts, type ColdLegResult } from "./cold-plan.ts";
+import { LOADTEST_LEGS, type WaitSpanField } from "../../src/lib/booking/wait-marks.ts";
+import { COLD_SAMPLES_TARGET, coldSampleCounts, isAnsweredSample, type ColdLegResult } from "./cold-plan.ts";
 import { CRON_BUDGET_WARN_SHARE } from "../../src/lib/monitor/cron-budget.ts";
 import type { SoakSample } from "./invariants.ts";
 import {
@@ -669,7 +669,7 @@ export function steadyLineReading(attempts: readonly BookingAttempt[]): SteadyLi
 }
 
 /** The span names as a report reads them, in the order a confirm passes them. */
-const WAIT_SPAN_LABELS: Record<(typeof WAIT_SPAN_FIELDS)[number], string> = {
+const WAIT_SPAN_LABELS: Record<WaitSpanField, string> = {
   wait_route_ms: "route",
   wait_auth_ms: "auth",
   wait_pre_line_ms: "before the line",
@@ -809,7 +809,7 @@ export function coldAfterDeployText(input: {
   const r = input.reading;
   if (r === null) return `${head}: ${asked}; its log was not archived or not read, so their startup was not measured`;
   const versions = new Set(Object.keys(r.byVersion));
-  const onOwn = input.result.attempts.filter((a) => a.status !== null && a.version !== null && versions.has(a.version)).length;
+  const onOwn = input.result.attempts.filter((a) => isAnsweredSample(a) && a.version !== null && versions.has(a.version)).length;
   const p = percentiles(r.coldPreProfileMs);
   const spans = WAIT_SPAN_FIELDS.flatMap((f) => {
     const q = percentiles(r.waitSpans.cold[f] ?? []);

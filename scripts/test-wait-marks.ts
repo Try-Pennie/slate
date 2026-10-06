@@ -16,6 +16,7 @@ import {
   LOADTEST_LEG_HEADER,
   LOADTEST_LEGS,
   readLoadtestLeg,
+  WAIT_SPAN_FIELDS,
 } from "../src/lib/booking/wait-marks.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -91,6 +92,38 @@ function clock(start: number) {
   const f = m.fields();
   eq(f.wait_out_of_order, "decided", "a point earlier than the one before it in the sequence is named");
   eq(f.wait_decide_ms, undefined, "and the span ending at it is withheld rather than reported negative");
+}
+{
+  // And the span STARTING at an out of order point is withheld too: its stamp is the
+  // one the sequence says is wrong, so a span measured from it is wrong as well
+  // (#3358 review: decided at 200 after line_turn at 300 made the profile span 200).
+  const c = clock(100);
+  const m = makeWaitMarks(c.now, 100);
+  m.mark("handler");
+  c.to(300); m.mark("line_turn");
+  c.to(200);
+  m.mark("decided");
+  c.to(400); m.mark("profile");
+  const f = m.fields();
+  eq(f.wait_out_of_order, "decided", "the out of order point is named");
+  eq(f.wait_to_profile_ms, undefined, "and the span from it to the next point is withheld, not measured from a stamp known to be wrong");
+}
+
+// --- one list of span names, derived from the points (L41) ---------------------------
+{
+  eq(
+    [...WAIT_SPAN_FIELDS].join(","),
+    "wait_route_ms,wait_auth_ms,wait_pre_line_ms,wait_line_ms,wait_decide_ms,wait_to_profile_ms,wait_total_ms",
+    "the span names are the points' spans in order, then the whole, from the module that writes them",
+  );
+  const c = clock(100);
+  const m = makeWaitMarks(c.now, 100);
+  for (const [i, p] of WAIT_POINTS.slice(1).entries()) {
+    c.to(200 + i * 10);
+    m.mark(p);
+  }
+  const written = Object.keys(m.fields()).filter((k) => k.startsWith("wait_"));
+  eq(written.sort().join(","), [...WAIT_SPAN_FIELDS].sort().join(","), "and every span the marks write is in the list, and nothing else");
 }
 
 // --- the points are the fixed sequence the request runs through -----------------

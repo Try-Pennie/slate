@@ -15,7 +15,7 @@
 //   node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/cold-after-deploy.ts
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { bookingBody, bookingRequestHeaders, externalIdFor, offeredSlots, REQUEST_TIMEOUT_MS } from "./book-plan.ts";
 import { MEASURED_CODE_MIX } from "./code-mix.ts";
 import { coldLegOutcome, makeColdDeploy, readColdSamples, runColdLeg } from "./cold-plan.ts";
@@ -58,7 +58,12 @@ const COLD_DRIVER = 90;
 const CODES = MEASURED_CODE_MIX.slice(0, 5).map((c) => c.code);
 
 // The load test Worker only, keeping the run's arm, under the deploy's own deadline.
-const deploy = makeColdDeploy({ arm: ARM, spawn: (cmd, args, opts) => spawnSync(cmd, args, opts) });
+const deploy = makeColdDeploy({
+  arm: ARM,
+  // Resolved from this file, not from wherever the leg was started.
+  wranglerBin: join(import.meta.dirname, "..", "..", "node_modules", ".bin", "wrangler"),
+  spawn: (cmd, args, opts) => spawnSync(cmd, args, opts),
+});
 
 const leg = await runColdLeg({
   n: samples.n,
