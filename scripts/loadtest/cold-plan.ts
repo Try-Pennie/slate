@@ -191,7 +191,15 @@ export async function runColdLeg(deps: {
   now: () => number;
 }): Promise<{ ok: true; result: ColdLegResult } | { ok: false; why: string }> {
   const offered: { code: string; slots: string[] }[] = [];
-  for (const code of deps.codes) offered.push({ code, slots: await deps.readSlots(code) });
+  for (const code of deps.codes) {
+    // A read that fails refuses the leg by name, before any deploy, rather than
+    // escaping as a crash that leaves no results file and no cause (L11).
+    try {
+      offered.push({ code, slots: await deps.readSlots(code) });
+    } catch (err) {
+      return { ok: false, why: `the offered times for code ${code} could not be read (${err instanceof Error ? err.message : String(err)})` };
+    }
+  }
   const picked = chooseColdSlots(offered, deps.n);
   if (!picked.ok) return { ok: false, why: picked.why };
   const attempts: ColdAttempt[] = [];

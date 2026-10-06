@@ -724,7 +724,12 @@ export function loadtestPhone(seed: string): string {
  */
 export function idPrefix(runId: string, mode: DriverMode | "cold"): string {
   if (mode === "fault") return `${runId}-f`;
-  // #3354: the diagnostic cold leg's bookings, apart from every driver's.
+  // #3354: the diagnostic cold leg's bookings, apart from every driver's. Deliberately
+  // inside the run's scope: the judge's checks on every booking (no two overlap on one
+  // agent, each has an idempotency key and a busy block) must hold for these too, and a
+  // cold booking that double booked would be a real fault. Its one reconciliation
+  // against the drivers' files walks their attempts, not the rows, so these never read
+  // as rows no driver accounts for.
   if (mode === "cold") return `${runId}-c`;
   // #3258: the baseline runs first on the same driver number, so it needs its own.
   if (mode === "baseline") return `${runId}-r`;

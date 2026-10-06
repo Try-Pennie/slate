@@ -191,7 +191,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
 // no longer that version's first request: the events are pinned in order.
 // Offered times an hour apart, so the chooser's gap passes over none of them.
 const [s1, s2, s3, s4, s5] = [14, 16, 18, 15, 17].map((h) => `2026-10-08T${h}:00:00Z`);
-async function legWith(opts: { n: number; failDeploys?: number[]; offered?: Record<string, string[]> }) {
+async function legWith(opts: { n: number; failDeploys?: number[]; offered?: Record<string, string[]>; failRead?: string }) {
   const events: string[] = [];
   const offered = opts.offered ?? { "112": [s1!, s2!, s3!], "212": [s4!, s5!] };
   let deploys = 0;
@@ -200,6 +200,7 @@ async function legWith(opts: { n: number; failDeploys?: number[]; offered?: Reco
     codes: Object.keys(offered),
     readSlots: async (code) => {
       events.push(`read:${code}`);
+      if (opts.failRead === code) throw new Error(`availability for ${code} answered 429`);
       return offered[code] ?? [];
     },
     deploy: async () => {
@@ -353,6 +354,13 @@ function coldWiringProblems(yml: string): string[] {
   {
     const { events, result } = await legWith({ n: 6 });
     assert(!result.ok && result.why.includes("5") && result.why.includes("6"), `too few offered times refuses before any deploy (got ${JSON.stringify(result)})`);
+    assert(!events.some((e) => e.startsWith("deploy")), "and deploys nothing");
+  }
+  {
+    // One code's read failing is a refusal the leg names, never a crash that leaves no
+    // results file and no cause (L11): the judge would only say the results never arrived.
+    const { events, result } = await legWith({ n: 2, failRead: "212" });
+    assert(!result.ok && result.why.includes("212") && result.why.includes("429"), `a failed slot read refuses by name, with its cause (got ${JSON.stringify(result)})`);
     assert(!events.some((e) => e.startsWith("deploy")), "and deploys nothing");
   }
   finish();
