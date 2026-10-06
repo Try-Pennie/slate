@@ -27,7 +27,7 @@ import { laneDecision } from "./lanes-disabled";
 import { loadtestServingProductionHost } from "@/lib/loadtest-guard";
 import { loadtestEntryRefusal } from "@/lib/loadtest-secrets";
 import { httpsRedirect } from "@/lib/http/https-redirect";
-import { withEntryMarks } from "@/lib/booking/wait-marks";
+import { countedApp } from "./app-invocations";
 import { log } from "@/lib/log";
 import { laneTimingFields, type LaneRun } from "@/lib/monitor/lane-timing";
 import {
@@ -77,8 +77,11 @@ interface Env {
   [key: string]: unknown;
 }
 
-/** #3354: fetches this isolate has served, so the first one can be told apart. */
-let fetchesServed = 0;
+/**
+ * #3354: every run of the app goes through this, so the isolate's first one can be
+ * told apart whichever way it came (HTTP, a cron tick, a log shipping receipt).
+ */
+const app = countedApp(handler);
 
 const worker = {
   // #1024: bounce plaintext to https BEFORE the app sees the request, so a lead
@@ -97,11 +100,9 @@ const worker = {
   // Judged on the request's own host, which is the only thing available here.
   fetch: (request: Request, env: Env, ctx: ExecutionContext) => {
     // #3354: taken first, before anything else this handler does, so the route can
-    // tell how long the request spent before Next reached it and whether it was this
-    // isolate's first. Counted for every fetch; stamped onto the request only under
-    // the load test (`withEntryMarks`).
+    // tell how long the request spent before Next reached it. The run is counted, and
+    // under the load test stamped onto the request, by the counted wrapper below.
     const enteredAtMs = Date.now();
-    const fetchIndex = fetchesServed++;
     const loadtest = env.SLATE_LOADTEST === "true";
     const refusal =
       loadtestServingProductionHost({ loadtest, url: request.url }) ??
@@ -124,8 +125,7 @@ const worker = {
         headers: { "content-type": "text/plain; charset=utf-8" },
       });
     }
-    const appRequest = withEntryMarks(request, { loadtest, nowMs: enteredAtMs, fetchIndex });
-    return httpsRedirect(request) ?? handler.fetch(appRequest, env, ctx);
+    return httpsRedirect(request) ?? app.fetch(request, env, ctx, { loadtest, enteredAtMs });
   },
 
   async scheduled(
@@ -211,7 +211,7 @@ const worker = {
       cronSecret: env.CRON_SECRET ?? "",
     };
     const deps: LaneRunDeps = {
-      fetch: (request) => handler.fetch(request, env, ctx),
+      fetch: (request) => app.fetch(request, env, ctx),
       now: () => performance.now(),
       log,
     };
@@ -261,7 +261,7 @@ export class LogShippingReceipt extends WorkerEntrypoint<Env> {
       return { stamped: false };
     }
     return forwardReceipt({
-      fetch: (request) => handler.fetch(request, this.env, this.ctx),
+      fetch: (request) => app.fetch(request, this.env, this.ctx),
       cronSecret: this.env.CRON_SECRET ?? "",
       log,
     });

@@ -94,14 +94,14 @@ export async function POST(req: NextRequest) {
 
 /**
  * #3354: under the load test, the marks that split the wait before the confirm's
- * profile, seeded with the Worker's entry stamp and its fetch count. Off the load
+ * profile, seeded with the Worker's entry stamp and its count of the times this isolate ran the app. Off the load
  * test there are none, so a production confirm reads no extra clock and nothing a
  * caller sent in those headers is ever read.
  */
 function waitFactsFor(req: NextRequest): ConfirmLineFacts {
   if (!isLoadtest()) return {};
   const entry = readEntryMarks(req.headers);
-  return { marks: makeWaitMarks(() => Date.now(), entry.entryAtMs), isolateFetchIndex: entry.fetchIndex };
+  return { marks: makeWaitMarks(() => Date.now(), entry.entryAtMs), isolateInvocationIndex: entry.invocationIndex };
 }
 
 async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {

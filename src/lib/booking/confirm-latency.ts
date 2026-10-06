@@ -49,7 +49,7 @@ export interface ConfirmLineFacts {
    * the Worker (0 is a fresh isolate's first). Null or absent when unknown, which is
    * never read as a first request.
    */
-  isolateFetchIndex?: number | null;
+  isolateInvocationIndex?: number | null;
 }
 
 /**
@@ -85,7 +85,7 @@ export async function answerTimed(
           }
         : {}),
       ...(opts.facts?.marks ? opts.facts.marks.fields() : {}),
-      ...(typeof opts.facts?.isolateFetchIndex === "number" ? { isolate_fetch_index: opts.facts.isolateFetchIndex } : {}),
+      ...(typeof opts.facts?.isolateInvocationIndex === "number" ? { isolate_invocation_index: opts.facts.isolateInvocationIndex } : {}),
     });
   try {
     const res = await handle();

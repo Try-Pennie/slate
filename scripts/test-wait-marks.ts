@@ -12,7 +12,7 @@ import {
   withEntryMarks,
   readEntryMarks,
   ENTRY_AT_HEADER,
-  FETCH_INDEX_HEADER,
+  INVOCATION_INDEX_HEADER,
 } from "../src/lib/booking/wait-marks.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -102,31 +102,31 @@ function clock(start: number) {
   assert(Object.keys(m.fields()).every((k) => k.startsWith("wait_")), "every field is prefixed, so it cannot collide with the line's other fields");
 }
 
-// --- the Worker's entry stamp and fetch count, carried to the route --------------
+// --- the Worker's entry stamp and invocation count, carried to the route ---------
 // The Worker runs before Next, so its two facts travel on the request: when it was
 // entered, and how many requests this isolate had served before this one (0 is a
 // fresh isolate's first, counted independently of any module's evaluation).
 {
-  const req = withEntryMarks(new Request("https://x.test/api/bookings"), { loadtest: true, nowMs: 1_234, fetchIndex: 0 });
+  const req = withEntryMarks(new Request("https://x.test/api/bookings"), { loadtest: true, nowMs: 1_234, invocationIndex: 0 });
   const read = readEntryMarks(req.headers);
   eq(read.entryAtMs, 1_234, "the entry stamp round trips");
-  eq(read.fetchIndex, 0, "and so does the fetch index, a fresh isolate's first being 0");
+  eq(read.invocationIndex, 0, "and so does the invocation index, a fresh isolate's first being 0");
 
   const plain = new Request("https://x.test/api/bookings");
-  const off = withEntryMarks(plain, { loadtest: false, nowMs: 1_234, fetchIndex: 3 });
+  const off = withEntryMarks(plain, { loadtest: false, nowMs: 1_234, invocationIndex: 3 });
   assert(off === plain, "off the load test the request is passed through untouched, nothing stamped");
 
-  const spoofed = new Request("https://x.test/api/bookings", { headers: { [ENTRY_AT_HEADER]: "1", [FETCH_INDEX_HEADER]: "99" } });
-  const over = readEntryMarks(withEntryMarks(spoofed, { loadtest: true, nowMs: 5_000, fetchIndex: 7 }).headers);
+  const spoofed = new Request("https://x.test/api/bookings", { headers: { [ENTRY_AT_HEADER]: "1", [INVOCATION_INDEX_HEADER]: "99" } });
+  const over = readEntryMarks(withEntryMarks(spoofed, { loadtest: true, nowMs: 5_000, invocationIndex: 7 }).headers);
   eq(over.entryAtMs, 5_000, "a stamp a caller sent is overwritten by the Worker's own");
-  eq(over.fetchIndex, 7, "and so is a fetch index a caller sent");
+  eq(over.invocationIndex, 7, "and so is an invocation index a caller sent");
 
-  const junk = readEntryMarks(new Headers({ [ENTRY_AT_HEADER]: "soon", [FETCH_INDEX_HEADER]: "-1" }));
+  const junk = readEntryMarks(new Headers({ [ENTRY_AT_HEADER]: "soon", [INVOCATION_INDEX_HEADER]: "-1" }));
   eq(junk.entryAtMs, null, "an unreadable stamp reads as absent, never as a time (L50)");
-  eq(junk.fetchIndex, null, "and an unreadable fetch index as absent, never as a count");
+  eq(junk.invocationIndex, null, "and an unreadable invocation index as absent, never as a count");
   const none = readEntryMarks(new Headers());
   eq(none.entryAtMs, null, "no stamp reads as absent");
-  eq(none.fetchIndex, null, "no fetch index reads as absent, not as a first request");
+  eq(none.invocationIndex, null, "no invocation index reads as absent, not as a first request");
 }
 
 finish();

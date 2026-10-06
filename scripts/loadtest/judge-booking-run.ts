@@ -695,7 +695,9 @@ export function waitSpanText(cs: ConfirmStartupReading | null): string {
     );
   }
   const side = (label: "cold" | "warm", n: number, spans: Record<string, number[]>) => {
-    const marked = Math.max(0, ...WAIT_SPAN_FIELDS.map((f) => spans[f]?.length ?? 0));
+    // The confirms that carried marks or an invocation index, counted by the reader,
+    // never the longest span list, which misses a confirm that carried only an index.
+    const marked = cs.markedBySide[label];
     const parts = WAIT_SPAN_FIELDS.flatMap((f) => {
       const p = percentiles(spans[f] ?? []);
       return p === null ? [] : [`${WAIT_SPAN_LABELS[f]} p50 ${p.p50}ms p95 ${p.p95}ms`];
@@ -705,7 +707,7 @@ export function waitSpanText(cs: ConfirmStartupReading | null): string {
   return (
     `${head}: ${side("cold", cs.cold, cs.waitSpans.cold)}; ` +
     `${side("warm", cs.samples - cs.cold, cs.waitSpans.warm)}; ` +
-    `${cs.firstRequests} of ${cs.fetchIndexKnown} confirms with a fetch index were their isolate's first request`
+    `${cs.firstRequests} of ${cs.invocationIndexKnown} confirms with an invocation index were their isolate's first request`
   );
 }
 
@@ -1570,7 +1572,7 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
         "by the Worker's own count and the startup reading called " +
         `${cs.firstRequestsReadWarm === 1 ? "it" : "them"} warm, so the cold population this bar judges is ` +
         `missing ${cs.firstRequestsReadWarm === 1 ? "it" : "them"} (${cs.firstRequests} first requests among ` +
-        `${cs.fetchIndexKnown} confirms with a fetch index, ${cs.cold} read as cold)`,
+        `${cs.invocationIndexKnown} confirms with an invocation index, ${cs.cold} read as cold)`,
     );
   }
 

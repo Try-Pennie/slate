@@ -123,11 +123,13 @@ export interface ConfirmStartupReading {
    * carry, or carried unreadably, contributes nothing rather than a zero (L90).
    */
   waitSpans: { cold: Record<string, number[]>; warm: Record<string, number[]> };
-  /** Profiles whose invocation logged a `confirm answered` line with marks or a fetch index. */
+  /** Profiles whose invocation logged a `confirm answered` line with marks or an invocation index. */
   markedSamples: number;
-  /** Profiles whose invocation carried a readable Worker fetch index. */
-  fetchIndexKnown: number;
-  /** Of those, the confirms that were their isolate's FIRST request (fetch index 0). */
+  /** The same, split by the cold or warm call, so each side says how many carried marks. */
+  markedBySide: { cold: number; warm: number };
+  /** Profiles whose invocation carried a readable Worker invocation index. */
+  invocationIndexKnown: number;
+  /** Of those, the confirms that were their isolate's FIRST run of the app (invocation index 0). */
   firstRequests: number;
   /**
    * First requests the module stamp read as warm. Such a request cannot have found
@@ -262,7 +264,8 @@ export function readConfirmStartup(archive: string): ConfirmStartupReading | nul
     unparsable: 0,
     waitSpans: { cold: {}, warm: {} },
     markedSamples: 0,
-    fetchIndexKnown: 0,
+    markedBySide: { cold: 0, warm: 0 },
+    invocationIndexKnown: 0,
     firstRequests: 0,
     firstRequestsReadWarm: 0,
   };
@@ -282,7 +285,7 @@ export function readConfirmStartup(archive: string): ConfirmStartupReading | nul
     }
     const logs = Array.isArray(event.logs) ? (event.logs as TailLog[]) : [];
     // #3354: this invocation's own answer line, which carries its marks and the
-    // Worker's fetch index; read once per invocation and paired with its profile.
+    // Worker's invocation index; read once per invocation and paired with its profile.
     const answerText = logs.map((l) => messageText(l.message)).find((t) => t.includes(ANSWER_MSG)) ?? null;
     for (const entry of logs) {
       const text = messageText(entry.message);
@@ -328,19 +331,22 @@ export function readConfirmStartup(archive: string): ConfirmStartupReading | nul
         if (cpuMs !== null) reading.warmCpuMs.push(cpuMs);
       }
       if (answerText !== null) {
-        const fetchIndex = field(answerText, "isolate_fetch_index");
+        const invocationIndex = field(answerText, "isolate_invocation_index");
         const spans = reading.waitSpans[cold ? "cold" : "warm"];
-        let marked = fetchIndex !== null;
+        let marked = invocationIndex !== null;
         for (const name of WAIT_SPAN_FIELDS) {
           const v = field(answerText, name);
           if (v === null || v < 0) continue;
           (spans[name] ??= []).push(v);
           marked = true;
         }
-        if (marked) reading.markedSamples += 1;
-        if (fetchIndex !== null && fetchIndex >= 0) {
-          reading.fetchIndexKnown += 1;
-          if (fetchIndex === 0) {
+        if (marked) {
+          reading.markedSamples += 1;
+          reading.markedBySide[cold ? "cold" : "warm"] += 1;
+        }
+        if (invocationIndex !== null && invocationIndex >= 0) {
+          reading.invocationIndexKnown += 1;
+          if (invocationIndex === 0) {
             reading.firstRequests += 1;
             if (!cold) reading.firstRequestsReadWarm += 1;
           }

@@ -798,9 +798,9 @@ function slowRun(made = 100): JudgeInput {
   // means the cold population the bar judges is missing it (L457).
   const misread = broken((i) => {
     i.confirmStartup = startupReading([
-      ...Array.from({ length: 40 }, () => ({ handlerMs: 900, beforeMs: 500, cold: false, answer: { isolate_fetch_index: 9 } })),
-      ...Array.from({ length: 3 }, () => ({ handlerMs: 900, beforeMs: 1_200, cold: true, answer: { isolate_fetch_index: 0 } })),
-      { handlerMs: 900, beforeMs: 1_400, cold: false, answer: { isolate_fetch_index: 0 } },
+      ...Array.from({ length: 40 }, () => ({ handlerMs: 900, beforeMs: 500, cold: false, answer: { isolate_invocation_index: 9 } })),
+      ...Array.from({ length: 3 }, () => ({ handlerMs: 900, beforeMs: 1_200, cold: true, answer: { isolate_invocation_index: 0 } })),
+      { handlerMs: 900, beforeMs: 1_400, cold: false, answer: { isolate_invocation_index: 0 } },
     ]);
   });
   const misreadDetail = misread.findings.find((f) => f.bar === "confirm startup")?.detail ?? "";
@@ -810,8 +810,8 @@ function slowRun(made = 100): JudgeInput {
   );
   const agreed = broken((i) => {
     i.confirmStartup = startupReading([
-      ...Array.from({ length: 40 }, () => ({ handlerMs: 900, beforeMs: 500, cold: false, answer: { isolate_fetch_index: 9 } })),
-      ...Array.from({ length: 3 }, () => ({ handlerMs: 900, beforeMs: 1_200, cold: true, answer: { isolate_fetch_index: 0 } })),
+      ...Array.from({ length: 40 }, () => ({ handlerMs: 900, beforeMs: 500, cold: false, answer: { isolate_invocation_index: 9 } })),
+      ...Array.from({ length: 3 }, () => ({ handlerMs: 900, beforeMs: 1_200, cold: true, answer: { isolate_invocation_index: 0 } })),
     ]);
   });
   assert(!bars(agreed).includes("confirm startup"), "and when the two counts agree there is no such finding");
@@ -2409,9 +2409,9 @@ const legAttempts = (i: JudgeInput, leg: number) =>
       handlerMs: 900,
       beforeMs: 500,
       cold: false,
-      answer: { wait_auth_ms: 100, wait_line_ms: 200, wait_total_ms: 400, isolate_fetch_index: 5 },
+      answer: { wait_auth_ms: 100, wait_line_ms: 200, wait_total_ms: 400, isolate_invocation_index: 5 },
     })),
-    { handlerMs: 900, beforeMs: 1_500, cold: true, answer: { wait_route_ms: 600, wait_auth_ms: 300, wait_line_ms: 500, wait_total_ms: 1_500, isolate_fetch_index: 0 } },
+    { handlerMs: 900, beforeMs: 1_500, cold: true, answer: { wait_route_ms: 600, wait_auth_ms: 300, wait_line_ms: 500, wait_total_ms: 1_500, isolate_invocation_index: 0 } },
     { handlerMs: 900, beforeMs: 1_100, cold: true },
   ]);
   const text = waitSpanText(reading);
@@ -2419,7 +2419,19 @@ const legAttempts = (i: JudgeInput, leg: number) =>
   assert(/route p50 600ms/.test(text), `a cold confirm's route span is reported (got: ${text})`);
   assert(/warm n=20, 20 marked/.test(text), `and the warm ones (got: ${text})`);
   assert(/auth p50 100ms p95 100ms/.test(text), `with each span's median and p95, through the judge's own percentile (got: ${text})`);
-  assert(/1 of 21 confirms with a fetch index were their isolate's first request/.test(text), `and the Worker's own first request count (got: ${text})`);
+  assert(/1 of 21 confirms with an invocation index were their isolate's first request/.test(text), `and the Worker's own first request count (got: ${text})`);
+
+  // "marked" counts the confirms that carried marks, not the longest span list: a
+  // confirm that carried only an invocation index is marked too (#3358 review).
+  const partly = waitSpanText(
+    startupReading([
+      { handlerMs: 900, beforeMs: 1_500, cold: true, answer: { wait_auth_ms: 300, isolate_invocation_index: 0 } },
+      { handlerMs: 900, beforeMs: 1_400, cold: true, answer: { isolate_invocation_index: 0 } },
+      { handlerMs: 900, beforeMs: 500, cold: false, answer: { wait_auth_ms: 100 } },
+    ]),
+  );
+  assert(/cold n=2, 2 marked/.test(partly), `both cold confirms carried marks, one of them only an index (got: ${partly})`);
+  assert(/warm n=1, 1 marked/.test(partly), `and the warm one is counted on its own side (got: ${partly})`);
 
   const unmarked = waitSpanText(startupReading([{ handlerMs: 900, beforeMs: 500, cold: false }]));
   assert(/no confirm carried marks/.test(unmarked), `a run with no marks says the wait was not split, never a zero (got: ${unmarked})`);

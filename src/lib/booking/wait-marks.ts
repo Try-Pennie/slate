@@ -33,35 +33,36 @@
 
 /**
  * The Worker's two facts, carried to the route on the request because the Worker
- * runs before Next: when its fetch handler was entered, and how many requests this
- * isolate had served before this one. A fetch index of 0 is a fresh isolate's first
- * request, counted at the Worker, independently of when any module of the app was
- * evaluated (#3354: the old cold test compares a module scope stamp, which moves
- * with the bundle, against the wait).
+ * runs before Next: when its fetch handler was entered, and how many times this
+ * isolate had run the app before this request, counting HTTP requests, cron ticks
+ * and log shipping receipts alike (`worker/app-invocations.ts`). An invocation index
+ * of 0 is the isolate's first run of the app, counted at the Worker, independently
+ * of when any module of the app was evaluated (#3354: the old cold test compares a
+ * module scope stamp, which moves with the bundle, against the wait).
  */
 export const ENTRY_AT_HEADER = "x-slate-entry-at-ms";
-export const FETCH_INDEX_HEADER = "x-slate-isolate-fetch-index";
+export const INVOCATION_INDEX_HEADER = "x-slate-isolate-invocation-index";
 
 /**
  * The request the app should see. Under the load test the Worker's own stamp and
  * count replace any a caller sent; otherwise the request passes through untouched.
  */
-export function withEntryMarks(request: Request, at: { loadtest: boolean; nowMs: number; fetchIndex: number }): Request {
+export function withEntryMarks(request: Request, at: { loadtest: boolean; nowMs: number; invocationIndex: number }): Request {
   if (!at.loadtest) return request;
   const headers = new Headers(request.headers);
   headers.set(ENTRY_AT_HEADER, String(at.nowMs));
-  headers.set(FETCH_INDEX_HEADER, String(at.fetchIndex));
+  headers.set(INVOCATION_INDEX_HEADER, String(at.invocationIndex));
   return new Request(request, { headers });
 }
 
 /** The Worker's stamp and count as the route reads them; anything unreadable is null. */
-export function readEntryMarks(headers: Headers): { entryAtMs: number | null; fetchIndex: number | null } {
+export function readEntryMarks(headers: Headers): { entryAtMs: number | null; invocationIndex: number | null } {
   const whole = (raw: string | null): number | null => {
     if (raw === null || !/^\d+$/.test(raw)) return null;
     const n = Number(raw);
     return Number.isSafeInteger(n) ? n : null;
   };
-  return { entryAtMs: whole(headers.get(ENTRY_AT_HEADER)), fetchIndex: whole(headers.get(FETCH_INDEX_HEADER)) };
+  return { entryAtMs: whole(headers.get(ENTRY_AT_HEADER)), invocationIndex: whole(headers.get(INVOCATION_INDEX_HEADER)) };
 }
 
 export const WAIT_POINTS = ["entry", "handler", "authed", "line_start", "line_turn", "decided", "profile"] as const;

@@ -99,14 +99,14 @@ async function main() {
   // --- #3354: which fetch of its isolate this was, counted at the Worker ---------
   {
     const cap = captureInfo();
-    await answerTimed("booking-api", async () => new Response("{}", { status: 200 }), { now: () => 0, facts: { isolateFetchIndex: 0 } });
-    await answerTimed("booking-api", async () => new Response("{}", { status: 200 }), { now: () => 0, facts: { isolateFetchIndex: 12 } });
-    await answerTimed("booking-api", async () => new Response("{}", { status: 200 }), { now: () => 0, facts: { isolateFetchIndex: null } });
+    await answerTimed("booking-api", async () => new Response("{}", { status: 200 }), { now: () => 0, facts: { isolateInvocationIndex: 0 } });
+    await answerTimed("booking-api", async () => new Response("{}", { status: 200 }), { now: () => 0, facts: { isolateInvocationIndex: 12 } });
+    await answerTimed("booking-api", async () => new Response("{}", { status: 200 }), { now: () => 0, facts: { isolateInvocationIndex: null } });
     cap.restore();
     const lines = cap.lines.filter((l) => l.includes('msg="confirm answered"'));
-    assert((lines[0] ?? "").includes("isolate_fetch_index=0"), `fetch index: a fresh isolate's first request says 0 (got ${lines[0]})`);
-    assert((lines[1] ?? "").includes("isolate_fetch_index=12"), `fetch index: a warm one says how many came before it (got ${lines[1]})`);
-    assert(!(lines[2] ?? "x").includes("isolate_fetch_index"), `fetch index: an unknown one is absent, never 0 (got ${lines[2]})`);
+    assert((lines[0] ?? "").includes("isolate_invocation_index=0"), `invocation index: a fresh isolate's first request says 0 (got ${lines[0]})`);
+    assert((lines[1] ?? "").includes("isolate_invocation_index=12"), `invocation index: a warm one says how many came before it (got ${lines[1]})`);
+    assert(!(lines[2] ?? "x").includes("isolate_invocation_index"), `invocation index: an unknown one is absent, never 0 (got ${lines[2]})`);
   }
 
   // --- a dry run says so, so it never mixes into the confirm latency -----------
