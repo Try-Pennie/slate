@@ -1,5 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { withinBookingCleanupBudget, withinBookingRequest } from "@/lib/booking/confirm-budget";
+import { answerTimed, noteRefusal, type ConfirmLineFacts } from "@/lib/booking/confirm-latency";
+import { timeStage } from "@/lib/booking/confirm-profile";
 import { z } from "zod";
 import {
   rescheduleBooking,
@@ -11,6 +13,7 @@ import {
   RescheduleLockUnavailableError,
   NoEligibleAgentsError,
   ContactRefusedError,
+  AttendeeEmailRefusedError,
   OutsideCallingWindowError,
 } from "@/lib/booking/service";
 import { validateReason } from "@/lib/booking/core";
@@ -86,16 +89,30 @@ export async function POST(
   // from a read before the move's own try (the limiter, the reason options) is the
   // same outage the move answers with its retryable 503, rather than escaping as
   // an unhandled 500.
+  //
+  // #3401: the same `confirm answered` line a booking writes, saying it was a move,
+  // so a time change's wait is measurable and a slow or timed out one carries the
+  // stage profile (#3300).
+  const facts: ConfirmLineFacts = {};
   return noStore(
-    await withinBookingRequest(
-      () => handlePost(req, ctx),
-      async (timeout) => {
-        const { token } = await ctx.params;
-        await pageBookingFailure(timeout);
-        recordApiOutcome("error", "", "reschedule_verify_unavailable", { by: "manageToken", token });
-        // refusal: reschedule_verify_unavailable
-        return NextResponse.json({ error: timeout.message }, { status: 503 });
-      },
+    await answerTimed(
+      "booking",
+      () =>
+        withinBookingRequest(
+          () => handlePost(req, ctx, facts),
+          async (timeout) => {
+            noteRefusal(facts, timeout);
+            return timeStage(facts.profile, "failure-path", async () => {
+              const { token } = await ctx.params;
+              await pageBookingFailure(timeout);
+              recordApiOutcome("error", "", "reschedule_verify_unavailable", { by: "manageToken", token });
+              // refusal: reschedule_verify_unavailable
+              return NextResponse.json({ error: timeout.message }, { status: 503 });
+            });
+          },
+          facts.profile?.observeCalls(),
+        ),
+      { facts, kind: "move" },
     ),
   );
 }
@@ -103,7 +120,10 @@ export async function POST(
 async function handlePost(
   req: NextRequest,
   { params }: { params: Promise<{ token: string }> },
+  facts: ConfirmLineFacts,
 ) {
+  // #3300: everything before the move itself, as one stage.
+  const endChecks = facts.profile?.begin("route-checks");
   // #1046: bound what an unauthenticated caller costs us. Guessing a manage token is
   // infeasible, so this is not about getting in; it is about a garbage token buying a
   // database round trip per request with nothing counting them. Fails OPEN, so a
@@ -142,6 +162,7 @@ async function handlePost(
     return NextResponse.json({ error: reason.error }, { status: 400 });
   }
 
+  endChecks?.();
   try {
     const { booking, manageUrl, contactChanged, isTest } = await rescheduleBooking(
       token,
@@ -150,6 +171,8 @@ async function handlePost(
       "customer",
       parsed.data.attendee,
       parsed.data.timezone,
+      // #3401: the line's facts, so the move charges its profile and names its lead.
+      facts,
     );
     // A lead moving their own call is a booking ATTEMPT, and its refusals below are
     // counted (#1318). The success has to be counted with them or the share stops being
@@ -197,10 +220,12 @@ async function handlePost(
       ...partnerKeysFrom(booking.prefill),
     });
   } catch (err) {
+    // #3300: a timeout, said on the line.
+    noteRefusal(facts, err);
     // #3102: the failure path runs under the cleanup allowance, not the confirm
     // budget, which a timeout has already spent; its outcome and report would
     // otherwise fail at once and the failure would go unrecorded.
-    return withinBookingCleanupBudget(async () => {
+    return timeStage(facts.profile, "failure-path", () => withinBookingCleanupBudget(async () => {
       // #2164: the details they typed were refused, and nothing moved. A 400 with
       // the sentence about the value itself, because that is what the reader has to
       // act on; the time they picked is still there and still theirs to take.
@@ -208,6 +233,20 @@ async function handlePost(
         recordApiOutcome("error", "", "reschedule_contact_refused", { by: "manageToken", token });
         // refusal: reschedule_contact_refused
         return NextResponse.json({ error: err.message }, { status: 400 });
+      }
+      // #3373: Google refused to invite the address the booking already holds, so
+      // the move's invite was never written and the call is where it was. Not
+      // `reschedule_internal` and a page: it is about the lead's email, and a wave
+      // of it means our address rule and Google's have drifted apart, which the
+      // share names under its own code. Not a 409 either: no time was taken, so the
+      // alternatives a 409 opens would offer times that fail the same way.
+      if (err instanceof AttendeeEmailRefusedError) {
+        recordApiOutcome("error", "", "reschedule_attendee_email_refused", { by: "manageToken", token });
+        // refusal: reschedule_attendee_email_refused
+        return NextResponse.json(
+          { error: BOOKING_ERROR_COPY.moveEmailRefused, reason: "reschedule_attendee_email_refused" },
+          { status: 422 },
+        );
       }
       // #2310: the new time starts outside the lead's calling window. Not a 409:
       // nothing is taken and the booking did not move under them, so neither of
@@ -288,6 +327,6 @@ async function handlePost(
       recordApiOutcome("error", "", "reschedule_internal", { by: "manageToken", token });
       // refusal: reschedule_internal
       return internalErrorResponse(err, "bookings/[token]/reschedule");
-    });
+    }));
   }
 }

@@ -676,6 +676,18 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "An approved time off has stopped blocking its window, so a lead can be booked into hours the agent is away. It stays true until someone retries the calendar updates, and the monitor lane re-measures every 5 minutes.",
   },
   {
+    key: "ooo_event_mismatch:*",
+    kind: "condition",
+    // The suffix is the agent's user id, so the family is bounded by the roster.
+    suffix: "bounded",
+    why:
+      "An agent's Google Calendar no longer matches an approved time off (#3360). Slate " +
+      "keeps blocking the approved window meanwhile, and only a person can say which side " +
+      "is right. It stays true until somebody makes the request and the event agree, or " +
+      "the request is changed or cancelled, or its window passes; the monitor lane " +
+      "re-measures every 5 minutes and is the only place it clears.",
+  },
+  {
     key: "coverage_needs_human",
     kind: "condition",
     why: "A coverage sweep gave up on appointments that are still with an absent agent; they stay stranded until a person places them or they pass, and the monitor lane re-measures every 5 minutes.",

@@ -340,12 +340,34 @@ export const BOOKING_ERROR_COPY = {
     const { from, to } = callingWindowLabel();
     return `We only call between ${from} and ${to} your time. Please pick another time.`;
   })(),
+  /**
+   * #3364: the confirm's minute window turned this one away. It is the refusal a lead meets
+   * after being refused for taken times and picking again, so it must not read as a dead end:
+   * it says how long (the window clears inside a minute) and what to do then. "Your network",
+   * never "you", because the window is per address and a shared office counts as one.
+   */
+  tooManyTriesJustNow: "Too many tries from your network just now. Please wait a minute, then try again.",
+  /** The hourly and per contact caps, whose windows are longer, so this one does not promise
+   *  a minute (L11). The wording the route carried inline before #3364, unchanged. */
+  tooManyTries: "Too many booking attempts from your network. Please try again in a few minutes.",
   generic: "Something went wrong. Please try again.",
   /** A detail the lead typed was refused, said once above the form while the field
    *  itself carries what to change. Shared by our own check and by Google refusing
    *  the address at the calendar (#3359), because to the lead they are one thing. */
   checkContactDetails: "Please check your contact details.",
   moveFailed: "Could not move your call. Please try again.",
+  /**
+   * #3373: a move refused because Google will not invite the email address the
+   * booking already holds.
+   *
+   * Noun free like `writeFailed` below, because the booker's move panel and the
+   * manage page share the endpoint. It says nothing changed, which is the fact the
+   * reader needs (their call still stands), and names the address as the reason.
+   * It offers no action: the manage page has no email field, and "try again"
+   * would meet the same refusal (L111).
+   */
+  moveEmailRefused:
+    "We could not send a calendar invite to the email address we have for you, so nothing changed.",
   /** #2297: bookings are deliberately held.
    *
    *  It does NOT say "in a moment", because a pause is lifted by a person deciding to

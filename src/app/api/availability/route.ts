@@ -141,6 +141,22 @@ async function handle(req: NextRequest) {
   };
   if (result.computedAt) headers["x-slots-computed-at"] = result.computedAt;
 
+  // #3366: the same facts in the log, with the UTC day the caller's `from` anchors
+  // to and the colo, because on 2026-10-06 leads were re-offered times full for
+  // hours and nothing recorded which layer served them. The next occurrence names
+  // its layer: a `hit` whose stamp is old is the edge cache, a `miss` whose stamp
+  // is fresh is the stored row. Bucket codes and stamps only, nothing about the lead.
+  log.info("availability", {
+    msg: "slots served",
+    bucket: code,
+    effective_code: result.routing.effective_code,
+    slot_cache: headers["x-slot-cache"],
+    computed_at: result.computedAt,
+    from_anchor: utcDayOf(from),
+    colo: requestColo(req),
+    slots: slots.length,
+  });
+
   // #1328: with nothing to offer, the booker needs to know WHY. "All times are
   // taken right now" is untrue in both halves when the reason is a closure, and a
   // lead reads it as a busy week and comes back tomorrow to the same screen.
@@ -202,6 +218,25 @@ async function handle(req: NextRequest) {
     },
     { headers },
   );
+}
+
+/** The UTC day a `from` anchors to (YYYY-MM-DD), or "unreadable" (#3366). */
+function utcDayOf(iso: string): string {
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? new Date(ms).toISOString().slice(0, 10) : "unreadable";
+}
+
+/**
+ * The Cloudflare data centre serving this request (#3366), whose edge cache the
+ * read used: the runtime's own `cf.colo` when the request carries it, otherwise the
+ * suffix Cloudflare puts on every `cf-ray`. Null when neither says, never a guess.
+ */
+function requestColo(req: NextRequest): string | null {
+  const cf = (req as unknown as { cf?: { colo?: unknown } }).cf;
+  if (typeof cf?.colo === "string" && cf.colo) return cf.colo;
+  const ray = req.headers.get("cf-ray");
+  const m = ray ? /-([A-Z]{3,4})$/.exec(ray) : null;
+  return m ? m[1] : null;
 }
 
 /**

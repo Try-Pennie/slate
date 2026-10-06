@@ -293,6 +293,8 @@ import {
   oooAgentCalendarAlert,
   oooAgentDmAlert,
   oooBusyBlockFallbackAlert,
+  oooEventMismatchAlert,
+  oooEventMismatchRecovery,
   oooCalcomAlert,
   oooCalcomStaleUnrecordedAlert,
   oooCalendarCreateAlert,
@@ -819,7 +821,7 @@ function previewPhotoPlan(over: Partial<RefreshPlan>): RefreshPlan {
  *  is not actually half spent, so a preview can never show a page the check would not send. */
 function previewBudgetSpend(
   name: "success" | "availability",
-  counts: { requests: number; errors: number; serverFaults: number },
+  counts: { requests: number; errors: number; serverFaults: number; errorCodes: { code: string; count: number }[] },
 ) {
   const v = judgeBudgets({ month: "2026-10", ...counts })[name];
   if (v.kind !== "half-spent" || v.spend.share < BUDGET_WARN_SHARE) {
@@ -1348,21 +1350,80 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   // budget figures in the copy are the ones docs/slo.md quotes.
   {
     key: "booking_budget:*",
-    state: "half the month's booking success budget spent on ordinary errors",
+    // #3374: the counts and the error mix of the page that fired on 2026-10-06.
+    state: "half the month's booking success budget spent, mostly on times another lead took first",
     channel: "alert",
-    text: sloBudgetPageText(previewBudgetSpend("success", { requests: 6200, errors: 104, serverFaults: 0 }), "2026-10"),
+    text: sloBudgetPageText(
+      previewBudgetSpend("success", {
+        requests: 2577,
+        errors: 102,
+        serverFaults: 0,
+        errorCodes: [
+          { code: "slot_unavailable", count: 78 },
+          { code: "invalid_request", count: 14 },
+          { code: "no_eligible_agents", count: 5 },
+          { code: "invalid_contact", count: 3 },
+          { code: "reschedule_slot_taken", count: 2 },
+        ],
+      }),
+      "2026-10",
+    ),
+  },
+  {
+    key: "booking_budget:*",
+    state: "half the booking success budget spent, none of it on taken times",
+    channel: "alert",
+    text: sloBudgetPageText(
+      previewBudgetSpend("success", {
+        requests: 6200,
+        errors: 104,
+        serverFaults: 0,
+        errorCodes: [
+          { code: "invalid_request", count: 70 },
+          { code: "no_eligible_agents", count: 34 },
+        ],
+      }),
+      "2026-10",
+    ),
+  },
+  {
+    key: "booking_budget:*",
+    state: "half the booking success budget spent, and the codes could not be read to split it",
+    channel: "alert",
+    text: sloBudgetPageText(
+      previewBudgetSpend("success", { requests: 2577, errors: 102, serverFaults: 0, errorCodes: [] }),
+      "2026-10",
+    ),
   },
   {
     key: "booking_budget:*",
     state: "server faults have spent half the availability budget",
     channel: "alert",
-    text: sloBudgetPageText(previewBudgetSpend("availability", { requests: 6200, errors: 41, serverFaults: 35 }), "2026-10"),
+    text: sloBudgetPageText(
+      previewBudgetSpend("availability", {
+        requests: 6200,
+        errors: 41,
+        serverFaults: 35,
+        errorCodes: [
+          { code: "internal", count: 30 },
+          { code: "slot_unavailable", count: 6 },
+          { code: "verify_unavailable", count: 5 },
+        ],
+      }),
+      "2026-10",
+    ),
   },
   {
     key: "booking_budget:*",
-    state: "a new month, back under half",
+    state: "a new month, the booking success budget back under half",
     channel: "recovery",
     text: sloBudgetClearText("success", "2026-11"),
+  },
+  {
+    key: "booking_budget:*",
+    state: "a new month, the availability budget back under half",
+    channel: "recovery",
+    text: sloBudgetClearText("availability", "2026-11"),
   },
   // #2593. The 2026-09-21 incident's shape: an Ultra High lead (XBC 512) with a
   // Low only agent. One state per catch-all reading, because each sends the reader
@@ -4835,6 +4896,27 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   // on a fallback, and by the time this sends there are none.
   { key: "ooo_busy_block_fallback", state: "nothing is relying on the fallback any more",
     channel: "recovery", text: formatFallbackClearedRecovery() },
+  // #3360: the 2026-10-06 shape, an all day request whose event was edited to begin
+  // at 11:30 AM MT. The edit was the true one that day, so the page must ask for
+  // the two to agree rather than for the event to be put back.
+  { key: "ooo_event_mismatch:*", state: "the event was shortened", channel: "alert",
+    text: oooEventMismatchAlert("Heather McLellen", [{
+      requestId: "req_9f2", startsAt: "2026-10-07T06:00:00.000Z", endsAt: "2026-10-08T05:59:00.000Z",
+      displayTzId: "America/Denver", displayTzLabel: "MT",
+      coverage: { kind: "uncovered", spans: [{ startMs: 1791352800000, endMs: 1791394200000 }] },
+    }], "https://slate.trypennie.app") },
+  { key: "ooo_event_mismatch:*", state: "two requests, one event gone", channel: "alert",
+    text: oooEventMismatchAlert("Heather McLellen", [
+      { requestId: "req_9f2", startsAt: "2026-10-07T06:00:00.000Z", endsAt: "2026-10-08T05:59:00.000Z",
+        displayTzId: "America/Denver", displayTzLabel: "MT",
+        coverage: { kind: "uncovered", spans: [{ startMs: 1791352800000, endMs: 1791394200000 }] } },
+      { requestId: "req_a41", startsAt: "2026-10-09T06:00:00.000Z", endsAt: "2026-10-10T05:59:00.000Z",
+        displayTzId: "America/Denver", displayTzLabel: "MT", coverage: { kind: "not-blocking" } },
+    ], "https://slate.trypennie.app") },
+  { key: "ooo_event_mismatch:*", state: "the calendar and the request agree again", channel: "recovery",
+    text: oooEventMismatchRecovery("Heather McLellen", { kind: "agreed", compared: 2 }) },
+  { key: "ooo_event_mismatch:*", state: "nothing approved is ahead any more", channel: "recovery",
+    text: oooEventMismatchRecovery("Heather McLellen", { kind: "nothing-ahead" }) },
   { key: "ooo_calcom", state: "the override failed at approval", channel: "alert",
     text: oooCalcomAlert("req_9f2", "409 conflict") },
   // #2890: a block left in cal.com while it was retired, whose record failed.

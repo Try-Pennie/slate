@@ -81,6 +81,10 @@ vi.mock("@/lib/booking/service", () => service);
 // The daily outcome tally (#418) is asserted directly: a declined bucket change
 // has to be COUNTABLE, not merely reported in one response (L77).
 vi.mock("@/lib/monitor/record-api-outcome", () => monitor);
+// #3366: the stored row check after a refusal, as a seam (its logic is pinned by
+// scripts/test-refusal-stored-offer.ts), so no test reaches the real table.
+const storedOffer = vi.hoisted(() => ({ scheduleStoredOfferCheck: vi.fn() }));
+vi.mock("@/lib/booking/refusal-stored-offer-live", () => storedOffer);
 
 import { POST, GET } from "./route";
 import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
@@ -202,10 +206,15 @@ describe("POST /api/bookings (auth skeleton)", () => {
   it("keeps no wait marks and no invocation count when the flag is off", async () => {
     regalKey.primary.mockReturnValue("real-secret");
     await post("Bearer real-secret", VALID_BODY);
-    const facts = service.bookViaApi.mock.calls.at(-1)?.[1] as { marks?: unknown; isolateInvocationIndex?: unknown } | undefined;
+    const facts = service.bookViaApi.mock.calls.at(-1)?.[1] as
+      | { marks?: unknown; isolateInvocationIndex?: unknown; lineTrace?: unknown; loadtestLeg?: unknown }
+      | undefined;
     expect(facts).toBeDefined();
     expect(facts?.marks).toBeUndefined();
     expect(facts?.isolateInvocationIndex).toBeUndefined();
+    // Nor a trace for the shared line's calls, so the object logs nothing for them.
+    expect(facts?.lineTrace).toBeUndefined();
+    expect(facts?.loadtestLeg).toBeUndefined();
   });
 
   it("trips 429 when the per-key ceiling is exceeded", async () => {
@@ -401,6 +410,36 @@ describe("POST /api/bookings (auth skeleton)", () => {
     service.pageBookingFailure.mockClear();
   });
 
+  // #3300: a call that timed out says where its time went and whose it was, on its
+  // own `confirm answered` line; the service is handed the request's profile.
+  it("logs where a timed out call's time went, with the lead's Salesforce id (#3300)", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    regalKey.primary.mockReturnValue("real-secret");
+    service.bookViaApi.mockImplementationOnce((async (
+      _input: unknown,
+      facts?: { profile?: { time: (s: string, fn: () => Promise<unknown>) => Promise<unknown> } },
+    ) => {
+      await facts?.profile?.time("assign-and-verify", async () => {});
+      // As the service throws it: the retryable outage, carrying the deadline as its cause.
+      throw Object.assign(new service.VerifyUnavailableError("try again"), {
+        cause: new DeadlineExceededError("supabase", 0, { label: "the booking confirm", totalMs: 12_000 }),
+      });
+    }) as never);
+    const res = await post("Bearer real-secret", { ...VALID_BODY, salesforceId: "00QUi00000zhEUPMA2" });
+    const lines = info.mock.calls.map((c) => c.map(String).join(" ")).filter((l) => l.includes('msg="confirm answered"'));
+    info.mockRestore();
+    expect(res.status).toBe(503);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("timed_out=true");
+    expect(lines[0]).toContain('lead_id="00QUi00000zhEUP"');
+    expect(lines[0]).toMatch(/stages="[^"]*assign-and-verify:\d+\/1/);
+    expect(lines[0]).toMatch(/stages="[^"]*route-checks:\d+\/1/);
+    // The confirm budget reported its calls to this profile (none here: the service is a fake).
+    expect(lines[0]).toContain("calls_made=0");
+    expect(lines[0]).not.toMatch(/dana|2155550100/i);
+  });
+
   it("answers a dry run that times out the same way, not as INTERNAL (#3102)", async () => {
     regalKey.primary.mockReturnValue("real-secret");
     service.previewBooking.mockRejectedValueOnce(new DeadlineExceededError("google freeBusy.many", 8000));
@@ -539,6 +578,19 @@ describe("POST /api/bookings (auth skeleton)", () => {
     const dry = info.mock.calls.map(String).filter((l) => l.includes('msg="confirm answered"'));
     expect(dry).toHaveLength(1);
     expect(dry[0]).toContain("dry_run=true");
+  });
+
+  // #3366: a refused API confirm hands its error to the stored row check too, and
+  // its 409 is unchanged.
+  it("hands a refusal to the stored row check and still answers 409 (#3366)", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    regalKey.primary.mockReturnValue("real-secret");
+    const err = new service.SlotUnavailableError("taken");
+    service.bookViaApi.mockRejectedValueOnce(err);
+    const res = await post("Bearer real-secret", VALID_BODY);
+    expect(res.status).toBe(409);
+    expect(storedOffer.scheduleStoredOfferCheck).toHaveBeenCalledWith(err);
   });
 
   it("carries the machine error code on the outcome line when the call fails", async () => {

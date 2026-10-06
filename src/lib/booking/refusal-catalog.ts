@@ -106,6 +106,15 @@ export interface RefusalPath {
    * path must be visible, not exempt by default.
    */
   codeFrom?: "route" | "mapped" | "authorizer";
+  /**
+   * The lead was told the time they picked had already gone (#3374). Usually another
+   * lead booked it first, which is ordinary contention on a time we offered rather than
+   * a fault, and the monthly error budget page counts these apart from everything else
+   * so a reader can tell a sold out month from a broken one. Derived into
+   * `SLOT_TAKEN_ERROR_CODES` (`src/lib/monitor/slo-targets.ts`), so a new path that
+   * answers "the time has gone" joins that count by being marked here.
+   */
+  slotTaken?: true;
   rateSignal: RefusalRateSignal;
   /** The reasoning that produced the decision. Required, including for a "no". */
   why: string;
@@ -116,7 +125,9 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
   {
     id: "rate_limit_ip_minute",
     surface: "embed booker",
-    outcome: "429, asked to try again in a few minutes",
+    // #3364: and not reached at all by a lead's retry after a taken time while the address
+    // holds a retry credit (at most three a minute).
+    outcome: "429, asked to wait a minute and try again",
     counting: { kind: "none" },
     rateSignal: { kind: "none" },
     why:
@@ -289,6 +300,7 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
     surface: "embed booker",
     outcome: "409, told the time has gone",
     counting: { kind: "error", code: "slot_unavailable" },
+    slotTaken: true,
     rateSignal: { kind: "covered" },
     why:
       "The headline case #1313 was built for. One lost race is ordinary contention on a slot we " +
@@ -430,6 +442,7 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
     outcome: "409 SLOT_TAKEN, telling the caller to pick another time",
     counting: { kind: "error", code: "SLOT_TAKEN" },
     codeFrom: "mapped",
+    slotTaken: true,
     rateSignal: { kind: "covered" },
     why: "The API-side twin of slot_unavailable, and it needs the same rate signal for the same reason.",
   },
@@ -630,6 +643,7 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
     surface: "manage page",
     outcome: "409, told the time has gone",
     counting: { kind: "error", code: "reschedule_slot_taken" },
+    slotTaken: true,
     rateSignal: { kind: "covered" },
     why:
       "A lead moving their call and being told the time went is the same shape as being refused " +
@@ -679,6 +693,19 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
       "made without them, because writing them is the point of having been given them and moving " +
       "the call while dropping them is what that issue was opened to end. It is a typo in a field, " +
       "so it belongs with the other shape refusals rather than in a rate that pages.",
+  },
+  {
+    id: "reschedule_attendee_email_refused",
+    surface: "manage page",
+    outcome: "422, told the invite could not go to the email we hold, with the call left where it is",
+    counting: { kind: "error", code: "reschedule_attendee_email_refused" },
+    rateSignal: { kind: "covered" },
+    why:
+      "The move-side twin of attendee_email_refused (#3373): Google refused to invite the address " +
+      "the booking already holds, on the invite the move writes. It used to arrive as " +
+      "reschedule_internal and a page about a fault of ours. One is a lead whose stored address " +
+      "predates the tightened rule; a wave means our rule and Google's have drifted apart, which the " +
+      "share names under its own code rather than burying it under internal.",
   },
   {
     id: "reschedule_verify_unavailable",

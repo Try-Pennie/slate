@@ -30,7 +30,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { parseClockShift, describeClockShift } from "./lib/clock-shift.ts";
+import { parseClockShift, describeClockShift, nodeOptionsWithHook } from "./lib/clock-shift.ts";
 import { CLOCK_SHIFT_ENV } from "./shift-clock.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -227,6 +227,185 @@ const ANCHOR = Date.UTC(2026, 0, 31, 12, 0, 0);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+// --- 4. a node process the suite STARTS is on the shifted clock too (#3361) ---
+// A suite that computes a moment from its own (shifted) clock and hands it to a
+// child `node` process is only tested at the shifted date if the child reads the
+// same clock. Before #3361 it did not: the child ran on the real clock, waited for
+// a moment a day away, and the run blamed the suite for depending on the date
+// (scripts/test-loadtest-burst-driver.ts, 29 checks, every shift). So a suite of
+// exactly that shape is planted and run through the real runner, both ways.
+//
+// The plant lives in a directory whose name carries a space and a curly apostrophe,
+// the two characters the real checkout path holds and NODE_OPTIONS splits or chokes
+// on, and the child is started with that directory as its cwd, so a hook named by a
+// path relative to the repo could not reach it.
+{
+  const dir = mkdtempSync(join(tmpdir(), "slate clock shift’s child "));
+  try {
+    const plant = join(dir, "planted-child-clock.ts");
+    writeFileSync(
+      plant,
+      [
+        'import { execFileSync } from "node:child_process";',
+        "const anchor = Number(process.env.PLANTED_ANCHOR_MS);",
+        "const expected = Number(process.env.PLANTED_EXPECT_SHIFT_MS);",
+        "const own = Date.now() - anchor - expected;",
+        "const childNow = Number(",
+        "  execFileSync(process.execPath, ['-e', 'process.stdout.write(String(Date.now()))'], {",
+        "    cwd: " + JSON.stringify(dir) + ",",
+        "    encoding: 'utf8',",
+        "  }),",
+        ");",
+        "const child = childNow - anchor - Number(process.env.PLANTED_EXPECT_CHILD_SHIFT_MS);",
+        "const options = process.env.NODE_OPTIONS ?? '';",
+        "const wanted = process.env.PLANTED_EXPECT_OPTIONS ?? '';",
+        "console.log('own offset error ' + own + 'ms, child offset error ' + child + 'ms, NODE_OPTIONS=' + JSON.stringify(options));",
+        "if (!Number.isFinite(childNow)) { console.error('FAIL: the child printed no clock'); process.exit(1); }",
+        // An unreadable anchor or expectation is NaN, which every comparison below
+        // would read as within tolerance (L50), so it refuses here instead.
+        "if (!Number.isFinite(own) || !Number.isFinite(child)) { console.error('FAIL: the plant could not read its anchor or expectations'); process.exit(1); }",
+        "if (Math.abs(own) > 60_000) { console.error('FAIL: the suite itself is off its expected clock'); process.exit(1); }",
+        "if (Math.abs(child) > 60_000) { console.error('FAIL: the child is not on the expected clock'); process.exit(1); }",
+        "const optionsOk = process.env.PLANTED_OPTIONS_MATCH === 'prefix' ? options.startsWith(wanted + ' ') : options === wanted;",
+        "if (!optionsOk) { console.error('FAIL: NODE_OPTIONS was not what this run should carry'); process.exit(1); }",
+        "process.exit(0);",
+      ].join("\n"),
+      "utf8",
+    );
+
+    interface PlantRun {
+      shift: string | null;
+      suiteShiftMs: number;
+      childShiftMs: number;
+      nodeOptions: string;
+      optionsMatch: "exact" | "prefix";
+    }
+    const runPlant = (p: PlantRun) =>
+      spawnSync(
+        "node",
+        [
+          "--experimental-strip-types",
+          "--import",
+          "./scripts/register-paths.mjs",
+          "scripts/run-tests.ts",
+          plant,
+        ],
+        {
+          cwd: ROOT,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            PLANTED_ANCHOR_MS: String((globalThis.__slateShiftedClock?.realDate ?? Date).now()),
+            PLANTED_EXPECT_SHIFT_MS: String(p.suiteShiftMs),
+            PLANTED_EXPECT_CHILD_SHIFT_MS: String(p.childShiftMs),
+            PLANTED_EXPECT_OPTIONS: p.nodeOptions,
+            PLANTED_OPTIONS_MATCH: p.optionsMatch,
+            // Written out rather than inherited, for the same reason as above: under
+            // the shifted workflow this suite's own NODE_OPTIONS already carries the
+            // hook, and a control that took it would be measuring the outer run.
+            NODE_OPTIONS: p.nodeOptions,
+            [CLOCK_SHIFT_ENV]: p.shift ?? "",
+            SLATE_CLOCK_SHIFT_QUIET: "1",
+          },
+        },
+      );
+
+    // The shifted run: the suite AND the node process it starts are a day ahead,
+    // the suite is not shifted twice by being handed the hook two ways, and the
+    // options the run was started with are kept ahead of the hook.
+    const shifted = runPlant({
+      shift: "+1d",
+      suiteShiftMs: DAY_MS,
+      childShiftMs: DAY_MS,
+      nodeOptions: "--no-deprecation",
+      optionsMatch: "prefix",
+    });
+    eq(
+      shifted.status,
+      0,
+      `a node process a shifted suite starts reads the shifted clock${childDetail(shifted)}`,
+    );
+
+    // The ordinary run is unchanged: nobody's clock moves and NODE_OPTIONS is exactly
+    // what the run was started with, so the normal suite pays nothing for this.
+    const plain = runPlant({
+      shift: null,
+      suiteShiftMs: 0,
+      childShiftMs: 0,
+      nodeOptions: "--no-deprecation",
+      optionsMatch: "exact",
+    });
+    eq(
+      plain.status,
+      0,
+      `and an ordinary run leaves the child on the real clock and NODE_OPTIONS untouched${childDetail(plain)}`,
+    );
+
+    // The control that makes the two passes above mean something (L1): the same
+    // shifted run, with the plant told to expect its child on the REAL clock, must
+    // fail on the child. That is the pre #3361 expectation, so this is the check
+    // that the plant can tell a shifted child from an unshifted one at all.
+    const wrong = runPlant({
+      shift: "+1d",
+      suiteShiftMs: DAY_MS,
+      childShiftMs: 0,
+      nodeOptions: "--no-deprecation",
+      optionsMatch: "prefix",
+    });
+    const wrongCaught =
+      wrong.status === 1 && /child is not on the expected clock/.test(`${wrong.stdout}${wrong.stderr}`);
+    assert(
+      wrongCaught,
+      `the plant fails on the child when told to expect it unshifted${wrongCaught ? "" : childDetail(wrong)}`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// --- 5. the NODE_OPTIONS form survives a path with a space in it (#3361) ------
+// NODE_OPTIONS is split on spaces, and the real checkout sits under a folder named
+// with spaces and a curly apostrophe, so a hook named by its plain path reaches the
+// child as several broken arguments. CI's checkout has no space in it, so section 4
+// passing there says nothing about this; this section plants a hook under a path
+// holding both characters wherever it runs, and asks a real child to load it.
+{
+  const dir = mkdtempSync(join(tmpdir(), "slate hook’s dir "));
+  try {
+    const hook = join(dir, "marker hook.mjs");
+    writeFileSync(hook, "globalThis.__plantedHookLoaded = true;\n", "utf8");
+    const probe = (nodeOptions: string) =>
+      spawnSync(
+        process.execPath,
+        ["-e", "process.stdout.write(String(globalThis.__plantedHookLoaded === true))"],
+        { cwd: tmpdir(), encoding: "utf8", env: { ...process.env, NODE_OPTIONS: nodeOptions } },
+      );
+
+    const built = nodeOptionsWithHook(undefined, hook);
+    assert(!/\s/.test(built), `the hook reference carries no whitespace (${built})`);
+    const loaded = probe(built);
+    eq(loaded.stdout, "true", `a child loads a hook under a path with a space and an apostrophe${childDetail(loaded)}`);
+
+    const kept = nodeOptionsWithHook("  --no-deprecation ", hook);
+    assert(kept.startsWith("--no-deprecation --import="), `options already set are kept ahead of the hook (${kept})`);
+    eq(probe(kept).stdout, "true", "and the hook still loads behind them");
+
+    // The control (L1): the plain path in the same place really does break, so the
+    // pass above is a property of the form and not of a path that happened to be safe.
+    const naive = probe(`--import=${hook}`);
+    assert(
+      naive.stdout !== "true",
+      "the same hook named by its plain path does NOT load, so the encoding is what made it work",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function childDetail(r: { status: number | null; stdout: string; stderr: string }): string {
+  return r.status === 0 ? "" : ` (exit ${r.status}: ${`${r.stdout}${r.stderr}`.trim().slice(-900)})`;
 }
 
 function detail(r: { status: number | null; stdout: string; stderr: string }): string {

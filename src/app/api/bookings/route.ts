@@ -4,7 +4,10 @@ import { withinBookingCleanupBudget, withinBookingRequest } from "@/lib/booking/
 import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import { authorizeBookingApi } from "@/lib/booking/route-auth";
 import { answerTimed, noteRefusal, type ConfirmLineFacts } from "@/lib/booking/confirm-latency";
-import { makeWaitMarks, readEntryMarks } from "@/lib/booking/wait-marks";
+import { timeStage } from "@/lib/booking/confirm-profile";
+import { refusedLeadId } from "@/lib/booking/refusal-trace";
+import { scheduleStoredOfferCheck } from "@/lib/booking/refusal-stored-offer-live";
+import { makeWaitMarks, readEntryMarks, readLoadtestLeg } from "@/lib/booking/wait-marks";
 import { isLoadtest } from "@/lib/loadtest-guard";
 import { parseDirectBookingRequest, parseLookupQuery, parseCancelQuery, parseListQuery, LIST_ONLY_PARAMS } from "@/lib/booking/api-request";
 import { respondToDirectCancel, apiErrorBody, mapLookupError } from "@/lib/booking/direct-cancel-http";
@@ -76,15 +79,22 @@ export async function POST(req: NextRequest) {
         withinBookingRequest(
           () => handlePost(req, facts),
           async (timeout) => {
-            await pageBookingFailure(timeout);
-            recordApiOutcome("error", "", "VERIFY_UNAVAILABLE", { by: "unidentifiable", why: "a dependency timed out before the request was read" });
-            // refusal: api_verify_unavailable
-            return NextResponse.json(await apiErrorBody(timeout, "VERIFY_UNAVAILABLE", "book", "Booking failed"), {
-              status: 503,
+            // #3300: the line says it timed out, and carries the profile and the lead.
+            noteRefusal(facts, timeout);
+            return timeStage(facts.profile, "failure-path", async () => {
+              await pageBookingFailure(timeout);
+              recordApiOutcome("error", "", "VERIFY_UNAVAILABLE", { by: "unidentifiable", why: "a dependency timed out before the request was read" });
+              // refusal: api_verify_unavailable
+              return NextResponse.json(await apiErrorBody(timeout, "VERIFY_UNAVAILABLE", "book", "Booking failed"), {
+                status: 503,
+              });
             });
           },
+          // #3300: every Supabase and Google call this request makes, for its profile.
+          // Read when the request starts, after `answerTimed` has opened the profile.
+          facts.profile?.observeCalls(),
         ),
-      { facts },
+      { facts, kind: "new" },
     ),
     req.headers,
   );
@@ -102,11 +112,22 @@ export async function POST(req: NextRequest) {
 function waitFactsFor(req: NextRequest): ConfirmLineFacts {
   if (!isLoadtest()) return {};
   const entry = readEntryMarks(req.headers);
-  return { marks: makeWaitMarks(() => Date.now(), entry.entryAtMs), isolateInvocationIndex: entry.invocationIndex };
+  const leg = readLoadtestLeg(req.headers);
+  return {
+    marks: makeWaitMarks(() => Date.now(), entry.entryAtMs),
+    isolateInvocationIndex: entry.invocationIndex,
+    // #3354: the shared line's calls carry this, so the object's log of them joins
+    // this confirm's own line; minted here, never taken from the request.
+    lineTrace: crypto.randomUUID(),
+    ...(leg ? { loadtestLeg: leg } : {}),
+  };
 }
 
 async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
   facts.marks?.mark("handler");
+  // #3300: the key, the ceilings and reading the body, as one stage, ended where the
+  // booking starts; a refusal on the way is charged up to its answer.
+  const endChecks = facts.profile?.begin("route-checks");
   // Three refusals, decided apart (#1429). The authorizer reports WHICH one it was
   // and records it according to the catalog, so a rotated key and a noisy caller no
   // longer raise the same number:
@@ -137,6 +158,8 @@ async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
   }
 
   const v = parsed.value;
+  // #3300: the lead's Salesforce id, which the line carries if this call times out.
+  facts.leadId = refusedLeadId({ salesforceId: v.salesforceId, externalId: v.externalId });
   // #2752: a server caller has no framing page, and whatever prefill it sends is what
   // the booking row stores, so the tally judges the same facts the off site page would.
   const apiHost: BookingOriginFacts = { prefill: v.prefill, referrer_origin: null };
@@ -144,6 +167,7 @@ async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
   // (#396) only for the canary callers, the public one (#2660) for anyone; a partner
   // naming SMOKE meets the same 422 UNKNOWN_BUCKET a typo does (#601).
   const allowTestBuckets = mayBookTestBuckets(authd.caller, v.bucketCode);
+  endChecks?.();
 
   // Dry run (#380): report what WOULD happen, no calendar event / booking / webhook.
   if (v.dryRun) {
@@ -283,10 +307,14 @@ async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
     return NextResponse.json(body, { status });
   } catch (err) {
     noteRefusal(facts, err);
+    // #3366: after the response, read the stored row for a candidate_read_empty
+    // refusal and log whether it still offers the refused time. Nothing changes here.
+    scheduleStoredOfferCheck(err);
     // #3102: the failure path runs under the cleanup allowance, not the confirm
     // budget, which a timeout has already spent; its outcome and report would
     // otherwise fail at once and the failure would go unrecorded.
-    return withinBookingCleanupBudget(async () => {
+    // #3300: charged to the profile as one stage.
+    return timeStage(facts.profile, "failure-path", () => withinBookingCleanupBudget(async () => {
       const { status, code } = mapBookingError(err);
       log.info("booking-api", {
         msg: "outcome",
@@ -313,7 +341,7 @@ async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
         },
         { status },
       );
-    });
+    }));
   }
 }
 

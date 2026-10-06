@@ -85,6 +85,10 @@ const rateLimit = vi.hoisted(() => ({
   allowRequest: vi.fn(async (_caller: unknown, _rules?: unknown) => true),
   refundRequest: vi.fn(async (_caller: unknown, _rules?: unknown) => {}),
   bookingWithinLimit: vi.fn(async () => true),
+  // #3364: the retry credit. No credit by default, so every older case that blocks at the
+  // edge still sees the 429 it always did.
+  bookingRetryCredit: vi.fn(async (_ip: string): Promise<string> => "no-credit"),
+  grantBookingRetryCredit: vi.fn(async (_ip: string) => {}),
   clientIp: () => "203.0.113.1",
   BOOKING_HOURLY_RATE_RULES: [{ prefix: "book:h", windowSeconds: 3600, max: 10 }],
   BOOKING_CONTACT_HOURLY_RATE_RULES: [{ prefix: "book:contact:h", windowSeconds: 3600, max: 5 }],
@@ -119,6 +123,12 @@ vi.mock("@/lib/booking/settings", () => bookingSettings);
 // judge behind it is driven by scripts/test-agent-link.ts.
 const agentLinkStore = vi.hoisted(() => ({ resolveAgentLink: vi.fn() }));
 vi.mock("@/lib/agent-link/store", () => agentLinkStore);
+
+// #3366: the stored row check after a refusal. Its decision and read are pinned by
+// scripts/test-refusal-stored-offer.ts; here it is a seam, so the route is proven to
+// hand it every refusal without a test ever reaching the real table.
+const storedOffer = vi.hoisted(() => ({ scheduleStoredOfferCheck: vi.fn() }));
+vi.mock("@/lib/booking/refusal-stored-offer-live", () => storedOffer);
 
 import { POST } from "./route";
 import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
@@ -178,6 +188,85 @@ describe("POST /booking (embed) error mapping", () => {
     // Edge block short-circuits before the hourly DB cap and the booking itself.
     expect(rateLimit.allowRequest).not.toHaveBeenCalled();
     expect(service.createBooking).not.toHaveBeenCalled();
+  });
+
+  // #3364: the 2026-10-06 dead end. A lead refused for a taken time three times was then
+  // refused at the edge minute window when they picked the next time along.
+  describe("a retry after a taken time (#3364)", () => {
+    beforeEach(() => {
+      rateLimit.bookingRetryCredit.mockReset();
+      rateLimit.bookingRetryCredit.mockResolvedValue("no-credit");
+      rateLimit.grantBookingRetryCredit.mockClear();
+    });
+
+    it("lets a confirm the edge window refused through when the address has an earned credit", async () => {
+      const info = vi.spyOn(console, "info").mockImplementation(() => {});
+      rateLimit.bookingWithinLimit.mockResolvedValueOnce(false);
+      rateLimit.bookingRetryCredit.mockResolvedValueOnce("allowed");
+      service.createBooking.mockResolvedValueOnce({
+        booking: { id: "bk-r", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z" },
+        manageUrl: "https://slate.test/booking/manage/tok",
+      });
+      const res = await post(VALID_BODY);
+      expect(res.status).toBe(200);
+      expect(rateLimit.bookingRetryCredit).toHaveBeenCalledWith("203.0.113.1");
+      // Still under every other cap: the credit replaces the minute window only.
+      expect(rateLimit.allowRequest).toHaveBeenCalled();
+      const line = info.mock.calls.map(String).find((l) => l.includes('msg="retry after a taken time"'));
+      expect(line).toContain("tag=booking-rate-limit");
+      info.mockRestore();
+    });
+
+    it("keeps the 429, with the builder's wait-a-minute sentence, when there is no credit to spend", async () => {
+      const info = vi.spyOn(console, "info").mockImplementation(() => {});
+      rateLimit.bookingWithinLimit.mockResolvedValueOnce(false);
+      rateLimit.bookingRetryCredit.mockResolvedValueOnce("spent");
+      const res = await post(VALID_BODY);
+      expect(res.status).toBe(429);
+      expect((await res.json()).error).toBe(BOOKING_ERROR_COPY.tooManyTriesJustNow);
+      expect(rateLimit.allowRequest).not.toHaveBeenCalled();
+      expect(service.createBooking).not.toHaveBeenCalled();
+      // The throttle line says why the credit did not carry it, so a cluster can be read.
+      const line = info.mock.calls.map(String).find((l) => l.includes('msg="throttled"'));
+      expect(line).toContain('retry="spent"');
+      info.mockRestore();
+    });
+
+    it("never consults the credit when the edge window allows the confirm", async () => {
+      service.createBooking.mockRejectedValueOnce(new service.NoEligibleAgentsError("none"));
+      await post(VALID_BODY);
+      expect(rateLimit.bookingRetryCredit).not.toHaveBeenCalled();
+    });
+
+    it("earns a credit for the address when the time was taken, a lost race included", async () => {
+      service.createBooking.mockRejectedValueOnce(new service.SlotUnavailableError("taken"));
+      expect((await post(VALID_BODY)).status).toBe(409);
+      expect(rateLimit.grantBookingRetryCredit).toHaveBeenCalledWith("203.0.113.1");
+      service.createBooking.mockRejectedValueOnce(new service.RaceLostRefusalError(2, false));
+      expect((await post(VALID_BODY)).status).toBe(409);
+      expect(rateLimit.grantBookingRetryCredit).toHaveBeenCalledTimes(2);
+    });
+
+    it("earns nothing for any refusal that is not a taken time", async () => {
+      for (const err of [
+        new service.NoEligibleAgentsError("none"),
+        new service.ExistingCallError({ disclose: false }),
+        new service.VerifyUnavailableError("outage"),
+        new service.OutsideCallingWindowError("Pacific/Honolulu"),
+        new service.UnknownBucketError("nope"),
+      ]) {
+        service.createBooking.mockRejectedValueOnce(err);
+        await post(VALID_BODY);
+      }
+      expect(rateLimit.grantBookingRetryCredit).not.toHaveBeenCalled();
+    });
+
+    it("keeps the longer wait sentence for the hourly and contact caps", async () => {
+      rateLimit.allowRequest.mockResolvedValueOnce(false);
+      const res = await post(VALID_BODY);
+      expect(res.status).toBe(429);
+      expect((await res.json()).error).toBe(BOOKING_ERROR_COPY.tooManyTries);
+    });
   });
 
   it("returns 429 when the hourly DB cap blocks (checked after the edge limiter)", async () => {
@@ -430,6 +519,67 @@ describe("POST /booking (embed) error mapping", () => {
     expect(lines[0]).toContain("status=409");
     expect(lines[0]).not.toContain("dana");
     expect(lines[0]).not.toContain("2155550100");
+  });
+
+  // #3300: a confirm that ran out of time says where it went, and whose it was. The
+  // service is handed the request's own profile, charges a stage to it, and runs
+  // out of budget; the line carries the profile, the timeout and the lead's id.
+  it("logs where a timed out confirm's time went, with the lead's Salesforce id (#3300)", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    service.createBooking.mockImplementationOnce((async (
+      _input: unknown,
+      facts?: { profile?: { time: (s: string, fn: () => Promise<unknown>) => Promise<unknown> } },
+    ) => {
+      await facts?.profile?.time("assign-and-verify", async () => {});
+      // As the service throws it: the retryable outage, carrying the deadline as its cause.
+      throw Object.assign(new service.VerifyUnavailableError("try again"), {
+        cause: new DeadlineExceededError("supabase", 0, { label: "the booking confirm", totalMs: 12_000 }),
+      });
+    }) as never);
+    const res = await post({ ...VALID_BODY, salesforceId: "00QUi00000zhEUPMA2" });
+    const lines = info.mock.calls.map((c) => c.map(String).join(" ")).filter((l) => l.includes('msg="confirm answered"'));
+    info.mockRestore();
+    expect(res.status).toBe(503);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("timed_out=true");
+    // The 15 character key, which both spellings of one lead share.
+    expect(lines[0]).toContain('lead_id="00QUi00000zhEUP"');
+    expect(lines[0]).toMatch(/stages_run=\d+/);
+    expect(lines[0]).toMatch(/stages="[^"]*assign-and-verify:\d+\/1/);
+    expect(lines[0]).toMatch(/stages="[^"]*route-checks:\d+\/1/);
+    // The confirm budget reported its calls to this profile (none here: the service is a fake).
+    expect(lines[0]).toContain("calls_made=0");
+    expect(lines[0]).toMatch(/unattributed_ms=\d+/);
+    // Never anything else about the lead.
+    expect(lines[0]).not.toMatch(/dana|2155550100/i);
+  });
+
+  // The other half (L1): the same route with an ordinary quick answer keeps its line short.
+  it("keeps an ordinary fast confirm's line to the wait and the status (#3300)", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    service.createBooking.mockResolvedValueOnce({
+      booking: { id: "b1", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z", agent_name: "Jane", prefill: null, salesforce_id: null, external_id: null },
+      manageUrl: "https://x.test/m/t",
+      newlyInserted: true,
+    });
+    const res = await post({ ...VALID_BODY, salesforceId: "00QUi00000zhEUPMA2" });
+    const lines = info.mock.calls.map((c) => c.map(String).join(" ")).filter((l) => l.includes('msg="confirm answered"'));
+    info.mockRestore();
+    expect(res.status).toBe(200);
+    expect(lines[0]).not.toContain("stages_run");
+    expect(lines[0]).not.toContain("lead_id");
+    expect(lines[0]).not.toContain("timed_out");
+  });
+
+  // #3366: a refused confirm hands its error to the stored row check, which runs
+  // after the response, and the lead's 409 is exactly what it was.
+  it("hands a refusal to the stored row check and still answers 409 (#3366)", async () => {
+    const err = new service.SlotUnavailableError("taken");
+    service.createBooking.mockRejectedValueOnce(err);
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(409);
+    expect(storedOffer.scheduleStoredOfferCheck).toHaveBeenCalledWith(err);
   });
 
   it("refunds the IP cap AND both contact keys on a taken-slot 409, which isn't the lead's fault (#1089)", async () => {

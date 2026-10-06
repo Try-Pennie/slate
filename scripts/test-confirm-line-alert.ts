@@ -13,6 +13,7 @@ import {
   confirmLineUnreachableAlert,
   CONFIRM_LINE_PAGE_AFTER,
   CONFIRM_LINE_PAGE_WINDOW_MS,
+  CONFIRM_LINE_ALERT_COOLDOWN_MS,
 } from "../src/lib/booking/confirm-line-alert.ts";
 import { createAsserter } from "./lib/booking-fakes.ts";
 
@@ -41,6 +42,22 @@ function reporter(onWorkers = true) {
   assert(r.pages.length === 1, `repeated: ${CONFIRM_LINE_PAGE_AFTER} failures inside the window page once (got ${r.pages.length})`);
   r.report("enter-error", null);
   assert(r.pages.length === 1, "repeated: further failures do not page again from this isolate (the alert store throttles across isolates)");
+}
+
+// --- #3349: a later, separate outage on the same isolate pages again ----------------
+// The first page used to latch for the isolate's whole life, so a long lived isolate
+// that paged once never paged about a second outage hours later. A page now waits only
+// as long as the alert's own cooldown.
+{
+  const r = reporter();
+  for (let i = 0; i < CONFIRM_LINE_PAGE_AFTER; i++) r.report("reach-timeout", null);
+  assert(r.pages.length === 1, "first outage: pages");
+  r.move(CONFIRM_LINE_ALERT_COOLDOWN_MS - CONFIRM_LINE_PAGE_WINDOW_MS);
+  for (let i = 0; i < CONFIRM_LINE_PAGE_AFTER; i++) r.report("reach-timeout", null);
+  assert(r.pages.length === 1, `a burst inside the cooldown does not page again (got ${r.pages.length})`);
+  r.move(CONFIRM_LINE_ALERT_COOLDOWN_MS);
+  for (let i = 0; i < CONFIRM_LINE_PAGE_AFTER; i++) r.report("reach-timeout", null);
+  assert(r.pages.length === 2, `a separate outage after the cooldown pages again from the same isolate (got ${r.pages.length})`);
 }
 
 // --- failures spread out past the window do not add up ----------------------------
