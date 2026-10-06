@@ -3865,6 +3865,19 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       unreadable: false,
     }),
   },
+  // #3340: the shared confirm line proof, stamped by its own step of the burst counter's
+  // workflow. Previewed never concluded, the state it ships in until its first daily run.
+  {
+    key: "cron_lane_stale:*",
+    state: "the shared confirm line proof has never once concluded",
+    channel: "alert",
+    text: verdictBlindAlertText({
+      lane: "verdict:confirm-line",
+      ageMs: Infinity,
+      maxStaleMs: VERDICT_STALE_BOUNDS_MS["verdict:confirm-line"],
+      unreadable: false,
+    }),
+  },
   // #1700: the canary's latency check, the third detector stamped by a GitHub workflow.
   {
     key: "cron_lane_stale:*",

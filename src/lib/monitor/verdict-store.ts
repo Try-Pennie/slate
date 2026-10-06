@@ -27,6 +27,7 @@ import {
   CROSS_SYSTEM_BOOKINGS_VERDICT_LANE,
   BURST_COUNTER_VERDICT_LANE,
   KILL_SWITCH_VERDICT_LANE,
+  CONFIRM_LINE_VERDICT_LANE,
   AVAILABILITY_LATENCY_VERDICT_LANE,
   REGAL_CALLS_VERDICT_LANE,
   ROSTER_COVERAGE_VERDICT_LANE,
@@ -48,14 +49,22 @@ import {
 /**
  * The verdict lanes this Worker stamps for itself.
  *
- * TWO are deliberately NOT, and both for the same reason: the check each records
- * does something the monitor lane must not.
+ * THREE are deliberately NOT, all for the same reason: the check each records does
+ * something the monitor lane must not.
  *
  * `verdict:burst-counter` (#2392) has to CALL the burst counter Durable Object, and
  * calling it creates the object and gives it an alarm to clean up on every tick
  * forever. `verdict:kill-switch` (#2493) has to STOP PUBLIC BOOKING for about two
- * seconds, which is not something a lane running every five minutes may do. Both run
- * as GitHub workflows and stamp through the key authed heartbeat endpoint instead.
+ * seconds, which is not something a lane running every five minutes may do.
+ * `verdict:confirm-line` (#3340) has to drive the confirm path's client against the
+ * shared `CONFIRM_LINE` object, taking leads, queueing behind them and reporting
+ * verdicts, two dozen calls and a wait out of a whole acknowledgement window per run,
+ * which the invocation four cron lanes share has no room for on every tick. All three
+ * run as GitHub workflows (the last as a step of the burst counter's) and stamp through
+ * the key authed heartbeat endpoint instead.
+ *
+ * A fourth, `verdict:availability-latency` (#1700), is excluded for its own reason,
+ * given beside it below: the smoke canary measures it on a GitHub runner.
  *
  * Excluding them in the TYPE rather than by leaving them out of the table below is
  * what keeps that a decision rather than an omission: a further lane added to the
@@ -66,6 +75,7 @@ export type WorkerStampedVerdictLane = Exclude<
   DetectorVerdictLane,
   | typeof BURST_COUNTER_VERDICT_LANE
   | typeof KILL_SWITCH_VERDICT_LANE
+  | typeof CONFIRM_LINE_VERDICT_LANE
   // #1700: measured by the smoke canary on a GitHub runner, where the reads it times
   // happen, so there is nothing for the Worker to stamp.
   | typeof AVAILABILITY_LATENCY_VERDICT_LANE

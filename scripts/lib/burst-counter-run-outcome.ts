@@ -24,16 +24,17 @@
  * command ("nothing was attempted here"), so an exit code alone makes those two one
  * message (L11). An absent file is evidence rather than an inference (L98).
  *
- * Bare node safe: this file imports nothing but node builtins, because the reporter
- * that uses it runs with no dependency install (#1598). That is also why `VERIFY_EXIT`
+ * Bare node safe: this file imports nothing outside `scripts/` (the shared summary
+ * writer, itself node builtins only), because the reporter that uses it runs with no
+ * dependency install (#1598). That is also why `VERIFY_EXIT`
  * LIVES here rather than in `burst-counter-live-control.ts`, which reaches into `src/`
  * for the probe vocabulary; that module re-exports it, so there is still one table.
  *
- * The WRITE and the READ live here together on purpose. They are two halves of one
- * contract across two processes, and a field added on one side and not the other
- * would be invisible until a run needed it (L26).
+ * The WRITE and the READ of the summary file are two halves of one contract across
+ * two processes, so both live in `run-summary-file.ts`, shared with the kill switch
+ * and the confirm line proofs rather than written out once per proof (L26).
  */
-import { writeFileSync } from "node:fs";
+import { writeRunSummary } from "./run-summary-file.ts";
 
 /**
  * Every way the command can end, and the exit code it ends on.
@@ -290,11 +291,6 @@ export function writeBurstSummary(
   path: string,
   summary: BurstSummaryFile,
 ): { written: boolean; why: string } {
-  if (!path.trim()) return { written: false, why: "no summary path was set" };
-  try {
-    writeFileSync(path, JSON.stringify(summary, null, 2), "utf8");
-    return { written: true, why: "written" };
-  } catch (err) {
-    return { written: false, why: String(err) };
-  }
+  // One writer for every scheduled proof (scripts/lib/run-summary-file.ts, #3340).
+  return writeRunSummary(path, summary);
 }
