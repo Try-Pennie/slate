@@ -108,5 +108,5 @@ mkdirSync(dirname(OUT), { recursive: true });
 writeFileSync(OUT, JSON.stringify(leg.result, null, 2));
 const outcome = coldLegOutcome(leg.result);
 console.log(`${outcome.text}; wrote ${OUT}`);
-// A lost sample (a failed deploy, or a confirm with no answer) reads red, and the judge names it.
+// Red only when no sample got an answer; a lost sample is named on the line and by the judge.
 process.exit(outcome.exit);

@@ -65,7 +65,7 @@ import {
   type DriverResult,
 } from "./book-plan.ts";
 import type { SoakSample } from "./invariants.ts";
-import { readColdSamples, type ColdLegResult } from "./cold-plan.ts";
+import { readColdSamples, readColdResult, type ColdLegResult } from "./cold-plan.ts";
 import { PRODUCTION_SUPABASE_REF } from "../../src/lib/loadtest-guard.ts";
 import { allLaneNames } from "../../worker/lanes-disabled.ts";
 import { LANE_STALE_BOUNDS_MS } from "../../src/lib/monitor/health.ts";
@@ -438,18 +438,19 @@ try {
 // its confirms are in the startup bar's population above.
 // env-ok: EXPECT_COLD_SAMPLES (optional; the workflow's cold_samples, unset on a hand run)
 const expectedColdRead = readColdSamples(process.env.EXPECT_COLD_SAMPLES);
-if (!expectedColdRead.ok) console.error(`note: ${expectedColdRead.why}; the cold leg is reported as not asked for`);
-let coldResult: ColdLegResult | null = null;
+if (!expectedColdRead.ok) console.error(`note: ${expectedColdRead.why}; the cold job refuses it, and the report names it`);
+// Absent is the normal state when the leg was not asked for; a file that is there and
+// unusable is said apart from it, never read as results that never arrived (L11).
+const coldFile = readColdResult(() => readFileSync(join(RESULTS, "cold-0.json"), "utf8"));
+const coldResult: ColdLegResult | null = coldFile.kind === "read" ? coldFile.result : null;
+const coldUnreadable = coldFile.kind === "unreadable" ? coldFile.why : null;
 let coldReading: ConfirmStartupReading | null = null;
 try {
-  coldResult = readJson<ColdLegResult>(join(RESULTS, "cold-0.json"));
-} catch {
-  // Absent is the normal state when the leg was not asked for; the line says which.
-}
-try {
   coldReading = readConfirmStartup(readFileSync(join(RESULTS, "cold-tail.jsonl"), "utf8"), { leg: "cold" });
-} catch {
-  // Likewise; a leg that ran and left no log is named by the line, not here.
+} catch (err) {
+  // A leg that ran and left no log is named by the line ("not archived or not read");
+  // anything other than a missing file is printed, so its cause is not lost.
+  if ((err as { code?: unknown }).code !== "ENOENT") console.error(`note: the cold leg's log could not be read: ${err instanceof Error ? err.message : String(err)}`);
 }
 
 // A MISSING artifact is judged by the same function as a present one, from an
@@ -803,7 +804,7 @@ if (m) {
   // #3354: where each cold confirm came from, and where the shared line's wait went.
   lines.push(startupOriginText(confirmStartup));
   lines.push(lineSplitText(confirmStartup));
-  lines.push(coldAfterDeployText({ expected: expectedColdRead.ok ? expectedColdRead.n : 0, result: coldResult, reading: coldReading }));
+  lines.push(coldAfterDeployText({ expected: expectedColdRead.ok ? expectedColdRead.n : 0, expectedUnreadable: expectedColdRead.ok ? null : expectedColdRead.why, result: coldResult, unreadable: coldUnreadable, reading: coldReading }));
   // The deferred span, APPORTIONED by job (#2353). The line above reports the
   // whole span; this says which job it was, which is the question somebody
   // optimising it actually has. WALL, like every number a Worker can produce

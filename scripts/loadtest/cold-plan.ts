@@ -40,8 +40,8 @@ export const COLD_DEPLOY_TIMEOUT_MS = 50_000;
 /**
  * The `cold_samples` input: 0 (off) when unset, or a whole number up to the most it
  * takes, written without a leading zero. The workflow stands the cold job down only on
- * the exact string "0", so "00" read here as off would be a job started for nothing;
- * it is refused by name instead.
+ * the exact strings "0" and "", so "00" read here as off would be a job started for
+ * nothing; it is refused by name instead.
  */
 export function readColdSamples(raw: string | undefined): { ok: true; n: number } | { ok: false; why: string } {
   if (raw === undefined || raw === "") return { ok: true, n: 0 };
@@ -139,6 +139,35 @@ export interface ColdLegResult {
 }
 
 /**
+ * The leg's results file, read three ways that each send a reader somewhere different
+ * (L11): absent (the normal state when the leg was not asked for, or never wrote it),
+ * read, or there and unusable (truncated, unreadable, or another file's shape). An
+ * unusable file is never folded into absent, which would say the results never arrived.
+ */
+export function readColdResult(
+  readText: () => string,
+): { kind: "absent" } | { kind: "read"; result: ColdLegResult } | { kind: "unreadable"; why: string } {
+  let text: string;
+  try {
+    text = readText();
+  } catch (err) {
+    if ((err as { code?: unknown }).code === "ENOENT") return { kind: "absent" };
+    return { kind: "unreadable", why: err instanceof Error ? err.message : String(err) };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    return { kind: "unreadable", why: err instanceof Error ? err.message : String(err) };
+  }
+  const r = parsed as Partial<ColdLegResult> | null;
+  if (r === null || typeof r !== "object" || r.mode !== "cold" || typeof r.planned !== "number" || !Array.isArray(r.attempts)) {
+    return { kind: "unreadable", why: "not a cold leg result (no cold mode, planned count and attempts)" };
+  }
+  return { kind: "read", result: r as ColdLegResult };
+}
+
+/**
  * The leg: read every code's offered times ONCE, then for each sample deploy, settle,
  * and send one confirm. Nothing else reaches a new version between its deploy and its
  * confirm, so the confirm is that version's first request. A failed deploy sends no
@@ -210,6 +239,10 @@ export function coldSampleCounts(result: ColdLegResult): {
  * confirm still started on a fresh version, so its wait before the profile is still a
  * reading. A failed deploy and a confirm that got no answer each lose a sample, and are
  * named apart because they send a reader to different places (L11).
+ *
+ * The leg is a diagnostic that never fails the run, so lost samples are reported on the
+ * line and the job still passes. Only a leg where no sample got an answer exits 1: it
+ * measured nothing, and that must not read as a quiet leg (L98).
  */
 export function coldLegOutcome(result: ColdLegResult): { exit: 0 | 1; text: string } {
   const { answered, created, deployFailed, noAnswer } = coldSampleCounts(result);
@@ -220,8 +253,9 @@ export function coldLegOutcome(result: ColdLegResult): { exit: 0 | 1; text: stri
   const text =
     `cold leg: ${answered} of ${result.planned} samples answered after a fresh deploy ` +
     `(${created} created, ${answered - created} refused)` +
-    (lost.length > 0 ? `; ${lost.join(", ")}` : "");
-  return { exit: answered === result.planned ? 0 : 1, text };
+    (lost.length > 0 ? `; ${lost.join(", ")}` : "") +
+    (answered === 0 ? "; it measured nothing" : "");
+  return { exit: answered > 0 ? 0 : 1, text };
 }
 
 /** The part of `spawnSync` a deploy uses, so a test can drive the real step. */

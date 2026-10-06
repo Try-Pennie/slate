@@ -678,6 +678,12 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+      # The `if:` above can only compare strings, so a value the leg would refuse ("31",
+      # "00") still starts this job. Checked on bare node before the install and build.
+      - name: Check cold_samples before installing anything
+        env:
+          COLD_SAMPLES: ${{ inputs.cold_samples }}
+        run: node --experimental-strip-types scripts/loadtest/check-cold-samples.ts
       - run: pnpm install --frozen-lockfile
       # The same stamp and build inputs as the fault leg, so every version this leg
       # deploys is the bundle the run measured.

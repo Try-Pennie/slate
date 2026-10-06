@@ -1301,7 +1301,11 @@ shows on the version just deployed, how many read cold, their wait before the pr
 (p50, p95 and max) and the median of each span. Every figure is read from the cold
 leg's own confirms only: the tail is read with `leg: "cold"`, and a confirm another leg
 sent into the same window is left out and counted on the line.
-A cold count under 30 is called short. It is a diagnostic and never fails the run.
+A cold count under 30 is called short. It is a diagnostic and never fails the run: a
+lost sample (a deploy that failed, a confirm with no answer) is named on the line and
+the job still passes. The job goes red only when no sample got an answer, since a leg
+that measured nothing must not read as a quiet one, and when `cold_samples` is not a
+whole number from 0 to 30, which is refused before anything is installed.
 At 0 (the default) the job is skipped and the line says it was not asked for.
 
 It costs about a minute of runner time per sample on top of one build: about 35

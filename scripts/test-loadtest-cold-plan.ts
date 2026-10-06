@@ -24,7 +24,9 @@ import {
   COLD_SAMPLES_TARGET,
   COLD_SAMPLE_SECONDS,
   COLD_JOB_SETUP_MINUTES,
+  readColdResult,
 } from "./loadtest/cold-plan.ts";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -47,6 +49,43 @@ import { assert, eq, finish } from "./lib/harness.ts";
   }
   const most = readColdSamples(String(COLD_SAMPLES_MAX));
   assert(most.ok && most.n === COLD_SAMPLES_MAX, "the most it takes is allowed");
+}
+
+// --- the input is checked before the job spends an install and a build on it ----------
+// The workflow can only stand the job down on the exact strings "0" and "", so any other
+// value starts it. The check runs on bare node before the install, so a mistyped value
+// costs seconds and is refused by name rather than after a full build.
+{
+  const runCheck = (value: string) =>
+    spawnSync(process.execPath, ["--experimental-strip-types", join(import.meta.dirname, "loadtest", "check-cold-samples.ts")], {
+      env: { PATH: process.env.PATH ?? "", COLD_SAMPLES: value },
+      encoding: "utf8",
+    });
+  for (const bad of ["31", "00", " 30", "lots"]) {
+    const r = runCheck(bad);
+    assert(r.status === 1 && r.stderr.includes(JSON.stringify(bad)), `${JSON.stringify(bad)} stops the job by name (got ${r.status}: ${r.stderr.trim()})`);
+  }
+  const good = runCheck("30");
+  assert(good.status === 0, `30 lets the job go on (got ${good.status}: ${good.stderr.trim()})`);
+}
+
+// --- the leg's results file: absent, read, or unreadable, each said apart --------------
+// A corrupt or truncated file must not read as "the results never arrived" (L11).
+{
+  const absent = readColdResult(() => {
+    throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+  });
+  eq(absent.kind, "absent", "no file is absent, the normal state when the leg was not asked for");
+  const truncated = readColdResult(() => '{"mode":"cold","planned":3,"attem');
+  assert(truncated.kind === "unreadable" && /JSON/.test(truncated.why), `a truncated file is unreadable, with the parser's reason (got ${JSON.stringify(truncated)})`);
+  const denied = readColdResult(() => {
+    throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+  });
+  assert(denied.kind === "unreadable" && /EACCES/.test(denied.why), `a file that is there and cannot be read is unreadable, never absent (got ${JSON.stringify(denied)})`);
+  const wrong = readColdResult(() => JSON.stringify({ mode: "steady", planned: 3, attempts: [] }));
+  assert(wrong.kind === "unreadable" && /not a cold leg result/.test(wrong.why), `a file of another shape is refused by name (got ${JSON.stringify(wrong)})`);
+  const ok = readColdResult(() => JSON.stringify({ mode: "cold", planned: 1, attempts: [] }));
+  assert(ok.kind === "read" && ok.result.planned === 1, "a cold leg result is read");
 }
 
 // --- how long the job may run --------------------------------------------------------
@@ -199,6 +238,12 @@ function coldWiringProblems(yml: string): string[] {
   if (!/kill -TERM -- -"\$tail_pid"/.test(cold)) out.push("the cold job does not stop its tail's whole process group (L321)");
   if (!cold.includes("scripts/loadtest/cold-after-deploy.ts")) out.push("the cold job does not run the leg");
   if (!/name: cold-0$/m.test(cold)) out.push("the cold job does not upload its results as cold-0");
+  const checkAt = cold.indexOf("scripts/loadtest/check-cold-samples.ts");
+  const installAt = cold.indexOf("pnpm install");
+  if (checkAt === -1 || installAt === -1 || checkAt > installAt) out.push("the cold job does not check cold_samples before it installs anything");
+  else if (!/COLD_SAMPLES: \$\{\{ inputs\.cold_samples \}\}[\s\S]*?check-cold-samples\.ts/.test(cold.slice(0, installAt))) {
+    out.push("the cold_samples check is not handed the input");
+  }
   const judge = job("judge");
   if (!(/^ {4}needs:\s*(.+)$/m.exec(judge)?.[1] ?? "").includes("cold")) out.push("the judge does not wait for the cold job");
   if (!judge.includes("EXPECT_COLD_SAMPLES: ${{ inputs.cold_samples }}")) out.push("the judge is not told how many cold samples were asked for");
@@ -213,6 +258,7 @@ function coldWiringProblems(yml: string): string[] {
     ["a fixed timeout", yml.replace(/(^ {2}cold:\n[\s\S]*?^ {4}timeout-minutes:\s*)\d+/m, "$11"), /timeout/],
     ["the tail killed by its pid alone", yml.replace(/kill -TERM -- -"\$tail_pid"/, 'kill -TERM "$tail_pid"'), /process group/],
     ["a judge never told", yml.replace("EXPECT_COLD_SAMPLES: ${{ inputs.cold_samples }}", ""), /not told/],
+    ["no early check", yml.replace("scripts/loadtest/check-cold-samples.ts", "scripts/loadtest/nothing.ts"), /before it installs/],
   ];
   for (const [what, broken, says] of controls) {
     assert(broken !== yml, `control (${what}): the copy really was broken`);
@@ -233,8 +279,14 @@ function coldWiringProblems(yml: string): string[] {
   eq(all.exit, 0, "every sample deployed and got an answer, so the leg passed, whatever the answer was");
   assert(/3 of 3 samples answered/.test(all.text) && /2 created/.test(all.text) && /1 refused/.test(all.text), `and it says how many were created and refused (got ${all.text})`);
   const lost = coldLegOutcome({ mode: "cold", planned: 3, attempts: [a(1, true, 0, "transport: TimeoutError"), a(2, false, null, null), a(3, true, 200, "created")] });
-  eq(lost.exit, 1, "a sample with no answer, or no deploy, fails the leg");
+  // The leg is a diagnostic that never fails the run, so a lost sample is reported, not a
+  // red job: one bad deploy among thirty must not turn a run's conclusion red.
+  eq(lost.exit, 0, "a sample with no answer, or no deploy, is reported rather than failing the job");
   assert(/1 of 3 samples answered/.test(lost.text) && /1 deploy failed/.test(lost.text) && /1 confirm got no answer/.test(lost.text), `naming each way a sample was lost (got ${lost.text})`);
+  // But a leg that measured nothing at all is red, so it never reads as a quiet one (L98).
+  const none = coldLegOutcome({ mode: "cold", planned: 2, attempts: [a(1, false, null, null), a(2, true, 0, "transport: TimeoutError")] });
+  eq(none.exit, 1, "a leg where no sample got an answer fails, since it measured nothing");
+  assert(/0 of 2 samples answered/.test(none.text) && /measured nothing/.test(none.text), `and says it measured nothing (got ${none.text})`);
 }
 
 // --- one deploy: the load test Worker only, the run's arm kept, under its own deadline ---

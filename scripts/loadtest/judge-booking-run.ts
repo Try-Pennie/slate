@@ -791,9 +791,19 @@ export function startupOriginText(cs: ConfirmStartupReading | null): string {
 export function coldAfterDeployText(input: {
   expected: number;
   result: ColdLegResult | null;
+  /** Why the run's cold_samples could not be read, when it could not; the job still started. */
+  expectedUnreadable?: string | null;
+  /** Why the results file was there and could not be used, or absent/null when it was not. */
+  unreadable?: string | null;
   reading: ConfirmStartupReading | null;
 }): string {
   const head = "- cold after deploy (diagnostic, not a bar)";
+  if (input.result === null && input.expectedUnreadable) {
+    return `${head}: ${input.expectedUnreadable}, so the cold job refused it before installing anything and nothing was measured`;
+  }
+  if (input.result === null && input.unreadable) {
+    return `${head}: its results file could not be read (${input.unreadable}), so nothing was measured`;
+  }
   // Results that arrived are reported whatever the run said it asked for, so a setting
   // the judge could not read never hides a leg that ran.
   if (input.expected === 0 && input.result === null) return `${head}: not asked for (cold_samples was 0)`;

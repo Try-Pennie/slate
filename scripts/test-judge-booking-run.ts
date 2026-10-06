@@ -2504,6 +2504,10 @@ const legAttempts = (i: JudgeInput, leg: number) =>
     outcome: status === 200 ? "created" : null,
   });
   assert(/not asked for/.test(coldAfterDeployText({ expected: 0, result: null, reading: null })), "a run that did not ask for the leg says so");
+  // A value the judge cannot read started the job (the workflow stands down only on "0"
+  // and ""), so it is never reported as not asked for (L11).
+  const mistyped = coldAfterDeployText({ expected: 0, expectedUnreadable: 'cold_samples "abc" is not a whole number from 0 to 30', result: null, reading: null });
+  assert(!/not asked for/.test(mistyped) && /cold_samples "abc"/.test(mistyped) && /nothing was measured/.test(mistyped), `an unreadable cold_samples is named, never read as not asked for (got: ${mistyped})`);
   const lost = coldAfterDeployText({ expected: 30, result: null, reading: null });
   assert(/asked for 30/.test(lost) && /never arrived/.test(lost), `a leg asked for whose results never arrived says so, never a zero (got: ${lost})`);
 
@@ -2543,6 +2547,11 @@ const legAttempts = (i: JudgeInput, leg: number) =>
   assert(/short of the 30 a startup change is judged against/.test(text), `and says a sample under the target is short of it (got: ${text})`);
   const unexpected = coldAfterDeployText({ expected: 0, result, reading: withVersions });
   assert(!/not asked for/.test(unexpected) && /4 of 5 deploys/.test(unexpected), `a leg whose results arrived is reported even when the run did not say it asked for one (got: ${unexpected})`);
+  const corrupt = coldAfterDeployText({ expected: 5, result: null, unreadable: "Unexpected end of JSON input", reading: withVersions });
+  assert(
+    /results file could not be read \(Unexpected end of JSON input\)/.test(corrupt) && !/never arrived/.test(corrupt),
+    `a results file that is there and unreadable is said apart from one that never arrived (got: ${corrupt})`,
+  );
   const unread = coldAfterDeployText({ expected: 5, result, reading: null });
   assert(/not archived|not read/.test(unread) && /3 confirms answered/.test(unread), `a leg whose log was not read says what it sent and that nothing was measured (got: ${unread})`);
 
