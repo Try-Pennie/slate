@@ -618,6 +618,13 @@ const T0 = Date.parse("2026-09-15T14:00:00.000Z");
   assert(twice !== planSource && declaresMode(twice).length === 2, "control: a second, hand written union beside it is caught");
 }
 
+// --- #3354: the cold leg's bookings carry their own prefix, like every other leg's -----
+{
+  const prefixes = (["steady", "burst", "fault", "baseline", "cold"] as const).map((m) => idPrefix("run-9", m));
+  eq(new Set(prefixes).size, prefixes.length, `every leg's external ids carry a prefix of their own (got ${prefixes.join(", ")})`);
+  eq(idPrefix("run-9", "cold"), "run-9-c", "the cold leg's is run-c, so its bookings never read as a steady driver's");
+}
+
 // --- #3354: one booking body for every sender that drives a confirm -----------------
 // The steady drivers and the cold leg both book through it, so a lead the cold leg
 // sends is the same lead the run measures everywhere else (L41).

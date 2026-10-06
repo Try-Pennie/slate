@@ -16,7 +16,7 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { bookingBody, bookingRequestHeaders, externalIdFor, offeredSlots, REQUEST_TIMEOUT_MS } from "./book-plan.ts";
+import { bookingBody, bookingRequestHeaders, externalIdFor, idPrefix, offeredSlots, REQUEST_TIMEOUT_MS } from "./book-plan.ts";
 import { MEASURED_CODE_MIX } from "./code-mix.ts";
 import { coldLegOutcome, makeColdDeploy, readColdSamples, runColdLeg } from "./cold-plan.ts";
 import { PRODUCTION_HOST, PRODUCTION_SUPABASE_REF } from "../../src/lib/loadtest-guard.ts";
@@ -88,7 +88,7 @@ const leg = await runColdLeg({
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         method: "POST",
         headers: bookingRequestHeaders(API_KEY, "cold"),
-        body: JSON.stringify(bookingBody({ code: slot.code, startIso: slot.start, externalId: externalIdFor(RUN_ID, COLD_DRIVER, i), timezone: TIMEZONE })),
+        body: JSON.stringify(bookingBody({ code: slot.code, startIso: slot.start, externalId: externalIdFor(idPrefix(RUN_ID, "cold"), COLD_DRIVER, i), timezone: TIMEZONE })),
       });
       const body = (await res.json().catch(() => null)) as { outcome?: string; code?: string } | null;
       return { status: res.status, outcome: body?.outcome ?? body?.code ?? null };

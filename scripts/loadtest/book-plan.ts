@@ -722,8 +722,10 @@ export function loadtestPhone(seed: string): string {
  * Every prefix stays rooted at RUN_ID, because the judge scopes its database reads
  * to `external_id=like.<run>-*` and an id outside that is a row the run cannot see.
  */
-export function idPrefix(runId: string, mode: DriverMode): string {
+export function idPrefix(runId: string, mode: DriverMode | "cold"): string {
   if (mode === "fault") return `${runId}-f`;
+  // #3354: the diagnostic cold leg's bookings, apart from every driver's.
+  if (mode === "cold") return `${runId}-c`;
   // #3258: the baseline runs first on the same driver number, so it needs its own.
   if (mode === "baseline") return `${runId}-r`;
   if (mode === "burst") return `${runId}-b`;

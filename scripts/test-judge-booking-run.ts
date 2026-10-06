@@ -2511,7 +2511,17 @@ const legAttempts = (i: JudgeInput, leg: number) =>
     { handlerMs: 900, beforeMs: 2_100, cold: true, answer: { wait_route_ms: 1_200, wait_line_ms: 350, isolate_invocation_index: 0 } },
     { handlerMs: 900, beforeMs: 600, cold: false, answer: { isolate_invocation_index: 3 } },
   ])!;
-  const withVersions = { ...reading, byVersion: { "aaaa1111-x": { cold: [1_800], warm: [] }, "bbbb2222-x": { cold: [2_100], warm: [600] } } };
+  // The cold leg's own confirms are the ones under its leg; a straggler from another
+  // leg in the same tail window is in the archive and is not one of its samples.
+  const withVersions = {
+    ...reading,
+    byVersion: { "aaaa1111-x": { cold: [1_800], warm: [] }, "bbbb2222-x": { cold: [2_100], warm: [600] } },
+    byLeg: { cold: { cold: [1_800, 2_100], warm: [600] }, fault: { cold: [3_900], warm: [] } },
+    // The archive as a whole also holds the straggler: four profiles, three of them cold.
+    samples: 4,
+    cold: 3,
+    coldPreProfileMs: [1_800, 2_100, 3_900],
+  };
   const result = {
     mode: "cold" as const,
     planned: 5,
@@ -2524,7 +2534,9 @@ const legAttempts = (i: JudgeInput, leg: number) =>
   // Sample 5 deployed bbbb2222 and got no answer: it served nothing, so it is not
   // counted as landing on its version, the same rule the leg's exit line uses.
   assert(/2 on the version just deployed/.test(text), `and how many landed on the version their deploy made, counting only answered confirms (got: ${text})`);
+  assert(/the log read 3 of them/.test(text), `counting only the cold leg's own confirms in its log, not a straggler from another leg (got: ${text})`);
   assert(/2 the first on their isolate/.test(text), `and how many read cold (got: ${text})`);
+  assert(!text.includes("3900"), `a straggler's wait is not in the cold leg's figures (got: ${text})`);
   const p = percentiles([1_800, 2_100])!;
   assert(text.includes(`before the profile p50 ${p.p50}ms p95 ${p.p95}ms max ${p.max}ms`), `with the cold wait through the judge's own percentile (got: ${text})`);
   assert(/short of the 30 a startup change is judged against/.test(text), `and says a sample under the target is short of it (got: ${text})`);
