@@ -88,6 +88,7 @@ import {
 import { DateTime } from "luxon";
 import {
   eventDescription,
+  eventLocation,
   eventSummary,
   validateReason,
   RESCHEDULE_REASONS,
@@ -156,6 +157,8 @@ const DAY_SHORT = DateTime.fromISO(SLOT_ISO, { zone: ZONE }).toFormat("ccc, LLL 
 const TIME = formatSlotTime(SLOT_ISO, ZONE);
 const ZONE_LABEL = "EDT";
 const PHONE = "(215) 555-0100";
+/** The same number as the bookings table stores it (E.164), for the invite's location. */
+const STORED_PHONE = "+12155550100";
 /** #1334: a Regal calling line, as Salesforce stores it (E.164). */
 const CALLING_NUMBER = "+12197588170";
 const EMAIL = "dana@example.com";
@@ -717,11 +720,22 @@ export function inviteCopyScreens(): CopyScreen[] {
         "What the lead has in front of them for the whole week before the call, and " +
         "the only place they are given a way to move or cancel it.",
       lines: [
-        { state: "the title", text: eventSummary("Pennie consultation", "Dana Lee") },
+        // #3376: both people, the way cal.com's invite reads.
         {
-          state: "the title when we never got a name",
-          text: eventSummary("Pennie consultation", null),
+          state: "the title",
+          text: eventSummary({ eventType: "Senior Loan Advisor Call", advisor: "Sam Ortiz", lead: "Dana Lee" }),
         },
+        {
+          state: "the title when we hold no advisor name",
+          text: eventSummary({ eventType: "Senior Loan Advisor Call", advisor: null, lead: "Dana Lee" }),
+        },
+        {
+          state: "the title when we never got the lead's name",
+          text: eventSummary({ eventType: "Senior Loan Advisor Call", advisor: "Sam Ortiz", lead: null }),
+        },
+        // The number as stored, which is what the advisor sees after the time and
+        // taps to dial. A booking with no number has no location at all.
+        { state: "the location", text: String(eventLocation(STORED_PHONE)) },
         {
           state: "the body, with the number the advisor will dial",
           text: eventDescription(PHONE, manageUrl),
