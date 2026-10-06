@@ -11,6 +11,7 @@ import {
   RescheduleLockUnavailableError,
   NoEligibleAgentsError,
   ContactRefusedError,
+  AttendeeEmailRefusedError,
   OutsideCallingWindowError,
 } from "@/lib/booking/service";
 import { validateReason } from "@/lib/booking/core";
@@ -208,6 +209,20 @@ async function handlePost(
         recordApiOutcome("error", "", "reschedule_contact_refused", { by: "manageToken", token });
         // refusal: reschedule_contact_refused
         return NextResponse.json({ error: err.message }, { status: 400 });
+      }
+      // #3373: Google refused to invite the address the booking already holds, so
+      // the move's invite was never written and the call is where it was. Not
+      // `reschedule_internal` and a page: it is about the lead's email, and a wave
+      // of it means our address rule and Google's have drifted apart, which the
+      // share names under its own code. Not a 409 either: no time was taken, so the
+      // alternatives a 409 opens would offer times that fail the same way.
+      if (err instanceof AttendeeEmailRefusedError) {
+        recordApiOutcome("error", "", "reschedule_attendee_email_refused", { by: "manageToken", token });
+        // refusal: reschedule_attendee_email_refused
+        return NextResponse.json(
+          { error: BOOKING_ERROR_COPY.moveEmailRefused, reason: "reschedule_attendee_email_refused" },
+          { status: 422 },
+        );
       }
       // #2310: the new time starts outside the lead's calling window. Not a 409:
       // nothing is taken and the booking did not move under them, so neither of

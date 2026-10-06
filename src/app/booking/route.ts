@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { withinBookingCleanupBudget, withinBookingRequest } from "@/lib/booking/confirm-budget";
 import { answerTimed, noteRefusal, type ConfirmLineFacts } from "@/lib/booking/confirm-latency";
+import { scheduleStoredOfferCheck } from "@/lib/booking/refusal-stored-offer-live";
 import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import { z } from "zod";
 import {
@@ -37,6 +38,8 @@ import {
   allowRequest,
   refundRequest,
   bookingWithinLimit,
+  bookingRetryCredit,
+  grantBookingRetryCredit,
   clientIp,
   contactRateKeys,
   BOOKING_HOURLY_RATE_RULES,
@@ -212,32 +215,45 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
   // than counting them into one shared bucket. Refusing one refuses a customer at the last
   // step of the funnel; the per contact cap below needs no address and still bounds abuse.
   const bookingCaller: CallerKey = { kind: "address", ip, policy: BOOKING_LIMITER };
-  // Light monitoring (#962): the edge per-minute window has no refund path, so a
-  // transient server outage (503) still consumes one of the lead's 3/min (the
-  // hourly DB cap is refunded on an outage; see the catch below). A block is
-  // normally a spammy visitor, so it is deliberately NOT alerted (that would be
-  // noise). But every booking 429 is logged with its scope + IP at a queryable
-  // tag/level, so a too-tight limit surfaces: a cluster of edge-minute 429s from
-  // many distinct IPs (rather than one flooding host) is the signal to revisit
-  // 3/min. The hourly 10/hr cap already bounds sustained abuse, so the per-minute
-  // window only shapes bursts.
-  const tooMany = (scope: "edge-minute" | "hourly" | "contact") => {
-    log.info("booking-rate-limit", { msg: "throttled", scope, ip });
+  // Light monitoring (#962): the edge per-minute window is Cloudflare's native
+  // limiter and has no refund path, so a transient server outage (503) still
+  // consumes one of the lead's 3/min (the hourly DB cap is refunded on an outage;
+  // see the catch below). A taken time is the exception, through the retry credit
+  // below (#3364). A block is normally a spammy visitor, so it is deliberately NOT
+  // alerted (that would be noise). But every booking 429 is logged with its scope +
+  // IP at a queryable tag/level, so a too-tight limit surfaces: a cluster of
+  // edge-minute 429s from many distinct IPs (rather than one flooding host) is the
+  // signal to revisit 3/min. The hourly 10/hr cap already bounds sustained abuse,
+  // so the per-minute window only shapes bursts.
+  const tooMany = (scope: "edge-minute" | "hourly" | "contact", retry?: string) => {
+    log.info("booking-rate-limit", { msg: "throttled", scope, ip, ...(retry ? { retry } : {}) });
+    // #3364: the minute window clears inside a minute, and it is what a lead refused for
+    // taken times meets when they pick again, so it says so rather than sending them away
+    // for "a few minutes". The longer caps keep the longer wait.
+    const error =
+      scope === "edge-minute" ? BOOKING_ERROR_COPY.tooManyTriesJustNow : BOOKING_ERROR_COPY.tooManyTries;
     // refusal: rate_limit_ip_minute
     // refusal: rate_limit_ip_hour
     // refusal: rate_limit_contact_hour
     // Deliberately UNCOUNTED (#1318). Counting a throttle would put bot volume in the
     // denominator the booking failure share is measured against, so a flood would make
     // a real outage look proportionally smaller. The reasoning is in refusal-catalog.ts.
-    return NextResponse.json(
-      { error: "Too many booking attempts from your network. Please try again in a few minutes." },
-      { status: 429 },
-    );
+    return NextResponse.json({ error }, { status: 429 });
   };
   // Per-minute burst window at the edge (#237): in-datacenter, no DB round-trip,
   // so it doesn't add latency to the Confirm tap. Checked first so a flood is
   // shed before we touch Postgres.
-  if (!(await bookingWithinLimit(ip))) return tooMany("edge-minute");
+  //
+  // #3364: a lead refused for a taken time earns one retry past it, at most three a
+  // minute per address. The credit is only consulted once the native window has
+  // refused, and gates itself per isolate before reading anything, so a flood still
+  // costs no more than a handful of reads; the bound and why refusals cannot be used
+  // to get around the limit are on `@/lib/rate-limit-retry-credit`.
+  if (!(await bookingWithinLimit(ip))) {
+    const retry = await bookingRetryCredit(ip);
+    if (retry !== "allowed") return tooMany("edge-minute", retry);
+    log.info("booking-rate-limit", { msg: "retry after a taken time", scope: "edge-minute", ip });
+  }
 
   // The kill switch (#2297). Placed HERE on purpose: after the edge burst window, so
   // a flood is still shed in-datacenter without a database read, and BEFORE the
@@ -369,8 +385,9 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
 
   // Give back the IP cap AND the per-contact caps for a failure that ISN'T the
   // lead's doing, so a server outage or a lost slot race can't consume their
-  // booking budget. The edge per-minute window has no refund path, but it's a
-  // short burst that clears within a minute.
+  // booking budget. The edge per-minute window has no refund path; a taken time
+  // offsets it with a retry credit instead (#3364), and anything else clears
+  // within a minute.
   // Under the cleanup allowance rather than the confirm budget (#3102): a confirm
   // that timed out has spent that budget, and the lead is still owed the refund.
   // By here every cap has been spent, so the list is the IP cap and each contact.
@@ -517,6 +534,9 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
     // budget, which a timeout has already spent; its outcome and report would
     // otherwise fail at once and the failure would go unrecorded.
     noteRefusal(progress.facts, err);
+    // #3366: after the response, read the stored row for a candidate_read_empty
+    // refusal and log whether it still offers the refused time. Nothing changes here.
+    scheduleStoredOfferCheck(err);
     return withinBookingCleanupBudget(async () => {
       // The lead already has an active call, so nothing was created (#1337). Refund
       // the rate-limit hit: being declined is not an attempt they should pay for,
@@ -568,6 +588,10 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
       // back (#1089) before surfacing "no times" (409).
       if (err instanceof SlotUnavailableError) {
         await refundAll();
+        // #3364: and the edge minute window, which cannot be refunded, is offset by one
+        // retry credit, so picking the next time along is not refused as a burst. Before
+        // the response, so a lead picking again at once already holds it.
+        await grantBookingRetryCredit(ip);
         // The headline case (#1313 / #1315): a customer refused at confirm on a slot
         // WE ADVERTISED. One lost race is ordinary contention, which is why this
         // does not page on its own; fifty in two hours is the cal.com failure of

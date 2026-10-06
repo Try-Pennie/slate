@@ -108,6 +108,7 @@ import type { ScheduleTimer } from "../read-within-deadline.ts";
 import { findDeadlineExceeded, type DeadlineFound } from "../fetch-within-deadline.ts";
 import { GoogleBreakerOpenError } from "../google/breaker.ts";
 import { isInvalidAttendeeEmailRefusal } from "../google/http-error.ts";
+import { AttendeeEmailRefusedError } from "./attendee-email-refused.ts";
 import { withinOwedCleanup } from "./cleanup-allowance.ts";
 import { confirmLineWaitMs, type ConfirmLine, type LeaderVerdict, type LineKey, type SharedSeat } from "./confirm-queue.ts";
 import type { WaitPoint } from "./wait-marks.ts";
@@ -542,26 +543,9 @@ export class ContactRefusedError extends Error {
   }
 }
 
-/**
- * Google refused to invite the lead's email address on a create (#3359), so no
- * booking was made and none ever can be with that address.
- *
- * Our own check (`validateAttendee`) is meant to refuse everything Google does,
- * so this is the backstop for a shape the two still disagree on. It carries the
- * lead's own sentence, the one the email field already shows, so every route
- * answers it as a refusal about that field rather than as an unexpected fault:
- * on 2026-10-06 it was a 500, and the lead tried four more times without ever
- * learning their email was the problem. Google's answer rides along as `cause`.
- */
-export class AttendeeEmailRefusedError extends Error {
-  /** The field the lead has to change. */
-  readonly field = "email" as const;
-  constructor(cause: unknown) {
-    super(INVALID_EMAIL);
-    this.name = "AttendeeEmailRefusedError";
-    this.cause = cause;
-  }
-}
+// #3359: the typed refusal of the lead's address. Its own module (#3373) so the
+// bulk coverage sweep can recognise it without importing the booking layer.
+export { AttendeeEmailRefusedError };
 
 export class ExistingCallError extends Error {
   readonly existingCall: ExistingCall;
@@ -800,6 +784,29 @@ async function queueOwedEventDeletion(
   bookingId: string | null,
 ): Promise<void> {
   await withinOwedCleanup(() => enqueueEventDeletionUnlessHeld(deps, email, eventId, bookingId));
+}
+
+/**
+ * What a reschedule answers when its event create fails (#3373): the error to
+ * throw, after doing the cleanup that error is owed.
+ *
+ * Google refusing the lead's stored address is a refusal about the email, never a
+ * fault: the typed error lets the routes say so instead of `reschedule_internal`.
+ * Nothing is queued for it, because a 400 means Google wrote no event, so there is
+ * nothing to delete and the booking is left exactly as it was. Every other failure
+ * keeps the #3217 handling: the event may have landed even though the answer never
+ * came back, so it is queued for the drain to judge, never deleted live.
+ */
+async function refusedOrQueued(
+  deps: BookingDeps,
+  err: unknown,
+  email: string,
+  eventId: string,
+  bookingId: string,
+): Promise<unknown> {
+  if (isInvalidAttendeeEmailRefusal(err)) return new AttendeeEmailRefusedError(err);
+  await queueOwedEventDeletion(deps, email, eventId, bookingId);
+  return err;
 }
 
 /**
@@ -6329,8 +6336,7 @@ async function applyReschedule(
           },
         });
       } catch (createErr) {
-        await queueOwedEventDeletion(deps, pin.pinned_agent_email, pin.gcal_client_id, booking.id);
-        throw createErr;
+        throw await refusedOrQueued(deps, createErr, pin.pinned_agent_email, pin.gcal_client_id, booking.id);
       }
       recreated = true;
     }
@@ -6354,8 +6360,7 @@ async function applyReschedule(
         },
       });
     } catch (err) {
-      await queueOwedEventDeletion(deps, pin.pinned_agent_email, pin.gcal_client_id, booking.id);
-      throw err;
+      throw await refusedOrQueued(deps, err, pin.pinned_agent_email, pin.gcal_client_id, booking.id);
     }
     recreated = true;
   }
@@ -6677,14 +6682,17 @@ export async function reassignBooking(
     // inserted: nothing was created, so no intent may be left standing for the
     // drain to hold. Each delete is tried on its own; one the store refuses is
     // left to the abandoned intent sweep, which clears it once its lease passes.
-    if (err instanceof EventCancelledOnReuse || hookFailed) {
+    // #3373: Google refusing the lead's address wrote no event either, so it clears
+    // the same way, and is answered as a refusal about the email rather than a 500.
+    const refused = isInvalidAttendeeEmailRefusal(err);
+    if (err instanceof EventCancelledOnReuse || hookFailed || refused) {
       for (const id of unbacked) {
         await deps.deleteReassignIntent(booking.id, id).catch((delErr) =>
           log.warn("reassign", { msg: "could not clear an intent with no event behind it", booking_id: booking.id, gcal_event_id: id }, delErr),
         );
       }
     }
-    throw err;
+    throw refused ? new AttendeeEmailRefusedError(err) : err;
   }
 
   // The reassignment audit record is appended server-side in reassign_booking_swap
@@ -7269,6 +7277,14 @@ export async function updateBookingContact(
   if (contactUnchanged(changed) && !firstNameMoved) return { ok: true, phone: stored, changed };
 
   const nextFirstName = changed.name || firstNameMoved ? answeredFirstName : booking.attendee_first_name;
+  // What the row held before this write, so a correction Google refuses can be put
+  // back exactly (#3373).
+  const prior = {
+    attendee_name: booking.attendee_name,
+    attendee_first_name: booking.attendee_first_name,
+    attendee_email: booking.attendee_email,
+    attendee_phone: booking.attendee_phone,
+  };
   await deps.updateBookingContact(booking.id, {
     ...(changed.name ? { attendee_name: nextName ?? "" } : {}),
     ...(changed.name || firstNameMoved ? { attendee_first_name: nextFirstName } : {}),
@@ -7338,6 +7354,23 @@ export async function updateBookingContact(
       try {
         await deps.updateEventContact(booking.agent_email, booking.gcal_event_id, patch);
       } catch (err) {
+        // #3373: Google will never invite the new address, so this correction cannot
+        // stand. It is the one patch failure that is not a stale invite: keeping the
+        // row would store an address every later move of this call carries into a
+        // refused create. The whole PATCH was refused, so the invite still holds the
+        // old details, and the row goes back to them; the lead is told to fix the
+        // email, as our own check would have. A revert that cannot be written throws
+        // its own error rather than answering ok over a refused address (L12).
+        if (changed.email && isInvalidAttendeeEmailRefusal(err)) {
+          await deps.updateBookingContact(booking.id, {
+            ...(changed.name ? { attendee_name: prior.attendee_name ?? "" } : {}),
+            ...(changed.name || firstNameMoved ? { attendee_first_name: prior.attendee_first_name } : {}),
+            attendee_email: prior.attendee_email ?? "",
+            ...(changed.phone ? { attendee_phone: prior.attendee_phone ?? "" } : {}),
+          });
+          Object.assign(booking, prior);
+          return { ok: false, error: INVALID_EMAIL };
+        }
         patchFailed = true;
         log.warn("manage-contact", {
           msg: "invite not refreshed",

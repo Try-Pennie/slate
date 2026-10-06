@@ -4,6 +4,7 @@ import { withinBookingCleanupBudget, withinBookingRequest } from "@/lib/booking/
 import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import { authorizeBookingApi } from "@/lib/booking/route-auth";
 import { answerTimed, noteRefusal, type ConfirmLineFacts } from "@/lib/booking/confirm-latency";
+import { scheduleStoredOfferCheck } from "@/lib/booking/refusal-stored-offer-live";
 import { makeWaitMarks, readEntryMarks, readLoadtestLeg } from "@/lib/booking/wait-marks";
 import { isLoadtest } from "@/lib/loadtest-guard";
 import { parseDirectBookingRequest, parseLookupQuery, parseCancelQuery, parseListQuery, LIST_ONLY_PARAMS } from "@/lib/booking/api-request";
@@ -291,6 +292,9 @@ async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
     return NextResponse.json(body, { status });
   } catch (err) {
     noteRefusal(facts, err);
+    // #3366: after the response, read the stored row for a candidate_read_empty
+    // refusal and log whether it still offers the refused time. Nothing changes here.
+    scheduleStoredOfferCheck(err);
     // #3102: the failure path runs under the cleanup allowance, not the confirm
     // budget, which a timeout has already spent; its outcome and report would
     // otherwise fail at once and the failure would go unrecorded.

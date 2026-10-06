@@ -313,12 +313,30 @@ export function bookerCopyScreens(): CopyScreen[] {
           state: "the time starts outside the lead's calling hours",
           text: BOOKING_ERROR_COPY.outsideCallingHours,
         },
+        // #3364: read these directly below `slotTaken`. The first is what a lead refused
+        // for taken times meets on their next pick, so it says how long and what then;
+        // the second is the longer caps, which must not promise a minute.
+        {
+          state: "too many confirms from their network inside a minute",
+          text: BOOKING_ERROR_COPY.tooManyTriesJustNow,
+        },
+        {
+          state: "too many confirms from their network or their contact inside an hour",
+          text: BOOKING_ERROR_COPY.tooManyTries,
+        },
         { state: "anything else", text: BOOKING_ERROR_COPY.generic },
         // #3359: a detail they typed was refused, by our check or by Google at the
         // calendar. The banner, and the sentence the email field shows under it.
         { state: "a detail they typed was refused", text: BOOKING_ERROR_COPY.checkContactDetails },
         { state: "the email field, when the address cannot be invited", text: INVALID_EMAIL },
         { state: "moving an existing call failed", text: BOOKING_ERROR_COPY.moveFailed },
+        // #3373: a move refused because Google will not invite the address the
+        // booking already holds. Shown on the manage page too, which has no email
+        // field, so it names the reason and offers no action.
+        {
+          state: "a move whose invite Google refused for the stored email",
+          text: BOOKING_ERROR_COPY.moveEmailRefused,
+        },
         // #2297: the two refusals the kill switch produces. They share a status code
         // and must not share a sentence: one is somebody holding bookings on purpose
         // and cannot be waited out, the other clears itself.

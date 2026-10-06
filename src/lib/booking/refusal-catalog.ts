@@ -125,7 +125,9 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
   {
     id: "rate_limit_ip_minute",
     surface: "embed booker",
-    outcome: "429, asked to try again in a few minutes",
+    // #3364: and not reached at all by a lead's retry after a taken time while the address
+    // holds a retry credit (at most three a minute).
+    outcome: "429, asked to wait a minute and try again",
     counting: { kind: "none" },
     rateSignal: { kind: "none" },
     why:
@@ -691,6 +693,19 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
       "made without them, because writing them is the point of having been given them and moving " +
       "the call while dropping them is what that issue was opened to end. It is a typo in a field, " +
       "so it belongs with the other shape refusals rather than in a rate that pages.",
+  },
+  {
+    id: "reschedule_attendee_email_refused",
+    surface: "manage page",
+    outcome: "422, told the invite could not go to the email we hold, with the call left where it is",
+    counting: { kind: "error", code: "reschedule_attendee_email_refused" },
+    rateSignal: { kind: "covered" },
+    why:
+      "The move-side twin of attendee_email_refused (#3373): Google refused to invite the address " +
+      "the booking already holds, on the invite the move writes. It used to arrive as " +
+      "reschedule_internal and a page about a fault of ours. One is a lead whose stored address " +
+      "predates the tightened rule; a wave means our rule and Google's have drifted apart, which the " +
+      "share names under its own code rather than burying it under internal.",
   },
   {
     id: "reschedule_verify_unavailable",
