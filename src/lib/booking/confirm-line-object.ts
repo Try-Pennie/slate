@@ -148,9 +148,12 @@ export function makeConfirmLineHost(deps: {
     return id;
   };
 
-  /** What a settled ticket answers its poll, serialising a settlement once. */
-  const answerFor = (result: QueueTurn<unknown>): string => {
-    if (result.kind === "lead") return json({ kind: "lead", turn: registerLead(result) });
+  /**
+   * What a settled ticket answers its poll when it did not lead, serialising a
+   * settlement once. A lead is answered by `poll` itself, which also points the attempt
+   * at the turn (#3351).
+   */
+  const answerFor = (result: Exclude<QueueTurn<unknown>, { kind: "lead" }>): string => {
     if (result.kind === "unqueued") return json({ kind: "unqueued" });
     const s = result.settled;
     if (s === null || typeof s !== "object") return json({ kind: "refused", refusal: result.refusal, settled: s ?? null });

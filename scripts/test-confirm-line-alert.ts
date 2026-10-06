@@ -94,6 +94,22 @@ function reporter(onWorkers = true) {
   assert(r.pages.length === 1, `bad answer: repeated answers the client cannot read page (got ${r.pages.length})`);
 }
 
+// --- #3351: a page worded from the WHOLE window, never only the failure that tipped it --
+// Two timeouts and one unreadable reply must not page as "replies they cannot read",
+// which claims a cause only one of the three showed (L11).
+{
+  const r = reporter();
+  r.report("reach-timeout", null);
+  r.report("reach-timeout", null);
+  r.report("bad-answer", null);
+  assert(r.pages.length === 1, "mixed: three failures of two kinds page once");
+  const text = r.pages[0] ?? "";
+  assert(/2 could not reach it/.test(text) && /1 got a reply it could not read/.test(text), `mixed: the page counts each kind (got ${text})`);
+  const same = reporter();
+  for (let i = 0; i < CONFIRM_LINE_PAGE_AFTER; i++) same.report("reach-timeout", null);
+  assert(same.pages[0] === confirmLineUnreachableAlert("reach-timeout"), "uniform: one kind keeps that kind's own wording");
+}
+
 // --- off the Workers runtime nothing pages ------------------------------------------
 {
   const r = reporter(false);
