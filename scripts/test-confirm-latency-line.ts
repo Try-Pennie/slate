@@ -7,6 +7,7 @@
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-confirm-latency-line.ts
 import { answerTimed, type ConfirmLineFacts } from "../src/lib/booking/confirm-latency.ts";
+import { makeWaitMarks } from "../src/lib/booking/wait-marks.ts";
 import { createAsserter } from "./lib/booking-fakes.ts";
 
 const { assert, finish } = createAsserter();
@@ -63,6 +64,49 @@ async function main() {
       `line: the line, its reason, its key kind and its cost are on the confirm's line (got ${lines[0]})`,
     );
     assert(!(lines[1] ?? "x").includes("line_"), `line: a confirm that recorded none carries no line fields (got ${lines[1]})`);
+  }
+
+  // --- #3354: the wait before the profile, split by the request's own marks -----
+  {
+    const cap = captureInfo();
+    let t = 10_000;
+    const marks = makeWaitMarks(() => t, 9_900);
+    const facts: ConfirmLineFacts = { marks };
+    await answerTimed(
+      "booking-api",
+      async () => {
+        marks.mark("handler");
+        t = 10_150; marks.mark("authed");
+        t = 10_160; marks.mark("line_start");
+        t = 10_400; marks.mark("line_turn");
+        t = 10_700; marks.mark("decided");
+        t = 10_710; marks.mark("profile");
+        t = 12_000;
+        return new Response("{}", { status: 200 });
+      },
+      { now: () => t, facts },
+    );
+    await answerTimed("booking-api", async () => new Response("{}", { status: 200 }), { now: () => 0, facts: {} });
+    cap.restore();
+    const lines = cap.lines.filter((l) => l.includes('msg="confirm answered"'));
+    const marked = lines[0] ?? "";
+    for (const want of ["wait_route_ms=100", "wait_auth_ms=150", "wait_pre_line_ms=10", "wait_line_ms=240", "wait_decide_ms=300", "wait_to_profile_ms=10", "wait_total_ms=810"]) {
+      assert(marked.includes(want), `marks: ${want} is on the confirm's own line (got ${marked})`);
+    }
+    assert(!(lines[1] ?? "x").includes("wait_"), `marks: a confirm that carried no marks carries no wait fields (got ${lines[1]})`);
+  }
+
+  // --- #3354: which fetch of its isolate this was, counted at the Worker ---------
+  {
+    const cap = captureInfo();
+    await answerTimed("booking-api", async () => new Response("{}", { status: 200 }), { now: () => 0, facts: { isolateInvocationIndex: 0 } });
+    await answerTimed("booking-api", async () => new Response("{}", { status: 200 }), { now: () => 0, facts: { isolateInvocationIndex: 12 } });
+    await answerTimed("booking-api", async () => new Response("{}", { status: 200 }), { now: () => 0, facts: { isolateInvocationIndex: null } });
+    cap.restore();
+    const lines = cap.lines.filter((l) => l.includes('msg="confirm answered"'));
+    assert((lines[0] ?? "").includes("isolate_invocation_index=0"), `invocation index: a fresh isolate's first request says 0 (got ${lines[0]})`);
+    assert((lines[1] ?? "").includes("isolate_invocation_index=12"), `invocation index: a warm one says how many came before it (got ${lines[1]})`);
+    assert(!(lines[2] ?? "x").includes("isolate_invocation_index"), `invocation index: an unknown one is absent, never 0 (got ${lines[2]})`);
   }
 
   // --- a dry run says so, so it never mixes into the confirm latency -----------

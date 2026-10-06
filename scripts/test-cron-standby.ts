@@ -51,9 +51,12 @@ assert(
   const scheduled = entry.slice(entry.indexOf("async scheduled("));
   assert(scheduled.length > 0 && entry.includes("async scheduled("), "the scheduled handler is found");
   const standbyAt = scheduled.indexOf("cronStandby(");
-  const dispatchAt = scheduled.indexOf("handler.fetch(");
+  // #3354: every call into the app goes through the counted wrapper
+  // (`worker/app-invocations.ts`), so a lane is dispatched through `app.fetch`.
+  const dispatchAt = scheduled.indexOf("app.fetch(");
   const routesAt = scheduled.indexOf("routesForCron(");
   assert(standbyAt !== -1, "scheduled() consults cronStandby");
+  assert(dispatchAt !== -1 && routesAt !== -1, "and the lane dispatch and route lookup it must come before are both found");
   assert(standbyAt < routesAt && standbyAt < dispatchAt, "and does so before resolving or dispatching any lane");
   // The standby branch must RETURN, or it only logs while the lanes run anyway.
   const branch = scheduled.slice(standbyAt, routesAt);

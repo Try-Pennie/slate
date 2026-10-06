@@ -28,8 +28,9 @@ assert(
 /**
  * The guard must run INSIDE fetch and SHORT-CIRCUIT the app: the redirect has to
  * be returned instead of the handler's response, not alongside it. The shipping
- * form is `httpsRedirect(request) ?? handler.fetch(...)`, so require the call to
- * appear before `handler.fetch` in the fetch body.
+ * form is `httpsRedirect(request) ?? app.fetch(...)`, so require the call to
+ * appear before `app.fetch` in the fetch body. (`app` is the counted wrapper every
+ * call into the app goes through since #3354, `worker/app-invocations.ts`.)
  */
 function guardsFetch(source: string): boolean {
   const fetchStart = source.indexOf("fetch:");
@@ -40,11 +41,11 @@ function guardsFetch(source: string): boolean {
     scheduledStart === -1 ? source.length : scheduledStart,
   );
   const guardAt = fetchBody.indexOf("httpsRedirect(request)");
-  const handlerAt = fetchBody.indexOf("handler.fetch");
+  const handlerAt = fetchBody.indexOf("app.fetch");
   return guardAt !== -1 && handlerAt !== -1 && guardAt < handlerAt;
 }
 
-assert(guardsFetch(entry), "the redirect guard runs in fetch() before handler.fetch");
+assert(guardsFetch(entry), "the redirect guard runs in fetch() before app.fetch");
 
 // Positive control: the assertion above must FAIL on the unwired form, or it is
 // decoration. Strip the guard from a copy of the real source and prove it is
