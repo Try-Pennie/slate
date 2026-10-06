@@ -481,6 +481,16 @@ function baselineWiringProblems(yml: string, runJudge: string): string[] {
   if (!setup.cond.includes("!cancelled()") || !setup.cond.includes("needs.preflight.result == 'success'")) {
     out.push("the burst setup is skipped behind a failed baseline");
   }
+  // #3431: the setup surviving a failed baseline is not enough on its own. A job that
+  // needs it with no condition of its own takes the default success(), which is false
+  // when ANY ancestor failed (L754), so the drivers and their log stream would be
+  // skipped behind the baseline the setup was made to outlive.
+  for (const name of ["burst", "burst-tail"]) {
+    const g = jobGate(yml, name);
+    if (!g.cond.includes("!cancelled()") || !g.cond.includes("needs.setup-burst.result == 'success'")) {
+      out.push(`${name} is skipped behind a failed baseline`);
+    }
+  }
   const judge = job("judge");
   if (!/needs: \[[^\]]*\bbaseline\b/.test(judge)) out.push("the judge does not wait for the baseline");
   if (!/EXPECT_BASELINE: "1"/.test(judge)) out.push("the judge is not told the run carried a baseline");
@@ -507,6 +517,14 @@ function baselineWiringProblems(yml: string, runJudge: string): string[] {
     baselineWiringProblems(noExpectation, runJudge),
     ["the judge is not told the run carried a baseline"],
     "control: a judge job without EXPECT_BASELINE is caught, and only that",
+  );
+  // #3431 control: the burst drivers with their condition removed are caught, and only that.
+  const burstBare = yml.replace(/(\n  burst:\n    needs: setup-burst\n(?:    #.*\n)*)    if: .*\n/, "$1");
+  assert(burstBare !== yml, "control setup: the burst job's condition was really removed");
+  eq(
+    baselineWiringProblems(burstBare, runJudge),
+    ["burst is skipped behind a failed baseline"],
+    "control: burst drivers that would be skipped behind a failed baseline are caught, and only that",
   );
   const noPass = runJudge.replace(/baseline: expectBaseline,/, "baseline: false,");
   eq(

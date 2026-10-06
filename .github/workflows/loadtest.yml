@@ -345,6 +345,12 @@ jobs:
 
   burst:
     needs: setup-burst
+    # #3431: setup-burst runs after a FAILED baseline on purpose, and a job that needs
+    # it with no condition of its own would still be skipped behind that baseline: the
+    # default success() is false when ANY ancestor failed (L754). Named the same way
+    # as the burst tail's, so the drivers and the stream that records them run or not
+    # together.
+    if: ${{ !cancelled() && needs.setup-burst.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
