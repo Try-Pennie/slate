@@ -25,7 +25,7 @@ import { CEILING_CONCLUSION, type CeilingVerdict } from "./preflight-checks.ts";
 // judge, so the two stay one direction apart.
 import { WAIT_SPAN_FIELDS, type ConfirmStartupReading, type LineSplit, type SideWaits } from "./confirm-startup.ts";
 import { LOADTEST_LEGS } from "../../src/lib/booking/wait-marks.ts";
-import { COLD_SAMPLES_TARGET, type ColdLegResult } from "./cold-plan.ts";
+import { COLD_SAMPLES_TARGET, coldSampleCounts, type ColdLegResult } from "./cold-plan.ts";
 import { CRON_BUDGET_WARN_SHARE } from "../../src/lib/monitor/cron-budget.ts";
 import type { SoakSample } from "./invariants.ts";
 import {
@@ -800,12 +800,12 @@ export function coldAfterDeployText(input: {
   if (input.result === null) {
     return `${head}: asked for ${input.expected} samples and the leg's results never arrived, so nothing was measured`;
   }
-  const deployed = input.result.attempts.filter((a) => a.deployOk).length;
-  const failed = input.result.planned - deployed;
-  const sent = input.result.attempts.filter((a) => a.status !== null).length;
+  // Counted the way the leg's own exit line counts them, from one helper (L41).
+  const c = coldSampleCounts(input.result);
   const asked =
-    `asked for ${input.result.planned}; ${deployed} of ${input.result.planned} deploys made a version` +
-    `${failed > 0 ? ` (${failed} failed)` : ""} and ${sent} confirms sent`;
+    `asked for ${c.planned}; ${c.deployed} of ${c.planned} deploys made a version` +
+    `${c.deployFailed > 0 ? ` (${c.deployFailed} failed)` : ""} and ${c.answered} confirms answered` +
+    `${c.noAnswer > 0 ? ` (${c.noAnswer} got no answer)` : ""}`;
   const r = input.reading;
   if (r === null) return `${head}: ${asked}; its log was not archived or not read, so their startup was not measured`;
   const versions = new Set(Object.keys(r.byVersion));

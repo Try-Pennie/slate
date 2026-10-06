@@ -15,6 +15,7 @@ import {
   chooseColdSlots,
   runColdLeg,
   coldLegOutcome,
+  coldSampleCounts,
   makeColdDeploy,
   COLD_SETTLE_MS,
   COLD_DEPLOY_TIMEOUT_MS,
@@ -183,6 +184,10 @@ function coldWiringProblems(yml: string): string[] {
   const a = (i: number, deployOk: boolean, status: number | null, outcome: string | null) => ({
     i, slot: { code: "112", start: `s${i}` }, deployOk, version: deployOk ? `v${i}` : null, sentAtMs: status === null ? null : i, status, outcome,
   });
+  // One count of what each sample came to, shared by the leg's own exit line and the
+  // judge's report, so the two can never disagree about one population (L41).
+  const counts = coldSampleCounts({ mode: "cold", planned: 4, attempts: [a(1, true, 200, "created"), a(2, true, 0, "transport: TimeoutError"), a(3, false, null, null), a(4, true, 409, "SLOT_TAKEN")] });
+  eq(JSON.stringify(counts), JSON.stringify({ planned: 4, deployed: 3, deployFailed: 1, answered: 2, created: 1, noAnswer: 1 }), "each sample is counted once, by what it came to");
   const all = coldLegOutcome({ mode: "cold", planned: 3, attempts: [a(1, true, 200, "created"), a(2, true, 409, "SLOT_TAKEN"), a(3, true, 200, "created")] });
   eq(all.exit, 0, "every sample deployed and got an answer, so the leg passed, whatever the answer was");
   assert(/3 of 3 samples answered/.test(all.text) && /2 created/.test(all.text) && /1 refused/.test(all.text), `and it says how many were created and refused (got ${all.text})`);
@@ -206,7 +211,11 @@ function coldWiringProblems(yml: string): string[] {
   };
   const ok = await answer({ status: 0, stdout: "Current Version ID: 5239f06d-1c2e-4b8a-9f3d-0a1b2c3d4e5f" });
   assert(ok.ok && ok.output.includes("Current Version ID"), "a deploy that exits 0 is a deploy, carrying wrangler's output");
-  eq(calls[0]?.args.join(" "), "wrangler deploy --env loadtest --var SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE:reads-only", "it deploys the load test Worker only, keeping the run's arm");
+  eq(calls[0]?.args.join(" "), "deploy --env loadtest --var SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE:reads-only", "it deploys the load test Worker only, keeping the run's arm");
+  // wrangler's own binary, not `npx wrangler`: a deadline kills the process it started,
+  // and through npx that is only the wrapper, leaving wrangler deploying into the next
+  // sample with the pipes held open (L321).
+  eq(calls[0]?.cmd, "node_modules/.bin/wrangler", "it runs wrangler itself, so the deadline stops wrangler and not a wrapper around it");
   eq(calls[0]?.timeout, COLD_DEPLOY_TIMEOUT_MS, "under the deploy's own deadline (L110)");
   const hung = await answer({ status: null, error: { code: "ETIMEDOUT", message: "spawnSync npx ETIMEDOUT" } });
   assert(!hung.ok && hung.output.includes(`did not finish within ${COLD_DEPLOY_TIMEOUT_MS}ms`), `a deploy that hits its deadline is a failed sample that says so (got ${JSON.stringify(hung)})`);

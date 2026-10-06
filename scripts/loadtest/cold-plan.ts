@@ -162,20 +162,42 @@ export async function runColdLeg(deps: {
  * reading. A failed deploy and a confirm that got no answer each lose a sample, and are
  * named apart because they send a reader to different places (L11).
  */
+/**
+ * What each sample came to, counted once: a deploy that failed, a confirm that got no
+ * HTTP answer, or an answer (created or refused). The leg's exit line and the judge's
+ * report both read this, so they cannot disagree about one population (L41).
+ */
+export function coldSampleCounts(result: ColdLegResult): {
+  planned: number;
+  deployed: number;
+  deployFailed: number;
+  answered: number;
+  created: number;
+  noAnswer: number;
+} {
+  const answeredRows = result.attempts.filter((a) => a.deployOk && a.status !== null && a.status >= 100);
+  const deployed = result.attempts.filter((a) => a.deployOk).length;
+  return {
+    planned: result.planned,
+    deployed,
+    deployFailed: result.attempts.filter((a) => !a.deployOk).length,
+    answered: answeredRows.length,
+    created: answeredRows.filter((a) => a.outcome === "created").length,
+    noAnswer: deployed - answeredRows.length,
+  };
+}
+
 export function coldLegOutcome(result: ColdLegResult): { exit: 0 | 1; text: string } {
-  const answered = result.attempts.filter((a) => a.status !== null && a.status >= 100);
-  const created = answered.filter((a) => a.outcome === "created").length;
-  const deployFailed = result.attempts.filter((a) => !a.deployOk).length;
-  const noAnswer = result.attempts.filter((a) => a.deployOk && (a.status === null || a.status < 100)).length;
+  const { answered, created, deployFailed, noAnswer } = coldSampleCounts(result);
   const lost = [
     deployFailed > 0 ? `${deployFailed} deploy${deployFailed === 1 ? "" : "s"} failed` : null,
     noAnswer > 0 ? `${noAnswer} confirm${noAnswer === 1 ? "" : "s"} got no answer` : null,
   ].filter((t): t is string => t !== null);
   const text =
-    `cold leg: ${answered.length} of ${result.planned} samples answered after a fresh deploy ` +
-    `(${created} created, ${answered.length - created} refused)` +
+    `cold leg: ${answered} of ${result.planned} samples answered after a fresh deploy ` +
+    `(${created} created, ${answered - created} refused)` +
     (lost.length > 0 ? `; ${lost.join(", ")}` : "");
-  return { exit: answered.length === result.planned ? 0 : 1, text };
+  return { exit: answered === result.planned ? 0 : 1, text };
 }
 
 /** The part of `spawnSync` a deploy uses, so a test can drive the real step. */
@@ -193,7 +215,9 @@ export type DeploySpawn = (
  */
 export function makeColdDeploy(deps: { arm: string; spawn: DeploySpawn }): () => Promise<{ ok: boolean; output: string }> {
   return async () => {
-    const r = deps.spawn("npx", ["wrangler", "deploy", "--env", "loadtest", "--var", `SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE:${deps.arm}`], {
+    // wrangler's own binary rather than `npx wrangler`: the deadline kills the process
+    // it started, and through npx that is only the wrapper (L321).
+    const r = deps.spawn("node_modules/.bin/wrangler", ["deploy", "--env", "loadtest", "--var", `SLATE_LOADTEST_POST_CONFIRM_RECOMPUTE:${deps.arm}`], {
       encoding: "utf8",
       maxBuffer: 16 * 1024 * 1024,
       timeout: COLD_DEPLOY_TIMEOUT_MS,
