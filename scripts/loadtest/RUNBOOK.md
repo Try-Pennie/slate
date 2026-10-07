@@ -1098,7 +1098,11 @@ and it cannot conclude.
 under "What the bursts could not conclude" in the report, beside the findings and
 never among them, and the burst's line says COULD NOT CONCLUDE. On a run with no
 finding the verdict is **INCOMPLETE** (exit 2) with every figure still measured, never
-a pass (L98); a real finding anywhere outranks it and the run fails. A declaration
+a pass (L98); a real finding anywhere outranks it and the run fails. It outranks the
+two readings that measured nothing, an unmeasured speed verdict and a platform half
+the analytics could not give, which are still reported beside it. A clause that a
+refusals finding has already failed (a slot still free on the requested rung) is not
+asked again by the tier drop bar, so one fault is reported once. A declaration
 that disagrees with the build is caught in both directions: a build that walks while
 saying `stops` gives a drop burst where everyone won, which cannot conclude, and one
 that stops while saying `walks` fails the drop burst naming #3338.
