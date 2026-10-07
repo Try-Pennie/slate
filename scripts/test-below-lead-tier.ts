@@ -26,7 +26,6 @@ import {
   belowLeadTierKey,
   compareBookingsToLeadTier,
   formatBelowLeadTierAlert,
-  formatBelowLeadTierRecovery,
   isLeadId,
   leadIdOf,
   leadTierOf,
@@ -172,12 +171,6 @@ function booking(over: Partial<UpcomingBooking> = {}): UpcomingBooking {
   assert(/could not be read/i.test(formatBelowLeadTierAlert(finding, "unreadable", "u")), "an unreadable routing record says so");
   assert(!/[\u2014\u2013]/.test(withCatchall), "no dashes in the page");
   assert(!/NaN|undefined|null/.test(withCatchall), "no leaked values in the page");
-  const rec = formatBelowLeadTierRecovery("bk-1", "agrees", "https://slate.example/admin/bookings/bk-1");
-  assert(rec.includes("https://slate.example/admin/bookings/bk-1"), "the all clear links the booking it is about");
-  assert(
-    formatBelowLeadTierRecovery("bk-1", "gone", "u") !== formatBelowLeadTierRecovery("bk-1", "agrees", "u"),
-    "a booking that left the upcoming set gets its own all clear",
-  );
   eq(belowLeadTierKey("bk-1"), `${BELOW_LEAD_TIER_KEY}:bk-1`, "the key family is per booking");
 }
 
@@ -261,9 +254,8 @@ function deps(over: Partial<BelowLeadTierDeps> = {}, calls: Calls = { notified: 
     notify: async (key, cooldown, text) => {
       calls.notified.push({ key, text, cooldown });
     },
-    resolve: async (key, text) => {
-      calls.resolved.push({ key, text });
-      return true;
+    settle: async (keys) => {
+      for (const key of keys) calls.resolved.push({ key, text: "" });
     },
     cooldownMs: 6 * 60 * 60_000,
     ...over,
@@ -447,7 +439,8 @@ async function main(): Promise<void> {
     assert(belowLeadTierReachedVerdict(r), "a real booking beside a test one still stamps");
   }
 
-  // The all clears: a booking now agreeing, and a booking no longer upcoming.
+  // The silent settles: a booking now agreeing, and a booking no longer upcoming.
+  // Nothing is posted for either (2026-10-07): settle sends no text at all.
   {
     const calls: Calls = { notified: [], resolved: [], sfQueries: 0 };
     await runBelowLeadTierCheck(
@@ -458,6 +451,7 @@ async function main(): Promise<void> {
       [belowLeadTierKey("bk-2"), belowLeadTierKey("bk-cancelled")],
       "the agreeing booking and the one that left the upcoming set clear; the one still below does not",
     );
+    eq(calls.notified.length, 1, "and clearing posts nothing: the only send is the page for the booking still below");
   }
 
   // A failed firing read clears nothing, and does not stop the page.

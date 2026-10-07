@@ -45,13 +45,13 @@
  * Pure apart from dependency free helpers, so scripts/test-below-lead-tier.ts
  * drives it directly.
  */
-import { logAlertSendFailure, logResolveFailure } from "../notify/send-failure.ts";
+import { logAlertSendFailure } from "../notify/send-failure.ts";
 import { DEBT_TIER, bucketSpecForXbc } from "@/lib/xbc";
 import { formatSlotDay, formatSlotTime } from "@/lib/booking/slot-label";
 import { isLeadId, leadIdKey } from "@/lib/salesforce/lead-xbc";
 import { bookingLeadId } from "@/lib/booking/lookup-identity";
 import type { Criteria } from "@/lib/db/types";
-import type { AlertResolve, ThrottledNotify } from "./alert-deps";
+import type { ThrottledNotify } from "./alert-deps";
 import { isTestSourceBooking, type BookingOriginFacts } from "./offsite-origin";
 import { tierLadder } from "@/lib/routing/tiers";
 
@@ -327,28 +327,6 @@ export function formatBelowLeadTierAlert(
   );
 }
 
-/**
- * The all clear for one booking, hung off a MEASURED fact: the booking was read
- * this run and now agrees, or the read of upcoming bookings no longer holds it.
- */
-export function formatBelowLeadTierRecovery(
-  bookingId: string,
-  why: "agrees" | "gone",
-  bookingUrl: string,
-): string {
-  if (why === "agrees") {
-    return (
-      `The call paged about earlier is no longer below the lead's Salesforce tier: it is now ` +
-      `with a team that works their tier, either because it moved or because their score came ` +
-      `down.\n${bookingUrl}`
-    );
-  }
-  return (
-    `The call paged about earlier is no longer upcoming (it was cancelled or its time has ` +
-    `passed), so it is no longer with the wrong team.\n${bookingUrl}`
-  );
-}
-
 // ------------------------------------------------------------- the runner
 
 export type BelowLeadTierResult =
@@ -389,8 +367,14 @@ export interface BelowLeadTierDeps {
   /** False until somebody has read a few ordinary days: measure and log, send nothing. */
   armed: boolean;
   notify: ThrottledNotify;
-  /** REQUIRED, so `tsc` enumerates every construction site (#1151, #1400). */
-  resolve: AlertResolve<unknown>;
+  /**
+   * Drops the page state for bookings measured as fixed, WITHOUT posting anything.
+   * Nobody wanted an all clear per booking (Dan, 2026-10-07): the page asks for one
+   * action on one call, and whoever took it already knows. Settling still matters,
+   * so a booking that goes below again later pages at once rather than waiting out
+   * the old cooldown. Best effort and never throws.
+   */
+  settle: (keys: string[]) => Promise<void>;
   cooldownMs: number;
 }
 
@@ -482,16 +466,17 @@ export async function runBelowLeadTierCheck(deps: BelowLeadTierDeps): Promise<Be
     const firing = await deps.listFiring().catch(() => null);
     if (firing !== null) {
       const byId = new Map(comparisons.map((c) => [c.booking.id, c]));
+      const settled: string[] = [];
       for (const id of firing) {
         // Excluded, so not measured this run: it keeps whatever it has (#1134).
         if (testSourceIds.has(id)) continue;
         const c = byId.get(id);
-        const why = c === undefined ? "gone" : c.kind === "agrees" ? "agrees" : null;
-        if (why === null) continue;
-        const sent = await deps
-          .resolve(belowLeadTierKey(id), formatBelowLeadTierRecovery(id, why, deps.bookingUrl(id)))
-          .catch(logResolveFailure(belowLeadTierKey(id)));
-        if (sent) cleared++;
+        // Fixed (now agrees) or gone (cancelled, or its time has passed).
+        if (c === undefined || c.kind === "agrees") settled.push(belowLeadTierKey(id));
+      }
+      if (settled.length > 0) {
+        await deps.settle(settled).catch(() => undefined);
+        cleared = settled.length;
       }
     }
   }
