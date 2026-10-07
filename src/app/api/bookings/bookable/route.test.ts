@@ -17,7 +17,7 @@ const env = vi.hoisted(() => ({
 const regalKeyFor = (caller: string, slot: string) =>
   caller !== "regal" ? "" : slot === "primary" ? regalKey.primary() : regalKey.secondary();
 const rateLimit = vi.hoisted(() => ({
-  allowRequest: vi.fn(async () => true),
+  exactCeilingWithinLimit: vi.fn(async () => true),
   bookingApiWriteWithinLimit: vi.fn(async () => true),
   bookingApiReadWithinLimit: vi.fn(async () => true),
   bookingApiIpWithinLimit: vi.fn(async () => true),
@@ -72,7 +72,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   regalKey.primary.mockReturnValue("real-secret");
   regalKey.secondary.mockReturnValue("");
-  rateLimit.allowRequest.mockResolvedValue(true);
+  rateLimit.exactCeilingWithinLimit.mockResolvedValue(true);
   rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
   rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
   service.checkBookable.mockResolvedValue(OK);
@@ -87,7 +87,7 @@ describe("GET /api/bookings/bookable", () => {
   });
 
   it("trips 429 when the per-key ceiling is exceeded", async () => {
-    rateLimit.allowRequest.mockResolvedValue(false);
+    rateLimit.exactCeilingWithinLimit.mockResolvedValue(false);
     const res = await get(VALID);
     expect(res.status).toBe(429);
     expect(service.checkBookable).not.toHaveBeenCalled();

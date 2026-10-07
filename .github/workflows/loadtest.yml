@@ -35,7 +35,9 @@ name: Booking path load run
 #   burst-tail  `wrangler tail` from before the first burst's moment until the last
 #               burst's lines are in (#3416), so the judge can say where each burst's
 #               time went. Its own file, read for the burst section only, so no
-#               burst confirm joins the startup bar's population.
+#               burst confirm joins the startup bar's population. The drive,
+#               freshness and archive wait for it to CLOSE (#3450): stopping one
+#               tail silences every other tail on the Worker, so two never overlap.
 #   drivers     four of them, fifteen a minute for ten minutes, which is exactly
 #               the per address write ceiling.
 #   freshness   the existing soak sampler, one sample a minute, so recompute is
@@ -452,7 +454,12 @@ jobs:
           path: results/
 
   drive:
-    needs: [preflight, setup-burst, burst]
+    needs: [preflight, setup-burst, burst, burst-tail]
+    # Also waits for the burst tail (#3450): stopping one `wrangler tail` silences
+    # every other tail on the Worker, so the archive must not open until the burst
+    # tail has closed, and the drive and freshness wait with it so the archive still
+    # records the drive from its first request. `!cancelled()` below means a failed
+    # burst tail never skips this.
     # Runs whatever the BURST concluded (#3222). A job with `needs:` and no `if:` is
     # skipped when any ancestor did not succeed, and a burst driver that wakes late
     # exits 3 by design, so one late driver used to skip the steady pass, freshness
@@ -498,7 +505,12 @@ jobs:
           path: results/
 
   freshness:
-    needs: [preflight, setup-burst, burst]
+    needs: [preflight, setup-burst, burst, burst-tail]
+    # Also waits for the burst tail (#3450): stopping one `wrangler tail` silences
+    # every other tail on the Worker, so the archive must not open until the burst
+    # tail has closed, and the drive and freshness wait with it so the archive still
+    # records the drive from its first request. `!cancelled()` below means a failed
+    # burst tail never skips this.
     # Runs whatever the BURST concluded (#3222). A job with `needs:` and no `if:` is
     # skipped when any ancestor did not succeed, and a burst driver that wakes late
     # exits 3 by design, so one late driver used to skip the steady pass, freshness
@@ -571,7 +583,12 @@ jobs:
           path: results/
 
   archive:
-    needs: [preflight, setup-burst, burst]
+    needs: [preflight, setup-burst, burst, burst-tail]
+    # Also waits for the burst tail (#3450): stopping one `wrangler tail` silences
+    # every other tail on the Worker, so the archive must not open until the burst
+    # tail has closed, and the drive and freshness wait with it so the archive still
+    # records the drive from its first request. `!cancelled()` below means a failed
+    # burst tail never skips this.
     # Runs whatever the BURST concluded (#3222). A job with `needs:` and no `if:` is
     # skipped when any ancestor did not succeed, and a burst driver that wakes late
     # exits 3 by design, so one late driver used to skip the steady pass, freshness
@@ -600,16 +617,31 @@ jobs:
       # The window is `archiveTailMinutes` (#3222): one minute past the longest a
       # drive job can run, since a slow drive now legitimately takes its whole
       # deadline. A fixed fifteen minutes lost a slow run's last lines.
+      #
+      # The burst tail's and the cold job's pattern, and for their reasons (#3463).
+      # `timeout` alone signals only `npx`, and `wrangler` beneath it outlived it on
+      # run 37566700055: the step ran 36 minutes past its 29 minute window until the
+      # job was cancelled, and the upload never ran. So the tail is its own process
+      # group (`setsid`), the step waits out the window itself and then stops the
+      # whole group, and the `timeout` one minute later is only the backstop. stderr
+      # goes to its own file so the stream holds only events.
       - name: Archive the Worker's logs for the window
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ARCHIVE_TAIL_MINUTES: "29"
         run: |
-          set -o pipefail
           mkdir -p results
-          timeout 29m npx wrangler tail --env loadtest --format json > results/tail.jsonl || true
+          setsid timeout "$((ARCHIVE_TAIL_MINUTES + 1))m" npx wrangler tail --env loadtest --format json > results/tail.jsonl 2> results/tail.err &
+          tail_pid=$!
+          sleep "$((ARCHIVE_TAIL_MINUTES * 60))"
+          kill -TERM -- -"$tail_pid" 2>/dev/null || true
+          wait "$tail_pid" 2>/dev/null || true
           wc -l results/tail.jsonl
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      # ALWAYS: a step that hangs or fails still holds what it caught, and the judge
+      # says what the archive could and could not cover.
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tail
           path: results/

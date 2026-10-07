@@ -25,7 +25,10 @@ import {
   recomputeHeadroomRecovery,
 } from "@/lib/monitor/cron-alert-copy";
 import { groupByPool } from "@/lib/availability/pool-key";
-import { poolsDueForRecompute } from "@/lib/availability/pool-recompute";
+import { groupingEntriesOf } from "@/lib/booking/pool-grouping";
+import { publishPoolGrouping } from "@/lib/booking/pool-grouping-live";
+import { POOL_GROUPING_LANE } from "@/lib/monitor/health";
+import { poolsDueForRecompute, type PooledBucket } from "@/lib/availability/pool-recompute";
 import {
   staleBuckets,
   staleBucketPage,
@@ -104,18 +107,70 @@ async function judgeHeadroom(
 }
 
 /**
+ * #3460: publish the pool grouping this tick read, in its own step boundary (L73), for a
+ * cold server to key its confirm line from (`pool-grouping-reader.ts`). Never throws. The
+ * `pool-grouping` heartbeat is stamped only when the directory STORED this tick's
+ * snapshot: one it kept a newer snapshot over says the directory is fresh, not that this
+ * publisher's own read is, so stamping on it could hide a publisher whose reads had gone
+ * stale. A publisher that stops is paged (`POOL_GROUPING_STALE_BOUNDS_MS`), because every
+ * cold server would otherwise quietly keep its code's own line.
+ */
+async function publishGroupingStep(buckets: PooledBucket[], readAtMs: number): Promise<void> {
+  try {
+    const published = await publishPoolGrouping(groupingEntriesOf(groupByPool(buckets)), readAtMs);
+    if (published.ok && published.kind === "stored") await recordHeartbeat(POOL_GROUPING_LANE).catch(() => {});
+  } catch (err) {
+    log.error("recompute", { msg: "pool grouping publish threw; the recompute carries on" }, err);
+  }
+}
+
+/**
+ * #3460: the bucket read the publish needs, in its own step boundary. Null when it
+ * failed, which publishes nothing this tick and leaves the recompute to read for itself
+ * exactly as it did before #3460: a transient read error must never take the lane down.
+ */
+async function readForPublish(): Promise<PooledBucket[] | null> {
+  try {
+    return await listPoolBuckets();
+  } catch (err) {
+    log.warn("recompute", { msg: "pool grouping read failed; nothing is published this tick and the recompute carries on" }, err);
+    return null;
+  }
+}
+
+/**
  * RECOMPUTE lane: keeps the precomputed `bucket_slots` cache fresh, independent
  * of per-agent calendar sync, under its OWN lock so a busy sync tick can't
  * starve it (#273). It recomputes only buckets aging past the freshness window
  * (#294), oldest-first within its budget; the tail is picked up next tick.
  * Real-time freshness for just-changed buckets is owned by the push/booking/OOO
- * recomputes — this is the day-window + missed-push backstop floor behind them.
+ * recomputes; this is the day-window and missed-push backstop floor behind them.
  */
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));
   }
 
+  // #3460: the bucket read comes BEFORE the lock, so the grouping is published even on a
+  // tick the lock skips; otherwise a skipped minute leaves the snapshot to go stale (L614).
+  // A skipped tick therefore pays this one read: the tick holding the lock read its
+  // buckets in another invocation, at the start of its own minute, so there is nothing
+  // here to reuse, and its snapshot is the one about to go stale. On every other tick the
+  // recompute reuses this read, so publishing adds none. Stamped at the read's START, so
+  // a snapshot is never fresher than the read behind it.
+  const readAtMs = Date.now();
+  const forPublish = await readForPublish();
+  const publishing = forPublish ? publishGroupingStep(forPublish, readAtMs) : Promise.resolve();
+  try {
+    return await recomputeLocked(forPublish);
+  } finally {
+    // Awaited on every exit, the skipped tick's included, so the Worker never cancels it.
+    await publishing;
+  }
+}
+
+/** `prefetched` is the publish's read, reused; null when it failed, so the lane reads for itself. */
+async function recomputeLocked(prefetched: PooledBucket[] | null) {
   // Overlapping invocations would recompute the same buckets for nothing; the
   // lock referees both the every-minute cadence and the duplicate cron worker.
   // lock-overlap: every slot write is a compare and swap on when its compute started
@@ -129,7 +184,7 @@ export async function GET(req: NextRequest) {
   try {
     const [known, poolBuckets] = await Promise.all([
       listKnownBucketSlotRows(),
-      listPoolBuckets(),
+      prefetched ?? listPoolBuckets(),
     ]);
     const allCodes = poolBuckets.map((b) => b.code);
     // #2245: the unit of work is a POOL, not a code. Sixty codes resolve to
@@ -143,12 +198,7 @@ export async function GET(req: NextRequest) {
     // jitter gives each code its own deadline inside the window and writing all
     // six rows at the first of them would bring the pool due again a minute
     // later (see poolsDueForRecompute).
-    const duePools = poolsDueForRecompute(
-      known,
-      groupByPool(poolBuckets),
-      Date.now(),
-      RECOMPUTE_FRESH_MS,
-    );
+    const duePools = poolsDueForRecompute(known, groupByPool(poolBuckets), Date.now(), RECOMPUTE_FRESH_MS);
     // Counted in BUCKETS, not pools, so the headroom numbers and the alert copy
     // keep meaning what they said before (L683). A due pool refreshes every one
     // of its codes, so its whole membership is what this cycle owes.

@@ -18,9 +18,11 @@ const logged = vi.hoisted(() => ({ error: vi.fn(), warn: vi.fn(), info: vi.fn() 
 vi.mock("@/lib/log", () => ({ log: logged }));
 
 import { POST } from "./route";
-import { CONFIRM_LINE_BINDING, makeConfirmLineHost } from "@/lib/booking/confirm-line-object";
+import { CONFIRM_LINE_BINDING, makeConfirmLineObject, objectRoleOf } from "@/lib/booking/confirm-line-object";
 import { realTimer } from "@/lib/read-within-deadline";
 import { CONFIRM_LINE_CHECKS, CONFIRM_LINE_PROBE_REASON, CONFIRM_LINE_VERIFY_GROUP } from "@/lib/monitor/confirm-line-probe";
+import { POOL_GROUPING_DIRECTORY, POOL_GROUPING_VERIFY_DIRECTORY, groupingPutMessage, groupingSnapshotOf } from "@/lib/booking/pool-grouping";
+import { memoryGroupingStorage } from "../../../../../scripts/lib/memory-grouping-storage";
 
 function post(authorization = "Bearer real-key") {
   const headers = new Headers();
@@ -28,10 +30,29 @@ function post(authorization = "Bearer real-key") {
   return POST(new Request("http://localhost/api/smoke/confirm-line", { method: "POST", headers }) as never);
 }
 
-/** A binding whose objects are real hosts, one per name, reached over a JSON fetch as in production. */
-function boundToRealHosts() {
+/**
+ * A binding whose objects are the real object, one per name, reached over a JSON fetch
+ * and served in the role its path and name say, as in production. #3460: the live pool
+ * grouping directory is seeded as the recompute lane leaves it.
+ */
+/** Every message the binding carried, by object name and op, for the case that reads it. */
+const ops: { name: string; op: string }[] = [];
+function boundToRealHosts(opts: { seedLive?: boolean } = {}) {
   const named: string[] = [];
-  const hosts = new Map<string, ReturnType<typeof makeConfirmLineHost>>();
+  ops.length = 0;
+  const objects = new Map<string, ReturnType<typeof makeConfirmLineObject>>();
+  const objectFor = (name: string) => {
+    if (!objects.has(name)) {
+      objects.set(name, makeConfirmLineObject({ now: () => Date.now(), timer: realTimer, leaseTimer: realTimer, newId: () => crypto.randomUUID(), directoryStorage: memoryGroupingStorage() }));
+    }
+    return objects.get(name)!;
+  };
+  if (opts.seedLive !== false) {
+    void objectFor(`confirm-line:v1:${POOL_GROUPING_DIRECTORY}`).handle(
+      "directory",
+      groupingPutMessage(groupingSnapshotOf([["120", "pool-a"], ["121", "pool-a"]], Date.now() - 5_000)),
+    );
+  }
   const ns = {
     idFromName: (name: string) => {
       named.push(name);
@@ -39,13 +60,13 @@ function boundToRealHosts() {
     },
     get: (id: unknown) => {
       const name = String(id);
-      if (!hosts.has(name)) {
-        hosts.set(name, makeConfirmLineHost({ now: () => Date.now(), timer: realTimer, leaseTimer: realTimer, newId: () => crypto.randomUUID() }));
-      }
-      const host = hosts.get(name)!;
       return {
-        fetch: async (_url: string, init: { body?: string }) =>
-          new Response(await host.handle(JSON.parse(init.body ?? "null")), { headers: { "content-type": "application/json" } }),
+        fetch: async (url: string, init: { body?: string }) => {
+          const message = JSON.parse(init.body ?? "null") as { op?: string };
+          ops.push({ name, op: String(message?.op) });
+          const role = objectRoleOf(new URL(url).pathname, name);
+          return new Response(await objectFor(name).handle("role" in role ? role.role : role, message), { headers: { "content-type": "application/json" } });
+        },
       };
     },
   };
@@ -100,10 +121,28 @@ describe("POST /api/smoke/confirm-line", () => {
     expect(body.reason).toBe(CONFIRM_LINE_PROBE_REASON.checked);
     expect(body.group).toBe(CONFIRM_LINE_VERIFY_GROUP);
     for (const check of CONFIRM_LINE_CHECKS) expect([check, body.checks[check].outcome]).toEqual([check, "passed"]);
-    // Named exactly as the confirm path names a group's object, and never anything else.
+    // Named exactly as the confirm path names a group's object, and never anything else:
+    // the verification group's line, the verification directory it writes, and the live
+    // directory it only reads (#3460).
     expect(named.length).toBeGreaterThan(0);
-    expect(new Set(named)).toEqual(new Set([`confirm-line:v1:${CONFIRM_LINE_VERIFY_GROUP}`]));
+    expect(new Set(named)).toEqual(
+      new Set([
+        `confirm-line:v1:${CONFIRM_LINE_VERIFY_GROUP}`,
+        `confirm-line:v1:${POOL_GROUPING_VERIFY_DIRECTORY}`,
+        `confirm-line:v1:${POOL_GROUPING_DIRECTORY}`,
+      ]),
+    );
+    const live = ops.filter((o) => o.name === `confirm-line:v1:${POOL_GROUPING_DIRECTORY}`);
+    expect(live).toEqual([{ name: `confirm-line:v1:${POOL_GROUPING_DIRECTORY}`, op: "grouping-get" }]);
     expect(logged.warn).not.toHaveBeenCalled();
+  });
+
+  it("#3460 reports a live directory the lane has not published to, on the directory check alone", async () => {
+    boundToRealHosts({ seedLive: false });
+    const res = await post();
+    const body = await res.json();
+    expect(body.checks.directory.outcome).toBe("no-grouping");
+    for (const check of CONFIRM_LINE_CHECKS.filter((c) => c !== "directory")) expect([check, body.checks[check].outcome]).toEqual([check, "passed"]);
   });
 
   it("reports an object that does not answer on every check, and logs it, rather than failing the request", async () => {
@@ -122,7 +161,10 @@ describe("POST /api/smoke/confirm-line", () => {
     const res = await post();
     expect(res.status).toBe(200);
     const body = await res.json();
-    for (const check of CONFIRM_LINE_CHECKS) expect([check, body.checks[check].outcome]).toEqual([check, "unreachable"]);
+    for (const check of CONFIRM_LINE_CHECKS) {
+      // #3460: the directory says so in its own word, since its remedy reads differently.
+      expect([check, body.checks[check].outcome]).toEqual([check, check === "directory" ? "directory-unreachable" : "unreachable"]);
+    }
     expect(logged.warn).toHaveBeenCalledTimes(1);
   });
 });

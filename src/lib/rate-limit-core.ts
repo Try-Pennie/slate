@@ -92,8 +92,11 @@ export function contactRateKeys(attendee: {
  *
  * The per-minute burst window (120/min) moved to the Cloudflare edge limiter
  * (BOOKINGAPI_RATE_LIMITER, #961) so it no longer costs a DB round-trip on each
- * call; only the strict hourly cap stays here (the native binding can't express a
- * 1-hour window).
+ * call. The native binding can't express a 1-hour window, so this strict hourly cap
+ * stayed in Postgres until #3416, which moved it into the edge counter's Durable
+ * Object (`exactCeilingWithinLimit`): counted exactly, per request, under the same
+ * key, with the same limit and the same fail open direction. It is still declared
+ * here, beside the other limits, and the authorizer is the only place it is spent.
  */
 export const DIRECT_BOOKING_API_HOURLY_RATE_RULES: RateLimitRule[] = [
   { prefix: "bookapi:h", windowSeconds: 3600, max: 6000 },
@@ -112,7 +115,9 @@ export const DIRECT_BOOKING_API_HOURLY_RATE_RULES: RateLimitRule[] = [
  *
  * The per-minute backstop (60/min) moved to the edge limiter (BOOKINGAPI_IP_RATE_LIMITER,
  * #961), which keeps the alert-on-block signal (a block means the ceiling is too tight
- * or a key leaked); only the hourly backstop stays here.
+ * or a key leaked). The hourly backstop is this rule, counted exactly in the edge
+ * counter's Durable Object since #3416 (it was a Postgres row before), still paging
+ * on a block.
  *
  * **This is the tightest bound on one address that is EXACT** (#2339). The per-minute
  * edge ceiling in front of it is approximate and per location, so it can allow several
@@ -220,6 +225,11 @@ export const LANDING_IDENTITY_HOURLY_RATE_RULES: RateLimitRule[] = [
  * Every DB limiter rule above, in one list, so the prune below covers each one by
  * construction (#3109). scripts/test-rate-limit-prune.ts reads this module's
  * exports and fails when a rule set exists that this list leaves out.
+ *
+ * The four booking API sets (the per caller, per address, read and bookable check
+ * hourly ceilings) are counted in the edge counter since #3416 and write no row any
+ * more. They stay listed so the rows written before that move age out through the
+ * same prune as everything else, rather than sitting in the table for ever.
  */
 const DB_RATE_LIMIT_RULE_SETS: readonly RateLimitRule[][] = [
   BOOKING_HOURLY_RATE_RULES,
@@ -748,7 +758,8 @@ export const BOOKING_API_WRITE_LIMITER = {
  * and answering, were ALL allowed against this 60. That is the documented behaviour of the
  * native binding, not a fault, so nothing may treat this number as a bound. The two bounds on
  * one address that really refuse are `burstCeilingPerMinute` below (a Durable Object, exact
- * across isolates) and `DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES` (Postgres, exact). Raising or
+ * across isolates) and `DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES` (exact, counted per request
+ * in the same Durable Object since #3416, in Postgres before). Raising or
  * lowering this shapes a well behaved caller and does not bound abuse.
  */
 export const BOOKING_API_IP_LIMITER = {

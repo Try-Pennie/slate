@@ -49,6 +49,8 @@ import {
   LANE_STALE_BOUNDS_MS,
   LOG_SHIPPING_LANE,
   LOG_SHIPPING_STALE_BOUNDS_MS,
+  POOL_GROUPING_LANE,
+  POOL_GROUPING_STALE_BOUNDS_MS,
   TIME_OFF_STALE_BOUNDS_MS,
   UPTIME_STALE_BOUNDS_MS,
   VERDICT_STALE_BOUNDS_MS,
@@ -65,7 +67,6 @@ import { ACTIVATION_BUDGET_MS } from "@/lib/bookable/activation-allowance";
 import { formatUnsetHoursAlert, formatUnsetHoursRecovery } from "@/lib/monitor/unset-hours";
 import {
   formatBelowLeadTierAlert,
-  formatBelowLeadTierRecovery,
   type BelowFinding,
 } from "@/lib/monitor/below-lead-tier";
 import { formatOffsiteOriginAlert, type OffsiteFinding } from "@/lib/monitor/offsite-origin";
@@ -394,6 +395,8 @@ import {
   laneRecoveryText,
   logShippingAlertText,
   logShippingRecoveryText,
+  poolGroupingAlertText,
+  poolGroupingRecoveryText,
   mirrorAlertText,
   mirrorRecoveryText,
   retentionRecoveryText,
@@ -1468,18 +1471,6 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the routing record could not be read",
     channel: "alert",
     text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, "unreadable", PREVIEW_BELOW_TIER_URL),
-  },
-  {
-    key: "booking_below_lead_tier:*",
-    state: "the call is now with a team that works the tier",
-    channel: "recovery",
-    text: formatBelowLeadTierRecovery("5b0c7a8e-2f41-4d7e-9a61-0c3f1e2d4b5a", "agrees", PREVIEW_BELOW_TIER_URL),
-  },
-  {
-    key: "booking_below_lead_tier:*",
-    state: "the call was cancelled or its time passed",
-    channel: "recovery",
-    text: formatBelowLeadTierRecovery("5b0c7a8e-2f41-4d7e-9a61-0c3f1e2d4b5a", "gone", PREVIEW_BELOW_TIER_URL),
   },
   // #2933: one state per way the two bookings can match, since each sends the reader
   // to check a different thing, plus a Slate booking with no lead id. Each pair is
@@ -3807,6 +3798,47 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "logs are reaching Better Stack again",
     channel: "recovery",
     text: logShippingRecoveryText(LOG_SHIPPING_LANE),
+  },
+  // #3460: the same key, for the pool grouping publish. A publish that stopped, one that
+  // never landed, and an unreadable record each send the reader somewhere different.
+  {
+    key: "cron_lane_stale:*",
+    state: "the pool grouping has stopped being published",
+    channel: "alert",
+    text: poolGroupingAlertText({
+      lane: POOL_GROUPING_LANE,
+      ageMs: 25 * 60_000,
+      maxStaleMs: POOL_GROUPING_STALE_BOUNDS_MS[POOL_GROUPING_LANE]!,
+      unreadable: false,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "the pool grouping has never been published",
+    channel: "alert",
+    text: poolGroupingAlertText({
+      lane: POOL_GROUPING_LANE,
+      ageMs: Infinity,
+      maxStaleMs: POOL_GROUPING_STALE_BOUNDS_MS[POOL_GROUPING_LANE]!,
+      unreadable: false,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "the pool grouping publish record cannot be read",
+    channel: "alert",
+    text: poolGroupingAlertText({
+      lane: POOL_GROUPING_LANE,
+      ageMs: NOW_MS,
+      maxStaleMs: POOL_GROUPING_STALE_BOUNDS_MS[POOL_GROUPING_LANE]!,
+      unreadable: true,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "the pool grouping is being published again",
+    channel: "recovery",
+    text: poolGroupingRecoveryText(POOL_GROUPING_LANE),
   },
   // #1394: the same key, a different fault. These lanes are NOT quiet; they run
   // faithfully and conclude nothing, which every other message here would

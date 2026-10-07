@@ -163,12 +163,15 @@ describe("the confirm path's worst case (#3102)", () => {
     expect(heldMs).toBe(SLOW_MS);
   });
 
-  // The path a timed out /booking really takes: the service sends the outage page
-  // (under the cleanup allowance), throws, and the route's failure path then runs
-  // the refunds (under the cleanup allowance again). Those two are opened one
-  // after the other, not nested, so unless the allowance is ONE per request the
-  // second restarts it and the path holds the lead 12 + 2 + 2 seconds.
-  it("the service's page and the route's failure path share ONE cleanup allowance", async () => {
+  // The path a timed out /booking really takes: the service hands the outage page
+  // to after() and throws, and the route's failure path then runs the refunds under
+  // the cleanup allowance. The page used to be sent here under the allowance too,
+  // one after the other with the refunds, which is why the allowance is ONE per
+  // request rather than one per opening (12 + 2 + 2 otherwise). Since #3416 the
+  // page goes after the response, outside every budget (confirm-timeout.test.ts),
+  // so it is no longer in front of the lead at all; the bound still holds, and the
+  // page is still sent.
+  it("the service's page stays out of the lead's wait, and the failure path keeps to the worst case", async () => {
     orchestrationCreate.mockImplementation(confirmShapedWork);
     pageSends.count = 0;
     let failure: unknown = null;

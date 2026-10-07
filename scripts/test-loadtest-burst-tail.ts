@@ -151,7 +151,7 @@ function burstTailWiringProblems(yml: string, runJudge: string): string[] {
   if (!judge.includes("-name '*.jsonl'")) out.push("the judge's gather does not copy the .jsonl logs, the burst tail among them");
   const archive = job(yml, "archive");
   if (!needsOf(archive).includes("burst")) out.push("the archive no longer waits for the bursts, so burst confirms would join the startup bar's population");
-  if (!/timeout \d+m npx wrangler tail --env loadtest --format json > results\/tail\.jsonl/.test(archive)) out.push("the archive's tail no longer writes tail.jsonl, the startup bar's population");
+  if (!/npx wrangler tail --env loadtest --format json > results\/tail\.jsonl/.test(archive)) out.push("the archive's tail no longer writes tail.jsonl, the startup bar's population");
   // The judge reads the burst tail for the burst section ONLY.
   const burstReads = runJudge.split("\n").filter((l) => l.includes("BURST_TAIL_FILE") || l.includes(BURST_TAIL_FILE));
   if (!burstReads.some((l) => /readBurstTailFile\(/.test(l))) out.push("the judge never reads the burst tail");
@@ -176,7 +176,7 @@ function burstTailWiringProblems(yml: string, runJudge: string): string[] {
     ["the burst tail into the archive's file", yml.replace(`> results/${BURST_TAIL_FILE} 2>`, "> results/tail.jsonl 2>"), runJudge, /own file/],
     ["no artifact", yml.replace(/name: burst-tail\n/, "name: burst-logs\n"), runJudge, /burst-tail/],
     ["a judge that does not wait", yml.replace(/(^ {4}needs: \[preflight, baseline, setup-burst, drive, burst, )burst-tail, /m, "$1"), runJudge, /does not wait for the burst tail/],
-    ["an archive that no longer waits for the bursts", yml.replace(/(^ {2}archive:\n {4}needs: \[preflight, setup-burst), burst\]/m, "$1]"), runJudge, /startup bar's population/],
+    ["an archive that no longer waits for the bursts", yml.replace(/(^ {2}archive:\n {4}needs: \[preflight, setup-burst), burst, burst-tail\]/m, "$1, burst-tail]"), runJudge, /startup bar's population/],
     ["the burst tail fed to the startup reader", yml, runJudge.replace(/readBurstTailFile\(/, "readConfirmStartup(readBurstTailFile("), /startup bar's population/],
     ["a judge that never reads it", yml, runJudge.replace(/readBurstTailFile\(/g, "readNothing("), /never reads the burst tail/],
     ["a download filtered to other artifacts", yml.replace(/(uses: actions\/download-artifact@[^\n]+\n {8}with:\n)/, "$1          pattern: driver-*\n"), runJudge, /does not download/],

@@ -174,8 +174,9 @@ and for nothing looser than that.
 **Treat every `perMinute` in `EDGE_LIMITERS` as approximate, per Cloudflare
 location, and eventually consistent.** The bounds on ONE address that really
 refuse are the two behind it: the Durable Object ceiling
-(`burstCeilingPerMinute`), exact across isolates, and the hourly rules in Postgres
-(`DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES`, 1,200 an hour), exact full stop. The
+(`burstCeilingPerMinute`), exact across isolates, and the hourly rules
+(`DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES`, 1,200 an hour), exact full stop, which
+since #3416 are counted in the same Durable Object rather than in Postgres. The
 load run's ceiling control (`scripts/loadtest/ip-ceiling-control.ts`) is built on
 that: it sends until the deployment credits a refusal to the per address ceiling,
 up to past the hourly cap, and reports where the refusal landed rather than
@@ -210,6 +211,37 @@ It fails **open and loud** like every other limiter here, and it declines to
 judge a request whose address could not be identified at all, because `"unknown"`
 is a shared bucket rather than an address.
 
+**Since #3416 the same object also holds the booking API's hourly ceilings**, and
+those are counted differently on purpose. Each booking API request sends ONE hit
+per hourly rule (`exactCeilingWithinLimit` in `src/lib/rate-limit.ts`), with no
+escalation threshold and no memo, because a ceiling that sampled would not be
+exact. They used to be `rate_limit_hit` rows, one Supabase round trip per rule per
+request, and load run 37547143303 showed what that cost: a burst of a hundred
+confirms for one slot made two hundred of them in one second, every statement in
+Postgres was fast, and the Supabase API layer queued them in front of the one
+confirm that would book (upstream p95 4 to 9 seconds, only during the bursts).
+What moved is where the number is kept, and nothing else:
+
+- the limits, and `rate_limit_hit`'s own window arithmetic: the window opens at
+  its first hit (not on the hour), a refused hit still counts, and it resets only
+  once strictly older than an hour (`hitAnchoredWindow`);
+- the key: the object is `exact:` plus the row's old key
+  (`bookapi:h:key:<caller>`, `bookapi:ip:h:ip:<address>`), so a count is shared
+  exactly where a row was, and the `exact` space is disjoint from every burst key
+  and from the verification command's;
+- the refusal (429, `throttled_key` / `throttled_ip`, counted under
+  `refused_ceiling_*`) and the per address block page;
+- the direction: a hit that cannot be counted (no context, no binding, an error,
+  no answer inside the Supabase request's own deadline and the call budget, or an
+  answer for a different window, which is what an object still running older code
+  gives during a rollout) is SERVED and paged as `rate_limit_broken:<prefix>`,
+  exactly as an unreadable row was.
+
+A hit is charged to a confirm's profile as its own dependency, `edge-counter`, so a
+run reads the counter's time apart from Supabase's. The objects are keyed by a
+caller or an address, which live long, so they are warm (about 11ms a call, below)
+rather than created per request.
+
 ## A Durable Object call: what it costs, and what a deploy does to it (#3325)
 
 Measured on 2026-10-05 from inside a Worker invocation, against a throwaway Worker
@@ -226,6 +258,16 @@ Measured on 2026-10-05 from inside a Worker invocation, against a throwaway Work
   about a third of the cost: 17ms after 30s idle, about 50ms after 90s, about 55ms
   after 180s. So key objects by something long lived (a pool, a code), never by
   something new on every request (a slot), or every request pays creation.
+- **An idle object FORGETS its memory after ten seconds** (#3479). An object with no
+  timers set and nothing pending is hibernated after ten seconds with no request, and
+  its in memory state is discarded; the next call runs its constructor again
+  ([lifecycle](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/)).
+  Measured in load run 37601024392: the pool grouping directory, published to once a
+  minute and kept only in memory, answered every burst's read (about 48 seconds after the
+  last publish) with nothing, while reads arriving every few seconds found it. Anything
+  a LATER call depends on goes in the object's storage; memory is a cache in front of it.
+  A line holds a pending timer while it has a turn, which is why its memory survives the
+  turns it serves.
 - **Concurrency inside one object is cheap.** 100 calls held open on one object (each
   awaiting an in memory promise, nothing in storage, so no input gate closes) were
   all released by one call with no measurable lag.

@@ -208,6 +208,17 @@ pinned offline by `scripts/test-burst-counter-live-control.ts`, which drives eve
 refusal through hand written replies and asserts no two of them share a code or a
 message.
 
+**Since #3416 the same object also holds the booking API's hourly ceilings**, sent
+one hit per rule on EVERY booking API request rather than only past an escalation
+threshold (`docs/cloudflare-platform-notes.md` has the why). Two consequences. An
+object that is bound and not answering no longer waits for a hot caller to be
+noticed: the next booking API request, the smoke canary's included, fails open on
+it and pages `rate_limit_broken:bookapi:h`. But this command reports the burst
+tracker's kind of request, not a hit, so what it proves live is that the object
+answers and counts BURST reports; the hit's own arithmetic, and the object's
+handling of it, are pinned offline by `scripts/test-exact-ceiling.ts`, which drives
+the real `BurstLimiter` class around a fake storage.
+
 ## It runs DAILY, because asking people to re-run it did not work (#2392)
 
 This section used to say, in bold, to re-run the command after any change to the
@@ -279,7 +290,7 @@ asked the object anything (L557), and a fake cannot stand in for it (L52).
 **`pnpm verify:confirm-line` is the proof.** It calls `POST /api/smoke/confirm-line`,
 which runs the probe (`src/lib/monitor/confirm-line-probe.ts`) inside the deployment
 with the confirm path's OWN client (`makeSharedConfirmLine`) and its own transport
-(`durableLineNamespace`), against the real object. Four checks, each in both
+(`durableLineNamespace`), against the real object. Five checks, each in both
 directions and each on its own named outcome:
 
 - **full**: B, queued behind A, is REFUSED as taken once A reports a full verdict,
@@ -293,6 +304,15 @@ directions and each on its own named outcome:
   rather than after the whole lease.
 - **nothingHeld**: afterwards a newcomer on each instant the probe used leads at
   once, so leaving nothing held is measured rather than assumed.
+- **directory** (#3460): the pool grouping DIRECTORY, the reserved instance of the
+  same class the recompute lane publishes the pool grouping to (`src/lib/booking/pool-grouping.ts`),
+  through the production directory transport (`durableGroupingDirectory`). On the
+  probe's own directory, `directory:pool-grouping:verify`, a fresh put is stored and
+  handed back and an older put is kept out, so newest wins is measured both ways. Then
+  the LIVE directory is read, and only read, and must hold a grouping a cold server
+  would install: this build's format, well formed, and read within three minutes,
+  three of the recompute lane's publishes, so a run landing in one minute's gap
+  between snapshots is never called stale.
 
 It uses the shared line **whatever the stored switch says**: the switch decides
 whether real confirms use it, and a probe that stood down while the switch is off
@@ -309,13 +329,16 @@ It writes leads, tickets and verdicts on ONE object, the group
 `scripts/test-confirm-line-live-control.ts` walks `confirmQueueKey`, the one place
 the booking path builds a line key, with inputs chosen to try to reach it. The
 group is a **constant in the route and nothing is taken from the request**, and
-each run mints fresh instants, so two runs never meet.
+each run mints fresh instants, so two runs never meet. The directory check writes
+only its own directory, `directory:pool-grouping:verify`, and only READS the live
+one, so it can never put a grouping in front of a real confirm; the same walk shows
+no real line key can name either directory.
 
 ```
 BOOKING_API_KEY_CANARY=<the canary key the deployment holds> pnpm verify:confirm-line
 ```
 
-`SLATE_BASE_URL` picks the deployment (default prod). Only four passed checks pass
+`SLATE_BASE_URL` picks the deployment (default prod). Only five passed checks pass
 (L98), and every other ending exits on **its own code** with its own opening
 sentence. When several checks fail, the worst names the run and the message still
 lists every check's outcome.
@@ -341,6 +364,11 @@ lists every check's outcome.
 | 16 | an unacknowledged lead was freed only by its lease | the acknowledgement window is not enforced |
 | 17 | an unacknowledged lead was never freed | one lost answer holds every confirm behind it |
 | 18 | something the probe used was still held afterwards | the object keeps a line it should have dropped |
+| 19 | the pool grouping directory did not answer | the grouping the lane publishes reaches no server |
+| 20 | the directory did not keep a fresh grouping it was handed | nothing the lane publishes reaches a server |
+| 21 | an older grouping replaced a newer one | a slow publisher could hand servers a stale grouping |
+| 22 | the live directory holds no grouping | the recompute lane is not publishing; search `tag=pool-grouping` |
+| 23 | the live grouping is one a server would refuse | another format, malformed, or older than three minutes |
 
 Its decision logic is pinned offline by `scripts/test-confirm-line-live-control.ts`,
 which drives the probe against the real object host (`makeConfirmLineHost`) on a
@@ -359,7 +387,7 @@ can stand in for the other's (L53).
 `neverIsStale` ON, at the burst counter's 52 hours for the same derived reasons
 (`scripts/test-confirm-line-schedule.ts` re-derives it from the workflow file).
 **Only a run that measured how the object answers may stamp it**: exits 0, 9 and 12
-to 18 conclude, and every bad one of those is also posted to Slack. Exit 8 (nothing
+to 23 conclude, and every bad one of those is also posted to Slack. Exit 8 (nothing
 bound) deliberately does not, because nothing exercised the answering half; the
 daily message still says so and the lapsing stamp pages as a blind detector, so
 nothing about it is quieter. The mapping is `scripts/lib/confirm-line-run-outcome.ts`.

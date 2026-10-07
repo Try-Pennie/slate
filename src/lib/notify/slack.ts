@@ -9,11 +9,13 @@ import { fetchWithinBudget } from "@/lib/call-budget";
 // an approval). On timeout the deadline error is caught like any other failure
 // and the call returns not-ok/null, honouring the never-throws contract.
 //
-// The cap is also held to any enclosing call budget (#3163). A booking that has
-// spent its confirm budget pages under the 2 second cleanup allowance, and a Slack
+// The cap is also held to any enclosing call budget (#3163). A booking that had
+// spent its confirm budget paged under the 2 second cleanup allowance, and a Slack
 // answering just inside these 8 seconds used to wait on them alone, so the lead was
 // held 12 + 8 seconds against the booker's 20 second abort. Inside a budget a post
 // now waits only for what the budget has left; outside one it keeps its 8 seconds.
+// (That page has gone after the response since #3416, outside every budget, but any
+// post still made inside one is held to it.)
 const SLACK_TIMEOUT_MS = 8000;
 
 function fetchWithTimeout(

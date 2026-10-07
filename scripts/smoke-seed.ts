@@ -180,8 +180,10 @@ export function buildSmokeSeed(p: SmokeSeedParams): SmokeSeed {
     org_id: p.orgId,
     email: p.agentEmail,
     // #3424: read out on the booker's confirmation, which the /demo link shows
-    // to people outside Pennie, so a neutral advisor name, not the canary's label.
-    name: "Demo Advisor",
+    // to people outside Pennie, so a made up person's name (Dan, 2026-10-06),
+    // checked against the roster when chosen. Rename it if Pennie ever hires
+    // somebody by this name, so a visitor never takes the demo for them.
+    name: "Sarah Mitchell",
     role: "agent",
     attributes: {},
     bookable: true,

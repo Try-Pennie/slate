@@ -18,7 +18,7 @@ const env = vi.hoisted(() => ({
 const regalKeyFor = (caller: string, slot: string) =>
   caller !== "regal" ? "" : slot === "primary" ? regalKey.primary() : regalKey.secondary();
 const rateLimit = vi.hoisted(() => ({
-  allowRequest: vi.fn(async (_caller: unknown, _rules: unknown) => true),
+  exactCeilingWithinLimit: vi.fn(async (_caller: unknown, _rules: unknown) => true),
   // Per-minute burst windows run at the edge (#961); default to allow so the auth /
   // outcome glue under test isn't throttled, and flip them per-test to exercise 429s.
   bookingApiWriteWithinLimit: vi.fn(async (_keyId: string) => true),
@@ -85,6 +85,9 @@ vi.mock("@/lib/monitor/record-api-outcome", () => monitor);
 // scripts/test-refusal-stored-offer.ts), so no test reaches the real table.
 const storedOffer = vi.hoisted(() => ({ scheduleStoredOfferCheck: vi.fn() }));
 vi.mock("@/lib/booking/refusal-stored-offer-live", () => storedOffer);
+// #3460: the confirm's early reads, as a seam: this pins WHEN the route starts them.
+const prelude = vi.hoisted(() => ({ startConfirmPrelude: vi.fn() }));
+vi.mock("@/lib/booking/confirm-line-live", () => prelude);
 
 import { POST, GET } from "./route";
 import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
@@ -145,8 +148,8 @@ describe("POST /api/bookings (auth skeleton)", () => {
   beforeEach(() => {
     regalKey.primary.mockReturnValue("");
     regalKey.secondary.mockReturnValue("");
-    rateLimit.allowRequest.mockClear();
-    rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.exactCeilingWithinLimit.mockClear();
+    rateLimit.exactCeilingWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiWriteWithinLimit.mockClear();
     rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiReadWithinLimit.mockClear();
@@ -184,6 +187,23 @@ describe("POST /api/bookings (auth skeleton)", () => {
     expect(res.status).toBe(401);
   });
 
+  // #3460, #3355 item 1: the confirm's early reads start the moment the key is known to
+  // be good (inside the authorizer, before its ceilings answer), with THIS request's
+  // facts, and never for a key that fails authentication (L498).
+  it("#3460 starts the confirm's early reads for a good key, with the facts the booking is handed", async () => {
+    prelude.startConfirmPrelude.mockClear();
+    regalKey.primary.mockReturnValue("real-secret");
+    const res = await post("Bearer real-secret", VALID_BODY);
+    expect(res.status).toBe(200);
+    expect(prelude.startConfirmPrelude).toHaveBeenCalledTimes(1);
+    expect(prelude.startConfirmPrelude.mock.calls[0]![0]).toBe(service.bookViaApi.mock.calls.at(-1)![1]);
+    expect(prelude.startConfirmPrelude.mock.invocationCallOrder[0]!).toBeLessThan(rateLimit.bookingApiWriteWithinLimit.mock.invocationCallOrder.at(-1)!);
+    prelude.startConfirmPrelude.mockClear();
+    expect((await post("Bearer wrong-secret", VALID_BODY)).status).toBe(401);
+    expect((await post(undefined, VALID_BODY)).status).toBe(401);
+    expect(prelude.startConfirmPrelude).not.toHaveBeenCalled();
+  });
+
   it("authenticates the secondary key too (zero-downtime rotation)", async () => {
     regalKey.primary.mockReturnValue("old-secret");
     regalKey.secondary.mockReturnValue("new-secret");
@@ -219,7 +239,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
 
   it("trips 429 when the per-key ceiling is exceeded", async () => {
     regalKey.primary.mockReturnValue("real-secret");
-    rateLimit.allowRequest.mockResolvedValue(false);
+    rateLimit.exactCeilingWithinLimit.mockResolvedValue(false);
     const res = await post("Bearer real-secret");
     expect(res.status).toBe(429);
   });
@@ -227,7 +247,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
   it("rate-limits on the matched key's CALLER, in its own bucket (#2645)", async () => {
     regalKey.primary.mockReturnValue("real-secret");
     await post("Bearer real-secret");
-    expect(rateLimit.allowRequest).toHaveBeenCalledWith(
+    expect(rateLimit.exactCeilingWithinLimit).toHaveBeenCalledWith(
       { kind: "opaque", key: "key:regal" },
       DIRECT_BOOKING_API_HOURLY_RATE_RULES,
     );
@@ -236,13 +256,14 @@ describe("POST /api/bookings (auth skeleton)", () => {
   });
 
   // #961: the per-minute window is the edge limiter now. A block there must 429
-  // BEFORE the DB hourly cap is consulted (no wasted round-trip on a throttled call).
-  it("trips 429 on the per-key EDGE limiter, without touching the DB hourly cap", async () => {
+  // BEFORE the hourly cap is counted (no wasted hit on a throttled call; the hourly
+  // cap is the edge counter since #3416, and was a DB round trip before it).
+  it("trips 429 on the per-key EDGE limiter, without touching the hourly cap", async () => {
     regalKey.primary.mockReturnValue("real-secret");
     rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(false);
     const res = await post("Bearer real-secret", VALID_BODY);
     expect(res.status).toBe(429);
-    expect(rateLimit.allowRequest).not.toHaveBeenCalledWith(
+    expect(rateLimit.exactCeilingWithinLimit).not.toHaveBeenCalledWith(
       { kind: "opaque", key: "key:regal" },
       DIRECT_BOOKING_API_HOURLY_RATE_RULES,
     );
@@ -254,7 +275,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
   it("ALSO applies a per-IP ceiling, keyed on the client IP in a separate bucket", async () => {
     regalKey.primary.mockReturnValue("real-secret");
     await post("Bearer real-secret", VALID_BODY, "203.0.113.9");
-    expect(rateLimit.allowRequest).toHaveBeenCalledWith(
+    expect(rateLimit.exactCeilingWithinLimit).toHaveBeenCalledWith(
       // #1557: an address descriptor carrying the backstop's own answer for a caller it
       // cannot identify, not a bare key string.
       { kind: "address", ip: "203.0.113.9", keyPrefix: "ip:", policy: BOOKING_API_IP_LIMITER },
@@ -275,7 +296,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
   it("trips 429 on the per-IP ceiling even when the key is well within its budget", async () => {
     regalKey.primary.mockReturnValue("real-secret");
     // The key is fine; only the IP is flooding. This is the leaked-key case.
-    rateLimit.allowRequest.mockImplementation(
+    rateLimit.exactCeilingWithinLimit.mockImplementation(
       async (caller: unknown) => !rateLimitKey(caller as CallerKey).startsWith("ip:"),
     );
 
@@ -390,10 +411,13 @@ describe("POST /api/bookings (auth skeleton)", () => {
 
   // #3102: the hourly cap is read BEFORE the booking's try, under the confirm
   // budget, so a deadline there used to escape as an unhandled 500. It is the
-  // same outage the booking path answers with VERIFY_UNAVAILABLE.
+  // same outage the booking path answers with VERIFY_UNAVAILABLE. Since #3416 the
+  // hourly cap fails open on a deadline by itself (rate-limit.test.ts), so this
+  // pins the route's answer to any deadline that escapes before the try, which is
+  // what keeps a future read added there from becoming an unhandled 500 again.
   it("answers a deadline from a read before the try with 503 VERIFY_UNAVAILABLE (#3102)", async () => {
     regalKey.primary.mockReturnValue("real-secret");
-    rateLimit.allowRequest.mockRejectedValueOnce(
+    rateLimit.exactCeilingWithinLimit.mockRejectedValueOnce(
       new DeadlineExceededError("supabase", 4000, { label: "the booking confirm", totalMs: 12_000 }),
     );
     const res = await post("Bearer real-secret", VALID_BODY);
@@ -629,8 +653,8 @@ describe("GET /api/bookings (list mode + lookup mode)", () => {
   beforeEach(() => {
     regalKey.primary.mockReturnValue("real-secret");
     regalKey.secondary.mockReturnValue("");
-    rateLimit.allowRequest.mockClear();
-    rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.exactCeilingWithinLimit.mockClear();
+    rateLimit.exactCeilingWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiWriteWithinLimit.mockClear();
     rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiReadWithinLimit.mockClear();
@@ -693,11 +717,11 @@ describe("GET /api/bookings (list mode + lookup mode)", () => {
 
   it("GET (read) draws from the separate read rate ceiling, not the write one", async () => {
     await authedGet("http://localhost/api/bookings?status=confirmed");
-    expect(rateLimit.allowRequest).toHaveBeenCalledWith(
+    expect(rateLimit.exactCeilingWithinLimit).toHaveBeenCalledWith(
       { kind: "opaque", key: "key:regal" },
       DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES,
     );
-    expect(rateLimit.allowRequest).not.toHaveBeenCalledWith(
+    expect(rateLimit.exactCeilingWithinLimit).not.toHaveBeenCalledWith(
       { kind: "opaque", key: "key:regal" },
       DIRECT_BOOKING_API_HOURLY_RATE_RULES,
     );
@@ -715,8 +739,8 @@ describe("GET /api/bookings (list mode + lookup mode)", () => {
 describe("GET rate limiting (#597)", () => {
   beforeEach(() => {
     regalKey.primary.mockReturnValue("real-secret");
-    rateLimit.allowRequest.mockResolvedValue(true);
-    rateLimit.allowRequest.mockClear();
+    rateLimit.exactCeilingWithinLimit.mockResolvedValue(true);
+    rateLimit.exactCeilingWithinLimit.mockClear();
     rateLimit.bookingApiWriteWithinLimit.mockClear();
     rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiReadWithinLimit.mockClear();
@@ -736,11 +760,11 @@ describe("GET rate limiting (#597)", () => {
       }) as never,
     );
 
-    expect(rateLimit.allowRequest).toHaveBeenCalledWith(
+    expect(rateLimit.exactCeilingWithinLimit).toHaveBeenCalledWith(
       { kind: "opaque", key: "key:regal" },
       DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES,
     );
-    const keys = rateLimit.allowRequest.mock.calls.map(([c]) => rateLimitKey(c as CallerKey));
+    const keys = rateLimit.exactCeilingWithinLimit.mock.calls.map(([c]) => rateLimitKey(c as CallerKey));
     expect(keys.every((k) => !String(k).startsWith("ip:"))).toBe(true);
     // Reads opt out of the per-IP edge backstop too, not just the DB one (#597/#961).
     expect(rateLimit.bookingApiIpWithinLimit).not.toHaveBeenCalled();
@@ -965,7 +989,7 @@ describe("POST /api/bookings confirmation extras (#2643)", () => {
   beforeEach(() => {
     regalKey.primary.mockReturnValue("real-secret");
     regalKey.secondary.mockReturnValue("");
-    rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.exactCeilingWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
     service.bookingDetailExtras.mockReset();
@@ -1001,7 +1025,7 @@ describe("GET /api/bookings lookup attribution (#2643, #2645)", () => {
   beforeEach(() => {
     regalKey.primary.mockReturnValue("real-secret");
     regalKey.secondary.mockReturnValue("");
-    rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.exactCeilingWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
     service.getPersonBookingById.mockReset();
     service.getPersonBookingById.mockResolvedValue({ id: "bk-1" });
@@ -1048,7 +1072,7 @@ describe("POST /api/bookings partner join keys (#2659)", () => {
   beforeEach(() => {
     regalKey.primary.mockReturnValue("real-secret");
     regalKey.secondary.mockReturnValue("");
-    rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.exactCeilingWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
   });
@@ -1113,7 +1137,7 @@ describe("POST /api/bookings: who may book a test bucket (#2669)", () => {
     env.bookingApiKeyFor.mockImplementation((caller: string, slot: string) =>
       slot === "primary" && (caller === "canary" || caller === "trypennie") ? `${caller}-secret` : "",
     );
-    rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.exactCeilingWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
     service.bookViaApi.mockReset();

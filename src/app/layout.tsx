@@ -13,6 +13,14 @@ export const metadata: Metadata = {
   // absolute title, so it is never rewritten by this.
   title: { template: "%s | Slate", default: "Slate" },
   description: "Scheduling and booking for Pennie.",
+  // The picture a pasted link unfurls with. A plain file under a name of its own
+  // rather than Next's `opengraph-image.png` convention: Slack caches a preview
+  // image by its URL, and after the picture changed under the convention Slack
+  // kept showing the old one even for a link it had never seen. Replacing the
+  // picture means a NEW file name, never new bytes under this one.
+  openGraph: {
+    images: [{ url: "/brand/share-pennie-mark.png", width: 1200, height: 630, alt: "Pennie logo" }],
+  },
 };
 
 export default function RootLayout({

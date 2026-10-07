@@ -578,10 +578,11 @@ async function main() {
 
   // --- #3338: each reason the next advisor search gives, read directly -----------
   // The unit beneath the tests above: every reason it can return, and that only
-  // one of them lets the confirm walk on.
+  // one of them lets the confirm walk on. It is asked only about a lost race
+  // (`attemptReservation` answering `lost`, #3462), so there is no reason for a
+  // failure that was not one.
   {
     const base = {
-      err: new SlotUnavailableError() as unknown,
       named: false,
       reservation: { pinned_user_id: "a" } as BookingReservation,
       lostUserId: "a",
@@ -602,8 +603,6 @@ async function main() {
     };
     const next = note(await ask({}));
     assert(next.kind === "advisor" && next.assignment.userId === "b", "reason: the next free advisor after the loser");
-    const notRace = note(await ask({ err: new Error("insert failed") }));
-    assert(notRace.kind === "none" && notRace.reason === "not-a-race", "reason: a failure that is not a lost race");
     const named = note(await ask({ named: true }));
     assert(named.kind === "none" && named.reason === "named-link", "reason: a named advisor link");
     const adopted = note(await ask({ reservation: { pinned_user_id: "b" } as BookingReservation }));
@@ -635,7 +634,7 @@ async function main() {
       const thrown = note(await nextAdvisorAfterLostRace(deps, base));
       assert(thrown.kind === "none" && thrown.reason === "check-failed", "reason: a check that threw");
     }
-    const every = ["advisor", "not-a-race", "named-link", "not-chosen-here", "bound", "rung-exhausted", "check-failed", "deadline"];
+    const every = ["advisor", "named-link", "not-chosen-here", "bound", "rung-exhausted", "check-failed", "deadline"];
     assert(
       every.every((r) => reasons.has(r)) && reasons.size === every.length,
       `reason: every reason is produced by a case above (got ${[...reasons].join(",")})`,

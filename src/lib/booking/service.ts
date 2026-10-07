@@ -159,7 +159,6 @@ import { escapeLike } from "@/lib/sql-like";
 import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
 import { emitWebhook, type WebhookSendScheduler } from "@/lib/webhooks/emit";
 import { afterResponse, deferWebhookSend } from "@/lib/after-response";
-import { withinBookingCleanupBudget } from "@/lib/booking/confirm-budget";
 import { DeadlineExceededError, findDeadlineExceeded, isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import { sendThrottledAlert, sendThrottledInfo, resolveRecovered } from "@/lib/notify/dispatch";
 import { logAlertSendFailure } from "@/lib/notify/send-failure";
@@ -514,7 +513,7 @@ import { resolveBookingAdvisorPhoto } from "@/lib/booking/advisor-photo";
 import { loadPhotoRecords, loadUserSignInPhoto } from "@/lib/advisor-photos/store";
 import { makeConfirmQueue, isolateLine } from "@/lib/booking/confirm-queue";
 import { makeCommitCostLog } from "@/lib/booking/commit-cost";
-import { confirmLineFor, lineGroupOfLive } from "@/lib/booking/confirm-line-live";
+import { confirmLineFor, lineGroupOfLive, settleLineGrouping } from "@/lib/booking/confirm-line-live";
 import type { ConfirmLineFacts } from "@/lib/booking/confirm-latency";
 import { timeStage } from "@/lib/booking/confirm-profile";
 export type { BookingResult, CreateBookingInput };
@@ -1142,8 +1141,10 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
       // #3354: the load test's trace for this confirm, so the object logs its calls.
       lineFacts?.lineTrace ?? null,
     ),
-    // #3325: sibling codes that walk the same pools share one line.
-    lineGroupOf: lineGroupOfLive,
+    // #3325: sibling codes that walk the same pools share one line. #3460: from the
+    // grouping this server holds, which `settleLineGrouping` made fresh where it could
+    // before the orchestration builds the key; the facts record where it came from.
+    lineGroupOf: (code) => lineGroupOfLive(code, lineFacts),
     commitCosts: ISOLATE_COMMIT_COSTS,
     // #3354: the points of the wait before the confirm's profile, when the route
     // keeps marks (the load test only); absent, nothing is stamped.
@@ -1384,15 +1385,16 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
       }
     },
 
-    getUser: async (userId) => {
-      // error-ok: agent lookup inside the crash-safe create/drain step; a read error is recovered by the outbox retry, not silently lost.
-      const { data } = await supabaseAdmin()
-        .from("users")
-        .select("*")
-        .eq("id", userId)
-        .single();
-      return data as User;
-    },
+    // #3477: refuses a failed read rather than answering null. The live confirm calls
+    // this (the advisor it is about to book), not only the drain, and a null here was
+    // read as `agent.name` and answered the lead 500 INTERNAL on load run 37587811697,
+    // when the read had hit its deadline. Thrown, a deadline reaches the confirm as the
+    // retryable dependency error it is, and the drain still retries on its own throw.
+    getUser: async (userId) =>
+      unwrap(
+        await supabaseAdmin().from("users").select("*").eq("id", userId).single(),
+        "advisor read",
+      ) as User,
 
     loadEmails: async (userIds) => {
       const m = new Map<string, string>();
@@ -2396,17 +2398,23 @@ async function alertOnBookingFailure<T>(op: () => Promise<T>): Promise<T> {
 
 /**
  * Page about a booking failure that warrants it (`bookingFailureAlert` decides),
- * under the request's cleanup allowance. Exported for the booking routes, which
- * answer a deadline that struck BEFORE the service was reached (#3102) and must
- * page about it the same way. Never throws: a send that fails is logged.
+ * once the response has gone. Exported for the booking routes, which answer a
+ * deadline that struck BEFORE the service was reached (#3102) and must page about
+ * it the same way. Never throws, and never holds the answer: a send that fails is
+ * logged.
  */
 export async function pageBookingFailure(err: unknown): Promise<void> {
   const spec = bookingFailureAlert(err);
   if (!spec) return;
-  // #3102: under the cleanup allowance. A timeout page is sent after the
-  // request's budget may already be spent, and its alert_state read would
-  // otherwise fail at once and lose the page about the outage itself.
-  await withinBookingCleanupBudget(() =>
+  // #3416: after the response, never in front of it. Nothing in the answer reads
+  // the page, and the page reads `alert_state` (and on its first send claims and
+  // stamps it): a burst whose confirms time out waiting in line made every one of
+  // them ask Supabase before its own 503, on the database the burst was already
+  // queueing on (load run 37547143303). Deferred work runs outside any call budget
+  // (`afterResponse`), so a budget the timeout spent cannot fail the page's own
+  // read, which is what the cleanup allowance used to be for here (#3102), and
+  // `after()` keeps it alive past the response as #3145 does for the limiter pages.
+  afterResponse("booking-failure-page", () =>
     // alert-text-ok: `spec.message` is the alert's own copy, built by
     // bookingFailureAlert from the pure builders in booking/alert-copy.ts. The
     // name ends in `.message` and is not an error; the widened #2418 scan reads
@@ -2414,8 +2422,8 @@ export async function pageBookingFailure(err: unknown): Promise<void> {
     // alert-key: verify_on_book_outage
     // alert-key: reschedule_lock_outage
     // alert-key: no_eligible_agents:*
-    sendThrottledAlert(spec.key, spec.cooldownMs, spec.message),
-  ).catch(logAlertSendFailure(spec.key));
+    sendThrottledAlert(spec.key, spec.cooldownMs, spec.message).catch(logAlertSendFailure(spec.key)),
+  );
 }
 
 /**
@@ -2504,10 +2512,22 @@ async function rescheduleWithLog(
   }
 }
 
+/**
+ * #3460: before a confirm keys its line, wait within the bound for a fresh pool grouping
+ * where its server holds none, so a burst on sibling codes joins ONE ladder line rather
+ * than splitting by code. Charged to the confirm's profile as its own stage. A named
+ * advisor's link keys on the advisor and needs no grouping, so it waits for nothing.
+ */
+function lineGroupingBeforeKey(input: { agentLinkUserId?: string }, lineFacts?: ConfirmLineFacts): Promise<void> {
+  if (input.agentLinkUserId !== undefined) return Promise.resolve();
+  return timeStage(lineFacts?.profile, "line-grouping", () => settleLineGrouping(lineFacts));
+}
+
 export function createBooking(input: CreateBookingInput, lineFacts?: ConfirmLineFacts): Promise<BookingResult> {
-  return alertOnBookingFailure(() =>
-    orchestration.createBooking(input, realDeps(deferWebhookSend, lineFacts)),
-  );
+  return alertOnBookingFailure(async () => {
+    await lineGroupingBeforeKey(input, lineFacts);
+    return orchestration.createBooking(input, realDeps(deferWebhookSend, lineFacts));
+  });
 }
 
 /**
@@ -2735,6 +2755,7 @@ export async function updateBookingPhone(
  */
 export function bookViaApi(input: ApiBookingInput, lineFacts?: ConfirmLineFacts): Promise<ApiBookingResult> {
   return alertOnBookingFailure(async () => {
+    await lineGroupingBeforeKey(input, lineFacts);
     try {
       const res = await orchestration.bookViaApi(input, realDeps(deferWebhookSend, lineFacts));
       // Only a "rescheduled" outcome can carry a decline reason (#543).

@@ -26,10 +26,12 @@ const logged = vi.hoisted(() => ({ warn: vi.fn(), info: vi.fn(), error: vi.fn() 
 vi.mock("@/lib/supabase/admin", () => admin);
 vi.mock("@/lib/log", () => ({ log: logged }));
 
-import { resolveTestTraffic, resolveTrafficMarkers } from "./test-traffic";
+import { resolveTestTraffic, resolveTrafficMarkers, resetBucketTestCacheForTests, bucketTestCacheSizeForTests, BUCKET_TEST_CACHE_MS, BUCKET_TEST_CACHE_MAX } from "./test-traffic";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.useRealTimers();
+  resetBucketTestCacheForTests();
   bucketMaybeSingle.mockResolvedValue({ data: { is_test: false }, error: null });
   bookingMaybeSingle.mockResolvedValue({ data: { buckets: { is_test: false } }, error: null });
 });
@@ -154,5 +156,76 @@ describe("resolveTrafficMarkers, the host page class", () => {
       hostClass: "none",
     });
     expect(from).not.toHaveBeenCalled();
+  });
+});
+
+// #3461: the tally asks this once per booking API attempt, after the answer. In a burst
+// of a hundred confirms that was 145 identical one row reads inside five seconds (load
+// run 37581963075), each queued 3 to 4 seconds in the API layer while the winning
+// confirm was still writing its booking, which stretched its commit to 7.5 seconds and
+// timed out the confirms behind it. A bucket's test flag changes almost never, so one
+// server reads each code at most once a minute, and concurrent askers share one read.
+describe("resolveTestTraffic, by bucket, read once per server per minute (#3461)", () => {
+  it("shares one read among concurrent askers for the same code", async () => {
+    let release: (v: unknown) => void = () => {};
+    bucketMaybeSingle.mockImplementation(() => new Promise((r) => (release = r)));
+    const asks = Array.from({ length: 5 }, () => resolveTestTraffic({ by: "bucket", code: "120" }));
+    release({ data: { is_test: true }, error: null });
+    expect(await Promise.all(asks)).toEqual([true, true, true, true, true]);
+    expect(bucketMaybeSingle).toHaveBeenCalledTimes(1);
+  });
+
+  it("answers a later ask inside the minute from the first read", async () => {
+    expect(await resolveTestTraffic({ by: "bucket", code: "120" })).toBe(false);
+    expect(await resolveTestTraffic({ by: "bucket", code: "120" })).toBe(false);
+    expect(bucketMaybeSingle).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads again once the minute has passed", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-07T07:00:00Z"));
+    await resolveTestTraffic({ by: "bucket", code: "120" });
+    vi.setSystemTime(new Date(Date.parse("2026-10-07T07:00:00Z") + BUCKET_TEST_CACHE_MS + 1));
+    bucketMaybeSingle.mockResolvedValue({ data: { is_test: true }, error: null });
+    expect(await resolveTestTraffic({ by: "bucket", code: "120" })).toBe(true);
+    expect(bucketMaybeSingle).toHaveBeenCalledTimes(2);
+  });
+
+  it("never keeps a FAILED read as an answer: the next ask reads again", async () => {
+    bucketMaybeSingle.mockResolvedValueOnce({ data: null, error: { message: "timeout" } });
+    expect(await resolveTestTraffic({ by: "bucket", code: "120" })).toBe(false);
+    expect(logged.warn).toHaveBeenCalled();
+    bucketMaybeSingle.mockResolvedValue({ data: { is_test: true }, error: null });
+    expect(await resolveTestTraffic({ by: "bucket", code: "120" })).toBe(true);
+    expect(bucketMaybeSingle).toHaveBeenCalledTimes(2);
+  });
+
+  // The code comes from the request, and the client error route takes it from callers
+  // who are not signed in. A code that matches no bucket is never kept, and the map is
+  // capped, so a caller sending endless made up codes cannot grow it without bound.
+  it("never keeps a code that matches no bucket", async () => {
+    bucketMaybeSingle.mockResolvedValue({ data: null, error: null });
+    expect(await resolveTestTraffic({ by: "bucket", code: "NOPE" })).toBe(false);
+    expect(await resolveTestTraffic({ by: "bucket", code: "NOPE" })).toBe(false);
+    expect(bucketMaybeSingle).toHaveBeenCalledTimes(2);
+    expect(bucketTestCacheSizeForTests()).toBe(0);
+  });
+
+  it("holds at most its cap of codes, dropping the oldest", async () => {
+    for (let i = 0; i < BUCKET_TEST_CACHE_MAX + 25; i++) await resolveTestTraffic({ by: "bucket", code: `C${i}` });
+    expect(bucketTestCacheSizeForTests()).toBe(BUCKET_TEST_CACHE_MAX);
+    bucketMaybeSingle.mockClear();
+    await resolveTestTraffic({ by: "bucket", code: `C${BUCKET_TEST_CACHE_MAX + 24}` });
+    expect(bucketMaybeSingle).not.toHaveBeenCalled();
+    await resolveTestTraffic({ by: "bucket", code: "C0" });
+    expect(bucketMaybeSingle).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps each code apart", async () => {
+    bucketMaybeSingle.mockResolvedValueOnce({ data: { is_test: true }, error: null });
+    bucketMaybeSingle.mockResolvedValueOnce({ data: { is_test: false }, error: null });
+    expect(await resolveTestTraffic({ by: "bucket", code: "SMOKE" })).toBe(true);
+    expect(await resolveTestTraffic({ by: "bucket", code: "120" })).toBe(false);
+    expect(bucketMaybeSingle).toHaveBeenCalledTimes(2);
   });
 });

@@ -19,7 +19,7 @@ const env = vi.hoisted(() => ({
 const regalKeyFor = (caller: string, slot: string) =>
   caller !== "regal" ? "" : slot === "primary" ? regalKey.primary() : regalKey.secondary();
 const rateLimit = vi.hoisted(() => ({
-  allowRequest: vi.fn(async (_caller: unknown, _rules: unknown) => true),
+  exactCeilingWithinLimit: vi.fn(async (_caller: unknown, _rules: unknown) => true),
   bookingApiWriteWithinLimit: vi.fn(async (_keyId: string) => true),
   bookingApiReadWithinLimit: vi.fn(async (_keyId: string) => true),
   bookingApiIpWithinLimit: vi.fn(async (_ip: string) => true),
@@ -37,7 +37,8 @@ vi.mock("@/lib/booking/record-caller-seen", () => seen);
 vi.mock("@/lib/booking/retired-key-watch", () => retired);
 
 import { authorizeBookingApi } from "./route-auth";
-import { DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES } from "@/lib/rate-limit-core";
+import { DIRECT_BOOKING_API_HOURLY_RATE_RULES, DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES } from "@/lib/rate-limit-core";
+import { FULL_API_CALLERS } from "@/lib/booking/api-auth";
 
 function req(authorization?: string) {
   const headers = new Headers({ "cf-connecting-ip": "203.0.113.7" });
@@ -67,7 +68,7 @@ describe("authorizeBookingApi refusal reasons (#1429)", () => {
     regalKey.primary.mockReturnValue("goodsecret");
     regalKey.secondary.mockReturnValue("");
     env.bookingApiKeyFor.mockImplementation(regalKeyFor);
-    rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.exactCeilingWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
@@ -219,7 +220,7 @@ describe("authorizeBookingApi caller attribution (#2645)", () => {
         ? slot === "primary" ? "trypennie-old" : "trypennie-new"
         : slot !== "primary" ? "" : caller === "regal" ? "regalsecret" : caller === "canary" ? "canarysecret" : "",
     );
-    rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.exactCeilingWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
@@ -229,7 +230,7 @@ describe("authorizeBookingApi caller attribution (#2645)", () => {
   function budgetsSpent() {
     return [
       ...rateLimit.bookingApiWriteWithinLimit.mock.calls.map((c) => `edge:${c[0]}`),
-      ...rateLimit.allowRequest.mock.calls
+      ...rateLimit.exactCeilingWithinLimit.mock.calls
         .map((c) => (c[0] as { kind: string; key?: string }))
         .filter((c) => c.kind === "opaque")
         .map((c) => `hourly:${c.key}`),
@@ -269,7 +270,7 @@ describe("authorizeBookingApi records who authenticated (#2717)", () => {
     env.bookingApiKeyFor.mockImplementation((caller: string, slot: string) =>
       caller === "trypennie" && slot === "primary" ? "trypenniesecret" : "",
     );
-    rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.exactCeilingWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
@@ -323,7 +324,7 @@ describe("authorizeBookingApi asks whether a refused key is a retired one (#2879
     vi.clearAllMocks();
     env.bookingApiKeyFor.mockImplementation(regalKeyFor);
     regalKey.primary.mockReturnValue("goodsecret");
-    rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.exactCeilingWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
@@ -343,6 +344,43 @@ describe("authorizeBookingApi asks whether a refused key is a retired one (#2879
     if (out.ok) return;
     expect(out.response.status).toBe(401);
     expect(await out.response.json()).toEqual({ error: "unauthorized" });
+  });
+
+  // #3460, #3355 item 1: a confirm starts its early reads (the shared line switch and the
+  // pool grouping snapshot) the moment its key is known to be good, so they run during
+  // the ceilings' I/O. Never before: a flood of bad keys must not buy a directory call
+  // or a switch read per request (L498). Ordered on one injected clock.
+  it("#3460 runs the authenticated hook only for a good key, and before the ceilings answer", async () => {
+    let clock = 0;
+    const at: Record<string, number> = {};
+    rateLimit.bookingApiWriteWithinLimit.mockImplementation(async () => {
+      at.ceiling = ++clock;
+      return true;
+    });
+    const onAuthenticated = vi.fn(() => {
+      at.hook = ++clock;
+    });
+    const out = await authorizeBookingApi(
+      req("Bearer goodsecret"),
+      DIRECT_BOOKING_API_HOURLY_RATE_RULES,
+      DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
+      false,
+      FULL_API_CALLERS,
+      onAuthenticated,
+    );
+    expect(out.ok).toBe(true);
+    expect(onAuthenticated).toHaveBeenCalledTimes(1);
+    expect(at.hook).toBeLessThan(at.ceiling!);
+
+    onAuthenticated.mockClear();
+    for (const bad of [req("Bearer stalekey"), req()]) {
+      await authorizeBookingApi(bad, DIRECT_BOOKING_API_HOURLY_RATE_RULES, DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES, false, FULL_API_CALLERS, onAuthenticated);
+    }
+    rateLimit.bearerFailureWithinLimit.mockResolvedValue(false);
+    await authorizeBookingApi(req("Bearer stalekey"), DIRECT_BOOKING_API_HOURLY_RATE_RULES, DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES, false, FULL_API_CALLERS, onAuthenticated);
+    regalKey.primary.mockReturnValue("");
+    await authorizeBookingApi(req("Bearer goodsecret"), DIRECT_BOOKING_API_HOURLY_RATE_RULES, DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES, false, FULL_API_CALLERS, onAuthenticated);
+    expect(onAuthenticated).not.toHaveBeenCalled();
   });
 
   it("asks nothing for a request with no credential, a good key, or no key configured", async () => {

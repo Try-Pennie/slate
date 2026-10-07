@@ -628,13 +628,14 @@ export const ALERT_CATALOG: AlertEntry[] = [
   },
   {
     key: "booking_below_lead_tier:*",
-    kind: "condition",
+    kind: "incident",
     suffix: "booking",
     why:
       "One upcoming call is with a team below the tier Salesforce gives the lead " +
-      "today; it ends when the call moves to a team that works the tier, the score " +
-      "comes down, or the call is cancelled or its time passes, and the monitor " +
-      "re-measures every booking every tick (#2593).",
+      "today (#2593). The page asks for one action on one call, and whoever " +
+      "reassigns it already knows it is done, so an all clear per booking was noise " +
+      "(Dan, 2026-10-07). The monitor still re-measures every tick and settles the " +
+      "state SILENTLY once the call agrees or is gone, so a recurrence pages at once.",
   },
   {
     key: "cross_system_booking:*",
