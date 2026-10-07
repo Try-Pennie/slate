@@ -231,10 +231,14 @@ export function verdictText(r: {
   verdict: string;
   speedUnmeasured: string | null;
   platformUnmeasured: string | null;
-  /** #3429: the burst clauses that could not conclude; absent on a hand built result. */
-  burstsUnconcluded?: readonly { bar: string; detail: string }[];
-  /** #3429: each burst's notes, for a known defect the deployment declares; absent on a hand built result. */
-  measurements?: { bursts: readonly { notes: readonly string[] }[] } | null;
+  /**
+   * #3429: the burst clauses that could not conclude. Required, never optional (#3459
+   * review, L167): a caller that left it out would get a verdict line silent about
+   * why a run could not conclude, and nothing would say so.
+   */
+  burstsUnconcluded: readonly { bar: string; detail: string }[];
+  /** #3429: each burst's notes, for a known defect the deployment declares; null when nothing was measured. */
+  measurements: { bursts: readonly { notes: readonly string[] }[] } | null;
 }): string {
   // #3429: a known defect the deployment declares is never a silent pass, on the line
   // a reader looks at first: a pass is held to the rule the build says it runs.
@@ -245,7 +249,7 @@ export function verdictText(r: {
         "defect on a build that says a crowd stops at its rung, which fails once it says a crowd walks the ladder"
       : "";
   const head = `Verdict: **${r.verdict.toUpperCase()}**${declared}`;
-  const open = r.burstsUnconcluded ?? [];
+  const open = r.burstsUnconcluded;
   const causes = [
     ...(r.speedUnmeasured !== null ? [`speed was UNMEASURED because ${r.speedUnmeasured}`] : []),
     ...(r.platformUnmeasured !== null ? [`platform limits were UNMEASURED because ${r.platformUnmeasured}`] : []),
