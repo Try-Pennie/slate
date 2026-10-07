@@ -2191,14 +2191,18 @@ export async function GET(req: NextRequest) {
     // booked with the Low team. A rate cannot see it (two bookings in twelve
     // hundred was the incident), and the cal.com Slack workflow that covers it
     // today stops at cutover. Every upcoming real booking's pool tier is held
-    // against the lead's CURRENT XBC__c, so a lead re-scored after booking is
-    // caught by the same comparison.
+    // against the lead's CURRENT score, so a lead re-scored after booking is
+    // caught by the same comparison. Since #3501 that is the score on the lead's
+    // current submission, or the Lead's own XBC__c where it was edited after that
+    // submission (`readLeadScores`), never a stale copy.
     //
     // Cost on this lane: nothing at all while no real booking is upcoming (no
     // Salesforce call is made for an empty set). Otherwise one bookings read, one
     // token exchange and one SOQL query per ~450 distinct leads, since the lead
     // ids are batched into one IN list per URI budget, plus as many again for the
-    // submissions those leads name (#3501), which is one per lead at most. At a cutover roster of a
+    // submissions those leads name (#3501), which is one per lead at most, plus a
+    // LeadHistory query per ~450 leads whose submission and Lead scores disagree
+    // (4 of 1,838 current submissions, measured 2026-10-07), so usually none. At a cutover roster of a
     // few thousand upcoming calls that is about 2 to 8 Salesforce calls every
     // five minutes, against a daily API allowance measured in the hundreds of
     // thousands, and this lane has its own invocation rather than the one the
