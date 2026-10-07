@@ -243,9 +243,10 @@ async function sameKeyBothWays() {
 // the derivation demand a new format: change any input below and this fails until the
 // format is bumped and the new values are pinned under it.
 {
-  // Found and printed by the TypeScript compiler, comments removed (review of #3470,
-  // L135): a brace count is cut short by a brace inside a string or a regex, and then the
-  // pin guards a fragment of the function.
+  // Found by the TypeScript compiler and read as the source's own tokens, comments and
+  // layout removed (review of #3470, L135, L552): a brace count is cut short by a brace
+  // inside a string or a regex, and then the pin guards a fragment of the function, while
+  // the compiler's printer would tie the hash to the installed TypeScript version.
   const read = (file: string) => readFileSync(join(ROOT, file), "utf8");
   const functionText = (file: string, name: string) => functionSource(file, read(file), name) ?? `missing:${name}`;
   {
