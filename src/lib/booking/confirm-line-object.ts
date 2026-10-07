@@ -39,8 +39,15 @@
  * A settlement (the leader's booking and who sits at the instant) carries contact
  * data; it lives only in memory for the moment it is handed to the followers, is
  * serialised ONCE however many are waiting, and is never logged.
+ *
+ * #3460: one reserved instance of the class is not a line at all but the pool grouping
+ * DIRECTORY (`pool-grouping.ts`), which holds the newest grouping the recompute lane
+ * published so a cold server can key its line from it. Which role a call is served as
+ * is `objectRoleOf`, and `makeConfirmLineObject` keeps each role's messages to its own
+ * instances.
  */
 import { makeConfirmQueue, type LeaderVerdict, type QueueTurn, type EnteredNow } from "./confirm-queue.ts";
+import { DIRECTORY_GROUP_PREFIX, isGroupingMessage, makeGroupingDirectoryHost } from "./pool-grouping.ts";
 import type { ScheduleTimer } from "../read-within-deadline.ts";
 
 /** The Worker binding the shared line is reached through, and the class behind it. */
@@ -375,4 +382,67 @@ export function makeConfirmLineHost(deps: {
   };
 
   return { handle };
+}
+
+/**
+ * Every instance of the class is named `confirm-line:v1:<group>` by the client's one
+ * naming function (`confirmLineObjectName`), a line's group and the directory's alike.
+ */
+export const CONFIRM_LINE_OBJECT_PREFIX = "confirm-line:v1:";
+/** The path a line's client posts to. The bare `/` an older client sends is a line too. */
+export const CONFIRM_LINE_PATH = "/line";
+/** The path the pool grouping directory's client posts to (#3460). */
+export const GROUPING_DIRECTORY_PATH = "/directory";
+
+export type ObjectRole = "line" | "directory";
+
+/**
+ * Which role one call is served as (#3460): a confirm LINE, or the pool grouping
+ * DIRECTORY, a reserved instance of the same class (no new class, binding or migration).
+ *
+ * The role travels in the URL, which only the client's two constructors build
+ * (`durableLineNamespace` and `durableGroupingDirectory`). The instance's own name is
+ * platform behaviour this repo cannot measure offline (L82): a runtime may or may not
+ * expose `ctx.id.name` inside an object. So when it does and the name is one of ours,
+ * it must AGREE with the path, which is what refuses a directory message on the
+ * monitor's instance or a real line's; when it is absent, unreadable or not ours, the
+ * path alone decides, and neither answer can break the line.
+ */
+export function objectRoleOf(pathname: string, instanceName: unknown): { role: ObjectRole } | { refused: string } {
+  const byPath: ObjectRole | null =
+    pathname === GROUPING_DIRECTORY_PATH ? "directory" : pathname === CONFIRM_LINE_PATH || pathname === "/" ? "line" : null;
+  if (byPath === null) return { refused: `no role is served on ${pathname.slice(0, 40)}` };
+  if (typeof instanceName === "string" && instanceName.startsWith(CONFIRM_LINE_OBJECT_PREFIX)) {
+    const byName: ObjectRole = instanceName.slice(CONFIRM_LINE_OBJECT_PREFIX.length).startsWith(DIRECTORY_GROUP_PREFIX) ? "directory" : "line";
+    if (byName !== byPath) return { refused: `a ${byPath} call on a ${byName} instance` };
+  }
+  return { role: byPath };
+}
+
+/**
+ * Everything one instance of the class does: a line, or the directory, by the role
+ * each call is served as. Directory messages are honoured ONLY on the directory, and
+ * line messages are refused there, so neither can reach the other's state by a
+ * misaddressed call. Each half is created on first use, so a line never holds a
+ * directory and the directory never holds a line.
+ */
+export function makeConfirmLineObject(deps: Parameters<typeof makeConfirmLineHost>[0]): {
+  handle(role: ObjectRole | { refused: string }, message: unknown): Promise<string>;
+} {
+  let line: ReturnType<typeof makeConfirmLineHost> | null = null;
+  let directory: ReturnType<typeof makeGroupingDirectoryHost> | null = null;
+  const bad = (why: string) => JSON.stringify({ kind: "bad", why });
+  return {
+    async handle(role, message) {
+      if (typeof role !== "string") return bad(role.refused);
+      if (role === "directory") {
+        if (!isGroupingMessage(message)) return bad("a confirm line message on the pool grouping directory");
+        directory ??= makeGroupingDirectoryHost();
+        return directory.handle(message);
+      }
+      if (isGroupingMessage(message)) return bad("a pool grouping message on a confirm line");
+      line ??= makeConfirmLineHost(deps);
+      return line.handle(message);
+    },
+  };
 }

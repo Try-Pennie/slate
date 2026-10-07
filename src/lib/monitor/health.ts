@@ -463,6 +463,36 @@ export const LOG_SHIPPING_STALE_BOUNDS_MS: Record<string, number> = {
 };
 
 /**
+ * The heartbeat the recompute lane stamps once the pool grouping directory holds the
+ * grouping it published (#3460). One constant, read by the lane that stamps it and the
+ * bound that watches it, so the two cannot drift.
+ */
+export const POOL_GROUPING_LANE = "pool-grouping";
+
+/**
+ * How long the pool grouping may go unpublished (#3460).
+ *
+ * The every minute recompute lane publishes the grouping it already reads, before its
+ * lock, to a reserved instance of the confirm line object. In this first half of #3460
+ * NOTHING reads it yet; the second half has a server holding no fresh grouping of its own
+ * key its confirm line from it, and every way that can fail will fall back to the code's
+ * own line, so a publisher that stopped would then be invisible: bursts on sibling codes
+ * would quietly split across lines, each electing its own leader (load run 37566700055).
+ * Hence a bound, watched from the first publish so the publisher is known to work before
+ * anything depends on it (L551, L13).
+ *
+ * Ten minutes, the recompute lane's own bound, since the publish rides that lane's
+ * every tick. `neverIsStale` is ON with the grace window, like the log shipping receipt:
+ * a publish that has never once landed is the exact state this exists to notice.
+ *
+ * Slack only, never the external /api/health 503: confirms still book, they only
+ * contend in more lines, so a stopped publish is lost capacity, never the site down.
+ */
+export const POOL_GROUPING_STALE_BOUNDS_MS: Record<string, number> = {
+  [POOL_GROUPING_LANE]: 10 * MIN,
+};
+
+/**
  * How long a DETECTOR may go without reaching a measured verdict (#1394).
  *
  * A fifth family, kept apart from the four above because it answers a different

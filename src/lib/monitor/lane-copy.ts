@@ -331,6 +331,47 @@ export function logShippingRecoveryText(_lane: string): string {
   );
 }
 
+/**
+ * The pool grouping has stopped being published (#3460).
+ *
+ * Its own voice, and in this first half of #3460 a quiet one: nothing reads the grouping
+ * yet, so no lead is affected, and what is at stake is that the publisher works before
+ * the second half starts keying cold servers' confirm lines from it (L703: the copy says
+ * only what this phase does). The cause is in the lane's own log line, which names how
+ * the publish ended.
+ */
+export function poolGroupingAlertText(lane: StaleLane): string {
+  const bound = describeGap(lane.maxStaleMs);
+  const stake =
+    `Nothing reads the grouping yet, so no booking is affected today, but cold servers will key their confirm ` +
+    `line from it once the rest of #3460 ships, so the publisher has to be working by then.`;
+  const look =
+    `The recompute lane logs why a publish did not land: search tag=pool-grouping. Unbound is a deployment ` +
+    `without the CONFIRM_LINE binding, unreachable or refused is the object, and empty is a bucket read that came back empty.`;
+  if (lane.unreadable) {
+    return (
+      `The record of the last pool grouping publish cannot be read, so whether the publisher is working is ` +
+      `unknown and it is being treated as stopped (expected one every minute, at most ` +
+      `${bound} apart). Look at the ${lane.lane} row in lane_heartbeats. ${look}`
+    );
+  }
+  if (!Number.isFinite(lane.ageMs)) {
+    return (
+      `The pool grouping has NEVER once been published to the confirm line's directory (expected every minute, ` +
+      `at most ${bound} apart). ${stake} ${look}`
+    );
+  }
+  return (
+    `The pool grouping has not been published for ${describeGap(lane.ageMs)} (expected every minute, at most ` +
+    `${bound} apart). ${stake} ${look}`
+  );
+}
+
+/** All-clear for the pool grouping publish (#3460). */
+export function poolGroupingRecoveryText(_lane: string): string {
+  return `The pool grouping is being published again, so the earlier page is cleared. No action is needed.`;
+}
+
 /** All-clear for a daily retention lane (#1102). These destroy customer data, so
  *  the notice says plainly that the deletion work has resumed. */
 export function retentionRecoveryText(lane: string): string {

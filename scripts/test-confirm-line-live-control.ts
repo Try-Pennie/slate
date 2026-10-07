@@ -47,6 +47,7 @@ import {
 } from "../src/lib/booking/confirm-line-object.ts";
 import { keyKindOf, CONFIRM_LINE_CALL_MS, type LineNamespace } from "../src/lib/booking/shared-confirm-line.ts";
 import { ladderGroupOf } from "../src/lib/booking/line-key.ts";
+import { POOL_GROUPING_DIRECTORY, POOL_GROUPING_VERIFY_DIRECTORY } from "../src/lib/booking/pool-grouping.ts";
 import { confirmQueueKey } from "../src/lib/booking/orchestration.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -140,15 +141,35 @@ const outcomes = (r: ProbeReport | "unsettled") =>
   eq(keyKindOf(CONFIRM_LINE_VERIFY_GROUP), "none", "the verification group is none of the real line kinds");
   assert(CONFIRM_LINE_VERIFY_GROUP.startsWith("monitor:"), "and it is in the monitor space, which nothing in the booking path writes");
 
+  // #3460: the pool grouping directory is a reserved instance of the same class, and it
+  // must be just as unreachable from a real line key, the probe's own directory too.
+  for (const reserved of [POOL_GROUPING_DIRECTORY, POOL_GROUPING_VERIFY_DIRECTORY]) {
+    eq(keyKindOf(reserved), "none", `${reserved} is none of the real line kinds`);
+    assert(reserved.startsWith("directory:"), `and ${reserved} is in the directory space, which nothing in the booking path writes`);
+  }
+
   // Walk the one constructor every real line key comes from (`confirmQueueKey`), with
-  // inputs chosen to TRY to land on the verification group: the group itself as a code
-  // and as an advisor id, a code that already starts with monitor:, and the ladder
-  // grouping fed pool keys that spell it.
-  const hostile = [CONFIRM_LINE_VERIFY_GROUP, "monitor:", "monitor:x", "", "521", "510", "100"];
+  // inputs chosen to TRY to land on the verification group or the directory: each name
+  // itself as a code and as an advisor id, a code that already starts with monitor: or
+  // directory:, and the ladder grouping fed pool keys that spell them.
+  const hostile = [
+    CONFIRM_LINE_VERIFY_GROUP,
+    "monitor:",
+    "monitor:x",
+    POOL_GROUPING_DIRECTORY,
+    POOL_GROUPING_VERIFY_DIRECTORY,
+    "directory:",
+    "directory:x",
+    "",
+    "521",
+    "510",
+    "100",
+  ];
   const peeks: ((code: string) => string | null | undefined)[] = [
     () => undefined,
     () => null,
     () => CONFIRM_LINE_VERIFY_GROUP,
+    () => POOL_GROUPING_DIRECTORY,
     (code) => `pool:${code}`,
   ];
   let walked = 0;
@@ -158,14 +179,14 @@ const outcomes = (r: ProbeReport | "unsettled") =>
         for (const lineGroupOf of [undefined, (c: string) => ladderGroupOf(c, peek)]) {
           const key = confirmQueueKey(code, "2026-10-06T14:00:00.000Z", link, lineGroupOf);
           walked++;
-          if (keyKindOf(key.group) === "none" || key.group === CONFIRM_LINE_VERIFY_GROUP) {
+          if (keyKindOf(key.group) === "none" || key.group === CONFIRM_LINE_VERIFY_GROUP || key.group.startsWith("directory:")) {
             assert(false, `confirmQueueKey(${JSON.stringify(code)}, ${JSON.stringify(link)}) built ${key.group}, which is not a real line kind`);
           }
         }
       }
     }
   }
-  assert(walked > 300, `every real line key the walk built is a link, code or ladder group (${walked} built)`);
+  assert(walked > 1000, `every real line key the walk built is a link, code or ladder group (${walked} built)`);
   {
     // Control: the walk would have noticed. A constructor that passed the code through
     // bare would build the verification group from the first hostile input.
