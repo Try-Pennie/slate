@@ -166,6 +166,14 @@ export interface GroupingDirectoryStorage {
 export const POOL_GROUPING_STORAGE_KEY = "pool-grouping-snapshot";
 
 /**
+ * How far in the future a snapshot's read time may be: the clock skew between servers that
+ * is accepted, and no more. The directory refuses a put beyond it and reads a stored one
+ * beyond it as none, and every reader refuses one beyond it (#3483). One constant, so the
+ * two can never disagree about what counts as the future.
+ */
+export const POOL_GROUPING_FUTURE_TOLERANCE_MS = 5_000;
+
+/**
  * Where a get was answered from (#3481): `storage` only on the get that loaded the
  * instance's storage, which on a woken instance is its first call, and `memory` on every
  * other. An additive field readers ignore (`pool-grouping-reader.ts` reads `kind` and
@@ -190,7 +198,14 @@ export type GroupingAnsweredFrom = "memory" | "storage";
  * too, never answered as an empty directory (L215). A get says which of the two it was
  * answered from (`GroupingAnsweredFrom`, #3481).
  */
-export function makeGroupingDirectoryHost(storage: GroupingDirectoryStorage): { handle(message: unknown): Promise<string> } {
+export function makeGroupingDirectoryHost(
+  storage: GroupingDirectoryStorage,
+  now: () => number,
+): { handle(message: unknown): Promise<string> } {
+  // #3483: a snapshot read in the future would be newer than every honest put after it, so
+  // once stored it would be kept over all of them, outlive every hibernation, and be refused
+  // by every reader: a directory poisoned for good. Judged against this object's clock.
+  const fromTheFuture = (snapshot: GroupingSnapshot) => snapshot.readAtMs > now() + POOL_GROUPING_FUTURE_TOLERANCE_MS;
   let stored: GroupingSnapshot | null = null;
   // One load per woken instance; a load that failed is forgotten so the next call tries
   // again. Answers whether THIS call did the load, which is what `storage` means on a get.
@@ -199,7 +214,7 @@ export function makeGroupingDirectoryHost(storage: GroupingDirectoryStorage): { 
     if (loaded) return false;
     const raw = await storage.get(POOL_GROUPING_STORAGE_KEY);
     const read = raw === undefined || raw === null ? null : readGroupingSnapshot(raw, null);
-    stored = read?.kind === "snapshot" ? read.snapshot : null;
+    stored = read?.kind === "snapshot" && !fromTheFuture(read.snapshot) ? read.snapshot : null;
     loaded = true;
     return true;
   };
@@ -222,6 +237,7 @@ export function makeGroupingDirectoryHost(storage: GroupingDirectoryStorage): { 
     if (m.op === "grouping-get") return JSON.stringify({ kind: "grouping", snapshot: stored, from });
     const read = readGroupingSnapshot(m.snapshot, null);
     if (read.kind !== "snapshot") return bad(read.kind === "refused" ? read.why : "format");
+    if (fromTheFuture(read.snapshot)) return bad("snapshot read in the future");
     if (stored && stored.readAtMs >= read.snapshot.readAtMs) return JSON.stringify({ kind: "kept", readAtMs: stored.readAtMs });
     try {
       await storage.put(POOL_GROUPING_STORAGE_KEY, read.snapshot);
