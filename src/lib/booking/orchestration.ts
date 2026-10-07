@@ -4699,7 +4699,9 @@ async function createHeld(
         return answer;
       },
     };
-    const attempt = await profile.time("complete-reservation", () => attemptReservation(measured, reservation));
+    const attempt = await profile.time("complete-reservation", () =>
+      attemptReservation(measured, reservation, { bucket: bookedBucket, eventType: bookedEventType, agent }),
+    );
     if (attempt.kind === "completed") {
       result = answerCommitted(attempt.completed);
       if (committedChainMs !== null) deps.commitCosts.record(committedChainMs, Date.now());
@@ -4898,10 +4900,24 @@ async function createHeld(
  * double webhook. Returns the resolved bucket/eventType (or null) so the fresh
  * path can attach its best-effort routing log without a second resolve.
  */
+/**
+ * What a fresh confirm already holds when it commits (#3495): its booked bucket with its
+ * event type, and the advisor it read before writing the booking. Each is used only for
+ * the row it describes (the bucket by code, the advisor by id), so a crash resume or a
+ * booking made by another request still reads its own. The reservation drain holds
+ * neither and passes nothing.
+ */
+interface CommitKnown {
+  bucket: Bucket;
+  eventType: EventType;
+  agent: User;
+}
+
 async function deliverCreatedSideEffects(
   deps: BookingDeps,
   booking: Booking,
   bookedCode: string,
+  known?: CommitKnown,
 ): Promise<{ bucket: Bucket; eventType: EventType } | null> {
   if (booking.assigned_user_id) {
     await deps.moveBusyBlock(
@@ -4920,8 +4936,12 @@ async function deliverCreatedSideEffects(
       : undefined,
   );
 
-  // Re-resolve bucket + eventType for the webhook (works on the drain path too).
-  const resolved = await deps.resolveBucketByCode(bookedCode);
+  // Re-resolve bucket + eventType for the webhook (works on the drain path too), unless
+  // the confirm already holds them for this very code (#3495: one request fewer).
+  const resolved =
+    known && known.bucket.code === bookedCode
+      ? { bucket: known.bucket, eventType: known.eventType }
+      : await deps.resolveBucketByCode(bookedCode);
   if (resolved) {
     await fire(deps, "booking.created", booking, resolved.bucket, resolved.eventType);
   }
@@ -5024,6 +5044,8 @@ type ReservationAttempt =
 async function attemptReservation(
   deps: BookingDeps,
   reservation: BookingReservation,
+  /** #3495: what a fresh confirm already holds (`CommitKnown`); absent on the drain. */
+  known?: CommitKnown,
 ): Promise<ReservationAttempt> {
   const { booking: bookingInsert, event, bucketCode } = reservation.payload;
   const key = bookingInsert.idempotency_key;
@@ -5039,7 +5061,7 @@ async function attemptReservation(
     if (already) {
       const bookedCode = already.routing_trace?.bucket_code ?? bucketCode;
       const unfinished = await finishCommitted(async () => {
-        await deliverCreatedSideEffects(deps, already, bookedCode);
+        await deliverCreatedSideEffects(deps, already, bookedCode, known);
         await deps.deleteReservation(reservation.id);
       });
       return {
@@ -5133,7 +5155,7 @@ async function attemptReservation(
   // the confirm budget running out in the work below, is returned as unfinished
   // rather than thrown, so the lead is answered with the booking that exists and
   // the reservation is left for the drain to finish.
-  const unfinished = await finishCommitted(() => afterCreateCommitted(deps, booking, reservation, gcalEventId));
+  const unfinished = await finishCommitted(() => afterCreateCommitted(deps, booking, reservation, gcalEventId, known));
   // #2838: the one return where THIS call's own insert made the booking. Every
   // other return hands back a booking an earlier or racing confirm made.
   return {
@@ -5155,6 +5177,8 @@ async function afterCreateCommitted(
   /** The event this create wrote or adopted, as before #3263, never re-read off
    *  the returned row, so the #586 mirror cleanup keys on the id actually used. */
   gcalEventId: string,
+  /** #3495: what a fresh confirm already holds (`CommitKnown`); absent on the drain. */
+  known?: CommitKnown,
 ): Promise<void> {
   const { booking: bookingInsert, bucketCode, requestedCode } = reservation.payload;
 
@@ -5181,7 +5205,7 @@ async function afterCreateCommitted(
 
   // Deliver the busyblock/recompute/notify side effects idempotently — the SAME
   // path a crash-resume takes, so booking.created can't be dropped (#613).
-  const resolved = await deliverCreatedSideEffects(deps, booking, bookedCode);
+  const resolved = await deliverCreatedSideEffects(deps, booking, bookedCode, known);
   // #2073: a named link booking logs no routing decision and raises no tier
   // alert. Read off the ROW written, so a crash resume from the reservation drain
   // decides exactly as the fresh create did.
@@ -5190,9 +5214,12 @@ async function afterCreateCommitted(
     // Best-effort routing decision log. Awaited so the write is not dropped by the
     // CF runtime; try/catch keeps any transient failure out of the booking response.
     try {
-      const chosenAgent = booking.assigned_user_id
-        ? await deps.getUser(booking.assigned_user_id)
-        : null;
+      // #3495: the advisor the confirm read before writing, when it is this booking's.
+      const chosenAgent = !booking.assigned_user_id
+        ? null
+        : known && known.agent.id === booking.assigned_user_id
+          ? known.agent
+          : await deps.getUser(booking.assigned_user_id);
       const rt = booking.routing_trace;
       await deps.recordRoutingDecision({
         orgId: booking.org_id,
