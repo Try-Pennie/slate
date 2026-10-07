@@ -141,7 +141,20 @@ export interface ConfirmRequestReading {
    * (the admin time change) reports no calls, and zero would read as a confirm that
    * waited on nothing (L90).
    */
-  calls: { count: number; ms: number; byDependency: DependencyCalls[] } | null;
+  calls: {
+    count: number;
+    ms: number;
+    byDependency: DependencyCalls[];
+    /** #3511: the slowest single call by its FULL label (`google freeBusy.many`),
+     *  which `byDependency` folds into its dependency; null when none was made. */
+    slowest: { label: string; ms: number } | null;
+    /**
+     * #3511: the slowest call that STARTED inside each named stage, by stage. The
+     * request's slowest call can belong to another stage than the dearest one, and
+     * naming it for the dearest would blame the wrong thing (L11).
+     */
+    slowestByStage: Record<string, { label: string; ms: number }>;
+  } | null;
 }
 
 export interface ConfirmProfile {
@@ -276,7 +289,7 @@ export function makeConfirmProfile(opts: { now: () => number; startedAt?: number
         stagedMs,
         unattributed: { totalMs, beforeMs, betweenMs: Math.max(0, totalMs - beforeMs - afterMs), afterMs },
         rungs: rungs.map((r) => ({ code: r.code, ms: lengthOf(r.span, at) })),
-        calls: observed ? readCalls(calls, startedAt, at) : null,
+        calls: observed ? readCalls(calls, startedAt, at, stages) : null,
       };
     },
   };
@@ -327,6 +340,8 @@ function readCalls(
   calls: { label: string; span: Span }[],
   from: number,
   at: number,
+  /** Required: a forgotten list would read as no call ever made inside a stage. */
+  stages: StageSpan[],
 ): ConfirmRequestReading["calls"] {
   const groups = new Map<string, { label: string; span: Span }[]>();
   for (const c of calls) {
@@ -346,7 +361,27 @@ function readCalls(
       maxMs: Math.max(...list.map((c) => lengthOf(c.span, at))),
     }))
     .sort((a, b) => b.ms - a.ms);
-  return { count: calls.length, ms: covered(calls), byDependency };
+  let slowest: { label: string; ms: number } | null = null;
+  for (const c of calls) {
+    const ms = lengthOf(c.span, at);
+    if (slowest === null || ms > slowest.ms) slowest = { label: c.label, ms };
+  }
+  // No prototype, so a stage named like an inherited property starts empty (L738).
+  const slowestByStage: Record<string, { label: string; ms: number }> = Object.create(null);
+  for (const c of calls) {
+    const ms = lengthOf(c.span, at);
+    for (const s of stages) {
+      // A call belongs to every stage running when it started (an outer stage and
+      // an inner one both hold it), never to one that merely overlaps its tail. A
+      // call starting the instant a stage ENDED belongs to what runs next, so the
+      // end is exclusive; an open stage runs to the reading.
+      const end = s.to ?? Number.POSITIVE_INFINITY;
+      if (c.span.from < s.from || c.span.from >= end) continue;
+      const held = slowestByStage[s.stage];
+      if (!held || ms > held.ms) slowestByStage[s.stage] = { label: c.label, ms };
+    }
+  }
+  return { count: calls.length, ms: covered(calls), byDependency, slowest, slowestByStage };
 }
 
 /** `profile.time`, or the work alone when there is no profile to charge it to. */
@@ -379,6 +414,8 @@ export function confirmProfileFields(r: ConfirmRequestReading): Record<string, s
     if (r.calls.byDependency.length > 0) {
       out.calls_by = r.calls.byDependency.map((d) => `${d.dependency}:${d.ms}/${d.calls}/${d.maxMs}`).join(",");
     }
+    // #3511: which call, by name, since `calls_by` says only which dependency.
+    if (r.calls.slowest) out.slowest_call = `${r.calls.slowest.label}:${r.calls.slowest.ms}`;
   }
   return out;
 }

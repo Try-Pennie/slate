@@ -283,6 +283,31 @@ describe("the request's own reading (#3300)", () => {
         { dependency: "google", calls: 2, ms: 800, maxMs: 800 },
         { dependency: "supabase", calls: 3, ms: 600, maxMs: 400 },
       ],
+      // #3511: the slowest single call by its full label, which byDependency folds away.
+      slowest: { label: "google freeBusy", ms: 800 },
+      // No stage ran, so no call belongs to one.
+      slowestByStage: {},
+    });
+  });
+
+  // #3511: a call belongs to every stage running when it started, an outer one and
+  // the inner one it sits in, and never to a stage it merely overlaps at its tail.
+  it("keeps the slowest call started inside each stage, nested stages included", async () => {
+    const clock = fakeClock();
+    const p = makeConfirmProfile({ now: clock.now, startedAt: 1_000 }).observeCalls();
+    await p.time("outer", async () => {
+      await p.time("inner", async () => {
+        p.call("google freeBusy.many", clock.now(), clock.now() + 600);
+        clock.advance(700);
+      });
+      p.call("supabase bookings", clock.now(), clock.now() + 900);
+      clock.advance(1_000);
+    });
+    await p.time("later", async () => { clock.advance(50); });
+    const r = p.read(clock.now());
+    expect(r.calls?.slowestByStage).toEqual({
+      outer: { label: "supabase bookings", ms: 900 },
+      inner: { label: "google freeBusy.many", ms: 600 },
     });
   });
 
@@ -311,6 +336,7 @@ describe("the request's own reading (#3300)", () => {
       calls_made: 1,
       calls_ms: 200,
       calls_by: "supabase:200/1/200",
+      slowest_call: "supabase:200",
     });
     for (const v of Object.values(fields)) expect(String(v)).not.toMatch(/undefined|NaN|\[object|null/);
   });

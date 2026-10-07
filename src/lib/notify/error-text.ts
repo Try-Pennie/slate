@@ -145,6 +145,11 @@ export function spentBeforeAsked(found: DeadlineFound): boolean {
   return found.neededMs !== undefined || (found.budget !== null && found.timeoutMs === 0);
 }
 
+/** `span`, for a page that states a duration beside a deadline sentence (#3511). */
+export function durationText(ms: number): string {
+  return span(ms);
+}
+
 /** A duration in the unit a person would say it in. */
 function span(ms: number): string {
   if (ms < 1000) return `${ms}ms`;

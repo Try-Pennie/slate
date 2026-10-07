@@ -111,6 +111,16 @@ function current(): Budget | undefined {
   const budget = store().getStore();
   return budget && !budget.request.closed ? budget : undefined;
 }
+/**
+ * The observer of the request in force here (#3511), or none outside one. The
+ * booking failure page reads the confirm's own profile through it, at the moment
+ * the confirm fails and while the request is still open, so the page can say
+ * where the time went rather than guess.
+ */
+export function requestObserver(): CallObserver | undefined {
+  return current()?.request.observer;
+}
+
 /** Resolved on first use, so the server runtime has installed its class by then. */
 function store(): ContextStore<Budget | undefined> {
   if (!found) {
