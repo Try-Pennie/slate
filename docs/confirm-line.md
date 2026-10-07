@@ -77,6 +77,13 @@ follower's 10s wait. Followers poll in 1.5s long polls, so a deploy, which leave
 calls already held on the old instance until their own timeout, strands a follower
 for at most one poll. The relations are pinned by `scripts/test-confirm-line-object.ts`.
 
+The lead SENDS its ack at once and does not wait for the answer (#3355): nothing the
+confirm does depends on it, since a `gone` only marks the turn detached, which every
+later call checks. Waiting on it put a line object's round trip in front of every
+confirm, 1.3s on an object fresh from a deploy (load run 37572839375). Nothing waits
+on the ack at all, neither the confirm's start nor its report, and it is not counted
+in `line_ms`.
+
 ## Traced calls (load test only, #3354)
 
 Under SLATE_LOADTEST the route mints a trace for each confirm, and the client adds
