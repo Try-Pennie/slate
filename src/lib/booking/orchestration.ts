@@ -1012,8 +1012,10 @@ export interface CommitFreshInput {
   booking: BookingInsert & { id: string };
   reservationId: string;
   /** `booking.created`, built by the builder fire() uses; the function takes the
-   *  booking id and times from the row as stored. */
-  webhook: { payload: BookingEventPayload; dedupeKey: string; suppressed: boolean };
+   *  booking id and times from the row as stored. Or, when the bucket it is built
+   *  from would not read, the reason: the save then commits without it and keeps
+   *  the reservation, so the drain, which reads the bucket again, sends it. */
+  webhook: { payload: BookingEventPayload; dedupeKey: string; suppressed: boolean } | { unbuilt: string };
   /** The routing record for a routed booking; null for an agent link one (#2073). */
   routing: RecordRoutingDecisionInput | null;
 }
@@ -5194,35 +5196,57 @@ async function attemptReservation(
     throw new Error("Failed to persist booking", { cause: err });
   };
 
-  // Everything the save needs, read before it is sent. A failure here sent nothing,
-  // so it is today's failure before the insert, with no read back.
-  let request: CommitFreshInput;
+  // The two reads behind the webhook and the routing record. A fresh confirm holds
+  // both (`known`); only the drain's resume reads them. They feed those two parts
+  // alone, which never decided whether a booking is made: before the one call save
+  // they ran after the insert, where a failure cost that part and nothing else. So a
+  // failed read degrades its part here, and never fails the booking.
+  let resolved: Awaited<ReturnType<BookingDeps["resolveBucketByCode"]>> = null;
+  let unbuilt: string | null = null;
   try {
-    const resolved =
+    resolved =
       known && known.bucket.code === bookedCode
         ? { bucket: known.bucket, eventType: known.eventType }
         : await deps.resolveBucketByCode(bookedCode);
-    if (!resolved) throw new Error(`the booked bucket ${bookedCode} no longer resolves`);
+    if (!resolved) unbuilt = `the booked bucket ${bookedCode} no longer resolves`;
+  } catch (err) {
+    unbuilt = `the booked bucket ${bookedCode} would not read (${err instanceof Error ? err.message : String(err)})`;
+    log.warn("booking", { msg: "the booked bucket would not read; saving the booking without its webhook, which the drain sends", booking_id: bookingId, bucket_code: bookedCode }, err);
+  }
+  // #3495: the advisor the confirm read before writing, when it is this booking's.
+  // Unread, the routing record goes in without their attributes, which the misroute
+  // check then does not judge (`alertIfMisroute`).
+  let chosenAgent: User | null = null;
+  if (routed && resolved) {
+    try {
+      chosenAgent =
+        known && known.agent.id === row.assigned_user_id ? known.agent : await deps.getUser(row.assigned_user_id);
+    } catch (err) {
+      log.warn("routing", { msg: "the advisor would not read; the routing record goes in without their attributes", booking_id: bookingId }, err);
+    }
+  }
+
+  // Everything else the save needs is built from what is held. A failure here sent
+  // nothing, so it is today's failure before the insert, with no read back.
+  let request: CommitFreshInput;
+  try {
     const asBooking = row as unknown as Booking;
-    // #3495: the advisor the confirm read before writing, when it is this booking's.
-    const chosenAgent = !routed
-      ? null
-      : known && known.agent.id === row.assigned_user_id
-        ? known.agent
-        : await deps.getUser(row.assigned_user_id);
     const rt = bookingInsert.routing_trace;
     request = {
       booking: row,
       reservationId: reservation.id,
-      webhook: {
-        payload: webhookPayload(deps, asBooking, resolved.bucket, resolved.eventType, null, null),
-        // The one rule for a booking webhook's key (#436): booking.created keys on the id.
-        dedupeKey: webhookDedupeKey("booking.created", { bookingId, bookingEventId: null }) ?? bookingId,
-        // #459: a test bucket's delivery is recorded and never sent.
-        suppressed: resolved.bucket.is_test,
-      },
-      // #2073: a named link booking logs no routing decision.
-      routing: !routed
+      webhook: !resolved
+        ? { unbuilt: unbuilt ?? `the booked bucket ${bookedCode} no longer resolves` }
+        : {
+            payload: webhookPayload(deps, asBooking, resolved.bucket, resolved.eventType, null, null),
+            // The one rule for a booking webhook's key (#436): booking.created keys on the id.
+            dedupeKey: webhookDedupeKey("booking.created", { bookingId, bookingEventId: null }) ?? bookingId,
+            // #459: a test bucket's delivery is recorded and never sent.
+            suppressed: resolved.bucket.is_test,
+          },
+      // #2073: a named link booking logs no routing decision, and one whose bucket
+      // would not read has nothing to log it against (as before the one call save).
+      routing: !routed || !resolved
         ? null
         : {
             orgId: row.org_id,
@@ -5341,12 +5365,22 @@ async function afterFreshCommit(
 ): Promise<void> {
   // #3324: after the busy block committed (inside the save), so the splice's fence
   // is stamped no earlier than the block every later compute will read.
-  await deps.invalidateSlots(
-    bookedCode,
-    booking.assigned_user_id
-      ? { userId: booking.assigned_user_id, startsAt: booking.starts_at, endsAt: booking.ends_at }
-      : undefined,
-  );
+  //
+  // The save has already deleted the reservation, so nothing re-runs these three
+  // steps: each has its own boundary, so one that throws cannot take the others with
+  // it (L73), and none reports itself as work the drain will finish. A refresh that
+  // fails leaves the time offered until the every minute recompute lane reconverges
+  // the bucket, so it is logged as the error it is.
+  try {
+    await deps.invalidateSlots(
+      bookedCode,
+      booking.assigned_user_id
+        ? { userId: booking.assigned_user_id, startsAt: booking.starts_at, endsAt: booking.ends_at }
+        : undefined,
+    );
+  } catch (err) {
+    log.error("booking", { msg: "the slot refresh after a booking failed; the recompute lane reconverges the bucket", booking_id: booking.id, bucket: bookedCode }, err);
+  }
 
   // #586: the booking now owns this event id, so any source=gcal block for it is a
   // stray mirror a push-sync cached while racing the create. Deleted AFTER the commit

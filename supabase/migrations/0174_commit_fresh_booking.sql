@@ -21,7 +21,9 @@
 --   3. The busy block, through move_busy_block (one copy of that rule).
 --   4. The webhook, through enqueue_webhook_deliveries (one copy of the fan out), with
 --      the booking id and times taken from the row as STORED, which is the rendering
---      Regal has always received, rather than the caller's.
+--      Regal has always received, rather than the caller's. A caller that could not
+--      build the webhook sends the reason instead ({"unbuilt": "..."}), and the step
+--      fails with it.
 --   5. The routing record, from the caller's row (one mapper, in TypeScript), with only
 --      the columns it names, and the booking's id.
 --   6. The reservation's delete, unless the webhook step failed: then it stays and the
@@ -57,8 +59,14 @@ begin
   if p_booking is null or jsonb_typeof(p_booking) <> 'object' or coalesce(p_booking ->> 'id', '') = '' then
     raise exception 'commit_fresh_booking needs a booking row carrying its id' using errcode = '22023';
   end if;
-  if p_webhook is null or jsonb_typeof(p_webhook) <> 'object' or jsonb_typeof(p_webhook -> 'payload') is distinct from 'object' then
-    raise exception 'commit_fresh_booking needs a webhook with a payload' using errcode = '22023';
+  -- The webhook is a payload, or the reason the caller could not build one, never
+  -- neither and never both: a caller that forgot it must not read as one that could not.
+  -- Every clause is true or false, never null, so none can let a bad one through.
+  if p_webhook is null or jsonb_typeof(p_webhook) <> 'object'
+     or (p_webhook ? 'payload') = (p_webhook ? 'unbuilt')
+     or (p_webhook ? 'payload' and jsonb_typeof(p_webhook -> 'payload') <> 'object')
+     or (p_webhook ? 'unbuilt' and (jsonb_typeof(p_webhook -> 'unbuilt') <> 'string' or p_webhook ->> 'unbuilt' = '')) then
+    raise exception 'commit_fresh_booking needs a webhook with a payload, or the reason it could not be built' using errcode = '22023';
   end if;
 
   select string_agg(k, ', ' order by k) into v_unknown
@@ -100,24 +108,30 @@ begin
     end;
   end if;
 
-  -- 4: the webhook, with the row's own id and times.
-  begin
-    v_payload := (p_webhook -> 'payload') || jsonb_build_object(
-      'booking_id', v_booking.id,
-      'starts_at', v_booking.starts_at,
-      'ends_at', v_booking.ends_at
-    );
-    v_enqueue := enqueue_webhook_deliveries(
-      p_org_id      => v_booking.org_id,
-      p_event       => p_webhook ->> 'event',
-      p_payload     => v_payload,
-      p_dedupe_key  => p_webhook ->> 'dedupe_key',
-      p_suppression => p_webhook -> 'suppression'
-    );
-  exception when others then
-    v_enqueue := null;
-    v_failed := v_failed || jsonb_build_object('webhook', sqlerrm);
-  end;
+  -- 4: the webhook, with the row's own id and times. One the caller could not build
+  -- (the drain's resume, whose bucket would not read) is a failed step like any other:
+  -- the reservation stays, and the drain, which reads the bucket again, sends it.
+  if p_webhook ? 'unbuilt' then
+    v_failed := v_failed || jsonb_build_object('webhook', p_webhook ->> 'unbuilt');
+  else
+    begin
+      v_payload := (p_webhook -> 'payload') || jsonb_build_object(
+        'booking_id', v_booking.id,
+        'starts_at', v_booking.starts_at,
+        'ends_at', v_booking.ends_at
+      );
+      v_enqueue := enqueue_webhook_deliveries(
+        p_org_id      => v_booking.org_id,
+        p_event       => p_webhook ->> 'event',
+        p_payload     => v_payload,
+        p_dedupe_key  => p_webhook ->> 'dedupe_key',
+        p_suppression => p_webhook -> 'suppression'
+      );
+    exception when others then
+      v_enqueue := null;
+      v_failed := v_failed || jsonb_build_object('webhook', sqlerrm);
+    end;
+  end if;
 
   -- 5: the routing record, when the booking was routed.
   if p_routing is not null then

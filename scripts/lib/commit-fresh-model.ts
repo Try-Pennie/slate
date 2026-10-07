@@ -13,7 +13,8 @@
 //    deadline is a call with no answer, which may have committed;
 //  - the busy block, the webhook and the routing record each fail on their own,
 //    named, without undoing the booking;
-//  - the webhook carries the row's own id and times;
+//  - the webhook carries the row's own id and times, and one the caller could not
+//    build fails its step with the reason given;
 //  - the reservation is deleted unless the webhook failed.
 //
 // It imports only from src/, so a src test can use it without pulling in the scripts
@@ -63,17 +64,22 @@ export async function commitFreshModel(parts: CommitFreshParts, input: CommitFre
       failed.busy = reason(err);
     }
   }
-  try {
-    await parts.emitWebhook(
-      booking.org_id,
-      "booking.created",
-      { ...input.webhook.payload, booking_id: booking.id, starts_at: booking.starts_at, ends_at: booking.ends_at },
-      input.webhook.dedupeKey,
-      input.webhook.suppressed,
-      parts.deferSend,
-    );
-  } catch (err) {
-    failed.webhook = reason(err);
+  const webhook = input.webhook;
+  if ("unbuilt" in webhook) {
+    failed.webhook = webhook.unbuilt;
+  } else {
+    try {
+      await parts.emitWebhook(
+        booking.org_id,
+        "booking.created",
+        { ...webhook.payload, booking_id: booking.id, starts_at: booking.starts_at, ends_at: booking.ends_at },
+        webhook.dedupeKey,
+        webhook.suppressed,
+        parts.deferSend,
+      );
+    } catch (err) {
+      failed.webhook = reason(err);
+    }
   }
   if (input.routing) {
     try {

@@ -58,8 +58,6 @@ function enqueue(opts: { event?: string; dedupe?: string | null; suppression?: s
   return JSON.parse(out);
 }
 
-/** The error text a call raises, verbose, so the SQLSTATE shows. */
-
 /** The formats this suite seeded its endpoints with, which the reader accepts. */
 const SEEDED_FORMATS = ["generic", "regal"];
 const read = (answer: unknown) => readEnqueueAnswer(answer, SEEDED_FORMATS);

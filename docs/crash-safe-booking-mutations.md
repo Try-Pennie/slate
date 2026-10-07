@@ -131,14 +131,22 @@ resume, and the drain, so a crash anywhere converges on the same end state:
     so a failure there is named in the answer and never undoes the booking. A failed
     webhook step **keeps the reservation pending**, so the drain re-runs the side
     effects and the webhook is not lost.
+  - The two reads behind those parts (the booked bucket and the advisor) are made
+    only on the drain's resume; a fresh confirm already holds both. Neither can fail
+    the booking, because neither decided it: a bucket that will not read sends the
+    reason in the webhook's place (`{"unbuilt": ...}`), so the booking commits, the
+    webhook step fails with that reason and the drain sends it; an advisor that will
+    not read leaves the routing record without their attributes.
   - A refusal Postgres answered (`CommitRefusedError`) wrote nothing: the event's
     deletion is queued and the reservation stays pending, so the drain retries. A
     call with **no answer** (a deadline, a dropped connection) may have committed,
     so the booking is read back by its key before the lead is told it failed.
 - After the save: the slot refresh (its fence stamped after the busy block
   committed), the stray gcal mirror's delete (after the commit, #586, and after the
-  lead's answer), and the tier alert. The real database half is proved by
-  `scripts/verify-commit-fresh-booking-sql.ts`.
+  lead's answer), and the tier alert. The reservation is already gone, so nothing
+  re-runs these: each has its own boundary, and a refresh that fails is logged while
+  the every minute recompute lane reconverges the bucket. The real database half is
+  proved by `scripts/verify-commit-fresh-booking-sql.ts`.
 
 **Resume after a crash:** `processBookingReservations` runs on the
 `/api/cron/outbox` lane. It loads pending reservations, leases each one

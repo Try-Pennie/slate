@@ -219,6 +219,32 @@ describe("a fresh booking's one call save (#3495)", () => {
     expect(isDeadlineExceeded(err)).toBe(true);
   });
 
+  it("control: a failed fetch is NOT a refusal, whatever code rides along with it", async () => {
+    // postgrest-js folds a failed fetch into an error with an empty code; a system
+    // error's own code (EPIPE, EPERM: five capitals, like a SQLSTATE) must not read as
+    // Postgres answering if a client ever passes it through, or a commit whose answer
+    // was lost is never read back.
+    for (const code of ["", "EPIPE", "EPERM"]) {
+      rpcResult = { data: null, error: { code, message: "TypeError: fetch failed" } };
+      const err = await realDeps().commitFreshBooking(req).catch((e: unknown) => e);
+      expect(err, `code ${JSON.stringify(code)}`).toBeInstanceOf(Error);
+      expect(err, `code ${JSON.stringify(code)}`).not.toBeInstanceOf(CommitRefusedError);
+    }
+  });
+
+  it("reads every class of SQLSTATE, a lettered one included, and PostgREST's own codes as answered", async () => {
+    for (const code of ["23505", "XX000", "P0001", "HV000", "F0000", "PGRST116"]) {
+      rpcResult = { data: null, error: { code, message: "refused" } };
+      await expect(realDeps().commitFreshBooking(req), code).rejects.toBeInstanceOf(CommitRefusedError);
+    }
+  });
+
+  it("sends a webhook it could not build as the reason alone, so the save keeps the reservation for the drain", async () => {
+    rpcResult = { data: { status: "conflict", winner: null }, error: null };
+    await realDeps().commitFreshBooking({ ...req, webhook: { unbuilt: "the bucket 100 would not read" } });
+    expect(rpcCalls[0]?.args.p_webhook).toEqual({ unbuilt: "the bucket 100 would not read" });
+  });
+
   it("returns the committed booking and hands each delivery's first send to the scheduler", async () => {
     rpcResult = {
       data: {

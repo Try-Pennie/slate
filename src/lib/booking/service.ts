@@ -1017,20 +1017,18 @@ const ISOLATE_LINE = isolateLine(ISOLATE_CONFIRM_QUEUE);
 const ISOLATE_COMMIT_COSTS = makeCommitCostLog();
 
 /**
- * `lineFacts`, when given, receives which confirm line served this request's turn
- * (#3325), for the route's `confirm answered` line.
- */
-/**
- * Whether a refused database call was Postgres ANSWERING (#3495): a SQLSTATE, five
- * characters, or PostgREST's own PGRST code, refused before or inside the statement,
- * so a one transaction function wrote nothing. A deadline is not: it carries
- * ABORT_ERR, and the client passes a failed fetch's code through, so judging by
- * whether a code is present would read a commit whose answer was lost as one that
- * never happened.
+ * Whether a refused database call was Postgres ANSWERING (#3495): a SQLSTATE or
+ * PostgREST's own PGRST code, refused before or inside the statement, so a one
+ * transaction function wrote nothing. Anything else may have committed and is read
+ * back. The client gives a failed fetch an EMPTY code today, but a SQLSTATE is also
+ * five capitals, exactly like a system error's own code (EPIPE, EPERM), so one
+ * passed through would read a commit whose answer was lost as one that never
+ * happened. So the first character is held to the classes Postgres defines: a digit,
+ * or F0, HV, P0 and XX. A deadline is never an answer, however it arrives.
  */
 function postgresAnswered(error: { code?: string; message: string }): boolean {
   if (isDeadlineExceeded(error)) return false;
-  return typeof error.code === "string" && (/^[0-9A-Z]{5}$/.test(error.code) || /^PGRST\d+$/.test(error.code));
+  return typeof error.code === "string" && (/^[0-9FHPX][0-9A-Z]{4}$/.test(error.code) || /^PGRST\d+$/.test(error.code));
 }
 
 /**
@@ -1047,6 +1045,10 @@ async function reportBusyBlockMoveFailure(bookingId: string, reason: string, err
   ).catch(logAlertSendFailure("busy_block_write_through"));
 }
 
+/**
+ * `lineFacts`, when given, receives which confirm line served this request's turn
+ * (#3325), for the route's `confirm answered` line.
+ */
 export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLineFacts): BookingDeps {
   return {
     deferSend,
@@ -1487,12 +1489,15 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
       const { data, error } = await supabaseAdmin().rpc("commit_fresh_booking", {
         p_booking: booking,
         p_reservation_id: reservationId,
-        p_webhook: {
-          event: "booking.created",
-          payload: webhook.payload,
-          dedupe_key: webhook.dedupeKey,
-          suppression: suppressionByFormat("booking.created", webhook.payload, webhook.suppressed),
-        },
+        p_webhook:
+          "unbuilt" in webhook
+            ? { unbuilt: webhook.unbuilt }
+            : {
+                event: "booking.created",
+                payload: webhook.payload,
+                dedupe_key: webhook.dedupeKey,
+                suppression: suppressionByFormat("booking.created", webhook.payload, webhook.suppressed),
+              },
         p_routing: routing ? routingDecisionRow(routing) : null,
       });
       if (error) {
@@ -1522,7 +1527,11 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
       } else if (routing) {
         await alertIfMisroute(routing);
       }
-      if (answer.enqueue) await afterEnqueue(booking.org_id, "booking.created", answer.enqueue, webhook.suppressed, deferSend);
+      // An unbuilt webhook failed its step, so the reader has already refused any
+      // deliveries beside it (`readCommitAnswer`); the check here is the type's.
+      if (answer.enqueue && !("unbuilt" in webhook)) {
+        await afterEnqueue(booking.org_id, "booking.created", answer.enqueue, webhook.suppressed, deferSend);
+      }
       return {
         kind: "committed",
         booking: answer.booking as unknown as Booking,

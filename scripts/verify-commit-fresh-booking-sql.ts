@@ -262,6 +262,21 @@ try {
   eq(count("booking_reservations", `id = '${rHook}'`), "1", "and the reservation STAYS for the drain");
   eq(hook.status === "committed" ? hook.reservationDeleted : null, false, "the answer says the reservation was kept");
 
+  // A webhook the caller could not BUILD (the drain's resume, whose bucket would not
+  // read): before the one call save that read ran after the insert, where its failure
+  // cost the webhook alone. So the booking stands, the reason is named, nothing is
+  // enqueued, and the reservation STAYS for the drain, which reads the bucket again.
+  const hookUnbuilt = bookingRow({ start: "10:30", end: "10:50" });
+  const rUnbuilt = reservation(hookUnbuilt.idempotency_key);
+  const unbuilt = read(commit(hookUnbuilt, { reservation: rUnbuilt, webhook: { unbuilt: "the bucket 100 would not read" } }));
+  assert(
+    unbuilt.status === "committed" && unbuilt.failed.webhook === "the bucket 100 would not read" && unbuilt.enqueue === null,
+    `a webhook the caller could not build is named with its reason and the booking commits (got ${JSON.stringify(unbuilt)})`,
+  );
+  eq(count("bookings", `id = '${hookUnbuilt.id}'`), "1", "the booking stands");
+  eq(count("webhook_deliveries", `dedupe_key = '${hookUnbuilt.id}'`), "0", "with no deliveries");
+  eq(count("booking_reservations", `id = '${rUnbuilt}'`), "1", "and the reservation STAYS for the drain");
+
   // The routing record: the booking stands and the reservation goes (the record is evidence,
   // not control flow, as today).
   const routeFails = bookingRow({ start: "11:00", end: "11:20" });
@@ -285,7 +300,21 @@ try {
   const stray = { ...bookingRow({ start: "13:00", end: "13:20" }), not_a_column: 1 };
   const e2 = pg.verboseError(`select commit_fresh_booking(p_booking => ${lit(stray)}, p_reservation_id => '${R1}', p_webhook => ${lit(webhook(stray))}, p_routing => null);`);
   assert(e2 !== null && /22023/.test(e2) && /not_a_column/.test(e2), `a key bookings has no column for is refused by name (got ${e2?.split("\n")[0] ?? "a result"})`);
-  eq(sql("select count(*) from bookings;"), before, "and neither wrote a booking");
+  // A webhook is a payload or the reason there is none, never neither and never both: a
+  // caller that forgot it must not read as one that could not build it (L168).
+  const hookless = bookingRow({ start: "13:00", end: "13:20" });
+  for (const [label, bad] of [
+    ["no webhook at all", null],
+    ["an empty webhook", {}],
+    ["an empty reason", { unbuilt: "" }],
+    ["a payload AND a reason", { ...webhook(hookless), unbuilt: "the bucket 100 would not read" }],
+  ] as const) {
+    const e = pg.verboseError(
+      `select commit_fresh_booking(p_booking => ${lit(hookless)}, p_reservation_id => '${R1}', p_webhook => ${bad === null ? "null" : lit(bad)}, p_routing => null);`,
+    );
+    assert(e !== null && /22023/.test(e), `${label} is refused (got ${e?.split("\n")[0] ?? "a result"})`);
+  }
+  eq(sql("select count(*) from bookings;"), before, "and none of them wrote a booking");
 
   // --- the answers have the shape the reader is tested against (L26) ------------------------------
   const fixture = JSON.parse(readFileSync(join(FIXTURES, "commit-fresh-booking-answer.json"), "utf8")) as Record<string, Record<string, unknown>>;

@@ -502,11 +502,6 @@ export interface Database {
         Returns: number;
       };
       /**
-       * #3495, migration 0173: one delivery per active endpoint subscribed to the event,
-       * deduped on (endpoint, event, dedupe_key), suppression decided by the caller per
-       * format. Answers {subscribers, deliveries}, read by `readEnqueueAnswer`.
-       */
-      /**
        * #3495, migration 0174: a fresh booking's save after its calendar event, in one
        * transaction. Answers {status: committed, booking, enqueue, failed,
        * reservation_deleted} or {status: conflict, winner}, read by `readCommitAnswer`.
@@ -520,6 +515,11 @@ export interface Database {
         };
         Returns: unknown;
       };
+      /**
+       * #3495, migration 0173: one delivery per active endpoint subscribed to the event,
+       * deduped on (endpoint, event, dedupe_key), suppression decided by the caller per
+       * format. Answers {subscribers, deliveries}, read by `readEnqueueAnswer`.
+       */
       enqueue_webhook_deliveries: {
         Args: {
           p_org_id: string;

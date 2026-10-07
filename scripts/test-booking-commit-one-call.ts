@@ -11,7 +11,8 @@
 // the booking back before telling a lead their booking failed (red team 3).
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-booking-commit-one-call.ts
-import { createBooking, CommitRefusedError, type CommitFreshInput } from "../src/lib/booking/orchestration.ts";
+import { createBooking, processBookingReservations, CommitRefusedError, type CommitFreshInput } from "../src/lib/booking/orchestration.ts";
+import type { BookingReservation } from "../src/lib/db/types.ts";
 import { createAsserter, makeDeps, makeBooking, input } from "./lib/booking-fakes.ts";
 
 const { assert, finish } = createAsserter();
@@ -85,6 +86,37 @@ async function main() {
     const made = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
     await createBooking(input, made.deps);
     assert(made.calls.deleteGcalMirror.length === 1, "with nothing to schedule on (the drain), it is cleared inline");
+  }
+  // The save has already deleted the reservation, so nothing retries the work after it:
+  // a slot refresh that throws must not take the mirror's delete down with it (L73).
+  {
+    const made = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
+    made.deps.invalidateSlots = async () => {
+      throw new Error("slot refresh refused");
+    };
+    const res = await createBooking(input, made.deps);
+    assert(res.booking.id === "bk-new", "a slot refresh that throws still answers the booking");
+    assert(made.calls.deleteGcalMirror.length === 1, `and the stray mirror is still cleared (got ${made.calls.deleteGcalMirror.length})`);
+  }
+  // Nor is it reported to the drain as work left over: the reservation is gone, so the
+  // drain would back off on a row that no longer exists. The recompute lane reconverges.
+  {
+    const first = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
+    let written: BookingReservation | undefined;
+    const insertReservation = first.deps.insertReservation;
+    first.deps.insertReservation = async (row) => {
+      written = { ...row, id: "resv-refresh", status: "pending", lease_until: null, attempts: 0, last_error: null, next_attempt_at: null, created_at: "", updated_at: "" } as unknown as BookingReservation;
+      return insertReservation(row);
+    };
+    await createBooking(input, first.deps);
+    assert(written !== undefined, "the fresh confirm wrote a reservation to drain");
+    const made = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]), drainableReservations: [written!] });
+    made.deps.invalidateSlots = async () => {
+      throw new Error("slot refresh refused");
+    };
+    const res = await processBookingReservations(made.deps, 15);
+    assert(res.completed === 1 && res.failed === 0, `the drain counts the booking completed (got ${JSON.stringify(res)})`);
+    assert(made.calls.reservationBumps.length === 0, `and bumps no attempt on the deleted reservation (got ${made.calls.reservationBumps.length})`);
   }
 
   // --- refused by Postgres: nothing was written, so the confirm fails as before --------------
