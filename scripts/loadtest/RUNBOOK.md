@@ -483,11 +483,11 @@ and downloading it, the archive still needing the burst job and the burst tail, 
 handing the burst tail to a reader of the startup population.
 
 **Two tails on the Worker must never overlap (#3450).** Stopping one `wrangler tail`
-silences every other tail attached to the same Worker. Measured 2026-10-07: tail A and
-tail B both received the 00:30 crons, B was stopped at 00:30:34, and A received nothing
+silences every other tail attached to the same Worker. Measured 2026-10-06 (times ET):
+tail A and tail B both received the 8:30 PM crons, B was stopped at 8:30:34 PM, and A received nothing
 for the next two and a half minutes while the every minute cron kept firing; one tail
 alone received every minute's. Run 37547143303's archive attached while the burst tail
-was still open and went deaf at 23:49:22, the moment the burst tail was stopped, so its
+was still open and went deaf at 7:49:22 PM ET on 2026-10-06, the moment the burst tail was stopped, so its
 startup bar was judged on 1 of 24 confirms. So `drive`, `freshness` and `archive` all
 wait for `burst-tail` to CLOSE (with `!cancelled()`, so a failed burst tail never skips
 them), and the drive and the archive still start together.

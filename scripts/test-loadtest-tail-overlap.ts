@@ -1,11 +1,11 @@
 // No two `wrangler tail` jobs of a load run may be open at once (#3450).
 //
 // Stopping one tail on a Worker silences every other tail attached to it. Measured
-// 2026-10-07: tail A and tail B both received the 00:30 crons, B was stopped at
-// 00:30:34, and A then received nothing for two and a half minutes while the every
+// 2026-10-06 (all times ET): tail A and tail B both received the 8:30 PM crons, B
+// was stopped at 8:30:34 PM, and A then received nothing for two and a half minutes while the every
 // minute cron kept firing; one tail alone received a cron every minute. On run
 // 37547143303 the archive tail attached while the burst tail was still open, and
-// went deaf at 23:49:22 when the burst tail was stopped, so the startup bar was
+// went deaf at 7:49:22 PM ET when the burst tail was stopped, so the startup bar was
 // judged on 1 of 24 confirms.
 //
 // So every pair of jobs that runs `wrangler tail` must be ordered by `needs`, and the
