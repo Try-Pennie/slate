@@ -1810,9 +1810,11 @@ function judgeDropBurst(
     return;
   }
   const sawDefect = taken > 0 && probe.kind === "read" && probe.bookable && probe.rungsDropped > 0;
-  // A probe that could not be read has already left the refusals bar open; saying so
-  // twice would name one unknown as two.
-  const alreadyOpen = taken > 0 && probe.kind === "unconcluded";
+  // A probe that could not be read, or that read a reason other than taken, has already
+  // left the refusals bar open; saying so twice would name one unknown as two (L260).
+  const alreadyOpen =
+    taken > 0 &&
+    (probe.kind === "unconcluded" || (!probe.bookable && probe.reason !== SLOT_TAKEN_REASON));
   // And refusals while the REQUESTED rung was still free have already FAILED the
   // refusals bar, on any build. Asking this bar too would report one fault twice, the
   // second time blaming the crowd or the declaration for it (#3459 review).

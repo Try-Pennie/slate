@@ -3081,6 +3081,29 @@ function withDrop(outcome: "walks" | "stops", rule: string | undefined, mutate: 
 }
 
 {
+  // #3459 lessons review (L260): the same probe on a build that says it STOPS. The
+  // refusals bar has already been left open for it, so the tier drop bar must not list
+  // it a second time as a burst that could not show the declared defect, blaming the
+  // crowd or the declaration for what is one unknown about the slot.
+  for (const reason of ["closed", "no_eligible_agents"]) {
+    const r = withDrop("stops", "stops", (i) => {
+      for (const f of i.burstResults.filter((x) => x.burstLeg?.index === 1)) {
+        f.probe = probeOf("120", legAt(1), { bookable: false, reason });
+      }
+    });
+    eq(r.verdict, "inconclusive", `stops build, ${reason}: a drop burst whose slot answered ${reason} cannot conclude`);
+    assert(
+      r.burstsUnconcluded.some((x) => x.bar === "the burst's refusals" && x.detail.includes(reason)),
+      `stops build, ${reason}: the refusals bar says why`,
+    );
+    assert(
+      !r.burstsUnconcluded.some((x) => x.bar === "the tier drop"),
+      `stops build, ${reason}: and the tier drop bar does not report the same unknown again (got: ${r.burstsUnconcluded.map((x) => `${x.bar}: ${x.detail}`).join(" | ")})`,
+    );
+  }
+}
+
+{
   // #3459 review: on a build that says it stops, a drop burst whose losers were told
   // SLOT_TAKEN while the REQUESTED rung was still free has already failed the refusals
   // bar, on any build. The tier drop bar must not ALSO list it as a burst that could
