@@ -62,6 +62,33 @@ async function replay1655() {
   assert(spent.call?.label === "google freeBusy.many" && spent.call.ms === 6529, "and the slowest single call");
 }
 
+// --- the call must have run INSIDE the step it is blamed for ----------------------
+// The slowest call of the whole request is not necessarily inside the dearest step.
+// Here a 3s Google call runs in `assign-and-verify` while `route-checks` is the
+// dearest step at 5s of quick reads: naming the Google call for route-checks would
+// be the very misattribution this exists to stop (L11).
+{
+  const c = clock();
+  const profile = makeConfirmProfile({ now: c.now }).observeCalls();
+  await profile.time("assign-and-verify", async () => {
+    profile.call("google freeBusy.many", c.now(), c.now() + 3000);
+    c.advance(3100);
+  });
+  await profile.time("route-checks", async () => {
+    profile.call("supabase bookings", c.now(), c.now() + 200);
+    c.advance(5000);
+  });
+  const spent = whereTimeWent(profile.read(c.now()));
+  assert(spent.stage?.name === "route-checks", "the dearest stage is route-checks");
+  assert(
+    spent.call?.label === "supabase bookings" && spent.call.ms === 200,
+    `the call named is the slowest one INSIDE that stage, not the request's (got ${spent.call?.label}:${spent.call?.ms})`,
+  );
+  const page = dependencyTimeoutAlert({ dependency: "writing the booking and its calendar event", timeoutMs: 3000, budget: null, neededMs: 7000, spent });
+  assert(!page.includes("google"), `and the page never pins a Google call on a stage it did not run in (got: ${page})`);
+  assert(page.includes("route-checks step (5 seconds) inside Slate"), "it reads as Slate's own work, which is what the stage was");
+}
+
 // --- read from the request in force, and only there ------------------------------
 {
   const { profile, at } = await replay1655();

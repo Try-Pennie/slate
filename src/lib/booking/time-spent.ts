@@ -14,7 +14,7 @@ import type { ConfirmProfile, ConfirmRequestReading } from "./confirm-profile";
 export interface TimeSpent {
   /** The dearest named stage. */
   stage: { name: string; ms: number } | null;
-  /** The slowest single outside call, by its full label. */
+  /** The slowest single outside call made INSIDE that stage, by its full label. */
   call: { label: string; ms: number } | null;
 }
 
@@ -22,7 +22,7 @@ export function whereTimeWent(r: ConfirmRequestReading): TimeSpent {
   const top = r.stages[0];
   return {
     stage: top ? { name: top.stage, ms: top.ms } : null,
-    call: r.calls?.slowest ?? null,
+    call: top ? (r.calls?.slowestByStage[top.stage] ?? null) : null,
   };
 }
 

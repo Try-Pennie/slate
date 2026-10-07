@@ -285,6 +285,8 @@ describe("the request's own reading (#3300)", () => {
       ],
       // #3511: the slowest single call by its full label, which byDependency folds away.
       slowest: { label: "google freeBusy", ms: 800 },
+      // No stage ran, so no call belongs to one.
+      slowestByStage: {},
     });
   });
 
