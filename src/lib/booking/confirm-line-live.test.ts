@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // The runtime pieces the wiring composes, replaced so the test decides each one.
 const env = vi.hoisted(() => ({ value: {} as Record<string, unknown>, throws: false }));
@@ -23,7 +23,7 @@ vi.mock("@/lib/platform/runtime", () => ({ isWorkersRuntime: () => true }));
 // expires is the shipped rule; only the warm up (two table reads) is counted instead.
 const pools = vi.hoisted(() => ({ warms: 0, after: [] as string[] }));
 vi.mock("@/lib/availability/slot-cache", async () => {
-  const { makeGroupingStore, POOL_GROUPING_FRESH_MS } = await import("@/lib/booking/pool-grouping");
+  const { makeGroupingStore, POOL_GROUPING_FRESH_MS } = await import("@/lib/booking/pool-grouping-reader");
   const lineGroupingStore = makeGroupingStore({ now: () => Date.now(), freshMs: POOL_GROUPING_FRESH_MS });
   return {
     lineGroupingStore,
@@ -46,6 +46,7 @@ import { lineGroupingStore } from "@/lib/availability/slot-cache";
 import { makeConfirmLineObject, objectRoleOf } from "@/lib/booking/confirm-line-object";
 import { POOL_GROUPING_DIRECTORY, groupingPutMessage, groupingSnapshotOf, type GroupingEntry } from "@/lib/booking/pool-grouping";
 import { confirmLineObjectName } from "@/lib/booking/shared-confirm-line";
+import { POOL_GROUPING_RETRY_MS } from "@/lib/booking/pool-grouping-reader";
 
 /**
  * A `CONFIRM_LINE` binding whose every instance is the REAL object, named and served
@@ -189,6 +190,9 @@ describe("confirmLineFor (#3325)", () => {
 // grouping; #3355 had already decided a confirm may WAIT, within a short bound, for the
 // grouping before its key. These pin the wait and every way it can end.
 describe("the line key's grouping (#3460)", () => {
+  // The clock every case runs on, only ever moved forward (restoring the real clock
+  // between cases would move it back under a fetch an earlier case recorded).
+  let clock = 0;
   beforeEach(() => {
     env.value = {};
     env.throws = false;
@@ -196,6 +200,15 @@ describe("the line key's grouping (#3460)", () => {
     pools.warms = 0;
     pools.after = [];
     switchReading.reads = 0;
+    // The reader is the server's own, one per module, so a fetch an earlier case found
+    // nothing in holds the next one back for the retry window. Each case starts past it.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    clock = Math.max(clock, Date.now()) + 10 * POOL_GROUPING_RETRY_MS;
+    vi.setSystemTime(clock);
+  });
+  afterEach(() => {
+    clock = Math.max(clock, Date.now());
+    vi.useRealTimers();
   });
 
   it("keys a ladder from a grouping this server read itself, fetches nothing, and says local", async () => {
@@ -241,6 +254,32 @@ describe("the line key's grouping (#3460)", () => {
     await Promise.resolve();
     expect(pools.after).toContain("pool-keys-warm");
     expect(pools.warms).toBe(1);
+  });
+
+  // Review of #3471: the fetch starts before the ceilings answer, so a caller they refuse
+  // starts it too. After a fetch that found nothing, the next is not started for the retry
+  // window, so a flood of such requests costs this server one call, never one each.
+  it("asks an empty directory once, then says backoff without asking until the retry window has passed", async () => {
+    const objects = boundObjects();
+    env.value = { CONFIRM_LINE: objects.binding };
+    const first: ConfirmLineFacts = {};
+    startConfirmPrelude(first);
+    await settleLineGrouping(first);
+    expect(first.grouping?.source).toBe("absent");
+    for (let i = 0; i < 20; i++) {
+      const facts: ConfirmLineFacts = {};
+      startConfirmPrelude(facts);
+      await settleLineGrouping(facts);
+      expect(facts.grouping?.source).toBe("backoff");
+      expect(lineGroupOfLive("120", facts)).toBeNull();
+      expect(facts.lineGroupSource).toBe("backoff");
+    }
+    expect(objects.calls.length).toBe(1);
+    vi.setSystemTime(Date.now() + POOL_GROUPING_RETRY_MS);
+    const later: ConfirmLineFacts = {};
+    await settleLineGrouping(later);
+    expect(later.grouping?.source).toBe("absent");
+    expect(objects.calls.length).toBe(2);
   });
 
   it("keeps the code's own line when a stale snapshot is all the directory has", async () => {

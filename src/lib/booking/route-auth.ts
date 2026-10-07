@@ -161,8 +161,11 @@ function refuse(
  *
  * `onAuthenticated` (#3460, #3355 item 1) runs the moment the key is known to be good,
  * BEFORE the ceilings are asked, so whatever it starts (a confirm's switch read and pool
- * grouping fetch) runs during their I/O. It never runs for a refused key: a flood of
- * bad keys must buy no work beyond the refusal (L498). It must not throw or await.
+ * grouping fetch) runs during their I/O. It never runs for a key that fails
+ * authentication: a flood of bad keys buys no work beyond the refusal (L498). It DOES
+ * run for a good key the ceilings then refuse with a 429, so whatever it starts must
+ * cost per server and never per request; `startConfirmPrelude` states that bound. It
+ * must not throw or await.
  */
 export async function authorizeBookingApi<C extends BookingApiCaller = FullApiCaller>(
   req: NextRequest,

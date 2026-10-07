@@ -46,7 +46,7 @@ import {
   GROUPING_DIRECTORY_PATH,
 } from "./confirm-line-object.ts";
 import { DIRECTORY_GROUP_PREFIX } from "./pool-grouping.ts";
-import { readWithinDeadline, type ScheduleTimer } from "../read-within-deadline.ts";
+import { readWithinDeadline, NoAnswerWithinError, type ScheduleTimer } from "../read-within-deadline.ts";
 import type { SwitchReading } from "../cached-switch.ts";
 
 export type { SwitchReading };
@@ -143,7 +143,7 @@ export function makeSharedConfirmLine<T>(deps: {
     const answer = await readWithinDeadline(() => stub.send({ v: CONFIRM_LINE_PROTOCOL, ...message, ...traced() }), ms, (e) => (err = e), timer);
     return { answer, err, ms: now() - t0 };
   };
-  const timedOut = (err: unknown) => err instanceof Error && /no answer within/.test(err.message);
+  const timedOut = (err: unknown) => err instanceof NoAnswerWithinError;
 
   /** Best effort: undo whatever the object gave an attempt its caller gave up on. */
   const abandon = async (stub: LineStub, attempt: string) => {

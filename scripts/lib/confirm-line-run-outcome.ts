@@ -191,25 +191,25 @@ export const RUN_JUDGEMENT: Record<ConfirmLineExit, RunJudgement> = {
   [CONFIRM_LINE_EXIT.directoryUnreachable]: {
     concluded: true,
     headline:
-      "The pool grouping directory did not answer, so a server holding no grouping of its own keys its confirm line by code and a crowd on sibling codes splits across lines again.",
+      "The shared confirm line's pool grouping directory did not answer, so the grouping the recompute lane publishes cannot reach any server.",
   },
   [CONFIRM_LINE_EXIT.directoryNotStored]: {
     concluded: true,
     headline:
-      "The shared confirm line's pool grouping directory did not keep the grouping it was handed, so no published grouping can reach a cold server.",
+      "The shared confirm line's pool grouping directory did not keep the grouping it was handed, so no published grouping can reach any server.",
   },
   [CONFIRM_LINE_EXIT.directoryOlderWon]: {
     concluded: true,
     headline:
-      "The shared confirm line's pool grouping directory let an older grouping replace a newer one, so a slow publisher could hand cold servers a stale grouping.",
+      "The shared confirm line's pool grouping directory let an older grouping replace a newer one, so a slow publisher could hand servers a stale grouping.",
   },
   [CONFIRM_LINE_EXIT.groupingAbsent]: {
     concluded: true,
-    headline: "The live pool grouping directory holds nothing, so the recompute lane is not publishing and every cold server keys its confirm line by code.",
+    headline: "The shared confirm line's live pool grouping directory holds nothing, so the recompute lane is not publishing to it.",
   },
   [CONFIRM_LINE_EXIT.groupingUnusable]: {
     concluded: true,
-    headline: "The live pool grouping is one every cold server refuses, so the snapshot reaches nobody and cold servers key their confirm line by code.",
+    headline: "The shared confirm line's live pool grouping is one a server reading it would refuse, so the snapshot reaches nobody.",
   },
 };
 

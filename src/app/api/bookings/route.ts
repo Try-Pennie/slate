@@ -142,7 +142,9 @@ async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
   //   refusal: api_rate_limited     429, deliberately uncounted (it would dilute the share)
   // #3460, #3355 item 1: the confirm's early reads (the shared line switch and the pool
   // grouping snapshot) start the moment the key is good, so they run during the
-  // ceilings' I/O, and never for a refused key.
+  // ceilings' I/O, and never for a key that fails authentication. A good key the
+  // ceilings refuse has started them, which costs per server, never per request
+  // (`startConfirmPrelude`).
   const authd = await authorizeBookingApi(
     req,
     DIRECT_BOOKING_API_HOURLY_RATE_RULES,

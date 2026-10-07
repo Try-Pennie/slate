@@ -56,16 +56,14 @@ import { VirtualClock, SharedResource, onSharedCapacity, type CallRecord } from 
 import { makeConfirmLineHost, makeConfirmLineObject } from "../src/lib/booking/confirm-line-object.ts";
 import { makeSharedConfirmLine } from "../src/lib/booking/shared-confirm-line.ts";
 import { ladderGroupOf } from "../src/lib/booking/line-key.ts";
+import { groupingEntriesOf, groupingPutMessage, groupingSnapshotOf, type GroupingSnapshot } from "../src/lib/booking/pool-grouping.ts";
 import {
   POOL_GROUPING_FETCH_MS,
   POOL_GROUPING_FRESH_MS,
-  groupingEntriesOf,
-  groupingPutMessage,
-  groupingSnapshotOf,
+  POOL_GROUPING_RETRY_MS,
   makeGroupingReader,
   makeGroupingStore,
-  type GroupingSnapshot,
-} from "../src/lib/booking/pool-grouping.ts";
+} from "../src/lib/booking/pool-grouping-reader.ts";
 import { groupByPool } from "../src/lib/availability/pool-key.ts";
 import { poolGroupingRoster } from "./lib/pool-grouping-fixture.ts";
 
@@ -281,6 +279,7 @@ async function burst(opts: {
           timer: timerOnClock,
           boundMs: POOL_GROUPING_FETCH_MS,
           freshMs: POOL_GROUPING_FRESH_MS,
+          retryMs: POOL_GROUPING_RETRY_MS,
         });
         groupings.push({ lineGroupOf: (code) => ladderGroupOf(code, store.peek), ensure: opts.grouping.fetch ? () => reader.ensure() : null });
       }

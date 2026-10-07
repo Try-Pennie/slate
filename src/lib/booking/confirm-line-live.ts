@@ -26,7 +26,8 @@ import {
   lineGroupSourceOf,
   POOL_GROUPING_FETCH_MS,
   POOL_GROUPING_FRESH_MS,
-} from "@/lib/booking/pool-grouping";
+  POOL_GROUPING_RETRY_MS,
+} from "@/lib/booking/pool-grouping-reader";
 import { groupingDirectoryLive } from "@/lib/booking/pool-grouping-live";
 import type { ConfirmLineFacts } from "@/lib/booking/confirm-latency";
 
@@ -106,20 +107,34 @@ const groupingReader = () =>
     timer: realTimer,
     boundMs: POOL_GROUPING_FETCH_MS,
     freshMs: POOL_GROUPING_FRESH_MS,
+    retryMs: POOL_GROUPING_RETRY_MS,
     onFetchStarted: (fetching) => afterResponse("pool-grouping-fetch", () => fetching),
   }));
 
 /**
- * The confirm's early reads, started the moment the request is known to be allowed
- * (#3460, #3355 item 1): after the booking API's key is authenticated, or after the
- * booker's address passes its edge limiter, and never before, so a flood of refused
- * requests buys neither (L498). Both then run during the ceilings, the pause flag and
- * the body read, and the confirm awaits them where it needs them: the grouping before
- * its line key (`settleLineGrouping`), the switch when the line decides.
+ * The confirm's early reads (#3460, #3355 item 1), started after the booking API's key
+ * is authenticated, or after the booker's address passes its edge limiter, and never
+ * before, so a flood of bad keys or of one address past its minute buys neither
+ * (L498). Both then run during the ceilings, the pause flag and the body read, and the
+ * confirm awaits them where it needs them: the grouping before its line key
+ * (`settleLineGrouping`), the switch when the line decides.
  *
- * The switch read is the cached reader the line already uses, so starting it here adds
- * no read (one per server per TTL, coalesced); it is kept alive past the response for
- * the same reason as the fetch.
+ * Because they start BEFORE the per key and per address hourly ceilings answer, a caller
+ * with a good key (or an address inside its minute) whom those ceilings then refuse with
+ * a 429 has started them too. What that caller can cause is bounded per SERVER, never
+ * per request, however fast it sends:
+ *
+ * - the switch: the cached reader the line already uses, so at most one read per server
+ *   per `SHARED_LINE_SWITCH_TTL_MS` (15s), or per `SHARED_LINE_SWITCH_RETRY_MS` (5s)
+ *   while the read is failing, coalesced however many ask;
+ * - the grouping: no fetch while the server holds a fresh grouping; one in flight
+ *   however many ask, a new one only once that is older than `POOL_GROUPING_FETCH_MS`;
+ *   and none for `POOL_GROUPING_RETRY_MS` after a fetch that installed nothing.
+ *
+ * So an over ceiling flood costs a server at most about one switch read every 5 seconds
+ * and two directory calls a second, the same as a flood of real confirms would, and
+ * nothing more for each request it sends. Each is kept alive past the response
+ * (`afterResponse`), because a later confirm on this server may have joined it.
  */
 export function startConfirmPrelude(facts: ConfirmLineFacts): void {
   const reading = readSharedConfirmLine();

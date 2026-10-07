@@ -38,7 +38,7 @@ import { confirmProfileFields, makeConfirmProfile, type ConfirmProfile } from "@
 import { DependencyTimeoutError } from "@/lib/booking/orchestration";
 import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import type { LineServed } from "@/lib/booking/shared-confirm-line";
-import type { GroupingReading, LineGroupSource } from "@/lib/booking/pool-grouping";
+import type { GroupingReading, LineGroupSource } from "@/lib/booking/pool-grouping-reader";
 import type { LoadtestLeg, WaitMarks } from "@/lib/booking/wait-marks";
 
 /**

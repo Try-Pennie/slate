@@ -105,9 +105,9 @@ export const OUTCOME_ORDER: readonly Failed[] = [
   "not-handed-on",
   "not-freed",
   "freed-late",
-  // #3460: a directory that serves nothing splits a crowd on sibling codes by code again,
-  // which is lost capacity on the line rather than a line that misbehaves, so it ranks
-  // below every line fault and above a slot merely left held.
+  // #3460: a directory that serves nothing costs the line capacity rather than being a
+  // line that misbehaves, so it ranks below every line fault and above a slot merely
+  // left held.
   "directory-unreachable",
   "not-stored",
   "older-won",
@@ -159,15 +159,15 @@ export const FAILED_CHECK: Record<Failed, { exit: number; says: string }> = {
   "directory-unreachable": {
     exit: CONFIRM_LINE_EXIT.directoryUnreachable,
     says:
-      "The pool grouping directory did not answer the confirm path's own transport, so a server holding no grouping of its own keys its confirm line by code, and a crowd for one slot on sibling codes elects a leader per code again.",
+      "The pool grouping directory did not answer the confirm path's own transport, so the grouping the recompute lane publishes cannot reach any server.",
   },
   "not-stored": {
     exit: CONFIRM_LINE_EXIT.directoryNotStored,
-    says: "The pool grouping directory did not keep a fresh grouping it was handed, so whatever the recompute lane publishes never reaches a cold server.",
+    says: "The pool grouping directory did not keep a fresh grouping it was handed, so whatever the recompute lane publishes never reaches any server.",
   },
   "older-won": {
     exit: CONFIRM_LINE_EXIT.directoryOlderWon,
-    says: "The pool grouping directory let an older grouping replace a newer one, so a slow publisher can hand cold servers a grouping an admin has since edited.",
+    says: "The pool grouping directory let an older grouping replace a newer one, so a slow publisher could hand servers a grouping an admin has since edited.",
   },
   "no-grouping": {
     exit: CONFIRM_LINE_EXIT.groupingAbsent,
@@ -175,7 +175,7 @@ export const FAILED_CHECK: Record<Failed, { exit: number; says: string }> = {
   },
   "grouping-unusable": {
     exit: CONFIRM_LINE_EXIT.groupingUnusable,
-    says: "The live pool grouping is one every cold server refuses (another format, malformed, or stale), so the snapshot reaches nobody and cold servers key their confirm line by code.",
+    says: "The live pool grouping is one a server reading it would refuse (another format, malformed, or stale), so the snapshot reaches nobody.",
   },
 };
 

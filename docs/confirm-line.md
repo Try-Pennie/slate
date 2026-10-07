@@ -78,16 +78,29 @@ after the response, as a backup. A publish that landed stamps the `pool-grouping
 heartbeat, watched by `POOL_GROUPING_STALE_BOUNDS_MS` (Slack only, ten minutes), so a
 publisher that stops is paged rather than every cold server quietly keying by code.
 
-A confirm starts fetching the snapshot the moment its request is known to be allowed
-(after the booking API's key authenticates, inside the authorizer and before its
-ceilings, or after the booker's address passes its edge limiter), alongside the
-shared line switch read (#3355 item 1), and never for a refused request (L498). It
-waits for it in the service, before the orchestration builds the key, at most
-`POOL_GROUPING_FETCH_MS` (500ms: #3325 measured a new object's first call at p95
-323ms and worst 452ms). One fetch per server however many confirms ask, and a fetch
-older than the bound is never joined, because a fetch started by a request that has
-since ended can be left pending for ever. A fetch a request starts is kept alive past
-its response, so a confirm that joined it is never stranded.
+A confirm starts fetching the snapshot, alongside the shared line switch read (#3355
+item 1), after the booking API's key authenticates (inside the authorizer, before its
+ceilings) or after the booker's address passes its edge limiter. A bad key, or an
+address past its minute, starts neither (L498). It waits for it in the service, before
+the orchestration builds the key, at most `POOL_GROUPING_FETCH_MS` (500ms: #3325
+measured a new object's first call at p95 323ms and worst 452ms). One fetch per server
+however many confirms ask, and a fetch older than the bound is never joined, because a
+fetch started by a request that has since ended can be left pending for ever. A fetch a
+request starts is kept alive past its response, so a confirm that joined it is never
+stranded.
+
+**What a caller over its ceiling can cause, stated.** Both reads start before the per
+key and per address hourly ceilings answer, so a good key that those ceilings then
+refuse with a 429 has started them too. That is bounded per server and never per
+request: the switch is read at most once per server per 15 seconds (once per 5 while
+the read is failing), coalesced; the snapshot is not fetched at all while the server
+holds a fresh grouping, is fetched once however many ask, and is not fetched again for
+`POOL_GROUPING_RETRY_MS` (one second) after a fetch that installed nothing. So a flood
+of over ceiling requests costs each server about one switch read every 5 seconds and
+two directory calls a second at most, what the same number of real confirms would
+cost, and nothing more for each request it sends. `startConfirmPrelude` carries the
+same statement beside the code, and the bookings route's tests send a burst of refused
+requests to a cold server and count both.
 
 Every refusal leaves the confirm on its code's own line, which is today's behaviour,
 and over grouping is the one failure this must not have:
@@ -103,6 +116,7 @@ and over grouping is the one failure this must not have:
 | no answer within the bound | keys by code; an answer inside the fetch's own 2s give up still installs, for the next confirm | `timeout` |
 | the call failed | installs nothing | `unreachable` |
 | no binding (off the runtime) | fetches nothing | `unbound` |
+| nothing: a fetch on this server installed nothing less than a second ago | fetches nothing, keys by code | `backoff` |
 | a grouping that does not list the confirm's own code | keys by code | `own-code-missing` |
 
 Two guards keep the snapshot from ever grouping differently from a local read:

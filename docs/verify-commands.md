@@ -305,7 +305,7 @@ directions and each on its own named outcome:
 - **nothingHeld**: afterwards a newcomer on each instant the probe used leads at
   once, so leaving nothing held is measured rather than assumed.
 - **directory** (#3460): the pool grouping DIRECTORY, the reserved instance of the
-  same class a cold server fetches its line grouping from (`docs/confirm-line.md`),
+  same class the recompute lane publishes the pool grouping to (`src/lib/booking/pool-grouping.ts`),
   through the production directory transport (`durableGroupingDirectory`). On the
   probe's own directory, `directory:pool-grouping:verify`, a fresh put is stored and
   handed back and an older put is kept out, so newest wins is measured both ways. Then
@@ -364,11 +364,11 @@ lists every check's outcome.
 | 16 | an unacknowledged lead was freed only by its lease | the acknowledgement window is not enforced |
 | 17 | an unacknowledged lead was never freed | one lost answer holds every confirm behind it |
 | 18 | something the probe used was still held afterwards | the object keeps a line it should have dropped |
-| 19 | the pool grouping directory did not answer | cold servers key their line by code; a sibling code crowd splits again |
-| 20 | the directory did not keep a fresh grouping it was handed | nothing the lane publishes reaches a cold server |
-| 21 | an older grouping replaced a newer one | a slow publisher can hand cold servers a stale grouping |
+| 19 | the pool grouping directory did not answer | the grouping the lane publishes reaches no server |
+| 20 | the directory did not keep a fresh grouping it was handed | nothing the lane publishes reaches a server |
+| 21 | an older grouping replaced a newer one | a slow publisher could hand servers a stale grouping |
 | 22 | the live directory holds no grouping | the recompute lane is not publishing; search `tag=pool-grouping` |
-| 23 | the live grouping is one a cold server refuses | another format, malformed, or older than three minutes |
+| 23 | the live grouping is one a server would refuse | another format, malformed, or older than three minutes |
 
 Its decision logic is pinned offline by `scripts/test-confirm-line-live-control.ts`,
 which drives the probe against the real object host (`makeConfirmLineHost`) on a

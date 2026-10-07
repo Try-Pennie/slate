@@ -131,7 +131,7 @@ export const CHECK_CAN_END_ON: Record<ConfirmLineCheck, readonly CheckOutcome[]>
 
 /**
  * How old the LIVE grouping may be before the proof calls it stale (#3460): three of the
- * recompute lane's one minute publishes. Looser than the minute a cold server accepts,
+ * recompute lane's one minute publishes. Looser than the minute a server holds a grouping for,
  * because the proof runs once a day at a moment that can fall in a minute's gap between
  * one snapshot expiring and the next landing; three missed publishes is a publisher that
  * has stopped, which the `pool-grouping` heartbeat also pages on.
@@ -538,7 +538,7 @@ async function checkDirectory(deps: ConfirmLineProbeDeps, run: string): Promise<
   };
   const unreachable = (what: string, why: string): CheckResult => ({
     outcome: "directory-unreachable",
-    detail: `The pool grouping directory did not answer ${what} (${why}), so no cold server could key its confirm line from it`,
+    detail: `The pool grouping directory did not answer ${what} (${why}), so the grouping it holds cannot reach any server`,
   });
   const now = deps.now();
   const newer = groupingSnapshotOf([["verify", run]], now);
@@ -568,19 +568,19 @@ async function checkDirectory(deps: ConfirmLineProbeDeps, run: string): Promise<
   if (current.snapshot === null || current.snapshot === undefined) {
     return {
       outcome: "no-grouping",
-      detail: "The live directory holds no pool grouping, so nothing has published one since it started and every cold server keys its confirm line by code",
+      detail: "The live directory holds no pool grouping, so nothing has published one since it started",
     };
   }
   const read = readGroupingSnapshot(current.snapshot, POOL_GROUPING_FORMAT);
   if (read.kind === "format-mismatch") {
-    return { outcome: "grouping-unusable", detail: `The live grouping is format ${read.format} and this build reads format ${POOL_GROUPING_FORMAT}, so every cold server refuses it` };
+    return { outcome: "grouping-unusable", detail: `The live grouping is format ${read.format} and this build reads format ${POOL_GROUPING_FORMAT}, so a server reading it would refuse it` };
   }
-  if (read.kind === "refused") return { outcome: "grouping-unusable", detail: `The live grouping is malformed (${read.why}), so every cold server refuses it` };
+  if (read.kind === "refused") return { outcome: "grouping-unusable", detail: `The live grouping is malformed (${read.why}), so a server reading it would refuse it` };
   const ageS = Math.round((deps.now() - read.snapshot.readAtMs) / 1000);
   if (deps.now() - read.snapshot.readAtMs > PROBE_GROUPING_MAX_AGE_MS) {
     return {
       outcome: "grouping-unusable",
-      detail: `The live grouping was read ${ageS} seconds ago, past ${PROBE_GROUPING_MAX_AGE_MS / 1000} seconds, so its publisher has stopped and every cold server refuses it as stale`,
+      detail: `The live grouping was read ${ageS} seconds ago, past ${PROBE_GROUPING_MAX_AGE_MS / 1000} seconds, so its publisher has stopped and a server reading it would refuse it as stale`,
     };
   }
   return passed(

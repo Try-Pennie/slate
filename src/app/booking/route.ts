@@ -272,7 +272,9 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
   // #3460, #3355 item 1: the booker carries no key, so the confirm's early reads (the
   // shared line switch and the pool grouping snapshot) start once the address has passed
   // the edge limiter, never before (L498), and run during the pause flag, the caps and
-  // the body read. The confirm awaits the grouping before its line key.
+  // the body read. A request the caps below then refuse has started them, which costs
+  // per server, never per request (`startConfirmPrelude`). The confirm awaits the
+  // grouping before its line key.
   startConfirmPrelude(progress.facts);
 
   // The kill switch (#2297). Placed HERE on purpose: after the edge burst window, so

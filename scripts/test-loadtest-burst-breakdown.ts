@@ -35,7 +35,7 @@ import { traced, type RefusalTrace } from "../src/lib/booking/refusal-trace.ts";
 import { DependencyTimeoutError } from "../src/lib/booking/orchestration.ts";
 import { answeredAtEchoHeader, confirmLineEchoHeaders, readLoadtestEcho } from "../src/lib/loadtest-echo.ts";
 import { formatLine } from "../src/lib/log.ts";
-import type { LineGroupSource } from "../src/lib/booking/pool-grouping.ts";
+import type { LineGroupSource } from "../src/lib/booking/pool-grouping-reader.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const SLOT = "2026-10-07T17:40:00.000Z";

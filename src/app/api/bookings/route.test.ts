@@ -189,7 +189,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
 
   // #3460, #3355 item 1: the confirm's early reads start the moment the key is known to
   // be good (inside the authorizer, before its ceilings answer), with THIS request's
-  // facts, and never for a refused key (L498).
+  // facts, and never for a key that fails authentication (L498).
   it("#3460 starts the confirm's early reads for a good key, with the facts the booking is handed", async () => {
     prelude.startConfirmPrelude.mockClear();
     regalKey.primary.mockReturnValue("real-secret");
