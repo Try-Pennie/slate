@@ -117,6 +117,84 @@ async function readManagedBooking(token: string): Promise<ManagedBookingMarkers 
   }
 }
 
+/**
+ * How long one server keeps a bucket's test flag (#3461). The tally asks once per
+ * booking API attempt, after the answer, and in a burst of a hundred confirms that was
+ * 145 identical one row reads in five seconds (load run 37581963075), queued 3 to 4
+ * seconds each in the API layer while the winning confirm was still writing its
+ * booking. A bucket's test flag changes almost never, and a minute late is a tally
+ * row counted in the wrong column, never a booking.
+ */
+export const BUCKET_TEST_CACHE_MS = 60_000;
+
+const bucketTestCache = new Map<string, { isTest: boolean; readAtMs: number }>();
+const bucketTestReads = new Map<string, Promise<boolean | null>>();
+
+/** How many codes the map holds at most: every real code with room to spare. */
+export const BUCKET_TEST_CACHE_MAX = 256;
+
+/** How many codes are held now. Tests only. */
+export function bucketTestCacheSizeForTests(): number {
+  return bucketTestCache.size;
+}
+
+/** Forget every cached flag. Tests only: each test starts from a cold server. */
+export function resetBucketTestCacheForTests(): void {
+  bucketTestCache.clear();
+  bucketTestReads.clear();
+}
+
+/**
+ * One bucket's test flag, read at most once a minute per server, with concurrent
+ * askers sharing the one read in flight. A read that FAILS is never kept as an
+ * answer: it counts the attempt as real, as before, and the next ask reads again.
+ */
+async function bucketIsTest(code: string): Promise<boolean> {
+  const cached = bucketTestCache.get(code);
+  if (cached && Date.now() - cached.readAtMs <= BUCKET_TEST_CACHE_MS) return cached.isTest;
+  let reading = bucketTestReads.get(code);
+  if (!reading) {
+    reading = readBucketIsTest(code).finally(() => bucketTestReads.delete(code));
+    bucketTestReads.set(code, reading);
+  }
+  const isTest = await reading;
+  return isTest ?? false;
+}
+
+/** The flag as stored, or null when it could not be read (already reported). */
+async function readBucketIsTest(code: string): Promise<boolean | null> {
+  const startedAt = Date.now();
+  try {
+    // cap-safe: bucket codes are unique, so maybeSingle returns at most one row.
+    const { data, error } = await supabaseAdmin()
+      .from("buckets")
+      .select("is_test")
+      .eq("code", code)
+      .maybeSingle();
+    if (error) {
+      unreadable("bucket", error.message);
+      return null;
+    }
+    // A code that matches no bucket is answered (not test) and never kept: the code
+    // comes from the request, sometimes from a caller who is not signed in, so keeping
+    // misses would let made up codes fill the map.
+    if (!data) return false;
+    const isTest = data.is_test === true;
+    // Capped, dropping the oldest entry (a Map keeps insertion order). A re-read code is
+    // moved to the end, so live codes stay and only stale or rare ones fall out.
+    bucketTestCache.delete(code);
+    if (bucketTestCache.size >= BUCKET_TEST_CACHE_MAX) {
+      const oldest = bucketTestCache.keys().next().value;
+      if (oldest !== undefined) bucketTestCache.delete(oldest);
+    }
+    bucketTestCache.set(code, { isTest, readAtMs: startedAt });
+    return isTest;
+  } catch (err) {
+    unreadable("bucket", String(err));
+    return null;
+  }
+}
+
 export async function resolveTestTraffic(source: TestTraffic): Promise<boolean> {
   if (source.by === "unidentifiable") return false;
 
@@ -124,18 +202,7 @@ export async function resolveTestTraffic(source: TestTraffic): Promise<boolean> 
     // No code to look up. Not a failure and not worth a warn: the recording sites
     // that pass an empty code are the ones that refused before routing.
     if (!source.code) return false;
-    try {
-      // cap-safe: bucket codes are unique, so maybeSingle returns at most one row.
-      const { data, error } = await supabaseAdmin()
-        .from("buckets")
-        .select("is_test")
-        .eq("code", source.code)
-        .maybeSingle();
-      if (error) return unreadable("bucket", error.message);
-      return data?.is_test === true;
-    } catch (err) {
-      return unreadable("bucket", String(err));
-    }
+    return bucketIsTest(source.code);
   }
 
   // A token that matches nothing is not a canary booking; count it.

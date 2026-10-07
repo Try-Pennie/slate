@@ -54,7 +54,7 @@ function world() {
   const makeHost = () => makeConfirmLineHost({ now: () => now, timer, leaseTimer: timer, newId });
   let host = makeHost();
   /** What the transport does to the next messages, by op, and how many times (once unless set). */
-  const faults = new Map<string, "throw" | "late" | "hang" | "bad" | "gone">();
+  const faults = new Map<string, "throw" | "throw-like-timeout" | "late" | "hang" | "bad" | "gone">();
   const faultTimes = new Map<string, number>();
   const sent: string[] = [];
   /** Every message as sent, for what a call carries beside its op (#3354). */
@@ -75,6 +75,8 @@ function world() {
           }
         }
         if (fault === "throw") throw new Error("the object refused");
+        // A refusal whose own text reads like the deadline's (L199).
+        if (fault === "throw-like-timeout") throw new Error("no answer within 1500ms");
         if (fault === "hang") return new Promise(() => {});
         // An answer the client has no meaning for (a version skew, a protocol fault).
         if (fault === "bad") return { kind: "bad", why: "injected" };
@@ -304,6 +306,16 @@ async function main() {
     const next = (await w.settle(behind.line.enter(KEY, 10_000))) as LineTurn<string>;
     assert(next.kind === "lead", "late enter: the next confirm leads the shared line");
     assert(w.now() - started < CONFIRM_LINE_ACK_MS + CONFIRM_LINE_POLL_MS, `late enter: and does not wait out a phantom lead (waited ${w.now() - started}ms)`);
+  }
+
+  // --- a refusal is told from a timeout by its type, never its wording (L199) -------
+  {
+    const w = world();
+    const c = w.client();
+    w.faults.set("enter", "throw-like-timeout");
+    const t = (await w.settle(c.line.enter(KEY, 10_000))) as LineTurn<string>;
+    assert(lastServed(c.served)?.reason === "enter-error", `typed timeout: a refused enter whose text reads like a timeout is an enter error (got ${JSON.stringify(lastServed(c.served))})`);
+    if (t.kind === "lead") await w.settle(t.done({ full: false }));
   }
 
   {

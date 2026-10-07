@@ -9,6 +9,22 @@
 /** Starts a timer and returns the function that clears it. Injected in tests. */
 export type ScheduleTimer = (ms: number, fire: () => void) => () => void;
 
+/**
+ * The failure a read reports when it ran out of time rather than being refused. A
+ * caller that must tell the two apart checks the TYPE, never the wording (L199): a
+ * refusal whose own text happened to read like this one would otherwise be counted as
+ * a timeout. The message is unchanged from when it was a plain `Error`, so a reader of
+ * the logs sees what it always saw.
+ */
+export class NoAnswerWithinError extends Error {
+  readonly ms: number;
+  constructor(ms: number) {
+    super(`no answer within ${ms}ms`);
+    this.name = "NoAnswerWithinError";
+    this.ms = ms;
+  }
+}
+
 export const realTimer: ScheduleTimer = (ms, fire) => {
   const t = setTimeout(fire, ms);
   return () => clearTimeout(t);
@@ -18,8 +34,8 @@ export const realTimer: ScheduleTimer = (ms, fire) => {
  * A read under a deadline, shared by every bounded read that must not hold a page
  * or a lane up: the calling number reads (lead facing and the reminder lane's
  * batched one), the advisor card photo, and the rebook lookup (#2982).
- * Null on a refusal or a timeout, each reported through `onUnread`, and the timer
- * cleared however the race ends.
+ * Null on a refusal or a timeout, each reported through `onUnread` (a timeout as a
+ * `NoAnswerWithinError`), and the timer cleared however the race ends.
  */
 export async function readWithinDeadline<T>(
   read: () => Promise<T | null>,
@@ -48,7 +64,7 @@ export async function readWithinDeadline<T>(
   try {
     const got = await Promise.race([attempt, expired]);
     if (got === TIMED_OUT) {
-      report(new Error(`no answer within ${ms}ms`));
+      report(new NoAnswerWithinError(ms));
       return null;
     }
     return got;

@@ -158,6 +158,14 @@ function refuse(
  * cancel alone passes `BOOKING_API_CALLERS`. A cancel only key on any other route is
  * simply not one of that route's keys, so it is refused 401 exactly as a partner key
  * is on the smoke endpoints.
+ *
+ * `onAuthenticated` (#3460, #3355 item 1) runs the moment the key is known to be good,
+ * BEFORE the ceilings are asked, so whatever it starts (a confirm's switch read and pool
+ * grouping fetch) runs during their I/O. It never runs for a key that fails
+ * authentication: a flood of bad keys buys no work beyond the refusal (L498). It DOES
+ * run for a good key the ceilings then refuse with a 429, so whatever it starts must
+ * cost per server and never per request; `startConfirmPrelude` states that bound. It
+ * must not throw or await.
  */
 export async function authorizeBookingApi<C extends BookingApiCaller = FullApiCaller>(
   req: NextRequest,
@@ -165,6 +173,7 @@ export async function authorizeBookingApi<C extends BookingApiCaller = FullApiCa
   hourlyIpRules: RateLimitRule[] | null = DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
   readPath = false,
   callers: readonly C[] = FULL_API_CALLERS as readonly C[],
+  onAuthenticated?: () => void,
 ): Promise<AuthOutcome<C>> {
   const auth = authenticateBearer(req.headers.get("authorization"), configuredBookingApiKeys(callers));
   if (!auth.ok) {
@@ -198,6 +207,7 @@ export async function authorizeBookingApi<C extends BookingApiCaller = FullApiCa
       auth.tokenPresent,
     );
   }
+  onAuthenticated?.();
   const keyBudget = "Rate limit exceeded for this API key.";
   // Per CALLER (#2645): edge per-minute burst window first (no DB round-trip), then
   // the hourly cap. Keyed on who the key belongs to, not which slot matched, so a
