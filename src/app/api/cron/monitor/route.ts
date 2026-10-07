@@ -2237,11 +2237,10 @@ export async function GET(req: NextRequest) {
         // alert-text-ok: our own copy from below-lead-tier.ts, built from measured
         // tiers and the booking row; no error text can reach it.
         notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
-        // alert-key: booking_below_lead_tier:*
-        // all-clear-proof: scripts/test-below-lead-tier.ts - a failed bookings read,
-        // a failed Salesforce read and a failed firing read each clear NOTHING, and
-        // a paged booking that became unmeasurable keeps its page.
-        resolve: (key, text) => resolveAlert(key, text),
+        // No all clear is posted (Dan, 2026-10-07); the state is dropped silently.
+        // scripts/test-below-lead-tier.ts proves a failed bookings, Salesforce or
+        // firing read settles NOTHING, and an unmeasurable booking keeps its page.
+        settle: settleAlertsSilently,
         cooldownMs: cooldownMs.booking_below_lead_tier,
       }).then((result) => {
         if (result.status === "unreadable") {
