@@ -63,7 +63,12 @@ async function run() {
       created[0].routing === null,
       "the webhook carries no routing summary, never a fabricated 'no fallback' outcome for a booking nothing routed",
     );
-    assert(calls.resolveBucketByCode.length === 2, "one bucket resolve for the confirm and one for the webhook, never a walk down the tier ladder");
+    // #3495: the webhook reuses the bucket the confirm resolved, so the one resolve is the
+    // confirm's own; a walk down the tier ladder would add one a rung.
+    assert(
+      calls.resolveBucketByCode.length === 1,
+      `one bucket resolve, the confirm's own, never a walk down the tier ladder (got ${calls.resolveBucketByCode.length})`,
+    );
   }
 
   // --- a routed booking is recorded as routed ---------------------------------
