@@ -4,7 +4,7 @@
 // The rate check (`catchall_rate`) cannot see one Ultra High lead booked with the
 // Low team: two bookings in twelve hundred do not move a share. So this compares
 // every upcoming real booking's pool tier against the tier the lead's CURRENT
-// Salesforce XBC__c decodes to, and pages per booking when the lead sits HIGHER.
+// Salesforce score decodes to, and pages per booking when the lead sits HIGHER.
 //
 // What this file pins:
 //  - both directions: a lead ABOVE the pool pages, a lead EQUAL to or BELOW it is
@@ -21,6 +21,9 @@
 //  - #2594: a lead re-scored AFTER booking is told apart from one routed below its
 //    own code, by the code the lead arrived with (`routing_decisions.requested_code`),
 //    and the page names both the old code and tier and the new ones.
+//  - #3501: the score judged is the one on the lead's CURRENT submission, which is
+//    what the booking link carries, never the copy on the Lead record, which can
+//    lag it; and "re-scored" is said only when the booking's own submission was.
 import {
   BELOW_LEAD_TIER_KEY,
   belowLeadTierKey,
@@ -36,7 +39,8 @@ import {
   type UpcomingBooking,
 } from "@/lib/monitor/below-lead-tier";
 import { belowLeadTierReachedVerdict } from "@/lib/monitor/verdict-freshness";
-import { readLeadXbcs, leadIdKey } from "@/lib/salesforce/lead-xbc";
+import { readLeadXbcs, readLeadScores, leadIdKey, type LeadScore, type LeadFieldRecord } from "@/lib/salesforce/lead-xbc";
+import { PARTNER_KEYS } from "@/lib/booking/partner-keys";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const NOW = Date.UTC(2026, 8, 24, 14, 0, 0);
@@ -62,6 +66,18 @@ function booking(over: Partial<UpcomingBooking> = {}): UpcomingBooking {
     prefill: { parentOrigin: "https://www.trypennie.com", embed: "1" },
     referrer_origin: "https://www.trypennie.com",
     ...over,
+  };
+}
+
+const SUB_A = "a04Ui00000subAAAAA";
+
+/** A finding whose score came from the very submission the booking was made under:
+ *  the one shape that may be called a re-score (#3501). */
+function rescoredOwnSubmission<F extends { booking: UpcomingBooking; lead: { code: string } }>(f: F): F & { score: LeadScore } {
+  return {
+    ...f,
+    booking: { ...f.booking, prefill: { ...f.booking.prefill, [PARTNER_KEYS.submissionId]: SUB_A } },
+    score: { code: f.lead.code, source: "submission", submissionId: SUB_A },
   };
 }
 
@@ -184,7 +200,7 @@ function booking(over: Partial<UpcomingBooking> = {}): UpcomingBooking {
     new Map([[leadIdKey(LEAD_A), "512"]]),
   );
   if (finding.kind !== "below") throw new Error("fixture must be a finding");
-  const rescored = formatBelowLeadTierAlert(finding, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, "u");
+  const rescored = formatBelowLeadTierAlert(rescoredOwnSubmission(finding), { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, "u");
   assert(/re-scored/i.test(rescored), "a lead who arrived on a lower code than today's is named as re-scored");
   assert(/XBC 422 \(Very High\)/.test(rescored), "the page names the OLD code and the tier it decodes to");
   assert(/XBC 512/.test(rescored) && rescored.startsWith("An Ultra High lead"), "and the NEW code and tier");
@@ -210,10 +226,17 @@ function booking(over: Partial<UpcomingBooking> = {}): UpcomingBooking {
   // code. Calling it only a re-score would hide a routing fault, and "was routed on
   // it" would be false, so the page must name both causes.
   if (lowFinding.pool.rank >= 4) throw new Error("fixture must sit below the Very High pool");
-  const both = formatBelowLeadTierAlert(lowFinding, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, "u");
+  const both = formatBelowLeadTierAlert(rescoredOwnSubmission(lowFinding), { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, "u");
   assert(/re-scored/i.test(both), "a lead re-scored above an arrival code still reads as re-scored");
   assert(/below the code it was given/i.test(both), "and a pool below the arrival code is still named as a routing fault");
   assert(!/was routed on it/i.test(both), "and never claims the call was routed on the arrival code");
+
+  // #3501: a finding that does not say where its score came from claims no re-score,
+  // because a Lead's lagging copy reads exactly like one (the 2026-10-07 page).
+  const unattributed = formatBelowLeadTierAlert(finding, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, "u");
+  assert(/could not tell/.test(unattributed) && !/re-scored that submission/.test(unattributed), "a score of unknown source claims no re-score");
+  const unattributedBoth = formatBelowLeadTierAlert(lowFinding, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, "u");
+  assert(/could not tell/.test(unattributedBoth) && /below the code it was given/i.test(unattributedBoth), "and still names a routing fault beside it");
 
   // An arrival code in the same tier as today's score is not a re-score either.
   const sameTier = formatBelowLeadTierAlert(lowFinding, { catchall: false, requestedCode: "501", tierFallback: false, rungsDropped: 0 }, "u");
@@ -235,17 +258,23 @@ function booking(over: Partial<UpcomingBooking> = {}): UpcomingBooking {
 }
 
 // --- the runner -------------------------------------------------------------------------
+/** A code per lead as `readLeadScores` answers it, read off the Lead's copy: the
+ *  shape every fake below meant before #3501 split the score from its source. */
+function asScores(codes: Map<string, string | null>): Map<string, LeadScore> {
+  return new Map([...codes].map(([k, code]) => [k, { code, source: "lead" as const, submissionId: null }]));
+}
+
 type Calls = { notified: { key: string; text: string; cooldown: number }[]; resolved: { key: string; text: string }[]; sfQueries: number };
 
 function deps(over: Partial<BelowLeadTierDeps> = {}, calls: Calls = { notified: [], resolved: [], sfQueries: 0 }): BelowLeadTierDeps {
   return {
     loadBookings: async () => [booking({ id: "bk-1", salesforce_id: LEAD_A }), booking({ id: "bk-2", bucket_id: ULTRA.id, salesforce_id: LEAD_B })],
     buckets: BUCKETS,
-    readLeadXbcs: async (ids) => {
+    readLeadScores: async (ids) => {
       calls.sfQueries++;
       const m = new Map<string, string | null>();
       for (const id of ids) m.set(leadIdKey(id), id === LEAD_A ? "512" : "111");
-      return m;
+      return asScores(m);
     },
     loadRoutingContext: async () => new Map([["bk-1", { catchall: true, requestedCode: "", tierFallback: false, rungsDropped: 0 }]]),
     listFiring: async () => new Set<string>(),
@@ -298,7 +327,7 @@ async function main(): Promise<void> {
     const r = await runBelowLeadTierCheck(
       deps(
         {
-          readLeadXbcs: async () => {
+          readLeadScores: async () => {
             throw new Error("SF query failed: 503");
           },
           listFiring: async () => new Set(["bk-1", "bk-2"]),
@@ -350,7 +379,7 @@ async function main(): Promise<void> {
       deps(
         {
           loadBookings: async () => [booking({ id: "bk-1", salesforce_id: LEAD_C })],
-          readLeadXbcs: async () => new Map([[leadIdKey(LEAD_C), null]]),
+          readLeadScores: async () => asScores(new Map([[leadIdKey(LEAD_C), null]])),
           listFiring: async () => new Set(["bk-1"]),
         },
         calls,
@@ -496,7 +525,15 @@ async function main(): Promise<void> {
     await runBelowLeadTierCheck(
       deps(
         {
-          loadBookings: async () => [booking({ id: "bk-rescored", bucket_id: VERY_HIGH.id, salesforce_id: LEAD_A })],
+          loadBookings: async () => [
+            booking({
+              id: "bk-rescored",
+              bucket_id: VERY_HIGH.id,
+              salesforce_id: LEAD_A,
+              prefill: { ...booking().prefill, [PARTNER_KEYS.submissionId]: SUB_A },
+            }),
+          ],
+          readLeadScores: async () => new Map([[leadIdKey(LEAD_A), { code: "512", source: "submission", submissionId: SUB_A }]]),
           loadRoutingContext: async (ids) => {
             asked.push(ids);
             return new Map([["bk-rescored", { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }]]);
@@ -523,9 +560,9 @@ async function main(): Promise<void> {
           booking({ id: "b", salesforce_id: LEAD_A.slice(0, 15) }),
           booking({ id: "c", salesforce_id: "pilot1234567890" }),
         ],
-        readLeadXbcs: async (ids) => {
+        readLeadScores: async (ids) => {
           asked.push(ids);
-          return new Map([[leadIdKey(LEAD_A), "512"]]);
+          return asScores(new Map([[leadIdKey(LEAD_A), "512"]]));
         },
       }),
     );
@@ -596,7 +633,7 @@ async function main(): Promise<void> {
       const d = deps(
         {
           loadBookings: async () => [booking({ id: "bk-drop", bucket_id: MEDIUM.id, salesforce_id: MED_LEAD })],
-          readLeadXbcs: async (ids) => new Map(ids.map((id) => [leadIdKey(id), xbc])),
+          readLeadScores: async (ids) => asScores(new Map(ids.map((id) => [leadIdKey(id), xbc]))),
           loadRoutingContext: async () => {
             if (rec === "throw") throw new Error("routing_decisions read failed");
             return new Map([["bk-drop", rec as never]]);
@@ -644,7 +681,7 @@ async function main(): Promise<void> {
       const d = deps(
         {
           loadBookings: async () => [booking({ id: "bk-drop", bucket_id: MEDIUM.id, salesforce_id: MED_LEAD })],
-          readLeadXbcs: async (ids) => new Map(ids.map((id) => [leadIdKey(id), "311"])),
+          readLeadScores: async (ids) => asScores(new Map(ids.map((id) => [leadIdKey(id), "311"]))),
           loadRoutingContext: async () => new Map([["bk-drop", dropped as never]]),
           listFiring: async () => new Set(["bk-drop"]),
         },
@@ -652,6 +689,219 @@ async function main(): Promise<void> {
       );
       await runBelowLeadTierCheck(d);
       eq(calls.notified.length + calls.resolved.length, 0, "an explained booking already firing is neither re-paged nor cleared");
+    }
+  }
+
+  // --- #3501: judge the current submission's score, never the Lead's copy of it -------------
+  //
+  // The three pages between 2026-10-03 and 2026-10-07, from Salesforce's own history.
+  // Two were false: Slate routed on the submission's score and the Lead record's copy
+  // of it lagged. One was real: the same submission was re-scored three days later.
+  {
+    const LOW_111: PoolBucket = { id: "b-111", code: "111", name: "Low | Both | Legal", criteria: { debt_team: "low" } };
+    const LOW_112: PoolBucket = { id: "b-112", code: "112", name: "Low | Both | Non-Legal", criteria: { debt_team: "low" } };
+    const POOLS = [...BUCKETS, LOW_111, LOW_112];
+
+    // What Salesforce held when each page fired.
+    const RETURNED = "00QUi00000tHtYHMA0"; // 2026-10-07: came back, new submission scored 111
+    const LAGGING = "00QUi000010OO3tMAG"; // 2026-10-03: Lead said 212 for 75 minutes
+    const RESCORED = "00QUi000010PCwjMAG"; // 2026-10-06: same submission went 112 to 312
+    const NO_SUB = "00QUi00000noSubAAA"; // names no submission at all
+    const CORRECTED = "00QUi00000zMlRmMAK"; // 2026-09-21: Lead edited 512 to 412 49s AFTER its submission
+    const leadRows: LeadFieldRecord[] = [
+      { Id: CORRECTED, XBC__c: "412", Submission_Object_ID__c: "a04Ui00000MmsSrIAJ" },
+      { Id: RETURNED, XBC__c: "211", Submission_Object_ID__c: "a04Ui00000NXcm1IAD" },
+      { Id: LAGGING, XBC__c: "212", Submission_Object_ID__c: "a04Ui00000NL1LdIAL" },
+      { Id: RESCORED, XBC__c: "312", Submission_Object_ID__c: "a04Ui00000NLKZZIA5" },
+      { Id: NO_SUB, XBC__c: "312", Submission_Object_ID__c: null },
+    ];
+    const submissionRows: LeadFieldRecord[] = [
+      { Id: "a04Ui00000NXcm1IAD", XBC_SO__c: "111", CreatedDate: "2026-10-07T18:17:53.000+0000" },
+      { Id: "a04Ui00000NL1LdIAL", XBC_SO__c: "112", CreatedDate: "2026-10-03T05:07:51.000+0000" },
+      { Id: "a04Ui00000NLKZZIA5", XBC_SO__c: "312", CreatedDate: "2026-10-03T11:59:08.000+0000" },
+      { Id: "a04Ui00000MmsSrIAJ", XBC_SO__c: "512", CreatedDate: "2026-09-21T13:16:12.000+0000" },
+    ];
+    // Every XBC__c edit Salesforce recorded for these leads, as LeadHistory holds them.
+    // The 2026-10-03 lead's only edit came 75 minutes AFTER its page, so when it paged
+    // it had none; a lead's created value is never a history row.
+    const historyRows: LeadFieldRecord[] = [
+      { Id: "017h1", LeadId: RETURNED, CreatedDate: "2026-07-15T15:38:55.000+0000" },
+      { Id: "017h2", LeadId: CORRECTED, CreatedDate: "2026-09-21T13:17:01.000+0000" },
+      { Id: "017h3", LeadId: RESCORED, CreatedDate: "2026-10-03T11:59:53.000+0000" },
+      { Id: "017h4", LeadId: RESCORED, CreatedDate: "2026-10-06T23:50:53.000+0000" },
+    ];
+    const queries: string[] = [];
+    const salesforce = async (soql: string): Promise<LeadFieldRecord[]> => {
+      queries.push(soql);
+      if (/FROM Lead /.test(soql)) return leadRows.filter((r) => soql.includes(`'${r.Id}'`) || soql.includes(`'${r.Id.slice(0, 15)}'`));
+      if (/FROM Submission__c /.test(soql)) return submissionRows.filter((r) => soql.includes(`'${r.Id}'`));
+      if (/FROM LeadHistory /.test(soql)) return historyRows.filter((r) => soql.includes(`'${String(r.LeadId)}'`));
+      throw new Error(`unexpected query: ${soql}`);
+    };
+
+    // The reader: the submission's score wins, and says where it came from.
+    const scores = await readLeadScores([RETURNED, LAGGING, RESCORED, NO_SUB, CORRECTED], salesforce);
+    eq(scores.get(leadIdKey(RETURNED)), { code: "111", source: "submission", submissionId: "a04Ui00000NXcm1IAD" } satisfies LeadScore, "a returning lead is scored by today's submission, not July's copy");
+    eq(scores.get(leadIdKey(LAGGING))?.code, "112", "a Lead copy that has not caught up is not the score");
+    eq(scores.get(leadIdKey(NO_SUB)), { code: "312", source: "lead", submissionId: null } satisfies LeadScore, "a lead naming no submission falls back to the Lead's copy, and says so");
+    assert(queries.some((q) => /XBC_SO__c, CreatedDate FROM Submission__c WHERE Id IN \(/.test(q)), "it reads the named submissions");
+
+    // Newest wins (Dan, 2026-10-07): a Lead score EDITED after the submission was made
+    // is the later fact, so it wins; a copy last written before it is stale, and loses.
+    eq(scores.get(leadIdKey(CORRECTED)), { code: "412", source: "lead-edit", submissionId: "a04Ui00000MmsSrIAJ" } satisfies LeadScore, "a Lead score edited after the submission wins over it");
+    eq(scores.get(leadIdKey(RETURNED))?.source, "submission", "a Lead copy last edited in July loses to today's submission");
+    eq(scores.get(leadIdKey(LAGGING))?.source, "submission", "a Lead copy never edited since the submission loses to it");
+    {
+      const history = queries.filter((q) => /FROM LeadHistory /.test(q));
+      eq(history.length, 1, "the edit history is read once per run");
+      assert(!history[0].includes(`'${RESCORED}'`) && !history[0].includes(`'${NO_SUB}'`), "and only for leads whose two scores disagree, so an agreeing roster costs no extra read");
+      assert(/Field = 'XBC__c'/.test(history[0]), "and only for edits to the score");
+    }
+    // An edit whose time cannot be read, or a submission whose creation cannot, never
+    // overrides the submission: the comparison could not be made.
+    {
+      const run = async (soql: string): Promise<LeadFieldRecord[]> => {
+        if (/FROM Lead /.test(soql)) return [{ Id: LEAD_A, XBC__c: "412", Submission_Object_ID__c: "a04Ui00000subAAAAA" }];
+        if (/FROM Submission__c /.test(soql)) return [{ Id: "a04Ui00000subAAAAA", XBC_SO__c: "512", CreatedDate: "not a date" }];
+        return [{ Id: "017x", LeadId: LEAD_A, CreatedDate: "2026-09-21T13:17:01.000+0000" }];
+      };
+      eq((await readLeadScores([LEAD_A], run)).get(leadIdKey(LEAD_A))?.source, "submission", "an unreadable submission time keeps the submission");
+    }
+
+    // A named submission Salesforce did not return, or one with no score, falls back too.
+    {
+      const run = async (soql: string): Promise<LeadFieldRecord[]> =>
+        /FROM Lead /.test(soql)
+          ? [
+              { Id: LEAD_A, XBC__c: "411", Submission_Object_ID__c: "a04Ui00000goneAAA" },
+              { Id: LEAD_B, XBC__c: "211", Submission_Object_ID__c: "a04Ui00000blankAAA" },
+            ]
+          : [{ Id: "a04Ui00000blankAAA", XBC_SO__c: "  " }];
+      const got = await readLeadScores([LEAD_A, LEAD_B], run);
+      eq(got.get(leadIdKey(LEAD_A)), { code: "411", source: "lead", submissionId: "a04Ui00000goneAAA" } satisfies LeadScore, "a missing submission falls back to the Lead's copy");
+      eq(got.get(leadIdKey(LEAD_B))?.source, "lead", "a submission with a blank score falls back to the Lead's copy");
+      eq(got.has(leadIdKey(LEAD_C)), false, "a lead Salesforce did not return is missing, not a score");
+    }
+    // No submission named, no second query; either query refusing THROWS.
+    {
+      const asked: string[] = [];
+      await readLeadScores([NO_SUB], async (q) => {
+        asked.push(q);
+        return [{ Id: NO_SUB, XBC__c: "312", Submission_Object_ID__c: null }];
+      });
+      eq(asked.length, 1, "no submission named, so Submission__c is never asked");
+      for (const failing of [/FROM Lead /, /FROM Submission__c /, /FROM LeadHistory /]) {
+        let threw = false;
+        try {
+          await readLeadScores([RETURNED, CORRECTED], async (q) => {
+            if (failing.test(q)) throw new Error("SF query failed: 500");
+            return salesforce(q);
+          });
+        } catch {
+          threw = true;
+        }
+        assert(threw, `a refused ${failing.source} query throws rather than answering a partial score`);
+      }
+    }
+
+    // The runner, end to end through the real reader.
+    const run = async (b: UpcomingBooking[], arrival: Record<string, string>) => {
+      const calls: Calls = { notified: [], resolved: [], sfQueries: 0 };
+      const r = await runBelowLeadTierCheck(
+        deps(
+          {
+            loadBookings: async () => b,
+            buckets: POOLS,
+            readLeadScores: (ids) => readLeadScores(ids, salesforce),
+            loadRoutingContext: async (ids) =>
+              new Map(ids.map((id) => [id, { catchall: false, requestedCode: arrival[id] ?? null, tierFallback: false, rungsDropped: 0 }])),
+          },
+          calls,
+        ),
+      );
+      return { r, calls };
+    };
+    const withSub = (sub: string | null) => ({
+      ...booking().prefill,
+      ...(sub === null ? {} : { [PARTNER_KEYS.submissionId]: sub }),
+    });
+
+    // 2026-10-07: routed on 111, today's submission says 111. Silent.
+    {
+      const { r, calls } = await run(
+        [booking({ id: "efdafd53", bucket_id: LOW_111.id, salesforce_id: RETURNED, prefill: withSub("a04Ui00000NXcm1IAD") })],
+        { efdafd53: "111" },
+      );
+      eq(r.status === "measured" && r.compared, 1, "the returning lead is compared");
+      eq(calls.notified.length, 0, "and NOT paged: Slate routed on the score the lead has today");
+    }
+    // 2026-10-03: routed on 112, the submission says 112, the Lead copy still 212. Silent.
+    {
+      const { calls } = await run(
+        [booking({ id: "19cd927a", bucket_id: LOW_112.id, salesforce_id: LAGGING, prefill: withSub("a04Ui00000NL1LdIAL") })],
+        { "19cd927a": "112" },
+      );
+      eq(calls.notified.length, 0, "a Lead copy that has not caught up pages nobody");
+    }
+    // 2026-10-06: the SAME submission went 112 to 312 after booking. Pages, as a re-score.
+    {
+      const { calls } = await run(
+        [booking({ id: "aafbb707", bucket_id: LOW_112.id, salesforce_id: RESCORED, prefill: withSub("a04Ui00000NLKZZIA5") })],
+        { aafbb707: "112" },
+      );
+      eq(calls.notified.length, 1, "a real re-score still pages");
+      const text = calls.notified[0]?.text ?? "";
+      assert(text.startsWith("A High lead is booked with the Low team"), "naming the tier the lead has now");
+      assert(/re-scored that submission to High/.test(text), "and saying the booking's own submission was re-scored");
+      assert(!/submitted again/.test(text), "and not that the lead submitted again");
+      assert(!/[\u2014\u2013]/.test(text) && !/NaN|undefined|null/.test(text), "no dashes or leaked values");
+    }
+    // A lead who submitted again after booking and scored higher: pages, as a newer submission.
+    {
+      const { calls } = await run(
+        [booking({ id: "bk-newer", bucket_id: LOW_112.id, salesforce_id: RESCORED, prefill: withSub("a04Ui00000olderAAA") })],
+        { "bk-newer": "112" },
+      );
+      eq(calls.notified.length, 1, "a higher newer submission pages");
+      const text = calls.notified[0]?.text ?? "";
+      assert(/submitted again since/.test(text), "saying the lead submitted again");
+      assert(!/re-scored/.test(text), "and never that Salesforce re-scored them");
+    }
+    // A booking that recorded no submission: the cause is not known, so neither is claimed.
+    {
+      const { calls } = await run(
+        [booking({ id: "bk-nosub", bucket_id: LOW_112.id, salesforce_id: RESCORED, prefill: withSub(null) })],
+        { "bk-nosub": "112" },
+      );
+      const text = calls.notified[0]?.text ?? "";
+      assert(/could not tell/.test(text), "a booking with no recorded submission says the check could not tell");
+      assert(!/re-scored that submission/.test(text) && !/submitted again since/.test(text), "and claims neither cause");
+    }
+    // A Lead corrected after its submission, booked on the corrected tier: silent.
+    {
+      const VERY_HIGH_412: PoolBucket = { id: "b-412", code: "412", name: "Very High | Both | Non-Legal", criteria: { debt_team: "very_high" } };
+      POOLS.push(VERY_HIGH_412);
+      const { calls } = await run(
+        [booking({ id: "bk-corrected", bucket_id: VERY_HIGH_412.id, salesforce_id: CORRECTED, prefill: withSub("a04Ui00000MmsSrIAJ") })],
+        { "bk-corrected": "412" },
+      );
+      eq(calls.notified.length, 0, "a call on the tier the Lead was corrected to pages nobody");
+      // The same lead booked BELOW the correction pages, and names the Lead edit as the cause.
+      const below = await run(
+        [booking({ id: "bk-corrected-low", bucket_id: LOW_112.id, salesforce_id: CORRECTED, prefill: withSub("a04Ui00000MmsSrIAJ") })],
+        { "bk-corrected-low": "112" },
+      );
+      const text = below.calls.notified[0]?.text ?? "";
+      assert(/Lead record was re-scored to Very High after their latest submission/.test(text), "a rise from a Lead edit says so");
+    }
+    // Scored from the Lead's copy (no submission named): never claims a re-score either.
+    {
+      const { calls } = await run(
+        [booking({ id: "bk-copy", bucket_id: LOW_112.id, salesforce_id: NO_SUB, prefill: withSub("a04Ui00000NLKZZIA5") })],
+        { "bk-copy": "112" },
+      );
+      const text = calls.notified[0]?.text ?? "";
+      assert(/could not tell/.test(text), "a score read off the Lead's copy says the check could not tell");
     }
   }
 

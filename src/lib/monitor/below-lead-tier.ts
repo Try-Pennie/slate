@@ -14,11 +14,14 @@
  * consulted a routing code, so keying on `catchall_applied` would miss half the
  * class. Whether the catch-all chose the pool is carried in the page as context.
  *
- * AGAINST WHAT. The lead's CURRENT `XBC__c`, read from Salesforce each run and
+ * AGAINST WHAT. The lead's CURRENT score, read from Salesforce each run and
  * decoded through `xbc.ts` (never a second decoder). Reading the current value is
  * what answers the issue's second half: a lead re-scored AFTER booking (422 to 512,
  * four minutes after the first booking) is, from that moment, a booking below the
- * lead's tier, and the same comparison reports it.
+ * lead's tier, and the same comparison reports it. Since #3501 that score is the
+ * one on the lead's current submission, which is what the booking link carries,
+ * and not the Lead record's copy of it, which lagged on two of the first three
+ * pages and paged correctly routed calls as re-scores (`readLeadScores`).
  *
  * DIRECTION. Only a lead HIGHER than the pool pages. Equal is the healthy case,
  * and lower is a lead served by a team above their tier, which is not a fault.
@@ -48,7 +51,8 @@
 import { logAlertSendFailure } from "../notify/send-failure.ts";
 import { DEBT_TIER, bucketSpecForXbc } from "@/lib/xbc";
 import { formatSlotDay, formatSlotTime } from "@/lib/booking/slot-label";
-import { isLeadId, leadIdKey } from "@/lib/salesforce/lead-xbc";
+import { isLeadId, leadIdKey, type LeadScore } from "@/lib/salesforce/lead-xbc";
+import { partnerKeysFrom } from "@/lib/booking/partner-keys";
 import { bookingLeadId } from "@/lib/booking/lookup-identity";
 import type { Criteria } from "@/lib/db/types";
 import type { ThrottledNotify } from "./alert-deps";
@@ -180,6 +184,9 @@ export interface BelowFinding {
   bucket: PoolBucket;
   pool: PoolTier;
   lead: Extract<LeadTier, { kind: "tier" }>;
+  /** Where the lead's score came from (#3501), when the runner read it; it decides
+   *  whether the page may say the booking's own submission was re-scored. */
+  score?: LeadScore;
 }
 
 export type TierComparison =
@@ -276,19 +283,14 @@ function routingLine(f: BelowFinding, c: RoutingContext): string {
     return "The routing catch-all chose this pool, because the lead's link carried a blank or unreadable code.";
   }
   const arrived = leadTierOf(c.requestedCode);
-  // Both causes at once: re-scored since, AND placed below the arrival code too.
-  // Naming only the re-score would hide the routing fault.
-  if (arrived.kind === "tier" && arrived.rank < f.lead.rank && f.pool.rank < arrived.rank) {
-    return (
-      `The lead arrived with XBC ${arrived.code} (${arrived.label}) and Salesforce has re-scored ` +
-      `them to ${f.lead.label} since, but the routing also placed the call below the code it was given.`
-    );
-  }
   if (arrived.kind === "tier" && arrived.rank < f.lead.rank) {
-    return (
-      `The lead arrived with XBC ${arrived.code} (${arrived.label}) and was routed on it, so ` +
-      `Salesforce re-scored them to ${f.lead.label} after that link was made.`
-    );
+    const rose = `The lead arrived with XBC ${arrived.code} (${arrived.label})`;
+    // Both causes at once: scored higher since, AND placed below the arrival code
+    // too. Naming only the rise would hide the routing fault.
+    if (f.pool.rank < arrived.rank) {
+      return `${rose} and ${riseClause(f)}, but the routing also placed the call below the code it was given.`;
+    }
+    return `${rose} and was routed on it, and ${riseClause(f)}.`;
   }
   if (arrived.kind === "tier") {
     return (
@@ -299,6 +301,35 @@ function routingLine(f: BelowFinding, c: RoutingContext): string {
   return (
     "The routing catch-all did not pick this pool: it was routed on the code the lead arrived " +
     "with, so either that code was lower than Salesforce's score or the lead was scored higher after booking."
+  );
+}
+
+/**
+ * Why the lead scores higher now than the code they arrived with (#3501).
+ *
+ * "Re-scored" is said only when it was measured: the score came from the lead's
+ * current submission AND that is the submission the booking was made under, or
+ * Salesforce's history shows the Lead score edited after the latest submission. A
+ * newer current submission is the lead coming back, which sends nobody to ask
+ * why a score moved. Anything else (a booking that recorded no submission, or a
+ * score read off the Lead's copy) names both and claims neither (L11): the
+ * 2026-10-07 page called a stale Lead copy a re-score, and somebody moved the call.
+ */
+function riseClause(f: BelowFinding): string {
+  // A Lead score edited after the submission (newest wins, `readLeadScores`): the
+  // history read says when, so the cause is measured.
+  if (f.score?.source === "lead-edit") return `the Lead record was re-scored to ${f.lead.label} after their latest submission`;
+  const booked = partnerKeysFrom(f.booking.prefill).submissionId;
+  const current = f.score?.source === "submission" ? f.score.submissionId : null;
+  if (booked !== null && current !== null) {
+    if (leadIdKey(booked) === leadIdKey(current)) {
+      return `Salesforce has since re-scored that submission to ${f.lead.label}`;
+    }
+    return `they have submitted again since, scoring ${f.lead.label} on the newer submission`;
+  }
+  return (
+    `Salesforce scores them ${f.lead.label} now, from a re-score or a newer submission ` +
+    `that this check could not tell apart`
   );
 }
 
@@ -356,8 +387,9 @@ export interface BelowLeadTierDeps {
   loadBookings: () => Promise<UpcomingBooking[]>;
   /** The real buckets, for their tiers. */
   buckets: PoolBucket[];
-  /** The current XBC per lead, keyed by `leadIdKey`. THROWS when Salesforce refuses. */
-  readLeadXbcs: (leadIds: string[]) => Promise<Map<string, string | null>>;
+  /** The current score per lead, keyed by `leadIdKey` (#3501: the current
+   *  submission's, falling back to the Lead's copy). THROWS when Salesforce refuses. */
+  readLeadScores: (leadIds: string[]) => Promise<Map<string, LeadScore>>;
   /** The routing record per booking id, from `routing_decisions`: the catch-all
    *  flag and the arrival code (#2594). Context only, so a failure costs no page. */
   loadRoutingContext: (bookingIds: string[]) => Promise<Map<string, RoutingRecord>>;
@@ -406,15 +438,16 @@ export async function runBelowLeadTierCheck(deps: BelowLeadTierDeps): Promise<Be
     if (id !== null && isLeadId(id) && !idsByKey.has(leadIdKey(id))) idsByKey.set(leadIdKey(id), id);
   }
 
-  let leads = new Map<string, string | null>();
+  let scores = new Map<string, LeadScore>();
   if (idsByKey.size > 0) {
     try {
-      leads = await deps.readLeadXbcs([...idsByKey.values()]);
+      scores = await deps.readLeadScores([...idsByKey.values()]);
     } catch (err) {
       return { status: "unreadable", stage: "salesforce", error: err instanceof Error ? err.message : String(err) };
     }
   }
 
+  const leads = new Map([...scores].map(([key, score]) => [key, score.code]));
   const comparisons = compareBookingsToLeadTier(bookings, deps.buckets, leads);
   const findings: BelowFinding[] = [];
   const unmeasured = Object.fromEntries(UNMEASURED_REASONS.map((r) => [r, 0])) as Record<UnmeasuredReason, number>;
@@ -422,7 +455,10 @@ export async function runBelowLeadTierCheck(deps: BelowLeadTierDeps): Promise<Be
   for (const c of comparisons) {
     if (c.kind === "unmeasured") unmeasured[c.reason]++;
     else compared++;
-    if (c.kind === "below") findings.push(c);
+    if (c.kind === "below") {
+      const id = leadIdOf(c.booking);
+      findings.push({ ...c, score: id === null ? undefined : scores.get(leadIdKey(id)) });
+    }
   }
 
   // Read whether or not the check is armed, so a disarmed run counts the same

@@ -662,12 +662,38 @@ const PREVIEW_BELOW_TIER: BelowFinding = {
 const PREVIEW_BELOW_TIER_URL = "https://slate.trypennie.app/admin/bookings/5b0c7a8e-2f41-4d7e-9a61-0c3f1e2d4b5a";
 
 /** #2594: the same lead booked correctly on XBC 422 into the Very High pool, then
- *  re-scored to 512 four minutes later. */
+ *  re-scored to 512 four minutes later. #3501: the score came from the submission
+ *  the booking was made under, which is what lets the page call it a re-score. */
+const PREVIEW_RESCORED_SUBMISSION = "a04Ui00000NLKZZIA5";
 const PREVIEW_RESCORED: BelowFinding = {
   ...PREVIEW_BELOW_TIER,
-  booking: { ...PREVIEW_BELOW_TIER.booking, bucket_id: "b-422" },
+  booking: {
+    ...PREVIEW_BELOW_TIER.booking,
+    bucket_id: "b-422",
+    prefill: { ...PREVIEW_BELOW_TIER.booking.prefill, [PARTNER_KEYS.submissionId]: PREVIEW_RESCORED_SUBMISSION },
+  },
   bucket: { id: "b-422", code: "422", name: "Very High | Both | Non-Legal", criteria: { debt_team: "very_high" } },
   pool: { rank: 4, label: "Very High" },
+  score: { code: "512", source: "submission", submissionId: PREVIEW_RESCORED_SUBMISSION },
+};
+
+/** #3501: the lead came back and submitted again after booking, scoring higher. */
+const PREVIEW_RESUBMITTED: BelowFinding = {
+  ...PREVIEW_RESCORED,
+  score: { code: "512", source: "submission", submissionId: "a04Ui00000NXcm1IAD" },
+};
+
+/** #3501: the Lead score was edited after the submission, so the edit wins. */
+const PREVIEW_LEAD_EDIT: BelowFinding = {
+  ...PREVIEW_RESCORED,
+  score: { code: "512", source: "lead-edit", submissionId: PREVIEW_RESCORED_SUBMISSION },
+};
+
+/** #3501: a booking that recorded no submission, so a re-score and a newer
+ *  submission cannot be told apart. */
+const PREVIEW_RISE_UNATTRIBUTED: BelowFinding = {
+  ...PREVIEW_RESCORED,
+  booking: { ...PREVIEW_RESCORED.booking, prefill: PREVIEW_BELOW_TIER.booking.prefill },
 };
 
 // #2715. The 2026-09-25 shape: a partner testing from localhost onto a real Low
@@ -1447,6 +1473,26 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "arrived on a lower code, and Salesforce re-scored the lead after booking",
     channel: "alert",
     text: formatBelowLeadTierAlert(PREVIEW_RESCORED, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
+  },
+  // #3501: "re-scored" only when the booking's own submission was; a newer
+  // submission and an unattributed rise each read differently.
+  {
+    key: "booking_below_lead_tier:*",
+    state: "arrived on a lower code, and the lead submitted again after booking",
+    channel: "alert",
+    text: formatBelowLeadTierAlert(PREVIEW_RESUBMITTED, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
+  },
+  {
+    key: "booking_below_lead_tier:*",
+    state: "arrived on a lower code, and the Lead score was edited after the submission",
+    channel: "alert",
+    text: formatBelowLeadTierAlert(PREVIEW_LEAD_EDIT, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
+  },
+  {
+    key: "booking_below_lead_tier:*",
+    state: "arrived on a lower code, and the booking recorded no submission to tell why",
+    channel: "alert",
+    text: formatBelowLeadTierAlert(PREVIEW_RISE_UNATTRIBUTED, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
   },
   {
     key: "booking_below_lead_tier:*",

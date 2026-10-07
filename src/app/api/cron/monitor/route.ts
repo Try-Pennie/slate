@@ -382,7 +382,7 @@ import {
 } from "@/lib/monitor/below-lead-tier-store";
 import { runOffsiteOriginCheck, OFFSITE_ORIGIN_LOOKBACK_MS } from "@/lib/monitor/offsite-origin";
 import { loadRecentBookingsInBuckets } from "@/lib/monitor/offsite-origin-store";
-import { readLeadXbcs, type LeadXbcRecord } from "@/lib/salesforce/lead-xbc";
+import { readLeadScores, type LeadXbcRecord } from "@/lib/salesforce/lead-xbc";
 import { querySoqlAll, sfToken } from "@/lib/salesforce/rest";
 import type { OrgDefaults } from "@/lib/schedule-core";
 
@@ -2191,13 +2191,18 @@ export async function GET(req: NextRequest) {
     // booked with the Low team. A rate cannot see it (two bookings in twelve
     // hundred was the incident), and the cal.com Slack workflow that covers it
     // today stops at cutover. Every upcoming real booking's pool tier is held
-    // against the lead's CURRENT XBC__c, so a lead re-scored after booking is
-    // caught by the same comparison.
+    // against the lead's CURRENT score, so a lead re-scored after booking is
+    // caught by the same comparison. Since #3501 that is the score on the lead's
+    // current submission, or the Lead's own XBC__c where it was edited after that
+    // submission (`readLeadScores`), never a stale copy.
     //
     // Cost on this lane: nothing at all while no real booking is upcoming (no
     // Salesforce call is made for an empty set). Otherwise one bookings read, one
     // token exchange and one SOQL query per ~450 distinct leads, since the lead
-    // ids are batched into one IN list per URI budget. At a cutover roster of a
+    // ids are batched into one IN list per URI budget, plus as many again for the
+    // submissions those leads name (#3501), which is one per lead at most, plus a
+    // LeadHistory query per ~450 leads whose submission and Lead scores disagree
+    // (4 of 1,838 current submissions, measured 2026-10-07), so usually none. At a cutover roster of a
     // few thousand upcoming calls that is about 2 to 8 Salesforce calls every
     // five minutes, against a daily API allowance measured in the hundreds of
     // thousands, and this lane has its own invocation rather than the one the
@@ -2221,8 +2226,9 @@ export async function GET(req: NextRequest) {
             new Date(now).toISOString(),
           ),
         buckets: realBuckets,
-        readLeadXbcs: (ids) =>
-          readLeadXbcs(ids, async (soql) => {
+        // #3501: the score on each lead's current submission, not the Lead's copy.
+        readLeadScores: (ids) =>
+          readLeadScores(ids, async (soql) => {
             // One token per tick, fetched only once there is something to ask.
             session ??= sfToken();
             const { token, instanceUrl } = await session;
