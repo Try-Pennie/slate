@@ -12,11 +12,13 @@
  *  - the CONFIRM budget, 12 seconds, for everything the request does;
  *  - a CLEANUP allowance, 2 seconds, that ignores the spent confirm budget, for
  *    the whole failure path a request still owes after it timed out: handing
- *    back the lead's rate limit hit, recording the outcome, reporting the error
- *    and sending the page. Without it each of those would fail at once, the lead
- *    would pay for our outage, and the outage itself would go unrecorded. One
- *    allowance per request: the route's failure path and the service's page
- *    beneath it share it rather than each adding 2 seconds.
+ *    back the lead's rate limit hit, recording the outcome and reporting the
+ *    error. Without it each of those would fail at once, the lead would pay for
+ *    our outage, and the outage itself would go unrecorded. One allowance per
+ *    request: every failure path opened inside it shares it rather than each
+ *    adding 2 seconds. The outage PAGE is not among them since #3416: it is sent
+ *    after the response, outside every budget (`pageBookingFailure`), so a burst
+ *    of timed out confirms does not each read alert_state before its own answer.
  *
  * A budget that runs out AFTER the booking row has committed is not a failure
  * (#3263): the confirm answers the booking, and the reservation drain finishes

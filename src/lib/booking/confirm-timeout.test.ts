@@ -15,6 +15,18 @@ vi.mock("@/lib/booking/orchestration", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/booking/orchestration")>()),
   createBooking,
 }));
+// #3416: the page goes after the response, so work handed to `after()` is QUEUED here
+// and run only by `flushAfter`, the way the platform runs it once the answer has gone.
+const afterQueue = vi.hoisted(() => [] as Array<() => unknown>);
+vi.mock("next/server", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("next/server")>()),
+  after: (fn: () => unknown) => {
+    afterQueue.push(fn);
+  },
+}));
+async function flushAfter(): Promise<void> {
+  while (afterQueue.length > 0) await afterQueue.shift()!();
+}
 
 import { createBooking as serviceCreateBooking, bookingFailureAlert } from "./service";
 import {
@@ -24,13 +36,16 @@ import {
   timeoutAsRetryable,
 } from "./orchestration";
 import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
-import { deadlineWithinBudget } from "@/lib/call-budget";
+import { deadlineWithinBudget, insideCallBudget, withinCallBudget } from "@/lib/call-budget";
 import { GoogleBreakerOpenError } from "@/lib/google/breaker";
 import type { CreateBookingInput } from "./service";
 
 const input = {} as CreateBookingInput;
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  afterQueue.length = 0;
+});
 
 describe("a timeout on the confirm path (#3102)", () => {
   it("reaches the route as the retryable outage, with the sentence the booker shows", async () => {
@@ -43,6 +58,7 @@ describe("a timeout on the confirm path (#3102)", () => {
   it("pages under the verify outage key, naming what did not answer", async () => {
     createBooking.mockRejectedValue(new DeadlineExceededError("google events.insert", 8000));
     await serviceCreateBooking(input).catch(() => {});
+    await flushAfter();
     expect(alert).toHaveBeenCalledOnce();
     expect(alert.mock.calls[0][0]).toBe("verify_on_book_outage");
     expect(String(alert.mock.calls[0][2])).toContain("google events.insert");
@@ -67,6 +83,7 @@ describe("a timeout on the confirm path (#3102)", () => {
       new DeadlineExceededError("supabase", 3000, { label: "the booking confirm", totalMs: 12_000 }),
     );
     await serviceCreateBooking(input).catch(() => {});
+    await flushAfter();
     const page = String(alert.mock.calls[0][2]);
     expect(page).toContain("supabase");
     expect(page).toContain("the booking confirm");
@@ -134,17 +151,30 @@ describe("a timeout on the confirm path (#3102)", () => {
     expect(page).not.toMatch(/finishes|will finish|can still receive/i);
   });
 
-  // The page is sent AFTER the confirm's budget may already be spent, so it has to
-  // run under the cleanup allowance, or the alert about the timeout would itself
-  // fail at once on its alert_state read.
-  it("sends the page under the cleanup allowance", async () => {
-    let label: string | undefined;
+  // The page is sent AFTER the confirm's budget may already be spent, so it must not
+  // run under that budget, or the alert about the timeout would itself fail at once
+  // on its alert_state read. #3102 ran it under the cleanup allowance for that; since
+  // #3416 it goes after the response, outside every budget, so it is not in front of
+  // the lead's answer either. A burst whose confirms timed out in line made every one
+  // of them read alert_state before its own 503 (load run 37547143303).
+  it("sends the page after the answer, outside every budget", async () => {
+    const inBudget: boolean[] = [];
     alert.mockImplementationOnce(async () => {
-      label = deadlineWithinBudget(60_000, "probe").reportAs.budget?.label;
+      inBudget.push(insideCallBudget());
     });
     createBooking.mockRejectedValue(new DeadlineExceededError("google events.insert", 8000));
-    await serviceCreateBooking(input).catch(() => {});
-    expect(label).toBe("the booking cleanup");
+    await withinCallBudget(12_000, "the booking confirm", async () => {
+      await serviceCreateBooking(input).catch(() => {});
+      // Nothing is sent while the lead is still waiting for the answer...
+      expect(alert).not.toHaveBeenCalled();
+    });
+    // ...it was handed to after(), which keeps it alive past the response...
+    expect(afterQueue.length).toBe(1);
+    await flushAfter();
+    // ...and it runs once, with no budget over it.
+    expect(alert).toHaveBeenCalledOnce();
+    expect(inBudget).toEqual([false]);
+    expect(deadlineWithinBudget(60_000, "probe").reportAs.budget).toBeNull();
   });
 
   // #3134: an open Google breaker refuses verify-on-book's reads at once. It must
@@ -155,6 +185,7 @@ describe("a timeout on the confirm path (#3102)", () => {
     const caught = await serviceCreateBooking(input).catch((e: unknown) => e);
     expect(caught).toBeInstanceOf(VerifyUnavailableError);
     expect((caught as Error).message).toBe(new VerifyUnavailableError().message);
+    await flushAfter();
     expect(alert.mock.calls[0]?.[0]).toBe("verify_on_book_outage");
   });
 
@@ -165,6 +196,9 @@ describe("a timeout on the confirm path (#3102)", () => {
     expect(timeoutAsRetryable(boom)).toBe(boom);
     createBooking.mockRejectedValue(boom);
     await expect(serviceCreateBooking(input)).rejects.toBe(boom);
+    // Nothing deferred either, so the silence is not merely a page still queued.
+    expect(afterQueue.length).toBe(0);
+    await flushAfter();
     expect(alert).not.toHaveBeenCalled();
   });
 });
