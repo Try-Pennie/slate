@@ -153,8 +153,12 @@ async function burst(opts: {
   slowRescheduleMs?: number;
   /** The FIRST idempotency read for this key fails (a lookahead meeting an outage). */
   failFirstIdempotencyReadOf?: string;
+  /** #3462: how long a reservation's delete takes, the last step of a lost
+   *  attempt's rollback. Kept inside the 2s cleanup allowance it runs under. */
+  slowCleanupMs?: number;
 }) {
   const clock = new VirtualClock(Date.parse("2026-06-01T00:00:00.000Z"));
+  const burstStart = clock.now;
   const realNow = Date.now;
   Date.now = () => clock.now;
   try {
@@ -217,8 +221,17 @@ async function burst(opts: {
       }
     }
     let personReads = 0;
+    // When the last slow reservation delete finished, from the burst's start.
+    const cleanup = { endedMs: null as number | null };
     const shared: BookingDeps = {
       ...base,
+      deleteReservation: async (id) => {
+        if (opts.slowCleanupMs) {
+          await clock.sleep(opts.slowCleanupMs);
+          cleanup.endedMs = clock.now - burstStart;
+        }
+        return base.deleteReservation(id);
+      },
       // The database's own per column fetch: equality on each signal, the grading
       // left to `findPersonMatch`, exactly as the real read does.
       findActiveBookingsForPerson: async (identity) => {
@@ -335,7 +348,7 @@ async function burst(opts: {
     await clock.runUntil(() => runs.every((r) => r.outcome !== undefined));
     const tally: Record<string, number> = {};
     for (const r of runs) tally[r.outcome!] = (tally[r.outcome!] ?? 0) + 1;
-    return { runs, tally, bySlot, calls, seatedReads, raceLosses };
+    return { runs, tally, bySlot, calls, seatedReads, raceLosses, cleanupEndedMs: cleanup.endedMs };
   } finally {
     Date.now = realNow;
   }
@@ -951,6 +964,53 @@ async function main() {
     );
     assert(raceLosses === 2, `two lost races: each lost exactly once, never to the other (got ${raceLosses})`);
     assert(bySlot.size === 4, "two lost races: the two held elsewhere and two new bookings");
+  }
+
+  // --- #3462: a leader that loses the race tells its crowd before it cleans up ---
+  //
+  // Load run 37566700055, burst 3: another line's leader booked the advisor at
+  // about 7s, the `code:121` leader's insert lost to it, and that leader answered
+  // only at 12.0s, after rolling back its lost attempt, looking for a next advisor
+  // and recording the refusal. Its 41 followers ran out of their wait first and
+  // were answered 503. The same shape here: the pool's only advisor is held by a
+  // booking the candidate read has not caught up with, the leader runs at
+  // production speed (a 3.5s live check, a 5s calendar write), and its rollback
+  // takes 1.8s, inside the 2s cleanup allowance it runs under. Before the fix the
+  // followers' 10 second wait ended before the leader reported and every one of
+  // them was answered 503; now every one is told the time is taken before the
+  // leader's cleanup has finished.
+  {
+    const held = makeBooking({
+      id: "elsewhere-a",
+      assigned_user_id: "a",
+      starts_at: input.startIso,
+      external_id: "other-line-0",
+      salesforce_id: "sf-other-line-0",
+      attendee_email: "otherline0@example.com",
+      attendee_phone: "+12035580000",
+    } as Partial<Booking>);
+    const { runs, tally, bySlot, raceLosses, cleanupEndedMs } = await burst({
+      inputs: Array.from({ length: 42 }, (_, i) => lead(i)),
+      pool: ["a"],
+      queue: "real",
+      slowGoogleMs: 3_500,
+      slowEventMs: 5_000,
+      slowCleanupMs: 1_800,
+      heldElsewhere: [held],
+    });
+    assert(raceLosses === 1, `lost race crowd: only the leader reaches the insert, and loses (got ${raceLosses})`);
+    assert(bySlot.size === 1, "lost race crowd: nothing is booked beside the booking that won");
+    assert(!tally["503"], `lost race crowd: none of the 41 followers is answered 503 (got ${JSON.stringify(tally)})`);
+    assert(tally.SLOT_TAKEN === 42, `lost race crowd: the leader and all 41 followers are told the time is taken (got ${JSON.stringify(tally)})`);
+    const lastFollower = maxOf(runs.slice(1).map((r) => r.answeredMs!));
+    assert(
+      cleanupEndedMs !== null && runs.slice(1).every((r) => r.outcome === "SLOT_TAKEN" && r.answeredMs! < cleanupEndedMs),
+      `lost race crowd: every follower is told SLOT_TAKEN before the leader's cleanup ends (last follower ${lastFollower}ms, cleanup ended ${cleanupEndedMs}ms)`,
+    );
+    assert(
+      runs[0].answeredMs! < BOOKING_CONFIRM_BUDGET_MS,
+      `lost race crowd: the leader itself still answers inside its budget (at ${runs[0].answeredMs}ms)`,
+    );
   }
 
   // --- #3257 review: a claim that FAILED never makes the next booking "full" ----
