@@ -312,7 +312,17 @@ directions and each on its own named outcome:
   the LIVE directory is read, and only read, and must hold a grouping a cold server
   would install: this build's format, well formed, and read within three minutes,
   three of the recompute lane's publishes, so a run landing in one minute's gap
-  between snapshots is never called stale.
+  between snapshots is never called stale. **What it holds the directory to**
+  (#3496): the probe's own directory is touched only by this proof, so its first call
+  of a run meets an object idle since the day before, a cold start, which took about a
+  second on 2026-10-07. The live directory never meets that, because the recompute
+  lane calls it every minute. So the check opens with one read of its own directory,
+  held to the two seconds a server's own fetch of the grouping waits and timed, and
+  holds every call after it to one call (1000ms), the live directory's real pattern.
+  The pass detail prints the first call's time every day. A call that misses its
+  bound says when it really answered, when it failed, or that it never did in the
+  five seconds the probe watches it, so a cold object a few milliseconds slow is never
+  read as a hung one.
 - **directoryWake** (#3481): the directory still answers after the platform has put
   it to sleep. The platform hibernates an idle object after ten seconds and discards
   its memory, which is why #3479 keeps the snapshot in the object's storage; the
