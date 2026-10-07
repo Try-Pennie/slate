@@ -29,6 +29,8 @@ import {
   PLATFORM_HIBERNATE_AFTER_MS,
   PROBE_WAKE_IDLE_MS,
   PROBE_WAKE_READS,
+  PROBE_LATE_ANSWER_MS,
+  PROBE_DIRECTORY_FIRST_CALL_MS,
   runConfirmLineProbe,
   judgeHandOn,
   type ConfirmLineCheck,
@@ -59,6 +61,7 @@ import {
   groupingSnapshotOf,
   type DirectoryStub,
 } from "../src/lib/booking/pool-grouping.ts";
+import { POOL_GROUPING_FETCH_GIVE_UP_MS } from "../src/lib/booking/pool-grouping-reader.ts";
 import { confirmQueueKey } from "../src/lib/booking/orchestration.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 import { memoryGroupingStorage } from "./lib/memory-grouping-storage.ts";
@@ -358,6 +361,12 @@ async function main() {
         eq(report[check].outcome, "passed", `real host: ${check} passes (${report[check].detail})`);
         assert(PLAIN.test(report[check].detail) && report[check].detail.length > 20, `real host: ${check} says what it saw, in plain words`);
       }
+      // #3496: a pass says what the directory was held to, and what its first call took.
+      assert(/answered its first call in \d+ms/.test(report.directory.detail), `real host: the directory says how long its first call took (${report.directory.detail})`);
+      assert(
+        report.directory.detail.includes(`within ${CONFIRM_LINE_CALL_MS}ms`) && /live directory/.test(report.directory.detail),
+        `and that every later call was held to one call, the live directory's own pattern (${report.directory.detail})`,
+      );
     }
     assert(w.groups.length > 0, "the probe reached the object");
     assert(
@@ -631,6 +640,134 @@ async function main() {
       return w.handleDirectory(name, m);
     });
   });
+
+  // --- #3496: a directory call that misses its bound says when it really answered -----
+  // The daily proof failed on 2026-10-07 with "no answer within 1000ms", which reads the
+  // same for an object a few milliseconds slow to start as for one that is hung. The
+  // platform's own records put that put's answer about 1.0s after it was sent, so the
+  // difference was tens of milliseconds, and nothing in the message could say so. A call
+  // that misses its bound is still the same finding; it now also says when the answer
+  // came, or that it never did inside the probe's watch.
+  /** Hold the `nth` call (from 1) the probe makes to directory `name` for `ms`, or for ever, then answer it, or fail it. */
+  const holdCall = (w: ReturnType<typeof world>, target: { name: string; nth: number; ms: number | "never"; fail?: boolean }) => {
+    let seen = 0;
+    w.setDirectorySend(async (name, m) => {
+      if (name === target.name && ++seen === target.nth) {
+        if (target.ms === "never") return new Promise<Message>(() => {});
+        const ms = target.ms;
+        await new Promise<void>((resolve) => w.timer(ms, () => resolve()));
+        if (target.fail) throw new Error("the directory refused");
+      }
+      return w.handleDirectory(name, m);
+    });
+  };
+  const runHeld = async (label: string, target: Parameters<typeof holdCall>[1]): Promise<ProbeReport | null> => {
+    const w = world();
+    holdCall(w, target);
+    const report = await w.run();
+    measure(w);
+    assert(report !== "unsettled", `${label}: the probe still finishes`);
+    return report === "unsettled" ? null : report;
+  };
+  assert(PROBE_LATE_ANSWER_MS > CONFIRM_LINE_CALL_MS, `the probe watches a call that missed its bound for longer than the bound itself (${PROBE_LATE_ANSWER_MS}ms)`);
+  {
+    const r = await runHeld("a live get answered late", { name: POOL_GROUPING_DIRECTORY, nth: 1, ms: 1043 });
+    if (r) {
+      eq(r.directory.outcome, "directory-unreachable", `a live get answered past one call is still a call that did not answer in time (${r.directory.detail})`);
+      assert(r.directory.detail.includes(`no answer within ${CONFIRM_LINE_CALL_MS}ms`), `and it names the bound it missed (${r.directory.detail})`);
+      assert(r.directory.detail.includes("it answered 1043ms after it was sent"), `and when the answer really came, so a slow start is told from a hung object (${r.directory.detail})`);
+      assert(PLAIN.test(r.directory.detail), "in plain words");
+      eq(r.directoryWake.outcome, "passed", "and the verification directory, which answered in time, still passes its wake");
+    }
+  }
+  {
+    const r = await runHeld("a live get that fails late", { name: POOL_GROUPING_DIRECTORY, nth: 1, ms: 1300, fail: true });
+    if (r) {
+      eq(r.directory.outcome, "directory-unreachable", `a live get that failed past one call did not answer in time (${r.directory.detail})`);
+      assert(
+        r.directory.detail.includes("it failed 1300ms after it was sent") && r.directory.detail.includes("the directory refused"),
+        `and it says when it failed and why, rather than that it answered (${r.directory.detail})`,
+      );
+    }
+  }
+  {
+    const r = await runHeld("a live get that never answers", { name: POOL_GROUPING_DIRECTORY, nth: 1, ms: "never" });
+    if (r) {
+      eq(r.directory.outcome, "directory-unreachable", `a live get that never answers did not answer (${r.directory.detail})`);
+      assert(
+        r.directory.detail.includes(`no answer within ${CONFIRM_LINE_CALL_MS}ms, nor at all in the ${PROBE_LATE_ANSWER_MS}ms the probe watched for one`),
+        `and it says it watched the whole while and saw nothing, so a hung object is never read as a slow one (${r.directory.detail})`,
+      );
+    }
+  }
+  {
+    // The verification directory hung outright: both of its checks say so, and the probe
+    // still answers, so the command is not held to its own deadline by a hung object.
+    const w = world();
+    w.setDirectorySend(async (name, m) => (name === POOL_GROUPING_VERIFY_DIRECTORY ? new Promise<Message>(() => {}) : w.handleDirectory(name, m)));
+    const r = await w.run();
+    measure(w);
+    assert(r !== "unsettled", "a hung verification directory: the probe still finishes");
+    if (r !== "unsettled") {
+      for (const check of ["directory", "directoryWake"] as const) {
+        eq(r[check].outcome, "directory-unreachable", `a hung verification directory: ${check} says it did not answer (${r[check].detail})`);
+        assert(r[check].detail.includes(`nor at all in the ${PROBE_LATE_ANSWER_MS}ms`), `and that it never answered while watched (${r[check].detail})`);
+      }
+    }
+  }
+
+  {
+    // A call that resolves with nothing is no answer, said as one, never a reading the
+    // check then trips over in its own code (which would end it as errored, the probe's fault).
+    const w = world();
+    w.setDirectorySend(async (name, m) => (name === POOL_GROUPING_DIRECTORY ? (null as unknown as Message) : w.handleDirectory(name, m)));
+    const r = await w.run();
+    measure(w);
+    assert(r !== "unsettled", "a live get that resolves with nothing: the probe still finishes");
+    if (r !== "unsettled") {
+      eq(r.directory.outcome, "directory-unreachable", `a live get that resolves with nothing did not answer (${r.directory.detail})`);
+      assert(r.directory.detail.includes("an answer that is not a message"), `and says what came back instead (${r.directory.detail})`);
+    }
+  }
+
+  // --- #3496: what the check holds the verification directory to ----------------------
+  // The verification directory is touched only by this proof, so its first call of a run
+  // meets an object idle since yesterday, a cold start: on 2026-10-07 the platform's own
+  // records put it about a second after the call was sent, twice. The LIVE directory never
+  // meets that: the recompute lane calls it every minute, and its puts after a minute idle
+  // reached it no later than those after a few seconds. So every call after the first is
+  // held to one call, the live directory's real pattern, and the first is held only to the
+  // longest a server's own fetch waits for the grouping, and says how long it took.
+  eq(PROBE_DIRECTORY_FIRST_CALL_MS, POOL_GROUPING_FETCH_GIVE_UP_MS, "the verification directory's first call is held to the longest a server's own fetch of the grouping waits, and no longer");
+  assert(PROBE_DIRECTORY_FIRST_CALL_MS > CONFIRM_LINE_CALL_MS, "which is looser than one call, the bound every later call is held to");
+  assert(PROBE_LATE_ANSWER_MS > PROBE_DIRECTORY_FIRST_CALL_MS, "and a first call that misses even that is still watched for its real answer");
+  {
+    const r = await runHeld("a cold first call", { name: POOL_GROUPING_VERIFY_DIRECTORY, nth: 1, ms: 1500 });
+    if (r) {
+      eq(r.directory.outcome, "passed", `a first call that meets a cold start and answers inside a server's own wait passes (${r.directory.detail})`);
+      assert(r.directory.detail.includes("answered its first call in 1500ms"), `and says how long the cold start took, so the number is in every day's log (${r.directory.detail})`);
+      eq(r.directoryWake.outcome, "passed", "and the wake check after it passes");
+    }
+  }
+  {
+    // Control (L159): the same delay on any LATER call is a directory already awake, which
+    // is what the live one is, so it still fails. The loose bound is the first call's alone.
+    const r = await runHeld("a slow call after the first", { name: POOL_GROUPING_VERIFY_DIRECTORY, nth: 2, ms: 1500 });
+    if (r) {
+      eq(r.directory.outcome, "directory-unreachable", `a call to a directory already awake that takes 1500ms did not answer in time (${r.directory.detail})`);
+      assert(r.directory.detail.includes(`no answer within ${CONFIRM_LINE_CALL_MS}ms; it answered 1500ms after it was sent`), `held to one call (${r.directory.detail})`);
+    }
+  }
+  {
+    const r = await runHeld("a first call slower than any server waits", { name: POOL_GROUPING_VERIFY_DIRECTORY, nth: 1, ms: 2600 });
+    if (r) {
+      eq(r.directory.outcome, "directory-unreachable", `a first call slower than a server's own fetch waits did not answer in time (${r.directory.detail})`);
+      assert(
+        r.directory.detail.includes("its first call") && r.directory.detail.includes(`no answer within ${PROBE_DIRECTORY_FIRST_CALL_MS}ms; it answered 2600ms after it was sent`),
+        `and says it was the first call, the bound it missed, and when it answered (${r.directory.detail})`,
+      );
+    }
+  }
 
   // The wake loop, past a first spell the runtime stretched. The first read after the wait
   // finds the directory still awake and holding its grouping, so the probe waits another

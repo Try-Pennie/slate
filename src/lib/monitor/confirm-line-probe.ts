@@ -34,7 +34,9 @@
  *    directions, on the probe's OWN directory), and the LIVE directory holds a grouping
  *    a cold server would install: this build's format, well formed, and read within
  *    `PROBE_GROUPING_MAX_AGE_MS`. The live one is only ever READ, so the proof can never
- *    put a grouping in front of a real confirm.
+ *    put a grouping in front of a real confirm. Its first call of a run, which meets the
+ *    probe's own directory cold, is timed and held to `PROBE_DIRECTORY_FIRST_CALL_MS`;
+ *    every call after it is held to one call, the live directory's real pattern (#3496).
  *  - `directoryWake` (#3481): the probe's own directory, left idle past the platform's
  *    hibernation window, hands back the grouping it stored, answered FROM STORAGE. #3479
  *    keeps the snapshot in the object's storage because the platform discards an idle
@@ -72,6 +74,7 @@ import {
   type GroupingAnsweredFrom,
   type GroupingSnapshot,
 } from "../booking/pool-grouping.ts";
+import { POOL_GROUPING_FETCH_GIVE_UP_MS } from "../booking/pool-grouping-reader.ts";
 import { shortErrorReason } from "../notify/error-text.ts";
 import { readWithinDeadline, type ScheduleTimer } from "../read-within-deadline.ts";
 
@@ -176,6 +179,35 @@ export const PROBE_WAKE_IDLE_MS = 2 * PLATFORM_HIBERNATE_AFTER_MS;
  * the directory's design assumes, which is itself the thing to say.
  */
 export const PROBE_WAKE_READS = 3;
+
+/**
+ * #3496: how long, from when it was sent, the probe keeps watching a directory call that
+ * missed its bound, to say when it really answered. "No answer within 1000ms" reads the
+ * same for an object a few milliseconds slow to start as for one that is hung, and on
+ * 2026-10-07 the platform's own records put the failing put's answer about 1.0s after it
+ * was sent. More than three times the slowest first answer measured on a cold object
+ * (1.4s, load run 37640583621), so a cold start is always measured rather than reported as
+ * no answer, and short enough that a failing run is held open a few seconds at most.
+ */
+export const PROBE_LATE_ANSWER_MS = 5_000;
+
+/**
+ * #3496: what the daily proof holds the verification directory's FIRST call of a run to.
+ *
+ * The verification directory is touched only by this proof, so that call meets an object
+ * idle since the day before: a cold start. On 2026-10-07 the platform's own records put it
+ * about a second after the call was sent, twice (runs at 17:33 and 17:40 UTC), while every
+ * call after it, including one after a 20 second idle that woke the object from storage,
+ * reached it within about 70ms. The LIVE directory never meets that cold start: the
+ * recompute lane calls it every minute, and over six hours its puts after a minute idle
+ * reached it no later than those after a few seconds. So the proof holds every call after
+ * the first to one call (`CONFIRM_LINE_CALL_MS`), the live directory's real pattern, and
+ * this first one only to the longest a server's own fetch of the grouping waits for the
+ * directory: a cold start inside it still installs a grouping for the next confirm, and one
+ * past it would not, which is a finding. The pass detail says how long it took, so the cold
+ * start is measured every day rather than hidden behind a looser bound.
+ */
+export const PROBE_DIRECTORY_FIRST_CALL_MS = POOL_GROUPING_FETCH_GIVE_UP_MS;
 
 export interface CheckResult {
   outcome: CheckOutcome;
@@ -563,11 +595,38 @@ function holds(answer: Record<string, unknown>, expected: GroupingSnapshot): boo
   return read.kind === "snapshot" && JSON.stringify(read.snapshot) === JSON.stringify(expected);
 }
 
-/** One call to a directory within one call's deadline: its answer, or why there was none. */
-async function askDirectory(deps: ConfirmLineProbeDeps, stub: DirectoryStub, message: Record<string, unknown>): Promise<Record<string, unknown> | string> {
-  let why = "no answer within a call";
-  const answer = await readWithinDeadline(() => stub.send(message), CONFIRM_LINE_CALL_MS, (err) => (why = shortErrorReason(err)), deps.timer);
-  return answer ?? why;
+/**
+ * One call to a directory within `boundMs`: its answer, or why there was none. A call that
+ * misses its bound is still a call that did not answer in time, and is then watched until
+ * `PROBE_LATE_ANSWER_MS` after it was sent (#3496), so the reason says when it really
+ * answered, when it failed, or that it never did: a cold object a few milliseconds slow and
+ * a hung one are different findings, and only the time tells them apart.
+ */
+async function askDirectory(
+  deps: ConfirmLineProbeDeps,
+  stub: DirectoryStub,
+  message: Record<string, unknown>,
+  boundMs: number = CONFIRM_LINE_CALL_MS,
+): Promise<Record<string, unknown> | string> {
+  const sentAt = deps.now();
+  // Settles exactly once, with the answer or the failure, and records WHEN; never rejects,
+  // and a send that throws at once is a failure like any other.
+  const call = new Promise<Record<string, unknown>>((resolve) => resolve(stub.send(message))).then(
+    (answer) => ({ answer, at: deps.now() }),
+    (err: unknown) => ({ failed: err, at: deps.now() }),
+  );
+  type Settled = Awaited<typeof call>;
+  const inBound = await readWithinDeadline<Settled>(() => call, boundMs, () => {}, deps.timer);
+  if (inBound) {
+    if (!("answer" in inBound)) return shortErrorReason(inBound.failed);
+    // The transport's contract is a message; anything else is no answer, never a reading.
+    return inBound.answer && typeof inBound.answer === "object" ? inBound.answer : "an answer that is not a message";
+  }
+  const missed = `no answer within ${boundMs}ms`;
+  const late = await readWithinDeadline<Settled>(() => call, Math.max(0, PROBE_LATE_ANSWER_MS - (deps.now() - sentAt)), () => {}, deps.timer);
+  if (!late) return `${missed}, nor at all in the ${PROBE_LATE_ANSWER_MS}ms the probe watched for one`;
+  const afterMs = late.at - sentAt;
+  return "answer" in late ? `${missed}; it answered ${afterMs}ms after it was sent` : `${missed}; it failed ${afterMs}ms after it was sent (${shortErrorReason(late.failed)})`;
 }
 const directoryUnreachable = (what: string, why: string): CheckResult => ({
   outcome: "directory-unreachable",
@@ -579,12 +638,24 @@ const directoryUnreachable = (what: string, why: string): CheckResult => ({
  * put is stored and handed back, and an older put is kept out, so newest wins is
  * measured in both directions (L1). Then the LIVE directory, read and never written:
  * it holds a grouping a cold server would install.
+ *
+ * #3496: it opens with one read of its own directory, held to
+ * `PROBE_DIRECTORY_FIRST_CALL_MS` and timed, because that directory sits idle between runs
+ * and its first call meets a cold start the live directory never does. Every call after it
+ * is held to one call, as a directory already awake, which is what the live one is.
  */
 async function checkDirectory(deps: ConfirmLineProbeDeps, run: string): Promise<CheckResult> {
   const verify = deps.directory(POOL_GROUPING_VERIFY_DIRECTORY);
   const live = deps.directory(POOL_GROUPING_DIRECTORY);
   const ask = (stub: DirectoryStub, message: Record<string, unknown>) => askDirectory(deps, stub, message);
   const unreachable = directoryUnreachable;
+
+  // Any answer will do: what the directory holds is judged by the calls after it.
+  const firstSentAt = deps.now();
+  const first = await askDirectory(deps, verify, groupingGetMessage(), PROBE_DIRECTORY_FIRST_CALL_MS);
+  if (typeof first === "string") return unreachable("its first call of the run, which meets it however long it has sat idle", first);
+  const firstMs = deps.now() - firstSentAt;
+
   const now = deps.now();
   const newer = groupingSnapshotOf([["verify", run]], now);
   const older = groupingSnapshotOf([["verify", `${run}:older`]], now - 1_000);
@@ -629,7 +700,9 @@ async function checkDirectory(deps: ConfirmLineProbeDeps, run: string): Promise<
     };
   }
   return passed(
-    `The pool grouping directory stored a put, kept the newest over an older one, and holds a live grouping of ${read.snapshot.count} codes read ${ageS} seconds ago`,
+    `The pool grouping directory answered its first call in ${firstMs}ms (it sits idle between runs, so that call can meet a cold start, and is held to the ${PROBE_DIRECTORY_FIRST_CALL_MS}ms a server's own fetch waits), ` +
+      `then stored a put and kept the newest over an older one with every call answered within ${CONFIRM_LINE_CALL_MS}ms, as the live directory, called every minute, must answer; ` +
+      `and the live directory holds a grouping of ${read.snapshot.count} codes read ${ageS} seconds ago`,
   );
 }
 

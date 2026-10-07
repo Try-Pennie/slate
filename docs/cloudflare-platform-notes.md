@@ -268,6 +268,30 @@ Measured on 2026-10-05 from inside a Worker invocation, against a throwaway Work
   a LATER call depends on goes in the object's storage; memory is a cache in front of it.
   A line holds a pending timer while it has a turn, which is why its memory survives the
   turns it serves.
+- **An object idle for minutes answers its first call about a second late, in Slate**
+  (#3496). Read from the platform's own invocation records on 2026-10-07, where an
+  event's timestamp is when the call ENDED, so its handler started at the timestamp less
+  `wallTimeMs`. The daily proof's verification directory, idle 20 hours (17:33 UTC) and
+  then 7 minutes (17:40), reached its handler about 0.87s and 1.0s after the first call
+  was sent; the handler then took 124ms and 30ms, so the answer missed the 1000ms call
+  bound by tens of milliseconds. In the second run a call sent a second after the first
+  reached the object at the same moment as the first, which is an object not yet
+  available delivering what had queued. The verify group's line object did the same on
+  its first enter (about 1.25s and 1.35s from the request's start, inside the line's 1.5s
+  reach bound). After a 20 second idle, by contrast, the same directory woke from
+  storage and its handler started about 60 to 70ms after the call was sent, so
+  hibernation (above) is cheap and the second is something evicted later, somewhere
+  between 20 seconds and 7 minutes idle. **What it is not:** the deploy reports
+  `Worker Startup Time` of 16 to 20ms on a 21,877 KiB bundle (4,644 KiB gzipped), so it is
+  not the global scope; and the throwaway spike above, a tiny Worker, never took more than
+  452ms even to create a new object. Whether the second is fetching and compiling Slate's
+  bundle on the object's machine was not separated from anything else about the object,
+  because that needs a deployed experiment. **Where it does not reach:** the live pool
+  grouping directory, called every minute. Over six hours (343 recompute lane puts, each
+  timed from its own cron invocation's start, so the caller's clock is the same every
+  minute) puts after 45 seconds or more idle reached it at a median 437ms (n=120), no later
+  than puts after under 15 seconds (462ms, n=106); a one second cold start would have moved
+  the first figure to about 1.4s. The one plainly cold call was the first after a deploy.
 - **Concurrency inside one object is cheap.** 100 calls held open on one object (each
   awaiting an in memory promise, nothing in storage, so no input gate closes) were
   all released by one call with no measurable lag.

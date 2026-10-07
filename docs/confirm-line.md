@@ -226,6 +226,16 @@ verification directory and only reads the live one. It cannot prove two isolates
 share one object; only the load run can. Exit codes and
 decisions: `docs/verify-commands.md`.
 
+**What it holds the verification directory to (#3496).** That directory is touched only
+by the proof, so its first call each day meets a cold start, which the live directory,
+called every minute by the recompute lane, never does. The proof times that first call
+and holds it to `POOL_GROUPING_FETCH_GIVE_UP_MS` (two seconds, the longest a server's own
+fetch waits for the directory), and holds every call after it to `CONFIRM_LINE_CALL_MS`,
+the live directory's real pattern. Before this, the first call was held to one call, and
+the proof failed daily on a cold start that is about a second long. The measurements are
+in `docs/cloudflare-platform-notes.md` ("An object idle for minutes"). A call that misses
+its bound is watched for `PROBE_LATE_ANSWER_MS` and says when it really answered.
+
 **What it proves about the directory surviving a sleep (#3481).** #3479 rests on a
 platform guarantee the offline tests can show only with a stand in: the object's
 storage outlives the hibernation that discards its memory, and a woken instance reads
