@@ -27,7 +27,7 @@ import {
   readBurstTailFile,
   type BurstTailFile,
 } from "./loadtest/burst-breakdown.ts";
-import type { BurstLegGroup } from "./loadtest/judge-booking-run.ts";
+import { burstLegLabel, type BurstLegGroup } from "./loadtest/judge-booking-run.ts";
 import type { BookingAttempt, DriverResult } from "./loadtest/book-plan.ts";
 import { answerTimed, noteRefusal, type ConfirmLineFacts } from "../src/lib/booking/confirm-latency.ts";
 import { makeWaitMarks } from "../src/lib/booking/wait-marks.ts";
@@ -320,6 +320,15 @@ const archive = [cronTick, ...built.map((b) => b.event), steadyStray.event].join
   const text = lines.join("\n");
   assert(/burst 1 of 2.*UNMEASURED/.test(text), `control: a burst whose requests matched nothing is UNMEASURED (got ${text})`);
   assert(!text.includes("assign-and-verify") && !text.includes("refused at"), "control: and no stage figure is printed for it, so it never reads as quick");
+  // #3429: the burst is named by the judge's own label, its kind included, so the
+  // breakdown and the verdict never name one burst two ways (L41).
+  const drop = group(1, shifted);
+  drop.files[0]!.burstLeg = { ...drop.files[0]!.burstLeg!, kind: "drop" };
+  const named = burstBreakdownLines({ groups: [group(0, shifted), drop], tail: { kind: "read", text: archive } }).join("\n");
+  assert(
+    named.includes(burstLegLabel(drop)) && named.includes("burst 2 of 2, the tier drop burst") && named.includes("burst 1 of 2, the refusal control"),
+    `each burst is named with its kind, by the judge's label (got ${named})`,
+  );
 }
 
 // --- control: two requests on one key with only one confirm are ambiguous, never guessed ----

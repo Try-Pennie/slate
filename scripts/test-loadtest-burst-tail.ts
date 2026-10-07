@@ -19,6 +19,7 @@ import {
   AFTER_RESPONSE_CANCEL_MS,
   BURST_GRACE_DEFAULT_MS,
   BURST_LEGS,
+  BURST_SEQUENCE,
   BURST_SPACING_MS,
   BURST_TAIL_AFTER_LAST_MOMENT_MS,
   DRIVE_JOB_SETUP_MINUTES,
@@ -36,8 +37,14 @@ import { assert, eq, finish } from "./lib/harness.ts";
 const ROOT = join(import.meta.dirname, "..");
 const T0 = 1_791_316_778_917;
 const plan: BurstPlan = {
-  codes: ["120", "121"],
-  bursts: burstMoments(T0, BURST_LEGS, BURST_SPACING_MS).map((startAtMs, i) => ({ slot: `2026-10-0${7 + i}T17:40:00.000Z`, startAtMs })),
+  bursts: burstMoments(T0, BURST_LEGS, BURST_SPACING_MS).map((startAtMs, i) => ({
+    kind: BURST_SEQUENCE[i]!,
+    codes: ["120", "121"],
+    slot: `2026-10-0${7 + i}T17:40:00.000Z`,
+    startAtMs,
+    perDriver: 3,
+    capacity: { ladderRoster: 74, rung0Free: 1, ladderFree: 40 },
+  })),
 };
 const lastMoment = plan.bursts[plan.bursts.length - 1]!.startAtMs;
 
@@ -82,7 +89,7 @@ const lastMoment = plan.bursts[plan.bursts.length - 1]!.startAtMs;
   );
   const after = burstTailWait({ rawPlan: raw, rawCeilingMinutes: "10", nowMs: burstTailStopAtMs(plan) + 1 });
   assert(after.ok && after.waitMs === 0 && after.exit === 3 && after.lines.some((l) => /covered no burst/.test(l)), `a tail that started after the stop waits for nothing, says it covered no burst and exits 3 (got ${JSON.stringify(after)})`);
-  for (const bad of ["", "{", JSON.stringify({ codes: ["120"], bursts: [] })]) {
+  for (const bad of ["", "{", JSON.stringify({ bursts: [] }), JSON.stringify({ bursts: [{ ...plan.bursts[0]!, kind: undefined }] })]) {
     const r = burstTailWait({ rawPlan: bad, rawCeilingMinutes: "10", nowMs: T0 });
     assert(!r.ok && /BURST_PLAN/.test(r.why), `an unreadable plan ${JSON.stringify(bad)} is refused by name (got ${JSON.stringify(r)})`);
   }
@@ -104,7 +111,7 @@ const lastMoment = plan.bursts[plan.bursts.length - 1]!.startAtMs;
   const refused = run({ BURST_PLAN: "{", BURST_TAIL_CEILING_MINUTES: "10" });
   assert(refused.status === 1 && /BURST_PLAN/.test(refused.stderr), `an unreadable plan stops the wait at once by name (got ${refused.status}: ${refused.stderr.trim()})`);
   // A plan whose every moment is long past: nothing to wait for, said, and red.
-  const past: BurstPlan = { codes: ["120", "121"], bursts: [{ slot: "2026-10-07T17:40:00.000Z", startAtMs: 1_000 }] };
+  const past: BurstPlan = { bursts: [{ ...plan.bursts[0]!, startAtMs: 1_000 }] };
   const late = run({ BURST_PLAN: JSON.stringify(past), BURST_TAIL_CEILING_MINUTES: "10" });
   assert(late.status === 3 && /after burst 1's moment/.test(late.stdout + late.stderr), `a tail started after every burst exits 3 and says why (got ${late.status}: ${(late.stdout + late.stderr).trim()})`);
 }

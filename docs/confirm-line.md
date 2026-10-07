@@ -256,7 +256,8 @@ three leaders keyed as main keys it and one once every server fetches the snapsh
 `test-pool-grouping.ts` (the snapshot, every refusal, the directory through the real
 object, and the format pin), `test-pool-grouping-reader.ts` (the server's grouping,
 newest wins, the reader's bound counted from the line key, coalescing and backoff, and
-the same key both ways for sixty codes), `test-unawaited-line-calls.ts` (no unawaited line call),
+the same key both ways for sixty codes), `test-unawaited-line-calls.ts` (no unawaited seat call or turn report; the lead's ack
+is the one deliberate exception, see Timings),
 `test-confirm-line-binding.ts` (bound, created and exported in production and the load
 test, the deployed class logging a traced call, and serving the directory only on its
 own path and, when the runtime names it, its own instance).

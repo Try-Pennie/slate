@@ -111,9 +111,10 @@ export function codeSequence(total: number, mix: readonly CodeWeight[] = MEASURE
  * attribute source (#2152) and the constant had to be moved by hand from 122 to
  * 222 on the morning of the next run (#2319).
  *
- * `scripts/loadtest/burst-setup.ts` measures every pool through the booker's own
- * predicate and fires at the shallowest one that is actually offering times, and
- * hands the measured depth to the judge to report. A hand run names the code with
- * `BURST_CODE_OVERRIDE`, which reads as an UNMEASURED depth in the report rather
- * than as a one deep pool.
+ * `scripts/loadtest/burst-setup.ts` measures the roster through the booker's own
+ * predicates and, since #3429, chooses each burst by what its whole LADDER holds: the
+ * refusal control at the smallest ladder under its crowd, the tier drop burst at the
+ * shallowest top rung with room below. What it measured travels in the burst plan to
+ * the report. There is no hand override: a burst sized without the measurement is the
+ * unmeasured control this removed.
  */

@@ -20,12 +20,12 @@
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AddressInfo } from "node:net";
-import { burstCodeFor, burstLegOut, type BurstPlan, type DriverResult } from "./loadtest/book-plan.ts";
+import { burstCodeFor, burstLegOut, REQUEST_TIMEOUT_MS, type BurstPlan, type DriverResult } from "./loadtest/book-plan.ts";
 import {
   answeredAtEchoHeader,
   confirmLineEchoHeaders,
@@ -44,14 +44,52 @@ function requestNumber(externalId: string): number {
   return Number(externalId.split("-").pop());
 }
 
+/** What the stub saw, so a test can say what the driver asked and when. */
+interface Seen {
+  codes: string[];
+  bodies: number;
+  /** #3429: each bookable probe, with when it arrived. */
+  probes: { code: string; startIso: string; atMs: number }[];
+  /** #3429: how many times the driver asked the deployment for its crowd rule. */
+  versions: number;
+}
+
 async function withStub<T>(
-  run: (base: string, seen: { codes: string[]; bodies: number }) => Promise<T>,
+  run: (base: string, seen: Seen) => Promise<T>,
+  opts: { rule?: string | null } = {},
 ): Promise<T> {
-  const seen = { codes: [] as string[], bodies: 0 };
+  const seen: Seen = { codes: [], bodies: 0, probes: [], versions: 0 };
   const server = createServer((req, res) => {
     if (req.url?.startsWith("/api/availability")) {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ slots: SLOTS }));
+      return;
+    }
+    // #3429: the version answer a load test deployment sends, carrying its crowd rule
+    // (or not, the way a deployment before #3429 answers).
+    if (req.url === "/api/smoke/version" && req.method === "GET") {
+      seen.versions += 1;
+      const rule = opts.rule === undefined ? "walks" : opts.rule;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ commit: "abc1234", loadtest: true, faultPct: 0, ...(rule === null ? {} : { confirmCrowdRule: rule }) }));
+      return;
+    }
+    // #3429: the bookable probe, answered in the route's own shape.
+    if (req.url?.startsWith("/api/bookings/bookable") && req.method === "GET") {
+      const q = new URL(req.url, "http://stub").searchParams;
+      seen.probes.push({ code: q.get("bucketCode") ?? "", startIso: q.get("startIso") ?? "", atMs: Date.now() });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          bookable: true,
+          reason: "available",
+          requestedBucketCode: q.get("bucketCode"),
+          effectiveBucketCode: "130",
+          tierFallback: true,
+          rungsDropped: 1,
+          wouldAssign: { id: "agent-x", name: null, email: null },
+        }),
+      );
       return;
     }
     if (req.url === "/api/bookings" && req.method === "POST") {
@@ -76,7 +114,12 @@ async function withStub<T>(
         }
         const won = n % REQUESTS === 0;
         res.writeHead(won ? 200 : 409, headers);
-        res.end(JSON.stringify(won ? { outcome: "booked" } : { code: "SLOT_TAKEN" }));
+        // #3429: a 200 says which rung took it, the way the booking API's body does.
+        res.end(
+          JSON.stringify(
+            won ? { outcome: "booked", bucket: { code: "130", requestedCode: body.bucketCode, tierFallback: true, rungsDropped: 1 } } : { code: "SLOT_TAKEN" },
+          ),
+        );
       });
       return;
     }
@@ -93,11 +136,22 @@ async function withStub<T>(
   }
 }
 
-async function runDriver(base: string, env: Record<string, string>): Promise<{ code: number; stderr: string }> {
+async function runDriver(
+  base: string,
+  env: Record<string, string>,
+  // A module preloaded into the driver only, such as the early timers below.
+  preload: string[] = [],
+): Promise<{ code: number; stderr: string }> {
   try {
     await promisify(execFile)(
       process.execPath,
-      ["--experimental-strip-types", "--import", "./scripts/register-paths.mjs", "scripts/loadtest/book.ts"],
+      [
+        "--experimental-strip-types",
+        "--import",
+        "./scripts/register-paths.mjs",
+        ...preload.flatMap((m) => ["--import", m]),
+        "scripts/loadtest/book.ts",
+      ],
       {
         cwd: ROOT,
         env: {
@@ -117,9 +171,17 @@ async function runDriver(base: string, env: Record<string, string>): Promise<{ c
   }
 }
 
-function plan(startAts: number[]): BurstPlan {
-  return { codes: CODES, bursts: startAts.map((startAtMs, i) => ({ slot: SLOTS[i]!, startAtMs })) };
+/** #3429: a burst of the plan, each with its own kind, codes and share. */
+function burstOf(slot: string, startAtMs: number, kind: "refusal" | "drop" = "refusal", perDriver = REQUESTS) {
+  return { kind, codes: CODES, slot, startAtMs, perDriver, capacity: { ladderRoster: 16, rung0Free: 1, ladderFree: 9 } };
 }
+
+function plan(startAts: number[]): BurstPlan {
+  return { bursts: startAts.map((startAtMs, i) => burstOf(SLOTS[i]!, startAtMs)) };
+}
+
+/** The settle seam this test drives with: a short settle so the probe comes in under a second. */
+const SETTLE_MS = 600;
 
 const readFile = (path: string) => (existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as DriverResult) : null);
 
@@ -129,38 +191,67 @@ const readFile = (path: string) => (existsSync(path) ? (JSON.parse(readFileSync(
   const out = join(dir, `burst-${DRIVER}.json`);
   const startedAt = Date.now();
   const t = startedAt + 2_000;
+  // #3429: the middle burst is a drop burst of two requests a driver, so each burst's
+  // own share and kind are seen to reach the file.
+  const threeLegs: BurstPlan = { bursts: [burstOf(SLOTS[0]!, t), burstOf(SLOTS[1]!, t + 300, "drop", 2), burstOf(SLOTS[2]!, t + 600)] };
   const { code, stderr, seen } = await withStub(async (base, seen) => ({
     ...(await runDriver(base, {
       MODE: "burst",
       OUT: out,
-      BURST_REQUESTS: String(REQUESTS),
       BURST_GRACE_MS: "30000",
-      BURST_PLAN: JSON.stringify(plan([t, t + 300, t + 600])),
+      BURST_SETTLE_MS: String(SETTLE_MS),
+      BURST_PLAN: JSON.stringify(threeLegs),
     })),
     seen,
   }));
   const finishedAt = Date.now();
   eq(code, 0, `a driver that made every burst exits zero ${stderr.slice(0, 300)}`);
-  eq(seen.bodies, 3 * REQUESTS, "it fired every request of every burst");
+  eq(seen.bodies, 2 * REQUESTS + 2, "it fired every request of every burst, each burst its own share");
 
   const files = [0, 1, 2].map((i) => readFile(burstLegOut(out, i)));
   assert(files.every((f) => f !== null), "one file per burst, beside the driver's own name");
   for (const [i, f] of files.entries()) {
+    const share = i === 1 ? 2 : REQUESTS;
     eq(f?.mode, "burst", `burst ${i + 1}'s file is a burst file`);
     eq(f?.burstLeg?.index, i, `and says which burst it holds`);
     eq(f?.burstLeg?.of, 3, "out of how many");
     eq(f?.burstLeg?.slot, SLOTS[i], "at the slot the plan named");
     eq(f?.burstLeg?.codes, CODES, "split across the plan's two codes");
-    eq(f?.attempts.length, REQUESTS, "holding its whole burst");
+    eq(f?.burstLeg?.kind, i === 1 ? "drop" : "refusal", "of the kind the plan named (#3429)");
+    eq(f?.burstLeg?.capacity, { ladderRoster: 16, rung0Free: 1, ladderFree: 9 }, "carrying what the setup measured");
+    // #3459 review: the grace and request bound it ran with, so the judge settles the
+    // burst on what its drivers were configured with rather than on the defaults.
+    eq(f?.burstLeg?.graceMs, 30_000, "recording the grace it was configured with");
+    eq(f?.burstLeg?.requestBoundMs, REQUEST_TIMEOUT_MS, "and the abort bound its requests carried");
+    eq(f?.planned, share, "planning its own share");
+    eq(f?.attempts.length, share, "holding its whole burst");
     eq(
       f?.attempts.map((a) => a.code),
-      Array.from({ length: REQUESTS }, (_, n) => burstCodeFor(CODES, DRIVER, n)),
+      Array.from({ length: share }, (_, n) => burstCodeFor(CODES, DRIVER, n)),
       "each request asking for the code the split gives it",
     );
     assert(f?.attempts.every((a) => a.startIso === SLOTS[i]) === true, "every request at that burst's slot");
+    // #3429: the deployment's crowd rule, read once and recorded on every burst.
+    eq(f?.crowdRule, { state: "read", value: "walks" }, "the crowd rule the deployment declared");
+    // #3429: the slot probed once the burst settled, through the driver's own reader.
+    const probe = f?.probe;
+    assert(
+      probe?.kind === "read" && probe.bookable && probe.rungsDropped === 1 && probe.effectiveCode === "130",
+      `the slot's probe is recorded as the deployment answered it (got ${JSON.stringify(probe)})`,
+    );
+    eq(probe?.code, burstCodeFor(CODES, DRIVER, 0), "asked of the code this driver opened on");
+    const moment = threeLegs.bursts[i]!.startAtMs;
+    assert(probe !== undefined && probe.sentAtMs >= moment + SETTLE_MS, `and sent only once the burst settled (${probe ? probe.sentAtMs - moment : "none"}ms after its moment)`);
+    // A 200 records which rung took it; a refusal records nothing.
+    const won = f?.attempts.find((a) => a.status === 200);
+    eq(won?.rungsDropped, 1, "a winner records the rung its answer named");
+    assert(f?.attempts.filter((a) => a.status !== 200).every((a) => a.rungsDropped === undefined) === true, "and a refusal names no rung");
   }
+  eq(seen.versions, 1, "the crowd rule is asked once, before the first burst");
+  eq(seen.probes.length, 3, "and the slot is probed once per burst");
+  eq(seen.probes.map((p) => p.startIso), SLOTS, "each at its own burst's slot");
   const ids = files.flatMap((f) => f?.attempts.map((a) => a.externalId) ?? []);
-  eq(new Set(ids).size, 3 * REQUESTS, "no two of the run's burst requests share an external id");
+  eq(new Set(ids).size, 2 * REQUESTS + 2, "no two of the run's burst requests share an external id");
   eq(new Set(seen.codes).size, 2, "and the deployment was asked for both codes");
 
   const normal = files[1]!.attempts[0]!.echo!;
@@ -185,6 +276,130 @@ const readFile = (path: string) => (existsSync(path) ? (JSON.parse(readFileSync(
   rmSync(dir, { recursive: true, force: true });
 }
 
+// --- #3429: a timer that returns early never sends the probe before the settle ------
+//
+// Run 37568349592 sent a probe 599ms after its moment against a 600ms settle: one
+// sleep toward the settle, and the timer returned a millisecond before the wall clock
+// reached it. The judge reads a probe sent before the burst settled as one it cannot
+// use, so a single early timer leaves the run INCOMPLETE. The driver's timers fire at
+// half their delay here, so one sleep is early on every run, never only an unlucky one.
+{
+  const dir = mkdtempSync(join(tmpdir(), "slate-3429-"));
+  const out = join(dir, `burst-${DRIVER}.json`);
+  const t = Date.now() + 2_000;
+  const { code, stderr } = await withStub(async (base) =>
+    runDriver(
+      base,
+      {
+        MODE: "burst",
+        OUT: out,
+        BURST_GRACE_MS: "30000",
+        BURST_SETTLE_MS: String(SETTLE_MS),
+        BURST_PLAN: JSON.stringify({ bursts: [burstOf(SLOTS[0]!, t)] }),
+      },
+      ["./scripts/lib/early-timers.mjs"],
+    ),
+  );
+  eq(code, 0, `a driver whose timers fire early still makes its burst ${stderr.slice(0, 300)}`);
+  const probe = readFile(burstLegOut(out, 0))?.probe;
+  assert(
+    probe !== undefined && probe.sentAtMs >= t + SETTLE_MS,
+    `and sends its probe only once the wall clock reaches the settle (${probe ? probe.sentAtMs - t : "none"}ms after its moment, settle ${SETTLE_MS}ms)`,
+  );
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// --- a lead outside the phone's digits stops the driver by name, before any send ----
+//
+// `book()` builds its body before its try, as the ceiling control does (#3447), so a
+// lead `loadtestPhone` refuses ends the driver naming why rather than being recorded
+// as a request that failed in transit. A driver number past 99 is the coordinate a
+// valid plan can still reach (the plan reader refuses request numbers past 9999).
+{
+  const dir = mkdtempSync(join(tmpdir(), "slate-3429-"));
+  const out = join(dir, `burst-${DRIVER}.json`);
+  const t = Date.now() + 2_000;
+  const { code, stderr, seen } = await withStub(async (base, seen) => ({
+    ...(await runDriver(base, {
+      MODE: "burst",
+      OUT: out,
+      DRIVER: "100",
+      BURST_GRACE_MS: "30000",
+      BURST_SETTLE_MS: String(SETTLE_MS),
+      BURST_PLAN: JSON.stringify({ bursts: [burstOf(SLOTS[0]!, t)] }),
+    })),
+    seen,
+  }));
+  assert(code !== 0, `a driver whose leads have no number of their own does not exit zero (got ${code})`);
+  assert(/driver 100 is outside 0 to 99/.test(stderr), `and says why, by name (got: ${stderr.slice(0, 300)})`);
+  eq(seen.bodies, 0, "having sent no booking at all");
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// --- #3446 review: an unparseable grace is refused by name, before anything is sent --
+// `Number("soon")` is NaN, which a file writes as null and the judge reads as "not
+// recorded", replacing it with the default: a bad setting would vanish (L50).
+{
+  const dir = mkdtempSync(join(tmpdir(), "slate-3429-"));
+  const out = join(dir, `burst-${DRIVER}.json`);
+  const { code, stderr, seen } = await withStub(async (base, seen) => ({
+    ...(await runDriver(base, {
+      MODE: "burst",
+      OUT: out,
+      BURST_GRACE_MS: "soon",
+      BURST_SETTLE_MS: String(SETTLE_MS),
+      BURST_PLAN: JSON.stringify({ bursts: [burstOf(SLOTS[0]!, Date.now() + 2_000)] }),
+    })),
+    seen,
+  }));
+  eq(code, 1, "a driver whose grace cannot be read stops");
+  assert(/BURST_GRACE_MS/.test(stderr) && /soon/.test(stderr), `naming the setting and its value (got: ${stderr.slice(0, 300)})`);
+  eq(seen.bodies, 0, "having sent nothing");
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// --- #3446 review: a probe that cannot be recorded neither kills the driver nor vanishes
+// The probe of each burst runs beside the next burst's wait and is awaited only once
+// every burst has fired. A rejection before then had no handler, so Node reported it
+// as unhandled and ended the driver mid run (L749). Here burst 1's file is replaced by
+// a directory after it is written and before its probe lands, so the probe's own write
+// really fails, and burst 2 must still fire, be probed and be written.
+{
+  const dir = mkdtempSync(join(tmpdir(), "slate-3446-"));
+  const out = join(dir, `burst-${DRIVER}.json`);
+  const t = Date.now() + 2_000;
+  const settleMs = 3_000;
+  const first = burstLegOut(out, 0);
+  const { code, stderr, seen } = await withStub(async (base, seen) => {
+    const running = runDriver(base, {
+      MODE: "burst",
+      OUT: out,
+      BURST_GRACE_MS: "30000",
+      BURST_SETTLE_MS: String(settleMs),
+      BURST_PLAN: JSON.stringify({ bursts: [burstOf(SLOTS[0]!, t), burstOf(SLOTS[1]!, t + 4_000)] }),
+    });
+    // Waits on the file itself, never a fixed time (L290), bounded so a driver that
+    // never writes it fails here rather than hanging the suite.
+    const until = Date.now() + 30_000;
+    while (!existsSync(first) && Date.now() < until) await new Promise((r) => setTimeout(r, 10));
+    assert(existsSync(first), "fixture: burst 1's file was written before its probe");
+    // tree-write-ok: `first` is burstLegOut(out, 0), and `out` is join(dir, ...) with `dir` from this block's mkdtempSync(tmpdir())
+    rmSync(first);
+    // tree-write-ok: the same path, replaced by a directory so the probe's own write really fails
+    mkdirSync(first);
+    return { ...(await running), seen };
+  });
+  // Node ends a process on an uncaught error with its version as the last line; for an
+  // Error reason it prints no "unhandled" text at all, so this is what to look for.
+  assert(!/^Node\.js v\d+/m.test(stderr), `the driver is not ended by an uncaught rejection (got: ${stderr.slice(-400)})`);
+  eq(code, 4, "it exits on its own code for a probe it could not record, so the failure is visible in the workflow");
+  assert(/burst 1 of 2/.test(stderr) && /probe/.test(stderr), `and names the burst whose probe was lost (got: ${stderr.slice(0, 400)})`);
+  eq(seen.bodies, 2 * REQUESTS, "every burst still fired");
+  const second = readFile(burstLegOut(out, 1));
+  assert(second?.probe?.kind === "read", `and the burst after it was still probed and written (got ${JSON.stringify(second?.probe)})`);
+  rmSync(dir, { recursive: true, force: true });
+}
+
 // --- a burst a driver wakes too late for is written as missed, and the rest fire ----
 {
   const dir = mkdtempSync(join(tmpdir(), "slate-3325-"));
@@ -194,8 +409,8 @@ const readFile = (path: string) => (existsSync(path) ? (JSON.parse(readFileSync(
     ...(await runDriver(base, {
       MODE: "burst",
       OUT: out,
-      BURST_REQUESTS: String(REQUESTS),
       BURST_GRACE_MS: "30000",
+      BURST_SETTLE_MS: String(SETTLE_MS),
       BURST_PLAN: JSON.stringify(plan([now - 120_000, now + 2_000, now + 2_300])),
     })),
     seen,
@@ -204,9 +419,33 @@ const readFile = (path: string) => (existsSync(path) ? (JSON.parse(readFileSync(
   const first = readFile(burstLegOut(out, 0));
   eq(first?.burstSkipped, "missed", "the missed burst's file says so");
   eq(first?.attempts.length, 0, "having fired nothing late");
+  eq(first?.probe, undefined, "and probed nothing for a burst it never fired");
   eq(readFile(burstLegOut(out, 1))?.attempts.length, REQUESTS, "and the bursts after it still fired");
   eq(readFile(burstLegOut(out, 2))?.attempts.length, REQUESTS, "all of them");
   eq(seen.bodies, 2 * REQUESTS, "so the deployment saw exactly the bursts that were on time");
+  eq(seen.probes.length, 2, "and only those were probed");
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// --- #3429: a deployment that does not say its crowd rule is recorded as not saying --
+{
+  const dir = mkdtempSync(join(tmpdir(), "slate-3429-"));
+  const out = join(dir, `burst-${DRIVER}.json`);
+  const t = Date.now() + 2_000;
+  const { code } = await withStub(
+    async (base) =>
+      runDriver(base, {
+        MODE: "burst",
+        OUT: out,
+        BURST_GRACE_MS: "30000",
+        BURST_SETTLE_MS: String(SETTLE_MS),
+        BURST_PLAN: JSON.stringify({ bursts: [burstOf(SLOTS[0]!, t)] }),
+      }),
+    { rule: null },
+  );
+  eq(code, 0, "a deployment that states no rule does not stop the burst");
+  const f = readFile(burstLegOut(out, 0));
+  eq(f?.crowdRule?.state, "absent", "its silence is recorded as absent, for the judge to refuse to guess");
   rmSync(dir, { recursive: true, force: true });
 }
 

@@ -86,10 +86,10 @@ import { assert, eq, finish } from "./lib/harness.ts";
 // now, and one is deliberately reversed:
 //
 //   - "its pool is exactly one deep" is MEASURED at run time by
-//     `scripts/loadtest/burst-setup.ts`, which reads every pool through the
-//     booker's own predicate and fires at the shallowest that is offering times.
-//     An assertion about a constant could only ever say what somebody believed on
-//     the day they wrote it, and it was wrong twice in three days.
+//     `scripts/loadtest/burst-setup.ts`, which reads the roster through the
+//     booker's own predicates and, since #3429, sizes each burst against what its
+//     whole ladder holds. An assertion about a constant could only ever say what
+//     somebody believed on the day they wrote it, and it was wrong twice in three days.
 //   - "it is a code real leads actually arrive on" is REVERSED on purpose. The
 //     burst measures contention on one slot; the steady pass is what carries the
 //     measured traffic mix. Demanding the shallowest pool also be a hot one would

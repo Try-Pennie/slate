@@ -1,157 +1,43 @@
-// What pool the burst fires at, and how strong that makes the control (#2278).
+// Which ladders the run's bursts fire at, and why (#2278, #3325, #3429).
 //
-// The burst leg fires 100 simultaneous requests at ONE slot and the whole control
-// rests on that slot's pool being ONE agent deep: contention across three agents
-// proves much less than contention on one. Nothing measured it. The code was a
-// hand maintained constant (`BURST_CODE`), the seeded roster gave it three, and a
-// live run answered three 200s on three different agents, which is correct
-// behaviour and a materially weaker control than the one intended.
+// The burst used to aim at the shallowest POOL: a crowd of a hundred against a pool one
+// agent deep was "exactly one 200 and the rest SLOT_TAKEN" by construction. #3338 made
+// a crowd walk the tier ladder like any confirm, so a hundred confirms at a one deep
+// code whose lower rungs hold a whole tier mostly WIN, and the refusal path goes
+// untested. So the run now fires two kinds of burst, each chosen by MEASURING the
+// branch's own roster and buckets through the booker's own predicates (L107):
 //
-// It rots, too, and did: production's Low plus Beyond pool emptied on 2026-09-10
-// (#2152) and the constant had to be moved by hand from 122 to 222 the morning of
-// the next run (#2319).
+//   - the REFUSAL control fires at the ladder whose WHOLE capacity (distinct advisors
+//     across every rung, with the Low exclusion) is the smallest, and only at one
+//     genuinely smaller than its crowd. It is the only kind that can refuse anybody.
+//   - the DROP burst fires at a ladder whose top rung is the shallowest, whose ladder
+//     has a rung below it, and which holds at least twice its crowd, at a slot where
+//     the top rung has somebody free and the ladder as a whole has room for everyone.
 //
-// So the pool is MEASURED, the shallowest one that is actually offering times is
-// chosen, and the depth it ran at is reported. Two things the design deliberately
-// does NOT do:
-//
-//   - it never FAILS on depth. The judge asks one winner per AGENT (#2273), which
-//     is the real invariant and holds at any depth, so a run red because the
-//     roster has no one deep pool is red for a property of the roster and is how a
-//     check stops being read (L36).
-//   - an UNMEASURED depth never renders as a number. "Nobody measured it" and
-//     "it was one deep" are the two states this whole issue is about telling
-//     apart (L98, L11).
+// Each burst is still split across two codes of ONE fallback ladder, so the shared
+// confirm line is proved across codes and not only within one (#3325). Which codes
+// qualify is measured from the bucket rows, never assumed.
 //
 // Run: node --experimental-strip-types scripts/test-loadtest-burst-target.ts
+import { readBurstPlan } from "./loadtest/book-plan.ts";
 import {
-  burstCandidateOrder,
-  burstControlStrength,
-  burstPairOrder,
+  assembleBurstPlan,
+  dropLadders,
+  dropSlotFit,
+  ladderCandidates,
+  ladderFreeFrom,
+  ladderRosterIds,
   ladderSignature,
   poolKeysByCode,
+  refusalLadders,
   siblingCodes,
+  type LadderCandidate,
   type PoolRow,
 } from "./loadtest/burst-target.ts";
+import { generateSeed } from "./loadtest/generate.ts";
+import { PRODUCTION_SHAPE } from "./loadtest/roster-shape.ts";
 import { allXbcCodes, bucketSpecForXbc } from "../src/lib/xbc.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
-
-// --- the shallowest pool is asked first -----------------------------------------
-{
-  const order = burstCandidateOrder(
-    [
-      { code: "112", depth: 74 },
-      { code: "222", depth: 1 },
-      { code: "322", depth: 3 },
-      { code: "212", depth: 56 },
-    ],
-    4,
-  );
-  eq(order[0], "222", "the one agent pool is asked first, because it is the strongest control");
-  eq(order[1], "322", "then the next shallowest");
-  eq(order.join(","), "222,322,212,112", "and the rest in ascending depth");
-}
-
-// --- a pool with nobody in it is never asked -------------------------------------
-{
-  // It can never offer a time, so asking spends one of the availability reads the
-  // setup has to live inside for nothing, and a run of empty answers would end in
-  // the "offered nothing" refusal naming the wrong pool.
-  const order = burstCandidateOrder(
-    [
-      { code: "531", depth: 0 },
-      { code: "222", depth: 2 },
-    ],
-    5,
-  );
-  eq(order.join(","), "222", "an empty pool is not a candidate");
-}
-
-// --- the order is stable when depths tie -----------------------------------------
-{
-  // Two runs against one roster must ask the same question. An order settled by
-  // whatever the read happened to return makes the burst's code a different
-  // measurement each time, for no reason a reader could see (L419).
-  const depths = [
-    { code: "422", depth: 1 },
-    { code: "122", depth: 1 },
-    { code: "322", depth: 1 },
-  ];
-  eq(burstCandidateOrder(depths, 3).join(","), "122,322,422", "ties break on the code");
-  eq(
-    burstCandidateOrder([...depths].reverse(), 3).join(","),
-    "122,322,422",
-    "whatever order the rows arrived in",
-  );
-}
-
-// --- the number of availability reads is bounded ----------------------------------
-{
-  // `/api/availability` has its own per address ceiling (30 a minute) and the
-  // setup shares that address with everything else the job does.
-  const many = Array.from({ length: 60 }, (_, i) => ({ code: `c${i}`, depth: i + 1 }));
-  eq(burstCandidateOrder(many, 6).length, 6, "at most the limit is asked");
-  eq(burstCandidateOrder(many, 0).length, 0, "and a limit of zero asks nothing");
-}
-
-// --- nothing measured means no candidates, never a silent default ------------------
-{
-  eq(burstCandidateOrder([], 6).length, 0, "no depths, no candidates");
-}
-
-// --- what the report says the control actually proved ------------------------------
-{
-  const one = burstControlStrength({ measured: true, code: "222", depth: 1 });
-  assert(/\b1\b|one/i.test(one), "a one deep pool is reported as one deep");
-  assert(/222/.test(one), "and names the code it ran at");
-
-  const three = burstControlStrength({ measured: true, code: "322", depth: 3 });
-  assert(/\b3\b/.test(three), "a three deep pool reports the three");
-  assert(
-    three !== one,
-    "and does not read like the one deep case, which is the whole point of measuring",
-  );
-  assert(
-    /weaker|less|spread/i.test(three),
-    "it says the control is weaker at depth, rather than leaving a reader to work it out",
-  );
-}
-
-// --- an unmeasured depth says so, and never renders as a number ---------------------
-{
-  const unknown = burstControlStrength({
-    measured: false,
-    code: "222",
-    why: "no database credentials in this job",
-  });
-  assert(
-    /not measured|unmeasured|unknown/i.test(unknown),
-    "an unmeasured depth is reported as unmeasured",
-  );
-  assert(
-    !/\bdepth 0\b|\b0 agents\b|\b1 agent deep\b/.test(unknown),
-    "and never as a depth nobody read (L98)",
-  );
-  assert(
-    /no database credentials/.test(unknown),
-    "carrying the reason, so a reader knows what to fix",
-  );
-  assert(
-    unknown !== burstControlStrength({ measured: true, code: "222", depth: 1 }),
-    "and it does not read like a measured one deep pool",
-  );
-}
-
-// --- the burst is split across two codes of ONE fallback ladder (#3325) ------------
-//
-// The shared confirm line keys a crowd on the whole fallback LADDER, so a follower is
-// only ever told "taken" by a leader who walked the same pools at every rung. The
-// burst splits across two codes whose ladders are the same pools at every rung, so
-// the line is proved across codes and not only within one. Which codes qualify is
-// MEASURED from the branch's own bucket rows, through the booker's own ladder and the
-// recompute lane's own pool key, never assumed: on today's matrix two codes differing
-// only in the legal digit qualify, and a bucket given a hand named member must stop
-// qualifying the moment it is.
 
 /** The sixty buckets as the load test seed writes them: one org, one event type. */
 function seededRows(edit: (row: PoolRow) => PoolRow = (r) => r): PoolRow[] {
@@ -167,6 +53,20 @@ function seededRows(edit: (row: PoolRow) => PoolRow = (r) => r): PoolRow[] {
   );
 }
 
+/**
+ * The roster the load test seed really writes, from the production shape, so the
+ * capacities below are the ones a run meets rather than numbers shaped to pass (L48).
+ */
+const SEEDED_AGENTS = generateSeed({
+  agentCount: PRODUCTION_SHAPE.agents,
+  orgId: "org",
+  nowMs: Date.parse("2026-10-06T12:00:00Z"),
+  windowDays: 4,
+  blocksPerAgentPerDay: 12,
+  shape: PRODUCTION_SHAPE,
+}).users.map((u) => ({ id: u.id, attributes: u.attributes }));
+
+// --- the burst is split across two codes of ONE fallback ladder (#3325) ------------
 {
   const keys = poolKeysByCode(seededRows());
   eq(keys.size, 60, "every seeded code has a pool key");
@@ -204,9 +104,7 @@ function seededRows(edit: (row: PoolRow) => PoolRow = (r) => r): PoolRow[] {
 
 {
   // A rung with no bucket is a GAP, part of the ladder's identity, exactly as the
-  // confirm path's own key reads it (`ladderGroupOf`, #3325): the burst must pick codes
-  // production really puts in one line. So a code whose ladder crosses the gap differs
-  // from the same ladder with that rung filled.
+  // confirm path's own key reads it (`ladderGroupOf`, #3325).
   const full = poolKeysByCode(seededRows());
   const gapped = poolKeysByCode(seededRows().filter((r) => r.code !== "132"));
   assert(ladderSignature("122", gapped) !== null, "a ladder with a gap still has a signature");
@@ -214,54 +112,132 @@ function seededRows(edit: (row: PoolRow) => PoolRow = (r) => r): PoolRow[] {
   eq(ladderSignature("122", gapped), ladderSignature("122", gapped), "and the same gap always gives the same signature");
 }
 
+// --- #3429: who a ladder can book, from the roster ---------------------------------
 {
-  // Shallowest pool first, among the codes that HAVE a sibling, each paired with its
-  // first sibling in code order so two runs against one roster pick the same pair.
-  const keys = poolKeysByCode(
-    seededRows((r) => (r.code === "321" || r.code === "320" ? { ...r, memberIds: [`m-${r.code}`] } : r)),
-  );
-  const pairs = burstPairOrder(
-    [
-      { code: "322", depth: 1 },
-      { code: "122", depth: 1 },
-      { code: "112", depth: 40 },
-      { code: "222", depth: 0 },
-    ],
-    keys,
-    6,
-  );
-  eq(
-    pairs,
-    [
-      { code: "122", sibling: "120" },
-      { code: "112", sibling: "100" },
-    ],
-    "a one deep code whose siblings all split off is skipped, and an empty pool is never asked",
-  );
-  eq(burstPairOrder([{ code: "122", depth: 1 }], keys, 0), [], "a limit of zero asks nothing");
+  const rows = seededRows();
+  const byCode = new Map(rows.map((r) => [r.code, r]));
+  // 120's ladder is 120, 130, 110: one Beyond advisor on the top rung, and the whole
+  // Low tier below it.
+  const low = ladderRosterIds("120", byCode, SEEDED_AGENTS);
+  eq(low.rung0.length, 1, "120's top rung is the one Beyond advisor on the seeded roster");
+  eq(low.ladder.size, 74, "and its whole ladder is the Low tier, 74 advisors");
+  // 500's ladder is 500, 400, 300, 200, and below Ultra every rung skips Low carriers
+  // (#2842), so the ladder is the sixteen advisors who carry no Low at all.
+  const ultra = ladderRosterIds("500", byCode, SEEDED_AGENTS);
+  eq(ultra.rung0.length, 6, "500's top rung is the six Ultra advisors");
+  eq(ultra.ladder.size, 16, "and its whole ladder is sixteen, because the rungs below skip Low carriers");
+  // Control: without the Low exclusion the same ladder would reach nearly everyone,
+  // so the sixteen is the exclusion being applied, not a coincidence of the roster.
+  const noExclusion = ladderRosterIds("300", byCode, SEEDED_AGENTS);
+  assert(noExclusion.ladder.size > 60, `control: a High ladder, which may reach Low, holds far more (got ${noExclusion.ladder.size})`);
+
+  // A rung with no bucket adds nobody, the way the booker skips it.
+  const gap = ladderRosterIds("120", new Map(rows.filter((r) => r.code !== "130" && r.code !== "110").map((r) => [r.code, r])), SEEDED_AGENTS);
+  eq(gap.ladder.size, 1, "a ladder whose lower rungs have no bucket holds only its top rung");
+
+  // A fallback advisor serves a bucket whose criteria match nobody, as the booker's
+  // own eligibility judge says, so it counts toward what the ladder can book.
+  const empty = new Map(rows.map((r) => [r.code, r.code === "520" ? { ...r, criteria: { debt_team: "nobody" }, fallbackUserId: SEEDED_AGENTS[0]!.id } : r]));
+  eq(ladderRosterIds("520", empty, SEEDED_AGENTS).rung0, [SEEDED_AGENTS[0]!.id], "a fallback advisor is the top rung of a bucket that matches nobody");
+}
+
+// --- #3429: the candidates, one per ladder that has a sibling ----------------------
+const CANDIDATES = ladderCandidates(seededRows(), SEEDED_AGENTS);
+{
+  const ladders = new Set(CANDIDATES.map((c) => c.code));
+  eq(ladders.size, CANDIDATES.length, "one candidate per code");
+  const sigs = new Set(CANDIDATES.map((c) => ladderSignature(c.code, poolKeysByCode(seededRows()))));
+  eq(sigs.size, CANDIDATES.length, "and one per LADDER: siblings offer the same times, so a second pair of one ladder asks nothing new");
+  const c120 = CANDIDATES.find((c) => c.code === "120");
+  eq(c120, { code: "120", sibling: "121", rungs: 3, rung0Roster: 1, ladderRoster: 74 }, "each ladder is named by its first code, with its sibling and what it holds");
+  assert(CANDIDATES.every((c) => c.code < c.sibling), "the sibling is the next code of the ladder in code order (L419)");
+}
+
+// --- #3429: the refusal control fires at the smallest ladder under its crowd -------
+{
+  const picked = refusalLadders(CANDIDATES, 100);
+  assert(picked.length > 0, "the seeded roster has a ladder smaller than the crowd of a hundred");
+  eq(picked[0]!.ladderRoster, 16, "the smallest ladder on the seeded roster holds sixteen");
+  eq(picked[0]!.code, "500", "and among the ladders that small, the one with the fewest rungs, then the lowest code, is first");
+  assert(picked.every((c) => c.ladderRoster < 100), "every refusal candidate is genuinely smaller than its crowd");
+  for (let i = 1; i < picked.length; i++) {
+    assert(picked[i - 1]!.ladderRoster <= picked[i]!.ladderRoster, "smallest ladder first, so the crowd outnumbers its capacity by the most");
+  }
+  // Control: a crowd no larger than every ladder leaves no refusal control at all,
+  // rather than one whose crowd could all win (L63: never "winners equal capacity").
+  eq(refusalLadders(CANDIDATES, 16), [], "control: a crowd of sixteen has no ladder smaller than itself");
+  const one: LadderCandidate = { code: "900", sibling: "901", rungs: 1, rung0Roster: 0, ladderRoster: 0 };
+  eq(refusalLadders([one], 100), [], "a ladder that can book nobody is no control either: nothing would ever win");
+}
+
+// --- #3429: the drop burst fires at the shallowest top rung with room below -------
+{
+  const picked = dropLadders(CANDIDATES, 12, 2, ["500"]);
+  assert(picked.length > 0, "the seeded roster has a ladder a drop burst can fire at");
+  eq(picked[0]!.code, "120", "120 first: a one deep top rung, three rungs, the lowest code");
+  assert(picked.every((c) => c.rung0Roster >= 1), "every drop candidate has somebody on its top rung to take");
+  assert(picked.every((c) => c.rungs >= 2), "and a rung below it to drop to");
+  assert(picked.every((c) => c.ladderRoster >= 24), "and holds at least twice the crowd");
+  assert(!picked.some((c) => c.code === "500"), "and is never the refusal control's own ladder");
+  // A ladder of one rung cannot show a drop however deep it is.
+  const flat: LadderCandidate = { code: "110", sibling: "111", rungs: 1, rung0Roster: 1, ladderRoster: 74 };
+  eq(dropLadders([flat], 12, 2, []), [], "a one rung ladder is never a drop candidate");
+  const thin: LadderCandidate = { code: "420", sibling: "421", rungs: 9, rung0Roster: 1, ladderRoster: 19 };
+  eq(dropLadders([thin], 12, 2, []), [], "nor one holding less than twice the crowd");
+}
+
+// --- #3429: who is free at the slot, from the booker's candidate read per rung ------
+{
+  eq(ladderFreeFrom([["a"], ["b", "c"], ["c", "d"]]), { rung0Free: 1, ladderFree: 4 }, "the top rung's count and the distinct advisors across every rung");
+  eq(ladderFreeFrom([[], ["b"]]), { rung0Free: 0, ladderFree: 1 }, "a top rung with nobody free is zero, the rest still counted");
+  eq(ladderFreeFrom([]), { rung0Free: 0, ladderFree: 0 }, "no rungs read, nobody free");
 }
 
 {
-  // ONE pair per ladder. Siblings resolve to the same pools, so they offer the same
-  // times: asking 121 with 120 after 120 with 121 spends two availability reads on an
-  // answer already known, and pushes a genuinely different pool out of the bounded
-  // walk. Measured on the seeded roster, the first three candidates were all one
-  // ladder before this.
-  const keys = poolKeysByCode(seededRows());
-  const pairs = burstPairOrder(
-    ["120", "121", "122", "220", "221", "222", "320"].map((code) => ({ code, depth: 1 })),
-    keys,
-    6,
-  );
-  eq(
-    pairs,
-    [
-      { code: "120", sibling: "121" },
-      { code: "220", sibling: "221" },
-      { code: "320", sibling: "321" },
+  const ok = dropSlotFit({ rung0Free: 1, ladderFree: 30 }, 12, 2);
+  eq(ok, null, "a slot with one free on top and room for twice the crowd fits");
+  const noneOnTop = dropSlotFit({ rung0Free: 0, ladderFree: 30 }, 12, 2);
+  assert(noneOnTop !== null && noneOnTop.includes("requested rung"), `a slot with nobody free on the top rung never meets its last advisor (got ${noneOnTop})`);
+  const allOnTop = dropSlotFit({ rung0Free: 12, ladderFree: 40 }, 12, 2);
+  assert(allOnTop !== null && allOnTop.includes("drop"), `a top rung that holds the whole crowd never needs a drop (got ${allOnTop})`);
+  const tight = dropSlotFit({ rung0Free: 1, ladderFree: 23 }, 12, 2);
+  assert(tight !== null && tight.includes("23"), `a ladder under twice the crowd is refused, saying how many were free (got ${tight})`);
+  eq(dropSlotFit({ rung0Free: 1, ladderFree: 24 }, 12, 2), null, "and exactly twice the crowd is enough");
+}
+
+// --- #3429: the plan, one burst per kind in the run's own sequence -------------------
+{
+  const refusal = {
+    codes: ["500", "501"] as [string, string],
+    slots: ["2026-10-08T15:00:00.000Z", "2026-10-08T19:00:00.000Z"],
+    capacities: [
+      { ladderRoster: 16, rung0Free: 3, ladderFree: 9 },
+      { ladderRoster: 16, rung0Free: 2, ladderFree: 7 },
     ],
-    "each ladder is asked about once, by its first code",
-  );
+  };
+  const drop = {
+    codes: ["120", "121"] as [string, string],
+    slot: "2026-10-08T17:00:00.000Z",
+    capacity: { ladderRoster: 74, rung0Free: 1, ladderFree: 40 },
+  };
+  const moments = [1_000, 61_000, 121_000];
+  const plan = assembleBurstPlan(["refusal", "drop", "refusal"], moments, refusal, drop);
+  eq(plan.bursts.map((b) => b.kind), ["refusal", "drop", "refusal"], "the bursts follow the run's sequence");
+  eq(plan.bursts.map((b) => b.startAtMs), moments, "each at its own moment, in order");
+  eq(plan.bursts.map((b) => b.slot), [refusal.slots[0], drop.slot, refusal.slots[1]], "the refusal slots fill the refusal bursts in order, the drop slot the drop burst");
+  eq(plan.bursts.map((b) => b.codes.join("/")), ["500/501", "120/121", "500/501"], "each burst on its own ladder's two codes");
+  eq(plan.bursts.map((b) => b.perDriver), [25, 3, 25], "each with its kind's share");
+  eq(plan.bursts[2]!.capacity, refusal.capacities[1], "and the capacity measured at its own slot");
+  // The plan it builds is one the drivers read back whole (L41).
+  const back = readBurstPlan(JSON.stringify(plan));
+  assert(back.ok && JSON.stringify(back.plan) === JSON.stringify(plan), `the drivers read the plan back exactly (got ${JSON.stringify(back)})`);
+  let threw = "";
+  try {
+    assembleBurstPlan(["refusal", "drop", "refusal", "refusal"], [1, 2, 3, 4], refusal, drop);
+  } catch (err) {
+    threw = String(err);
+  }
+  assert(threw.includes("refusal"), `a sequence asking for more refusal slots than were chosen is refused, never a burst with no slot (got ${threw})`);
 }
 
 finish();

@@ -56,6 +56,7 @@ import { createAsserter, makeDeps, makeBooking, input, users, bucket as fakeBuck
 import { VirtualClock, SharedResource, onSharedCapacity, type CallRecord } from "./lib/confirm-contention-sim.ts";
 import { makeConfirmLineHost, makeConfirmLineObject } from "../src/lib/booking/confirm-line-object.ts";
 import { makeSharedConfirmLine } from "../src/lib/booking/shared-confirm-line.ts";
+import { CONFIRM_CROWD_RULE, type ConfirmCrowdRule } from "../src/lib/confirm-crowd-rule.ts";
 import { makeCommitCostLog } from "../src/lib/booking/commit-cost.ts";
 import { ladderGroupOf } from "../src/lib/booking/line-key.ts";
 import { groupingEntriesOf, groupingPutMessage, groupingSnapshotOf, type GroupingSnapshot } from "../src/lib/booking/pool-grouping.ts";
@@ -1708,6 +1709,74 @@ async function main() {
       !(loser?.calls ?? []).some((c, i, all) => c.name === "verifyFree" && all.slice(0, i).filter((x) => x.name === "verifyFree").length > 0),
       "#3338 slow lost race: the loser never asks Google about the rung below",
     );
+  }
+
+  // --- #3429: the crowd rule this build DECLARES is the one its confirm path RUNS ---
+  //
+  // `CONFIRM_CROWD_RULE` is what /api/smoke/version reports and what the load run's
+  // judge holds every burst to. A hand set literal enforced by nothing would let #3437
+  // change the behaviour and forget the flip, and the judge would then grade every
+  // burst against a rule the deployment does not follow (L407). So the REAL confirm
+  // path is driven here: a crowd behind a top rung of ONE advisor, with a staffed rung
+  // below it, all arriving at once. Under `stops` the leader takes the top rung's last
+  // advisor, every confirm waiting behind it is refused as taken, and none books lower
+  // (#3338). Under `walks` they walk to the rung below and book there. The outcome must
+  // match the declaration, so flipping either one alone fails this suite.
+  {
+    const top = input.bucketCode;
+    const lower = tierLadder(top)[1];
+    assert(typeof lower === "string" && lower !== top, `crowd rule: ${top} has a rung below it (got ${lower})`);
+    const topPool = ["p0"];
+    const lowerPool = ["p1", "p2", "p3", "p4", "p5"];
+    const poolByCode = { [top]: topPool, [lower!]: lowerPool };
+    /** Which rule a crowd's outcome shows, from where the real path booked it. */
+    const ruleShown = (runs: Run[], rows: Map<string, Booking>): ConfirmCrowdRule | string => {
+      const advisors = [...rows.values()].map((b) => b.assigned_user_id ?? "");
+      const onTop = advisors.filter((id) => topPool.includes(id)).length;
+      const below = advisors.filter((id) => lowerPool.includes(id)).length;
+      const refused = runs.filter((r) => r.outcome === "SLOT_TAKEN").length;
+      if (onTop === 1 && below === 0 && refused === runs.length - 1) return "stops";
+      if (onTop === 1 && below === Math.min(lowerPool.length, runs.length - 1)) return "walks";
+      return `neither (${onTop} on the top rung, ${below} below, ${refused} SLOT_TAKEN of ${runs.length})`;
+    };
+    /** The guard itself: null when the outcome shows the declared rule, else why not. */
+    const mismatch = (shown: string, declared: ConfirmCrowdRule): string | null =>
+      shown === declared ? null : `the confirm path ${shown === "stops" || shown === "walks" ? shown : `shows ${shown}`}, and CONFIRM_CROWD_RULE declares "${declared}"`;
+
+    const crowd = await burst({
+      inputs: Array.from({ length: 6 }, (_, i) => lead(200 + i, { bucketCode: top })),
+      pool: [],
+      poolByCode,
+      queue: "real",
+    });
+    const shown = ruleShown(crowd.runs, crowd.bySlot);
+    const why = mismatch(shown, CONFIRM_CROWD_RULE);
+    assert(
+      why === null,
+      `crowd rule: ${why ?? `the crowd's outcome shows "${shown}", the rule CONFIRM_CROWD_RULE declares`} (tally ${JSON.stringify(crowd.tally)})`,
+    );
+
+    // Positive controls, one for each half that could change alone (L1).
+    // 1. The declaration flipped and the behaviour not: declaring the rule this outcome
+    //    does NOT show is refused over it.
+    const notShown: ConfirmCrowdRule = shown === "stops" ? "walks" : "stops";
+    assert(
+      mismatch(shown, notShown) !== null,
+      `crowd rule control: declaring "${notShown}" over this outcome is refused (shown ${shown})`,
+    );
+    // 2. The behaviour different and the declaration not: confirms that never meet in
+    //    one crowd each lead and walk the ladder on their own, under either rule, so
+    //    the same pools read as walking, and a stops declaration is refused over it.
+    const alone = await burst({
+      inputs: Array.from({ length: 6 }, (_, i) => lead(210 + i, { bucketCode: top })),
+      pool: [],
+      poolByCode,
+      queue: "real",
+      arriveAtMs: [0, 20_000, 40_000, 60_000, 80_000, 100_000],
+    });
+    const shownAlone = ruleShown(alone.runs, alone.bySlot);
+    assert(shownAlone === "walks", `crowd rule control: confirms that never met walk the ladder (got ${shownAlone}, tally ${JSON.stringify(alone.tally)})`);
+    assert(mismatch(shownAlone, "stops") !== null, "crowd rule control: and a stops declaration is refused over a walking outcome");
   }
 
   finish();

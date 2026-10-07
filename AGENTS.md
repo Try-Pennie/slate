@@ -922,9 +922,9 @@ which is exactly why it is guarded.
 # The confirm line is shared across isolates (#3325)
 
 Behind `booking_settings.shared_confirm_line`, ONE Durable Object holds the confirm
-line for every isolate. Its rules live only in `makeConfirmQueue`, every call to it is
-awaited (`scripts/test-unawaited-line-calls.ts`), and any failure falls back to the
-isolate's own line. The rest: **`docs/confirm-line.md`**.
+line for every isolate. Its rules live only in `makeConfirmQueue`, every call but the
+lead's ack (#3355) is awaited (`scripts/test-unawaited-line-calls.ts`), and any failure
+falls back to the isolate's own line. The rest: **`docs/confirm-line.md`**.
 
 # Capped single-page reads (the `// cap-safe:` convention)
 
