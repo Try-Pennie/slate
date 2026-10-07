@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { makeConfirmQueue, isolateLine } from "@/lib/booking/confirm-queue";
 import { makeCommitCostLog } from "@/lib/booking/commit-cost";
+// #3495: the fresh booking save, modelled over the fake's separate steps.
+import { commitFreshModel, type CommitFreshParts } from "../../../scripts/lib/commit-fresh-model";
 
 // Asserts which tier-drop bookings dispatch a throttled Slack alert via
 // sendThrottledAlert: only a drop of two or more debt tiers does
@@ -96,7 +98,7 @@ const bucketFor = (code: string) => ({ ...bucket511, id: `bkt${code}`, code }) a
 
 // #2843: an Ultra High or Very High cascade is counted daily rather than alerted per
 // booking, so the dispatch test cascades a HIGH lead (311 to 211), which still alerts.
-function makeTierDropDeps(requested = "511", lower = "411"): BookingDeps {
+function makeTierDropDeps(requested = "511", lower = "411"): BookingDeps & CommitFreshParts {
   const noop = async (..._args: unknown[]): Promise<void> => {};
   return {
     // #3272: the pool read is injected now; these tests never reach it with a
@@ -237,6 +239,10 @@ function makeTierDropDeps(requested = "511", lower = "411"): BookingDeps {
     loadPastBookingIdsToComplete: async () => [],
     emitWebhook: noop,
     newManageToken: () => "tok-fixed",
+    newBookingId: () => "bk-new",
+    commitFreshBooking(this: CommitFreshParts, req) {
+      return commitFreshModel(this, req);
+    },
     newIdempotencyKey: () => "anon-fixed",
     appBaseUrl: () => "https://slate.test",
     invalidateSlots: noop,

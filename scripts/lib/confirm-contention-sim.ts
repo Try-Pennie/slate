@@ -258,7 +258,10 @@ export function onSharedCapacity(
         clock.now + waitMs,
         () => new DeadlineExceededError(reportAs.label, reportAs.timeoutMs, reportAs.budget),
       );
-      return original(...args);
+      // On the UNWRAPPED deps: a dependency built from other dependencies (the fresh
+      // booking save, #3495, modelled over the fake's separate steps) is ONE request,
+      // so its inner steps must not each be charged a unit as well.
+      return original.apply(deps, args);
     };
   }
   return wrapped as unknown as BookingDeps;

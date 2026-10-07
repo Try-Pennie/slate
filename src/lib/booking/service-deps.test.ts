@@ -29,9 +29,16 @@ let readRows: unknown[] = [];
 const readTables: string[] = [];
 /** What a `select(...).eq(...).single()` read answers (#3477). */
 let singleResult: { data: unknown; error: { message: string } | null } = { data: null, error: null };
+/** #3495: what the next `rpc(...)` answers, and every rpc asked. */
+let rpcResult: { data: unknown; error: { message: string; code?: string } | null } = { data: null, error: null };
+const rpcCalls: { fn: string; args: Record<string, unknown> }[] = [];
 
 vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: () => ({
+    rpc: async (fn: string, args: Record<string, unknown>) => {
+      rpcCalls.push({ fn, args });
+      return rpcResult;
+    },
     from: (table: string) => ({
       upsert: (row: unknown) => {
         upserted.push(row);
@@ -57,6 +64,7 @@ vi.mock("@/lib/supabase/admin", () => ({
 }));
 
 import { realDeps } from "./service";
+import { CommitRefusedError, type CommitFreshInput } from "./orchestration";
 import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 
 beforeEach(() => {
@@ -151,31 +159,90 @@ describe("writeReschedulePin (#2482)", () => {
   });
 });
 
-describe("insertBooking and a reroute hold (#3251)", () => {
-  // The bookings trigger refuses a lead's call on an advisor an admin is holding
-  // for a bucket correction, with the SAME SQLSTATE an overlap race raises (23P01),
-  // so the booker reads it as a lost race and offers the next advisor rather than
-  // failing the lead (audit 1). `pnpm verify:reroute-holds-sql` proves the trigger
-  // raises exactly this in a real Postgres; this proves the live insert reads it as
-  // the lost race, which is where the next advisor branch starts.
-  const row = { assigned_user_id: "A", starts_at: "2031-03-04T15:00:00Z", ends_at: "2031-03-04T15:20:00Z" };
+describe("a fresh booking's one call save (#3495)", () => {
+  // What the save writes is proved in a real Postgres (scripts/verify-commit-fresh-booking-sql.ts),
+  // including that the reroute hold trigger's 23P01 (#3251) and both slot guards are
+  // answered as a conflict with nothing written. What is pinned here is how the live
+  // dependency reads the call's answer and its refusals.
+  const booking = {
+    id: "10000000-0000-4000-8000-000000000001",
+    org_id: "o1",
+    status: "confirmed",
+    starts_at: "2031-03-04T15:00:00+00:00",
+    ends_at: "2031-03-04T15:20:00+00:00",
+    manage_token: "tok",
+    assigned_user_id: "A",
+  };
+  const req = {
+    booking: { ...booking, starts_at: "2031-03-04T15:00:00.000Z" },
+    reservationId: "r1",
+    webhook: { payload: { booking_id: booking.id }, dedupeKey: booking.id, suppressed: false },
+    routing: null,
+  } as unknown as CommitFreshInput;
+  const endpoint = {
+    id: "ep1", org_id: "o1", url: "https://receiver.example/hook", secret: null, events: ["booking.created"],
+    format: "generic", auth_header: null, active: true, created_at: "2031-03-01T00:00:00+00:00",
+  };
 
-  it("reads the hold trigger's refusal as a lost race", async () => {
-    writeError = {
-      code: "23P01",
-      message: "agent A is held for a bucket correction until 2031-03-04 15:05:00+00",
-      details: "held_until=2031-03-04T15:05:00Z",
-      hint: "A reroute hold is a lost race for this agent and window; route to another agent.",
-    };
-    const r = await realDeps().insertBooking(row as never);
-    expect(r).toEqual({ ok: false, conflict: true });
+  beforeEach(() => {
+    rpcCalls.length = 0;
   });
 
-  it("control: a refusal that is not a clash is not read as one", async () => {
-    writeError = { code: "42501", message: "permission denied for table bookings" };
-    const r = await realDeps().insertBooking(row as never);
-    expect(r.ok).toBe(false);
-    expect(r.ok === false && r.conflict).toBe(false);
+  it("reads a conflict as the lost race the next advisor branch starts from, a reroute hold's included (#3251)", async () => {
+    rpcResult = { data: { status: "conflict", winner: null }, error: null };
+    const r = await realDeps().commitFreshBooking(req);
+    expect(r).toEqual({ kind: "conflict", winner: null });
+    expect(rpcCalls[0]?.fn).toBe("commit_fresh_booking");
+  });
+
+  it("decides the webhook's suppression for every format, in the call itself", async () => {
+    rpcResult = { data: { status: "conflict", winner: null }, error: null };
+    await realDeps().commitFreshBooking(req);
+    const hook = rpcCalls[0]?.args.p_webhook as { event: string; dedupe_key: string; suppression: Record<string, unknown> };
+    expect(hook.event).toBe("booking.created");
+    expect(hook.dedupe_key).toBe(booking.id);
+    expect(Object.keys(hook.suppression).sort()).toEqual(["generic", "regal"]);
+  });
+
+  it("throws CommitRefusedError for a refusal Postgres answered, which wrote nothing", async () => {
+    rpcResult = { data: null, error: { code: "42501", message: "permission denied for function commit_fresh_booking" } };
+    await expect(realDeps().commitFreshBooking(req)).rejects.toBeInstanceOf(CommitRefusedError);
+  });
+
+  it("control: a deadline is NOT a refusal, so the confirm reads the booking back, and the deadline still reaches the route", async () => {
+    rpcResult = {
+      data: null,
+      error: { code: "ABORT_ERR", message: "DeadlineExceededError: writing the booking did not answer within 900ms" },
+    };
+    const err = await realDeps().commitFreshBooking(req).catch((e: unknown) => e);
+    expect(err).not.toBeInstanceOf(CommitRefusedError);
+    expect(isDeadlineExceeded(err)).toBe(true);
+  });
+
+  it("returns the committed booking and hands each delivery's first send to the scheduler", async () => {
+    rpcResult = {
+      data: {
+        status: "committed",
+        booking,
+        enqueue: { subscribers: 1, deliveries: [{ id: "d1", suppressed: false, payload: { booking_id: booking.id }, endpoint }] },
+        failed: {},
+        reservation_deleted: true,
+      },
+      error: null,
+    };
+    const scheduled: (() => Promise<void>)[] = [];
+    const r = await realDeps((work) => {
+      scheduled.push(work);
+    }).commitFreshBooking(req);
+    expect(r.kind).toBe("committed");
+    expect(r.kind === "committed" && r.booking.id).toBe(booking.id);
+    expect(r.kind === "committed" && r.reservationDeleted).toBe(true);
+    expect(scheduled).toHaveLength(1);
+  });
+
+  it("refuses an answer it cannot read, rather than reading it as a conflict or a commit", async () => {
+    rpcResult = { data: { status: "maybe" }, error: null };
+    await expect(realDeps().commitFreshBooking(req)).rejects.toThrow(/status/);
   });
 });
 

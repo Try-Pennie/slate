@@ -9,8 +9,14 @@
 //
 // The budget is the real `call-budget.ts` one. The fake's calls ask it for their
 // deadline the way the real Supabase and Google clients do, against a clock this
-// file moves forward the moment the insert commits. So "the budget ran out after
+// file moves forward the moment the save commits. So "the budget ran out after
 // the commit" is a real refusal at 0ms, not a stub that throws.
+//
+// #3495: the save is ONE call now (`commit_fresh_booking`), so the busy block, the
+// webhook and the reservation's delete are inside the commit, not after it. What a
+// spent budget can still cut off is the work that follows the call (the slot
+// refresh, the mirror cleanup, the tier alert), and the call's own ANSWER, which the
+// confirm then reads back.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-booking-committed-deadline.ts
 import {
@@ -20,7 +26,7 @@ import {
   DependencyTimeoutError,
   type BookingDeps,
 } from "../src/lib/booking/orchestration.ts";
-import type { BookingReservation } from "../src/lib/db/types.ts";
+import type { Booking, BookingReservation } from "../src/lib/db/types.ts";
 import { deadlineWithinBudget, withinCallBudget } from "../src/lib/call-budget.ts";
 import { DeadlineExceededError } from "../src/lib/fetch-within-deadline.ts";
 import { busyBlockWriteThroughAlert } from "../src/lib/booking/alert-copy.ts";
@@ -66,31 +72,36 @@ async function settle<T>(work: () => Promise<T>): Promise<{ value: T | null; err
 const said = (err: unknown) => (err === null ? "no error" : err instanceof Error ? `${err.name}: ${err.message}` : String(err));
 
 /**
- * Deps where every Supabase and Google call after the insert asks the budget,
- * and the insert itself spends it on the way out: the commit lands, then the
- * clock is past the 12 seconds.
+ * Deps where the save asks the budget and spends it on the way out: the commit
+ * lands, then the clock is past the 12 seconds, so every budgeted call after it is
+ * refused. `lostAnswer` makes the save's answer itself the casualty: it committed,
+ * and the client gave up waiting, as a deadline on the call does.
  */
-function committedThenSpent(clock: ReturnType<typeof confirmClock>) {
+function committedThenSpent(clock: ReturnType<typeof confirmClock>, opts: { lostAnswer?: boolean } = {}) {
   const fixture = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
   const { deps } = fixture;
   let reservation: BookingReservation | null = null;
-  let committed: Awaited<ReturnType<BookingDeps["insertBooking"]>> | null = null;
-  const d: BookingDeps = {
+  let committed: Booking | null = null;
+  const d: BookingDeps & typeof deps = {
     ...deps,
     insertReservation: async (row) => {
       reservation = await deps.insertReservation(row);
       return reservation;
     },
-    insertBooking: async (row) => {
+    commitFreshBooking: async (req) => {
       clock.call("supabase");
-      committed = await deps.insertBooking(row);
+      const answer = await deps.commitFreshBooking.call(d, req);
+      if (answer.kind === "committed") committed = answer.booking;
       clock.spend();
-      return committed;
+      if (opts.lostAnswer) {
+        throw new Error("the booking commit got no answer", {
+          cause: new DeadlineExceededError("supabase", 0, { label: "the booking confirm", totalMs: 12_000 }),
+        });
+      }
+      return answer;
     },
-    moveBusyBlock: async (...args) => {
-      clock.call("supabase");
-      await deps.moveBusyBlock(...args);
-    },
+    // The read back by the lead's key runs under the cleanup allowance, so it is not budgeted.
+    findBookingByIdempotencyKey: async (key) => committed ?? (await deps.findBookingByIdempotencyKey(key)),
     invalidateSlots: async (code) => {
       clock.call("supabase");
       await deps.invalidateSlots(code);
@@ -98,10 +109,6 @@ function committedThenSpent(clock: ReturnType<typeof confirmClock>) {
     resolveBucketByCode: async (code) => {
       clock.call("supabase");
       return deps.resolveBucketByCode(code);
-    },
-    deleteReservation: async (id) => {
-      clock.call("supabase");
-      await deps.deleteReservation(id);
     },
   };
   return {
@@ -121,52 +128,40 @@ async function run() {
     assert(err === null, `committed then spent: the confirm answers success, not an error (got ${said(err)})`);
     const committed = f.committed();
     assert(
-      res !== null && committed?.ok === true && res.booking.id === committed.booking.id,
-      "committed then spent: the answer carries the booking that was inserted",
+      res !== null && committed !== null && res.booking.id === committed.id,
+      "committed then spent: the answer carries the booking that was saved",
     );
     assert(
       res?.newlyInserted === true,
-      "committed then spent: it is still this confirm's own insert, so the race tally counts it once",
+      "committed then spent: it is still this confirm's own save, so the race tally counts it once",
     );
-    assert(f.calls.insertBooking.length === 1, "committed then spent: one insert, nothing written twice");
+    assert(f.calls.insertBooking.length === 1, "committed then spent: one save, nothing written twice");
+    // #3495: the busy block, the webhook and the reservation's delete are inside the
+    // save, so a budget spent after it cannot cut them off.
     assert(
-      f.calls.deletedReservations.length === 0,
-      "committed then spent: the reservation is LEFT pending, so the drain finishes the side effects the budget cut off",
+      f.calls.moveBusyBlock.length === 1 && f.calls.webhooks.some((w) => w.event === "booking.created"),
+      "committed then spent: the busy block and booking.created went in with the save",
     );
+    assert(f.calls.deletedReservations.length === 1, "committed then spent: and the reservation went with them");
     assert(
-      f.calls.webhooks.length === 0,
-      "control: the side effects really were cut off (no booking.created fired inline), so the case is the cut off one",
+      f.calls.invalidateSlots.length === 0,
+      "control: the work after the save really was cut off (the slot refresh was refused), so the case is the cut off one",
     );
+  }
 
-    // The existing reservation drain finishes it: a later tick, no budget, finds
-    // the booking by its key and delivers what the confirm could not.
-    if (res !== null && committed?.ok) {
-      const reservation = f.reservation();
-      const booking = committed.booking;
-      const drained = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
-      const dd: BookingDeps = {
-        ...drained.deps,
-        loadDrainableReservations: async () => (reservation ? [reservation] : []),
-        findBookingByIdempotencyKey: async () => booking,
-      };
-      const out = await processBookingReservations(dd, 10);
-      assert(
-        out.completed === 1 && out.failed === 0,
-        "drain: the left reservation completes on the next tick",
-      );
-      assert(
-        drained.calls.moveBusyBlock.length === 1 && drained.calls.moveBusyBlock[0].bookingId === booking.id,
-        "drain: the busy block the confirm could not write is written",
-      );
-      assert(
-        drained.calls.webhooks.some((w) => w.event === "booking.created"),
-        "drain: booking.created is delivered",
-      );
-      assert(
-        reservation !== null && drained.calls.deletedReservations.includes(reservation.id),
-        "drain: and only then is the reservation deleted",
-      );
-    }
+  // --- 1b. the save committed and its ANSWER was lost to the deadline ----------
+  // The client gave up waiting while Postgres committed. The confirm reads the
+  // booking back by the lead's key, under the cleanup allowance, and answers it,
+  // rather than telling a lead to retry for a booking that exists (red team 3).
+  {
+    const clock = confirmClock();
+    const f = committedThenSpent(clock, { lostAnswer: true });
+    const { value: res, err } = await settle(() => clock.run(() => createBooking(input, f.d)));
+    assert(err === null, `answer lost: the confirm answers the booking, not a 503 (got ${said(err)})`);
+    const committed = f.committed();
+    assert(res !== null && committed !== null && res.booking.id === committed.id, "answer lost: the booking read back is the one saved");
+    assert(res?.newlyInserted === true, "answer lost: and it is this confirm's own save");
+    assert(f.calls.enqueueEventDeletion.length === 0, "answer lost: its calendar event is NOT queued for deletion");
   }
 
   // --- 2. any failure after the commit answers success, not only a deadline ---
@@ -181,8 +176,8 @@ async function run() {
     const err = await caught(() => createBooking(input, d));
     assert(err === null, `a non-deadline failure after the commit: still the booking, not a 500 (got ${said(err)})`);
     assert(
-      calls.insertBooking.length === 1 && calls.deletedReservations.length === 0,
-      "a non-deadline failure after the commit: the reservation stays for the drain",
+      calls.insertBooking.length === 1 && calls.deletedReservations.length === 1,
+      "a non-deadline failure after the commit: the save's own writes landed, the reservation's delete with them",
     );
   }
 

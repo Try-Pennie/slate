@@ -102,7 +102,7 @@ The flow:
 4. **Write the reservation.** `insertReservation` writes a `booking_reservations`
    row holding the pinned agent, the pinned `gcal_client_id`, and the **full
    booking payload** (times, attendee, manage token, routing trace, everything
-   `insertBooking` needs), so a resume never re-runs the non-deterministic assign.
+   the save needs), so a resume never re-runs the non-deterministic assign.
 5. **Complete** via `completeReservation`.
 
 `idempotency_key` on `booking_reservations` is `UNIQUE`, and that constraint is
@@ -119,13 +119,26 @@ resume, and the drain, so a crash anywhere converges on the same end state:
   reservation.
 - Otherwise `createEvent(pinned_agent_email, ..., gcal_client_id)` creates **or**
   409-reuses the event.
-- `insertBooking` persists the row. A `23505` conflict from the active-slot unique
-  index means either a same-key winner exists (return it) or the slot was genuinely
-  taken (roll back the event + reservation, throw `SlotUnavailableError`). A
-  generic failure rolls back the event but **leaves the reservation pending** so
-  the drain retries.
-- Deliver the busy-block write-through, cache invalidation, and `booking.created`
-  webhook (all idempotent), then delete the reservation.
+- **The save is one call** (#3495, `commit_fresh_booking`, migration 0174): the
+  booking row, its busy block, its `booking.created` deliveries, its routing record
+  and the reservation's delete, in one transaction. The booking id is minted first,
+  because the webhook names it and its dedupe key is it.
+  - A clash on any guard (the active-slot index, the overlap constraint, the reroute
+    hold trigger, the idempotency index) writes NOTHING and answers a conflict:
+    either a same-key winner exists (return it) or the slot was genuinely taken
+    (roll back the event + reservation, throw `SlotUnavailableError`).
+  - The busy block, the webhook and the routing record each run in their own block,
+    so a failure there is named in the answer and never undoes the booking. A failed
+    webhook step **keeps the reservation pending**, so the drain re-runs the side
+    effects and the webhook is not lost.
+  - A refusal Postgres answered (`CommitRefusedError`) wrote nothing: the event's
+    deletion is queued and the reservation stays pending, so the drain retries. A
+    call with **no answer** (a deadline, a dropped connection) may have committed,
+    so the booking is read back by its key before the lead is told it failed.
+- After the save: the slot refresh (its fence stamped after the busy block
+  committed), the stray gcal mirror's delete (after the commit, #586, and after the
+  lead's answer), and the tier alert. The real database half is proved by
+  `scripts/verify-commit-fresh-booking-sql.ts`.
 
 **Resume after a crash:** `processBookingReservations` runs on the
 `/api/cron/outbox` lane. It loads pending reservations, leases each one

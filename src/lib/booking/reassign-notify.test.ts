@@ -128,10 +128,6 @@ function makeDeps(): BookingDeps {
     getUser: async () => targetAgent,
     loadEmails: async (ids: string[]) => new Map(ids.map((id) => [id, "target@x.com"])),
     findBookingByIdempotencyKey: async () => null,
-    insertBooking: async (row: Record<string, unknown>) => ({
-      ok: true as const,
-      booking: { ...row, id: "bk-1" } as unknown as Booking,
-    }),
     insertBusyBlocks: noop,
     moveBusyBlock: noop,
     reassignSwap: async () => ({ prevGcalEventId: "old-evt", prevAgentEmail: "old@x.com", updated: true }),

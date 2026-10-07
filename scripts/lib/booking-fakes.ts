@@ -35,6 +35,7 @@ import type { OwnerAlertEventBody } from "../../src/lib/booking/owner-alert.ts";
 import type { BookingEventPayload } from "../../src/lib/webhooks/types.ts";
 import { makeConfirmQueue, isolateLine } from "../../src/lib/booking/confirm-queue.ts";
 import { makeCommitCostLog } from "../../src/lib/booking/commit-cost.ts";
+import { commitFreshModel, type CommitFreshParts } from "./commit-fresh-model.ts";
 
 /**
  * Per-file assertion counter. Each suite is its own process (the runner spawns
@@ -572,7 +573,14 @@ export function makeDeps(opts: FakeOpts) {
     const b = opts.existing?.booking;
     if (b) opts.concurrentBeforeCommit(b);
   };
-  const deps: BookingDeps = {
+  // #3495: the fake keeps the separate insert, which suites make race, fail or wait,
+  // and builds the one save call from it (`commitFreshModel`). Read off `this`, the
+  // deps object the call was made on, so a suite that overrides a step, on these
+  // deps or on a copy spread from them, is the step the save runs.
+  const deps: BookingDeps & CommitFreshParts = {
+    commitFreshBooking(this: CommitFreshParts, req) {
+      return commitFreshModel(this, req);
+    },
     deferSend: opts.deferSend,
     readLeadXbc: async (leadId) => {
       calls.readLeadXbc.push(leadId);
@@ -1155,6 +1163,8 @@ export function makeDeps(opts: FakeOpts) {
       });
     },
     newManageToken: () => "tok-fixed",
+    // #3495: the id the save is made with, which the fake's insert has always answered.
+    newBookingId: () => "bk-new",
     newIdempotencyKey: () => "anon-fixed", // synthetic key for keyless bookings (#666)
     appBaseUrl: () => "https://slate.test",
     invalidateSlots: async (bucketCode, booked) => {

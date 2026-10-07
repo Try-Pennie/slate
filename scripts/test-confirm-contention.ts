@@ -82,7 +82,7 @@ const CAPACITY = 1;
 const SERVICE_MS = 12;
 const BURST = 100;
 /** Not I/O, so they stay synchronous in the wrapped deps. */
-const SYNCHRONOUS = new Set(["newManageToken", "newIdempotencyKey", "pageRaceBoundHit", "deferSend", "deadlineTimer", "appBaseUrl", "lineGroupOf"]);
+const SYNCHRONOUS = new Set(["newManageToken", "newIdempotencyKey", "newBookingId", "pageRaceBoundHit", "deferSend", "deadlineTimer", "appBaseUrl", "lineGroupOf"]);
 
 type Outcome = "created" | "SLOT_TAKEN" | "503" | string;
 interface Run {
@@ -553,6 +553,11 @@ async function main() {
   // leader through where production let none, and tuning it until it matched would
   // make the fixture prove only itself (L48). The shared line case below runs the
   // identical crowd and must answer none of them retryably.
+  //
+  // #3495: the floor was 40 while a booking's save was six database calls after its
+  // calendar event. Folded into one, each leader's path is shorter and fewer run out
+  // of time (18 of the hundred in this model on 2026-10-07), so the floor is the
+  // failure itself, a material share told to retry, rather than the old count.
   {
     const { tally, bySlot } = await burst({
       inputs: Array.from({ length: BURST }, (_, i) => lead(i)),
@@ -560,7 +565,7 @@ async function main() {
       queue: "real",
       isolates: { count: 50, line: "isolate" },
     });
-    assert((tally["503"] ?? 0) >= 40, `per isolate lines: dozens of leaders are told to retry, as on 2026-10-05 (got ${JSON.stringify(tally)})`);
+    assert((tally["503"] ?? 0) >= 10, `per isolate lines: leaders are told to retry, the 2026-10-05 failure (got ${JSON.stringify(tally)})`);
     assert(bySlot.size <= 1, `per isolate lines: still never a double booking (got ${bySlot.size})`);
   }
 

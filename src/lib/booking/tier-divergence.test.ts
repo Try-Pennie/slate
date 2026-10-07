@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { makeConfirmQueue, isolateLine } from "@/lib/booking/confirm-queue";
 import { makeCommitCostLog } from "@/lib/booking/commit-cost";
+// #3495: the fresh booking save, modelled over the fake's separate steps.
+import { commitFreshModel, type CommitFreshParts } from "../../../scripts/lib/commit-fresh-model";
 
 // Asserts the runtime half of AUD-061 (#827): on a fresh confirm, when the tier
 // the availability cache currently DISPLAYS for the requested bucket differs from
@@ -92,7 +94,7 @@ const bookInput: CreateBookingInput = {
 
 // ---- dep builder -------------------------------------------------------------
 
-function makeDeps(): BookingDeps {
+function makeDeps(): BookingDeps & CommitFreshParts {
   const noop = async (..._args: unknown[]): Promise<void> => {};
   return {
     // #3272: the pool read is injected now; these tests never reach it with a
@@ -232,6 +234,10 @@ function makeDeps(): BookingDeps {
     loadPastBookingIdsToComplete: async () => [],
     emitWebhook: noop,
     newManageToken: () => "tok-fixed",
+    newBookingId: () => "bk-new",
+    commitFreshBooking(this: CommitFreshParts, req) {
+      return commitFreshModel(this, req);
+    },
     newIdempotencyKey: () => "anon-fixed",
     appBaseUrl: () => "https://slate.test",
     invalidateSlots: noop,
