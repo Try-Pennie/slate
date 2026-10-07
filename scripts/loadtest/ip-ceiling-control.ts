@@ -45,7 +45,7 @@ import {
   DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
 } from "../../src/lib/rate-limit-core.ts";
 import { MEASURED_CODE_MIX } from "./code-mix.ts";
-import { loadtestPhone } from "./book-plan.ts";
+import { leadExternalId, loadtestPhone } from "./book-plan.ts";
 
 const PROD_HOST = "slate.trypennie.app";
 
@@ -101,6 +101,8 @@ const WAVE = 10;
  * deployment less.
  */
 async function attempt(n: number, code: string, startIso: string): Promise<CeilingAttempt> {
+  // Its own id space, outside any run's scope: these are dry runs and write no row.
+  const lead = { runId: "ceiling-control", leg: "ceiling", driver: 0, n } as const;
   try {
     const res = await fetch(`${SLATE_BASE}/api/bookings`, {
       method: "POST",
@@ -110,15 +112,15 @@ async function attempt(n: number, code: string, startIso: string): Promise<Ceili
         bucketCode: code,
         start: startIso,
         timezone: "America/New_York",
-        externalId: `ceiling-control-${n}`,
+        externalId: leadExternalId(lead),
         dryRun: true,
         attendee: {
           name: "Ceiling Control",
-          email: `ceiling-control-${n}@loadtest.local`,
+          email: `${leadExternalId(lead)}@loadtest.local`,
           // Its own number like every other caller (#2261). These are dry runs, so
           // the person gate cannot refuse them anyway, but one shared identity
           // across the load machinery is the footgun this whole change removes.
-          phone: loadtestPhone(`ceiling-control-${n}`),
+          phone: loadtestPhone(lead),
         },
       }),
     });

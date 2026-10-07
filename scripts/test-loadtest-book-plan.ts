@@ -30,6 +30,7 @@ import {
   burstStartAt,
   offeredSlots,
   loadtestPhone,
+  leadExternalId,
   idPrefix,
   chooseBurstSlots,
   burstMoments,
@@ -381,38 +382,125 @@ const T0 = Date.parse("2026-09-15T14:00:00.000Z");
 //
 // The email was already unique per attempt, which is exactly why it hid.
 
+// #3447: the number is BUILT from the attempt rather than hashed from its id. The
+// hash kept 32 bit FNV-1a modulo ten million, and ids differing only in their last
+// digits landed on structured collisions: run 37547143303 gave twelve of driver 3's
+// requests the number of an earlier one, and all twelve were refused
+// `confirm_required`. The guard above it checked six hundred ids shaped
+// `run-1-<driver>-<n>`, which never collide; the real shape does (L48). So every
+// fixture below uses the id shape the workflow mints, `run-<run id>-<attempt>`.
+
+const REAL_RUN = "run-37547143303-1";
+
+/** The generator #3447 replaced, kept here only to prove the fixture is the real shape. */
+function hashedPhone(seed: string): string {
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return `+1555${String(Math.abs(h) % 10_000_000).padStart(7, "0")}`;
+}
+
+/** The twelve pairs run 37547143303 refused: [the refused request, the earlier one it matched]. */
+const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
+  [116, 80], [117, 81], [114, 82], [115, 83], [112, 84], [113, 85],
+  [110, 86], [111, 87], [108, 92], [109, 93], [102, 98], [103, 99],
+];
+
 {
-  const a = loadtestPhone("run-1-0-0");
-  const b = loadtestPhone("run-1-0-1");
-  assert(a !== b, "two attempts of one driver get different numbers");
-  assert(loadtestPhone("run-1-0-0") !== loadtestPhone("run-1-1-0"), "and so do two drivers");
-  assert(loadtestPhone("run-1-0-0") !== loadtestPhone("run-2-0-0"), "and so do two runs");
+  // Positive control: the fixture reproduces the run. Under the old generator every
+  // pair shares a number, so the assertions after it are asked of inputs that DID
+  // collide, not of inputs that never could (L1, L159).
+  for (const [refused, earlier] of RUN_37547143303_PAIRS) {
+    eq(
+      hashedPhone(externalIdFor(REAL_RUN, 3, refused)),
+      hashedPhone(externalIdFor(REAL_RUN, 3, earlier)),
+      `the old generator gave 3-${refused} the number of 3-${earlier}, as the run recorded`,
+    );
+  }
+  for (const [refused, earlier] of RUN_37547143303_PAIRS) {
+    assert(
+      loadtestPhone({ runId: REAL_RUN, leg: "steady", driver: 3, n: refused }) !==
+        loadtestPhone({ runId: REAL_RUN, leg: "steady", driver: 3, n: earlier }),
+      `3-${refused} and 3-${earlier} are two people now`,
+    );
+  }
 }
 
 {
-  // Deterministic, so a re-run of the same attempt is the same person and a
-  // re-driven id cannot become a second lead.
-  eq(loadtestPhone("run-1-0-0"), loadtestPhone("run-1-0-0"), "the same id gives the same number");
+  // The property itself, over every id a real run can mint: every leg, the four
+  // drivers and the cold leg's own driver number, and more requests than any leg
+  // sends. Distinct by construction, so this is exhaustive rather than sampled.
+  const drivers = [...Array.from({ length: DRIVERS }, (_, d) => d), 90];
+  const seen = new Set<string>();
+  let made = 0;
+  for (const leg of LOADTEST_LEGS) {
+    for (const driver of drivers) {
+      for (let n = 0; n < 400; n++) {
+        seen.add(loadtestPhone({ runId: REAL_RUN, leg, driver, n }));
+        made++;
+      }
+    }
+  }
+  eq(seen.size, made, `every attempt of a run is its own person (${made} attempts)`);
+}
+
+{
+  const lead = { runId: REAL_RUN, leg: "steady", driver: 0, n: 0 } as const;
+  assert(
+    loadtestPhone(lead) !== loadtestPhone({ ...lead, runId: "run-37547143303-2" }),
+    "a retried attempt of the same run gets other numbers, since the branch outlives it",
+  );
+  assert(loadtestPhone(lead) !== loadtestPhone({ ...lead, leg: "burst" }), "and two legs differ at the same driver and request");
+  // Deterministic, so a re-driven request is the same person and never a second lead.
+  eq(loadtestPhone(lead), loadtestPhone({ ...lead }), "the same attempt gives the same number");
 }
 
 {
   // Shaped like the number it replaces, and inside the 555 range, which is
   // unassignable in the real numbering plan: nothing this produces is a number
-  // somebody actually holds.
-  const n = loadtestPhone("run-1-0-0");
-  assert(/^\+1555\d{7}$/.test(n), `the number is a 555 range E.164 value (${n})`);
-  eq(n.length, "+15555550100".length, "and is the same length as the one it replaces");
+  // somebody actually holds. Checked at the edges of every coordinate, where a
+  // carry would show.
+  for (const lead of [
+    { runId: REAL_RUN, leg: "steady", driver: 0, n: 0 },
+    { runId: REAL_RUN, leg: "cold", driver: 99, n: 9999 },
+    { runId: "run-99999999999-9", leg: "ceiling", driver: 99, n: 9999 },
+  ] as const) {
+    const n = loadtestPhone(lead);
+    assert(/^\+1555\d{7}$/.test(n), `the number is a 555 range E.164 value (${n})`);
+  }
 }
 
 {
-  // The spread that matters: a real run makes six hundred of these, and a branch
-  // can see several runs. A generator colliding inside one run would refuse the
-  // colliding attempts for a reason the judge would read as the path failing.
-  const seen = new Set<string>();
-  for (let driver = 0; driver < 4; driver++) {
-    for (let n = 0; n < 150; n++) seen.add(loadtestPhone(`run-1-${driver}-${n}`));
+  // A coordinate outside the space is refused by name. Wrapping it would hand two
+  // attempts one number again, silently, which is the defect this replaces.
+  const refusals: Array<[string, () => unknown, RegExp]> = [
+    ["a driver past 99", () => loadtestPhone({ runId: REAL_RUN, leg: "steady", driver: 100, n: 0 }), /driver 100/],
+    ["a negative driver", () => loadtestPhone({ runId: REAL_RUN, leg: "steady", driver: -1, n: 0 }), /driver -1/],
+    ["a request past 9999", () => loadtestPhone({ runId: REAL_RUN, leg: "burst", driver: 0, n: 10_000 }), /request 10000/],
+    ["a fractional request", () => loadtestPhone({ runId: REAL_RUN, leg: "burst", driver: 0, n: 1.5 }), /request 1\.5/],
+    ["a leg outside the vocabulary", () => loadtestPhone({ runId: REAL_RUN, leg: "nightly" as "steady", driver: 0, n: 0 }), /leg nightly/],
+  ];
+  for (const [what, call, message] of refusals) {
+    let threw: unknown = null;
+    try {
+      call();
+    } catch (err) {
+      threw = err;
+    }
+    assert(threw instanceof Error && message.test(threw.message), `${what} is refused by name (got ${threw instanceof Error ? threw.message : "no refusal"})`);
   }
-  eq(seen.size, 600, "a whole run's six hundred attempts are six hundred distinct people");
+}
+
+{
+  // The external id comes from the same lead, so an id and a number can never
+  // describe two different attempts (L41).
+  eq(leadExternalId({ runId: REAL_RUN, leg: "steady", driver: 3, n: 102 }), "run-37547143303-1-3-102", "a steady id is the one the judge scopes on");
+  eq(leadExternalId({ runId: REAL_RUN, leg: "burst", driver: 1, n: 30 }), "run-37547143303-1-b-1-30", "a burst id carries its leg's prefix");
+  eq(leadExternalId({ runId: REAL_RUN, leg: "cold", driver: 90, n: 2 }), "run-37547143303-1-c-90-2", "and so does the cold leg's");
+  eq(leadExternalId({ runId: REAL_RUN, leg: "preflight", driver: 0, n: 0 }), "run-37547143303-1-preflight", "the preflight keeps the id the judge looks it up by");
+  eq(leadExternalId({ runId: "ceiling-control", leg: "ceiling", driver: 0, n: 7 }), "ceiling-control-7", "and the ceiling control keeps its own");
 }
 
 // --- each leg mints its own external ids (#2261) ------------------------------
@@ -631,14 +719,15 @@ const T0 = Date.parse("2026-09-15T14:00:00.000Z");
 // The steady drivers and the cold leg both book through it, so a lead the cold leg
 // sends is the same lead the run measures everywhere else (L41).
 {
-  const body = bookingBody({ code: "112", startIso: "2026-10-08T14:00:00Z", externalId: "run-1-9-3", timezone: "America/New_York" });
+  const lead = { runId: "run-1", leg: "steady", driver: 9, n: 3 } as const;
+  const body = bookingBody({ code: "112", startIso: "2026-10-08T14:00:00Z", lead, timezone: "America/New_York" });
   eq(body.bucketCode, "112", "the code it asks for");
   eq(body.start, "2026-10-08T14:00:00Z", "the time");
   eq(body.timezone, "America/New_York", "the lead's zone");
   eq(body.externalId, "run-1-9-3", "its own external id, so the booker never dedupes it onto another");
   const attendee = body.attendee as { name: string; email: string; phone: string };
   eq(attendee.email, "run-1-9-3@loadtest.local", "an address on the load test's own domain");
-  eq(attendee.phone, loadtestPhone("run-1-9-3"), "and its OWN number, since a weak match is email OR phone (#2261)");
+  eq(attendee.phone, loadtestPhone(lead), "and its OWN number, since a weak match is email OR phone (#2261)");
   assert(attendee.name.includes("run-1-9-3"), "named for its id, so a row can be traced to the request");
 }
 
