@@ -154,7 +154,7 @@ export type ProbeVerdict =
  * Only a probe READ and sent once the burst SETTLED counts: one sent while confirms
  * were still walking the ladder could see a free advisor the next confirm was about to
  * take, and accuse an honest refusal. Probes that disagree about whether the slot is
- * bookable conclude nothing rather than one of them being picked. When every usable
+ * bookable, or about WHY it is not, conclude nothing rather than one of them being picked. When every usable
  * probe says available, the highest rung still free is kept, because "the requested
  * rung itself still had somebody" is the stronger accusation and the one #3338 does
  * not explain.
@@ -185,6 +185,15 @@ export function burstProbeVerdict(probes: readonly (BurstProbe | undefined)[], s
       why:
         `the probes disagree: ${available.length} answered available and ${usable.length - available.length} ` +
         `answered ${[...new Set(usable.filter((p) => !p.bookable).map((p) => p.reason))].join(", ")}`,
+    };
+  }
+  // #3459 review (L11): all not bookable, but for different reasons. Only one reason
+  // proves a refusal honest, so picking one would decide the question by arrival order.
+  const notBookableReasons = [...new Set(usable.filter((p) => !p.bookable).map((p) => p.reason))].sort();
+  if (available.length === 0 && notBookableReasons.length > 1) {
+    return {
+      kind: "unconcluded",
+      why: `the probes disagree on why the slot is not bookable: ${notBookableReasons.join(", ")}`,
     };
   }
   const top = (available.length > 0 ? available : usable).slice().sort((a, b) => a.rungsDropped - b.rungsDropped)[0]!;
