@@ -47,6 +47,7 @@ const broken: [string, unknown, RegExp][] = [
   ["a delivery with no id", { subscribers: 1, deliveries: [{ ...fixture.deliveries[0], id: undefined }] }, /id/],
   ["a delivery with no endpoint", { subscribers: 1, deliveries: [{ ...fixture.deliveries[0], endpoint: null }] }, /endpoint/],
   ["an endpoint with no url", { subscribers: 1, deliveries: [{ ...fixture.deliveries[0], endpoint: { ...fixture.deliveries[0].endpoint, url: undefined } }] }, /url/],
+  ["an endpoint with no created_at", { subscribers: 1, deliveries: [{ ...fixture.deliveries[0], endpoint: { ...fixture.deliveries[0].endpoint, created_at: undefined } }] }, /created_at/],
   ["an endpoint of a format Slate does not know", { subscribers: 1, deliveries: [{ ...fixture.deliveries[0], endpoint: { ...fixture.deliveries[0].endpoint, format: "smtp" } }] }, /format/],
   ["a payload that is not an object", { subscribers: 1, deliveries: [{ ...fixture.deliveries[0], payload: "x" }] }, /payload/],
   ["suppressed not a boolean", { subscribers: 1, deliveries: [{ ...fixture.deliveries[0], suppressed: "no" }] }, /suppressed/],

@@ -67,7 +67,7 @@ export function readEnqueueAnswer(data: unknown, knownFormats: readonly string[]
 /** The endpoint row a delivery is for, with every field a send reads checked. */
 function readEndpoint(raw: unknown, n: number, knownFormats: readonly string[]): EnqueuedEndpoint {
   if (!isObject(raw)) throw new Error(`webhook enqueue delivery ${n} has no endpoint`);
-  for (const field of ["id", "org_id", "url"] as const) {
+  for (const field of ["id", "org_id", "url", "created_at"] as const) {
     if (typeof raw[field] !== "string" || raw[field] === "") throw new Error(`webhook enqueue delivery ${n}'s endpoint has no ${field}`);
   }
   if (typeof raw.format !== "string" || !knownFormats.includes(raw.format)) {
@@ -84,6 +84,6 @@ function readEndpoint(raw: unknown, n: number, knownFormats: readonly string[]):
     format: raw.format,
     auth_header: typeof raw.auth_header === "string" ? raw.auth_header : null,
     active: raw.active,
-    created_at: typeof raw.created_at === "string" ? raw.created_at : "",
+    created_at: raw.created_at as string,
   };
 }

@@ -14,11 +14,8 @@ const state = vi.hoisted(() => ({
   claimWins: true,
   endpointSelects: 0,
   inserted: [] as Record<string, unknown>[],
-  // #771: the filters emitWebhook narrows webhook_endpoints by, the error the
-  // delivery insert returns, and the status writes send() makes.
+  // The filters the retry and replay reads narrow by, and the status writes send() makes.
   filters: [] as { table: string; col: string; val: unknown }[],
-  insertError: null as null | { code?: string; message: string },
-  endpointsError: null as null | { code?: string; message: string },
   updates: [] as Record<string, unknown>[],
   // #2563: when set, the attempt claim is resolved by a REAL compare and swap
   // over this store (delivery id -> attempts) instead of the claimWins flag.
@@ -84,8 +81,8 @@ function resolve(b: Record<string, unknown>, table: string) {
     if (state.userError) return { data: null, error: state.userError };
     return { data: state.user, error: null };
   }
+  // The retry sweep's one read of the endpoints its deliveries name (#623).
   if (table === "webhook_endpoints") {
-    if (state.endpointsError) return { data: null, error: state.endpointsError };
     return { data: b._single ? state.endpoints[0] : state.endpoints, error: null };
   }
   if (table === "webhook_deliveries") {
@@ -138,10 +135,6 @@ function makeBuilder(table: string) {
     (b._eqs as { col: string; val: unknown }[]).push({ col, val });
     return b;
   };
-  b.contains = (col: string, val: unknown) => {
-    state.filters.push({ table, col, val });
-    return b;
-  };
   b.order = self;
   b.limit = self;
   b.update = (payload: Record<string, unknown>) => {
@@ -149,19 +142,6 @@ function makeBuilder(table: string) {
     state.updates.push(payload);
     return b;
   };
-  b.insert = (row: Record<string, unknown>) => {
-    b._insert = true;
-    state.inserted.push(row);
-    return b;
-  };
-  // insert().select("id").single() -> the new delivery row emitWebhook then sends.
-  // A 23505 here is the dedupe collision: a prior call already enqueued this event.
-  b.single = () =>
-    Promise.resolve(
-      state.insertError
-        ? { data: null, error: state.insertError }
-        : { data: { id: "d-new" }, error: null },
-    );
   b.maybeSingle = () => {
     b._single = true;
     return Promise.resolve(resolve(b, table));
@@ -234,8 +214,6 @@ beforeEach(() => {
   state.endpointSelects = 0;
   state.inserted = [];
   state.filters = [];
-  state.insertError = null;
-  state.endpointsError = null;
   state.updates = [];
   state.cas = null;
   state.user = null;
@@ -437,10 +415,10 @@ describe("emitWebhook", () => {
   });
 
   // The exactly-once guarantee (#436). The dedupe key is written under a partial
-  // UNIQUE (endpoint_id, event, dedupe_key), so a re-enqueue of the same logical
-  // event (a crash-resume re-running the side effects) hits a 23505. The ORIGINAL
-  // delivery owns the send and its retries, so this call must drop BOTH the second
-  // row and the second POST. Without this, a resumed booking double-fires into Regal.
+  // UNIQUE (endpoint_id, event, dedupe_key), so the function writes nothing for a
+  // re-enqueue of the same logical event (a crash-resume re-running the side
+  // effects) and hands back no delivery. The ORIGINAL delivery owns the send and its
+  // retries, so this call must make neither a second row nor a second POST.
   it("drops both the row and the POST when the dedupe key collides (exactly-once)", async () => {
     await emitWebhook("o1", "booking.created", payload, "bk1");
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -453,10 +431,10 @@ describe("emitWebhook", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  // #1036: a non-dedupe insert error leaves NO durable row, so the outbox step
-  // must NOT be marked done. Throw so the step fails and the drain retries,
-  // instead of silently dropping the event (a 23505 is the only "skip" case).
-  it("throws (so the outbox step retries) when the insert fails for any non-dedupe reason", async () => {
+  // #1036: a refused call wrote NOTHING (the function is one transaction), so the
+  // outbox step must not be marked done. Throw so the step fails and the drain
+  // retries, instead of silently dropping the event.
+  it("throws (so the outbox step retries) when the enqueue call is refused", async () => {
     state.enqueueError = { code: "08006", message: "connection failure" };
 
     await expect(emitWebhook("o1", "booking.created", payload, "bk1")).rejects.toThrow();
@@ -465,9 +443,8 @@ describe("emitWebhook", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  // #1036: a swallowed endpoints-read error used to yield null -> zero endpoints
-  // -> the outbox step marked done with nothing queued -> the event permanently
-  // lost to Regal/Cadence. Throw so the step fails and retries.
+  // A subscriber whose format the caller did not decide is refused, with nothing
+  // written, rather than read as "send" (L42): the step fails and retries.
   it("throws (so the outbox step retries) when the function refuses a format it was not told about, instead of sending", async () => {
     state.endpoints = [{ ...endpoint, format: "smtp" }];
 
