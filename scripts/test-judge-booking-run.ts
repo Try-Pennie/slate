@@ -3002,8 +3002,8 @@ function withDrop(outcome: "walks" | "stops", rule: string | undefined, mutate: 
   // the defect it declares: the declaration is wrong or the crowd never contended.
   // Learning nothing is never a pass (L98).
   const r = withDrop("walks", "stops");
-  eq(r.verdict, "incomplete", "a stops build whose drop burst all won cannot conclude");
-  eq(r.exit, JUDGE_EXIT.incomplete, "on the incomplete exit");
+  eq(r.verdict, "inconclusive", "a stops build whose drop burst all won cannot conclude");
+  eq(r.exit, JUDGE_EXIT.inconclusive, "on the inconclusive exit");
   assert(r.measurements !== null, "with every figure still measured, because only the burst could not conclude");
   const u = r.burstsUnconcluded.find((x) => x.bar === "the tier drop");
   assert(u !== undefined && u.detail.includes("could not show the defect"), `saying why (got: ${u?.detail})`);
@@ -3014,7 +3014,7 @@ function withDrop(outcome: "walks" | "stops", rule: string | undefined, mutate: 
   // held to, whatever happened.
   for (const rule of [undefined, "Walks"]) {
     const r = withDrop("walks", rule);
-    eq(r.verdict, "incomplete", `a drop burst under ${rule === undefined ? "no declared rule" : "a rule nobody knows"} cannot conclude`);
+    eq(r.verdict, "inconclusive", `a drop burst under ${rule === undefined ? "no declared rule" : "a rule nobody knows"} cannot conclude`);
     const u = r.burstsUnconcluded.find((x) => x.bar === "the tier drop");
     assert(u !== undefined && u.detail.includes("cannot be held to either rule"), `saying so (got: ${u?.detail})`);
   }
@@ -3033,7 +3033,7 @@ function withDrop(outcome: "walks" | "stops", rule: string | undefined, mutate: 
       f.probe = probeOf("120", legAt(1), { bookable: false, reason: "slot_taken" });
     }
   });
-  eq(r.verdict, "incomplete", "a drop burst refused by a really spent ladder cannot conclude");
+  eq(r.verdict, "inconclusive", "a drop burst refused by a really spent ladder cannot conclude");
   assert(!r.findings.some((x) => x.bar === "the burst's refusals"), "and accuses nobody, since every refusal was honest");
   const u = r.burstsUnconcluded.find((x) => x.bar === "the tier drop");
   assert(u !== undefined && u.detail.includes("outran"), `saying the crowd outran the ladder (got: ${u?.detail})`);
@@ -3077,7 +3077,7 @@ function withDrop(outcome: "walks" | "stops", rule: string | undefined, mutate: 
   const r = withDrop("walks", "walks", (i) => {
     for (const f of i.burstResults.filter((x) => x.burstLeg?.index === 1)) for (const a of f.attempts) a.rungsDropped = 0;
   });
-  eq(r.verdict, "incomplete", "a drop burst that never dropped cannot conclude");
+  eq(r.verdict, "inconclusive", "a drop burst that never dropped cannot conclude");
   const u = r.burstsUnconcluded.find((x) => x.bar === "the tier drop");
   assert(u !== undefined && u.detail.includes("never showed a tier being dropped"), `saying so (got: ${u?.detail})`);
   const unsaid = withDrop("walks", "walks", (i) => {
@@ -3151,7 +3151,7 @@ function withDrop(outcome: "walks" | "stops", rule: string | undefined, mutate: 
       x.probe = probeOf("120", legAt(0), { bookable: true, reason: "available", rungsDropped: 2, effective: "110" });
     }
   });
-  eq(unknown.verdict, "incomplete", "a rung below free under an undeclared rule cannot conclude");
+  eq(unknown.verdict, "inconclusive", "a rung below free under an undeclared rule cannot conclude");
   assert(unknown.burstsUnconcluded.some((x) => x.bar === "the burst's refusals" && x.detail.includes("2 rungs down")), "saying where the slot was free");
 }
 
@@ -3162,7 +3162,7 @@ function withDrop(outcome: "walks" | "stops", rule: string | undefined, mutate: 
       f.probe = readBurstProbe({ code: "120", sentAtMs: burstSettleAtMs(legAt(0), BURST_GRACE_DEFAULT_MS, REQUEST_TIMEOUT_MS) + 5, status: 503, body: { code: "VERIFY_UNAVAILABLE" } });
     }
   });
-  eq(unreadable.verdict, "incomplete", "a burst whose every probe was refused cannot say its refusals were honest");
+  eq(unreadable.verdict, "inconclusive", "a burst whose every probe was refused cannot say its refusals were honest");
   const u = unreadable.burstsUnconcluded.find((x) => x.bar === "the burst's refusals");
   assert(u !== undefined && u.detail.includes("burst 1 of 3") && u.detail.includes("503 VERIFY_UNAVAILABLE"), `naming the probe's own answer (got: ${u?.detail})`);
 
@@ -3170,6 +3170,18 @@ function withDrop(outcome: "walks" | "stops", rule: string | undefined, mutate: 
     for (const f of i.burstResults.filter((x) => x.burstLeg?.index === 0)) delete f.probe;
   });
   assert(missing.burstsUnconcluded.some((x) => x.detail.includes("not recorded")), "a probe never recorded is unconcluded, never read as taken");
+
+  // #3459 review: a run whose every figure was MEASURED and whose burst could not
+  // conclude has its own verdict and exit code. INCOMPLETE (exit 2) means the run did
+  // not happen as asked and nothing was measured; reading the two alike on one code
+  // would send a reader to re-run a run that ran.
+  eq(missing.verdict, "inconclusive", "a measured run whose burst could not conclude is inconclusive");
+  eq(missing.exit, JUDGE_EXIT.inconclusive, "on its own exit code");
+  assert(missing.measurements !== null, "with every figure measured");
+  assert(JUDGE_EXIT.inconclusive !== JUDGE_EXIT.incomplete, "and that code is not the code of a run that did not happen as asked");
+  eq(new Set(Object.values(JUDGE_EXIT)).size, Object.keys(JUDGE_EXIT).length, "every way the judge ends has a code of its own");
+  const notRun = brokenThree((i) => i.driverResults.pop());
+  eq(`${notRun.verdict} ${notRun.exit}`, `incomplete ${JUDGE_EXIT.incomplete}`, "control: a run missing a driver file is still incomplete on exit 2");
 
   // #3459 review (L46): until #3446 lands, no driver writes the crowd rule, the probe,
   // the burst's kind or capacity, or a winner's rung. A run whose burst files carry
@@ -3186,7 +3198,7 @@ function withDrop(outcome: "walks" | "stops", rule: string | undefined, mutate: 
       for (const a of f.attempts) delete a.rungsDropped;
     }
   });
-  eq(unwired.verdict, "incomplete", "burst files written before #3429 are never a pass");
+  eq(unwired.verdict, "inconclusive", "burst files written before #3429 are never a pass");
   eq(
     unwired.burstsUnconcluded.filter((x) => x.bar === "the burst's refusals" && x.detail.includes("not recorded")).length,
     3,
@@ -3205,8 +3217,8 @@ function withDrop(outcome: "walks" | "stops", rule: string | undefined, mutate: 
     for (const f of i.burstResults.filter((x) => x.burstLeg?.index === 0)) delete f.probe;
     i.platform = { invocations: null, cpuMsP99: null, subrequests: null, statuses: null, cron: null };
   });
-  eq(blind.verdict, "incomplete", "an unconcluded burst on a run whose platform half is unreadable is incomplete");
-  eq(blind.exit, JUDGE_EXIT.incomplete, "on the incomplete exit code");
+  eq(blind.verdict, "inconclusive", "an unconcluded burst on a run whose platform half is unreadable is inconclusive");
+  eq(blind.exit, JUDGE_EXIT.inconclusive, "on the inconclusive exit code");
   assert(blind.burstsUnconcluded.some((x) => x.detail.includes("not recorded")), "naming the burst clause");
   assert(blind.platformUnmeasured !== null, "with the unreadable platform half still reported beside it");
   assert(blind.findings.some((f) => f.bar === "platform limits"), "and its finding kept");
@@ -3217,6 +3229,50 @@ function withDrop(outcome: "walks" | "stops", rule: string | undefined, mutate: 
     i.faultPass = { attempts: 30, availabilityUnread: 0, fiveXx: 3, faultPct: 10, faultTargets: ["google-read"] };
   });
   eq(blindAndFailed.verdict, "fail", "and a measured failure beside them still fails the run");
+
+  // #3459 review: the settle is the latest any driver of the burst could have fired
+  // plus a request's bound, on the grace and bound the drivers RECORD, never a
+  // driver's own word about its settle. A hand run with a shorter grace probes sooner,
+  // and those probes are not early; a longer grace probes later, and a probe sent at
+  // the default settle would be.
+  const shortGrace = 500;
+  const shorter = brokenThree((i) => {
+    for (const f of i.burstResults.filter((x) => x.burstLeg?.index === 0)) {
+      f.burstLeg!.graceMs = shortGrace;
+      f.probe = readBurstProbe({
+        code: "120",
+        sentAtMs: burstSettleAtMs(legAt(0), shortGrace, REQUEST_TIMEOUT_MS) + 5,
+        status: 200,
+        body: { bookable: false, reason: "slot_taken", requestedBucketCode: "120", effectiveBucketCode: null, tierFallback: false, rungsDropped: 0 },
+      });
+    }
+  });
+  assert(
+    !shorter.burstsUnconcluded.some((x) => x.detail.includes("burst 1 of 3")),
+    `a probe sent after the settle of the grace the drivers recorded is used (got: ${JSON.stringify(shorter.burstsUnconcluded)})`,
+  );
+  const longer = brokenThree((i) => {
+    for (const f of i.burstResults.filter((x) => x.burstLeg?.index === 0)) f.burstLeg!.graceMs = 10_000;
+  });
+  assert(
+    longer.burstsUnconcluded.some((x) => x.detail.includes("burst 1 of 3") && x.detail.includes("before the burst settled")),
+    "and a probe sent at the default settle of a burst whose drivers recorded a longer grace is early",
+  );
+  const mixed = brokenThree((i) => {
+    const files = i.burstResults.filter((x) => x.burstLeg?.index === 0);
+    files[0]!.burstLeg!.graceMs = 10_000;
+  });
+  assert(
+    mixed.burstsUnconcluded.some((x) => x.detail.includes("burst 1 of 3") && x.detail.includes("before the burst settled")),
+    "the longest grace any driver of the burst recorded decides, since that driver may have fired last",
+  );
+  const unreadableGrace = brokenThree((i) => {
+    for (const f of i.burstResults.filter((x) => x.burstLeg?.index === 0)) f.burstLeg!.requestBoundMs = -1;
+  });
+  assert(
+    unreadableGrace.burstsUnconcluded.some((x) => x.detail.includes("burst 1 of 3") && x.detail.includes("request bound")),
+    `a recorded bound that is not a whole number of milliseconds leaves the settle unknown, by name (got: ${JSON.stringify(unreadableGrace.burstsUnconcluded)})`,
+  );
 
   const early = brokenThree((i) => {
     for (const f of i.burstResults.filter((x) => x.burstLeg?.index === 0)) {
@@ -3251,7 +3307,7 @@ function withDrop(outcome: "walks" | "stops", rule: string | undefined, mutate: 
   const alone = withDrop("walks", undefined);
   const text = verdictText(alone);
   assert(
-    text.includes("INCOMPLETE") && text.includes("could not conclude"),
+    text.includes("INCONCLUSIVE") && text.includes("could not conclude"),
     `an otherwise clean run whose burst could not conclude says so on the verdict line (got: ${text})`,
   );
   const summary = burstsSummaryText(alone.measurements!.bursts)!;

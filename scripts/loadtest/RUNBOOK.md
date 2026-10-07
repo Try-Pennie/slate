@@ -1097,15 +1097,29 @@ and it cannot conclude.
 **Cannot conclude is its own outcome.** A clause that could not conclude is listed
 under "What the bursts could not conclude" in the report, beside the findings and
 never among them, and the burst's line says COULD NOT CONCLUDE. On a run with no
-finding the verdict is **INCOMPLETE** (exit 2) with every figure still measured, never
-a pass (L98); a real finding anywhere outranks it and the run fails. It outranks the
+finding the verdict is **INCONCLUSIVE** (exit 5) with every figure still measured, never
+a pass (L98); a real finding anywhere outranks it and the run fails. It has its own
+code rather than INCOMPLETE's (exit 2), which means the run did not happen as asked and
+nothing was measured: "re-run it" and "read why the burst could not conclude" are two
+different things to do. It outranks the
 two readings that measured nothing, an unmeasured speed verdict and a platform half
 the analytics could not give, which are still reported beside it. A clause that a
 refusals finding has already failed (a slot still free on the requested rung) is not
 asked again by the tier drop bar, so one fault is reported once. A declaration
 that disagrees with the build is caught in both directions: a build that walks while
 saying `stops` gives a drop burst where everyone won, which cannot conclude, and one
-that stops while saying `walks` fails the drop burst naming #3338.
+that stops while saying `walks` fails the drop burst naming #3338. The first is not a
+failure on purpose: on a `stops` build a confirm that is not held behind another walks
+the ladder on its own (`assignAgentWithTierFallback`), so twelve winners, some a rung
+down, is also what a stops build gives a drop burst whose confirms never met in one
+crowd, and nothing a confirm's answer carries says whether it was held behind a leader.
+
+**When a burst settled** is its moment plus the longest grace any of its drivers
+recorded (`BURST_GRACE_MS`, how late a driver may still fire) plus the longest request
+bound they recorded, computed by the judge from what each driver was configured with,
+never from a driver's own word about its settle. A file that records neither is read on
+the defaults every workflow run uses; a recorded figure that is not a whole number of
+milliseconds leaves the settle unknown, and the burst's refusals cannot conclude.
 
 **Subrequests are deliberately not a bar**, and that is a decision rather than an
 omission. Cloudflare's observability exposes **no subrequest counter**
