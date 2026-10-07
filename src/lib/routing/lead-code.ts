@@ -15,7 +15,10 @@
  *     The link is what the page scored a moment ago; a second opinion would add a
  *     network call to every booking and a way for the two to disagree.
  *  2. Otherwise, a Lead id on the link means Salesforce is asked, and a code it
- *     holds that `bucketSpecForXbc` decodes is routed on.
+ *     holds that `bucketSpecForXbc` decodes is routed on. Since #3502 that is the
+ *     score on the lead's CURRENT submission (`readLeadScores`), the one a link
+ *     carries when it carries one; `Lead.XBC__c` is a copy that lags it, and on
+ *     2026-10-07 held a returning lead's July 211 against today's 111.
  *  3. Otherwise, a Salesforce Submission id (the `submissionId` trypennie's trigger
  *     always carries) is resolved to the Lead it names (`Submission__c.Lead__c`),
  *     and that lead is routed through step 2's read exactly (#3246). On iPhone

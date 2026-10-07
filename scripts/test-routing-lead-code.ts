@@ -9,6 +9,11 @@
 // and routes on it. Only when Salesforce holds no routable code does the
 // catch-all apply, and a Salesforce read that FAILS refuses rather than falling
 // through to it, because that fall through is the misroute this exists to stop.
+//
+// #3502: "the lead's score" is the one on the lead's CURRENT submission, which is
+// what a link carries when it carries one. `Lead.XBC__c` is a copy that lags it: a
+// lead who came back on 2026-10-07 scored 111 while the Lead still held 211 from
+// July, so a codeless link would have sent a Low lead to the Medium team.
 import {
   resolveRoutingCode,
   LeadCodeUnavailableError,
@@ -16,7 +21,7 @@ import {
   type SubmissionLeadReader,
 } from "../src/lib/routing/lead-code.ts";
 import { CATCHALL_CODE } from "../src/lib/routing/catchall.ts";
-import { readSubmissionLeadId, isSubmissionId } from "../src/lib/salesforce/lead-xbc.ts";
+import { readSubmissionLeadId, isSubmissionId, readOneLeadXbc, type LeadFieldRecord } from "../src/lib/salesforce/lead-xbc.ts";
 import { PUBLIC_TEST_BUCKET_CODES } from "../src/lib/embed/public-test-bucket.ts";
 import { createBooking } from "../src/lib/booking/orchestration.ts";
 import { assert, finish } from "./lib/harness.ts";
@@ -426,8 +431,61 @@ async function submissionReader() {
   assert(!isSubmissionId(LEAD) && !isSubmissionId("a04short"), "reader: a Lead id or a short value is not");
 }
 
+/** #3502: the real single lead reader, against Salesforce's recorded answers. */
+async function currentSubmissionScore() {
+  const RETURNED = "00QUi00000tHtYHMA0";
+  const NO_SUB = "00QUi00000noSubAAA";
+  const CORRECTED = "00QUi00000zMlRmMAK"; // Lead edited 512 to 412 49s after its submission
+  const queries: string[] = [];
+  const salesforce = async (soql: string): Promise<LeadFieldRecord[]> => {
+    queries.push(soql);
+    if (/FROM Lead /.test(soql)) {
+      return [
+        { Id: RETURNED, XBC__c: "211", Submission_Object_ID__c: "a04Ui00000NXcm1IAD" },
+        { Id: NO_SUB, XBC__c: "312", Submission_Object_ID__c: null },
+        { Id: CORRECTED, XBC__c: "412", Submission_Object_ID__c: "a04Ui00000MmsSrIAJ" },
+      ].filter((r) => soql.includes(`'${r.Id}'`));
+    }
+    if (/FROM Submission__c /.test(soql)) {
+      return [
+        { Id: "a04Ui00000NXcm1IAD", XBC_SO__c: "111", CreatedDate: "2026-10-07T18:17:53.000+0000" },
+        { Id: "a04Ui00000MmsSrIAJ", XBC_SO__c: "512", CreatedDate: "2026-09-21T13:16:12.000+0000" },
+      ].filter((r) => soql.includes(`'${r.Id}'`));
+    }
+    if (/FROM LeadHistory /.test(soql)) {
+      return [
+        { Id: "017h1", LeadId: RETURNED, CreatedDate: "2026-07-15T15:38:55.000+0000" },
+        { Id: "017h2", LeadId: CORRECTED, CreatedDate: "2026-09-21T13:17:01.000+0000" },
+      ].filter((r) => soql.includes(`'${r.LeadId}'`));
+    }
+    throw new Error(`unexpected query: ${soql}`);
+  };
+  const live: LeadXbcReader = (id) => readOneLeadXbc(id, salesforce);
+
+  const routed = await resolveRoutingCode("", RETURNED, live, { id: null, readLeadId: async () => undefined });
+  assert(routed.code === "111", `a returning lead with no code routes on today's submission, not July's copy (got ${routed.code})`);
+  assert(routed.source === "salesforce", "and records Salesforce as the source");
+  assert(queries.some((q) => /FROM Submission__c /.test(q)), "it asked for the submission the Lead names");
+
+  assert((await live(NO_SUB)) === "312", "a lead naming no submission still routes on the Lead's own score");
+  assert((await live(CORRECTED)) === "412", "a Lead score edited after its submission routes on the edit (newest wins)");
+  assert((await live("00QUi00000missingA")) === undefined, "a lead Salesforce did not return is still undefined, never a score");
+
+  let thrown: unknown = null;
+  try {
+    await readOneLeadXbc(RETURNED, async (q) => {
+      if (/FROM Submission__c /.test(q)) throw new Error("SF query failed: 503");
+      return salesforce(q);
+    });
+  } catch (e) {
+    thrown = e;
+  }
+  assert(thrown instanceof Error, "a refused submission read throws, so the confirm refuses rather than routing on the copy");
+}
+
 await main();
 await submissionReader();
 await submissionPath();
 await confirmPath();
+await currentSubmissionScore();
 finish();

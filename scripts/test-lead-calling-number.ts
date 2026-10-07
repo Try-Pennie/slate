@@ -18,7 +18,6 @@ import {
   readLeadCallingNumbers,
   readOneCallingNumber,
 } from "../src/lib/salesforce/lead-calling-number.ts";
-import { readLeadXbcs } from "../src/lib/salesforce/lead-xbc.ts";
 import { bookingLeadId } from "../src/lib/booking/lookup-identity.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -73,12 +72,6 @@ eq(callingNumberOf(12197588170), null, "a value of the wrong type is no number")
     threw = err instanceof Error ? err.message : String(err);
   }
   eq(threw, "SF query failed: 503", "a refused query throws, so a failed read never reads as no number");
-}
-
-// The XBC reader shares the same field reader, and still answers as it did.
-{
-  const map = await readLeadXbcs([LEAD_A], async () => [{ Id: LEAD_A, XBC__c: 512 }]);
-  eq(map.get("00QUi000010889Z"), "512", "the XBC reader still answers the stored value verbatim");
 }
 
 // --- one booking's lead ----------------------------------------------------------

@@ -38,8 +38,8 @@ export type LeadXbcRecord = LeadFieldRecord;
 export type LeadSoqlRunner = (soql: string) => Promise<LeadFieldRecord[]>;
 
 /**
- * One Lead field's raw value per lead, keyed by `leadIdKey`. Shared out of the XBC
- * reader for the calling number (#1334), so both are read one way rather than two.
+ * One Lead field's raw value per lead, keyed by `leadIdKey`, for the calling number
+ * (#1334).
  *
  * Three answers per id, and the map keeps them apart:
  *  - a value: what Salesforce holds, verbatim (decoding is the caller's job);
@@ -64,18 +64,6 @@ export async function readLeadField(
       const v = r[field];
       out.set(leadIdKey(r.Id), v === undefined ? null : v);
     }
-  }
-  return out;
-}
-
-/** The XBC value per lead, keyed by `leadIdKey`: `readLeadField` as text. */
-export async function readLeadXbcs(
-  leadIds: string[],
-  run: LeadSoqlRunner,
-): Promise<Map<string, string | null>> {
-  const out = new Map<string, string | null>();
-  for (const [key, v] of await readLeadField(leadIds, "XBC__c", run)) {
-    out.set(key, v === null || v === undefined ? null : String(v));
   }
   return out;
 }
@@ -202,27 +190,33 @@ export async function readLeadScores(
 }
 
 /**
- * One lead's `XBC__c`, for the booking path (#2638).
+ * One lead's score, for the booking path (#2638): since #3502 the score on the
+ * lead's CURRENT submission, through `readLeadScores`, so a codeless link routes
+ * on the same score a link carrying one would have, and on the same one the
+ * below tier check judges against. `Lead.XBC__c` is a copy that lags it, and is
+ * read only when the lead names no submission with a score.
  *
- * Same three answers as `readLeadXbcs`, spelled for one id: a string is what
- * Salesforce holds, null is a lead with the field empty, undefined is a lead
- * Salesforce did not return. A refused query THROWS, so a failed read is never
- * mistaken for a lead with no code, which would send them to the catch-all on
- * exactly the read that could not tell.
+ * Three answers: a string is the score Salesforce holds, null is a lead with
+ * none, undefined is a lead Salesforce did not return. A refused query (the
+ * Lead's or the submission's) THROWS, so a failed read is never mistaken for a
+ * lead with no code, which would send them to the catch-all on exactly the read
+ * that could not tell.
  */
 export async function readOneLeadXbc(
   leadId: string,
   run: LeadSoqlRunner,
 ): Promise<string | null | undefined> {
-  const map = await readLeadXbcs([leadId], run);
-  const key = leadIdKey(leadId);
-  return map.has(key) ? (map.get(key) ?? null) : undefined;
+  const map = await readLeadScores([leadId], run);
+  const score = map.get(leadIdKey(leadId));
+  return score === undefined ? undefined : score.code;
 }
 
 /**
- * `readOneLeadXbc` against the real org: one token exchange and one SOQL query,
- * through the shared REST client (`rest.ts`), so the retry and the refusal text
- * are the ones every other Salesforce reader uses. Throws on any refusal.
+ * `readOneLeadXbc` against the real org: one token exchange and up to two SOQL
+ * queries (the Lead, then the submission it names), through the shared REST
+ * client (`rest.ts`), so the retry and the refusal text are the ones every other
+ * Salesforce reader uses. Throws on any refusal. Asked only when the link carried
+ * no routable code.
  */
 export async function readLeadXbcLive(leadId: string): Promise<string | null | undefined> {
   const { sfToken, querySoqlAll } = await import("@/lib/salesforce/rest");
