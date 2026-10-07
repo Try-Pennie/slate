@@ -36,6 +36,21 @@ const valid = {
   }
 }
 
+// --- #3495: the tier the caller had on show, a measure only ---
+// Sent, the confirm records it instead of reading the availability cache for it.
+// Anything that is not a tier name is dropped rather than refusing the booking,
+// because a lead must never lose a call over a field only /admin/routing reads.
+{
+  const r = parseDirectBookingRequest({ ...valid, shownTier: "very_high" });
+  assert(r.ok && r.value.shownTier === "very_high", "a tier name the caller had on show is passed through (#3495)");
+  for (const bad of ["Very High", "nonsense", 4, "", null, { key: "high" }]) {
+    const b = parseDirectBookingRequest({ ...valid, shownTier: bad });
+    assert(b.ok && b.value.shownTier === undefined, `an unreadable shownTier (${JSON.stringify(bad)}) is dropped and the booking still parses (#3495)`);
+  }
+  const none = parseDirectBookingRequest(valid);
+  assert(none.ok && none.value.shownTier === undefined, "a caller that sends no tier hands none on, so the confirm reads it as before (#3495)");
+}
+
 // --- external_id is REQUIRED for the API (unlike the embed) ---
 for (const bad of [undefined, "", "   "]) {
   const r = parseDirectBookingRequest({ ...valid, externalId: bad });

@@ -349,6 +349,32 @@ describe("displayed tier on the routing trace", () => {
     expect(res.booking.routing_trace?.displayed_tier).toBeNull();
   });
 
+  // #3495: the booker sends the tier it had on show, so the confirm records that and
+  // makes no read for it. The read cost a database request per rung walked in a
+  // crowd, where every booking had just cleared the cache, and it could see another
+  // confirm's booking and file a lost last time as "nothing on show".
+  it("records the tier the page sent and does not read the cache for it (#3495)", async () => {
+    const deps = makeDeps();
+    const read = vi.fn(async () => tierKeyOf("411"));
+    deps.displayedTier = read;
+
+    const res = await createBooking({ ...bookInput, shownTier: tierKeyOf("511")! }, deps);
+
+    expect(read).not.toHaveBeenCalled();
+    expect(res.booking.routing_trace?.displayed_tier).toBe(tierKeyOf("511"));
+  });
+
+  it("reads the cache as before when the page sent no tier: a partner call, or an older page (#3495)", async () => {
+    const deps = makeDeps();
+    const read = vi.fn(async () => tierKeyOf("511"));
+    deps.displayedTier = read;
+
+    const res = await createBooking(bookInput, deps);
+
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(res.booking.routing_trace?.displayed_tier).toBe(tierKeyOf("511"));
+  });
+
   it("records null and still books when the display read throws", async () => {
     const deps = makeDeps();
     deps.displayedTier = async () => {

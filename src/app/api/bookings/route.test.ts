@@ -375,6 +375,16 @@ describe("POST /api/bookings (auth skeleton)", () => {
     expect(service.bookViaApi).toHaveBeenCalledWith(expect.objectContaining({ apiCaller: "regal" }), expect.anything());
   });
 
+  // #3495: a caller that read availability first (the load test does) hands back the
+  // tier it had on show, so the confirm records it instead of reading the cache.
+  it("hands the tier the caller had on show to the booking, and none when it sent none (#3495)", async () => {
+    regalKey.primary.mockReturnValue("real-secret");
+    await post("Bearer real-secret", { ...VALID_BODY, shownTier: "medium" });
+    expect(service.bookViaApi.mock.calls.at(-1)![0].shownTier).toBe("medium");
+    await post("Bearer real-secret", VALID_BODY);
+    expect(service.bookViaApi.mock.calls.at(-1)![0].shownTier).toBeUndefined();
+  });
+
   it("returns 409 on confirm_required so the bot can ask the lead first", async () => {
     regalKey.primary.mockReturnValue("real-secret");
     service.bookViaApi.mockResolvedValue(result("confirm_required"));

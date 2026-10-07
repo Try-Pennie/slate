@@ -873,6 +873,16 @@ export interface CreateBookingInput {
    * out and the booking records null.
    */
   referrerOrigin?: string | null;
+  /**
+   * #3495: the tier whose times the caller had on show when the lead confirmed, as
+   * its availability answer named it (`shownTier`). The booker hands it back, and so
+   * does the load test; the route's schema has already dropped anything that is not
+   * a tier name. Recorded as `routing_trace.displayed_tier` in place of the cache read
+   * (`deps.displayedTier`), which cost a database request per rung in a crowd and
+   * could see another confirm's booking. Undefined means the caller did not say (a
+   * partner call, or a page loaded before this), and the confirm reads it as before.
+   */
+  shownTier?: string;
   /** Allow booking a synthetic test bucket (#396). Set in exactly two places:
    *  the key authed direct booking API, only for a canary caller or for the
    *  public test bucket's code (#2669, `mayBookTestBuckets`); and the Booker's
@@ -1751,7 +1761,8 @@ export interface BookingDeps {
   resolveBucketPool(bucket: Bucket): Promise<Parameters<typeof buildRoutingTraceExtras>[0]>;
   /**
    * The tier the availability cache CURRENTLY displays for a bucket code, or null
-   * (#827). Read once on a fresh confirm, before write-through mutates the cache,
+   * (#827). Read once on a fresh confirm whose caller did not hand back the tier it
+   * had on show (`CreateBookingInput.shownTier`, #3495), before write-through mutates the cache,
    * so createBooking can measure when verify-on-book dropped a further rung
    * between what the booker showed and what it actually booked. Best-effort: a
    * read error or a hidden test bucket returns null and simply skips the measure.
@@ -4423,17 +4434,20 @@ async function createHeld(
     if (inFlight) return { result: answerCommitted(await profile.time("complete-reservation", () => completeReservation(deps, inFlight))), verdict: { full: false } };
   }
 
-  // The tier the availability cache shows for the requested bucket RIGHT NOW,
-  // read before assign (and before the confirm's write-through mutates the
-  // cache) so we can measure runtime divergence once the booking lands (#827).
+  // The tier on show for the requested bucket, so we can measure runtime divergence
+  // once the booking lands (#827). The tier the caller's page HAD on show when it
+  // sent it (#3495); otherwise the one the availability cache shows RIGHT NOW, read
+  // before assign (and before the confirm's write-through mutates the cache).
   // Best-effort: a null (read failed, or a hidden test bucket) skips the measure.
   // Not asked on a named link (#2073): it measures routing, and nothing routed.
   const displayedTier =
     agentLinkUserId !== undefined
       ? null
-      : await profile
-          .time("displayed-tier", () => deps.displayedTier(input.bucketCode))
-          .catch(() => null);
+      : input.shownTier !== undefined
+        ? input.shownTier
+        : await profile
+            .time("displayed-tier", () => deps.displayedTier(input.bucketCode))
+            .catch(() => null);
 
   // #3338: this confirm's slowest Google call so far, its live checks, measured
   // where they are made. A floor for what its commit chain's Google write will

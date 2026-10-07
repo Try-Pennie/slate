@@ -683,6 +683,26 @@ describe("POST /booking (embed) error mapping", () => {
     );
   });
 
+  // #3495: the tier the booker had on show rides through to createBooking, which
+  // records it instead of reading the availability cache for it. A measure only, so
+  // anything that is not a tier name is dropped and the lead still books.
+  it("passes the tier the page had on show through, and books when it is not a tier name (#3495)", async () => {
+    const created = {
+      booking: { id: "b1", starts_at: VALID_BODY.start, ends_at: VALID_BODY.start, prefill: {} },
+      manageUrl: "u",
+    };
+    service.createBooking.mockResolvedValue(created);
+    await post({ ...VALID_BODY, shownTier: "high" });
+    expect(service.createBooking.mock.calls[0][0].shownTier).toBe("high");
+
+    const res = await post({ ...VALID_BODY, shownTier: "High | Both | Legal" });
+    expect(res.status).toBe(200);
+    expect(service.createBooking.mock.calls[1][0].shownTier).toBeUndefined();
+
+    await post(VALID_BODY);
+    expect(service.createBooking.mock.calls[2][0].shownTier).toBeUndefined();
+  });
+
   // #2728: the framing page's origin rides through to createBooking, which reduces
   // it itself; a value of the wrong type must never cost the lead the booking.
   it("passes the referrer origin through, and books when it is not even a string (#2728)", async () => {

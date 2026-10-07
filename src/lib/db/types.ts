@@ -763,7 +763,8 @@ export interface RoutingTrace {
   booked_tier?: string | null;
   rungs_dropped?: number;
   /** The tier the booker had on show for the requested code when the lead
-   *  confirmed (`deps.displayedTier`), so a drop can be told apart as "the
+   *  confirmed (the `shownTier` it handed back, #3495, else `deps.displayedTier`),
+   *  so a drop can be told apart as "the
    *  lead's tier had times on show and lost the last one at confirm" or "the
    *  lead's tier had no times at all" (2026-10-02). Null when the read found
    *  nothing or failed; absent on bookings made before it was recorded. */

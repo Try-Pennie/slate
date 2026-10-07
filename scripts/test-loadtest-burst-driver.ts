@@ -38,6 +38,10 @@ const REQUESTS = 4;
 const DRIVER = 2;
 const CODES: [string, string] = ["120", "121"];
 const SLOTS = ["2026-10-06T14:00:00.000Z", "2026-10-06T15:10:00.000Z", "2026-10-06T16:20:00.000Z"];
+/** #3495: the tier the setup read for each of CODES, which every burst booking hands back. */
+const TIERS: [string, string] = ["very_high", "high"];
+/** #3495: the tier the stub's availability answer names for the steady driver. */
+const STEADY_TIER = "medium";
 
 /** The request number a booking body's external id carries (`<run>-b-<driver>-<n>`). */
 function requestNumber(externalId: string): number {
@@ -47,6 +51,8 @@ function requestNumber(externalId: string): number {
 /** What the stub saw, so a test can say what the driver asked and when. */
 interface Seen {
   codes: string[];
+  /** #3495: the tier each booking handed back, beside the code it asked for. */
+  tiers: { code: string; shownTier: unknown }[];
   bodies: number;
   /** #3429: each bookable probe, with when it arrived. */
   probes: { code: string; startIso: string; atMs: number }[];
@@ -58,11 +64,12 @@ async function withStub<T>(
   run: (base: string, seen: Seen) => Promise<T>,
   opts: { rule?: string | null } = {},
 ): Promise<T> {
-  const seen: Seen = { codes: [], bodies: 0, probes: [], versions: 0 };
+  const seen: Seen = { codes: [], tiers: [], bodies: 0, probes: [], versions: 0 };
   const server = createServer((req, res) => {
     if (req.url?.startsWith("/api/availability")) {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ slots: SLOTS }));
+      // #3495: the tier on show, which the steady driver hands back with each booking.
+      res.end(JSON.stringify({ slots: SLOTS, shownTier: STEADY_TIER }));
       return;
     }
     // #3429: the version answer a load test deployment sends, carrying its crowd rule
@@ -96,8 +103,9 @@ async function withStub<T>(
       let raw = "";
       req.on("data", (c) => (raw += c));
       req.on("end", () => {
-        const body = JSON.parse(raw) as { bucketCode: string; externalId: string };
+        const body = JSON.parse(raw) as { bucketCode: string; externalId: string; shownTier?: unknown };
         seen.codes.push(body.bucketCode);
+        seen.tiers.push({ code: body.bucketCode, shownTier: body.shownTier });
         seen.bodies += 1;
         const n = requestNumber(body.externalId);
         const headers: Record<string, string> = { "content-type": "application/json" };
@@ -173,7 +181,7 @@ async function runDriver(
 
 /** #3429: a burst of the plan, each with its own kind, codes and share. */
 function burstOf(slot: string, startAtMs: number, kind: "refusal" | "drop" = "refusal", perDriver = REQUESTS) {
-  return { kind, codes: CODES, slot, startAtMs, perDriver, capacity: { ladderRoster: 16, rung0Free: 1, ladderFree: 9 } };
+  return { kind, codes: CODES, shownTiers: TIERS, slot, startAtMs, perDriver, capacity: { ladderRoster: 16, rung0Free: 1, ladderFree: 9 } };
 }
 
 function plan(startAts: number[]): BurstPlan {
@@ -207,6 +215,12 @@ const readFile = (path: string) => (existsSync(path) ? (JSON.parse(readFileSync(
   const finishedAt = Date.now();
   eq(code, 0, `a driver that made every burst exits zero ${stderr.slice(0, 300)}`);
   eq(seen.bodies, 2 * REQUESTS + 2, "it fired every request of every burst, each burst its own share");
+  // #3495: every booking hands back the tier the setup read for ITS code, as the booker
+  // hands back the tier it had on show, so the confirm makes no read for it.
+  assert(
+    seen.tiers.length === seen.bodies && seen.tiers.every((t) => t.shownTier === TIERS[CODES.indexOf(t.code)]),
+    `every burst booking carries its own code's tier (got ${JSON.stringify(seen.tiers)})`,
+  );
 
   const files = [0, 1, 2].map((i) => readFile(burstLegOut(out, i)));
   assert(files.every((f) => f !== null), "one file per burst, beside the driver's own name");
@@ -453,10 +467,16 @@ const readFile = (path: string) => (existsSync(path) ? (JSON.parse(readFileSync(
 {
   const dir = mkdtempSync(join(tmpdir(), "slate-3325-"));
   const out = join(dir, `driver-${DRIVER}.json`);
-  const { code, stderr } = await withStub((base) =>
-    runDriver(base, { MODE: "steady", OUT: out, DRIVE_DEADLINE_MS: "1500" }),
-  );
+  const { code, stderr, seen } = await withStub(async (base, seen) => ({
+    ...(await runDriver(base, { MODE: "steady", OUT: out, DRIVE_DEADLINE_MS: "1500" })),
+    seen,
+  }));
   eq(code, 0, `a short steady pass exits zero ${stderr.slice(0, 300)}`);
+  // #3495: the steady driver hands back the tier its availability read named.
+  assert(
+    seen.tiers.length > 0 && seen.tiers.every((t) => t.shownTier === STEADY_TIER),
+    `every steady booking carries the tier its availability read named (got ${JSON.stringify(seen.tiers)})`,
+  );
   const steady = readFile(out);
   const first = steady?.attempts[0];
   assert(first !== undefined, "and made at least one booking");

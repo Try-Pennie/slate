@@ -4,7 +4,7 @@
 // response shape staying stable:
 //
 //   { bucket: { code }, orgName, eventType: { name, description, durationMin },
-//     slots, emptyBecause }
+//     slots, emptyBecause, shownTier }
 //
 // A future refactor of the route could silently add, drop, or rename a field and
 // break every embedded booker without any test noticing. This locks the contract
@@ -18,6 +18,13 @@
 // breaks a reader, and this guard is still the thing that makes the difference
 // visible: the golden has to be edited deliberately, in the same change, with the
 // reasoning attached.
+//
+// `shownTier` arrived with #3495: the tier whose times are on show, which the booker
+// hands back with its confirm so the confirm records it instead of reading the cache
+// for it. Dan, 2026-10-07, on #259: "I don't want the lead to see it. I don't care if
+// it's in the background in a spot they'll never see". So it is the one routing fact
+// the payload carries, never rendered; the routing block itself, and the effective
+// code under a tier drop, still never leave the server.
 //
 //   Part A (runtime golden): builds the response from a faked slot-cache result
 //   using the real filterSlotsFromNow, then deep-compares it to a frozen golden
@@ -41,7 +48,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
 // The frozen contract. Keys are exact and ordered by level; the embed reads all
 // of these and nothing else.
 const GOLDEN_SHAPE = {
-  top: ["bucket", "emptyBecause", "eventType", "orgName", "slots"],
+  top: ["bucket", "emptyBecause", "eventType", "orgName", "shownTier", "slots"],
   bucket: ["code"],
   eventType: ["description", "durationMin", "name"],
 };
@@ -120,6 +127,8 @@ function buildResponseBody(result: typeof fakeResult, nowMs: number) {
     // scripts/test-empty-reason.ts; what belongs here is that the key exists and
     // that a populated response says nothing about emptiness.
     emptyBecause: slots.length === 0 ? { kind: "busy" as const } : null,
+    // #3495: the tier whose times are on show, for the booker to hand back.
+    shownTier: result.routing.booked_tier,
   };
 }
 
@@ -135,6 +144,8 @@ const GOLDEN_RESPONSE = {
   },
   slots: ["2026-06-10T14:00:00.000Z", "2026-06-10T15:00:00.000Z"],
   emptyBecause: null,
+  // The EFFECTIVE tier: the times on show are one rung down.
+  shownTier: "t2",
 };
 
 const body = buildResponseBody(fakeResult, NOW_MS);
@@ -142,7 +153,7 @@ const body = buildResponseBody(fakeResult, NOW_MS);
 eq(JSON.stringify(body), JSON.stringify(GOLDEN_RESPONSE), "response body matches the frozen golden snapshot");
 
 // Field set/shape, asserted level by level so an add/remove/rename is named.
-eq(Object.keys(body).sort().join(","), GOLDEN_SHAPE.top.join(","), "top-level keys are exactly bucket, emptyBecause, eventType, orgName, slots");
+eq(Object.keys(body).sort().join(","), GOLDEN_SHAPE.top.join(","), "top-level keys are exactly bucket, emptyBecause, eventType, orgName, shownTier, slots");
 // A response WITH times must never carry a reason for emptiness: the booker keys
 // its copy off this, and a stale "closed" beside a list of times would be absurd.
 eq(body.emptyBecause, null, "a populated response says nothing about why it might be empty");
@@ -153,6 +164,10 @@ eq(Object.keys(body.eventType).sort().join(","), GOLDEN_SHAPE.eventType.join(","
 // bucket.code is the REQUESTED code, not the effective tier under fallback.
 assert(!("routing" in body), "routing meta is not present in the payload");
 eq(body.bucket.code, "411", "bucket.code is the REQUESTED code, not the effective fallback tier");
+// #3495: the tier on show is the one routing fact the payload carries. The effective
+// code under the drop is not, anywhere in it.
+assert(!JSON.stringify(body).includes(fakeResult.routing.effective_code), "the effective code under a tier drop appears nowhere in the payload");
+eq(body.shownTier, "t2", "shownTier is the tier whose times are on show, one rung down here");
 
 // filterSlotsFromNow trimming is preserved: the pre-cutoff slot is dropped, the
 // boundary and future slots are kept, order intact.
