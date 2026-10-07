@@ -1034,6 +1034,14 @@ export function offeredSlots(body: unknown): string[] {
 }
 
 /**
+ * How many request numbers one driver has on one leg inside a load test phone's
+ * digits (0 to 9999). Shared by the phone, which refuses a number past it, and by the
+ * burst plan reader, which refuses shares that would number a request past it, so the
+ * two can never disagree about the limit (L41).
+ */
+export const LEAD_REQUEST_NUMBERS = 10_000;
+
+/**
  * A phone number of this attempt's OWN (#2261, #3447).
  *
  * The dedupe gate is a PERSON gate, and a weak match is email OR phone
@@ -1065,14 +1073,6 @@ export function offeredSlots(body: unknown): string[] {
  * Kept in the 555 range, which is unassignable in the real numbering plan, so no
  * value this can produce is a number anybody actually holds.
  */
-/**
- * How many request numbers one driver has on one leg inside a load test phone's
- * digits (0 to 9999). Shared by the phone, which refuses a number past it, and by the
- * burst plan reader, which refuses shares that would number a request past it, so the
- * two can never disagree about the limit (L41).
- */
-export const LEAD_REQUEST_NUMBERS = 10_000;
-
 export function loadtestPhone(lead: LoadtestLead): string {
   const leg = (LOADTEST_LEGS as readonly string[]).indexOf(lead.leg);
   if (leg < 0 || leg > 9) throw new Error(`loadtestPhone: leg ${lead.leg} has no digit of its own`);

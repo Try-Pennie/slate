@@ -25,7 +25,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AddressInfo } from "node:net";
-import { burstCodeFor, burstLegOut, type BurstPlan, type DriverResult } from "./loadtest/book-plan.ts";
+import { burstCodeFor, burstLegOut, REQUEST_TIMEOUT_MS, type BurstPlan, type DriverResult } from "./loadtest/book-plan.ts";
 import {
   answeredAtEchoHeader,
   confirmLineEchoHeaders,
@@ -219,6 +219,10 @@ const readFile = (path: string) => (existsSync(path) ? (JSON.parse(readFileSync(
     eq(f?.burstLeg?.codes, CODES, "split across the plan's two codes");
     eq(f?.burstLeg?.kind, i === 1 ? "drop" : "refusal", "of the kind the plan named (#3429)");
     eq(f?.burstLeg?.capacity, { ladderRoster: 16, rung0Free: 1, ladderFree: 9 }, "carrying what the setup measured");
+    // #3459 review: the grace and request bound it ran with, so the judge settles the
+    // burst on what its drivers were configured with rather than on the defaults.
+    eq(f?.burstLeg?.graceMs, 30_000, "recording the grace it was configured with");
+    eq(f?.burstLeg?.requestBoundMs, REQUEST_TIMEOUT_MS, "and the abort bound its requests carried");
     eq(f?.planned, share, "planning its own share");
     eq(f?.attempts.length, share, "holding its whole burst");
     eq(

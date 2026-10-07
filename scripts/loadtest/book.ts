@@ -529,6 +529,10 @@ async function burst(): Promise<void> {
       startAtMs: leg.startAtMs,
       kind: leg.kind,
       capacity: leg.capacity,
+      // #3459 review: what this driver ran with, so the judge settles the burst on the
+      // longest grace and bound its drivers had rather than on the defaults.
+      graceMs: BURST_GRACE_MS,
+      requestBoundMs: burstRequestBoundMs(),
     };
     const out = burstLegOut(OUT, index);
 
@@ -621,6 +625,11 @@ async function readDeploymentCrowdRule(): Promise<CrowdRuleReading> {
   }
 }
 
+/** The abort bound a burst request carries: the one figure the record and the settle share. */
+function burstRequestBoundMs(): number {
+  return effectiveDeadlineMs(REQUEST_TIMEOUT_MS, REQUEST_TIMEOUT_OVERRIDE);
+}
+
 /**
  * #3429: wait until every confirm of the burst is over, then ask the deployment whether
  * its slot is still bookable. Settled is the latest this driver may have fired plus a
@@ -629,7 +638,7 @@ async function readDeploymentCrowdRule(): Promise<CrowdRuleReading> {
  * driver opened on, so across four drivers both sibling codes are asked.
  */
 async function probeOnceSettled(leg: PlannedBurst): Promise<BurstProbe> {
-  const requestBoundMs = effectiveDeadlineMs(REQUEST_TIMEOUT_MS, REQUEST_TIMEOUT_OVERRIDE);
+  const requestBoundMs = burstRequestBoundMs();
   const settleAfterMs = effectiveDeadlineMs(burstSettleAtMs(0, BURST_GRACE_MS, requestBoundMs), BURST_SETTLE_OVERRIDE);
   // Looped until the WALL clock reads the settle, like the moment itself (#3103): one
   // sleep can return a millisecond early, and the judge cannot use a probe sent before
