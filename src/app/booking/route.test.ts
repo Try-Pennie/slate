@@ -130,6 +130,12 @@ vi.mock("@/lib/agent-link/store", () => agentLinkStore);
 const storedOffer = vi.hoisted(() => ({ scheduleStoredOfferCheck: vi.fn() }));
 vi.mock("@/lib/booking/refusal-stored-offer-live", () => storedOffer);
 
+// #3460: the confirm's early reads. A seam here: what they do is driven by
+// confirm-line-live.test.ts and scripts/test-pool-grouping.ts; this pins WHEN the route
+// starts them.
+const prelude = vi.hoisted(() => ({ startConfirmPrelude: vi.fn() }));
+vi.mock("@/lib/booking/confirm-line-live", () => prelude);
+
 import { POST } from "./route";
 import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
 import { deadlineWithinBudget } from "@/lib/call-budget";
@@ -188,6 +194,29 @@ describe("POST /booking (embed) error mapping", () => {
     // Edge block short-circuits before the hourly DB cap and the booking itself.
     expect(rateLimit.allowRequest).not.toHaveBeenCalled();
     expect(service.createBooking).not.toHaveBeenCalled();
+    // #3460: and before the confirm's early reads, which a flood must not buy (L498).
+    expect(prelude.startConfirmPrelude).not.toHaveBeenCalled();
+  });
+
+  // #3460, #3355 item 1: the booker has no bearer key, so the confirm's early reads (the
+  // shared line switch and the pool grouping snapshot) start once its address has passed
+  // the edge limiter, and run during the pause flag, the caps and the body read.
+  it("#3460 starts the confirm's early reads once the edge limiter has passed, with this request's facts", async () => {
+    prelude.startConfirmPrelude.mockClear();
+    service.createBooking.mockResolvedValueOnce({
+      booking: { id: "bk-p", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z" },
+      manageUrl: "https://slate.test/booking/manage/tok",
+    });
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(200);
+    expect(prelude.startConfirmPrelude).toHaveBeenCalledTimes(1);
+    const limiter = rateLimit.bookingWithinLimit.mock.invocationCallOrder.at(-1)!;
+    const started = prelude.startConfirmPrelude.mock.invocationCallOrder[0]!;
+    const paused = bookingSettings.readPublicBookingPaused.mock.invocationCallOrder.at(-1)!;
+    expect(started).toBeGreaterThan(limiter);
+    expect(started).toBeLessThan(paused);
+    // The same facts the service is handed, so the confirm awaits the fetch it started.
+    expect(prelude.startConfirmPrelude.mock.calls[0]![0]).toBe(service.createBooking.mock.calls.at(-1)![1]);
   });
 
   // #3364: the 2026-10-06 dead end. A lead refused for a taken time three times was then

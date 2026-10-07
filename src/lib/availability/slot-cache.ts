@@ -27,6 +27,8 @@ import { bookedSpliceIo } from "./booked-splice-io";
 import { spliceBookedTime, type BookedTime, type BookedSpliceOutcome } from "./booked-splice";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { groupByPool } from "./pool-key";
+import { makeGroupingStore, groupingEntriesOf, POOL_GROUPING_FRESH_MS } from "@/lib/booking/pool-grouping";
+import { publishPoolGroupingAfterResponse } from "@/lib/booking/pool-grouping-live";
 import { makePoolRefreshCoalescer, POST_CONFIRM_REFRESH_WINDOW_MS } from "./pool-refresh-coalescer";
 import { appUrl } from "@/lib/env";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
@@ -283,37 +285,62 @@ const bookingReads = makePoolRefreshCoalescer({
  * unrefreshed, and both last only until the cache's minute is up.
  */
 let poolKeyCache: { readAtMs: number; byCode: Map<string, string>; missing: Set<string> } | null = null;
-const POOL_KEY_CACHE_MS = 60_000;
+/** One minute, the same window a published snapshot stands for (#3460), so the two cannot drift. */
+const POOL_KEY_CACHE_MS = POOL_GROUPING_FRESH_MS;
+
+/**
+ * The grouping the CONFIRM LINE keys on (#3325, #3460): each code's pool digest, from
+ * this server's own read or from the snapshot the recompute lane published, whichever
+ * was read more recently (compare and set, `makeGroupingStore`). Kept apart from
+ * `poolKeyCache` above on purpose: that one holds full pool keys for the refresh
+ * coalescer, whose start times the push path shares (`lastPoolRecomputeAt`), and a
+ * snapshot carries only digests. The confirm line's reader installs into it
+ * (`confirm-line-live.ts`); nothing here fetches.
+ */
+export const lineGroupingStore = makeGroupingStore({ now: () => Date.now(), freshMs: POOL_GROUPING_FRESH_MS });
 
 async function readPoolKeys(now: number): Promise<Map<string, string>> {
   const byCode = new Map<string, string>();
-  for (const [key, members] of groupByPool(await listPoolBuckets())) {
+  const groups = groupByPool(await listPoolBuckets());
+  for (const [key, members] of groups) {
     for (const m of members) byCode.set(m.code, key);
   }
   poolKeyCache = { readAtMs: now, byCode, missing: new Set() };
+  // #3460: the same read keys the confirm line, under the time the read STARTED, and
+  // never over a newer snapshot that landed while it was reading. An empty read installs
+  // and publishes nothing: every code would read as a gap.
+  const entries = groupingEntriesOf(groups);
+  if (entries.length > 0) {
+    lineGroupingStore.install(entries, now, "read");
+    // The backup to the recompute lane's publish: any server that read the grouping
+    // offers it to the others, after the response.
+    publishPoolGroupingAfterResponse(entries, now);
+  }
   return byCode;
 }
 
 /**
- * The pool a code is in, as this isolate already knows it, WITHOUT reading (#3325):
- * the pool key, null for a code with no bucket, or undefined when the grouping is
- * absent or a minute old. The confirm line keys on it before any read, which is why it
- * never reads; `warmPoolKeys`, scheduled after the response, is what fills it.
+ * The pool a code is in, as this server holds it: its pool's digest, null for a code
+ * with no bucket, or undefined when no fresh grouping is held. A look, never a read.
+ * The confirm path makes sure a fresh grouping is held, when it can, BEFORE it keys its
+ * line: it waits, within a short bound, for the snapshot the recompute lane published
+ * (#3460, superseding #3355 items 1 and 2). `warmPoolKeys`, scheduled after the
+ * response, is the fallback for a server that could not get one.
  */
 export function peekPoolKey(code: string): string | null | undefined {
-  if (!poolKeyCache || Date.now() - poolKeyCache.readAtMs > POOL_KEY_CACHE_MS) return undefined;
-  return poolKeyCache.byCode.get(code) ?? null;
+  return lineGroupingStore.peek(code);
 }
 
 let warmingPoolKeys: Promise<void> | null = null;
 
 /**
- * Refresh the grouping when it is absent or a minute old, at most one read at a time
- * however many confirms ask (#3325). A failed read REJECTS and leaves the grouping as
- * it was, so a code reads as unknown rather than as having no pool.
+ * Refresh the grouping when no fresh one is held, at most one read at a time however
+ * many confirms ask (#3325). A fresh snapshot counts as held, so a server the snapshot
+ * reached does not pay the two table reads (#3460). A failed read REJECTS and leaves the
+ * grouping as it was, so a code reads as unknown rather than as having no pool.
  */
 export function warmPoolKeys(): Promise<void> {
-  if (poolKeyCache && Date.now() - poolKeyCache.readAtMs <= POOL_KEY_CACHE_MS) return Promise.resolve();
+  if (lineGroupingStore.fresh()) return Promise.resolve();
   warmingPoolKeys ??= readPoolKeys(Date.now())
     .then(() => undefined)
     .finally(() => {
@@ -369,6 +396,7 @@ export function resetBookingRefreshesForTests(): void {
   poolRefreshes.reset();
   bookingReads.reset();
   poolKeyCache = null;
+  lineGroupingStore.reset();
   lastPoolRecomputeAt.clear();
   lastPoolReadAt.clear();
   pushRotation.clear();

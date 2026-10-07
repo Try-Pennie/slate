@@ -4,7 +4,7 @@ import { refuseBearerAuth } from "@/lib/bearer-failure";
 import { authenticateBearer, CANARY_CALLERS } from "@/lib/booking/api-auth";
 import { configuredBookingApiKeys } from "@/lib/booking/api-keys";
 import { CONFIRM_LINE_BINDING } from "@/lib/booking/confirm-line-object";
-import { durableLineNamespace, type DurableLineNamespace } from "@/lib/booking/shared-confirm-line";
+import { durableGroupingDirectory, durableLineNamespace, type DurableLineNamespace } from "@/lib/booking/shared-confirm-line";
 import { realTimer } from "@/lib/read-within-deadline";
 import {
   CONFIRM_LINE_CHECKS,
@@ -63,6 +63,10 @@ export async function POST(req: NextRequest) {
 
   const checks = await runConfirmLineProbe({
     namespace: durableLineNamespace(lineObjects),
+    // #3460: the pool grouping directory, through the same binding and the production
+    // directory transport. The probe writes only its own verification directory and
+    // only reads the live one; no name comes from the request.
+    directory: (name) => durableGroupingDirectory(lineObjects).directory(name),
     now: () => Date.now(),
     timer: realTimer,
     newId: () => crypto.randomUUID(),

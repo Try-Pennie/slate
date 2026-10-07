@@ -8,17 +8,29 @@ vi.mock("@opennextjs/cloudflare", () => ({
     return { env: env.value };
   },
 }));
-const switchReading = vi.hoisted(() => ({ value: { on: false, source: "read" as const } as { on: boolean; source: "read" | "last-known" | "default" } }));
-vi.mock("@/lib/booking/shared-line-switch", () => ({ readSharedConfirmLine: async () => switchReading.value }));
+const switchReading = vi.hoisted(() => ({ value: { on: false, source: "read" as const } as { on: boolean; source: "read" | "last-known" | "default" }, reads: 0 }));
+vi.mock("@/lib/booking/shared-line-switch", () => ({
+  readSharedConfirmLine: async () => {
+    switchReading.reads++;
+    return switchReading.value;
+  },
+}));
 const sent = vi.hoisted(() => ({ alerts: [] as string[] }));
 vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert: async (key: string) => void sent.alerts.push(key) }));
 vi.mock("@/lib/platform/runtime", () => ({ isWorkersRuntime: () => true }));
 
-const pools = vi.hoisted(() => ({ known: new Map<string, string | null>(), warms: 0, after: [] as string[] }));
-vi.mock("@/lib/availability/slot-cache", () => ({
-  peekPoolKey: (code: string) => (pools.known.has(code) ? pools.known.get(code) : undefined),
-  warmPoolKeys: async () => void pools.warms++,
-}));
+// #3460: the server's grouping is the REAL store, so what is installed and when it
+// expires is the shipped rule; only the warm up (two table reads) is counted instead.
+const pools = vi.hoisted(() => ({ warms: 0, after: [] as string[] }));
+vi.mock("@/lib/availability/slot-cache", async () => {
+  const { makeGroupingStore, POOL_GROUPING_FRESH_MS } = await import("@/lib/booking/pool-grouping");
+  const lineGroupingStore = makeGroupingStore({ now: () => Date.now(), freshMs: POOL_GROUPING_FRESH_MS });
+  return {
+    lineGroupingStore,
+    peekPoolKey: (code: string) => lineGroupingStore.peek(code),
+    warmPoolKeys: async () => void pools.warms++,
+  };
+});
 vi.mock("@/lib/after-response", () => ({
   afterResponse: (label: string, work: () => Promise<unknown>) => {
     pools.after.push(label);
@@ -26,9 +38,58 @@ vi.mock("@/lib/after-response", () => ({
   },
 }));
 
-import { confirmLineFor, lineGroupOfLive } from "@/lib/booking/confirm-line-live";
+import { confirmLineFor, lineGroupOfLive, settleLineGrouping, startConfirmPrelude } from "@/lib/booking/confirm-line-live";
 import { isolateLine, makeConfirmQueue } from "@/lib/booking/confirm-queue";
 import type { LineServed } from "@/lib/booking/shared-confirm-line";
+import type { ConfirmLineFacts } from "@/lib/booking/confirm-latency";
+import { lineGroupingStore } from "@/lib/availability/slot-cache";
+import { makeConfirmLineObject, objectRoleOf } from "@/lib/booking/confirm-line-object";
+import { POOL_GROUPING_DIRECTORY, groupingPutMessage, groupingSnapshotOf, type GroupingEntry } from "@/lib/booking/pool-grouping";
+import { confirmLineObjectName } from "@/lib/booking/shared-confirm-line";
+
+/**
+ * A `CONFIRM_LINE` binding whose every instance is the REAL object, named and served
+ * exactly as the deployment does (the name from the client's naming, the role from the
+ * path), so the directory a confirm fetches from is the shipped one.
+ */
+function boundObjects() {
+  const objects = new Map<string, ReturnType<typeof makeConfirmLineObject>>();
+  const calls: string[] = [];
+  const objectFor = (name: string) => {
+    let o = objects.get(name);
+    if (!o) {
+      o = makeConfirmLineObject({ now: () => Date.now(), timer: () => () => {}, leaseTimer: () => () => {}, newId: () => "id" });
+      objects.set(name, o);
+    }
+    return o;
+  };
+  return {
+    calls,
+    put: async (snapshot: ReturnType<typeof groupingSnapshotOf>) =>
+      objectFor(confirmLineObjectName(POOL_GROUPING_DIRECTORY)).handle("directory", groupingPutMessage(snapshot)),
+    binding: {
+      idFromName: (name: string) => ({ name }),
+      get: (id: { name: string }) => ({
+        fetch: async (url: string, init: { body?: string }) => {
+          const path = new URL(url).pathname;
+          calls.push(`${id.name} ${path}`);
+          const role = objectRoleOf(path, id.name);
+          return new Response(await objectFor(id.name).handle("role" in role ? role.role : role, JSON.parse(init.body ?? "null")));
+        },
+      }),
+    },
+  };
+}
+
+/** The 120 and 121 ladders, every rung one pool, as a recompute lane would publish them. */
+const ENTRIES: GroupingEntry[] = [
+  ["110", "pool-1"],
+  ["111", "pool-1"],
+  ["120", "pool-1-beyond"],
+  ["121", "pool-1-beyond"],
+  ["130", "pool-1-achieve"],
+  ["131", "pool-1-achieve"],
+];
 
 const KEY = { group: "code:521", instant: "1791230400000" };
 
@@ -121,18 +182,104 @@ describe("confirmLineFor (#3325)", () => {
     expect(bodies.some((b) => "trace" in b)).toBe(false);
   });
 
-  it("names a code's ladder from what the isolate holds, and warms it after the response when it does not know", async () => {
-    pools.known = new Map();
+});
+
+// #3460 retires #3325's "a confirm never reads before its line". Load run 37566700055
+// split a burst across ladder and code lines because most of its servers held no
+// grouping; #3355 had already decided a confirm may WAIT, within a short bound, for the
+// grouping before its key. These pin the wait and every way it can end.
+describe("the line key's grouping (#3460)", () => {
+  beforeEach(() => {
+    env.value = {};
+    env.throws = false;
+    lineGroupingStore.reset();
     pools.warms = 0;
     pools.after = [];
-    expect(lineGroupOfLive("510")).toBeNull();
-    await Promise.resolve();
-    expect(pools.after).toEqual(["pool-keys-warm"]);
-    expect(pools.warms).toBe(1);
-    for (const code of ["510", "410", "310", "210", "511", "411", "311", "211"]) pools.known.set(code, `pool-${code[0]}`);
-    const g = lineGroupOfLive("510");
+    switchReading.reads = 0;
+  });
+
+  it("keys a ladder from a grouping this server read itself, fetches nothing, and says local", async () => {
+    const objects = boundObjects();
+    env.value = { CONFIRM_LINE: objects.binding };
+    lineGroupingStore.install(ENTRIES, Date.now() - 1_000, "read");
+    const facts: ConfirmLineFacts = {};
+    await settleLineGrouping(facts);
+    expect(facts.grouping?.source).toBe("held");
+    const g = lineGroupOfLive("120", facts);
     expect(g).toMatch(/^ladder:/);
-    expect(lineGroupOfLive("511")).toBe(g);
-    expect(pools.after).toEqual(["pool-keys-warm"]);
+    expect(lineGroupOfLive("121", facts)).toBe(g);
+    expect(facts.lineGroupSource).toBe("local");
+    expect(objects.calls).toEqual([]);
+    expect(pools.after).not.toContain("pool-keys-warm");
+  });
+
+  it("fetches the directory's snapshot when it holds nothing, installs it, and the confirm keys its ladder from it", async () => {
+    const objects = boundObjects();
+    env.value = { CONFIRM_LINE: objects.binding };
+    await objects.put(groupingSnapshotOf(ENTRIES, Date.now() - 2_000));
+    const facts: ConfirmLineFacts = {};
+    startConfirmPrelude(facts);
+    await settleLineGrouping(facts);
+    expect(facts.grouping?.source).toBe("installed");
+    expect(objects.calls).toEqual([`${confirmLineObjectName(POOL_GROUPING_DIRECTORY)} /directory`]);
+    // Kept alive past the response: a fetch the request started must not be cancelled
+    // under a later confirm on this server that joined it.
+    expect(pools.after).toContain("pool-grouping-fetch");
+    expect(lineGroupOfLive("121", facts)).toMatch(/^ladder:/);
+    expect(facts.lineGroupSource).toBe("snapshot");
+    expect(pools.after).not.toContain("pool-keys-warm");
+  });
+
+  it("keeps the code's own line, says why, and warms after the response when the directory holds nothing", async () => {
+    const objects = boundObjects();
+    env.value = { CONFIRM_LINE: objects.binding };
+    const facts: ConfirmLineFacts = {};
+    await settleLineGrouping(facts);
+    expect(facts.grouping?.source).toBe("absent");
+    expect(lineGroupOfLive("120", facts)).toBeNull();
+    expect(facts.lineGroupSource).toBe("absent");
+    await Promise.resolve();
+    expect(pools.after).toContain("pool-keys-warm");
+    expect(pools.warms).toBe(1);
+  });
+
+  it("keeps the code's own line when a stale snapshot is all the directory has", async () => {
+    const objects = boundObjects();
+    env.value = { CONFIRM_LINE: objects.binding };
+    await objects.put(groupingSnapshotOf(ENTRIES, Date.now() - 61_000));
+    const facts: ConfirmLineFacts = {};
+    await settleLineGrouping(facts);
+    expect(facts.grouping?.source).toBe("stale");
+    expect(lineGroupOfLive("120", facts)).toBeNull();
+    expect(facts.lineGroupSource).toBe("stale");
+  });
+
+  it("keeps the code's own line when the grouping it holds does not list the confirm's own code", async () => {
+    lineGroupingStore.install(ENTRIES.filter(([code]) => code !== "120"), Date.now() - 1_000, "snapshot");
+    const facts: ConfirmLineFacts = {};
+    await settleLineGrouping(facts);
+    expect(lineGroupOfLive("120", facts)).toBeNull();
+    expect(facts.lineGroupSource).toBe("own-code-missing");
+  });
+
+  it("says unbound, never absent, where there is no binding", async () => {
+    const facts: ConfirmLineFacts = {};
+    await settleLineGrouping(facts);
+    expect(facts.grouping?.source).toBe("unbound");
+    expect(lineGroupOfLive("120", facts)).toBeNull();
+    expect(facts.lineGroupSource).toBe("unbound");
+  });
+
+  it("starts the switch read and the fetch together, keeping the read alive past the response (#3355 item 1)", async () => {
+    const objects = boundObjects();
+    env.value = { CONFIRM_LINE: objects.binding };
+    const facts: ConfirmLineFacts = {};
+    startConfirmPrelude(facts);
+    expect(switchReading.reads).toBe(1);
+    expect(pools.after).toContain("shared-line-switch");
+    expect(facts.groupingRead).toBeDefined();
+    // The confirm awaits the fetch the prelude started, never a second one.
+    await settleLineGrouping(facts);
+    expect(objects.calls.length).toBe(1);
   });
 });

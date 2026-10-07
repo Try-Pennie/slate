@@ -2,7 +2,7 @@
 // every ending it can reach is driven offline by scripts/test-confirm-line-live-control.ts.
 //
 // The command asks the deployed endpoint to run the probe (`src/lib/monitor/confirm-line-probe.ts`)
-// and judges what comes back. Only four passed checks pass. A reply missing a check is
+// and judges what comes back. Only five passed checks pass. A reply missing a check is
 // never a pass on the ones it carried (L98), and every other ending exits on its own code
 // with its own opening sentence (L11).
 import {
@@ -38,6 +38,7 @@ const ASKS: Record<ConfirmLineCheck, string> = {
   notFull: "handed the lead after a not full verdict",
   abandoned: "freed behind an unacknowledged lead",
   nothingHeld: "nothing left held",
+  directory: "the pool grouping directory stores, keeps the newest, and holds a live grouping",
 };
 
 /**
@@ -104,6 +105,14 @@ export const OUTCOME_ORDER: readonly Failed[] = [
   "not-handed-on",
   "not-freed",
   "freed-late",
+  // #3460: a directory that serves nothing splits a crowd on sibling codes by code again,
+  // which is lost capacity on the line rather than a line that misbehaves, so it ranks
+  // below every line fault and above a slot merely left held.
+  "directory-unreachable",
+  "not-stored",
+  "older-won",
+  "no-grouping",
+  "grouping-unusable",
   "held",
 ];
 
@@ -146,6 +155,27 @@ export const FAILED_CHECK: Record<Failed, { exit: number; says: string }> = {
   held: {
     exit: CONFIRM_LINE_EXIT.leftHeld,
     says: "Something this proof used was still held on the object after it finished, so a newcomer on that slot could not lead at once and the next run could trip over it.",
+  },
+  "directory-unreachable": {
+    exit: CONFIRM_LINE_EXIT.directoryUnreachable,
+    says:
+      "The pool grouping directory did not answer the confirm path's own transport, so a server holding no grouping of its own keys its confirm line by code, and a crowd for one slot on sibling codes elects a leader per code again.",
+  },
+  "not-stored": {
+    exit: CONFIRM_LINE_EXIT.directoryNotStored,
+    says: "The pool grouping directory did not keep a fresh grouping it was handed, so whatever the recompute lane publishes never reaches a cold server.",
+  },
+  "older-won": {
+    exit: CONFIRM_LINE_EXIT.directoryOlderWon,
+    says: "The pool grouping directory let an older grouping replace a newer one, so a slow publisher can hand cold servers a grouping an admin has since edited.",
+  },
+  "no-grouping": {
+    exit: CONFIRM_LINE_EXIT.groupingAbsent,
+    says: "The live pool grouping directory holds no grouping, so the recompute lane has not published one since the object started. Search the logs for tag=pool-grouping to see why.",
+  },
+  "grouping-unusable": {
+    exit: CONFIRM_LINE_EXIT.groupingUnusable,
+    says: "The live pool grouping is one every cold server refuses (another format, malformed, or stale), so the snapshot reaches nobody and cold servers key their confirm line by code.",
   },
 };
 
