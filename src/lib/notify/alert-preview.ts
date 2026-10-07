@@ -4466,6 +4466,28 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     }),
   },
   {
+    key: "verify_on_book_outage",
+    state: "too little budget left to write the booking, so nothing was started (#3338)",
+    channel: "alert",
+    text: dependencyTimeoutAlert({
+      dependency: "writing the booking and its calendar event",
+      timeoutMs: 3_900,
+      budget: null,
+      neededMs: 5_100,
+    }),
+  },
+  {
+    key: "verify_on_book_outage",
+    state: "no budget left at all to write the booking (#3338)",
+    channel: "alert",
+    text: dependencyTimeoutAlert({
+      dependency: "writing the booking and its calendar event",
+      timeoutMs: 0,
+      budget: null,
+      neededMs: 5_100,
+    }),
+  },
+  {
     key: "reschedule_lock_outage",
     state: "the lock claim hit a DB error",
     channel: "alert",
