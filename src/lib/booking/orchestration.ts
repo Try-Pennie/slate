@@ -4891,16 +4891,6 @@ async function createHeld(
 }
 
 /**
- * The post-insert side effects a create MUST deliver, factored out so the fresh
- * create and a crash-resume run the SAME sequence (#613). Every step is
- * idempotent — moveBusyBlock replaces any prior block for the booking, and
- * booking.created dedupes on the booking id (`webhookDedupeKey`) so a re-run
- * emits nothing new — so running it inline once, or again from the reservation
- * drain after a crash, reaches the same end state without a duplicate block or a
- * double webhook. Returns the resolved bucket/eventType (or null) so the fresh
- * path can attach its best-effort routing log without a second resolve.
- */
-/**
  * What a fresh confirm already holds when it commits (#3495): its booked bucket with its
  * event type, and the advisor it read before writing the booking. Each is used only for
  * the row it describes (the bucket by code, the advisor by id), so a crash resume or a
@@ -4913,6 +4903,16 @@ interface CommitKnown {
   agent: User;
 }
 
+/**
+ * The post-insert side effects a create MUST deliver, factored out so the fresh
+ * create and a crash-resume run the SAME sequence (#613). Every step is
+ * idempotent (moveBusyBlock replaces any prior block for the booking, and
+ * booking.created dedupes on the booking id (`webhookDedupeKey`) so a re-run
+ * emits nothing new), so running it inline once, or again from the reservation
+ * drain after a crash, reaches the same end state without a duplicate block or a
+ * double webhook. Returns the resolved bucket/eventType (or null) so the fresh
+ * path can attach its best-effort routing log without a second resolve.
+ */
 async function deliverCreatedSideEffects(
   deps: BookingDeps,
   booking: Booking,
