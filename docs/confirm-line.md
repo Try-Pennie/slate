@@ -102,7 +102,8 @@ every lost, late, repeated or outlived message), `test-shared-confirm-line.ts` (
 client against the real host through a transport that can fail each message, or
 swap the host for a deploy), `test-confirm-contention.ts` (fifty isolates: per
 isolate lines leave dozens told to retry, one shared line answers the whole crowd),
-`test-unawaited-line-calls.ts` (no unawaited line call), `test-confirm-line-binding.ts`
+`test-unawaited-line-calls.ts` (no unawaited seat call or turn report; the lead's ack
+is the one deliberate exception, see Timings), `test-confirm-line-binding.ts`
 (bound, created and exported in production and the load test, and the deployed class
 logging a traced call).
 
