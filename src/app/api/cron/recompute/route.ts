@@ -107,14 +107,6 @@ async function judgeHeadroom(
 }
 
 /**
- * RECOMPUTE lane: keeps the precomputed `bucket_slots` cache fresh, independent
- * of per-agent calendar sync, under its OWN lock so a busy sync tick can't
- * starve it (#273). It recomputes only buckets aging past the freshness window
- * (#294), oldest-first within its budget; the tail is picked up next tick.
- * Real-time freshness for just-changed buckets is owned by the push/booking/OOO
- * recomputes — this is the day-window + missed-push backstop floor behind them.
- */
-/**
  * #3460: publish the pool grouping this tick read, in its own step boundary (L73), for a
  * cold server to key its confirm line from. Nothing reads it until #3460's second half
  * wires the confirm path. Never throws. The `pool-grouping` heartbeat is stamped only
@@ -146,6 +138,14 @@ async function readForPublish(): Promise<PooledBucket[] | null> {
   }
 }
 
+/**
+ * RECOMPUTE lane: keeps the precomputed `bucket_slots` cache fresh, independent
+ * of per-agent calendar sync, under its OWN lock so a busy sync tick can't
+ * starve it (#273). It recomputes only buckets aging past the freshness window
+ * (#294), oldest-first within its budget; the tail is picked up next tick.
+ * Real-time freshness for just-changed buckets is owned by the push/booking/OOO
+ * recomputes; this is the day-window and missed-push backstop floor behind them.
+ */
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return refuseCronSecret(req.headers, () => new NextResponse("unauthorized", { status: 401 }));

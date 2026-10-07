@@ -261,8 +261,17 @@ async function sameKeyBothWays() {
       "export function after() { return 2; }",
     ].join("\n");
     const found = functionSource("tricky.ts", tricky, "tricky") ?? "";
-    assert(found.includes("return a.length") && !found.includes("after"), `pin: control, braces in strings, templates and regexes do not cut a function short (got ${JSON.stringify(found)})`);
+    assert(found.endsWith("return a . length + b . length + ( c ? 1 : 0 ) ; }") && !found.includes("after"), `pin: control, braces in strings, templates and regexes do not cut a function short (got ${JSON.stringify(found)})`);
     eq(functionSource("tricky.ts", tricky, "absent"), null, "pin: control, a function that is not there is said to be missing, never an empty text");
+    // Control (review of #3470, L552): the text is the source's OWN tokens, never the
+    // compiler's printer, whose layout belongs to the installed TypeScript version, so a
+    // compiler upgrade would fail the pin with no change to the derivation. A doc comment,
+    // a line comment and the layout are all dropped.
+    eq(
+      functionSource("plain.ts", "/** what f does */\nfunction f ( x:string ) {\n  // a note\n  return `${x}}`  ;\n}", "f"),
+      "function f ( x : string ) { return `${ x }}` ; }",
+      "pin: control, a function's text is its own tokens, comments and layout removed, independent of the compiler's printer",
+    );
   }
   const sources = [
     fileSource("pool-key.ts", read("src/lib/availability/pool-key.ts")),
@@ -284,11 +293,12 @@ async function sameKeyBothWays() {
     .slice(0, 16);
   // One entry per format ever shipped. A new format ADDS an entry: the old ones stay, so
   // the history of what each format meant is kept beside the number that names it.
-  // Format 1's source hash was re-pinned once, before it ever shipped, when the sources
-  // moved from a brace count to the compiler's printed text; its fixture hash, the
-  // derivation's actual output, did not move.
+  // Format 1's source hash was re-pinned twice, before it ever shipped: when the sources
+  // moved from a brace count to the compiler's printed text, and again when they moved
+  // from that printed text to the source's own tokens (review of #3470, L552). Its
+  // fixture hash, the derivation's actual output, did not move either time.
   const PINNED: Record<number, { sources: string; fixture: string }> = {
-    1: { sources: "859590eb55629bd2", fixture: "b1c70a4b91b48a81" },
+    1: { sources: "9f7ba83cae0ba4aa", fixture: "b1c70a4b91b48a81" },
   };
   const pin = PINNED[POOL_GROUPING_FORMAT];
   assert(pin !== undefined, `pin: format ${POOL_GROUPING_FORMAT} has pinned values`);
