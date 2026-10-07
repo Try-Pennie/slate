@@ -171,6 +171,11 @@ export interface CallRecord {
   timedOut: boolean;
 }
 
+/** A call record for `name`, asked for at this instant and not yet served. */
+function callRecordNow(name: string, clock: VirtualClock): CallRecord {
+  return { name, askedAt: clock.now, queuedMs: 0, served: false, timedOut: false };
+}
+
 /**
  * Shared capacity: `capacity` calls in service at once, each taking `serviceMs`,
  * the rest queued in arrival order. A call whose deadline passes while it waits or
@@ -183,16 +188,18 @@ export class SharedResource {
   private queue: { start: () => void }[] = [];
   private readonly clock: VirtualClock;
   private readonly capacity: number;
-  private readonly serviceMs: number;
+  /** How long one unit of work holds one unit of capacity. */
+  readonly serviceMs: number;
   constructor(clock: VirtualClock, capacity: number, serviceMs: number) {
     this.clock = clock;
     this.capacity = capacity;
     this.serviceMs = serviceMs;
   }
+  /** `deadlineAt` of Infinity is work nobody abandons (#3489: deferred work after an answer). */
   use(record: CallRecord, deadlineAt: number, missed: () => Error): Promise<void> {
     return new Promise((resolve, reject) => {
       let settled = false;
-      const giveUp = this.clock.at(deadlineAt, () => {
+      const giveUp = !Number.isFinite(deadlineAt) ? () => {} : this.clock.at(deadlineAt, () => {
         if (settled) return;
         settled = true;
         record.timedOut = true;
@@ -230,10 +237,119 @@ export class SharedResource {
 const OWN_CALL_MS = 8_000;
 
 /**
+ * #3489: what one database call costs in the load model (`confirm-load-model.ts`).
+ *
+ * A call is network time, which any number of calls spend at once, around
+ * `queries` statements, each of which holds one of the database's slots for the
+ * resource's `serviceMs` and queues for one when every slot is busy. Alone, a call
+ * answers in `latencyMs`; in a crowd, its statements wait their turn, which is how
+ * a hundred reads at once slow each other and slow the one confirm that is booking.
+ */
+export interface CallCost {
+  /** End to end, with nothing queued ahead of it. */
+  latencyMs: number;
+  /** Statements it runs, one after another, each holding one slot. */
+  queries: number;
+}
+
+/**
+ * A pause on the virtual clock that the call's deadline cuts short, as a real fetch
+ * is aborted at its deadline wherever it is (on the wire as much as in a queue).
+ */
+function pauseWithin(clock: VirtualClock, ms: number, deadlineAt: number, record: CallRecord, missed: () => Error): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const giveUp = !Number.isFinite(deadlineAt)
+      ? () => {}
+      : clock.at(deadlineAt, () => {
+          if (settled) return;
+          settled = true;
+          record.timedOut = true;
+          reject(missed());
+        });
+    clock.at(clock.now + ms, () => {
+      if (settled) return;
+      settled = true;
+      giveUp();
+      resolve();
+    });
+  });
+}
+
+/** One call's network and statements, in that order of time: half the network out,
+ *  the statements, half the network back. */
+async function spend(
+  clock: VirtualClock,
+  resource: SharedResource,
+  cost: CallCost,
+  record: CallRecord,
+  deadlineAt: number,
+  missed: () => Error,
+): Promise<void> {
+  const networkMs = Math.max(0, cost.latencyMs - cost.queries * resource.serviceMs);
+  await pauseWithin(clock, networkMs / 2, deadlineAt, record, missed);
+  for (let q = 0; q < cost.queries; q++) {
+    const one = callRecordNow(record.name, clock);
+    try {
+      await resource.use(one, deadlineAt, missed);
+    } finally {
+      record.queuedMs += one.queuedMs;
+      if (one.timedOut) record.timedOut = true;
+    }
+  }
+  await pauseWithin(clock, networkMs / 2, deadlineAt, record, missed);
+}
+
+/**
+ * #3489: work a request does on the database AFTER it has answered (the outcome
+ * tally, the failure page, the slot cache refresh), which no budget cuts off. It
+ * finishes whenever the queue lets it, and every confirm still booking queues behind
+ * it, which is how a crowd answered at once slows the next leader's commit.
+ */
+export function occupy(clock: VirtualClock, resource: SharedResource, cost: CallCost, name: string): Promise<void> {
+  const record = callRecordNow(name, clock);
+  return spend(clock, resource, cost, record, Infinity, () => new Error("deferred work is never cut off")).then(() => {
+    record.served = true;
+  });
+}
+
+/**
+ * #3489: the shared confirm line's object as a confirm reaches it: a round trip on
+ * every message, and an object that answers nothing until it is up (a fresh object,
+ * or one the platform has to place, answered its first call in about a second in
+ * load run 37640583621). A message is handled when it ARRIVES, so a poll the object
+ * holds is answered as soon as the object answers it, plus the trip back.
+ */
+export function objectOnClock(
+  clock: VirtualClock,
+  reach: { roundTripMs: number; firstAnswerMs: number },
+  handle: (message: Record<string, unknown>) => Promise<string>,
+): (message: Record<string, unknown>) => Promise<Record<string, unknown>> {
+  const oneWay = reach.roundTripMs / 2;
+  let upAt: number | null = null;
+  return async (message) => {
+    // The first message starts the object; it answers that one `firstAnswerMs` after
+    // it was sent, so it is up a one way trip before that.
+    if (upAt === null) upAt = clock.now + Math.max(oneWay, reach.firstAnswerMs - oneWay);
+    const arrives = Math.max(clock.now + oneWay, upAt);
+    await clock.sleep(arrives - clock.now);
+    const answer = await handle(JSON.parse(JSON.stringify(message)) as Record<string, unknown>);
+    await clock.sleep(oneWay);
+    return JSON.parse(answer) as Record<string, unknown>;
+  };
+}
+
+/**
  * Every asynchronous dependency of `deps`, made to cost one unit of the shared
  * resource and to keep the real budget's deadline. The fake's own behaviour runs
  * when the call is SERVED, so a write lands at the moment the database would
  * commit it, never while the call is still queued.
+ *
+ * #3489: with `costOf`, each call costs what the load model says instead: null is a
+ * call that never touches the database (Google, whose time the fake itself spends,
+ * and anything that is not I/O on it), still refused at once when the budget is
+ * spent; a cost is network around statements on the database's slots (`CallCost`).
  */
 export function onSharedCapacity(
   deps: BookingDeps,
@@ -242,22 +358,26 @@ export function onSharedCapacity(
   calls: CallRecord[],
   /** Dependencies that are not I/O at all and must stay synchronous. */
   synchronous: ReadonlySet<string>,
+  costOf?: (name: string, args: unknown[]) => CallCost | null,
 ): BookingDeps {
   const wrapped: Record<string, unknown> = { ...deps };
   for (const [name, value] of Object.entries(deps)) {
     if (typeof value !== "function" || synchronous.has(name)) continue;
     const original = value as (...args: unknown[]) => unknown;
     wrapped[name] = async (...args: unknown[]) => {
-      const record: CallRecord = { name, askedAt: clock.now, queuedMs: 0, served: false, timedOut: false };
+      const record = callRecordNow(name, clock);
       calls.push(record);
       // Refused at once when the budget is already spent, exactly as the real
       // clients are; otherwise waits no longer than the budget has left.
       const { waitMs, reportAs } = deadlineWithinBudget(OWN_CALL_MS, name, () => clock.now);
-      await resource.use(
-        record,
-        clock.now + waitMs,
-        () => new DeadlineExceededError(reportAs.label, reportAs.timeoutMs, reportAs.budget),
-      );
+      const missed = () => new DeadlineExceededError(reportAs.label, reportAs.timeoutMs, reportAs.budget);
+      if (!costOf) {
+        await resource.use(record, clock.now + waitMs, missed);
+        return original(...args);
+      }
+      const cost = costOf(name, args);
+      if (cost) await spend(clock, resource, cost, record, clock.now + waitMs, missed);
+      record.served = true;
       return original(...args);
     };
   }
