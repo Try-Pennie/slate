@@ -10,8 +10,9 @@
 // WHAT IT PROVES. It asks the deployment to run the probe (`POST /api/smoke/confirm-line`),
 // which drives the confirm path's OWN client against the real object: a follower refused
 // after a full verdict, handed the lead after a not full one, freed behind a lead nobody
-// acknowledged, and nothing left held afterwards. Only all four passing is a pass, and every
-// other ending exits on its own code (L98, L11). The rules are pinned offline by
+// acknowledged, and nothing left held afterwards; and (#3460) the pool grouping directory
+// stores, keeps the newest, and holds a live grouping a cold server would install. Only all
+// five passing is a pass, and every other ending exits on its own code (L98, L11). The rules are pinned offline by
 // `scripts/test-confirm-line-live-control.ts`, against the real object host.
 //
 // WHAT IT CANNOT PROVE. Every participant runs in the one invocation that serves the
@@ -19,7 +20,8 @@
 // whose confirms spread across isolates, can show that.
 //
 // WHAT IT WRITES. Leads, tickets and verdicts on the verification group's object only, on
-// instants minted per run, and the probe checks it left nothing held. No booking, no row.
+// instants minted per run, and the probe checks it left nothing held; and groupings on its
+// own verification directory. The live pool grouping directory is only read. No booking, no row.
 //
 // It talks to the LIVE deployment, so it is not named `test-*.ts`. It runs daily on
 // `.github/workflows/burst-counter.yml` beside the burst counter's proof, and there it

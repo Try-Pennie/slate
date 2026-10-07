@@ -65,6 +65,7 @@ import { bookingIdentityFrom } from "@/lib/booking/booking-identity";
 import { REFERRER_ORIGIN_MAX_CHARS, readReferrerOrigin } from "@/lib/embed/referrer-origin";
 import type { BookingOriginFacts } from "@/lib/monitor/offsite-origin";
 import { readJsonCapped, PUBLIC_JSON_MAX_BYTES } from "@/lib/http/read-json-capped";
+import { startConfirmPrelude } from "@/lib/booking/confirm-line-live";
 
 export const dynamic = "force-dynamic";
 
@@ -267,6 +268,14 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
     if (retry !== "allowed") return tooMany("edge-minute", retry);
     log.info("booking-rate-limit", { msg: "retry after a taken time", scope: "edge-minute", ip });
   }
+
+  // #3460, #3355 item 1: the booker carries no key, so the confirm's early reads (the
+  // shared line switch and the pool grouping snapshot) start once the address has passed
+  // the edge limiter, never before (L498), and run during the pause flag, the caps and
+  // the body read. A request the caps below then refuse has started them, which costs
+  // per server, never per request (`startConfirmPrelude`). The confirm awaits the
+  // grouping before its line key.
+  startConfirmPrelude(progress.facts);
 
   // The kill switch (#2297). Placed HERE on purpose: after the edge burst window, so
   // a flood is still shed in-datacenter without a database read, and BEFORE the
