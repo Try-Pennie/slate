@@ -35,7 +35,9 @@ name: Booking path load run
 #   burst-tail  `wrangler tail` from before the first burst's moment until the last
 #               burst's lines are in (#3416), so the judge can say where each burst's
 #               time went. Its own file, read for the burst section only, so no
-#               burst confirm joins the startup bar's population.
+#               burst confirm joins the startup bar's population. The drive,
+#               freshness and archive wait for it to CLOSE (#3450): stopping one
+#               tail silences every other tail on the Worker, so two never overlap.
 #   drivers     four of them, fifteen a minute for ten minutes, which is exactly
 #               the per address write ceiling.
 #   freshness   the existing soak sampler, one sample a minute, so recompute is
@@ -452,7 +454,12 @@ jobs:
           path: results/
 
   drive:
-    needs: [preflight, setup-burst, burst]
+    needs: [preflight, setup-burst, burst, burst-tail]
+    # Also waits for the burst tail (#3450): stopping one `wrangler tail` silences
+    # every other tail on the Worker, so the archive must not open until the burst
+    # tail has closed, and the drive and freshness wait with it so the archive still
+    # records the drive from its first request. `!cancelled()` below means a failed
+    # burst tail never skips this.
     # Runs whatever the BURST concluded (#3222). A job with `needs:` and no `if:` is
     # skipped when any ancestor did not succeed, and a burst driver that wakes late
     # exits 3 by design, so one late driver used to skip the steady pass, freshness
@@ -498,7 +505,12 @@ jobs:
           path: results/
 
   freshness:
-    needs: [preflight, setup-burst, burst]
+    needs: [preflight, setup-burst, burst, burst-tail]
+    # Also waits for the burst tail (#3450): stopping one `wrangler tail` silences
+    # every other tail on the Worker, so the archive must not open until the burst
+    # tail has closed, and the drive and freshness wait with it so the archive still
+    # records the drive from its first request. `!cancelled()` below means a failed
+    # burst tail never skips this.
     # Runs whatever the BURST concluded (#3222). A job with `needs:` and no `if:` is
     # skipped when any ancestor did not succeed, and a burst driver that wakes late
     # exits 3 by design, so one late driver used to skip the steady pass, freshness
@@ -571,7 +583,12 @@ jobs:
           path: results/
 
   archive:
-    needs: [preflight, setup-burst, burst]
+    needs: [preflight, setup-burst, burst, burst-tail]
+    # Also waits for the burst tail (#3450): stopping one `wrangler tail` silences
+    # every other tail on the Worker, so the archive must not open until the burst
+    # tail has closed, and the drive and freshness wait with it so the archive still
+    # records the drive from its first request. `!cancelled()` below means a failed
+    # burst tail never skips this.
     # Runs whatever the BURST concluded (#3222). A job with `needs:` and no `if:` is
     # skipped when any ancestor did not succeed, and a burst driver that wakes late
     # exits 3 by design, so one late driver used to skip the steady pass, freshness

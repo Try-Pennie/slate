@@ -479,8 +479,23 @@ its confirms must never join the startup bar's population, which comes from the
 archive's `tail.jsonl` alone. The cold leg's `cold-tail.jsonl` is kept out the same
 way. `scripts/test-loadtest-burst-tail.ts` holds the wiring: the job's needs, its
 ceiling and timeout against the default lead, its artifact, the judge waiting for it
-and downloading it, the archive still needing the burst job, and `run-judge.ts` never
+and downloading it, the archive still needing the burst job and the burst tail, and `run-judge.ts` never
 handing the burst tail to a reader of the startup population.
+
+**Two tails on the Worker must never overlap (#3450).** Stopping one `wrangler tail`
+silences every other tail attached to the same Worker. Measured 2026-10-06 (times ET):
+tail A and tail B both received the 8:30 PM crons, B was stopped at 8:30:34 PM, and A received nothing
+for the next two and a half minutes while the every minute cron kept firing; one tail
+alone received every minute's. Run 37547143303's archive attached while the burst tail
+was still open and went deaf at 7:49:22 PM ET on 2026-10-06, the moment the burst tail was stopped, so its
+startup bar was judged on 1 of 24 confirms. So `drive`, `freshness` and `archive` all
+wait for `burst-tail` to CLOSE (with `!cancelled()`, so a failed burst tail never skips
+them), and the drive and the archive still start together.
+`scripts/test-loadtest-tail-overlap.ts` reads every job that runs `wrangler tail` and
+fails unless each pair is ordered by `needs`. **The same goes for a person: never stop
+a local `wrangler tail --env loadtest` while a run is in flight**, because it deafens the
+run's archive. An archive that ends early while its process stayed attached is this, not
+a quiet Worker.
 
 **The report's "where each burst's time went" lines** (`scripts/loadtest/burst-breakdown.ts`,
 never a bar) match every burst request to its own confirm's log lines and then say,

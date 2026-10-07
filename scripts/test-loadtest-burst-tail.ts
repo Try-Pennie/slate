@@ -176,7 +176,7 @@ function burstTailWiringProblems(yml: string, runJudge: string): string[] {
     ["the burst tail into the archive's file", yml.replace(`> results/${BURST_TAIL_FILE} 2>`, "> results/tail.jsonl 2>"), runJudge, /own file/],
     ["no artifact", yml.replace(/name: burst-tail\n/, "name: burst-logs\n"), runJudge, /burst-tail/],
     ["a judge that does not wait", yml.replace(/(^ {4}needs: \[preflight, baseline, setup-burst, drive, burst, )burst-tail, /m, "$1"), runJudge, /does not wait for the burst tail/],
-    ["an archive that no longer waits for the bursts", yml.replace(/(^ {2}archive:\n {4}needs: \[preflight, setup-burst), burst\]/m, "$1]"), runJudge, /startup bar's population/],
+    ["an archive that no longer waits for the bursts", yml.replace(/(^ {2}archive:\n {4}needs: \[preflight, setup-burst), burst, burst-tail\]/m, "$1, burst-tail]"), runJudge, /startup bar's population/],
     ["the burst tail fed to the startup reader", yml, runJudge.replace(/readBurstTailFile\(/, "readConfirmStartup(readBurstTailFile("), /startup bar's population/],
     ["a judge that never reads it", yml, runJudge.replace(/readBurstTailFile\(/g, "readNothing("), /never reads the burst tail/],
     ["a download filtered to other artifacts", yml.replace(/(uses: actions\/download-artifact@[^\n]+\n {8}with:\n)/, "$1          pattern: driver-*\n"), runJudge, /does not download/],
