@@ -79,6 +79,22 @@ async function run() {
     const trace = calls.insertBooking.at(-1)?.routing_trace as { displayed_tier?: string | null } | undefined;
     assert(trace?.displayed_tier === "high", `bookViaApi: the booking records the tier the caller sent (#3495) (got ${trace?.displayed_tier})`);
   }
+  // The control (L159): the same fixture with no tier sent DOES read it, so the
+  // zero above is the caller's tier at work, never a read this path stopped making.
+  {
+    const apiInput: ApiBookingInput = { ...input, externalId: "ext-no-tier", confirmReschedule: false };
+    const { deps, calls } = makeDeps({ personBookings: [] });
+    let reads = 0;
+    deps.displayedTier = async () => {
+      reads += 1;
+      return "low";
+    };
+    const res = await bookViaApi(apiInput, deps);
+    assert(res.outcome === "created", "bookViaApi with no shown tier: created");
+    assert(reads === 1, `bookViaApi: with no tier sent, the confirm reads it once, as before (#3495) (got ${reads} reads)`);
+    const trace = calls.insertBooking.at(-1)?.routing_trace as { displayed_tier?: string | null } | undefined;
+    assert(trace?.displayed_tier === "low", `bookViaApi: and records what the read found (got ${trace?.displayed_tier})`);
+  }
   {
     const apiInput: ApiBookingInput = {
       ...input,
