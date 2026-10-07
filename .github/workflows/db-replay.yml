@@ -55,6 +55,10 @@ on:
       # own reader, and holds it to the fixture the reader is tested against.
       - "src/lib/webhooks/enqueue-answer.ts"
       - "scripts/fixtures/webhook-enqueue-answer.json"
+      # The fresh booking commit suite reads its answer with the Worker's reader too.
+      - "src/lib/booking/commit-answer.ts"
+      - "scripts/fixtures/commit-fresh-booking-answer.json"
+      - "scripts/fixtures/stored-webhook-time-format.json"
       # The audit chain suite recomputes hashes with the Worker's own code.
       - "scripts/lib/audit-chain-vector.ts"
       - "src/lib/monitor/audit-chain.ts"

@@ -1,0 +1,5 @@
+{
+  "source": "production webhook_deliveries, the newest booking.created rows, read 2026-10-07 for #3495; the booking times as Regal has always received them",
+  "starts_at": "2026-10-08T12:00:00+00:00",
+  "ends_at": "2026-10-08T12:20:00+00:00"
+}
