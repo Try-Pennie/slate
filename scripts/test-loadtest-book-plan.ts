@@ -41,11 +41,19 @@ import {
   bookingBody,
   DRIVER_MODES,
   BURST_LEGS,
+  BURST_KINDS,
+  BURST_SEQUENCE,
   BURST_REQUESTS_DEFAULT,
+  DROP_BURST_REQUESTS_PER_DRIVER,
   BURST_SPACING_MS,
   BURST_SLOT_GAP_MS,
   BURST_GRACE_DEFAULT_MS,
+  BURST_PROBE_TIMEOUT_MS,
   REQUEST_TIMEOUT_MS,
+  burstCrowd,
+  burstRequestsPerDriver,
+  burstSettleAtMs,
+  burstRequestNumbers,
 } from "./loadtest/book-plan.ts";
 import {
   AVAILABILITY_LIMITER,
@@ -472,6 +480,13 @@ const T0 = Date.parse("2026-09-15T14:00:00.000Z");
 
 {
   eq(BURST_LEGS, 3, "a run fires three bursts");
+  // #3429: two refusal controls and one tier drop burst. The refusal control carries
+  // the loser speed bar, which is a timing claim, so it is read twice (L395); the drop
+  // burst is a correctness demonstration that one counterexample decides.
+  eq(BURST_LEGS, BURST_SEQUENCE.length, "the burst count is the sequence's length, one number (L41)");
+  eq(BURST_SEQUENCE.filter((k) => k === "refusal").length, 2, "two of the three are refusal controls");
+  eq(BURST_SEQUENCE.filter((k) => k === "drop").length, 1, "and one is the tier drop burst");
+  assert(BURST_SEQUENCE.every((k) => (BURST_KINDS as readonly string[]).includes(k)), "every burst is a kind the plan reader knows");
   // Spaced so a burst has finished before the next one fires: every request carries
   // its own abort, so a burst is over by its timeout plus the lateness a driver is
   // allowed, and the next moment must be past that or two bursts would overlap and
@@ -483,6 +498,40 @@ const T0 = Date.parse("2026-09-15T14:00:00.000Z");
   // The slots are an hour apart, which is longer than any appointment plus its
   // buffers, so a booking made by one burst cannot overlap the slot another fires at.
   assert(BURST_SLOT_GAP_MS >= 60 * 60_000, "the three slots are at least an hour apart");
+}
+
+// --- #3429: the two kinds of burst, their crowds, and the probe after each ---------
+{
+  // The refusal control keeps the crowd of a hundred; the drop burst is about ten.
+  eq(burstRequestsPerDriver("refusal"), BURST_REQUESTS_DEFAULT, "a refusal driver fires the default share");
+  eq(burstRequestsPerDriver("drop"), DROP_BURST_REQUESTS_PER_DRIVER, "a drop driver fires the drop share");
+  eq(burstCrowd("refusal"), DRIVERS * BURST_REQUESTS_DEFAULT, "the refusal crowd is every driver's share");
+  eq(burstCrowd("refusal"), 100, "which is the crowd of a hundred the burst always fired");
+  const drop = burstCrowd("drop");
+  assert(drop >= 8 && drop <= 12, `the drop crowd is about ten (got ${drop})`);
+  assert(drop < burstCrowd("refusal"), "and smaller than the refusal crowd");
+
+  // The probe goes out once every confirm of the burst is over: the latest a driver
+  // may still fire, plus a request's own abort bound. The confirm's own budget is
+  // inside that bound, so nothing is still walking the ladder when the probe asks.
+  const at = 1_760_000_000_000;
+  eq(burstSettleAtMs(at, BURST_GRACE_DEFAULT_MS, REQUEST_TIMEOUT_MS), at + BURST_GRACE_DEFAULT_MS + REQUEST_TIMEOUT_MS, "the burst settles a grace and a request bound past its moment");
+  eq(burstSettleAtMs(at, 100, 500), at + 600, "and a driver's shortened seams shorten it, never lengthen it");
+  // And it is answered before the next burst fires, so no probe overlaps a crowd.
+  assert(
+    burstSettleAtMs(0, BURST_GRACE_DEFAULT_MS, REQUEST_TIMEOUT_MS) + BURST_PROBE_TIMEOUT_MS < BURST_SPACING_MS,
+    `a burst's probe ends before the next moment (${BURST_GRACE_DEFAULT_MS + REQUEST_TIMEOUT_MS + BURST_PROBE_TIMEOUT_MS}ms against ${BURST_SPACING_MS}ms)`,
+  );
+}
+
+{
+  // Each burst's request numbers start past every earlier burst's, so no two of a
+  // run's requests share an external id whatever each burst's share is (#2261).
+  eq(burstRequestNumbers([25, 3, 25], 0), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24], "the first burst starts at zero");
+  eq(burstRequestNumbers([25, 3, 25], 1), [25, 26, 27], "the second starts past the first's share");
+  eq(burstRequestNumbers([25, 3, 25], 2)[0], 28, "and the third past both");
+  const all = [0, 1, 2].flatMap((i) => burstRequestNumbers([25, 3, 25], i));
+  eq(new Set(all).size, 53, "no number is used twice");
 }
 
 {
@@ -547,35 +596,63 @@ const T0 = Date.parse("2026-09-15T14:00:00.000Z");
   // drivers cannot fire at different codes, slots or moments while each reads as
   // correct (L70). Read strictly: a plan this cannot read is refused by name rather
   // than becoming a burst nobody configured.
-  const good = JSON.stringify({
+  // #3429: each burst carries its OWN kind, codes, share and measured capacity, because
+  // the refusal control and the drop burst fire at different ladders.
+  const refusalBurst = {
+    kind: "refusal",
+    codes: ["500", "501"],
+    slot: "2026-10-06T14:00:00.000Z",
+    startAtMs: 1_760_000_000_000,
+    perDriver: 25,
+    capacity: { ladderRoster: 16, rung0Free: 4, ladderFree: 9 },
+  };
+  const dropBurst = {
+    kind: "drop",
     codes: ["120", "121"],
-    bursts: [
-      { slot: "2026-10-06T14:00:00.000Z", startAtMs: 1_760_000_000_000 },
-      { slot: "2026-10-06T15:10:00.000Z", startAtMs: 1_760_000_060_000 },
-      { slot: "2026-10-06T16:20:00.000Z", startAtMs: 1_760_000_120_000 },
-    ],
+    slot: "2026-10-06T15:10:00.000Z",
+    startAtMs: 1_760_000_060_000,
+    perDriver: 3,
+    capacity: { ladderRoster: 74, rung0Free: 1, ladderFree: 40 },
+  };
+  const good = JSON.stringify({
+    bursts: [refusalBurst, dropBurst, { ...refusalBurst, slot: "2026-10-06T16:20:00.000Z", startAtMs: 1_760_000_120_000 }],
   });
   const read = readBurstPlan(good);
   assert(read.ok, `a well formed plan is read (got: ${JSON.stringify(read)})`);
   if (read.ok) {
-    eq(read.plan.codes, ["120", "121"], "with its two codes");
-    eq(read.plan.bursts.length, 3, "and its three bursts");
+    eq(read.plan.bursts.length, 3, "with its three bursts");
     eq(read.plan.bursts[1]!.startAtMs, 1_760_000_060_000, "each with its moment");
+    eq(read.plan.bursts[1]!.kind, "drop", "its kind");
+    eq(read.plan.bursts[1]!.codes, ["120", "121"], "its own two codes");
+    eq(read.plan.bursts[1]!.perDriver, 3, "its own share per driver");
+    eq(read.plan.bursts[1]!.capacity, { ladderRoster: 74, rung0Free: 1, ladderFree: 40 }, "and what the setup measured");
   }
+  // An unmeasured capacity is a null, never a zero: "nobody measured it" and "nobody
+  // was free" are the two readings the report must not confuse (L98).
+  const unmeasured = readBurstPlan(
+    JSON.stringify({ bursts: [{ ...refusalBurst, capacity: { ladderRoster: 16, rung0Free: null, ladderFree: null } }] }),
+  );
+  assert(unmeasured.ok && unmeasured.plan.bursts[0]!.capacity.ladderFree === null, "an unmeasured capacity is read as null");
 
+  const plan1 = (b: Record<string, unknown>) => JSON.stringify({ bursts: [{ ...refusalBurst, ...b }] });
   const refusals: [string, string][] = [
     ["not json", "not JSON"],
-    [JSON.stringify({ codes: ["120"], bursts: JSON.parse(good).bursts }), "two codes"],
-    [JSON.stringify({ codes: ["120", "120"], bursts: JSON.parse(good).bursts }), "two different codes"],
-    [JSON.stringify({ codes: ["120", "121"], bursts: [] }), "no bursts"],
-    [JSON.stringify({ codes: ["120", "121"], bursts: [{ slot: "soon", startAtMs: 1 }] }), "slot"],
-    [JSON.stringify({ codes: ["120", "121"], bursts: [{ slot: "2026-10-06T14:00:00.000Z", startAtMs: "x" }] }), "moment"],
+    [JSON.stringify({ bursts: [] }), "no bursts"],
+    [plan1({ kind: "storm" }), "kind"],
+    [plan1({ codes: ["120"] }), "two codes"],
+    [plan1({ codes: ["120", "120"] }), "two different codes"],
+    [plan1({ slot: "soon" }), "slot"],
+    [plan1({ startAtMs: "x" }), "moment"],
+    [plan1({ perDriver: 0 }), "share"],
+    [plan1({ perDriver: 2.5 }), "share"],
+    [plan1({ capacity: undefined }), "capacity"],
+    [plan1({ capacity: { ladderRoster: -1, rung0Free: 1, ladderFree: 1 } }), "capacity"],
+    [plan1({ capacity: { ladderRoster: 16, rung0Free: "1", ladderFree: 1 } }), "capacity"],
     [
       JSON.stringify({
-        codes: ["120", "121"],
         bursts: [
-          { slot: "2026-10-06T14:00:00.000Z", startAtMs: 1_760_000_060_000 },
-          { slot: "2026-10-06T15:00:00.000Z", startAtMs: 1_760_000_000_000 },
+          { ...refusalBurst, startAtMs: 1_760_000_060_000 },
+          { ...dropBurst, startAtMs: 1_760_000_000_000 },
         ],
       }),
       "in time order",

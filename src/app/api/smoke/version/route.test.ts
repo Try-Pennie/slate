@@ -19,6 +19,14 @@ const canaryKeyFor = (caller: string, slot: string) =>
   caller !== "canary" ? "" : slot === "primary" ? canaryKey.primary() : canaryKey.secondary();
 vi.mock("@/lib/env", () => env);
 vi.mock("@/lib/build-info", () => ({ BUILD_COMMIT: "abc1234" }));
+// #3429: the confirm crowd rule the deployment declares, read through the module so a
+// case can flip it and prove the route reports the constant rather than a literal.
+const crowd = vi.hoisted(() => ({ rule: "stops" as "stops" | "walks" }));
+vi.mock("@/lib/confirm-crowd-rule", () => ({
+  get CONFIRM_CROWD_RULE() {
+    return crowd.rule;
+  },
+}));
 
 import { GET } from "./route";
 
@@ -33,6 +41,7 @@ beforeEach(() => {
   env.bookingApiKeyFor.mockImplementation(canaryKeyFor);
   canaryKey.primary.mockReturnValue("");
   canaryKey.secondary.mockReturnValue("");
+  crowd.rule = "stops";
 });
 
 describe("GET /api/smoke/version", () => {
@@ -95,6 +104,9 @@ describe("GET /api/smoke/version", () => {
         // #3258: the post confirm recompute arm, on when nothing set it.
         postConfirmRecompute: "on",
         postConfirmRecomputeUnknown: null,
+        // #3429: what a confirm waiting behind a leader that booked its rung's last
+        // advisor does, which the load run's drop burst is held to.
+        confirmCrowdRule: "stops",
       });
     } finally {
       if (saved === undefined) delete process.env.SLATE_LOADTEST;
@@ -239,6 +251,42 @@ describe("GET /api/smoke/version", () => {
         expect(body).not.toHaveProperty("postConfirmRecompute");
         expect(body).not.toHaveProperty("postConfirmRecomputeUnknown");
       });
+    });
+  });
+
+  // #3429: whether a confirm in a crowd behind a leader that booked its rung's last
+  // advisor walks the tier ladder (#3338, built in #3437) or is answered SLOT_TAKEN.
+  // The load run's drop burst is held to whichever rule the deployment SAYS it runs,
+  // so a run before #3437 merges is neither failed for #3338 nor passed by a bar that
+  // never asked.
+  describe("the confirm crowd rule", () => {
+    const withLoadtest = async (run: () => Promise<void>) => {
+      const saved = process.env.SLATE_LOADTEST;
+      process.env.SLATE_LOADTEST = "true";
+      try {
+        await run();
+      } finally {
+        if (saved === undefined) delete process.env.SLATE_LOADTEST;
+        else process.env.SLATE_LOADTEST = saved;
+      }
+    };
+
+    it("reports the rule from the constant the booking path declares, either value", async () => {
+      // Both values, so a route hard wired to one of them fails here (L1).
+      for (const rule of ["stops", "walks"] as const) {
+        crowd.rule = rule;
+        await withLoadtest(async () => {
+          canaryKey.primary.mockReturnValue("real-key");
+          const body = await (await get("Bearer real-key")).json();
+          expect(body.confirmCrowdRule).toBe(rule);
+        });
+      }
+    });
+
+    it("says nothing about it when it is not a load test", async () => {
+      canaryKey.primary.mockReturnValue("real-key");
+      const body = await (await get("Bearer real-key")).json();
+      expect(body).not.toHaveProperty("confirmCrowdRule");
     });
   });
 });

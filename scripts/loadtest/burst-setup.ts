@@ -1,66 +1,84 @@
-// Picks the burst plan every burst driver fires (#2262, #3325): the code and its
-// sibling, and for each of the run's three bursts ONE slot and ONE moment, and writes
-// it where the workflow's matrix can read it.
+// Picks the burst plan every burst driver fires (#2262, #3325, #3429): for each of the
+// run's bursts its KIND, its two sibling codes, ONE slot, ONE moment, its share per
+// driver and what was measured about its capacity, and writes it where the
+// workflow's matrix can read it.
 //
-// THREE bursts (#3325), each at its own slot and moment and each judged on its own,
-// because one burst is one spread of requests over the deployment's isolates and one
-// lucky spread can pass a run a second would fail (L395). The slots are an hour apart
-// so no burst's bookings overlap another's slot, and the moments are spaced past one
-// burst's longest life so no two bursts overlap in time.
+// TWO kinds of burst since #3429, because a crowd now walks the tier ladder like any
+// confirm (#3338, #3437). A hundred confirms at a code whose lower rungs hold a whole
+// tier mostly WIN, so the old aim (the shallowest pool) no longer tests the refusal
+// path or the line's settle path at all:
 //
-// Split across TWO codes (#3325) whose fallback ladders are the same pools at every
-// rung, MEASURED from the branch's own bucket rows through the booker's ladder and the
-// recompute lane's pool key. The shared confirm line keys a crowd on the whole ladder,
-// so the split is what proves the line ACROSS codes rather than only within one. A
-// roster with no such pair is refused on its own exit code rather than burst on one
-// code, because a burst that cannot exercise the line across codes is not the control.
+// - the REFUSAL control fires its crowd of a hundred at the ladder whose WHOLE capacity,
+//   the distinct advisors across every rung with the Low exclusion, is the smallest,
+//   and only at one genuinely smaller than the crowd (`refusalLadders`). The ladder is a
+//   bound at any slot, so somebody is refused whatever the slot. The booking API has no
+//   named advisor link, the other way to give a crowd one advisor by construction: its
+//   request names a bucket only (`parseDirectBookingRequest`), and the public booker
+//   route that does take a link is behind per address ceilings and stamps no load test
+//   echo, so the crowd is sized against a measured capacity instead.
+// - the DROP burst fires about ten confirms at a ladder whose top rung is the
+//   shallowest and whose ladder holds at least twice the crowd (`dropLadders`), at a
+//   slot where, through the booker's own candidate read on every rung, the top rung has
+//   somebody free and the ladder has room for twice the crowd (`dropSlotFit`). On a
+//   build that walks the ladder every confirm wins, a rung down, on distinct advisors.
 //
-// The BUCKET is measured now rather than assumed (#2278). The whole burst control
-// rests on its pool being one agent deep, and that was a hand maintained constant
-// nothing checked: the seeded roster gave it three, so a live run answered three
-// 200s on three different agents, which is correct behaviour and a materially
-// weaker control than the one intended. The constant rots too, and did, when
-// production's Low plus Beyond pool emptied (#2152) and it had to be moved by hand
-// the morning of the next run (#2319). So every pool's depth is read through the
-// booker's own predicate, the shallowest that is actually OFFERING times is
-// chosen, and the depth it ran at is handed to the judge to report.
+// Each burst at its own slot and moment and each judged on its own, because one burst
+// is one spread of requests over the deployment's isolates and one lucky spread can
+// pass a run a second would fail (L395). The slots are an hour apart so no burst's
+// bookings overlap another's slot, and the moments are spaced past one burst's longest
+// life, its probe included, so no two bursts overlap in time.
 //
-// It never refuses on depth. The judge asks one winner per AGENT (#2273), which
-// holds at any depth, so a run red because the roster has no one deep pool would
-// be red for a property of the roster (L36). What it refuses is a depth it could
-// not READ, because an unmeasured depth that renders as a number is the exact
-// failure this fixes.
+// Each burst is split across TWO codes whose fallback ladders are the same pools at
+// every rung, MEASURED from the branch's own bucket rows through the booker's ladder and
+// the recompute lane's pool key (#3325). The shared confirm line keys a crowd on the
+// whole ladder, so the split is what proves the line ACROSS codes rather than only
+// within one.
 //
-// It exists because a burst whose drivers each chose their own slot and their own
-// moment is not a burst: nothing contends, everything succeeds, and the control it
-// is there to be ("exactly one 200 against a pool of one, every other answer
-// SLOT_TAKEN") is satisfied by a run that never tested anything.
+// Every figure is read through the app's own predicates rather than a copy of them
+// (L107): the roster and its buckets through `listPoolBuckets` and the booker's own
+// eligibility judge, and who is free at a slot through `roundRobinCandidates`, the read
+// the confirm itself makes on each rung. What the setup measured travels in the plan to
+// the report, so a reader knows what each control was worth (#2278).
 //
 // Finding nothing to burst at is NEVER a pass (L98). Every way of learning nothing
-// exits non-zero with the reason, because the alternative is a burst leg that
-// produced an empty file and a judge that reads it as a run with no burst.
+// exits non-zero on its own code with the reason, because the alternative is a burst
+// leg that produced an empty file and a judge that reads it as a run with no burst.
 //
 // Run:
 //   SLATE_BASE=https://<loadtest>.workers.dev BURST_LEAD_SECONDS=300 \
-//   node --experimental-strip-types scripts/loadtest/burst-setup.ts
+//   NEXT_PUBLIC_SUPABASE_URL=<branch> SUPABASE_SECRET_KEY=<branch key> \
+//   node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/burst-setup.ts
 import { appendFileSync } from "node:fs";
 import {
   chooseBurstSlots,
   burstStartAt,
   burstMoments,
+  burstCrowd,
   offeredSlots,
   DRIVERS,
   BURST_LEGS,
+  BURST_SEQUENCE,
   BURST_SLOT_GAP_MS,
   BURST_SPACING_MS,
-  type BurstPlan,
+  DROP_CAPACITY_HEADROOM,
+  type BurstCapacity,
 } from "./book-plan.ts";
-import { burstPairOrder, poolKeysByCode, type BurstDepthReading } from "./burst-target.ts";
+import {
+  assembleBurstPlan,
+  dropLadders,
+  dropSlotFit,
+  ladderCandidates,
+  ladderFreeFrom,
+  refusalLadders,
+  type LadderCandidate,
+} from "./burst-target.ts";
 import { poolDepthsFrom } from "./pool-depth.ts";
 import { PRODUCTION_SUPABASE_REF, PRODUCTION_HOST } from "../../src/lib/loadtest-guard.ts";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { listPoolBuckets } from "@/lib/availability/precompute";
+import { resolveBucketByCode, roundRobinCandidates } from "@/lib/availability/service";
+import { rungExcludesLow, tierLadder } from "@/lib/routing/tiers";
 import type { Attributes } from "@/lib/db/types";
 
 const PROD_HOSTS = [PRODUCTION_HOST, `${PRODUCTION_SUPABASE_REF}.supabase.co`];
@@ -75,42 +93,36 @@ function need(name: string): string {
 }
 
 const SLATE_BASE = need("SLATE_BASE").replace(/\/$/, "");
-// env-ok: BURST_CODE_OVERRIDE (optional; only a deliberate experiment, or a hand
-// run with no database credentials, would name the code instead of measuring it)
-const CODE_OVERRIDE = (process.env.BURST_CODE_OVERRIDE ?? "").trim() || null;
-// env-ok: BURST_SIBLING_OVERRIDE (optional; required beside BURST_CODE_OVERRIDE, the
-// second code a hand named burst is split across, unmeasured like the code itself)
-const SIBLING_OVERRIDE = (process.env.BURST_SIBLING_OVERRIDE ?? "").trim() || null;
 
 /**
- * How many code pairs are asked what they are offering.
+ * How many ladders of each kind are asked what they are offering.
  *
  * `/api/availability` has its own per address ceiling (30 a minute) and this job
- * shares that address with everything else it does, so the walk down the depth
- * ordering is bounded rather than running the whole 60 code matrix. Each pair is two
- * reads (#3325), so six pairs is at most twelve, inside the ceiling; in practice the
- * first pair answers.
+ * shares that address with everything else it does, so the walk is bounded rather
+ * than running the whole matrix. Each ladder is two reads (#3325), so three of each
+ * kind is at most twelve, inside the ceiling; in practice the first of each answers.
  */
-const CANDIDATES_TO_ASK = 6;
+const LADDERS_TO_ASK = 3;
+/**
+ * How many of a drop ladder's offered times are measured for capacity, furthest first.
+ * Each measurement is the booker's own candidate read on every rung of the ladder,
+ * against the branch database rather than the deployment, so it spends no availability
+ * read; it is bounded so a roster where nothing fits refuses in seconds.
+ */
+const DROP_SLOTS_TO_MEASURE = 24;
 // env-ok: BURST_LEAD_SECONDS (optional; defaults to 300, which has to cover a
 // runner being queued, checked out and installed)
 const LEAD = Number((process.env.BURST_LEAD_SECONDS ?? "300").trim());
+
+const REFUSAL_CROWD = burstCrowd("refusal");
+const DROP_CROWD = burstCrowd("drop");
+const REFUSAL_BURSTS = BURST_SEQUENCE.filter((k) => k === "refusal").length;
 
 for (const host of PROD_HOSTS) {
   if (SLATE_BASE.includes(host)) {
     console.error(`FAILED: SLATE_BASE points at production (${host}).`);
     process.exit(1);
   }
-}
-if (CODE_OVERRIDE && (!SIBLING_OVERRIDE || SIBLING_OVERRIDE === CODE_OVERRIDE)) {
-  // Refused by name. A burst on one code never exercises the shared line ACROSS
-  // codes, and quietly firing one would hand the judge a control that cannot prove
-  // what it is there to prove (#3325).
-  console.error(
-    "FAILED: BURST_CODE_OVERRIDE names the code by hand, so BURST_SIBLING_OVERRIDE must name a " +
-      "DIFFERENT second code to split each burst across.",
-  );
-  process.exit(1);
 }
 if (!Number.isFinite(LEAD) || LEAD <= 0) {
   // Refused by name rather than left as NaN: `burstStartAt` would clamp a NaN lead
@@ -131,161 +143,264 @@ async function offeredFor(code: string): Promise<string[] | null> {
   return offeredSlots(await res.json());
 }
 
-// The pools, measured. A code named by hand skips the measurement and says so, so
-// a hand run with no database credentials is still possible and is never mistaken
-// for a measured one deep pool.
-let candidates: { code: string; sibling: string }[];
-let depthByCode = new Map<string, number>();
-if (CODE_OVERRIDE && SIBLING_OVERRIDE) {
-  candidates = [{ code: CODE_OVERRIDE, sibling: SIBLING_OVERRIDE }];
-} else {
-  let depths;
-  let poolKeys;
+/** The times BOTH codes of a ladder offer, or why they could not be read. */
+async function sharedOffered(c: LadderCandidate): Promise<{ times: string[] } | { why: string }> {
   try {
-    const db = supabaseAdmin();
-    // cap-safe: users is roster bounded, the seeded roster is ~94 rows against a
-    // 200-agent design target
-    const agents = (unwrap(
-      await db
-        .from("users")
-        .select("id, attributes")
-        .eq("bookable", true)
-        .is("deactivated_at", null)
-        .eq("is_test", false),
-      "burst target agents",
-    ) ?? []) as { id: string; attributes: Attributes | null }[];
-    // The buckets and their hand named members through the app's OWN pool reader
-    // (#3325), the one the recompute lane groups on, so the depths and the ladders
-    // below are read from exactly the inputs the booker uses (L107). Test buckets are
-    // left out, as they always were here.
-    const rows = (await listPoolBuckets()).filter((r) => !r.bucket.is_test);
-    depths = poolDepthsFrom({
-      agents,
-      buckets: rows.map((r) => ({ id: r.bucket.id, code: r.code, criteria: r.criteria })),
-      members: rows.flatMap((r) => r.memberIds.map((user_id) => ({ bucket_id: r.bucket.id, user_id }))),
-    });
-    poolKeys = poolKeysByCode(rows);
+    const offered = await offeredFor(c.code);
+    const sibling = offered === null ? null : await offeredFor(c.sibling);
+    if (offered === null || sibling === null) return { why: `${c.code}/${c.sibling}: availability did not answer` };
+    // Each sibling is asked too, because a time only one of the two offers would be
+    // refused for the other half of the burst for a reason that is not contention.
+    const both = new Set(sibling);
+    return { times: offered.filter((t) => both.has(t)) };
   } catch (err) {
-    // Its OWN exit code. A roster this cannot read and a roster with nothing to
-    // burst at send two different people to two different places (L11), and an
-    // empty depth list would make every pool look unreachable and pick nothing.
-    console.error(
-      `FAILED: the pools could not be measured (${String(err)}), so the burst has no way to know ` +
-        `how deep the pool it fires at is. Set the database credentials, or name the codes with ` +
-        `BURST_CODE_OVERRIDE and BURST_SIBLING_OVERRIDE and accept an unmeasured control.`,
-    );
-    process.exit(4);
+    return { why: `${c.code}/${c.sibling}: ${String(err)}` };
   }
-  depthByCode = new Map(depths.map((d) => [d.code, d.depth]));
-  if (!depths.some((d) => d.depth > 0)) {
-    console.error(
-      `FAILED: not one of the ${depths.length} pools has an agent in it, so there is nothing to ` +
-        `burst at. The seed did not staff the roster.`,
-    );
-    process.exit(5);
-  }
-  candidates = burstPairOrder(depths, poolKeys, CANDIDATES_TO_ASK);
-  if (candidates.length === 0) {
-    // Its own code (#3325): the roster has agents, and no two codes share a fallback
-    // ladder, so a burst cannot be split across codes the shared line treats as one.
-    // That is a property of the bucket rows, never the deployment, and firing on one
-    // code instead would hand the judge a control that cannot prove the split.
-    console.error(
-      `FAILED: no staffed code shares its whole fallback ladder with another code on this branch, ` +
-        `so the burst cannot be split across two codes of one line. Two codes qualify when every ` +
-        `rung of their ladders resolves to the same pool (criteria, members, fallback advisor, event ` +
-        `type); a hand named member or a fallback advisor on one bucket splits it from its siblings.`,
-    );
-    process.exit(6);
-  }
-  console.log(
-    `pools measured: asking ${candidates.map((c) => `${c.code} with ${c.sibling} (${depthByCode.get(c.code)} deep)`).join(", ")}`,
-  );
 }
 
-// Walk the candidates shallowest first and fire at the first pair offering THREE
-// times an hour apart that BOTH codes offer. A pool one agent deep whose one agent has
-// no free time offers nothing, so depth alone cannot choose; and each sibling is asked
-// too, because a time only one of the two offers would be refused for the other half
-// of the burst for a reason that is not contention.
-let CODE: string | null = null;
-let SIBLING: string | null = null;
-let slots: string[] | null = null;
-let offeredCount = 0;
-const readFailures: string[] = [];
-for (const pair of candidates) {
-  let offered: string[] | null;
-  let siblingOffered: string[] | null;
+/**
+ * Who is free at `slot` on each rung of `code`'s ladder, through the booker's OWN
+ * candidate read (`roundRobinCandidates`, read only), with the bucket each rung
+ * resolves to and the Low exclusion the booking cascade applies (L107). A rung with no
+ * bucket, or a hidden test bucket, is an empty list, as the cascade skips both.
+ */
+async function ladderFreeAt(code: string, slot: string): Promise<{ rung0Free: number; ladderFree: number }> {
+  const startMs = Date.parse(slot);
+  const perRung: string[][] = [];
+  for (const rung of tierLadder(code)) {
+    const resolved = await resolveBucketByCode(rung);
+    if (!resolved || resolved.bucket.is_test) {
+      perRung.push([]);
+      continue;
+    }
+    const { candidates } = await roundRobinCandidates(
+      resolved.bucket,
+      resolved.eventType,
+      startMs,
+      true, // preview: read only, and no unfair ordering alert
+      undefined,
+      rungExcludesLow(code, rung),
+    );
+    perRung.push(candidates);
+  }
+  return ladderFreeFrom(perRung);
+}
+
+/** `ladderFreeAt`, or the refusal its own exit code names when the read fails (L11). */
+async function measuredCapacity(c: LadderCandidate, slot: string): Promise<BurstCapacity> {
   try {
-    offered = await offeredFor(pair.code);
-    siblingOffered = offered === null ? null : await offeredFor(pair.sibling);
+    const free = await ladderFreeAt(c.code, slot);
+    return { ladderRoster: c.ladderRoster, rung0Free: free.rung0Free, ladderFree: free.ladderFree };
   } catch (err) {
-    readFailures.push(`${pair.code}/${pair.sibling}: ${String(err)}`);
+    console.error(
+      `FAILED: who is free at ${slot} on ${c.code}'s ladder could not be read (${String(err)}), so the burst's ` +
+        "capacity there is unknown and the crowd cannot be sized against it.",
+    );
+    process.exit(10);
+  }
+}
+
+// --- the roster and its ladders, measured -----------------------------------------
+let candidates: LadderCandidate[];
+let staffedPools = 0;
+let poolCount = 0;
+try {
+  const db = supabaseAdmin();
+  // cap-safe: users is roster bounded, the seeded roster is ~94 rows against a
+  // 200-agent design target
+  const agents = (unwrap(
+    await db
+      .from("users")
+      .select("id, attributes")
+      .eq("bookable", true)
+      .is("deactivated_at", null)
+      .eq("is_test", false),
+    "burst target agents",
+  ) ?? []) as { id: string; attributes: Attributes | null }[];
+  // The buckets and their hand named members through the app's OWN pool reader
+  // (#3325), the one the recompute lane groups on, so the ladders below are read from
+  // exactly the inputs the booker uses (L107). Test buckets are left out, as the
+  // booking cascade leaves them out of every routed ladder.
+  const rows = (await listPoolBuckets()).filter((r) => !r.bucket.is_test);
+  const depths = poolDepthsFrom({
+    agents,
+    buckets: rows.map((r) => ({ id: r.bucket.id, code: r.code, criteria: r.criteria })),
+    members: rows.flatMap((r) => r.memberIds.map((user_id) => ({ bucket_id: r.bucket.id, user_id }))),
+  });
+  poolCount = depths.length;
+  staffedPools = depths.filter((d) => d.depth > 0).length;
+  candidates = ladderCandidates(
+    rows.map((r) => ({
+      code: r.code,
+      orgId: r.orgId,
+      eventTypeId: r.eventTypeId,
+      criteria: r.criteria,
+      fallbackUserId: r.fallbackUserId,
+      memberIds: r.memberIds,
+    })),
+    agents,
+  );
+} catch (err) {
+  // Its OWN exit code. A roster this cannot read and a roster with nothing to burst at
+  // send two different people to two different places (L11), and an empty list would
+  // make every ladder look unreachable and pick nothing.
+  console.error(
+    `FAILED: the roster and its ladders could not be measured (${String(err)}), so no burst can be sized ` +
+      "against what its ladder holds. Set the branch's database credentials.",
+  );
+  process.exit(4);
+}
+if (staffedPools === 0) {
+  console.error(
+    `FAILED: not one of the ${poolCount} pools has an agent in it, so there is nothing to burst at. The seed did ` +
+      "not staff the roster.",
+  );
+  process.exit(5);
+}
+const staffed = candidates.filter((c) => c.ladderRoster > 0);
+if (staffed.length === 0) {
+  // The roster has agents, and no two codes share a fallback ladder, so a burst cannot
+  // be split across codes the shared line treats as one (#3325). A property of the
+  // bucket rows, never the deployment.
+  console.error(
+    "FAILED: no staffed code shares its whole fallback ladder with another code on this branch, so no burst " +
+      "can be split across two codes of one line. Two codes qualify when every rung of their ladders resolves to " +
+      "the same pool (criteria, members, fallback advisor, event type); a hand named member or a fallback advisor " +
+      "on one bucket splits it from its siblings.",
+  );
+  process.exit(6);
+}
+console.log(
+  `ladders measured: ${staffed
+    .map((c) => `${c.code}/${c.sibling} (${c.rungs} rungs, top ${c.rung0Roster}, whole ${c.ladderRoster})`)
+    .join(", ")}`,
+);
+
+// --- the refusal control: the smallest ladder under its crowd ---------------------
+const refusalAsk = refusalLadders(staffed, REFUSAL_CROWD).slice(0, LADDERS_TO_ASK);
+if (refusalAsk.length === 0) {
+  const smallest = Math.min(...staffed.map((c) => c.ladderRoster));
+  console.error(
+    `FAILED: no ladder holds fewer advisors than the refusal crowd of ${REFUSAL_CROWD} (the smallest holds ` +
+      `${smallest}), so no crowd here is genuinely larger than what it can book and the refusal path would go ` +
+      "untested. A refusal control sized at its capacity proves nothing (L63).",
+  );
+  process.exit(7);
+}
+
+const refusalReads: string[] = [];
+let refusal: LadderCandidate | null = null;
+let refusalSlots: string[] | null = null;
+for (const c of refusalAsk) {
+  const shared = await sharedOffered(c);
+  if ("why" in shared) {
+    refusalReads.push(shared.why);
     continue;
   }
-  if (offered === null || siblingOffered === null) {
-    readFailures.push(`${pair.code}/${pair.sibling}: availability did not answer`);
-    continue;
-  }
-  const both = new Set(siblingOffered);
-  const shared = offered.filter((t) => both.has(t));
-  const chosen = chooseBurstSlots(shared, BURST_LEGS, BURST_SLOT_GAP_MS);
+  const chosen = chooseBurstSlots(shared.times, REFUSAL_BURSTS, BURST_SLOT_GAP_MS);
   if (chosen !== null) {
-    CODE = pair.code;
-    SIBLING = pair.sibling;
-    slots = chosen;
-    offeredCount = shared.length;
+    refusal = c;
+    refusalSlots = chosen;
     break;
   }
 }
-if (CODE === null || SIBLING === null || slots === null) {
-  // TWO exit codes, because a bucket offering nothing and an availability read
-  // that failed send two different people to two different places (L11): the
-  // first is a seed or a roster problem, the second is the deployment. The walk
-  // over several candidates is what makes the distinction worth drawing at the
-  // END rather than on the first bad read: one unreadable code among six that
-  // answered is not the deployment being down.
-  const asked = candidates.map((c) => `${c.code}/${c.sibling}`).join(", ");
-  if (readFailures.length === candidates.length) {
+if (refusal === null || refusalSlots === null) {
+  // TWO exit codes, because a ladder offering nothing and an availability read that
+  // failed send two different people to two different places (L11): the first is a
+  // seed or a roster problem, the second is the deployment.
+  const asked = refusalAsk.map((c) => `${c.code}/${c.sibling}`).join(", ");
+  if (refusalReads.length === refusalAsk.length) {
     console.error(
-      `FAILED: availability answered for none of ${asked}, so no slot could be ` +
-        `chosen and nothing is known about any pool. Reads: ${readFailures.join("; ")}.`,
+      `FAILED: availability answered for none of the refusal control's ladders (${asked}), so no slot could be ` +
+        `chosen and nothing is known about any of them. Reads: ${refusalReads.join("; ")}.`,
     );
     process.exit(2);
   }
   console.error(
-    `FAILED: none of ${asked} offered ${BURST_LEGS} times at least ${BURST_SLOT_GAP_MS / 60_000} ` +
-      `minutes apart that both codes of the pair offer, so there is nothing to burst at. The burst ` +
-      `aims at the shallowest pools, so an empty answer here usually means the seed did not staff ` +
-      `them.${readFailures.length > 0 ? ` Reads that did not answer: ${readFailures.join("; ")}.` : ""}`,
+    `FAILED: none of the refusal control's ladders (${asked}) offered ${REFUSAL_BURSTS} times at least ` +
+      `${BURST_SLOT_GAP_MS / 60_000} minutes apart that both codes offer, so there is nothing to burst at.` +
+      (refusalReads.length > 0 ? ` Reads that did not answer: ${refusalReads.join("; ")}.` : ""),
   );
   process.exit(3);
 }
 
-// What the report will say this control actually proved. An override skips the
-// measurement, and that reads as unmeasured rather than as a depth (L98).
-const depth = depthByCode.get(CODE);
-const reading: BurstDepthReading =
-  depth === undefined
-    ? {
-        measured: false,
-        code: CODE,
-        why: "the codes were named by BURST_CODE_OVERRIDE and BURST_SIBLING_OVERRIDE rather than measured",
-      }
-    : { measured: true, code: CODE, depth };
+// --- the drop burst: a shallow top rung with room below, at a slot that fits --------
+const dropAsk = dropLadders(staffed, DROP_CROWD, DROP_CAPACITY_HEADROOM, [refusal.code]).slice(0, LADDERS_TO_ASK);
+if (dropAsk.length === 0) {
+  console.error(
+    `FAILED: no ladder can host the tier drop burst: one needs a sibling code, somebody on its top rung, a rung ` +
+      `below it, and room for ${DROP_CAPACITY_HEADROOM} times the crowd of ${DROP_CROWD} across the ladder, and is ` +
+      `never the refusal control's own (${refusal.code}).`,
+  );
+  process.exit(8);
+}
+const farEnough = (t: string) => refusalSlots!.every((s) => Math.abs(Date.parse(s) - Date.parse(t)) >= BURST_SLOT_GAP_MS);
+const dropReads: string[] = [];
+const dropMisses: string[] = [];
+let drop: { ladder: LadderCandidate; slot: string; capacity: BurstCapacity } | null = null;
+for (const c of dropAsk) {
+  const shared = await sharedOffered(c);
+  if ("why" in shared) {
+    dropReads.push(shared.why);
+    continue;
+  }
+  // The furthest first, as every burst slot is chosen, and never within the gap of a
+  // refusal slot, so no burst's bookings sit on another's slot.
+  const times = shared.times
+    .filter((t) => Number.isFinite(Date.parse(t)) && farEnough(t))
+    .sort((a, b) => Date.parse(b) - Date.parse(a))
+    .slice(0, DROP_SLOTS_TO_MEASURE);
+  for (const t of times) {
+    const capacity = await measuredCapacity(c, t);
+    const why = dropSlotFit({ rung0Free: capacity.rung0Free!, ladderFree: capacity.ladderFree! }, DROP_CROWD, DROP_CAPACITY_HEADROOM);
+    if (why === null) {
+      drop = { ladder: c, slot: t, capacity };
+      break;
+    }
+    dropMisses.push(`${c.code} at ${t}: ${why}`);
+  }
+  if (drop !== null) break;
+  if (times.length === 0) dropMisses.push(`${c.code}/${c.sibling}: offered no time an hour from both refusal slots`);
+}
+if (drop === null) {
+  if (dropReads.length === dropAsk.length) {
+    console.error(
+      `FAILED: availability answered for none of the drop burst's ladders ` +
+        `(${dropAsk.map((c) => `${c.code}/${c.sibling}`).join(", ")}). Reads: ${dropReads.join("; ")}.`,
+    );
+    process.exit(2);
+  }
+  console.error(
+    `FAILED: no offered time fits the tier drop burst (somebody free on the top rung, fewer than the crowd of ` +
+      `${DROP_CROWD} there, room for ${DROP_CAPACITY_HEADROOM} times the crowd across the ladder). Measured: ` +
+      `${dropMisses.slice(0, 6).join("; ")}${dropMisses.length > 6 ? `; and ${dropMisses.length - 6} more` : ""}.` +
+      (dropReads.length > 0 ? ` Reads that did not answer: ${dropReads.join("; ")}.` : ""),
+  );
+  process.exit(9);
+}
 
+// What each refusal slot held when planned, for the report. Its ladder is the bound
+// either way; this says how strong the control was at the slot it fired at.
+const refusalCapacities: BurstCapacity[] = [];
+for (const s of refusalSlots) refusalCapacities.push(await measuredCapacity(refusal, s));
+
+// --- the plan ----------------------------------------------------------------------
 const startAt = burstStartAt(Date.now(), LEAD);
 const moments = burstMoments(startAt, BURST_LEGS, BURST_SPACING_MS);
-const plan: BurstPlan = {
-  codes: [CODE, SIBLING],
-  bursts: slots.map((slot, i) => ({ slot, startAtMs: moments[i]! })),
-};
-console.log(`burst: bucket ${CODE} split with ${SIBLING}, ${plan.bursts.length} bursts`);
+const plan = assembleBurstPlan(
+  BURST_SEQUENCE,
+  moments,
+  { codes: [refusal.code, refusal.sibling], slots: refusalSlots, capacities: refusalCapacities },
+  { codes: [drop.ladder.code, drop.ladder.sibling], slot: drop.slot, capacity: drop.capacity },
+);
+console.log(`burst plan: ${plan.bursts.length} bursts`);
 for (const [i, b] of plan.bursts.entries()) {
-  console.log(`  burst ${i + 1}: slot ${b.slot}, firing at ${new Date(b.startAtMs).toISOString()}`);
+  console.log(
+    `  burst ${i + 1} (${b.kind}): ${b.codes.join(" with ")}, slot ${b.slot}, firing at ` +
+      `${new Date(b.startAtMs).toISOString()}, ${b.perDriver} a driver; its ladder holds at most ` +
+      `${b.capacity.ladderRoster}, ${b.capacity.ladderFree} free at the slot (${b.capacity.rung0Free} on the top rung)`,
+  );
 }
-console.log(`  (chosen from ${offeredCount} times both codes offered, the first ${Math.round(LEAD)}s from now)`);
-console.log(`  (${reading.measured ? `pool ${reading.depth} agents deep` : "pool depth NOT measured"})`);
 
 // GITHUB_OUTPUT is absent for a hand run, which prints the plan above and is the
 // whole point of running it by hand.
@@ -303,13 +418,11 @@ if (out) {
     out,
     // The plan is ONE value, so the drivers cannot fire at different codes, slots or
     // moments while each reads as correct (L70). JSON on one line, which is what a
-    // GITHUB_OUTPUT value has to be.
-    `burst_code=${CODE}\nburst_sibling_code=${SIBLING}\nburst_plan=${JSON.stringify(plan)}\n` +
+    // GITHUB_OUTPUT value has to be. What each burst was worth travels inside it, to
+    // the drivers' files and from there to the report.
+    `burst_plan=${JSON.stringify(plan)}\n` +
       `burst_count=${plan.bursts.length}\n` +
-      `drivers=${JSON.stringify(drivers)}\ndriver_count=${drivers.length}\n` +
-      // Empty when it was not measured, which the judge reads as unmeasured. A
-      // number here would be the assumption this whole change removes (L98).
-      `burst_pool_depth=${reading.measured ? reading.depth : ""}\n`,
+      `drivers=${JSON.stringify(drivers)}\ndriver_count=${drivers.length}\n`,
     "utf8",
   );
 }

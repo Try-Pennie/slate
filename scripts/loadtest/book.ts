@@ -35,20 +35,26 @@ import {
   readBurstPlan,
   burstCodeFor,
   burstLegOut,
+  burstRequestNumbers,
+  burstSettleAtMs,
   readDriverMode,
   bookingRequestHeaders,
   bookingBody,
-  BURST_REQUESTS_DEFAULT,
   BURST_GRACE_DEFAULT_MS,
+  BURST_PROBE_TIMEOUT_MS,
   DRIVERS,
   PER_DRIVER_PER_MINUTE,
+  REQUEST_TIMEOUT_MS,
   RUN_MINUTES,
   type BookingAttempt,
+  type BurstLegRecord,
   type DriverResult,
+  type PlannedBurst,
   slotViewIsFresh,
   slotViewAfterRead,
   type SlotView,
 } from "./book-plan.ts";
+import { readBurstProbe, readCrowdRule, type BurstProbe, type CrowdRuleReading } from "./burst-probe.ts";
 import { AVAILABILITY_UNREAD, NO_SLOTS_OFFERED, TIMED_OUT } from "./outcomes.ts";
 import {
   faultModeVerdict,
@@ -86,12 +92,12 @@ if (!modeRead.ok) {
   process.exit(1);
 }
 const MODE = modeRead.mode;
-// env-ok: BURST_REQUESTS (optional; defaults to 25, which is what one burst driver
-// fires in each burst)
-const BURST_REQUESTS = Number(process.env.BURST_REQUESTS ?? String(BURST_REQUESTS_DEFAULT));
 // env-ok: BURST_GRACE_MS (optional; defaults to 2000, how late a driver may be and
 // still be part of the same burst)
 const BURST_GRACE_MS = Number(process.env.BURST_GRACE_MS ?? String(BURST_GRACE_DEFAULT_MS));
+// env-ok: BURST_SETTLE_MS (optional; a test seam that can only SHORTEN how long after a
+// burst's moment the driver waits before probing its slot, #3429)
+const BURST_SETTLE_OVERRIDE = process.env.BURST_SETTLE_MS;
 // env-ok: FAULT_PCT (required in fault mode only; the percentage the deployment
 // was redeployed with, which the driver then CONFIRMS with the deployment itself)
 // env-ok: FAULT_MINUTES (optional; defaults to 2, long enough for the bar to have
@@ -212,6 +218,8 @@ async function book(req: {
   let outcome: string | null = null;
   let seenIp: string | null = null;
   let echo: LoadtestEcho | null = null;
+  // #3429: which rung took a 200, from the body's own `bucket.rungsDropped`.
+  let rungsDropped: number | null | undefined;
   try {
     const res = await fetch(`${SLATE_BASE}/api/bookings`, {
       signal: requestSignal(req.deadlineAtMs, REQUEST_TIMEOUT_OVERRIDE),
@@ -237,8 +245,14 @@ async function book(req: {
     const body = (await res.json().catch((err: unknown) => {
       if (timedOut(err)) throw err;
       return null;
-    })) as { outcome?: string; code?: string } | null;
+    })) as { outcome?: string; code?: string; bucket?: { rungsDropped?: unknown } } | null;
     outcome = body?.outcome ?? body?.code ?? null;
+    // #3429: on a 200 only, and a figure the body does not carry is null, never 0: the
+    // drop burst reads "dropped" from it, and a missing one must not read as either.
+    if (status === 200) {
+      const rd = body?.bucket?.rungsDropped;
+      rungsDropped = typeof rd === "number" && Number.isInteger(rd) && rd >= 0 ? rd : null;
+    }
   } catch (err) {
     // status stays 0, which the judge reads as "no reply at all" and keeps apart
     // from a 5xx: a driver that could not reach the deployment and one the
@@ -251,6 +265,7 @@ async function book(req: {
     // request was not answered, so it carries no status either, and no echo.
     status = 0;
     echo = null;
+    rungsDropped = undefined;
   }
   return {
     driver: DRIVER,
@@ -264,6 +279,7 @@ async function book(req: {
     startIso: req.startIso,
     seenIp,
     echo,
+    ...(rungsDropped !== undefined ? { rungsDropped } : {}),
   };
 }
 
@@ -495,15 +511,27 @@ async function burst(): Promise<void> {
   }
   const plan = read.plan;
   let missedAny = false;
+  // #3429: each burst's share, so its request numbers start past every earlier one's.
+  const shares = plan.bursts.map((b) => b.perDriver);
+  // #3429: the confirm crowd rule, asked ONCE before the first burst and recorded on
+  // every burst's file, so the judge holds each burst to the rule of the build it
+  // measured. A read that fails is recorded as unreadable, never as a rule.
+  const crowdRule = await readDeploymentCrowdRule();
+  console.log(`driver ${DRIVER}: the deployment's crowd rule: ${JSON.stringify(crowdRule)}`);
+  // #3429: the probes run beside the next burst's wait rather than before it, so a
+  // probe can never make a driver late for the next moment.
+  const probes: Promise<void>[] = [];
 
   for (const [index, leg] of plan.bursts.entries()) {
     const startedAtMs = Date.now();
-    const burstLeg = {
+    const burstLeg: BurstLegRecord = {
       index,
       of: plan.bursts.length,
       slot: leg.slot,
-      codes: [...plan.codes],
+      codes: [...leg.codes],
       startAtMs: leg.startAtMs,
+      kind: leg.kind,
+      capacity: leg.capacity,
     };
     const out = burstLegOut(OUT, index);
 
@@ -525,11 +553,12 @@ async function burst(): Promise<void> {
           runId: RUN_ID,
           driver: DRIVER,
           mode: "burst",
-          planned: BURST_REQUESTS,
+          planned: leg.perDriver,
           startedAtMs,
           finishedAtMs: Date.now(),
           burstSkipped: readiness,
           burstLeg,
+          crowdRule,
           attempts: [],
         },
         out,
@@ -542,36 +571,89 @@ async function burst(): Promise<void> {
     // across the two sibling codes, so the shared confirm line is exercised ACROSS
     // codes whose ladders are the same pools rather than only within one (#3325).
     // Each burst's ids are numbered past the previous bursts', so no two of the run's
-    // requests share an external id (#2261).
+    // requests share an external id (#2261), whatever each burst's share (#3429).
     const attempts = await Promise.all(
-      Array.from({ length: BURST_REQUESTS }, (_, i) =>
+      burstRequestNumbers(shares, index).map((n, i) =>
         book({
-          code: burstCodeFor(plan.codes, DRIVER, i),
+          code: burstCodeFor(leg.codes, DRIVER, i),
           startIso: leg.slot,
-          externalId: externalIdFor(idPrefix(RUN_ID, "burst"), DRIVER, index * BURST_REQUESTS + i),
-          n: index * BURST_REQUESTS + i,
+          externalId: externalIdFor(idPrefix(RUN_ID, "burst"), DRIVER, n),
+          n,
           deadlineAtMs: Number.POSITIVE_INFINITY,
         }),
       ),
     );
-    write(
-      {
-        runId: RUN_ID,
-        driver: DRIVER,
-        mode: "burst",
-        planned: BURST_REQUESTS,
-        startedAtMs,
-        finishedAtMs: Date.now(),
-        burstLeg,
-        attempts,
-      },
-      out,
-    );
+    const result: DriverResult = {
+      runId: RUN_ID,
+      driver: DRIVER,
+      mode: "burst",
+      planned: leg.perDriver,
+      startedAtMs,
+      finishedAtMs: Date.now(),
+      burstLeg,
+      crowdRule,
+      attempts,
+    };
+    // Written now, so a driver that dies before its probe still hands the judge the
+    // burst, whose missing probe the judge reads as never recorded. Written again
+    // with the probe once the slot has been asked.
+    write(result, out);
+    probes.push(probeOnceSettled(leg).then((probe) => write({ ...result, probe }, out)));
   }
+  await Promise.all(probes);
 
   // Non-zero, so a missed burst is visible in the workflow rather than only in a file
   // the judge reads later.
   if (missedAny) process.exit(3);
+}
+
+/**
+ * #3429: the deployment's confirm crowd rule, from `/api/smoke/version`, through the
+ * one reader the judge's fixtures use. A request that fails is recorded as unreadable
+ * with why, never as a rule and never as a crash: the judge then says it cannot hold
+ * the burst to either rule, which is what is true.
+ */
+async function readDeploymentCrowdRule(): Promise<CrowdRuleReading> {
+  try {
+    const res = await fetch(`${SLATE_BASE}/api/smoke/version`, {
+      headers: { Authorization: `Bearer ${API_KEY}` },
+      signal: AbortSignal.timeout(effectiveDeadlineMs(REQUEST_TIMEOUT_MS, REQUEST_TIMEOUT_OVERRIDE)),
+    });
+    return readCrowdRule(res.status, await res.json().catch(() => null));
+  } catch (err) {
+    return { state: "unreadable", why: `/api/smoke/version did not answer (${timedOut(err) ? "timed out" : (err as Error).name})` };
+  }
+}
+
+/**
+ * #3429: wait until every confirm of the burst is over, then ask the deployment whether
+ * its slot is still bookable. Settled is the latest this driver may have fired plus a
+ * request's own abort bound (`burstSettleAtMs`), so no burst request is in flight on
+ * any driver; `BURST_SETTLE_MS` can only shorten it, for a test. Asked of the code this
+ * driver opened on, so across four drivers both sibling codes are asked.
+ */
+async function probeOnceSettled(leg: PlannedBurst): Promise<BurstProbe> {
+  const requestBoundMs = effectiveDeadlineMs(REQUEST_TIMEOUT_MS, REQUEST_TIMEOUT_OVERRIDE);
+  const settleAfterMs = effectiveDeadlineMs(burstSettleAtMs(0, BURST_GRACE_MS, requestBoundMs), BURST_SETTLE_OVERRIDE);
+  const wait = leg.startAtMs + settleAfterMs - Date.now();
+  if (wait > 0) await sleep(wait);
+  const code = burstCodeFor(leg.codes, DRIVER, 0);
+  const sentAtMs = Date.now();
+  try {
+    const q = new URLSearchParams({ bucketCode: code, startIso: leg.slot });
+    const res = await fetch(`${SLATE_BASE}/api/bookings/bookable?${q.toString()}`, {
+      headers: { Authorization: `Bearer ${API_KEY}` },
+      signal: AbortSignal.timeout(effectiveDeadlineMs(BURST_PROBE_TIMEOUT_MS, REQUEST_TIMEOUT_OVERRIDE)),
+    });
+    return readBurstProbe({ code, sentAtMs, status: res.status, body: await res.json().catch(() => null) });
+  } catch (err) {
+    return {
+      kind: "unreadable",
+      code,
+      sentAtMs,
+      why: `the bookable check did not answer (${timedOut(err) ? "timed out" : (err as Error).name})`,
+    };
+  }
 }
 
 await (MODE === "burst"

@@ -18,6 +18,8 @@ import { OK_P95_MS } from "./judge-booking-run.ts";
 // deployment sent, read through the one parser both sides share (#3325, L41).
 import type { LoadtestEcho } from "../../src/lib/loadtest-echo.ts";
 import { LOADTEST_LEG_HEADER, type LoadtestLeg } from "../../src/lib/booking/wait-marks.ts";
+// Type only: what a burst driver records from the deployment for the judge (#3429).
+import type { BurstProbe, CrowdRuleReading } from "./burst-probe.ts";
 
 /** Availability reads a single address may make in a minute (30, from the app). */
 export const AVAILABILITY_PER_MINUTE = AVAILABILITY_LIMITER.perMinute;
@@ -142,14 +144,83 @@ export const REQUEST_TIMEOUT_MS = 30_000;
 export const REQUEST_OVERRUN_MS = 60_000;
 
 /**
- * How many bursts one run fires (#3325), each at its own slot and moment and each
- * judged on its own. One burst is one spread of simultaneous requests over the
- * deployment's isolates, and one lucky spread can pass a run that a second would
- * fail, so a single reading cannot carry the verdict (L395).
+ * The two kinds of burst a run fires (#3429).
+ *
+ * `refusal`: the crowd of a hundred at a ladder whose WHOLE capacity is smaller than
+ * the crowd, measured from the roster. Once a crowd walks the tier ladder (#3338,
+ * #3437), a hundred confirms at a code whose lower rungs hold a whole tier mostly WIN,
+ * so the refusal path and the line's settle path are exercised only where the ladder
+ * genuinely runs out. It carries the loser speed bar.
+ *
+ * `drop`: about ten confirms at a code whose top rung is shallow and whose ladder holds
+ * at least twice the crowd, at a slot where the top rung has somebody free. On a build
+ * that walks the ladder every one of them wins, on distinct advisors, and at least one
+ * on a lower rung, which is what proves the #3338 drop happens at all.
  */
-export const BURST_LEGS = 3;
-/** Requests one burst driver fires in one burst, when BURST_REQUESTS is unset. */
+export const BURST_KINDS = ["refusal", "drop"] as const;
+export type BurstKind = (typeof BURST_KINDS)[number];
+
+/**
+ * The run's bursts in firing order (#3325, #3429), each at its own slot and moment and
+ * each judged on its own. The refusal control is fired twice because its loser speed
+ * bar is a timing claim, and one spread of a crowd over the deployment's isolates can
+ * pass a run a second would fail (L395). The drop burst is a correctness demonstration
+ * that a single counterexample decides, fired once between them; a second drop
+ * reading is the lever not pulled here, since a fourth burst would leave the burst
+ * tail's ceiling no headroom at the default lead (L308).
+ */
+export const BURST_SEQUENCE: readonly BurstKind[] = ["refusal", "drop", "refusal"];
+/** How many bursts one run fires: the sequence's length, so the two are one number (L41). */
+export const BURST_LEGS = BURST_SEQUENCE.length;
+/** Requests one burst driver fires in a REFUSAL burst: four drivers make the crowd of a hundred. */
 export const BURST_REQUESTS_DEFAULT = 25;
+/** #3429: requests one burst driver fires in a DROP burst: four drivers make twelve. */
+export const DROP_BURST_REQUESTS_PER_DRIVER = 3;
+
+/** How many requests one driver fires in a burst of this kind. */
+export function burstRequestsPerDriver(kind: BurstKind): number {
+  return kind === "drop" ? DROP_BURST_REQUESTS_PER_DRIVER : BURST_REQUESTS_DEFAULT;
+}
+
+/** The whole crowd one burst of this kind fires across every driver. */
+export function burstCrowd(kind: BurstKind): number {
+  return DRIVERS * burstRequestsPerDriver(kind);
+}
+
+/**
+ * #3429: the drop burst's ladder must hold at least this many times its crowd, free at
+ * the slot when planned, so a booking made between the plan and the burst cannot turn
+ * the drop burst into a refusal and every confirm can win.
+ */
+export const DROP_CAPACITY_HEADROOM = 2;
+
+/**
+ * #3429: how long one probe of a burst's slot may take. Held, with the moment the
+ * burst settles, inside the spacing to the next burst, so no probe overlaps a crowd.
+ */
+export const BURST_PROBE_TIMEOUT_MS = 20_000;
+
+/**
+ * #3429: when every confirm of a burst is over, so its slot can be asked whether it is
+ * still bookable. The latest a driver may fire (its grace) plus a request's own abort
+ * bound: past that no burst request is in flight on any driver, and the confirm's own
+ * budget (`BOOKING_CONFIRM_WORST_CASE_MS`) is inside the bound, so nothing is still
+ * walking the ladder when the probe asks. Both are passed explicitly, so a driver whose
+ * test seams shortened them settles sooner and the judge uses the run's own defaults.
+ */
+export function burstSettleAtMs(momentMs: number, graceMs: number, requestTimeoutMs: number): number {
+  return momentMs + graceMs + requestTimeoutMs;
+}
+
+/**
+ * #3429: the request numbers burst `index` uses, given every burst's share per driver,
+ * so each burst starts past every earlier one's and no two of a run's requests share an
+ * external id whatever the shares are (#2261).
+ */
+export function burstRequestNumbers(shares: readonly number[], index: number): number[] {
+  const start = shares.slice(0, index).reduce((n, s) => n + s, 0);
+  return Array.from({ length: shares[index] ?? 0 }, (_, i) => start + i);
+}
 /** How late a burst driver may wake and still be part of the burst, when BURST_GRACE_MS is unset. */
 export const BURST_GRACE_DEFAULT_MS = 2_000;
 /**
@@ -175,13 +246,14 @@ export const BURST_SLOT_GAP_MS = 60 * 60_000;
 
 /**
  * The whole minutes a burst driver's job needs at a given lead (#3325): the lead to
- * the first moment, the spacing to the last, that burst's longest life (its requests'
- * own timeout plus the lateness a driver may fire at), and the runner's setup. The
- * workflow's burst job timeout is held at or above this at its default lead.
+ * the first moment, the spacing to the last, the moment that burst settles (its
+ * requests' own timeout plus the lateness a driver may fire at), the probe of its slot
+ * after that (#3429), and the runner's setup. The workflow's burst job timeout is held
+ * at or above this at its default lead.
  */
 export function burstJobMinutesNeeded(leadSeconds: number): number {
-  const workMs =
-    leadSeconds * 1000 + (BURST_LEGS - 1) * BURST_SPACING_MS + REQUEST_TIMEOUT_MS + BURST_GRACE_DEFAULT_MS;
+  const lastMomentMs = leadSeconds * 1000 + (BURST_LEGS - 1) * BURST_SPACING_MS;
+  const workMs = burstSettleAtMs(lastMomentMs, BURST_GRACE_DEFAULT_MS, REQUEST_TIMEOUT_MS) + BURST_PROBE_TIMEOUT_MS;
   return Math.ceil(workMs / 60_000) + DRIVE_JOB_SETUP_MINUTES;
 }
 
@@ -503,6 +575,27 @@ export interface BookingAttempt {
    * offered, or the request never got an answer).
    */
   echo: LoadtestEcho | null;
+  /**
+   * #3429: how many rungs below the requested one the booking landed, from a 200's own
+   * `bucket.rungsDropped`, or null when the answer did not say. Absent on an attempt
+   * that was not answered 200. The drop burst reads it to show a tier was dropped at
+   * all; a missing figure reads as not dropped, never as dropped.
+   */
+  rungsDropped?: number | null;
+}
+
+/**
+ * #3429: what the setup measured about a burst's capacity, for the report. Every
+ * figure is a count of advisors, or null when it was not measured: "nobody measured
+ * it" and "nobody was free" are the two readings a zero would merge (L98).
+ */
+export interface BurstCapacity {
+  /** The most advisors the code's WHOLE ladder holds, from the roster: a bound at any slot. */
+  ladderRoster: number | null;
+  /** Advisors free at the slot on the requested rung, through the booker's own candidate read, when planned. */
+  rung0Free: number | null;
+  /** Distinct advisors free at the slot across the whole ladder, the same way, when planned. */
+  ladderFree: number | null;
 }
 
 /** Which burst of the run a burst driver file holds (#3325). */
@@ -517,6 +610,13 @@ export interface BurstLegRecord {
   codes: string[];
   /** The shared moment, epoch ms. */
   startAtMs: number;
+  /**
+   * #3429: which kind of burst it was. Absent on a file from before #3429, which was
+   * always the crowd at one slot that the refusal control still is.
+   */
+  kind?: BurstKind;
+  /** #3429: what the setup measured about its capacity. Absent on a file from before #3429. */
+  capacity?: BurstCapacity;
 }
 
 /** What one driver writes when it finishes. The judge refuses without all of them. */
@@ -554,6 +654,17 @@ export interface DriverResult {
    * the judge the others whole.
    */
   burstLeg?: BurstLegRecord;
+  /**
+   * #3429, burst mode only: the confirm crowd rule the deployment declared before the
+   * burst fired, so the judge holds the burst to the rule of the build it measured.
+   */
+  crowdRule?: CrowdRuleReading;
+  /**
+   * #3429, burst mode only: this driver's probe of the burst's slot once the burst had
+   * settled. Absent on a burst the driver did not fire, and on a file written before
+   * the probe returned, which the judge reads as a probe never recorded.
+   */
+  probe?: BurstProbe;
   /**
    * Set only in fault mode: the percentage the DEPLOYMENT reported it was running
    * with, read from `/api/smoke/version` before a single request was sent.
@@ -654,21 +765,39 @@ export function burstLegOut(out: string, index: number): string {
   return `${out.replace(/\.json$/, "")}-leg-${index}.json`;
 }
 
+/** One burst of the plan (#3325, #3429): its kind, its own two codes, slot, moment and share. */
+export interface PlannedBurst {
+  kind: BurstKind;
+  /** The two sibling codes it is split across, measured to share a fallback ladder. */
+  codes: [string, string];
+  slot: string;
+  startAtMs: number;
+  /** Requests each driver fires in it. */
+  perDriver: number;
+  /** What the setup measured about its capacity, for the report. */
+  capacity: BurstCapacity;
+}
+
 /** The burst plan the setup chose once and every driver fires (#3325). */
 export interface BurstPlan {
-  /** The two sibling codes, measured to share a fallback ladder. */
-  codes: [string, string];
   /** One per burst, in firing order. */
-  bursts: { slot: string; startAtMs: number }[];
+  bursts: PlannedBurst[];
+}
+
+/** A capacity figure: a whole count of advisors, or null for one nobody measured. */
+function isCapacityFigure(v: unknown): v is number | null {
+  return v === null || (typeof v === "number" && Number.isInteger(v) && v >= 0);
 }
 
 /**
  * The plan from `BURST_PLAN`, or the reason it cannot be fired (#3325).
  *
  * Read strictly, and refused by name, because a plan this half read would be a burst
- * nobody configured: one code instead of two, a slot that is not a time (every
- * request then refused as a validation error and counted as a loser), or moments out
- * of order, which would have a driver wait past one burst to fire the next late.
+ * nobody configured: a kind the judge does not know, one code instead of two, a slot
+ * that is not a time (every request then refused as a validation error and counted as
+ * a loser), a share that is not a whole number of requests, a capacity that is not a
+ * count, or moments out of order, which would have a driver wait past one burst to
+ * fire the next late.
  */
 export function readBurstPlan(raw: string): { ok: true; plan: BurstPlan } | { ok: false; why: string } {
   let parsed: unknown;
@@ -677,34 +806,58 @@ export function readBurstPlan(raw: string): { ok: true; plan: BurstPlan } | { ok
   } catch {
     return { ok: false, why: "BURST_PLAN is not JSON" };
   }
-  const p = parsed as { codes?: unknown; bursts?: unknown } | null;
+  const p = parsed as { bursts?: unknown } | null;
   if (typeof p !== "object" || p === null) return { ok: false, why: "BURST_PLAN is not an object" };
-  const codes = p.codes;
-  if (!Array.isArray(codes) || codes.length !== 2 || !codes.every((c) => typeof c === "string" && c.trim() !== "")) {
-    return { ok: false, why: "BURST_PLAN must name exactly two codes, the burst and its sibling" };
-  }
-  if (codes[0] === codes[1]) {
-    return { ok: false, why: `BURST_PLAN must name two different codes, and names ${codes[0]} twice` };
-  }
   const bursts = p.bursts;
   if (!Array.isArray(bursts) || bursts.length === 0) return { ok: false, why: "BURST_PLAN holds no bursts" };
-  const out: BurstPlan["bursts"] = [];
-  for (const [i, b] of bursts.entries()) {
-    const slot = (b as { slot?: unknown } | null)?.slot;
-    const startAtMs = (b as { startAtMs?: unknown } | null)?.startAtMs;
-    if (typeof slot !== "string" || !Number.isFinite(Date.parse(slot))) {
-      return { ok: false, why: `BURST_PLAN burst ${i + 1}'s slot is not a time: ${JSON.stringify(slot)}` };
+  const out: PlannedBurst[] = [];
+  for (const [i, entry] of bursts.entries()) {
+    const n = i + 1;
+    const b = (typeof entry === "object" && entry !== null ? entry : {}) as Record<string, unknown>;
+    const kind = b.kind;
+    if (typeof kind !== "string" || !(BURST_KINDS as readonly string[]).includes(kind)) {
+      return { ok: false, why: `BURST_PLAN burst ${n}'s kind is not one of ${BURST_KINDS.join(", ")}: ${JSON.stringify(kind)}` };
     }
+    const codes = b.codes;
+    if (!Array.isArray(codes) || codes.length !== 2 || !codes.every((c) => typeof c === "string" && c.trim() !== "")) {
+      return { ok: false, why: `BURST_PLAN burst ${n} must name exactly two codes, the burst's and its sibling's` };
+    }
+    if (codes[0] === codes[1]) {
+      return { ok: false, why: `BURST_PLAN burst ${n} must name two different codes, and names ${codes[0]} twice` };
+    }
+    const slot = b.slot;
+    if (typeof slot !== "string" || !Number.isFinite(Date.parse(slot))) {
+      return { ok: false, why: `BURST_PLAN burst ${n}'s slot is not a time: ${JSON.stringify(slot)}` };
+    }
+    const startAtMs = b.startAtMs;
     if (typeof startAtMs !== "number" || !Number.isSafeInteger(startAtMs) || startAtMs <= 0) {
-      return { ok: false, why: `BURST_PLAN burst ${i + 1}'s moment is not epoch milliseconds: ${JSON.stringify(startAtMs)}` };
+      return { ok: false, why: `BURST_PLAN burst ${n}'s moment is not epoch milliseconds: ${JSON.stringify(startAtMs)}` };
+    }
+    const perDriver = b.perDriver;
+    if (typeof perDriver !== "number" || !Number.isSafeInteger(perDriver) || perDriver <= 0) {
+      return { ok: false, why: `BURST_PLAN burst ${n}'s share per driver is not a whole number of requests: ${JSON.stringify(perDriver)}` };
+    }
+    const c = (typeof b.capacity === "object" && b.capacity !== null ? b.capacity : null) as Record<string, unknown> | null;
+    if (c === null || !isCapacityFigure(c.ladderRoster) || !isCapacityFigure(c.rung0Free) || !isCapacityFigure(c.ladderFree)) {
+      return {
+        ok: false,
+        why: `BURST_PLAN burst ${n}'s capacity is not three counts of advisors (or null where unmeasured): ${JSON.stringify(b.capacity)}`,
+      };
     }
     const prev = out[out.length - 1];
     if (prev && startAtMs <= prev.startAtMs) {
-      return { ok: false, why: `BURST_PLAN burst ${i + 1}'s moment is not after burst ${i}'s, so the bursts are not in time order` };
+      return { ok: false, why: `BURST_PLAN burst ${n}'s moment is not after burst ${i}'s, so the bursts are not in time order` };
     }
-    out.push({ slot, startAtMs });
+    out.push({
+      kind: kind as BurstKind,
+      codes: [codes[0], codes[1]],
+      slot,
+      startAtMs,
+      perDriver,
+      capacity: { ladderRoster: c.ladderRoster, rung0Free: c.rung0Free, ladderFree: c.ladderFree },
+    });
   }
-  return { ok: true, plan: { codes: [codes[0], codes[1]], bursts: out } };
+  return { ok: true, plan: { bursts: out } };
 }
 
 /**

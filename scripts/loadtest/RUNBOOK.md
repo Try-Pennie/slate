@@ -250,9 +250,10 @@ Both were measured on 2026-09-11 and both matter to what the run can find:
   attribute distribution. The old distribution was measured in June and gave the
   Beyond backend **60 percent** of the roster; production gives it **two agents**.
   That is not a rounding difference: two agents is what makes every `x2x` bucket
-  resolve to a pool of exactly **one**, and a one agent pool is the whole positive
-  control for the burst. A seed staffing those pools sixty deep produces a run that
-  cannot fail the control it was built for.
+  resolve to a pool of exactly **one**, and since #3429 that one deep top rung is what
+  the tier drop burst needs: a crowd that meets its rung's last advisor and must drop
+  to the Low tier below. A seed staffing those pools sixty deep produces a drop burst
+  whose crowd never has to drop at all.
 
 Re-export the shape before a run if the roster has moved:
 
@@ -345,13 +346,53 @@ node --experimental-strip-types scripts/loadtest/book.ts
 ### The burst
 
 `MODE=burst` with `BURST_PLAN`, ONE value chosen **once** by the setup step
-(`scripts/loadtest/burst-setup.ts`) and handed to every driver: the burst's code and
-its sibling, and for each of the run's **three** bursts one slot and one moment
-(#3325). A burst whose drivers each chose their own time is not a burst: nothing
-contends and everything succeeds. The plan is passed through rather than re-derived
-in the driver, so the two cannot fire at different codes, slots or moments while
-each reads as correct (L70). The driver reads it strictly (`readBurstPlan` in
-`book-plan.ts`) and refuses a plan it cannot read by name.
+(`scripts/loadtest/burst-setup.ts`) and handed to every driver: for each of the run's
+**three** bursts its kind, its two sibling codes, one slot, one moment, its share per
+driver and what was measured about its capacity (#3325, #3429). A burst whose drivers
+each chose their own time is not a burst: nothing contends and everything succeeds.
+The plan is passed through rather than re-derived in the driver, so the two cannot
+fire at different codes, slots or moments while each reads as correct (L70). The
+driver reads it strictly (`readBurstPlan` in `book-plan.ts`) and refuses a plan it
+cannot read by name.
+
+**Two kinds of burst (#3429).** #3338 made a confirm in a crowd walk the tier ladder
+like any confirm (Dan, 2026-10-06, built in #3437), so a crowd now books one advisor
+per free advisor across its code's whole ladder rather than one. A hundred confirms at
+`120`, whose ladder is `120, 130, 110` and whose lower rungs are the whole Low tier,
+mostly WIN, and the refusal path and the line's settle path would go untested. So the
+run fires `BURST_SEQUENCE` (`book-plan.ts`): a refusal control, a tier drop burst, and
+a second refusal control.
+
+- **The refusal control** keeps the crowd of a hundred (`BURST_REQUESTS_DEFAULT`, 25 a
+  driver) and fires it at the ladder whose WHOLE capacity is smallest and genuinely
+  smaller than the crowd (`refusalLadders` in `burst-target.ts`): the distinct
+  advisors across every rung, with the Low exclusion each rung applies (#2842), read
+  through the booker's own eligibility judge. A ladder is a hard bound at any slot, so
+  somebody is refused whatever the slot. On the seeded roster that is the Ultra ladder
+  `500, 400, 300, 200` (with `501`), which holds sixteen advisors because every rung
+  below Ultra skips Low carriers. The other way to give a crowd one advisor by
+  construction, a named advisor link burst (`link:<userId>`, migrations 0144 and
+  0155), is not available: the booking API's request names a bucket only
+  (`parseDirectBookingRequest`), and the public booker route that does take a link is
+  behind per address ceilings and stamps no load test echo, so the crowd is sized
+  against a measured capacity instead. It is fired twice because its loser speed bar
+  is a timing claim (L395).
+- **The tier drop burst** fires about ten confirms (`DROP_BURST_REQUESTS_PER_DRIVER`, 3
+  a driver, twelve in all) at the ladder whose top rung is shallowest, which has a rung
+  below it and holds at least `DROP_CAPACITY_HEADROOM` (2) times the crowd
+  (`dropLadders`), never the refusal control's own. On the seeded roster that is `120`
+  and `121`: one Beyond advisor on top, the Low tier below. Its slot is chosen by
+  asking, through the booker's own candidate read on every rung
+  (`roundRobinCandidates`, read only), who is free there: somebody on the top rung, so
+  the crowd meets that rung's LAST advisor; fewer than the crowd there, so somebody has
+  to drop; and twice the crowd across the ladder (`dropSlotFit`). On a build that walks
+  the ladder every confirm wins, at least one below the requested rung, on distinct
+  advisors. It proves the #3338 drop happens at all.
+
+What the setup measured for each burst (the most its ladder holds, and how many were
+free at the slot when planned) travels inside the plan to the drivers' files and from
+there to the report's burst lines, which is how the report says what each control was
+worth (#2278).
 
 ```
 SLATE_BASE=https://<loadtest>.workers.dev BOOKING_API_KEY=<key> RUN_ID=<run> \
@@ -369,8 +410,28 @@ the next fires). Each driver fires all three and writes **one file per burst**,
 `burst-<driver>-leg-<k>.json`, each carrying which burst it holds. A driver that
 wakes late for one burst fires nothing for THAT burst, writes it as missed, fires the
 others, and exits non-zero, so a late wake costs the run one burst rather than three.
-The burst job's timeout is held against the lead, all three bursts and the runner's
-setup by `scripts/test-loadtest-driver-deadline.ts`.
+The burst job's timeout is held against the lead, all three bursts, the last one's
+probe and the runner's setup by `scripts/test-loadtest-driver-deadline.ts`.
+
+**Each driver reads two facts from the deployment for the judge (#3429)**, both
+recorded in its own burst files so they are paired with the burst by being in it
+(`burst-probe.ts`):
+
+- **The confirm crowd rule**, once before the first burst, from `/api/smoke/version`'s
+  `confirmCrowdRule`: `stops` (a crowd behind a leader that booked its rung's last
+  advisor is answered SLOT_TAKEN, every build before #3437) or `walks` (#3437). It is
+  `CONFIRM_CROWD_RULE` in `src/lib/confirm-crowd-rule.ts`, and #3437 sets it to `walks`
+  in the change that makes it so. A deployment that does not say is recorded as absent.
+- **The slot's probe**, once the burst has SETTLED: the latest a driver may fire
+  (`BURST_GRACE_MS`) plus a request's own abort bound (`REQUEST_TIMEOUT_MS`), past
+  which no burst request is in flight and the confirm's own budget is spent
+  (`burstSettleAtMs`). It asks `/api/bookings/bookable`, which runs the routing a real
+  book runs, read only, of the code the driver opened on, under its own
+  `BURST_PROBE_TIMEOUT_MS` (20s), and is answered before the next moment. The probes
+  run beside the next burst's wait, never before it, and the file is written once
+  without the probe and again with it, so a driver that dies before its probe still
+  hands the judge its burst. `BURST_SETTLE_MS` is a test seam that can only shorten
+  the wait.
 
 **Each burst is split across two sibling codes** (#3325). The shared confirm line
 keys a crowd on the whole fallback LADDER, so a follower is only told "taken" by a
@@ -388,27 +449,23 @@ Each sibling is asked what it offers too, and the slots are chosen from the time
 BOTH offer, because a time only one offers would be refused for the other half of the
 burst for a reason that is not contention.
 
-**The pool is MEASURED, not a constant** (#2278). The whole control rests on the
-burst's pool being one agent deep, and for months that was a hand written code
-nothing checked: the seeded roster gave it three, so a live run answered three
-200s on three different agents, which is correct behaviour and a materially weaker
-control. It rotted too, and did, when production's Low plus Beyond pool emptied
-(#2152) and the constant had to be moved by hand the morning of the next run
-(#2319). The setup now reads every pool's depth through the booker's own predicate
-(`poolDepthsFrom`, shared with `pnpm loadtest:export-shape` so the two cannot
-disagree about one roster), and walks the shallowest six LADDERS that have a sibling,
-one pair per ladder, asking each pair what both codes offer, and fires at the first
-offering three times an hour apart. Depth alone cannot choose: a pool one agent deep
-whose agent has no free time offers nothing.
+**The ladders are MEASURED, not constants** (#2278, #3429). The control used to rest
+on the burst's POOL being one agent deep, and for months that was a hand written code
+nothing checked: the seeded roster gave it three, so a live run answered three 200s
+on three different agents. It rotted too, when production's Low plus Beyond pool
+emptied (#2152) and the constant had to be moved by hand the morning of the next run
+(#2319). Since #3338 the control rests on the code's whole LADDER instead, and the
+setup reads the roster and its buckets through the app's own pool reader
+(`listPoolBuckets`) and the booker's own eligibility judge (`eligibleFromRoster`),
+names each ladder by its first code paired with its next (`ladderCandidates`, one pair
+per ladder), and asks at most three ladders of each kind what both codes offer.
 
-**It never fails on depth**, and that is deliberate. The judge asks for one winner
-per AGENT (#2273), which holds at any depth, so a run red because the roster has
-no one deep pool would be red for a property of the roster, which is how a check
-stops being read (L36). What it DOES do is report the depth it ran at, so a reader
-knows what the control was worth. A depth it could not measure exits on its own
-code rather than guessing, and a hand run that names the codes with
-`BURST_CODE_OVERRIDE` and `BURST_SIBLING_OVERRIDE` (both, or it refuses) is reported
-as **unmeasured** rather than as one deep.
+**It refuses rather than firing a control that cannot prove anything.** "Winners equal
+capacity" is not a bar (L63), so a roster with no ladder smaller than the refusal
+crowd is a refusal of the setup by name, never a smaller crowd, and a roster with no
+ladder or slot where the drop burst fits is refused the same way. A hand run has no
+override any more: the drop burst's slot has to be measured against the branch
+database, so a plan nobody measured would be the unmeasured control #2278 removed.
 
 **It runs BEFORE the steady pass, and alone** (#2262). That is a decision rather
 than an ordering accident: the steady mix can include whichever codes the burst
@@ -421,13 +478,19 @@ The setup picks the **last** offered time first and walks back from it, for the 
 class of reason: the preflight books the first time ITS bucket offers, minutes
 earlier, and the two buckets can share an agent. It sorts before choosing, because a
 list read out of a response carries no order unless something declares one (L343).
-Five refusals, each its own code: `2` availability answered for none of the
-candidates (the deployment), `3` they answered and none offered three usable times
-both codes share (the seed), `4` the pools could not be measured at all, `5` not one
-pool has an agent in it, and `6` no staffed code shares its whole fallback ladder
-with another, so a burst cannot be split across two codes of one line (the bucket
-rows). An empty burst file and a run with no burst leg are otherwise the same thing
-(L98).
+The drop burst's slot is at least an hour from both refusal slots, and at most
+`DROP_SLOTS_TO_MEASURE` (24) of its ladder's times are measured, furthest first.
+Each refusal is its own code: `2` availability answered for none of one kind's
+ladders (the deployment), `3` they answered and no refusal ladder offered two usable
+times both codes share (the seed), `4` the roster and its ladders could not be
+measured at all, `5` not one pool has an agent in it, `6` no staffed code shares its
+whole fallback ladder with another, so a burst cannot be split across two codes of
+one line (the bucket rows), `7` no ladder holds fewer advisors than the refusal crowd
+of a hundred, `8` no ladder can host the drop burst (a sibling, somebody on the top
+rung, a rung below, twice the crowd across the ladder, and not the refusal control's
+own), `9` no offered time fits the drop burst, naming what each measured slot lacked,
+and `10` who is free at a slot could not be read. An empty burst file and a run with no
+burst leg are otherwise the same thing (L98).
 
 It also emits the DRIVER COUNT, from the app's own `DRIVERS` constant, and the BURST
 COUNT, from `BURST_LEGS`, and both the matrix and the judge's expectations read them
@@ -439,10 +502,13 @@ checked out and installed before the FIRST burst's moment. A driver that wakes l
 fires nothing for that burst, and the judge fails that burst: raise the lead rather
 than re-running and hoping.
 
-The control on each burst is **one winner per agent and the rest SLOT_TAKEN**, which
-is `bookings_active_slot_uniq` doing its job, plus the two shared line clauses below
-(every confirm on the shared line, every SLOT_TAKEN within two seconds of the last
-winner on the deployment's clock).
+The control on each burst is **one winner per agent**, which is
+`bookings_active_slot_uniq` doing its job, every confirm on the shared line, and **no
+SLOT_TAKEN while the slot still answers available** (#3429). Then by kind: the refusal
+control's every other answer is SLOT_TAKEN and is told within two seconds of the last
+winner on the deployment's clock; the drop burst's every confirm wins and at least one
+is booked below the requested rung. Each is held to the crowd rule the deployment
+declares; see "The burst, judged against the build's own rule" below.
 
 A driver that wakes up **late for a burst does not fire it** and says so, in that
 burst's file and on a non-zero exit. A late request meets an already taken slot and
@@ -999,8 +1065,9 @@ all** (L288).
 **A burst that did not happen as configured FAILS that burst instead (#3222).** A
 burst driver that missed its moment, a burst file that never arrived, or a driver
 that fired part of its plan is a `the burst` finding with its reason, naming WHICH of
-the three bursts (#3325), and the contention question is not asked of that burst
-("exactly one 200" would be answered by however many drivers happened to arrive).
+the three bursts (#3325), and the contention questions are not asked of that burst
+(one winner per agent, and every #3429 clause, would be answered by however many
+drivers happened to arrive).
 The other bursts are still asked it. Two files claiming one driver inside ONE burst
 is incomplete; the same driver across three bursts is the plan. It used to be incompleteness, and since a
 late burst driver exits non-zero by design, the burst job failed and the steady
@@ -1042,9 +1109,11 @@ arrived). The fault drivers' files get the same file checks as the steady ones.
 | requests never sent | a request whose bucket's times could not be read at all (`availability-unread`, #3348) fails here, never under no reply: no booking was sent to go unanswered, and the run did not drive the load it planned |
 | double bookings | no two run-scoped ACTIVE bookings overlap on one agent in `[starts_at, ends_at)`, read through a **paginating** list, and the preflight must have seen `bookings_active_slot_uniq` actually REFUSE a planted duplicate (without that, an absence of overlaps proves nothing). The count is printed in the measured section on EVERY run, with its denominator and the same-slot count beside it, because a measured zero and a check that never ran read the same when neither prints (#2323) |
 | every 200 left a row | a booking row carrying the request's external id, an idempotency key, and a `busy_blocks` row |
-| the burst | judged **per burst**, three a run (#3325), and any one failing fails the run; every finding names its burst, and the report opens with a line naming each burst that failed. Per burst: one winner **per agent** (#2273), every other answer `SLOT_TAKEN`, and each winner really exists. A burst that was configured and produced fewer driver files than fired, a driver that missed its moment, or one that fired part of its plan **fails** that burst with its reason (#3222), never a skipped bar. The report states the measured depth the control ran at, since one deep and three deep prove different amounts (#2278) |
+| the burst | judged **per burst**, three a run (#3325), and any one failing fails the run; every finding names its burst and its kind (`burst 2 of 3, the tier drop burst (slot)`), and the report opens with a line naming each burst that failed. Per burst: one winner **per agent** (#2273), every answer that is not a 200 a `SLOT_TAKEN` (the losers bar, so a 503 the line could not serve inside its wait fails here on either kind), and each winner really exists. A burst that was configured and produced fewer driver files than fired, a driver that missed its moment, or one that fired part of its plan **fails** that burst with its reason (#3222), never a skipped bar. Each burst's report line states what its ladder held and how many were free at the slot when planned, since that is what the control was worth (#2278, #3429) |
+| the burst's refusals | no `SLOT_TAKEN` while the slot still answers available once the burst settled, by every driver's probe of `/api/bookings/bookable` (#3429). Free on the requested rung itself **fails on any build**; free a rung or more down **fails naming #3338** on a deployment that says a crowd walks the ladder, is **named, not failed**, on one that says it stops (the rule before #3437), and **cannot conclude** on one that said nothing. A probe that could not be used (refused, unreadable, never recorded, sent before the burst settled, or probes that disagree) **cannot conclude**, never a pass |
+| the tier drop | the drop burst only (#3429), held to the declared rule. On `walks`: every confirm wins (a `SLOT_TAKEN` the slot still answers available for has already failed the refusals bar; one where the slot was honestly spent means the crowd outran the ladder and **cannot conclude**), and at least one winner says it was booked below the requested rung, or it **cannot conclude** (an answer that does not say which rung is never read as dropped). On `stops`: it must see a `SLOT_TAKEN` while a rung below is free, the defect that build declares, or it **cannot conclude**. With no declared rule it **cannot conclude** |
 | the burst's line | every answered confirm in the burst carried `x-loadtest-confirm-line: shared` (#3325). Otherwise it fails naming the counts by line and reason (`shared/ok 96, fallback/reach-timeout 3, no line header 1`). A deployment that says nothing at all fails as "the deployment did not say which line served the burst", which is every run until the shared line ships: nothing to object to is never a pass (L98). The share of the burst's confirms that took a `ladder` key is **reported**, not barred |
-| the burst's speed | every `SLOT_TAKEN` was answered within `BURST_LOSER_LAG_MS` (2,000ms) of the burst's **last** 200, both read on the deployment's own `x-loadtest-answered-at` stamps rather than four runners' clocks (#3325). The last winner, not the first, because a crowd walking a ladder produces one winner per free advisor at different moments. It **fails as unmeasured**, never passes, when any burst answer carries no readable stamp, when nobody won (no winner to measure against), and when nobody lost (nothing tested) |
+| the burst's speed | the **refusal control** only (#3429): every `SLOT_TAKEN` was answered within `BURST_LOSER_LAG_MS` (2,000ms) of the burst's **last** 200, both read on the deployment's own `x-loadtest-answered-at` stamps rather than four runners' clocks (#3325). The last winner, not the first, because a crowd walking a ladder produces one winner per free advisor at different moments. Once a crowd walks the ladder its losers are still answered from a leader's verdict, now the verdict of the confirm that spent the WHOLE ladder, so the bar keeps its meaning: how soon a crowd is told once the last free advisor anywhere on the ladder is gone. It **fails as unmeasured**, never passes, when any burst answer carries no readable stamp, when nobody won (no winner to measure against), and when nobody lost (nothing tested). The drop burst is not asked it: on a build that walks it has no losers, and "every confirm wins" already bounds its time, because a confirm the line cannot serve inside its wait answers a 503; its report line gives the first to last winner's spread instead, never a bar |
 | freshness | the worst oldest-bucket age across the window under 6 minutes |
 | the per address ceiling | its own step, run AFTER the steady pass so it has the API key's budget to itself, sends from one address until the deployment CREDITS a refusal to the per address ceiling, up to past the exact 1,200 an hour cap. It reads back both echoes: the address it was keyed on (unidentified, several, or unechoed each get their own conclusion) and WHICH ceiling refused, so a per key refusal is never counted as proof of the per address one (#2339) |
 | confirm startup | what a lead waits BEFORE the confirm begins, read from the run's own archived log and judged only on the confirms that were their isolate's FIRST request by the Worker's own count (`isolate_invocation_index=0` on the confirm's `confirm answered` line: no earlier HTTP request, cron tick or receipt had run the app on that isolate, #3418), under `REQUEST_STARTUP_P95_MS` (what is left of the latency bar once the confirm's own CPU share is taken out). Three ways it FAILS without a slow start: no archive at all, an archive holding nothing readable (the stream is written under a `wrangler tail` timeout, so its last line is routinely half written), and a reading in which nothing was its isolate's first request (said as a reading that broke, unless the module stamp shows confirms that loaded the confirm's code on an isolate already running, in which case isolates started on other requests first and it says that instead). Two more since #3418: a reading in which no confirm carried the invocation index (an older deployment, or the answer line lost), and one in which SOME did not, because a first request among them would be missing from the population judged. Each has its own sentence, because nothing to check is never a pass (#2340, L98). The bar used to judge the module stamp's cold (the confirm module evaluated inside the request), which also counts the first CONFIRM on an isolate that had already run the app: run 37520312761 printed 8 cold by the stamp and 4 by the Worker, and the 4 the stamp alone counted had no gap at all between the invocation starting and the Worker's handler being entered, against 585 to 1,021ms on the 4 real first requests. Its cold p95 was 2801ms either way, because the slowest was a real first request. The stamp now only names where it disagrees, on the report's wall time line, which states one count. The report's "wait before the profile, by span" line splits the wait this bar judges, from marks each confirm takes at fixed points (Worker entry, handler, auth, the first line call, the line's answer, the person decision, the profile), filed cold and warm. It names no cause on its own: on run 37390071571 the confirm line, not only the bundle, was in that wait. Note the p95 of a handful of cold confirms (4 on run 37520312761, #3418) is the slowest of them (`percentiles` takes `s[floor(0.95 n)]`), so with a typical run's cold count this bar reads as every cold confirm under the bound. Two more report lines beside it (#3354), neither a bar. "By origin" files every confirm under the Worker version that served it and the leg that sent it (each sender names its leg on an `x-loadtest-leg` header: the four driver modes, `preflight` and `ceiling`), with each group's cold count, its slowest cold confirm and its warm p95. Read on run 37390071571's archive, the slowest cold confirm (2782ms) came from the main deployment, not from the fault leg's redeploy (whose four were at most 2275ms). "The shared line's wait" splits each traced confirm's `wait_line_ms` by the line object's own log of the calls it sent while waiting: polls (held behind a leader), the object's work on every other call, and what is left, which is the network, the object starting and the client's own work between calls. The client sends a trace only under SLATE_LOADTEST, so the object logs nothing for a production call. A traced confirm whose calls never reached the archive is counted as missing, never as a split of zeroes |
@@ -1058,6 +1127,32 @@ labelled as the absolute time the line added per confirm. It sits beside the spe
 ratio bar because the ratio alone hides an overhead the at rest baseline pays too. A
 confirm with no readable time is counted as unread, never scored zero, and with no
 readable time anywhere the percentile is null rather than 0.
+
+### The burst, judged against the build's own rule (#3429)
+
+A run can happen before #3437 merges, so the judge never assumes which build it
+measured: each burst is held to the confirm crowd rule its drivers read from the
+deployment, and neither build passes a bar that never asked. What each burst shows,
+and how it is read:
+
+| | build that says `stops` (before #3437) | build that says `walks` (#3437) |
+|---|---|---|
+| refusal control | the top rung's free advisors win, the rest `SLOT_TAKEN`, and the slot still answers available a rung down: #3338's known defect, **named on the burst and in the summary, not failed** | at most the ladder's capacity wins, the rest `SLOT_TAKEN`, and the slot answers taken: **passes**. A `SLOT_TAKEN` while it still answers available **fails naming #3338** |
+| tier drop burst | the top rung's one advisor wins and the rest are `SLOT_TAKEN` while a rung below is free: the control that the defect is visible, **named, not failed**. No such `SLOT_TAKEN` at all **cannot conclude** | every confirm wins, at least one a rung down, on distinct advisors: **passes**. A `SLOT_TAKEN` while a rung below is free **fails naming #3338** |
+
+Either way, a slot still free on the REQUESTED rung itself while confirms were told
+it was taken fails on any build, because that is not #3338's shape. A deployment that
+declares no rule (one built before #3429) leaves the drop burst nothing to be held to,
+and it cannot conclude.
+
+**Cannot conclude is its own outcome.** A clause that could not conclude is listed
+under "What the bursts could not conclude" in the report, beside the findings and
+never among them, and the burst's line says COULD NOT CONCLUDE. On a run with no
+finding the verdict is **INCOMPLETE** (exit 2) with every figure still measured, never
+a pass (L98); a real finding anywhere outranks it and the run fails. A declaration
+that disagrees with the build is caught in both directions: a build that walks while
+saying `stops` gives a drop burst where everyone won, which cannot conclude, and one
+that stops while saying `walks` fails the drop burst naming #3338.
 
 **Subrequests are deliberately not a bar**, and that is a decision rather than an
 omission. Cloudflare's observability exposes **no subrequest counter**

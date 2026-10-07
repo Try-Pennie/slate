@@ -1,33 +1,39 @@
 /**
- * What pool the burst fires at, and how strong that makes the control (#2278).
+ * Which ladders the run's bursts fire at, and why (#2278, #3325, #3429).
  *
- * The burst leg fires 100 simultaneous requests at ONE slot, and the control rests
- * on that slot's pool being ONE agent deep: contention across three agents proves
- * much less than contention on one. Nothing measured it. The code was a hand
- * maintained constant, the seeded roster gave it three, and a live run answered
- * three 200s on three different agents, which is correct behaviour and a
- * materially weaker control than the one intended.
+ * The burst used to aim at the shallowest POOL, because a crowd of a hundred against a
+ * pool one agent deep was "exactly one 200 and the rest SLOT_TAKEN" by construction.
+ * #3338 made a crowd walk the tier ladder like any confirm (#3437), so that control now
+ * rests on the code's whole LADDER rather than its top rung: a hundred confirms at 120,
+ * whose lower rungs are the whole Low tier, mostly win, and the refusal path and the
+ * line's settle path go untested. So the run fires two kinds of burst, each chosen by
+ * measuring the branch's own roster and bucket rows through the booker's own
+ * predicates (L107), never from a hand maintained code (#2278):
  *
- * The constant rots as well as being unmeasured: production's Low plus Beyond pool
- * emptied on 2026-09-10 (#2152) and it had to be moved by hand from 122 to 222 on
- * the morning of the next run (#2319).
+ * - the REFUSAL control (`refusalLadders`) fires at the ladder whose WHOLE capacity,
+ *   the distinct advisors across every rung with the Low exclusion applied, is the
+ *   smallest, and only at one genuinely smaller than its crowd. A ladder is a hard
+ *   bound on what any slot of it can book, so the crowd outnumbering it means somebody
+ *   is refused whatever the slot. No such ladder is a refusal of the setup by name,
+ *   never a smaller crowd: "winners equal capacity" is not a bar (L63).
+ * - the DROP burst (`dropLadders`) fires at a ladder whose top rung is the shallowest,
+ *   which has a rung below it, and which holds at least twice its crowd, at a slot
+ *   where the top rung has somebody free and the ladder has room for everyone
+ *   (`dropSlotFit`). On a build that walks the ladder every confirm wins.
  *
- * So the setup MEASURES every pool through the booker's own predicate, asks the
- * shallowest ones what they are offering, fires at the first that offers anything,
- * and reports the depth it actually ran at.
- *
- * Two things this deliberately does NOT do. It never FAILS on depth, because the
- * judge asks one winner per AGENT (#2273), which is the real invariant and holds
- * at any depth, so a run red for a roster with no one deep pool is red for a
- * property of the roster (L36). And an unmeasured depth never renders as a number:
- * "nobody measured it" and "it was one deep" are the two states this exists to
- * tell apart (L98, L11).
+ * Each burst is split across two codes of ONE fallback ladder, so the shared confirm
+ * line is proved across codes and not only within one (#3325).
  *
  * Pure, so `scripts/test-loadtest-burst-target.ts` drives it with no network and no
  * database.
  */
 import { ladderGroupOf } from "../../src/lib/booking/line-key.ts";
 import { poolKeyFor, type PoolInput } from "../../src/lib/availability/pool-key.ts";
+import { eligibleFromRoster } from "../../src/lib/availability/pool.ts";
+import { withoutLowCarriers } from "../../src/lib/availability/low-exclusion.ts";
+import { rungExcludesLow, tierLadder } from "../../src/lib/routing/tiers.ts";
+import type { Attributes } from "../../src/lib/db/types.ts";
+import { burstRequestsPerDriver, type BurstCapacity, type BurstKind, type BurstPlan, type PlannedBurst } from "./book-plan.ts";
 
 /** One bucket code and how many agents its pool resolves to. */
 export interface PoolDepth {
@@ -35,69 +41,15 @@ export interface PoolDepth {
   depth: number;
 }
 
-/** What the run knows about the depth the burst actually ran at. */
-export type BurstDepthReading =
-  | { measured: true; code: string; depth: number }
-  | { measured: false; code: string; why: string };
-
-/**
- * The codes to ask availability about, shallowest pool first.
- *
- * A pool with NOBODY in it is not a candidate: it can never offer a time, so
- * asking spends one of the availability reads the setup has to live inside for
- * nothing, and a run of empty answers would end in the "offered nothing" refusal
- * naming a pool that was never the problem.
- *
- * Ties break on the CODE, so two runs against one roster ask the same question.
- * An order settled by whatever the read happened to return makes the burst a
- * different measurement each time for no reason a reader could see (L419).
- *
- * `limit` is what bounds the availability reads: that endpoint has its own per
- * address ceiling (30 a minute) and the setup shares its address with everything
- * else the job does.
- */
-export function burstCandidateOrder(depths: readonly PoolDepth[], limit: number): string[] {
-  if (limit <= 0) return [];
-  return depths
-    .filter((d) => d.depth > 0)
-    .slice()
-    .sort((a, b) => (a.depth !== b.depth ? a.depth - b.depth : a.code.localeCompare(b.code)))
-    .slice(0, limit)
-    .map((d) => d.code);
-}
-
-/**
- * The sentence the report carries about what this run's burst actually proved.
- *
- * Three readings, never two: one deep, deeper than one, and not measured. The
- * third is the one the issue is about, and it must not be able to render as a
- * number, because a report saying nothing about depth reads exactly like a report
- * about a one deep pool to anybody who knows what the control is for.
- */
-export function burstControlStrength(reading: BurstDepthReading): string {
-  if (!reading.measured) {
-    return (
-      `the depth of the burst's pool (${reading.code}) was NOT measured (${reading.why}), so how ` +
-      "strong this control was is unknown: contention on one agent and contention spread over " +
-      "several are the two things it cannot tell apart"
-    );
-  }
-  if (reading.depth === 1) {
-    return (
-      `the burst ran against ${reading.code}, a pool 1 agent deep, which is the strongest form of ` +
-      "this control: every request after the winner met the same agent"
-    );
-  }
-  return (
-    `the burst ran against ${reading.code}, a pool ${reading.depth} agents deep, so contention was ` +
-    `spread over ${reading.depth} agents and the control is weaker than a one deep pool would be. ` +
-    "The bar itself still holds: it asks for one winner per agent, not one winner"
-  );
-}
-
 /** One bucket's pool inputs and its code, as the app's own `listPoolBuckets` reads them. */
 export interface PoolRow extends PoolInput {
   code: string;
+}
+
+/** A roster agent as the capacity math needs it: bookable, live, not a test agent. */
+export interface RosterAgent {
+  id: string;
+  attributes: Attributes | null;
 }
 
 /**
@@ -134,39 +86,180 @@ export function siblingCodes(code: string, poolKeyByCode: ReadonlyMap<string, st
 }
 
 /**
- * The code pairs to ask availability about, shallowest pool first (#3325): each code
- * that has at least one sibling, paired with its first sibling in code order so two
- * runs against one roster split the burst the same way (L419). A code with no sibling
- * is skipped rather than fired alone, because a burst on one code never exercises the
- * line ACROSS codes, which is what the split is for.
+ * Who `code`'s ladder can book, from the roster (#3429): the top rung's advisors, and
+ * every distinct advisor across the whole ladder.
  *
- * ONE pair per ladder: siblings resolve to the same pools and so offer the same times,
- * and asking a second pair of one ladder would spend two of the bounded availability
- * reads on an answer already known.
+ * Each rung through the booker's OWN eligibility judge (`eligibleFromRoster`: criteria,
+ * hand named members, and the fallback advisor when the criteria match nobody), with
+ * the Low exclusion applied on exactly the rungs the booking cascade applies it to
+ * (`rungExcludesLow`), so this is the set the cascade could reach rather than a second
+ * copy of the rule (L41). A rung with no bucket adds nobody, as the cascade skips it.
+ * The agents are the bookable, live, non test roster, which is also the set a fallback
+ * advisor must be in to be routable.
  */
-export function burstPairOrder(
-  depths: readonly PoolDepth[],
-  poolKeyByCode: ReadonlyMap<string, string>,
-  limit: number,
-): { code: string; sibling: string }[] {
-  const paired = new Map<string, string>();
-  for (const d of depths) {
-    const sibling = siblingCodes(d.code, poolKeyByCode)[0];
-    if (sibling !== undefined) paired.set(d.code, sibling);
+export function ladderRosterIds(
+  code: string,
+  rowsByCode: ReadonlyMap<string, PoolRow>,
+  agents: readonly RosterAgent[],
+): { rung0: string[]; ladder: Set<string> } {
+  const roster = agents.map((a) => ({ id: a.id, attributes: a.attributes ?? {} }));
+  const ladder = new Set<string>();
+  let rung0: string[] = [];
+  for (const [i, rung] of tierLadder(code).entries()) {
+    const row = rowsByCode.get(rung);
+    if (!row) continue;
+    const eligible = eligibleFromRoster(
+      { criteria: row.criteria, fallback_user_id: row.fallbackUserId },
+      roster,
+      new Set(row.memberIds),
+    );
+    const ids = rungExcludesLow(code, rung) ? withoutLowCarriers(eligible.ids, eligible.lowIds) : eligible.ids;
+    if (i === 0) rung0 = ids;
+    for (const id of ids) ladder.add(id);
   }
-  const ordered = burstCandidateOrder(
-    depths.filter((d) => paired.has(d.code)),
-    depths.length,
-  );
-  const seenLadders = new Set<string>();
-  const out: { code: string; sibling: string }[] = [];
-  for (const code of ordered) {
-    if (out.length >= limit) break;
-    // Non null: a code is only paired when its ladder has a signature.
-    const ladder = ladderSignature(code, poolKeyByCode)!;
-    if (seenLadders.has(ladder)) continue;
-    seenLadders.add(ladder);
-    out.push({ code, sibling: paired.get(code)! });
+  return { rung0, ladder };
+}
+
+/** One ladder a burst could fire at: a code with a sibling sharing its whole ladder. */
+export interface LadderCandidate {
+  /** The ladder's first code in code order, which names it. */
+  code: string;
+  /** The next code of the same ladder, which the burst is split with. */
+  sibling: string;
+  /** How many rungs the ladder has (`tierLadder`). */
+  rungs: number;
+  /** Advisors the top rung can book, from the roster. */
+  rung0Roster: number;
+  /** Distinct advisors the whole ladder can book, from the roster: a bound at any slot. */
+  ladderRoster: number;
+}
+
+/**
+ * Every ladder a burst could fire at, ONE per ladder, each named by its first code and
+ * paired with its next one in code order, so two runs against one roster split a burst
+ * the same way (L419). Siblings resolve to the same pools and offer the same times, so
+ * a second pair of one ladder would spend availability reads on an answer already
+ * known. A code with no sibling is left out, because a burst on one code never
+ * exercises the line ACROSS codes, which is what the split is for.
+ */
+export function ladderCandidates(rows: readonly PoolRow[], agents: readonly RosterAgent[]): LadderCandidate[] {
+  const keys = poolKeysByCode(rows);
+  const byCode = new Map(rows.map((r) => [r.code, r]));
+  const seen = new Set<string>();
+  const out: LadderCandidate[] = [];
+  for (const code of [...byCode.keys()].sort((a, b) => a.localeCompare(b))) {
+    const signature = ladderSignature(code, keys);
+    if (signature === null || seen.has(signature)) continue;
+    const sibling = siblingCodes(code, keys).find((c) => c > code);
+    if (sibling === undefined) continue;
+    seen.add(signature);
+    const ids = ladderRosterIds(code, byCode, agents);
+    out.push({
+      code,
+      sibling,
+      rungs: tierLadder(code).length,
+      rung0Roster: ids.rung0.length,
+      ladderRoster: ids.ladder.size,
+    });
   }
   return out;
+}
+
+/**
+ * The ladders a refusal control can fire at, best first (#3429): those that can book
+ * somebody and whose WHOLE capacity is smaller than the crowd, smallest first so the
+ * crowd outnumbers its capacity by the most, then the fewest rungs (each one a hop a
+ * walking follower pays inside the line's wait), then the code (L419).
+ */
+export function refusalLadders(candidates: readonly LadderCandidate[], crowd: number): LadderCandidate[] {
+  return candidates
+    .filter((c) => c.ladderRoster >= 1 && c.ladderRoster < crowd)
+    .slice()
+    .sort((a, b) => a.ladderRoster - b.ladderRoster || a.rungs - b.rungs || a.code.localeCompare(b.code));
+}
+
+/**
+ * The ladders a drop burst can fire at, best first (#3429): somebody on the top rung to
+ * take its last advisor, a rung below to drop to, and room in the whole ladder for at
+ * least `headroom` times the crowd. The shallowest top rung first, so the crowd
+ * outnumbers it by the most, then the fewest rungs, then the code. A ladder named in
+ * `exclude` (the refusal control's) is never one, so the two bursts never share a pool.
+ */
+export function dropLadders(
+  candidates: readonly LadderCandidate[],
+  crowd: number,
+  headroom: number,
+  exclude: readonly string[],
+): LadderCandidate[] {
+  return candidates
+    .filter((c) => !exclude.includes(c.code) && c.rung0Roster >= 1 && c.rungs >= 2 && c.ladderRoster >= headroom * crowd)
+    .slice()
+    .sort((a, b) => a.rung0Roster - b.rung0Roster || a.rungs - b.rungs || a.code.localeCompare(b.code));
+}
+
+/**
+ * Who is free at one slot, from the booker's own candidate read on each rung in ladder
+ * order (#3429): the top rung's count, and the distinct advisors across every rung. A
+ * rung with no bucket is an empty list.
+ */
+export function ladderFreeFrom(perRung: readonly (readonly string[])[]): { rung0Free: number; ladderFree: number } {
+  const all = new Set<string>();
+  for (const ids of perRung) for (const id of ids) all.add(id);
+  return { rung0Free: perRung[0]?.length ?? 0, ladderFree: all.size };
+}
+
+/**
+ * Whether a drop burst can fire at a slot, or why not (#3429). Three things, each its
+ * own sentence (L11): somebody free on the top rung, so the crowd meets its LAST
+ * advisor and the build's rule decides what the rest are told; fewer free there than
+ * the crowd, so somebody has to drop; and room across the ladder for `headroom` times
+ * the crowd, so a booking made between the plan and the burst cannot turn the drop
+ * burst into a refusal.
+ */
+export function dropSlotFit(
+  free: { rung0Free: number; ladderFree: number },
+  crowd: number,
+  headroom: number,
+): string | null {
+  if (free.rung0Free < 1) {
+    return "the requested rung has nobody free at it, so the crowd would never meet that rung's last advisor";
+  }
+  if (free.rung0Free >= crowd) {
+    return `the requested rung alone has ${free.rung0Free} free, as many as the crowd of ${crowd}, so nobody would need to drop`;
+  }
+  if (free.ladderFree < headroom * crowd) {
+    return `the ladder has ${free.ladderFree} free, under ${headroom} times the crowd of ${crowd}`;
+  }
+  return null;
+}
+
+/**
+ * The plan every driver fires (#3429): one burst per entry of the run's sequence, each at
+ * its own moment, the refusal bursts taking the refusal slots in order and the drop
+ * burst the drop slot, each with its own ladder's two codes, its kind's share and the
+ * capacity measured at its own slot. A sequence asking for more slots than were chosen
+ * THROWS rather than planning a burst with no slot.
+ */
+export function assembleBurstPlan(
+  sequence: readonly BurstKind[],
+  moments: readonly number[],
+  refusal: { codes: [string, string]; slots: readonly string[]; capacities: readonly BurstCapacity[] },
+  drop: { codes: [string, string]; slot: string; capacity: BurstCapacity },
+): BurstPlan {
+  let nextRefusal = 0;
+  const bursts = sequence.map((kind, i): PlannedBurst => {
+    const startAtMs = moments[i];
+    if (startAtMs === undefined) throw new Error(`burst ${i + 1} has no moment`);
+    if (kind === "drop") {
+      return { kind, codes: drop.codes, slot: drop.slot, startAtMs, perDriver: burstRequestsPerDriver(kind), capacity: drop.capacity };
+    }
+    const slot = refusal.slots[nextRefusal];
+    const capacity = refusal.capacities[nextRefusal];
+    nextRefusal += 1;
+    if (slot === undefined || capacity === undefined) {
+      throw new Error(`burst ${i + 1} is a refusal control and only ${refusal.slots.length} refusal slots were chosen`);
+    }
+    return { kind, codes: refusal.codes, slot, startAtMs, perDriver: burstRequestsPerDriver(kind), capacity };
+  });
+  return { bursts };
 }

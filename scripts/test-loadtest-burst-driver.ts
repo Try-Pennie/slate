@@ -44,14 +44,52 @@ function requestNumber(externalId: string): number {
   return Number(externalId.split("-").pop());
 }
 
+/** What the stub saw, so a test can say what the driver asked and when. */
+interface Seen {
+  codes: string[];
+  bodies: number;
+  /** #3429: each bookable probe, with when it arrived. */
+  probes: { code: string; startIso: string; atMs: number }[];
+  /** #3429: how many times the driver asked the deployment for its crowd rule. */
+  versions: number;
+}
+
 async function withStub<T>(
-  run: (base: string, seen: { codes: string[]; bodies: number }) => Promise<T>,
+  run: (base: string, seen: Seen) => Promise<T>,
+  opts: { rule?: string | null } = {},
 ): Promise<T> {
-  const seen = { codes: [] as string[], bodies: 0 };
+  const seen: Seen = { codes: [], bodies: 0, probes: [], versions: 0 };
   const server = createServer((req, res) => {
     if (req.url?.startsWith("/api/availability")) {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ slots: SLOTS }));
+      return;
+    }
+    // #3429: the version answer a load test deployment sends, carrying its crowd rule
+    // (or not, the way a deployment before #3429 answers).
+    if (req.url === "/api/smoke/version" && req.method === "GET") {
+      seen.versions += 1;
+      const rule = opts.rule === undefined ? "walks" : opts.rule;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ commit: "abc1234", loadtest: true, faultPct: 0, ...(rule === null ? {} : { confirmCrowdRule: rule }) }));
+      return;
+    }
+    // #3429: the bookable probe, answered in the route's own shape.
+    if (req.url?.startsWith("/api/bookings/bookable") && req.method === "GET") {
+      const q = new URL(req.url, "http://stub").searchParams;
+      seen.probes.push({ code: q.get("bucketCode") ?? "", startIso: q.get("startIso") ?? "", atMs: Date.now() });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          bookable: true,
+          reason: "available",
+          requestedBucketCode: q.get("bucketCode"),
+          effectiveBucketCode: "130",
+          tierFallback: true,
+          rungsDropped: 1,
+          wouldAssign: { id: "agent-x", name: null, email: null },
+        }),
+      );
       return;
     }
     if (req.url === "/api/bookings" && req.method === "POST") {
@@ -76,7 +114,12 @@ async function withStub<T>(
         }
         const won = n % REQUESTS === 0;
         res.writeHead(won ? 200 : 409, headers);
-        res.end(JSON.stringify(won ? { outcome: "booked" } : { code: "SLOT_TAKEN" }));
+        // #3429: a 200 says which rung took it, the way the booking API's body does.
+        res.end(
+          JSON.stringify(
+            won ? { outcome: "booked", bucket: { code: "130", requestedCode: body.bucketCode, tierFallback: true, rungsDropped: 1 } } : { code: "SLOT_TAKEN" },
+          ),
+        );
       });
       return;
     }
@@ -117,9 +160,17 @@ async function runDriver(base: string, env: Record<string, string>): Promise<{ c
   }
 }
 
-function plan(startAts: number[]): BurstPlan {
-  return { codes: CODES, bursts: startAts.map((startAtMs, i) => ({ slot: SLOTS[i]!, startAtMs })) };
+/** #3429: a burst of the plan, each with its own kind, codes and share. */
+function burstOf(slot: string, startAtMs: number, kind: "refusal" | "drop" = "refusal", perDriver = REQUESTS) {
+  return { kind, codes: CODES, slot, startAtMs, perDriver, capacity: { ladderRoster: 16, rung0Free: 1, ladderFree: 9 } };
 }
+
+function plan(startAts: number[]): BurstPlan {
+  return { bursts: startAts.map((startAtMs, i) => burstOf(SLOTS[i]!, startAtMs)) };
+}
+
+/** The settle seam this test drives with: a short settle so the probe comes in under a second. */
+const SETTLE_MS = 600;
 
 const readFile = (path: string) => (existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as DriverResult) : null);
 
@@ -129,38 +180,63 @@ const readFile = (path: string) => (existsSync(path) ? (JSON.parse(readFileSync(
   const out = join(dir, `burst-${DRIVER}.json`);
   const startedAt = Date.now();
   const t = startedAt + 2_000;
+  // #3429: the middle burst is a drop burst of two requests a driver, so each burst's
+  // own share and kind are seen to reach the file.
+  const threeLegs: BurstPlan = { bursts: [burstOf(SLOTS[0]!, t), burstOf(SLOTS[1]!, t + 300, "drop", 2), burstOf(SLOTS[2]!, t + 600)] };
   const { code, stderr, seen } = await withStub(async (base, seen) => ({
     ...(await runDriver(base, {
       MODE: "burst",
       OUT: out,
-      BURST_REQUESTS: String(REQUESTS),
       BURST_GRACE_MS: "30000",
-      BURST_PLAN: JSON.stringify(plan([t, t + 300, t + 600])),
+      BURST_SETTLE_MS: String(SETTLE_MS),
+      BURST_PLAN: JSON.stringify(threeLegs),
     })),
     seen,
   }));
   const finishedAt = Date.now();
   eq(code, 0, `a driver that made every burst exits zero ${stderr.slice(0, 300)}`);
-  eq(seen.bodies, 3 * REQUESTS, "it fired every request of every burst");
+  eq(seen.bodies, 2 * REQUESTS + 2, "it fired every request of every burst, each burst its own share");
 
   const files = [0, 1, 2].map((i) => readFile(burstLegOut(out, i)));
   assert(files.every((f) => f !== null), "one file per burst, beside the driver's own name");
   for (const [i, f] of files.entries()) {
+    const share = i === 1 ? 2 : REQUESTS;
     eq(f?.mode, "burst", `burst ${i + 1}'s file is a burst file`);
     eq(f?.burstLeg?.index, i, `and says which burst it holds`);
     eq(f?.burstLeg?.of, 3, "out of how many");
     eq(f?.burstLeg?.slot, SLOTS[i], "at the slot the plan named");
     eq(f?.burstLeg?.codes, CODES, "split across the plan's two codes");
-    eq(f?.attempts.length, REQUESTS, "holding its whole burst");
+    eq(f?.burstLeg?.kind, i === 1 ? "drop" : "refusal", "of the kind the plan named (#3429)");
+    eq(f?.burstLeg?.capacity, { ladderRoster: 16, rung0Free: 1, ladderFree: 9 }, "carrying what the setup measured");
+    eq(f?.planned, share, "planning its own share");
+    eq(f?.attempts.length, share, "holding its whole burst");
     eq(
       f?.attempts.map((a) => a.code),
-      Array.from({ length: REQUESTS }, (_, n) => burstCodeFor(CODES, DRIVER, n)),
+      Array.from({ length: share }, (_, n) => burstCodeFor(CODES, DRIVER, n)),
       "each request asking for the code the split gives it",
     );
     assert(f?.attempts.every((a) => a.startIso === SLOTS[i]) === true, "every request at that burst's slot");
+    // #3429: the deployment's crowd rule, read once and recorded on every burst.
+    eq(f?.crowdRule, { state: "read", value: "walks" }, "the crowd rule the deployment declared");
+    // #3429: the slot probed once the burst settled, through the driver's own reader.
+    const probe = f?.probe;
+    assert(
+      probe?.kind === "read" && probe.bookable && probe.rungsDropped === 1 && probe.effectiveCode === "130",
+      `the slot's probe is recorded as the deployment answered it (got ${JSON.stringify(probe)})`,
+    );
+    eq(probe?.code, burstCodeFor(CODES, DRIVER, 0), "asked of the code this driver opened on");
+    const moment = threeLegs.bursts[i]!.startAtMs;
+    assert(probe !== undefined && probe.sentAtMs >= moment + SETTLE_MS, `and sent only once the burst settled (${probe ? probe.sentAtMs - moment : "none"}ms after its moment)`);
+    // A 200 records which rung took it; a refusal records nothing.
+    const won = f?.attempts.find((a) => a.status === 200);
+    eq(won?.rungsDropped, 1, "a winner records the rung its answer named");
+    assert(f?.attempts.filter((a) => a.status !== 200).every((a) => a.rungsDropped === undefined) === true, "and a refusal names no rung");
   }
+  eq(seen.versions, 1, "the crowd rule is asked once, before the first burst");
+  eq(seen.probes.length, 3, "and the slot is probed once per burst");
+  eq(seen.probes.map((p) => p.startIso), SLOTS, "each at its own burst's slot");
   const ids = files.flatMap((f) => f?.attempts.map((a) => a.externalId) ?? []);
-  eq(new Set(ids).size, 3 * REQUESTS, "no two of the run's burst requests share an external id");
+  eq(new Set(ids).size, 2 * REQUESTS + 2, "no two of the run's burst requests share an external id");
   eq(new Set(seen.codes).size, 2, "and the deployment was asked for both codes");
 
   const normal = files[1]!.attempts[0]!.echo!;
@@ -194,8 +270,8 @@ const readFile = (path: string) => (existsSync(path) ? (JSON.parse(readFileSync(
     ...(await runDriver(base, {
       MODE: "burst",
       OUT: out,
-      BURST_REQUESTS: String(REQUESTS),
       BURST_GRACE_MS: "30000",
+      BURST_SETTLE_MS: String(SETTLE_MS),
       BURST_PLAN: JSON.stringify(plan([now - 120_000, now + 2_000, now + 2_300])),
     })),
     seen,
@@ -204,9 +280,33 @@ const readFile = (path: string) => (existsSync(path) ? (JSON.parse(readFileSync(
   const first = readFile(burstLegOut(out, 0));
   eq(first?.burstSkipped, "missed", "the missed burst's file says so");
   eq(first?.attempts.length, 0, "having fired nothing late");
+  eq(first?.probe, undefined, "and probed nothing for a burst it never fired");
   eq(readFile(burstLegOut(out, 1))?.attempts.length, REQUESTS, "and the bursts after it still fired");
   eq(readFile(burstLegOut(out, 2))?.attempts.length, REQUESTS, "all of them");
   eq(seen.bodies, 2 * REQUESTS, "so the deployment saw exactly the bursts that were on time");
+  eq(seen.probes.length, 2, "and only those were probed");
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// --- #3429: a deployment that does not say its crowd rule is recorded as not saying --
+{
+  const dir = mkdtempSync(join(tmpdir(), "slate-3429-"));
+  const out = join(dir, `burst-${DRIVER}.json`);
+  const t = Date.now() + 2_000;
+  const { code } = await withStub(
+    async (base) =>
+      runDriver(base, {
+        MODE: "burst",
+        OUT: out,
+        BURST_GRACE_MS: "30000",
+        BURST_SETTLE_MS: String(SETTLE_MS),
+        BURST_PLAN: JSON.stringify({ bursts: [burstOf(SLOTS[0]!, t)] }),
+      }),
+    { rule: null },
+  );
+  eq(code, 0, "a deployment that states no rule does not stop the burst");
+  const f = readFile(burstLegOut(out, 0));
+  eq(f?.crowdRule?.state, "absent", "its silence is recorded as absent, for the judge to refuse to guess");
   rmSync(dir, { recursive: true, force: true });
 }
 

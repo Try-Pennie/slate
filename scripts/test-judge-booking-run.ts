@@ -31,7 +31,15 @@ import {
   type JudgedBooking,
 } from "./loadtest/judge-booking-run.ts";
 import type { BookingAttempt, DriverResult } from "./loadtest/book-plan.ts";
-import { idPrefix, burstCodeFor, externalIdFor } from "./loadtest/book-plan.ts";
+import {
+  idPrefix,
+  burstCodeFor,
+  externalIdFor,
+  burstSettleAtMs,
+  BURST_GRACE_DEFAULT_MS,
+  REQUEST_TIMEOUT_MS,
+} from "./loadtest/book-plan.ts";
+import { readBurstProbe, readCrowdRule, type BurstProbe, type CrowdRuleReading } from "./loadtest/burst-probe.ts";
 import {
   answeredAtEchoHeader,
   confirmLineEchoHeaders,
@@ -157,6 +165,47 @@ const TARGET = { drivers: 4, perDriverPerMinute: 15, minutes: 10 };
 const BURST_AT = Date.parse("2026-09-15T13:50:00.000Z");
 const PER_DRIVER = TARGET.perDriverPerMinute * TARGET.minutes;
 
+/**
+ * #3429: what a burst driver read of the deployment's crowd rule, through the driver's
+ * OWN reader over a version body in the route's shape, so no fixture can hold a rule
+ * the driver could never record (L48).
+ */
+function crowdRuleOf(rule: string | undefined): CrowdRuleReading {
+  return readCrowdRule(200, {
+    commit: "abc1234",
+    loadtest: true,
+    faultPct: 0,
+    ...(rule === undefined ? {} : { confirmCrowdRule: rule }),
+  });
+}
+
+/**
+ * #3429: one driver's probe of a burst's slot, sent `afterMs` past the moment the burst
+ * settled (on the run's own defaults), read through the driver's own reader from a body
+ * in `/api/bookings/bookable`'s shape.
+ */
+function probeOf(
+  code: string,
+  momentMs: number,
+  answer: { bookable: boolean; reason: string; rungsDropped?: number; effective?: string | null },
+  afterMs = 1_000,
+): BurstProbe {
+  return readBurstProbe({
+    code,
+    sentAtMs: burstSettleAtMs(momentMs, BURST_GRACE_DEFAULT_MS, REQUEST_TIMEOUT_MS) + afterMs,
+    status: 200,
+    body: {
+      bookable: answer.bookable,
+      reason: answer.reason,
+      requestedBucketCode: code,
+      effectiveBucketCode: answer.effective ?? (answer.bookable ? code : null),
+      tierFallback: (answer.rungsDropped ?? 0) > 0,
+      rungsDropped: answer.rungsDropped ?? 0,
+      wouldAssign: answer.bookable ? { id: "agent-x", name: null, email: null } : null,
+    },
+  });
+}
+
 function attempt(driver: number, n: number, over: Partial<BookingAttempt> = {}): BookingAttempt {
   return {
     driver,
@@ -226,6 +275,10 @@ function passing(): JudgeInput {
       startedAtMs: T0,
       finishedAtMs: T0 + 2000,
       burstLeg: { index: 0, of: 1, slot: "2026-09-16T15:00:00.000Z", codes: ["122"], startAtMs: BURST_AT },
+      // #3429: the deployment's crowd rule, and the slot probed once the burst had
+      // settled: the ladder spent, so every SLOT_TAKEN below was honest.
+      crowdRule: crowdRuleOf("walks"),
+      probe: probeOf("122", BURST_AT, { bookable: false, reason: "slot_taken" }),
       attempts: [
         burstWinner,
         ...Array.from({ length: 24 }, (_, i) =>
@@ -2213,6 +2266,9 @@ function legFile(leg: number, driver: number): DriverResult {
     startedAtMs: legAt(leg) - 1000,
     finishedAtMs: legAt(leg) + 2000,
     burstLeg: { index: leg, of: 3, slot: LEG_SLOTS[leg]!, codes: [...SIBLINGS], startAtMs: legAt(leg) },
+    // #3429: every driver read the rule and probed the slot once the burst settled.
+    crowdRule: crowdRuleOf("walks"),
+    probe: probeOf(burstCodeFor(SIBLINGS, driver, 0), legAt(leg), { bookable: false, reason: "slot_taken" }),
     attempts,
   };
 }
@@ -2816,6 +2872,326 @@ const legAttempts = (i: JudgeInput, leg: number) =>
   const refusedRun = { mode: "cold" as const, planned: 2, attempts: [attempt(1, "aaaa1111-x", 200), { ...attempt(2, "bbbb2222-x", 409), outcome: "SLOT_TAKEN" }] };
   const refusedText = coldAfterDeployText({ expected: 2, result: refusedRun, reading: withVersions });
   assert(/2 confirms answered \(1 refused rather than booked\)/.test(refusedText), `a refused confirm is named on the line (got: ${refusedText})`);
+}
+
+// =====================================================================================
+// #3429: the refusal control, the tier drop burst, and the probe after each
+// =====================================================================================
+//
+// Once a crowd walks the tier ladder (#3338, #3437), a SLOT_TAKEN is honest only when
+// the ladder is really spent. After every burst each driver asks the deployment's own
+// `/api/bookings/bookable` whether the slot is still bookable, which runs the routing a
+// real book runs and is a reading no follower's SLOT_TAKEN consulted (L721). The judge
+// holds each burst to the confirm crowd rule the deployment SAYS it runs, so a run on a
+// build without #3437 is neither failed for #3338 nor passed by a bar that never asked.
+// Every clause below is driven in both directions from a passing run (L1), and every
+// outcome the contract names has a fixture that produces it (L151).
+
+/**
+ * A drop burst as the workflow fires it: four drivers of three requests on 120 and its
+ * sibling, at leg 1 of the three leg run. `walks` books every confirm, the first on
+ * 120's one advisor and the rest a rung down on distinct advisors; `stops` books the
+ * top rung's advisor and refuses the rest, the way every build before #3437 answers.
+ * The probe after it says the slot is still bookable a rung down, which it is under both
+ * rules, because 130 holds the whole Low tier.
+ */
+function dropLeg(i: JudgeInput, outcome: "walks" | "stops", rule: string | undefined): void {
+  const leg = 1;
+  const replaced = new Set(i.burstResults.filter((r) => r.burstLeg?.index === leg).flatMap((r) => r.attempts.map((a) => a.externalId)));
+  i.burstResults = i.burstResults.filter((r) => r.burstLeg?.index !== leg);
+  const files = [0, 1, 2, 3].map((driver): DriverResult => {
+    const attempts = Array.from({ length: 3 }, (_, k) => {
+      const n = 75 + driver * 3 + k;
+      const first = driver === 0 && k === 0;
+      const won = outcome === "walks" || first;
+      return attempt(driver, n, {
+        code: burstCodeFor(SIBLINGS, driver, k),
+        externalId: externalIdFor(idPrefix(RUN, "burst"), driver, n),
+        startIso: LEG_SLOTS[leg]!,
+        status: won ? 200 : 409,
+        outcome: won ? "booked" : "SLOT_TAKEN",
+        rungsDropped: won ? (first ? 0 : 1) : undefined,
+        echo: echoOf({}, legAt(leg) + 800 + driver * 300 + k * 100),
+      });
+    });
+    return {
+      runId: RUN,
+      driver,
+      mode: "burst",
+      planned: 3,
+      startedAtMs: legAt(leg) - 1000,
+      finishedAtMs: legAt(leg) + 4000,
+      burstLeg: {
+        index: leg,
+        of: 3,
+        slot: LEG_SLOTS[leg]!,
+        codes: [...SIBLINGS],
+        startAtMs: legAt(leg),
+        kind: "drop",
+        capacity: { ladderRoster: 74, rung0Free: 1, ladderFree: 40 },
+      },
+      crowdRule: crowdRuleOf(rule),
+      probe: probeOf(burstCodeFor(SIBLINGS, driver, 0), legAt(leg), { bookable: true, reason: "available", rungsDropped: 1, effective: "130" }),
+      attempts,
+    };
+  });
+  i.burstResults.push(...files);
+  const winners = files.flatMap((f) => f.attempts.filter((a) => a.status === 200));
+  i.bookings = [
+    ...i.bookings.filter((b) => !replaced.has(b.external_id ?? "")),
+    ...winners.map((a, k) => bookingFor(a, { assigned_user_id: k === 0 ? "agent-beyond-low" : `agent-low-${k}` })),
+  ];
+  i.bookingIdsWithBusyBlock = i.bookings.map((b) => b.id);
+}
+
+function withDrop(outcome: "walks" | "stops", rule: string | undefined, mutate: (i: JudgeInput) => void = () => {}) {
+  const input = threeBursts();
+  dropLeg(input, outcome, rule);
+  mutate(input);
+  return judgeBookingRun(input);
+}
+
+// --- the drop burst on a build that walks the ladder ---------------------------------
+{
+  const r = withDrop("walks", "walks");
+  eq(`${r.verdict} ${bars(r).join("|")}`, "pass ", "a drop burst where every confirm wins, a rung down on distinct advisors, passes");
+  const leg = r.measurements!.bursts[1]!;
+  eq(leg.kind, "drop", "and is read as the drop burst");
+  eq(leg.won, 12, "every one of its twelve won");
+  eq(leg.dropped, 11, "eleven of them a rung below the one asked for");
+  const text = burstLegText(leg);
+  assert(text.includes("tier drop burst") && text.includes("11 below the requested rung"), `its line names the kind and the drop (got: ${text})`);
+  assert(!r.findings.some((f) => f.bar === "the burst's speed"), "and a drop burst is never asked the loser speed question: it has no losers");
+}
+
+{
+  // #3338 itself: the crowd stops at the top rung's last advisor and every other
+  // confirm is told the slot is taken while a rung below is free. On a deployment
+  // that says it walks, that FAILS by name.
+  const r = withDrop("stops", "walks");
+  const f = r.findings.find((x) => x.bar === "the burst's refusals");
+  assert(f !== undefined, "eleven SLOT_TAKEN while the slot still answers available fail on a build that says it walks");
+  assert(
+    f !== undefined && f.detail.includes("burst 2 of 3") && f.detail.includes("#3338") && f.detail.includes("1 rung down") && f.detail.includes("130"),
+    `naming the burst, the issue, and where the slot was still free (got: ${f?.detail})`,
+  );
+  eq(r.verdict, "fail", "and the run fails");
+  eq(r.burstsUnconcluded, [], "with that one finding, not a second unconcluded clause about the same refusals");
+}
+
+{
+  // The SAME outcome on a deployment that says it stops at the rung (the rule before
+  // #3437) is the defect that build declares: expected, named, and not a failure.
+  const r = withDrop("stops", "stops");
+  eq(`${r.verdict} ${bars(r).join("|")}`, "pass ", "the old build's known defect does not fail the run");
+  const leg = r.measurements!.bursts[1]!;
+  assert(leg.notes.some((n) => n.includes("#3338") && n.includes("stops")), `and the burst says it saw #3338 on a build that declares it (got: ${JSON.stringify(leg.notes)})`);
+  const summary = burstsSummaryText(r.measurements!.bursts)!;
+  assert(summary.includes("#3338") && summary.includes("burst 2 of 3"), `so the summary never reads as a silent pass (got: ${summary})`);
+  const verdict = verdictText(r);
+  assert(
+    verdict.includes("PASS") && verdict.includes("#3338") && verdict.includes("stops at its rung"),
+    `and nor does the verdict line itself, which names the rule it held the run to (got: ${verdict})`,
+  );
+  // Control: a run on a walks build whose bursts all passed claims no known defect.
+  assert(!verdictText(withDrop("walks", "walks")).includes("#3338"), "control: a clean walks run's verdict names no defect");
+}
+
+{
+  // A build that says it stops but whose drop burst every confirm won could not show
+  // the defect it declares: the declaration is wrong or the crowd never contended.
+  // Learning nothing is never a pass (L98).
+  const r = withDrop("walks", "stops");
+  eq(r.verdict, "incomplete", "a stops build whose drop burst all won cannot conclude");
+  eq(r.exit, JUDGE_EXIT.incomplete, "on the incomplete exit");
+  assert(r.measurements !== null, "with every figure still measured, because only the burst could not conclude");
+  const u = r.burstsUnconcluded.find((x) => x.bar === "the tier drop");
+  assert(u !== undefined && u.detail.includes("could not show the defect"), `saying why (got: ${u?.detail})`);
+}
+
+{
+  // A deployment that never said which rule it runs leaves the drop burst nothing to be
+  // held to, whatever happened.
+  for (const rule of [undefined, "Walks"]) {
+    const r = withDrop("walks", rule);
+    eq(r.verdict, "incomplete", `a drop burst under ${rule === undefined ? "no declared rule" : "a rule nobody knows"} cannot conclude`);
+    const u = r.burstsUnconcluded.find((x) => x.bar === "the tier drop");
+    assert(u !== undefined && u.detail.includes("cannot be held to either rule"), `saying so (got: ${u?.detail})`);
+  }
+  // Control: a refusal control whose refusals were honest needs no rule at all.
+  const r = brokenThree((i) => {
+    for (const f of i.burstResults) f.crowdRule = crowdRuleOf(undefined);
+  });
+  eq(r.verdict, "pass", "control: honest refusals pass whatever the deployment declares");
+}
+
+{
+  // The crowd outran what the ladder held: SLOT_TAKEN, and the slot honestly taken.
+  // That is not #3338 and not a pass: the drop could not be shown.
+  const r = withDrop("stops", "walks", (i) => {
+    for (const f of i.burstResults.filter((x) => x.burstLeg?.index === 1)) {
+      f.probe = probeOf("120", legAt(1), { bookable: false, reason: "slot_taken" });
+    }
+  });
+  eq(r.verdict, "incomplete", "a drop burst refused by a really spent ladder cannot conclude");
+  assert(!r.findings.some((x) => x.bar === "the burst's refusals"), "and accuses nobody, since every refusal was honest");
+  const u = r.burstsUnconcluded.find((x) => x.bar === "the tier drop");
+  assert(u !== undefined && u.detail.includes("outran"), `saying the crowd outran the ladder (got: ${u?.detail})`);
+}
+
+{
+  // Every confirm won, and none says it landed below the top rung: the burst never
+  // showed a tier being dropped, so it proved nothing about #3338.
+  const r = withDrop("walks", "walks", (i) => {
+    for (const f of i.burstResults.filter((x) => x.burstLeg?.index === 1)) for (const a of f.attempts) a.rungsDropped = 0;
+  });
+  eq(r.verdict, "incomplete", "a drop burst that never dropped cannot conclude");
+  const u = r.burstsUnconcluded.find((x) => x.bar === "the tier drop");
+  assert(u !== undefined && u.detail.includes("never showed a tier being dropped"), `saying so (got: ${u?.detail})`);
+  const unsaid = withDrop("walks", "walks", (i) => {
+    for (const f of i.burstResults.filter((x) => x.burstLeg?.index === 1)) for (const a of f.attempts) delete a.rungsDropped;
+  });
+  const v = unsaid.burstsUnconcluded.find((x) => x.bar === "the tier drop");
+  assert(v !== undefined && v.detail.includes("did not say which rung"), `an answer that never said which rung is never read as dropped (got: ${v?.detail})`);
+}
+
+{
+  // A confirm the line could not serve inside its wait is a retryable 503, never a
+  // win: on a crowd of twelve that is a finding about the line, by the losers bar.
+  const r = withDrop("walks", "walks", (i) => {
+    const a = i.burstResults.find((x) => x.burstLeg?.index === 1 && x.driver === 3)!.attempts[2]!;
+    a.status = 503;
+    a.outcome = "VERIFY_UNAVAILABLE";
+    delete a.rungsDropped;
+    i.bookings = i.bookings.filter((b) => b.external_id !== a.externalId);
+  });
+  assert(
+    r.findings.some((x) => x.bar === "the burst's losers" && x.detail.includes("burst 2 of 3") && x.detail.includes("503 VERIFY_UNAVAILABLE")),
+    "a drop burst confirm answered 503 fails, naming it",
+  );
+  const doubled = withDrop("walks", "walks", (i) => {
+    const winners = i.burstResults.filter((x) => x.burstLeg?.index === 1).flatMap((x) => x.attempts);
+    const second = i.bookings.find((b) => b.external_id === winners[5]!.externalId)!;
+    second.assigned_user_id = i.bookings.find((b) => b.external_id === winners[4]!.externalId)!.assigned_user_id;
+  });
+  assert(
+    doubled.findings.some((x) => x.bar === "the burst's winners" && x.detail.includes("burst 2 of 3")),
+    "two drop burst winners on one advisor fail as a double booking",
+  );
+}
+
+// --- the refusal control, held to the same rule -------------------------------------
+{
+  const availableBelow = (rule: string) =>
+    brokenThree((i) => {
+      for (const f of i.burstResults.filter((x) => x.burstLeg?.index === 2)) {
+        f.crowdRule = crowdRuleOf(rule);
+        f.probe = probeOf("120", legAt(2), { bookable: true, reason: "available", rungsDropped: 1, effective: "130" });
+      }
+    });
+  const walks = availableBelow("walks");
+  assert(
+    walks.findings.some((x) => x.bar === "the burst's refusals" && x.detail.includes("burst 3 of 3") && x.detail.includes("#3338")),
+    "a refusal control refused while a rung below is free fails on a walks build",
+  );
+  const stops = availableBelow("stops");
+  eq(stops.verdict, "pass", "and is the declared, expected defect on a stops build");
+  assert(stops.measurements!.bursts[2]!.notes.length === 1, "named on that burst");
+
+  // A slot still bookable on the REQUESTED rung itself is not #3338's shape: the line
+  // refused leads its own rung could take. That fails on any build.
+  const sameRung = brokenThree((i) => {
+    for (const f of i.burstResults.filter((x) => x.burstLeg?.index === 0)) {
+      f.crowdRule = crowdRuleOf("stops");
+      f.probe = probeOf("120", legAt(0), { bookable: true, reason: "available", rungsDropped: 0 });
+    }
+  });
+  const f = sameRung.findings.find((x) => x.bar === "the burst's refusals");
+  assert(
+    f !== undefined && f.detail.includes("burst 1 of 3") && f.detail.includes("requested rung itself") && f.detail.includes("any build"),
+    `refusals while the requested rung is still free fail even on a stops build (got: ${f?.detail})`,
+  );
+
+  // And with no declared rule, a slot free a rung down cannot be judged either way.
+  const unknown = brokenThree((i) => {
+    for (const x of i.burstResults.filter((y) => y.burstLeg?.index === 0)) {
+      x.crowdRule = crowdRuleOf(undefined);
+      x.probe = probeOf("120", legAt(0), { bookable: true, reason: "available", rungsDropped: 2, effective: "110" });
+    }
+  });
+  eq(unknown.verdict, "incomplete", "a rung below free under an undeclared rule cannot conclude");
+  assert(unknown.burstsUnconcluded.some((x) => x.bar === "the burst's refusals" && x.detail.includes("2 rungs down")), "saying where the slot was free");
+}
+
+// --- the probe itself: unreadable, early, or contradictory is never a pass ---------
+{
+  const unreadable = brokenThree((i) => {
+    for (const f of i.burstResults.filter((x) => x.burstLeg?.index === 0)) {
+      f.probe = readBurstProbe({ code: "120", sentAtMs: burstSettleAtMs(legAt(0), BURST_GRACE_DEFAULT_MS, REQUEST_TIMEOUT_MS) + 5, status: 503, body: { code: "VERIFY_UNAVAILABLE" } });
+    }
+  });
+  eq(unreadable.verdict, "incomplete", "a burst whose every probe was refused cannot say its refusals were honest");
+  const u = unreadable.burstsUnconcluded.find((x) => x.bar === "the burst's refusals");
+  assert(u !== undefined && u.detail.includes("burst 1 of 3") && u.detail.includes("503 VERIFY_UNAVAILABLE"), `naming the probe's own answer (got: ${u?.detail})`);
+
+  const missing = brokenThree((i) => {
+    for (const f of i.burstResults.filter((x) => x.burstLeg?.index === 0)) delete f.probe;
+  });
+  assert(missing.burstsUnconcluded.some((x) => x.detail.includes("not recorded")), "a probe never recorded is unconcluded, never read as taken");
+
+  const early = brokenThree((i) => {
+    for (const f of i.burstResults.filter((x) => x.burstLeg?.index === 0)) {
+      f.probe = probeOf("120", legAt(0), { bookable: false, reason: "slot_taken" }, -5_000);
+    }
+  });
+  assert(early.burstsUnconcluded.some((x) => x.detail.includes("before the burst settled")), "a probe sent while confirms could still be walking proves nothing");
+
+  const split = brokenThree((i) => {
+    const files = i.burstResults.filter((x) => x.burstLeg?.index === 0);
+    files[0]!.probe = probeOf("120", legAt(0), { bookable: true, reason: "available", rungsDropped: 1, effective: "130" });
+  });
+  assert(split.burstsUnconcluded.some((x) => x.detail.includes("disagree")), "probes that disagree conclude nothing rather than one being picked");
+
+  // A readable probe beside an unreadable one still concludes.
+  const partial = brokenThree((i) => {
+    const files = i.burstResults.filter((x) => x.burstLeg?.index === 0);
+    delete files[0]!.probe;
+  });
+  eq(partial.verdict, "pass", "one probe lost among four does not stop the others concluding");
+}
+
+// --- what the run's verdict says when a burst could not conclude ---------------------
+{
+  // A real finding elsewhere outranks a burst that could not conclude: the run FAILS.
+  const both = withDrop("walks", undefined, (i) => {
+    i.slotUniqueIndexPresent = false;
+  });
+  eq(both.verdict, "fail", "a finding and an unconcluded burst together fail the run");
+  assert(both.burstsUnconcluded.length > 0, "and the unconcluded burst is still carried for the report");
+
+  const alone = withDrop("walks", undefined);
+  const text = verdictText(alone);
+  assert(
+    text.includes("INCOMPLETE") && text.includes("could not conclude"),
+    `an otherwise clean run whose burst could not conclude says so on the verdict line (got: ${text})`,
+  );
+  const summary = burstsSummaryText(alone.measurements!.bursts)!;
+  assert(summary.includes("could not conclude") && summary.includes("burst 2 of 3"), `and the burst summary names it (got: ${summary})`);
+  // Control: the clean three leg run's verdict line claims nothing unconcluded.
+  assert(!verdictText(judgeBookingRun(threeBursts())).includes("could not conclude"), "control: a clean run's verdict line says nothing of it");
+}
+
+// --- the report line carries what was measured about each burst ----------------------
+{
+  const r = withDrop("walks", "walks");
+  const drop = burstLegText(r.measurements!.bursts[1]!);
+  assert(drop.includes("74") && drop.includes("40 were free"), `the drop burst's line carries its measured capacity (got: ${drop})`);
+  assert(drop.includes("available 1 rung down (130)"), `and what the slot answered after it (got: ${drop})`);
+  assert(drop.includes("walks the tier ladder"), `and the rule the deployment declared (got: ${drop})`);
+  assert(drop.includes("no losers to time") && drop.includes("answered across"), `and how long its winners took instead of a loser bar (got: ${drop})`);
+  const refusal = burstLegText(r.measurements!.bursts[0]!);
+  assert(refusal.includes("refusal control") && refusal.includes("answered slot_taken"), `a refusal control's line says the slot was spent (got: ${refusal})`);
+  assert(refusal.includes("capacity was not recorded"), `and, from a file written before #3429, that its capacity was not recorded (got: ${refusal})`);
 }
 
 finish();
