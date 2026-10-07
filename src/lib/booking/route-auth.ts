@@ -18,7 +18,7 @@ import { bearerToken } from "@/lib/bearer-auth";
 import type { SelfInflictedRefusal } from "@/lib/monitor/booking-api-outcome";
 import { log } from "@/lib/log";
 import {
-  allowRequest,
+  exactCeilingWithinLimit,
   clientIp,
   bookingApiWriteWithinLimit,
   bookingApiReadWithinLimit,
@@ -143,8 +143,12 @@ function refuse(
  * Shared bearer-auth + rate-limit gate for the key-authed booking API routes
  * (#386, extracted in #1017 so `/api/bookings` and `/api/bookings/bookable` share
  * one gate instead of drifting copies). The per-minute burst windows run at the
- * Cloudflare edge (#961, no DB round-trip); the strict hourly ceilings stay in the
- * DB. `hourlyKeyRules` selects the ceiling (writes use the default; reads pass a
+ * Cloudflare edge (#961, no DB round-trip), and since #3416 so do the strict hourly
+ * ceilings: they are counted exactly, per request, in the same Durable Object
+ * (`exactCeilingWithinLimit`), with the limits, keys, refusals and fail open
+ * direction they had as Postgres rows. So nothing here reaches Supabase before the
+ * confirm line, which is what a burst of a hundred confirms used to queue behind.
+ * `hourlyKeyRules` selects the ceiling (writes use the default; reads pass a
  * separate ceiling so polling can't starve the booking path, #393). `readPath`
  * picks the matching edge binding, and a null `hourlyIpRules` opts reads out of
  * the per-IP backstop.
@@ -202,15 +206,16 @@ export async function authorizeBookingApi<C extends BookingApiCaller = FullApiCa
   const keyEdgeOk = readPath
     ? await bookingApiReadWithinLimit(auth.caller)
     : await bookingApiWriteWithinLimit(auth.caller);
-  if (!keyEdgeOk || !(await allowRequest({ kind: "opaque", key: `key:${auth.caller}` }, hourlyKeyRules))) {
+  if (!keyEdgeOk || !(await exactCeilingWithinLimit({ kind: "opaque", key: `key:${auth.caller}` }, hourlyKeyRules))) {
     return refuse("throttled_key", keyBudget, 429, readPath, req.headers, auth.keyId);
   }
   // #597: a coarse per-IP backstop on top of the per-key ceiling, in its own counter.
   // The key ceiling bounds total volume; this bounds any ONE machine, so a leaked key
-  // cannot spend the whole budget from a single host. Per-minute at the edge, hourly in DB.
+  // cannot spend the whole budget from a single host. Per-minute at the edge, and the
+  // hourly one exact in the edge counter too (#3416).
   if (hourlyIpRules) {
     const ip = clientIp(req.headers);
-    if (!(await bookingApiIpWithinLimit(ip)) || !(await allowRequest(
+    if (!(await bookingApiIpWithinLimit(ip)) || !(await exactCeilingWithinLimit(
         // #1557: an address we cannot read declines to judge here, and the per KEY ceiling
         // above (an id that came from authentication) still bounds the caller.
         { kind: "address", ip, keyPrefix: "ip:", policy: BOOKING_API_IP_LIMITER },

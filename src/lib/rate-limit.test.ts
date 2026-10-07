@@ -86,9 +86,22 @@ import {
   bearerFailureWithinLimit,
   grantBookingRetryCredit,
   bookingRetryCredit,
+  exactCeilingWithinLimit,
 } from "./rate-limit";
-import type { RateLimitRule } from "@/lib/rate-limit-core";
-import { BURST_ESCALATE_AT, burstEscalateAt } from "@/lib/rate-limit-burst";
+import {
+  DIRECT_BOOKING_API_HOURLY_RATE_RULES,
+  DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
+  friendlyRateArea,
+  limiterFailOpenAlert,
+  type RateLimitRule,
+} from "@/lib/rate-limit-core";
+import {
+  BURST_ESCALATE_AT,
+  burstEscalateAt,
+  applyCounterRequest,
+  readCounterRequest,
+  type CounterWindow,
+} from "@/lib/rate-limit-burst";
 import { insideCallBudget, withinCallBudget } from "@/lib/call-budget";
 import {
   UNIDENTIFIED_IP,
@@ -1323,4 +1336,219 @@ describe("every limiter page goes after the response, outside the lead's budget 
       consoleErr.mockRestore();
     });
   }
+});
+
+// #3416: the booking API's hourly per caller and per address ceilings, counted per request in
+// the edge counter instead of a `rate_limit_hit` row. They are a security control, so what these
+// pin is that the move changed WHERE the number lives and nothing the control decides: the
+// limit, the key, the refusal, the block alert, and above all the direction it fails, which is
+// OPEN and LOUD exactly as `allowRequest` fails on an unreadable row (its own cases above).
+describe("exactCeilingWithinLimit, the hourly ceilings at the edge (#3416)", () => {
+  // A fake object that counts with the arithmetic the deployed object runs, so a hit here is
+  // counted exactly as production counts it (scripts/test-exact-ceiling.ts drives the real
+  // class around a fake storage).
+  const objects = new Map<string, CounterWindow>();
+  const asked: string[] = [];
+  const exactNamespace = () => ({
+    idFromName: (name: string) => ({ name }),
+    get: (id: unknown) => ({
+      fetch: async (_url: string, init?: RequestInit) => {
+        const name = (id as { name: string }).name;
+        asked.push(name);
+        const request = readCounterRequest(JSON.parse(String(init?.body)));
+        if (request.kind === "unreadable") return Response.json({ error: request.detail }, { status: 400 });
+        const step = applyCounterRequest(objects.get(name) ?? null, request, Date.now());
+        objects.set(name, step.next);
+        return Response.json(step.reply);
+      },
+    }),
+  });
+  /** A namespace whose one object answers every hit with `answer`. */
+  const answering = (answer: () => Promise<Response>) => ({
+    idFromName: (name: string) => ({ name }),
+    get: () => ({ fetch: answer }),
+  });
+  const KEY_CALLER = { kind: "opaque", key: "key:regal" } as const;
+  const IP_CALLER = { kind: "address", ip: "203.0.113.9", keyPrefix: "ip:", policy: BOOKING_API_IP_LIMITER } as const;
+  const KEY_RULE = DIRECT_BOOKING_API_HOURLY_RATE_RULES[0]!;
+  const IP_RULE = DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES[0]!;
+  const KEY_OBJECT = "exact:bookapi:h:key:regal";
+  const IP_OBJECT = "exact:bookapi:ip:h:ip:203.0.113.9";
+
+  // Two hours a case, past the edge alert gate's half hour cooldown, so every case attempts
+  // its own page rather than inheriting a gate the last one closed (#3145).
+  let clock = Date.UTC(2026, 9, 1);
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    clock += 2 * 60 * 60_000;
+    vi.setSystemTime(clock);
+    objects.clear();
+    asked.length = 0;
+    cf.env = { BURST_LIMITER: exactNamespace() };
+    getCloudflareContext.mockImplementation(() => ({ env: cf.env }));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("counts each ceiling under its Postgres row's own key, and never asks Supabase", async () => {
+    await expect(exactCeilingWithinLimit(KEY_CALLER, DIRECT_BOOKING_API_HOURLY_RATE_RULES)).resolves.toBe(true);
+    await expect(exactCeilingWithinLimit(IP_CALLER, DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES)).resolves.toBe(true);
+    expect(asked).toEqual([KEY_OBJECT, IP_OBJECT]);
+    expect(rpc).not.toHaveBeenCalled();
+    await flushAfter();
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("still refuses at the per caller limit: hit 6000 is allowed, hit 6001 is not", async () => {
+    objects.set(KEY_OBJECT, { windowStartMs: Date.now(), count: KEY_RULE.max - 1 });
+    await expect(exactCeilingWithinLimit(KEY_CALLER, DIRECT_BOOKING_API_HOURLY_RATE_RULES)).resolves.toBe(true);
+    await expect(exactCeilingWithinLimit(KEY_CALLER, DIRECT_BOOKING_API_HOURLY_RATE_RULES)).resolves.toBe(false);
+    // A refused hit still counts, as rate_limit_hit counts it, so the caller stays refused.
+    await expect(exactCeilingWithinLimit(KEY_CALLER, DIRECT_BOOKING_API_HOURLY_RATE_RULES)).resolves.toBe(false);
+    expect(objects.get(KEY_OBJECT)?.count).toBe(KEY_RULE.max + 2);
+    // The per caller rule never alerted on a block, and still does not.
+    await flushAfter();
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("still refuses at the per address limit, and still pages the block naming the address", async () => {
+    objects.set(IP_OBJECT, { windowStartMs: Date.now(), count: IP_RULE.max - 1 });
+    await expect(exactCeilingWithinLimit(IP_CALLER, DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES)).resolves.toBe(true);
+    await expect(exactCeilingWithinLimit(IP_CALLER, DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES)).resolves.toBe(false);
+    await flushAfter();
+    expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
+    const [key, , text] = sendThrottledAlert.mock.calls[0]!;
+    expect(key).toBe("rate_limit_blocked:bookapi:ip:h");
+    expect(text).toMatch(/ip:203\.0\.113\.9/);
+    expect(text).toMatch(/1200 requests per hour/);
+  });
+
+  it("keeps one count per caller, so one caller at its limit refuses nobody else", async () => {
+    objects.set(KEY_OBJECT, { windowStartMs: Date.now(), count: KEY_RULE.max });
+    await expect(exactCeilingWithinLimit(KEY_CALLER, DIRECT_BOOKING_API_HOURLY_RATE_RULES)).resolves.toBe(false);
+    await expect(
+      exactCeilingWithinLimit({ kind: "opaque", key: "key:canary" }, DIRECT_BOOKING_API_HOURLY_RATE_RULES),
+    ).resolves.toBe(true);
+  });
+
+  it("opens a new window once the old one is strictly older than an hour", async () => {
+    objects.set(KEY_OBJECT, { windowStartMs: Date.now() - 3_600_001, count: KEY_RULE.max + 50 });
+    await expect(exactCeilingWithinLimit(KEY_CALLER, DIRECT_BOOKING_API_HOURLY_RATE_RULES)).resolves.toBe(true);
+    expect(objects.get(KEY_OBJECT)).toEqual({ windowStartMs: Date.now(), count: 1 });
+  });
+
+  it("serves a caller with no address uncounted, and says so, exactly as allowRequest does (#1557)", async () => {
+    const unknown = { kind: "address", ip: UNIDENTIFIED_IP, policy: BOOKING_API_IP_LIMITER } as const;
+    await expect(exactCeilingWithinLimit(unknown, DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES)).resolves.toBe(true);
+    await expect(allowRequest(unknown, DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES)).resolves.toBe(true);
+    expect(asked).toEqual([]);
+    expect(rpc).not.toHaveBeenCalled();
+    await flushAfter();
+    expect(sendThrottledAlert.mock.calls.map((c) => c[0])).toEqual([
+      "rate_limit_unidentified:booking-api-ip",
+      "rate_limit_unidentified:booking-api-ip",
+    ]);
+  });
+
+  // PARITY, not endorsement. The authorizer hands the per address ceiling a key carrying the
+  // `ip:` prefix, and `judgeCaller` is asked about the PREFIXED key, which never equals the
+  // fallback, so the #1557 rule above is never reached on this ceiling: a caller with no address
+  // is counted into one shared `ip:unknown` count. That is what the Postgres ceiling did, so it
+  // is what this one does; serving them unjudged instead would change a security control, which
+  // is a decision for its owner rather than a side effect of moving it. Unreachable behind
+  // Cloudflare, which always sets the address. When it is changed, it changes in both.
+  it("treats the authorizer's prefixed no-address key exactly as allowRequest does", async () => {
+    const prefixed = { kind: "address", ip: UNIDENTIFIED_IP, keyPrefix: "ip:", policy: BOOKING_API_IP_LIMITER } as const;
+    await expect(exactCeilingWithinLimit(prefixed, DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES)).resolves.toBe(true);
+    await expect(allowRequest(prefixed, DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES)).resolves.toBe(true);
+    expect(asked).toEqual(["exact:bookapi:ip:h:ip:unknown"]);
+    expect(rpc).toHaveBeenCalledWith("rate_limit_hit", expect.objectContaining({ p_key: "bookapi:ip:h:ip:unknown" }));
+  });
+
+  // THE DIRECTION. Today a `rate_limit_hit` that errors (a missing function, a refused
+  // connection, a deadline, which PostgREST hands back as an error rather than throwing) makes
+  // `allowRequest` CONTINUE: the request is served, and the outage is paged in plain words
+  // under `rate_limit_broken:<prefix>`. Every way the edge counter can fail to count has to
+  // land on that same side, under that same key, with those same words.
+  const unreachable: { name: string; arrange: () => void }[] = [
+    {
+      name: "the object throws",
+      arrange: () => {
+        cf.env = { BURST_LIMITER: answering(async () => Promise.reject(new Error("object unreachable"))) };
+      },
+    },
+    {
+      name: "the object answers an error",
+      arrange: () => {
+        cf.env = { BURST_LIMITER: answering(async () => new Response("nope", { status: 500 })) };
+      },
+    },
+    {
+      name: "the object counts a different window (code from before this change, mid rollout)",
+      arrange: () => {
+        cf.env = { BURST_LIMITER: answering(async () => Response.json({ count: 1, windowStartMs: 0 })) };
+      },
+    },
+    {
+      name: "the binding is missing",
+      arrange: () => {
+        cf.env = {};
+      },
+    },
+    {
+      name: "the request context cannot be read",
+      arrange: () => {
+        getCloudflareContext.mockImplementation(() => {
+          throw new Error("no context");
+        });
+      },
+    },
+  ];
+  for (const c of unreachable) {
+    it(`serves the request and pages, as allowRequest does, when ${c.name}`, async () => {
+      c.arrange();
+      const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+      await expect(exactCeilingWithinLimit(KEY_CALLER, DIRECT_BOOKING_API_HOURLY_RATE_RULES)).resolves.toBe(true);
+      // Nothing is sent while the caller waits; the page goes after the response.
+      expect(sendThrottledAlert).not.toHaveBeenCalled();
+      await flushAfter();
+      expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
+      const [key, , text] = sendThrottledAlert.mock.calls[0]!;
+      expect(key).toBe(`rate_limit_broken:${KEY_RULE.prefix}`);
+      // The same words allowRequest pages with for this rule (built by the same builder from
+      // the same prefix), and no internal name or raw error in them.
+      expect(text).toBe(limiterFailOpenAlert(friendlyRateArea(KEY_RULE.prefix)));
+      expect(text).toMatch(/booking API/);
+      expect(text).not.toMatch(/BURST_LIMITER|object unreachable|no context/);
+      consoleErr.mockRestore();
+    });
+  }
+
+  it("serves the request, loudly, when the object does not answer inside the request's budget", async () => {
+    cf.env = { BURST_LIMITER: answering(() => new Promise<Response>(() => {})) };
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    // A short budget stands for a confirm with little left: the hit waits only for that, as
+    // the Supabase request it replaced did, and is then served rather than held.
+    await expect(
+      withinCallBudget(30, "the booking confirm", () =>
+        exactCeilingWithinLimit(KEY_CALLER, DIRECT_BOOKING_API_HOURLY_RATE_RULES),
+      ),
+    ).resolves.toBe(true);
+    await flushAfter();
+    expect(sendThrottledAlert.mock.calls.map((c) => c[0])).toEqual([`rate_limit_broken:${KEY_RULE.prefix}`]);
+    expect(JSON.stringify(consoleErr.mock.calls)).toMatch(/did not answer/);
+    consoleErr.mockRestore();
+  });
+
+  it("pages an outage once per isolate per cooldown, not once per request", async () => {
+    cf.env = {};
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    for (let i = 0; i < 20; i++) {
+      await expect(exactCeilingWithinLimit(KEY_CALLER, DIRECT_BOOKING_API_HOURLY_RATE_RULES)).resolves.toBe(true);
+    }
+    await flushAfter();
+    expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
+    consoleErr.mockRestore();
+  });
 });
