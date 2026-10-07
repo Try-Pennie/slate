@@ -332,12 +332,50 @@ describe("/book with no code on the link and a Lead id (#2638)", () => {
     );
   });
 
-  it("CONTROL: a routable code on the link never asks Salesforce", async () => {
+  // #3508 reverses the old rule here, at the LANDING only: four trypennie pages put
+  // the Lead's stale XBC__c on the link, so a routable code is no longer taken on
+  // trust when the link names the lead. The confirm still never asks (it books the
+  // team this page showed), which test-routing-lead-code.ts holds.
+  it("#3508: a routable but stale link code shows the team of the lead's current score", async () => {
+    leadXbc.readLeadXbcLive.mockResolvedValueOnce("312");
+    const asked: string[] = [];
+    admin.supabaseAdmin.mockReturnValue(dbByCode({ "312": { org_id: "o1", is_test: false } }, asked));
+
+    const el = await BookEntry({ searchParams: Promise.resolve({ xbc: "112", external_id: LEAD }) });
+
+    expect(leadXbc.readLeadXbcLive).toHaveBeenCalledWith(LEAD);
+    expect(asked).toEqual(["312"]);
+    // The Booker shows 312 and still posts what the link carried, so the confirm can record both.
+    expect(bookerElement(el)).toMatchObject({ bucketCode: "312", requestedCode: "112" });
+  });
+
+  it("CONTROL: an agreeing score leaves the link's code", async () => {
+    leadXbc.readLeadXbcLive.mockResolvedValueOnce("111");
     admin.supabaseAdmin.mockReturnValue(dbByCode({ "111": { org_id: "o1", is_test: false } }, []));
 
-    await BookEntry({ searchParams: Promise.resolve({ xbc: "111", external_id: LEAD }) });
+    const el = await BookEntry({ searchParams: Promise.resolve({ xbc: "111", external_id: LEAD }) });
+
+    expect(bookerElement(el)).toMatchObject({ bucketCode: "111", requestedCode: "111" });
+  });
+
+  it("#3508: a failed score read keeps the link's code and logs it, never refusing the page", async () => {
+    leadXbc.readLeadXbcLive.mockRejectedValueOnce(new Error("SF query failed: 503"));
+    admin.supabaseAdmin.mockReturnValue(dbByCode({ "112": { org_id: "o1", is_test: false } }, []));
+
+    const el = await BookEntry({ searchParams: Promise.resolve({ xbc: "112", external_id: LEAD }) });
+
+    expect(bookerElement(el)).toMatchObject({ bucketCode: "112" });
+    expect(log.warn).toHaveBeenCalledWith("landing", expect.objectContaining({ code: "112" }), expect.any(Error));
+  });
+
+  it("#3508: over the landing ceiling, a routable link code is shown as sent and nothing is read", async () => {
+    landingIdentityAllowed.mockResolvedValueOnce(false);
+    admin.supabaseAdmin.mockReturnValue(dbByCode({ "112": { org_id: "o1", is_test: false } }, []));
+
+    const el = await BookEntry({ searchParams: Promise.resolve({ xbc: "112", external_id: LEAD }) });
 
     expect(leadXbc.readLeadXbcLive).not.toHaveBeenCalled();
+    expect(bookerElement(el)).toMatchObject({ bucketCode: "112" });
   });
 
   // #3173: the routing read sits behind the same per address throttle as the identity

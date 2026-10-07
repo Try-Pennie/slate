@@ -91,7 +91,14 @@ export type SalesforceCodeMiss =
  * that knows what the link carried; absent on a booking means nobody said.
  */
 export type RoutingCodeRecord =
-  | { source: "link"; requested: string }
+  | {
+      source: "link";
+      requested: string;
+      /** #3508: the code the landing SHOWED and the confirm booked, when it is not
+       *  the link's own: the lead's current Salesforce score corrected a link that
+       *  carried a stale one (`correctLinkToLeadScore`). */
+      shown?: string;
+    }
   | {
       source: "salesforce";
       requested: string;
@@ -183,4 +190,44 @@ export async function resolveRoutingCode(
       ? { source: "salesforce", requested: raw, salesforce_xbc: value, via: "submission", submission_id: viaSubmission }
       : { source: "salesforce", requested: raw, salesforce_xbc: value },
   };
+}
+
+/**
+ * The LANDING's second look at a link that carried a routable code (#3508).
+ *
+ * Step 1 above routes a routable link code as sent, and the confirm still does. But
+ * four trypennie pages keyed by a submission put the Lead's `XBC__c` on the link, and
+ * Salesforce does not rewrite that copy when a lead submits again, so a returning
+ * lead arrived carrying their PREVIOUS submission's score: on 2026-10-07 three were
+ * booked a tier low that way (links 112, 311 and 222 against submissions of 312, 511
+ * and 312). So when the link names a lead, the landing reads the lead's current score
+ * (the same reader the no code path and the below tier check use) and shows that
+ * team's times when it differs. The confirm books the team the page showed, so it
+ * pays nothing: the read happens once, while the calendar loads (Dan, 2026-10-07).
+ *
+ * Unlike a codeless link, a link code is a safe answer to fall back on, so a read
+ * that FAILS keeps it, as before this existed, and is handed to `onUnreadable` to be
+ * logged rather than refusing the page. Only an XBC code is ever corrected, so a test
+ * bucket link can never be moved into a real pool; and only a code the resolver took
+ * from the link, since a Salesforce or catch-all answer was already read from the lead.
+ */
+export async function correctLinkToLeadScore(
+  routed: RoutingCodeResolution,
+  leadId: string | null | undefined,
+  readLeadXbc: LeadXbcReader,
+  onUnreadable: (err: unknown) => void,
+): Promise<RoutingCodeResolution> {
+  if (routed.record.source !== "link" || bucketSpecForXbc(routed.code) === null) return routed;
+  const id = (leadId ?? "").trim();
+  if (!isLeadId(id)) return routed;
+  let held: string | null | undefined;
+  try {
+    held = await readLeadXbc(id);
+  } catch (err) {
+    onUnreadable(err);
+    return routed;
+  }
+  const value = (held ?? "").trim();
+  if (value === "" || value === routed.code || bucketSpecForXbc(value) === null) return routed;
+  return { code: value, source: "link", record: { source: "link", requested: routed.record.requested, shown: value } };
 }

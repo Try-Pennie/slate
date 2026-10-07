@@ -72,7 +72,16 @@ export default async function BookEntry({
   // allowance, and ONLY in that case, so an ordinary page view spends nothing on it.
   const needsSubmission = codeNeedsLookup(requestedCode) && !externalId;
   const lookupSubmission = needsSubmission ? await landingLookupId(entry.submissionId ?? "", headers) : "";
-  const resolved = await resolveLandingCode(requestedCode, lookupId, lookupSubmission || null);
+  // #3508: the lead's score can now be read even for a routable link code, so the
+  // reads that do not depend on the routed code start alongside it rather than after.
+  // #1337: when a lead already has a call, the booker offers to MOVE it, and a
+  // reschedule records a mandatory reason (Dan, 2026-08-07: ask the lead), so the
+  // live option set has to reach the client the same way the manage page gets it.
+  const [resolved, horizonDays, reasonOptions] = await Promise.all([
+    resolveLandingCode(requestedCode, lookupId, lookupSubmission || null),
+    loadBookingHorizonDays(),
+    loadReasonOptions(),
+  ]);
   const bucketCode = resolved.code;
   const embedded = first(sp, "embed") === "1";
   const theme = first(sp, "theme") === "dark" ? ("dark" as const) : ("light" as const);
@@ -114,11 +123,6 @@ export default async function BookEntry({
   // the branch was dead code guarded by a fixture production never produced (L29,
   // L84). A hidden bucket is still refused, at the confirm (#2667).
   const isTest = await loadLandingBucketIsTest(bucketCode);
-  const horizonDays = await loadBookingHorizonDays();
-  // #1337: when a lead already has a call, the booker offers to MOVE it, and a
-  // reschedule records a mandatory reason (Dan, 2026-08-07: ask the lead), so the
-  // live option set has to reach the client the same way the manage page gets it.
-  const reasonOptions = await loadReasonOptions();
   // #2166: `/book?external_id=` carries the same identity `/booking/{id}` does, and
   // is graded the same way, so a lead who arrives by either route is told about the
   // call they have before they pick a time. A link with NO id identifies nobody,

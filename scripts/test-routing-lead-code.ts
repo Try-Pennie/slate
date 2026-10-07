@@ -16,6 +16,7 @@
 // July, so a codeless link would have sent a Low lead to the Medium team.
 import {
   resolveRoutingCode,
+  correctLinkToLeadScore,
   LeadCodeUnavailableError,
   type LeadXbcReader,
   type SubmissionLeadReader,
@@ -496,9 +497,90 @@ async function currentSubmissionScore() {
   assert(refused instanceof LeadCodeUnavailableError, "a refused edit history read refuses the booking with the retriable error");
 }
 
+/**
+ * #3508: four trypennie pages put the Lead's stale XBC__c on the link, so a returning
+ * lead arrived with their PREVIOUS submission's score. The landing (never the confirm)
+ * asks the lead's current score and shows that team when it differs.
+ */
+async function landingCorrection() {
+  const link = (code: string) => resolveRoutingCode(code, LEAD, reader({}), { id: null, readLeadId: async () => undefined });
+  const unread: unknown[] = [];
+  const onUnreadable = (err: unknown) => unread.push(err);
+
+  // 2026-10-07, booking a31a062e: the link carried 112, the booked submission scores 312.
+  {
+    const read = reader({ [LEAD]: "312" });
+    const got = await correctLinkToLeadScore(await link("112"), LEAD, read, onUnreadable);
+    assert(got.code === "312", `a link carrying a stale 112 shows the lead's current 312 (got ${got.code})`);
+    assert(got.record.source === "link" && got.record.requested === "112", "and still records what the link carried");
+    assert(got.record.source === "link" && got.record.shown === "312", "and the code it showed instead");
+    assert(read.asked.length === 1 && read.asked[0] === LEAD, "Salesforce is asked about that lead once");
+  }
+  // Agreement changes nothing and records nothing extra.
+  {
+    const got = await correctLinkToLeadScore(await link("112"), LEAD, reader({ [LEAD]: "112" }), onUnreadable);
+    assert(got.code === "112" && !("shown" in got.record), "an agreeing score leaves the link's code alone");
+  }
+  // Nothing routable from Salesforce: the link's code stands.
+  for (const held of [null, "011", "  "]) {
+    const got = await correctLinkToLeadScore(await link("112"), LEAD, reader({ [LEAD]: held }), onUnreadable);
+    assert(got.code === "112", `a Salesforce score of ${JSON.stringify(held)} leaves the link's code`);
+  }
+  {
+    const got = await correctLinkToLeadScore(await link("112"), LEAD, reader({}), onUnreadable);
+    assert(got.code === "112", "a lead Salesforce did not return leaves the link's code");
+  }
+  // A failed read keeps today's behaviour (the link's code) and says so, never throws:
+  // the link carried a routable code, so there is a safe answer to fall back on.
+  {
+    unread.length = 0;
+    const got = await correctLinkToLeadScore(await link("112"), LEAD, failing, onUnreadable);
+    assert(got.code === "112", "a refused read keeps the link's code");
+    assert(unread.length === 1, "and reports the failure so it is logged");
+  }
+  // No lead to ask about, or an id that is not a Lead id: no read at all.
+  for (const id of [null, "", "003Ui00000contact"]) {
+    const read = reader({ [LEAD]: "312" });
+    const got = await correctLinkToLeadScore(await link("112"), id, read, onUnreadable);
+    assert(got.code === "112" && read.asked.length === 0, `no read for a lead id of ${JSON.stringify(id)}`);
+  }
+  // A test bucket link is never corrected into a real pool, whatever the lead scores.
+  {
+    const read = reader({ [LEAD]: "312" });
+    const got = await correctLinkToLeadScore(await link(PUBLIC_TEST_BUCKET_CODES[0]), LEAD, read, onUnreadable);
+    assert(got.code === PUBLIC_TEST_BUCKET_CODES[0] && read.asked.length === 0, "a test bucket link is left alone and nothing is read");
+  }
+  // Only a link the resolver routed AS SENT is corrected: a Salesforce or catch-all
+  // answer was already read from the lead.
+  {
+    const read = reader({ [LEAD]: "312" });
+    const fromSf = await resolveRoutingCode("", LEAD, reader({ [LEAD]: "512" }), { id: null, readLeadId: async () => undefined });
+    const got = await correctLinkToLeadScore(fromSf, LEAD, read, onUnreadable);
+    assert(got.code === "512" && read.asked.length === 0, "a code Salesforce already supplied is not read again");
+  }
+
+  // The confirm books the team the landing SHOWED, without asking Salesforce, and
+  // records the correction so the booking does not read as routed on the link.
+  {
+    const { deps, calls } = makeDeps({ leadXbc: { [LEAD]: "312" } });
+    await createBooking({ ...input, salesforceId: LEAD, requestedCode: "112", bucketCode: "312" }, deps);
+    assert(calls.readLeadXbc.length === 0, "confirm: a routable link code never asks Salesforce, so the confirm is no slower");
+    assert(calls.resolveBucketByCode[0] === "312", "confirm: it books the team the landing showed");
+    const cs = (calls.insertBooking[0]?.routing_trace as { code_source?: Record<string, unknown> } | null)?.code_source;
+    assert(cs?.source === "link" && cs.requested === "112" && cs.shown === "312", "confirm: and records the link's code beside the one shown");
+  }
+  {
+    const { deps, calls } = makeDeps({});
+    await createBooking({ ...input, salesforceId: LEAD, requestedCode: "112", bucketCode: "112" }, deps);
+    const cs = (calls.insertBooking[0]?.routing_trace as { code_source?: Record<string, unknown> } | null)?.code_source;
+    assert(cs?.source === "link" && !("shown" in (cs ?? {})), "confirm: an uncorrected booking records no shown code");
+  }
+}
+
 await main();
 await submissionReader();
 await submissionPath();
 await confirmPath();
+await landingCorrection();
 await currentSubmissionScore();
 finish();
