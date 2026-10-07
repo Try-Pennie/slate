@@ -677,6 +677,14 @@ export interface BurstLegRecord {
   kind?: BurstKind;
   /** #3429: what the setup measured about its capacity. Absent on a file from before #3429. */
   capacity?: BurstCapacity;
+  /**
+   * #3429: how late this driver could have fired (its `BURST_GRACE_MS`), and the abort
+   * bound its requests carried, as it was configured. The judge settles the burst on
+   * the longest of each across its drivers. Absent on a file from before the drivers
+   * recorded them, which is read on the run's own defaults.
+   */
+  graceMs?: number;
+  requestBoundMs?: number;
 }
 
 /** What one driver writes when it finishes. The judge refuses without all of them. */

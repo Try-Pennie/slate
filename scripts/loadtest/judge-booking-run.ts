@@ -280,22 +280,27 @@ export interface Finding {
   detail: string;
 }
 
-export type JudgeVerdict = "pass" | "incomplete" | "unmeasured" | "fail";
+export type JudgeVerdict = "pass" | "incomplete" | "unmeasured" | "inconclusive" | "fail";
 
 /**
  * Every way the judge can end, each on its own code.
  *
- * `incomplete` and `unmeasured` are deliberately NOT failures and deliberately not
- * passes. One says the run did not happen as asked, the other says the platform
- * could not tell us what it did; both mean nobody learned whether the booking path
- * holds up, and reporting either as a pass or a failure is a claim the run cannot
- * support (L98, L11).
+ * `incomplete`, `unmeasured` and `inconclusive` are deliberately NOT failures and
+ * deliberately not passes. The first says the run did not happen as asked, so nothing
+ * was measured; the second says the platform could not tell us what it did; the third
+ * (#3429) says every figure WAS measured and a burst could not conclude what it exists
+ * to prove. All three mean nobody learned whether the booking path holds up, and
+ * reporting any as a pass or a failure is a claim the run cannot support (L98, L11).
+ * The third has its own code rather than sharing the first's, because "re-run, it did
+ * not happen" and "it ran, read why the burst could not conclude" send a reader to do
+ * different things (#3459 review).
  */
 export const JUDGE_EXIT = {
   pass: 0,
   incomplete: 2,
   unmeasured: 3,
   fail: 4,
+  inconclusive: 5,
 } as const;
 
 /** p50, p95 and max over a set of durations. Empty gives nulls, never zeros: a
@@ -454,23 +459,57 @@ export function burstLegLabel(g: Pick<BurstLegGroup, "index" | "of" | "slot" | "
   return `burst ${g.index + 1} of ${g.of}, ${BURST_KIND_WORDS[burstKindOf(g)]}${g.slot ? ` (${g.slot})` : ""}`;
 }
 
+/** A recorded figure the settle can use: a whole, non negative number of milliseconds. */
+function isWholeMs(v: unknown): v is number {
+  return typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+}
+
 /**
- * #3429: when a burst settled, on the run's own defaults (`burstSettleAtMs`), or null
- * when no file names its moment. A probe is judged against this, never against a
- * driver's word about its own settle: a driver with shortened seams is a test.
+ * #3429: when a burst settled (`burstSettleAtMs`): its moment, plus the LONGEST grace
+ * any of its drivers recorded, since that driver may have fired last, plus the longest
+ * request bound they recorded. A file that records neither (one from before the
+ * drivers did, #3459 review) is read on the run's own defaults, which is what every
+ * workflow run uses. A probe is judged against this, computed here from what each
+ * driver was configured with, never against a driver's word about its own settle, so
+ * a driver whose timer woke it early still has its probe called early (run
+ * 37568349592). A recorded figure that is not a whole number of milliseconds leaves
+ * the settle unknown, by name, rather than falling back to a default it may exceed.
  */
-function burstSettleOf(g: Pick<BurstLegGroup, "files">): number | null {
+function burstSettleOf(g: Pick<BurstLegGroup, "files">): { ok: true; atMs: number } | { ok: false; why: string } {
   const moment = g.files.find((f) => f.burstLeg !== undefined)?.burstLeg?.startAtMs;
-  return moment === undefined ? null : burstSettleAtMs(moment, BURST_GRACE_DEFAULT_MS, REQUEST_TIMEOUT_MS);
+  if (moment === undefined) return { ok: false, why: "no burst file names the burst's moment, so when it settled is unknown" };
+  let graceMs = BURST_GRACE_DEFAULT_MS;
+  let requestBoundMs = REQUEST_TIMEOUT_MS;
+  let recorded = false;
+  for (const f of g.files) {
+    const leg = f.burstLeg;
+    if (leg === undefined) continue;
+    for (const [field, label] of [["graceMs", "grace"], ["requestBoundMs", "request bound"]] as const) {
+      const v = leg[field];
+      if (v === undefined || v === null) continue;
+      if (!isWholeMs(v)) {
+        return {
+          ok: false,
+          why: `driver ${f.driver} recorded a ${label} that is not a whole number of milliseconds (${JSON.stringify(v)}), so when the burst settled is unknown`,
+        };
+      }
+    }
+    const g0 = leg.graceMs ?? BURST_GRACE_DEFAULT_MS;
+    const r0 = leg.requestBoundMs ?? REQUEST_TIMEOUT_MS;
+    // The first file sets the figures and each later one can only lengthen them, so a
+    // burst of files that all recorded a SHORTER grace is judged on that grace.
+    graceMs = recorded ? Math.max(graceMs, g0) : g0;
+    requestBoundMs = recorded ? Math.max(requestBoundMs, r0) : r0;
+    recorded = true;
+  }
+  return { ok: true, atMs: burstSettleAtMs(moment, graceMs, requestBoundMs) };
 }
 
 /** #3429: the burst's probes of its slot, judged together. */
 function burstProbeOf(g: Pick<BurstLegGroup, "files">): ProbeVerdict {
   const settle = burstSettleOf(g);
-  if (settle === null) {
-    return { kind: "unconcluded", why: "no burst file names the burst's moment, so when it settled is unknown" };
-  }
-  return burstProbeVerdict(g.files.map((f) => f.probe), settle);
+  if (!settle.ok) return { kind: "unconcluded", why: settle.why };
+  return burstProbeVerdict(g.files.map((f) => f.probe), settle.atMs);
 }
 
 /**
@@ -1566,7 +1605,7 @@ export interface JudgeResult {
    * #3429: the burst clauses that could not conclude, each naming its burst: a probe of
    * the slot that could not be read, a deployment that did not say which crowd rule it
    * runs, a drop burst that never dropped. Never a pass (L98): with no finding beside
-   * them the verdict is INCOMPLETE, on its own exit, with every figure still measured.
+   * them the verdict is INCONCLUSIVE, on its own exit, with every figure still measured.
    * Required, so `tsc` names every construction site.
    */
   burstsUnconcluded: Finding[];
@@ -1895,15 +1934,16 @@ function judgeBurstLeg(
   // free advisor anywhere on the ladder is gone. A drop burst has no losers on a build
   // that walks, so nothing replaces the bar there: "every confirm wins" already bounds
   // its time, since a confirm the line cannot serve inside its wait answers a 503.
+  // An if/else chain rather than an early return for `not-asked`, so a check added
+  // after this one runs for a drop burst too (#3459 review).
   const speed = reading?.speed ?? burstSpeedFor(kind, burst);
-  if (speed.kind === "not-asked") return;
   if (speed.kind === "unmeasured") {
     failLeg(
       "the burst's speed",
       `how fast the losers were answered could not be measured: ${speed.why}. Finding nothing to ` +
         "measure is never a pass",
     );
-  } else if (speed.late > 0) {
+  } else if (speed.kind === "measured" && speed.late > 0) {
     failLeg(
       "the burst's speed",
       `${speed.late} of ${speed.slotTaken} SLOT_TAKEN answers came more than ${BURST_LOSER_LAG_MS}ms ` +
@@ -2078,7 +2118,7 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
   // names its burst.
   const wantBurstDrivers = input.expectedLegs.burstDrivers;
   // #3429: clauses a burst could not conclude. Never a pass: with no finding beside
-  // them the run is INCOMPLETE, with every figure still measured.
+  // them the run is INCONCLUSIVE, with every figure still measured.
   const burstsUnconcluded: Finding[] = [];
   for (const g of burstLegGroups(input)) {
     const label = burstLegLabel(g);
@@ -2424,12 +2464,12 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
   // UNMEASURED, with its own non zero exit, never a pass; a real finding on any
   // other bar outranks it and the run fails.
   // #3429: a burst clause that could not conclude on an otherwise clean run is
-  // INCOMPLETE, the burst having not happened as a judgeable control, never a pass; a
+  // INCONCLUSIVE, the burst having not happened as a judgeable control, never a pass; a
   // real finding outranks it, and it outranks a void speed verdict, since a run whose
   // burst could not conclude did not prove what it exists to prove.
   const speedVoid = speedUnmeasuredOf(m);
   const verdict: JudgeVerdict =
-    findings.length > 0 ? "fail" : burstsUnconcluded.length > 0 ? "incomplete" : speedVoid !== null ? "unmeasured" : "pass";
+    findings.length > 0 ? "fail" : burstsUnconcluded.length > 0 ? "inconclusive" : speedVoid !== null ? "unmeasured" : "pass";
   return {
     verdict,
     exit: JUDGE_EXIT[verdict],
@@ -2464,7 +2504,7 @@ function unmeasured(m: RunMeasurements, why: string, findings: Finding[], bursts
   // first, then a burst clause that could not conclude, which outranks a reading the
   // platform could not give, since a run whose burst could not conclude did not prove
   // what it exists to prove. The platform finding is carried either way.
-  const verdict: JudgeVerdict = findings.length > 0 ? "fail" : burstsUnconcluded.length > 0 ? "incomplete" : "unmeasured";
+  const verdict: JudgeVerdict = findings.length > 0 ? "fail" : burstsUnconcluded.length > 0 ? "inconclusive" : "unmeasured";
   return {
     verdict,
     exit: JUDGE_EXIT[verdict],
