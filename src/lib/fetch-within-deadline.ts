@@ -75,6 +75,13 @@ export interface DeadlineFound {
   label: string;
   timeoutMs: number;
   budget: { label: string; totalMs: number } | null;
+  /**
+   * #3338: set only when Slate chose NOT to start the work, because what the
+   * request had left (`timeoutMs`) was less than the work was measured to need on
+   * this very request. Never parsed from an error: nothing was asked, so no
+   * dependency wrote a sentence about it.
+   */
+  neededMs?: number;
 }
 
 export function findDeadlineExceeded(err: unknown): DeadlineFound | null {

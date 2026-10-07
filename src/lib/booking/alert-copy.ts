@@ -468,11 +468,13 @@ export function dependencyTimeoutAlert(timeout: {
   dependency: string;
   timeoutMs: number;
   budget: { label: string; totalMs: number } | null;
+  /** #3338: set when Slate chose not to start the work for want of time. */
+  neededMs?: number;
 }): string {
   // #3263: one wording for a missed deadline across every alert. A call refused
   // because the budget was already spent says the budget was used up before
   // Slate asked, never that the dependency "was not started".
-  const found = { label: timeout.dependency, timeoutMs: timeout.timeoutMs, budget: timeout.budget };
+  const found = { label: timeout.dependency, timeoutMs: timeout.timeoutMs, budget: timeout.budget, neededMs: timeout.neededMs };
   const what = deadlineReason(found);
   const head = `A booking failed because ${what}, not because the slot was full. The lead saw a retryable error. Check booking_reservations for a pending row before asking them to rebook`;
   // #3313: a budget spent before Slate asked means the dependency was never

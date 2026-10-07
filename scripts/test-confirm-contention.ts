@@ -57,6 +57,7 @@ import { makeConfirmLineHost, makeConfirmLineObject } from "../src/lib/booking/c
 import { makeSharedConfirmLine } from "../src/lib/booking/shared-confirm-line.ts";
 import { tierLadder } from "../src/lib/routing/tiers.ts";
 import { CONFIRM_CROWD_RULE, type ConfirmCrowdRule } from "../src/lib/confirm-crowd-rule.ts";
+import { makeCommitCostLog } from "../src/lib/booking/commit-cost.ts";
 import { ladderGroupOf } from "../src/lib/booking/line-key.ts";
 import { groupingEntriesOf, groupingPutMessage, groupingSnapshotOf, type GroupingSnapshot } from "../src/lib/booking/pool-grouping.ts";
 import {
@@ -237,6 +238,7 @@ async function burst(opts: {
           }));
     const timerOnClock = (ms: number, fire: () => void) => clock.at(clock.now + ms, fire);
     const isolateLines: ConfirmLine<unknown>[] = [];
+    const isolateCosts = Array.from({ length: opts.isolates?.count ?? 0 }, () => makeCommitCostLog());
     if (opts.isolates) {
       let ids = 0;
       // One object per line GROUP, as production names them (#3460): a crowd split across
@@ -412,6 +414,10 @@ async function burst(opts: {
                   },
                 }
               : {}),
+            // #3338: each isolate keeps its own record of what its commit chains cost, as
+            // production's module state does, so a confirm on an isolate that has run no
+            // chain is judged on its own request alone.
+            commitCosts: isolateCosts[i % opts.isolates.count],
           }
         : shared;
       const deps = onSharedCapacity(onIsolate, resource, clock, run.calls, SYNCHRONOUS);
@@ -945,12 +951,19 @@ async function main() {
   // fixed 6 second wait every follower gave up first and ran its own chain, which
   // is the stampede again. Followers now wait for the verdict up to their budget
   // less the reserve, so they are answered from it.
+  //
+  // #3338: the eight seconds are split as the rest of this suite splits production
+  // speed, a 3s live check and a 5s calendar write. With all eight in the live
+  // check, the leader would reach its commit chain with under 4s left after a Google
+  // call that took 8s, and a confirm no longer starts a chain it cannot finish
+  // (`commit-cost.ts`); that case is the "slower leader" one below.
   {
     const { runs, tally, bySlot } = await burst({
       inputs: Array.from({ length: BURST }, (_, i) => lead(i)),
       pool: ["a"],
       queue: "real",
-      slowGoogleMs: 8_000,
+      slowGoogleMs: 3_000,
+      slowEventMs: 5_000,
     });
     assert(runs[0].outcome === "created" && bySlot.size === 1, `slow leader: the first in is booked (got ${runs[0].outcome})`);
     assert(tally.SLOT_TAKEN === BURST - 1, `slow leader: every other one is told SLOT_TAKEN (got ${JSON.stringify(tally)})`);
@@ -966,6 +979,11 @@ async function main() {
   // Google takes 10.5s, so the leader answers after the followers' wait runs out.
   // A follower then has only the reserve left, too little for a chain of its own,
   // so it answers the retryable 503 at once and reads nothing: never a stampede.
+  //
+  // #3338: and the leader itself, with about 1.4s left after a Google call that
+  // took 10.5s, no longer starts its reservation, calendar event and insert: it is
+  // told to retry with nothing started, rather than being cut off part way and
+  // booked later by the drain after being told it failed (L12).
   {
     const { runs, tally, bySlot } = await burst({
       inputs: Array.from({ length: BURST }, (_, i) => lead(i)),
@@ -973,8 +991,15 @@ async function main() {
       queue: "real",
       slowGoogleMs: 10_500,
     });
-    assert(runs[0].outcome === "created" && bySlot.size === 1, `slower leader: the first in is still booked (got ${runs[0].outcome})`);
-    assert(tally["503"] === BURST - 1, `slower leader: the rest are answered the retryable 503 (got ${JSON.stringify(tally)})`);
+    assert(
+      runs[0].outcome === "503" && bySlot.size === 0 && (runs[0].error as DependencyTimeoutError).neededMs !== undefined,
+      `slower leader: the first in is told to retry, for want of time to write (got ${runs[0].outcome}, ${String(runs[0].error)})`,
+    );
+    assert(
+      runs[0].calls.every((c) => c.name !== "createEvent" && c.name !== "insertReservation" && c.name !== "insertBooking"),
+      "slower leader: it started nothing: no reservation, no event, no insert",
+    );
+    assert(tally["503"] === BURST, `slower leader: the rest are answered the retryable 503 (got ${JSON.stringify(tally)})`);
     assert(quiet(runs.slice(1)), "slower leader: no follower reads beyond the bounded lookahead");
     assert(
       runs.slice(1).every((r) => r.answeredMs === CONFIRM_QUEUE_WAIT_MS),

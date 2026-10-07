@@ -512,6 +512,7 @@ import { resolveAdvisorName, type AdvisorNameReader } from "@/lib/booking/adviso
 import { resolveBookingAdvisorPhoto } from "@/lib/booking/advisor-photo";
 import { loadPhotoRecords, loadUserSignInPhoto } from "@/lib/advisor-photos/store";
 import { makeConfirmQueue, isolateLine } from "@/lib/booking/confirm-queue";
+import { makeCommitCostLog } from "@/lib/booking/commit-cost";
 import { confirmLineFor, lineGroupOfLive, settleLineGrouping } from "@/lib/booking/confirm-line-live";
 import type { ConfirmLineFacts } from "@/lib/booking/confirm-latency";
 import { timeStage } from "@/lib/booking/confirm-profile";
@@ -1005,6 +1006,12 @@ async function fetchAgentWorkingHours(
 const ISOLATE_CONFIRM_QUEUE = makeConfirmQueue<orchestration.SlotSettlement>();
 /** #3325: the isolate's line behind the async interface, the shared line's fallback. */
 const ISOLATE_LINE = isolateLine(ISOLATE_CONFIRM_QUEUE);
+/**
+ * #3338: what this isolate's recent commit chains cost, so a confirm never starts a
+ * reservation, an event and an insert its budget cannot finish. Module state for the
+ * same reason as the line: every request this isolate serves reads the same record.
+ */
+const ISOLATE_COMMIT_COSTS = makeCommitCostLog();
 
 /**
  * `lineFacts`, when given, receives which confirm line served this request's turn
@@ -1138,6 +1145,7 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
     // grouping this server holds, which `settleLineGrouping` made fresh where it could
     // before the orchestration builds the key; the facts record where it came from.
     lineGroupOf: (code) => lineGroupOfLive(code, lineFacts),
+    commitCosts: ISOLATE_COMMIT_COSTS,
     // #3354: the points of the wait before the confirm's profile, when the route
     // keeps marks (the load test only); absent, nothing is stamped.
     mark: lineFacts?.marks ? (point) => lineFacts.marks?.mark(point) : undefined,
