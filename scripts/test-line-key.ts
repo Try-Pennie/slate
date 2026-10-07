@@ -10,7 +10,7 @@
 // confirm uses its code's own line rather than guess.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-line-key.ts
-import { ladderGroupOf } from "../src/lib/booking/line-key.ts";
+import { ladderGroupOf, ladderGroupRead, poolKeyDigest } from "../src/lib/booking/line-key.ts";
 import { tierLadder } from "../src/lib/routing/tiers.ts";
 import { assert, finish } from "./lib/harness.ts";
 
@@ -57,5 +57,39 @@ assert(ladderGroupOf("511", peek(partial)) === null, "partial: one unknown rung 
 // --- deterministic and compact --------------------------------------------------
 assert(ladderGroupOf("510", peek(pools)) === g510, "stable: the same pools always give the same group");
 assert((g510 ?? "").length < 80, `compact: the group is a short name, not the pools spelled out (got ${(g510 ?? "").length} chars)`);
+
+// --- #3460: a grouping that does not hold the confirm's OWN code knows nothing ---
+//
+// A lower rung missing from a grouping is a gap, part of the ladder's identity: the
+// bucket really does not exist. The confirm's OWN code missing is different. Its
+// bucket must exist for the confirm to book at all, so a grouping that does not list
+// it was read before the bucket existed, or is partial, and every lower rung it calls
+// a gap may be one too. Read as a gap, two codes whose missing rungs really differ
+// would share a line (an empty grouping makes every ladder of one length alike), so
+// the confirm keeps its code's own line instead, and says why.
+{
+  const own = new Map(pools);
+  own.delete("511");
+  const read = ladderGroupRead("511", (code) => (own.has(code) ? own.get(code)! : null));
+  assert(read.group === null && read.why === "own-code-missing", `own code: a grouping without the confirm's own code gives no ladder (got ${JSON.stringify(read)})`);
+  assert(ladderGroupOf("511", (code) => (own.has(code) ? own.get(code)! : null)) === null, "own code: and ladderGroupOf says the same");
+  const empty = ladderGroupRead("511", () => null);
+  assert(empty.group === null && empty.why === "own-code-missing", "own code: an EMPTY grouping, every code a gap, gives no ladder either");
+  const unknown = ladderGroupRead("511", peek(cold));
+  assert(unknown.group === null && unknown.why === "unknown-rung", `unknown: a grouping this isolate does not hold is told apart from a missing own code (got ${JSON.stringify(unknown)})`);
+  // Control: a lower rung known to be absent is still a gap, so the rule is about the
+  // own code only and the gap test above keeps its meaning.
+  const lower = ladderGroupRead("511", peek(gap));
+  assert(typeof lower.group === "string", "control: a missing LOWER rung is still a gap, so the ladder is known");
+}
+
+// --- #3460: the pool digest a snapshot carries ------------------------------------
+{
+  const key = JSON.stringify(["pool:v1", "org", "evt", null, [["debt_team", ["High"]]], ["u1", "u2"]]);
+  const d = poolKeyDigest(key);
+  assert(d === poolKeyDigest(key), "digest: stable for one pool key");
+  assert(d !== poolKeyDigest(key.replace("u2", "u3")), "digest: a different pool key gives a different digest");
+  assert(d.length > 0 && d.length <= 40, `digest: short enough for the object's string cap (got ${d.length} chars)`);
+}
 
 finish();

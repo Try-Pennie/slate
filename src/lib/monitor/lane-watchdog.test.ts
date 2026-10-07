@@ -178,6 +178,9 @@ const healthy = () => ({
   "db-backup": ago(6 * 60 * MIN),
   // #3182: the log shipping receipt arrives on every cron tick Better Stack accepts.
   "log-shipping": ago(1 * MIN),
+  // #3460: the recompute lane publishes the pool grouping every minute, judged with
+  // neverIsStale ON, so a healthy fleet has a publish a minute old.
+  "pool-grouping": ago(1 * MIN),
 });
 
 beforeEach(() => {
@@ -925,6 +928,58 @@ describe("alertOnStaleLanes (#803)", () => {
       heartbeat.readAllHeartbeatMs.mockRejectedValue(new Error("supabase unreachable"));
       await alertOnStaleLanes();
       expect(dispatch.resolveAlert).not.toHaveBeenCalled();
+    });
+  });
+
+  // #3460: the recompute lane publishes the pool grouping every minute, watched from its
+  // first run so the publisher is known to work before anything reads what it publishes.
+  describe("the pool grouping publish (#3460)", () => {
+    const pageFor = (lane: string) =>
+      dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === `cron_lane_stale:${lane}`);
+
+    it("does not page inside the 10 minute bound", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), "pool-grouping": ago(9 * MIN) });
+      const { stale } = await alertOnStaleLanes();
+      expect(stale.map((l) => l.lane)).not.toContain("pool-grouping");
+      expect(pageFor("pool-grouping")).toBeUndefined();
+    });
+
+    it("pages, Slack only, once nothing has been published for 10 minutes, naming the stake and where to look", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), "pool-grouping": ago(25 * MIN) });
+      const { stale } = await alertOnStaleLanes();
+      expect(stale.map((l) => l.lane)).toContain("pool-grouping");
+      const page = pageFor("pool-grouping");
+      expect(String(page?.[2])).toMatch(/pool grouping has not been published/);
+      expect(String(page?.[2])).toMatch(/tag=pool-grouping/);
+      // #3460's first half: nothing reads the grouping yet, and the page says so (L703).
+      expect(String(page?.[2])).toMatch(/Nothing reads the grouping yet/);
+      expect(page?.[1]).toBe(60 * MIN);
+      expect(page?.[3]).toBeUndefined();
+    });
+
+    it("gives a publish that has never landed its grace window, then pages never", async () => {
+      const { "pool-grouping": _omitted, ...rest } = healthy();
+      heartbeat.readAllHeartbeatMs.mockResolvedValue(rest);
+      await alertOnStaleLanes();
+      expect(pageFor("pool-grouping")).toBeUndefined();
+      expect(marker.written).toContain("lane_never_seen:pool-grouping");
+
+      dispatch.sendThrottledAlert.mockClear();
+      marker.firstSeenAt = new Date(Date.now() - 20 * MIN).toISOString();
+      await alertOnStaleLanes();
+      expect(String(pageFor("pool-grouping")?.[2])).toMatch(/NEVER once been published/);
+    });
+
+    it("all-clears only once a publish lands inside the bound", async () => {
+      dispatch.existingAlertStateKeys.mockResolvedValue(new Set(["alert_firing:cron_lane_stale:pool-grouping"]));
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), "pool-grouping": ago(25 * MIN) });
+      await alertOnStaleLanes();
+      expect(dispatch.resolveAlert.mock.calls.find((c) => c[0] === "cron_lane_stale:pool-grouping")).toBeUndefined();
+
+      heartbeat.readAllHeartbeatMs.mockResolvedValue(healthy());
+      await alertOnStaleLanes();
+      const call = dispatch.resolveAlert.mock.calls.find((c) => c[0] === "cron_lane_stale:pool-grouping");
+      expect(String(call?.[1])).toMatch(/being published again/);
     });
   });
 

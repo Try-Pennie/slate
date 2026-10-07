@@ -37,7 +37,15 @@
  * Every call has a deadline, through the shared `readWithinDeadline` (L110).
  */
 import { isolateKeyOf, type ConfirmLine, type LeaderVerdict, type LineKey, type LineTurn } from "./confirm-queue.ts";
-import { CONFIRM_LINE_PROTOCOL, CONFIRM_LINE_HEARTBEAT_MS, CONFIRM_LINE_POLL_MS } from "./confirm-line-object.ts";
+import {
+  CONFIRM_LINE_PROTOCOL,
+  CONFIRM_LINE_HEARTBEAT_MS,
+  CONFIRM_LINE_POLL_MS,
+  CONFIRM_LINE_OBJECT_PREFIX,
+  CONFIRM_LINE_PATH,
+  GROUPING_DIRECTORY_PATH,
+} from "./confirm-line-object.ts";
+import { DIRECTORY_GROUP_PREFIX } from "./pool-grouping.ts";
 import { readWithinDeadline, type ScheduleTimer } from "../read-within-deadline.ts";
 import type { SwitchReading } from "../cached-switch.ts";
 
@@ -406,6 +414,15 @@ export function makeSharedConfirmLine<T>(deps: {
   };
 }
 
+/**
+ * The name of the object a group lives in. The ONE naming function, for a line's group
+ * and the pool grouping directory's alike (#3460), so the object can read its role
+ * back from its own name when the runtime supplies it (`objectRoleOf`).
+ */
+export function confirmLineObjectName(group: string): string {
+  return `${CONFIRM_LINE_OBJECT_PREFIX}${group}`;
+}
+
 /** The Durable Object namespace, as much of it as this client uses. */
 export interface DurableLineNamespace {
   idFromName(name: string): unknown;
@@ -413,28 +430,48 @@ export interface DurableLineNamespace {
 }
 
 /**
- * The real binding as the client's transport (#3325): one object per line GROUP,
- * named from the group, created near the database. Smart placement runs the Worker
- * beside Supabase (us west), and an object is created where its first request comes
- * from, so the hint keeps a group's object there even when that first request does
- * not. An answer that is not the protocol's JSON is a failed call, never a guess.
+ * One object's transport: a JSON message posted on the role's path, a JSON message
+ * back. Created near the database: smart placement runs the Worker beside Supabase (us
+ * west), and an object is created where its first request comes from, so the hint
+ * keeps it there even when that first request does not. An answer that is not the
+ * protocol's JSON is a failed call, never a guess.
  */
+function objectStub(ns: DurableLineNamespace, group: string, path: string): LineStub {
+  const stub = ns.get(ns.idFromName(confirmLineObjectName(group)), { locationHint: "wnam" });
+  return {
+    async send(message) {
+      const res = await stub.fetch(`https://confirm-line${path}`, {
+        method: "POST",
+        body: JSON.stringify(message),
+        headers: { "content-type": "application/json" },
+      });
+      const body = (await res.json()) as unknown;
+      if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error(`the shared line answered ${res.status} with something that is not a message`);
+      return body as Record<string, unknown>;
+    },
+  };
+}
+
+/** The real binding as the client's transport (#3325): one object per line GROUP, named from the group. */
 export function durableLineNamespace(ns: DurableLineNamespace): LineNamespace {
   return {
     stubFor(group) {
-      const stub = ns.get(ns.idFromName(`confirm-line:v1:${group}`), { locationHint: "wnam" });
-      return {
-        async send(message) {
-          const res = await stub.fetch("https://confirm-line/", {
-            method: "POST",
-            body: JSON.stringify(message),
-            headers: { "content-type": "application/json" },
-          });
-          const body = (await res.json()) as unknown;
-          if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error(`the shared line answered ${res.status} with something that is not a message`);
-          return body as Record<string, unknown>;
-        },
-      };
+      return objectStub(ns, group, CONFIRM_LINE_PATH);
+    },
+  };
+}
+
+/**
+ * The pool grouping directory's transport (#3460): the same binding and naming, on the
+ * directory's own path, so the object serves the call as the directory. It builds a
+ * stub only for a name in the directory space: a line's group handed here is a bug,
+ * refused at once rather than sent somewhere a directory message is refused anyway.
+ */
+export function durableGroupingDirectory(ns: DurableLineNamespace): { directory(name: string): LineStub } {
+  return {
+    directory(name) {
+      if (!name.startsWith(DIRECTORY_GROUP_PREFIX)) throw new Error(`${name.slice(0, 40)} is not a directory's name`);
+      return objectStub(ns, name, GROUPING_DIRECTORY_PATH);
     },
   };
 }

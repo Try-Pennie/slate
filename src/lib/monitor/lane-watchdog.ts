@@ -9,6 +9,8 @@ import {
   laneRecoveryText,
   logShippingAlertText,
   logShippingRecoveryText,
+  poolGroupingAlertText,
+  poolGroupingRecoveryText,
   mirrorAlertText,
   mirrorRecoveryText,
   retentionRecoveryText,
@@ -30,6 +32,7 @@ import {
   CANARY_STALE_BOUNDS_MS,
   LOG_SHIPPING_STALE_BOUNDS_MS,
   MIRROR_STALE_BOUNDS_MS,
+  POOL_GROUPING_STALE_BOUNDS_MS,
   RETENTION_STALE_BOUNDS_MS,
   TIME_OFF_STALE_BOUNDS_MS,
   UPTIME_STALE_BOUNDS_MS,
@@ -204,6 +207,10 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
   // never sent one is the fault, not a fresh deploy. Slack only: log history stopping
   // is a missing record, not an outage.
   const logShippingStale = findStaleLanes(heartbeats, now, LOG_SHIPPING_STALE_BOUNDS_MS, true);
+  // #3460: the pool grouping publish, stamped by the recompute lane once the directory
+  // holds it. `neverIsStale` is ON with the grace window: a publish that never once landed
+  // leaves every cold server on its code's own line, which is the state this watches for.
+  const poolGroupingStale = findStaleLanes(heartbeats, now, POOL_GROUPING_STALE_BOUNDS_MS, true);
   // The detector verdict stamps (#1394): not "did this lane run" but "did this
   // detector CONCLUDE anything". `neverIsStale` is ON for a sharper reason than
   // the retention lanes': a detector that has never once reached a verdict is the
@@ -326,6 +333,14 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
     ),
   );
 
+  await pageWithGraceWindow(poolGroupingStale, now, "pool grouping publish", (lane) =>
+    sendThrottledAlert(
+      staleLaneAlertKey(lane.lane),
+      STALE_LANE_COOLDOWN_MS,
+      poolGroupingAlertText(lane),
+    ),
+  );
+
   await pageWithGraceWindow(armedVerdictStale, now, "detector", (lane) =>
     sendThrottledAlert(
       staleLaneAlertKey(lane.lane),
@@ -374,6 +389,7 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
         ...uptimeStale,
         ...backupStale,
         ...logShippingStale,
+        ...poolGroupingStale,
         ...armedVerdictStale,
       ].map((l) => l.lane),
     ),
@@ -413,6 +429,7 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
       ...uptimeStale,
       ...backupStale,
       ...logShippingStale,
+      ...poolGroupingStale,
       ...armedVerdictStale,
     ],
   };
@@ -468,7 +485,7 @@ async function pageWithGraceWindow(
 }
 
 /**
- * The nine lane families and the all-clear each one speaks (#1134, #1394, #2543, #1228, #3182).
+ * The ten lane families and the all-clear each one speaks (#1134, #1394, #2543, #1228, #3182, #3460).
  *
  * Kept alongside the per family alert-text functions rather than collapsed into one
  * generic "recovered": these lanes fail for different reasons, are recovered by
@@ -494,6 +511,7 @@ function laneFamilies(canaryBounds: Record<string, number>): {
     { bounds: UPTIME_STALE_BOUNDS_MS, recovery: uptimeRecoveryText, graceWindow: true },
     { bounds: BACKUP_STALE_BOUNDS_MS, recovery: backupRecoveryText, graceWindow: true },
     { bounds: LOG_SHIPPING_STALE_BOUNDS_MS, recovery: logShippingRecoveryText, graceWindow: true },
+    { bounds: POOL_GROUPING_STALE_BOUNDS_MS, recovery: poolGroupingRecoveryText, graceWindow: true },
     { bounds: VERDICT_STALE_BOUNDS_MS, recovery: verdictRecoveryText, graceWindow: true },
   ];
 }

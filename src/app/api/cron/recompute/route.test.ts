@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Denial guard for the recompute cron (#676) + heartbeat wiring (#685). An
 // unauthenticated caller is rejected with 401 before any lock or bucket work; a
@@ -62,8 +62,15 @@ vi.mock("@/lib/availability/slot-cache", () => slotCache);
 vi.mock("@/lib/notify/dispatch", () => dispatch);
 vi.mock("@/lib/notify/alerts", () => alerts);
 vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
+// #3460: the pool grouping publish. Its own decisions (refusing an empty grouping, what
+// counts as published) are pinned by pool-grouping-live.test.ts; here it is a seam.
+const grouping = vi.hoisted(() => ({
+  publishPoolGrouping: vi.fn(async (..._a: unknown[]): Promise<{ ok: boolean; kind: string }> => ({ ok: true, kind: "stored" })),
+}));
+vi.mock("@/lib/booking/pool-grouping-live", () => grouping);
 
 import { GET } from "./route";
+import { POOL_GROUPING_LANE } from "@/lib/monitor/health";
 
 const req = () => ({ headers: new Headers() }) as unknown as Parameters<typeof GET>[0];
 
@@ -75,6 +82,104 @@ describe("GET /api/cron/recompute", () => {
     expect(res.status).toBe(401);
     expect(locks.acquireLock).not.toHaveBeenCalled();
     expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
+  });
+
+  // #3460: the lane publishes the pool grouping it ALREADY reads, so cold servers can key
+  // their confirm line from it. Before its lock, because a tick that finds the lock held
+  // is skipped, and a skipped minute must not leave the snapshot to go stale (L614).
+  describe("the pool grouping publish (#3460)", () => {
+    const rows = [
+      { code: "510", orgId: "o", eventTypeId: "e", criteria: { debt_team: "high" }, fallbackUserId: null, memberIds: [] },
+      { code: "511", orgId: "o", eventTypeId: "e", criteria: { debt_team: "high" }, fallbackUserId: null, memberIds: [] },
+    ];
+    beforeEach(() => {
+      cron.isAuthorizedCron.mockReturnValue(true);
+      precompute.listPoolBuckets.mockResolvedValue(rows);
+      grouping.publishPoolGrouping.mockResolvedValue({ ok: true, kind: "stored" });
+      locks.acquireLock.mockResolvedValue("lease");
+    });
+    afterEach(() => {
+      // Back to the file's defaults, so no later case inherits an authorised caller or rows.
+      cron.isAuthorizedCron.mockReturnValue(false);
+      precompute.listPoolBuckets.mockResolvedValue([]);
+    });
+
+    it("publishes the grouping it read, stamped with the read's start, before it takes its lock", async () => {
+      const before = Date.now();
+      const res = await GET(req());
+      expect(res.status).toBe(200);
+      expect(grouping.publishPoolGrouping).toHaveBeenCalledTimes(1);
+      const [entries, readAtMs] = grouping.publishPoolGrouping.mock.calls[0]!;
+      expect((entries as [string, string][]).map(([c]) => c)).toEqual(["510", "511"]);
+      expect(readAtMs as number).toBeGreaterThanOrEqual(before);
+      expect(grouping.publishPoolGrouping.mock.invocationCallOrder[0]!).toBeLessThan(locks.acquireLock.mock.invocationCallOrder[0]!);
+      // With NO new read: the lane's one bucket list feeds both the publish and the recompute.
+      expect(precompute.listPoolBuckets).toHaveBeenCalledTimes(1);
+      expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith(POOL_GROUPING_LANE);
+      expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("recompute");
+    });
+
+    it("still publishes on a tick skipped for an overlapping run", async () => {
+      locks.acquireLock.mockResolvedValueOnce(null as never);
+      const res = await GET(req());
+      expect(await res.json()).toEqual({ skipped: "overlapping-run" });
+      expect(grouping.publishPoolGrouping).toHaveBeenCalledTimes(1);
+      expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith(POOL_GROUPING_LANE);
+      expect(heartbeat.recordHeartbeat).not.toHaveBeenCalledWith("recompute");
+    });
+
+    // Review of #3470: a transient failure of the publish's read must never take down the
+    // recompute lane. The read sits in its own step boundary; on failure nothing is
+    // published, and the tick runs exactly as it did before #3460, reading the buckets
+    // inside its own handling.
+    it("leaves the tick's result and status unchanged when the publish's read fails", async () => {
+      const baseline = await GET(req());
+      const baselineBody = await baseline.json();
+      vi.clearAllMocks();
+      precompute.listPoolBuckets.mockRejectedValueOnce(new Error("bucket read timed out"));
+      const res = await GET(req());
+      expect(res.status).toBe(baseline.status);
+      expect(await res.json()).toEqual(baselineBody);
+      expect(grouping.publishPoolGrouping).not.toHaveBeenCalled();
+      expect(heartbeat.recordHeartbeat).not.toHaveBeenCalledWith(POOL_GROUPING_LANE);
+      expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("recompute");
+      // The lane read for itself, as it always has, after the publish's read failed.
+      expect(precompute.listPoolBuckets).toHaveBeenCalledTimes(2);
+    });
+
+    it("still fails the tick, as before #3460, when the lane's OWN read fails too", async () => {
+      precompute.listPoolBuckets.mockRejectedValue(new Error("buckets unreadable"));
+      await expect(GET(req())).rejects.toThrow("buckets unreadable");
+      expect(locks.releaseLock).toHaveBeenCalled();
+      precompute.listPoolBuckets.mockResolvedValue(rows);
+    });
+
+    // Review of #3470: a publish the directory KEPT a newer snapshot over says the
+    // directory is fresh, not that THIS publisher's read is, so it stamps nothing.
+    it("stamps the grouping heartbeat only when the directory stored this tick's snapshot", async () => {
+      grouping.publishPoolGrouping.mockResolvedValueOnce({ ok: true, kind: "kept" });
+      await GET(req());
+      expect(heartbeat.recordHeartbeat).not.toHaveBeenCalledWith(POOL_GROUPING_LANE);
+      vi.clearAllMocks();
+      await GET(req());
+      expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith(POOL_GROUPING_LANE);
+    });
+
+    it("stamps no grouping heartbeat for a publish that did not land, and the lane carries on", async () => {
+      grouping.publishPoolGrouping.mockResolvedValueOnce({ ok: false, kind: "unreachable" });
+      const res = await GET(req());
+      expect(res.status).toBe(200);
+      expect(heartbeat.recordHeartbeat).not.toHaveBeenCalledWith(POOL_GROUPING_LANE);
+      expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("recompute");
+    });
+
+    it("never lets a publish that throws take the lane down (its own step boundary, L73)", async () => {
+      grouping.publishPoolGrouping.mockRejectedValueOnce(new Error("publish exploded"));
+      const res = await GET(req());
+      expect(res.status).toBe(200);
+      expect(heartbeat.recordHeartbeat).not.toHaveBeenCalledWith(POOL_GROUPING_LANE);
+      expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("recompute");
+    });
   });
 
   // Multi-lane dead-man's switch (#685): a successful tick stamps THIS lane.
