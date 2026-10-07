@@ -27,6 +27,8 @@ let readError: { message: string } | null = null;
 /** What a `select(...).in(...)` read returns when it lands. */
 let readRows: unknown[] = [];
 const readTables: string[] = [];
+/** What a `select(...).eq(...).single()` read answers (#3477). */
+let singleResult: { data: unknown; error: { message: string } | null } = { data: null, error: null };
 
 vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: () => ({
@@ -43,7 +45,7 @@ vi.mock("@/lib/supabase/admin", () => ({
       }),
       insert: () => ({ select: () => ({ single: async () => result() }) }),
       select: () => ({
-        eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }),
+        eq: () => ({ maybeSingle: async () => ({ data: null, error: null }), single: async () => singleResult }),
         in: async () => {
           readTables.push(table);
           return readError ? { data: null, error: readError } : { data: readRows, error: null };
@@ -55,6 +57,7 @@ vi.mock("@/lib/supabase/admin", () => ({
 }));
 
 import { realDeps } from "./service";
+import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 
 beforeEach(() => {
   writeError = null;
@@ -63,6 +66,7 @@ beforeEach(() => {
   readError = null;
   readRows = [];
   readTables.length = 0;
+  singleResult = { data: null, error: null };
 });
 
 describe("the reads that word a refused calendar (#1630)", () => {
@@ -172,5 +176,29 @@ describe("insertBooking and a reroute hold (#3251)", () => {
     const r = await realDeps().insertBooking(row as never);
     expect(r.ok).toBe(false);
     expect(r.ok === false && r.conflict).toBe(false);
+  });
+});
+
+// #3477: the advisor read the confirm makes before it writes the booking. It used to
+// read `data` alone under an error-ok reason written for the drain, so a read that
+// failed (on load run 37587811697, one that hit its deadline with the confirm's budget
+// nearly spent) resolved null against a `Promise<User>` type, and the confirm then
+// threw a TypeError on `agent.name` and answered 500 INTERNAL. It must refuse instead,
+// so the confirm answers the retryable dependency error it really met.
+describe("getUser refuses a failed read rather than answering null (#3477)", () => {
+  it("rejects when the read fails", async () => {
+    singleResult = { data: null, error: { message: "supabase did not answer within 65ms" } };
+    await expect(realDeps().getUser("u1")).rejects.toThrow(/65ms/);
+  });
+
+  it("throws a read cut short by the budget as the deadline it is, so the confirm answers 503", async () => {
+    singleResult = { data: null, error: { message: "TypeError: DeadlineExceededError: supabase did not answer within 65ms, when the booking confirm ran out of its 12000ms" } };
+    const err = await realDeps().getUser("u1").then(() => null, (e: unknown) => e);
+    expect(isDeadlineExceeded(err)).toBe(true);
+  });
+
+  it("control: answers the advisor when the read lands", async () => {
+    singleResult = { data: { id: "u1", name: "Ada" }, error: null };
+    await expect(realDeps().getUser("u1")).resolves.toMatchObject({ id: "u1", name: "Ada" });
   });
 });

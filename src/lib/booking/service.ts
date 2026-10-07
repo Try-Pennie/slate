@@ -1375,15 +1375,16 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
       }
     },
 
-    getUser: async (userId) => {
-      // error-ok: agent lookup inside the crash-safe create/drain step; a read error is recovered by the outbox retry, not silently lost.
-      const { data } = await supabaseAdmin()
-        .from("users")
-        .select("*")
-        .eq("id", userId)
-        .single();
-      return data as User;
-    },
+    // #3477: refuses a failed read rather than answering null. The live confirm calls
+    // this (the advisor it is about to book), not only the drain, and a null here was
+    // read as `agent.name` and answered the lead 500 INTERNAL on load run 37587811697,
+    // when the read had hit its deadline. Thrown, a deadline reaches the confirm as the
+    // retryable dependency error it is, and the drain still retries on its own throw.
+    getUser: async (userId) =>
+      unwrap(
+        await supabaseAdmin().from("users").select("*").eq("id", userId).single(),
+        "advisor read",
+      ) as User,
 
     loadEmails: async (userIds) => {
       const m = new Map<string, string>();
