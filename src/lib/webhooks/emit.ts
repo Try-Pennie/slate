@@ -337,10 +337,23 @@ export async function emitWebhook<E extends WebhookEvent>(
     log.error("webhook-emit", { msg: "deliveries enqueue failed", org_id: orgId, event }, error);
     throw new Error(`webhook enqueue failed: ${error.message}`);
   }
-  // An answer this cannot read throws too, rather than reading as "nothing to
-  // send". Whatever the call did write is pending, so the retry sweep sends it, and
-  // the step's retry writes nothing twice (the dedupe).
-  const enqueued = readEnqueueAnswer(data, Object.keys(WEBHOOK_FORMATS));
+  // An answer this cannot read is never read as "nothing to send". The call itself
+  // succeeded, so whatever it wrote is pending and the retry sweep sends it. With a
+  // dedupe key the step is failed, so it retries and alerts once stuck, and its retry
+  // writes nothing twice. With NO key a retry would write a second set and send both,
+  // so the sweep owns the rows and the defect is logged instead.
+  let enqueued: ReturnType<typeof readEnqueueAnswer>;
+  try {
+    enqueued = readEnqueueAnswer(data, Object.keys(WEBHOOK_FORMATS));
+  } catch (err) {
+    log.error(
+      "webhook-emit",
+      { msg: "deliveries enqueue answer unreadable", org_id: orgId, event, deduped: dedupeKey !== null },
+      err,
+    );
+    if (dedupeKey === null) return;
+    throw err;
+  }
 
   // #1459: a zero fan-out is silent. Nothing downstream can tell it apart from a
   // delivered event, so say it here: the monitor lane's subscriber-coverage check

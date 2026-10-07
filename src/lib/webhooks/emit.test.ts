@@ -388,6 +388,22 @@ describe("emitWebhook", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  // With NO dedupe key the call that answered unreadably may still have written its
+  // rows, and the caller's retry would write a second set and send both. So the step
+  // is not failed: the rows it wrote are pending, the retry sweep sends them, and the
+  // defect is logged. (With a key, above, a retry writes nothing twice.)
+  it("does not fail the step when the answer is unreadable and there is no dedupe key, and logs it (#3495)", async () => {
+    state.enqueueAnswer = { subscribers: "two" };
+
+    await expect(emitWebhook("o1", "booking.cancelled", payload, null)).resolves.toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(logged.error).toHaveBeenCalledWith(
+      "webhook-emit",
+      expect.objectContaining({ msg: "deliveries enqueue answer unreadable", deduped: false }),
+      expect.any(Error),
+    );
+  });
+
   it("fans out to every subscribed endpoint, one delivery row each", async () => {
     state.endpoints = [endpoint, { ...endpoint, id: "ep2", url: "https://other.example/hook" }];
 
