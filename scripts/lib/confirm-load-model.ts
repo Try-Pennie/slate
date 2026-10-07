@@ -32,13 +32,16 @@
 // library the suite imports (shared fakes never live in a suite).
 import type { CallCost } from "./confirm-contention-sim.ts";
 
-/** A dependency that never reaches the database: Google, whose time each profile sets
- *  on the fake itself, and the line object, which has its own reach. */
+/**
+ * A dependency that never reaches the database: Google (whose time each profile sets on
+ * the fake itself), Salesforce and Slack. Every dependency is in exactly one of this,
+ * `ON_DATABASE`, or the suite's synchronous set, and the suite derives the check from
+ * the deps themselves (`classifyDeps`), so a new one is classified before it is priced.
+ */
 export const OFF_DATABASE: ReadonlySet<string> = new Set([
   "verifyFree",
   "createEvent",
   "deleteEvent",
-  "eventExists",
   "updateEventTime",
   "updateEventDescription",
   "updateEventContact",
@@ -47,7 +50,112 @@ export const OFF_DATABASE: ReadonlySet<string> = new Set([
   "createOwnerAlertEvent",
   "deleteOwnerAlertEvent",
   "moveOwnerAlertEvent",
+  // Salesforce.
+  "readLeadXbc",
+  "readSubmissionLead",
+  "readCallingNumber",
+  // Slack.
+  "postHandoffNotice",
 ]);
+
+/**
+ * A dependency that reaches the database. Priced at its own measured latency where
+ * `DatabaseModel.callMs` (or the candidate read's rule) has one, and at the mean
+ * statement otherwise.
+ */
+export const ON_DATABASE: ReadonlySet<string> = new Set([
+  "roundRobinCandidates",
+  "findActiveBookingsForPerson",
+  "resolveBucketByCode",
+  "findBookingByIdempotencyKey",
+  "loadReservationByKey",
+  "displayedTier",
+  "resolveBucketPool",
+  "getUser",
+  "insertReservation",
+  "loadEmails",
+  "advisorTimezone",
+  "agentActiveBookingStartsMs",
+  "agentWorkingHours",
+  "bumpPendingEventDeletion",
+  "bumpReservationAttempt",
+  "businessHours",
+  "claimCancellation",
+  "claimReschedule",
+  "commitReschedule",
+  "completeBookingsIfDue",
+  "deleteBusyBlocksForBooking",
+  "deleteExpiredReservations",
+  "deleteGcalMirrorBlock",
+  "deleteReassignIntent",
+  "deleteReservation",
+  "emitWebhook",
+  "enqueueEventDeletion",
+  "enqueueOutbox",
+  "findActiveBookingsByStrongIds",
+  "findActiveBookingsStartingAt",
+  "getAgentByEmail",
+  "getBookingEventId",
+  "hasBookingEvent",
+  "insertBooking",
+  "insertBookingEvent",
+  "insertBusyBlocks",
+  "insertOwnerAlert",
+  "invalidateSlots",
+  "leaseOutbox",
+  "leaseReservation",
+  "liveBookingHoldingEvent",
+  "loadAbandonedReassignIntents",
+  "loadAbandonedReschedulePins",
+  "loadAgentDisplayName",
+  "loadBookingAssignees",
+  "loadBookingById",
+  "loadBookingContext",
+  "loadCalendarOwners",
+  "loadDrainableReservations",
+  "loadHandoffChannel",
+  "loadLiveOwnerAlert",
+  "loadPastBookingIdsToComplete",
+  "loadPendingEventDeletions",
+  "loadPendingEventDeletionsForCalendar",
+  "markOutboxDelivered",
+  "markOwnerAlertRemoved",
+  "moveBusyBlock",
+  "pendingWritePinsEvent",
+  "queryBookings",
+  "readReschedulePin",
+  "reassignSwap",
+  "recordOwnerAlertSkip",
+  "recordRoutingDecision",
+  "releaseOutboxLease",
+  "releaseReschedule",
+  "releaseRescheduleIfTarget",
+  "releaseReservationLease",
+  "removePendingEventDeletion",
+  "repinReservationEvent",
+  "saveOutboxSteps",
+  "setOwnerAlertEventId",
+  "updateBookingContact",
+  "updateBookingPhone",
+  "writeReassignIntent",
+  "writeReschedulePin",
+]);
+
+/**
+ * How `names` (every function dependency) fall across the classifications: the ones in
+ * none, the ones in more than one, and the classified names that are not dependencies.
+ */
+export function classifyDeps(
+  names: readonly string[],
+  sets: Readonly<Record<string, ReadonlySet<string>>>,
+): { unclassified: string[]; twice: string[]; stale: string[] } {
+  const all = Object.values(sets);
+  const unclassified = names.filter((n) => !all.some((set) => set.has(n)));
+  const twice = names.filter((n) => all.filter((set) => set.has(n)).length > 1);
+  const known = new Set(names);
+  const stale = [...new Set(all.flatMap((set) => [...set]))].filter((n) => !known.has(n)).sort();
+  return { unclassified, twice, stale };
+}
 
 export interface DatabaseModel {
   /**
@@ -222,6 +330,8 @@ export function databaseCosts(
   const statementsFor = (latencyMs: number) => Math.max(1, Math.round(latencyMs / db.meanStatementMs));
   return (name, args) => {
     if (OFF_DATABASE.has(name)) return null;
+    // A call in neither list would be priced on a guess; refuse it by name instead.
+    if (!ON_DATABASE.has(name)) throw new Error(`the load model has not classified ${name}: add it to ON_DATABASE or OFF_DATABASE`);
     if (name === "roundRobinCandidates") {
       const bucket = args[0] as { code: string };
       const free = freeOnRung(bucket.code, args[2] as number);

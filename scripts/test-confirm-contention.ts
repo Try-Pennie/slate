@@ -55,6 +55,9 @@ import type { BookingContext } from "../src/lib/booking/orchestration.ts";
 import { createAsserter, makeDeps, makeBooking, input, users, bucket as fakeBucket, eventType as fakeEventType } from "./lib/booking-fakes.ts";
 import { VirtualClock, SharedResource, onSharedCapacity, occupy, objectOnClock, type CallRecord } from "./lib/confirm-contention-sim.ts";
 import {
+  classifyDeps,
+  ON_DATABASE,
+  OFF_DATABASE,
   databaseCosts,
   LOAD_MODEL_ADVISORS,
   LOAD_RUN_PROFILE,
@@ -711,6 +714,39 @@ const describe = (x: Replayed) =>
   Object.entries(x.others).map(([k, o]) => `${o.count} ${k} at ${(o.firstMs / 1000).toFixed(1)}..${(o.maxMs / 1000).toFixed(1)}s (p50 ${(o.p50Ms / 1000).toFixed(1)}s)`).join("; ");
 
 async function main() {
+  // --- #3489 step 0: every dependency the model prices is classified, by name ---
+  //
+  // The model charges a call to the database only when it is listed ON_DATABASE and
+  // charges nothing for one listed OFF_DATABASE (Google, Salesforce, Slack), and it
+  // refuses a name in neither. So every function dependency the confirm path can call
+  // must be in exactly one of the two, or in this suite's SYNCHRONOUS set (not I/O at
+  // all), and nothing may be listed that is not a dependency: a stale entry is a
+  // classification of nothing, and a missing one is the next Google call silently
+  // billed to the database (L96). Derived from the deps themselves, so a dependency
+  // added to `BookingDeps` and its fakes fails here until somebody classifies it.
+  {
+    const { deps } = makeDeps({ candidates: ["p0"], freeEmails: new Set() });
+    const names = Object.entries(deps).filter(([, v]) => typeof v === "function").map(([k]) => k);
+    const sets = { onDatabase: ON_DATABASE, offDatabase: OFF_DATABASE, synchronous: SYNCHRONOUS };
+    const got = classifyDeps(names, sets);
+    assert(got.unclassified.length === 0, `load model: every dependency is classified (unclassified: ${got.unclassified.join(", ")})`);
+    assert(got.twice.length === 0, `load model: no dependency is classified twice (${got.twice.join(", ")})`);
+    // Stale is asked of the model's own two lists: the suite's synchronous set also names
+    // optional dependencies the base fake leaves out (`lineGroupOf`, `deferSend`).
+    const modelStale = classifyDeps(names, { onDatabase: ON_DATABASE, offDatabase: OFF_DATABASE }).stale;
+    assert(modelStale.length === 0, `load model: nothing the model classifies is missing from the deps (stale: ${modelStale.join(", ")})`);
+    // Control (L1): a dependency nobody classified is caught by name.
+    const planted = classifyDeps([...names, "readSomethingNew"], sets);
+    assert(JSON.stringify(planted.unclassified) === JSON.stringify(["readSomethingNew"]), `load model control: a new dependency is reported unclassified (got ${JSON.stringify(planted.unclassified)})`);
+    let refused = "";
+    try {
+      databaseCosts(LOAD_RUN_PROFILE.database, () => 0)("readSomethingNew", []);
+    } catch (err) {
+      refused = (err as Error).message;
+    }
+    assert(refused.includes("readSomethingNew"), `load model control: pricing an unclassified call throws by name (got ${JSON.stringify(refused)})`);
+  }
+
   // --- #3489 step 0: the load model, calibrated against load run 37640583621 --
   //
   // CALIBRATION, not a target. The model (`scripts/lib/confirm-load-model.ts`) replays
