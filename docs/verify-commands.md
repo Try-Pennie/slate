@@ -208,6 +208,17 @@ pinned offline by `scripts/test-burst-counter-live-control.ts`, which drives eve
 refusal through hand written replies and asserts no two of them share a code or a
 message.
 
+**Since #3416 the same object also holds the booking API's hourly ceilings**, sent
+one hit per rule on EVERY booking API request rather than only past an escalation
+threshold (`docs/cloudflare-platform-notes.md` has the why). Two consequences. An
+object that is bound and not answering no longer waits for a hot caller to be
+noticed: the next booking API request, the smoke canary's included, fails open on
+it and pages `rate_limit_broken:bookapi:h`. But this command reports the burst
+tracker's kind of request, not a hit, so what it proves live is that the object
+answers and counts BURST reports; the hit's own arithmetic, and the object's
+handling of it, are pinned offline by `scripts/test-exact-ceiling.ts`, which drives
+the real `BurstLimiter` class around a fake storage.
+
 ## It runs DAILY, because asking people to re-run it did not work (#2392)
 
 This section used to say, in bold, to re-run the command after any change to the

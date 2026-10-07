@@ -26,7 +26,7 @@ vi.mock("@/lib/env", () => ({
     caller === "regal" && slot === "primary" ? regalKey.primary() : "",
 }));
 vi.mock("@/lib/rate-limit", () => ({
-  allowRequest: vi.fn(async () => true),
+  exactCeilingWithinLimit: vi.fn(async () => true),
   bookingApiWriteWithinLimit: vi.fn(async () => true),
   bookingApiReadWithinLimit: vi.fn(async () => true),
   bookingApiIpWithinLimit: vi.fn(async () => true),

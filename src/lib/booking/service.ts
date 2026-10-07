@@ -159,7 +159,6 @@ import { escapeLike } from "@/lib/sql-like";
 import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
 import { emitWebhook, type WebhookSendScheduler } from "@/lib/webhooks/emit";
 import { afterResponse, deferWebhookSend } from "@/lib/after-response";
-import { withinBookingCleanupBudget } from "@/lib/booking/confirm-budget";
 import { DeadlineExceededError, findDeadlineExceeded, isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import { sendThrottledAlert, sendThrottledInfo, resolveRecovered } from "@/lib/notify/dispatch";
 import { logAlertSendFailure } from "@/lib/notify/send-failure";
@@ -2396,17 +2395,23 @@ async function alertOnBookingFailure<T>(op: () => Promise<T>): Promise<T> {
 
 /**
  * Page about a booking failure that warrants it (`bookingFailureAlert` decides),
- * under the request's cleanup allowance. Exported for the booking routes, which
- * answer a deadline that struck BEFORE the service was reached (#3102) and must
- * page about it the same way. Never throws: a send that fails is logged.
+ * once the response has gone. Exported for the booking routes, which answer a
+ * deadline that struck BEFORE the service was reached (#3102) and must page about
+ * it the same way. Never throws, and never holds the answer: a send that fails is
+ * logged.
  */
 export async function pageBookingFailure(err: unknown): Promise<void> {
   const spec = bookingFailureAlert(err);
   if (!spec) return;
-  // #3102: under the cleanup allowance. A timeout page is sent after the
-  // request's budget may already be spent, and its alert_state read would
-  // otherwise fail at once and lose the page about the outage itself.
-  await withinBookingCleanupBudget(() =>
+  // #3416: after the response, never in front of it. Nothing in the answer reads
+  // the page, and the page reads `alert_state` (and on its first send claims and
+  // stamps it): a burst whose confirms time out waiting in line made every one of
+  // them ask Supabase before its own 503, on the database the burst was already
+  // queueing on (load run 37547143303). Deferred work runs outside any call budget
+  // (`afterResponse`), so a budget the timeout spent cannot fail the page's own
+  // read, which is what the cleanup allowance used to be for here (#3102), and
+  // `after()` keeps it alive past the response as #3145 does for the limiter pages.
+  afterResponse("booking-failure-page", () =>
     // alert-text-ok: `spec.message` is the alert's own copy, built by
     // bookingFailureAlert from the pure builders in booking/alert-copy.ts. The
     // name ends in `.message` and is not an error; the widened #2418 scan reads
@@ -2414,8 +2419,8 @@ export async function pageBookingFailure(err: unknown): Promise<void> {
     // alert-key: verify_on_book_outage
     // alert-key: reschedule_lock_outage
     // alert-key: no_eligible_agents:*
-    sendThrottledAlert(spec.key, spec.cooldownMs, spec.message),
-  ).catch(logAlertSendFailure(spec.key));
+    sendThrottledAlert(spec.key, spec.cooldownMs, spec.message).catch(logAlertSendFailure(spec.key)),
+  );
 }
 
 /**

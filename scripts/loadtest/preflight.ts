@@ -28,7 +28,7 @@ import {
   type WarmupReading,
   type WarmupProgress,
 } from "./preflight-checks.ts";
-import { offeredSlots, loadtestPhone } from "./book-plan.ts";
+import { offeredSlots, loadtestPhone, leadExternalId } from "./book-plan.ts";
 import { refreshAfterWarmup, readOfferedSlots, bookControlSlot } from "./preflight-control.ts";
 import { PRODUCTION_SUPABASE_REF, PRODUCTION_HOST } from "../../src/lib/loadtest-guard.ts";
 
@@ -354,7 +354,8 @@ try {
   fail(err instanceof Error ? err.message : String(err));
 }
 
-const externalId = `${RUN_ID}-preflight`;
+const lead = { runId: RUN_ID, leg: "preflight", driver: 0, n: 0 } as const;
+const externalId = leadExternalId(lead);
 
 let control: Awaited<ReturnType<typeof bookControlSlot>>;
 try {
@@ -374,7 +375,7 @@ try {
         // (#2261). A weak dedupe match is email OR phone, and a fixed number made
         // the second preflight ever a `confirm_required` refusal naming the first
         // one's booking. A run gets retried; the branch outlives the attempt.
-        phone: loadtestPhone(externalId),
+        phone: loadtestPhone(lead),
       },
     }),
     ...freshRowDeps,

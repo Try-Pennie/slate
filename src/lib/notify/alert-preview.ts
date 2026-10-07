@@ -65,7 +65,6 @@ import { ACTIVATION_BUDGET_MS } from "@/lib/bookable/activation-allowance";
 import { formatUnsetHoursAlert, formatUnsetHoursRecovery } from "@/lib/monitor/unset-hours";
 import {
   formatBelowLeadTierAlert,
-  formatBelowLeadTierRecovery,
   type BelowFinding,
 } from "@/lib/monitor/below-lead-tier";
 import { formatOffsiteOriginAlert, type OffsiteFinding } from "@/lib/monitor/offsite-origin";
@@ -1468,18 +1467,6 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the routing record could not be read",
     channel: "alert",
     text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, "unreadable", PREVIEW_BELOW_TIER_URL),
-  },
-  {
-    key: "booking_below_lead_tier:*",
-    state: "the call is now with a team that works the tier",
-    channel: "recovery",
-    text: formatBelowLeadTierRecovery("5b0c7a8e-2f41-4d7e-9a61-0c3f1e2d4b5a", "agrees", PREVIEW_BELOW_TIER_URL),
-  },
-  {
-    key: "booking_below_lead_tier:*",
-    state: "the call was cancelled or its time passed",
-    channel: "recovery",
-    text: formatBelowLeadTierRecovery("5b0c7a8e-2f41-4d7e-9a61-0c3f1e2d4b5a", "gone", PREVIEW_BELOW_TIER_URL),
   },
   // #2933: one state per way the two bookings can match, since each sends the reader
   // to check a different thing, plus a Slate booking with no lead id. Each pair is
