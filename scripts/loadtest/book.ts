@@ -22,10 +22,10 @@ import {
   requestSchedule,
   availabilityRefreshMs,
   offeredSlots,
-  idPrefix,
   burstReadiness,
   waitForBurstMoment,
-  externalIdFor,
+  attemptIdentity,
+  type LoadtestLead,
   pickSlot,
   driverDeadlineMs,
   effectiveDeadlineMs,
@@ -201,8 +201,8 @@ async function slotsFor(code: string, nowMs: number, deadlineAtMs: number): Prom
 async function book(req: {
   code: string;
   startIso: string;
-  externalId: string;
-  n: number;
+  /** The attempt, which its external id, address, number and `n` all come from (#3447). */
+  lead: LoadtestLead;
   /** The driver's own deadline, or Infinity for the burst, which has none. */
   deadlineAtMs: number;
 }): Promise<BookingAttempt> {
@@ -218,7 +218,7 @@ async function book(req: {
       method: "POST",
       // #3354: the leg rides on every confirm, so the run can say where each cold one came from.
       headers: bookingRequestHeaders(API_KEY, MODE),
-      body: JSON.stringify(bookingBody({ code: req.code, startIso: req.startIso, externalId: req.externalId, timezone: TIMEZONE })),
+      body: JSON.stringify(bookingBody({ code: req.code, startIso: req.startIso, lead: req.lead, timezone: TIMEZONE })),
     });
     status = res.status;
     // The address Slate SAW, echoed on the loadtest path only. Attributing a write
@@ -253,10 +253,8 @@ async function book(req: {
     echo = null;
   }
   return {
-    driver: DRIVER,
-    n: req.n,
+    ...attemptIdentity(req.lead),
     code: req.code,
-    externalId: req.externalId,
     sentAtMs,
     wallMs: Math.round(performance.now() - t0),
     status,
@@ -318,10 +316,8 @@ async function steady(
       // failed first read). No booking was sent, and the bucket is not known to offer
       // nothing, so this has its own outcome rather than no-slots-offered (L11).
       attempts.push({
-        driver: DRIVER,
-        n: req.n,
+        ...attemptIdentity({ runId: RUN_ID, leg: mode, driver: DRIVER, n: req.n }),
         code: req.code,
-        externalId: externalIdFor(idPrefix(RUN_ID, mode), DRIVER, req.n),
         sentAtMs: now,
         wallMs: 0,
         status: 0,
@@ -338,10 +334,8 @@ async function steady(
       // status of its own. An offered-nothing run and a run nobody drove produce the
       // same empty file otherwise, and the judge could not tell them apart (L98).
       attempts.push({
-        driver: DRIVER,
-        n: req.n,
+        ...attemptIdentity({ runId: RUN_ID, leg: mode, driver: DRIVER, n: req.n }),
         code: req.code,
-        externalId: externalIdFor(idPrefix(RUN_ID, mode), DRIVER, req.n),
         sentAtMs: now,
         wallMs: 0,
         status: 0,
@@ -356,8 +350,7 @@ async function steady(
       await book({
         code: req.code,
         startIso,
-        externalId: externalIdFor(idPrefix(RUN_ID, mode), DRIVER, req.n),
-        n: req.n,
+        lead: { runId: RUN_ID, leg: mode, driver: DRIVER, n: req.n },
         deadlineAtMs,
       }),
     );
@@ -548,8 +541,7 @@ async function burst(): Promise<void> {
         book({
           code: burstCodeFor(plan.codes, DRIVER, i),
           startIso: leg.slot,
-          externalId: externalIdFor(idPrefix(RUN_ID, "burst"), DRIVER, index * BURST_REQUESTS + i),
-          n: index * BURST_REQUESTS + i,
+          lead: { runId: RUN_ID, leg: "burst", driver: DRIVER, n: index * BURST_REQUESTS + i },
           deadlineAtMs: Number.POSITIVE_INFINITY,
         }),
       ),
