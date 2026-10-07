@@ -25,7 +25,7 @@ import {
   leaseReservationRow,
   releaseReservationLeaseRow,
 } from "@/lib/booking/outbox-lease";
-import { unwrap, unwrapCount, isSlotClash, type DbResult } from "@/lib/db/result";
+import { unwrap, unwrapCount, type DbResult } from "@/lib/db/result";
 import { settleDrainStuckAlert } from "@/lib/booking/drain-stuck-alert";
 import { whereStillInPool } from "@/lib/bookable/left-pool";
 import { gatedWriteApplied, gatedWriteRows } from "@/lib/booking/gated-write";
@@ -1496,7 +1496,15 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
         p_routing: routing ? routingDecisionRow(routing) : null,
       });
       if (error) {
-        if (postgresAnswered(error)) throw new orchestration.CommitRefusedError({ code: error.code, message: error.message });
+        const answered = postgresAnswered(error);
+        // #1047: what identifies the ATTEMPT, the slot and the advisor, never the
+        // attendee (contact data does not go in logs, docs/pii.md).
+        log.error(
+          "booking",
+          { msg: answered ? "booking commit refused" : "booking commit got no answer", ...insertFailureLogFields(booking) },
+          error,
+        );
+        if (answered) throw new orchestration.CommitRefusedError({ code: error.code, message: error.message });
         // No answer at all (a deadline, a dropped connection): it may have committed,
         // and the caller reads the booking back. The error rides along as the cause, so
         // a deadline in it still reaches the route as the retryable outage (#3215).

@@ -229,6 +229,13 @@ try {
   assert(read(commit(freeOfHold, { reservation: reservation(freeOfHold.idempotency_key) })).status === "committed",
     "control: the same advisor away from the held window commits");
 
+  // The other direction (L159): an insert error that is NOT a clash is never read as
+  // one. A bucket that does not exist is a foreign key violation, 23503.
+  const badBucket = { ...bookingRow({ agent: B, start: "21:00", end: "21:20" }), bucket_id: "00000000-0000-0000-0000-00000000dead" };
+  const fk = pg.verboseError(`select commit_fresh_booking(p_booking => ${lit(badBucket)}, p_reservation_id => '${reservation(badBucket.idempotency_key)}', p_webhook => ${lit(webhook(badBucket))}, p_routing => null);`);
+  assert(fk !== null && /23503/.test(fk), `a foreign key refusal is an error, never a conflict (got ${fk?.split("\n")[0] ?? "a conflict or a commit"})`);
+  eq(count("bookings", `id = '${badBucket.id}'`), "0", "and writes nothing");
+
   // The idempotency clash: the same lead's key already booked at another time names the winner.
   const sameKey = bookingRow({ agent: B, start: "19:00", end: "19:20", sameLeadAs: K1 });
   const dup = read(commit(sameKey, { reservation: reservation(`${K1.idempotency_key}-3`) }));
