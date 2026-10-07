@@ -211,8 +211,14 @@ async function main() {
       const reporting = t.done({ full: false });
       await w.advance(CONFIRM_LINE_CALL_MS / 4);
       assert(w.sent.slice(before).includes("done"), `hung ack: the report is sent without waiting on the ack (sent ${JSON.stringify(w.sent.slice(before))})`);
-      const reported = await w.settle(reporting, 30_000);
-      assert(reported !== "unsettled", "hung ack: the turn still settles once the ack's own bound runs out");
+      // Nor does the leader's own answer wait on it: once the turn has reported, the ack
+      // can no longer matter to anybody.
+      let settledAt: number | null = null;
+      const startDone = w.now();
+      void reporting.then(() => (settledAt = w.now()));
+      await w.advance(CONFIRM_LINE_CALL_MS / 4);
+      const settledAfter = settledAt === null ? Infinity : (settledAt as number) - startDone;
+      assert(settledAfter < CONFIRM_LINE_CALL_MS / 2, `hung ack: the turn finishes without waiting on the ack (after ${settledAfter}ms)`);
     }
   }
 

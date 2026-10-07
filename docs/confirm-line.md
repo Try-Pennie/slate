@@ -80,8 +80,9 @@ for at most one poll. The relations are pinned by `scripts/test-confirm-line-obj
 The lead SENDS its ack at once and does not wait for the answer (#3355): nothing the
 confirm does depends on it, since a `gone` only marks the turn detached, which every
 later call checks. Waiting on it put a line object's round trip in front of every
-confirm, 1.3s on an object fresh from a deploy (load run 37572839375). The ack is
-settled when the turn reports, like the heartbeat, and is not counted in `line_ms`.
+confirm, 1.3s on an object fresh from a deploy (load run 37572839375). Nothing waits
+on the ack at all, neither the confirm's start nor its report, and it is not counted
+in `line_ms`.
 
 ## Traced calls (load test only, #3354)
 
