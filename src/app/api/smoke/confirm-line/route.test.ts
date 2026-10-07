@@ -17,12 +17,27 @@ vi.mock("@opennextjs/cloudflare", () => cf);
 const logged = vi.hoisted(() => ({ error: vi.fn(), warn: vi.fn(), info: vi.fn() }));
 vi.mock("@/lib/log", () => ({ log: logged }));
 
+// #3481: the probe leaves its own directory idle past the platform's hibernation window,
+// through the route's `realSleep`. Here that wait costs nothing and moves the clock the
+// binding's directories sleep by instead, so a route that slept some other way would wait
+// for real and time this file out.
+const slept = vi.hoisted(() => ({ ms: 0 }));
+vi.mock("@/lib/read-within-deadline", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/lib/read-within-deadline")>();
+  return {
+    ...real,
+    realSleep: async (ms: number) => {
+      slept.ms += ms;
+    },
+  };
+});
+
 import { POST } from "./route";
 import { CONFIRM_LINE_BINDING, makeConfirmLineObject, objectRoleOf } from "@/lib/booking/confirm-line-object";
 import { realTimer } from "@/lib/read-within-deadline";
-import { CONFIRM_LINE_CHECKS, CONFIRM_LINE_PROBE_REASON, CONFIRM_LINE_VERIFY_GROUP } from "@/lib/monitor/confirm-line-probe";
+import { CONFIRM_LINE_CHECKS, CONFIRM_LINE_PROBE_REASON, CONFIRM_LINE_VERIFY_GROUP, PLATFORM_HIBERNATE_AFTER_MS, PROBE_WAKE_IDLE_MS } from "@/lib/monitor/confirm-line-probe";
 import { POOL_GROUPING_DIRECTORY, POOL_GROUPING_VERIFY_DIRECTORY, groupingPutMessage, groupingSnapshotOf } from "@/lib/booking/pool-grouping";
-import { memoryGroupingStorage } from "../../../../../scripts/lib/memory-grouping-storage";
+import { hibernatingObjects } from "../../../../../scripts/lib/hibernating-objects";
 
 function post(authorization = "Bearer real-key") {
   const headers = new Headers();
@@ -33,24 +48,24 @@ function post(authorization = "Bearer real-key") {
 /**
  * A binding whose objects are the real object, one per name, reached over a JSON fetch
  * and served in the role its path and name say, as in production. #3460: the live pool
- * grouping directory is seeded as the recompute lane leaves it.
+ * grouping directory is seeded as the recompute lane leaves it. #3481: and an idle object
+ * sleeps as the platform's do, waking over the same storage, on a clock the probe's sleep
+ * moves.
  */
 /** Every message the binding carried, by object name and op, for the case that reads it. */
 const ops: { name: string; op: string }[] = [];
 function boundToRealHosts(opts: { seedLive?: boolean } = {}) {
   const named: string[] = [];
   ops.length = 0;
-  const objects = new Map<string, ReturnType<typeof makeConfirmLineObject>>();
-  const objectFor = (name: string) => {
-    if (!objects.has(name)) {
-      objects.set(name, makeConfirmLineObject({ now: () => Date.now(), timer: realTimer, leaseTimer: realTimer, newId: () => crypto.randomUUID(), directoryStorage: memoryGroupingStorage() }));
-    }
-    return objects.get(name)!;
-  };
+  slept.ms = 0;
+  const objects = hibernatingObjects({
+    now: () => Date.now() + slept.ms,
+    build: (storage) => makeConfirmLineObject({ now: () => Date.now(), timer: realTimer, leaseTimer: realTimer, newId: () => crypto.randomUUID(), directoryStorage: storage }),
+    idleMs: PLATFORM_HIBERNATE_AFTER_MS,
+  });
   if (opts.seedLive !== false) {
-    void objectFor(`confirm-line:v1:${POOL_GROUPING_DIRECTORY}`).handle(
-      "directory",
-      groupingPutMessage(groupingSnapshotOf([["120", "pool-a"], ["121", "pool-a"]], Date.now() - 5_000)),
+    void objects.call(`confirm-line:v1:${POOL_GROUPING_DIRECTORY}`, (o) =>
+      o.handle("directory", groupingPutMessage(groupingSnapshotOf([["120", "pool-a"], ["121", "pool-a"]], Date.now() - 5_000))),
     );
   }
   const ns = {
@@ -65,7 +80,8 @@ function boundToRealHosts(opts: { seedLive?: boolean } = {}) {
           const message = JSON.parse(init.body ?? "null") as { op?: string };
           ops.push({ name, op: String(message?.op) });
           const role = objectRoleOf(new URL(url).pathname, name);
-          return new Response(await objectFor(name).handle("role" in role ? role.role : role, message), { headers: { "content-type": "application/json" } });
+          const answer = await objects.call(name, (o) => o.handle("role" in role ? role.role : role, message));
+          return new Response(answer, { headers: { "content-type": "application/json" } });
         },
       };
     },
@@ -134,6 +150,8 @@ describe("POST /api/smoke/confirm-line", () => {
     );
     const live = ops.filter((o) => o.name === `confirm-line:v1:${POOL_GROUPING_DIRECTORY}`);
     expect(live).toEqual([{ name: `confirm-line:v1:${POOL_GROUPING_DIRECTORY}`, op: "grouping-get" }]);
+    // #3481: the wake check slept through the route's own sleep, at least one idle spell.
+    expect(slept.ms).toBeGreaterThanOrEqual(PROBE_WAKE_IDLE_MS);
     expect(logged.warn).not.toHaveBeenCalled();
   });
 
@@ -162,8 +180,10 @@ describe("POST /api/smoke/confirm-line", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     for (const check of CONFIRM_LINE_CHECKS) {
-      // #3460: the directory says so in its own word, since its remedy reads differently.
-      expect([check, body.checks[check].outcome]).toEqual([check, check === "directory" ? "directory-unreachable" : "unreachable"]);
+      // #3460: the directory says so in its own word, since its remedy reads differently,
+      // and so does its wake check (#3481).
+      const directory = check === "directory" || check === "directoryWake";
+      expect([check, body.checks[check].outcome]).toEqual([check, directory ? "directory-unreachable" : "unreachable"]);
     }
     expect(logged.warn).toHaveBeenCalledTimes(1);
   });

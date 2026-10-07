@@ -63,9 +63,10 @@ jobs:
   burst:
     # The work is two HTTP requests. What takes any time at all is the command waiting out
     # the end of the current one minute window so both reports land inside one, which is at
-    # most a minute. The confirm line proof below is one request the command cuts off at a
-    # minute, and a few seconds when healthy. Ten covers the install and both with room,
-    # and an explicit timeout is required of every job here (L313).
+    # most a minute. The confirm line proof below is one request the command cuts off at
+    # two and a half minutes, and about 25 seconds when healthy, most of it the directory
+    # left idle until the platform puts it to sleep (#3481). Ten covers the install and both
+    # with room, and an explicit timeout is required of every job here (L313).
     timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:

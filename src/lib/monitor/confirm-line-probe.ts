@@ -35,6 +35,14 @@
  *    a cold server would install: this build's format, well formed, and read within
  *    `PROBE_GROUPING_MAX_AGE_MS`. The live one is only ever READ, so the proof can never
  *    put a grouping in front of a real confirm.
+ *  - `directoryWake` (#3481): the probe's own directory, left idle past the platform's
+ *    hibernation window, hands back the grouping it stored, answered FROM STORAGE. #3479
+ *    keeps the snapshot in the object's storage because the platform discards an idle
+ *    object's memory after ten seconds; the tests can show that only with a stand in
+ *    (L52, L82), so this is the check that it still holds on the real platform. Its two
+ *    endings that are not a pass are kept apart: the grouping gone after the wait is a
+ *    failure, and every read answering from memory is a wake the probe could not SEE,
+ *    which is never a pass (L98, L159) and never called a failure of storage either.
  *
  * WHAT IT CANNOT PROVE, stated so nobody reads more into a pass: every participant runs
  * in ONE isolate, the route's. A pass proves the object answers and keeps the rules; it
@@ -61,6 +69,7 @@ import {
   groupingSnapshotOf,
   readGroupingSnapshot,
   type DirectoryStub,
+  type GroupingAnsweredFrom,
   type GroupingSnapshot,
 } from "../booking/pool-grouping.ts";
 import { shortErrorReason } from "../notify/error-text.ts";
@@ -84,7 +93,7 @@ export const CONFIRM_LINE_PROBE_REASON = {
   bindingMissing: "binding-missing",
 } as const;
 
-export const CONFIRM_LINE_CHECKS = ["full", "notFull", "abandoned", "nothingHeld", "directory"] as const;
+export const CONFIRM_LINE_CHECKS = ["full", "notFull", "abandoned", "nothingHeld", "directory", "directoryWake"] as const;
 export type ConfirmLineCheck = (typeof CONFIRM_LINE_CHECKS)[number];
 
 export const CHECK_OUTCOMES = [
@@ -117,6 +126,10 @@ export const CHECK_OUTCOMES = [
   "no-grouping",
   /** The live grouping would be refused by a cold server: another format, malformed, or stale. */
   "grouping-unusable",
+  /** #3481: left idle past the hibernation window, the directory no longer handed back the grouping it stored. */
+  "lost-after-idle",
+  /** Every read after the wait was answered from memory, or without saying where from, so no wake was seen. */
+  "wake-unobserved",
 ] as const;
 export type CheckOutcome = (typeof CHECK_OUTCOMES)[number];
 
@@ -127,6 +140,7 @@ export const CHECK_CAN_END_ON: Record<ConfirmLineCheck, readonly CheckOutcome[]>
   abandoned: ["passed", "unreachable", "errored", "idle-not-led", "led-beside", "freed-late", "not-freed"],
   nothingHeld: ["passed", "unreachable", "errored", "held"],
   directory: ["passed", "errored", "directory-unreachable", "not-stored", "older-won", "no-grouping", "grouping-unusable"],
+  directoryWake: ["passed", "errored", "directory-unreachable", "not-stored", "lost-after-idle", "wake-unobserved"],
 };
 
 /**
@@ -137,6 +151,31 @@ export const CHECK_CAN_END_ON: Record<ConfirmLineCheck, readonly CheckOutcome[]>
  * has stopped, which the `pool-grouping` heartbeat also pages on.
  */
 export const PROBE_GROUPING_MAX_AGE_MS = 3 * 60_000;
+
+/**
+ * How long an idle Durable Object stays in memory before the platform hibernates it and
+ * discards that memory: "currently, it is after 10 seconds of inactivity" (the Durable
+ * Object lifecycle docs, read 2026-10-07), for an object with no timers, no unfinished
+ * I/O and no request in flight, which the directory's instance is between calls. The
+ * platform's own number, not ours, and the reason the directory keeps its snapshot in
+ * storage (#3479).
+ */
+export const PLATFORM_HIBERNATE_AFTER_MS = 10_000;
+/**
+ * #3481: how long the probe leaves its own directory idle before each read. Every read is
+ * a call, and a call resets the object's idle clock, so each spell must on its own be past
+ * the window, or the probe's polling is what keeps the object awake. Twice the documented
+ * window, because the runtime decides when it acts and says only what it does currently.
+ */
+export const PROBE_WAKE_IDLE_MS = 2 * PLATFORM_HIBERNATE_AFTER_MS;
+/**
+ * How many spells the probe waits through for a read answered from storage before it says
+ * it could not see a wake. More than one, so a single spell the runtime happened to stretch
+ * is not the day's verdict; few, because every spell is time the daily request is held
+ * open, and an object that is still awake after a minute idle is not hibernating the way
+ * the directory's design assumes, which is itself the thing to say.
+ */
+export const PROBE_WAKE_READS = 3;
 
 export interface CheckResult {
   outcome: CheckOutcome;
@@ -182,6 +221,8 @@ export interface ConfirmLineProbeDeps {
   directory: (name: string) => DirectoryStub;
   now: () => number;
   timer: ScheduleTimer;
+  /** #3481: how the probe waits out an idle spell. Injected, so no test waits for real (L524). */
+  sleep: (ms: number) => Promise<void>;
   newId: () => string;
 }
 
@@ -522,6 +563,17 @@ function holds(answer: Record<string, unknown>, expected: GroupingSnapshot): boo
   return read.kind === "snapshot" && JSON.stringify(read.snapshot) === JSON.stringify(expected);
 }
 
+/** One call to a directory within one call's deadline: its answer, or why there was none. */
+async function askDirectory(deps: ConfirmLineProbeDeps, stub: DirectoryStub, message: Record<string, unknown>): Promise<Record<string, unknown> | string> {
+  let why = "no answer within a call";
+  const answer = await readWithinDeadline(() => stub.send(message), CONFIRM_LINE_CALL_MS, (err) => (why = shortErrorReason(err)), deps.timer);
+  return answer ?? why;
+}
+const directoryUnreachable = (what: string, why: string): CheckResult => ({
+  outcome: "directory-unreachable",
+  detail: `The pool grouping directory did not answer ${what} (${why}), so the grouping it holds cannot reach any server`,
+});
+
 /**
  * #3460: the pool grouping directory, both halves. On the probe's OWN directory: a fresh
  * put is stored and handed back, and an older put is kept out, so newest wins is
@@ -531,15 +583,8 @@ function holds(answer: Record<string, unknown>, expected: GroupingSnapshot): boo
 async function checkDirectory(deps: ConfirmLineProbeDeps, run: string): Promise<CheckResult> {
   const verify = deps.directory(POOL_GROUPING_VERIFY_DIRECTORY);
   const live = deps.directory(POOL_GROUPING_DIRECTORY);
-  const ask = async (stub: DirectoryStub, message: Record<string, unknown>): Promise<Record<string, unknown> | string> => {
-    let why = "no answer within a call";
-    const answer = await readWithinDeadline(() => stub.send(message), CONFIRM_LINE_CALL_MS, (err) => (why = shortErrorReason(err)), deps.timer);
-    return answer ?? why;
-  };
-  const unreachable = (what: string, why: string): CheckResult => ({
-    outcome: "directory-unreachable",
-    detail: `The pool grouping directory did not answer ${what} (${why}), so the grouping it holds cannot reach any server`,
-  });
+  const ask = (stub: DirectoryStub, message: Record<string, unknown>) => askDirectory(deps, stub, message);
+  const unreachable = directoryUnreachable;
   const now = deps.now();
   const newer = groupingSnapshotOf([["verify", run]], now);
   const older = groupingSnapshotOf([["verify", `${run}:older`]], now - 1_000);
@@ -588,6 +633,85 @@ async function checkDirectory(deps: ConfirmLineProbeDeps, run: string): Promise<
   );
 }
 
+/** Where a get said it answered from, or null when it did not say (a directory older than #3481). */
+function answeredFrom(answer: Record<string, unknown>): GroupingAnsweredFrom | null {
+  return answer.from === "storage" || answer.from === "memory" ? answer.from : null;
+}
+
+/**
+ * #3481: does the directory still hand back its grouping once the platform has put it to
+ * sleep? On the probe's OWN directory, never the live one: it puts a grouping of its own,
+ * confirms it is held, then leaves the directory idle for a whole spell and reads it,
+ * up to `PROBE_WAKE_READS` times. Only a read answered FROM STORAGE holding that grouping
+ * passes, because a read answered from memory is an object that never slept and proves
+ * nothing about storage (L98). A read after the wait that does not hold the grouping fails,
+ * whichever it was answered from.
+ *
+ * Its grouping is minted newer than whatever the directory already holds, which the
+ * directory says, so it is stored whatever the check before it (or yesterday's run) left
+ * there, and two of the probe's own puts never tie on one clock reading.
+ */
+async function checkDirectoryWake(deps: ConfirmLineProbeDeps, run: string): Promise<CheckResult> {
+  const verify = deps.directory(POOL_GROUPING_VERIFY_DIRECTORY);
+  const ask = (message: Record<string, unknown>) => askDirectory(deps, verify, message);
+  const spellS = PROBE_WAKE_IDLE_MS / 1000;
+
+  const before = await ask(groupingGetMessage());
+  if (typeof before === "string") return directoryUnreachable("a get", before);
+  const held = before.kind === "grouping" ? readGroupingSnapshot(before.snapshot, null) : null;
+  const floor = held?.kind === "snapshot" ? held.snapshot.readAtMs + 1 : 0;
+  const mine = groupingSnapshotOf([["verify", `${run}:wake`]], Math.max(deps.now(), floor));
+
+  const put = await ask(groupingPutMessage(mine));
+  if (typeof put === "string") return directoryUnreachable("a put", put);
+  if (put.kind !== "stored") return { outcome: "not-stored", detail: `The verification directory answered the wake check's put with ${kindOf(put)} rather than storing it, so there was nothing to leave idle` };
+  const confirmed = await ask(groupingGetMessage());
+  if (typeof confirmed === "string") return directoryUnreachable("a get", confirmed);
+  if (!holds(confirmed, mine)) {
+    return { outcome: "not-stored", detail: `The verification directory stored the wake check's put and then handed back ${kindOf(confirmed)} that is not it, before it was left idle at all` };
+  }
+
+  const unnamed: number[] = [];
+  for (let read = 1; read <= PROBE_WAKE_READS; read++) {
+    // Nothing touches the directory during the spell: this read is the first call since
+    // the one before it, so the object's idle clock runs the whole spell.
+    await deps.sleep(PROBE_WAKE_IDLE_MS);
+    const got = await ask(groupingGetMessage());
+    const idle = `${read} idle ${read === 1 ? "spell" : "spells"} of ${spellS} seconds`;
+    if (typeof got === "string") return directoryUnreachable(`a get after ${idle}`, got);
+    const from = answeredFrom(got);
+    if (!holds(got, mine)) {
+      const said =
+        got.kind !== "grouping"
+          ? `${kindOf(got)}${typeof got.why === "string" ? ` (${got.why})` : ""}`
+          : got.snapshot === null || got.snapshot === undefined
+            ? "no grouping at all"
+            : "a grouping that is not the one it stored";
+      const state = from === "storage" ? "had slept and read its storage" : from === "memory" ? "was still awake, answering from memory" : "did not say where it answered from";
+      return {
+        outcome: "lost-after-idle",
+        detail: `After ${idle} the verification directory ${state}, and handed back ${said} rather than the grouping it stored, so a directory left idle between publishes serves no grouping`,
+      };
+    }
+    if (from === "storage") {
+      return passed(`Left idle for ${spellS} seconds, the verification directory slept, woke, and handed back the grouping it stored, read from its storage, on read ${read} of ${PROBE_WAKE_READS}`);
+    }
+    if (from === null) unnamed.push(read);
+  }
+  // Said apart (L11): an object that stayed awake is the platform keeping it in memory,
+  // while one that names no source is a directory older than this probe.
+  const how =
+    unnamed.length === PROBE_WAKE_READS
+      ? "without saying where it answered from, as a directory older than this probe does"
+      : unnamed.length > 0
+        ? `from memory, apart from read ${unnamed.join(" and ")}, which named no source`
+        : "from memory, so the platform kept it awake";
+  return {
+    outcome: "wake-unobserved",
+    detail: `Left idle ${PROBE_WAKE_READS} times for ${spellS} seconds each, the verification directory still held its grouping and answered every read ${how}. The probe never saw it wake, so whether a woken directory reads its storage back was not measured`,
+  };
+}
+
 /** A check that threw is the probe's own fault, said as such and never as the object's. */
 async function guarded(work: () => Promise<CheckResult>): Promise<CheckResult> {
   try {
@@ -611,5 +735,8 @@ export async function runConfirmLineProbe(deps: ConfirmLineProbeDeps): Promise<P
   const abandoned = await guarded(() => checkAbandoned(deps, claim("abandoned")));
   const nothingHeld = await guarded(() => checkNothingHeld(deps, used));
   const directory = await guarded(() => checkDirectory(deps, run));
-  return { full, notFull, abandoned, nothingHeld, directory };
+  // Last, because it is the one that waits: the line checks and the live read are never
+  // held behind its idle spells.
+  const directoryWake = await guarded(() => checkDirectoryWake(deps, run));
+  return { full, notFull, abandoned, nothingHeld, directory, directoryWake };
 }

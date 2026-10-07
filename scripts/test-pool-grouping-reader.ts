@@ -161,6 +161,20 @@ async function readerTests() {
     const w = readerWorld({ heldAt: T0 - 70_000, answer: answering(groupingSnapshotOf(ENTRIES, T0 - 5_000)) });
     eq((await w.reader.ensure()).source, "installed", "reader: a STALE server installs a fresh snapshot too");
   }
+  {
+    // #3481: the directory's get says where it answered from, an additive field for the
+    // daily proof. A server installs exactly as it did without it, and the directory's
+    // protocol is unchanged, so builds on either side of the change read each other.
+    for (const from of ["storage", "memory", "somewhere new"]) {
+      const w = readerWorld({ answer: () => ({ kind: "grouping", snapshot: groupingSnapshotOf(ENTRIES, T0 - 5_000), from }) });
+      eq((await w.reader.ensure()).source, "installed", `reader: an answer saying it came from ${from} installs as one that says nothing`);
+      eq(w.store.peek("121"), poolKeyDigest(RAW_KEY.get("121")!), `reader: and the grouping from ${from} answers as before`);
+    }
+    const real = objectWorld();
+    eq((await real.send("directory", groupingPutMessage(groupingSnapshotOf(ENTRIES, T0 - 5_000)))).kind, "stored", "reader: the real directory stores a snapshot");
+    const w = readerWorld({ answer: (m) => real.send("directory", m) });
+    eq((await w.reader.ensure()).source, "installed", "reader: and a server installs what the real directory hands back, the new field and all");
+  }
   const refusedBy = async (label: string, answer: (m: Message) => Promise<Message> | Message, want: string) => {
     const w = readerWorld({ answer });
     const r = await w.reader.ensure();
