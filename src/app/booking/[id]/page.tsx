@@ -53,7 +53,14 @@ export default async function BookingPage({
   const requestedCode = first(sp, "xbc");
   const lookupId = await landingLookupId(id, headers);
   // No submission: the path names the lead itself (#3246).
-  const resolved = await resolveLandingCode(requestedCode, lookupId, null);
+  // #3508: started alongside the reads that do not depend on the routed code.
+  // #1337: a lead who already has a call is offered the Move, which records a
+  // mandatory reschedule reason chosen right there.
+  const [resolved, horizonDays, reasonOptions] = await Promise.all([
+    resolveLandingCode(requestedCode, lookupId, null),
+    loadBookingHorizonDays(),
+    loadReasonOptions(),
+  ]);
   const bucketCode = resolved.code;
 
   // #2660: the same question `/book` asks of the same helper, so a test booking
@@ -72,10 +79,6 @@ export default async function BookingPage({
 
   const embedded = first(sp, "embed") === "1";
   const theme = first(sp, "theme") === "dark" ? ("dark" as const) : ("light" as const);
-  const horizonDays = await loadBookingHorizonDays();
-  // #1337: a lead who already has a call is offered the Move, which records a
-  // mandatory reschedule reason chosen right there.
-  const reasonOptions = await loadReasonOptions();
   // #2166: the id in the path IS the identity, graded as a strong match by the
   // same rule the confirm uses, so this lead is known from the first render. Asked
   // here rather than left to the confirm, where the notice would arrive one picked

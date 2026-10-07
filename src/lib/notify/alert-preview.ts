@@ -1470,15 +1470,17 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   // fault, so each gets its own state, plus the one where the code cannot say.
   {
     key: "booking_below_lead_tier:*",
-    state: "arrived on a lower code, and Salesforce re-scored the lead after booking",
+    state: "arrived on a lower code than the submission they booked from now scores",
     channel: "alert",
     text: formatBelowLeadTierAlert(PREVIEW_RESCORED, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
   },
-  // #3501: "re-scored" only when the booking's own submission was; a newer
-  // submission and an unattributed rise each read differently.
+  // #3501, #3508: a rise is named by what was measured: a Lead edit after the
+  // latest submission, a newer submission than the one booked from, or (when the
+  // booked submission is the latest) both possible causes, since its score keeps no
+  // history; and an unattributed rise says the check could not tell.
   {
     key: "booking_below_lead_tier:*",
-    state: "arrived on a lower code, and the lead submitted again after booking",
+    state: "arrived on a lower code, and their latest submission is a newer one",
     channel: "alert",
     text: formatBelowLeadTierAlert(PREVIEW_RESUBMITTED, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
   },

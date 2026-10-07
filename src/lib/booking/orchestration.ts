@@ -3750,7 +3750,13 @@ async function routeOnLeadCode(
     id: partnerKeysFrom(input.prefill).submissionId,
     readLeadId: deps.readSubmissionLead,
   });
-  if (routed.source === "link") return { input, codeSource: routed.record };
+  if (routed.source === "link") {
+    // #3508: the landing may have shown (and the Booker posted) the lead's current
+    // score in place of a stale link code; record it, so the booking does not read
+    // as routed on the link while sitting with another team.
+    const shown = input.bucketCode !== routed.code ? { shown: input.bucketCode } : {};
+    return { input, codeSource: { ...routed.record, ...shown } };
+  }
   return { input: { ...input, bucketCode: routed.code }, codeSource: routed.record };
 }
 

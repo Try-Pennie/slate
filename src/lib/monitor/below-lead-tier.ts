@@ -307,13 +307,15 @@ function routingLine(f: BelowFinding, c: RoutingContext): string {
 /**
  * Why the lead scores higher now than the code they arrived with (#3501).
  *
- * "Re-scored" is said only when it was measured: the score came from the lead's
- * current submission AND that is the submission the booking was made under, or
- * Salesforce's history shows the Lead score edited after the latest submission. A
- * newer current submission is the lead coming back, which sends nobody to ask
- * why a score moved. Anything else (a booking that recorded no submission, or a
- * score read off the Lead's copy) names both and claims neither (L11): the
- * 2026-10-07 page called a stale Lead copy a re-score, and somebody moved the call.
+ * Only what was measured is said as fact (L11). A Lead edit after the latest
+ * submission is measured, by `LeadHistory`. A newer current submission than the one
+ * booked from is measured, by the Lead's pointer. But when the booked submission IS
+ * the latest and scores higher than the link's code, Slate cannot tell a re-score
+ * after booking from a page that sent an older score, because Salesforce keeps no
+ * history of `XBC_SO__c`: #3501 said "re-scored" there, and the three pages of
+ * 2026-10-07 15:41 ET were all trypennie pages sending the Lead's stale copy (#3508).
+ * So that case names both. Anything else (a booking that recorded no submission, or
+ * a score read off the Lead's copy) says the check could not tell.
  */
 function riseClause(f: BelowFinding): string {
   // A Lead score edited after the submission (newest wins, `readLeadScores`): the
@@ -323,9 +325,12 @@ function riseClause(f: BelowFinding): string {
   const current = f.score?.source === "submission" ? f.score.submissionId : null;
   if (booked !== null && current !== null) {
     if (leadIdKey(booked) === leadIdKey(current)) {
-      return `Salesforce has since re-scored that submission to ${f.lead.label}`;
+      return (
+        `the submission they booked from scores ${f.lead.label} now, so either the link carried an ` +
+        `older score or Salesforce re-scored that submission since`
+      );
     }
-    return `they have submitted again since, scoring ${f.lead.label} on the newer submission`;
+    return `their latest submission, newer than the one they booked from, scores ${f.lead.label}`;
   }
   return (
     `Salesforce scores them ${f.lead.label} now, from a re-score or a newer submission ` +

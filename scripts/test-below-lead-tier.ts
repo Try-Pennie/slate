@@ -234,7 +234,7 @@ function rescoredOwnSubmission<F extends { booking: UpcomingBooking; lead: { cod
   // #3501: a finding that does not say where its score came from claims no re-score,
   // because a Lead's lagging copy reads exactly like one (the 2026-10-07 page).
   const unattributed = formatBelowLeadTierAlert(finding, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, "u");
-  assert(/could not tell/.test(unattributed) && !/re-scored that submission/.test(unattributed), "a score of unknown source claims no re-score");
+  assert(/could not tell/.test(unattributed) && !/submission they booked from/.test(unattributed), "a score of unknown source claims no cause");
   const unattributedBoth = formatBelowLeadTierAlert(lowFinding, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, "u");
   assert(/could not tell/.test(unattributedBoth) && /below the code it was given/i.test(unattributedBoth), "and still names a routing fault beside it");
 
@@ -843,16 +843,21 @@ async function main(): Promise<void> {
       );
       eq(calls.notified.length, 0, "a Lead copy that has not caught up pages nobody");
     }
-    // 2026-10-06: the SAME submission went 112 to 312 after booking. Pages, as a re-score.
+    // The booking's own submission scores higher than the link's code. #3508: that is
+    // EITHER a re-score after booking or a page that sent an older score (three such on
+    // 2026-10-07 came from trypennie pages sending the Lead's stale copy), and Salesforce
+    // keeps no history of the submission's score, so the page names both and claims neither.
     {
       const { calls } = await run(
         [booking({ id: "aafbb707", bucket_id: LOW_112.id, salesforce_id: RESCORED, prefill: withSub("a04Ui00000NLKZZIA5") })],
         { aafbb707: "112" },
       );
-      eq(calls.notified.length, 1, "a real re-score still pages");
+      eq(calls.notified.length, 1, "a booked submission scoring higher than the link still pages");
       const text = calls.notified[0]?.text ?? "";
       assert(text.startsWith("A High lead is booked with the Low team"), "naming the tier the lead has now");
-      assert(/re-scored that submission to High/.test(text), "and saying the booking's own submission was re-scored");
+      assert(/the submission they booked from scores High now/.test(text), "and saying the booked submission's score");
+      assert(/either the link carried an older score or Salesforce re-scored that submission since/.test(text), "and both possible causes");
+      assert(!/has since re-scored/.test(text), "and never a re-score as fact, which nothing measured");
       assert(!/submitted again/.test(text), "and not that the lead submitted again");
       assert(!/[\u2014\u2013]/.test(text) && !/NaN|undefined|null/.test(text), "no dashes or leaked values");
     }
@@ -864,7 +869,7 @@ async function main(): Promise<void> {
       );
       eq(calls.notified.length, 1, "a higher newer submission pages");
       const text = calls.notified[0]?.text ?? "";
-      assert(/submitted again since/.test(text), "saying the lead submitted again");
+      assert(/their latest submission, newer than the one they booked from, scores High/.test(text), "saying the lead's latest submission is newer");
       assert(!/re-scored/.test(text), "and never that Salesforce re-scored them");
     }
     // A booking that recorded no submission: the cause is not known, so neither is claimed.
@@ -875,7 +880,7 @@ async function main(): Promise<void> {
       );
       const text = calls.notified[0]?.text ?? "";
       assert(/could not tell/.test(text), "a booking with no recorded submission says the check could not tell");
-      assert(!/re-scored that submission/.test(text) && !/submitted again since/.test(text), "and claims neither cause");
+      assert(!/submission they booked from/.test(text) && !/newer than the one they booked from/.test(text), "and claims neither cause");
     }
     // A Lead corrected after its submission, booked on the corrected tier: silent.
     {
