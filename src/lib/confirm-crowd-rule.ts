@@ -21,6 +21,12 @@
  * defect it declares, which the judge reports as unconcluded, and a build that stops
  * while saying `walks` fails the drop burst by name.
  *
+ * Enforced, not only declared (L407): `scripts/test-confirm-contention.ts` drives the
+ * REAL confirm path with a crowd behind a top rung of one advisor and a staffed rung
+ * below it, reads which rule the outcome shows, and fails unless it is this one. So a
+ * change to the behaviour without this flip, or to this without the behaviour, fails
+ * the build.
+ *
  * Pure, no `@/` imports, so the node suites read the vocabulary directly.
  */
 export const CONFIRM_CROWD_RULES = ["stops", "walks"] as const;
