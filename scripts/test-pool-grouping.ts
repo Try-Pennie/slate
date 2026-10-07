@@ -24,6 +24,8 @@ import {
   POOL_GROUPING_FORMAT,
   POOL_GROUPING_DIRECTORY,
   POOL_GROUPING_DIRECTORY_PROTOCOL,
+  POOL_GROUPING_FUTURE_TOLERANCE_MS,
+  POOL_GROUPING_STORAGE_KEY,
   groupingEntriesOf,
   groupingSnapshotOf,
   readGroupingSnapshot,
@@ -238,6 +240,30 @@ async function directoryTests() {
     const w = objectWorld(corrupt);
     eq((await w.send("directory", groupingGetMessage())).snapshot, null, "storage: a stored value that is not a snapshot is none");
     eq((await w.send("directory", groupingPutMessage(good))).kind, "stored", "storage: and a put over it is stored");
+  }
+
+  // #3483: a put stamped in the future is refused before it is stored. Stored, it would
+  // outlive every hibernation and be answered over every later honest put (all "older"
+  // than it), while every reader refuses it: the directory would be poisoned for good.
+  // The bound is the reader's own tolerance, one constant.
+  {
+    const w = objectWorld();
+    const future = groupingSnapshotOf(ENTRIES, T0 + POOL_GROUPING_FUTURE_TOLERANCE_MS + 1);
+    eq((await w.send("directory", groupingPutMessage(future))).kind, "bad", "future: a put stamped beyond the tolerance is refused");
+    eq((await w.send("directory", groupingGetMessage())).snapshot, null, "future: and is never handed out");
+    eq((await w.send("directory", groupingPutMessage(good))).kind, "stored", "future: so the next honest put is still stored");
+    // Control: exactly at the tolerance is the clock skew readers accept, so it is kept.
+    const edge = groupingSnapshotOf(ENTRIES, T0 + POOL_GROUPING_FUTURE_TOLERANCE_MS);
+    eq((await objectWorld().send("directory", groupingPutMessage(edge))).kind, "stored", "future: control, a put at exactly the tolerance is stored");
+  }
+  {
+    // A woken instance whose storage already holds a future snapshot (written before
+    // this rule, or by a build without it) reads it as none, and stores the next put.
+    const storage = memoryGroupingStorage();
+    await storage.put(POOL_GROUPING_STORAGE_KEY, groupingSnapshotOf(ENTRIES, T0 + POOL_GROUPING_FUTURE_TOLERANCE_MS + 60_000));
+    const woken = objectWorld(storage);
+    eq((await woken.send("directory", groupingGetMessage())).snapshot, null, "future: a stored snapshot from the future is read as none on waking");
+    eq((await woken.send("directory", groupingPutMessage(good))).kind, "stored", "future: and the next honest put replaces it");
   }
 
   // Line messages are refused on the directory, and directory messages on every line,

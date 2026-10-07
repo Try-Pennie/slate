@@ -449,7 +449,7 @@ export function makeConfirmLineObject(
       if (typeof role !== "string") return bad(role.refused);
       if (role === "directory") {
         if (!isGroupingMessage(message)) return bad("a confirm line message on the pool grouping directory");
-        directory ??= makeGroupingDirectoryHost(deps.directoryStorage);
+        directory ??= makeGroupingDirectoryHost(deps.directoryStorage, deps.now);
         return directory.handle(message);
       }
       if (isGroupingMessage(message)) return bad("a pool grouping message on a confirm line");

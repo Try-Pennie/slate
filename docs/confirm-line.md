@@ -78,7 +78,9 @@ memory, so a memory only directory was empty for most of every minute, and load 
 37601024392's bursts, each arriving about 48 seconds after the last publish, read
 nothing. A put writes storage before it answers `stored`, a failed write is refused (so
 the heartbeat below is not stamped), and a failed read is refused rather than answered
-as an empty directory. It publishes
+as an empty directory. A put stamped further in the future than the readers accept
+(`POOL_GROUPING_FUTURE_TOLERANCE_MS`) is refused, and a stored one is read as none, so a
+single bad clock cannot hold the directory against every honest put after it (#3483). It publishes
 BEFORE taking its lock, because a tick that finds the lock held is skipped, and it
 adds no read: the same list feeds the recompute. Any server's own read publishes too,
 after the response, as a backup. A publish that landed stamps the `pool-grouping`
