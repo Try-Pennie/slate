@@ -6,13 +6,17 @@
 // nothing about the migration, so it is never a pass and never the failed check
 // exit either (L98, L411).
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { CLI_HISTORY_TABLE_SQL, migrationPlan, replayMigrations } from "./migration-replay.ts";
 
 /** A migration file's SQL, verbatim, by file name, for applying to the throwaway database. */
 export function readMigration(file: string): string {
   return readFileSync(join(import.meta.dirname, "..", "..", "supabase", "migrations", file), "utf8");
 }
+
+/** The role the server's own client calls as (the secret key), so a suite's calls are the Worker's. */
+export const SERVER_ROLE = "service_role";
 
 export interface ThrowawayPostgres {
   /** The container name, for a caller that drives psql itself. */
@@ -24,6 +28,12 @@ export interface ThrowawayPostgres {
   sql(text: string, role?: string, opts?: { singleTransaction?: boolean }): string;
   /** Run a statement expected to FAIL, returning the error text (or null if it succeeded). */
   sqlError(text: string, role?: string): string | null;
+  /**
+   * The same, verbose, so the SQLSTATE and the constraint name show in the text a
+   * refusal is judged by, made as the server's own role unless another is named
+   * (#3495: the suites that judge a function's refusals as the Worker meets them).
+   */
+  verboseError(text: string, role?: string): string | null;
   /**
    * One psql session run CONCURRENTLY with the caller, for proving what two
    * transactions do to each other. Resolves with its exit code and stderr; never rejects.
@@ -198,6 +208,9 @@ export function startThrowawayPostgres(name: string, image: string): ThrowawayPo
         return String((err as { stderr?: string }).stderr ?? err);
       }
     },
+    verboseError(text, role = SERVER_ROLE) {
+      return pg.sqlError(`\\set VERBOSITY verbose\n${text}`, role);
+    },
     session(text) {
       return new Promise((resolve) => {
         const p = spawn("docker", ["exec", "-i", name, "psql", "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-qtAX", "-f", "-"]);
@@ -234,5 +247,23 @@ export function startThrowawayPostgres(name: string, image: string): ThrowawayPo
   pg.stop();
   throw new Error(
     `the throwaway Postgres never accepted a connection in 90s; its last log lines:\n  ${lastLines(last?.logs ?? "", 5)}`,
+  );
+}
+
+/**
+ * Every migration in `dir` applied to the throwaway database from empty, as
+ * `supabase db push` applies them: the CLI's history table, then each file in its own
+ * transaction (#3495). One copy for the suites that need the schema rather than the
+ * replay itself. Throws on a plan it cannot read or a file that does not apply, so a
+ * short replay never passes as a complete one; returns how many applied.
+ */
+export function replayEveryMigration(pg: ThrowawayPostgres, dir: string): number {
+  const plan = migrationPlan(readdirSync(dir));
+  if (!plan.ok) throw new Error(plan.error);
+  pg.sql(CLI_HISTORY_TABLE_SQL);
+  return replayMigrations(
+    plan.files,
+    (file) => readFileSync(join(dir, file), "utf8"),
+    (batch) => void pg.sql(batch, undefined, { singleTransaction: true }),
   );
 }

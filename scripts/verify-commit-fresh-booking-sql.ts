@@ -24,10 +24,9 @@
 // named test-*.ts: it needs Docker. No Docker is exit 2, never a pass (L98).
 //
 // Run: node --experimental-strip-types scripts/verify-commit-fresh-booking-sql.ts
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { startThrowawayPostgres } from "./lib/throwaway-postgres.ts";
-import { CLI_HISTORY_TABLE_SQL, migrationPlan, replayMigrations } from "./lib/migration-replay.ts";
+import { replayEveryMigration, startThrowawayPostgres } from "./lib/throwaway-postgres.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 import { readCommitAnswer } from "../src/lib/booking/commit-answer.ts";
 
@@ -36,14 +35,8 @@ const FIXTURES = join(import.meta.dirname, "fixtures");
 const IMAGE = process.env.COMMIT_FRESH_PG_IMAGE ?? "supabase/postgres:17.6.1.175";
 const NAME = `slate-commit-fresh-${process.pid}`;
 
-const plan = migrationPlan(readdirSync(DIR));
-if (!plan.ok) {
-  console.error(`FAIL: ${plan.error}`);
-  process.exit(1);
-}
-
 const pg = startThrowawayPostgres(NAME, IMAGE);
-const { sql, sqlError } = pg;
+const { sql } = pg;
 
 const ORG = "00000000-0000-0000-0000-0000000000a0";
 const A = "00000000-0000-0000-0000-00000000000a";
@@ -133,7 +126,6 @@ function commit(row: ReturnType<typeof bookingRow>, opts: { reservation: string;
 
 const read = (answer: unknown) => readCommitAnswer(answer, FORMATS);
 const count = (table: string, where: string) => sql(`select count(*) from ${table} where ${where};`);
-const refusal = (text: string, role = "service_role"): string | null => sqlError(`\\set VERBOSITY verbose\n${text}`, role);
 /** The digits of a time replaced by 9, so two renderings compare by their shape alone. */
 const shape = (t: string) => t.replace(/\d/g, "9");
 
@@ -151,21 +143,15 @@ function plantRefusal(table: string, column: string, bookingId: string, name: st
 
 try {
   // --- every migration, from empty, as db push applies them ----------------------------
-  sql(CLI_HISTORY_TABLE_SQL);
-  const applied = replayMigrations(
-    plan.files,
-    (file) => readFileSync(join(DIR, file), "utf8"),
-    (batch) => void sql(batch, undefined, { singleTransaction: true }),
-  );
-  assert(applied === plan.files.length && applied > 170, `every migration applied to an empty database (${applied})`);
+  const applied = replayEveryMigration(pg, DIR);
+  assert(applied > 170, `the schema for the one call save: every migration applied to an empty database (${applied})`);
 
   sql(`
     insert into organizations (id, name) values ('${ORG}', 'Commit org');
     insert into users (id, org_id, email, role) values
       ('${A}', '${ORG}', 'a@example.com', 'agent'), ('${B}', '${ORG}', 'b@example.com', 'agent'),
       ('${C}', '${ORG}', 'c@example.com', 'agent');
-    insert into event_types (id, org_id, name, duration_min, buffer_before_min, buffer_after_min) values
-      ('${ET}', '${ORG}', 'Call', 20, 10, 10);
+    insert into event_types (id, org_id, name, duration_min, buffer_before_min, buffer_after_min) values ('${ET}', '${ORG}', 'Call', 20, 10, 10);
     insert into buckets (id, org_id, code, name, event_type_id) values ('${B100}', '${ORG}', '100', 'Low', '${ET}');
     insert into webhook_endpoints (id, org_id, url, format, active, events, created_at) values
       ('${GENERIC}', '${ORG}', 'https://generic.example/hook', 'generic', true, array['booking.created'], '2031-03-01 00:00:00+00'),
@@ -287,10 +273,10 @@ try {
   // --- refusals: nothing written -------------------------------------------------------------------
   const before = sql("select count(*) from bookings;");
   const noId = { ...bookingRow({ start: "13:00", end: "13:20" }), id: undefined };
-  const e1 = refusal(`select commit_fresh_booking(p_booking => ${lit(noId)}, p_reservation_id => '${R1}', p_webhook => ${lit(webhook(bookingRow({ start: "13:00", end: "13:20" })))}, p_routing => null);`);
+  const e1 = pg.verboseError(`select commit_fresh_booking(p_booking => ${lit(noId)}, p_reservation_id => '${R1}', p_webhook => ${lit(webhook(bookingRow({ start: "13:00", end: "13:20" })))}, p_routing => null);`);
   assert(e1 !== null && /22023/.test(e1) && /id/.test(e1), `a row with no id is refused, since the webhook names it (got ${e1?.split("\n")[0] ?? "a result"})`);
   const stray = { ...bookingRow({ start: "13:00", end: "13:20" }), not_a_column: 1 };
-  const e2 = refusal(`select commit_fresh_booking(p_booking => ${lit(stray)}, p_reservation_id => '${R1}', p_webhook => ${lit(webhook(stray))}, p_routing => null);`);
+  const e2 = pg.verboseError(`select commit_fresh_booking(p_booking => ${lit(stray)}, p_reservation_id => '${R1}', p_webhook => ${lit(webhook(stray))}, p_routing => null);`);
   assert(e2 !== null && /22023/.test(e2) && /not_a_column/.test(e2), `a key bookings has no column for is refused by name (got ${e2?.split("\n")[0] ?? "a result"})`);
   eq(sql("select count(*) from bookings;"), before, "and neither wrote a booking");
 
@@ -305,7 +291,7 @@ try {
   // --- who may call it -------------------------------------------------------------------------------
   for (const role of ["anon", "authenticated"]) {
     const row = bookingRow({ start: "20:00", end: "20:20" });
-    const err = refusal(`select commit_fresh_booking(p_booking => ${lit(row)}, p_reservation_id => '${R1}', p_webhook => ${lit(webhook(row))}, p_routing => null);`, role);
+    const err = pg.verboseError(`select commit_fresh_booking(p_booking => ${lit(row)}, p_reservation_id => '${R1}', p_webhook => ${lit(webhook(row))}, p_routing => null);`, role);
     assert(err !== null && /permission denied/.test(err), `${role} cannot execute it (got ${err?.split("\n")[0] ?? "a result"})`);
   }
   // Every call above ran as service_role, so a missing grant to the server's own role

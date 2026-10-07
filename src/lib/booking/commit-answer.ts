@@ -1,4 +1,4 @@
-import { readEnqueueAnswer, type EnqueueAnswer } from "../webhooks/enqueue-answer.ts";
+import { isJsonObject as isObject, readEnqueueAnswer, type EnqueueAnswer } from "../webhooks/enqueue-answer.ts";
 
 /**
  * What `commit_fresh_booking` answers (#3495, migration 0174).
@@ -35,8 +35,6 @@ export type CommittedBooking = Record<string, unknown> & {
   ends_at: string;
   manage_token: string;
 };
-
-const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /**
  * The answer, or a refusal naming what could not be read. Never a guess: reading an

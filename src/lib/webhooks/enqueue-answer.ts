@@ -36,7 +36,9 @@ export interface EnqueueAnswer {
   deliveries: EnqueuedDelivery[];
 }
 
-const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+/** A JSON object, never an array or null: the one shape check both answer readers use. */
+export const isJsonObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+const isObject = isJsonObject;
 
 /**
  * The answer, or a refusal naming what could not be read. Never a guess: an answer
