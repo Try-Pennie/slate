@@ -27,6 +27,7 @@
  */
 import {
   POOL_GROUPING_FORMAT,
+  POOL_GROUPING_FUTURE_TOLERANCE_MS,
   groupingGetMessage,
   readGroupingSnapshot,
   type DirectoryStub,
@@ -57,8 +58,8 @@ export const POOL_GROUPING_FETCH_MS = 500;
  * cuts it.
  */
 export const POOL_GROUPING_FETCH_GIVE_UP_MS = 2_000;
-/** How far in the future a snapshot's read time may be before it is refused. */
-export const POOL_GROUPING_FUTURE_TOLERANCE_MS = 5_000;
+/** How far in the future a snapshot's read time may be before it is refused: the directory's own bound, one constant (#3483). */
+export { POOL_GROUPING_FUTURE_TOLERANCE_MS };
 /**
  * How long a server waits, after a fetch that installed nothing, before it fetches again.
  * The fetch starts as soon as a confirm's key authenticates, before the per key and per

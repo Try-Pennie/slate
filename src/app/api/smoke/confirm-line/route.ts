@@ -5,7 +5,7 @@ import { authenticateBearer, CANARY_CALLERS } from "@/lib/booking/api-auth";
 import { configuredBookingApiKeys } from "@/lib/booking/api-keys";
 import { CONFIRM_LINE_BINDING } from "@/lib/booking/confirm-line-object";
 import { durableGroupingDirectory, durableLineNamespace, type DurableLineNamespace } from "@/lib/booking/shared-confirm-line";
-import { realTimer } from "@/lib/read-within-deadline";
+import { realSleep, realTimer } from "@/lib/read-within-deadline";
 import {
   CONFIRM_LINE_CHECKS,
   CONFIRM_LINE_PROBE_REASON,
@@ -40,7 +40,9 @@ export const dynamic = "force-dynamic";
  *
  * WHAT IT CANNOT PROVE: every participant runs in this one invocation, so a pass shows the
  * object answers and keeps the line's rules, and cannot show that two isolates reach the
- * same object. Only a load run can.
+ * same object. Only a load run can. What it CAN prove since #3481 is that the directory
+ * survives the platform's hibernation: the probe's own directory sleeps on the platform's
+ * clock, not ours, and is read back from storage.
  */
 export async function POST(req: NextRequest) {
   const callers = configuredBookingApiKeys(CANARY_CALLERS);
@@ -69,6 +71,11 @@ export async function POST(req: NextRequest) {
     directory: (name) => durableGroupingDirectory(lineObjects).directory(name),
     now: () => Date.now(),
     timer: realTimer,
+    // #3481: the wake check leaves its own directory idle for whole spells on the real
+    // clock, so a healthy run holds this request about twenty seconds longer. An HTTP
+    // invocation has no wall time limit while its caller is connected, and the command
+    // waits `REPLY_DEADLINE_MS` for it.
+    sleep: realSleep,
     newId: () => crypto.randomUUID(),
   });
   const failed = CONFIRM_LINE_CHECKS.filter((c) => checks[c].outcome !== "passed");

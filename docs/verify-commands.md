@@ -290,7 +290,7 @@ asked the object anything (L557), and a fake cannot stand in for it (L52).
 **`pnpm verify:confirm-line` is the proof.** It calls `POST /api/smoke/confirm-line`,
 which runs the probe (`src/lib/monitor/confirm-line-probe.ts`) inside the deployment
 with the confirm path's OWN client (`makeSharedConfirmLine`) and its own transport
-(`durableLineNamespace`), against the real object. Five checks, each in both
+(`durableLineNamespace`), against the real object. Six checks, each in both
 directions and each on its own named outcome:
 
 - **full**: B, queued behind A, is REFUSED as taken once A reports a full verdict,
@@ -313,6 +313,21 @@ directions and each on its own named outcome:
   would install: this build's format, well formed, and read within three minutes,
   three of the recompute lane's publishes, so a run landing in one minute's gap
   between snapshots is never called stale.
+- **directoryWake** (#3481): the directory still answers after the platform has put
+  it to sleep. The platform hibernates an idle object after ten seconds and discards
+  its memory, which is why #3479 keeps the snapshot in the object's storage; the
+  tests can show that only with a stand in. So the probe puts a grouping of its own on
+  its own directory, confirms it is held, then leaves the directory untouched for 20
+  seconds (twice the window) and reads it, up to three times. Each get says where it
+  answered from (`memory`, or `storage` on the get that loaded a woken instance's
+  storage, an additive field readers ignore), and only a read **from storage**
+  holding that grouping passes. Every read is a call, and a call resets the object's
+  idle clock, so each spell is a whole one on its own: the probe's polling cannot keep
+  the object awake. A read after the wait that has lost the grouping fails (exit 24).
+  Every read answering from memory, or naming no source as an older directory does, is
+  a wake the probe could not see, which is **never a pass** and never called a failure
+  of storage either (exit 25). It runs last, so the line checks and the live read are
+  never held behind its wait; a healthy run takes about 20 seconds longer for it.
 
 It uses the shared line **whatever the stored switch says**: the switch decides
 whether real confirms use it, and a probe that stood down while the switch is off
@@ -338,7 +353,7 @@ no real line key can name either directory.
 BOOKING_API_KEY_CANARY=<the canary key the deployment holds> pnpm verify:confirm-line
 ```
 
-`SLATE_BASE_URL` picks the deployment (default prod). Only five passed checks pass
+`SLATE_BASE_URL` picks the deployment (default prod). Only every check passing passes
 (L98), and every other ending exits on **its own code** with its own opening
 sentence. When several checks fail, the worst names the run and the message still
 lists every check's outcome.
@@ -347,7 +362,7 @@ lists every check's outcome.
 |---|---|---|
 | 0 | every check answered as the line's rules say | nothing |
 | 1 | no base URL or no `BOOKING_API_KEY_CANARY` here | set them; nothing was attempted |
-| 2 | no reply at all, or none within a minute | check the base URL and that the deployment serves |
+| 2 | no reply at all, or none within two and a half minutes | check the base URL and that the deployment serves |
 | 3 | a reply this command cannot read | something other than the endpoint answered |
 | 4 | the key was refused | the deployment does not hold this key |
 | 5 | the endpoint is disabled | the deployment has no booking API key configured |
@@ -369,6 +384,8 @@ lists every check's outcome.
 | 21 | an older grouping replaced a newer one | a slow publisher could hand servers a stale grouping |
 | 22 | the live directory holds no grouping | the recompute lane is not publishing; search `tag=pool-grouping` |
 | 23 | the live grouping is one a server would refuse | another format, malformed, or older than three minutes |
+| 24 | left idle past the hibernation window, the directory lost the grouping it stored | **the #3479 failure is back**: servers between publishes read nothing and key by code; the detail says whether it woke or stayed awake |
+| 25 | every read after the idle wait answered from memory, or named no source | not a pass and not a finding: the platform kept the object awake, or the directory predates the field (deploy); the wake half was not measured |
 
 Its decision logic is pinned offline by `scripts/test-confirm-line-live-control.ts`,
 which drives the probe against the real object host (`makeConfirmLineHost`) on a
@@ -387,10 +404,14 @@ can stand in for the other's (L53).
 `neverIsStale` ON, at the burst counter's 52 hours for the same derived reasons
 (`scripts/test-confirm-line-schedule.ts` re-derives it from the workflow file).
 **Only a run that measured how the object answers may stamp it**: exits 0, 9 and 12
-to 23 conclude, and every bad one of those is also posted to Slack. Exit 8 (nothing
+to 24 conclude, and every bad one of those is also posted to Slack. Exit 8 (nothing
 bound) deliberately does not, because nothing exercised the answering half; the
 daily message still says so and the lapsing stamp pages as a blind detector, so
-nothing about it is quieter. The mapping is `scripts/lib/confirm-line-run-outcome.ts`.
+nothing about it is quieter. Exit 25 (no wake seen) does not either, for the same
+reason: a stamp there would keep the verdict fresh for as long as the platform kept
+the directory awake, which is a detector that has stopped concluding. It ranks below
+every real finding, so a run with one is named by that finding and still stamps. The
+mapping is `scripts/lib/confirm-line-run-outcome.ts`.
 
 # Proving an approved time off blocks (`pnpm verify:ooo-protection`)
 

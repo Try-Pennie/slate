@@ -78,7 +78,9 @@ memory, so a memory only directory was empty for most of every minute, and load 
 37601024392's bursts, each arriving about 48 seconds after the last publish, read
 nothing. A put writes storage before it answers `stored`, a failed write is refused (so
 the heartbeat below is not stamped), and a failed read is refused rather than answered
-as an empty directory. It publishes
+as an empty directory. A put stamped further in the future than the readers accept
+(`POOL_GROUPING_FUTURE_TOLERANCE_MS`) is refused, and a stored one is read as none, so a
+single bad clock cannot hold the directory against every honest put after it (#3483). It publishes
 BEFORE taking its lock, because a tick that finds the lock held is skipped, and it
 adds no read: the same list feeds the recompute. Any server's own read publishes too,
 after the response, as a backup. A publish that landed stamps the `pool-grouping`
@@ -206,7 +208,7 @@ isolate lines leave dozens told to retry, one shared line answers the whole crow
 and #3460's burst on sibling codes across warm, cold and stale servers, which elects
 three leaders keyed as main keys it and one once every server fetches the snapshot),
 `test-pool-grouping.ts` (the snapshot, every refusal, the directory through the real
-object, and the format pin), `test-pool-grouping-reader.ts` (the server's grouping,
+object, where each get says it answered from, and the format pin), `test-pool-grouping-reader.ts` (the server's grouping,
 newest wins, the reader's bound counted from the line key, coalescing and backoff, and
 the same key both ways for sixty codes), `test-unawaited-line-calls.ts` (no unawaited seat call or turn report; the lead's ack
 is the one deliberate exception, see Timings),
@@ -223,6 +225,24 @@ one, and holding a live grouping a cold server would install. It writes only its
 verification directory and only reads the live one. It cannot prove two isolates
 share one object; only the load run can. Exit codes and
 decisions: `docs/verify-commands.md`.
+
+**What it proves about the directory surviving a sleep (#3481).** #3479 rests on a
+platform guarantee the offline tests can show only with a stand in: the object's
+storage outlives the hibernation that discards its memory, and a woken instance reads
+it back. Load run 37610783404 showed it once, indirectly. The daily proof now shows it
+every day, directly, on the real platform: on its own verification directory it puts
+a grouping, confirms it is held, leaves the directory untouched for 20 seconds (twice
+the platform's ten second window) and reads it again, up to three times. The
+directory's get says where it answered from, `memory`, or `storage` on the one get
+that loaded a woken instance's storage (an additive field: the reader takes `kind` and
+`snapshot` alone, and the directory's protocol is unchanged). A pass is a read **from
+storage** holding the grouping the probe put, which is a woken instance reading its
+snapshot back. A read after the wait that lost the grouping fails on its own exit
+(24). Every read answered from memory means the platform kept the object awake and
+the probe never saw a wake, which is never a pass (exit 25, and no stamp). What it
+still cannot prove is the LIVE directory's own sleeps: the live one is only read, so
+the proof checks the mechanism on an instance of the same class rather than the
+instance real confirms use.
 
 ## Measured before it was built (2026-10-05)
 

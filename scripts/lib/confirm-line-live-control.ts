@@ -2,7 +2,7 @@
 // every ending it can reach is driven offline by scripts/test-confirm-line-live-control.ts.
 //
 // The command asks the deployed endpoint to run the probe (`src/lib/monitor/confirm-line-probe.ts`)
-// and judges what comes back. Only five passed checks pass. A reply missing a check is
+// and judges what comes back. Only every check passing passes. A reply missing a check is
 // never a pass on the ones it carried (L98), and every other ending exits on its own code
 // with its own opening sentence (L11).
 import {
@@ -17,6 +17,17 @@ import { CONFIRM_LINE_EXIT } from "./confirm-line-run-outcome.ts";
 
 // The table LIVES in the bare node module, re-exported so there is one of it (L41).
 export { CONFIRM_LINE_EXIT };
+
+/**
+ * The longest the command waits for the probe's answer. A healthy probe takes the line
+ * checks' few seconds plus one idle spell of the directory's wake check (#3481), about
+ * 25 seconds. The slowest honest one, every follower waiting out its whole wait and the
+ * directory never answering from storage, is under two minutes:
+ * `scripts/test-confirm-line-live-control.ts` measures every planted run on its virtual
+ * clock and holds the slowest well inside this. Past it the reply is not coming, and
+ * waiting on it would only hold the job until its own timeout (L110).
+ */
+export const REPLY_DEADLINE_MS = 150_000;
 
 /** What one call to the endpoint produced. */
 export type ProbeOutcome =
@@ -39,6 +50,7 @@ const ASKS: Record<ConfirmLineCheck, string> = {
   abandoned: "freed behind an unacknowledged lead",
   nothingHeld: "nothing left held",
   directory: "the pool grouping directory stores, keeps the newest, and holds a live grouping",
+  directoryWake: "the pool grouping directory hands its grouping back from storage after an idle sleep",
 };
 
 /**
@@ -110,10 +122,17 @@ export const OUTCOME_ORDER: readonly Failed[] = [
   // left held.
   "directory-unreachable",
   "not-stored",
+  // #3481: a directory that loses its grouping on every sleep is empty for most of each
+  // minute, so nearly every confirm keys by code: worse than an older grouping winning now
+  // and then.
+  "lost-after-idle",
   "older-won",
   "no-grouping",
   "grouping-unusable",
   "held",
+  // Last: nothing was found wrong, one half went unmeasured, and any real finding beside
+  // it is the more useful thing to name the run by.
+  "wake-unobserved",
 ];
 
 /** Each failed outcome's exit code and its opening sentence, which no other ending shares. */
@@ -176,6 +195,16 @@ export const FAILED_CHECK: Record<Failed, { exit: number; says: string }> = {
   "grouping-unusable": {
     exit: CONFIRM_LINE_EXIT.groupingUnusable,
     says: "The live pool grouping is one a server reading it would refuse (another format, malformed, or stale), so the snapshot reaches nobody.",
+  },
+  "lost-after-idle": {
+    exit: CONFIRM_LINE_EXIT.directoryLostAfterIdle,
+    says:
+      "The pool grouping directory did not hand back the grouping it stored once it was left idle past the platform's hibernation window, so between the recompute lane's publishes every server reads nothing and confirms key by code again.",
+  },
+  "wake-unobserved": {
+    exit: CONFIRM_LINE_EXIT.directoryWakeUnobserved,
+    says:
+      "The pool grouping directory answered every read after its idle wait from memory, so the proof never saw it wake and did not measure whether a woken directory reads its grouping back. That is not a pass: the detail says whether it stayed awake or answered without saying where from.",
   },
 };
 

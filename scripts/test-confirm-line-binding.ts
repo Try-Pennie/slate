@@ -97,6 +97,10 @@ async function shellReports(message: Record<string, unknown>): Promise<string[]>
   // #3479: a NEW instance over the same storage is a woken one, and still answers.
   const woken = await call(new ConfirmLine({ storage } as never), "/directory", groupingGetMessage());
   eq(JSON.stringify(woken.snapshot), JSON.stringify(snapshot), "the shell hands its storage to the directory, so a woken instance still holds the snapshot");
+  // #3481: and says where each get answered from, which the daily proof reads to tell a
+  // woken instance from one that never slept.
+  eq(got.from, "memory", "the deployed class answers a get after a put from memory, since the put already loaded its storage");
+  eq(woken.from, "storage", "and a woken instance's first get says it read its storage");
   // With no storage on the context the directory refuses rather than keeping the snapshot
   // in memory alone, which would read as healthy and be empty within a minute.
   eq((await call(new ConfirmLine(), "/directory", groupingPutMessage(snapshot))).kind, "bad", "an instance with no storage refuses a put");
