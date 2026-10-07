@@ -3040,6 +3040,38 @@ function withDrop(outcome: "walks" | "stops", rule: string | undefined, mutate: 
 }
 
 {
+  // #3459 review: on a build that says it stops, a drop burst whose losers were told
+  // SLOT_TAKEN while the REQUESTED rung was still free has already failed the refusals
+  // bar, on any build. The tier drop bar must not ALSO list it as a burst that could
+  // not show the declared defect: that would report one fault twice, the second time
+  // blaming the crowd or the declaration for it.
+  const r = withDrop("stops", "stops", (i) => {
+    for (const f of i.burstResults.filter((x) => x.burstLeg?.index === 1)) {
+      f.probe = probeOf("120", legAt(1), { bookable: true, reason: "available", rungsDropped: 0 });
+    }
+  });
+  const refused = r.findings.filter((x) => x.bar === "the burst's refusals" && x.detail.includes("burst 2 of 3"));
+  eq(refused.length, 1, "the requested rung refusal fails the drop burst once, on the refusals bar");
+  assert(refused[0]!.detail.includes("requested rung itself"), `naming the requested rung (got: ${refused[0]?.detail})`);
+  eq(
+    r.burstsUnconcluded.filter((x) => x.detail.includes("burst 2 of 3")),
+    [],
+    "and the tier drop bar does not report the same refusals again as a burst that could not conclude",
+  );
+  // Control (L159): with the slot honestly taken, the same stops drop burst still
+  // cannot show the declared defect, so the tier drop bar is still asked.
+  const spent = withDrop("stops", "stops", (i) => {
+    for (const f of i.burstResults.filter((x) => x.burstLeg?.index === 1)) {
+      f.probe = probeOf("120", legAt(1), { bookable: false, reason: "slot_taken" });
+    }
+  });
+  assert(
+    spent.burstsUnconcluded.some((x) => x.bar === "the tier drop" && x.detail.includes("burst 2 of 3")),
+    "control: a stops drop burst whose slot was honestly spent still cannot conclude",
+  );
+}
+
+{
   // Every confirm won, and none says it landed below the top rung: the burst never
   // showed a tier being dropped, so it proved nothing about #3338.
   const r = withDrop("walks", "walks", (i) => {
@@ -3138,6 +3170,53 @@ function withDrop(outcome: "walks" | "stops", rule: string | undefined, mutate: 
     for (const f of i.burstResults.filter((x) => x.burstLeg?.index === 0)) delete f.probe;
   });
   assert(missing.burstsUnconcluded.some((x) => x.detail.includes("not recorded")), "a probe never recorded is unconcluded, never read as taken");
+
+  // #3459 review (L46): until #3446 lands, no driver writes the crowd rule, the probe,
+  // the burst's kind or capacity, or a winner's rung. A run whose burst files carry
+  // NONE of them, as main's drivers write them today, must read as not measured and
+  // never as a pass.
+  const unwired = brokenThree((i) => {
+    for (const f of i.burstResults) {
+      delete f.crowdRule;
+      delete f.probe;
+      if (f.burstLeg) {
+        delete f.burstLeg.kind;
+        delete f.burstLeg.capacity;
+      }
+      for (const a of f.attempts) delete a.rungsDropped;
+    }
+  });
+  eq(unwired.verdict, "incomplete", "burst files written before #3429 are never a pass");
+  eq(
+    unwired.burstsUnconcluded.filter((x) => x.bar === "the burst's refusals" && x.detail.includes("not recorded")).length,
+    3,
+    "every burst's refusals left open, for a probe never recorded",
+  );
+  assert(
+    unwired.measurements!.bursts.every((b) => burstLegText(b).includes("capacity was not recorded")),
+    "and every burst's line says its capacity was not recorded, never a number",
+  );
+
+  // #3459 review: the platform half's early returns hold the SAME precedence as the
+  // end of the judge, where a burst that could not conclude outranks a void reading.
+  // An unreadable platform half used to answer UNMEASURED over it, so the run's exit
+  // named the analytics and not the burst that never proved what it exists to prove.
+  const blind = brokenThree((i) => {
+    for (const f of i.burstResults.filter((x) => x.burstLeg?.index === 0)) delete f.probe;
+    i.platform = { invocations: null, cpuMsP99: null, subrequests: null, statuses: null, cron: null };
+  });
+  eq(blind.verdict, "incomplete", "an unconcluded burst on a run whose platform half is unreadable is incomplete");
+  eq(blind.exit, JUDGE_EXIT.incomplete, "on the incomplete exit code");
+  assert(blind.burstsUnconcluded.some((x) => x.detail.includes("not recorded")), "naming the burst clause");
+  assert(blind.platformUnmeasured !== null, "with the unreadable platform half still reported beside it");
+  assert(blind.findings.some((f) => f.bar === "platform limits"), "and its finding kept");
+  // The other direction (L159): a measured failure still outranks both.
+  const blindAndFailed = brokenThree((i) => {
+    for (const f of i.burstResults.filter((x) => x.burstLeg?.index === 0)) delete f.probe;
+    i.platform = { invocations: null, cpuMsP99: null, subrequests: null, statuses: null, cron: null };
+    i.faultPass = { attempts: 30, availabilityUnread: 0, fiveXx: 3, faultPct: 10, faultTargets: ["google-read"] };
+  });
+  eq(blindAndFailed.verdict, "fail", "and a measured failure beside them still fails the run");
 
   const early = brokenThree((i) => {
     for (const f of i.burstResults.filter((x) => x.burstLeg?.index === 0)) {

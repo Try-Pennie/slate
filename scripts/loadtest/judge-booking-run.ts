@@ -1758,7 +1758,11 @@ function judgeDropBurst(
   // A probe that could not be read has already left the refusals bar open; saying so
   // twice would name one unknown as two.
   const alreadyOpen = taken > 0 && probe.kind === "unconcluded";
-  if (!sawDefect && !alreadyOpen) {
+  // And refusals while the REQUESTED rung was still free have already FAILED the
+  // refusals bar, on any build. Asking this bar too would report one fault twice, the
+  // second time blaming the crowd or the declaration for it (#3459 review).
+  const alreadyFailed = taken > 0 && probe.kind === "read" && probe.bookable && probe.rungsDropped === 0;
+  if (!sawDefect && !alreadyOpen && !alreadyFailed) {
     unconclude(
       BURST_DROP_BAR,
       "the deployment says a crowd stops at its rung (the rule before #3437), and the drop burst saw no confirm " +
@@ -2456,10 +2460,14 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
  * with anything to say.
  */
 function unmeasured(m: RunMeasurements, why: string, findings: Finding[], burstsUnconcluded: Finding[]): JudgeResult {
-  const measuredFailures = findings.length > 0;
+  // The same precedence as the end of `judgeBookingRun` (#3429): a measured failure
+  // first, then a burst clause that could not conclude, which outranks a reading the
+  // platform could not give, since a run whose burst could not conclude did not prove
+  // what it exists to prove. The platform finding is carried either way.
+  const verdict: JudgeVerdict = findings.length > 0 ? "fail" : burstsUnconcluded.length > 0 ? "incomplete" : "unmeasured";
   return {
-    verdict: measuredFailures ? "fail" : "unmeasured",
-    exit: measuredFailures ? JUDGE_EXIT.fail : JUDGE_EXIT.unmeasured,
+    verdict,
+    exit: JUDGE_EXIT[verdict],
     findings: [...findings, { bar: "platform limits", detail: why }],
     measurements: m,
     speedUnmeasured: speedUnmeasuredOf(m),
