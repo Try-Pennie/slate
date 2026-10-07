@@ -68,6 +68,39 @@ async function main() {
     assert(!(lines[1] ?? "x").includes("line_"), `line: a confirm that recorded none carries no line fields (got ${lines[1]})`);
   }
 
+  // --- #3460: where the line key's grouping came from, and what fetching it cost ------
+  //
+  // Every new way of not getting the snapshot falls back to the code's own line, which is
+  // today's honest behaviour, so the snapshot path could stop firing and nothing would say
+  // so (L551, L289). The line names the source, and the wait the fetch added, so a load
+  // run can count the share keyed from the snapshot and measure the bound it waits under.
+  {
+    const cap = captureInfo();
+    const fetched: ConfirmLineFacts = { lineGroupSource: "snapshot", grouping: { source: "installed", waitedMs: 87, ageMs: 4_200 } };
+    await answerTimed("booking-api", async () => new Response("{}", { status: 200 }), { now: () => 0, facts: fetched });
+    const held: ConfirmLineFacts = { lineGroupSource: "local", grouping: { source: "held", waitedMs: null, ageMs: null } };
+    await answerTimed("booking-api", async () => new Response("{}", { status: 200 }), { now: () => 0, facts: held });
+    const cut: ConfirmLineFacts = { lineGroupSource: "timeout", grouping: { source: "timeout", waitedMs: 500, ageMs: null } };
+    await answerTimed("booking", async () => new Response("{}", { status: 200 }), { now: () => 0, facts: cut });
+    const none: ConfirmLineFacts = {};
+    await answerTimed("booking", async () => new Response("{}", { status: 200 }), { now: () => 0, facts: none });
+    cap.restore();
+    const lines = cap.lines.filter((l) => l.includes('msg="confirm answered"'));
+    assert(
+      (lines[0] ?? "").includes('line_group_source="snapshot"') && lines[0]!.includes("grouping_fetch_ms=87") && lines[0]!.includes("grouping_age_ms=4200"),
+      `grouping: a key from the snapshot says so, with the wait and the snapshot's age (got ${lines[0]})`,
+    );
+    assert(
+      (lines[1] ?? "").includes('line_group_source="local"') && !lines[1]!.includes("grouping_fetch_ms"),
+      `grouping: a server that fetched nothing says local and carries no wait (got ${lines[1]})`,
+    );
+    assert(
+      (lines[2] ?? "").includes('line_group_source="timeout"') && lines[2]!.includes("grouping_fetch_ms=500"),
+      `grouping: a fetch cut at the bound says timeout, with the bound it waited (got ${lines[2]})`,
+    );
+    assert(!(lines[3] ?? "x").includes("grouping") && !(lines[3] ?? "x").includes("line_group"), `grouping: a confirm that keyed no ladder carries neither field (got ${lines[3]})`);
+  }
+
   // --- #3354: the wait before the profile, split by the request's own marks -----
   {
     const cap = captureInfo();

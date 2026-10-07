@@ -115,9 +115,19 @@ export function shortFailureReason(
  *  - refused before it started: the budget was used up before Slate asked;
  *  - cut short by the budget: the call was still running when the budget ran out;
  *  - out of its own limit: the call did not answer within that limit.
+ *
+ * And a fourth that is no call at all (#3338): Slate did not START the work,
+ * because the request had less left than the work was measured to need. It says
+ * both numbers, and never that anything failed to answer, since nothing was asked.
  */
 export function deadlineReason(found: DeadlineFound): string {
   const { label, timeoutMs, budget } = found;
+  if (found.neededMs !== undefined) {
+    const holder = budget ? budget.label : "the request";
+    // A budget already spent is said as that, never as a zero or a negative left.
+    if (timeoutMs <= 0) return `${holder} had no time left for ${label}, so Slate did not start it`;
+    return `${label} needs about ${span(found.neededMs)} and ${holder} had ${span(timeoutMs)} left, so Slate did not start it`;
+  }
   if (!budget) return `${label} did not answer within ${span(timeoutMs)}`;
   if (spentBeforeAsked(found)) return `${budget.label} had used up its ${span(budget.totalMs)} before Slate asked ${label}`;
   return `${label} was still running when ${budget.label} ran out of its ${span(budget.totalMs)}`;
@@ -130,7 +140,9 @@ export function deadlineReason(found: DeadlineFound): string {
  * disagree with its reason about which case it is.
  */
 export function spentBeforeAsked(found: DeadlineFound): boolean {
-  return found.budget !== null && found.timeoutMs === 0;
+  // #3338: work Slate chose not to start is the same advice: the time went inside
+  // Slate before it, not into a dependency that was slow to answer.
+  return found.neededMs !== undefined || (found.budget !== null && found.timeoutMs === 0);
 }
 
 /** A duration in the unit a person would say it in. */

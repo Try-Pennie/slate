@@ -161,6 +161,17 @@ function bookableBody(over: Record<string, unknown> = {}): Record<string, unknow
     `probes that disagree about bookable conclude nothing (got ${JSON.stringify(disagree)})`,
   );
 
+  // #3459 review (L11): every probe says not bookable, for DIFFERENT reasons. Only
+  // "slot_taken" proves a refusal honest, so keeping whichever came first would let a
+  // closed or unroutable slot hide behind a taken one: they conclude nothing either.
+  const mixed = burstProbeVerdict([read(), read({ code: "501", reason: "no_eligible_agents" })], settle);
+  assert(
+    mixed.kind === "unconcluded" && mixed.why.includes("slot_taken") && mixed.why.includes("no_eligible_agents"),
+    `probes that say not bookable for different reasons conclude nothing, naming both (got ${JSON.stringify(mixed)})`,
+  );
+  const mixedOtherOrder = burstProbeVerdict([read({ reason: "closed" }), read({ code: "501" })], settle);
+  assert(mixedOtherOrder.kind === "unconcluded", `whichever order they arrive in (got ${JSON.stringify(mixedOtherOrder)})`);
+
   const early = burstProbeVerdict([read({ sentAtMs: settle - 1 })], settle);
   assert(
     early.kind === "unconcluded" && early.why.includes("before the burst settled"),

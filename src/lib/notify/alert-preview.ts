@@ -49,6 +49,8 @@ import {
   LANE_STALE_BOUNDS_MS,
   LOG_SHIPPING_LANE,
   LOG_SHIPPING_STALE_BOUNDS_MS,
+  POOL_GROUPING_LANE,
+  POOL_GROUPING_STALE_BOUNDS_MS,
   TIME_OFF_STALE_BOUNDS_MS,
   UPTIME_STALE_BOUNDS_MS,
   VERDICT_STALE_BOUNDS_MS,
@@ -393,6 +395,8 @@ import {
   laneRecoveryText,
   logShippingAlertText,
   logShippingRecoveryText,
+  poolGroupingAlertText,
+  poolGroupingRecoveryText,
   mirrorAlertText,
   mirrorRecoveryText,
   retentionRecoveryText,
@@ -3795,6 +3799,47 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "recovery",
     text: logShippingRecoveryText(LOG_SHIPPING_LANE),
   },
+  // #3460: the same key, for the pool grouping publish. A publish that stopped, one that
+  // never landed, and an unreadable record each send the reader somewhere different.
+  {
+    key: "cron_lane_stale:*",
+    state: "the pool grouping has stopped being published",
+    channel: "alert",
+    text: poolGroupingAlertText({
+      lane: POOL_GROUPING_LANE,
+      ageMs: 25 * 60_000,
+      maxStaleMs: POOL_GROUPING_STALE_BOUNDS_MS[POOL_GROUPING_LANE]!,
+      unreadable: false,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "the pool grouping has never been published",
+    channel: "alert",
+    text: poolGroupingAlertText({
+      lane: POOL_GROUPING_LANE,
+      ageMs: Infinity,
+      maxStaleMs: POOL_GROUPING_STALE_BOUNDS_MS[POOL_GROUPING_LANE]!,
+      unreadable: false,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "the pool grouping publish record cannot be read",
+    channel: "alert",
+    text: poolGroupingAlertText({
+      lane: POOL_GROUPING_LANE,
+      ageMs: NOW_MS,
+      maxStaleMs: POOL_GROUPING_STALE_BOUNDS_MS[POOL_GROUPING_LANE]!,
+      unreadable: true,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "the pool grouping is being published again",
+    channel: "recovery",
+    text: poolGroupingRecoveryText(POOL_GROUPING_LANE),
+  },
   // #1394: the same key, a different fault. These lanes are NOT quiet; they run
   // faithfully and conclude nothing, which every other message here would
   // misdescribe.
@@ -4418,6 +4463,28 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       dependency: "supabase",
       timeoutMs: 0,
       budget: { label: "the booking confirm", totalMs: 12_000 },
+    }),
+  },
+  {
+    key: "verify_on_book_outage",
+    state: "too little budget left to write the booking, so nothing was started (#3338)",
+    channel: "alert",
+    text: dependencyTimeoutAlert({
+      dependency: "writing the booking and its calendar event",
+      timeoutMs: 3_900,
+      budget: null,
+      neededMs: 5_100,
+    }),
+  },
+  {
+    key: "verify_on_book_outage",
+    state: "no budget left at all to write the booking (#3338)",
+    channel: "alert",
+    text: dependencyTimeoutAlert({
+      dependency: "writing the booking and its calendar event",
+      timeoutMs: 0,
+      budget: null,
+      neededMs: 5_100,
     }),
   },
   {

@@ -512,7 +512,8 @@ import { resolveAdvisorName, type AdvisorNameReader } from "@/lib/booking/adviso
 import { resolveBookingAdvisorPhoto } from "@/lib/booking/advisor-photo";
 import { loadPhotoRecords, loadUserSignInPhoto } from "@/lib/advisor-photos/store";
 import { makeConfirmQueue, isolateLine } from "@/lib/booking/confirm-queue";
-import { confirmLineFor, lineGroupOfLive } from "@/lib/booking/confirm-line-live";
+import { makeCommitCostLog } from "@/lib/booking/commit-cost";
+import { confirmLineFor, lineGroupOfLive, settleLineGrouping } from "@/lib/booking/confirm-line-live";
 import type { ConfirmLineFacts } from "@/lib/booking/confirm-latency";
 import { timeStage } from "@/lib/booking/confirm-profile";
 export type { BookingResult, CreateBookingInput };
@@ -1005,6 +1006,12 @@ async function fetchAgentWorkingHours(
 const ISOLATE_CONFIRM_QUEUE = makeConfirmQueue<orchestration.SlotSettlement>();
 /** #3325: the isolate's line behind the async interface, the shared line's fallback. */
 const ISOLATE_LINE = isolateLine(ISOLATE_CONFIRM_QUEUE);
+/**
+ * #3338: what this isolate's recent commit chains cost, so a confirm never starts a
+ * reservation, an event and an insert its budget cannot finish. Module state for the
+ * same reason as the line: every request this isolate serves reads the same record.
+ */
+const ISOLATE_COMMIT_COSTS = makeCommitCostLog();
 
 /**
  * `lineFacts`, when given, receives which confirm line served this request's turn
@@ -1134,8 +1141,11 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
       // #3354: the load test's trace for this confirm, so the object logs its calls.
       lineFacts?.lineTrace ?? null,
     ),
-    // #3325: sibling codes that walk the same pools share one line.
-    lineGroupOf: lineGroupOfLive,
+    // #3325: sibling codes that walk the same pools share one line. #3460: from the
+    // grouping this server holds, which `settleLineGrouping` made fresh where it could
+    // before the orchestration builds the key; the facts record where it came from.
+    lineGroupOf: (code) => lineGroupOfLive(code, lineFacts),
+    commitCosts: ISOLATE_COMMIT_COSTS,
     // #3354: the points of the wait before the confirm's profile, when the route
     // keeps marks (the load test only); absent, nothing is stamped.
     mark: lineFacts?.marks ? (point) => lineFacts.marks?.mark(point) : undefined,
@@ -1375,15 +1385,16 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
       }
     },
 
-    getUser: async (userId) => {
-      // error-ok: agent lookup inside the crash-safe create/drain step; a read error is recovered by the outbox retry, not silently lost.
-      const { data } = await supabaseAdmin()
-        .from("users")
-        .select("*")
-        .eq("id", userId)
-        .single();
-      return data as User;
-    },
+    // #3477: refuses a failed read rather than answering null. The live confirm calls
+    // this (the advisor it is about to book), not only the drain, and a null here was
+    // read as `agent.name` and answered the lead 500 INTERNAL on load run 37587811697,
+    // when the read had hit its deadline. Thrown, a deadline reaches the confirm as the
+    // retryable dependency error it is, and the drain still retries on its own throw.
+    getUser: async (userId) =>
+      unwrap(
+        await supabaseAdmin().from("users").select("*").eq("id", userId).single(),
+        "advisor read",
+      ) as User,
 
     loadEmails: async (userIds) => {
       const m = new Map<string, string>();
@@ -2501,10 +2512,22 @@ async function rescheduleWithLog(
   }
 }
 
+/**
+ * #3460: before a confirm keys its line, wait within the bound for a fresh pool grouping
+ * where its server holds none, so a burst on sibling codes joins ONE ladder line rather
+ * than splitting by code. Charged to the confirm's profile as its own stage. A named
+ * advisor's link keys on the advisor and needs no grouping, so it waits for nothing.
+ */
+function lineGroupingBeforeKey(input: { agentLinkUserId?: string }, lineFacts?: ConfirmLineFacts): Promise<void> {
+  if (input.agentLinkUserId !== undefined) return Promise.resolve();
+  return timeStage(lineFacts?.profile, "line-grouping", () => settleLineGrouping(lineFacts));
+}
+
 export function createBooking(input: CreateBookingInput, lineFacts?: ConfirmLineFacts): Promise<BookingResult> {
-  return alertOnBookingFailure(() =>
-    orchestration.createBooking(input, realDeps(deferWebhookSend, lineFacts)),
-  );
+  return alertOnBookingFailure(async () => {
+    await lineGroupingBeforeKey(input, lineFacts);
+    return orchestration.createBooking(input, realDeps(deferWebhookSend, lineFacts));
+  });
 }
 
 /**
@@ -2732,6 +2755,7 @@ export async function updateBookingPhone(
  */
 export function bookViaApi(input: ApiBookingInput, lineFacts?: ConfirmLineFacts): Promise<ApiBookingResult> {
   return alertOnBookingFailure(async () => {
+    await lineGroupingBeforeKey(input, lineFacts);
     try {
       const res = await orchestration.bookViaApi(input, realDeps(deferWebhookSend, lineFacts));
       // Only a "rescheduled" outcome can carry a decline reason (#543).

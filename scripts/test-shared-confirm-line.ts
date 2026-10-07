@@ -54,7 +54,7 @@ function world() {
   const makeHost = () => makeConfirmLineHost({ now: () => now, timer, leaseTimer: timer, newId });
   let host = makeHost();
   /** What the transport does to the next messages, by op, and how many times (once unless set). */
-  const faults = new Map<string, "throw" | "late" | "hang" | "bad" | "gone">();
+  const faults = new Map<string, "throw" | "throw-like-timeout" | "late" | "hang" | "bad" | "gone">();
   const faultTimes = new Map<string, number>();
   const sent: string[] = [];
   /** Every message as sent, for what a call carries beside its op (#3354). */
@@ -75,6 +75,8 @@ function world() {
           }
         }
         if (fault === "throw") throw new Error("the object refused");
+        // A refusal whose own text reads like the deadline's (L199).
+        if (fault === "throw-like-timeout") throw new Error("no answer within 1500ms");
         if (fault === "hang") return new Promise(() => {});
         // An answer the client has no meaning for (a version skew, a protocol fault).
         if (fault === "bad") return { kind: "bad", why: "injected" };
@@ -179,6 +181,63 @@ async function main() {
     assert(typeof lastServed(c.served)?.lineMs === "number", "idle: the time spent in line calls is recorded");
   }
 
+  // --- #3355: a lead does not wait on its ack ----------------------------------------
+  // Nothing the confirm does depends on the ack's answer: a `gone` only marks the turn
+  // detached, which every later call checks. Waiting on it added its round trip to every
+  // leader's start, and on load run 37572839375 the first confirm on a line object fresh
+  // from the fault leg's deploy waited 1.3s on it, which alone put the cold confirm over
+  // the startup bar. The ack is still sent, once, before the turn is handed back, and is
+  // then never waited on: not by the confirm's start, not by its report, and its wait is
+  // not time the line added to the confirm.
+  {
+    const w = world();
+    const c = w.client();
+    w.faults.set("ack", "hang");
+    const start = w.now();
+    let handedAt: number | null = null;
+    const entering = c.line.enter(KEY, 10_000).then((turn) => {
+      handedAt = w.now();
+      return turn;
+    });
+    const t = (await w.settle(entering)) as LineTurn<string>;
+    assert(t.kind === "lead", "hung ack: the confirm still leads");
+    const handedAfter = handedAt === null ? Infinity : (handedAt as number) - start;
+    assert(handedAfter < CONFIRM_LINE_CALL_MS / 2, `hung ack: the turn is handed back without waiting on the ack (after ${handedAfter}ms; the ack's own bound is ${CONFIRM_LINE_CALL_MS}ms)`);
+    assert(w.sent.filter((o) => o === "ack").length === 1, `hung ack: the ack is still sent, once (sent ${JSON.stringify(w.sent)})`);
+    const recorded = lastServed(c.served)?.lineMs ?? Infinity;
+    assert(recorded < CONFIRM_LINE_CALL_MS / 2, `hung ack: its wait is not counted as time the line added (lineMs ${recorded})`);
+    if (t.kind === "lead") {
+      // The verdict goes out first: the followers wait on it, and a slow ack is no
+      // reason to hold it back. Nor does the leader's own answer wait on it: once the
+      // turn has reported, the ack can no longer matter to anybody. Both are measured
+      // from the moment `done` is called, before any time passes.
+      const before = w.sent.length;
+      const startDone = w.now();
+      let settledAt: number | null = null;
+      const reporting = t.done({ full: false });
+      void reporting.then(() => (settledAt = w.now()));
+      await w.advance(CONFIRM_LINE_CALL_MS / 4);
+      assert(w.sent.slice(before).includes("done"), `hung ack: the report is sent without waiting on the ack (sent ${JSON.stringify(w.sent.slice(before))})`);
+      const settledAfter = settledAt === null ? Infinity : (settledAt as number) - startDone;
+      assert(settledAfter <= CONFIRM_LINE_CALL_MS / 4, `hung ack: the turn finishes without waiting on the ack (after ${settledAfter}ms)`);
+    }
+  }
+
+  // --- #3355: a gone ack still detaches the turn, so no later call is sent ---------------
+  {
+    const w = world();
+    const c = w.client();
+    w.faults.set("ack", "gone");
+    const t = (await w.settle(c.line.enter(KEY, 10_000))) as LineTurn<string>;
+    assert(t.kind === "lead", "gone ack: the confirm still leads");
+    if (t.kind === "lead") {
+      await w.advance(50);
+      const before = w.sent.length;
+      await w.settle(t.done({ full: false }));
+      assert(!w.sent.slice(before).includes("done"), `gone ack: a detached turn sends no report (sent ${JSON.stringify(w.sent.slice(before))})`);
+    }
+  }
+
   // --- two isolates, one line: the follower is refused from the leader's verdict ---
   {
     const w = world();
@@ -247,6 +306,16 @@ async function main() {
     const next = (await w.settle(behind.line.enter(KEY, 10_000))) as LineTurn<string>;
     assert(next.kind === "lead", "late enter: the next confirm leads the shared line");
     assert(w.now() - started < CONFIRM_LINE_ACK_MS + CONFIRM_LINE_POLL_MS, `late enter: and does not wait out a phantom lead (waited ${w.now() - started}ms)`);
+  }
+
+  // --- a refusal is told from a timeout by its type, never its wording (L199) -------
+  {
+    const w = world();
+    const c = w.client();
+    w.faults.set("enter", "throw-like-timeout");
+    const t = (await w.settle(c.line.enter(KEY, 10_000))) as LineTurn<string>;
+    assert(lastServed(c.served)?.reason === "enter-error", `typed timeout: a refused enter whose text reads like a timeout is an enter error (got ${JSON.stringify(lastServed(c.served))})`);
+    if (t.kind === "lead") await w.settle(t.done({ full: false }));
   }
 
   {

@@ -23,6 +23,10 @@ import type { BookingAttempt, BurstCapacity, BurstKind, DriverResult } from "./b
 // exports is not initialised while this one is first evaluated (#3429).
 import { burstSettleAtMs, BURST_GRACE_DEFAULT_MS, REQUEST_TIMEOUT_MS } from "./book-plan.ts";
 import { burstCrowdRule, burstProbeVerdict, type CrowdRuleVerdict, type ProbeVerdict } from "./burst-probe.ts";
+import type { BookableReason } from "../../src/lib/booking/orchestration.ts";
+
+/** The one probe reason that proves a SLOT_TAKEN was honest: the booker's own word for it. */
+const SLOT_TAKEN_REASON: BookableReason = "slot_taken";
 import { AVAILABILITY_UNREAD, NO_SLOTS_OFFERED, TIMED_OUT } from "./outcomes.ts";
 import { HEALTHY_INVOCATION_STATUS, type ScheduledReading } from "./platform-reading.ts";
 import { CEILING_CONCLUSION, type CeilingVerdict } from "./preflight-checks.ts";
@@ -1703,7 +1707,19 @@ function judgeRefusalHonesty(
     );
     return;
   }
-  if (!probe.bookable) return;
+  if (!probe.bookable) {
+    // #3459 review (L11): only "taken" proves the refusals honest. A slot not bookable
+    // for another reason (closed, or no eligible advisor, the booker's own routing
+    // failing) says nothing about whether the line refused leads it could have booked.
+    if (probe.reason !== SLOT_TAKEN_REASON) {
+      unconclude(
+        BURST_REFUSALS_BAR,
+        `${taken} confirms were told SLOT_TAKEN and once the burst settled the slot answered ${probe.reason}, ` +
+          "not taken, so whether those refusals were honest cannot be said",
+      );
+    }
+    return;
+  }
   const where =
     probe.rungsDropped === 0
       ? "on the requested rung itself"
@@ -1771,7 +1787,7 @@ function judgeDropBurst(
     // still free, left open when the probe could not say. Only an HONEST one is this
     // bar's, and it means the drop could not be shown, so nothing more is asked.
     if (taken > 0) {
-      if (probe.kind === "read" && !probe.bookable) {
+      if (probe.kind === "read" && !probe.bookable && probe.reason === SLOT_TAKEN_REASON) {
         unconclude(
           BURST_DROP_BAR,
           `${taken} confirms were told SLOT_TAKEN and the slot answered ${probe.reason} once the burst settled, so ` +
@@ -1794,9 +1810,11 @@ function judgeDropBurst(
     return;
   }
   const sawDefect = taken > 0 && probe.kind === "read" && probe.bookable && probe.rungsDropped > 0;
-  // A probe that could not be read has already left the refusals bar open; saying so
-  // twice would name one unknown as two.
-  const alreadyOpen = taken > 0 && probe.kind === "unconcluded";
+  // A probe that could not be read, or that read a reason other than taken, has already
+  // left the refusals bar open; saying so twice would name one unknown as two (L260).
+  const alreadyOpen =
+    taken > 0 &&
+    (probe.kind === "unconcluded" || (!probe.bookable && probe.reason !== SLOT_TAKEN_REASON));
   // And refusals while the REQUESTED rung was still free have already FAILED the
   // refusals bar, on any build. Asking this bar too would report one fault twice, the
   // second time blaming the crowd or the declaration for it (#3459 review).

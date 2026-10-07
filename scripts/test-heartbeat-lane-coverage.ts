@@ -29,6 +29,7 @@ import {
   CANARY_STALE_BOUNDS_MS,
   LOG_SHIPPING_STALE_BOUNDS_MS,
   MIRROR_STALE_BOUNDS_MS,
+  POOL_GROUPING_STALE_BOUNDS_MS,
   RETENTION_STALE_BOUNDS_MS,
   TIME_OFF_STALE_BOUNDS_MS,
   UPTIME_STALE_BOUNDS_MS,
@@ -58,6 +59,8 @@ const BOUNDS: Record<string, Record<string, number>> = {
   BACKUP_STALE_BOUNDS_MS,
   // #3182: the log shipping receipt, stamped through the tail worker's binding.
   LOG_SHIPPING_STALE_BOUNDS_MS,
+  // #3460: the pool grouping publish, stamped by the recompute lane once it landed.
+  POOL_GROUPING_STALE_BOUNDS_MS,
 };
 
 // A lane that deliberately stamps with NO bound watching it. Empty on purpose: an
