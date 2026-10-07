@@ -41,7 +41,7 @@
  */
 import { answerLineOf, logNumber, logText, tailInvocations, type TailInvocation, type TailLogLine } from "./confirm-startup.ts";
 import { WAIT_SPAN_FIELDS, type WaitSpanField } from "../../src/lib/booking/wait-marks.ts";
-import { isSlotTaken, percentiles, refusalLabel, WAIT_SPAN_LABELS, type BurstLegGroup } from "./judge-booking-run.ts";
+import { burstLegLabel, isSlotTaken, percentiles, refusalLabel, WAIT_SPAN_LABELS, type BurstLegGroup } from "./judge-booking-run.ts";
 import type { BookingAttempt } from "./book-plan.ts";
 import type { EchoField } from "../../src/lib/loadtest-echo.ts";
 import { readOptionalText, type OptionalText } from "./read-optional.ts";
@@ -434,7 +434,8 @@ export function burstBreakdowns(groups: readonly BurstLegGroup[], tail: BurstTai
     const first = g.files[0];
     return {
       index: g.index,
-      label: `burst ${g.index + 1} of ${g.of}${g.slot ? ` (${g.slot})` : ""}`,
+      // The judge's own name for the burst (#3429), so the report never names one burst two ways.
+      label: burstLegLabel(g),
       momentMs: first?.burstLeg?.startAtMs ?? null,
       requests: attempts.length,
       matched: attempts.filter((a) => confirmOfAttempt.has(a)).length,

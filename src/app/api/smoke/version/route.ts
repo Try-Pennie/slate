@@ -11,6 +11,7 @@ import {
   LOADTEST_FAULT_TARGETS_UNKNOWN,
 } from "@/lib/loadtest-fault";
 import { postConfirmRecomputeSetting } from "@/lib/booking/post-confirm-recompute";
+import { CONFIRM_CROWD_RULE } from "@/lib/confirm-crowd-rule";
 
 export const dynamic = "force-dynamic";
 
@@ -86,6 +87,10 @@ export async function GET(req: NextRequest) {
           // describe an arm nobody drove.
           postConfirmRecompute: recompute.mode,
           postConfirmRecomputeUnknown: recompute.unknown,
+          // #3429: whether a confirm in a crowd behind a leader that booked its
+          // rung's last advisor walks the tier ladder (#3338). The load run's drop
+          // burst is held to the rule the deployment says it runs.
+          confirmCrowdRule: CONFIRM_CROWD_RULE,
         }
       : {}),
   });

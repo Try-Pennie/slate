@@ -18,6 +18,8 @@ import { OK_P95_MS } from "./judge-booking-run.ts";
 // deployment sent, read through the one parser both sides share (#3325, L41).
 import type { LoadtestEcho } from "../../src/lib/loadtest-echo.ts";
 import { LOADTEST_LEG_HEADER, LOADTEST_LEGS, type LoadtestLeg } from "../../src/lib/booking/wait-marks.ts";
+// Type only: what a burst driver records from the deployment for the judge (#3429).
+import type { BurstProbe, CrowdRuleReading } from "./burst-probe.ts";
 
 /** Availability reads a single address may make in a minute (30, from the app). */
 export const AVAILABILITY_PER_MINUTE = AVAILABILITY_LIMITER.perMinute;
@@ -142,6 +144,23 @@ export const REQUEST_TIMEOUT_MS = 30_000;
 export const REQUEST_OVERRUN_MS = 60_000;
 
 /**
+ * The two kinds of burst a run fires (#3429).
+ *
+ * `refusal`: the crowd of a hundred at a ladder whose WHOLE capacity is smaller than
+ * the crowd, measured from the roster. Once a crowd walks the tier ladder (#3338,
+ * #3437), a hundred confirms at a code whose lower rungs hold a whole tier mostly WIN,
+ * so the refusal path and the line's settle path are exercised only where the ladder
+ * genuinely runs out. It carries the loser speed bar.
+ *
+ * `drop`: about ten confirms at a code whose top rung is shallow and whose ladder holds
+ * at least twice the crowd, at a slot where the top rung has somebody free. On a build
+ * that walks the ladder every one of them wins, on distinct advisors, and at least one
+ * on a lower rung, which is what proves the #3338 drop happens at all.
+ */
+export const BURST_KINDS = ["refusal", "drop"] as const;
+export type BurstKind = (typeof BURST_KINDS)[number];
+
+/**
  * How many bursts one run fires (#3325), each at its own slot and moment and each
  * judged on its own. One burst is one spread of simultaneous requests over the
  * deployment's isolates, and one lucky spread can pass a run that a second would
@@ -150,6 +169,19 @@ export const REQUEST_OVERRUN_MS = 60_000;
 export const BURST_LEGS = 3;
 /** Requests one burst driver fires in one burst, when BURST_REQUESTS is unset. */
 export const BURST_REQUESTS_DEFAULT = 25;
+
+/**
+ * #3429: when every confirm of a burst is over, so its slot can be asked whether it is
+ * still bookable. The latest a driver may fire (its grace) plus a request's own abort
+ * bound: past that no burst request is in flight on any driver, and the confirm's own
+ * budget (`BOOKING_CONFIRM_WORST_CASE_MS`) is inside the bound, so nothing is still
+ * walking the ladder when the probe asks. Both are passed explicitly, so a driver whose
+ * test seams shortened them settles sooner and the judge uses the run's own defaults.
+ */
+export function burstSettleAtMs(momentMs: number, graceMs: number, requestTimeoutMs: number): number {
+  return momentMs + graceMs + requestTimeoutMs;
+}
+
 /** How late a burst driver may wake and still be part of the burst, when BURST_GRACE_MS is unset. */
 export const BURST_GRACE_DEFAULT_MS = 2_000;
 /**
@@ -563,6 +595,27 @@ export interface BookingAttempt {
    * offered, or the request never got an answer).
    */
   echo: LoadtestEcho | null;
+  /**
+   * #3429: how many rungs below the requested one the booking landed, from a 200's own
+   * `bucket.rungsDropped`, or null when the answer did not say. Absent on an attempt
+   * that was not answered 200. The drop burst reads it to show a tier was dropped at
+   * all; a missing figure reads as not dropped, never as dropped.
+   */
+  rungsDropped?: number | null;
+}
+
+/**
+ * #3429: what the setup measured about a burst's capacity, for the report. Every
+ * figure is a count of advisors, or null when it was not measured: "nobody measured
+ * it" and "nobody was free" are the two readings a zero would merge (L98).
+ */
+export interface BurstCapacity {
+  /** The most advisors the code's WHOLE ladder holds, from the roster: a bound at any slot. */
+  ladderRoster: number | null;
+  /** Advisors free at the slot on the requested rung, through the booker's own candidate read, when planned. */
+  rung0Free: number | null;
+  /** Distinct advisors free at the slot across the whole ladder, the same way, when planned. */
+  ladderFree: number | null;
 }
 
 /** Which burst of the run a burst driver file holds (#3325). */
@@ -577,6 +630,13 @@ export interface BurstLegRecord {
   codes: string[];
   /** The shared moment, epoch ms. */
   startAtMs: number;
+  /**
+   * #3429: which kind of burst it was. Absent on a file from before #3429, which was
+   * always the crowd at one slot that the refusal control still is.
+   */
+  kind?: BurstKind;
+  /** #3429: what the setup measured about its capacity. Absent on a file from before #3429. */
+  capacity?: BurstCapacity;
 }
 
 /** What one driver writes when it finishes. The judge refuses without all of them. */
@@ -614,6 +674,17 @@ export interface DriverResult {
    * the judge the others whole.
    */
   burstLeg?: BurstLegRecord;
+  /**
+   * #3429, burst mode only: the confirm crowd rule the deployment declared before the
+   * burst fired, so the judge holds the burst to the rule of the build it measured.
+   */
+  crowdRule?: CrowdRuleReading;
+  /**
+   * #3429, burst mode only: this driver's probe of the burst's slot once the burst had
+   * settled. Absent on a burst the driver did not fire, and on a file written before
+   * the probe returned, which the judge reads as a probe never recorded.
+   */
+  probe?: BurstProbe;
   /**
    * Set only in fault mode: the percentage the DEPLOYMENT reported it was running
    * with, read from `/api/smoke/version` before a single request was sent.

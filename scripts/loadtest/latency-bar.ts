@@ -231,11 +231,30 @@ export function verdictText(r: {
   verdict: string;
   speedUnmeasured: string | null;
   platformUnmeasured: string | null;
+  /** #3429: the burst clauses that could not conclude; absent on a hand built result. */
+  burstsUnconcluded?: readonly { bar: string; detail: string }[];
+  /** #3429: each burst's notes, for a known defect the deployment declares; absent on a hand built result. */
+  measurements?: { bursts: readonly { notes: readonly string[] }[] } | null;
 }): string {
-  const head = `Verdict: **${r.verdict.toUpperCase()}**`;
+  // #3429: a known defect the deployment declares is never a silent pass, on the line
+  // a reader looks at first: a pass is held to the rule the build says it runs.
+  const noted = (r.measurements?.bursts ?? []).filter((b) => b.notes.length > 0).length;
+  const declared =
+    noted > 0
+      ? `, held to the rule the deployment declares: ${noted} burst${noted === 1 ? "" : "s"} showed #3338's known ` +
+        "defect on a build that says a crowd stops at its rung, which fails once it says a crowd walks the ladder"
+      : "";
+  const head = `Verdict: **${r.verdict.toUpperCase()}**${declared}`;
+  const open = r.burstsUnconcluded ?? [];
   const causes = [
     ...(r.speedUnmeasured !== null ? [`speed was UNMEASURED because ${r.speedUnmeasured}`] : []),
     ...(r.platformUnmeasured !== null ? [`platform limits were UNMEASURED because ${r.platformUnmeasured}`] : []),
+    ...(open.length > 0
+      ? [
+          `${open.length} burst clause${open.length === 1 ? "" : "s"} could not conclude ` +
+            `(${open.map((o) => o.bar).join(", ")}; each is listed under "What the bursts could not conclude")`,
+        ]
+      : []),
   ];
   if (causes.length === 0) return `${head}.`;
   if (r.verdict === "fail") return `${head}; also, ${causes.join("; and ")}.`;
