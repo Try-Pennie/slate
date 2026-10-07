@@ -206,19 +206,18 @@ async function main() {
     assert(recorded < CONFIRM_LINE_CALL_MS / 2, `hung ack: its wait is not counted as time the line added (lineMs ${recorded})`);
     if (t.kind === "lead") {
       // The verdict goes out first: the followers wait on it, and a slow ack is no
-      // reason to hold it back. The ack is settled after.
+      // reason to hold it back. Nor does the leader's own answer wait on it: once the
+      // turn has reported, the ack can no longer matter to anybody. Both are measured
+      // from the moment `done` is called, before any time passes.
       const before = w.sent.length;
-      const reporting = t.done({ full: false });
-      await w.advance(CONFIRM_LINE_CALL_MS / 4);
-      assert(w.sent.slice(before).includes("done"), `hung ack: the report is sent without waiting on the ack (sent ${JSON.stringify(w.sent.slice(before))})`);
-      // Nor does the leader's own answer wait on it: once the turn has reported, the ack
-      // can no longer matter to anybody.
-      let settledAt: number | null = null;
       const startDone = w.now();
+      let settledAt: number | null = null;
+      const reporting = t.done({ full: false });
       void reporting.then(() => (settledAt = w.now()));
       await w.advance(CONFIRM_LINE_CALL_MS / 4);
+      assert(w.sent.slice(before).includes("done"), `hung ack: the report is sent without waiting on the ack (sent ${JSON.stringify(w.sent.slice(before))})`);
       const settledAfter = settledAt === null ? Infinity : (settledAt as number) - startDone;
-      assert(settledAfter < CONFIRM_LINE_CALL_MS / 2, `hung ack: the turn finishes without waiting on the ack (after ${settledAfter}ms)`);
+      assert(settledAfter <= CONFIRM_LINE_CALL_MS / 4, `hung ack: the turn finishes without waiting on the ack (after ${settledAfter}ms)`);
     }
   }
 
