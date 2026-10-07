@@ -98,6 +98,11 @@ async function pickFirstDay() {
 
 async function fillAndConfirm() {
   await pickFirstDay();
+  await fillDetailsAndConfirm();
+}
+
+/** From a chosen day: pick its first time, fill the details and confirm. */
+async function fillDetailsAndConfirm() {
   const slot = await screen.findByRole("button", { name: /:\d{2}/ });
   await userEvent.click(slot);
   // #2362: two fields, joined on submit, so the payload still carries "Dana Lead".
@@ -1652,6 +1657,44 @@ describe("Booker sends the framing page's origin with the confirm (#2728)", () =
     withReferrer("https://mail.google.com/mail/u/0/");
     const body = await confirmedBody();
     expect("referrerOrigin" in body).toBe(false);
+  });
+});
+
+// #3495: the confirm hands back the tier whose times were on show, out of the same
+// availability answer the times came from, so the server records it instead of
+// reading the cache for it. Dan, 2026-10-07: the lead must never see it, so it is
+// never anywhere in the page, only in the request.
+describe("Booker hands back the tier on show with the confirm, unseen (#3495)", () => {
+  async function confirmedBody(answer: unknown): Promise<Record<string, unknown>> {
+    let postedBody: Record<string, unknown> | null = null;
+    global.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url).includes("/api/availability")) {
+        return { ok: true, json: async () => answer } as Response;
+      }
+      if (String(url).includes("/api/client-errors")) return { ok: true, json: async () => ({}) } as Response;
+      postedBody = JSON.parse(String(init?.body));
+      return { ok: true, status: 200, json: async () => ({ startsAt: slotIso }) } as Response;
+    }) as unknown as typeof fetch;
+    render(<Booker {...baseProps} />);
+    // On the screen where the times are on show, the tier is nowhere in the page.
+    await pickFirstDay();
+    await screen.findByRole("button", { name: /:\d{2}/ });
+    expect(document.body.innerHTML).not.toMatch(/very_high|very high/i);
+    await fillDetailsAndConfirm();
+    await screen.findByText("You're all set");
+    expect(document.body.innerHTML).not.toMatch(/very_high|very high/i);
+    expect(postedBody).not.toBeNull();
+    return postedBody!;
+  }
+
+  it("sends the tier the availability answer named", async () => {
+    const body = await confirmedBody({ ...availability, shownTier: "very_high" });
+    expect(body.shownTier).toBe("very_high");
+  });
+
+  it("sends no tier when the answer named none, so the server reads it as before", async () => {
+    const body = await confirmedBody(availability);
+    expect("shownTier" in body).toBe(false);
   });
 });
 

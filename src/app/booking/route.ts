@@ -35,6 +35,7 @@ import {
   timezoneSchema,
   salesforceIdSchema,
   prefillSchema,
+  shownTierSchema,
 } from "@/lib/booking/input-schema";
 import {
   allowRequest,
@@ -111,6 +112,10 @@ const schema = z.object({
   // DROPPED here rather than refusing the booking, because a lead must never lose a
   // call over a field only a monitor reads.
   referrerOrigin: z.string().max(REFERRER_ORIGIN_MAX_CHARS).optional().catch(undefined),
+  // #3495: the tier whose times the booker had on show, handed back from its
+  // availability answer so the confirm records it instead of reading the cache for
+  // it. A measure only, so a value that is not a tier name is dropped, never a refusal.
+  shownTier: shownTierSchema,
 }).refine(
   (d) =>
     [d.bucketCode, d.agentLink, d.agentLinkToken].filter((v) => v !== undefined).length === 1,
@@ -490,6 +495,8 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
       },
       prefill: parsed.data.prefill,
       referrerOrigin: parsed.data.referrerOrigin,
+      // #3495: never through an agent's own link, which routes nothing.
+      shownTier: agentLink ? undefined : parsed.data.shownTier,
     }, progress.facts);
     // Backstop, not the ordinary path (#1337): a second booking is normally
     // DECLINED above before anything is created. Since #1641 the window it

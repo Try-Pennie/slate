@@ -39,6 +39,7 @@ import {
   burstCodeFor,
   burstLegOut,
   readBurstPlan,
+  shownTierOf,
   readDriverMode,
   readBurstGraceMs,
   settleLater,
@@ -752,6 +753,7 @@ const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
   const refusalBurst = {
     kind: "refusal",
     codes: ["500", "501"],
+    shownTiers: ["high", "high"],
     slot: "2026-10-06T14:00:00.000Z",
     startAtMs: 1_760_000_000_000,
     perDriver: 25,
@@ -760,6 +762,7 @@ const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
   const dropBurst = {
     kind: "drop",
     codes: ["120", "121"],
+    shownTiers: ["low", null],
     slot: "2026-10-06T15:10:00.000Z",
     startAtMs: 1_760_000_060_000,
     perDriver: 3,
@@ -777,6 +780,8 @@ const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
     eq(read.plan.bursts[1]!.codes, ["120", "121"], "its own two codes");
     eq(read.plan.bursts[1]!.perDriver, 3, "its own share per driver");
     eq(read.plan.bursts[1]!.capacity, { ladderRoster: 74, rung0Free: 1, ladderFree: 40 }, "and what the setup measured");
+    // #3495: the tier each code's availability answer had on show, null where it named none.
+    eq(read.plan.bursts[1]!.shownTiers, ["low", null], "and the tier each code had on show (#3495)");
   }
   // An unmeasured capacity is a null, never a zero: "nobody measured it" and "nobody
   // was free" are the two readings the report must not confuse (L98).
@@ -799,6 +804,10 @@ const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
     [plan1({ capacity: undefined }), "capacity"],
     [plan1({ capacity: { ladderRoster: -1, rung0Free: 1, ladderFree: 1 } }), "capacity"],
     [plan1({ capacity: { ladderRoster: 16, rung0Free: "1", ladderFree: 1 } }), "capacity"],
+    [plan1({ shownTiers: undefined }), "tier"],
+    [plan1({ shownTiers: ["high"] }), "tier"],
+    [plan1({ shownTiers: ["high", 3] }), "tier"],
+    [plan1({ shownTiers: ["high", ""] }), "tier"],
     [
       JSON.stringify({
         bursts: [
@@ -929,6 +938,21 @@ const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
   eq(attendee.email, "run-1-9-3@loadtest.local", "an address on the load test's own domain");
   eq(attendee.phone, loadtestPhone(lead), "and its OWN number, since a weak match is email OR phone (#2261)");
   assert(attendee.name.includes("run-1-9-3"), "named for its id, so a row can be traced to the request");
+  // #3495: no tier key at all unless the sender has one, so a sender that read none
+  // leaves the confirm to read it, as a partner call does.
+  assert(!("shownTier" in body), "a body built with no tier carries no tier key");
+  const withTier = bookingBody({ code: "112", startIso: "2026-10-08T14:00:00Z", lead, timezone: "America/New_York", shownTier: "high" });
+  eq(withTier.shownTier, "high", "and one built with the tier on show hands it back (#3495)");
+  const nullTier = bookingBody({ code: "112", startIso: "2026-10-08T14:00:00Z", lead, timezone: "America/New_York", shownTier: null });
+  assert(!("shownTier" in nullTier), "a null tier (the answer named none) sends no key either");
+}
+
+// --- #3495: the tier an availability answer had on show -----------------------------
+{
+  eq(shownTierOf({ slots: [], shownTier: "very_high" }), "very_high", "the answer's tier on show is read");
+  eq(shownTierOf({ slots: [] }), null, "an answer naming none (a deployment before #3495) reads as null, never a guess");
+  eq(shownTierOf({ slots: [], shownTier: 4 }), null, "and so does a tier that is not a string");
+  eq(shownTierOf(null), null, "and a body that is not an object");
 }
 
 {

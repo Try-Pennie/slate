@@ -230,6 +230,8 @@ async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
       allowTestBuckets,
       // #2876: from the key that matched, so a call naming no page records who made it.
       apiCaller: authd.caller,
+      // #3495: the tier the caller had on show, when it sent one; else the confirm reads it.
+      shownTier: v.shownTier,
     }, facts);
 
     const body = {

@@ -348,7 +348,11 @@ node --experimental-strip-types scripts/loadtest/book.ts
 `MODE=burst` with `BURST_PLAN`, ONE value chosen **once** by the setup step
 (`scripts/loadtest/burst-setup.ts`) and handed to every driver: for each of the run's
 **three** bursts its kind, its two sibling codes, one slot, one moment, its share per
-driver and what was measured about its capacity (#3325, #3429). A burst whose drivers
+driver and what was measured about its capacity (#3325, #3429), and the tier each code
+had on show when the setup read its availability (#3495). Every booking hands its own
+code's tier back, as the booker hands back the tier it had on show, so the confirm
+records it instead of reading the availability cache for it; a steady driver does the
+same from its own availability reads. A burst whose drivers
 each chose their own time is not a burst: nothing contends and everything succeeds.
 The plan is passed through rather than re-derived in the driver, so the two cannot
 fire at different codes, slots or moments while each reads as correct (L70). The

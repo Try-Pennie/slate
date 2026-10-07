@@ -22,6 +22,7 @@ import {
   requestSchedule,
   availabilityRefreshMs,
   offeredSlots,
+  shownTierOf,
   burstReadiness,
   waitForBurstMoment,
   attemptIdentity,
@@ -165,6 +166,12 @@ for (const host of PROD_HOSTS) {
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 const slotCache = new Map<string, SlotView>();
+/**
+ * #3495: the tier each code's last answered availability read had on show, handed back
+ * with its bookings as the booker does. Kept beside the slot view rather than in it, and
+ * refreshed only by a read that answered, as the view is.
+ */
+const shownTiers = new Map<string, string | null>();
 const REFRESH_MS = availabilityRefreshMs(DRIVERS);
 
 /**
@@ -195,6 +202,7 @@ async function slotsFor(code: string, nowMs: number, deadlineAtMs: number): Prom
       signal: requestSignal(deadlineAtMs, AVAILABILITY_TIMEOUT_OVERRIDE),
     });
     if (res.ok) payload = await res.json();
+    if (payload !== null) shownTiers.set(code, shownTierOf(payload));
     // A refused or unreadable read KEEPS the previous view rather than emptying it.
     // An empty list means "this bucket offers nothing", which is a real state the
     // run should be able to record; a 429 means "we asked too often", and turning
@@ -217,11 +225,15 @@ async function book(req: {
   lead: LoadtestLead;
   /** The driver's own deadline, or Infinity for the burst, which has none. */
   deadlineAtMs: number;
+  /** #3495: the tier the code had on show, handed back; null leaves the confirm to read it. */
+  shownTier: string | null;
 }): Promise<BookingAttempt> {
   // Built before the try, as the ceiling control's is (#3447): a lead outside the
   // phone's digits stops the driver here, by name, rather than being recorded as a
   // request that failed in transit.
-  const requestBody = JSON.stringify(bookingBody({ code: req.code, startIso: req.startIso, lead: req.lead, timezone: TIMEZONE }));
+  const requestBody = JSON.stringify(
+    bookingBody({ code: req.code, startIso: req.startIso, lead: req.lead, timezone: TIMEZONE, shownTier: req.shownTier }),
+  );
   const sentAtMs = Date.now();
   const t0 = performance.now();
   let status = 0;
@@ -378,6 +390,7 @@ async function steady(
         startIso,
         lead: { runId: RUN_ID, leg: mode, driver: DRIVER, n: req.n },
         deadlineAtMs,
+        shownTier: shownTiers.get(req.code) ?? null,
       }),
     );
   }
@@ -583,14 +596,17 @@ async function burst(): Promise<void> {
     // Each burst's ids are numbered past the previous bursts', so no two of the run's
     // requests share an external id (#2261), whatever each burst's share (#3429).
     const attempts = await Promise.all(
-      burstRequestNumbers(shares, index).map((n, i) =>
-        book({
-          code: burstCodeFor(leg.codes, DRIVER, i),
+      burstRequestNumbers(shares, index).map((n, i) => {
+        const code = burstCodeFor(leg.codes, DRIVER, i);
+        return book({
+          code,
           startIso: leg.slot,
           lead: { runId: RUN_ID, leg: "burst", driver: DRIVER, n },
           deadlineAtMs: Number.POSITIVE_INFINITY,
-        }),
-      ),
+          // #3495: the tier the setup read for this request's own code.
+          shownTier: leg.shownTiers[leg.codes.indexOf(code)] ?? null,
+        });
+      }),
     );
     const result: DriverResult = {
       runId: RUN_ID,

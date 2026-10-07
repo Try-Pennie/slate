@@ -55,6 +55,7 @@ import {
   burstMoments,
   burstCrowd,
   offeredSlots,
+  shownTierOf,
   DRIVERS,
   BURST_LEGS,
   BURST_SEQUENCE,
@@ -132,27 +133,36 @@ if (!Number.isFinite(LEAD) || LEAD <= 0) {
   process.exit(1);
 }
 
-/** What one code is offering, or null when the deployment would not answer for it. */
-async function offeredFor(code: string): Promise<string[] | null> {
+/**
+ * What one code is offering, and the tier its answer had on show (#3495), or null when
+ * the deployment would not answer for it.
+ */
+async function offeredFor(code: string): Promise<{ times: string[]; shownTier: string | null } | null> {
   const res = await fetch(`${SLATE_BASE}/api/availability?bucket=${code}`);
   if (!res.ok) return null;
   // Through the shared reader (#2261), which THROWS on a payload it cannot read
   // rather than resolving to an empty list: an unreadable shape would otherwise
   // arrive here as "this bucket offers nothing" and refuse the run for the wrong
   // reason entirely.
-  return offeredSlots(await res.json());
+  const body: unknown = await res.json();
+  return { times: offeredSlots(body), shownTier: shownTierOf(body) };
 }
 
-/** The times BOTH codes of a ladder offer, or why they could not be read. */
-async function sharedOffered(c: LadderCandidate): Promise<{ times: string[] } | { why: string }> {
+/**
+ * The times BOTH codes of a ladder offer, and the tier each had on show (#3495), or
+ * why they could not be read.
+ */
+async function sharedOffered(
+  c: LadderCandidate,
+): Promise<{ times: string[]; shownTiers: [string | null, string | null] } | { why: string }> {
   try {
     const offered = await offeredFor(c.code);
     const sibling = offered === null ? null : await offeredFor(c.sibling);
     if (offered === null || sibling === null) return { why: `${c.code}/${c.sibling}: availability did not answer` };
     // Each sibling is asked too, because a time only one of the two offers would be
     // refused for the other half of the burst for a reason that is not contention.
-    const both = new Set(sibling);
-    return { times: offered.filter((t) => both.has(t)) };
+    const both = new Set(sibling.times);
+    return { times: offered.times.filter((t) => both.has(t)), shownTiers: [offered.shownTier, sibling.shownTier] };
   } catch (err) {
     return { why: `${c.code}/${c.sibling}: ${String(err)}` };
   }
@@ -291,6 +301,7 @@ if (refusalAsk.length === 0) {
 const refusalReads: string[] = [];
 let refusal: LadderCandidate | null = null;
 let refusalSlots: string[] | null = null;
+let refusalTiers: [string | null, string | null] = [null, null];
 for (const c of refusalAsk) {
   const shared = await sharedOffered(c);
   if ("why" in shared) {
@@ -301,6 +312,7 @@ for (const c of refusalAsk) {
   if (chosen !== null) {
     refusal = c;
     refusalSlots = chosen;
+    refusalTiers = shared.shownTiers;
     break;
   }
 }
@@ -337,7 +349,7 @@ if (dropAsk.length === 0) {
 const farEnough = (t: string) => refusalSlots!.every((s) => Math.abs(Date.parse(s) - Date.parse(t)) >= BURST_SLOT_GAP_MS);
 const dropReads: string[] = [];
 const dropMisses: string[] = [];
-let drop: { ladder: LadderCandidate; slot: string; capacity: BurstCapacity } | null = null;
+let drop: { ladder: LadderCandidate; slot: string; capacity: BurstCapacity; shownTiers: [string | null, string | null] } | null = null;
 for (const c of dropAsk) {
   const shared = await sharedOffered(c);
   if ("why" in shared) {
@@ -354,7 +366,7 @@ for (const c of dropAsk) {
     const capacity = await measuredCapacity(c, t);
     const why = dropSlotFit({ rung0Free: capacity.rung0Free!, ladderFree: capacity.ladderFree! }, DROP_CROWD, DROP_CAPACITY_HEADROOM);
     if (why === null) {
-      drop = { ladder: c, slot: t, capacity };
+      drop = { ladder: c, slot: t, capacity, shownTiers: shared.shownTiers };
       break;
     }
     dropMisses.push(`${c.code} at ${t}: ${why}`);
@@ -390,13 +402,13 @@ const moments = burstMoments(startAt, BURST_LEGS, BURST_SPACING_MS);
 const plan = assembleBurstPlan(
   BURST_SEQUENCE,
   moments,
-  { codes: [refusal.code, refusal.sibling], slots: refusalSlots, capacities: refusalCapacities },
-  { codes: [drop.ladder.code, drop.ladder.sibling], slot: drop.slot, capacity: drop.capacity },
+  { codes: [refusal.code, refusal.sibling], shownTiers: refusalTiers, slots: refusalSlots, capacities: refusalCapacities },
+  { codes: [drop.ladder.code, drop.ladder.sibling], shownTiers: drop.shownTiers, slot: drop.slot, capacity: drop.capacity },
 );
 console.log(`burst plan: ${plan.bursts.length} bursts`);
 for (const [i, b] of plan.bursts.entries()) {
   console.log(
-    `  burst ${i + 1} (${b.kind}): ${b.codes.join(" with ")}, slot ${b.slot}, firing at ` +
+    `  burst ${i + 1} (${b.kind}): ${b.codes.join(" with ")} (tiers on show ${b.shownTiers.join(", ")}), slot ${b.slot}, firing at ` +
       `${new Date(b.startAtMs).toISOString()}, ${b.perDriver} a driver; its ladder holds at most ` +
       `${b.capacity.ladderRoster}, ${b.capacity.ladderFree} free at the slot (${b.capacity.rung0Free} on the top rung)`,
   );

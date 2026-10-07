@@ -209,6 +209,7 @@ const CANDIDATES = ladderCandidates(seededRows(), SEEDED_AGENTS);
 {
   const refusal = {
     codes: ["500", "501"] as [string, string],
+    shownTiers: ["high", "high"] as [string | null, string | null],
     slots: ["2026-10-08T15:00:00.000Z", "2026-10-08T19:00:00.000Z"],
     capacities: [
       { ladderRoster: 16, rung0Free: 3, ladderFree: 9 },
@@ -217,6 +218,7 @@ const CANDIDATES = ladderCandidates(seededRows(), SEEDED_AGENTS);
   };
   const drop = {
     codes: ["120", "121"] as [string, string],
+    shownTiers: ["very_high", null] as [string | null, string | null],
     slot: "2026-10-08T17:00:00.000Z",
     capacity: { ladderRoster: 74, rung0Free: 1, ladderFree: 40 },
   };
@@ -228,6 +230,8 @@ const CANDIDATES = ladderCandidates(seededRows(), SEEDED_AGENTS);
   eq(plan.bursts.map((b) => b.codes.join("/")), ["500/501", "120/121", "500/501"], "each burst on its own ladder's two codes");
   eq(plan.bursts.map((b) => b.perDriver), [25, 3, 25], "each with its kind's share");
   eq(plan.bursts[2]!.capacity, refusal.capacities[1], "and the capacity measured at its own slot");
+  // #3495: each burst carries the tier its own ladder's two codes had on show.
+  eq(plan.bursts.map((b) => b.shownTiers), [refusal.shownTiers, drop.shownTiers, refusal.shownTiers], "each burst carries its own codes' tiers on show (#3495)");
   // The plan it builds is one the drivers read back whole (L41).
   const back = readBurstPlan(JSON.stringify(plan));
   assert(back.ok && JSON.stringify(back.plan) === JSON.stringify(plan), `the drivers read the plan back exactly (got ${JSON.stringify(back)})`);

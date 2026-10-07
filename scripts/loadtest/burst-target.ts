@@ -243,15 +243,15 @@ export function dropSlotFit(
 export function assembleBurstPlan(
   sequence: readonly BurstKind[],
   moments: readonly number[],
-  refusal: { codes: [string, string]; slots: readonly string[]; capacities: readonly BurstCapacity[] },
-  drop: { codes: [string, string]; slot: string; capacity: BurstCapacity },
+  refusal: { codes: [string, string]; shownTiers: [string | null, string | null]; slots: readonly string[]; capacities: readonly BurstCapacity[] },
+  drop: { codes: [string, string]; shownTiers: [string | null, string | null]; slot: string; capacity: BurstCapacity },
 ): BurstPlan {
   let nextRefusal = 0;
   const bursts = sequence.map((kind, i): PlannedBurst => {
     const startAtMs = moments[i];
     if (startAtMs === undefined) throw new Error(`burst ${i + 1} has no moment`);
     if (kind === "drop") {
-      return { kind, codes: drop.codes, slot: drop.slot, startAtMs, perDriver: burstRequestsPerDriver(kind), capacity: drop.capacity };
+      return { kind, codes: drop.codes, shownTiers: drop.shownTiers, slot: drop.slot, startAtMs, perDriver: burstRequestsPerDriver(kind), capacity: drop.capacity };
     }
     const slot = refusal.slots[nextRefusal];
     const capacity = refusal.capacities[nextRefusal];
@@ -259,7 +259,7 @@ export function assembleBurstPlan(
     if (slot === undefined || capacity === undefined) {
       throw new Error(`burst ${i + 1} is a refusal control and only ${refusal.slots.length} refusal slots were chosen`);
     }
-    return { kind, codes: refusal.codes, slot, startAtMs, perDriver: burstRequestsPerDriver(kind), capacity };
+    return { kind, codes: refusal.codes, shownTiers: refusal.shownTiers, slot, startAtMs, perDriver: burstRequestsPerDriver(kind), capacity };
   });
   return { bursts };
 }

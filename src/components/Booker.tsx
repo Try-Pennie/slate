@@ -295,6 +295,11 @@ interface AvailabilityResponse {
     | { kind: "unstaffed" }
     | { kind: "busy" }
     | null;
+  /** #3495: the tier whose times are on show, handed back with the confirm so the
+   *  server records it instead of reading the cache for it. NEVER rendered: the lead
+   *  must not see routing (#259, Dan 2026-10-07). Null or absent when the answer
+   *  named none, and then nothing is handed back. */
+  shownTier?: string | null;
 }
 
 /**
@@ -830,7 +835,10 @@ export default function Booker({
         {
           // #2073: an agent's own link names the link, and the server decides
           // which bucket the booking is stored in; a routed page names its bucket.
-          ...(agentLink ? { agentLink } : { bucketCode, requestedCode }),
+          // #3495: and the tier its times came from, handed back unseen.
+          ...(agentLink
+            ? { agentLink }
+            : { bucketCode, requestedCode, ...(meta?.shownTier ? { shownTier: meta.shownTier } : {}) }),
           start: selectedSlot,
           timezone: zone,
           salesforceId,
