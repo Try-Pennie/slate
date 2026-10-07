@@ -212,6 +212,10 @@ async function book(req: {
   /** The driver's own deadline, or Infinity for the burst, which has none. */
   deadlineAtMs: number;
 }): Promise<BookingAttempt> {
+  // Built before the try, as the ceiling control's is (#3447): a lead outside the
+  // phone's digits stops the driver here, by name, rather than being recorded as a
+  // request that failed in transit.
+  const requestBody = JSON.stringify(bookingBody({ code: req.code, startIso: req.startIso, lead: req.lead, timezone: TIMEZONE }));
   const sentAtMs = Date.now();
   const t0 = performance.now();
   let status = 0;
@@ -226,7 +230,7 @@ async function book(req: {
       method: "POST",
       // #3354: the leg rides on every confirm, so the run can say where each cold one came from.
       headers: bookingRequestHeaders(API_KEY, MODE),
-      body: JSON.stringify(bookingBody({ code: req.code, startIso: req.startIso, lead: req.lead, timezone: TIMEZONE })),
+      body: requestBody,
     });
     status = res.status;
     // The address Slate SAW, echoed on the loadtest path only. Attributing a write
@@ -627,8 +631,10 @@ async function readDeploymentCrowdRule(): Promise<CrowdRuleReading> {
 async function probeOnceSettled(leg: PlannedBurst): Promise<BurstProbe> {
   const requestBoundMs = effectiveDeadlineMs(REQUEST_TIMEOUT_MS, REQUEST_TIMEOUT_OVERRIDE);
   const settleAfterMs = effectiveDeadlineMs(burstSettleAtMs(0, BURST_GRACE_MS, requestBoundMs), BURST_SETTLE_OVERRIDE);
-  const wait = leg.startAtMs + settleAfterMs - Date.now();
-  if (wait > 0) await sleep(wait);
+  // Looped until the WALL clock reads the settle, like the moment itself (#3103): one
+  // sleep can return a millisecond early, and the judge cannot use a probe sent before
+  // the burst settled (run 37568349592 sent one at 599ms against a 600ms settle).
+  await waitForBurstMoment(leg.startAtMs + settleAfterMs, { now: Date.now, sleep });
   const code = burstCodeFor(leg.codes, DRIVER, 0);
   const sentAtMs = Date.now();
   try {

@@ -136,11 +136,22 @@ async function withStub<T>(
   }
 }
 
-async function runDriver(base: string, env: Record<string, string>): Promise<{ code: number; stderr: string }> {
+async function runDriver(
+  base: string,
+  env: Record<string, string>,
+  // A module preloaded into the driver only, such as the early timers below.
+  preload: string[] = [],
+): Promise<{ code: number; stderr: string }> {
   try {
     await promisify(execFile)(
       process.execPath,
-      ["--experimental-strip-types", "--import", "./scripts/register-paths.mjs", "scripts/loadtest/book.ts"],
+      [
+        "--experimental-strip-types",
+        "--import",
+        "./scripts/register-paths.mjs",
+        ...preload.flatMap((m) => ["--import", m]),
+        "scripts/loadtest/book.ts",
+      ],
       {
         cwd: ROOT,
         env: {
@@ -258,6 +269,66 @@ const readFile = (path: string) => (existsSync(path) ? (JSON.parse(readFileSync(
   const silent = files[0]!.attempts[2]!.echo!;
   eq(silent.line, { state: "absent" }, "an answer with no echo at all records every field as absent");
   eq(silent.lineMs, { state: "absent" }, "never a zero");
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// --- #3429: a timer that returns early never sends the probe before the settle ------
+//
+// Run 37568349592 sent a probe 599ms after its moment against a 600ms settle: one
+// sleep toward the settle, and the timer returned a millisecond before the wall clock
+// reached it. The judge reads a probe sent before the burst settled as one it cannot
+// use, so a single early timer leaves the run INCOMPLETE. The driver's timers fire at
+// half their delay here, so one sleep is early on every run, never only an unlucky one.
+{
+  const dir = mkdtempSync(join(tmpdir(), "slate-3429-"));
+  const out = join(dir, `burst-${DRIVER}.json`);
+  const t = Date.now() + 2_000;
+  const { code, stderr } = await withStub(async (base) =>
+    runDriver(
+      base,
+      {
+        MODE: "burst",
+        OUT: out,
+        BURST_GRACE_MS: "30000",
+        BURST_SETTLE_MS: String(SETTLE_MS),
+        BURST_PLAN: JSON.stringify({ bursts: [burstOf(SLOTS[0]!, t)] }),
+      },
+      ["./scripts/lib/early-timers.mjs"],
+    ),
+  );
+  eq(code, 0, `a driver whose timers fire early still makes its burst ${stderr.slice(0, 300)}`);
+  const probe = readFile(burstLegOut(out, 0))?.probe;
+  assert(
+    probe !== undefined && probe.sentAtMs >= t + SETTLE_MS,
+    `and sends its probe only once the wall clock reaches the settle (${probe ? probe.sentAtMs - t : "none"}ms after its moment, settle ${SETTLE_MS}ms)`,
+  );
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// --- a lead outside the phone's digits stops the driver by name, before any send ----
+//
+// `book()` builds its body before its try, as the ceiling control does (#3447), so a
+// lead `loadtestPhone` refuses ends the driver naming why rather than being recorded
+// as a request that failed in transit. A driver number past 99 is the coordinate a
+// valid plan can still reach (the plan reader refuses request numbers past 9999).
+{
+  const dir = mkdtempSync(join(tmpdir(), "slate-3429-"));
+  const out = join(dir, `burst-${DRIVER}.json`);
+  const t = Date.now() + 2_000;
+  const { code, stderr, seen } = await withStub(async (base, seen) => ({
+    ...(await runDriver(base, {
+      MODE: "burst",
+      OUT: out,
+      DRIVER: "100",
+      BURST_GRACE_MS: "30000",
+      BURST_SETTLE_MS: String(SETTLE_MS),
+      BURST_PLAN: JSON.stringify({ bursts: [burstOf(SLOTS[0]!, t)] }),
+    })),
+    seen,
+  }));
+  assert(code !== 0, `a driver whose leads have no number of their own does not exit zero (got ${code})`);
+  assert(/driver 100 is outside 0 to 99/.test(stderr), `and says why, by name (got: ${stderr.slice(0, 300)})`);
+  eq(seen.bodies, 0, "having sent no booking at all");
   rmSync(dir, { recursive: true, force: true });
 }
 

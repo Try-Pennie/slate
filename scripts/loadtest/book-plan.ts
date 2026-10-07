@@ -917,6 +917,19 @@ export function readBurstPlan(raw: string): { ok: true; plan: BurstPlan } | { ok
       capacity: { ladderRoster: c.ladderRoster, rung0Free: c.rung0Free, ladderFree: c.ladderFree },
     });
   }
+  // Every burst is numbered past the earlier bursts' shares (`burstRequestNumbers`), so
+  // the shares' total is the request numbers one driver uses. Past the phone's digits
+  // a request would have no number of its own, so it is refused here, by name, rather
+  // than at a send that cannot build its lead (#3447).
+  const total = out.reduce((n, b) => n + b.perDriver, 0);
+  if (total > LEAD_REQUEST_NUMBERS) {
+    return {
+      ok: false,
+      why:
+        `BURST_PLAN's bursts total ${total} requests a driver, past the ${LEAD_REQUEST_NUMBERS} request numbers ` +
+        `a load test phone holds (0 to ${LEAD_REQUEST_NUMBERS - 1}), so a burst request would have no number of its own`,
+    };
+  }
   return { ok: true, plan: { bursts: out } };
 }
 
@@ -1044,14 +1057,22 @@ export function offeredSlots(body: unknown): string[] {
  * Kept in the 555 range, which is unassignable in the real numbering plan, so no
  * value this can produce is a number anybody actually holds.
  */
+/**
+ * How many request numbers one driver has on one leg inside a load test phone's
+ * digits (0 to 9999). Shared by the phone, which refuses a number past it, and by the
+ * burst plan reader, which refuses shares that would number a request past it, so the
+ * two can never disagree about the limit (L41).
+ */
+export const LEAD_REQUEST_NUMBERS = 10_000;
+
 export function loadtestPhone(lead: LoadtestLead): string {
   const leg = (LOADTEST_LEGS as readonly string[]).indexOf(lead.leg);
   if (leg < 0 || leg > 9) throw new Error(`loadtestPhone: leg ${lead.leg} has no digit of its own`);
   if (!Number.isInteger(lead.driver) || lead.driver < 0 || lead.driver > 99) {
     throw new Error(`loadtestPhone: driver ${lead.driver} is outside 0 to 99`);
   }
-  if (!Number.isInteger(lead.n) || lead.n < 0 || lead.n > 9999) {
-    throw new Error(`loadtestPhone: request ${lead.n} is outside 0 to 9999`);
+  if (!Number.isInteger(lead.n) || lead.n < 0 || lead.n > LEAD_REQUEST_NUMBERS - 1) {
+    throw new Error(`loadtestPhone: request ${lead.n} is outside 0 to ${LEAD_REQUEST_NUMBERS - 1}`);
   }
   const local = leg * 1_000_000 + lead.driver * 10_000 + lead.n;
   const digits = (runOffset(lead.runId) + local) % 10_000_000;

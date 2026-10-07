@@ -811,6 +811,18 @@ const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
     const r = readBurstPlan(raw);
     assert(!r.ok && r.why.includes(says), `refused, saying "${says}" (got: ${JSON.stringify(r)})`);
   }
+
+  // Each burst's requests are numbered past the earlier bursts' shares
+  // (`burstRequestNumbers`), and a load test phone holds request numbers 0 to 9999
+  // only (#3447). A plan whose shares a driver totals past that is refused HERE, by
+  // name, rather than reaching a send that cannot build its lead.
+  const over = readBurstPlan(JSON.stringify({ bursts: [{ ...refusalBurst, perDriver: 6_000 }, { ...dropBurst, perDriver: 4_001 }] }));
+  assert(
+    !over.ok && over.why.includes("10001") && over.why.includes("0 to 9999"),
+    `a plan whose shares run past the phone's request numbers is refused naming both (got: ${JSON.stringify(over)})`,
+  );
+  const atLimit = readBurstPlan(JSON.stringify({ bursts: [{ ...refusalBurst, perDriver: 6_000 }, { ...dropBurst, perDriver: 4_000 }] }));
+  assert(atLimit.ok, `and shares that use exactly every request number are read (got: ${JSON.stringify(atLimit)})`);
 }
 
 // --- #3354: the driver says which leg it is on every confirm it sends ---------------
@@ -867,6 +879,19 @@ const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
   eq(attendee.email, "run-1-9-3@loadtest.local", "an address on the load test's own domain");
   eq(attendee.phone, loadtestPhone(lead), "and its OWN number, since a weak match is email OR phone (#2261)");
   assert(attendee.name.includes("run-1-9-3"), "named for its id, so a row can be traced to the request");
+}
+
+{
+  // A lead outside the phone's digits is refused while the body is BUILT, by name, so
+  // a sender that builds it before its send (as `book()` and the ceiling control do)
+  // stops there rather than recording a request that failed in transit (#3447).
+  let threw: unknown = null;
+  try {
+    bookingBody({ code: "112", startIso: "2026-10-08T14:00:00Z", lead: { runId: "run-1", leg: "burst", driver: 0, n: 10_000 }, timezone: "America/New_York" });
+  } catch (err) {
+    threw = err;
+  }
+  assert(threw instanceof Error && /request 10000/.test(threw.message), `a body for request 10000 is refused by name (got ${threw instanceof Error ? threw.message : "no refusal"})`);
 }
 
 // --- #3348: a failed first read is remembered, so it is not re-asked on every request ---
