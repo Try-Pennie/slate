@@ -81,6 +81,77 @@ export async function readLeadXbcs(
 }
 
 /**
+ * A lead's score as of now, and where it came from (#3501).
+ *
+ * `code` is the XBC on the submission the Lead names as current
+ * (`Lead.Submission_Object_ID__c` to `Submission__c.XBC_SO__c`), which is the
+ * score the lead's booking link carries. `Lead.XBC__c` is a COPY of it and can
+ * lag: on 2026-10-07 a returning lead's new submission scored 111 while the Lead
+ * still held 211 from July, and on 2026-10-03 a new lead's copy read 212 for 75
+ * minutes against a submission of 112. Both were paged as re-scores that never
+ * happened. The copy is read only when the lead names no submission, Salesforce
+ * does not return the one it names, or that submission carries no score, and
+ * `source` says so. Measured 2026-10-07: all 2,790 leads with a scheduled Slate
+ * call named a submission.
+ *
+ * `submissionId` is the submission the Lead names, whichever source answered, so
+ * a caller can tell a re-score of the booking's own submission from a newer one.
+ */
+export interface LeadScore {
+  code: string | null;
+  source: "submission" | "lead";
+  submissionId: string | null;
+}
+
+function textOrNull(v: unknown): string | null {
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim();
+  return s === "" ? null : s;
+}
+
+/**
+ * Each lead's `LeadScore`, keyed by `leadIdKey`; a lead Salesforce did not return
+ * is missing. Two reads: the Leads, then the submissions they name, each chunked
+ * like `readLeadField`, and either one refusing THROWS, so a partial answer is
+ * never mistaken for a whole one. No submission named, no second query.
+ */
+export async function readLeadScores(
+  leadIds: string[],
+  run: LeadSoqlRunner,
+): Promise<Map<string, LeadScore>> {
+  const out = new Map<string, LeadScore>();
+  if (leadIds.length === 0) return out;
+  const leads: LeadFieldRecord[] = [];
+  for (const chunk of chunkSoqlValues(leadIds)) {
+    leads.push(...(await run(`SELECT Id, XBC__c, Submission_Object_ID__c FROM Lead WHERE Id IN (${sfInList(chunk)})`)));
+  }
+  const named = new Map<string, string>();
+  for (const l of leads) {
+    const sub = textOrNull(l.Submission_Object_ID__c);
+    if (sub !== null && isSubmissionId(sub)) named.set(leadIdKey(sub), sub);
+  }
+  const submissionXbc = new Map<string, string | null>();
+  if (named.size > 0) {
+    for (const chunk of chunkSoqlValues([...named.values()])) {
+      for (const s of await run(`SELECT Id, XBC_SO__c FROM Submission__c WHERE Id IN (${sfInList(chunk)})`)) {
+        submissionXbc.set(leadIdKey(s.Id), textOrNull(s.XBC_SO__c));
+      }
+    }
+  }
+  for (const l of leads) {
+    const submissionId = textOrNull(l.Submission_Object_ID__c);
+    const fromSubmission = submissionId === null ? null : (submissionXbc.get(leadIdKey(submissionId)) ?? null);
+    out.set(
+      leadIdKey(l.Id),
+      fromSubmission !== null
+        ? { code: fromSubmission, source: "submission", submissionId }
+        : { code: textOrNull(l.XBC__c), source: "lead", submissionId },
+    );
+  }
+  return out;
+}
+
+/**
  * One lead's `XBC__c`, for the booking path (#2638).
  *
  * Same three answers as `readLeadXbcs`, spelled for one id: a string is what

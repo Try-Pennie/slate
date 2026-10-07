@@ -382,7 +382,7 @@ import {
 } from "@/lib/monitor/below-lead-tier-store";
 import { runOffsiteOriginCheck, OFFSITE_ORIGIN_LOOKBACK_MS } from "@/lib/monitor/offsite-origin";
 import { loadRecentBookingsInBuckets } from "@/lib/monitor/offsite-origin-store";
-import { readLeadXbcs, type LeadXbcRecord } from "@/lib/salesforce/lead-xbc";
+import { readLeadScores, type LeadXbcRecord } from "@/lib/salesforce/lead-xbc";
 import { querySoqlAll, sfToken } from "@/lib/salesforce/rest";
 import type { OrgDefaults } from "@/lib/schedule-core";
 
@@ -2197,7 +2197,8 @@ export async function GET(req: NextRequest) {
     // Cost on this lane: nothing at all while no real booking is upcoming (no
     // Salesforce call is made for an empty set). Otherwise one bookings read, one
     // token exchange and one SOQL query per ~450 distinct leads, since the lead
-    // ids are batched into one IN list per URI budget. At a cutover roster of a
+    // ids are batched into one IN list per URI budget, plus as many again for the
+    // submissions those leads name (#3501), which is one per lead at most. At a cutover roster of a
     // few thousand upcoming calls that is about 2 to 8 Salesforce calls every
     // five minutes, against a daily API allowance measured in the hundreds of
     // thousands, and this lane has its own invocation rather than the one the
@@ -2221,8 +2222,9 @@ export async function GET(req: NextRequest) {
             new Date(now).toISOString(),
           ),
         buckets: realBuckets,
-        readLeadXbcs: (ids) =>
-          readLeadXbcs(ids, async (soql) => {
+        // #3501: the score on each lead's current submission, not the Lead's copy.
+        readLeadScores: (ids) =>
+          readLeadScores(ids, async (soql) => {
             // One token per tick, fetched only once there is something to ask.
             session ??= sfToken();
             const { token, instanceUrl } = await session;
