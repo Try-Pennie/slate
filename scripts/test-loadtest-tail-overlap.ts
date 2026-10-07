@@ -112,4 +112,40 @@ const jobs = parseWorkflowJobs(yml);
   );
 }
 
+// --- every tail stops at its window and keeps what it caught (#3463) ---------------
+//
+// `timeout` signals only the process it started (`npx`), and `wrangler` beneath it can
+// outlive it while holding the step open (L321). On run 37566700055 the archive's
+// step ran 36 minutes past a 29 minute window until the job was cancelled, and its
+// upload never ran, so the run had no archived log at all. The burst tail and the cold
+// job already start the tail under `setsid` and stop its whole process group; every
+// job that tails must, and must upload what it caught whatever the step did.
+
+/** Every way a tailing job could hang past its window or lose its file. */
+function stopProblems(source: string): string[] {
+  const out: string[] = [];
+  for (const job of parseWorkflowJobs(source)) {
+    const tailRuns = job.runs.filter((r) => /\bwrangler tail\b/.test(r));
+    if (tailRuns.length === 0) continue;
+    for (const run of tailRuns) {
+      if (!/\bsetsid\b[^\n]*\bwrangler tail\b/.test(run)) out.push(`${job.name} runs wrangler tail without setsid, so a stop cannot reach wrangler beneath npx`);
+    }
+    // The stop is its own command line, so it is looked for across the job's commands.
+    if (!job.runs.some((r) => /kill -TERM -- -"\$\w+"/.test(r))) out.push(`${job.name} never signals the tail's process group, so it can run past its window`);
+    if (!/- if: always\(\)\n\s+uses: actions\/upload-artifact@/.test(job.body)) out.push(`${job.name} uploads its tail only on success, so a step that hangs loses everything it caught`);
+  }
+  return out;
+}
+
+{
+  eq(stopProblems(yml), [], "every tailing job stops its whole process group at its window and uploads whatever happened");
+  // Control: the archive as run 37566700055 ran it is refused on all three counts.
+  const asRun = yml
+    .replace(/\n {4}if: \$\{\{ !cancelled\(\)[^\n]*\n( {4}runs-on: ubuntu-latest\n(?: {4}#[^\n]*\n)* {4}timeout-minutes: \d+\n)/, "\n$1")
+    .replace(/(Archive the Worker's logs for the window[\s\S]*?run: \|\n)[\s\S]*?(\n {6}- if: always\(\)\n {8}uses: actions\/upload-artifact@[^\n]+\n {8}with:\n {10}name: tail\n)/, (_m, head: string, upload: string) =>
+      `${head}          set -o pipefail\n          mkdir -p results\n          timeout 29m npx wrangler tail --env loadtest --format json > results/tail.jsonl || true\n          wc -l results/tail.jsonl${upload.replace("- if: always()\n        uses", "- uses")}`);
+  const ran = stopProblems(asRun).filter((p) => p.startsWith("archive "));
+  eq(ran.length, 3, `control: the archive as run 37566700055 had it is refused three ways (got ${JSON.stringify(ran)})`);
+}
+
 finish();
