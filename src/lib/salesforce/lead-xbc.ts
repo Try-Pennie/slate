@@ -194,13 +194,14 @@ export async function readLeadScores(
  * lead's CURRENT submission, through `readLeadScores`, so a codeless link routes
  * on the same score a link carrying one would have, and on the same one the
  * below tier check judges against. `Lead.XBC__c` is a copy that lags it, and is
- * read only when the lead names no submission with a score.
+ * read only when the lead names no submission with a score, or when it was
+ * edited after that submission (newest wins).
  *
  * Three answers: a string is the score Salesforce holds, null is a lead with
  * none, undefined is a lead Salesforce did not return. A refused query (the
- * Lead's or the submission's) THROWS, so a failed read is never mistaken for a
- * lead with no code, which would send them to the catch-all on exactly the read
- * that could not tell.
+ * Lead's, the submission's or the edit history's) THROWS, so a failed read is
+ * never mistaken for a lead with no code, which would send them to the
+ * catch-all on exactly the read that could not tell.
  */
 export async function readOneLeadXbc(
   leadId: string,

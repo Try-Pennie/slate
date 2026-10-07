@@ -481,6 +481,19 @@ async function currentSubmissionScore() {
     thrown = e;
   }
   assert(thrown instanceof Error, "a refused submission read throws, so the confirm refuses rather than routing on the copy");
+
+  // The third read: the returning lead's two scores disagree, so the edit history is
+  // asked. Refused, the confirm must refuse too, never route on either score unjudged.
+  let refused: unknown = null;
+  try {
+    await resolveRoutingCode("", RETURNED, (id) => readOneLeadXbc(id, async (q) => {
+      if (/FROM LeadHistory /.test(q)) throw new Error("SF query failed: 503");
+      return salesforce(q);
+    }), { id: null, readLeadId: async () => undefined });
+  } catch (e) {
+    refused = e;
+  }
+  assert(refused instanceof LeadCodeUnavailableError, "a refused edit history read refuses the booking with the retriable error");
 }
 
 await main();
