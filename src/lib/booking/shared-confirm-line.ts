@@ -85,7 +85,8 @@ export interface LineServed {
   key: LineKeyKind;
   /**
    * Milliseconds the confirm spent in calls to the shared line other than waiting
-   * in it (enter, acknowledge, claims, report): what the line ADDS to a confirm.
+   * in it (enter, claims, report): what the line ADDS to a confirm. The ack is not
+   * among them since #3355: it is sent and never waited on.
    */
   lineMs: number;
 }
@@ -177,7 +178,17 @@ export function makeSharedConfirmLine<T>(deps: {
       if (r.answer?.kind === "gone") detached = true;
       return r.answer && r.answer.ok === true ? r.answer : null;
     };
-    await timed({ op: "ack" });
+    // #3355: the ack is sent at once and NOT waited on. Nothing the confirm does
+    // depends on its answer (a `gone` only marks the turn detached, which every later
+    // call checks), so waiting on it only added its round trip to every leader's start:
+    // 1.3s on a line object fresh from a deploy (load run 37572839375), which alone put
+    // a cold confirm over the startup bar. Nothing waits on it at all, and its time is
+    // not counted in `lineMs`, which is what the line ADDS to a confirm.
+    // It never rejects (`call` reports failure in its result), so it is safe to leave
+    // to finish on its own.
+    void call(stub, { op: "ack", turn }, CONFIRM_LINE_CALL_MS).then((r) => {
+      if (r.answer?.kind === "gone") detached = true;
+    });
     // The heartbeat: a renewal every `CONFIRM_LINE_HEARTBEAT_MS` until the turn
     // reports. It runs beside the confirm, so its calls are not counted in `lineMs`.
     let beating: Promise<unknown> = Promise.resolve();
@@ -238,6 +249,9 @@ export function makeSharedConfirmLine<T>(deps: {
             served.lineMs += second.ms;
           }
         }
+        // #3355: the ack is not waited on here either. Once the turn has reported, its
+        // answer can matter to nobody, and waiting would only hold back the leader's own
+        // answer.
         deps.record({ ...served });
       },
     };
