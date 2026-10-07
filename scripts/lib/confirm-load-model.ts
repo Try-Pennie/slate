@@ -390,7 +390,10 @@ export function databaseCosts(
     if (!ON_DATABASE.has(name)) throw new Error(`the load model has not classified ${name}: add it to ON_DATABASE or OFF_DATABASE`);
     if (name === "roundRobinCandidates") {
       const bucket = args[0] as { code: string };
-      const free = freeOnRung(bucket.code, args[2] as number);
+      // #3489: a read narrowed to the one advisor the line handed (`narrowTo`) reads one
+      // member, priced as the run measured a rung with one advisor free.
+      const narrowed = (args[6] as { narrowTo?: string } | undefined)?.narrowTo !== undefined;
+      const free = narrowed ? 1 : freeOnRung(bucket.code, args[2] as number);
       const latencyMs = free === 0 ? db.candidateReadMs.noneFree : free === 1 ? db.candidateReadMs.oneFree : db.candidateReadMs.manyFree;
       return { latencyMs, queries: statementsFor(latencyMs) };
     }

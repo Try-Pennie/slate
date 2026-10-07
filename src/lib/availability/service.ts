@@ -1,3 +1,4 @@
+import { narrowedTo } from "./narrowed-pool";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import { unwrap } from "@/lib/db/result";
@@ -493,11 +494,15 @@ export async function roundRobinCandidates(
       bucket,
       readFrom,
       readTo,
-      excludeLow
-        ? lowExcludedResolver(eligibleAgentIds)
-        : onlyUserId !== undefined
-          ? namedAgentResolver(onlyUserId)
-          : eligibleAgentIds,
+      // #3489: a released confirm narrows the pool's OWN resolver to the advisor it was
+      // handed, after the Low exclusion, never the named link shortcut.
+      ((resolver: EligibleResolver) => (opts.narrowTo !== undefined ? narrowedTo(resolver, opts.narrowTo) : resolver))(
+        excludeLow
+          ? lowExcludedResolver(eligibleAgentIds)
+          : onlyUserId !== undefined
+            ? namedAgentResolver(onlyUserId)
+            : eligibleAgentIds,
+      ),
       { excludeHoldBlocks: true },
     ),
     loadBusinessHours(),

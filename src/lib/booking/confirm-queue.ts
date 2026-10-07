@@ -90,6 +90,76 @@ export const CONFIRM_QUEUE_WAIT_MS = 10_000;
 export const CONFIRM_CLAIM_LEASE_MS = 14_000;
 
 /**
+ * The most waiting confirms one leader's read releases at once (#3489). Each released
+ * confirm runs a whole booking chain, and on the per isolate line every one of them
+ * runs in THIS isolate: a confirm cost about 250ms of CPU (#3221), so 24 at once is
+ * about six seconds of CPU, half the confirm budget, leaving the other half for what
+ * else the isolate is serving. The largest rung a load run has handed out had 23
+ * advisors free (run 37640583621, burst 2). A premise that can be re-measured: the
+ * CPU a confirm costs, and the largest free rung a crowd meets.
+ */
+export const RELEASE_CAP = 24;
+
+/**
+ * How long a leader's read of a rung stays good enough to hand out (#3489). Every
+ * handed advisor is read again, narrowed to that one advisor, before anything is
+ * booked, so a stale entry costs a wasted read rather than a wrong booking; the bound
+ * is the follower's whole wait, since a read older than that predates every confirm
+ * still waiting.
+ */
+export const FRONTIER_FRESH_MS = CONFIRM_QUEUE_WAIT_MS;
+
+/**
+ * How a confirm's claim on an advisor ended (#3489), one value, never a boolean
+ * (L163): only an advisor nobody tried is free for certain.
+ *
+ * - `booked`: the confirm holds a booking on it.
+ * - `advisor-busy`: the live check found the advisor busy.
+ * - `lost-race`: the insert found the advisor already taken at this time.
+ * - `untried`: the confirm never asked anything about the advisor (its request ended
+ *   first: a replay, a person gate, a client gone). The line knows this itself: an
+ *   advisor is untried until the confirm says `trying`.
+ * - `unknown`: anything else, an older client's report among it. Never handed on.
+ */
+export const CLAIM_OUTCOMES = ["booked", "advisor-busy", "lost-race", "untried", "unknown"] as const;
+export type ClaimOutcome = (typeof CLAIM_OUTCOMES)[number];
+
+/** A claim outcome read off the wire, or undefined for anything else (read as `unknown`). */
+export function readClaimOutcome(x: unknown): ClaimOutcome | undefined {
+  return (CLAIM_OUTCOMES as readonly unknown[]).includes(x) ? (x as ClaimOutcome) : undefined;
+}
+
+/** Where a confirm reads its candidates from: the rung of its ladder, by position (#3489). */
+export interface ClaimPlace {
+  rung: number;
+}
+
+/**
+ * What a released confirm is handed (#3489): the rung, the advisor claimed for it, and
+ * the leader's whole read of that rung in round robin order, which the confirm reasons
+ * over (its full verdict, its lost race) instead of a list of one.
+ */
+export interface StartFrom {
+  rung: number;
+  advisor: string;
+  read: readonly string[];
+}
+
+/**
+ * A `StartFrom` read off the wire, or undefined when it is absent or not one: a whole
+ * rung, an advisor id, and a read that holds that advisor. A confirm handed nothing
+ * readable reads for itself, and its own claim then returns the advisor it was handed.
+ */
+export function readStartFrom(x: unknown): StartFrom | undefined {
+  if (!x || typeof x !== "object") return undefined;
+  const { rung, advisor, read } = x as Record<string, unknown>;
+  if (typeof rung !== "number" || !Number.isInteger(rung) || rung < 0) return undefined;
+  if (typeof advisor !== "string" || advisor.length === 0) return undefined;
+  if (!Array.isArray(read) || !read.every((id) => typeof id === "string") || !read.includes(advisor)) return undefined;
+  return { rung, advisor, read: read as string[] };
+}
+
+/**
  * How long THIS follower waits: what its budget has left less the reserve, capped
  * at `CONFIRM_QUEUE_WAIT_MS`, and never negative. `budgetLeftMs` is null outside
  * any budget, where the cap alone applies. The route's own reads (the key and the
@@ -152,7 +222,12 @@ export interface LineSeat {
    * call over the network, and between a separate read and claim another leader
    * could claim the same advisor.
    */
-  claimFirst(candidates: readonly string[]): { pool: string[]; unclaimed: number };
+  claimFirst(candidates: readonly string[], place?: ClaimPlace): { pool: string[]; unclaimed: number };
+  /**
+   * #3489: this confirm is about to ask Google about `userId`, so from now on its claim
+   * is no longer untried (`ClaimOutcome`). A no op for an advisor it does not hold.
+   */
+  trying(userId: string): void;
   /**
    * Claim `userId` and hand the line on only when some advisor in `besides` other
    * than `userId` is unclaimed by anybody else (#3325): an in place move's rule,
@@ -184,9 +259,19 @@ export type QueueTurn<T> =
    */
   | {
       kind: "lead";
-      done(verdict: LeaderVerdict<T>): void;
+      /**
+       * Reports the verdict and, since #3489, how this confirm's claim ended. With no
+       * outcome (an older client) the claim ended `unknown`, never handed on.
+       */
+      done(verdict: LeaderVerdict<T>, outcome?: ClaimOutcome): void;
       waiting(): number;
       seat: LineSeat;
+      /**
+       * #3489: set when the line RELEASED this confirm on a leader's read: the rung,
+       * the advisor claimed for it, and the leader's whole read of that rung. Absent
+       * for a confirm that leads and reads for itself.
+       */
+      start?: StartFrom;
       /**
        * Confirms this turn reached its caller (#3325). A host that requires it
        * (`ackMs`) ends a lead nobody acknowledges within that window, so an answer
@@ -235,6 +320,21 @@ interface Waiter<T> {
   answer(turn: QueueTurn<T>): void;
 }
 
+/** One leader's claim (#3274, #3489). */
+interface Claim {
+  userId: string | null;
+  until: number;
+  /** It said `trying` for `userId`: the advisor is no longer untried. */
+  tried: boolean;
+  /** The line handed it this advisor (`StartFrom`); counted against `RELEASE_CAP`. */
+  handed: boolean;
+  /**
+   * Its advisor came off the frontier (handed, or claimed with a `ClaimPlace`), so an
+   * untried end puts it back. Never true for a move's `claimBeside` or an older client.
+   */
+  returnable: boolean;
+}
+
 /**
  * One slot's line. `holder` is the leader that has NOT handed on, whom the
  * waiting are behind; null when every leader in flight has handed on, so the
@@ -245,7 +345,13 @@ interface Line<T> {
   waiting: Waiter<T>[];
   holder: object | null;
   /** Each leader in flight: the advisor it claimed (or none yet) and when its lease ends (#3274). */
-  claims: Map<object, { userId: string | null; until: number }>;
+  claims: Map<object, Claim>;
+  /**
+   * #3489: the newest leader's read of a rung, the advisors on it in round robin order
+   * and when it was read. Advisors leave it as their claims end anything but `untried`;
+   * what nobody in flight has claimed is what the line can hand out.
+   */
+  frontier: { rung: number; read: string[]; at: number } | null;
   /** Cheap reads in flight ahead of joining this line (`lookahead`). */
   looking: number;
 }
@@ -303,16 +409,47 @@ export function makeConfirmQueue<T>(
   // Returns whether the holder was among them, so the caller can hand the line on.
   const expire = (line: Line<T>): boolean => {
     const t = now();
-    let heldExpired = false;
+    let freed = false;
     for (const [who, c] of line.claims) {
       if (c.until > t) continue;
+      // #3489: an expired claim said nothing about how it ended.
+      if (endAdvisor(line, c, "unknown")) freed = true;
       line.claims.delete(who);
       if (line.holder === who) {
         line.holder = null;
-        heldExpired = true;
+        freed = true;
       }
     }
-    return heldExpired;
+    return freed;
+  };
+
+  // #3489: the one rule for what an ended claim means for its advisor. An end the
+  // confirm KNOWS (booked, found busy, lost the race) is taken as reported. Between
+  // untried and unknown the line's own knowledge decides: a returnable claim that never
+  // said `trying` is untried, and one that did can never be. Only an untried advisor
+  // stays on the frontier; any other end takes it off. Returns whether an advisor went
+  // back, so the caller can hand it out.
+  const endAdvisor = (line: Line<T>, c: Claim, reported: ClaimOutcome): boolean => {
+    if (c.userId === null) return false;
+    const known = reported === "booked" || reported === "advisor-busy" || reported === "lost-race";
+    const outcome: ClaimOutcome = known ? reported : c.returnable && !c.tried ? "untried" : "unknown";
+    if (outcome === "untried") return line.frontier !== null && line.frontier.read.includes(c.userId);
+    if (line.frontier) line.frontier.read = line.frontier.read.filter((id) => id !== c.userId);
+    return false;
+  };
+
+  // #3489: who on the frontier nobody in flight has claimed, while it is fresh.
+  const unclaimedOnFrontier = (line: Line<T>): string[] => {
+    const f = line.frontier;
+    if (!f || now() - f.at > FRONTIER_FRESH_MS) return [];
+    const claimed = new Set<string>();
+    for (const c of line.claims.values()) if (c.userId !== null) claimed.add(c.userId);
+    return f.read.filter((id) => !claimed.has(id));
+  };
+  const handedInFlight = (line: Line<T>): number => {
+    let n = 0;
+    for (const c of line.claims.values()) if (c.handed) n++;
+    return n;
   };
 
   // The one way any path expires leases (#3274 review): expire, and when that
@@ -334,15 +471,30 @@ export function makeConfirmQueue<T>(
 
   const promoteNext = (key: string, line: Line<T>): void => {
     if (line.holder !== null) return;
-    const next = line.waiting.shift();
-    if (next) {
-      next.answer(leadTurn(key, line));
+    if (line.waiting.length === 0) {
+      dropIfIdle(key, line);
       return;
     }
-    dropIfIdle(key, line);
+    // #3489: release one waiter per advisor on the frontier nobody has claimed, each
+    // handed its advisor (claimed for it here, so two can never be handed one), up to
+    // RELEASE_CAP in flight. The one handed the rung's LAST unclaimed advisor holds the
+    // line, as any confirm on a rung's last advisor does (#3257). When the cap stops
+    // the release, the rest wait for a handed confirm to end.
+    const free = unclaimedOnFrontier(line);
+    if (free.length > 0) {
+      const room = RELEASE_CAP - handedInFlight(line);
+      const k = Math.min(free.length, line.waiting.length, Math.max(0, room));
+      const { rung, read } = line.frontier!;
+      for (let i = 0; i < k; i++) {
+        const w = line.waiting.shift()!;
+        w.answer(leadTurn(key, line, { rung, advisor: free[i]!, read: [...read] }, i === free.length - 1));
+      }
+      if (k > 0 || room <= 0) return;
+    }
+    line.waiting.shift()!.answer(leadTurn(key, line));
   };
 
-  const leadTurn = (key: string, line: Line<T>): Extract<QueueTurn<T>, { kind: "lead" }> => {
+  const leadTurn = (key: string, line: Line<T>, start?: StartFrom, holds = true): Extract<QueueTurn<T>, { kind: "lead" }> => {
     const me = {};
     let reported = false;
     // #3325: a host that requires acknowledgement gives a new lead only the ack
@@ -372,8 +524,8 @@ export function makeConfirmQueue<T>(
     // A turn whose lease has passed was dropped by `expire`: whatever it does next
     // is ignored, so a late claim cannot exclude an advisor again.
     const live = () => !reported && line.claims.has(me);
-    line.holder = me;
-    line.claims.set(me, { userId: null, until });
+    if (holds) line.holder = me;
+    line.claims.set(me, { userId: start?.advisor ?? null, until, tried: false, handed: start !== undefined, returnable: start !== undefined });
     const handOn = () => {
       if (line.holder !== me) return;
       line.holder = null;
@@ -385,11 +537,16 @@ export function makeConfirmQueue<T>(
       for (const [who, c] of line.claims) if (who !== me && c.userId !== null) others.add(c.userId);
       return others;
     };
-    const claim = (userId: string, othersRemain: boolean): void => {
+    const claim = (userId: string | null, othersRemain: boolean, returnable = false): void => {
       expireAndHandOn(key, line);
       if (!live()) return;
-      line.claims.set(me, { userId, until });
+      const before = line.claims.get(me)!;
+      // #3489: the advisor this replaces ended here: tried, it was found busy or lost
+      // its race; untried (an older client ignoring what it was handed), it goes back.
+      const back = before.userId !== userId && endAdvisor(line, before, "advisor-busy");
+      line.claims.set(me, { userId, until, tried: false, handed: before.handed, returnable });
       if (othersRemain) handOn();
+      else if (back) promoteNext(key, line);
     };
     // The pending lease timer fires at the old end, finds time left and re-arms for
     // it (`onLeaseEnd`), so extending is only moving `until` on the turn and its claim.
@@ -409,32 +566,40 @@ export function makeConfirmQueue<T>(
         return live();
       },
       waiting: () => line.waiting.length,
+      ...(start ? { start } : {}),
       seat: {
         claimedByOthers,
         claim,
-        claimFirst(candidates) {
+        claimFirst(candidates, place) {
           const others = claimedByOthers();
           const unclaimed = candidates.filter((id) => !others.has(id));
           const pool = unclaimed.length > 0 ? unclaimed : [...candidates];
-          if (pool.length > 0) claim(pool[0]!, unclaimed.length > 1);
+          // #3489: a caller that names its rung makes its read the line's frontier, so
+          // handing the line on releases one waiter per advisor it left unclaimed.
+          if (place && live()) line.frontier = { rung: place.rung, read: [...candidates], at: now() };
+          if (pool.length > 0) claim(pool[0]!, unclaimed.length > 1, place !== undefined);
           return { pool, unclaimed: unclaimed.length };
+        },
+        trying(userId) {
+          if (!live()) return;
+          const mine = line.claims.get(me);
+          if (mine && mine.userId === userId) mine.tried = true;
         },
         claimBeside(userId, besides) {
           const others = claimedByOthers();
           claim(userId, besides.some((id) => id !== userId && !others.has(id)));
         },
         pass() {
-          expireAndHandOn(key, line);
-          if (!live()) return;
-          line.claims.set(me, { userId: null, until });
-          handOn();
+          claim(null, true);
         },
       },
-      done(verdict) {
+      done(verdict, outcome) {
         if (reported) return;
+        expireAndHandOn(key, line);
+        const mine = line.claims.get(me);
         reported = true;
         cancelLease();
-        expireAndHandOn(key, line);
+        if (mine) endAdvisor(line, mine, outcome ?? "unknown");
         line.claims.delete(me);
         if (line.holder === me) line.holder = null;
         // A full verdict settles the slot for the waiting only when no other
@@ -462,13 +627,17 @@ export function makeConfirmQueue<T>(
       existing = lines.get(key);
     }
     if (!existing) {
-      const line: Line<T> = { waiting: [], holder: null, claims: new Map(), looking: 0 };
+      const line: Line<T> = { waiting: [], holder: null, claims: new Map(), looking: 0, frontier: null };
       lines.set(key, line);
       return { kind: "lead", turn: leadTurn(key, line) };
     }
     // Every leader in flight has handed on: nobody to wait behind.
     if (existing.holder === null && existing.waiting.length === 0) {
-      return { kind: "lead", turn: leadTurn(key, existing) };
+      // #3489: an advisor the frontier still has unclaimed is handed to it too.
+      const free = handedInFlight(existing) < RELEASE_CAP ? unclaimedOnFrontier(existing) : [];
+      const f = existing.frontier;
+      const start = free.length > 0 && f ? { rung: f.rung, advisor: free[0]!, read: [...f.read] } : undefined;
+      return { kind: "lead", turn: leadTurn(key, existing, start, start === undefined || free.length === 1) };
     }
     const line = existing;
     let settled = false;
@@ -569,7 +738,9 @@ export function isolateKeyOf(key: LineKey): string {
 export interface SharedSeat {
   claimedByOthers(): Promise<ReadonlySet<string>>;
   claim(userId: string, othersRemain: boolean): Promise<void>;
-  claimFirst(candidates: readonly string[]): Promise<{ pool: string[]; unclaimed: number }>;
+  claimFirst(candidates: readonly string[], place?: ClaimPlace): Promise<{ pool: string[]; unclaimed: number }>;
+  /** #3489: see `LineSeat.trying`. */
+  trying(userId: string): Promise<void>;
   claimBeside(userId: string, besides: readonly string[]): Promise<void>;
   pass(): Promise<void>;
 }
@@ -580,7 +751,10 @@ export type LineTurn<T> =
       kind: "lead";
       seat: SharedSeat;
       waiting(): Promise<number>;
-      done(verdict: LeaderVerdict<T>): Promise<void>;
+      /** Reports the verdict and how this confirm's claim ended (#3489, `ClaimOutcome`). */
+      done(verdict: LeaderVerdict<T>, outcome?: ClaimOutcome): Promise<void>;
+      /** #3489: what the line handed this confirm when it released it (`StartFrom`). */
+      start?: StartFrom;
       /**
        * #3338: whether this confirm WAITED behind another for its turn, rather than
        * leading at once or being handed the line at once. A confirm that waited and
@@ -622,11 +796,13 @@ export function asLineTurn<T>(turn: QueueTurn<T>, queued: boolean): LineTurn<T> 
     kind: "lead",
     queued,
     waiting: async () => turn.waiting(),
-    done: async (verdict) => turn.done(verdict),
+    done: async (verdict, outcome) => turn.done(verdict, outcome),
+    ...(turn.start ? { start: turn.start } : {}),
     seat: {
       claimedByOthers: async () => seat.claimedByOthers(),
       claim: async (userId, othersRemain) => seat.claim(userId, othersRemain),
-      claimFirst: async (candidates) => seat.claimFirst(candidates),
+      claimFirst: async (candidates, place) => seat.claimFirst(candidates, place),
+      trying: async (userId) => seat.trying(userId),
       claimBeside: async (userId, besides) => seat.claimBeside(userId, besides),
       pass: async () => seat.pass(),
     },

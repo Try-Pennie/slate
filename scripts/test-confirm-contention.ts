@@ -128,6 +128,7 @@ const NO_QUEUE: ConfirmLine<never> = {
       claim: async () => {},
       claimFirst: async (candidates) => ({ pool: [...candidates], unclaimed: candidates.length }),
       claimBeside: async () => {},
+      trying: async () => {},
       pass: async () => {},
     },
   }),

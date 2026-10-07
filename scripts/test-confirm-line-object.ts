@@ -305,6 +305,56 @@ async function main() {
     assert(old.kind === "gone" && calls.length === 1 && calls[0]?.op === "enter", "trace: a call on another protocol version is still reported, so a load run can see it was refused");
   }
 
+  // --- #3489: a claim that names its rung releases a waiter with what it was handed ---
+  //
+  // The object hosts the same line (`makeConfirmQueue`), so the release itself is the
+  // queue suite's to prove; this proves the wire: the rung reaches the line, the lead
+  // answer carries the start, `trying` and a claim's outcome reach the line, and an
+  // older client's messages (no rung, no outcome) keep today's line exactly (L255).
+  {
+    const { send } = host();
+    const lead = await send({ op: "enter", attempt: "A", line: "100", waitMs: 10_000 });
+    await send({ op: "ack", turn: lead.turn });
+    const w = await send({ op: "enter", attempt: "B", line: "100", waitMs: 10_000 });
+    const polled = send({ op: "poll", ticket: w.ticket });
+    await tick();
+    const claimed = await send({ op: "claimFirst", turn: lead.turn, candidates: ["p0", "p1"], rung: 2 });
+    assert(claimed.ok === true && JSON.stringify(claimed.pool) === JSON.stringify(["p0", "p1"]), `wire: a claim with a rung is answered as before (got ${JSON.stringify(claimed)})`);
+    const released = await polled;
+    assert(released.kind === "lead", `wire: the waiter is released (got ${JSON.stringify(released)})`);
+    assert(
+      JSON.stringify(released.start) === JSON.stringify({ rung: 2, advisor: "p1", read: ["p0", "p1"] }),
+      `wire: the lead answer carries what the line handed it (got ${JSON.stringify(released.start)})`,
+    );
+    await send({ op: "ack", turn: released.turn });
+    const tried = await send({ op: "trying", turn: released.turn, userId: "p1" });
+    assert(tried.ok === true, "wire: trying is accepted");
+    const next = await send({ op: "enter", attempt: "C", line: "100", waitMs: 10_000 });
+    const nextPolled = send({ op: "poll", ticket: next.ticket });
+    await tick();
+    // It tried p1 and Google found it busy: the next waiter is handed nothing.
+    await send({ op: "done", turn: released.turn, verdict: { full: false }, outcome: "advisor-busy" });
+    const n = await nextPolled;
+    assert(n.kind === "lead" && n.start === undefined, `wire: an outcome reaches the line; a busy advisor is not handed on (got ${JSON.stringify(n)})`);
+    for (const t of [lead.turn, n.turn]) await send({ op: "done", turn: t, verdict: { full: false }, outcome: "booked" });
+  }
+  {
+    const { send } = host();
+    const lead = await send({ op: "enter", attempt: "A", line: "100", waitMs: 10_000 });
+    await send({ op: "ack", turn: lead.turn });
+    const w = await send({ op: "enter", attempt: "B", line: "100", waitMs: 10_000 });
+    const polled = send({ op: "poll", ticket: w.ticket });
+    await tick();
+    await send({ op: "claimFirst", turn: lead.turn, candidates: ["p0", "p1"] });
+    const r = await polled;
+    assert(r.kind === "lead" && r.start === undefined, `wire: an older client's claim (no rung) hands the line on with nothing handed (got ${JSON.stringify(r)})`);
+    const odd = await send({ op: "done", turn: r.turn, verdict: { full: false }, outcome: "something-new" });
+    assert(odd.ok === true, "wire: an outcome this side does not know is accepted, as unknown");
+    await send({ op: "done", turn: lead.turn, verdict: { full: false } });
+    const bad = await send({ op: "claimFirst", turn: "nobody", candidates: ["p0"], rung: 1.5 });
+    assert(bad.kind === "bad", `wire: a rung that is not a whole number is refused by name (got ${JSON.stringify(bad)})`);
+  }
+
   finish();
 }
 

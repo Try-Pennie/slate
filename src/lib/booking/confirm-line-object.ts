@@ -49,7 +49,7 @@
  * served as is `objectRoleOf`, and `makeConfirmLineObject` keeps each role's messages to
  * its own instances.
  */
-import { makeConfirmQueue, type LeaderVerdict, type QueueTurn, type EnteredNow } from "./confirm-queue.ts";
+import { makeConfirmQueue, readClaimOutcome, type LeaderVerdict, type QueueTurn, type EnteredNow } from "./confirm-queue.ts";
 import { DIRECTORY_GROUP_PREFIX, isGroupingMessage, makeGroupingDirectoryHost, type GroupingDirectoryStorage } from "./pool-grouping.ts";
 import type { ScheduleTimer } from "../read-within-deadline.ts";
 
@@ -57,7 +57,13 @@ import type { ScheduleTimer } from "../read-within-deadline.ts";
 export const CONFIRM_LINE_BINDING = "CONFIRM_LINE";
 export const CONFIRM_LINE_CLASS = "ConfirmLine";
 
-/** Raised whenever the messages change shape; a mismatch answers `gone`. */
+/**
+ * Raised only for a change an older peer cannot ignore; a mismatch answers `gone`, which
+ * sends every confirm to its isolate's own line for the whole of a gradual deploy (run
+ * 37333201026). So a change an older peer CAN ignore keeps it: #3489 added optional fields
+ * (a rung on `claimFirst`, an outcome on `done`, a start on a lead) and the `trying`
+ * message, and each side reads their absence as the behaviour before them.
+ */
 export const CONFIRM_LINE_PROTOCOL = 1;
 /** The longest one poll is held. A deploy strands a follower for at most this. */
 export const CONFIRM_LINE_POLL_MS = 1_500;
@@ -104,6 +110,8 @@ interface Ticket {
 type AttemptRef = { kind: "lead"; turn: string } | { kind: "wait"; ticket: string } | { kind: "lookahead"; permit: string };
 
 const isString = (x: unknown): x is string => typeof x === "string" && x.length > 0 && x.length <= 200;
+/** #3489: a lead answer carries what the line handed it, when it handed anything. */
+const startOf = (t: QueueTurn<unknown>) => (t.kind === "lead" && t.start ? { start: t.start } : {});
 const isStringList = (x: unknown): x is string[] => Array.isArray(x) && x.length <= 500 && x.every(isString);
 
 /** A leader's verdict as it arrives over the wire, or null when it is not one. */
@@ -218,7 +226,7 @@ export function makeConfirmLineHost(deps: {
     const entered = line.enterNow(key, waitMs);
     if (entered.kind === "lead") {
       const turn = registerLead(entered.turn);
-      const answer = json({ kind: "lead", turn });
+      const answer = json({ kind: "lead", turn, ...startOf(entered.turn) });
       attempts.set(attempt, { answer, ref: { kind: "lead", turn }, at: now() });
       return answer;
     }
@@ -261,7 +269,7 @@ export function makeConfirmLineHost(deps: {
       const turn = registerLead(ticket.result);
       const a = attempts.get(ticket.attempt);
       if (a) a.ref = { kind: "lead", turn };
-      return json({ kind: "lead", turn });
+      return json({ kind: "lead", turn, ...startOf(ticket.result) });
     }
     return answerFor(ticket.result);
   };
@@ -320,8 +328,18 @@ export function makeConfirmLineHost(deps: {
       }
       case "claimFirst": {
         if (!isString(m.turn) || !isStringList(m.candidates)) return bad("claimFirst needs turn and candidates");
+        // #3489: an optional rung, absent from an older client.
+        if (m.rung !== undefined && !(typeof m.rung === "number" && Number.isInteger(m.rung) && m.rung >= 0)) return bad("claimFirst rung must be a whole number");
         const turn = leader(m);
-        return turn ? json({ ok: true, ...turn.seat.claimFirst(m.candidates) }) : gone();
+        const place = typeof m.rung === "number" ? { rung: m.rung } : undefined;
+        return turn ? json({ ok: true, ...turn.seat.claimFirst(m.candidates, place) }) : gone();
+      }
+      case "trying": {
+        if (!isString(m.turn) || !isString(m.userId)) return bad("trying needs turn and userId");
+        const turn = leader(m);
+        if (!turn) return gone();
+        turn.seat.trying(m.userId);
+        return json({ ok: true });
       }
       case "claimBeside": {
         if (!isString(m.turn) || !isString(m.userId) || !isStringList(m.besides)) return bad("claimBeside needs turn, userId and besides");
@@ -351,7 +369,8 @@ export function makeConfirmLineHost(deps: {
         // the report is accepted, because there is nothing left for it to settle.
         if (!turn) return json({ ok: true, gone: true });
         turns.delete(m.turn);
-        turn.done(verdict);
+        // #3489: an outcome this side does not know is read as none, `unknown`.
+        turn.done(verdict, readClaimOutcome(m.outcome));
         return json({ ok: true });
       }
       case "giveBack": {
