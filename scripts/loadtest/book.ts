@@ -38,9 +38,10 @@ import {
   burstRequestNumbers,
   burstSettleAtMs,
   readDriverMode,
+  readBurstGraceMs,
+  settleLater,
   bookingRequestHeaders,
   bookingBody,
-  BURST_GRACE_DEFAULT_MS,
   BURST_PROBE_TIMEOUT_MS,
   DRIVERS,
   PER_DRIVER_PER_MINUTE,
@@ -94,7 +95,12 @@ if (!modeRead.ok) {
 const MODE = modeRead.mode;
 // env-ok: BURST_GRACE_MS (optional; defaults to 2000, how late a driver may be and
 // still be part of the same burst)
-const BURST_GRACE_MS = Number(process.env.BURST_GRACE_MS ?? String(BURST_GRACE_DEFAULT_MS));
+const graceRead = readBurstGraceMs(process.env.BURST_GRACE_MS);
+if (!graceRead.ok) {
+  console.error(`FAILED: ${graceRead.why}, so nothing was attempted.`);
+  process.exit(1);
+}
+const BURST_GRACE_MS = graceRead.ms;
 // env-ok: BURST_SETTLE_MS (optional; a test seam that can only SHORTEN how long after a
 // burst's moment the driver waits before probing its slot, #3429)
 const BURST_SETTLE_OVERRIDE = process.env.BURST_SETTLE_MS;
@@ -518,6 +524,9 @@ async function burst(): Promise<void> {
   // #3429: the probes run beside the next burst's wait rather than before it, so a
   // probe can never make a driver late for the next moment.
   const probes: Promise<void>[] = [];
+  // #3446 review (L749): a probe that cannot be recorded is held here, with its handler
+  // attached when the probe starts, and reported once every burst has fired.
+  const unrecordedProbes: string[] = [];
 
   for (const [index, leg] of plan.bursts.entries()) {
     const startedAtMs = Date.now();
@@ -598,13 +607,28 @@ async function burst(): Promise<void> {
     // burst, whose missing probe the judge reads as never recorded. Written again
     // with the probe once the slot has been asked.
     write(result, out);
-    probes.push(probeOnceSettled(leg).then((probe) => write({ ...result, probe }, out)));
+    probes.push(
+      settleLater(
+        probeOnceSettled(leg).then((probe) => write({ ...result, probe }, out)),
+        (err) =>
+          unrecordedProbes.push(
+            `burst ${index + 1} of ${plan.bursts.length}: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+      ),
+    );
   }
   await Promise.all(probes);
+  for (const why of unrecordedProbes) {
+    console.error(
+      `driver ${DRIVER}: the probe of ${why}. Its burst's file was written without it, which the judge reads as a probe never recorded`,
+    );
+  }
 
   // Non-zero, so a missed burst is visible in the workflow rather than only in a file
-  // the judge reads later.
+  // the judge reads later. A missed burst names the run first; a probe that could not
+  // be recorded has its own code, so the two are told apart.
   if (missedAny) process.exit(3);
+  if (unrecordedProbes.length > 0) process.exit(4);
 }
 
 /**

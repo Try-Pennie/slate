@@ -20,7 +20,7 @@
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -333,6 +333,68 @@ const readFile = (path: string) => (existsSync(path) ? (JSON.parse(readFileSync(
   assert(code !== 0, `a driver whose leads have no number of their own does not exit zero (got ${code})`);
   assert(/driver 100 is outside 0 to 99/.test(stderr), `and says why, by name (got: ${stderr.slice(0, 300)})`);
   eq(seen.bodies, 0, "having sent no booking at all");
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// --- #3446 review: an unparseable grace is refused by name, before anything is sent --
+// `Number("soon")` is NaN, which a file writes as null and the judge reads as "not
+// recorded", replacing it with the default: a bad setting would vanish (L50).
+{
+  const dir = mkdtempSync(join(tmpdir(), "slate-3429-"));
+  const out = join(dir, `burst-${DRIVER}.json`);
+  const { code, stderr, seen } = await withStub(async (base, seen) => ({
+    ...(await runDriver(base, {
+      MODE: "burst",
+      OUT: out,
+      BURST_GRACE_MS: "soon",
+      BURST_SETTLE_MS: String(SETTLE_MS),
+      BURST_PLAN: JSON.stringify({ bursts: [burstOf(SLOTS[0]!, Date.now() + 2_000)] }),
+    })),
+    seen,
+  }));
+  eq(code, 1, "a driver whose grace cannot be read stops");
+  assert(/BURST_GRACE_MS/.test(stderr) && /soon/.test(stderr), `naming the setting and its value (got: ${stderr.slice(0, 300)})`);
+  eq(seen.bodies, 0, "having sent nothing");
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// --- #3446 review: a probe that cannot be recorded neither kills the driver nor vanishes
+// The probe of each burst runs beside the next burst's wait and is awaited only once
+// every burst has fired. A rejection before then had no handler, so Node reported it
+// as unhandled and ended the driver mid run (L749). Here burst 1's file is replaced by
+// a directory after it is written and before its probe lands, so the probe's own write
+// really fails, and burst 2 must still fire, be probed and be written.
+{
+  const dir = mkdtempSync(join(tmpdir(), "slate-3446-"));
+  const out = join(dir, `burst-${DRIVER}.json`);
+  const t = Date.now() + 2_000;
+  const settleMs = 3_000;
+  const first = burstLegOut(out, 0);
+  const { code, stderr, seen } = await withStub(async (base, seen) => {
+    const running = runDriver(base, {
+      MODE: "burst",
+      OUT: out,
+      BURST_GRACE_MS: "30000",
+      BURST_SETTLE_MS: String(settleMs),
+      BURST_PLAN: JSON.stringify({ bursts: [burstOf(SLOTS[0]!, t), burstOf(SLOTS[1]!, t + 4_000)] }),
+    });
+    // Waits on the file itself, never a fixed time (L290), bounded so a driver that
+    // never writes it fails here rather than hanging the suite.
+    const until = Date.now() + 30_000;
+    while (!existsSync(first) && Date.now() < until) await new Promise((r) => setTimeout(r, 10));
+    assert(existsSync(first), "fixture: burst 1's file was written before its probe");
+    rmSync(first);
+    mkdirSync(first);
+    return { ...(await running), seen };
+  });
+  // Node ends a process on an uncaught error with its version as the last line; for an
+  // Error reason it prints no "unhandled" text at all, so this is what to look for.
+  assert(!/^Node\.js v\d+/m.test(stderr), `the driver is not ended by an uncaught rejection (got: ${stderr.slice(-400)})`);
+  eq(code, 4, "it exits on its own code for a probe it could not record, so the failure is visible in the workflow");
+  assert(/burst 1 of 2/.test(stderr) && /probe/.test(stderr), `and names the burst whose probe was lost (got: ${stderr.slice(0, 400)})`);
+  eq(seen.bodies, 2 * REQUESTS, "every burst still fired");
+  const second = readFile(burstLegOut(out, 1));
+  assert(second?.probe?.kind === "read", `and the burst after it was still probed and written (got ${JSON.stringify(second?.probe)})`);
   rmSync(dir, { recursive: true, force: true });
 }
 

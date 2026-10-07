@@ -1141,6 +1141,40 @@ export function readDriverMode(raw: string | undefined): { ok: true; mode: Drive
   return { ok: false, why: `MODE "${raw}" is not one of ${DRIVER_MODES.join(", ")}` };
 }
 
+/**
+ * How late a burst driver may wake and still fire, from its `BURST_GRACE_MS` (#3446
+ * review, L50). Unset or EMPTY is the default: the empty string is what a workflow
+ * interpolates for a setting nobody created (L138), and `Number("")` is a grace of 0.
+ * Anything that is not a whole, non negative number of milliseconds is refused by name:
+ * `Number("soon")` is NaN, which a burst file writes as null and the judge reads as
+ * "not recorded", so a bad setting would have been replaced by the default unseen.
+ */
+export function readBurstGraceMs(raw: string | undefined): { ok: true; ms: number } | { ok: false; why: string } {
+  if (raw === undefined || raw.trim() === "") return { ok: true, ms: BURST_GRACE_DEFAULT_MS };
+  const ms = Number(raw.trim());
+  if (!/^\d+$/.test(raw.trim()) || !Number.isSafeInteger(ms)) {
+    return { ok: false, why: `BURST_GRACE_MS "${raw}" is not a whole number of milliseconds` };
+  }
+  return { ok: true, ms };
+}
+
+/**
+ * Work started now and awaited later, with its failure handled from the moment it is
+ * created (#3446 review, L749). A promise that rejects before anything awaits it is
+ * reported by Node as unhandled, which ends the process: a burst driver holding a
+ * probe until every burst had fired lost every later burst to one failed write. The
+ * returned promise never rejects; the failure goes to `onFailure`, for the caller to
+ * report once it does await.
+ */
+export function settleLater(work: Promise<unknown>, onFailure: (err: unknown) => void): Promise<void> {
+  return work.then(
+    () => undefined,
+    (err: unknown) => {
+      onFailure(err);
+    },
+  );
+}
+
 /** The headers every confirm a driver sends carries, its leg among them (#3354). */
 export function bookingRequestHeaders(apiKey: string, leg: LoadtestLeg): Record<string, string> {
   return { Authorization: `Bearer ${apiKey}`, "content-type": "application/json", [LOADTEST_LEG_HEADER]: leg };

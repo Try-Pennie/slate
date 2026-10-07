@@ -40,6 +40,8 @@ import {
   burstLegOut,
   readBurstPlan,
   readDriverMode,
+  readBurstGraceMs,
+  settleLater,
   bookingRequestHeaders,
   bookingBody,
   DRIVER_MODES,
@@ -847,6 +849,54 @@ const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
   assert(!typo.ok && typo.why.includes("Burst"), `a mode outside the four is refused by name (got ${JSON.stringify(typo)})`);
   const control = readDriverMode("preflight");
   assert(!control.ok, "a control's leg is not a mode this driver runs, so it is refused rather than run as the steady pass");
+}
+
+{
+  // #3446 review (L50): BURST_GRACE_MS is read once, strictly. `Number("soon")` is NaN,
+  // which JSON writes as null, which the judge reads as "not recorded" and replaces
+  // with the default, so a bad setting vanished. An unset or EMPTY one (the empty
+  // string a workflow interpolates for a missing setting, L138) is the default, never 0.
+  const unsetGrace = readBurstGraceMs(undefined);
+  assert(unsetGrace.ok && unsetGrace.ms === BURST_GRACE_DEFAULT_MS, `no grace is the default (got ${JSON.stringify(unsetGrace)})`);
+  const emptyGrace = readBurstGraceMs("");
+  assert(emptyGrace.ok && emptyGrace.ms === BURST_GRACE_DEFAULT_MS, `an empty grace is the default, never zero (got ${JSON.stringify(emptyGrace)})`);
+  const set = readBurstGraceMs("5000");
+  assert(set.ok && set.ms === 5000, `a whole number of milliseconds is read (got ${JSON.stringify(set)})`);
+  for (const raw of ["soon", "-1", "1.5", "2s", "Infinity"]) {
+    const r = readBurstGraceMs(raw);
+    assert(!r.ok && r.why.includes("BURST_GRACE_MS") && r.why.includes(raw), `a grace of "${raw}" is refused by name (got ${JSON.stringify(r)})`);
+  }
+}
+
+{
+  // #3446 review (L749): work started now and awaited later carries its rejection
+  // handler from the moment it is created, so a failure in between is RECORDED
+  // rather than reported by Node as unhandled, which kills a driver mid run.
+  const unhandled: unknown[] = [];
+  const listen = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", listen);
+  try {
+    const failures: unknown[] = [];
+    const held = settleLater(Promise.reject(new Error("probe write failed")), (err) => failures.push(err));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    eq(unhandled.length, 0, "a held rejection is never reported as unhandled");
+    eq(failures.length, 1, "and is recorded, not dropped");
+    assert(failures[0] instanceof Error && (failures[0] as Error).message === "probe write failed", "with its own error");
+    eq(await held, undefined, "and what is awaited later resolves");
+    const fine: unknown[] = [];
+    await settleLater(Promise.resolve("written"), (err) => fine.push(err));
+    eq(fine.length, 0, "work that succeeds records nothing");
+    // Control (L1): the same rejection with no handler IS reported, so the zero above
+    // is the handler's doing and not a listener that never fires.
+    const bare = Promise.reject(new Error("bare"));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    eq(unhandled.length, 1, "control: a rejection with no handler is reported as unhandled");
+    bare.catch(() => {});
+  } finally {
+    process.off("unhandledRejection", listen);
+  }
 
   // One vocabulary, written once (L41). The mode list was first added beside a hand
   // written DriverMode union, which declared the type twice; only tsc over scripts/

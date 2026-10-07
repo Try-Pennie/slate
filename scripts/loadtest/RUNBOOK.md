@@ -515,6 +515,13 @@ burst's file and on a non-zero exit. A late request meets an already taken slot 
 records a SLOT_TAKEN indistinguishable from the contention the control is counting,
 so the judge would be handed a staggered burst wearing a simultaneous one's clothes.
 
+The burst driver's exits: **1** a setting it cannot read (an unknown `MODE`, a
+`BURST_GRACE_MS` that is not a whole number of milliseconds, a plan it refuses, or a
+lead outside the phone's digits), with nothing sent; **3** a burst it woke too late
+for; **4** a burst whose probe it could not record, which it names, with every other
+burst still fired, probed and written, since each probe's failure is held from the
+moment the probe starts rather than left to end the driver (#3446 review, L749).
+
 #### The burst tail, and where each burst's time went (#3416)
 
 Run 37520312761 failed two of its three bursts: every burst confirm took about ten
