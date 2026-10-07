@@ -2320,9 +2320,9 @@ export const MAX_RACE_REASSIGNS = 3;
  * same live check verify on book uses. It never resolves the pool again, never
  * walks the tier ladder, and never books a named link's lead with anybody else.
  *
- * It refuses (returns null) on:
- *  - any failure that is not a lost race: a transient insert failure keeps its
- *    own path, which leaves the reservation for the drain;
+ * It is asked only about a lost race (`attemptReservation` answering `lost`): a
+ * transient insert failure keeps its own path, which leaves the reservation for
+ * the drain. It refuses (returns null) on:
  *  - a named advisor link (#2073), which must never fall to another advisor;
  *  - a reservation this request did not pin: a same key racer's pin was adopted,
  *    and choosing again under it would be a second request's decision;
@@ -2335,15 +2335,17 @@ export const MAX_RACE_REASSIGNS = 3;
  * not learned to be taken, the budget ran out, so the lead gets the retryable
  * answer and the page names the timeout.
  *
- * The lost attempt's calendar event is already gone by the time this runs:
- * `completeReservation` removes it (and the reservation) before it raises the
- * refusal, and a new attempt pins its own event id, since the id is derived from
- * the advisor as well as the idempotency key.
+ * #3462: this runs BEFORE the lost attempt is rolled back, so a confirm with
+ * nobody to hand to can tell the confirms waiting behind it first. Nothing here
+ * reads the lost attempt's event or reservation, only the advisors after the
+ * loser. The rollback still finishes before any further attempt: its reservation
+ * reuses the idempotency key, whose unique index would hand back the lost one,
+ * while its event pins an id of its own, since the id is derived from the advisor
+ * as well as the idempotency key.
  */
 async function nextAdvisorAfterLostRace(
   deps: BookingDeps,
   lost: {
-    err: unknown;
     named: boolean;
     reservation: BookingReservation;
     lostUserId: string;
@@ -2357,7 +2359,6 @@ async function nextAdvisorAfterLostRace(
     seat: SharedSeat | null;
   },
 ): Promise<AssignResult | null> {
-  if (!(lost.err instanceof SlotUnavailableError)) return null;
   if (lost.named) return null;
   if (lost.reservation.pinned_user_id !== lost.lostUserId) return null;
   if (lost.lostSoFar >= MAX_RACE_REASSIGNS) return null;
@@ -4035,18 +4036,33 @@ async function inConfirmTurn<R>(
   }
   // The turn's end is reported however the work ends, and however the settling read
   // ends: a report that never arrives holds the line until its lease runs out (#3325).
+  //
+  // #3462: and exactly ONCE. A leader that lost the insert race with nobody to hand
+  // to reports from inside its work (`lostRace`), before its rollback; the report
+  // after the work is then this same one, never a second, which could only say less
+  // (a rollback that failed would read as nothing settled). Awaiting the same promise
+  // is also what surfaces a failed early report where a failed report always surfaced.
+  let reporting: Promise<void> | null = null;
   const report = (verdict: LeaderVerdict<ConfirmTaker>) =>
-    timeStage(deps.profile, "line-report", async () => {
+    (reporting ??= timeStage(deps.profile, "line-report", async () => {
       let settled: LeaderVerdict<SlotSettlement> = { full: false };
       try {
         settled = await settleSlot(deps, line, verdict, await turn.waiting());
       } finally {
         await turn.done(settled);
       }
-    });
+    }));
+  const lostRace = async () => {
+    try {
+      await report(lostRaceVerdict());
+    } catch {
+      // Surfaced by the closing report below, which awaits this same promise, so the
+      // leader's rollback and bookkeeping still run in full first.
+    }
+  };
   let done: { result: R; verdict: LeaderVerdict<ConfirmTaker> };
   try {
-    done = await work({ seat: turn.seat });
+    done = await work({ seat: turn.seat, lostRace });
   } catch (err) {
     await report(verdictForRefusal(err));
     throw err;
@@ -4094,6 +4110,20 @@ async function settleSlot(
  */
 export interface HeldTurn {
   seat: SharedSeat | null;
+  /**
+   * #3462: tells the line NOW that this confirm lost the insert race with nobody
+   * left in its rung to hand to, so the confirms waiting behind it are answered
+   * while it still rolls the lost attempt back and records the refusal. That work
+   * cannot change what they are owed: the unique index has already said somebody
+   * else holds the time. The turn reports once, so its report at the end is then
+   * skipped. Never throws: a report that fails is surfaced by that closing report,
+   * exactly where a failed report always surfaced, so the rollback still runs.
+   *
+   * Absent outside the line, and wherever the refusal does not reach the line as
+   * the lost race: a bucket move that answers it as a declined move
+   * (`moveToRequestedBucket`), whose turn reports that nothing settles.
+   */
+  lostRace?: () => Promise<void>;
 }
 
 /**
@@ -4238,7 +4268,7 @@ async function createChecked(
   // (`createBookingWithVerdict`) and already hold their turn here. Only a booker
   // link Salesforce routed joins now, once its bucket is known.
   const ctx: HeldCreate = { input, stableKey, agentLinkUserId, codeSource, bucket, eventType, profile, loadtestWindow, seat: null };
-  if (held !== "late") return createHeld({ ...ctx, seat: held.seat }, deps);
+  if (held !== "late") return createHeld({ ...ctx, seat: held.seat, lostRace: held.lostRace }, deps);
   return inConfirmTurn(
     deps,
     {
@@ -4248,7 +4278,7 @@ async function createChecked(
       startIso: input.startIso,
       person: personIdentityOf(input),
     },
-    (turn) => createHeld({ ...ctx, seat: turn.seat }, deps),
+    (turn) => createHeld({ ...ctx, seat: turn.seat, lostRace: turn.lostRace }, deps),
     bookingFromTaker,
   );
 }
@@ -4266,6 +4296,8 @@ interface HeldCreate {
   loadtestWindow: { read(): ConfirmProfileReading } | null;
   /** #3257: this confirm's claim on an advisor in its slot's line, or none. */
   seat: SharedSeat | null;
+  /** #3462: tells the line at once that this confirm lost the race (`HeldTurn.lostRace`). */
+  lostRace?: () => Promise<void>;
 }
 
 /**
@@ -4326,16 +4358,25 @@ export function confirmQueueKey(
  * runs.
  */
 function verdictForRefusal(err: unknown): LeaderVerdict<ConfirmTaker> {
-  if (err instanceof RaceLostRefusalError) return { full: true, refusal: "race", settled: null };
+  if (err instanceof RaceLostRefusalError) return lostRaceVerdict();
   if (err instanceof SlotUnavailableError) return { full: true, refusal: "taken", settled: null };
   return { full: false };
+}
+
+/**
+ * What a confirm refused after losing the insert race shows the confirms behind it,
+ * whether it says so at the end or as soon as it knows (#3462, `HeldTurn.lostRace`):
+ * one value, so the two can never tell the line different things.
+ */
+function lostRaceVerdict(): LeaderVerdict<ConfirmTaker> {
+  return { full: true, refusal: "race", settled: null };
 }
 
 async function createHeld(
   ctx: HeldCreate,
   deps: BookingDeps,
 ): Promise<{ result: BookingResult; verdict: LeaderVerdict<ConfirmTaker> }> {
-  const { input, stableKey, agentLinkUserId, codeSource, bucket, eventType, profile, loadtestWindow, seat } = ctx;
+  const { input, stableKey, agentLinkUserId, codeSource, bucket, eventType, profile, loadtestWindow, seat, lostRace } = ctx;
 
   // One call per person, ENFORCED (#1337), not reported after the fact. Runs
   // AFTER the idempotency fast path above on purpose: a double-click's second
@@ -4583,14 +4624,23 @@ async function createHeld(
     // The insert, the exclusion index write and the cache write through, which is
     // where the overlap constraint (#2280) and the in request pool recompute both
     // land: two of the three candidates #2321 names.
-    try {
-      result = answerCommitted(
-        await profile.time("complete-reservation", () => completeReservation(deps, reservation)),
-      );
+    const attempt = await profile.time("complete-reservation", () => attemptReservation(deps, reservation));
+    if (attempt.kind === "completed") {
+      result = answerCommitted(attempt.completed);
       break;
-    } catch (err) {
-      const next = await profile.time("race-reassign", () => nextAdvisorAfterLostRace(deps, {
-        err,
+    }
+
+    // The insert lost to a booking that is not this request's own (#2274).
+    //
+    // #3462: who to hand to is decided BEFORE the lost attempt is rolled back, so a
+    // confirm with nobody left tells its line at once. The rollback, and the
+    // bookkeeping after it, cannot change what the confirms behind it are owed, and
+    // on load run 37566700055 waiting for them cost 41 followers their budget. Both
+    // still run in full, under the same allowance. The rollback always comes before
+    // a further attempt, whose reservation reuses the idempotency key.
+    let next: AssignResult | null;
+    try {
+      next = await profile.time("race-reassign", () => nextAdvisorAfterLostRace(deps, {
         named: agentLinkUserId !== undefined,
         reservation,
         lostUserId: userId,
@@ -4601,96 +4651,106 @@ async function createHeld(
         eventType: bookedEventType,
         seat,
       }));
-      if (!next) {
-        if (!(err instanceof SlotUnavailableError)) throw err;
-        // #2838: refused after a lost race. Said apart so it can be counted, and
-        // a bound hit paged at once: a lead turned away while the rung was still
-        // handing out advisors, which ordinary traffic cannot produce.
-        const boundHit = raceLost.length >= MAX_RACE_REASSIGNS;
-        log.warn("booking", {
-          msg: "confirm lost the overlap race and was refused",
-          lost_user_id: userId,
-          bucket_code: bookedBucket.code,
-          lost_races: raceLost.length + 1,
-          bound_hit: boundHit,
-        });
-        const page = raceBoundHitPage({
-          boundHit,
-          isTest: bookedBucket.is_test,
-          loadtest: isLoadtest(),
-          bucketCode: bookedBucket.code,
-          startIso,
-          lostRaces: raceLost.length + 1,
-        });
-        // Handed to the injected dispatcher, never sent from here: production
-        // defers it past the response, and a test supplies a fake (L2).
-        // A dispatcher that throws is logged and the lead still gets the 409:
-        // the refusal is their answer, and a page must never turn it into a 500.
-        if (page) {
-          try {
-            deps.pageRaceBoundHit(page);
-          } catch (pageErr) {
-            log.warn("booking", { msg: "could not hand off a race bound hit page; the refusal stands" }, pageErr);
-          }
-        }
-        const raceTrace: RefusalTrace = {
-          requestedStart: input.startIso,
-          bucketCode: input.bucketCode,
-          stage: "race_lost",
-          rungs: [
-            {
-              code: bookedBucket.code,
-              members: null,
-              read: tier.read.length,
-              claimed: null,
-              checked: null,
-              stage: "race_lost",
-            },
-          ],
-          lostRaces: raceLost.length + 1,
-          leadId: refusedLeadId(input),
-        };
-        // #3272: a lost race wrote no routing decision at all, so it was the one
-        // refusal nothing could look up. Best effort, like the refusal record above.
-        if (agentLinkUserId === undefined) {
-          try {
-            await deps.recordRoutingDecision({
-              orgId: bookedBucket.org_id,
-              bookingId: null,
-              bucketCode: bookedBucket.code,
-              bucketId: bookedBucket.id,
-              criteria: bookedBucket.criteria,
-              considered: traceExtras.considered,
-              excluded: traceExtras.excluded,
-              chosenUserId: null,
-              chosenAttributes: null,
-              emptyPoolFallback: false,
-              tierFallback: tier.rungsDropped > 0,
-              rungsDropped: tier.rungsDropped,
-              requestedTier: bucket.criteria.debt_team ? String(bucket.criteria.debt_team) : null,
-              bookedTier: null,
-              ...catchallRecord(input.requestedCode, bookedBucket.code, codeSource),
-              ...refusalRecord(raceTrace, input.startIso, input),
-              outcome: "no_availability",
-            });
-          } catch {
-            // best-effort: never change the refusal
-          }
-        }
-        throw traced(new RaceLostRefusalError(raceLost.length + 1, boundHit), raceTrace);
-      }
-      log.info("booking", {
-        msg: "confirm lost the overlap race, handed to the next advisor in the same rung",
-        lost_user_id: userId,
-        next_user_id: next.userId,
-        bucket_code: bookedBucket.code,
-        attempt: raceLost.length + 2,
-      });
-      raceLost.push(userId);
-      chosen = next;
-      // #3257: the confirms beside it in line must not pick this one next.
-      await seat?.claim(next.userId, false);
+    } catch (err) {
+      // #3402: a deadline in the free check is the answer, and the line hears that
+      // nothing settled. The lost attempt is rolled back all the same; a rollback
+      // that fails throws its own error instead, as it did when it ran first.
+      await profile.time("race-rollback", attempt.rollBack);
+      throw err;
     }
+    // Only on the definitive loss: an outage never reaches here, and a confirm that
+    // hands on has settled nothing yet.
+    if (!next) await lostRace?.();
+    // A failure here is the lead's answer, as it was inside the completion.
+    await profile.time("race-rollback", attempt.rollBack);
+    if (!next) {
+      // #2838: refused after a lost race. Said apart so it can be counted, and
+      // a bound hit paged at once: a lead turned away while the rung was still
+      // handing out advisors, which ordinary traffic cannot produce.
+      const boundHit = raceLost.length >= MAX_RACE_REASSIGNS;
+      log.warn("booking", {
+        msg: "confirm lost the overlap race and was refused",
+        lost_user_id: userId,
+        bucket_code: bookedBucket.code,
+        lost_races: raceLost.length + 1,
+        bound_hit: boundHit,
+      });
+      const page = raceBoundHitPage({
+        boundHit,
+        isTest: bookedBucket.is_test,
+        loadtest: isLoadtest(),
+        bucketCode: bookedBucket.code,
+        startIso,
+        lostRaces: raceLost.length + 1,
+      });
+      // Handed to the injected dispatcher, never sent from here: production
+      // defers it past the response, and a test supplies a fake (L2).
+      // A dispatcher that throws is logged and the lead still gets the 409:
+      // the refusal is their answer, and a page must never turn it into a 500.
+      if (page) {
+        try {
+          deps.pageRaceBoundHit(page);
+        } catch (pageErr) {
+          log.warn("booking", { msg: "could not hand off a race bound hit page; the refusal stands" }, pageErr);
+        }
+      }
+      const raceTrace: RefusalTrace = {
+        requestedStart: input.startIso,
+        bucketCode: input.bucketCode,
+        stage: "race_lost",
+        rungs: [
+          {
+            code: bookedBucket.code,
+            members: null,
+            read: tier.read.length,
+            claimed: null,
+            checked: null,
+            stage: "race_lost",
+          },
+        ],
+        lostRaces: raceLost.length + 1,
+        leadId: refusedLeadId(input),
+      };
+      // #3272: a lost race wrote no routing decision at all, so it was the one
+      // refusal nothing could look up. Best effort, like the refusal record above.
+      if (agentLinkUserId === undefined) {
+        try {
+          await deps.recordRoutingDecision({
+            orgId: bookedBucket.org_id,
+            bookingId: null,
+            bucketCode: bookedBucket.code,
+            bucketId: bookedBucket.id,
+            criteria: bookedBucket.criteria,
+            considered: traceExtras.considered,
+            excluded: traceExtras.excluded,
+            chosenUserId: null,
+            chosenAttributes: null,
+            emptyPoolFallback: false,
+            tierFallback: tier.rungsDropped > 0,
+            rungsDropped: tier.rungsDropped,
+            requestedTier: bucket.criteria.debt_team ? String(bucket.criteria.debt_team) : null,
+            bookedTier: null,
+            ...catchallRecord(input.requestedCode, bookedBucket.code, codeSource),
+            ...refusalRecord(raceTrace, input.startIso, input),
+            outcome: "no_availability",
+          });
+        } catch {
+          // best-effort: never change the refusal
+        }
+      }
+      throw traced(new RaceLostRefusalError(raceLost.length + 1, boundHit), raceTrace);
+    }
+    log.info("booking", {
+      msg: "confirm lost the overlap race, handed to the next advisor in the same rung",
+      lost_user_id: userId,
+      next_user_id: next.userId,
+      bucket_code: bookedBucket.code,
+      attempt: raceLost.length + 2,
+    });
+    raceLost.push(userId);
+    chosen = next;
+    // #3257: the confirms beside it in line must not pick this one next.
+    await seat?.claim(next.userId, false);
   }
 
   // The apportionment, once, at the end. It carries no contact data: the stage
@@ -4854,12 +4914,41 @@ async function finishCommitted(work: () => Promise<void>): Promise<unknown> {
  * active-slot 23505 handling. Deletes the reservation on success.
  *
  * Throws only for a failure BEFORE the booking committed. Anything after the
- * commit comes back as `unfinished` (#3263).
+ * commit comes back as `unfinished` (#3263). A slot taken by another booking is
+ * rolled back here and thrown as `SlotUnavailableError`, as it always was; only
+ * the fresh create asks first (`attemptReservation`, #3462).
  */
 async function completeReservation(
   deps: BookingDeps,
   reservation: BookingReservation,
 ): Promise<CompletedReservation> {
+  const attempt = await attemptReservation(deps, reservation);
+  if (attempt.kind === "completed") return attempt.completed;
+  await attempt.rollBack();
+  throw new SlotUnavailableError();
+}
+
+/**
+ * What completing a reservation came to (#3462): completed (`CompletedReservation`),
+ * or LOST, its insert refused because a booking that is not this request's own
+ * holds the slot, with the rollback that loss still owes.
+ *
+ * The rollback is handed back rather than run, so a lead's confirm can tell the
+ * confirms waiting behind it that the time is taken BEFORE it spends the cleanup
+ * allowance (#3462). A caller that takes the loss must run it, under any outcome:
+ * `completeReservation` runs it at once. One it never ran would still be repaired,
+ * since the reservation stays pending and the drain's own completion meets the
+ * same conflict and rolls it back, but late and in the wrong place.
+ */
+type ReservationAttempt =
+  | { kind: "completed"; completed: CompletedReservation }
+  | { kind: "lost"; rollBack: () => Promise<void> };
+
+/** `completeReservation`, with a lost race handed back unrolled (see `ReservationAttempt`). */
+async function attemptReservation(
+  deps: BookingDeps,
+  reservation: BookingReservation,
+): Promise<ReservationAttempt> {
   const { booking: bookingInsert, event, bucketCode } = reservation.payload;
   const key = bookingInsert.idempotency_key;
 
@@ -4877,7 +4966,10 @@ async function completeReservation(
         await deliverCreatedSideEffects(deps, already, bookedCode);
         await deps.deleteReservation(reservation.id);
       });
-      return { result: { booking: already, manageUrl: manageUrl(deps, already.manage_token) }, unfinished };
+      return {
+        kind: "completed",
+        completed: { result: { booking: already, manageUrl: manageUrl(deps, already.manage_token) }, unfinished },
+      };
     }
   }
 
@@ -4926,17 +5018,23 @@ async function completeReservation(
           // The winner committed, so its booking is the answer however this
           // cleanup goes (#3263); a reservation left behind is the drain's.
           const unfinished = await finishCommitted(() => deps.deleteReservation(reservation.id));
-          return { result: { booking: winner, manageUrl: manageUrl(deps, winner.manage_token) }, unfinished };
+          return {
+            kind: "completed",
+            completed: { result: { booking: winner, manageUrl: manageUrl(deps, winner.manage_token) }, unfinished },
+          };
         }
       }
-      // Genuinely unavailable: roll back the event + reservation, under the
-      // cleanup allowance, since this failure can arrive with the confirm budget
-      // spent (#3215).
-      await withinOwedCleanup(async () => {
-        await compensateEvent(deps, reservation.pinned_agent_email, gcalEventId, null);
-        await deps.deleteReservation(reservation.id);
-      });
-      throw new SlotUnavailableError();
+      // Genuinely unavailable: the event + reservation are owed a rollback, under
+      // the cleanup allowance, since this failure can arrive with the confirm budget
+      // spent (#3215). Handed back rather than run (#3462, `ReservationAttempt`).
+      return {
+        kind: "lost",
+        rollBack: () =>
+          withinOwedCleanup(async () => {
+            await compensateEvent(deps, reservation.pinned_agent_email, gcalEventId, null);
+            await deps.deleteReservation(reservation.id);
+          }),
+      };
     }
     // Generic (likely transient) failure. The reservation stays PENDING, so the
     // drain, or the lead's own retry, resumes it and adopts THIS event through
@@ -4962,7 +5060,10 @@ async function completeReservation(
   const unfinished = await finishCommitted(() => afterCreateCommitted(deps, booking, reservation, gcalEventId));
   // #2838: the one return where THIS call's own insert made the booking. Every
   // other return hands back a booking an earlier or racing confirm made.
-  return { result: { booking, manageUrl: manageUrl(deps, booking.manage_token), newlyInserted: true }, unfinished };
+  return {
+    kind: "completed",
+    completed: { result: { booking, manageUrl: manageUrl(deps, booking.manage_token), newlyInserted: true }, unfinished },
+  };
 }
 
 /**
@@ -5561,9 +5662,14 @@ async function moveToRequestedBucket(
 ): Promise<BucketMove> {
   if (requested.resolved.bucket.id === existing.bucket_id) return { outcome: "unchanged" };
 
+  // #3462: a refusal tolerated here is answered as a declined move, and this call's
+  // turn then reports that nothing settles (`bookViaApiDecided`), so the create must
+  // not tell the line early that the time is taken. One that is not tolerated goes
+  // up as itself, and the line hears a lost race as taken either way.
+  const held = opts.held && opts.tolerateRefusal !== false ? { seat: opts.held.seat } : opts.held;
   let created: Awaited<ReturnType<typeof createBooking>>;
   try {
-    created = await createBooking(input, deps, { requested, held: opts.held });
+    created = await createBooking(input, deps, { requested, held });
   } catch (err) {
     if (opts.tolerateRefusal === false) throw err;
     // Only the two ordinary "no" answers are tolerated. A transient verify
