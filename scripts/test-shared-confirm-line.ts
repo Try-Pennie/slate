@@ -179,6 +179,53 @@ async function main() {
     assert(typeof lastServed(c.served)?.lineMs === "number", "idle: the time spent in line calls is recorded");
   }
 
+  // --- #3355: a lead does not wait on its ack ----------------------------------------
+  // Nothing the confirm does depends on the ack's answer: a `gone` only marks the turn
+  // detached, which every later call checks. Waiting on it added its round trip to every
+  // leader's start, and on load run 37572839375 the first confirm on a line object fresh
+  // from the fault leg's deploy waited 1.3s on it, which alone put the cold confirm over
+  // the startup bar. The ack is still sent, once, before the turn is handed back; it is
+  // settled when the turn reports, like the heartbeat, and its wait is not time the line
+  // added to the confirm.
+  {
+    const w = world();
+    const c = w.client();
+    w.faults.set("ack", "hang");
+    const start = w.now();
+    let handedAt: number | null = null;
+    const entering = c.line.enter(KEY, 10_000).then((turn) => {
+      handedAt = w.now();
+      return turn;
+    });
+    const t = (await w.settle(entering)) as LineTurn<string>;
+    assert(t.kind === "lead", "hung ack: the confirm still leads");
+    const handedAfter = handedAt === null ? Infinity : (handedAt as number) - start;
+    assert(handedAfter < CONFIRM_LINE_CALL_MS / 2, `hung ack: the turn is handed back without waiting on the ack (after ${handedAfter}ms; the ack's own bound is ${CONFIRM_LINE_CALL_MS}ms)`);
+    assert(w.sent.filter((o) => o === "ack").length === 1, `hung ack: the ack is still sent, once (sent ${JSON.stringify(w.sent)})`);
+    const recorded = lastServed(c.served)?.lineMs ?? Infinity;
+    assert(recorded < CONFIRM_LINE_CALL_MS / 2, `hung ack: its wait is not counted as time the line added (lineMs ${recorded})`);
+    if (t.kind === "lead") {
+      const reported = await w.settle(t.done({ full: false }), 30_000);
+      assert(reported !== "unsettled", "hung ack: the turn still reports once the ack's own bound runs out");
+      assert(w.sent.includes("done"), `hung ack: the report is still sent (sent ${JSON.stringify(w.sent)})`);
+    }
+  }
+
+  // --- #3355: a gone ack still detaches the turn, so no later call is sent ---------------
+  {
+    const w = world();
+    const c = w.client();
+    w.faults.set("ack", "gone");
+    const t = (await w.settle(c.line.enter(KEY, 10_000))) as LineTurn<string>;
+    assert(t.kind === "lead", "gone ack: the confirm still leads");
+    if (t.kind === "lead") {
+      await w.advance(50);
+      const before = w.sent.length;
+      await w.settle(t.done({ full: false }));
+      assert(!w.sent.slice(before).includes("done"), `gone ack: a detached turn sends no report (sent ${JSON.stringify(w.sent.slice(before))})`);
+    }
+  }
+
   // --- two isolates, one line: the follower is refused from the leader's verdict ---
   {
     const w = world();

@@ -169,7 +169,15 @@ export function makeSharedConfirmLine<T>(deps: {
       if (r.answer?.kind === "gone") detached = true;
       return r.answer && r.answer.ok === true ? r.answer : null;
     };
-    await timed({ op: "ack" });
+    // #3355: the ack is sent at once and NOT waited on. Nothing the confirm does
+    // depends on its answer (a `gone` only marks the turn detached, which every later
+    // call checks), so waiting on it only added its round trip to every leader's start:
+    // 1.3s on a line object fresh from a deploy (load run 37572839375), which alone put
+    // a cold confirm over the startup bar. It is settled in `done`, like the heartbeat,
+    // and its time is not counted in `lineMs`, which is what the line ADDS to a confirm.
+    const acking = call(stub, { op: "ack", turn }, CONFIRM_LINE_CALL_MS).then((r) => {
+      if (r.answer?.kind === "gone") detached = true;
+    });
     // The heartbeat: a renewal every `CONFIRM_LINE_HEARTBEAT_MS` until the turn
     // reports. It runs beside the confirm, so its calls are not counted in `lineMs`.
     let beating: Promise<unknown> = Promise.resolve();
@@ -219,6 +227,7 @@ export function makeSharedConfirmLine<T>(deps: {
         stopped = true;
         cancelBeat();
         await beating;
+        await acking;
         if (!detached) {
           // One retry inside the reserve: an unreported full verdict leaves the
           // followers to find out for themselves, and an unreported turn holds the
