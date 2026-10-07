@@ -892,7 +892,7 @@ async function main(): Promise<void> {
         { "bk-corrected-low": "112" },
       );
       const text = below.calls.notified[0]?.text ?? "";
-      assert(/Lead record was re-scored to Very High after that submission/.test(text), "a rise from a Lead edit says so");
+      assert(/Lead record was re-scored to Very High after their latest submission/.test(text), "a rise from a Lead edit says so");
     }
     // Scored from the Lead's copy (no submission named): never claims a re-score either.
     {

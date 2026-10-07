@@ -309,7 +309,7 @@ function routingLine(f: BelowFinding, c: RoutingContext): string {
  *
  * "Re-scored" is said only when it was measured: the score came from the lead's
  * current submission AND that is the submission the booking was made under, or
- * Salesforce's history shows the Lead score edited after that submission. A
+ * Salesforce's history shows the Lead score edited after the latest submission. A
  * newer current submission is the lead coming back, which sends nobody to ask
  * why a score moved. Anything else (a booking that recorded no submission, or a
  * score read off the Lead's copy) names both and claims neither (L11): the
@@ -318,7 +318,7 @@ function routingLine(f: BelowFinding, c: RoutingContext): string {
 function riseClause(f: BelowFinding): string {
   // A Lead score edited after the submission (newest wins, `readLeadScores`): the
   // history read says when, so the cause is measured.
-  if (f.score?.source === "lead-edit") return `the Lead record was re-scored to ${f.lead.label} after that submission`;
+  if (f.score?.source === "lead-edit") return `the Lead record was re-scored to ${f.lead.label} after their latest submission`;
   const booked = partnerKeysFrom(f.booking.prefill).submissionId;
   const current = f.score?.source === "submission" ? f.score.submissionId : null;
   if (booked !== null && current !== null) {
