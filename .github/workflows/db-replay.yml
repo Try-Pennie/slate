@@ -51,6 +51,10 @@ on:
       - "scripts/lib/run-alerter.ts"
       - "scripts/lib/slack-post.ts"
       - "scripts/notify-db-replay-failure.ts"
+      # #3495: the webhook enqueue suite reads the function's answer with the Worker's
+      # own reader, and holds it to the fixture the reader is tested against.
+      - "src/lib/webhooks/enqueue-answer.ts"
+      - "scripts/fixtures/webhook-enqueue-answer.json"
       # The audit chain suite recomputes hashes with the Worker's own code.
       - "scripts/lib/audit-chain-vector.ts"
       - "src/lib/monitor/audit-chain.ts"

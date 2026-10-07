@@ -285,6 +285,7 @@ const EXPECTED_PINNED = [
   // #2447: reports which definer functions the web roles can execute. Security INVOKER
   // itself, deliberately, so it adds no row to the list it reports on.
   "definer_function_web_grants",
+  "enqueue_webhook_deliveries",
   "erase_booking_pii",
   // #3248: the live reroute holds the booker skips, judged on the database clock.
   "live_reroute_holds",
