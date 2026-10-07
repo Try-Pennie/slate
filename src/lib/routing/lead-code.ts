@@ -14,9 +14,11 @@
  * it held a returning lead's July 211 against today's 111.
  *
  * THE ORDER, and each step's reason:
- *  1. A routable code on the link is used as sent, and Salesforce is not asked.
- *     The link is what the page scored a moment ago; a second opinion would add a
- *     network call to every booking and a way for the two to disagree.
+ *  1. A routable code on the link is used as sent, and THIS resolver does not ask
+ *     Salesforce, so the confirm never adds a network call for it. The LANDING
+ *     takes a second look since #3508 (`correctLinkToLeadScore`, below): four
+ *     trypennie pages send the Lead's stale copy, so it reads the lead's current
+ *     score once while the calendar loads, and the confirm books the team shown.
  *  2. Otherwise, a Lead id on the link means Salesforce is asked, and a code it
  *     holds that `bucketSpecForXbc` decodes is routed on. Since #3502 that is the
  *     score on the lead's CURRENT submission (`readLeadScores`), the one a link
