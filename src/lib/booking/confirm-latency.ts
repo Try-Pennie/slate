@@ -38,7 +38,7 @@ import { confirmProfileFields, makeConfirmProfile, type ConfirmProfile } from "@
 import { DependencyTimeoutError } from "@/lib/booking/orchestration";
 import { isDeadlineExceeded } from "@/lib/fetch-within-deadline";
 import type { LineServed } from "@/lib/booking/shared-confirm-line";
-import type { GroupingReading, LineGroupSource } from "@/lib/booking/pool-grouping-reader";
+import type { GroupingReading, GroupingStart, LineGroupSource } from "@/lib/booking/pool-grouping-reader";
 import type { LoadtestLeg, WaitMarks } from "@/lib/booking/wait-marks";
 
 /**
@@ -71,16 +71,18 @@ export interface ConfirmLineFacts {
   line?: LineServed;
   /**
    * #3460: the confirm's fetch of the pool grouping snapshot, started by the route the
-   * moment the request is allowed (`startConfirmPrelude`) and awaited before the line
-   * key (`settleLineGrouping`), which notes how it ended in `grouping`.
+   * moment the request is allowed (`startConfirmPrelude`) and waited on before the line
+   * key (`settleLineGrouping`), which notes how it ended in `grouping`. The bound on that
+   * wait counts from the settle, not from here.
    */
-  groupingRead?: Promise<GroupingReading>;
+  groupingStart?: GroupingStart;
   grouping?: GroupingReading;
   /**
    * #3460: where the line key's grouping came from (`local`, `snapshot`), or why the
-   * confirm kept its code's own line. Logged as `line_group_source`, with the fetch's
-   * wait as `grouping_fetch_ms` and the snapshot's age as `grouping_age_ms`, so a load
-   * run can count the share keyed from the snapshot and measure the bound.
+   * confirm kept its code's own line. Logged as `line_group_source`, with the time the
+   * confirm itself waited for the fetch, counted from when it needed the grouping, as
+   * `grouping_fetch_ms`, and the snapshot's age as `grouping_age_ms`, so a load run can
+   * count the share keyed from the snapshot and measure the bound.
    */
   lineGroupSource?: LineGroupSource;
   /**

@@ -41,8 +41,9 @@ import { readWithinDeadline, NoAnswerWithinError, type ScheduleTimer } from "../
  */
 export const POOL_GROUPING_FRESH_MS = 60_000;
 /**
- * How long a confirm waits for the snapshot before keying on its code's own line.
- * #3325's measurement put a new object's first call at p95 323ms and worst 452ms cross
+ * How long a confirm waits for the snapshot before keying on its code's own line,
+ * counted from when it reaches its line key; the fetch itself began at authentication,
+ * so the work in between overlaps it for free. #3325's measurement put a new object's first call at p95 323ms and worst 452ms cross
  * country, and an existing one under 105ms, so 500ms waits out a cold object and no
  * more. Every confirm that fetched records `grouping_fetch_ms`, so the next load run
  * measures this rather than taking it on trust (L172, L743).
@@ -134,7 +135,10 @@ export type GroupingFetch =
 
 export interface GroupingReading {
   source: GroupingFetch;
-  /** How long this confirm waited for it, or null when it did not fetch. */
+  /**
+   * How long this confirm itself waited for it, counted from when it needed the
+   * grouping (`wait`), never from when the fetch was started; null when it did not fetch.
+   */
   waitedMs: number | null;
   /** How old the snapshot it read was, when it read one. */
   ageMs: number | null;
@@ -144,7 +148,20 @@ export interface GroupingReading {
 type Fetched = { source: GroupingFetch; ageMs: number | null };
 
 /**
+ * A fetch begun early (#3460's prelude) and not yet waited on: either already decided,
+ * because the server holds a fresh grouping or did not ask, or a fetch in flight.
+ */
+export type GroupingStart = { decided: GroupingReading } | { fetching: Promise<Fetched> };
+
+/**
  * Ensure this server holds a fresh grouping, from the directory when it does not.
+ *
+ * `start` begins the fetch and `wait` waits for it; `ensure` is both at once. They are
+ * apart so a confirm can start the fetch at authentication and wait only where it needs
+ * the grouping, before its line key, with the bound counted from THERE (review of #3471,
+ * L440): counted from the start, slow ceilings and a slow body read would spend it
+ * before the confirm reached its line, and it would key by code with the answer on its
+ * way.
  *
  * One fetch per server however many confirms ask at once, and each confirm waits at
  * most `boundMs` of its own. A fetch older than the bound is never joined: on the
@@ -166,7 +183,7 @@ export function makeGroupingReader(deps: {
   retryMs: number;
   /** Told of every fetch it starts, so the live wiring keeps its invocation alive until it settles. */
   onFetchStarted?: (fetching: Promise<unknown>) => void;
-}): { ensure(): Promise<GroupingReading> } {
+}): { start(): GroupingStart; wait(started: GroupingStart): Promise<GroupingReading>; ensure(): Promise<GroupingReading> } {
   let inFlight: { startedAt: number; settled: Promise<Fetched> } | null = null;
   // When the last fetch that installed nothing settled, or null after one that did.
   let fruitlessAt: number | null = null;
@@ -191,32 +208,38 @@ export function makeGroupingReader(deps: {
     return { source: deps.store.fresh() ? "held" : "stale", ageMs };
   };
 
-  return {
-    async ensure() {
-      const startedAt = deps.now();
-      if (deps.store.fresh()) return { source: "held", waitedMs: null, ageMs: null };
-      const stub = deps.directory();
-      if (!stub) return { source: "unbound", waitedMs: null, ageMs: null };
-      let joined = inFlight;
-      if (!joined || startedAt - joined.startedAt > deps.boundMs) {
-        if (fruitlessAt !== null && startedAt - fruitlessAt < deps.retryMs) return { source: "backoff", waitedMs: null, ageMs: null };
-        // Never rejects: a fault in reading the answer is a failed call, said as one.
-        const settled = fetchOnce(stub).catch((): Fetched => ({ source: "unreachable", ageMs: null }));
-        const mine = { startedAt, settled };
-        inFlight = joined = mine;
-        void settled.then((got) => {
-          if (inFlight === mine) inFlight = null;
-          fruitlessAt = got.source === "installed" || got.source === "held" ? null : deps.now();
-        });
-        deps.onFetchStarted?.(settled);
-      }
-      const fetching = joined.settled;
-      const got = await readWithinDeadline(() => fetching, deps.boundMs, () => {}, deps.timer);
-      const waitedMs = deps.now() - startedAt;
-      if (got === null) return { source: "timeout", waitedMs, ageMs: null };
-      return { source: got.source, waitedMs, ageMs: got.ageMs };
-    },
+  const start = (): GroupingStart => {
+    const startedAt = deps.now();
+    if (deps.store.fresh()) return { decided: { source: "held", waitedMs: null, ageMs: null } };
+    const stub = deps.directory();
+    if (!stub) return { decided: { source: "unbound", waitedMs: null, ageMs: null } };
+    let joined = inFlight;
+    if (!joined || startedAt - joined.startedAt > deps.boundMs) {
+      if (fruitlessAt !== null && startedAt - fruitlessAt < deps.retryMs) return { decided: { source: "backoff", waitedMs: null, ageMs: null } };
+      // Never rejects: a fault in reading the answer is a failed call, said as one.
+      const settled = fetchOnce(stub).catch((): Fetched => ({ source: "unreachable", ageMs: null }));
+      const mine = { startedAt, settled };
+      inFlight = joined = mine;
+      void settled.then((got) => {
+        if (inFlight === mine) inFlight = null;
+        fruitlessAt = got.source === "installed" || got.source === "held" ? null : deps.now();
+      });
+      deps.onFetchStarted?.(settled);
+    }
+    return { fetching: joined.settled };
   };
+
+  const wait = async (started: GroupingStart): Promise<GroupingReading> => {
+    if ("decided" in started) return started.decided;
+    const waitingFrom = deps.now();
+    const fetching = started.fetching;
+    const got = await readWithinDeadline(() => fetching, deps.boundMs, () => {}, deps.timer);
+    const waitedMs = deps.now() - waitingFrom;
+    if (got === null) return { source: "timeout", waitedMs, ageMs: null };
+    return { source: got.source, waitedMs, ageMs: got.ageMs };
+  };
+
+  return { start, wait, ensure: () => wait(start()) };
 }
 
 /** What a confirm's `confirm answered` line says about where its line key's grouping came from. */

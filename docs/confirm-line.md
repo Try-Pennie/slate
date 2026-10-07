@@ -83,7 +83,9 @@ item 1), after the booking API's key authenticates (inside the authorizer, befor
 ceilings) or after the booker's address passes its edge limiter. A bad key, or an
 address past its minute, starts neither (L498). It waits for it in the service, before
 the orchestration builds the key, at most `POOL_GROUPING_FETCH_MS` (500ms: #3325
-measured a new object's first call at p95 323ms and worst 452ms). One fetch per server
+measured a new object's first call at p95 323ms and worst 452ms), counted from that
+point and not from when the fetch started, so the ceilings and the body read in between
+overlap the fetch without spending the bound. One fetch per server
 however many confirms ask, and a fetch older than the bound is never joined, because a
 fetch started by a request that has since ended can be left pending for ever. A fetch a
 request starts is kept alive past its response, so a confirm that joined it is never
@@ -121,11 +123,12 @@ and over grouping is the one failure this must not have:
 
 Two guards keep the snapshot from ever grouping differently from a local read:
 **both routes derive their entries in one place** (`groupingEntriesOf`), and
-`scripts/test-pool-grouping.ts` builds the same ladder key both ways for all sixty
-codes of a realistic roster, through the real object and JSON. And because deploys are
-gradual, so one build may install what another published, the **format** is in the
-directory's name and the snapshot, and that test pins the derivation's sources and a
-fixture's digests under each format, so changing the pool key, `listPoolBuckets`, the
+`scripts/test-pool-grouping-reader.ts` builds the same ladder key both ways for all
+sixty codes of a realistic roster, through the real object, reader, store and JSON. And
+because deploys are gradual, so one build may install what another published, the
+**format** is in the directory's name and the snapshot, and
+`scripts/test-pool-grouping.ts` pins the derivation's sources and a fixture's digests
+under each format, so changing the pool key, `listPoolBuckets`, the
 ladder or the digest fails until the format is bumped.
 
 **The gap, stated (L614).** The lane stamps a snapshot with its read's START, and a
@@ -135,8 +138,9 @@ each minute there is a short gap, between one snapshot expiring and the next lan
 keys by code, said as `stale`. Widening the window to close it would extend the
 staleness accepted above; it was left as is and is measured instead.
 
-Every confirm's `confirm answered` line carries `line_group_source`, the fetch's wait
-as `grouping_fetch_ms` and the snapshot's age as `grouping_age_ms`, and the load run's
+Every confirm's `confirm answered` line carries `line_group_source`, its own wait for
+the fetch (counted from its line key, so a fetch that answered during the ceilings reads
+0) as `grouping_fetch_ms` and the snapshot's age as `grouping_age_ms`, and the load run's
 burst breakdown reports, per burst, how many line keys came from the snapshot and why
 the rest did not, with the spread of the wait.
 
@@ -194,9 +198,10 @@ swap the host for a deploy), `test-confirm-contention.ts` (fifty isolates: per
 isolate lines leave dozens told to retry, one shared line answers the whole crowd;
 and #3460's burst on sibling codes across warm, cold and stale servers, which elects
 three leaders keyed as main keys it and one once every server fetches the snapshot),
-`test-pool-grouping.ts` (the snapshot, every refusal, the reader's bound and
-coalescing, the directory through the real object, the same key both ways for sixty
-codes, and the format pin), `test-unawaited-line-calls.ts` (no unawaited line call),
+`test-pool-grouping.ts` (the snapshot, every refusal, the directory through the real
+object, and the format pin), `test-pool-grouping-reader.ts` (the server's grouping,
+newest wins, the reader's bound counted from the line key, coalescing and backoff, and
+the same key both ways for sixty codes), `test-unawaited-line-calls.ts` (no unawaited line call),
 `test-confirm-line-binding.ts` (bound, created and exported in production and the load
 test, the deployed class logging a traced call, and serving the directory only on its
 own path and, when the runtime names it, its own instance).

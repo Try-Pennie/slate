@@ -190,6 +190,50 @@ async function readerTests() {
     eq(settled?.waitedMs, POOL_GROUPING_FETCH_MS, "reader: having waited exactly the bound");
   }
   {
+    // Review of #3471 (L440, L629): the bound is the confirm's OWN wait, counted from when
+    // it needs the grouping, never from when the prelude started the fetch at
+    // authentication. Otherwise slow ceilings and a slow body read spend the bound before
+    // the confirm reaches its line, and it keys by code while the answer is on its way,
+    // which is the split this exists to end.
+    let release: (m: Message) => void = () => {};
+    const w = readerWorld({ answer: () => new Promise<Message>((r) => (release = r)) });
+    const started = w.reader.start();
+    await w.advance(POOL_GROUPING_FETCH_MS + 100);
+    let out: { source: string; waitedMs: number | null } | null = null;
+    void w.reader.wait(started).then((r) => (out = r));
+    await w.advance(50);
+    eq(out, null, "reader: a fetch the prelude started, still in flight past the bound when the confirm reaches its line, is still waited on");
+    release({ kind: "grouping", snapshot: groupingSnapshotOf(ENTRIES, w.now() - 1_000) });
+    await w.advance(1);
+    const got = out as { source: string; waitedMs: number | null } | null;
+    eq(got?.source, "installed", "reader: and the confirm keys from its answer");
+    assert(got?.waitedMs !== null && got?.waitedMs !== undefined && got.waitedMs >= 50 && got.waitedMs <= 51, `reader: and its wait is counted from when it started waiting, not from the prelude (got ${got?.waitedMs})`);
+  }
+  {
+    // And the bound still holds from there: a confirm that reaches its line late waits at
+    // most the bound more, then moves on.
+    const w = readerWorld({ answer: () => new Promise<Message>(() => {}) });
+    const started = w.reader.start();
+    await w.advance(POOL_GROUPING_FETCH_MS + 100);
+    let out: { source: string; waitedMs: number | null } | null = null;
+    void w.reader.wait(started).then((r) => (out = r));
+    await w.advance(POOL_GROUPING_FETCH_MS - 1);
+    eq(out, null, "reader: a late confirm waits up to the bound from its own start");
+    await w.advance(1);
+    const got = out as { source: string; waitedMs: number | null } | null;
+    eq(got?.source, "timeout", "reader: and no longer, as timeout");
+    eq(got?.waitedMs, POOL_GROUPING_FETCH_MS, "reader: having waited exactly the bound itself");
+  }
+  {
+    // A fetch that answered before the confirm needed it costs the confirm nothing.
+    const w = readerWorld({ answer: answering(groupingSnapshotOf(ENTRIES, T0 - 5_000)) });
+    const started = w.reader.start();
+    await w.advance(300);
+    const r = await w.reader.wait(started);
+    eq(r.source, "installed", "reader: an answer that landed during the ceilings is used");
+    eq(r.waitedMs, 0, "reader: and the confirm waited nothing for it");
+  }
+  {
     // A late answer, past one confirm's bound but inside the fetch's own, still installs,
     // so the NEXT confirm on this server keys its ladder from it.
     let release: (m: Message) => void = () => {};

@@ -316,7 +316,7 @@ describe("the line key's grouping (#3460)", () => {
     startConfirmPrelude(facts);
     expect(switchReading.reads).toBe(1);
     expect(pools.after).toContain("shared-line-switch");
-    expect(facts.groupingRead).toBeDefined();
+    expect(facts.groupingStart).toBeDefined();
     // The confirm awaits the fetch the prelude started, never a second one.
     await settleLineGrouping(facts);
     expect(objects.calls.length).toBe(1);

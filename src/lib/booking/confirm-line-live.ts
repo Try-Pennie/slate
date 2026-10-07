@@ -139,16 +139,19 @@ const groupingReader = () =>
 export function startConfirmPrelude(facts: ConfirmLineFacts): void {
   const reading = readSharedConfirmLine();
   afterResponse("shared-line-switch", () => reading);
-  facts.groupingRead ??= groupingReader().ensure();
+  facts.groupingStart ??= groupingReader().start();
 }
 
 /**
  * Wait, within the bound, for the grouping before the confirm keys its line (#3460).
- * Awaits the fetch the prelude started, or starts one for a confirm that had none.
+ * Waits for the fetch the prelude started, or starts one for a confirm that had none,
+ * and the bound counts from HERE, where the confirm needs the answer, so slow ceilings
+ * between the prelude and this point never spend it (review of #3471).
  * Never throws: how it ended is noted on the facts for the `confirm answered` line.
  */
 export async function settleLineGrouping(facts?: ConfirmLineFacts): Promise<void> {
-  const reading = await (facts?.groupingRead ?? groupingReader().ensure());
+  const reader = groupingReader();
+  const reading = await reader.wait(facts?.groupingStart ?? reader.start());
   if (facts) facts.grouping = reading;
 }
 
