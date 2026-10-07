@@ -108,12 +108,12 @@ async function judgeHeadroom(
 
 /**
  * #3460: publish the pool grouping this tick read, in its own step boundary (L73), for a
- * cold server to key its confirm line from. Nothing reads it until #3460's second half
- * wires the confirm path. Never throws. The `pool-grouping` heartbeat is stamped only
- * when the directory STORED this tick's snapshot: one it kept a newer snapshot over
- * says the directory is fresh, not that this publisher's own read is, so stamping on it
- * could hide a publisher whose reads had gone stale. A publisher that stops is paged
- * (`POOL_GROUPING_STALE_BOUNDS_MS`) before anything depends on it.
+ * cold server to key its confirm line from (`pool-grouping-reader.ts`). Never throws. The
+ * `pool-grouping` heartbeat is stamped only when the directory STORED this tick's
+ * snapshot: one it kept a newer snapshot over says the directory is fresh, not that this
+ * publisher's own read is, so stamping on it could hide a publisher whose reads had gone
+ * stale. A publisher that stops is paged (`POOL_GROUPING_STALE_BOUNDS_MS`), because every
+ * cold server would otherwise quietly keep its code's own line.
  */
 async function publishGroupingStep(buckets: PooledBucket[], readAtMs: number): Promise<void> {
   try {

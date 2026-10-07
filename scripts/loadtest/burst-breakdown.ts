@@ -88,6 +88,10 @@ export interface BurstConfirm {
   lineReason: string | null;
   lineKey: string | null;
   lineMs: string | null;
+  /** #3460: where its line key's grouping came from (`line_group_source`), null when it says nothing. */
+  lineGroupSource: string | null;
+  /** #3460: how long it waited for the grouping snapshot, null when it fetched none. */
+  groupingFetchMs: number | null;
   /** The route's own answer time. */
   responseMs: number | null;
   /** The runtime's CPU for the whole invocation, deferred work included. */
@@ -170,6 +174,8 @@ function confirmOf(inv: TailInvocation, answer: TailLogLine & { timestamp: numbe
     lineReason: logText(text, "line_reason"),
     lineKey: logText(text, "line_key"),
     lineMs: logText(text, "line_ms"),
+    lineGroupSource: logText(text, "line_group_source"),
+    groupingFetchMs: logNumber(text, "grouping_fetch_ms"),
     responseMs: logNumber(text, "response_ms"),
     cpuMs: inv.cpuTime,
     waits,
@@ -348,6 +354,12 @@ export interface BurstBreakdown {
   unmatched: number;
   ambiguous: number;
   groups: OutcomeBreakdown[];
+  /**
+   * #3460: where each matched confirm's line key grouping came from (`snapshot`, `local`,
+   * or why it kept its code's own line), and the wait of every one that fetched.
+   */
+  lineGroupSources: Record<string, number>;
+  groupingFetchMs: number[];
 }
 
 function refusalSignature(c: BurstConfirm, withCounts: boolean): string {
@@ -404,6 +416,13 @@ export function burstBreakdowns(groups: readonly BurstLegGroup[], tail: BurstTai
     const attempts = g.files.flatMap((f) => f.attempts);
     const mine = new Set(attempts);
     const byLabel = new Map<string, OutcomeBreakdown>();
+    const lineGroupSources: Record<string, number> = {};
+    const groupingFetchMs: number[] = [];
+    for (const a of attempts) {
+      const keyed = confirmOfAttempt.get(a);
+      if (keyed?.lineGroupSource) lineGroupSources[keyed.lineGroupSource] = (lineGroupSources[keyed.lineGroupSource] ?? 0) + 1;
+      if (keyed && keyed.groupingFetchMs !== null) groupingFetchMs.push(keyed.groupingFetchMs);
+    }
     for (const a of attempts) {
       const label = burstOutcomeLabel(a);
       const o = byLabel.get(label) ?? emptyOutcome(label);
@@ -444,6 +463,8 @@ export function burstBreakdowns(groups: readonly BurstLegGroup[], tail: BurstTai
       unmatched: count(match.unmatched, mine),
       ambiguous: count(match.ambiguous, mine),
       groups: outcomes,
+      lineGroupSources,
+      groupingFetchMs,
     };
   });
 }
@@ -524,6 +545,25 @@ function outcomeText(o: OutcomeBreakdown): string {
   return `${head}: ${parts.join("; ")}`;
 }
 
+/**
+ * #3460: where a burst's line keys came from. Every way of not getting the pool grouping
+ * snapshot falls back to the code's own line, so a burst whose confirms all fell back
+ * reads like one keyed from the snapshot unless this says so (L551). A burst none of whose
+ * confirms said anything (a deployment before #3460) is UNMEASURED, never "none from the
+ * snapshot" (L98).
+ */
+function lineKeysText(b: BurstBreakdown): string {
+  const said = Object.values(b.lineGroupSources).reduce((n, c) => n + c, 0);
+  if (said === 0) {
+    return "line keys: UNMEASURED, no matched confirm said where its line key came from (a deployment before #3460, or every one keyed on a named advisor)";
+  }
+  const fetch = spread(b.groupingFetchMs);
+  return (
+    `line keys: ${b.lineGroupSources.snapshot ?? 0} of ${said} from the snapshot; ${tally(b.lineGroupSources)}` +
+    (fetch ? `; grouping fetch ${fetch}` : "; no confirm fetched the snapshot")
+  );
+}
+
 const HEAD = "- where each burst's time went (reported, not a bar)";
 
 /**
@@ -586,6 +626,7 @@ export function burstBreakdownLines(input: { groups: readonly BurstLegGroup[]; t
       continue;
     }
     lines.push(`  - ${b.label}: ${b.matched} of ${b.requests} requests matched${lost.length > 0 ? ` (${lost.join("; ")})` : ""}`);
+    lines.push(`    - ${lineKeysText(b)}`);
     for (const o of b.groups) lines.push(`    - ${outcomeText(o)}`);
   }
   return lines;

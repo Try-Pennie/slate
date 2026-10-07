@@ -28,7 +28,13 @@ import {
   RaceLostRefusalError,
 } from "@/lib/booking/service";
 import { raceOutcomeForRefusal } from "@/lib/monitor/race-contention";
-import { DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES } from "@/lib/rate-limit-core";
+import {
+  DIRECT_BOOKING_API_HOURLY_RATE_RULES,
+  DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
+  DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES,
+} from "@/lib/rate-limit-core";
+import { FULL_API_CALLERS } from "@/lib/booking/api-auth";
+import { startConfirmPrelude } from "@/lib/booking/confirm-line-live";
 import { log } from "@/lib/log";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
 import type { BookingOriginFacts } from "@/lib/monitor/offsite-origin";
@@ -134,7 +140,19 @@ async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
   //   refusal: api_key_rejected     401, counted as API_KEY_REJECTED
   //   refusal: api_not_configured   503, counted as API_NOT_CONFIGURED
   //   refusal: api_rate_limited     429, deliberately uncounted (it would dilute the share)
-  const authd = await authorizeBookingApi(req);
+  // #3460, #3355 item 1: the confirm's early reads (the shared line switch and the pool
+  // grouping snapshot) start the moment the key is good, so they run during the
+  // ceilings' I/O, and never for a key that fails authentication. A good key the
+  // ceilings refuse has started them, which costs per server, never per request
+  // (`startConfirmPrelude`).
+  const authd = await authorizeBookingApi(
+    req,
+    DIRECT_BOOKING_API_HOURLY_RATE_RULES,
+    DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
+    false,
+    FULL_API_CALLERS,
+    () => startConfirmPrelude(facts),
+  );
   if (!authd.ok) return authd.response;
   facts.marks?.mark("authed");
   log.info("booking-api", { msg: "authenticated request", key: authd.keyId });

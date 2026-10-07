@@ -85,6 +85,9 @@ vi.mock("@/lib/monitor/record-api-outcome", () => monitor);
 // scripts/test-refusal-stored-offer.ts), so no test reaches the real table.
 const storedOffer = vi.hoisted(() => ({ scheduleStoredOfferCheck: vi.fn() }));
 vi.mock("@/lib/booking/refusal-stored-offer-live", () => storedOffer);
+// #3460: the confirm's early reads, as a seam: this pins WHEN the route starts them.
+const prelude = vi.hoisted(() => ({ startConfirmPrelude: vi.fn() }));
+vi.mock("@/lib/booking/confirm-line-live", () => prelude);
 
 import { POST, GET } from "./route";
 import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
@@ -182,6 +185,23 @@ describe("POST /api/bookings (auth skeleton)", () => {
     regalKey.primary.mockReturnValue("real-secret");
     const res = await post();
     expect(res.status).toBe(401);
+  });
+
+  // #3460, #3355 item 1: the confirm's early reads start the moment the key is known to
+  // be good (inside the authorizer, before its ceilings answer), with THIS request's
+  // facts, and never for a key that fails authentication (L498).
+  it("#3460 starts the confirm's early reads for a good key, with the facts the booking is handed", async () => {
+    prelude.startConfirmPrelude.mockClear();
+    regalKey.primary.mockReturnValue("real-secret");
+    const res = await post("Bearer real-secret", VALID_BODY);
+    expect(res.status).toBe(200);
+    expect(prelude.startConfirmPrelude).toHaveBeenCalledTimes(1);
+    expect(prelude.startConfirmPrelude.mock.calls[0]![0]).toBe(service.bookViaApi.mock.calls.at(-1)![1]);
+    expect(prelude.startConfirmPrelude.mock.invocationCallOrder[0]!).toBeLessThan(rateLimit.bookingApiWriteWithinLimit.mock.invocationCallOrder.at(-1)!);
+    prelude.startConfirmPrelude.mockClear();
+    expect((await post("Bearer wrong-secret", VALID_BODY)).status).toBe(401);
+    expect((await post(undefined, VALID_BODY)).status).toBe(401);
+    expect(prelude.startConfirmPrelude).not.toHaveBeenCalled();
   });
 
   it("authenticates the secondary key too (zero-downtime rotation)", async () => {

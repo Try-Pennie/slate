@@ -12,8 +12,9 @@
 // Over-grouping is the failure this must never have: a leader's "full" verdict settles
 // only followers whose ladders walk the same pools, so a guessed group could tell a lead
 // a time is taken when it is not. So this pins the snapshot's REFUSALS (empty, partial,
-// malformed, another format), the directory's newest wins, that a snapshot builds the very
-// ladder key a local read builds for every code, and the derivation under its format.
+// malformed, another format), the directory's newest wins, and the derivation under its
+// format. That a snapshot builds the very ladder key a local read builds for every code is
+// `scripts/test-pool-grouping-reader.ts`, through the real reader and store.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-pool-grouping.ts
 import { createHash } from "node:crypto";
@@ -28,7 +29,6 @@ import {
   readGroupingSnapshot,
   groupingGetMessage,
   groupingPutMessage,
-  type GroupingEntry,
   type GroupingSnapshot,
 } from "../src/lib/booking/pool-grouping.ts";
 import { fileSource, functionSource } from "./lib/function-source.ts";
@@ -37,7 +37,6 @@ import { keyKindOf, confirmLineObjectName } from "../src/lib/booking/shared-conf
 import { CONFIRM_LINE_VERIFY_GROUP } from "../src/lib/monitor/confirm-line-probe.ts";
 import { ladderGroupOf, poolKeyDigest } from "../src/lib/booking/line-key.ts";
 import { groupByPool, poolKeyFor } from "../src/lib/availability/pool-key.ts";
-import { tierLadder, rungExcludesLow } from "../src/lib/routing/tiers.ts";
 import { poolGroupingRoster } from "./lib/pool-grouping-fixture.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -183,56 +182,6 @@ async function directoryTests() {
   assert(POOL_GROUPING_DIRECTORY.includes(`v${POOL_GROUPING_FORMAT}`), "roles: and carries the format, so two builds of different formats never share an instance during a gradual deploy");
 }
 
-// --- the line key, the same both ways, for every code (L246) ---------------------------
-async function sameKeyBothWays() {
-  // A grouping, as a server holding it answers for a code: its pool, or null for a code
-  // with no bucket (a gap).
-  const peekOf = (entries: readonly GroupingEntry[]) => {
-    const byCode = new Map(entries.map(([c, p]) => [c, p]));
-    return (code: string) => byCode.get(code) ?? null;
-  };
-  // The local route: the entries a server's own read derives.
-  const local = { peek: peekOf(groupingEntriesOf(groupByPool(ROWS))) };
-  // The snapshot route: what the lane publishes, put to the REAL object and read back,
-  // through JSON both ways.
-  const { send } = objectWorld();
-  await send("directory", groupingPutMessage(groupingSnapshotOf(groupingEntriesOf(groupByPool(ROWS)), T0 - 1_000)));
-  const read = readGroupingSnapshot((await send("directory", groupingGetMessage())).snapshot, POOL_GROUPING_FORMAT);
-  assert(read.kind === "snapshot", "both ways: the published snapshot reads back from the directory");
-  if (read.kind !== "snapshot") return;
-  const fetched = { peek: peekOf(read.snapshot.entries) };
-  let same = 0;
-  for (const { code } of ROWS) {
-    const a = ladderGroupOf(code, local.peek);
-    const b = ladderGroupOf(code, fetched.peek);
-    if (a !== null && a === b) same++;
-    else assert(false, `both ways: ${code} keys ${a} locally and ${b} from the snapshot`);
-  }
-  eq(same, 60, "both ways: every one of the sixty codes builds the SAME ladder key from a local read and from the snapshot, so they can never split a line silently");
-
-  // And the grouping it builds is the right one: two codes share a key exactly when their
-  // whole ladders walk the same pools at every rung (judged here from the raw pool keys,
-  // not the digests the key is built from), so a different pool anywhere never shares.
-  const truth = (code: string) => JSON.stringify(tierLadder(code).map((r) => [RAW_KEY.get(r) ?? null, rungExcludesLow(code, r)]));
-  let pairs = 0;
-  let shared = 0;
-  for (const a of ROWS) {
-    for (const b of ROWS) {
-      if (a.code >= b.code) continue;
-      pairs++;
-      const keysEqual = ladderGroupOf(a.code, fetched.peek) === ladderGroupOf(b.code, fetched.peek);
-      if (keysEqual) shared++;
-      if (keysEqual !== (truth(a.code) === truth(b.code))) {
-        assert(false, `grouping: ${a.code} and ${b.code} ${keysEqual ? "share a line though their ladders differ" : "were split though their ladders are the same"}`);
-      }
-    }
-  }
-  assert(pairs === 1770 && shared > 0, `grouping: of ${pairs} pairs, the ${shared} that share a line are exactly those whose ladders match`);
-  eq(ladderGroupOf("120", fetched.peek), ladderGroupOf("121", fetched.peek), "grouping: 120 and 121, the burst's two codes, share a line from the snapshot");
-  assert(ladderGroupOf("411", fetched.peek) !== ladderGroupOf("410", fetched.peek), "grouping: the bucket with a hand named member splits off");
-  assert(ladderGroupOf("511", fetched.peek) !== ladderGroupOf("510", fetched.peek), "grouping: and so does every ladder that walks it");
-}
-
 // --- the derivation a snapshot carries is pinned to its format (L1013) ----------------
 //
 // A snapshot is installed by whichever build fetches it, and production deploys are
@@ -243,9 +192,10 @@ async function sameKeyBothWays() {
 // the derivation demand a new format: change any input below and this fails until the
 // format is bumped and the new values are pinned under it.
 {
-  // Found and printed by the TypeScript compiler, comments removed (review of #3470,
-  // L135): a brace count is cut short by a brace inside a string or a regex, and then the
-  // pin guards a fragment of the function.
+  // Found by the TypeScript compiler and read as the source's own tokens, comments and
+  // layout removed (review of #3470, L135, L552): a brace count is cut short by a brace
+  // inside a string or a regex, and then the pin guards a fragment of the function, while
+  // the compiler's printer would tie the hash to the installed TypeScript version.
   const read = (file: string) => readFileSync(join(ROOT, file), "utf8");
   const functionText = (file: string, name: string) => functionSource(file, read(file), name) ?? `missing:${name}`;
   {
@@ -320,7 +270,6 @@ async function sameKeyBothWays() {
 
 async function main() {
   await directoryTests();
-  await sameKeyBothWays();
   finish();
 }
 

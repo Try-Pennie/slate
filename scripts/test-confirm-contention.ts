@@ -53,8 +53,19 @@ import type { Booking, User } from "../src/lib/db/types.ts";
 import type { BookingContext } from "../src/lib/booking/orchestration.ts";
 import { createAsserter, makeDeps, makeBooking, input, users, bucket as fakeBucket, eventType as fakeEventType } from "./lib/booking-fakes.ts";
 import { VirtualClock, SharedResource, onSharedCapacity, type CallRecord } from "./lib/confirm-contention-sim.ts";
-import { makeConfirmLineHost } from "../src/lib/booking/confirm-line-object.ts";
+import { makeConfirmLineHost, makeConfirmLineObject } from "../src/lib/booking/confirm-line-object.ts";
 import { makeSharedConfirmLine } from "../src/lib/booking/shared-confirm-line.ts";
+import { ladderGroupOf } from "../src/lib/booking/line-key.ts";
+import { groupingEntriesOf, groupingPutMessage, groupingSnapshotOf, type GroupingSnapshot } from "../src/lib/booking/pool-grouping.ts";
+import {
+  POOL_GROUPING_FETCH_MS,
+  POOL_GROUPING_FRESH_MS,
+  POOL_GROUPING_RETRY_MS,
+  makeGroupingReader,
+  makeGroupingStore,
+} from "../src/lib/booking/pool-grouping-reader.ts";
+import { groupByPool } from "../src/lib/availability/pool-key.ts";
+import { poolGroupingRoster } from "./lib/pool-grouping-fixture.ts";
 
 const { assert, finish } = createAsserter();
 
@@ -67,7 +78,7 @@ const CAPACITY = 1;
 const SERVICE_MS = 12;
 const BURST = 100;
 /** Not I/O, so they stay synchronous in the wrapped deps. */
-const SYNCHRONOUS = new Set(["newManageToken", "newIdempotencyKey", "pageRaceBoundHit", "deferSend", "deadlineTimer", "appBaseUrl"]);
+const SYNCHRONOUS = new Set(["newManageToken", "newIdempotencyKey", "pageRaceBoundHit", "deferSend", "deadlineTimer", "appBaseUrl", "lineGroupOf"]);
 
 type Outcome = "created" | "SLOT_TAKEN" | "503" | string;
 interface Run {
@@ -76,7 +87,12 @@ interface Run {
   result?: BookingResult;
   error?: unknown;
   calls: CallRecord[];
+  /** #3460: the line group this confirm keyed on, when it asked for one. */
+  group?: string;
 }
+
+/** #3460: what one isolate holds of the pool grouping when the burst arrives. */
+type GroupingState = "warm" | "cold" | "stale";
 
 /** A queue that never queues: the behaviour before #3221, for the control. Every
  *  confirm leads at once with nobody behind it, so each runs the whole path. */
@@ -156,6 +172,18 @@ async function burst(opts: {
   /** #3462: how long a reservation's delete takes, the last step of a lost
    *  attempt's rollback. Kept inside the 2s cleanup allowance it runs under. */
   slowCleanupMs?: number;
+  /**
+   * #3460: the pool grouping each isolate holds when the burst arrives (isolate k takes
+   * `states[k % states.length]`), what the directory holds, and whether each confirm
+   * fetches it before its line key. `warm` is a local read a second old, `stale` one
+   * seventy seconds old, `cold` nothing. `fetch: false` is main before #3460: a confirm
+   * keys on what its isolate already holds.
+   */
+  grouping?: {
+    states: readonly GroupingState[];
+    snapshot: GroupingSnapshot | null;
+    fetch: boolean;
+  };
 }) {
   const clock = new VirtualClock(Date.parse("2026-06-01T00:00:00.000Z"));
   const burstStart = clock.now;
@@ -199,7 +227,18 @@ async function burst(opts: {
     const isolateLines: ConfirmLine<unknown>[] = [];
     if (opts.isolates) {
       let ids = 0;
-      const host = makeConfirmLineHost({ now: () => clock.now, timer: timerOnClock, leaseTimer: timerOnClock, newId: () => `o${++ids}` });
+      // One object per line GROUP, as production names them (#3460): a crowd split across
+      // `ladder:` and `code:` groups meets several objects, each electing its own leader,
+      // which one object shared by every group would hide.
+      const hosts = new Map<string, ReturnType<typeof makeConfirmLineHost>>();
+      const hostFor = (group: string) => {
+        let host = hosts.get(group);
+        if (!host) {
+          host = makeConfirmLineHost({ now: () => clock.now, timer: timerOnClock, leaseTimer: timerOnClock, newId: () => `o${++ids}` });
+          hosts.set(group, host);
+        }
+        return host;
+      };
       for (let k = 0; k < opts.isolates.count; k++) {
         const own = isolateLine(makeConfirmQueue({ timer: timerOnClock, leaseTimer: timerOnClock, now: () => clock.now }));
         isolateLines.push(
@@ -208,7 +247,7 @@ async function burst(opts: {
             : makeSharedConfirmLine<unknown>({
                 // The object is reached in no time at all: the simulation cannot see
                 // network latency, which is why the load run measures it (#3325).
-                namespace: { stubFor: () => ({ send: async (m) => JSON.parse(await host.handle(m)) as Record<string, unknown> }) },
+                namespace: { stubFor: (group) => ({ send: async (m) => JSON.parse(await hostFor(group).handle(m)) as Record<string, unknown> }) },
                 fallback: own,
                 enabled: async () => ({ on: true, source: "read" }),
                 record: () => {},
@@ -218,6 +257,31 @@ async function burst(opts: {
                 newId: () => `c${++ids}`,
               }),
         );
+      }
+    }
+    // #3460: each isolate's own pool grouping, the directory every isolate reaches as
+    // one instance (the real object, through JSON both ways), and each isolate's reader.
+    const groupings: { lineGroupOf: (code: string) => string | null; ensure: (() => Promise<unknown>) | null }[] = [];
+    if (opts.grouping && opts.isolates) {
+      const entries = groupingEntriesOf(groupByPool(poolGroupingRoster()));
+      const directory = makeConfirmLineObject({ now: () => clock.now, timer: timerOnClock, leaseTimer: timerOnClock, newId: () => "dir" });
+      const ask = async (m: Record<string, unknown>) => JSON.parse(await directory.handle("directory", JSON.parse(JSON.stringify(m)) as unknown)) as Record<string, unknown>;
+      if (opts.grouping.snapshot) await ask(groupingPutMessage(opts.grouping.snapshot));
+      for (let k = 0; k < opts.isolates.count; k++) {
+        const store = makeGroupingStore({ now: () => clock.now, freshMs: POOL_GROUPING_FRESH_MS });
+        const state = opts.grouping.states[k % opts.grouping.states.length];
+        if (state === "warm") store.install(entries, clock.now - 1_000, "read");
+        if (state === "stale") store.install(entries, clock.now - 70_000, "read");
+        const reader = makeGroupingReader({
+          store,
+          directory: () => ({ send: ask }),
+          now: () => clock.now,
+          timer: timerOnClock,
+          boundMs: POOL_GROUPING_FETCH_MS,
+          freshMs: POOL_GROUPING_FRESH_MS,
+          retryMs: POOL_GROUPING_RETRY_MS,
+        });
+        groupings.push({ lineGroupOf: (code) => ladderGroupOf(code, store.peek), ensure: opts.grouping.fetch ? () => reader.ensure() : null });
       }
     }
     let personReads = 0;
@@ -321,10 +385,27 @@ async function burst(opts: {
     const t0 = clock.now;
     opts.inputs.forEach((one, i) => clock.at(t0 + (opts.arriveAtMs?.[i] ?? 0), () => {
       const run = runs[i];
-      const onIsolate = opts.isolates ? { ...shared, confirmQueue: isolateLines[i % opts.isolates.count] as BookingDeps["confirmQueue"] } : shared;
+      const grouping = opts.isolates ? groupings[i % opts.isolates.count] : undefined;
+      const onIsolate = opts.isolates
+        ? {
+            ...shared,
+            confirmQueue: isolateLines[i % opts.isolates.count] as BookingDeps["confirmQueue"],
+            ...(grouping
+              ? {
+                  lineGroupOf: (code: string) => {
+                    const g = grouping.lineGroupOf(code);
+                    run.group = g ?? `code:${code}`;
+                    return g;
+                  },
+                }
+              : {}),
+          }
+        : shared;
       const deps = onSharedCapacity(onIsolate, resource, clock, run.calls, SYNCHRONOUS);
       const startedAt = clock.now;
-      const work = opts.viaApi === false ? () => createBooking(one, deps) : () => bookViaApi(one, deps);
+      // #3460: the route awaits the grouping before the line key, as production does.
+      const book = opts.viaApi === false ? () => createBooking(one, deps) : () => bookViaApi(one, deps);
+      const work = grouping?.ensure ? async () => (await grouping.ensure!(), book()) : book;
       void withinBookingConfirmBudget(work as () => Promise<unknown>).then(
         (res) => {
           run.outcome = (res as { outcome?: string }).outcome ?? "created";
@@ -481,6 +562,62 @@ async function main() {
       lastLoser <= winner.answeredMs! + 2_000,
       `shared line: every loser hears "taken" within 2s of the winner's answer (winner ${winner.answeredMs}ms, last loser ${lastLoser}ms)`,
     );
+  }
+
+  // --- #3460: a burst on two SIBLING codes across warm, cold and stale servers ---
+  //
+  // Load run 37566700055, burst 3: a hundred confirms for one slot on codes 120 and 121,
+  // whose ladders walk the same pools. 85 ran on servers holding no fresh grouping, so
+  // they keyed their codes' own lines, and the burst split across `ladder:`, `code:120`
+  // and `code:121`: three leaders, and a slow losing one timed out 41 followers. The mix
+  // matters (L246): an all cold crowd given a snapshot is the easy case, so these
+  // servers are warm, cold and stale together, as that run's were.
+  {
+    const T = Date.parse("2026-06-01T00:00:00.000Z");
+    const siblings = Array.from({ length: BURST }, (_, i) => lead(i, { bucketCode: i % 2 === 0 ? "120" : "121", prefill: { xbc: i % 2 === 0 ? "120" : "121" } }));
+    const isolates = { count: 10, line: "shared" as const };
+    const states: GroupingState[] = ["warm", "cold", "stale"];
+    const fresh = groupingSnapshotOf(groupingEntriesOf(groupByPool(poolGroupingRoster())), T - 5_000);
+    const leadersOf = (runs: Run[]) => runs.filter((r) => r.calls.some((c) => !LOOKAHEAD_READS.has(c.name)));
+    const groupsOf = (runs: Run[]) => [...new Set(runs.map((r) => r.group ?? "none"))].sort();
+
+    // CONTROL, main before #3460: each confirm keys on what its own isolate holds.
+    {
+      const { runs, tally, bySlot } = await burst({ inputs: siblings, pool: ["a"], queue: "real", isolates, grouping: { states, snapshot: fresh, fetch: false } });
+      const groups = groupsOf(runs);
+      assert(
+        groups.length === 3 && groups.includes("code:120") && groups.includes("code:121") && groups.some((g) => g.startsWith("ladder:")),
+        `siblings, main: the burst splits across a ladder line and both codes' own lines, as in run 37566700055 (got ${groups.join(", ")})`,
+      );
+      const leaders = leadersOf(runs);
+      assert(leaders.length >= 2, `siblings, main: so it elects more than one leader (got ${leaders.length})`);
+      assert(bySlot.size === 1, `siblings, main: still never a double booking (got ${bySlot.size}, ${JSON.stringify(tally)})`);
+    }
+
+    // THE FIX: each confirm fetches the snapshot before its line key.
+    {
+      const { runs, tally, bySlot } = await burst({ inputs: siblings, pool: ["a"], queue: "real", isolates, grouping: { states, snapshot: fresh, fetch: true } });
+      const groups = groupsOf(runs);
+      assert(groups.length === 1 && groups[0]!.startsWith("ladder:"), `siblings, snapshot: every confirm on every server joins ONE ladder line (got ${groups.join(", ")})`);
+      const leaders = leadersOf(runs);
+      assert(leaders.length === 1, `siblings, snapshot: which elects ONE leader (got ${leaders.length})`);
+      assert(tally.created === 1 && bySlot.size === 1, `siblings, snapshot: exactly one confirm is booked (got ${JSON.stringify(tally)})`);
+      assert(tally.SLOT_TAKEN === BURST - 1, `siblings, snapshot: and every follower is answered SLOT_TAKEN from it (got ${JSON.stringify(tally)})`);
+      assert(!tally["503"], `siblings, snapshot: none is answered 503 (got ${tally["503"] ?? 0})`);
+      assert(quiet(runs.filter((r) => r.outcome === "SLOT_TAKEN")), "siblings, snapshot: no follower runs a chain of its own");
+    }
+
+    // Every refusal keeps today's behaviour: the code's own line, never a guess.
+    for (const [label, snapshot] of [
+      ["a stale snapshot", groupingSnapshotOf(fresh.entries, T - POOL_GROUPING_FRESH_MS - 1_000)],
+      ["no snapshot", null],
+      ["a partial snapshot", { ...fresh, entries: fresh.entries.slice(0, 20) }],
+    ] as const) {
+      const { runs, bySlot } = await burst({ inputs: siblings, pool: ["a"], queue: "real", isolates, grouping: { states, snapshot: snapshot as GroupingSnapshot | null, fetch: true } });
+      const groups = groupsOf(runs);
+      assert(groups.includes("code:120") && groups.includes("code:121"), `siblings, ${label}: cold and stale servers keep their codes' own lines (got ${groups.join(", ")})`);
+      assert(bySlot.size === 1, `siblings, ${label}: and still never a double booking`);
+    }
   }
 
   // --- a pool of two: two booked, the rest SLOT_TAKEN, none 503 ---------------

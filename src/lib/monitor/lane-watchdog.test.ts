@@ -931,8 +931,9 @@ describe("alertOnStaleLanes (#803)", () => {
     });
   });
 
-  // #3460: the recompute lane publishes the pool grouping every minute, watched from its
-  // first run so the publisher is known to work before anything reads what it publishes.
+  // #3460: the recompute lane publishes the pool grouping every minute. A publisher that
+  // stopped leaves every cold server keying its confirm line by code, which is how
+  // confirms keyed before #3460, so nothing else would ever say so.
   describe("the pool grouping publish (#3460)", () => {
     const pageFor = (lane: string) =>
       dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === `cron_lane_stale:${lane}`);
@@ -951,8 +952,7 @@ describe("alertOnStaleLanes (#803)", () => {
       const page = pageFor("pool-grouping");
       expect(String(page?.[2])).toMatch(/pool grouping has not been published/);
       expect(String(page?.[2])).toMatch(/tag=pool-grouping/);
-      // #3460's first half: nothing reads the grouping yet, and the page says so (L703).
-      expect(String(page?.[2])).toMatch(/Nothing reads the grouping yet/);
+      expect(String(page?.[2])).toMatch(/Bookings still go through/);
       expect(page?.[1]).toBe(60 * MIN);
       expect(page?.[3]).toBeUndefined();
     });

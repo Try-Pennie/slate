@@ -245,10 +245,17 @@ const outcomes = (r: ProbeReport | "unsettled") =>
   // cannot answer for it (L103).
   const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   const service = strip(readFileSync(join(ROOT, "src/lib/booking/service.ts"), "utf8"));
-  assert(/lineGroupOf:\s*lineGroupOfLive\b/.test(service), "the booking service groups lines with lineGroupOfLive");
+  assert(/lineGroupOf:\s*\(code\)\s*=>\s*lineGroupOfLive\(code,/.test(service), "the booking service groups lines with lineGroupOfLive");
   const live = strip(readFileSync(join(ROOT, "src/lib/booking/confirm-line-live.ts"), "utf8"));
-  const body = live.slice(live.indexOf("export function lineGroupOfLive"));
-  assert(/=\s*ladderGroupOf\(/.test(body) && /return group;/.test(body), "and lineGroupOfLive answers only what ladderGroupOf built, or null");
+  const start = live.indexOf("export function lineGroupOfLive");
+  const body = live.slice(start, live.indexOf("\n}\n", start) + 3);
+  // #3460 retired the `return group;` reading: the confirm may now WAIT, bounded, for a
+  // grouping before its key (#3355 items 1 and 2), and the function also notes where
+  // its grouping came from. What it answers is still only what the ladder read built.
+  assert(
+    /const read\s*=\s*ladderGroupRead\(code,/.test(body) && /return read\.group;/.test(body) && (body.match(/return /g) ?? []).length === 1,
+    "and lineGroupOfLive answers only what ladderGroupRead built, or null, through its one return",
+  );
   const orchestration = strip(readFileSync(join(ROOT, "src/lib/booking/orchestration.ts"), "utf8"));
   const built = [...orchestration.matchAll(/\{\s*group\s*,\s*instant\s*:/g)].length;
   eq(built, 1, "and confirmQueueKey is the one place the booking path builds a line key, so the walk above covers them all");

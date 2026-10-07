@@ -512,7 +512,7 @@ import { resolveAdvisorName, type AdvisorNameReader } from "@/lib/booking/adviso
 import { resolveBookingAdvisorPhoto } from "@/lib/booking/advisor-photo";
 import { loadPhotoRecords, loadUserSignInPhoto } from "@/lib/advisor-photos/store";
 import { makeConfirmQueue, isolateLine } from "@/lib/booking/confirm-queue";
-import { confirmLineFor, lineGroupOfLive } from "@/lib/booking/confirm-line-live";
+import { confirmLineFor, lineGroupOfLive, settleLineGrouping } from "@/lib/booking/confirm-line-live";
 import type { ConfirmLineFacts } from "@/lib/booking/confirm-latency";
 import { timeStage } from "@/lib/booking/confirm-profile";
 export type { BookingResult, CreateBookingInput };
@@ -1134,8 +1134,10 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
       // #3354: the load test's trace for this confirm, so the object logs its calls.
       lineFacts?.lineTrace ?? null,
     ),
-    // #3325: sibling codes that walk the same pools share one line.
-    lineGroupOf: lineGroupOfLive,
+    // #3325: sibling codes that walk the same pools share one line. #3460: from the
+    // grouping this server holds, which `settleLineGrouping` made fresh where it could
+    // before the orchestration builds the key; the facts record where it came from.
+    lineGroupOf: (code) => lineGroupOfLive(code, lineFacts),
     // #3354: the points of the wait before the confirm's profile, when the route
     // keeps marks (the load test only); absent, nothing is stamped.
     mark: lineFacts?.marks ? (point) => lineFacts.marks?.mark(point) : undefined,
@@ -2502,10 +2504,22 @@ async function rescheduleWithLog(
   }
 }
 
+/**
+ * #3460: before a confirm keys its line, wait within the bound for a fresh pool grouping
+ * where its server holds none, so a burst on sibling codes joins ONE ladder line rather
+ * than splitting by code. Charged to the confirm's profile as its own stage. A named
+ * advisor's link keys on the advisor and needs no grouping, so it waits for nothing.
+ */
+function lineGroupingBeforeKey(input: { agentLinkUserId?: string }, lineFacts?: ConfirmLineFacts): Promise<void> {
+  if (input.agentLinkUserId !== undefined) return Promise.resolve();
+  return timeStage(lineFacts?.profile, "line-grouping", () => settleLineGrouping(lineFacts));
+}
+
 export function createBooking(input: CreateBookingInput, lineFacts?: ConfirmLineFacts): Promise<BookingResult> {
-  return alertOnBookingFailure(() =>
-    orchestration.createBooking(input, realDeps(deferWebhookSend, lineFacts)),
-  );
+  return alertOnBookingFailure(async () => {
+    await lineGroupingBeforeKey(input, lineFacts);
+    return orchestration.createBooking(input, realDeps(deferWebhookSend, lineFacts));
+  });
 }
 
 /**
@@ -2733,6 +2747,7 @@ export async function updateBookingPhone(
  */
 export function bookViaApi(input: ApiBookingInput, lineFacts?: ConfirmLineFacts): Promise<ApiBookingResult> {
   return alertOnBookingFailure(async () => {
+    await lineGroupingBeforeKey(input, lineFacts);
     try {
       const res = await orchestration.bookViaApi(input, realDeps(deferWebhookSend, lineFacts));
       // Only a "rescheduled" outcome can carry a decline reason (#543).

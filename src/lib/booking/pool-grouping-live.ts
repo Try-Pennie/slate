@@ -1,4 +1,5 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare";
+import { afterResponse } from "@/lib/after-response";
 import { log } from "@/lib/log";
 import { readWithinDeadline } from "@/lib/read-within-deadline";
 import { CONFIRM_LINE_BINDING } from "@/lib/booking/confirm-line-object";
@@ -73,4 +74,15 @@ export async function publishPoolGrouping(entries: readonly GroupingEntry[], rea
     return { ok: true, kind: answer.kind };
   }
   return failed({ ok: false, kind: "refused", why: typeof answer.why === "string" ? answer.why.slice(0, 80) : String(answer.kind) });
+}
+
+/**
+ * A server's own read publishes too, as the lane's backup, after the response
+ * (`readPoolKeys` in `slot-cache.ts`). Nothing is stamped for it: the heartbeat is the
+ * lane's, and a backup that lands only makes the directory fresher.
+ */
+export function publishPoolGroupingAfterResponse(entries: readonly GroupingEntry[], readAtMs: number): void {
+  afterResponse("pool-grouping-publish", async () => {
+    await publishPoolGrouping(entries, readAtMs);
+  });
 }

@@ -11,13 +11,12 @@
  * one slow losing leader timed out 41 followers. In burst 1, 46 servers each did the
  * warm up, 93 full table reads at a median of 4.5s.
  *
- * WHAT THIS HALF SHIPS. The every minute recompute lane already reads the grouping. It
- * publishes it, with the time its read STARTED, to a reserved instance of the confirm
- * line object (the DIRECTORY). NOTHING READS IT YET: the second half of #3460 has a
- * server whose grouping is absent or stale fetch it, bounded, before keying its confirm
- * line, and until then every confirm keys its line exactly as before. The publish is
- * watched from its first run, and the daily proof reads the live directory, so the
- * publisher is known to work before anything depends on it.
+ * WHAT. The every minute recompute lane already reads the grouping. It publishes it,
+ * with the time its read STARTED, to a reserved instance of the confirm line object (the
+ * DIRECTORY), and any server's own read publishes too, as a backup. A server whose
+ * grouping is absent or stale fetches it, bounded, before keying its confirm line
+ * (`pool-grouping-reader.ts`). The publish is watched by its own heartbeat, and the
+ * daily proof reads the live directory.
  *
  * OVER-GROUPING IS THE ONE FAILURE THIS MUST NOT HAVE. A leader's "full" verdict
  * settles only followers whose ladders walk the same pools, so a guessed group could

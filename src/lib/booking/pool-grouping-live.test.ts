@@ -20,7 +20,15 @@ vi.mock("@/lib/log", () => ({
     error: vi.fn(),
   },
 }));
-import { publishPoolGrouping, groupingDirectoryLive } from "@/lib/booking/pool-grouping-live";
+const after = vi.hoisted(() => ({ labels: [] as string[], work: [] as (() => Promise<unknown>)[] }));
+vi.mock("@/lib/after-response", () => ({
+  afterResponse: (label: string, work: () => Promise<unknown>) => {
+    after.labels.push(label);
+    after.work.push(work);
+  },
+}));
+
+import { publishPoolGrouping, publishPoolGroupingAfterResponse, groupingDirectoryLive } from "@/lib/booking/pool-grouping-live";
 import { makeConfirmLineObject, objectRoleOf } from "@/lib/booking/confirm-line-object";
 import { confirmLineObjectName } from "@/lib/booking/shared-confirm-line";
 import { POOL_GROUPING_DIRECTORY, groupingGetMessage, type GroupingEntry } from "@/lib/booking/pool-grouping";
@@ -64,6 +72,8 @@ describe("publishing the pool grouping (#3460)", () => {
     env.throws = false;
     logged.warn.length = 0;
     logged.info.length = 0;
+    after.labels.length = 0;
+    after.work.length = 0;
   });
 
   it("puts it on the directory's own instance, and a get hands it back", async () => {
@@ -112,5 +122,15 @@ describe("publishing the pool grouping (#3460)", () => {
     expect(groupingDirectoryLive()).toBeNull();
     env.throws = true;
     expect(groupingDirectoryLive()).toBeNull();
+  });
+
+  it("defers a server's own publish past the response", async () => {
+    const b = bound();
+    env.value = { CONFIRM_LINE: b.binding };
+    publishPoolGroupingAfterResponse(ENTRIES, 3_000);
+    expect(after.labels).toEqual(["pool-grouping-publish"]);
+    expect(b.names).toEqual([]);
+    await after.work[0]!();
+    expect(((await b.get()).snapshot as { readAtMs: number }).readAtMs).toBe(3_000);
   });
 });
