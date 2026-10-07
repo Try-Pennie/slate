@@ -1,5 +1,4 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare";
-import { afterResponse } from "@/lib/after-response";
 import { log } from "@/lib/log";
 import { readWithinDeadline } from "@/lib/read-within-deadline";
 import { CONFIRM_LINE_BINDING } from "@/lib/booking/confirm-line-object";
@@ -35,7 +34,11 @@ export function groupingDirectoryLive(name: string = POOL_GROUPING_DIRECTORY): D
   }
 }
 
-/** How one publish ended. Only a put the directory stored, or kept a newer one over, is published. */
+/**
+ * How one publish ended. `ok` means the directory now holds a grouping at least this
+ * fresh; only `stored` means it holds THIS one. `kept` is a newer snapshot already there,
+ * which says the directory is fresh and nothing about this publisher's own read.
+ */
 export type PublishOutcome =
   | { ok: true; kind: "stored" | "kept" }
   | { ok: false; kind: "empty" | "unbound" | "unreachable" | "refused"; why?: string };
@@ -46,12 +49,13 @@ export type PublishOutcome =
  * An EMPTY grouping is refused before anything is asked: a bucket read that came back
  * empty would otherwise publish a grouping in which every code is a gap, and every
  * ladder of one length alike (L215). Never throws: the recompute lane calls this in
- * its own step boundary and stamps its heartbeat only on `ok`, so a publisher that
- * stops is paged (`POOL_GROUPING_STALE_BOUNDS_MS`) rather than failing silently.
+ * its own step boundary and stamps its heartbeat only when the outcome is `stored`, so
+ * a publisher that stops is paged (`POOL_GROUPING_STALE_BOUNDS_MS`) rather than failing
+ * silently, and a stale one is never covered by somebody else's newer snapshot.
  */
 export async function publishPoolGrouping(entries: readonly GroupingEntry[], readAtMs: number): Promise<PublishOutcome> {
   const failed = (out: Extract<PublishOutcome, { ok: false }>): PublishOutcome => {
-    log.warn("pool-grouping", { msg: "pool grouping not published; cold servers keep their codes' own lines", kind: out.kind, why: out.why ?? null });
+    log.warn("pool-grouping", { msg: "pool grouping not published", kind: out.kind, why: out.why ?? null });
     return out;
   };
   if (entries.length === 0) return failed({ ok: false, kind: "empty", why: "the bucket list read empty" });
@@ -69,11 +73,4 @@ export async function publishPoolGrouping(entries: readonly GroupingEntry[], rea
     return { ok: true, kind: answer.kind };
   }
   return failed({ ok: false, kind: "refused", why: typeof answer.why === "string" ? answer.why.slice(0, 80) : String(answer.kind) });
-}
-
-/** A server's own read publishes too, as the lane's backup, after the response. */
-export function publishPoolGroupingAfterResponse(entries: readonly GroupingEntry[], readAtMs: number): void {
-  afterResponse("pool-grouping-publish", async () => {
-    await publishPoolGrouping(entries, readAtMs);
-  });
 }

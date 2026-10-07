@@ -29,6 +29,12 @@
  *    within the acknowledgement window rather than after the whole lease.
  *  - `nothingHeld`: afterwards, a newcomer on each instant the probe used leads at
  *    once, so the probe is MEASURED to have left nothing held, not assumed to.
+ *  - `directory` (#3460): the pool grouping DIRECTORY, a reserved instance of the same
+ *    class, stores a put and hands it back, keeps the newest over an older put (both
+ *    directions, on the probe's OWN directory), and the LIVE directory holds a grouping
+ *    a cold server would install: this build's format, well formed, and read within
+ *    `PROBE_GROUPING_MAX_AGE_MS`. The live one is only ever READ, so the proof can never
+ *    put a grouping in front of a real confirm.
  *
  * WHAT IT CANNOT PROVE, stated so nobody reads more into a pass: every participant runs
  * in ONE isolate, the route's. A pass proves the object answers and keeps the rules; it
@@ -46,8 +52,19 @@
 import { makeSharedConfirmLine, CONFIRM_LINE_CALL_MS, type LineNamespace, type LineServed, type SwitchReading } from "../booking/shared-confirm-line.ts";
 import { makeConfirmQueue, isolateLine, type LineKey, type LineTurn, type LeaderVerdict } from "../booking/confirm-queue.ts";
 import { CONFIRM_LINE_ACK_MS, CONFIRM_LINE_LEASE_MS } from "../booking/confirm-line-object.ts";
+import {
+  POOL_GROUPING_DIRECTORY,
+  POOL_GROUPING_FORMAT,
+  POOL_GROUPING_VERIFY_DIRECTORY,
+  groupingGetMessage,
+  groupingPutMessage,
+  groupingSnapshotOf,
+  readGroupingSnapshot,
+  type DirectoryStub,
+  type GroupingSnapshot,
+} from "../booking/pool-grouping.ts";
 import { shortErrorReason } from "../notify/error-text.ts";
-import type { ScheduleTimer } from "../read-within-deadline.ts";
+import { readWithinDeadline, type ScheduleTimer } from "../read-within-deadline.ts";
 
 /**
  * The line group the probe writes into, and the entire reason it cannot touch a real
@@ -67,7 +84,7 @@ export const CONFIRM_LINE_PROBE_REASON = {
   bindingMissing: "binding-missing",
 } as const;
 
-export const CONFIRM_LINE_CHECKS = ["full", "notFull", "abandoned", "nothingHeld"] as const;
+export const CONFIRM_LINE_CHECKS = ["full", "notFull", "abandoned", "nothingHeld", "directory"] as const;
 export type ConfirmLineCheck = (typeof CONFIRM_LINE_CHECKS)[number];
 
 export const CHECK_OUTCOMES = [
@@ -90,6 +107,16 @@ export const CHECK_OUTCOMES = [
   "not-freed",
   /** An instant the probe used was still held after it finished. */
   "held",
+  /** #3460: the pool grouping directory did not answer within a call. */
+  "directory-unreachable",
+  /** The directory did not store a fresh put, or handed back something else. */
+  "not-stored",
+  /** An older put replaced the newer snapshot. */
+  "older-won",
+  /** The live directory holds no grouping: nothing has published since it started. */
+  "no-grouping",
+  /** The live grouping would be refused by a cold server: another format, malformed, or stale. */
+  "grouping-unusable",
 ] as const;
 export type CheckOutcome = (typeof CHECK_OUTCOMES)[number];
 
@@ -99,7 +126,17 @@ export const CHECK_CAN_END_ON: Record<ConfirmLineCheck, readonly CheckOutcome[]>
   notFull: ["passed", "unreachable", "errored", "idle-not-led", "led-beside", "not-handed-on"],
   abandoned: ["passed", "unreachable", "errored", "idle-not-led", "led-beside", "freed-late", "not-freed"],
   nothingHeld: ["passed", "unreachable", "errored", "held"],
+  directory: ["passed", "errored", "directory-unreachable", "not-stored", "older-won", "no-grouping", "grouping-unusable"],
 };
+
+/**
+ * How old the LIVE grouping may be before the proof calls it stale (#3460): three of the
+ * recompute lane's one minute publishes. Looser than the minute a server holds a grouping for,
+ * because the proof runs once a day at a moment that can fall in a minute's gap between
+ * one snapshot expiring and the next landing; three missed publishes is a publisher that
+ * has stopped, which the `pool-grouping` heartbeat also pages on.
+ */
+export const PROBE_GROUPING_MAX_AGE_MS = 3 * 60_000;
 
 export interface CheckResult {
   outcome: CheckOutcome;
@@ -141,6 +178,8 @@ export const PROBE_SWITCH: SwitchReading = { on: true, source: "read" };
 
 export interface ConfirmLineProbeDeps {
   namespace: LineNamespace;
+  /** #3460: a pool grouping directory's stub by name, the production directory transport. */
+  directory: (name: string) => DirectoryStub;
   now: () => number;
   timer: ScheduleTimer;
   newId: () => string;
@@ -473,6 +512,82 @@ export function judgeHandOn(ledAt: number, reportSentAt: number): CheckResult {
   return passed(`The confirm waiting behind a not full verdict was handed the lead ${afterMs}ms after the report was sent`);
 }
 
+/** A directory answer's kind, in words, for a detail line. */
+const kindOf = (a: Record<string, unknown>): string => (typeof a.kind === "string" ? `a ${a.kind} answer` : "an unreadable answer");
+
+/** The snapshot a get answered, when it is exactly the one expected. */
+function holds(answer: Record<string, unknown>, expected: GroupingSnapshot): boolean {
+  if (answer.kind !== "grouping") return false;
+  const read = readGroupingSnapshot(answer.snapshot, POOL_GROUPING_FORMAT);
+  return read.kind === "snapshot" && JSON.stringify(read.snapshot) === JSON.stringify(expected);
+}
+
+/**
+ * #3460: the pool grouping directory, both halves. On the probe's OWN directory: a fresh
+ * put is stored and handed back, and an older put is kept out, so newest wins is
+ * measured in both directions (L1). Then the LIVE directory, read and never written:
+ * it holds a grouping a cold server would install.
+ */
+async function checkDirectory(deps: ConfirmLineProbeDeps, run: string): Promise<CheckResult> {
+  const verify = deps.directory(POOL_GROUPING_VERIFY_DIRECTORY);
+  const live = deps.directory(POOL_GROUPING_DIRECTORY);
+  const ask = async (stub: DirectoryStub, message: Record<string, unknown>): Promise<Record<string, unknown> | string> => {
+    let why = "no answer within a call";
+    const answer = await readWithinDeadline(() => stub.send(message), CONFIRM_LINE_CALL_MS, (err) => (why = shortErrorReason(err)), deps.timer);
+    return answer ?? why;
+  };
+  const unreachable = (what: string, why: string): CheckResult => ({
+    outcome: "directory-unreachable",
+    detail: `The pool grouping directory did not answer ${what} (${why}), so the grouping it holds cannot reach any server`,
+  });
+  const now = deps.now();
+  const newer = groupingSnapshotOf([["verify", run]], now);
+  const older = groupingSnapshotOf([["verify", `${run}:older`]], now - 1_000);
+
+  const put = await ask(verify, groupingPutMessage(newer));
+  if (typeof put === "string") return unreachable("a put", put);
+  if (put.kind !== "stored") return { outcome: "not-stored", detail: `The verification directory answered a fresh put with ${kindOf(put)} rather than storing it` };
+  const got = await ask(verify, groupingGetMessage());
+  if (typeof got === "string") return unreachable("a get", got);
+  if (!holds(got, newer)) return { outcome: "not-stored", detail: `The verification directory stored a fresh put and then handed back ${kindOf(got)} that is not it` };
+
+  const stale = await ask(verify, groupingPutMessage(older));
+  if (typeof stale === "string") return unreachable("a put", stale);
+  const after = await ask(verify, groupingGetMessage());
+  if (typeof after === "string") return unreachable("a get", after);
+  if (stale.kind !== "kept" || !holds(after, newer)) {
+    return {
+      outcome: "older-won",
+      detail: "An older put replaced the newer grouping on the verification directory, so a slow publisher could put a stale grouping back over a fresh one",
+    };
+  }
+
+  const current = await ask(live, groupingGetMessage());
+  if (typeof current === "string") return unreachable("a get of the live grouping", current);
+  if (current.kind !== "grouping") return { outcome: "grouping-unusable", detail: `The live directory answered a get with ${kindOf(current)} rather than a grouping` };
+  if (current.snapshot === null || current.snapshot === undefined) {
+    return {
+      outcome: "no-grouping",
+      detail: "The live directory holds no pool grouping, so nothing has published one since it started",
+    };
+  }
+  const read = readGroupingSnapshot(current.snapshot, POOL_GROUPING_FORMAT);
+  if (read.kind === "format-mismatch") {
+    return { outcome: "grouping-unusable", detail: `The live grouping is format ${read.format} and this build reads format ${POOL_GROUPING_FORMAT}, so a server reading it would refuse it` };
+  }
+  if (read.kind === "refused") return { outcome: "grouping-unusable", detail: `The live grouping is malformed (${read.why}), so a server reading it would refuse it` };
+  const ageS = Math.round((deps.now() - read.snapshot.readAtMs) / 1000);
+  if (deps.now() - read.snapshot.readAtMs > PROBE_GROUPING_MAX_AGE_MS) {
+    return {
+      outcome: "grouping-unusable",
+      detail: `The live grouping was read ${ageS} seconds ago, past ${PROBE_GROUPING_MAX_AGE_MS / 1000} seconds, so its publisher has stopped and a server reading it would refuse it as stale`,
+    };
+  }
+  return passed(
+    `The pool grouping directory stored a put, kept the newest over an older one, and holds a live grouping of ${read.snapshot.count} codes read ${ageS} seconds ago`,
+  );
+}
+
 /** A check that threw is the probe's own fault, said as such and never as the object's. */
 async function guarded(work: () => Promise<CheckResult>): Promise<CheckResult> {
   try {
@@ -495,5 +610,6 @@ export async function runConfirmLineProbe(deps: ConfirmLineProbeDeps): Promise<P
   const notFull = await guarded(() => checkNotFull(deps, claim("notFull")));
   const abandoned = await guarded(() => checkAbandoned(deps, claim("abandoned")));
   const nothingHeld = await guarded(() => checkNothingHeld(deps, used));
-  return { full, notFull, abandoned, nothingHeld };
+  const directory = await guarded(() => checkDirectory(deps, run));
+  return { full, notFull, abandoned, nothingHeld, directory };
 }

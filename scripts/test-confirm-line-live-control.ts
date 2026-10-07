@@ -40,6 +40,7 @@ import {
 } from "./lib/confirm-line-live-control.ts";
 import {
   makeConfirmLineHost,
+  makeConfirmLineObject,
   CONFIRM_LINE_ACK_MS,
   CONFIRM_LINE_LEASE_MS,
   CONFIRM_LINE_HEARTBEAT_MS,
@@ -47,7 +48,13 @@ import {
 } from "../src/lib/booking/confirm-line-object.ts";
 import { keyKindOf, CONFIRM_LINE_CALL_MS, type LineNamespace } from "../src/lib/booking/shared-confirm-line.ts";
 import { ladderGroupOf } from "../src/lib/booking/line-key.ts";
-import { POOL_GROUPING_DIRECTORY, POOL_GROUPING_VERIFY_DIRECTORY } from "../src/lib/booking/pool-grouping.ts";
+import {
+  POOL_GROUPING_DIRECTORY,
+  POOL_GROUPING_VERIFY_DIRECTORY,
+  groupingPutMessage,
+  groupingSnapshotOf,
+  type DirectoryStub,
+} from "../src/lib/booking/pool-grouping.ts";
 import { confirmQueueKey } from "../src/lib/booking/orchestration.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -60,7 +67,7 @@ const PLAIN = /^[\x20-\x7E\n]*$/;
 
 /** A virtual clock, the real object host, and a transport that can be swapped for a defect. */
 function world() {
-  let now = 50_000;
+  let now = 1_791_000_000_000;
   const pending: { at: number; fire: () => void; live: boolean }[] = [];
   const timer = (ms: number, fire: () => void) => {
     const t = { at: now + ms, fire, live: true };
@@ -88,10 +95,37 @@ function world() {
       };
     },
   };
+  // #3460: the pool grouping directories, each the REAL object served as the directory,
+  // through JSON both ways. The live one is seeded as the recompute lane would leave it,
+  // so a healthy world passes and each defect below is the only thing wrong.
+  const directoryObjects = new Map<string, ReturnType<typeof makeConfirmLineObject>>();
+  const directoryCalls: { name: string; op: string }[] = [];
+  const handleDirectory = async (name: string, m: Message) => {
+    let o = directoryObjects.get(name);
+    if (!o) {
+      o = makeConfirmLineObject({ now: () => now, timer, leaseTimer: timer, newId });
+      directoryObjects.set(name, o);
+    }
+    return JSON.parse(await o.handle("directory", JSON.parse(JSON.stringify(m)) as unknown)) as Message;
+  };
+  let directorySend: (name: string, m: Message) => Promise<Message> = handleDirectory;
+  let directoryFor: (name: string) => DirectoryStub = (name) => ({
+    send(m) {
+      directoryCalls.push({ name, op: String(m.op) });
+      return directorySend(name, m);
+    },
+  });
+  const seedLive = async (readAtMs: number, format?: number) =>
+    handleDirectory(POOL_GROUPING_DIRECTORY, groupingPutMessage({ ...groupingSnapshotOf([["120", "pool-a"], ["121", "pool-a"]], readAtMs), ...(format ? { format } : {}) }));
+  /** What the live directory holds when the probe runs: as the lane leaves it, unless a defect says otherwise. */
+  let liveSeed: "fresh" | "none" | "stale" | "other-format" = "fresh";
   const run = async (ns: LineNamespace = namespace): Promise<ProbeReport | "unsettled"> => {
+    if (liveSeed === "fresh") await seedLive(now - 5_000);
+    if (liveSeed === "stale") await seedLive(now - 10 * 60_000);
+    if (liveSeed === "other-format") await seedLive(now - 5_000, 99);
     let out: ProbeReport | "unsettled" = "unsettled";
     let settled = false;
-    void runConfirmLineProbe({ namespace: ns, now: () => now, timer, newId }).then((r) => {
+    void runConfirmLineProbe({ namespace: ns, directory: (name) => directoryFor(name), now: () => now, timer, newId }).then((r) => {
       out = r;
       settled = true;
     });
@@ -123,6 +157,18 @@ function world() {
     run,
     setSend(next: Send) {
       send = next;
+    },
+    directoryCalls,
+    handleDirectory,
+    seedLive,
+    setLiveSeed(next: typeof liveSeed) {
+      liveSeed = next;
+    },
+    setDirectorySend(next: (name: string, m: Message) => Promise<Message>) {
+      directorySend = next;
+    },
+    setDirectoryFor(next: (name: string) => DirectoryStub) {
+      directoryFor = next;
     },
   };
 }
@@ -254,6 +300,13 @@ async function main() {
       `and every object it addressed is the verification group's (got ${[...new Set(w.groups)].join(", ")})`,
     );
     eq(w.instants.size, 3, "it used one instant per check, each its own");
+    // #3460: it WRITES only to its own directory, and only READS the live one, so the
+    // proof can never put a grouping in front of a real confirm.
+    const puts = w.directoryCalls.filter((c) => c.op === "grouping-put");
+    assert(puts.length > 0 && puts.every((c) => c.name === POOL_GROUPING_VERIFY_DIRECTORY), `and every directory put went to the verification directory (got ${JSON.stringify(puts)})`);
+    const live = w.directoryCalls.filter((c) => c.name === POOL_GROUPING_DIRECTORY);
+    assert(live.length === 1 && live[0]!.op === "grouping-get", `and the live directory was only read, once (got ${JSON.stringify(live)})`);
+    assert(w.directoryCalls.every((c) => c.name === POOL_GROUPING_VERIFY_DIRECTORY || c.name === POOL_GROUPING_DIRECTORY), "and it addressed no other directory");
     // Nothing left held, checked by THIS file against the host directly rather than by
     // the probe's own last check, which uses the same client it is checking (L345).
     for (const instant of w.instants) {
@@ -265,10 +318,18 @@ async function main() {
 
   // --- a planted defect for every outcome the probe can name (L151) ------------------
   const produced = new Map<ConfirmLineCheck, Set<CheckOutcome>>(CONFIRM_LINE_CHECKS.map((c) => [c, new Set(["passed" as CheckOutcome])]));
-  const plant = async (name: string, defect: (w: ReturnType<typeof world>) => Send | null, expect: Partial<Record<ConfirmLineCheck, CheckOutcome>>, ns?: LineNamespace) => {
+  const plant = async (
+    name: string,
+    defect: (w: ReturnType<typeof world>) => Send | null,
+    expect: Partial<Record<ConfirmLineCheck, CheckOutcome>>,
+    ns?: LineNamespace,
+    /** #3460: a defect in the pool grouping directory instead, or as well. */
+    directoryDefect?: (w: ReturnType<typeof world>) => void,
+  ) => {
     const w = world();
     const send = defect(w);
     if (send) w.setSend(send);
+    directoryDefect?.(w);
     const report = await w.run(ns);
     assert(report !== "unsettled", `${name}: the probe still finishes`);
     if (report === "unsettled") return;
@@ -385,13 +446,46 @@ async function main() {
   await plant(
     "a transport that cannot be built",
     () => null,
-    { full: "errored", notFull: "errored", abandoned: "errored", nothingHeld: "errored" },
+    { full: "errored", notFull: "errored", abandoned: "errored", nothingHeld: "errored", directory: "errored" },
     {
       stubFor() {
         throw new Error("no stub for that group");
       },
     },
+    (w) =>
+      w.setDirectoryFor(() => {
+        throw new Error("no stub for that directory");
+      }),
   );
+
+  // --- #3460: the pool grouping directory, a planted defect for each of its outcomes ---
+  const healthyLine = () => null;
+  await plant("a directory that cannot be reached", healthyLine, { directory: "directory-unreachable", full: "passed" }, undefined, (w) =>
+    w.setDirectorySend(async () => {
+      throw new Error("the directory refused");
+    }),
+  );
+  await plant("a directory that forgets what it is given", healthyLine, { directory: "not-stored" }, undefined, (w) =>
+    w.setDirectorySend(async (name, m) => (m.op === "grouping-get" ? { kind: "grouping", snapshot: null } : w.handleDirectory(name, m))),
+  );
+  await plant("a directory that refuses every put", healthyLine, { directory: "not-stored" }, undefined, (w) =>
+    w.setDirectorySend(async (name, m) => (m.op === "grouping-put" ? { kind: "bad", why: "a pool grouping message on a confirm line" } : w.handleDirectory(name, m))),
+  );
+  await plant("a directory where an older put wins", healthyLine, { directory: "older-won" }, undefined, (w) => {
+    // Stores whatever it was handed last, newest or not.
+    let last: unknown = null;
+    w.setDirectorySend(async (name, m) => {
+      if (name !== POOL_GROUPING_VERIFY_DIRECTORY) return w.handleDirectory(name, m);
+      if (m.op === "grouping-put") {
+        last = m.snapshot;
+        return { kind: "stored" };
+      }
+      return { kind: "grouping", snapshot: last };
+    });
+  });
+  await plant("no live grouping", healthyLine, { directory: "no-grouping" }, undefined, (w) => w.setLiveSeed("none"));
+  await plant("a stale live grouping", healthyLine, { directory: "grouping-unusable" }, undefined, (w) => w.setLiveSeed("stale"));
+  await plant("a live grouping of another format", healthyLine, { directory: "grouping-unusable" }, undefined, (w) => w.setLiveSeed("other-format"));
 
   for (const check of CONFIRM_LINE_CHECKS) {
     const declared = [...CHECK_CAN_END_ON[check]].sort();
@@ -465,7 +559,7 @@ async function main() {
     const out = readConfirmLineOutcome(200, reply(allPassed));
     eq(out.kind, "checked", "a checked reply is read as checked");
     const v0 = judgeConfirmLineProbe(out);
-    assert(v0.ok, "and four passed checks are the one pass");
+    assert(v0.ok, "and five passed checks are the one pass");
     eq(v0.ok ? 0 : v0.exitCode, CONFIRM_LINE_EXIT.passed, "on exit 0");
   }
   {
