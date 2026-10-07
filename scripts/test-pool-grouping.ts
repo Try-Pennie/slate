@@ -165,6 +165,49 @@ async function directoryTests() {
     eq(storage.writes, writes, "eviction: writes nothing, so a crowd of older backup publishes costs no storage");
   }
   {
+    // #3481: a get says where it answered from, so the daily proof can tell an instance
+    // that woke and read its storage back from one that never slept. `storage` only on the
+    // get that loaded it, `memory` on every call after, whatever the call was.
+    const storage = memoryGroupingStorage();
+    const first = objectWorld(storage);
+    const fresh = await first.send("directory", groupingGetMessage());
+    eq(fresh.from, "storage", "answered from: a new instance's first get loads its storage, and says so");
+    eq(fresh.snapshot, null, "answered from: and an empty storage still holds nothing");
+    eq((await first.send("directory", groupingGetMessage())).from, "memory", "answered from: the next get on the same instance is served from memory");
+    eq((await first.send("directory", groupingPutMessage(good))).kind, "stored", "answered from: a put is stored");
+    eq((await first.send("directory", groupingGetMessage())).from, "memory", "answered from: and a get after it, on the same instance, is still memory");
+
+    const woken = await objectWorld(storage).send("directory", groupingGetMessage());
+    eq(woken.from, "storage", "answered from: a woken instance's first get is answered from storage");
+    const back = readGroupingSnapshot(woken.snapshot, POOL_GROUPING_FORMAT);
+    assert(back.kind === "snapshot" && JSON.stringify(back.snapshot) === JSON.stringify(good), "answered from: and hands back the snapshot stored before it slept");
+
+    // A woken instance whose first call is a PUT loaded its storage on that put, so the
+    // get after it is memory: `storage` means this very get read storage, never that the
+    // instance is new.
+    const putFirst = objectWorld(storage);
+    eq((await putFirst.send("directory", groupingPutMessage(groupingSnapshotOf(ENTRIES, T0 + 5_000)))).kind, "stored", "answered from: a woken instance stores a newer put");
+    eq((await putFirst.send("directory", groupingGetMessage())).from, "memory", "answered from: and the get after that put is memory, since the put did the load");
+
+    // A load that failed is retried by the next call, and that call is the one that read
+    // storage.
+    let failNext = true;
+    const flaky: DirectoryStorage = {
+      get: async (key) => {
+        if (failNext) {
+          failNext = false;
+          throw new Error("storage is down");
+        }
+        return storage.get(key);
+      },
+      put: (key, value) => storage.put(key, value),
+    };
+    const retried = objectWorld(flaky);
+    eq((await retried.send("directory", groupingGetMessage())).kind, "bad", "answered from: a get whose load fails is refused");
+    eq((await retried.send("directory", groupingGetMessage())).from, "storage", "answered from: and the get that loaded it next says storage");
+    eq((await retried.send("directory", groupingGetMessage())).from, "memory", "answered from: and the one after, memory");
+  }
+  {
     // A write that fails is a refusal, never `stored`: the publisher stamps its heartbeat
     // only on stored, so a directory that cannot persist is paged rather than believed.
     const failing: DirectoryStorage = {

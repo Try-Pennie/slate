@@ -26,6 +26,9 @@ import {
   ABANDONED_LEAD_FREED_WITHIN_MS,
   VERDICT_REACHES_FOLLOWER_WITHIN_MS,
   PROBE_SWITCH,
+  PLATFORM_HIBERNATE_AFTER_MS,
+  PROBE_WAKE_IDLE_MS,
+  PROBE_WAKE_READS,
   runConfirmLineProbe,
   judgeHandOn,
   type ConfirmLineCheck,
@@ -34,6 +37,7 @@ import {
 } from "../src/lib/monitor/confirm-line-probe.ts";
 import {
   CONFIRM_LINE_EXIT,
+  REPLY_DEADLINE_MS,
   readConfirmLineOutcome,
   judgeConfirmLineProbe,
   type ProbeOutcome,
@@ -58,6 +62,8 @@ import {
 import { confirmQueueKey } from "../src/lib/booking/orchestration.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 import { memoryGroupingStorage } from "./lib/memory-grouping-storage.ts";
+import { hibernatingObjects, type HibernatingObjects } from "./lib/hibernating-objects.ts";
+import type { GroupingDirectoryStorage } from "../src/lib/booking/pool-grouping.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 type Message = Record<string, unknown>;
@@ -65,6 +71,9 @@ type Send = (message: Message) => Promise<Message>;
 const tick = () => new Promise((r) => setImmediate(r));
 /** Printable ASCII only, so no dash or emoji can reach a message (written as a range, not a literal). */
 const PLAIN = /^[\x20-\x7E\n]*$/;
+/** #3481: whether a call is the wake check's own put, which only it makes: its grouping's code names the wake. */
+const isWakePut = (name: string, m: Message) =>
+  name === POOL_GROUPING_VERIFY_DIRECTORY && m.op === "grouping-put" && JSON.stringify(m.snapshot).includes(":wake");
 
 /** A virtual clock, the real object host, and a transport that can be swapped for a defect. */
 function world() {
@@ -99,38 +108,66 @@ function world() {
   // #3460: the pool grouping directories, each the REAL object served as the directory,
   // through JSON both ways. The live one is seeded as the recompute lane would leave it,
   // so a healthy world passes and each defect below is the only thing wrong.
-  const directoryObjects = new Map<string, ReturnType<typeof makeConfirmLineObject>>();
-  const directoryCalls: { name: string; op: string }[] = [];
-  const handleDirectory = async (name: string, m: Message) => {
-    let o = directoryObjects.get(name);
-    if (!o) {
-      o = makeConfirmLineObject({ now: () => now, timer, leaseTimer: timer, newId, directoryStorage: memoryGroupingStorage() });
-      directoryObjects.set(name, o);
-    }
-    return JSON.parse(await o.handle("directory", JSON.parse(JSON.stringify(m)) as unknown)) as Message;
-  };
+  //
+  // #3481: and each sleeps as the platform's do. An instance left idle for the hibernation
+  // window is discarded and the next call reaches a new one over the same storage, so the
+  // healthy world is one in which the probe CAN see a wake, and a defect below can take
+  // that away (a platform that never sleeps, or one that loses storage on the way).
+  let platform: { idleMs: number; storageOnWake?: (kept: GroupingDirectoryStorage) => GroupingDirectoryStorage } = { idleMs: PLATFORM_HIBERNATE_AFTER_MS };
+  let objects: HibernatingObjects<ReturnType<typeof makeConfirmLineObject>> | null = null;
+  const directoryObjects = () =>
+    (objects ??= hibernatingObjects({
+      now: () => now,
+      build: (storage) => makeConfirmLineObject({ now: () => now, timer, leaseTimer: timer, newId, directoryStorage: storage }),
+      get idleMs() {
+        return platform.idleMs;
+      },
+      storageOnWake: platform.storageOnWake,
+    }));
+  const directoryCalls: { name: string; op: string; at: number; wakePut: boolean }[] = [];
+  const handleDirectory = async (name: string, m: Message) =>
+    directoryObjects().call(name, async (o) => JSON.parse(await o.handle("directory", JSON.parse(JSON.stringify(m)) as unknown)) as Message);
   let directorySend: (name: string, m: Message) => Promise<Message> = handleDirectory;
   let directoryFor: (name: string) => DirectoryStub = (name) => ({
     send(m) {
-      directoryCalls.push({ name, op: String(m.op) });
+      directoryCalls.push({ name, op: String(m.op), at: now, wakePut: isWakePut(name, m) });
       return directorySend(name, m);
     },
   });
+  const sleep = (ms: number) => new Promise<void>((resolve) => timer(ms, () => resolve()));
   const seedLive = async (readAtMs: number, format?: number) =>
     handleDirectory(POOL_GROUPING_DIRECTORY, groupingPutMessage({ ...groupingSnapshotOf([["120", "pool-a"], ["121", "pool-a"]], readAtMs), ...(format ? { format } : {}) }));
   /** What the live directory holds when the probe runs: as the lane leaves it, unless a defect says otherwise. */
   let liveSeed: "fresh" | "none" | "stale" | "other-format" = "fresh";
+  /** How long the last run took on the virtual clock, from the probe starting to it answering. */
+  let lastRunMs = 0;
+  /**
+   * The same run split where the wake check starts (its first call, the read just before
+   * its own put), so the slowest line checks and the slowest wake can be added up even
+   * though no single planted defect makes both slow. A run whose wake check never reached
+   * its put spent no time waiting, so all of it counts before.
+   */
+  let lastSplit = { beforeWakeMs: 0, wakeMs: 0 };
   const run = async (ns: LineNamespace = namespace): Promise<ProbeReport | "unsettled"> => {
     if (liveSeed === "fresh") await seedLive(now - 5_000);
     if (liveSeed === "stale") await seedLive(now - 10 * 60_000);
     if (liveSeed === "other-format") await seedLive(now - 5_000, 99);
     let out: ProbeReport | "unsettled" = "unsettled";
     let settled = false;
-    void runConfirmLineProbe({ namespace: ns, directory: (name) => directoryFor(name), now: () => now, timer, newId }).then((r) => {
+    const startedAt = now;
+    const callsBefore = directoryCalls.length;
+    void runConfirmLineProbe({ namespace: ns, directory: (name) => directoryFor(name), now: () => now, timer, sleep, newId }).then((r) => {
       out = r;
       settled = true;
+      lastRunMs = now - startedAt;
+      const calls = directoryCalls.slice(callsBefore);
+      const wakePut = calls.findIndex((c) => c.wakePut);
+      const wakeStart = wakePut < 1 ? undefined : calls[wakePut - 1]?.at;
+      lastSplit = wakeStart === undefined ? { beforeWakeMs: lastRunMs, wakeMs: 0 } : { beforeWakeMs: wakeStart - startedAt, wakeMs: now - wakeStart };
     });
-    for (let spent = 0; !settled && spent < 90_000; spent += 25) {
+    // Past the command's own reply deadline, so a probe slower than the command waits for
+    // is seen here as slow rather than as unsettled.
+    for (let spent = 0; !settled && spent < 2 * REPLY_DEADLINE_MS; spent += 25) {
       const until = now + 25;
       for (;;) {
         await tick();
@@ -161,6 +198,17 @@ function world() {
     },
     directoryCalls,
     handleDirectory,
+    lastRunMs: () => lastRunMs,
+    lastSplit: () => lastSplit,
+    directoryWakes: (name: string) => directoryObjects().wakes(name),
+    setDirectoryPlatform(next: typeof platform) {
+      if (objects) throw new Error("set the directory platform before anything calls a directory");
+      platform = next;
+    },
+    /** Change how long an idle directory stays in memory, even mid run. */
+    setDirectoryIdleMs(ms: number) {
+      platform = { ...platform, idleMs: ms };
+    },
     seedLive,
     setLiveSeed(next: typeof liveSeed) {
       liveSeed = next;
@@ -288,6 +336,15 @@ const outcomes = (r: ProbeReport | "unsettled") =>
   // The probe never reads the stored switch: the switch decides real confirms, and a
   // probe that stood down whenever it was off would prove nothing while the line is off.
   eq(PROBE_SWITCH.on, true, "the probe uses the shared line whatever the stored switch says");
+  // #3481: the wake half. Every read the probe makes resets the object's idle clock, so
+  // each spell between reads must on its own be past the platform's window, with room for
+  // the runtime's own timing, or the probe's polling keeps the object awake and it can
+  // never see a wake.
+  assert(
+    PROBE_WAKE_IDLE_MS >= 2 * PLATFORM_HIBERNATE_AFTER_MS,
+    `each idle spell (${PROBE_WAKE_IDLE_MS}ms) is at least twice the platform's ${PLATFORM_HIBERNATE_AFTER_MS}ms hibernation window`,
+  );
+  assert(PROBE_WAKE_READS >= 2, "and there is more than one spell, so one the runtime happened to stretch is not the whole verdict");
 }
 
 async function main() {
@@ -315,6 +372,9 @@ async function main() {
     const live = w.directoryCalls.filter((c) => c.name === POOL_GROUPING_DIRECTORY);
     assert(live.length === 1 && live[0]!.op === "grouping-get", `and the live directory was only read, once (got ${JSON.stringify(live)})`);
     assert(w.directoryCalls.every((c) => c.name === POOL_GROUPING_VERIFY_DIRECTORY || c.name === POOL_GROUPING_DIRECTORY), "and it addressed no other directory");
+    // #3481: it left its own directory idle until it slept, and read it back from storage.
+    assert(w.directoryWakes(POOL_GROUPING_VERIFY_DIRECTORY) >= 1, "the verification directory slept and woke during the run");
+    assert(w.lastRunMs() >= PROBE_WAKE_IDLE_MS, `so the run took at least one idle spell (took ${w.lastRunMs()}ms)`);
     // Nothing left held, checked by THIS file against the host directly rather than by
     // the probe's own last check, which uses the same client it is checking (L345).
     for (const instant of w.instants) {
@@ -325,6 +385,17 @@ async function main() {
   }
 
   // --- a planted defect for every outcome the probe can name (L151) ------------------
+  /**
+   * The longest any planted run spent before the wake check, and in it, on the virtual
+   * clock: their sum is the slowest a run could be with both halves at their worst, held
+   * against the command's deadline below.
+   */
+  let slowestBefore = 0;
+  let slowestWake = 0;
+  const measure = (w: ReturnType<typeof world>) => {
+    slowestBefore = Math.max(slowestBefore, w.lastSplit().beforeWakeMs);
+    slowestWake = Math.max(slowestWake, w.lastSplit().wakeMs);
+  };
   const produced = new Map<ConfirmLineCheck, Set<CheckOutcome>>(CONFIRM_LINE_CHECKS.map((c) => [c, new Set(["passed" as CheckOutcome])]));
   const plant = async (
     name: string,
@@ -339,6 +410,7 @@ async function main() {
     if (send) w.setSend(send);
     directoryDefect?.(w);
     const report = await w.run(ns);
+    measure(w);
     assert(report !== "unsettled", `${name}: the probe still finishes`);
     if (report === "unsettled") return;
     for (const [check, outcome] of Object.entries(expect) as [ConfirmLineCheck, CheckOutcome][]) {
@@ -454,7 +526,7 @@ async function main() {
   await plant(
     "a transport that cannot be built",
     () => null,
-    { full: "errored", notFull: "errored", abandoned: "errored", nothingHeld: "errored", directory: "errored" },
+    { full: "errored", notFull: "errored", abandoned: "errored", nothingHeld: "errored", directory: "errored", directoryWake: "errored" },
     {
       stubFor() {
         throw new Error("no stub for that group");
@@ -468,15 +540,15 @@ async function main() {
 
   // --- #3460: the pool grouping directory, a planted defect for each of its outcomes ---
   const healthyLine = () => null;
-  await plant("a directory that cannot be reached", healthyLine, { directory: "directory-unreachable", full: "passed" }, undefined, (w) =>
+  await plant("a directory that cannot be reached", healthyLine, { directory: "directory-unreachable", directoryWake: "directory-unreachable", full: "passed" }, undefined, (w) =>
     w.setDirectorySend(async () => {
       throw new Error("the directory refused");
     }),
   );
-  await plant("a directory that forgets what it is given", healthyLine, { directory: "not-stored" }, undefined, (w) =>
+  await plant("a directory that forgets what it is given", healthyLine, { directory: "not-stored", directoryWake: "not-stored" }, undefined, (w) =>
     w.setDirectorySend(async (name, m) => (m.op === "grouping-get" ? { kind: "grouping", snapshot: null } : w.handleDirectory(name, m))),
   );
-  await plant("a directory that refuses every put", healthyLine, { directory: "not-stored" }, undefined, (w) =>
+  await plant("a directory that refuses every put", healthyLine, { directory: "not-stored", directoryWake: "not-stored" }, undefined, (w) =>
     w.setDirectorySend(async (name, m) => (m.op === "grouping-put" ? { kind: "bad", why: "a pool grouping message on a confirm line" } : w.handleDirectory(name, m))),
   );
   await plant("a directory where an older put wins", healthyLine, { directory: "older-won" }, undefined, (w) => {
@@ -494,6 +566,128 @@ async function main() {
   await plant("no live grouping", healthyLine, { directory: "no-grouping" }, undefined, (w) => w.setLiveSeed("none"));
   await plant("a stale live grouping", healthyLine, { directory: "grouping-unusable" }, undefined, (w) => w.setLiveSeed("stale"));
   await plant("a live grouping of another format", healthyLine, { directory: "grouping-unusable" }, undefined, (w) => w.setLiveSeed("other-format"));
+
+  // --- #3481: the directory after an idle sleep, a planted defect for each outcome -----
+  // A defect that acts "after the wait" counts from the wake check's own put (`isWakePut`).
+  //
+  // A platform that never discards an idle object: every read after the wait is answered
+  // from memory, so a wake was never seen. Never a pass (L98): nothing was proved about
+  // storage surviving a sleep.
+  await plant("a platform that never puts the directory to sleep", healthyLine, { directoryWake: "wake-unobserved", directory: "passed", full: "passed" }, undefined, (w) =>
+    w.setDirectoryPlatform({ idleMs: Infinity }),
+  );
+  // Control (L159): the same fixture with a window one millisecond longer than the probe's
+  // spell. The healthy world passes only because its window sits inside the spell, so a
+  // pass is never something the probe produces by construction.
+  await plant("a platform whose window is longer than the probe's spell", healthyLine, { directoryWake: "wake-unobserved" }, undefined, (w) =>
+    w.setDirectoryPlatform({ idleMs: PROBE_WAKE_IDLE_MS + 1 }),
+  );
+  // A directory older than the field answers without saying where from, so a woken
+  // instance cannot be told from one that never slept.
+  await plant("a directory that does not say where it answered from", healthyLine, { directoryWake: "wake-unobserved" }, undefined, (w) =>
+    w.setDirectorySend(async (name, m) => {
+      const answer = { ...(await w.handleDirectory(name, m)) };
+      delete answer.from;
+      return answer;
+    }),
+  );
+  // Storage that does not survive the sleep: the woken instance reads nothing back, which
+  // is the empty directory #3479 fixed.
+  await plant("a directory whose storage does not survive its sleep", healthyLine, { directoryWake: "lost-after-idle" }, undefined, (w) =>
+    w.setDirectoryPlatform({ idleMs: PLATFORM_HIBERNATE_AFTER_MS, storageOnWake: () => memoryGroupingStorage() }),
+  );
+  // A woken instance that cannot read its storage refuses the get (L215), and a server
+  // reading it keys by code exactly as if it had read nothing.
+  await plant("a woken directory that cannot read its storage", healthyLine, { directoryWake: "lost-after-idle" }, undefined, (w) =>
+    w.setDirectoryPlatform({
+      idleMs: PLATFORM_HIBERNATE_AFTER_MS,
+      storageOnWake: (kept) => ({
+        get: async () => {
+          throw new Error("storage is down");
+        },
+        put: (key, value) => kept.put(key, value),
+      }),
+    }),
+  );
+  // Awake the whole time and the grouping gone anyway: lost while idle, said as the memory
+  // it was answered from rather than blamed on a wake.
+  await plant("a directory that drops what it holds while idle", healthyLine, { directoryWake: "lost-after-idle" }, undefined, (w) => {
+    w.setDirectoryPlatform({ idleMs: Infinity });
+    let waitingSince: number | null = null;
+    w.setDirectorySend(async (name, m) => {
+      const answer = await w.handleDirectory(name, m);
+      if (isWakePut(name, m)) waitingSince = w.now();
+      const waited = waitingSince !== null && w.now() - waitingSince >= PROBE_WAKE_IDLE_MS;
+      return name === POOL_GROUPING_VERIFY_DIRECTORY && m.op === "grouping-get" && waited ? { ...answer, snapshot: null } : answer;
+    });
+  });
+  // The directory stops answering while it is left idle.
+  await plant("a directory that stops answering while idle", healthyLine, { directoryWake: "directory-unreachable" }, undefined, (w) => {
+    let waitingSince: number | null = null;
+    w.setDirectorySend(async (name, m) => {
+      const waited = waitingSince !== null && w.now() - waitingSince >= PROBE_WAKE_IDLE_MS;
+      if (name === POOL_GROUPING_VERIFY_DIRECTORY && m.op === "grouping-get" && waited) throw new Error("the directory refused");
+      if (isWakePut(name, m)) waitingSince = w.now();
+      return w.handleDirectory(name, m);
+    });
+  });
+
+  // The wake loop, past a first spell the runtime stretched. The first read after the wait
+  // finds the directory still awake and holding its grouping, so the probe waits another
+  // spell rather than calling it either way, and the second read finds it woken.
+  {
+    const w = world();
+    w.setDirectoryPlatform({ idleMs: Infinity });
+    let waitingSince: number | null = null;
+    w.setDirectorySend(async (name, m) => {
+      const answer = await w.handleDirectory(name, m);
+      if (isWakePut(name, m)) waitingSince = w.now();
+      // After the first spell, the runtime starts putting idle objects to sleep again.
+      if (name === POOL_GROUPING_VERIFY_DIRECTORY && waitingSince !== null && w.now() - waitingSince >= PROBE_WAKE_IDLE_MS) w.setDirectoryIdleMs(PLATFORM_HIBERNATE_AFTER_MS);
+      return answer;
+    });
+    const report = await w.run();
+    measure(w);
+    assert(report !== "unsettled", "a stretched first spell: the probe finishes");
+    if (report !== "unsettled") {
+      eq(report.directoryWake.outcome, "passed", `a stretched first spell: the second read, from storage, passes (${report.directoryWake.detail})`);
+      assert(/read 2 of /.test(report.directoryWake.detail), `and says it took the second read (${report.directoryWake.detail})`);
+    }
+    // Its own reads never kept the object awake: after the put, each read is a whole spell
+    // after the call before it.
+    const verify = w.directoryCalls.filter((c) => c.name === POOL_GROUPING_VERIFY_DIRECTORY);
+    const [before, first, second] = verify.slice(-3);
+    assert(
+      before !== undefined && first !== undefined && second !== undefined && first.at - before.at >= PROBE_WAKE_IDLE_MS && second.at - first.at >= PROBE_WAKE_IDLE_MS,
+      `a stretched first spell: each read after the put is a whole spell after the call before it (${JSON.stringify(verify.slice(-3))})`,
+    );
+  }
+  {
+    // And when no read ever answers from storage it gives up after its reads rather than
+    // waiting for ever (L110), every one of them a whole spell after the call before it.
+    const w = world();
+    w.setDirectoryPlatform({ idleMs: Infinity });
+    const report = await w.run();
+    measure(w);
+    assert(report !== "unsettled" && report.directoryWake.outcome === "wake-unobserved", "an awake directory: the probe ends unobserved");
+    const verify = w.directoryCalls.filter((c) => c.name === POOL_GROUPING_VERIFY_DIRECTORY);
+    const tail = verify.slice(-(PROBE_WAKE_READS + 1));
+    const gaps = tail.slice(1).map((c, i) => c.at - tail[i]!.at);
+    assert(
+      tail.slice(1).every((c) => c.op === "grouping-get") && gaps.length === PROBE_WAKE_READS && gaps.every((g) => g >= PROBE_WAKE_IDLE_MS),
+      `an awake directory: exactly ${PROBE_WAKE_READS} reads after the wait, each a whole spell after the call before it (gaps ${gaps.join(", ")}ms)`,
+    );
+    const callsAfter = verify.filter((c) => c.at > tail[0]!.at);
+    eq(callsAfter.length, PROBE_WAKE_READS, "and nothing else touched the directory while it was meant to be idle");
+    if (report !== "unsettled") assert(/memory/.test(report.directoryWake.detail), `and it says the directory answered from memory (${report.directoryWake.detail})`);
+  }
+
+  // The command must outwait the slowest probe, with room (L743): a deadline inside it
+  // reads a slow but honest run as no reply at all. Measured as the slowest line checks
+  // plus the slowest wake, the worst both halves can be together.
+  const worst = slowestBefore + slowestWake;
+  assert(slowestBefore > 0 && slowestWake >= PROBE_WAKE_READS * PROBE_WAKE_IDLE_MS, `both halves were measured (${slowestBefore}ms before the wake check, ${slowestWake}ms in it)`);
+  assert(worst < 0.8 * REPLY_DEADLINE_MS, `the slowest the probe can take (${worst}ms) sits well inside the command's ${REPLY_DEADLINE_MS}ms reply deadline`);
 
   for (const check of CONFIRM_LINE_CHECKS) {
     const declared = [...CHECK_CAN_END_ON[check]].sort();
@@ -567,7 +761,7 @@ async function main() {
     const out = readConfirmLineOutcome(200, reply(allPassed));
     eq(out.kind, "checked", "a checked reply is read as checked");
     const v0 = judgeConfirmLineProbe(out);
-    assert(v0.ok, "and five passed checks are the one pass");
+    assert(v0.ok, "and every check passing is the one pass");
     eq(v0.ok ? 0 : v0.exitCode, CONFIRM_LINE_EXIT.passed, "on exit 0");
   }
   {

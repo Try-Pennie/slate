@@ -166,6 +166,15 @@ export interface GroupingDirectoryStorage {
 export const POOL_GROUPING_STORAGE_KEY = "pool-grouping-snapshot";
 
 /**
+ * Where a get was answered from (#3481): `storage` only on the get that loaded the
+ * instance's storage, which on a woken instance is its first call, and `memory` on every
+ * other. An additive field readers ignore (`pool-grouping-reader.ts` reads `kind` and
+ * `snapshot` alone), so the directory's protocol is unchanged; the daily proof reads it to
+ * tell an instance that slept and read its snapshot back from one that never slept.
+ */
+export type GroupingAnsweredFrom = "memory" | "storage";
+
+/**
  * The directory, as its object runs it: the newest snapshot it was handed. A put is judged
  * by its shape alone (never empty, never a count its entries do not match) and kept only
  * when newer than what is held; a get hands back what is held, or null.
@@ -178,19 +187,21 @@ export const POOL_GROUPING_STORAGE_KEY = "pool-grouping-snapshot";
  * as a put (L1013), before answering anything. A put writes storage BEFORE it answers
  * `stored`, and a write that fails is refused, so the publisher, which stamps its
  * heartbeat only on `stored`, is paged rather than believed. A read that fails is refused
- * too, never answered as an empty directory (L215).
+ * too, never answered as an empty directory (L215). A get says which of the two it was
+ * answered from (`GroupingAnsweredFrom`, #3481).
  */
 export function makeGroupingDirectoryHost(storage: GroupingDirectoryStorage): { handle(message: unknown): Promise<string> } {
   let stored: GroupingSnapshot | null = null;
   // One load per woken instance; a load that failed is forgotten so the next call tries
-  // again.
+  // again. Answers whether THIS call did the load, which is what `storage` means on a get.
   let loaded = false;
-  const load = async () => {
-    if (loaded) return;
+  const load = async (): Promise<boolean> => {
+    if (loaded) return false;
     const raw = await storage.get(POOL_GROUPING_STORAGE_KEY);
     const read = raw === undefined || raw === null ? null : readGroupingSnapshot(raw, null);
     stored = read?.kind === "snapshot" ? read.snapshot : null;
     loaded = true;
+    return true;
   };
   const bad = (why: string) => JSON.stringify({ kind: "bad", why });
   // One call at a time, so a put's check against what is held and its write can never
@@ -202,12 +213,13 @@ export function makeGroupingDirectoryHost(storage: GroupingDirectoryStorage): { 
     const m = message as Record<string, unknown>;
     if (m.dv !== POOL_GROUPING_DIRECTORY_PROTOCOL) return bad("directory version");
     if (m.op !== "grouping-get" && m.op !== "grouping-put") return bad("unknown directory op");
+    let from: GroupingAnsweredFrom;
     try {
-      await load();
+      from = (await load()) ? "storage" : "memory";
     } catch {
       return bad("directory storage could not be read");
     }
-    if (m.op === "grouping-get") return JSON.stringify({ kind: "grouping", snapshot: stored });
+    if (m.op === "grouping-get") return JSON.stringify({ kind: "grouping", snapshot: stored, from });
     const read = readGroupingSnapshot(m.snapshot, null);
     if (read.kind !== "snapshot") return bad(read.kind === "refused" ? read.why : "format");
     if (stored && stored.readAtMs >= read.snapshot.readAtMs) return JSON.stringify({ kind: "kept", readAtMs: stored.readAtMs });

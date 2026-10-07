@@ -31,6 +31,13 @@ export const realTimer: ScheduleTimer = (ms, fire) => {
 };
 
 /**
+ * A wait on the real clock, for a caller whose wait is part of what it measures (the
+ * confirm line proof leaving its directory idle, #3481). Handed in as a dependency like
+ * `realTimer`, so a test replaces it rather than waiting for real (L524).
+ */
+export const realSleep = (ms: number): Promise<void> => new Promise((resolve) => realTimer(ms, () => resolve()));
+
+/**
  * A read under a deadline, shared by every bounded read that must not hold a page
  * or a lane up: the calling number reads (lead facing and the reminder lane's
  * batched one), the advisor card photo, and the rebook lookup (#2982).
