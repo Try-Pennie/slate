@@ -24,7 +24,7 @@ import {
   offeredSlots,
   burstReadiness,
   waitForBurstMoment,
-  leadExternalId,
+  attemptIdentity,
   type LoadtestLead,
   pickSlot,
   driverDeadlineMs,
@@ -201,9 +201,8 @@ async function slotsFor(code: string, nowMs: number, deadlineAtMs: number): Prom
 async function book(req: {
   code: string;
   startIso: string;
-  /** The attempt, which its external id, address and number all come from (#3447). */
+  /** The attempt, which its external id, address, number and `n` all come from (#3447). */
   lead: LoadtestLead;
-  n: number;
   /** The driver's own deadline, or Infinity for the burst, which has none. */
   deadlineAtMs: number;
 }): Promise<BookingAttempt> {
@@ -254,10 +253,8 @@ async function book(req: {
     echo = null;
   }
   return {
-    driver: DRIVER,
-    n: req.n,
+    ...attemptIdentity(req.lead),
     code: req.code,
-    externalId: leadExternalId(req.lead),
     sentAtMs,
     wallMs: Math.round(performance.now() - t0),
     status,
@@ -319,10 +316,8 @@ async function steady(
       // failed first read). No booking was sent, and the bucket is not known to offer
       // nothing, so this has its own outcome rather than no-slots-offered (L11).
       attempts.push({
-        driver: DRIVER,
-        n: req.n,
+        ...attemptIdentity({ runId: RUN_ID, leg: mode, driver: DRIVER, n: req.n }),
         code: req.code,
-        externalId: leadExternalId({ runId: RUN_ID, leg: mode, driver: DRIVER, n: req.n }),
         sentAtMs: now,
         wallMs: 0,
         status: 0,
@@ -339,10 +334,8 @@ async function steady(
       // status of its own. An offered-nothing run and a run nobody drove produce the
       // same empty file otherwise, and the judge could not tell them apart (L98).
       attempts.push({
-        driver: DRIVER,
-        n: req.n,
+        ...attemptIdentity({ runId: RUN_ID, leg: mode, driver: DRIVER, n: req.n }),
         code: req.code,
-        externalId: leadExternalId({ runId: RUN_ID, leg: mode, driver: DRIVER, n: req.n }),
         sentAtMs: now,
         wallMs: 0,
         status: 0,
@@ -358,7 +351,6 @@ async function steady(
         code: req.code,
         startIso,
         lead: { runId: RUN_ID, leg: mode, driver: DRIVER, n: req.n },
-        n: req.n,
         deadlineAtMs,
       }),
     );
@@ -550,7 +542,6 @@ async function burst(): Promise<void> {
           code: burstCodeFor(plan.codes, DRIVER, i),
           startIso: leg.slot,
           lead: { runId: RUN_ID, leg: "burst", driver: DRIVER, n: index * BURST_REQUESTS + i },
-          n: index * BURST_REQUESTS + i,
           deadlineAtMs: Number.POSITIVE_INFINITY,
         }),
       ),

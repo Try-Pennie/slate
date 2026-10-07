@@ -31,6 +31,8 @@ import {
   offeredSlots,
   loadtestPhone,
   leadExternalId,
+  attemptIdentity,
+  ceilingControlBody,
   idPrefix,
   chooseBurstSlots,
   burstMoments,
@@ -501,6 +503,42 @@ const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
   eq(leadExternalId({ runId: REAL_RUN, leg: "cold", driver: 90, n: 2 }), "run-37547143303-1-c-90-2", "and so does the cold leg's");
   eq(leadExternalId({ runId: REAL_RUN, leg: "preflight", driver: 0, n: 0 }), "run-37547143303-1-preflight", "the preflight keeps the id the judge looks it up by");
   eq(leadExternalId({ runId: "ceiling-control", leg: "ceiling", driver: 0, n: 7 }), "ceiling-control-7", "and the ceiling control keeps its own");
+}
+
+{
+  // #3447 review: what an attempt's record says about who it was (its driver, its
+  // request number and its external id) comes from its ONE lead, so the record and
+  // the id it booked under can never name two different requests (L41).
+  for (const leg of LOADTEST_LEGS) {
+    const lead = { runId: REAL_RUN, leg, driver: 2, n: 41 };
+    eq(attemptIdentity(lead), { driver: 2, n: 41, externalId: leadExternalId(lead) }, `a ${leg} attempt's record names its own lead`);
+  }
+}
+
+{
+  // The ceiling control's dry run, built from its lead like every other sender.
+  const body = JSON.parse(ceilingControlBody(7, "112", "2026-10-08T14:00:00Z")) as {
+    bucketCode: string;
+    start: string;
+    externalId: string;
+    dryRun: boolean;
+    attendee: { email: string; phone: string };
+  };
+  eq(body.bucketCode, "112", "the ceiling control asks for its code");
+  eq(body.start, "2026-10-08T14:00:00Z", "at its time");
+  eq(body.externalId, "ceiling-control-7", "under the id it has always used");
+  eq(body.dryRun, true, "as a dry run, which writes no row");
+  eq(body.attendee.email, "ceiling-control-7@loadtest.local", "with its own address");
+  eq(body.attendee.phone, loadtestPhone({ runId: "ceiling-control", leg: "ceiling", driver: 0, n: 7 }), "and its own number");
+  // Built before the request is sent, so a number outside the digits stops the
+  // control by name rather than being recorded as a request that failed in transit.
+  let threw: unknown = null;
+  try {
+    ceilingControlBody(10_000, "112", "2026-10-08T14:00:00Z");
+  } catch (err) {
+    threw = err;
+  }
+  assert(threw instanceof Error && /request 10000/.test(threw.message), `a ceiling request past the digits is refused by name (got ${threw instanceof Error ? threw.message : "no refusal"})`);
 }
 
 // --- each leg mints its own external ids (#2261) ------------------------------

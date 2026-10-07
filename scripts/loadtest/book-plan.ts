@@ -461,6 +461,42 @@ export function leadExternalId(lead: LoadtestLead): string {
 }
 
 /**
+ * What an attempt's record says about who it was: its driver, request number and
+ * external id, all from its one lead (#3447), so a record and the id it booked
+ * under can never name two different requests.
+ */
+export function attemptIdentity(lead: LoadtestLead): { driver: number; n: number; externalId: string } {
+  return { driver: lead.driver, n: lead.n, externalId: leadExternalId(lead) };
+}
+
+/**
+ * The ceiling control's dry run (#2339), from its lead like every other sender's
+ * body (#3447). Its leads sit outside any run's scope, since a dry run writes no
+ * row. Built before the request is sent, so a request number outside the phone's
+ * digits throws here, by name, rather than inside the send where it would be
+ * recorded as a request that failed in transit.
+ */
+export function ceilingControlBody(n: number, code: string, startIso: string): string {
+  const lead: LoadtestLead = { runId: "ceiling-control", leg: "ceiling", driver: 0, n };
+  const externalId = leadExternalId(lead);
+  return JSON.stringify({
+    bucketCode: code,
+    start: startIso,
+    timezone: "America/New_York",
+    externalId,
+    dryRun: true,
+    attendee: {
+      name: "Ceiling Control",
+      email: `${externalId}@loadtest.local`,
+      // Its own number like every other caller (#2261). These are dry runs, so the
+      // person gate cannot refuse them anyway, but one shared identity across the
+      // load machinery is the footgun that change removed.
+      phone: loadtestPhone(lead),
+    },
+  });
+}
+
+/**
  * The lead id a request books under.
  *
  * It carries the run, the driver and the request number, so every row a run wrote
