@@ -200,10 +200,13 @@ async function handle(req: NextRequest) {
     ).catch(logAlertSendFailure(`booking_window_extended:${result.routing.requested_code}`));
   }
 
-  // Rule #259: leads must never see routing internals, even in the network
-  // payload. Tier-drop is intentionally invisible: we report the REQUESTED
-  // bucket code (what the lead asked for) and serve the EFFECTIVE tier's slots,
-  // but the `routing` meta stays server-side only — never sent to the client.
+  // Rule #259: leads must never see routing internals. Tier-drop is intentionally
+  // invisible: we report the REQUESTED bucket code (what the lead asked for) and
+  // serve the EFFECTIVE tier's slots, and the `routing` meta stays server-side.
+  // The one routing fact the payload carries is `shownTier` (#3495), which the
+  // booker hands back with its confirm so the confirm records it instead of reading
+  // the cache for it, and never renders. Dan, 2026-10-07: "I don't want the lead to
+  // see it. I don't care if it's in the background in a spot they'll never see".
   return NextResponse.json(
     {
       bucket: { code: result.routing.requested_code },
@@ -215,6 +218,7 @@ async function handle(req: NextRequest) {
       },
       slots,
       emptyBecause,
+      shownTier: result.routing.booked_tier,
     },
     { headers },
   );

@@ -838,6 +838,14 @@ export interface PlannedBurst {
   kind: BurstKind;
   /** The two sibling codes it is split across, measured to share a fallback ladder. */
   codes: [string, string];
+  /**
+   * #3495: the tier each of `codes` had on show when the setup read its availability,
+   * in the same order, or null where the answer named none. Every booking hands back
+   * its own code's, as the booker hands back the tier it had on show, so the confirm
+   * records it instead of reading the cache for it, which is the read the burst is
+   * built to cost.
+   */
+  shownTiers: [string | null, string | null];
   slot: string;
   startAtMs: number;
   /** Requests each driver fires in it. */
@@ -893,6 +901,14 @@ export function readBurstPlan(raw: string): { ok: true; plan: BurstPlan } | { ok
     if (codes[0] === codes[1]) {
       return { ok: false, why: `BURST_PLAN burst ${n} must name two different codes, and names ${codes[0]} twice` };
     }
+    // #3495: one per code, each a tier name or null. A missing list is refused rather
+    // than read as "no tier", which would put the cache read back on every request
+    // with nothing to say the burst had changed what it measures.
+    const tiers = b.shownTiers;
+    const isTier = (t: unknown) => t === null || (typeof t === "string" && t.trim() !== "");
+    if (!Array.isArray(tiers) || tiers.length !== 2 || !tiers.every(isTier)) {
+      return { ok: false, why: `BURST_PLAN burst ${n} must name the tier each of its two codes had on show (or null): ${JSON.stringify(tiers)}` };
+    }
     const slot = b.slot;
     if (typeof slot !== "string" || !Number.isFinite(Date.parse(slot))) {
       return { ok: false, why: `BURST_PLAN burst ${n}'s slot is not a time: ${JSON.stringify(slot)}` };
@@ -919,6 +935,7 @@ export function readBurstPlan(raw: string): { ok: true; plan: BurstPlan } | { ok
     out.push({
       kind: kind as BurstKind,
       codes: [codes[0], codes[1]],
+      shownTiers: [tiers[0] as string | null, tiers[1] as string | null],
       slot,
       startAtMs,
       perDriver,
@@ -1188,7 +1205,15 @@ export function bookingRequestHeaders(apiKey: string, leg: LoadtestLeg): Record<
  * shared number makes every booking after the first a `confirm_required` refusal of
  * the same person calling again.
  */
-export function bookingBody(req: { code: string; startIso: string; lead: LoadtestLead; timezone: string }): Record<string, unknown> {
+export function bookingBody(req: {
+  code: string;
+  startIso: string;
+  lead: LoadtestLead;
+  timezone: string;
+  /** #3495: the tier the code's availability answer had on show, handed back as the
+   *  booker does; null or absent sends no key, and the confirm reads it instead. */
+  shownTier?: string | null;
+}): Record<string, unknown> {
   const externalId = leadExternalId(req.lead);
   return {
     bucketCode: req.code,
@@ -1200,5 +1225,18 @@ export function bookingBody(req: { code: string; startIso: string; lead: Loadtes
       email: `${externalId}@loadtest.local`,
       phone: loadtestPhone(req.lead),
     },
+    ...(req.shownTier ? { shownTier: req.shownTier } : {}),
   };
+}
+
+/**
+ * The tier an `/api/availability` answer had on show (#3495), or null when it named
+ * none (a deployment before #3495, or a code with no tier), never a guess. Read beside
+ * `offeredSlots` from the same answer, so a booking hands back the tier its times came
+ * from.
+ */
+export function shownTierOf(body: unknown): string | null {
+  if (typeof body !== "object" || body === null) return null;
+  const tier = (body as { shownTier?: unknown }).shownTier;
+  return typeof tier === "string" && tier.trim() !== "" ? tier : null;
 }

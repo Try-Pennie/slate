@@ -12,7 +12,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 //
 // Rule #259: the `routing` block is intentionally absent from the public
 // response — leads must never see tier-drop internals. `bucket.code` must
-// always echo the REQUESTED code, even when the effective tier differs.
+// always echo the REQUESTED code, even when the effective tier differs. The one
+// routing fact it carries is `shownTier` (#3495), which the booker hands back
+// with its confirm and never renders: Dan, 2026-10-07, "I don't want the lead to
+// see it. I don't care if it's in the background in a spot they'll never see".
 
 const cache = vi.hoisted(() => ({ getBucketSlotsWithFallback: vi.fn() }));
 const rateLimit = vi.hoisted(() => ({
@@ -304,6 +307,10 @@ describe("GET /api/availability test-bucket hiding (#396)", () => {
     // Reported code must be the REQUESTED code, not the effective lower tier.
     expect(body.bucket.code).toBe("SMOKE");
     expect(body).not.toHaveProperty("routing");
+    // #3495: the tier whose times are on show, for the booker to hand back; the
+    // effective code itself still appears nowhere.
+    expect(body.shownTier).toBe("low");
+    expect(JSON.stringify(body)).not.toContain("LOW411");
   });
 });
 

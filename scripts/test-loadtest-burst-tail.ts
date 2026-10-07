@@ -40,6 +40,7 @@ const plan: BurstPlan = {
   bursts: burstMoments(T0, BURST_LEGS, BURST_SPACING_MS).map((startAtMs, i) => ({
     kind: BURST_SEQUENCE[i]!,
     codes: ["120", "121"],
+    shownTiers: ["low", "low"],
     slot: `2026-10-0${7 + i}T17:40:00.000Z`,
     startAtMs,
     perDriver: 3,
