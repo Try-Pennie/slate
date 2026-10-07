@@ -96,6 +96,8 @@ assert(Number.isFinite(timeoutMin), "the job declares an explicit timeout (L313)
     CONFIRM_LINE_EXIT.directoryOlderWon,
     CONFIRM_LINE_EXIT.groupingAbsent,
     CONFIRM_LINE_EXIT.groupingUnusable,
+    // #3481: asked after its sleep and answered without the grouping, a definite reading.
+    CONFIRM_LINE_EXIT.directoryLostAfterIdle,
   ];
   eq(
     [...CONCLUDING_EXITS].sort((a, b) => a - b).join(","),
@@ -107,6 +109,10 @@ assert(Number.isFinite(timeoutMin), "the job declares an explicit timeout (L313)
   assert(!RUN_JUDGEMENT[CONFIRM_LINE_EXIT.incompleteReply].concluded, "a reply this command cannot fully read measured nothing it can stand on");
   assert(!RUN_JUDGEMENT[CONFIRM_LINE_EXIT.unauthorized].concluded, "a refused key measured nothing");
   assert(!RUN_JUDGEMENT[CONFIRM_LINE_EXIT.endpointMissing].concluded, "a deployment older than the endpoint measured nothing");
+  assert(
+    !RUN_JUDGEMENT[CONFIRM_LINE_EXIT.directoryWakeUnobserved].concluded,
+    "a directory that never woke where the probe could see it left the wake half unmeasured, so it stamps nothing, or the verdict stays fresh for as long as the platform keeps it awake",
+  );
 }
 
 // --- what it SAYS -----------------------------------------------------------------------

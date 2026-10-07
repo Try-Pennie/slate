@@ -72,6 +72,10 @@ export const CONFIRM_LINE_EXIT = {
   groupingAbsent: 22,
   /** The live grouping is one a cold server would refuse. */
   groupingUnusable: 23,
+  /** #3481: left idle past the hibernation window, the directory lost the grouping it stored. */
+  directoryLostAfterIdle: 24,
+  /** Every read after the idle wait answered from memory, so no wake was seen and storage went unmeasured. */
+  directoryWakeUnobserved: 25,
 } as const;
 
 export type ConfirmLineExit = (typeof CONFIRM_LINE_EXIT)[keyof typeof CONFIRM_LINE_EXIT];
@@ -109,6 +113,14 @@ interface RunJudgement {
  *
  * `incompleteReply` and `checkErrored` are faults in this command or its endpoint, and
  * measured nothing anybody can stand on.
+ *
+ * #3481: `directoryLostAfterIdle` concludes, because the directory was asked after its
+ * sleep and answered without the grouping, which is a definite reading. Its neighbour
+ * `directoryWakeUnobserved` does NOT, for the reason `bindingMissing` does not: the
+ * directory answered every read from memory, so the half that asks whether a woken
+ * directory reads its storage never ran. A stamp there would keep the verdict fresh for as
+ * long as the platform kept it awake, which is the blind detector #1394 is about. The
+ * daily message still says so, and the stamp lapsing adds its page.
  */
 export const RUN_JUDGEMENT: Record<ConfirmLineExit, RunJudgement> = {
   [CONFIRM_LINE_EXIT.passed]: { concluded: true, headline: null },
@@ -210,6 +222,16 @@ export const RUN_JUDGEMENT: Record<ConfirmLineExit, RunJudgement> = {
   [CONFIRM_LINE_EXIT.groupingUnusable]: {
     concluded: true,
     headline: "The shared confirm line's live pool grouping is one a server reading it would refuse, so the snapshot reaches nobody.",
+  },
+  [CONFIRM_LINE_EXIT.directoryLostAfterIdle]: {
+    concluded: true,
+    headline:
+      "The shared confirm line's pool grouping directory lost the grouping it stored once it was left idle, so between the recompute lane's publishes servers read nothing and key their confirms by code.",
+  },
+  [CONFIRM_LINE_EXIT.directoryWakeUnobserved]: {
+    concluded: false,
+    headline:
+      "Today's shared confirm line proof never saw the pool grouping directory wake from an idle sleep, so whether a woken directory reads its grouping back from storage was not measured.",
   },
 };
 

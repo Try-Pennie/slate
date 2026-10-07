@@ -11,8 +11,10 @@
 // which drives the confirm path's OWN client against the real object: a follower refused
 // after a full verdict, handed the lead after a not full one, freed behind a lead nobody
 // acknowledged, and nothing left held afterwards; and (#3460) the pool grouping directory
-// stores, keeps the newest, and holds a live grouping a cold server would install. Only all
-// five passing is a pass, and every other ending exits on its own code (L98, L11). The rules are pinned offline by
+// stores, keeps the newest, and holds a live grouping a cold server would install; and
+// (#3481) the probe's own directory, left idle until the platform puts it to sleep, hands
+// its grouping back from storage. Only every check passing is a pass, and every other
+// ending exits on its own code (L98, L11). The rules are pinned offline by
 // `scripts/test-confirm-line-live-control.ts`, against the real object host.
 //
 // WHAT IT CANNOT PROVE. Every participant runs in the one invocation that serves the
@@ -39,21 +41,15 @@ loadEnvFiles([".env.local", ".dev.vars"]);
 
 // After the env files load, like the other live scripts: a static import is hoisted above
 // that call, and anything reading the environment as it loads would read it unset.
-const { CONFIRM_LINE_EXIT, readConfirmLineOutcome, judgeConfirmLineProbe } = await import("./lib/confirm-line-live-control.ts");
+// REPLY_DEADLINE_MS lives beside the decision logic, where the offline test holds the
+// slowest planted run against it.
+const { CONFIRM_LINE_EXIT, REPLY_DEADLINE_MS, readConfirmLineOutcome, judgeConfirmLineProbe } = await import("./lib/confirm-line-live-control.ts");
 type Outcome = ReturnType<typeof readConfirmLineOutcome>;
 
 const canaryKey = process.env.BOOKING_API_KEY_CANARY ?? "";
 // envOr rather than `??`: an unset repo variable reaches the step as an empty string (#1494).
 const deployment = envOr(process.env.SLATE_BASE_URL, "https://slate.trypennie.app").replace(/\/$/, "");
 const summaryPath = process.env.CONFIRM_LINE_SUMMARY_FILE ?? "";
-
-/**
- * The longest the command waits for the probe's answer. A healthy probe takes a few
- * seconds; the slowest honest one (a follower waiting out its whole wait on every check)
- * is under half a minute. Past this the reply is not coming, and waiting on it would only
- * hold the job until its own timeout (L110).
- */
-const REPLY_DEADLINE_MS = 60_000;
 
 /** Record the verdict for the lane, print it, and exit on its code. */
 function end(exit: number, message: string): never {
