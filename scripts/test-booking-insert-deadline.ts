@@ -34,6 +34,7 @@ import {
 } from "../src/lib/booking/orchestration.ts";
 import type { Booking, BookingStatus } from "../src/lib/db/types.ts";
 import { deadlineWithinBudget, withinCallBudget } from "../src/lib/call-budget.ts";
+import { makeCommitCostLog } from "../src/lib/booking/commit-cost.ts";
 import { createAsserter, makeDeps, makeBooking, input, bucket, eventType, RR, NOW } from "./lib/booking-fakes.ts";
 
 const { assert, finish } = createAsserter();
@@ -52,6 +53,37 @@ const deadlineResult = () => ({
  *  request was by the time it reached the insert. */
 function underSpentConfirmBudget<T>(work: () => Promise<T>): Promise<T> {
   return withinCallBudget(12_000, "the booking confirm", work, () => Date.now() - 13_000);
+}
+
+/**
+ * Run a create inside a confirm budget that its own CALENDAR WRITE spends, which is
+ * how the 15:05:12 request reached its insert with nothing left. #3338: a confirm
+ * never starts its commit chain once the budget is spent, so a budget opened
+ * already spent would now refuse before any write and test nothing here. This one
+ * opens with the whole 12 seconds, so the chain starts, and the event write then
+ * takes 13 of them, so the insert after it meets a spent budget, exactly as before.
+ * The clock is swapped only for the length of the call, and each call is a confirm
+ * on an isolate of its own, so one call's 13 second chain is not what refuses the
+ * next one's (#3338 gates on what an isolate has measured, `commit-cost.ts`).
+ */
+async function spentByTheEventWrite<T>(d: BookingDeps, work: (spending: BookingDeps) => Promise<T>): Promise<T> {
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  const spending: BookingDeps = {
+    ...d,
+    commitCosts: makeCommitCostLog(),
+    createEvent: async (...args) => {
+      const id = await d.createEvent(...args);
+      now += 13_000;
+      return id;
+    },
+  };
+  try {
+    return await withinCallBudget(12_000, "the booking confirm", () => work(spending), () => Date.now());
+  } finally {
+    Date.now = realNow;
+  }
 }
 
 /** A dependency call as the real clients make one: refused at once when the
@@ -183,7 +215,7 @@ async function run() {
         await deps.deleteEvent(email, id, opts);
       },
     };
-    await caught(() => underSpentConfirmBudget(() => createBooking(input, d)));
+    await caught(() => spentByTheEventWrite(d, (spending) => createBooking(input, spending)));
     assert(
       queued.length === 1 && queued[0].eventId === "gcal-1" && queued[0].bookingId === null,
       "spent budget, generic failure: the event's deletion is queued under the cleanup allowance",
@@ -212,7 +244,7 @@ async function run() {
         await deps.enqueueEventDeletion(email, eventId, bookingId);
       },
     };
-    const err = await caught(() => underSpentConfirmBudget(() => createBooking(input, d)));
+    const err = await caught(() => spentByTheEventWrite(d, (spending) => createBooking(input, spending)));
     assert(err instanceof SlotUnavailableError, "spent budget, conflict: still refused as slot unavailable");
     assert(
       calls.deleteEvent.length === 1 && calls.deleteEvent[0].id === "gcal-1",
@@ -241,8 +273,8 @@ async function run() {
       // The retry completed the reservation, so nothing pins the event any more.
       pendingWritePinsEvent: async () => false,
     };
-    await caught(() => underSpentConfirmBudget(() => createBooking(input, d)));
-    await caught(() => underSpentConfirmBudget(() => createBooking(input, d)));
+    await caught(() => spentByTheEventWrite(d, (spending) => createBooking(input, spending)));
+    await caught(() => spentByTheEventWrite(d, (spending) => createBooking(input, spending)));
     assert(
       t.rows.size === 1 && [...t.rows.values()][0].gcal_event_id === "gcal-1",
       "race: two failed attempts on one event leave ONE queue row (the enqueue is idempotent per event)",
