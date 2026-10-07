@@ -4,7 +4,7 @@
  * The same resolver the confirm uses (`resolveRoutingCode`, wired to the real
  * Salesforce reader here and to the injected one in `createBooking`), so the
  * times a lead is shown and the pool they are booked into cannot disagree: a
- * lead whose link carried no code but whose Lead record holds 512 is shown the
+ * lead whose link carried no code but whose Salesforce score is 512 is shown the
  * 512 pool's times, not the catch-all's.
  *
  * A failed Salesforce read THROWS, and the page's error boundary offers a retry.
@@ -12,8 +12,10 @@
  * to prevent, shown to the lead before they have even picked a time.
  *
  * A landing page passes the id `landingLookupId` handed back, never the raw one
- * from the link (#3173): the read is one Salesforce call per guessed id, so it sits
- * behind the per address landing throttle, and over the ceiling the blank id takes
+ * from the link (#3173): the read is up to three Salesforce queries per guessed id
+ * (the Lead, its submission, and the score's edit history when the two disagree,
+ * #3502), so it sits behind the per address landing throttle, and over the
+ * ceiling the blank id takes
  * the page to the default route. `scripts/test-landing-identity-throttle.ts` holds
  * every call site to that.
  */

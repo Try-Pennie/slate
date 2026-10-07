@@ -5,17 +5,23 @@
  * lead who reaches booking another way arrives with a blank code. The catch-all
  * (#1908, `catchall.ts`) then sends them to the Low pool, and on 2026-09-21 that
  * booked an Ultra High lead with a Low agent. When the link NAMES the lead (the
- * 00Q Lead id the embed carries), the lead's own score is one Salesforce read
- * away: `XBC__c` on the Lead object, confirmed by a describe call against the
- * real org on 2026-09-25 (a 255 character string holding the three digit code,
- * the same field `lead-xbc.ts` already reads for the below tier check, #2593).
+ * 00Q Lead id the embed carries), the lead's own score is a Salesforce read
+ * away. Since #3502 that is the score on the lead's CURRENT submission
+ * (`Submission__c.XBC_SO__c`), the same one a link carries when it carries one,
+ * unless the Lead's own `XBC__c` was edited after that submission, which then
+ * wins; `readLeadScores` in `lead-xbc.ts` decides, for this and for the below
+ * tier check alike (#2593, #3501). The Lead's copy alone lagged: on 2026-10-07
+ * it held a returning lead's July 211 against today's 111.
  *
  * THE ORDER, and each step's reason:
  *  1. A routable code on the link is used as sent, and Salesforce is not asked.
  *     The link is what the page scored a moment ago; a second opinion would add a
  *     network call to every booking and a way for the two to disagree.
  *  2. Otherwise, a Lead id on the link means Salesforce is asked, and a code it
- *     holds that `bucketSpecForXbc` decodes is routed on.
+ *     holds that `bucketSpecForXbc` decodes is routed on. Since #3502 that is the
+ *     score on the lead's CURRENT submission (`readLeadScores`), the one a link
+ *     carries when it carries one; `Lead.XBC__c` is a copy that lags it, and on
+ *     2026-10-07 held a returning lead's July 211 against today's 111.
  *  3. Otherwise, a Salesforce Submission id (the `submissionId` trypennie's trigger
  *     always carries) is resolved to the Lead it names (`Submission__c.Lead__c`),
  *     and that lead is routed through step 2's read exactly (#3246). On iPhone
@@ -43,9 +49,11 @@ import { isLeadId, isSubmissionId } from "@/lib/salesforce/lead-xbc";
 import { CATCHALL_CODE, resolveRequestedCode, type CatchallReason } from "./catchall.ts";
 
 /**
- * One lead's `XBC__c`: a string is what Salesforce holds, null is a lead with the
- * field empty, undefined is a lead Salesforce did not return. THROWS when the read
- * fails; it must never answer null for a query that did not run.
+ * One lead's score (`readOneLeadXbc`: the current submission's, or the Lead's
+ * `XBC__c` where that was edited after it or there is no submission): a string is
+ * what Salesforce holds, null is a lead with no score, undefined is a lead
+ * Salesforce did not return. THROWS when any read fails; it must never answer
+ * null for a query that did not run.
  */
 export type LeadXbcReader = (leadId: string) => Promise<string | null | undefined>;
 

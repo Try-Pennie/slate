@@ -39,7 +39,7 @@ import {
   type UpcomingBooking,
 } from "@/lib/monitor/below-lead-tier";
 import { belowLeadTierReachedVerdict } from "@/lib/monitor/verdict-freshness";
-import { readLeadXbcs, readLeadScores, leadIdKey, type LeadScore, type LeadFieldRecord } from "@/lib/salesforce/lead-xbc";
+import { readLeadScores, leadIdKey, type LeadScore, type LeadFieldRecord } from "@/lib/salesforce/lead-xbc";
 import { PARTNER_KEYS } from "@/lib/booking/partner-keys";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -577,15 +577,15 @@ async function main(): Promise<void> {
       queries.push(soql);
       return [{ Id: LEAD_A, XBC__c: "512" }, { Id: LEAD_B, XBC__c: null }];
     };
-    const got = await readLeadXbcs([LEAD_A.slice(0, 15), LEAD_B], run);
-    eq(got.get(leadIdKey(LEAD_A)), "512", "an 18 character answer lands on the 15 character question");
-    eq(got.get(leadIdKey(LEAD_B)), null, "a lead with no XBC is present with null, not missing");
+    const got = await readLeadScores([LEAD_A.slice(0, 15), LEAD_B], run);
+    eq(got.get(leadIdKey(LEAD_A))?.code, "512", "an 18 character answer lands on the 15 character question");
+    eq(got.get(leadIdKey(LEAD_B))?.code, null, "a lead with no XBC is present with null, not missing");
     eq(got.has(leadIdKey(LEAD_C)), false, "a lead Salesforce did not return is missing, not null");
     assert(/FROM Lead WHERE Id IN \(/.test(queries[0] ?? ""), "it queries Lead by Id");
 
     const many = Array.from({ length: 900 }, (_, i) => `00QUi0000${String(i).padStart(6, "0")}AAA`);
     const chunks: string[] = [];
-    await readLeadXbcs(many, async (soql) => {
+    await readLeadScores(many, async (soql) => {
       chunks.push(soql);
       return [];
     });
@@ -602,7 +602,7 @@ async function main(): Promise<void> {
 
     let threw = false;
     try {
-      await readLeadXbcs([LEAD_A], async () => {
+      await readLeadScores([LEAD_A], async () => {
         throw new Error("SF query failed: 500");
       });
     } catch {
@@ -611,7 +611,7 @@ async function main(): Promise<void> {
     assert(threw, "a failed Salesforce query THROWS rather than answering empty");
 
     let calledForNothing = false;
-    await readLeadXbcs([], async () => {
+    await readLeadScores([], async () => {
       calledForNothing = true;
       return [];
     });
