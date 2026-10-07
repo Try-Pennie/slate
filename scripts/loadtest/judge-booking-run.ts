@@ -18,7 +18,15 @@ import {
   type BaselineReading,
   type LatencyJudgement,
 } from "./latency-bar.ts";
-import type { BookingAttempt, DriverResult } from "./book-plan.ts";
+import type { BookingAttempt, BurstCapacity, BurstKind, DriverResult } from "./book-plan.ts";
+// Values read only inside functions: book-plan imports this module too, so a value it
+// exports is not initialised while this one is first evaluated (#3429).
+import { burstSettleAtMs, BURST_GRACE_DEFAULT_MS, REQUEST_TIMEOUT_MS } from "./book-plan.ts";
+import { burstCrowdRule, burstProbeVerdict, type CrowdRuleVerdict, type ProbeVerdict } from "./burst-probe.ts";
+import type { BookableReason } from "../../src/lib/booking/orchestration.ts";
+
+/** The one probe reason that proves a SLOT_TAKEN was honest: the booker's own word for it. */
+const SLOT_TAKEN_REASON: BookableReason = "slot_taken";
 import { AVAILABILITY_UNREAD, NO_SLOTS_OFFERED, TIMED_OUT } from "./outcomes.ts";
 import { HEALTHY_INVOCATION_STATUS, type ScheduledReading } from "./platform-reading.ts";
 import { CEILING_CONCLUSION, type CeilingVerdict } from "./preflight-checks.ts";
@@ -276,22 +284,27 @@ export interface Finding {
   detail: string;
 }
 
-export type JudgeVerdict = "pass" | "incomplete" | "unmeasured" | "fail";
+export type JudgeVerdict = "pass" | "incomplete" | "unmeasured" | "inconclusive" | "fail";
 
 /**
  * Every way the judge can end, each on its own code.
  *
- * `incomplete` and `unmeasured` are deliberately NOT failures and deliberately not
- * passes. One says the run did not happen as asked, the other says the platform
- * could not tell us what it did; both mean nobody learned whether the booking path
- * holds up, and reporting either as a pass or a failure is a claim the run cannot
- * support (L98, L11).
+ * `incomplete`, `unmeasured` and `inconclusive` are deliberately NOT failures and
+ * deliberately not passes. The first says the run did not happen as asked, so nothing
+ * was measured; the second says the platform could not tell us what it did; the third
+ * (#3429) says every figure WAS measured and a burst could not conclude what it exists
+ * to prove. All three mean nobody learned whether the booking path holds up, and
+ * reporting any as a pass or a failure is a claim the run cannot support (L98, L11).
+ * The third has its own code rather than sharing the first's, because "re-run, it did
+ * not happen" and "it ran, read why the burst could not conclude" send a reader to do
+ * different things (#3459 review).
  */
 export const JUDGE_EXIT = {
   pass: 0,
   incomplete: 2,
   unmeasured: 3,
   fail: 4,
+  inconclusive: 5,
 } as const;
 
 /** p50, p95 and max over a set of durations. Empty gives nulls, never zeros: a
@@ -427,9 +440,80 @@ export function burstLegGroups(input: JudgeInput): BurstLegGroup[] {
   });
 }
 
-/** How every finding about one burst names it, so the report says WHICH burst. */
-export function burstLegLabel(g: Pick<BurstLegGroup, "index" | "of" | "slot">): string {
-  return `burst ${g.index + 1} of ${g.of}${g.slot ? ` (${g.slot})` : ""}`;
+/**
+ * #3429: which kind of burst a group is, from its files. A file from before #3429 names
+ * no kind, and it was always the crowd at one slot that the refusal control still is.
+ */
+export function burstKindOf(g: Pick<BurstLegGroup, "files">): BurstKind {
+  return g.files.find((f) => f.burstLeg?.kind !== undefined)?.burstLeg?.kind ?? "refusal";
+}
+
+/** #3429: a burst's kind in the words the report uses. */
+const BURST_KIND_WORDS: Record<BurstKind, string> = {
+  refusal: "the refusal control",
+  drop: "the tier drop burst",
+};
+
+/**
+ * How every finding about one burst names it, so the report says WHICH burst, and since
+ * #3429 which kind. The one builder of a burst's name: the breakdown uses it too, so a
+ * report never names one burst two ways (L41).
+ */
+export function burstLegLabel(g: Pick<BurstLegGroup, "index" | "of" | "slot" | "files">): string {
+  return `burst ${g.index + 1} of ${g.of}, ${BURST_KIND_WORDS[burstKindOf(g)]}${g.slot ? ` (${g.slot})` : ""}`;
+}
+
+/** A recorded figure the settle can use: a whole, non negative number of milliseconds. */
+function isWholeMs(v: unknown): v is number {
+  return typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+}
+
+/**
+ * #3429: when a burst settled (`burstSettleAtMs`): its moment, plus the LONGEST grace
+ * any of its drivers recorded, since that driver may have fired last, plus the longest
+ * request bound they recorded. A file that records neither (one from before the
+ * drivers did, #3459 review) is read on the run's own defaults, which is what every
+ * workflow run uses. A probe is judged against this, computed here from what each
+ * driver was configured with, never against a driver's word about its own settle, so
+ * a driver whose timer woke it early still has its probe called early (run
+ * 37568349592). A recorded figure that is not a whole number of milliseconds leaves
+ * the settle unknown, by name, rather than falling back to a default it may exceed.
+ */
+function burstSettleOf(g: Pick<BurstLegGroup, "files">): { ok: true; atMs: number } | { ok: false; why: string } {
+  const moment = g.files.find((f) => f.burstLeg !== undefined)?.burstLeg?.startAtMs;
+  if (moment === undefined) return { ok: false, why: "no burst file names the burst's moment, so when it settled is unknown" };
+  let graceMs = BURST_GRACE_DEFAULT_MS;
+  let requestBoundMs = REQUEST_TIMEOUT_MS;
+  let recorded = false;
+  for (const f of g.files) {
+    const leg = f.burstLeg;
+    if (leg === undefined) continue;
+    for (const [field, label] of [["graceMs", "grace"], ["requestBoundMs", "request bound"]] as const) {
+      const v = leg[field];
+      if (v === undefined || v === null) continue;
+      if (!isWholeMs(v)) {
+        return {
+          ok: false,
+          why: `driver ${f.driver} recorded a ${label} that is not a whole number of milliseconds (${JSON.stringify(v)}), so when the burst settled is unknown`,
+        };
+      }
+    }
+    const g0 = leg.graceMs ?? BURST_GRACE_DEFAULT_MS;
+    const r0 = leg.requestBoundMs ?? REQUEST_TIMEOUT_MS;
+    // The first file sets the figures and each later one can only lengthen them, so a
+    // burst of files that all recorded a SHORTER grace is judged on that grace.
+    graceMs = recorded ? Math.max(graceMs, g0) : g0;
+    requestBoundMs = recorded ? Math.max(requestBoundMs, r0) : r0;
+    recorded = true;
+  }
+  return { ok: true, atMs: burstSettleAtMs(moment, graceMs, requestBoundMs) };
+}
+
+/** #3429: the burst's probes of its slot, judged together. */
+function burstProbeOf(g: Pick<BurstLegGroup, "files">): ProbeVerdict {
+  const settle = burstSettleOf(g);
+  if (!settle.ok) return { kind: "unconcluded", why: settle.why };
+  return burstProbeVerdict(g.files.map((f) => f.probe), settle.atMs);
 }
 
 /**
@@ -530,7 +614,13 @@ export type BurstSpeedReading =
       late: number;
       slotTaken: number;
     }
-  | { kind: "unmeasured"; why: string };
+  | { kind: "unmeasured"; why: string }
+  /**
+   * #3429: the question is not asked of this burst. A drop burst on a build that walks
+   * the ladder has no losers to time, and on one that stops at the rung its losers are
+   * told exactly as the refusal control's are, which the refusal control measures.
+   */
+  | { kind: "not-asked"; why: string };
 
 /**
  * How soon after the LAST winner each SLOT_TAKEN was answered, on the deployment's
@@ -613,6 +703,55 @@ export interface BurstLegReading {
   speed: BurstSpeedReading;
   /** The bars this burst failed, filled in by the judge; empty for a burst that passed. */
   failed: string[];
+  /** #3429: the refusal control or the tier drop burst. */
+  kind: BurstKind;
+  /** #3429: what the setup measured about its capacity, or null on a file from before #3429. */
+  capacity: BurstCapacity | null;
+  /** #3429: winners whose answer says they were booked below the requested rung. */
+  dropped: number;
+  /** #3429: winners whose answer did not say which rung, never counted as dropped. */
+  rungUnsaid: number;
+  /** #3429: the slot's state once the burst settled, from every driver's probe. */
+  probe: ProbeVerdict;
+  /** #3429: the confirm crowd rule the deployment declared. */
+  crowdRule: CrowdRuleVerdict;
+  /**
+   * #3429, a drop burst only: how long its winners took, first 200 to last on the
+   * deployment's own stamps, a report and never a bar; null when not readable.
+   */
+  servedSpreadMs: number | null;
+  /** #3429: the clauses this burst could not conclude, filled in by the judge. */
+  unconcluded: string[];
+  /** #3429: what this burst showed that the deployment declares, named so it is never silent. */
+  notes: string[];
+}
+
+/**
+ * #3429: the loser speed question for a burst of this kind. Only the refusal control is
+ * asked it: a drop burst has no losers to time on a build that walks the ladder, and on
+ * one that stops at the rung its losers are told exactly as the refusal control's are,
+ * which the refusal control already measures. One place decides, so the report and the
+ * bar cannot ask different bursts (L41).
+ */
+function burstSpeedFor(kind: BurstKind, attempts: readonly BookingAttempt[]): BurstSpeedReading {
+  if (kind === "refusal") return burstSpeed(attempts);
+  return {
+    kind: "not-asked",
+    why:
+      "a drop burst has no losers to time on a build that walks the ladder, and on one that stops at the rung " +
+      "its losers are told as the refusal control's are, which the refusal control measures",
+  };
+}
+
+/** #3429: the first to last 200 on the deployment's stamps, or null when any winner's stamp is unreadable. */
+function servedSpread(attempts: readonly BookingAttempt[]): number | null {
+  const stamps: number[] = [];
+  for (const a of attempts.filter((x) => x.status === 200)) {
+    const s = a.echo?.answeredAtMs;
+    if (s?.state !== "read") return null;
+    stamps.push(s.value);
+  }
+  return stamps.length === 0 ? null : Math.max(...stamps) - Math.min(...stamps);
 }
 
 /** One reading per burst, from the same grouping the judge uses (L41). */
@@ -622,19 +761,30 @@ export function burstLegReadings(input: JudgeInput): BurstLegReading[] {
     const answered = attempts.filter((a) => a.status !== 0);
     const codes: Record<string, number> = {};
     for (const a of attempts) codes[a.code] = (codes[a.code] ?? 0) + 1;
+    const kind = burstKindOf(g);
+    const won = attempts.filter((a) => a.status === 200);
     return {
       index: g.index,
       of: g.of,
       label: burstLegLabel(g),
       attempts: attempts.length,
       answered: answered.length,
-      won: attempts.filter((a) => a.status === 200).length,
+      won: won.length,
       slotTaken: attempts.filter(isSlotTaken).length,
       codes,
       lines: tallyLines(answered).byLineReason,
       ladderKeys: answered.filter((a) => a.echo?.key.state === "read" && a.echo.key.value === "ladder").length,
-      speed: burstSpeed(attempts),
+      speed: burstSpeedFor(kind, attempts),
       failed: [],
+      kind,
+      capacity: g.files.find((f) => f.burstLeg?.capacity !== undefined)?.burstLeg?.capacity ?? null,
+      dropped: won.filter((a) => typeof a.rungsDropped === "number" && a.rungsDropped > 0).length,
+      rungUnsaid: won.filter((a) => typeof a.rungsDropped !== "number").length,
+      probe: burstProbeOf(g),
+      crowdRule: burstCrowdRule(g.files.map((f) => f.crowdRule)),
+      servedSpreadMs: kind === "drop" ? servedSpread(attempts) : null,
+      unconcluded: [],
+      notes: [],
     };
   });
 }
@@ -940,25 +1090,94 @@ export function steadyLineText(r: SteadyLineReading): string {
 export function burstsSummaryText(readings: readonly BurstLegReading[]): string | null {
   if (readings.length === 0) return null;
   const failed = readings.filter((r) => r.failed.length > 0);
-  if (failed.length === 0) return `the bursts: ${readings.length} judged, and every one passed`;
+  // #3429: a burst that failed nothing and could not conclude keeps the run from
+  // passing, and is named in its own words rather than folded into either.
+  const open = readings.filter((r) => r.failed.length === 0 && r.unconcluded.length > 0);
+  const noted = readings.filter((r) => r.notes.length > 0);
+  const parts: string[] = [];
+  if (failed.length > 0) {
+    parts.push(
+      `${failed.length} of ${readings.length} FAILED, which fails the run: ` +
+        failed.map((r) => `${r.label} (${r.failed.join(", ")})`).join("; "),
+    );
+  }
+  if (open.length > 0) {
+    parts.push(
+      `${open.length} of ${readings.length} could not conclude, which keeps the run from passing: ` +
+        open.map((r) => `${r.label} (${r.unconcluded.join(", ")})`).join("; "),
+    );
+  }
+  if (parts.length === 0) parts.push(`${readings.length} judged, and every one passed`);
+  // A known defect a build declares is never a silent pass: it is named on every run
+  // that shows it, until the deployment says it walks the ladder and it fails instead.
+  if (noted.length > 0) {
+    parts.push(
+      `${noted.length} showed #3338's known defect on a deployment that says a crowd stops at its rung ` +
+        `(${noted.map((r) => r.label).join("; ")}), which fails once it says a crowd walks the ladder`,
+    );
+  }
+  return `the bursts: ${parts.join("; ")}`;
+}
+
+/** #3429: what the setup measured about a burst's capacity, in words. */
+function capacityText(c: BurstCapacity | null): string {
+  if (c === null) return "its capacity was not recorded (a file from before #3429)";
+  const roster = c.ladderRoster === null ? "an unmeasured number of" : `at most ${c.ladderRoster}`;
+  const free =
+    c.ladderFree === null
+      ? "how many were free at the slot was not measured"
+      : `${c.ladderFree} were free at the slot when planned` +
+        (c.rung0Free === null ? "" : `, ${c.rung0Free} of them on the requested rung`);
+  return `its ladder holds ${roster} advisors and ${free}`;
+}
+
+/** #3429: what the slot answered once the burst settled, in words. */
+function probeText(p: ProbeVerdict): string {
+  if (p.kind === "unconcluded") return `the slot's state after it was not read: ${p.why}`;
+  const where = !p.bookable
+    ? `answered ${p.reason}`
+    : p.rungsDropped === 0
+      ? "answered available on the requested rung"
+      : `answered available ${p.rungsDropped} rung${p.rungsDropped === 1 ? "" : "s"} down${p.effectiveCode ? ` (${p.effectiveCode})` : ""}`;
   return (
-    `the bursts: ${failed.length} of ${readings.length} FAILED, which fails the run: ` +
-    failed.map((r) => `${r.label} (${r.failed.join(", ")})`).join("; ")
+    `once it settled the slot ${where} (${p.readings} probe${p.readings === 1 ? "" : "s"}` +
+    `${p.unusable.length > 0 ? `, ${p.unusable.length} not usable` : ""})`
   );
 }
 
-/** One burst's reading as one report line (#3325). */
+/** #3429: the rule the deployment declared, in words. */
+function crowdRuleText(r: CrowdRuleVerdict): string {
+  if (r.state === "unknown") return `the crowd rule is unknown: ${r.why}`;
+  return r.value === "walks"
+    ? "the deployment says a crowd walks the tier ladder"
+    : "the deployment says a crowd stops at its rung (the rule before #3437)";
+}
+
+/** One burst's reading as one report line (#3325, #3429). */
 export function burstLegText(r: BurstLegReading): string {
-  const verdict = r.failed.length === 0 ? "passed" : `FAILED (${r.failed.join(", ")})`;
+  const verdict = [
+    ...(r.failed.length > 0 ? [`FAILED (${r.failed.join(", ")})`] : []),
+    ...(r.unconcluded.length > 0 ? [`COULD NOT CONCLUDE (${r.unconcluded.join(", ")})`] : []),
+  ].join(", and ") || "passed";
   const speed =
     r.speed.kind === "unmeasured"
       ? `losers' speed not measured: ${r.speed.why}`
-      : `the slowest of ${r.speed.slotTaken} SLOT_TAKEN came ${r.speed.worstLagMs}ms after the last 200 ` +
-        `(bound ${BURST_LOSER_LAG_MS}ms, ${r.speed.late} past it)`;
+      : r.speed.kind === "not-asked"
+        ? `no losers to time; its winners were answered across ` +
+          (r.servedSpreadMs === null ? "an unread spread (a winner carried no readable stamp)" : `${r.servedSpreadMs}ms`) +
+          " on the deployment's stamps"
+        : `the slowest of ${r.speed.slotTaken} SLOT_TAKEN came ${r.speed.worstLagMs}ms after the last 200 ` +
+          `(bound ${BURST_LOSER_LAG_MS}ms, ${r.speed.late} past it)`;
   const ladder = r.answered === 0 ? "n/a" : `${r.ladderKeys} of ${r.answered} (${((r.ladderKeys / r.answered) * 100).toFixed(1)}%)`;
+  const won =
+    r.kind === "drop"
+      ? `${r.won} won (${r.dropped} below the requested rung${r.rungUnsaid > 0 ? `, ${r.rungUnsaid} not saying which rung` : ""})`
+      : `${r.won} won`;
   return (
-    `${r.label}: ${verdict}; ${r.attempts} requests (${tallyText(r.codes) || "none"}), ${r.won} won, ` +
-    `${r.slotTaken} SLOT_TAKEN; line: ${tallyText(r.lines) || "nothing answered"}; ladder key on ${ladder}; ${speed}`
+    `${r.label}: ${verdict}; ${r.attempts} requests (${tallyText(r.codes) || "none"}), ${won}, ` +
+    `${r.slotTaken} SLOT_TAKEN; ${capacityText(r.capacity)}; ${probeText(r.probe)}; ${crowdRuleText(r.crowdRule)}; ` +
+    `line: ${tallyText(r.lines) || "nothing answered"}; ladder key on ${ladder}; ${speed}` +
+    (r.notes.length > 0 ? `; NOTE: ${r.notes.join("; ")}` : "")
   );
 }
 
@@ -1386,6 +1605,14 @@ export interface JudgeResult {
   speedUnmeasured: string | null;
   /** #3294 review: why the platform reading was unmeasured, or null when it was read. */
   platformUnmeasured: string | null;
+  /**
+   * #3429: the burst clauses that could not conclude, each naming its burst: a probe of
+   * the slot that could not be read, a deployment that did not say which crowd rule it
+   * runs, a drop burst that never dropped. Never a pass (L98): with no finding beside
+   * them the verdict is INCONCLUSIVE, on its own exit, with every figure still measured.
+   * Required, so `tsc` names every construction site.
+   */
+  burstsUnconcluded: Finding[];
 }
 
 /**
@@ -1441,16 +1668,181 @@ function speedUnmeasuredOf(m: RunMeasurements): string | null {
   return m.latency?.kind === "unmeasured" ? m.latency.why : null;
 }
 
+/** #3429: the bar a SLOT_TAKEN the slot still answered available for fails or leaves open. */
+export const BURST_REFUSALS_BAR = "the burst's refusals";
+/** #3429: the bar the drop burst is held to. */
+export const BURST_DROP_BAR = "the tier drop";
+
 /**
- * The questions asked of ONE whole burst (#2261, #2273, #3325): its winners, its
- * losers, which confirm line served it, and how fast its losers were told.
+ * Were the burst's SLOT_TAKEN answers honest, by the product's own rule (#3429)?
+ *
+ * Asked once the burst settled, of `/api/bookings/bookable`, which runs the routing a
+ * real book runs and which no follower's SLOT_TAKEN consulted: a follower is answered by
+ * its leader's verdict through the line (L721). A slot that still answers available is
+ * the line refusing leads the routing would have booked. Where it is still free decides
+ * what that is:
+ *
+ * - on the REQUESTED rung itself, it is not #3338's shape (a rung below free) and is a
+ *   defect on any build: the line refused leads its own rung could take.
+ * - a rung or more down, it is #3338, and the deployment's declared crowd rule decides:
+ *   a build that says it walks the ladder FAILS; one that says it stops at the rung (the
+ *   rule before #3437) showed the defect it declares, which is named and not failed;
+ *   one that said nothing cannot be judged either way.
+ *
+ * A probe that could not be read concludes nothing, never a pass (L98).
+ */
+function judgeRefusalHonesty(
+  taken: number,
+  probe: ProbeVerdict,
+  rule: CrowdRuleVerdict,
+  failLeg: (bar: string, detail: string) => void,
+  unconclude: (bar: string, detail: string) => void,
+  note: (text: string) => void,
+): void {
+  if (taken === 0) return;
+  if (probe.kind === "unconcluded") {
+    unconclude(
+      BURST_REFUSALS_BAR,
+      `${taken} confirms were told SLOT_TAKEN and whether the slot really was taken could not be read: ${probe.why}`,
+    );
+    return;
+  }
+  if (!probe.bookable) {
+    // #3459 review (L11): only "taken" proves the refusals honest. A slot not bookable
+    // for another reason (closed, or no eligible advisor, the booker's own routing
+    // failing) says nothing about whether the line refused leads it could have booked.
+    if (probe.reason !== SLOT_TAKEN_REASON) {
+      unconclude(
+        BURST_REFUSALS_BAR,
+        `${taken} confirms were told SLOT_TAKEN and once the burst settled the slot answered ${probe.reason}, ` +
+          "not taken, so whether those refusals were honest cannot be said",
+      );
+    }
+    return;
+  }
+  const where =
+    probe.rungsDropped === 0
+      ? "on the requested rung itself"
+      : `${probe.rungsDropped} rung${probe.rungsDropped === 1 ? "" : "s"} down${probe.effectiveCode ? ` (${probe.effectiveCode})` : ""}`;
+  const head =
+    `${taken} confirms were told SLOT_TAKEN while the slot still answered available ${where} once the burst ` +
+    "had settled, by the booker's own routing (/api/bookings/bookable)";
+  if (probe.rungsDropped === 0) {
+    failLeg(
+      BURST_REFUSALS_BAR,
+      `${head}. That is not #3338's shape, a rung below still free, and is a defect on any build: the line ` +
+        "refused leads its own requested rung could still take",
+    );
+  } else if (rule.state === "read" && rule.value === "walks") {
+    failLeg(
+      BURST_REFUSALS_BAR,
+      `${head}. This is #3338: the deployment says a crowd walks the tier ladder, and these confirms were ` +
+        "refused while a rung below had somebody free. The one refusal of this shape #3437 keeps by design is a " +
+        "confirm that lost the insert race more times than its bound allows, which pages in production, so read " +
+        "the race tally before calling it a regression",
+    );
+  } else if (rule.state === "read") {
+    note(
+      `${head}, which is #3338 on a deployment that says a crowd stops at its rung (the rule before #3437); ` +
+        "held to that rule it is expected here, and it fails once the deployment says a crowd walks the ladder",
+    );
+  } else {
+    unconclude(
+      BURST_REFUSALS_BAR,
+      `${head}, and ${rule.why}, so whether that is #3338 or the rule this build runs cannot be said`,
+    );
+  }
+}
+
+/**
+ * The questions only a DROP burst is asked (#3429), held to the deployment's declared
+ * crowd rule.
+ *
+ * On a build that walks the ladder, every confirm wins and at least one is booked below
+ * the requested rung: that is what shows the #3338 drop happens at all. A SLOT_TAKEN the
+ * slot still answers available for has already failed the refusals bar; one where the
+ * slot was honestly spent means the crowd outran what the ladder held, so the drop could
+ * not be shown. On a build that stops at the rung, the drop burst is the control that
+ * the defect is visible: it must see a SLOT_TAKEN while a rung below is free, or it
+ * could not show what the build declares. A deployment that never said which rule it
+ * runs leaves nothing to hold the burst to. Every way of not concluding is never a pass.
+ */
+function judgeDropBurst(
+  burst: readonly BookingAttempt[],
+  probe: ProbeVerdict,
+  rule: CrowdRuleVerdict,
+  unconclude: (bar: string, detail: string) => void,
+): void {
+  const taken = burst.filter(isSlotTaken).length;
+  if (rule.state === "unknown") {
+    unconclude(
+      BURST_DROP_BAR,
+      `${rule.why}, so the drop burst cannot be held to either rule: a crowd that stops at its rung and one ` +
+        "that walks the ladder end differently here",
+    );
+    return;
+  }
+  if (rule.value === "walks") {
+    // A refusal has already been judged by the refusals bar: failed when the slot was
+    // still free, left open when the probe could not say. Only an HONEST one is this
+    // bar's, and it means the drop could not be shown, so nothing more is asked.
+    if (taken > 0) {
+      if (probe.kind === "read" && !probe.bookable && probe.reason === SLOT_TAKEN_REASON) {
+        unconclude(
+          BURST_DROP_BAR,
+          `${taken} confirms were told SLOT_TAKEN and the slot answered ${probe.reason} once the burst settled, so ` +
+            "the crowd outran what the ladder held when it was planned and the drop burst could not show every " +
+            "confirm winning",
+        );
+      }
+      return;
+    }
+    const won = burst.filter((a) => a.status === 200);
+    const dropped = won.filter((a) => typeof a.rungsDropped === "number" && a.rungsDropped > 0).length;
+    const unsaid = won.filter((a) => typeof a.rungsDropped !== "number").length;
+    if (won.length > 0 && dropped === 0) {
+      unconclude(
+        BURST_DROP_BAR,
+        `none of the ${won.length} winners says it was booked below the requested rung, so the burst never showed ` +
+          `a tier being dropped${unsaid > 0 ? ` (${unsaid} answers did not say which rung)` : ""}`,
+      );
+    }
+    return;
+  }
+  const sawDefect = taken > 0 && probe.kind === "read" && probe.bookable && probe.rungsDropped > 0;
+  // A probe that could not be read, or that read a reason other than taken, has already
+  // left the refusals bar open; saying so twice would name one unknown as two (L260).
+  const alreadyOpen =
+    taken > 0 &&
+    (probe.kind === "unconcluded" || (!probe.bookable && probe.reason !== SLOT_TAKEN_REASON));
+  // And refusals while the REQUESTED rung was still free have already FAILED the
+  // refusals bar, on any build. Asking this bar too would report one fault twice, the
+  // second time blaming the crowd or the declaration for it (#3459 review).
+  const alreadyFailed = taken > 0 && probe.kind === "read" && probe.bookable && probe.rungsDropped === 0;
+  if (!sawDefect && !alreadyOpen && !alreadyFailed) {
+    unconclude(
+      BURST_DROP_BAR,
+      "the deployment says a crowd stops at its rung (the rule before #3437), and the drop burst saw no confirm " +
+        "told SLOT_TAKEN while a rung below was still free, so it could not show the defect this build declares: " +
+        "either the crowd never met the top rung's last advisor, or the deployment walks the ladder while saying it does not",
+    );
+  }
+}
+
+/**
+ * The questions asked of ONE whole burst (#2261, #2273, #3325, #3429): its winners, its
+ * losers, which confirm line served it, whether its refusals were honest, and then by
+ * kind: how fast a refusal control's losers were told, or whether a drop burst dropped.
  */
 function judgeBurstLeg(
-  burst: BookingAttempt[],
+  g: BurstLegGroup,
   bookings: readonly JudgedBooking[],
   failLeg: (bar: string, detail: string) => void,
+  unconclude: (bar: string, detail: string) => void,
   reading: BurstLegReading | undefined,
 ): void {
+  const burst = attemptsOf(g.files);
+  const kind = burstKindOf(g);
   const won = burst.filter((a) => a.status === 200);
   // The invariant is ONE WINNER PER AGENT, not one winner (#2261).
   //
@@ -1544,16 +1936,32 @@ function judgeBurstLeg(
     );
   }
 
+  // --- c. no SLOT_TAKEN while the slot is still bookable (#3429) ----------------
+  // Asked of both kinds: an honest refusal is one the routing agrees with.
+  const probe = reading?.probe ?? burstProbeOf(g);
+  const rule = reading?.crowdRule ?? burstCrowdRule(g.files.map((f) => f.crowdRule));
+  const note = (text: string) => reading?.notes.push(text);
+  judgeRefusalHonesty(burst.filter(isSlotTaken).length, probe, rule, failLeg, unconclude, note);
+  if (kind === "drop") judgeDropBurst(burst, probe, rule, unconclude);
+
   // --- b. every SLOT_TAKEN within the bound of the LAST winner (#3325) ----------
-  // On the deployment's own answer stamps, never four runners' clocks.
-  const speed = reading?.speed ?? burstSpeed(burst);
+  // On the deployment's own answer stamps, never four runners' clocks. The refusal
+  // control's question only (#3429). Its losers are still answered from a leader's
+  // verdict, now the verdict of the confirm that spent the WHOLE ladder, so two seconds
+  // after the last winner keeps its meaning: how soon a crowd is told once the last
+  // free advisor anywhere on the ladder is gone. A drop burst has no losers on a build
+  // that walks, so nothing replaces the bar there: "every confirm wins" already bounds
+  // its time, since a confirm the line cannot serve inside its wait answers a 503.
+  // An if/else chain rather than an early return for `not-asked`, so a check added
+  // after this one runs for a drop burst too (#3459 review).
+  const speed = reading?.speed ?? burstSpeedFor(kind, burst);
   if (speed.kind === "unmeasured") {
     failLeg(
       "the burst's speed",
       `how fast the losers were answered could not be measured: ${speed.why}. Finding nothing to ` +
         "measure is never a pass",
     );
-  } else if (speed.late > 0) {
+  } else if (speed.kind === "measured" && speed.late > 0) {
     failLeg(
       "the burst's speed",
       `${speed.late} of ${speed.slotTaken} SLOT_TAKEN answers came more than ${BURST_LOSER_LAG_MS}ms ` +
@@ -1574,6 +1982,7 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
       incomplete,
       speedUnmeasured: null,
       platformUnmeasured: null,
+      burstsUnconcluded: [],
     };
   }
 
@@ -1726,6 +2135,9 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
   // cannot pass the run (L395). Any one failing fails the run, and every finding
   // names its burst.
   const wantBurstDrivers = input.expectedLegs.burstDrivers;
+  // #3429: clauses a burst could not conclude. Never a pass: with no finding beside
+  // them the run is INCONCLUSIVE, with every figure still measured.
+  const burstsUnconcluded: Finding[] = [];
   for (const g of burstLegGroups(input)) {
     const label = burstLegLabel(g);
     const reading = m.bursts.find((r) => r.index === g.index);
@@ -1733,10 +2145,14 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
       fail(bar, `${label}: ${detail}`);
       if (reading && !reading.failed.includes(bar)) reading.failed.push(bar);
     };
+    const unconclude = (bar: string, detail: string) => {
+      burstsUnconcluded.push({ bar, detail: `${label}: ${detail}` });
+      if (reading && !reading.unconcluded.includes(bar)) reading.unconcluded.push(bar);
+    };
     const short = legShortfall(g, wantBurstDrivers);
     for (const w of short) failLeg("the burst", w);
     if (short.length > 0 || g.files.length === 0) continue;
-    judgeBurstLeg(attemptsOf(g.files), input.bookings, failLeg, reading);
+    judgeBurstLeg(g, input.bookings, failLeg, unconclude, reading);
   }
 
   // --- freshness --------------------------------------------------------------
@@ -1927,6 +2343,7 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
       // was the API's own refusal text (L11).
       p.unreadableWhy ?? "the analytics API did not report CPU, statuses or invocations for the window",
       findings,
+      burstsUnconcluded,
     );
   }
   if (p.invocations < expectedInvocations * INVOCATION_CONTROL_FLOOR) {
@@ -1940,6 +2357,7 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
       `the analytics API counted ${p.invocations} invocations against the ${expectedInvocations} ` +
         "this run made, so its CPU and subrequest numbers are about a different window",
       findings,
+      burstsUnconcluded,
     );
   }
   // --- CPU, judged only where the reading is attributable ----------------------
@@ -1962,6 +2380,7 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
       "the scheduled invocations could not be read, so the CPU reading cannot be told " +
         "apart from the cron lanes and nothing is claimed about it",
       findings,
+      burstsUnconcluded,
     );
   }
   if (p.cron.invocations === 0) {
@@ -1979,6 +2398,7 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
           "the cron half reported zero scheduled invocations without a second source agreeing, " +
             "so nothing can say whether a cron fired and the CPU reading cannot be attributed",
         findings,
+        burstsUnconcluded,
       );
     }
     if (p.cpuMsP99 > input.budgets.cpuMsP99) {
@@ -2054,14 +2474,20 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
       m,
       "the analytics API reported no invocation outcomes at all for the window",
       findings,
+      burstsUnconcluded,
     );
   }
 
   // #3294 review, L98: a void speed verdict on an otherwise clean run is
   // UNMEASURED, with its own non zero exit, never a pass; a real finding on any
   // other bar outranks it and the run fails.
+  // #3429: a burst clause that could not conclude on an otherwise clean run is
+  // INCONCLUSIVE, the burst having not happened as a judgeable control, never a pass; a
+  // real finding outranks it, and it outranks a void speed verdict, since a run whose
+  // burst could not conclude did not prove what it exists to prove.
   const speedVoid = speedUnmeasuredOf(m);
-  const verdict: JudgeVerdict = findings.length > 0 ? "fail" : speedVoid !== null ? "unmeasured" : "pass";
+  const verdict: JudgeVerdict =
+    findings.length > 0 ? "fail" : burstsUnconcluded.length > 0 ? "inconclusive" : speedVoid !== null ? "unmeasured" : "pass";
   return {
     verdict,
     exit: JUDGE_EXIT[verdict],
@@ -2070,6 +2496,7 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
     speedUnmeasured: speedVoid,
     platformUnmeasured: null,
     incomplete: [],
+    burstsUnconcluded,
   };
 }
 
@@ -2090,15 +2517,22 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
  * `unmeasured` is reserved for the case where the platform half is the ONLY thing
  * with anything to say.
  */
-function unmeasured(m: RunMeasurements, why: string, findings: Finding[]): JudgeResult {
-  const measuredFailures = findings.length > 0;
+function unmeasured(m: RunMeasurements, why: string, findings: Finding[], burstsUnconcluded: Finding[]): JudgeResult {
+  // The same precedence as the end of `judgeBookingRun` (#3429): a measured failure
+  // first, then a burst clause that could not conclude, which outranks a reading the
+  // platform could not give, since a run whose burst could not conclude did not prove
+  // what it exists to prove. The platform finding is carried either way.
+  const verdict: JudgeVerdict = findings.length > 0 ? "fail" : burstsUnconcluded.length > 0 ? "inconclusive" : "unmeasured";
   return {
-    verdict: measuredFailures ? "fail" : "unmeasured",
-    exit: measuredFailures ? JUDGE_EXIT.fail : JUDGE_EXIT.unmeasured,
+    verdict,
+    exit: JUDGE_EXIT[verdict],
     findings: [...findings, { bar: "platform limits", detail: why }],
     measurements: m,
     speedUnmeasured: speedUnmeasuredOf(m),
     platformUnmeasured: why,
     incomplete: [],
+    // #3429: carried for the report and the verdict line, so a burst that could not
+    // conclude is named whatever the analytics did.
+    burstsUnconcluded,
   };
 }

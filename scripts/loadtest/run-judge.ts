@@ -863,6 +863,14 @@ if (result.findings.length > 0) {
   lines.push("");
   for (const f of result.findings) lines.push(`- **${f.bar}**: ${f.detail}`);
 }
+// #3429: a burst clause that could not conclude is neither a finding nor a pass, and
+// is listed in its own section so it is never read as either.
+if (result.burstsUnconcluded.length > 0) {
+  lines.push("");
+  lines.push("## What the bursts could not conclude");
+  lines.push("");
+  for (const f of result.burstsUnconcluded) lines.push(`- **${f.bar}**: ${f.detail}`);
+}
 lines.push("");
 lines.push(
   "Subrequests ARE counted: `sum { subrequests }` is a field, and this run's mean per invocation " +
