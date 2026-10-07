@@ -212,8 +212,9 @@ export async function readOneLeadXbc(
 }
 
 /**
- * `readOneLeadXbc` against the real org: one token exchange and up to two SOQL
- * queries (the Lead, then the submission it names), through the shared REST
+ * `readOneLeadXbc` against the real org: one token exchange and up to three SOQL
+ * queries (the Lead, the submission it names, and its score's edit history when
+ * the two disagree), through the shared REST
  * client (`rest.ts`), so the retry and the refusal text are the ones every other
  * Salesforce reader uses. Throws on any refusal. Asked only when the link carried
  * no routable code.

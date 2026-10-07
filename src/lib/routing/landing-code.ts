@@ -4,7 +4,7 @@
  * The same resolver the confirm uses (`resolveRoutingCode`, wired to the real
  * Salesforce reader here and to the injected one in `createBooking`), so the
  * times a lead is shown and the pool they are booked into cannot disagree: a
- * lead whose link carried no code but whose Lead record holds 512 is shown the
+ * lead whose link carried no code but whose Salesforce score is 512 is shown the
  * 512 pool's times, not the catch-all's.
  *
  * A failed Salesforce read THROWS, and the page's error boundary offers a retry.
