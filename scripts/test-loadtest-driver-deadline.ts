@@ -50,6 +50,11 @@ import {
   PER_DRIVER_PER_MINUTE,
   RUN_MINUTES,
   burstJobMinutesNeeded,
+  burstSettleAtMs,
+  BURST_GRACE_DEFAULT_MS,
+  BURST_LEGS,
+  BURST_PROBE_TIMEOUT_MS,
+  BURST_SPACING_MS,
   type DriverResult,
 } from "./loadtest/book-plan.ts";
 import { OK_P95_MS } from "./loadtest/judge-booking-run.ts";
@@ -132,6 +137,16 @@ const PLAN = { total: TOTAL, perMinute: PER_DRIVER_PER_MINUTE };
   );
   // Control: a lead long enough to need more than the job has is read as too long (L1).
   assert(burstJobMinutesNeeded(declared * 60) > declared, "control: a lead as long as the job is caught");
+  // #3429: the job also waits for the last burst to settle and probes its slot, so the
+  // probe's own bound is inside what the job is held to.
+  eq(
+    burstJobMinutesNeeded(lead),
+    Math.ceil(
+      (burstSettleAtMs(lead * 1000 + (BURST_LEGS - 1) * BURST_SPACING_MS, BURST_GRACE_DEFAULT_MS, REQUEST_TIMEOUT_MS) + BURST_PROBE_TIMEOUT_MS) /
+        60_000,
+    ) + DRIVE_JOB_SETUP_MINUTES,
+    "the burst job's need counts the last burst's settle and the probe after it",
+  );
 }
 
 // --- the log archive covers the whole drive it records ---------------------------

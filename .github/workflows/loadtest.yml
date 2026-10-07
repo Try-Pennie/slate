@@ -11,27 +11,34 @@ name: Booking path load run
 #               cannot make six hundred real calendar events), and that the
 #               database really refuses a planted clash. Nothing downstream means
 #               anything if this does not pass.
-#   setup-burst picks the ONE plan every burst driver fires: a code and its sibling,
-#               and for each of three bursts ONE slot and ONE moment, because a
-#               burst whose drivers each chose their own is not a burst: nothing
-#               contends and everything succeeds. The bucket is MEASURED (#2278):
-#               every pool's depth is read through the booker's own predicate and
-#               the shallowest one actually offering times wins, since the control
-#               is worth more the fewer agents share the slot. The sibling is a
-#               second code whose fallback ladder is the same pools at every rung
-#               (#3325), so each burst also proves the shared confirm line ACROSS
-#               codes the line treats as one.
-#   burst       four drivers firing twenty five requests each at each of three
-#               moments, a minute apart, at three slots an hour apart, each burst
-#               split across the two codes and judged on its own (#3325): one lucky
-#               spread of isolates cannot pass the run. One winner PER AGENT and
-#               the rest SLOT_TAKEN is `bookings_active_slot_uniq` doing its job
-#               under real contention; every confirm on the SHARED line and every
-#               SLOT_TAKEN within two seconds of the last winner is the shared line
-#               doing its. It runs BEFORE the steady pass, on purpose: the steady
-#               mix can include the burst's codes, so a steady driver taking a burst
-#               slot first would make every burst request SLOT_TAKEN and fail the
-#               control for a reason that has nothing to do with the index.
+#   setup-burst picks the ONE plan every burst driver fires: for each of three
+#               bursts its kind, two sibling codes, ONE slot and ONE moment, because
+#               a burst whose drivers each chose their own is not a burst: nothing
+#               contends and everything succeeds. Each ladder is MEASURED (#2278,
+#               #3429) through the booker's own predicates, since a crowd now walks
+#               the tier ladder (#3338): the two REFUSAL controls fire at the ladder
+#               whose whole capacity is smallest and below the crowd of a hundred,
+#               and the TIER DROP burst fires about ten confirms at the shallowest top
+#               rung with room for twice that below it, at a slot where the booker's
+#               own candidate read says the top rung has somebody free. The sibling
+#               is a second code whose fallback ladder is the same pools at every
+#               rung (#3325), so each burst also proves the shared confirm line
+#               ACROSS codes the line treats as one.
+#   burst       four drivers firing at each of three moments, a minute apart, at
+#               three slots an hour apart, each burst split across its two codes and
+#               judged on its own (#3325): one lucky spread of isolates cannot pass
+#               the run. One winner PER AGENT is `bookings_active_slot_uniq` doing
+#               its job under real contention; every confirm on the SHARED line is
+#               the shared line doing its. Once each burst settles, every driver asks
+#               `/api/bookings/bookable` whether its slot is still bookable (#3429),
+#               and the judge holds each burst to the confirm crowd rule the
+#               deployment declares: no SLOT_TAKEN while the slot still answers
+#               available, the refusal control's losers told within two seconds of
+#               its last winner, and every drop burst confirm winning, a rung down
+#               on distinct advisors. It runs BEFORE the steady pass, on purpose:
+#               the steady mix can include the burst's codes, so a steady driver
+#               taking a burst slot first would make burst requests SLOT_TAKEN for a
+#               reason that has nothing to do with contention.
 #   burst-tail  `wrangler tail` from before the first burst's moment until the last
 #               burst's lines are in (#3416), so the judge can say where each burst's
 #               time went. Its own file, read for the burst section only, so no
@@ -289,11 +296,11 @@ jobs:
           path: results/
 
   # The burst leg runs BEFORE the steady pass and alone, which is a decision rather
-  # than an ordering accident. The steady mix includes `122` (it is real traffic),
-  # so a steady driver that happened to take the burst's slot first would make every
-  # burst request SLOT_TAKEN, and "exactly one 200" would fail for a reason that has
-  # nothing to do with the unique index it exists to test. Twenty five simultaneous
-  # requests on one slot is the contention being measured either way.
+  # than an ordering accident. The steady mix includes the burst ladders' codes (it
+  # is real traffic), so a steady driver that happened to take a burst's slot first
+  # would turn burst requests into SLOT_TAKEN for a reason that has nothing to do with
+  # contention, and would change the capacity the setup measured for the burst
+  # (#3429). A crowd on one slot is the contention being measured either way.
   setup-burst:
     # After the baseline, so its bookings are made at rest (#3258). Whatever the
     # baseline concluded: a failed baseline leaves no file, which the judge reports
@@ -304,11 +311,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
-      burst_code: ${{ steps.pick.outputs.burst_code }}
-      burst_sibling_code: ${{ steps.pick.outputs.burst_sibling_code }}
-      # ONE value (#3325): both codes and every burst's slot and moment, so the four
-      # drivers cannot fire at different codes, slots or moments while each reads as
-      # correct (L70).
+      # ONE value (#3325, #3429): every burst's kind, codes, slot, moment, share and
+      # measured capacity, so the four drivers cannot fire at different codes, slots
+      # or moments while each reads as correct (L70). What each burst was worth
+      # travels inside it to the drivers' files and from there to the report.
       burst_plan: ${{ steps.pick.outputs.burst_plan }}
       # Emitted from the app's own BURST_LEGS, so the plan and the judge's
       # expectation are one number.
@@ -317,9 +323,6 @@ jobs:
       # judge's expectation are ONE number rather than two that drift (L41).
       drivers: ${{ steps.pick.outputs.drivers }}
       driver_count: ${{ steps.pick.outputs.driver_count }}
-      # Empty when the depth was not measured, which the judge reports as
-      # unmeasured rather than as a number (#2278).
-      burst_pool_depth: ${{ steps.pick.outputs.burst_pool_depth }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -328,19 +331,20 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # ONE plan, chosen here and handed to every driver: the code and its sibling,
-      # and each burst's slot and moment. It refuses on its own exit code when the
-      # pair offers nothing, because an empty burst file and a run with no burst leg
-      # are otherwise the same thing, and when no two codes share a fallback ladder
-      # (exit 6), because a burst on one code cannot prove the split (#3325).
+      # ONE plan, chosen here and handed to every driver: each burst's kind, codes,
+      # slot, moment and share. It refuses on its own exit code for every way of
+      # learning nothing, because an empty burst file and a run with no burst leg are
+      # otherwise the same thing: no two codes sharing a fallback ladder (6), no
+      # ladder smaller than the refusal crowd (7), none that can host the drop burst
+      # (8), no slot where the drop burst fits (9) (#3325, #3429; RUNBOOK lists all).
       - name: Pick the burst's codes, slots and moments
         id: pick
         env:
           SLATE_BASE: ${{ vars.LOADTEST_BASE_URL }}
           BURST_LEAD_SECONDS: ${{ inputs.burst_lead_seconds }}
-          # The roster, so the pool the burst fires at is MEASURED rather than a
-          # hand maintained constant (#2278). Without these the step refuses on its
-          # own exit code rather than guessing a depth.
+          # The roster and who is free at a slot, so every ladder the bursts fire at
+          # is MEASURED rather than a hand maintained constant (#2278, #3429). Without
+          # these the step refuses on its own exit code rather than guessing.
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.LOADTEST_SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.LOADTEST_SUPABASE_SECRET_KEY }}
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/burst-setup.ts
@@ -908,12 +912,9 @@ jobs:
           # have kept running under fault without reading wrangler.jsonc itself (#3104).
           # A copy, held equal to wrangler's resolved value by scripts/test-fault-lanes.ts.
           EXPECT_LANES_DISABLED: advisor-photos,agents,bulk-reassign,erasure-audit,monitor,ooo-approvals,ooo-digest,prune-bookings-pii,prune-warehouse-pii,snowflake-export,snowflake-reconcile
-          # What the burst control was actually worth (#2278): the code it fired at
-          # and how deep that pool measured. The depth is EMPTY when the setup could
-          # not measure it, and the report says unmeasured rather than printing a
-          # number nobody read.
-          BURST_CODE: ${{ needs.setup-burst.outputs.burst_code }}
-          BURST_POOL_DEPTH: ${{ needs.setup-burst.outputs.burst_pool_depth }}
+          # What each burst was worth (#2278) is no longer handed over here: since
+          # #3429 the plan carries each burst's measured capacity into the drivers'
+          # own files, and the report reads it from there.
           REPORT: reports/loadtest-${{ github.run_id }}.md
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/run-judge.ts
       # ALWAYS uploaded, and this is the step teardown waits on. A report that

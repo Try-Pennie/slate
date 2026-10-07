@@ -40,15 +40,25 @@ import {
   burstLegOut,
   readBurstPlan,
   readDriverMode,
+  readBurstGraceMs,
+  settleLater,
   bookingRequestHeaders,
   bookingBody,
   DRIVER_MODES,
   BURST_LEGS,
+  BURST_KINDS,
+  BURST_SEQUENCE,
   BURST_REQUESTS_DEFAULT,
+  DROP_BURST_REQUESTS_PER_DRIVER,
   BURST_SPACING_MS,
   BURST_SLOT_GAP_MS,
   BURST_GRACE_DEFAULT_MS,
+  BURST_PROBE_TIMEOUT_MS,
   REQUEST_TIMEOUT_MS,
+  burstCrowd,
+  burstRequestsPerDriver,
+  burstSettleAtMs,
+  burstRequestNumbers,
 } from "./loadtest/book-plan.ts";
 import {
   AVAILABILITY_LIMITER,
@@ -449,6 +459,29 @@ const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
 }
 
 {
+  // #3429 on #3447: the refusal controls and the drop burst share the burst leg, so
+  // what keeps their people apart is the request numbers `burstRequestNumbers` gives
+  // each burst. Every lead the default plan mints, on every driver, is checked here,
+  // and must sit inside the space the property above was checked over (n < 400).
+  const shares = BURST_SEQUENCE.map((kind) => burstRequestsPerDriver(kind));
+  const phonesOf = (numbersFor: (index: number) => number[]): string[] =>
+    Array.from({ length: DRIVERS }, (_, driver) => driver).flatMap((driver) =>
+      BURST_SEQUENCE.flatMap((_, index) =>
+        numbersFor(index).map((n) => loadtestPhone({ runId: REAL_RUN, leg: "burst", driver, n })),
+      ),
+    );
+  const all = BURST_SEQUENCE.flatMap((_, index) => burstRequestNumbers(shares, index));
+  assert(Math.max(...all) < 400, `the bursts' request numbers stay inside the checked space (largest ${Math.max(...all)})`);
+  const phones = phonesOf((index) => burstRequestNumbers(shares, index));
+  eq(phones.length, DRIVERS * shares.reduce((a, b) => a + b, 0), "one number per burst request of every driver");
+  eq(new Set(phones).size, phones.length, `every burst request of a run is its own person (${phones.length} requests)`);
+  // Control: numbering that restarts at zero for every burst gives the drop burst
+  // the first refusal control's people, and the same check must see it (L1).
+  const restarted = phonesOf((index) => burstRequestNumbers(shares, index).map((_, i) => i));
+  assert(new Set(restarted).size < restarted.length, "control: bursts that reuse request numbers are seen to share people");
+}
+
+{
   const lead = { runId: REAL_RUN, leg: "steady", driver: 0, n: 0 } as const;
   assert(
     loadtestPhone(lead) !== loadtestPhone({ ...lead, runId: "run-37547143303-2" }),
@@ -598,6 +631,13 @@ const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
 
 {
   eq(BURST_LEGS, 3, "a run fires three bursts");
+  // #3429: two refusal controls and one tier drop burst. The refusal control carries
+  // the loser speed bar, which is a timing claim, so it is read twice (L395); the drop
+  // burst is a correctness demonstration that one counterexample decides.
+  eq(BURST_LEGS, BURST_SEQUENCE.length, "the burst count is the sequence's length, one number (L41)");
+  eq(BURST_SEQUENCE.filter((k) => k === "refusal").length, 2, "two of the three are refusal controls");
+  eq(BURST_SEQUENCE.filter((k) => k === "drop").length, 1, "and one is the tier drop burst");
+  assert(BURST_SEQUENCE.every((k) => (BURST_KINDS as readonly string[]).includes(k)), "every burst is a kind the plan reader knows");
   // Spaced so a burst has finished before the next one fires: every request carries
   // its own abort, so a burst is over by its timeout plus the lateness a driver is
   // allowed, and the next moment must be past that or two bursts would overlap and
@@ -609,6 +649,40 @@ const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
   // The slots are an hour apart, which is longer than any appointment plus its
   // buffers, so a booking made by one burst cannot overlap the slot another fires at.
   assert(BURST_SLOT_GAP_MS >= 60 * 60_000, "the three slots are at least an hour apart");
+}
+
+// --- #3429: the two kinds of burst, their crowds, and the probe after each ---------
+{
+  // The refusal control keeps the crowd of a hundred; the drop burst is about ten.
+  eq(burstRequestsPerDriver("refusal"), BURST_REQUESTS_DEFAULT, "a refusal driver fires the default share");
+  eq(burstRequestsPerDriver("drop"), DROP_BURST_REQUESTS_PER_DRIVER, "a drop driver fires the drop share");
+  eq(burstCrowd("refusal"), DRIVERS * BURST_REQUESTS_DEFAULT, "the refusal crowd is every driver's share");
+  eq(burstCrowd("refusal"), 100, "which is the crowd of a hundred the burst always fired");
+  const drop = burstCrowd("drop");
+  assert(drop >= 8 && drop <= 12, `the drop crowd is about ten (got ${drop})`);
+  assert(drop < burstCrowd("refusal"), "and smaller than the refusal crowd");
+
+  // The probe goes out once every confirm of the burst is over: the latest a driver
+  // may still fire, plus a request's own abort bound. The confirm's own budget is
+  // inside that bound, so nothing is still walking the ladder when the probe asks.
+  const at = 1_760_000_000_000;
+  eq(burstSettleAtMs(at, BURST_GRACE_DEFAULT_MS, REQUEST_TIMEOUT_MS), at + BURST_GRACE_DEFAULT_MS + REQUEST_TIMEOUT_MS, "the burst settles a grace and a request bound past its moment");
+  eq(burstSettleAtMs(at, 100, 500), at + 600, "and a driver's shortened seams shorten it, never lengthen it");
+  // And it is answered before the next burst fires, so no probe overlaps a crowd.
+  assert(
+    burstSettleAtMs(0, BURST_GRACE_DEFAULT_MS, REQUEST_TIMEOUT_MS) + BURST_PROBE_TIMEOUT_MS < BURST_SPACING_MS,
+    `a burst's probe ends before the next moment (${BURST_GRACE_DEFAULT_MS + REQUEST_TIMEOUT_MS + BURST_PROBE_TIMEOUT_MS}ms against ${BURST_SPACING_MS}ms)`,
+  );
+}
+
+{
+  // Each burst's request numbers start past every earlier burst's, so no two of a
+  // run's requests share an external id whatever each burst's share is (#2261).
+  eq(burstRequestNumbers([25, 3, 25], 0), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24], "the first burst starts at zero");
+  eq(burstRequestNumbers([25, 3, 25], 1), [25, 26, 27], "the second starts past the first's share");
+  eq(burstRequestNumbers([25, 3, 25], 2)[0], 28, "and the third past both");
+  const all = [0, 1, 2].flatMap((i) => burstRequestNumbers([25, 3, 25], i));
+  eq(new Set(all).size, 53, "no number is used twice");
 }
 
 {
@@ -673,35 +747,63 @@ const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
   // drivers cannot fire at different codes, slots or moments while each reads as
   // correct (L70). Read strictly: a plan this cannot read is refused by name rather
   // than becoming a burst nobody configured.
-  const good = JSON.stringify({
+  // #3429: each burst carries its OWN kind, codes, share and measured capacity, because
+  // the refusal control and the drop burst fire at different ladders.
+  const refusalBurst = {
+    kind: "refusal",
+    codes: ["500", "501"],
+    slot: "2026-10-06T14:00:00.000Z",
+    startAtMs: 1_760_000_000_000,
+    perDriver: 25,
+    capacity: { ladderRoster: 16, rung0Free: 4, ladderFree: 9 },
+  };
+  const dropBurst = {
+    kind: "drop",
     codes: ["120", "121"],
-    bursts: [
-      { slot: "2026-10-06T14:00:00.000Z", startAtMs: 1_760_000_000_000 },
-      { slot: "2026-10-06T15:10:00.000Z", startAtMs: 1_760_000_060_000 },
-      { slot: "2026-10-06T16:20:00.000Z", startAtMs: 1_760_000_120_000 },
-    ],
+    slot: "2026-10-06T15:10:00.000Z",
+    startAtMs: 1_760_000_060_000,
+    perDriver: 3,
+    capacity: { ladderRoster: 74, rung0Free: 1, ladderFree: 40 },
+  };
+  const good = JSON.stringify({
+    bursts: [refusalBurst, dropBurst, { ...refusalBurst, slot: "2026-10-06T16:20:00.000Z", startAtMs: 1_760_000_120_000 }],
   });
   const read = readBurstPlan(good);
   assert(read.ok, `a well formed plan is read (got: ${JSON.stringify(read)})`);
   if (read.ok) {
-    eq(read.plan.codes, ["120", "121"], "with its two codes");
-    eq(read.plan.bursts.length, 3, "and its three bursts");
+    eq(read.plan.bursts.length, 3, "with its three bursts");
     eq(read.plan.bursts[1]!.startAtMs, 1_760_000_060_000, "each with its moment");
+    eq(read.plan.bursts[1]!.kind, "drop", "its kind");
+    eq(read.plan.bursts[1]!.codes, ["120", "121"], "its own two codes");
+    eq(read.plan.bursts[1]!.perDriver, 3, "its own share per driver");
+    eq(read.plan.bursts[1]!.capacity, { ladderRoster: 74, rung0Free: 1, ladderFree: 40 }, "and what the setup measured");
   }
+  // An unmeasured capacity is a null, never a zero: "nobody measured it" and "nobody
+  // was free" are the two readings the report must not confuse (L98).
+  const unmeasured = readBurstPlan(
+    JSON.stringify({ bursts: [{ ...refusalBurst, capacity: { ladderRoster: 16, rung0Free: null, ladderFree: null } }] }),
+  );
+  assert(unmeasured.ok && unmeasured.plan.bursts[0]!.capacity.ladderFree === null, "an unmeasured capacity is read as null");
 
+  const plan1 = (b: Record<string, unknown>) => JSON.stringify({ bursts: [{ ...refusalBurst, ...b }] });
   const refusals: [string, string][] = [
     ["not json", "not JSON"],
-    [JSON.stringify({ codes: ["120"], bursts: JSON.parse(good).bursts }), "two codes"],
-    [JSON.stringify({ codes: ["120", "120"], bursts: JSON.parse(good).bursts }), "two different codes"],
-    [JSON.stringify({ codes: ["120", "121"], bursts: [] }), "no bursts"],
-    [JSON.stringify({ codes: ["120", "121"], bursts: [{ slot: "soon", startAtMs: 1 }] }), "slot"],
-    [JSON.stringify({ codes: ["120", "121"], bursts: [{ slot: "2026-10-06T14:00:00.000Z", startAtMs: "x" }] }), "moment"],
+    [JSON.stringify({ bursts: [] }), "no bursts"],
+    [plan1({ kind: "storm" }), "kind"],
+    [plan1({ codes: ["120"] }), "two codes"],
+    [plan1({ codes: ["120", "120"] }), "two different codes"],
+    [plan1({ slot: "soon" }), "slot"],
+    [plan1({ startAtMs: "x" }), "moment"],
+    [plan1({ perDriver: 0 }), "share"],
+    [plan1({ perDriver: 2.5 }), "share"],
+    [plan1({ capacity: undefined }), "capacity"],
+    [plan1({ capacity: { ladderRoster: -1, rung0Free: 1, ladderFree: 1 } }), "capacity"],
+    [plan1({ capacity: { ladderRoster: 16, rung0Free: "1", ladderFree: 1 } }), "capacity"],
     [
       JSON.stringify({
-        codes: ["120", "121"],
         bursts: [
-          { slot: "2026-10-06T14:00:00.000Z", startAtMs: 1_760_000_060_000 },
-          { slot: "2026-10-06T15:00:00.000Z", startAtMs: 1_760_000_000_000 },
+          { ...refusalBurst, startAtMs: 1_760_000_060_000 },
+          { ...dropBurst, startAtMs: 1_760_000_000_000 },
         ],
       }),
       "in time order",
@@ -711,6 +813,18 @@ const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
     const r = readBurstPlan(raw);
     assert(!r.ok && r.why.includes(says), `refused, saying "${says}" (got: ${JSON.stringify(r)})`);
   }
+
+  // Each burst's requests are numbered past the earlier bursts' shares
+  // (`burstRequestNumbers`), and a load test phone holds request numbers 0 to 9999
+  // only (#3447). A plan whose shares a driver totals past that is refused HERE, by
+  // name, rather than reaching a send that cannot build its lead.
+  const over = readBurstPlan(JSON.stringify({ bursts: [{ ...refusalBurst, perDriver: 6_000 }, { ...dropBurst, perDriver: 4_001 }] }));
+  assert(
+    !over.ok && over.why.includes("10001") && over.why.includes("0 to 9999"),
+    `a plan whose shares run past the phone's request numbers is refused naming both (got: ${JSON.stringify(over)})`,
+  );
+  const atLimit = readBurstPlan(JSON.stringify({ bursts: [{ ...refusalBurst, perDriver: 6_000 }, { ...dropBurst, perDriver: 4_000 }] }));
+  assert(atLimit.ok, `and shares that use exactly every request number are read (got: ${JSON.stringify(atLimit)})`);
 }
 
 // --- #3354: the driver says which leg it is on every confirm it sends ---------------
@@ -735,6 +849,54 @@ const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
   assert(!typo.ok && typo.why.includes("Burst"), `a mode outside the four is refused by name (got ${JSON.stringify(typo)})`);
   const control = readDriverMode("preflight");
   assert(!control.ok, "a control's leg is not a mode this driver runs, so it is refused rather than run as the steady pass");
+}
+
+{
+  // #3446 review (L50): BURST_GRACE_MS is read once, strictly. `Number("soon")` is NaN,
+  // which JSON writes as null, which the judge reads as "not recorded" and replaces
+  // with the default, so a bad setting vanished. An unset or EMPTY one (the empty
+  // string a workflow interpolates for a missing setting, L138) is the default, never 0.
+  const unsetGrace = readBurstGraceMs(undefined);
+  assert(unsetGrace.ok && unsetGrace.ms === BURST_GRACE_DEFAULT_MS, `no grace is the default (got ${JSON.stringify(unsetGrace)})`);
+  const emptyGrace = readBurstGraceMs("");
+  assert(emptyGrace.ok && emptyGrace.ms === BURST_GRACE_DEFAULT_MS, `an empty grace is the default, never zero (got ${JSON.stringify(emptyGrace)})`);
+  const set = readBurstGraceMs("5000");
+  assert(set.ok && set.ms === 5000, `a whole number of milliseconds is read (got ${JSON.stringify(set)})`);
+  for (const raw of ["soon", "-1", "1.5", "2s", "Infinity"]) {
+    const r = readBurstGraceMs(raw);
+    assert(!r.ok && r.why.includes("BURST_GRACE_MS") && r.why.includes(raw), `a grace of "${raw}" is refused by name (got ${JSON.stringify(r)})`);
+  }
+}
+
+{
+  // #3446 review (L749): work started now and awaited later carries its rejection
+  // handler from the moment it is created, so a failure in between is RECORDED
+  // rather than reported by Node as unhandled, which kills a driver mid run.
+  const unhandled: unknown[] = [];
+  const listen = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", listen);
+  try {
+    const failures: unknown[] = [];
+    const held = settleLater(Promise.reject(new Error("probe write failed")), (err) => failures.push(err));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    eq(unhandled.length, 0, "a held rejection is never reported as unhandled");
+    eq(failures.length, 1, "and is recorded, not dropped");
+    assert(failures[0] instanceof Error && (failures[0] as Error).message === "probe write failed", "with its own error");
+    eq(await held, undefined, "and what is awaited later resolves");
+    const fine: unknown[] = [];
+    await settleLater(Promise.resolve("written"), (err) => fine.push(err));
+    eq(fine.length, 0, "work that succeeds records nothing");
+    // Control (L1): the same rejection with no handler IS reported, so the zero above
+    // is the handler's doing and not a listener that never fires.
+    const bare = Promise.reject(new Error("bare"));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    eq(unhandled.length, 1, "control: a rejection with no handler is reported as unhandled");
+    bare.catch(() => {});
+  } finally {
+    process.off("unhandledRejection", listen);
+  }
 
   // One vocabulary, written once (L41). The mode list was first added beside a hand
   // written DriverMode union, which declared the type twice; only tsc over scripts/
@@ -767,6 +929,19 @@ const RUN_37547143303_PAIRS: ReadonlyArray<readonly [number, number]> = [
   eq(attendee.email, "run-1-9-3@loadtest.local", "an address on the load test's own domain");
   eq(attendee.phone, loadtestPhone(lead), "and its OWN number, since a weak match is email OR phone (#2261)");
   assert(attendee.name.includes("run-1-9-3"), "named for its id, so a row can be traced to the request");
+}
+
+{
+  // A lead outside the phone's digits is refused while the body is BUILT, by name, so
+  // a sender that builds it before its send (as `book()` and the ceiling control do)
+  // stops there rather than recording a request that failed in transit (#3447).
+  let threw: unknown = null;
+  try {
+    bookingBody({ code: "112", startIso: "2026-10-08T14:00:00Z", lead: { runId: "run-1", leg: "burst", driver: 0, n: 10_000 }, timezone: "America/New_York" });
+  } catch (err) {
+    threw = err;
+  }
+  assert(threw instanceof Error && /request 10000/.test(threw.message), `a body for request 10000 is refused by name (got ${threw instanceof Error ? threw.message : "no refusal"})`);
 }
 
 // --- #3348: a failed first read is remembered, so it is not re-asked on every request ---

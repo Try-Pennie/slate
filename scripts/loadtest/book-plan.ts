@@ -161,14 +161,44 @@ export const BURST_KINDS = ["refusal", "drop"] as const;
 export type BurstKind = (typeof BURST_KINDS)[number];
 
 /**
- * How many bursts one run fires (#3325), each at its own slot and moment and each
- * judged on its own. One burst is one spread of simultaneous requests over the
- * deployment's isolates, and one lucky spread can pass a run that a second would
- * fail, so a single reading cannot carry the verdict (L395).
+ * The run's bursts in firing order (#3325, #3429), each at its own slot and moment and
+ * each judged on its own. The refusal control is fired twice because its loser speed
+ * bar is a timing claim, and one spread of a crowd over the deployment's isolates can
+ * pass a run a second would fail (L395). The drop burst is a correctness demonstration
+ * that a single counterexample decides, fired once between them; a second drop
+ * reading is the lever not pulled here, since a fourth burst would leave the burst
+ * tail's ceiling no headroom at the default lead (L308).
  */
-export const BURST_LEGS = 3;
-/** Requests one burst driver fires in one burst, when BURST_REQUESTS is unset. */
+export const BURST_SEQUENCE: readonly BurstKind[] = ["refusal", "drop", "refusal"];
+/** How many bursts one run fires: the sequence's length, so the two are one number (L41). */
+export const BURST_LEGS = BURST_SEQUENCE.length;
+/** Requests one burst driver fires in a REFUSAL burst: four drivers make the crowd of a hundred. */
 export const BURST_REQUESTS_DEFAULT = 25;
+/** #3429: requests one burst driver fires in a DROP burst: four drivers make twelve. */
+export const DROP_BURST_REQUESTS_PER_DRIVER = 3;
+
+/** How many requests one driver fires in a burst of this kind. */
+export function burstRequestsPerDriver(kind: BurstKind): number {
+  return kind === "drop" ? DROP_BURST_REQUESTS_PER_DRIVER : BURST_REQUESTS_DEFAULT;
+}
+
+/** The whole crowd one burst of this kind fires across every driver. */
+export function burstCrowd(kind: BurstKind): number {
+  return DRIVERS * burstRequestsPerDriver(kind);
+}
+
+/**
+ * #3429: the drop burst's ladder must hold at least this many times its crowd, free at
+ * the slot when planned, so a booking made between the plan and the burst cannot turn
+ * the drop burst into a refusal and every confirm can win.
+ */
+export const DROP_CAPACITY_HEADROOM = 2;
+
+/**
+ * #3429: how long one probe of a burst's slot may take. Held, with the moment the
+ * burst settles, inside the spacing to the next burst, so no probe overlaps a crowd.
+ */
+export const BURST_PROBE_TIMEOUT_MS = 20_000;
 
 /**
  * #3429: when every confirm of a burst is over, so its slot can be asked whether it is
@@ -182,6 +212,15 @@ export function burstSettleAtMs(momentMs: number, graceMs: number, requestTimeou
   return momentMs + graceMs + requestTimeoutMs;
 }
 
+/**
+ * #3429: the request numbers burst `index` uses, given every burst's share per driver,
+ * so each burst starts past every earlier one's and no two of a run's requests share an
+ * external id whatever the shares are (#2261).
+ */
+export function burstRequestNumbers(shares: readonly number[], index: number): number[] {
+  const start = shares.slice(0, index).reduce((n, s) => n + s, 0);
+  return Array.from({ length: shares[index] ?? 0 }, (_, i) => start + i);
+}
 /** How late a burst driver may wake and still be part of the burst, when BURST_GRACE_MS is unset. */
 export const BURST_GRACE_DEFAULT_MS = 2_000;
 /**
@@ -207,13 +246,14 @@ export const BURST_SLOT_GAP_MS = 60 * 60_000;
 
 /**
  * The whole minutes a burst driver's job needs at a given lead (#3325): the lead to
- * the first moment, the spacing to the last, that burst's longest life (its requests'
- * own timeout plus the lateness a driver may fire at), and the runner's setup. The
- * workflow's burst job timeout is held at or above this at its default lead.
+ * the first moment, the spacing to the last, the moment that burst settles (its
+ * requests' own timeout plus the lateness a driver may fire at), the probe of its slot
+ * after that (#3429), and the runner's setup. The workflow's burst job timeout is held
+ * at or above this at its default lead.
  */
 export function burstJobMinutesNeeded(leadSeconds: number): number {
-  const workMs =
-    leadSeconds * 1000 + (BURST_LEGS - 1) * BURST_SPACING_MS + REQUEST_TIMEOUT_MS + BURST_GRACE_DEFAULT_MS;
+  const lastMomentMs = leadSeconds * 1000 + (BURST_LEGS - 1) * BURST_SPACING_MS;
+  const workMs = burstSettleAtMs(lastMomentMs, BURST_GRACE_DEFAULT_MS, REQUEST_TIMEOUT_MS) + BURST_PROBE_TIMEOUT_MS;
   return Math.ceil(workMs / 60_000) + DRIVE_JOB_SETUP_MINUTES;
 }
 
@@ -793,21 +833,39 @@ export function burstLegOut(out: string, index: number): string {
   return `${out.replace(/\.json$/, "")}-leg-${index}.json`;
 }
 
+/** One burst of the plan (#3325, #3429): its kind, its own two codes, slot, moment and share. */
+export interface PlannedBurst {
+  kind: BurstKind;
+  /** The two sibling codes it is split across, measured to share a fallback ladder. */
+  codes: [string, string];
+  slot: string;
+  startAtMs: number;
+  /** Requests each driver fires in it. */
+  perDriver: number;
+  /** What the setup measured about its capacity, for the report. */
+  capacity: BurstCapacity;
+}
+
 /** The burst plan the setup chose once and every driver fires (#3325). */
 export interface BurstPlan {
-  /** The two sibling codes, measured to share a fallback ladder. */
-  codes: [string, string];
   /** One per burst, in firing order. */
-  bursts: { slot: string; startAtMs: number }[];
+  bursts: PlannedBurst[];
+}
+
+/** A capacity figure: a whole count of advisors, or null for one nobody measured. */
+function isCapacityFigure(v: unknown): v is number | null {
+  return v === null || (typeof v === "number" && Number.isInteger(v) && v >= 0);
 }
 
 /**
  * The plan from `BURST_PLAN`, or the reason it cannot be fired (#3325).
  *
  * Read strictly, and refused by name, because a plan this half read would be a burst
- * nobody configured: one code instead of two, a slot that is not a time (every
- * request then refused as a validation error and counted as a loser), or moments out
- * of order, which would have a driver wait past one burst to fire the next late.
+ * nobody configured: a kind the judge does not know, one code instead of two, a slot
+ * that is not a time (every request then refused as a validation error and counted as
+ * a loser), a share that is not a whole number of requests, a capacity that is not a
+ * count, or moments out of order, which would have a driver wait past one burst to
+ * fire the next late.
  */
 export function readBurstPlan(raw: string): { ok: true; plan: BurstPlan } | { ok: false; why: string } {
   let parsed: unknown;
@@ -816,34 +874,71 @@ export function readBurstPlan(raw: string): { ok: true; plan: BurstPlan } | { ok
   } catch {
     return { ok: false, why: "BURST_PLAN is not JSON" };
   }
-  const p = parsed as { codes?: unknown; bursts?: unknown } | null;
+  const p = parsed as { bursts?: unknown } | null;
   if (typeof p !== "object" || p === null) return { ok: false, why: "BURST_PLAN is not an object" };
-  const codes = p.codes;
-  if (!Array.isArray(codes) || codes.length !== 2 || !codes.every((c) => typeof c === "string" && c.trim() !== "")) {
-    return { ok: false, why: "BURST_PLAN must name exactly two codes, the burst and its sibling" };
-  }
-  if (codes[0] === codes[1]) {
-    return { ok: false, why: `BURST_PLAN must name two different codes, and names ${codes[0]} twice` };
-  }
   const bursts = p.bursts;
   if (!Array.isArray(bursts) || bursts.length === 0) return { ok: false, why: "BURST_PLAN holds no bursts" };
-  const out: BurstPlan["bursts"] = [];
-  for (const [i, b] of bursts.entries()) {
-    const slot = (b as { slot?: unknown } | null)?.slot;
-    const startAtMs = (b as { startAtMs?: unknown } | null)?.startAtMs;
-    if (typeof slot !== "string" || !Number.isFinite(Date.parse(slot))) {
-      return { ok: false, why: `BURST_PLAN burst ${i + 1}'s slot is not a time: ${JSON.stringify(slot)}` };
+  const out: PlannedBurst[] = [];
+  for (const [i, entry] of bursts.entries()) {
+    const n = i + 1;
+    const b = (typeof entry === "object" && entry !== null ? entry : {}) as Record<string, unknown>;
+    const kind = b.kind;
+    if (typeof kind !== "string" || !(BURST_KINDS as readonly string[]).includes(kind)) {
+      return { ok: false, why: `BURST_PLAN burst ${n}'s kind is not one of ${BURST_KINDS.join(", ")}: ${JSON.stringify(kind)}` };
     }
+    const codes = b.codes;
+    if (!Array.isArray(codes) || codes.length !== 2 || !codes.every((c) => typeof c === "string" && c.trim() !== "")) {
+      return { ok: false, why: `BURST_PLAN burst ${n} must name exactly two codes, the burst's and its sibling's` };
+    }
+    if (codes[0] === codes[1]) {
+      return { ok: false, why: `BURST_PLAN burst ${n} must name two different codes, and names ${codes[0]} twice` };
+    }
+    const slot = b.slot;
+    if (typeof slot !== "string" || !Number.isFinite(Date.parse(slot))) {
+      return { ok: false, why: `BURST_PLAN burst ${n}'s slot is not a time: ${JSON.stringify(slot)}` };
+    }
+    const startAtMs = b.startAtMs;
     if (typeof startAtMs !== "number" || !Number.isSafeInteger(startAtMs) || startAtMs <= 0) {
-      return { ok: false, why: `BURST_PLAN burst ${i + 1}'s moment is not epoch milliseconds: ${JSON.stringify(startAtMs)}` };
+      return { ok: false, why: `BURST_PLAN burst ${n}'s moment is not epoch milliseconds: ${JSON.stringify(startAtMs)}` };
+    }
+    const perDriver = b.perDriver;
+    if (typeof perDriver !== "number" || !Number.isSafeInteger(perDriver) || perDriver <= 0) {
+      return { ok: false, why: `BURST_PLAN burst ${n}'s share per driver is not a whole number of requests: ${JSON.stringify(perDriver)}` };
+    }
+    const c = (typeof b.capacity === "object" && b.capacity !== null ? b.capacity : null) as Record<string, unknown> | null;
+    if (c === null || !isCapacityFigure(c.ladderRoster) || !isCapacityFigure(c.rung0Free) || !isCapacityFigure(c.ladderFree)) {
+      return {
+        ok: false,
+        why: `BURST_PLAN burst ${n}'s capacity is not three counts of advisors (or null where unmeasured): ${JSON.stringify(b.capacity)}`,
+      };
     }
     const prev = out[out.length - 1];
     if (prev && startAtMs <= prev.startAtMs) {
-      return { ok: false, why: `BURST_PLAN burst ${i + 1}'s moment is not after burst ${i}'s, so the bursts are not in time order` };
+      return { ok: false, why: `BURST_PLAN burst ${n}'s moment is not after burst ${i}'s, so the bursts are not in time order` };
     }
-    out.push({ slot, startAtMs });
+    out.push({
+      kind: kind as BurstKind,
+      codes: [codes[0], codes[1]],
+      slot,
+      startAtMs,
+      perDriver,
+      capacity: { ladderRoster: c.ladderRoster, rung0Free: c.rung0Free, ladderFree: c.ladderFree },
+    });
   }
-  return { ok: true, plan: { codes: [codes[0], codes[1]], bursts: out } };
+  // Every burst is numbered past the earlier bursts' shares (`burstRequestNumbers`), so
+  // the shares' total is the request numbers one driver uses. Past the phone's digits
+  // a request would have no number of its own, so it is refused here, by name, rather
+  // than at a send that cannot build its lead (#3447).
+  const total = out.reduce((n, b) => n + b.perDriver, 0);
+  if (total > LEAD_REQUEST_NUMBERS) {
+    return {
+      ok: false,
+      why:
+        `BURST_PLAN's bursts total ${total} requests a driver, past the ${LEAD_REQUEST_NUMBERS} request numbers ` +
+        `a load test phone holds (0 to ${LEAD_REQUEST_NUMBERS - 1}), so a burst request would have no number of its own`,
+    };
+  }
+  return { ok: true, plan: { bursts: out } };
 }
 
 /**
@@ -939,6 +1034,14 @@ export function offeredSlots(body: unknown): string[] {
 }
 
 /**
+ * How many request numbers one driver has on one leg inside a load test phone's
+ * digits (0 to 9999). Shared by the phone, which refuses a number past it, and by the
+ * burst plan reader, which refuses shares that would number a request past it, so the
+ * two can never disagree about the limit (L41).
+ */
+export const LEAD_REQUEST_NUMBERS = 10_000;
+
+/**
  * A phone number of this attempt's OWN (#2261, #3447).
  *
  * The dedupe gate is a PERSON gate, and a weak match is email OR phone
@@ -976,8 +1079,8 @@ export function loadtestPhone(lead: LoadtestLead): string {
   if (!Number.isInteger(lead.driver) || lead.driver < 0 || lead.driver > 99) {
     throw new Error(`loadtestPhone: driver ${lead.driver} is outside 0 to 99`);
   }
-  if (!Number.isInteger(lead.n) || lead.n < 0 || lead.n > 9999) {
-    throw new Error(`loadtestPhone: request ${lead.n} is outside 0 to 9999`);
+  if (!Number.isInteger(lead.n) || lead.n < 0 || lead.n > LEAD_REQUEST_NUMBERS - 1) {
+    throw new Error(`loadtestPhone: request ${lead.n} is outside 0 to ${LEAD_REQUEST_NUMBERS - 1}`);
   }
   const local = leg * 1_000_000 + lead.driver * 10_000 + lead.n;
   const digits = (runOffset(lead.runId) + local) % 10_000_000;
@@ -1036,6 +1139,40 @@ export function readDriverMode(raw: string | undefined): { ok: true; mode: Drive
   if (raw === undefined || raw === "") return { ok: true, mode: "steady" };
   if ((DRIVER_MODES as readonly string[]).includes(raw)) return { ok: true, mode: raw as DriverMode };
   return { ok: false, why: `MODE "${raw}" is not one of ${DRIVER_MODES.join(", ")}` };
+}
+
+/**
+ * How late a burst driver may wake and still fire, from its `BURST_GRACE_MS` (#3446
+ * review, L50). Unset or EMPTY is the default: the empty string is what a workflow
+ * interpolates for a setting nobody created (L138), and `Number("")` is a grace of 0.
+ * Anything that is not a whole, non negative number of milliseconds is refused by name:
+ * `Number("soon")` is NaN, which a burst file writes as null and the judge reads as
+ * "not recorded", so a bad setting would have been replaced by the default unseen.
+ */
+export function readBurstGraceMs(raw: string | undefined): { ok: true; ms: number } | { ok: false; why: string } {
+  if (raw === undefined || raw.trim() === "") return { ok: true, ms: BURST_GRACE_DEFAULT_MS };
+  const ms = Number(raw.trim());
+  if (!/^\d+$/.test(raw.trim()) || !Number.isSafeInteger(ms)) {
+    return { ok: false, why: `BURST_GRACE_MS "${raw}" is not a whole number of milliseconds` };
+  }
+  return { ok: true, ms };
+}
+
+/**
+ * Work started now and awaited later, with its failure handled from the moment it is
+ * created (#3446 review, L749). A promise that rejects before anything awaits it is
+ * reported by Node as unhandled, which ends the process: a burst driver holding a
+ * probe until every burst had fired lost every later burst to one failed write. The
+ * returned promise never rejects; the failure goes to `onFailure`, for the caller to
+ * report once it does await.
+ */
+export function settleLater(work: Promise<unknown>, onFailure: (err: unknown) => void): Promise<void> {
+  return work.then(
+    () => undefined,
+    (err: unknown) => {
+      onFailure(err);
+    },
+  );
 }
 
 /** The headers every confirm a driver sends carries, its leg among them (#3354). */

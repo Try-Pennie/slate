@@ -27,7 +27,6 @@ import {
   type DeferredSpanReading,
 } from "./confirm-startup.ts";
 import { DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES } from "../../src/lib/rate-limit-core.ts";
-import { burstControlStrength, type BurstDepthReading } from "./burst-target.ts";
 import { baselineReading, expectBaselineFrom, latencyReportLine, verdictText } from "./latency-bar.ts";
 import { recomputeArmLine } from "../../src/lib/booking/post-confirm-recompute-modes.ts";
 import {
@@ -691,31 +690,6 @@ const result = judgeBookingRun(input);
 // tail. A report, never a bar: it is built after the verdict and feeds nothing into it.
 const burstBreakdown = burstBreakdownLines({ groups: burstLegGroups(input), tail: burstTail });
 
-/**
- * What the burst's pool depth was, for the report (#2278).
- *
- * `BURST_POOL_DEPTH` is empty when the setup could not measure it (a hand run that
- * named the code instead), and empty must stay UNMEASURED rather than becoming a
- * number: "nobody measured the depth" and "it was one deep" are the two states
- * this exists to tell apart (L98, L11).
- *
- * env-ok: BURST_POOL_DEPTH (optional; the depth setup-burst measured, and empty
- * for a hand run or a named code)
- * env-ok: BURST_CODE (optional; the code the burst actually fired at)
- */
-function burstDepthReading(): BurstDepthReading | null {
-  const code = (process.env.BURST_CODE ?? "").trim();
-  if (code === "") return null;
-  const raw = (process.env.BURST_POOL_DEPTH ?? "").trim();
-  if (raw === "") {
-    return { measured: false, code, why: "the setup did not report a measured depth" };
-  }
-  const depth = Number(raw);
-  return Number.isFinite(depth)
-    ? { measured: true, code, depth }
-    : { measured: false, code, why: `the reported depth (${raw}) could not be read as a number` };
-}
-
 const lines: string[] = [];
 lines.push(`# Booking path load run ${RUN_ID}`);
 lines.push("");
@@ -836,13 +810,12 @@ if (m) {
             : "") +
           (platform.cronNote ? `; ${platform.cronNote}` : ""),
   );
-  // The strength of the burst control, stated rather than assumed (#2278). A run
-  // with no burst leg says nothing here, because there was no control to describe.
-  const burstDepth = burstDepthReading();
-  if (burstDepth) lines.push(`- the burst's pool: ${burstControlStrength(burstDepth)}`);
   // #3325: every burst judged on its own, the ones that failed named first, then each
-  // burst's own line: its split across the two codes, its winners and losers, which
-  // confirm line served it, its ladder share, and how fast its losers were told.
+  // burst's own line: its kind, its split across the two codes, its winners and
+  // losers, what its ladder held when planned (#2278, #3429: the strength of each
+  // control, stated rather than assumed), what the slot answered once it settled, the
+  // crowd rule the deployment declared, which confirm line served it, its ladder share,
+  // and how fast its losers were told or its winners served.
   const burstsSummary = burstsSummaryText(m.bursts);
   if (burstsSummary) lines.push(`- ${burstsSummary}`);
   for (const leg of m.bursts) lines.push(`  - ${burstLegText(leg)}`);
