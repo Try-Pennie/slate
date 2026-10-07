@@ -35,6 +35,7 @@ import { traced, type RefusalTrace } from "../src/lib/booking/refusal-trace.ts";
 import { DependencyTimeoutError } from "../src/lib/booking/orchestration.ts";
 import { answeredAtEchoHeader, confirmLineEchoHeaders, readLoadtestEcho } from "../src/lib/loadtest-echo.ts";
 import { formatLine } from "../src/lib/log.ts";
+import type { LineGroupSource } from "../src/lib/booking/pool-grouping-reader.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const SLOT = "2026-10-07T17:40:00.000Z";
@@ -56,6 +57,8 @@ interface ConfirmSpec {
   timeout?: boolean;
   leg?: string;
   cpuMs?: number;
+  /** #3460: where its line key's grouping came from, and the wait for the snapshot. */
+  grouping?: { source: LineGroupSource; waitedMs: number | null };
 }
 
 /**
@@ -87,6 +90,10 @@ async function confirmOf(spec: ConfirmSpec, n: number): Promise<{ event: string;
         t += spec.waits.line;
         facts.marks?.mark("line_turn");
         if (spec.line) facts.line = { line: "shared", reason: "ok", key: spec.line.key, lineMs: spec.line.lineMs };
+        if (spec.grouping) {
+          facts.lineGroupSource = spec.grouping.source;
+          facts.grouping = { source: spec.grouping.waitedMs === null ? "held" : "installed", waitedMs: spec.grouping.waitedMs, ageMs: null };
+        }
         t += spec.waits.decide;
         facts.marks?.mark("decided");
         facts.marks?.mark("profile");
@@ -208,31 +215,37 @@ const specs: ConfirmSpec[] = [
     ip: IP_A, startAtMs: MOMENT + 20, status: 200, outcome: "created", responseMs: 9_962,
     line: { key: "code", lineMs: 1_051 }, waits: { auth: 311, line: 1_051, decide: 487 },
     stages: [["assign-and-verify", 6_100], ["complete-reservation", 1_900]], cpuMs: 900,
+    grouping: { source: "timeout", waitedMs: 500 },
   },
   {
     ip: IP_A, startAtMs: MOMENT + 25, status: 409, outcome: "SLOT_TAKEN", responseMs: 9_986,
     line: { key: "code", lineMs: 70 }, waits: { auth: 2_900, line: 70, decide: 300 },
     stages: [["confirm-line", 6_500]], refusal: follower,
+    grouping: { source: "absent", waitedMs: 30 },
   },
   {
     ip: IP_A, startAtMs: MOMENT + 25, status: 409, outcome: "SLOT_TAKEN", responseMs: 9_986,
     line: { key: "code", lineMs: 70 }, waits: { auth: 2_900, line: 70, decide: 300 },
     stages: [["confirm-line", 6_400]], refusal: follower,
+    grouping: { source: "absent", waitedMs: 30 },
   },
   {
     ip: IP_B, startAtMs: MOMENT + 30, status: 409, outcome: "SLOT_TAKEN", responseMs: 10_121,
     line: { key: "ladder", lineMs: 66 }, waits: { auth: 3_000, line: 66, decide: 310 },
     stages: [["confirm-line", 6_600]], refusal: follower,
+    grouping: { source: "snapshot", waitedMs: 80 },
   },
   {
     ip: IP_B, startAtMs: MOMENT + 35, status: 503, outcome: "VERIFY_UNAVAILABLE", responseMs: 12_804,
     line: { key: "code", lineMs: 55 }, waits: { auth: 3_100, line: 55, decide: 400 },
     stages: [["assign-and-verify", 9_000]], refusal: unreadable,
+    grouping: { source: "local", waitedMs: null },
   },
   {
     ip: IP_B, startAtMs: MOMENT + 40, status: 503, outcome: "VERIFY_UNAVAILABLE", responseMs: 13_280,
     line: { key: "code", lineMs: 68 }, waits: { auth: 3_200, line: 68, decide: 420 },
     stages: [["assign-and-verify", 9_400]], timeout: true,
+    grouping: { source: "own-code-missing", waitedMs: null },
   },
 ];
 
@@ -366,6 +379,30 @@ const archive = [cronTick, ...built.map((b) => b.event), steadyStray.event].join
   assert(text.includes("code:members/read/claimed/checked"), "and the per rung counts say what they count");
   assert(/no reply \(1\)/.test(text), "a request with no reply is named, never silently dropped");
   assert(/2 matched as one block/.test(text), "the interchangeable block is named, so the matching is never overstated");
+}
+
+// --- #3460: where each burst's line keys came from ------------------------------------------
+//
+// Every way of not getting the snapshot falls back to the code's own line, so a burst whose
+// confirms all fell back reads exactly like one keyed from the snapshot unless the report
+// counts them (L551). Counted per burst over its matched confirms, with the wait the fetch
+// added, so the next run measures the bound rather than taking it on trust.
+{
+  const [b] = burstBreakdowns([group(0, attempts)], readBurstTail(archive));
+  eq(b!.lineGroupSources, { timeout: 1, absent: 2, snapshot: 1, local: 1, "own-code-missing": 1 }, "every matched confirm's line key source is tallied");
+  eq(b!.groupingFetchMs.slice().sort((x, y) => x - y), [30, 30, 80, 500], "and the wait of every confirm that fetched");
+  const text = burstBreakdownLines({ groups: [group(0, attempts)], tail: { kind: "read", text: archive } }).join("\n");
+  assert(text.includes("line keys: 1 of 6 from the snapshot"), `the share keyed from the snapshot is stated (got ${text})`);
+  assert(text.includes("absent x2") && text.includes("timeout x1") && text.includes("own-code-missing x1") && text.includes("local x1"), "and every other source is named, with its count");
+  assert(/grouping fetch p50 \d+ms max 500ms/.test(text), "and the fetch's wait is spread");
+}
+{
+  // A deployment before #3460 writes no source: UNMEASURED, never "0 from the snapshot" (L98).
+  const bareBuilt: { event: string; attempt: BookingAttempt }[] = [];
+  for (const [i, s] of specs.entries()) bareBuilt.push(await confirmOf({ ...s, grouping: undefined }, i));
+  const bareArchive = bareBuilt.map((x) => x.event).join("\n");
+  const text = burstBreakdownLines({ groups: [group(0, bareBuilt.map((x) => x.attempt))], tail: { kind: "read", text: bareArchive } }).join("\n");
+  assert(/line keys: UNMEASURED/.test(text) && !text.includes("from the snapshot"), `a burst whose confirms said nothing about their line keys is UNMEASURED (got ${text})`);
 }
 
 // --- UNMEASURED, each in its own words --------------------------------------------------------

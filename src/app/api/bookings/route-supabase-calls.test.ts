@@ -134,6 +134,7 @@ vi.mock("@/lib/booking/orchestration", async (importOriginal) => {
 });
 
 import { POST } from "./route";
+import { POOL_GROUPING_RETRY_MS } from "@/lib/booking/pool-grouping-reader";
 
 const BODY = {
   bucketCode: "411",
@@ -142,6 +143,20 @@ const BODY = {
   attendee: { name: "Dana Lee", email: "dana@example.com", phone: "2155550100" },
   salesforceId: "00Q5x000001abcEAA",
   externalId: "lead-abc-123",
+};
+
+/** Every call to the pool grouping directory (#3460), by op, across a whole burst. */
+const directoryCalls: string[] = [];
+/** The `CONFIRM_LINE` binding, serving only the directory: it holds no snapshot, the
+ *  state in which a server would otherwise fetch again for every confirm. */
+const emptyDirectory = {
+  idFromName: (name: string) => name,
+  get: () => ({
+    fetch: async (_url: string, init?: RequestInit) => {
+      directoryCalls.push(String((JSON.parse(String(init?.body ?? "{}")) as { op?: unknown }).op));
+      return Response.json({ kind: "grouping", snapshot: null });
+    },
+  }),
 };
 
 /** What the outcome tally was asked to count, and which alert cooldowns were read. */
@@ -196,6 +211,8 @@ beforeEach(() => {
   afterQueue.length = 0;
   cf.counts.clear();
   cf.env.BURST_LIMITER = cf.burstLimiter;
+  delete cf.env.CONFIRM_LINE;
+  directoryCalls.length = 0;
   seen.outcomes.length = 0;
   seen.alertKeys.length = 0;
   vi.stubGlobal("fetch", supabaseFetch);
@@ -209,12 +226,39 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/**
+ * #3460, #3355 item 1: the shared line switch read now STARTS before the line, the moment
+ * the key is good, so it runs during the ceilings' I/O rather than after them. It is the
+ * one read the line already made before entering (`decide`), through the same cached
+ * reader, so it moves earlier and adds nothing: one per server per TTL, however many
+ * confirms arrive. The case below the first describe pins that bound; every other call
+ * before the line is still none.
+ */
+const SWITCH_READ = "supabase:GET /rest/v1/booking_settings";
+const beyondSwitch = (calls: string[]) => calls.filter((e) => e !== SWITCH_READ);
+
 describe("Supabase round trips around the confirm line (#3416)", () => {
-  it("a create reaches the line having made NO Supabase call", async () => {
+  it("a create reaches the line having made no Supabase call but the cached switch read", async () => {
     const out = await confirm("lead");
     expect(out.status).toBe(200);
     expect(out.reachedLine).toBe(true);
-    expect(out.beforeLine).toEqual([]);
+    expect(beyondSwitch(out.beforeLine)).toEqual([]);
+  });
+
+  it("#3460 the switch read started before the line is one per server per TTL, never one per confirm", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      // Past any reading an earlier case cached, so this server reads the switch afresh.
+      vi.setSystemTime(Date.now() + 10 * 60_000);
+      const first = await confirm("lead");
+      // The positive control (L1): the count sees the switch read, and it is the only call.
+      expect(first.beforeLine).toEqual([SWITCH_READ]);
+      const second = await confirm("lead");
+      const third = await confirm("refused");
+      expect([...second.beforeAnswer, ...third.beforeAnswer]).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // The other half of the same claim. "No Supabase call before the line" is also what a
@@ -230,14 +274,14 @@ describe("Supabase round trips around the confirm line (#3416)", () => {
     const out = await confirm("refused");
     expect(out.status).toBe(409);
     expect(out.body.code).toBe("SLOT_TAKEN");
-    expect(out.beforeAnswer).toEqual([]);
+    expect(beyondSwitch(out.beforeAnswer)).toEqual([]);
   });
 
   it("a follower that timed out in the line is answered having made NO Supabase call", async () => {
     const out = await confirm("timed-out");
     expect(out.status).toBe(503);
     expect(out.body.code).toBe("VERIFY_UNAVAILABLE");
-    expect(out.beforeAnswer).toEqual([]);
+    expect(beyondSwitch(out.beforeAnswer)).toEqual([]);
   });
 
   // The positive control (L1, L98): an empty list above is only evidence if this counter can
@@ -253,6 +297,50 @@ describe("Supabase round trips around the confirm line (#3416)", () => {
     const out = await confirm("timed-out");
     expect(out.afterAnswer).toContain("supabase:GET /rest/v1/alert_state");
     expect(seen.alertKeys).toEqual(["eq.verify_on_book_outage"]);
+  });
+});
+
+// Review of #3471: the early reads start the moment the key is good, BEFORE the hourly
+// ceilings answer, so a caller with a good key over its ceiling starts them too. That is
+// only acceptable while what it starts is bounded per SERVER, never per request. So drive
+// a burst of requests the per key ceiling refuses at a cold server whose directory holds
+// nothing (the state in which an unbounded reader would fetch on every request), and
+// count every call either read makes.
+describe("a good key over its ceiling starts only the coalesced reads (#3460)", () => {
+  it("a burst of refused requests costs one switch read and one directory call, however many it sends", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      // Past any switch reading or fetch an earlier case left, so this server is cold.
+      vi.setSystemTime(Date.now() + 20 * 60_000);
+      cf.env.CONFIRM_LINE = emptyDirectory;
+      cf.counts.set("exact:bookapi:h:key:regal", 10_000);
+      const burst = async (n: number) => {
+        const switchReads: string[] = [];
+        const before = directoryCalls.length;
+        for (let i = 0; i < n; i++) {
+          const out = await confirm("lead");
+          expect(out.status).toBe(429);
+          expect(out.body).toEqual({ error: "Rate limit exceeded for this API key." });
+          expect(out.reachedLine).toBe(false);
+          switchReads.push(...[...out.beforeAnswer, ...out.afterAnswer].filter((e) => e === SWITCH_READ));
+        }
+        return { switchReads: switchReads.length, directory: directoryCalls.slice(before) };
+      };
+      const first = await burst(25);
+      // The positive control (L1): the counts see both reads, so the ones below are not zero by blindness.
+      expect(first.switchReads).toBe(1);
+      expect(first.directory).toEqual(["grouping-get"]);
+      // Inside the switch's TTL and the directory's retry window: nothing at all.
+      const again = await burst(25);
+      expect(again).toEqual({ switchReads: 0, directory: [] });
+      // Once the retry window has passed, ONE more directory call for the whole next burst:
+      // the bound is the clock, never the number of requests.
+      vi.setSystemTime(Date.now() + POOL_GROUPING_RETRY_MS);
+      const later = await burst(25);
+      expect(later).toEqual({ switchReads: 0, directory: ["grouping-get"] });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -299,7 +387,7 @@ describe("the hourly ceilings on the edge counter, through the route (#3416)", (
     const out = await confirm("lead");
     expect(out.status).toBe(200);
     expect(out.reachedLine).toBe(true);
-    expect(out.beforeLine).toEqual([]);
+    expect(beyondSwitch(out.beforeLine)).toEqual([]);
     expect(seen.alertKeys).toEqual(expect.arrayContaining(["eq.rate_limit_broken:bookapi:h"]));
   });
 });
