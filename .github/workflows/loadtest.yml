@@ -621,16 +621,31 @@ jobs:
       # The window is `archiveTailMinutes` (#3222): one minute past the longest a
       # drive job can run, since a slow drive now legitimately takes its whole
       # deadline. A fixed fifteen minutes lost a slow run's last lines.
+      #
+      # The burst tail's and the cold job's pattern, and for their reasons (#3463).
+      # `timeout` alone signals only `npx`, and `wrangler` beneath it outlived it on
+      # run 37566700055: the step ran 36 minutes past its 29 minute window until the
+      # job was cancelled, and the upload never ran. So the tail is its own process
+      # group (`setsid`), the step waits out the window itself and then stops the
+      # whole group, and the `timeout` one minute later is only the backstop. stderr
+      # goes to its own file so the stream holds only events.
       - name: Archive the Worker's logs for the window
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ARCHIVE_TAIL_MINUTES: "29"
         run: |
-          set -o pipefail
           mkdir -p results
-          timeout 29m npx wrangler tail --env loadtest --format json > results/tail.jsonl || true
+          setsid timeout "$((ARCHIVE_TAIL_MINUTES + 1))m" npx wrangler tail --env loadtest --format json > results/tail.jsonl 2> results/tail.err &
+          tail_pid=$!
+          sleep "$((ARCHIVE_TAIL_MINUTES * 60))"
+          kill -TERM -- -"$tail_pid" 2>/dev/null || true
+          wait "$tail_pid" 2>/dev/null || true
           wc -l results/tail.jsonl
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      # ALWAYS: a step that hangs or fails still holds what it caught, and the judge
+      # says what the archive could and could not cover.
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tail
           path: results/

@@ -158,7 +158,8 @@ const PLAN = { total: TOTAL, perMinute: PER_DRIVER_PER_MINUTE };
 {
   const yml = readFileSync(join(ROOT, ".github/workflows/loadtest.yml"), "utf8");
   const archive = /^ {2}archive:\n([\s\S]*?)(?=^ {2}\S)/m.exec(yml)?.[1] ?? "";
-  const tail = Number(/timeout (\d+)m npx wrangler tail/.exec(archive)?.[1] ?? NaN);
+  // #3463: the window is one setting the step both waits out and stops the tail at.
+  const tail = Number(/ARCHIVE_TAIL_MINUTES: "(\d+)"/.exec(archive)?.[1] ?? NaN);
   eq(tail, archiveTailMinutes(PLAN), "the archive's tail window is the one derived from the plan");
   assert(
     archiveTailMinutes(PLAN) > driveJobTimeoutMinutes(PLAN),
@@ -168,9 +169,9 @@ const PLAN = { total: TOTAL, perMinute: PER_DRIVER_PER_MINUTE };
   eq(jobTimeout, archiveJobTimeoutMinutes(PLAN), "the archive job's timeout is derived from its window");
   assert(jobTimeout > tail, "and is longer than the window, so the tail ends before the job is killed");
   // Control: a planted fixed window is read as different (L1).
-  const planted = yml.replace(/timeout \d+m npx wrangler tail/, "timeout 15m npx wrangler tail");
+  const planted = yml.replace(/ARCHIVE_TAIL_MINUTES: "\d+"/, 'ARCHIVE_TAIL_MINUTES: "15"');
   const plantedArchive = /^ {2}archive:\n([\s\S]*?)(?=^ {2}\S)/m.exec(planted)?.[1] ?? "";
-  eq(Number(/timeout (\d+)m npx wrangler tail/.exec(plantedArchive)?.[1] ?? NaN), 15, "control: a changed window is read as changed");
+  eq(Number(/ARCHIVE_TAIL_MINUTES: "(\d+)"/.exec(plantedArchive)?.[1] ?? NaN), 15, "control: a changed window is read as changed");
 }
 
 // --- the fault plan's length is read one way by the driver and the judge -----------

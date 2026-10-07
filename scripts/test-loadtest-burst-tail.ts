@@ -158,7 +158,7 @@ function burstTailWiringProblems(yml: string, runJudge: string): string[] {
   if (!judge.includes("-name '*.jsonl'")) out.push("the judge's gather does not copy the .jsonl logs, the burst tail among them");
   const archive = job(yml, "archive");
   if (!needsOf(archive).includes("burst")) out.push("the archive no longer waits for the bursts, so burst confirms would join the startup bar's population");
-  if (!/timeout \d+m npx wrangler tail --env loadtest --format json > results\/tail\.jsonl/.test(archive)) out.push("the archive's tail no longer writes tail.jsonl, the startup bar's population");
+  if (!/npx wrangler tail --env loadtest --format json > results\/tail\.jsonl/.test(archive)) out.push("the archive's tail no longer writes tail.jsonl, the startup bar's population");
   // The judge reads the burst tail for the burst section ONLY.
   const burstReads = runJudge.split("\n").filter((l) => l.includes("BURST_TAIL_FILE") || l.includes(BURST_TAIL_FILE));
   if (!burstReads.some((l) => /readBurstTailFile\(/.test(l))) out.push("the judge never reads the burst tail");
