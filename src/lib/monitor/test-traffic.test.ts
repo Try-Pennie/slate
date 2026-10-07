@@ -26,7 +26,7 @@ const logged = vi.hoisted(() => ({ warn: vi.fn(), info: vi.fn(), error: vi.fn() 
 vi.mock("@/lib/supabase/admin", () => admin);
 vi.mock("@/lib/log", () => ({ log: logged }));
 
-import { resolveTestTraffic, resolveTrafficMarkers, resetBucketTestCacheForTests, BUCKET_TEST_CACHE_MS } from "./test-traffic";
+import { resolveTestTraffic, resolveTrafficMarkers, resetBucketTestCacheForTests, bucketTestCacheSizeForTests, BUCKET_TEST_CACHE_MS, BUCKET_TEST_CACHE_MAX } from "./test-traffic";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -198,6 +198,27 @@ describe("resolveTestTraffic, by bucket, read once per server per minute (#3461)
     bucketMaybeSingle.mockResolvedValue({ data: { is_test: true }, error: null });
     expect(await resolveTestTraffic({ by: "bucket", code: "120" })).toBe(true);
     expect(bucketMaybeSingle).toHaveBeenCalledTimes(2);
+  });
+
+  // The code comes from the request, and the client error route takes it from callers
+  // who are not signed in. A code that matches no bucket is never kept, and the map is
+  // capped, so a caller sending endless made up codes cannot grow it without bound.
+  it("never keeps a code that matches no bucket", async () => {
+    bucketMaybeSingle.mockResolvedValue({ data: null, error: null });
+    expect(await resolveTestTraffic({ by: "bucket", code: "NOPE" })).toBe(false);
+    expect(await resolveTestTraffic({ by: "bucket", code: "NOPE" })).toBe(false);
+    expect(bucketMaybeSingle).toHaveBeenCalledTimes(2);
+    expect(bucketTestCacheSizeForTests()).toBe(0);
+  });
+
+  it("holds at most its cap of codes, dropping the oldest", async () => {
+    for (let i = 0; i < BUCKET_TEST_CACHE_MAX + 25; i++) await resolveTestTraffic({ by: "bucket", code: `C${i}` });
+    expect(bucketTestCacheSizeForTests()).toBe(BUCKET_TEST_CACHE_MAX);
+    bucketMaybeSingle.mockClear();
+    await resolveTestTraffic({ by: "bucket", code: `C${BUCKET_TEST_CACHE_MAX + 24}` });
+    expect(bucketMaybeSingle).not.toHaveBeenCalled();
+    await resolveTestTraffic({ by: "bucket", code: "C0" });
+    expect(bucketMaybeSingle).toHaveBeenCalledTimes(1);
   });
 
   it("keeps each code apart", async () => {

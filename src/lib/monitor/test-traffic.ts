@@ -130,6 +130,14 @@ export const BUCKET_TEST_CACHE_MS = 60_000;
 const bucketTestCache = new Map<string, { isTest: boolean; readAtMs: number }>();
 const bucketTestReads = new Map<string, Promise<boolean | null>>();
 
+/** How many codes the map holds at most: every real code with room to spare. */
+export const BUCKET_TEST_CACHE_MAX = 256;
+
+/** How many codes are held now. Tests only. */
+export function bucketTestCacheSizeForTests(): number {
+  return bucketTestCache.size;
+}
+
 /** Forget every cached flag. Tests only: each test starts from a cold server. */
 export function resetBucketTestCacheForTests(): void {
   bucketTestCache.clear();
@@ -167,7 +175,18 @@ async function readBucketIsTest(code: string): Promise<boolean | null> {
       unreadable("bucket", error.message);
       return null;
     }
-    const isTest = data?.is_test === true;
+    // A code that matches no bucket is answered (not test) and never kept: the code
+    // comes from the request, sometimes from a caller who is not signed in, so keeping
+    // misses would let made up codes fill the map.
+    if (!data) return false;
+    const isTest = data.is_test === true;
+    // Capped, dropping the oldest entry (a Map keeps insertion order). A re-read code is
+    // moved to the end, so live codes stay and only stale or rare ones fall out.
+    bucketTestCache.delete(code);
+    if (bucketTestCache.size >= BUCKET_TEST_CACHE_MAX) {
+      const oldest = bucketTestCache.keys().next().value;
+      if (oldest !== undefined) bucketTestCache.delete(oldest);
+    }
     bucketTestCache.set(code, { isTest, readAtMs: startedAt });
     return isTest;
   } catch (err) {
