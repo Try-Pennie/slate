@@ -21,12 +21,6 @@
  * may wait, within a short bound, for the grouping before its line key (items 1 and 2,
  * which this supersedes); before that, a confirm never read anything before its line.
  *
- * SHIPPED IN TWO HALVES. This module, the directory and the lane's publish ship first.
- * Until the confirm path is wired to `makeGroupingReader` in the second half, the
- * directory holds a snapshot NOTHING reads, and every confirm keys its line exactly as
- * before; the publish is watched from its first run so it is known to work before
- * anything depends on it.
- *
  * OVER-GROUPING IS THE ONE FAILURE THIS MUST NOT HAVE. A leader's "full" verdict
  * settles only followers whose ladders walk the same pools, so a guessed group could
  * tell a lead a time is taken when it is not. So almost everything here is a REFUSAL,

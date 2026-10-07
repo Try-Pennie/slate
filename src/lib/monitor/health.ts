@@ -473,13 +473,11 @@ export const POOL_GROUPING_LANE = "pool-grouping";
  * How long the pool grouping may go unpublished (#3460).
  *
  * The every minute recompute lane publishes the grouping it already reads, before its
- * lock, to a reserved instance of the confirm line object. In this first half of #3460
- * NOTHING reads it yet; the second half has a server holding no fresh grouping of its own
- * key its confirm line from it, and every way that can fail will fall back to the code's
- * own line, so a publisher that stopped would then be invisible: bursts on sibling codes
- * would quietly split across lines, each electing its own leader (load run 37566700055).
- * Hence a bound, watched from the first publish so the publisher is known to work before
- * anything depends on it (L551, L13).
+ * lock, to a reserved instance of the confirm line object, so a server holding no fresh
+ * grouping of its own keys its confirm line from it. Every way that can fail falls back
+ * to the code's own line, which is the behaviour before #3460, so a publisher that
+ * stopped would be invisible: bursts on sibling codes would quietly split across lines
+ * again, each electing its own leader (load run 37566700055). Hence a bound (L551, L13).
  *
  * Ten minutes, the recompute lane's own bound, since the publish rides that lane's
  * every tick. `neverIsStale` is ON with the grace window, like the log shipping receipt:

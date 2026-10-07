@@ -209,12 +209,39 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/**
+ * #3460, #3355 item 1: the shared line switch read now STARTS before the line, the moment
+ * the key is good, so it runs during the ceilings' I/O rather than after them. It is the
+ * one read the line already made before entering (`decide`), through the same cached
+ * reader, so it moves earlier and adds nothing: one per server per TTL, however many
+ * confirms arrive. The case below the first describe pins that bound; every other call
+ * before the line is still none.
+ */
+const SWITCH_READ = "supabase:GET /rest/v1/booking_settings";
+const beyondSwitch = (calls: string[]) => calls.filter((e) => e !== SWITCH_READ);
+
 describe("Supabase round trips around the confirm line (#3416)", () => {
-  it("a create reaches the line having made NO Supabase call", async () => {
+  it("a create reaches the line having made no Supabase call but the cached switch read", async () => {
     const out = await confirm("lead");
     expect(out.status).toBe(200);
     expect(out.reachedLine).toBe(true);
-    expect(out.beforeLine).toEqual([]);
+    expect(beyondSwitch(out.beforeLine)).toEqual([]);
+  });
+
+  it("#3460 the switch read started before the line is one per server per TTL, never one per confirm", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      // Past any reading an earlier case cached, so this server reads the switch afresh.
+      vi.setSystemTime(Date.now() + 10 * 60_000);
+      const first = await confirm("lead");
+      // The positive control (L1): the count sees the switch read, and it is the only call.
+      expect(first.beforeLine).toEqual([SWITCH_READ]);
+      const second = await confirm("lead");
+      const third = await confirm("refused");
+      expect([...second.beforeAnswer, ...third.beforeAnswer]).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // The other half of the same claim. "No Supabase call before the line" is also what a
@@ -230,14 +257,14 @@ describe("Supabase round trips around the confirm line (#3416)", () => {
     const out = await confirm("refused");
     expect(out.status).toBe(409);
     expect(out.body.code).toBe("SLOT_TAKEN");
-    expect(out.beforeAnswer).toEqual([]);
+    expect(beyondSwitch(out.beforeAnswer)).toEqual([]);
   });
 
   it("a follower that timed out in the line is answered having made NO Supabase call", async () => {
     const out = await confirm("timed-out");
     expect(out.status).toBe(503);
     expect(out.body.code).toBe("VERIFY_UNAVAILABLE");
-    expect(out.beforeAnswer).toEqual([]);
+    expect(beyondSwitch(out.beforeAnswer)).toEqual([]);
   });
 
   // The positive control (L1, L98): an empty list above is only evidence if this counter can
@@ -299,7 +326,7 @@ describe("the hourly ceilings on the edge counter, through the route (#3416)", (
     const out = await confirm("lead");
     expect(out.status).toBe(200);
     expect(out.reachedLine).toBe(true);
-    expect(out.beforeLine).toEqual([]);
+    expect(beyondSwitch(out.beforeLine)).toEqual([]);
     expect(seen.alertKeys).toEqual(expect.arrayContaining(["eq.rate_limit_broken:bookapi:h"]));
   });
 });

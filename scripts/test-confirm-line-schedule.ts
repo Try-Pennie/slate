@@ -89,6 +89,13 @@ assert(Number.isFinite(timeoutMin), "the job declares an explicit timeout (L313)
     CONFIRM_LINE_EXIT.abandonedFreedLate,
     CONFIRM_LINE_EXIT.abandonedNotFreed,
     CONFIRM_LINE_EXIT.leftHeld,
+    // #3460: the pool grouping directory answered (or, like the line, was bound and did
+    // not), so each is a definite reading of the object, good or bad.
+    CONFIRM_LINE_EXIT.directoryUnreachable,
+    CONFIRM_LINE_EXIT.directoryNotStored,
+    CONFIRM_LINE_EXIT.directoryOlderWon,
+    CONFIRM_LINE_EXIT.groupingAbsent,
+    CONFIRM_LINE_EXIT.groupingUnusable,
   ];
   eq(
     [...CONCLUDING_EXITS].sort((a, b) => a - b).join(","),

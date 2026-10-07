@@ -19,8 +19,16 @@ import {
   type LineServed,
 } from "@/lib/booking/shared-confirm-line";
 import { readSharedConfirmLine } from "@/lib/booking/shared-line-switch";
-import { ladderGroupOf } from "@/lib/booking/line-key";
-import { peekPoolKey, warmPoolKeys } from "@/lib/availability/slot-cache";
+import { ladderGroupRead } from "@/lib/booking/line-key";
+import { lineGroupingStore, peekPoolKey, warmPoolKeys } from "@/lib/availability/slot-cache";
+import {
+  makeGroupingReader,
+  lineGroupSourceOf,
+  POOL_GROUPING_FETCH_MS,
+  POOL_GROUPING_FRESH_MS,
+} from "@/lib/booking/pool-grouping";
+import { groupingDirectoryLive } from "@/lib/booking/pool-grouping-live";
+import type { ConfirmLineFacts } from "@/lib/booking/confirm-latency";
 
 /**
  * The shared confirm line, wired to the deployment (#3325): the binding, the stored
@@ -81,19 +89,72 @@ export function confirmLineFor<T>(fallback: ConfirmLine<T>, record: (served: Lin
 }
 
 /**
- * The ladder group a code's confirms share, from the pool grouping this isolate
- * already holds, or null to keep the code's own line (#3325). It never reads: a
- * confirm joins its line before any read. When the grouping is not known yet it is
- * warmed after the response, so the next confirm on this isolate can use it.
+ * One reader per server (#3460): a server whose grouping is absent or stale fetches the
+ * snapshot the recompute lane published, once however many confirms ask, each waiting at
+ * most `POOL_GROUPING_FETCH_MS`. A fetch it STARTS is kept alive past the response
+ * (`afterResponse`), because a later confirm on this server may have joined it, and on
+ * the platform a request's own I/O can be cancelled when its response goes out. Built on
+ * first use rather than at import, so loading this module does no work and reads nothing
+ * of the modules it composes.
  */
-export function lineGroupOfLive(code: string): string | null {
-  const group = ladderGroupOf(code, peekPoolKey);
-  if (group === null) {
+let reader: ReturnType<typeof makeGroupingReader> | null = null;
+const groupingReader = () =>
+  (reader ??= makeGroupingReader({
+    store: lineGroupingStore,
+    directory: () => groupingDirectoryLive(),
+    now: () => Date.now(),
+    timer: realTimer,
+    boundMs: POOL_GROUPING_FETCH_MS,
+    freshMs: POOL_GROUPING_FRESH_MS,
+    onFetchStarted: (fetching) => afterResponse("pool-grouping-fetch", () => fetching),
+  }));
+
+/**
+ * The confirm's early reads, started the moment the request is known to be allowed
+ * (#3460, #3355 item 1): after the booking API's key is authenticated, or after the
+ * booker's address passes its edge limiter, and never before, so a flood of refused
+ * requests buys neither (L498). Both then run during the ceilings, the pause flag and
+ * the body read, and the confirm awaits them where it needs them: the grouping before
+ * its line key (`settleLineGrouping`), the switch when the line decides.
+ *
+ * The switch read is the cached reader the line already uses, so starting it here adds
+ * no read (one per server per TTL, coalesced); it is kept alive past the response for
+ * the same reason as the fetch.
+ */
+export function startConfirmPrelude(facts: ConfirmLineFacts): void {
+  const reading = readSharedConfirmLine();
+  afterResponse("shared-line-switch", () => reading);
+  facts.groupingRead ??= groupingReader().ensure();
+}
+
+/**
+ * Wait, within the bound, for the grouping before the confirm keys its line (#3460).
+ * Awaits the fetch the prelude started, or starts one for a confirm that had none.
+ * Never throws: how it ended is noted on the facts for the `confirm answered` line.
+ */
+export async function settleLineGrouping(facts?: ConfirmLineFacts): Promise<void> {
+  const reading = await (facts?.groupingRead ?? groupingReader().ensure());
+  if (facts) facts.grouping = reading;
+}
+
+/**
+ * The ladder group a code's confirms share, from the pool grouping this server holds,
+ * or null to keep the code's own line (#3325). Synchronous, and a look only: the wait
+ * for a grouping this server did not hold happened before the key, in
+ * `settleLineGrouping` (#3460, which retires #3325's "a confirm never reads before its
+ * line"). Notes on `facts` where the grouping came from, or why there was none
+ * (`line_group_source`). When no fresh grouping is held at all it is warmed after the
+ * response, so the next confirm on this server can use it.
+ */
+export function lineGroupOfLive(code: string, facts?: ConfirmLineFacts): string | null {
+  const read = ladderGroupRead(code, peekPoolKey);
+  if (facts) facts.lineGroupSource = lineGroupSourceOf(read, lineGroupingStore.held(), facts.grouping ?? null);
+  if (read.group === null && read.why === "unknown-rung") {
     afterResponse("pool-keys-warm", () =>
       warmPoolKeys().catch((err) => {
         log.warn("confirm-line", { msg: "could not warm the pool grouping; confirms keep their code's own line" }, err);
       }),
     );
   }
-  return group;
+  return read.group;
 }

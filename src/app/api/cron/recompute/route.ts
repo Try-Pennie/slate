@@ -115,11 +115,11 @@ async function judgeHeadroom(
  * recomputes — this is the day-window + missed-push backstop floor behind them.
  */
 /**
- * #3460: publish the pool grouping this tick read, in its own step boundary (L73), for a
- * cold server to key its confirm line from. Nothing reads it until #3460's second half
- * wires the confirm path. Never throws; the `pool-grouping` heartbeat is stamped only
- * when the directory holds it, so a publisher that stops is paged
- * (`POOL_GROUPING_STALE_BOUNDS_MS`) before anything depends on it.
+ * #3460: publish the pool grouping this tick read, in its own step boundary (L73), so a
+ * cold server can key its confirm line from it. Never throws; the `pool-grouping`
+ * heartbeat is stamped only when the directory holds it, so a publisher that stops is
+ * paged (`POOL_GROUPING_STALE_BOUNDS_MS`) rather than every cold server quietly keeping
+ * its code's own line.
  */
 async function publishGroupingStep(groups: ReadonlyMap<string, readonly PooledBucket[]>, readAtMs: number): Promise<void> {
   try {

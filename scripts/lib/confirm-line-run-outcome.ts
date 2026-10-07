@@ -62,6 +62,16 @@ export const CONFIRM_LINE_EXIT = {
   abandonedNotFreed: 17,
   /** Something the probe used was still held afterwards. */
   leftHeld: 18,
+  /** #3460: the pool grouping directory did not answer. */
+  directoryUnreachable: 19,
+  /** The directory did not store a fresh put, or handed back something else. */
+  directoryNotStored: 20,
+  /** An older put replaced the newer grouping. */
+  directoryOlderWon: 21,
+  /** The live directory holds no grouping. */
+  groupingAbsent: 22,
+  /** The live grouping is one a cold server would refuse. */
+  groupingUnusable: 23,
 } as const;
 
 export type ConfirmLineExit = (typeof CONFIRM_LINE_EXIT)[keyof typeof CONFIRM_LINE_EXIT];
@@ -175,6 +185,31 @@ export const RUN_JUDGEMENT: Record<ConfirmLineExit, RunJudgement> = {
   [CONFIRM_LINE_EXIT.leftHeld]: {
     concluded: true,
     headline: "The shared confirm line was still holding something after the proof finished, so a newcomer on that slot could not lead at once.",
+  },
+  // #3460: the pool grouping directory. Each is the object asked and answering (or, like
+  // the line's own, bound and not answering), so each concludes.
+  [CONFIRM_LINE_EXIT.directoryUnreachable]: {
+    concluded: true,
+    headline:
+      "The pool grouping directory did not answer, so a server holding no grouping of its own keys its confirm line by code and a crowd on sibling codes splits across lines again.",
+  },
+  [CONFIRM_LINE_EXIT.directoryNotStored]: {
+    concluded: true,
+    headline:
+      "The shared confirm line's pool grouping directory did not keep the grouping it was handed, so no published grouping can reach a cold server.",
+  },
+  [CONFIRM_LINE_EXIT.directoryOlderWon]: {
+    concluded: true,
+    headline:
+      "The shared confirm line's pool grouping directory let an older grouping replace a newer one, so a slow publisher could hand cold servers a stale grouping.",
+  },
+  [CONFIRM_LINE_EXIT.groupingAbsent]: {
+    concluded: true,
+    headline: "The live pool grouping directory holds nothing, so the recompute lane is not publishing and every cold server keys its confirm line by code.",
+  },
+  [CONFIRM_LINE_EXIT.groupingUnusable]: {
+    concluded: true,
+    headline: "The live pool grouping is one every cold server refuses, so the snapshot reaches nobody and cold servers key their confirm line by code.",
   },
 };
 
