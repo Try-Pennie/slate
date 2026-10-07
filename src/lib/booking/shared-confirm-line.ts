@@ -77,7 +77,8 @@ export interface LineServed {
   key: LineKeyKind;
   /**
    * Milliseconds the confirm spent in calls to the shared line other than waiting
-   * in it (enter, acknowledge, claims, report): what the line ADDS to a confirm.
+   * in it (enter, claims, report): what the line ADDS to a confirm. The ack is not
+   * among them since #3355: it is sent without being waited on and settled in `done`.
    */
   lineMs: number;
 }
@@ -227,7 +228,6 @@ export function makeSharedConfirmLine<T>(deps: {
         stopped = true;
         cancelBeat();
         await beating;
-        await acking;
         if (!detached) {
           // One retry inside the reserve: an unreported full verdict leaves the
           // followers to find out for themselves, and an unreported turn holds the
@@ -239,6 +239,9 @@ export function makeSharedConfirmLine<T>(deps: {
             served.lineMs += second.ms;
           }
         }
+        // #3355: settled AFTER the report, so a slow ack never holds back the verdict
+        // the followers are waiting on.
+        await acking;
         deps.record({ ...served });
       },
     };

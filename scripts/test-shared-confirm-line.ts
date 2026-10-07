@@ -205,9 +205,14 @@ async function main() {
     const recorded = lastServed(c.served)?.lineMs ?? Infinity;
     assert(recorded < CONFIRM_LINE_CALL_MS / 2, `hung ack: its wait is not counted as time the line added (lineMs ${recorded})`);
     if (t.kind === "lead") {
-      const reported = await w.settle(t.done({ full: false }), 30_000);
-      assert(reported !== "unsettled", "hung ack: the turn still reports once the ack's own bound runs out");
-      assert(w.sent.includes("done"), `hung ack: the report is still sent (sent ${JSON.stringify(w.sent)})`);
+      // The verdict goes out first: the followers wait on it, and a slow ack is no
+      // reason to hold it back. The ack is settled after.
+      const before = w.sent.length;
+      const reporting = t.done({ full: false });
+      await w.advance(CONFIRM_LINE_CALL_MS / 4);
+      assert(w.sent.slice(before).includes("done"), `hung ack: the report is sent without waiting on the ack (sent ${JSON.stringify(w.sent.slice(before))})`);
+      const reported = await w.settle(reporting, 30_000);
+      assert(reported !== "unsettled", "hung ack: the turn still settles once the ack's own bound runs out");
     }
   }
 
