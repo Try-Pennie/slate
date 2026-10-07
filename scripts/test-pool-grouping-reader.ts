@@ -34,6 +34,7 @@ import { groupByPool, poolKeyFor } from "../src/lib/availability/pool-key.ts";
 import { tierLadder, rungExcludesLow } from "../src/lib/routing/tiers.ts";
 import { poolGroupingRoster } from "./lib/pool-grouping-fixture.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { memoryGroupingStorage } from "./lib/memory-grouping-storage.ts";
 
 type Message = Record<string, unknown>;
 
@@ -75,6 +76,7 @@ function objectWorld() {
       let n = 0;
       return () => `id${++n}`;
     })(),
+    directoryStorage: memoryGroupingStorage(),
   });
   // Through JSON both ways, as the platform carries it, so a shape that does not survive
   // serialisation fails here (L505).

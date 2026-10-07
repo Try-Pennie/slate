@@ -22,6 +22,7 @@ import { CONFIRM_LINE_BINDING, makeConfirmLineObject, objectRoleOf } from "@/lib
 import { realTimer } from "@/lib/read-within-deadline";
 import { CONFIRM_LINE_CHECKS, CONFIRM_LINE_PROBE_REASON, CONFIRM_LINE_VERIFY_GROUP } from "@/lib/monitor/confirm-line-probe";
 import { POOL_GROUPING_DIRECTORY, POOL_GROUPING_VERIFY_DIRECTORY, groupingPutMessage, groupingSnapshotOf } from "@/lib/booking/pool-grouping";
+import { memoryGroupingStorage } from "../../../../../scripts/lib/memory-grouping-storage";
 
 function post(authorization = "Bearer real-key") {
   const headers = new Headers();
@@ -42,7 +43,7 @@ function boundToRealHosts(opts: { seedLive?: boolean } = {}) {
   const objects = new Map<string, ReturnType<typeof makeConfirmLineObject>>();
   const objectFor = (name: string) => {
     if (!objects.has(name)) {
-      objects.set(name, makeConfirmLineObject({ now: () => Date.now(), timer: realTimer, leaseTimer: realTimer, newId: () => crypto.randomUUID() }));
+      objects.set(name, makeConfirmLineObject({ now: () => Date.now(), timer: realTimer, leaseTimer: realTimer, newId: () => crypto.randomUUID(), directoryStorage: memoryGroupingStorage() }));
     }
     return objects.get(name)!;
   };

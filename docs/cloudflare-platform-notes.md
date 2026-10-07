@@ -258,6 +258,16 @@ Measured on 2026-10-05 from inside a Worker invocation, against a throwaway Work
   about a third of the cost: 17ms after 30s idle, about 50ms after 90s, about 55ms
   after 180s. So key objects by something long lived (a pool, a code), never by
   something new on every request (a slot), or every request pays creation.
+- **An idle object FORGETS its memory after ten seconds** (#3479). An object with no
+  timers set and nothing pending is hibernated after ten seconds with no request, and
+  its in memory state is discarded; the next call runs its constructor again
+  ([lifecycle](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/)).
+  Measured in load run 37601024392: the pool grouping directory, published to once a
+  minute and kept only in memory, answered every burst's read (about 48 seconds after the
+  last publish) with nothing, while reads arriving every few seconds found it. Anything
+  a LATER call depends on goes in the object's storage; memory is a cache in front of it.
+  A line holds a pending timer while it has a turn, which is why its memory survives the
+  turns it serves.
 - **Concurrency inside one object is cheap.** 100 calls held open on one object (each
   awaiting an in memory promise, nothing in storage, so no input gate closes) were
   all released by one call with no measurable lag.

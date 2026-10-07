@@ -30,8 +30,10 @@ import {
   groupingGetMessage,
   groupingPutMessage,
   type GroupingSnapshot,
+  type GroupingDirectoryStorage,
 } from "../src/lib/booking/pool-grouping.ts";
 import { fileSource, functionSource } from "./lib/function-source.ts";
+import { memoryGroupingStorage } from "./lib/memory-grouping-storage.ts";
 import { makeConfirmLineObject, objectRoleOf, CONFIRM_LINE_PROTOCOL } from "../src/lib/booking/confirm-line-object.ts";
 import { keyKindOf, confirmLineObjectName } from "../src/lib/booking/shared-confirm-line.ts";
 import { CONFIRM_LINE_VERIFY_GROUP } from "../src/lib/monitor/confirm-line-probe.ts";
@@ -104,7 +106,8 @@ const good = groupingSnapshotOf(ENTRIES, T0);
 }
 
 // --- the directory, through the real object and its envelope -------------------------
-function objectWorld() {
+type DirectoryStorage = GroupingDirectoryStorage;
+function objectWorld(directoryStorage: DirectoryStorage = memoryGroupingStorage()) {
   const object = makeConfirmLineObject({
     now: () => T0,
     timer: () => () => {},
@@ -113,6 +116,7 @@ function objectWorld() {
       let n = 0;
       return () => `id${++n}`;
     })(),
+    directoryStorage,
   });
   // Through JSON both ways, as the platform carries it, so a shape that does not survive
   // serialisation fails here (L505).
@@ -143,6 +147,55 @@ async function directoryTests() {
   eq((await send("directory", groupingPutMessage({ ...good, entries: good.entries.slice(0, 10) }))).kind, "bad", "directory: a put whose count does not match its entries is refused");
   eq((await send("directory", { dv: POOL_GROUPING_DIRECTORY_PROTOCOL + 1, op: "grouping-get" })).kind, "bad", "directory: a message of another directory version is refused");
   eq((await send("directory", { dv: POOL_GROUPING_DIRECTORY_PROTOCOL, op: "grouping-drop" })).kind, "bad", "directory: an op it does not know is refused");
+
+  // #3479: the platform hibernates an idle object after ten seconds and discards its
+  // memory, so the directory keeps its snapshot in the object's own storage. A NEW object
+  // over the same storage is exactly what a woken instance is (load run 37601024392: every
+  // burst arrived 46 to 48 seconds after the last publish and read nothing).
+  {
+    const storage = memoryGroupingStorage();
+    const asleep = objectWorld(storage);
+    eq((await asleep.send("directory", groupingPutMessage(good))).kind, "stored", "eviction: a put is stored");
+    const woken = objectWorld(storage);
+    const back = readGroupingSnapshot((await woken.send("directory", groupingGetMessage())).snapshot, POOL_GROUPING_FORMAT);
+    assert(back.kind === "snapshot" && JSON.stringify(back.snapshot) === JSON.stringify(good), "eviction: a woken directory still hands out the snapshot stored before it slept");
+    eq((await woken.send("directory", groupingPutMessage(groupingSnapshotOf(ENTRIES.slice(0, 3), T0 - 1)))).kind, "kept", "eviction: and an older put after waking is still kept, so newest wins survives the sleep");
+    const writes = storage.writes;
+    eq((await woken.send("directory", groupingPutMessage(groupingSnapshotOf(ENTRIES, T0 - 1)))).kind, "kept", "eviction: a kept put");
+    eq(storage.writes, writes, "eviction: writes nothing, so a crowd of older backup publishes costs no storage");
+  }
+  {
+    // A write that fails is a refusal, never `stored`: the publisher stamps its heartbeat
+    // only on stored, so a directory that cannot persist is paged rather than believed.
+    const failing: DirectoryStorage = {
+      get: async () => undefined,
+      put: async () => {
+        throw new Error("storage is down");
+      },
+    };
+    const w = objectWorld(failing);
+    eq((await w.send("directory", groupingPutMessage(good))).kind, "bad", "storage: a put whose write fails is refused");
+    eq((await w.send("directory", groupingGetMessage())).snapshot, null, "storage: and the snapshot that did not persist is never handed out");
+  }
+  {
+    // A read that fails is not an empty directory (L215): it is refused, which a reader
+    // counts as `refused` rather than `absent`.
+    const unreadable: DirectoryStorage = {
+      get: async () => {
+        throw new Error("storage is down");
+      },
+      put: async () => {},
+    };
+    eq((await objectWorld(unreadable).send("directory", groupingGetMessage())).kind, "bad", "storage: a get whose read fails is refused, never an empty directory");
+  }
+  {
+    // What storage holds is judged by the same rules as a put (L1013): a value that does
+    // not read as a snapshot is none, and a put over it is stored.
+    const corrupt: DirectoryStorage = { get: async () => ({ format: POOL_GROUPING_FORMAT, readAtMs: T0, count: 2, entries: [] }), put: async () => {} };
+    const w = objectWorld(corrupt);
+    eq((await w.send("directory", groupingGetMessage())).snapshot, null, "storage: a stored value that is not a snapshot is none");
+    eq((await w.send("directory", groupingPutMessage(good))).kind, "stored", "storage: and a put over it is stored");
+  }
 
   // Line messages are refused on the directory, and directory messages on every line,
   // the monitor's included.

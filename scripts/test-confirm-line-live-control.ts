@@ -57,6 +57,7 @@ import {
 } from "../src/lib/booking/pool-grouping.ts";
 import { confirmQueueKey } from "../src/lib/booking/orchestration.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { memoryGroupingStorage } from "./lib/memory-grouping-storage.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 type Message = Record<string, unknown>;
@@ -103,7 +104,7 @@ function world() {
   const handleDirectory = async (name: string, m: Message) => {
     let o = directoryObjects.get(name);
     if (!o) {
-      o = makeConfirmLineObject({ now: () => now, timer, leaseTimer: timer, newId });
+      o = makeConfirmLineObject({ now: () => now, timer, leaseTimer: timer, newId, directoryStorage: memoryGroupingStorage() });
       directoryObjects.set(name, o);
     }
     return JSON.parse(await o.handle("directory", JSON.parse(JSON.stringify(m)) as unknown)) as Message;

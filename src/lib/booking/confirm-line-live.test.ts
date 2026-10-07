@@ -47,6 +47,7 @@ import { makeConfirmLineObject, objectRoleOf } from "@/lib/booking/confirm-line-
 import { POOL_GROUPING_DIRECTORY, groupingPutMessage, groupingSnapshotOf, type GroupingEntry } from "@/lib/booking/pool-grouping";
 import { confirmLineObjectName } from "@/lib/booking/shared-confirm-line";
 import { POOL_GROUPING_RETRY_MS } from "@/lib/booking/pool-grouping-reader";
+import { memoryGroupingStorage } from "../../../scripts/lib/memory-grouping-storage";
 
 /**
  * A `CONFIRM_LINE` binding whose every instance is the REAL object, named and served
@@ -59,7 +60,7 @@ function boundObjects() {
   const objectFor = (name: string) => {
     let o = objects.get(name);
     if (!o) {
-      o = makeConfirmLineObject({ now: () => Date.now(), timer: () => () => {}, leaseTimer: () => () => {}, newId: () => "id" });
+      o = makeConfirmLineObject({ now: () => Date.now(), timer: () => () => {}, leaseTimer: () => () => {}, newId: () => "id", directoryStorage: memoryGroupingStorage() });
       objects.set(name, o);
     }
     return o;
