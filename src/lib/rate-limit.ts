@@ -10,7 +10,12 @@ import {
   BURST_LIMITER_BINDING,
   burstKey,
   burstEscalateAt,
+  exactCeilingAllows,
+  exactCeilingKey,
+  readExactCeilingReply,
 } from "@/lib/rate-limit-burst";
+import { fetchWithinBudget } from "@/lib/call-budget";
+import { SUPABASE_FETCH_TIMEOUT_MS } from "@/lib/supabase/fetch-deadline";
 import {
   judgeCaller,
   rateLimitKey,
@@ -307,7 +312,8 @@ export async function routingWithinLimit(ip: string): Promise<boolean> {
 
 /**
  * Direct booking API per-minute burst windows at the edge (#961), replacing the
- * old DB per-minute rules; the hourly ceilings stay in the DB. Three separate
+ * old DB per-minute rules; the hourly ceilings behind them are `exactCeilingWithinLimit`
+ * (#3416), in the same Durable Object rather than the DB. Three separate
  * bindings because the native limiter fixes one limit per binding and these are
  * intentionally different sizes and keys:
  *   - write path, keyed per API key (120/min): bookingApiWriteWithinLimit
@@ -584,6 +590,115 @@ export async function allowRequest(
     }
   }
   return true;
+}
+
+/**
+ * How long one hit may wait for the edge counter (#3416): the same deadline the Supabase request
+ * it replaced had, inside the same call budget, so the moment an unanswering counter fails open
+ * is the moment the Postgres one did.
+ */
+export const EXACT_CEILING_DEADLINE_MS = SUPABASE_FETCH_TIMEOUT_MS;
+
+/**
+ * The label a hit is charged under in a confirm's profile (#3300). Its own dependency, so a run
+ * reads the counter's time apart from Supabase's rather than inside it.
+ */
+const EXACT_CEILING_CALL_LABEL = "edge-counter";
+
+/**
+ * The booking API's EXACT ceilings (#3416): the hourly per caller and per address limits, counted
+ * per request in the `BURST_LIMITER` Durable Object that already holds the per minute burst
+ * windows, instead of in a `rate_limit_hit` row.
+ *
+ * A drop in replacement for `allowRequest` on these rules, and deliberately nothing more. A burst
+ * of a hundred confirms used to make two hundred Supabase round trips here before reaching the
+ * confirm line, and those queued in front of the one confirm that would book (load run
+ * 37547143303, upstream p95 4 to 9 seconds while every statement took milliseconds). Everything
+ * the security control decides is kept as it was:
+ *
+ *  - the limits, the window and its arithmetic (`hitAnchoredWindow`, `rate_limit_hit`'s own);
+ *  - the key, `${rule.prefix}:${callerKey}`, so a count is shared exactly where a row was;
+ *  - a caller with no address, decided at the key by the limit's own policy (#1557), uncounted;
+ *  - a refusal is `false`, a refused hit still counts, and a rule with `alertOnBlock` pages on
+ *    the block under the same key and words;
+ *  - and the FAILURE DIRECTION: a count that cannot be made (no context, no binding, an object
+ *    that errors, does not answer inside the deadline, or answers for another window) fails
+ *    OPEN, exactly as `allowRequest` continues past an unreadable row, and LOUD, under the same
+ *    `rate_limit_broken:<prefix>` key and the same plain words. The page is gated per isolate
+ *    like every edge limiter's (`alertEdgeLimiterDown`), so an outage costs one alert read per
+ *    half hour rather than one per request, and off the Workers runtime it is logged, never
+ *    paged (#1525).
+ */
+export async function exactCeilingWithinLimit(caller: CallerKey, rules: RateLimitRule[]): Promise<boolean> {
+  const verdict = judgeCaller(callerPolicy(caller), rateLimitKey(caller));
+  if (verdict !== "identified") {
+    const policy = callerPolicy(caller);
+    if (policy) reportUnidentifiedCaller(policy);
+    return verdict === "serve-unjudged";
+  }
+  const key = rateLimitKey(caller);
+  for (const rule of rules) {
+    const count = await countExactHit(rule, key);
+    // Fail open, as `allowRequest` does on an unreadable row; the failure was reported inside.
+    if (count === null) continue;
+    if (!exactCeilingAllows(count, rule.max)) {
+      if (rule.alertOnBlock) {
+        alertBestEffort(
+          `rate_limit_blocked:${rule.prefix}`,
+          limiterBlockedAlert(friendlyRateArea(rule.prefix), key, rule.max, rule.windowSeconds),
+          rule.prefix,
+        );
+      }
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * One hit against one exact ceiling, answered with the count INCLUDING it, or null when the count
+ * could not be made, which the caller reads as fail open. Never throws: every failure is reported
+ * here under the rule's own area, once per isolate per cooldown.
+ */
+async function countExactHit(rule: RateLimitRule, key: string): Promise<number | null> {
+  const cfg = { area: rule.prefix, friendly: friendlyRateArea(rule.prefix) };
+  let env: Record<string, unknown>;
+  try {
+    env = getCloudflareContext().env as unknown as Record<string, unknown>;
+  } catch (err) {
+    alertEdgeLimiterDown(cfg, `the limiter threw: ${String(err)}`);
+    return null;
+  }
+  const ns = env[BURST_LIMITER_BINDING] as DurableObjectishNamespace | undefined;
+  if (!ns) {
+    alertEdgeLimiterDown(cfg, `the ${BURST_LIMITER_BINDING} binding is missing, so the ${rule.prefix} ceiling is OFF`);
+    return null;
+  }
+  const windowMs = rule.windowSeconds * 1000;
+  try {
+    const stub = ns.get(ns.idFromName(exactCeilingKey(rule.prefix, key)));
+    // The signal the deadline adds is not handed to the stub: the race below ends the wait
+    // whether or not the object honours it, and nothing here depends on the stub accepting one.
+    const res = await fetchWithinBudget(
+      (input, init) =>
+        stub.fetch(String(input), { method: init?.method, headers: init?.headers, body: init?.body }),
+      "https://burst-limiter.slate/count",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ hit: { windowMs } }),
+      },
+      EXACT_CEILING_DEADLINE_MS,
+      EXACT_CEILING_CALL_LABEL,
+    );
+    if (!res.ok) throw new Error(`the counter answered ${res.status}`);
+    const reply = readExactCeilingReply(await res.json(), windowMs);
+    if (!reply.ok) throw new Error(reply.detail);
+    return reply.count;
+  } catch (err) {
+    alertEdgeLimiterDown(cfg, `the exact ceiling could not be counted: ${String(err)}`);
+    return null;
+  }
 }
 
 /**

@@ -72,8 +72,9 @@ export const BURST_ESCALATE_AT = 20;
  * What this gives up, stated so nobody rediscovers it: a burst spread so that every isolate
  * stays under the sustained limit is never escalated, so for these limiters the burst ceiling
  * is reached only once some isolate crosses that line. These callers are authenticated (or, for
- * the per address backstop, sit under an authenticated key), and the EXACT hourly caps in
- * Postgres (`DIRECT_BOOKING_API_*_HOURLY_RATE_RULES`) still bound them regardless.
+ * the per address backstop, sit under an authenticated key), and the EXACT hourly caps
+ * (`DIRECT_BOOKING_API_*_HOURLY_RATE_RULES`, counted per request in this same object since
+ * #3416, and in Postgres before it) still bound them regardless.
  *
  * Lead facing limiters keep `BURST_ESCALATE_AT`: their sustained limits (3 to 30 a minute) are
  * small enough that the shared number is already at or near them.
@@ -302,6 +303,142 @@ export function bumpSharedWindow(
   const safeBump = Number.isFinite(bump) ? Math.max(0, Math.floor(bump)) : 0;
   if (!stored || stored.windowStartMs !== windowStartMs) return { windowStartMs, count: safeBump };
   return { windowStartMs, count: stored.count + safeBump };
+}
+
+/**
+ * The EXACT ceilings the same object holds (#3416): the booking API's hourly per caller and per
+ * address ceilings, which used to be `rate_limit_hit` rows in Postgres.
+ *
+ * Why they moved. Every booking API call asked Supabase twice before reaching the confirm line,
+ * once per ceiling, and a burst of a hundred confirms for one slot asks two hundred times in the
+ * same second. Load run 37547143303 measured where that goes: every statement inside Postgres
+ * was fast (`rate_limit_hit` mean 12ms), while the Supabase API layer in front of it queued
+ * (upstream p95 4 to 9 seconds, only during the bursts), and the one confirm that would actually
+ * book waited behind its own followers for every call it made. This counter holds the same
+ * number without a Supabase round trip.
+ *
+ * What did NOT change, and must not: the limits, the keys (`exactCeilingKey` carries the very
+ * string the Postgres row was keyed by), the refusal and how it is counted, and the direction it
+ * fails, which is OPEN and loud, exactly as `allowRequest` fails on an unreadable row. Unlike the
+ * burst window above, nothing here escalates or memoises: every request is one hit, counted
+ * before its verdict, because an exact ceiling that sampled would not be exact.
+ *
+ * The arithmetic is `rate_limit_hit`'s (migration 0024), restated rather than reinvented: the
+ * window opens at its FIRST hit rather than on a clock boundary, a hit counts whether or not it
+ * is refused, the window resets only once it is strictly older than its length, and a hit is
+ * allowed while the count, including itself, is at most the limit.
+ */
+export const EXACT_CEILING_AREA = "exact";
+
+/**
+ * The object an exact ceiling counts in: `exact:` then the Postgres row's own key, which was
+ * `${rule.prefix}:${callerKey}`. So two routes sharing one rule and one caller share one count
+ * exactly as they shared one row (the per address backstop is one count across the create, the
+ * cancel and the bookable check), and no burst limiter, whose keys begin with its own area, and
+ * no verification key can ever land in one.
+ */
+export function exactCeilingKey(rulePrefix: string, callerKey: string): string {
+  return burstKey(EXACT_CEILING_AREA, `${rulePrefix}:${callerKey}`);
+}
+
+/** One counted window, as the object stores it. */
+export interface CounterWindow {
+  windowStartMs: number;
+  count: number;
+}
+
+/** One hit against an exact ceiling, with `rate_limit_hit`'s window rules (see above). */
+export function hitAnchoredWindow(stored: CounterWindow | null, nowMs: number, windowMs: number): CounterWindow {
+  if (!stored || stored.windowStartMs < nowMs - windowMs) return { windowStartMs: nowMs, count: 1 };
+  return { windowStartMs: stored.windowStartMs, count: stored.count + 1 };
+}
+
+/** Whether a hit is allowed: the count INCLUDING it is at most the limit (`count <= p_max`). */
+export function exactCeilingAllows(count: number, max: number): boolean {
+  return count <= max;
+}
+
+/**
+ * The longest window an exact ceiling may ask for. Every rule today is an hour; the bound exists
+ * so a malformed window is refused by the object rather than kept for ever, since its alarm is
+ * set from the window.
+ */
+export const MAX_EXACT_WINDOW_MS = 24 * 60 * 60_000;
+
+/** What one call to the shared counter asks for. */
+export type CounterRequest =
+  /** The burst tracker's report, unchanged since #1536: `bump` requests in the minute window. */
+  | { kind: "burst"; bump: number }
+  /** One request against an exact ceiling whose window is `windowMs` (#3416). */
+  | { kind: "hit"; windowMs: number }
+  /** A hit whose window cannot be read. Refused, never guessed: counting it in some other
+   *  window would answer a ceiling with a number that is not its own. */
+  | { kind: "unreadable"; detail: string };
+
+/**
+ * Read a request body. A body with no `hit` is the burst tracker's, read exactly as the object
+ * always read it, including counting an unreadable body as one request rather than none
+ * (undercounting is the direction that favours a flood).
+ */
+export function readCounterRequest(body: unknown): CounterRequest {
+  const b = body !== null && typeof body === "object" ? (body as { bump?: unknown; hit?: unknown }) : null;
+  if (b && "hit" in b) {
+    const windowMs = (b.hit as { windowMs?: unknown } | null)?.windowMs;
+    if (typeof windowMs !== "number" || !Number.isInteger(windowMs) || windowMs <= 0 || windowMs > MAX_EXACT_WINDOW_MS) {
+      return { kind: "unreadable", detail: `no usable window (${String(windowMs)})` };
+    }
+    return { kind: "hit", windowMs };
+  }
+  return { kind: "burst", bump: typeof b?.bump === "number" ? b.bump : 1 };
+}
+
+/**
+ * What the object does with one readable request: the window it stores, when its alarm deletes
+ * it, and what it answers.
+ *
+ * The alarm is two windows past the write, so it can never delete a window that is still open:
+ * a window opened no later than this write closes one window after it at the latest. For the
+ * burst window that is the two minutes it has always been.
+ *
+ * The answer to a hit names the window it counted, so the caller can refuse a count made in
+ * another one, which is what an object still running the code from before this change would
+ * hand back for an hourly ceiling during a rollout.
+ */
+export function applyCounterRequest(
+  stored: CounterWindow | null,
+  request: Exclude<CounterRequest, { kind: "unreadable" }>,
+  nowMs: number,
+): { next: CounterWindow; alarmAtMs: number; reply: { count: number; windowStartMs: number; windowMs?: number } } {
+  if (request.kind === "burst") {
+    const next = bumpSharedWindow(stored, request.bump, nowMs);
+    return { next, alarmAtMs: nowMs + 2 * BURST_WINDOW_MS, reply: { count: next.count, windowStartMs: next.windowStartMs } };
+  }
+  const next = hitAnchoredWindow(stored, nowMs, request.windowMs);
+  return {
+    next,
+    alarmAtMs: nowMs + 2 * request.windowMs,
+    reply: { count: next.count, windowStartMs: next.windowStartMs, windowMs: request.windowMs },
+  };
+}
+
+/**
+ * Read the object's answer to a hit. A count is the count INCLUDING this hit, so it is a whole
+ * number of at least one; anything else, or an answer for a different window, is unreadable and
+ * the caller fails open on it, loudly, exactly as `allowRequest` does on an unreadable row.
+ */
+export function readExactCeilingReply(
+  raw: unknown,
+  windowMs: number,
+): { ok: true; count: number } | { ok: false; detail: string } {
+  if (raw === null || typeof raw !== "object") return { ok: false, detail: "the counter answered with no object" };
+  const r = raw as { count?: unknown; windowMs?: unknown };
+  if (typeof r.count !== "number" || !Number.isInteger(r.count) || r.count < 1) {
+    return { ok: false, detail: `the counter answered no usable count (${String(r.count)})` };
+  }
+  if (r.windowMs !== windowMs) {
+    return { ok: false, detail: `the counter counted a ${String(r.windowMs)}ms window, not ${windowMs}ms` };
+  }
+  return { ok: true, count: r.count };
 }
 
 /**

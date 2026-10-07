@@ -18,7 +18,7 @@ const env = vi.hoisted(() => ({
   ),
 }));
 const rateLimit = vi.hoisted(() => ({
-  allowRequest: vi.fn(async (_caller: unknown, _rules: unknown) => true),
+  exactCeilingWithinLimit: vi.fn(async (_caller: unknown, _rules: unknown) => true),
   bookingApiWriteWithinLimit: vi.fn(async (_keyId: string) => true),
   bookingApiReadWithinLimit: vi.fn(async (_keyId: string) => true),
   bookingApiIpWithinLimit: vi.fn(async (_ip: string) => true),
@@ -91,7 +91,7 @@ const viaDelete: Verb = (fields, authorization = "Bearer real-secret") => {
 beforeEach(() => {
   regalKey.primary.mockReturnValue("real-secret");
   for (const f of [
-    rateLimit.allowRequest,
+    rateLimit.exactCeilingWithinLimit,
     rateLimit.bookingApiWriteWithinLimit,
     rateLimit.bookingApiIpWithinLimit,
   ]) {

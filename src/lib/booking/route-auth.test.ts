@@ -19,7 +19,7 @@ const env = vi.hoisted(() => ({
 const regalKeyFor = (caller: string, slot: string) =>
   caller !== "regal" ? "" : slot === "primary" ? regalKey.primary() : regalKey.secondary();
 const rateLimit = vi.hoisted(() => ({
-  allowRequest: vi.fn(async (_caller: unknown, _rules: unknown) => true),
+  exactCeilingWithinLimit: vi.fn(async (_caller: unknown, _rules: unknown) => true),
   bookingApiWriteWithinLimit: vi.fn(async (_keyId: string) => true),
   bookingApiReadWithinLimit: vi.fn(async (_keyId: string) => true),
   bookingApiIpWithinLimit: vi.fn(async (_ip: string) => true),
@@ -67,7 +67,7 @@ describe("authorizeBookingApi refusal reasons (#1429)", () => {
     regalKey.primary.mockReturnValue("goodsecret");
     regalKey.secondary.mockReturnValue("");
     env.bookingApiKeyFor.mockImplementation(regalKeyFor);
-    rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.exactCeilingWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
@@ -219,7 +219,7 @@ describe("authorizeBookingApi caller attribution (#2645)", () => {
         ? slot === "primary" ? "trypennie-old" : "trypennie-new"
         : slot !== "primary" ? "" : caller === "regal" ? "regalsecret" : caller === "canary" ? "canarysecret" : "",
     );
-    rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.exactCeilingWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
@@ -229,7 +229,7 @@ describe("authorizeBookingApi caller attribution (#2645)", () => {
   function budgetsSpent() {
     return [
       ...rateLimit.bookingApiWriteWithinLimit.mock.calls.map((c) => `edge:${c[0]}`),
-      ...rateLimit.allowRequest.mock.calls
+      ...rateLimit.exactCeilingWithinLimit.mock.calls
         .map((c) => (c[0] as { kind: string; key?: string }))
         .filter((c) => c.kind === "opaque")
         .map((c) => `hourly:${c.key}`),
@@ -269,7 +269,7 @@ describe("authorizeBookingApi records who authenticated (#2717)", () => {
     env.bookingApiKeyFor.mockImplementation((caller: string, slot: string) =>
       caller === "trypennie" && slot === "primary" ? "trypenniesecret" : "",
     );
-    rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.exactCeilingWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
@@ -323,7 +323,7 @@ describe("authorizeBookingApi asks whether a refused key is a retired one (#2879
     vi.clearAllMocks();
     env.bookingApiKeyFor.mockImplementation(regalKeyFor);
     regalKey.primary.mockReturnValue("goodsecret");
-    rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.exactCeilingWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);

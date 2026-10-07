@@ -17,7 +17,7 @@ import { OK_P95_MS } from "./judge-booking-run.ts";
 // Type only, erased under --experimental-strip-types: the attempt carries the echo the
 // deployment sent, read through the one parser both sides share (#3325, L41).
 import type { LoadtestEcho } from "../../src/lib/loadtest-echo.ts";
-import { LOADTEST_LEG_HEADER, type LoadtestLeg } from "../../src/lib/booking/wait-marks.ts";
+import { LOADTEST_LEG_HEADER, LOADTEST_LEGS, type LoadtestLeg } from "../../src/lib/booking/wait-marks.ts";
 // Type only: what a burst driver records from the deployment for the judge (#3429).
 import type { BurstProbe, CrowdRuleReading } from "./burst-probe.ts";
 
@@ -509,6 +509,66 @@ export async function waitForBurstMoment(
 }
 
 /**
+ * One attempt of a run, which every part of its identity is derived from (#3447):
+ * the external id, the address and the phone number. Deriving all three from one
+ * value is what stops an id and a number ever describing two different attempts.
+ */
+export interface LoadtestLead {
+  runId: string;
+  leg: LoadtestLeg;
+  driver: number;
+  /** The request's number within its driver and leg. */
+  n: number;
+}
+
+/**
+ * The external id an attempt books under. Every driver leg and the cold leg take
+ * their leg's prefix (`idPrefix`); the preflight and the ceiling control keep the
+ * ids they have always had, which the judge and the preflight look them up by.
+ */
+export function leadExternalId(lead: LoadtestLead): string {
+  if (lead.leg === "preflight") return `${lead.runId}-preflight`;
+  if (lead.leg === "ceiling") return `ceiling-control-${lead.n}`;
+  return externalIdFor(idPrefix(lead.runId, lead.leg), lead.driver, lead.n);
+}
+
+/**
+ * What an attempt's record says about who it was: its driver, request number and
+ * external id, all from its one lead (#3447), so a record and the id it booked
+ * under can never name two different requests.
+ */
+export function attemptIdentity(lead: LoadtestLead): { driver: number; n: number; externalId: string } {
+  return { driver: lead.driver, n: lead.n, externalId: leadExternalId(lead) };
+}
+
+/**
+ * The ceiling control's dry run (#2339), from its lead like every other sender's
+ * body (#3447). Its leads sit outside any run's scope, since a dry run writes no
+ * row. Built before the request is sent, so a request number outside the phone's
+ * digits throws here, by name, rather than inside the send where it would be
+ * recorded as a request that failed in transit.
+ */
+export function ceilingControlBody(n: number, code: string, startIso: string): string {
+  const lead: LoadtestLead = { runId: "ceiling-control", leg: "ceiling", driver: 0, n };
+  const externalId = leadExternalId(lead);
+  return JSON.stringify({
+    bucketCode: code,
+    start: startIso,
+    timezone: "America/New_York",
+    externalId,
+    dryRun: true,
+    attendee: {
+      name: "Ceiling Control",
+      email: `${externalId}@loadtest.local`,
+      // Its own number like every other caller (#2261). These are dry runs, so the
+      // person gate cannot refuse them anyway, but one shared identity across the
+      // load machinery is the footgun that change removed.
+      phone: loadtestPhone(lead),
+    },
+  });
+}
+
+/**
  * The lead id a request books under.
  *
  * It carries the run, the driver and the request number, so every row a run wrote
@@ -953,34 +1013,59 @@ export function offeredSlots(body: unknown): string[] {
 }
 
 /**
- * A phone number of this attempt's OWN, derived from its unique id (#2261).
+ * A phone number of this attempt's OWN (#2261, #3447).
  *
  * The dedupe gate is a PERSON gate, and a weak match is email OR phone
  * (`src/lib/booking/person-dedupe.ts`): one phone matching is enough to answer
- * `confirm_required` and refuse the booking. Every driver sent the same
- * `+15555550100`, so the first booking of a run would have succeeded and the other
- * five hundred and ninety nine would have been refused as the same person calling
- * again. The run would have reported a catastrophic confirmed-per-minute failure
- * that had nothing whatever to do with the booking path's capacity.
+ * `confirm_required` and refuse the booking. Every driver once sent the same
+ * `+15555550100`, so the first booking of a run succeeded and the rest would have
+ * been refused as the same person calling again, which the judge would have read
+ * as the booking path collapsing.
  *
- * The email was already unique per attempt, which is exactly why this hid: a
- * reader checking that the attendees differ sees an id in the address and stops.
+ * The number is BUILT from the attempt, never hashed from its id (#3447). A hash
+ * into ten million numbers collides by chance (about one run in sixty, at six
+ * hundred attempts), and the 32 bit FNV-1a this used to keep did far worse on ids
+ * differing only in their last digits: run 37547143303 gave twelve of driver 3's
+ * requests the number of an earlier one, and all twelve were refused.
+ *
+ * So the seven digits are a run offset plus a local index:
+ *
+ *   local = leg * 10^6 + driver * 10^4 + n      (leg from LOADTEST_LEGS)
+ *   digits = (offset(runId) + local) mod 10^7
+ *
+ * Within one run the local index is distinct for distinct attempts, and adding a
+ * fixed offset modulo 10^7 is a bijection, so a run's numbers are distinct by
+ * construction rather than by luck. The offset comes from the run id so a retried
+ * attempt (a new `run_attempt`) on the same branch gets other numbers; two runs can
+ * still meet by chance, which is why `reset.ts` deletes the bookings between arms.
+ * A coordinate outside its digits is REFUSED by name: wrapping it would quietly
+ * hand two attempts one number again.
  *
  * Kept in the 555 range, which is unassignable in the real numbering plan, so no
- * value this can produce is a number anybody actually holds. `toE164` returns the
- * string unchanged when it cannot parse it, so distinct seeds stay distinct to the
- * matcher either way. Seven varying digits rather than the four a fixed 555-555
- * prefix would leave, because a run makes six hundred of these and a branch can
- * see several runs.
+ * value this can produce is a number anybody actually holds.
  */
-export function loadtestPhone(seed: string): string {
+export function loadtestPhone(lead: LoadtestLead): string {
+  const leg = (LOADTEST_LEGS as readonly string[]).indexOf(lead.leg);
+  if (leg < 0 || leg > 9) throw new Error(`loadtestPhone: leg ${lead.leg} has no digit of its own`);
+  if (!Number.isInteger(lead.driver) || lead.driver < 0 || lead.driver > 99) {
+    throw new Error(`loadtestPhone: driver ${lead.driver} is outside 0 to 99`);
+  }
+  if (!Number.isInteger(lead.n) || lead.n < 0 || lead.n > 9999) {
+    throw new Error(`loadtestPhone: request ${lead.n} is outside 0 to 9999`);
+  }
+  const local = leg * 1_000_000 + lead.driver * 10_000 + lead.n;
+  const digits = (runOffset(lead.runId) + local) % 10_000_000;
+  return `+1555${String(digits).padStart(7, "0")}`;
+}
+
+/** Where a run's numbers start: FNV-1a of the run id, so a retried attempt starts elsewhere. */
+function runOffset(runId: string): number {
   let h = 2166136261;
-  for (let i = 0; i < seed.length; i++) {
-    h ^= seed.charCodeAt(i);
+  for (let i = 0; i < runId.length; i++) {
+    h ^= runId.charCodeAt(i);
     h = Math.imul(h, 16777619);
   }
-  const digits = String(Math.abs(h) % 10_000_000).padStart(7, "0");
-  return `+1555${digits}`;
+  return (h >>> 0) % 10_000_000;
 }
 
 /**
@@ -1040,16 +1125,17 @@ export function bookingRequestHeaders(apiKey: string, leg: LoadtestLeg): Record<
  * shared number makes every booking after the first a `confirm_required` refusal of
  * the same person calling again.
  */
-export function bookingBody(req: { code: string; startIso: string; externalId: string; timezone: string }): Record<string, unknown> {
+export function bookingBody(req: { code: string; startIso: string; lead: LoadtestLead; timezone: string }): Record<string, unknown> {
+  const externalId = leadExternalId(req.lead);
   return {
     bucketCode: req.code,
     start: req.startIso,
     timezone: req.timezone,
-    externalId: req.externalId,
+    externalId,
     attendee: {
-      name: `Loadtest Lead ${req.externalId}`,
-      email: `${req.externalId}@loadtest.local`,
-      phone: loadtestPhone(req.externalId),
+      name: `Loadtest Lead ${externalId}`,
+      email: `${externalId}@loadtest.local`,
+      phone: loadtestPhone(req.lead),
     },
   };
 }
