@@ -383,7 +383,9 @@ const readFile = (path: string) => (existsSync(path) ? (JSON.parse(readFileSync(
     const until = Date.now() + 30_000;
     while (!existsSync(first) && Date.now() < until) await new Promise((r) => setTimeout(r, 10));
     assert(existsSync(first), "fixture: burst 1's file was written before its probe");
+    // tree-write-ok: `first` is burstLegOut(out, 0), and `out` is join(dir, ...) with `dir` from this block's mkdtempSync(tmpdir())
     rmSync(first);
+    // tree-write-ok: the same path, replaced by a directory so the probe's own write really fails
     mkdirSync(first);
     return { ...(await running), seen };
   });
