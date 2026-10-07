@@ -707,31 +707,66 @@ async function main(): Promise<void> {
     const LAGGING = "00QUi000010OO3tMAG"; // 2026-10-03: Lead said 212 for 75 minutes
     const RESCORED = "00QUi000010PCwjMAG"; // 2026-10-06: same submission went 112 to 312
     const NO_SUB = "00QUi00000noSubAAA"; // names no submission at all
+    const CORRECTED = "00QUi00000zMlRmMAK"; // 2026-09-21: Lead edited 512 to 412 49s AFTER its submission
     const leadRows: LeadFieldRecord[] = [
+      { Id: CORRECTED, XBC__c: "412", Submission_Object_ID__c: "a04Ui00000MmsSrIAJ" },
       { Id: RETURNED, XBC__c: "211", Submission_Object_ID__c: "a04Ui00000NXcm1IAD" },
       { Id: LAGGING, XBC__c: "212", Submission_Object_ID__c: "a04Ui00000NL1LdIAL" },
       { Id: RESCORED, XBC__c: "312", Submission_Object_ID__c: "a04Ui00000NLKZZIA5" },
       { Id: NO_SUB, XBC__c: "312", Submission_Object_ID__c: null },
     ];
     const submissionRows: LeadFieldRecord[] = [
-      { Id: "a04Ui00000NXcm1IAD", XBC_SO__c: "111" },
-      { Id: "a04Ui00000NL1LdIAL", XBC_SO__c: "112" },
-      { Id: "a04Ui00000NLKZZIA5", XBC_SO__c: "312" },
+      { Id: "a04Ui00000NXcm1IAD", XBC_SO__c: "111", CreatedDate: "2026-10-07T18:17:53.000+0000" },
+      { Id: "a04Ui00000NL1LdIAL", XBC_SO__c: "112", CreatedDate: "2026-10-03T05:07:51.000+0000" },
+      { Id: "a04Ui00000NLKZZIA5", XBC_SO__c: "312", CreatedDate: "2026-10-03T11:59:08.000+0000" },
+      { Id: "a04Ui00000MmsSrIAJ", XBC_SO__c: "512", CreatedDate: "2026-09-21T13:16:12.000+0000" },
+    ];
+    // Every XBC__c edit Salesforce recorded for these leads, as LeadHistory holds them.
+    // The 2026-10-03 lead's only edit came 75 minutes AFTER its page, so when it paged
+    // it had none; a lead's created value is never a history row.
+    const historyRows: LeadFieldRecord[] = [
+      { Id: "017h1", LeadId: RETURNED, CreatedDate: "2026-07-15T15:38:55.000+0000" },
+      { Id: "017h2", LeadId: CORRECTED, CreatedDate: "2026-09-21T13:17:01.000+0000" },
+      { Id: "017h3", LeadId: RESCORED, CreatedDate: "2026-10-03T11:59:53.000+0000" },
+      { Id: "017h4", LeadId: RESCORED, CreatedDate: "2026-10-06T23:50:53.000+0000" },
     ];
     const queries: string[] = [];
     const salesforce = async (soql: string): Promise<LeadFieldRecord[]> => {
       queries.push(soql);
       if (/FROM Lead /.test(soql)) return leadRows.filter((r) => soql.includes(`'${r.Id}'`) || soql.includes(`'${r.Id.slice(0, 15)}'`));
       if (/FROM Submission__c /.test(soql)) return submissionRows.filter((r) => soql.includes(`'${r.Id}'`));
+      if (/FROM LeadHistory /.test(soql)) return historyRows.filter((r) => soql.includes(`'${String(r.LeadId)}'`));
       throw new Error(`unexpected query: ${soql}`);
     };
 
     // The reader: the submission's score wins, and says where it came from.
-    const scores = await readLeadScores([RETURNED, LAGGING, RESCORED, NO_SUB], salesforce);
+    const scores = await readLeadScores([RETURNED, LAGGING, RESCORED, NO_SUB, CORRECTED], salesforce);
     eq(scores.get(leadIdKey(RETURNED)), { code: "111", source: "submission", submissionId: "a04Ui00000NXcm1IAD" } satisfies LeadScore, "a returning lead is scored by today's submission, not July's copy");
     eq(scores.get(leadIdKey(LAGGING))?.code, "112", "a Lead copy that has not caught up is not the score");
     eq(scores.get(leadIdKey(NO_SUB)), { code: "312", source: "lead", submissionId: null } satisfies LeadScore, "a lead naming no submission falls back to the Lead's copy, and says so");
-    assert(queries.some((q) => /SELECT Id, XBC_SO__c FROM Submission__c WHERE Id IN \(/.test(q)), "it reads the named submissions");
+    assert(queries.some((q) => /XBC_SO__c, CreatedDate FROM Submission__c WHERE Id IN \(/.test(q)), "it reads the named submissions");
+
+    // Newest wins (Dan, 2026-10-07): a Lead score EDITED after the submission was made
+    // is the later fact, so it wins; a copy last written before it is stale, and loses.
+    eq(scores.get(leadIdKey(CORRECTED)), { code: "412", source: "lead-edit", submissionId: "a04Ui00000MmsSrIAJ" } satisfies LeadScore, "a Lead score edited after the submission wins over it");
+    eq(scores.get(leadIdKey(RETURNED))?.source, "submission", "a Lead copy last edited in July loses to today's submission");
+    eq(scores.get(leadIdKey(LAGGING))?.source, "submission", "a Lead copy never edited since the submission loses to it");
+    {
+      const history = queries.filter((q) => /FROM LeadHistory /.test(q));
+      eq(history.length, 1, "the edit history is read once per run");
+      assert(!history[0].includes(`'${RESCORED}'`) && !history[0].includes(`'${NO_SUB}'`), "and only for leads whose two scores disagree, so an agreeing roster costs no extra read");
+      assert(/Field = 'XBC__c'/.test(history[0]), "and only for edits to the score");
+    }
+    // An edit whose time cannot be read, or a submission whose creation cannot, never
+    // overrides the submission: the comparison could not be made.
+    {
+      const run = async (soql: string): Promise<LeadFieldRecord[]> => {
+        if (/FROM Lead /.test(soql)) return [{ Id: LEAD_A, XBC__c: "412", Submission_Object_ID__c: "a04Ui00000subAAAAA" }];
+        if (/FROM Submission__c /.test(soql)) return [{ Id: "a04Ui00000subAAAAA", XBC_SO__c: "512", CreatedDate: "not a date" }];
+        return [{ Id: "017x", LeadId: LEAD_A, CreatedDate: "2026-09-21T13:17:01.000+0000" }];
+      };
+      eq((await readLeadScores([LEAD_A], run)).get(leadIdKey(LEAD_A))?.source, "submission", "an unreadable submission time keeps the submission");
+    }
 
     // A named submission Salesforce did not return, or one with no score, falls back too.
     {
@@ -755,10 +790,10 @@ async function main(): Promise<void> {
         return [{ Id: NO_SUB, XBC__c: "312", Submission_Object_ID__c: null }];
       });
       eq(asked.length, 1, "no submission named, so Submission__c is never asked");
-      for (const failing of [/FROM Lead /, /FROM Submission__c /]) {
+      for (const failing of [/FROM Lead /, /FROM Submission__c /, /FROM LeadHistory /]) {
         let threw = false;
         try {
-          await readLeadScores([RETURNED], async (q) => {
+          await readLeadScores([RETURNED, CORRECTED], async (q) => {
             if (failing.test(q)) throw new Error("SF query failed: 500");
             return salesforce(q);
           });
@@ -841,6 +876,23 @@ async function main(): Promise<void> {
       const text = calls.notified[0]?.text ?? "";
       assert(/could not tell/.test(text), "a booking with no recorded submission says the check could not tell");
       assert(!/re-scored that submission/.test(text) && !/submitted again since/.test(text), "and claims neither cause");
+    }
+    // A Lead corrected after its submission, booked on the corrected tier: silent.
+    {
+      const VERY_HIGH_412: PoolBucket = { id: "b-412", code: "412", name: "Very High | Both | Non-Legal", criteria: { debt_team: "very_high" } };
+      POOLS.push(VERY_HIGH_412);
+      const { calls } = await run(
+        [booking({ id: "bk-corrected", bucket_id: VERY_HIGH_412.id, salesforce_id: CORRECTED, prefill: withSub("a04Ui00000MmsSrIAJ") })],
+        { "bk-corrected": "412" },
+      );
+      eq(calls.notified.length, 0, "a call on the tier the Lead was corrected to pages nobody");
+      // The same lead booked BELOW the correction pages, and names the Lead edit as the cause.
+      const below = await run(
+        [booking({ id: "bk-corrected-low", bucket_id: LOW_112.id, salesforce_id: CORRECTED, prefill: withSub("a04Ui00000MmsSrIAJ") })],
+        { "bk-corrected-low": "112" },
+      );
+      const text = below.calls.notified[0]?.text ?? "";
+      assert(/Lead record was re-scored to Very High after that submission/.test(text), "a rise from a Lead edit says so");
     }
     // Scored from the Lead's copy (no submission named): never claims a re-score either.
     {

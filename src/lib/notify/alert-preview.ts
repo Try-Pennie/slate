@@ -683,6 +683,12 @@ const PREVIEW_RESUBMITTED: BelowFinding = {
   score: { code: "512", source: "submission", submissionId: "a04Ui00000NXcm1IAD" },
 };
 
+/** #3501: the Lead score was edited after the submission, so the edit wins. */
+const PREVIEW_LEAD_EDIT: BelowFinding = {
+  ...PREVIEW_RESCORED,
+  score: { code: "512", source: "lead-edit", submissionId: PREVIEW_RESCORED_SUBMISSION },
+};
+
 /** #3501: a booking that recorded no submission, so a re-score and a newer
  *  submission cannot be told apart. */
 const PREVIEW_RISE_UNATTRIBUTED: BelowFinding = {
@@ -1475,6 +1481,12 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "arrived on a lower code, and the lead submitted again after booking",
     channel: "alert",
     text: formatBelowLeadTierAlert(PREVIEW_RESUBMITTED, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
+  },
+  {
+    key: "booking_below_lead_tier:*",
+    state: "arrived on a lower code, and the Lead score was edited after the submission",
+    channel: "alert",
+    text: formatBelowLeadTierAlert(PREVIEW_LEAD_EDIT, { catchall: false, requestedCode: "422", tierFallback: false, rungsDropped: 0 }, PREVIEW_BELOW_TIER_URL),
   },
   {
     key: "booking_below_lead_tier:*",
