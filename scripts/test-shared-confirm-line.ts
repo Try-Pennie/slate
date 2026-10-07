@@ -184,9 +184,9 @@ async function main() {
   // detached, which every later call checks. Waiting on it added its round trip to every
   // leader's start, and on load run 37572839375 the first confirm on a line object fresh
   // from the fault leg's deploy waited 1.3s on it, which alone put the cold confirm over
-  // the startup bar. The ack is still sent, once, before the turn is handed back; it is
-  // settled when the turn reports, like the heartbeat, and its wait is not time the line
-  // added to the confirm.
+  // the startup bar. The ack is still sent, once, before the turn is handed back, and is
+  // then never waited on: not by the confirm's start, not by its report, and its wait is
+  // not time the line added to the confirm.
   {
     const w = world();
     const c = w.client();

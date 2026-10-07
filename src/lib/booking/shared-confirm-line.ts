@@ -176,7 +176,9 @@ export function makeSharedConfirmLine<T>(deps: {
     // 1.3s on a line object fresh from a deploy (load run 37572839375), which alone put
     // a cold confirm over the startup bar. Nothing waits on it at all, and its time is
     // not counted in `lineMs`, which is what the line ADDS to a confirm.
-    const acking = call(stub, { op: "ack", turn }, CONFIRM_LINE_CALL_MS).then((r) => {
+    // It never rejects (`call` reports failure in its result), so it is safe to leave
+    // to finish on its own.
+    void call(stub, { op: "ack", turn }, CONFIRM_LINE_CALL_MS).then((r) => {
       if (r.answer?.kind === "gone") detached = true;
     });
     // The heartbeat: a renewal every `CONFIRM_LINE_HEARTBEAT_MS` until the turn
@@ -241,9 +243,7 @@ export function makeSharedConfirmLine<T>(deps: {
         }
         // #3355: the ack is not waited on here either. Once the turn has reported, its
         // answer can matter to nobody, and waiting would only hold back the leader's own
-        // answer. It never rejects (`call` reports failure in its result), so it is safe
-        // to leave to finish on its own.
-        void acking;
+        // answer.
         deps.record({ ...served });
       },
     };
