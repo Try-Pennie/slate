@@ -330,7 +330,9 @@ describe("emitWebhook", () => {
 
     state.rpcCalls = [];
     await emitWebhook("o1", "booking.created", payload, "bk2", false);
-    expect(Object.values(state.rpcCalls[0]!.args.p_suppression as Record<string, unknown>)).toEqual([null, null]);
+    const sent = state.rpcCalls[0]!.args.p_suppression as Record<string, unknown>;
+    expect(Object.keys(sent).sort()).toEqual(Object.keys(WEBHOOK_FORMATS).sort());
+    expect(Object.values(sent).every((reason) => reason === null)).toBe(true);
   });
 
   // The first send posts the payload AS STORED, which is what every retry posts, so a
