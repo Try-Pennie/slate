@@ -31,9 +31,10 @@
  *   leader that dies takes the whole invocation with it; across a network it is not.
  * - `abandon` lets a caller that gave up on an enter undo whatever it was given.
  *
- * State is memory only. Nothing is written to storage, so no input gate ever closes
- * and held polls interleave at every await, and a restart loses nothing but lines in
- * flight, whose confirms re-enter (`gone`) or fall back to their isolate. Correctness
+ * A line's state is memory only. A line writes nothing to storage, so no input gate
+ * ever closes on its instance and held polls interleave at every await, and a restart
+ * loses nothing but lines in flight, whose confirms re-enter (`gone`) or fall back to
+ * their isolate. Correctness
  * never rests on this object: the bookings indexes and verify on book still decide.
  *
  * A settlement (the leader's booking and who sits at the instant) carries contact
@@ -42,12 +43,14 @@
  *
  * #3460: one reserved instance of the class is not a line at all but the pool grouping
  * DIRECTORY (`pool-grouping.ts`), which holds the newest grouping the recompute lane
- * published so a cold server can key its line from it. Which role a call is served as
- * is `objectRoleOf`, and `makeConfirmLineObject` keeps each role's messages to its own
- * instances.
+ * published so a cold server can key its line from it, in the instance's STORAGE as
+ * well as its memory (#3479): the platform hibernates an idle object after ten seconds
+ * and discards its memory, and the lane publishes once a minute. Which role a call is
+ * served as is `objectRoleOf`, and `makeConfirmLineObject` keeps each role's messages to
+ * its own instances.
  */
 import { makeConfirmQueue, type LeaderVerdict, type QueueTurn, type EnteredNow } from "./confirm-queue.ts";
-import { DIRECTORY_GROUP_PREFIX, isGroupingMessage, makeGroupingDirectoryHost } from "./pool-grouping.ts";
+import { DIRECTORY_GROUP_PREFIX, isGroupingMessage, makeGroupingDirectoryHost, type GroupingDirectoryStorage } from "./pool-grouping.ts";
 import type { ScheduleTimer } from "../read-within-deadline.ts";
 
 /** The Worker binding the shared line is reached through, and the class behind it. */
@@ -426,7 +429,16 @@ export function objectRoleOf(pathname: string, instanceName: unknown): { role: O
  * misaddressed call. Each half is created on first use, so a line never holds a
  * directory and the directory never holds a line.
  */
-export function makeConfirmLineObject(deps: Parameters<typeof makeConfirmLineHost>[0]): {
+export function makeConfirmLineObject(
+  deps: Parameters<typeof makeConfirmLineHost>[0] & {
+    /**
+     * The instance's own storage (`ctx.storage`), where the directory keeps its snapshot
+     * through a hibernation (#3479). Required, so every place an object is built says
+     * where its directory persists rather than quietly keeping it in memory alone.
+     */
+    directoryStorage: GroupingDirectoryStorage;
+  },
+): {
   handle(role: ObjectRole | { refused: string }, message: unknown): Promise<string>;
 } {
   let line: ReturnType<typeof makeConfirmLineHost> | null = null;
@@ -437,7 +449,7 @@ export function makeConfirmLineObject(deps: Parameters<typeof makeConfirmLineHos
       if (typeof role !== "string") return bad(role.refused);
       if (role === "directory") {
         if (!isGroupingMessage(message)) return bad("a confirm line message on the pool grouping directory");
-        directory ??= makeGroupingDirectoryHost();
+        directory ??= makeGroupingDirectoryHost(deps.directoryStorage);
         return directory.handle(message);
       }
       if (isGroupingMessage(message)) return bad("a pool grouping message on a confirm line");

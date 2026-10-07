@@ -8,11 +8,14 @@
  * is the request envelope, the role the call is served as (its path, and the
  * instance's own name when the runtime supplies one), the real clock and timers, and
  * the log a traced call is written to, which `scripts/test-confirm-line-binding.ts`
- * drives through this class. Nothing is written to storage: the line and the
- * directory are memory only, so no input gate closes and held polls interleave at
- * every await.
+ * drives through this class. A line writes nothing to storage, so no input gate closes
+ * on a line's instance and its held polls interleave at every await. The directory
+ * DOES keep its snapshot in the instance's storage (#3479), because the platform
+ * hibernates an idle object after ten seconds and discards its memory; that is only
+ * ever its own instance, never a line's.
  */
 import { makeConfirmLineObject, objectRoleOf, CONFIRM_LINE_TRACE_TAG, TRACED_CALL_MSG } from "@/lib/booking/confirm-line-object";
+import type { GroupingDirectoryStorage } from "@/lib/booking/pool-grouping";
 import { log } from "@/lib/log";
 
 const realTimer = (ms: number, fire: () => void): (() => void) => {
@@ -35,22 +38,39 @@ function instanceNameOf(ctx: unknown): string | undefined {
   }
 }
 
+/**
+ * The instance's own storage (`ctx.storage`), where the directory keeps its snapshot
+ * (#3479). With none on the context, a storage that refuses every call, so the directory
+ * refuses its puts and the publisher is paged, rather than keeping the snapshot in memory
+ * alone, which reads as healthy and is empty within a minute.
+ */
+function storageOf(ctx: unknown): GroupingDirectoryStorage {
+  const storage = (ctx as { storage?: Partial<GroupingDirectoryStorage> } | undefined)?.storage;
+  if (storage && typeof storage.get === "function" && typeof storage.put === "function") {
+    const { get, put } = storage;
+    return { get: (key) => get.call(storage, key), put: (key, value) => put.call(storage, key, value) };
+  }
+  const none = () => Promise.reject(new Error("this instance has no storage"));
+  return { get: none, put: none };
+}
+
 export class ConfirmLine {
   private readonly name: string | undefined;
+  private readonly object: ReturnType<typeof makeConfirmLineObject>;
 
   constructor(ctx?: unknown) {
     this.name = instanceNameOf(ctx);
+    this.object = makeConfirmLineObject({
+      now: () => Date.now(),
+      timer: realTimer,
+      leaseTimer: realTimer,
+      newId: () => crypto.randomUUID(),
+      // #3354: a traced call (sent by the load test's client only) is logged, so the
+      // run can join this object's side of a confirm to the confirm's own line.
+      onTrace: (call) => log.info(CONFIRM_LINE_TRACE_TAG, { msg: TRACED_CALL_MSG, ...call }),
+      directoryStorage: storageOf(ctx),
+    });
   }
-
-  private readonly object = makeConfirmLineObject({
-    now: () => Date.now(),
-    timer: realTimer,
-    leaseTimer: realTimer,
-    newId: () => crypto.randomUUID(),
-    // #3354: a traced call (sent by the load test's client only) is logged, so the
-    // run can join this object's side of a confirm to the confirm's own line.
-    onTrace: (call) => log.info(CONFIRM_LINE_TRACE_TAG, { msg: TRACED_CALL_MSG, ...call }),
-  });
 
   async fetch(request: Request): Promise<Response> {
     let message: unknown = null;

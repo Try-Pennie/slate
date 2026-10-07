@@ -71,7 +71,14 @@ local read of the same age expire at the same moment.
 The every minute recompute lane already reads the bucket list. It groups it by pool
 and publishes `[code, pool digest]` for every code, with the time the read started,
 to the **directory**: a reserved instance of this same class, named
-`directory:pool-grouping:v<format>` (no new class, binding or migration). It publishes
+`directory:pool-grouping:v<format>` (no new class, binding or migration). The directory
+keeps its snapshot in the instance's own storage, not only its memory (#3479): the
+platform hibernates an idle object with no timers after ten seconds and discards its
+memory, so a memory only directory was empty for most of every minute, and load run
+37601024392's bursts, each arriving about 48 seconds after the last publish, read
+nothing. A put writes storage before it answers `stored`, a failed write is refused (so
+the heartbeat below is not stamped), and a failed read is refused rather than answered
+as an empty directory. It publishes
 BEFORE taking its lock, because a tick that finds the lock held is skipped, and it
 adds no read: the same list feeds the recompute. Any server's own read publishes too,
 after the response, as a backup. A publish that landed stamps the `pool-grouping`

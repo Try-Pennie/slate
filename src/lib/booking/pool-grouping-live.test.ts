@@ -32,6 +32,7 @@ import { publishPoolGrouping, publishPoolGroupingAfterResponse, groupingDirector
 import { makeConfirmLineObject, objectRoleOf } from "@/lib/booking/confirm-line-object";
 import { confirmLineObjectName } from "@/lib/booking/shared-confirm-line";
 import { POOL_GROUPING_DIRECTORY, groupingGetMessage, type GroupingEntry } from "@/lib/booking/pool-grouping";
+import { memoryGroupingStorage } from "../../../scripts/lib/memory-grouping-storage";
 
 function bound(fault?: "throws") {
   const objects = new Map<string, ReturnType<typeof makeConfirmLineObject>>();
@@ -39,7 +40,7 @@ function bound(fault?: "throws") {
   const objectFor = (name: string) => {
     let o = objects.get(name);
     if (!o) {
-      o = makeConfirmLineObject({ now: () => Date.now(), timer: () => () => {}, leaseTimer: () => () => {}, newId: () => "id" });
+      o = makeConfirmLineObject({ now: () => Date.now(), timer: () => () => {}, leaseTimer: () => () => {}, newId: () => "id", directoryStorage: memoryGroupingStorage() });
       objects.set(name, o);
     }
     return o;

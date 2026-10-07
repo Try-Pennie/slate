@@ -154,28 +154,76 @@ export function isGroupingMessage(message: unknown): boolean {
 }
 
 /**
- * The directory, as its object runs it: the newest snapshot it was handed, memory only
- * like the line. A put is judged by its shape alone (never empty, never a count its
- * entries do not match) and kept only when newer than what is held; a get hands back
- * what is held, or null.
+ * The object's own storage, as the directory uses it: the platform's `ctx.storage`
+ * (SQLite backed since the v2 migration), whose `get` and `put` have exactly this shape.
  */
-export function makeGroupingDirectoryHost(): { handle(message: unknown): string } {
+export interface GroupingDirectoryStorage {
+  get(key: string): Promise<unknown>;
+  put(key: string, value: unknown): Promise<void>;
+}
+
+/** The storage key the directory keeps its snapshot under. */
+export const POOL_GROUPING_STORAGE_KEY = "pool-grouping-snapshot";
+
+/**
+ * The directory, as its object runs it: the newest snapshot it was handed. A put is judged
+ * by its shape alone (never empty, never a count its entries do not match) and kept only
+ * when newer than what is held; a get hands back what is held, or null.
+ *
+ * Held in the object's STORAGE, not only its memory (#3479). The platform hibernates an
+ * idle object with no timers after ten seconds and discards its memory, and the lane
+ * publishes once a minute, so a memory only directory was empty for most of every minute:
+ * load run 37601024392's bursts each arrived 46 to 48 seconds after the last publish and
+ * read nothing. A woken instance loads what storage holds once, judged by the same rules
+ * as a put (L1013), before answering anything. A put writes storage BEFORE it answers
+ * `stored`, and a write that fails is refused, so the publisher, which stamps its
+ * heartbeat only on `stored`, is paged rather than believed. A read that fails is refused
+ * too, never answered as an empty directory (L215).
+ */
+export function makeGroupingDirectoryHost(storage: GroupingDirectoryStorage): { handle(message: unknown): Promise<string> } {
   let stored: GroupingSnapshot | null = null;
+  // One load per woken instance; a load that failed is forgotten so the next call tries
+  // again.
+  let loaded = false;
+  const load = async () => {
+    if (loaded) return;
+    const raw = await storage.get(POOL_GROUPING_STORAGE_KEY);
+    const read = raw === undefined || raw === null ? null : readGroupingSnapshot(raw, null);
+    stored = read?.kind === "snapshot" ? read.snapshot : null;
+    loaded = true;
+  };
   const bad = (why: string) => JSON.stringify({ kind: "bad", why });
+  // One call at a time, so a put's check against what is held and its write can never
+  // interleave with another put's. The platform's input gates already hold new calls while
+  // the object awaits its storage; this does not lean on that (L82).
+  let tail: Promise<unknown> = Promise.resolve();
+  const one = async (message: unknown): Promise<string> => {
+    if (!message || typeof message !== "object" || Array.isArray(message)) return bad("not a message");
+    const m = message as Record<string, unknown>;
+    if (m.dv !== POOL_GROUPING_DIRECTORY_PROTOCOL) return bad("directory version");
+    if (m.op !== "grouping-get" && m.op !== "grouping-put") return bad("unknown directory op");
+    try {
+      await load();
+    } catch {
+      return bad("directory storage could not be read");
+    }
+    if (m.op === "grouping-get") return JSON.stringify({ kind: "grouping", snapshot: stored });
+    const read = readGroupingSnapshot(m.snapshot, null);
+    if (read.kind !== "snapshot") return bad(read.kind === "refused" ? read.why : "format");
+    if (stored && stored.readAtMs >= read.snapshot.readAtMs) return JSON.stringify({ kind: "kept", readAtMs: stored.readAtMs });
+    try {
+      await storage.put(POOL_GROUPING_STORAGE_KEY, read.snapshot);
+    } catch {
+      return bad("directory storage could not be written");
+    }
+    stored = read.snapshot;
+    return JSON.stringify({ kind: "stored", readAtMs: read.snapshot.readAtMs });
+  };
   return {
     handle(message) {
-      if (!message || typeof message !== "object" || Array.isArray(message)) return bad("not a message");
-      const m = message as Record<string, unknown>;
-      if (m.dv !== POOL_GROUPING_DIRECTORY_PROTOCOL) return bad("directory version");
-      if (m.op === "grouping-get") return JSON.stringify({ kind: "grouping", snapshot: stored });
-      if (m.op === "grouping-put") {
-        const read = readGroupingSnapshot(m.snapshot, null);
-        if (read.kind !== "snapshot") return bad(read.kind === "refused" ? read.why : "format");
-        if (stored && stored.readAtMs >= read.snapshot.readAtMs) return JSON.stringify({ kind: "kept", readAtMs: stored.readAtMs });
-        stored = read.snapshot;
-        return JSON.stringify({ kind: "stored", readAtMs: stored.readAtMs });
-      }
-      return bad("unknown directory op");
+      const run = tail.then(() => one(message));
+      tail = run.catch(() => undefined);
+      return run;
     },
   };
 }

@@ -66,6 +66,7 @@ import {
 } from "../src/lib/booking/pool-grouping-reader.ts";
 import { groupByPool } from "../src/lib/availability/pool-key.ts";
 import { poolGroupingRoster } from "./lib/pool-grouping-fixture.ts";
+import { memoryGroupingStorage } from "./lib/memory-grouping-storage.ts";
 
 const { assert, finish } = createAsserter();
 
@@ -264,7 +265,7 @@ async function burst(opts: {
     const groupings: { lineGroupOf: (code: string) => string | null; ensure: (() => Promise<unknown>) | null }[] = [];
     if (opts.grouping && opts.isolates) {
       const entries = groupingEntriesOf(groupByPool(poolGroupingRoster()));
-      const directory = makeConfirmLineObject({ now: () => clock.now, timer: timerOnClock, leaseTimer: timerOnClock, newId: () => "dir" });
+      const directory = makeConfirmLineObject({ now: () => clock.now, timer: timerOnClock, leaseTimer: timerOnClock, newId: () => "dir", directoryStorage: memoryGroupingStorage() });
       const ask = async (m: Record<string, unknown>) => JSON.parse(await directory.handle("directory", JSON.parse(JSON.stringify(m)) as unknown)) as Record<string, unknown>;
       if (opts.grouping.snapshot) await ask(groupingPutMessage(opts.grouping.snapshot));
       for (let k = 0; k < opts.isolates.count; k++) {
