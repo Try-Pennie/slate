@@ -283,6 +283,8 @@ describe("the request's own reading (#3300)", () => {
         { dependency: "google", calls: 2, ms: 800, maxMs: 800 },
         { dependency: "supabase", calls: 3, ms: 600, maxMs: 400 },
       ],
+      // #3511: the slowest single call by its full label, which byDependency folds away.
+      slowest: { label: "google freeBusy", ms: 800 },
     });
   });
 
@@ -311,6 +313,7 @@ describe("the request's own reading (#3300)", () => {
       calls_made: 1,
       calls_ms: 200,
       calls_by: "supabase:200/1/200",
+      slowest_call: "supabase:200",
     });
     for (const v of Object.values(fields)) expect(String(v)).not.toMatch(/undefined|NaN|\[object|null/);
   });

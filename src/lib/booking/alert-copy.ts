@@ -12,7 +12,8 @@
  */
 import type { FailureKind } from "@/lib/google/sync-health";
 import { OFFERED_OPEN_DAYS } from "@/lib/availability/bookable-days";
-import { deadlineReason, spentBeforeAsked } from "@/lib/notify/error-text";
+import { deadlineReason, durationText, spentBeforeAsked } from "@/lib/notify/error-text";
+import type { TimeSpent } from "./time-spent";
 import { normalizeEmail } from "@/lib/auth/email";
 import { formatSlotDay, formatSlotTime } from "@/lib/booking/slot-label";
 
@@ -470,6 +471,8 @@ export function dependencyTimeoutAlert(timeout: {
   budget: { label: string; totalMs: number } | null;
   /** #3338: set when Slate chose not to start the work for want of time. */
   neededMs?: number;
+  /** #3511: where the confirm's time went, from its own profile, when one was read. */
+  spent?: TimeSpent | null;
 }): string {
   // #3263: one wording for a missed deadline across every alert. A call refused
   // because the budget was already spent says the budget was used up before
@@ -485,9 +488,39 @@ export function dependencyTimeoutAlert(timeout: {
   // included (#3401), and which carries where a slow or timed out one spent its
   // time (#3300).
   if (spentBeforeAsked(found)) {
+    const where = timeWentSentence(timeout.spent ?? null);
+    if (where) return `${head}. ${where}`;
     return `${head}. The time went inside Slate before that call, so start from that request's confirm answered log line rather than Google Calendar API and Supabase health.`;
   }
   return `${head}, and Google Calendar API and Supabase health.`;
+}
+
+/** The health page a dependency's calls are judged on, by the label's first word. */
+const DEPENDENCY_HEALTH: Record<string, string> = {
+  google: "Google Calendar API",
+  supabase: "Supabase",
+};
+
+/**
+ * Where a refused confirm's time went, said from its own profile (#3511), or null
+ * with no stage to name. The dearest stage is named; when one outside call took at
+ * least half of it, that call is named too and the reader is sent to its health,
+ * since that is where the time went (on 2026-10-07 16:55 ET, 6.5 of the 7.6
+ * seconds of `assign-and-verify` were one Google call). Otherwise the stage was
+ * Slate's own work and the reader is steered off the dependencies, as before.
+ */
+function timeWentSentence(spent: TimeSpent | null): string | null {
+  if (!spent?.stage) return null;
+  const stage = `The time went to the ${spent.stage.name} step (${durationText(spent.stage.ms)})`;
+  const call = spent.call;
+  const health = call ? DEPENDENCY_HEALTH[call.label.split(" ")[0]] : undefined;
+  if (call && health && call.ms * 2 >= spent.stage.ms) {
+    return (
+      `${stage}, ${durationText(call.ms)} of it in one call to ${call.label}, ` +
+      `so start from ${health} health and that request's confirm answered log line.`
+    );
+  }
+  return `${stage} inside Slate, so start from that request's confirm answered log line rather than Google Calendar API and Supabase health.`;
 }
 
 /** A reschedule failed closed because the lock claim hit a DB error. */

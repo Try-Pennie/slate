@@ -141,7 +141,14 @@ export interface ConfirmRequestReading {
    * (the admin time change) reports no calls, and zero would read as a confirm that
    * waited on nothing (L90).
    */
-  calls: { count: number; ms: number; byDependency: DependencyCalls[] } | null;
+  calls: {
+    count: number;
+    ms: number;
+    byDependency: DependencyCalls[];
+    /** #3511: the slowest single call by its FULL label (`google freeBusy.many`),
+     *  which `byDependency` folds into its dependency; null when none was made. */
+    slowest: { label: string; ms: number } | null;
+  } | null;
 }
 
 export interface ConfirmProfile {
@@ -346,7 +353,12 @@ function readCalls(
       maxMs: Math.max(...list.map((c) => lengthOf(c.span, at))),
     }))
     .sort((a, b) => b.ms - a.ms);
-  return { count: calls.length, ms: covered(calls), byDependency };
+  let slowest: { label: string; ms: number } | null = null;
+  for (const c of calls) {
+    const ms = lengthOf(c.span, at);
+    if (slowest === null || ms > slowest.ms) slowest = { label: c.label, ms };
+  }
+  return { count: calls.length, ms: covered(calls), byDependency, slowest };
 }
 
 /** `profile.time`, or the work alone when there is no profile to charge it to. */
@@ -379,6 +391,8 @@ export function confirmProfileFields(r: ConfirmRequestReading): Record<string, s
     if (r.calls.byDependency.length > 0) {
       out.calls_by = r.calls.byDependency.map((d) => `${d.dependency}:${d.ms}/${d.calls}/${d.maxMs}`).join(",");
     }
+    // #3511: which call, by name, since `calls_by` says only which dependency.
+    if (r.calls.slowest) out.slowest_call = `${r.calls.slowest.label}:${r.calls.slowest.ms}`;
   }
   return out;
 }

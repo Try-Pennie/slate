@@ -39,6 +39,7 @@ import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
 import { deadlineWithinBudget, insideCallBudget, withinCallBudget } from "@/lib/call-budget";
 import { GoogleBreakerOpenError } from "@/lib/google/breaker";
 import type { CreateBookingInput } from "./service";
+import { makeConfirmProfile } from "./confirm-profile";
 
 const input = {} as CreateBookingInput;
 
@@ -202,3 +203,31 @@ describe("a timeout on the confirm path (#3102)", () => {
     expect(alert).not.toHaveBeenCalled();
   });
 });
+
+// #3511: the page is sent after the response, when the request is closed, so the
+// confirm's profile has to be read at the failure, inside the request. On
+// 2026-10-07 16:55 ET the page said the time went "inside Slate" while one Google
+// call had taken 6.5 of the confirm's seconds.
+describe("the page names where the time went (#3511)", () => {
+  it("reads the confirm's profile before the page is deferred", async () => {
+    let t = 1_000_000;
+    const profile = makeConfirmProfile({ now: () => t }).observeCalls();
+    createBooking.mockImplementation(async () => {
+      await profile.time("assign-and-verify", async () => {
+        profile.call("google freeBusy.many", t, t + 6529);
+        t += 7555;
+      });
+      throw new DependencyTimeoutError(
+        { label: "writing the booking and its calendar event", timeoutMs: 3882, budget: null, neededMs: 7253 },
+        new Error("not started"),
+      );
+    });
+    await withinCallBudget(12_000, "the booking confirm", () => serviceCreateBooking(input).catch(() => {}), () => t, profile);
+    await flushAfter();
+    const page = String(alert.mock.calls[0]?.[2] ?? "");
+    expect(page).toContain("The time went to the assign-and-verify step (8 seconds), 7 seconds of it in one call to google freeBusy.many");
+    expect(page).toContain("start from Google Calendar API health");
+    expect(page).not.toContain("inside Slate");
+  });
+});
+

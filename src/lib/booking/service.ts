@@ -152,6 +152,7 @@ import type {
 import type { PersonIdentity, PersonWorld } from "@/lib/booking/person-dedupe";
 import { personStrongIds } from "@/lib/booking/person-dedupe";
 import { readLeadXbcLive, readSubmissionLeadIdLive } from "@/lib/salesforce/lead-xbc";
+import { timeSpentInThisRequest, type TimeSpent } from "@/lib/booking/time-spent";
 import { callingNumberWithinDeadline, readCallingNumberLive } from "@/lib/salesforce/lead-calling-number";
 import { bookingLeadId } from "@/lib/booking/lookup-identity";
 import { toE164 } from "@/lib/phone";
@@ -2343,6 +2344,8 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
  */
 export function bookingFailureAlert(
   err: unknown,
+  /** #3511: where the confirm's time went, read from its own profile. */
+  spent: TimeSpent | null = null,
 ): { key: string; cooldownMs: number; message: string } | null {
   // #3102: the same incident as the verify outage from the lead's side, so the
   // same key and cooldown, with words that name what did not answer.
@@ -2350,7 +2353,7 @@ export function bookingFailureAlert(
     return {
       key: VERIFY_OUTAGE_ALERT_KEY,
       cooldownMs: VERIFY_OUTAGE_ALERT_COOLDOWN_MS,
-      message: dependencyTimeoutAlert(err),
+      message: dependencyTimeoutAlert({ ...err, spent }),
     };
   }
   if (err instanceof orchestration.VerifyUnavailableError) {
@@ -2404,7 +2407,9 @@ async function alertOnBookingFailure<T>(op: () => Promise<T>): Promise<T> {
  * logged.
  */
 export async function pageBookingFailure(err: unknown): Promise<void> {
-  const spec = bookingFailureAlert(err);
+  // #3511: read NOW, while the confirm's request is still open, since the page
+  // itself is deferred past the response, where the request is closed.
+  const spec = bookingFailureAlert(err, timeSpentInThisRequest());
   if (!spec) return;
   // #3416: after the response, never in front of it. Nothing in the answer reads
   // the page, and the page reads `alert_state` (and on its first send claims and
