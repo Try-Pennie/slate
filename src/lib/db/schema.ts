@@ -502,6 +502,21 @@ export interface Database {
         Returns: number;
       };
       /**
+       * #3495, migration 0173: one delivery per active endpoint subscribed to the event,
+       * deduped on (endpoint, event, dedupe_key), suppression decided by the caller per
+       * format. Answers {subscribers, deliveries}, read by `readEnqueueAnswer`.
+       */
+      enqueue_webhook_deliveries: {
+        Args: {
+          p_org_id: string;
+          p_event: string;
+          p_payload: unknown;
+          p_dedupe_key: string | null;
+          p_suppression: unknown;
+        };
+        Returns: unknown;
+      };
+      /**
        * #3265, migration 0171: the gated reschedule and its outbox row in one transaction.
        * Returns the outbox row's id when the move applied; null when the guard matched nothing.
        */

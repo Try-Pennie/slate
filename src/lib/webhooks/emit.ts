@@ -14,7 +14,9 @@ import type { WebhookPayload, WebhookPayloadFor } from "@/lib/webhooks/types";
 import { isAgentEvent, isEmittedEvent, WEBHOOK_EVENTS } from "@/lib/webhooks/events";
 import { regalSendsNothingFor } from "@/lib/webhooks/regal";
 import { payloadForSend, type CurrentRoutableRead } from "@/lib/webhooks/agent-trait";
-import type { WebhookEndpoint, WebhookEvent } from "@/lib/db/types";
+import type { WebhookEndpoint, WebhookEvent, WebhookFormat } from "@/lib/db/types";
+import { WEBHOOK_FORMATS } from "@/lib/webhooks/formats";
+import { readEnqueueAnswer } from "@/lib/webhooks/enqueue-answer";
 import { gatedWriteApplied } from "@/lib/booking/gated-write";
 import { webhookLoadtestFault } from "@/lib/loadtest-fault";
 
@@ -34,19 +36,19 @@ const SUPPRESSED_AGENT_LINK_RESPONSE =
   "suppressed: an agent link booking has no Regal event for this (#2073), external POST skipped";
 
 /**
- * Whether THIS endpoint must not receive THIS emission, and why, or null. Decided
- * per endpoint because the #2073 rule is Regal's alone: a generic subscriber still
- * gets every event.
+ * Whether an endpoint of THIS format must not receive THIS emission, and why, or
+ * null. Decided per format because the #2073 rule is Regal's alone: a generic
+ * subscriber still gets every event.
  */
 function suppressionFor(
-  endpoint: WebhookEndpoint,
+  format: WebhookFormat,
   event: WebhookEvent,
   payload: WebhookPayload,
   suppressed: boolean,
 ): string | null {
   if (suppressed) return isAgentEvent(event) ? SUPPRESSED_AGENT_RESPONSE : SUPPRESSED_RESPONSE;
   if (
-    endpoint.format === "regal" &&
+    format === "regal" &&
     !isAgentEvent(event) &&
     regalSendsNothingFor(event as Parameters<typeof regalSendsNothingFor>[0], payload as Parameters<typeof regalSendsNothingFor>[1])
   ) {
@@ -57,6 +59,19 @@ function suppressionFor(
 
 /** The same, for a smoke test AGENT's bookable trait (#2085, #396). */
 const SUPPRESSED_AGENT_RESPONSE = "suppressed: is_test agent, external POST skipped (#2085)";
+
+/**
+ * #3495: the suppression decision for EVERY format Slate knows, which the database
+ * function applies to each subscriber by its format. Every format, every time,
+ * because the function refuses a format the map does not name rather than reading
+ * it as "send" (L42); derived from `WEBHOOK_FORMATS` so a new format is decided
+ * here the day it exists.
+ */
+function suppressionByFormat(event: WebhookEvent, payload: WebhookPayload, suppressed: boolean): Record<WebhookFormat, string | null> {
+  return Object.fromEntries(
+    (Object.keys(WEBHOOK_FORMATS) as WebhookFormat[]).map((format) => [format, suppressionFor(format, event, payload, suppressed)]),
+  ) as Record<WebhookFormat, string | null>;
+}
 
 /**
  * The agent's current routing state, for a trait send (#2085). Read by primary
@@ -279,11 +294,18 @@ export type WebhookSendScheduler = (work: () => Promise<void>) => void;
  * The send is bounded by a timeout so a slow subscriber can't block the booking;
  * any failure is retried with backoff by the cron sweep.
  *
+ * #3495: the endpoints are read and every delivery is written by ONE database call,
+ * `enqueue_webhook_deliveries` (migration 0173), rather than a read and an insert per
+ * endpoint: a crowd's bookings are limited by how many requests each makes (#3492).
+ * The subscription rule and the dedupe live only there, proved in a real database by
+ * scripts/verify-webhook-enqueue-sql.ts; what stays here is the suppression decision,
+ * which reads the payload, made for every format (`suppressionByFormat`).
+ *
  * `dedupeKey` makes the call idempotent (#436): the row is written under the
  * partial UNIQUE (endpoint_id, event, dedupe_key), so a re-enqueue of the same
- * logical event hits a 23505 and we skip both the second row and the second POST
- * (exactly-once to Regal/Cadence). A null `dedupeKey` opts out of dedup (the
- * partial index ignores nulls) and behaves exactly as before (at-least-once).
+ * logical event writes nothing and the function hands back no delivery, so there
+ * is no second POST (exactly-once to Regal/Cadence). A null `dedupeKey` opts out
+ * of dedup (the partial index ignores nulls), at least once as before.
  *
  * The durable pending row is ALWAYS written synchronously, so the retry sweep is
  * the backstop for a send that never lands. `deferSend` (#884) only moves the
@@ -300,28 +322,44 @@ export async function emitWebhook<E extends WebhookEvent>(
   deferSend?: WebhookSendScheduler,
 ): Promise<void> {
   const db = supabaseAdmin();
-  const { data: endpoints, error: endpointsError } = await db
-    .from("webhook_endpoints")
-    .select("*")
-    .eq("org_id", orgId)
-    .eq("active", true)
-    .contains("events", [event]);
-  // Fail loud (#1036). A swallowed read error here yielded null -> zero endpoints
-  // -> the outbox step (booking notify) marked done with nothing queued -> the
-  // booking event permanently lost to Regal/Cadence with no signal. Throw so the
-  // outbox/drain step is marked failed and retries (and alerts once stuck),
-  // instead of silently dropping the emission.
-  if (endpointsError) {
-    log.error("webhook-emit", { msg: "endpoints read failed", org_id: orgId, event }, endpointsError);
-    throw new Error(`webhook endpoints read failed: ${endpointsError.message}`);
+  const { data, error } = await db.rpc("enqueue_webhook_deliveries", {
+    p_org_id: orgId,
+    p_event: event,
+    p_payload: payload as unknown as Record<string, unknown>,
+    p_dedupe_key: dedupeKey,
+    p_suppression: suppressionByFormat(event, payload as WebhookPayload, suppressed),
+  });
+  // Fail loud (#1036). A swallowed error here would be an event lost to
+  // Regal/Cadence with no signal: the outbox step marked done with nothing queued.
+  // Throw so the outbox or drain step is marked failed and retries (and alerts once
+  // stuck). The function writes nothing when it refuses, so a retry starts clean.
+  if (error) {
+    log.error("webhook-emit", { msg: "deliveries enqueue failed", org_id: orgId, event }, error);
+    throw new Error(`webhook enqueue failed: ${error.message}`);
+  }
+  // An answer this cannot read is never read as "nothing to send". The call itself
+  // succeeded, so whatever it wrote is pending and the retry sweep sends it. With a
+  // dedupe key the step is failed, so it retries and alerts once stuck, and its retry
+  // writes nothing twice. With NO key a retry would write a second set and send both,
+  // so the sweep owns the rows and the defect is logged instead.
+  let enqueued: ReturnType<typeof readEnqueueAnswer>;
+  try {
+    enqueued = readEnqueueAnswer(data, Object.keys(WEBHOOK_FORMATS));
+  } catch (err) {
+    log.error(
+      "webhook-emit",
+      { msg: "deliveries enqueue answer unreadable", org_id: orgId, event, deduped: dedupeKey !== null },
+      err,
+    );
+    if (dedupeKey === null) return;
+    throw err;
   }
 
-  // #1459: a zero fan-out is silent. The map below over an empty list resolves,
-  // the outbox step is marked done, and the event is gone with no failure and no
-  // delivery row. Nothing downstream can tell that apart from a delivered event, so
-  // say it here: the monitor lane's subscriber-coverage check is what pages, and
-  // this is what a forensic log read needs to confirm which events it happened to.
-  if ((endpoints ?? []).length === 0) {
+  // #1459: a zero fan-out is silent. Nothing downstream can tell it apart from a
+  // delivered event, so say it here: the monitor lane's subscriber-coverage check
+  // is what pages, and this is what a forensic log read needs to confirm which
+  // events it happened to.
+  if (enqueued.subscribers === 0) {
     log.warn("webhook-emit", {
       msg: "no subscriber for event",
       org_id: orgId,
@@ -331,38 +369,10 @@ export async function emitWebhook<E extends WebhookEvent>(
   }
 
   await Promise.all(
-    ((endpoints ?? []) as WebhookEndpoint[]).map(async (endpoint) => {
-      const suppression = suppressionFor(endpoint, event, payload as WebhookPayload, suppressed);
-      const { data: delivery, error } = await db
-        .from("webhook_deliveries")
-        .insert({
-          endpoint_id: endpoint.id,
-          event,
-          payload: payload as unknown as Record<string, unknown>,
-          // A suppressed delivery lands in a TERMINAL state, so the retry sweep
-          // (which picks up pending/failed) can never send it after the fact.
-          status: suppression !== null ? "success" : "pending",
-          dedupe_key: dedupeKey,
-          suppressed: suppression !== null,
-          last_response: suppression,
-        })
-        .select("id")
-        .single();
-      if (error) {
-        // 23505 = this (endpoint, event, dedupe_key) was already enqueued by a
-        // prior call: the original delivery owns the send/retry, so skip (never
-        // double-fire).
-        if (error.code === "23505") return;
-        // Any OTHER insert error left no durable row (#1036): marking the outbox
-        // step done here would drop the event silently. Fail loud so the step
-        // retries instead.
-        log.error("webhook-emit", { msg: "delivery insert failed", endpoint_id: endpoint.id, event }, error);
-        throw new Error(`webhook delivery insert failed: ${error.message}`);
-      }
-      if (!delivery) return;
+    enqueued.deliveries.map(async (delivery) => {
       // #459: the row is recorded (so the exactly-once dedupe stays observable on
       // the smoke bucket) but nothing goes out the door.
-      if (suppression !== null) return;
+      if (delivery.suppressed) return;
       // #884: the durable pending row is written above, so a dropped send is
       // recoverable by the retry sweep. On a user-facing path the scheduler
       // hands the POST to Next after() so the response isn't blocked on it; the
@@ -371,17 +381,20 @@ export async function emitWebhook<E extends WebhookEvent>(
       // inside doSend, not around it, on purpose: claiming at emit time would leave
       // the sweep reading attempts=1 and claiming 1 to 2, which is a second POST
       // rather than a refusal. Here both actors read 0 and exactly one wins.
+      // #3495: it posts the payload AS STORED, which is what every retry posts.
       const doSend = async () => {
-        const deliveryId = (delivery as { id: string }).id;
-        if (await claimAndSend(db, endpoint, deliveryId, event, payload, 0)) return;
+        const stored = delivery.payload as unknown as WebhookPayloadFor<E>;
+        // The reader refused any format Slate does not know, so this is a known endpoint.
+        const endpoint = delivery.endpoint as WebhookEndpoint;
+        if (await claimAndSend(db, endpoint, delivery.id, event, stored, 0)) return;
         // Standing down is correct (the other actor is sending it), and silence is
         // not. The sweep can only beat a first send that hung past the one minute
         // backoff, while the send itself times out at five seconds, so this should
         // never fire; one that fires often is a symptom nothing else counts (L77).
         log.warn("webhook-emit", {
           msg: "first send lost the attempt claim",
-          endpoint_id: endpoint.id,
-          delivery_id: deliveryId,
+          endpoint_id: delivery.endpoint.id,
+          delivery_id: delivery.id,
           event,
         });
       };

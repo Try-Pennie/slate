@@ -14,11 +14,8 @@ const state = vi.hoisted(() => ({
   claimWins: true,
   endpointSelects: 0,
   inserted: [] as Record<string, unknown>[],
-  // #771: the filters emitWebhook narrows webhook_endpoints by, the error the
-  // delivery insert returns, and the status writes send() makes.
+  // The filters the retry and replay reads narrow by, and the status writes send() makes.
   filters: [] as { table: string; col: string; val: unknown }[],
-  insertError: null as null | { code?: string; message: string },
-  endpointsError: null as null | { code?: string; message: string },
   updates: [] as Record<string, unknown>[],
   // #2563: when set, the attempt claim is resolved by a REAL compare and swap
   // over this store (delivery id -> attempts) instead of the claimWins flag.
@@ -29,15 +26,63 @@ const state = vi.hoisted(() => ({
   // #2085: an agent trait send reads the agent's CURRENT state by id.
   user: null as null | { bookable: boolean; deactivated_at: string | null },
   userError: null as null | { message: string },
+  // #3495: emitWebhook writes its deliveries through ONE database function. Its
+  // calls, a refusal it answers with, an answer that overrides the model below, and
+  // the (endpoint, event, key) triples it has already written, for the dedupe.
+  rpcCalls: [] as { fn: string; args: Record<string, unknown> }[],
+  enqueueError: null as null | { code?: string; message: string },
+  enqueueAnswer: undefined as unknown,
+  writtenKeys: new Set<string>(),
 }));
+
+/**
+ * A model of `enqueue_webhook_deliveries` (migration 0173) over `state.endpoints`,
+ * which every test treats as the org's active subscribers: the subscription filter
+ * itself is proved in a real database (scripts/verify-webhook-enqueue-sql.ts), not
+ * here. What the model keeps is the contract the TypeScript reads: one delivery per
+ * subscriber, none for a key already written, suppressed when the caller's map names
+ * a reason for the endpoint's format, a format the map does not name refused, and the
+ * answer's shape, which both suites hold to scripts/fixtures/webhook-enqueue-answer.json.
+ */
+function enqueueModel(args: Record<string, unknown>) {
+  if (state.enqueueError) return { data: null, error: state.enqueueError };
+  if (state.enqueueAnswer !== undefined) return { data: state.enqueueAnswer, error: null };
+  const suppression = args.p_suppression as Record<string, string | null>;
+  const deliveries: Record<string, unknown>[] = [];
+  for (const ep of state.endpoints) {
+    const format = String(ep.format);
+    if (!Object.hasOwn(suppression, format)) {
+      return { data: null, error: { code: "22023", message: `no suppression decision for the ${format} format` } };
+    }
+    const key = args.p_dedupe_key === null ? null : `${String(ep.id)}|${String(args.p_event)}|${String(args.p_dedupe_key)}`;
+    if (key !== null && state.writtenKeys.has(key)) continue;
+    if (key !== null) state.writtenKeys.add(key);
+    const reason = suppression[format];
+    state.inserted.push({
+      endpoint_id: ep.id,
+      event: args.p_event,
+      payload: args.p_payload,
+      status: reason === null ? "pending" : "success",
+      dedupe_key: args.p_dedupe_key,
+      suppressed: reason !== null,
+      last_response: reason,
+    });
+    // The first row is "d-new", the id the attempt claim tests seed their store with.
+    const id = state.inserted.length === 1 ? "d-new" : `d-new-${state.inserted.length}`;
+    deliveries.push({ id, suppressed: reason !== null, payload: args.p_payload, endpoint: ep });
+  }
+  return { data: { subscribers: state.endpoints.length, deliveries }, error: null };
+}
+
+const rpc = vi.hoisted(() => vi.fn());
 
 function resolve(b: Record<string, unknown>, table: string) {
   if (table === "users") {
     if (state.userError) return { data: null, error: state.userError };
     return { data: state.user, error: null };
   }
+  // The retry sweep's one read of the endpoints its deliveries name (#623).
   if (table === "webhook_endpoints") {
-    if (state.endpointsError) return { data: null, error: state.endpointsError };
     return { data: b._single ? state.endpoints[0] : state.endpoints, error: null };
   }
   if (table === "webhook_deliveries") {
@@ -90,10 +135,6 @@ function makeBuilder(table: string) {
     (b._eqs as { col: string; val: unknown }[]).push({ col, val });
     return b;
   };
-  b.contains = (col: string, val: unknown) => {
-    state.filters.push({ table, col, val });
-    return b;
-  };
   b.order = self;
   b.limit = self;
   b.update = (payload: Record<string, unknown>) => {
@@ -101,19 +142,6 @@ function makeBuilder(table: string) {
     state.updates.push(payload);
     return b;
   };
-  b.insert = (row: Record<string, unknown>) => {
-    b._insert = true;
-    state.inserted.push(row);
-    return b;
-  };
-  // insert().select("id").single() -> the new delivery row emitWebhook then sends.
-  // A 23505 here is the dedupe collision: a prior call already enqueued this event.
-  b.single = () =>
-    Promise.resolve(
-      state.insertError
-        ? { data: null, error: state.insertError }
-        : { data: { id: "d-new" }, error: null },
-    );
   b.maybeSingle = () => {
     b._single = true;
     return Promise.resolve(resolve(b, table));
@@ -126,7 +154,7 @@ function makeBuilder(table: string) {
 const from = vi.hoisted(() => vi.fn());
 const fetchMock = vi.hoisted(() => vi.fn());
 
-vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
+vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from, rpc }) }));
 // #1151: a dead-lettering endpoint is a CONDITION, so a delivery that lands
 // clears it. Hoisted so the silent-path test can assert on the real boundary.
 const notify = vi.hoisted(() => ({
@@ -148,6 +176,7 @@ import {
 import type { BookingEventPayload } from "@/lib/webhooks/types";
 import { WEBHOOK_MAX_ATTEMPTS } from "@/lib/webhooks/retry";
 import { WEBHOOK_EVENTS } from "@/lib/webhooks/events";
+import { WEBHOOK_FORMATS } from "@/lib/webhooks/formats";
 
 const endpoint = {
   id: "ep1",
@@ -155,8 +184,10 @@ const endpoint = {
   url: "https://receiver.example/webhook",
   format: "generic",
   secret: "s3cr3t",
+  events: ["booking.created", "booking.rescheduled", "booking.cancelled", "booking.reassigned"],
   auth_header: null,
   active: true,
+  created_at: "2026-01-01T00:00:00+00:00",
 };
 
 function delivery(id: string, attempts = 1): Record<string, unknown> {
@@ -183,13 +214,20 @@ beforeEach(() => {
   state.endpointSelects = 0;
   state.inserted = [];
   state.filters = [];
-  state.insertError = null;
-  state.endpointsError = null;
   state.updates = [];
   state.cas = null;
   state.user = null;
   state.userError = null;
+  state.rpcCalls = [];
+  state.enqueueError = null;
+  state.enqueueAnswer = undefined;
+  state.writtenKeys = new Set();
   from.mockImplementation((table: string) => makeBuilder(table));
+  rpc.mockImplementation(async (fn: string, args: Record<string, unknown>) => {
+    state.rpcCalls.push({ fn, args });
+    if (fn !== "enqueue_webhook_deliveries") return { data: null, error: { message: `unexpected rpc ${fn}` } };
+    return enqueueModel(args);
+  });
   fetchMock.mockResolvedValue(reply({ ok: true, status: 200, body: "ok" }));
   vi.stubGlobal("fetch", fetchMock);
 });
@@ -266,19 +304,84 @@ describe("retryFailedDeliveries", () => {
 describe("emitWebhook", () => {
   const payload = { booking_id: "bk1", bucket_code: "411" } as unknown as BookingEventPayload;
 
-  it("delivers only to this org's ACTIVE endpoints subscribed to this event", async () => {
+  // #3495: who is sent to is decided by ONE database function, so the subscription
+  // rule (this org, active, subscribed to the event) is proved in a real database by
+  // scripts/verify-webhook-enqueue-sql.ts. Here: it is asked once, about this org and
+  // this event, carrying the payload and the dedupe key, and nothing else reads the
+  // endpoints table.
+  it("asks the one enqueue function about this org and event, once, with the payload and key (#3495)", async () => {
     await emitWebhook("o1", "booking.created", payload, "bk1");
 
-    const eps = state.filters.filter((f) => f.table === "webhook_endpoints");
-    // A leak here would post one org's bookings to another org's receiver, or wake a
-    // deactivated endpoint, or send a subscriber an event it never asked for.
-    expect(eps).toContainEqual({ table: "webhook_endpoints", col: "org_id", val: "o1" });
-    expect(eps).toContainEqual({ table: "webhook_endpoints", col: "active", val: true });
-    expect(eps).toContainEqual({
-      table: "webhook_endpoints",
-      col: "events",
-      val: ["booking.created"],
+    expect(state.rpcCalls).toHaveLength(1);
+    expect(state.rpcCalls[0]).toMatchObject({
+      fn: "enqueue_webhook_deliveries",
+      args: { p_org_id: "o1", p_event: "booking.created", p_payload: payload, p_dedupe_key: "bk1" },
     });
+    expect(state.endpointSelects).toBe(0);
+  });
+
+  // The function refuses a format its map does not name rather than reading it as
+  // "send" (L42), so the map must name EVERY format Slate knows, every time.
+  it("decides suppression for every format Slate knows, and sends to none when the bucket is a test one (#3495)", async () => {
+    await emitWebhook("o1", "booking.created", payload, "bk1", true);
+    const map = state.rpcCalls[0]!.args.p_suppression as Record<string, string | null>;
+    expect(Object.keys(map).sort()).toEqual(Object.keys(WEBHOOK_FORMATS).sort());
+    expect(Object.values(map).every((reason) => typeof reason === "string" && reason.length > 0)).toBe(true);
+
+    state.rpcCalls = [];
+    await emitWebhook("o1", "booking.created", payload, "bk2", false);
+    const sent = state.rpcCalls[0]!.args.p_suppression as Record<string, unknown>;
+    expect(Object.keys(sent).sort()).toEqual(Object.keys(WEBHOOK_FORMATS).sort());
+    expect(Object.values(sent).every((reason) => reason === null)).toBe(true);
+  });
+
+  // The first send posts the payload AS STORED, which is what every retry posts, so a
+  // booking is never described one way first and another way after.
+  it("sends the payload the function stored, not the one it was handed (#3495)", async () => {
+    state.enqueueAnswer = {
+      subscribers: 1,
+      deliveries: [{ id: "d-stored", suppressed: false, payload: { booking_id: "bk-as-stored", bucket_code: "411" }, endpoint }],
+    };
+
+    await emitWebhook("o1", "booking.created", payload, "bk1");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][1].body)).toContain("bk-as-stored");
+  });
+
+  it("logs nobody subscribed, and sends nothing (#1459)", async () => {
+    state.endpoints = [];
+
+    await emitWebhook("o1", "booking.created", payload, "bk1");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(logged.warn).toHaveBeenCalledWith("webhook-emit", expect.objectContaining({ msg: "no subscriber for event", event: "booking.created" }));
+  });
+
+  // An answer this cannot read would otherwise be read as "nothing to send", the
+  // silent drop #1036 was opened about. Thrown, so the outbox step retries; the rows
+  // it may have written are pending and the retry sweep sends them.
+  it("throws when the function's answer cannot be read, and sends nothing (#3495)", async () => {
+    state.enqueueAnswer = { subscribers: "two" };
+
+    await expect(emitWebhook("o1", "booking.created", payload, "bk1")).rejects.toThrow(/subscribers/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // With NO dedupe key the call that answered unreadably may still have written its
+  // rows, and the caller's retry would write a second set and send both. So the step
+  // is not failed: the rows it wrote are pending, the retry sweep sends them, and the
+  // defect is logged. (With a key, above, a retry writes nothing twice.)
+  it("does not fail the step when the answer is unreadable and there is no dedupe key, and logs it (#3495)", async () => {
+    state.enqueueAnswer = { subscribers: "two" };
+
+    await expect(emitWebhook("o1", "booking.cancelled", payload, null)).resolves.toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(logged.error).toHaveBeenCalledWith(
+      "webhook-emit",
+      expect.objectContaining({ msg: "deliveries enqueue answer unreadable", deduped: false }),
+      expect.any(Error),
+    );
   });
 
   it("fans out to every subscribed endpoint, one delivery row each", async () => {
@@ -314,23 +417,27 @@ describe("emitWebhook", () => {
   });
 
   // The exactly-once guarantee (#436). The dedupe key is written under a partial
-  // UNIQUE (endpoint_id, event, dedupe_key), so a re-enqueue of the same logical
-  // event (a crash-resume re-running the side effects) hits a 23505. The ORIGINAL
-  // delivery owns the send and its retries, so this call must drop BOTH the second
-  // row and the second POST. Without this, a resumed booking double-fires into Regal.
+  // UNIQUE (endpoint_id, event, dedupe_key), so the function writes nothing for a
+  // re-enqueue of the same logical event (a crash-resume re-running the side
+  // effects) and hands back no delivery. The ORIGINAL delivery owns the send and its
+  // retries, so this call must make neither a second row nor a second POST.
   it("drops both the row and the POST when the dedupe key collides (exactly-once)", async () => {
-    state.insertError = { code: "23505", message: "duplicate key value" };
+    await emitWebhook("o1", "booking.created", payload, "bk1");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    fetchMock.mockClear();
 
+    // The same logical event again: the function writes no delivery, so nothing is sent.
     await emitWebhook("o1", "booking.created", payload, "bk1");
 
+    expect(state.inserted).toHaveLength(1);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  // #1036: a non-dedupe insert error leaves NO durable row, so the outbox step
-  // must NOT be marked done. Throw so the step fails and the drain retries,
-  // instead of silently dropping the event (a 23505 is the only "skip" case).
-  it("throws (so the outbox step retries) when the insert fails for any non-dedupe reason", async () => {
-    state.insertError = { code: "08006", message: "connection failure" };
+  // #1036: a refused call wrote NOTHING (the function is one transaction), so the
+  // outbox step must not be marked done. Throw so the step fails and the drain
+  // retries, instead of silently dropping the event.
+  it("throws (so the outbox step retries) when the enqueue call is refused", async () => {
+    state.enqueueError = { code: "08006", message: "connection failure" };
 
     await expect(emitWebhook("o1", "booking.created", payload, "bk1")).rejects.toThrow();
 
@@ -338,15 +445,14 @@ describe("emitWebhook", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  // #1036: a swallowed endpoints-read error used to yield null -> zero endpoints
-  // -> the outbox step marked done with nothing queued -> the event permanently
-  // lost to Regal/Cadence. Throw so the step fails and retries.
-  it("throws (so the outbox step retries) when the endpoints read errors, instead of dropping the event", async () => {
-    state.endpointsError = { code: "08006", message: "connection failure" };
+  // A subscriber whose format the caller did not decide is refused, with nothing
+  // written, rather than read as "send" (L42): the step fails and retries.
+  it("throws (so the outbox step retries) when the function refuses a format it was not told about, instead of sending", async () => {
+    state.endpoints = [{ ...endpoint, format: "smtp" }];
 
-    await expect(emitWebhook("o1", "booking.created", payload, "bk1")).rejects.toThrow();
+    await expect(emitWebhook("o1", "booking.created", payload, "bk1")).rejects.toThrow(/smtp/);
 
-    expect(state.inserted).toHaveLength(0); // never reached the delivery insert
+    expect(state.inserted).toHaveLength(0); // the function wrote nothing
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

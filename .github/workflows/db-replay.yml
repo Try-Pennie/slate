@@ -51,6 +51,10 @@ on:
       - "scripts/lib/run-alerter.ts"
       - "scripts/lib/slack-post.ts"
       - "scripts/notify-db-replay-failure.ts"
+      # #3495: the webhook enqueue suite reads the function's answer with the Worker's
+      # own reader, and holds it to the fixture the reader is tested against.
+      - "src/lib/webhooks/enqueue-answer.ts"
+      - "scripts/fixtures/webhook-enqueue-answer.json"
       # The audit chain suite recomputes hashes with the Worker's own code.
       - "scripts/lib/audit-chain-vector.ts"
       - "src/lib/monitor/audit-chain.ts"
@@ -91,8 +95,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # No pnpm install: every suite imports only scripts/, node builtins and one
-      # type only src/ module, which scripts/test-db-replay-workflow.ts pins.
+      # No pnpm install: every suite imports only scripts/, node builtins and src/
+      # modules that reach no package and no alias in what node loads (one type only
+      # module, and the webhook enqueue reader, which imports nothing, #3495), which
+      # scripts/test-db-replay-workflow.ts pins.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
