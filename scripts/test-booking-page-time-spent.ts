@@ -23,7 +23,7 @@ function clock(start = 1_000_000) {
   return { now: () => t, advance: (ms: number) => (t += ms) };
 }
 
-/** The 16:55 confirm, replayed: a stage holding four Google calls, one of them 6.5s. */
+/** The 16:55 confirm, replayed: three Google calls in one stage, one of them 6.5s, after a Supabase read. */
 async function replay1655() {
   const c = clock();
   const profile = makeConfirmProfile({ now: c.now }).observeCalls();
@@ -128,6 +128,24 @@ const PENDING = "Check booking_reservations for a pending row before asking them
     spent: { stage: { name: "idempotency-lookup", ms: 6000 }, call: { label: "supabase idempotency", ms: 5200 } },
   });
   assert(page.includes("start from Supabase health"), "a Supabase call that ate the stage sends the reader to Supabase");
+}
+{
+  // A slow call to a dependency with no health page named here still gets the
+  // blame it earned, never "inside Slate".
+  const page = dependencyTimeoutAlert({
+    ...GATE,
+    spent: { stage: { name: "route-checks", ms: 6000 }, call: { label: "slack chat.postMessage", ms: 5000 } },
+  });
+  assert(page.includes("5 seconds of it in one call to slack chat.postMessage"), `an unlisted dependency's call is still named (got: ${page})`);
+  assert(!page.includes("inside Slate"), "and the stage is not called Slate's own work");
+}
+{
+  // A label whose first word is an inherited property name is just an unknown dependency.
+  const page = dependencyTimeoutAlert({
+    ...GATE,
+    spent: { stage: { name: "constructor", ms: 6000 }, call: { label: "constructor thing", ms: 5000 } },
+  });
+  assert(!page.includes("function") && !page.includes("[object"), `an inherited name never reads as a health page (got: ${page})`);
 }
 {
   // An unprofiled request keeps today's wording exactly.

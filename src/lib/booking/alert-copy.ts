@@ -496,10 +496,10 @@ export function dependencyTimeoutAlert(timeout: {
 }
 
 /** The health page a dependency's calls are judged on, by the label's first word. */
-const DEPENDENCY_HEALTH: Record<string, string> = {
-  google: "Google Calendar API",
-  supabase: "Supabase",
-};
+const DEPENDENCY_HEALTH = new Map<string, string>([
+  ["google", "Google Calendar API"],
+  ["supabase", "Supabase"],
+]);
 
 /**
  * Where a refused confirm's time went, said from its own profile (#3511), or null
@@ -513,12 +513,14 @@ function timeWentSentence(spent: TimeSpent | null): string | null {
   if (!spent?.stage) return null;
   const stage = `The time went to the ${spent.stage.name} step (${durationText(spent.stage.ms)})`;
   const call = spent.call;
-  const health = call ? DEPENDENCY_HEALTH[call.label.split(" ")[0]] : undefined;
-  if (call && health && call.ms * 2 >= spent.stage.ms) {
-    return (
-      `${stage}, ${durationText(call.ms)} of it in one call to ${call.label}, ` +
-      `so start from ${health} health and that request's confirm answered log line.`
-    );
+  if (call && call.ms * 2 >= spent.stage.ms) {
+    const named = `${stage}, ${durationText(call.ms)} of it in one call to ${call.label}`;
+    // A Map, so a first word like `constructor` is an unknown dependency, never
+    // an inherited property (L738); and an unknown one keeps the blame it earned.
+    const health = DEPENDENCY_HEALTH.get(call.label.split(" ")[0]);
+    return health
+      ? `${named}, so start from ${health} health and that request's confirm answered log line.`
+      : `${named}, so start from that request's confirm answered log line.`;
   }
   return `${stage} inside Slate, so start from that request's confirm answered log line rather than Google Calendar API and Supabase health.`;
 }

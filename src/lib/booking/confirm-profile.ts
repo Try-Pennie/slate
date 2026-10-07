@@ -366,7 +366,8 @@ function readCalls(
     const ms = lengthOf(c.span, at);
     if (slowest === null || ms > slowest.ms) slowest = { label: c.label, ms };
   }
-  const slowestByStage: Record<string, { label: string; ms: number }> = {};
+  // No prototype, so a stage named like an inherited property starts empty (L738).
+  const slowestByStage: Record<string, { label: string; ms: number }> = Object.create(null);
   for (const c of calls) {
     const ms = lengthOf(c.span, at);
     for (const s of stages) {
