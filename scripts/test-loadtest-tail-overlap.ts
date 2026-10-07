@@ -140,10 +140,14 @@ function stopProblems(source: string): string[] {
 {
   eq(stopProblems(yml), [], "every tailing job stops its whole process group at its window and uploads whatever happened");
   // Control: the archive as run 37566700055 ran it is refused on all three counts.
+  // Only the archive's own step is rewritten, so no other job's wiring changes.
   const asRun = yml
-    .replace(/\n {4}if: \$\{\{ !cancelled\(\)[^\n]*\n( {4}runs-on: ubuntu-latest\n(?: {4}#[^\n]*\n)* {4}timeout-minutes: \d+\n)/, "\n$1")
     .replace(/(Archive the Worker's logs for the window[\s\S]*?run: \|\n)[\s\S]*?(\n {6}- if: always\(\)\n {8}uses: actions\/upload-artifact@[^\n]+\n {8}with:\n {10}name: tail\n)/, (_m, head: string, upload: string) =>
       `${head}          set -o pipefail\n          mkdir -p results\n          timeout 29m npx wrangler tail --env loadtest --format json > results/tail.jsonl || true\n          wc -l results/tail.jsonl${upload.replace("- if: always()\n        uses", "- uses")}`);
+  // The plant touches the archive alone: every other job reads exactly as it does.
+  const before = new Map(parseWorkflowJobs(yml).map((j) => [j.name, j.body] as const));
+  const touched = parseWorkflowJobs(asRun).filter((j) => before.get(j.name) !== j.body).map((j) => j.name);
+  eq(touched, ["archive"], "control: replaying the old archive changes the archive job and nothing else");
   const ran = stopProblems(asRun).filter((p) => p.startsWith("archive "));
   eq(ran.length, 3, `control: the archive as run 37566700055 had it is refused three ways (got ${JSON.stringify(ran)})`);
 }
