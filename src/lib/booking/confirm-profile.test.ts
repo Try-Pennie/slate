@@ -290,6 +290,27 @@ describe("the request's own reading (#3300)", () => {
     });
   });
 
+  // #3511: a call belongs to every stage running when it started, an outer one and
+  // the inner one it sits in, and never to a stage it merely overlaps at its tail.
+  it("keeps the slowest call started inside each stage, nested stages included", async () => {
+    const clock = fakeClock();
+    const p = makeConfirmProfile({ now: clock.now, startedAt: 1_000 }).observeCalls();
+    await p.time("outer", async () => {
+      await p.time("inner", async () => {
+        p.call("google freeBusy.many", clock.now(), clock.now() + 600);
+        clock.advance(700);
+      });
+      p.call("supabase bookings", clock.now(), clock.now() + 900);
+      clock.advance(1_000);
+    });
+    await p.time("later", async () => { clock.advance(50); });
+    const r = p.read(clock.now());
+    expect(r.calls?.slowestByStage).toEqual({
+      outer: { label: "supabase bookings", ms: 900 },
+      inner: { label: "google freeBusy.many", ms: 600 },
+    });
+  });
+
   it("renders the reading as counts and milliseconds only", async () => {
     const clock = fakeClock();
     const p = makeConfirmProfile({ now: clock.now, startedAt: 1_000 });

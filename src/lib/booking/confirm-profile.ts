@@ -340,7 +340,8 @@ function readCalls(
   calls: { label: string; span: Span }[],
   from: number,
   at: number,
-  stages: StageSpan[] = [],
+  /** Required: a forgotten list would read as no call ever made inside a stage. */
+  stages: StageSpan[],
 ): ConfirmRequestReading["calls"] {
   const groups = new Map<string, { label: string; span: Span }[]>();
   for (const c of calls) {
@@ -370,8 +371,11 @@ function readCalls(
     const ms = lengthOf(c.span, at);
     for (const s of stages) {
       // A call belongs to every stage running when it started (an outer stage and
-      // an inner one both hold it), never to one that merely overlaps its tail.
-      if (c.span.from < s.from || c.span.from > (s.to ?? at)) continue;
+      // an inner one both hold it), never to one that merely overlaps its tail. A
+      // call starting the instant a stage ENDED belongs to what runs next, so the
+      // end is exclusive; an open stage runs to the reading.
+      const end = s.to ?? Number.POSITIVE_INFINITY;
+      if (c.span.from < s.from || c.span.from >= end) continue;
       const held = slowestByStage[s.stage];
       if (!held || ms > held.ms) slowestByStage[s.stage] = { label: c.label, ms };
     }
