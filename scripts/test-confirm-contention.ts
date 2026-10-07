@@ -317,8 +317,10 @@ async function burst(opts: {
           opts.isolates.line === "isolate"
             ? own
             : makeSharedConfirmLine<unknown>({
-                // The object is reached in no time at all: the simulation cannot see
-                // network latency, which is why the load run measures it (#3325).
+                // Without the load model the object is reached in no time at all, so
+                // network latency is the load run's to measure (#3325); with it
+                // (#3489) the object is reached through `objectOnClock`, a round trip
+                // on every message and a first answer once the object is up.
                 namespace: { stubFor: (group) => ({ send: sendTo(group) }) },
                 fallback: own,
                 enabled: async () => ({ on: true, source: "read" }),
