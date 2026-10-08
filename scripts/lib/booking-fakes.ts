@@ -39,11 +39,6 @@ import { commitFreshModel, type CommitFreshParts } from "./commit-fresh-model.ts
 import { assert as harnessAssert, finish as harnessFinish } from "./harness.ts";
 
 /**
- * Per-file assertion counter. Each suite is its own process (the runner spawns
- * one per file and reads the exit code), so each owns its failure count and
- * calls finish() to report and exit.
- */
-/**
  * The shared harness's own `assert` and `finish` (`./harness.ts`), so a booking suite
  * keeps every rule the harness carries, its guard against a suite that stops before
  * `finish()` (#3520) included. This was a second copy of the counter and summary, which
