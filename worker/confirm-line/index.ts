@@ -15,8 +15,9 @@
  */
 export { ConfirmLine } from "../confirm-line";
 
-export default {
+const lineWorker = {
   async fetch(): Promise<Response> {
     return new Response("not found", { status: 404 });
   },
 };
+export default lineWorker;
