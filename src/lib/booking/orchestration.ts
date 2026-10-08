@@ -2522,6 +2522,13 @@ export async function nextAdvisorAfterLostRace(
   if (at < 0) return none("not-chosen-here");
   const { pool: remaining } = await unclaimedFirst(lost.seat, lost.candidates.slice(at + 1));
   if (remaining.length === 0) return none("rung-exhausted");
+  // #3489: the next advisor is claimed the moment it is chosen, BEFORE the live check,
+  // as a confirm's first pick is (`claimFromLine`). Claimed only once Google answered
+  // (and, before that, only once the lost attempt was rolled back), a confirm beside
+  // this one that lost its own race in the meantime could not see it, chose the same
+  // advisor, and lost a second race to this one. Google may take another; that one is
+  // claimed in its place.
+  if (lost.seat) await lost.seat.claim(remaining[0]!, false);
   try {
     const { assignment, anyUnverified } = await selectAgent(
       remaining,
@@ -2532,7 +2539,10 @@ export async function nextAdvisorAfterLostRace(
       },
       VERIFY_WAVE_SIZE,
     );
-    if (assignment) return { kind: "advisor", assignment };
+    if (assignment) {
+      if (lost.seat && assignment.userId !== remaining[0]) await lost.seat.claim(assignment.userId, false);
+      return { kind: "advisor", assignment };
+    }
     // Somebody after the loser could not be checked, so the rung is not known to
     // be spent: it is never dropped for an advisor nobody could ask about.
     return none(anyUnverified ? "check-failed" : "rung-exhausted");
@@ -5209,6 +5219,9 @@ async function createHeld(
       throw err;
     }
     if (next.kind === "advisor") {
+      // #3257: the confirms beside it in line must not pick this one next. The search
+      // claimed it the moment it chose it (`nextAdvisorAfterLostRace`), before this
+      // rollback, which in production deletes a calendar event (#3489).
       await profile.time("race-rollback", attempt.rollBack);
       log.info("booking", {
         msg: "confirm lost the overlap race, handed to the next advisor in the same rung",
@@ -5220,8 +5233,6 @@ async function createHeld(
       raceLost.push(userId);
       chosen = next.assignment;
       attemptFromMs = reassignFromMs;
-      // #3257: the confirms beside it in line must not pick this one next.
-      await seat?.claim(next.assignment.userId, false);
       continue;
     }
     // A deadline is the retryable outage, never a taken time (#3402), and the line
@@ -6206,17 +6217,26 @@ async function resolvePersonDecision(
   deps: BookingDeps,
 ) {
   const identity = personIdentityOf(input);
-  // The decision is graded in the WORLD of the bucket being booked (#2660), so
-  // the bucket has to resolve first. The canary's SMOKE booking then dedupes
-  // against its SMOKE2 one (both test) and never against a real lead's, and a
-  // real lead's never against a test booking. An unknown or hidden bucket is
-  // refused here rather than one step later, which is the same 422 either way.
-  const resolved = await deps.resolveBucketByCode(input.bucketCode);
+  // The decision is graded in the WORLD of the bucket being booked (#2660): the
+  // canary's SMOKE booking dedupes against its SMOKE2 one (both test) and never
+  // against a real lead's, and a real lead's never against a test booking.
+  //
+  // #3489: the person read is asked in that bucket's world BY ITS CODE, which the read
+  // maps to the world itself, so it goes out beside the bucket read instead of after
+  // it: one round trip fewer before every confirm. Both are settled before either is
+  // used, and the bucket decides first, so an unknown or hidden bucket is the same 422
+  // whatever the person read did, and only then does a failed person read fail the
+  // confirm (never read as no bookings).
+  const [bucketRead, personRead] = await Promise.allSettled([
+    deps.resolveBucketByCode(input.bucketCode),
+    deps.findActiveBookingsForPerson(identity, { bucketCode: input.bucketCode }),
+  ]);
+  if (bucketRead.status === "rejected") throw bucketRead.reason;
+  const resolved = bucketRead.value;
   if (!resolved) throw new UnknownBucketError();
   if (resolved.bucket.is_test && !input.allowTestBuckets) throw new UnknownBucketError();
-  const candidates = await deps.findActiveBookingsForPerson(identity, {
-    isTest: resolved.bucket.is_test,
-  });
+  if (personRead.status === "rejected") throw personRead.reason;
+  const candidates = personRead.value;
   const match = findPersonMatch(identity, candidates);
   const decision = decidePersonBooking({
     startIso: input.startIso,

@@ -1680,6 +1680,28 @@ async function main() {
     );
     assert(raceLosses === 2, `two lost races: each lost exactly once, never to the other (got ${raceLosses})`);
     assert(bySlot.size === 4, "two lost races: the two held elsewhere and two new bookings");
+
+    // #3489: the same pair with each window between CHOOSING the next advisor and
+    // CLAIMING it held open on purpose, so neither depends on when the two confirms
+    // happen to lose: a slow rollback of the lost attempt (in production, a calendar
+    // event's delete), and a slow live check while the next advisor is being found.
+    for (const [label, slow] of [
+      ["a slow rollback", { slowCleanupMs: 1_500 }],
+      ["a slow live check", { slowGoogleMs: 1_500 }],
+    ] as const) {
+      const held = await burst({
+        inputs: [lead(0), lead(1)],
+        pool: BIG_POOL,
+        queue: "real",
+        heldElsewhere: [elsewhere("p0", 0), elsewhere("p1", 1)],
+        ...slow,
+      });
+      const mine = held.runs.map((r) => r.result?.booking.assigned_user_id);
+      assert(
+        held.runs.every((r) => r.outcome === "created") && mine[0] !== mine[1] && held.raceLosses === 2,
+        `two lost races with ${label}: each lost exactly once and they book apart (got ${held.raceLosses} races lost, ${mine.join(",")})`,
+      );
+    }
   }
 
   // --- #3462: a leader that loses the race tells its crowd before it cleans up ---

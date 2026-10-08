@@ -150,7 +150,7 @@ import type {
   ReschedulePin,
   RescheduleClaim,
 } from "@/lib/booking/orchestration";
-import type { PersonIdentity, PersonWorld } from "@/lib/booking/person-dedupe";
+import type { NamedWorld, PersonIdentity, PersonWorld } from "@/lib/booking/person-dedupe";
 import { personStrongIds } from "@/lib/booking/person-dedupe";
 import { readLeadXbcLive, readSubmissionLeadIdLive } from "@/lib/salesforce/lead-xbc";
 import { timeSpentInThisRequest, type TimeSpent } from "@/lib/booking/time-spent";
@@ -639,7 +639,7 @@ export async function findActiveBookingsForPerson(
   if (ids.length === 0 && !email && !phone) return [];
   const rows = await activeBookingsBySignals(
     { ids, emailLike: email ? escapeLike(email) : null, phone },
-    world.isTest ? "test" : "real",
+    "bucketCode" in world ? { bucket: world.bucketCode } : world.isTest ? "test" : "real",
     "person booking lookup",
   );
   // The world did its work in the read; the callers grade a Booking (#2660).
@@ -652,7 +652,8 @@ export async function findActiveBookingsForPerson(
  */
 async function activeBookingsBySignals(
   signals: { ids: readonly string[]; emailLike: string | null; phone: string | null },
-  world: "real" | "test" | "both",
+  /** A named world, or the world of the bucket with this code (#3489). */
+  world: "real" | "test" | "both" | { bucket: string },
   context: string,
 ): Promise<PersonBookingRow[]> {
   const data = unwrap(
@@ -660,7 +661,7 @@ async function activeBookingsBySignals(
       p_ids: [...signals.ids],
       p_email_like: signals.emailLike,
       p_phone: signals.phone,
-      p_world: world,
+      ...(typeof world === "string" ? { p_world: world } : { p_world: "bucket" as const, p_bucket_code: world.bucket }),
     }),
     context,
   );
@@ -2702,7 +2703,7 @@ export async function knownContactForLanding(
   },
   /** The world of the bucket being landed on (#2660): a tester who pastes a real
    *  lead's id into a test link is never handed that lead's name and number. */
-  world: PersonWorld,
+  world: NamedWorld,
 ): Promise<KnownContact | null> {
   const salesforceId = identity.salesforceId?.trim();
   if (!salesforceId) return null;
@@ -2747,7 +2748,7 @@ export async function landingAttendee(
   identity: { salesforceId?: string | null },
   link: LinkAttendee,
   /** The world of the bucket being landed on (#2660). */
-  world: PersonWorld,
+  world: NamedWorld,
 ): Promise<LandingAttendee> {
   const complete = link.name.trim() && link.email.trim() && link.phone.trim();
   if (complete) return attendeeForLanding(link, null);

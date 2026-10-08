@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { findDuplicateWarning } from "./orchestration";
 import type { BookingDeps } from "./orchestration";
-import { findPersonMatch } from "./person-dedupe";
+import { findPersonMatch, type PersonWorld } from "./person-dedupe";
 import type { Booking } from "@/lib/db/types";
 
 // #626: after a booking succeeds, warn the lead on the confirmation screen if
@@ -33,7 +33,7 @@ const booking = (over: Partial<Booking>): Booking =>
   }) as unknown as Booking;
 
 /** The world each lookup was asked in (#2660), recorded by the fake. */
-const askedWorlds: { isTest: boolean }[] = [];
+const askedWorlds: PersonWorld[] = [];
 
 function makeDeps(candidates: Booking[]): Pick<
   BookingDeps,

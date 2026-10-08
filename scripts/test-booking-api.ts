@@ -56,10 +56,69 @@ async function run() {
     // #2660: the person decision reads in the world of the bucket being booked,
     // so the canary's SMOKE bookings dedupe against SMOKE2's (both test) and never
     // against a real lead's.
+    // #3489: asked by the bucket's CODE, so the read goes out beside the bucket read;
+    // the database maps the code to its world (scripts/verify-person-bookings-sql.ts).
     assert(
-      calls.personWorlds.every((w) => w.isTest === false),
-      "bookViaApi on a real bucket asks the person decision in the real world",
+      calls.personWorlds.length >= 1 && calls.personWorlds.every((w) => "bucketCode" in w && w.bucketCode === apiInput.bucketCode),
+      `bookViaApi asks the person decision in the world of the bucket being booked, by its code (got ${JSON.stringify(calls.personWorlds)})`,
     );
+  }
+
+  // --- #3489: the person read goes out WITH the bucket read, not after it ------------------
+  //
+  // The person decision read the bucket, waited for it, and only then read the person's
+  // bookings, because they are graded in the bucket's world: two round trips one after the
+  // other on every confirm, the largest single wait before a confirm starts (p95 1245ms on
+  // load run 37732946308). Asked by the bucket's code, the two go out together.
+  {
+    const apiInput: ApiBookingInput = { ...input, externalId: "ext-together", confirmReschedule: false };
+    const { deps } = makeDeps({ personBookings: [] });
+    const bucketRead = deps.resolveBucketByCode;
+    const personRead = deps.findActiveBookingsForPerson;
+    let bucketAnswered = false;
+    const askedBeforeBucketAnswered: boolean[] = [];
+    deps.resolveBucketByCode = async (code) => {
+      const r = await bucketRead(code);
+      await new Promise((tick) => setImmediate(tick));
+      bucketAnswered = true;
+      return r;
+    };
+    deps.findActiveBookingsForPerson = async (identity, world) => {
+      askedBeforeBucketAnswered.push(!bucketAnswered);
+      return personRead(identity, world);
+    };
+    const res = await bookViaApi(apiInput, deps);
+    assert(res.outcome === "created", "#3489: the confirm still creates");
+    assert(
+      askedBeforeBucketAnswered[0] === true,
+      `#3489: the person read is asked before the bucket read has answered (got ${JSON.stringify(askedBeforeBucketAnswered)})`,
+    );
+  }
+  // The refusals keep their order: an unknown or hidden bucket is the same 422 even when
+  // the person read beside it fails, and a failed person read on a real bucket still fails.
+  for (const opts of [{ unknownBucket: true }, { testBucket: true }]) {
+    const refused = makeDeps({ personBookingsThrows: true, ...opts });
+    let err: unknown = null;
+    try {
+      await bookViaApi({ ...input, externalId: "ext-refused", confirmReschedule: false }, refused.deps);
+    } catch (e) {
+      err = e;
+    }
+    assert(err instanceof UnknownBucketError, `#3489: ${Object.keys(opts)[0]} is a 422 even when the person read beside it fails (got ${String(err)})`);
+  }
+  {
+    const failed = makeDeps({ personBookingsThrows: true });
+    let err: unknown = null;
+    try {
+      await bookViaApi({ ...input, externalId: "ext-read-down", confirmReschedule: false }, failed.deps);
+    } catch (e) {
+      err = e;
+    }
+    assert(
+      err instanceof Error && !(err instanceof UnknownBucketError) && /bookings read down/.test(err.message),
+      `#3489: a failed person read on a real bucket fails the confirm, never reads as no bookings (got ${String(err)})`,
+    );
+    assert(failed.calls.createEvent.length === 0, "#3489: and nothing was written");
   }
   // --- #3495: the tier the caller had on show reaches the confirm whole ---
   // The load test books through this path and hands its tier back so the confirm
@@ -106,8 +165,8 @@ async function run() {
     const res = await bookViaApi(apiInput, deps);
     assert(res.outcome === "created", "bookViaApi on a test bucket with permission -> created");
     assert(
-      calls.personWorlds.length >= 1 && calls.personWorlds.every((w) => w.isTest === true),
-      "bookViaApi on a test bucket asks the person decision in the test world",
+      calls.personWorlds.length >= 1 && calls.personWorlds.every((w) => "bucketCode" in w && w.bucketCode === apiInput.bucketCode),
+      "bookViaApi on a test bucket asks the person decision in that bucket's world, by its code",
     );
   }
 
@@ -139,7 +198,7 @@ async function run() {
     );
     assert(api.calls.createEvent.length === 1, "#2670: one calendar event, as before");
     assert(
-      api.calls.personWorlds.length === 1 && api.calls.personWorlds[0]!.isTest === false,
+      api.calls.personWorlds.length === 1 && "bucketCode" in api.calls.personWorlds[0]! && api.calls.personWorlds[0].bucketCode === apiInput.bucketCode,
       "#2670: the person decision is still asked, in the bucket's world, before the create",
     );
 
@@ -153,7 +212,7 @@ async function run() {
     );
 
     // The refusals are unchanged: an unknown bucket and a hidden test bucket are
-    // still the same 422 before anything is read about the person.
+    // still the same 422, decided before anything the person read answered is used.
     for (const opts of [{ unknownBucket: true }, { testBucket: true }]) {
       const refused = makeDeps({ personBookings: [], ...opts });
       let err: unknown = null;
