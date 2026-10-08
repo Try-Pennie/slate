@@ -49,11 +49,11 @@ import {
   type BookingResult,
 } from "../src/lib/booking/orchestration.ts";
 import { withinBookingConfirmBudget, BOOKING_CONFIRM_BUDGET_MS } from "../src/lib/booking/confirm-budget.ts";
-import { makeConfirmQueue, isolateLine, CONFIRM_QUEUE_WAIT_MS, CONFIRM_LINE_LOOKAHEAD, type ConfirmLine } from "../src/lib/booking/confirm-queue.ts";
+import { makeConfirmQueue, isolateLine, CONFIRM_QUEUE_WAIT_MS, CONFIRM_LINE_LOOKAHEAD, type ConfirmLine, type LineTurn } from "../src/lib/booking/confirm-queue.ts";
 import type { Booking, User } from "../src/lib/db/types.ts";
 import type { BookingContext } from "../src/lib/booking/orchestration.ts";
 import { createAsserter, makeDeps, makeBooking, input, users, bucket as fakeBucket, eventType as fakeEventType } from "./lib/booking-fakes.ts";
-import { VirtualClock, SharedResource, onSharedCapacity, occupy, objectOnClock, type CallRecord } from "./lib/confirm-contention-sim.ts";
+import { VirtualClock, SharedResource, onSharedCapacity, occupy, objectOnClock, type CallRecord, type CallCost } from "./lib/confirm-contention-sim.ts";
 import {
   classifyDeps,
   ON_DATABASE,
@@ -502,7 +502,11 @@ async function burst(opts: {
       const d = model.profile.deferred;
       void occupy(clock, resource, d.tally, "booking-api-tally");
       if (outcome === "503") void occupy(clock, resource, d.failurePage, "booking-failure-page");
-      if (outcome === "created") void occupy(clock, resource, d.recompute, "post-confirm-recompute");
+      if (outcome === "created") {
+        void occupy(clock, resource, d.recompute, "post-confirm-recompute");
+        void occupy(clock, resource, d.webhookSend, "webhook-first-send");
+        void occupy(clock, resource, d.mirrorDelete, "gcal-mirror-delete");
+      }
       const isolate = opts.isolates ? i % opts.isolates.count : 0;
       if (!answeredOn.has(isolate)) {
         answeredOn.add(isolate);
@@ -799,12 +803,100 @@ async function main() {
       assert(cost?.queries === 1, `load model: the stack's ${name} is ONE request (charged ${cost?.queries})`);
     }
     // Control (L1): a call with no stated count is still charged from its latency, so the
-    // stated counts are what moved the two above (the displayed tier: 262ms, three).
-    assert(price("displayedTier", [])?.queries === 3, `load model control: an uncounted call is charged by its latency (got ${price("displayedTier", [])?.queries})`);
+    // stated counts are what moved the two above (an advisor read priced at 270ms: three).
+    const slowRead = databaseCosts({ ...STACK_LOAD_RUN_PROFILE.database, callMs: { ...STACK_LOAD_RUN_PROFILE.database.callMs, getUser: 270 } }, () => 0)("getUser", []);
+    assert(slowRead?.queries === 3, `load model control: an uncounted call is charged by its latency (got ${slowRead?.queries})`);
+  }
+
+  // --- #3489: a call's requests run in the ROUNDS the code makes them, not one by one ----
+  //
+  // The candidate read makes seven requests in three rounds (members and users together,
+  // then schedules and busy time together, then the cap count, the business hours beside
+  // them), and the run timed it at 360ms alone. Served one after another, seven requests
+  // of 70ms take 490ms before any network: the call came out slower than the run that
+  // measured it, and every walker with it. So a call names its depth, and alone it takes
+  // its measured latency whatever its count.
+  {
+    const clock = new VirtualClock(0);
+    const resource = new SharedResource(clock, 2, 70);
+    const ends: Record<string, number> = {};
+    const alone = (cost: CallCost, name: string) =>
+      occupy(clock, resource, cost, name).then(() => {
+        ends[name] = clock.now;
+      });
+    void alone({ latencyMs: 360, queries: 7, depth: 3 }, "rounds");
+    await clock.runUntil(() => "rounds" in ends);
+    assert(ends.rounds === 360, `load model: a call of seven requests in three rounds takes its measured 360ms alone (took ${ends.rounds})`);
+    // Control (L1): without a depth the same call is served one request after another.
+    const start = clock.now;
+    void alone({ latencyMs: 360, queries: 7 }, "serial");
+    await clock.runUntil(() => "serial" in ends);
+    assert(ends.serial! - start === 490, `load model control: with no depth the seven are served in turn, 490ms (took ${ends.serial! - start})`);
+    // Each request of a round still holds a slot: a call of four at once on two slots is
+    // all service (two turns, its 140ms alone), so two such calls at once take twice that.
+    const both = clock.now;
+    void alone({ latencyMs: 140, queries: 4, depth: 1 }, "wide-a");
+    void alone({ latencyMs: 140, queries: 4, depth: 1 }, "wide-b");
+    await clock.runUntil(() => "wide-a" in ends && "wide-b" in ends);
+    assert(
+      Math.max(ends["wide-a"]!, ends["wide-b"]!) - both === 280,
+      `load model: two calls of four requests at once queue for the two slots, the later ending 280ms in (took ${Math.max(ends["wide-a"]!, ends["wide-b"]!) - both})`,
+    );
+  }
+
+  {
     // And the calibration's database replays the code run 37640583621 ran: the seven
     // calls the save replaced, seven requests.
     const ran = databaseCosts(LOAD_RUN_PROFILE.database, () => 0)("commitFreshBooking", []);
     assert(ran?.queries === 7, `load model: the calibration prices the save as the seven requests it replaced (got ${ran?.queries})`);
+  }
+
+  // --- #3489: each call is charged the requests the CODE makes (counted 2026-10-08) ------
+  //
+  // Counted from `realDeps` and what it calls, cited in `confirm-load-model.ts`. Three were
+  // wrong in ways that move where the drain goes: the live check reads the advisor and
+  // the calendar row before it asks Google, so it is ON the database; the slot refresh
+  // returns at once on the booking API (its splice runs after the answer); and the
+  // candidate read is seven to nine requests, not the four to eight its latency implied.
+  {
+    for (const profile of [LOAD_RUN_PROFILE, STACK_LOAD_RUN_PROFILE]) {
+      const free = { none: 0, one: 1, many: 5 } as const;
+      for (const [kind, n] of Object.entries(free)) {
+        const cost = databaseCosts(profile.database, () => n)("roundRobinCandidates", [{ code: "100" }, null, 0]);
+        const want = { none: 7, one: 8, many: 9 }[kind as keyof typeof free];
+        const deep = { none: 3, one: 4, many: 5 }[kind as keyof typeof free];
+        assert(
+          cost?.queries === want && cost.depth === deep,
+          `load model (${profile.name}): the candidate read with ${kind} free is ${want} requests in ${deep} rounds (got ${cost?.queries} in ${cost?.depth})`,
+        );
+      }
+      const price = databaseCosts(profile.database, () => 0);
+      const counted: Record<string, number> = {
+        verifyFree: 2,
+        invalidateSlots: 0,
+        deleteGcalMirrorBlock: 0,
+        resolveBucketPool: 2,
+        loadEmails: 1,
+        displayedTier: 1,
+      };
+      for (const [name, want] of Object.entries(counted)) {
+        assert(price(name, [])?.queries === want, `load model (${profile.name}): ${name} is ${want} requests on the booking API (got ${price(name, [])?.queries})`);
+      }
+      // The live check's two reads are one after the other; the pool trace's two at once.
+      assert(price("verifyFree", [])?.depth === 2 && price("resolveBucketPool", [])?.depth === 1, `load model (${profile.name}): the live check reads in turn and the pool trace at once (got ${price("verifyFree", [])?.depth} and ${price("resolveBucketPool", [])?.depth})`);
+      // The work after a booking's answer, by request: the splice, the webhook's first
+      // send (its claim and its outcome) and the stray mirror's delete.
+      const d = profile.deferred;
+      assert(
+        d.recompute.queries === 7 && d.recompute.depth === 5 && d.webhookSend.queries === 2 && d.webhookSend.depth === 2 && d.mirrorDelete.queries === 1,
+        `load model (${profile.name}): after a booking's answer, the splice is 7 requests, the webhook's send 2 and the mirror's delete 1 (got ${d.recompute.queries}, ${d.webhookSend.queries}, ${d.mirrorDelete.queries})`,
+      );
+    }
+    // The person read the run's code made was four requests at once (each strong id on
+    // two columns, the email, the phone); the stack's is one.
+    const oldPerson = databaseCosts(LOAD_RUN_PROFILE.database, () => 0)("findActiveBookingsForPerson", []);
+    assert(oldPerson?.queries === 4 && oldPerson.depth === 1, `load model (load run): the old person read is four requests at once (got ${oldPerson?.queries} in ${oldPerson?.depth})`);
+    assert(OFF_DATABASE.has("verifyFree") === false && ON_DATABASE.has("verifyFree"), "load model: the live check is classified on the database");
   }
 
   // --- #3489 step 0: the load model, calibrated against load run 37640583621 --
@@ -1959,6 +2051,47 @@ async function main() {
       assert(heldLines === 0 && claimsLeft === 0, `${tag}: no line held and no claim left in it (got ${heldLines} held, ${claimsLeft} claims)`);
       console.log(`${tag}: booked ${tally.created ?? 0}, told retry ${tally["503"] ?? 0}, told taken ${tally.SLOT_TAKEN ?? 0}, reservations left ${left}`);
     }
+  }
+
+  // #3489 step 3: a walker whose walk STANDS. The ladder holds one free advisor, on its
+  // top rung, and the confirm that claims him books before the confirm walking down
+  // behind it reaches the bottom: everything the walker skipped has booked, and every
+  // rung it read had nobody free. Its own walk proves the ladder spent, so it reports
+  // it full and the crowd is refused from that, with the lower rungs read ONCE. Before,
+  // the walker parked on nothing, the held verdict was discarded, and the next confirm
+  // walked the whole ladder again (2.8s of burst 1 in the load model).
+  {
+    const LONG = { "500": ["a"], "400": ["c"], "300": ["d"], "200": ["e"] };
+    const busy = ["c", "d", "e"].map((id, k) =>
+      makeBooking({
+        id: `busy-${id}`,
+        assigned_user_id: id,
+        agent_name: `Agent ${id}`,
+        agent_email: `${id}@x.com`,
+        starts_at: input.startIso,
+        external_id: `already-${k}`,
+        salesforce_id: `sf-already-${k}`,
+        attendee_email: `already${k}@example.com`,
+        attendee_phone: `+1203558${String(1000 + k)}`,
+        manage_token: `tok-already-${k}`,
+      } as Partial<Booking>),
+    );
+    const tag = "#3489 step 3, a walk that stands";
+    const { tally, runs } = await burst({
+      inputs: Array.from({ length: 20 }, (_, i) => lead(i, { bucketCode: "500" })),
+      pool: [],
+      poolByCode: LONG,
+      held: busy,
+      queue: "real",
+      isolates: { count: 1, line: "shared" },
+    });
+    assert(tally.created === 1 && tally.SLOT_TAKEN === 19, `${tag}: the one free advisor is booked and everybody else is told the time is taken (got ${JSON.stringify(tally)})`);
+    // Every rung a confirm walks to is read through its bucket first, so the bottom
+    // rung's bucket reads count the walks that reached the bottom.
+    const readsOfBottom = runs
+      .flatMap((r) => r.calls)
+      .filter((c) => c.name === "resolveBucketByCode" && (c.answer as { bucket?: { code?: string } } | null)?.bucket?.code === "200").length;
+    assert(readsOfBottom === 1, `${tag}: the ladder's bottom rung is read by ONE confirm, the walker, never walked again (read ${readsOfBottom} times)`);
   }
 
   // The same crowd at a speed the line can serve inside the wait (a 1s live check

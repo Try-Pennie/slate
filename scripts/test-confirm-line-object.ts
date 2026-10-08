@@ -436,6 +436,22 @@ async function main() {
       `step 3 wire: an older client's claim on a rung others hold is shared, never spent (got ${JSON.stringify(older)})`,
     );
     for (const t of [d.turn, eLead.turn]) await send({ op: "done", turn: t, verdict: { full: false } });
+    // A walker that parks once every claim it walked past has booked leads again at once,
+    // and the lead answer says its walk stands (`spent`), so it reports the ladder full.
+    const f = await send({ op: "enter", attempt: "F", line: "300", waitMs: 10_000 });
+    await send({ op: "ack", turn: f.turn });
+    const g = await send({ op: "enter", attempt: "G", line: "300", waitMs: 10_000 });
+    const gTurn = send({ op: "poll", ticket: g.ticket });
+    await tick();
+    await send({ op: "claimFirst", turn: f.turn, candidates: ["p0"], rung: 0, canWalk: true, below: true });
+    const gLead = await gTurn;
+    await send({ op: "ack", turn: gLead.turn });
+    await send({ op: "claimFirst", turn: gLead.turn, candidates: ["p0"], rung: 0, canWalk: true, below: true });
+    await send({ op: "done", turn: f.turn, verdict: { full: false }, outcome: "booked", settlement: { booked: null, seated: [] } });
+    const gParked = await send({ op: "park", turn: gLead.turn, attempt: "G-park", waitMs: 10_000 });
+    const gAgain = await send({ op: "poll", ticket: gParked.ticket });
+    assert(gAgain.kind === "lead" && gAgain.spent === true && typeof gAgain.turn === "string", `step 3 wire: a walker whose skipped claims all booked leads again marked spent (got ${JSON.stringify(gAgain)})`);
+    await send({ op: "done", turn: gAgain.turn, verdict: { full: true, refusal: "taken" } });
     // A park on a turn the object does not hold is gone, and one missing its fields is bad.
     const gone = await send({ op: "park", turn: "nobody", attempt: "Z", waitMs: 1_000 });
     assert(gone.kind === "gone", `step 3 wire: parking a turn the object does not hold is gone (got ${JSON.stringify(gone)})`);

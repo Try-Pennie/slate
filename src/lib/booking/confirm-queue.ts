@@ -316,6 +316,14 @@ export type QueueTurn<T> =
        */
       start?: StartFrom;
       /**
+       * #3489 step 3: set when a walker PARKED and every claim it walked past has since
+       * ended booked, with nothing freed since it found the first of them (`epoch`). Its
+       * own walk then proves the ladder spent: the rungs it read had nobody free and the
+       * ones it skipped are booked. So it leads again at once and reports the ladder full
+       * itself, rather than the next confirm walking the whole ladder again.
+       */
+      spent?: true;
+      /**
        * Confirms this turn reached its caller (#3325). A host that requires it
        * (`ackMs`) ends a lead nobody acknowledges within that window, so an answer
        * its caller never received cannot hold the line. A no op otherwise.
@@ -571,9 +579,12 @@ export function makeConfirmQueue<T>(
     line.waiting.shift()!.answer(leadTurn(key, line));
   };
 
-  const leadTurn = (key: string, line: Line<T>, start?: StartFrom, holds = true): Extract<QueueTurn<T>, { kind: "lead" }> => {
+  const leadTurn = (key: string, line: Line<T>, start?: StartFrom, holds = true, spent = false): Extract<QueueTurn<T>, { kind: "lead" }> => {
     const me = {};
     let reported = false;
+    // #3489 step 3: the line's epoch when this confirm first met a rung spent by claims,
+    // so a park can tell whether everything it walked past has since booked.
+    let spentAt: number | null = null;
     // #3325: a host that requires acknowledgement gives a new lead only the ack
     // window; `ack` and `renew` extend it by a full lease from then.
     let until = now() + (ackMs ?? leaseMs);
@@ -644,6 +655,7 @@ export function makeConfirmQueue<T>(
       },
       waiting: () => line.waiting.length,
       ...(start ? { start } : {}),
+      ...(spent ? { spent: true as const } : {}),
       seat: {
         claimedByOthers,
         claim,
@@ -652,7 +664,10 @@ export function makeConfirmQueue<T>(
           const unclaimed = candidates.filter((id) => !others.has(id));
           // #3489 step 3: to a confirm that can walk, a rung every candidate of which is
           // claimed is spent. It claims nothing here and leaves the frontier as it was.
-          if (place?.canWalk && candidates.length > 0 && unclaimed.length === 0) return { pool: [], unclaimed: 0, spent: true, waiting: line.waiting.length };
+          if (place?.canWalk && candidates.length > 0 && unclaimed.length === 0) {
+            if (spentAt === null && live()) spentAt = line.epoch;
+            return { pool: [], unclaimed: 0, spent: true, waiting: line.waiting.length };
+          }
           const pool = unclaimed.length > 0 ? unclaimed : [...candidates];
           // #3489: a caller that names its rung makes its read the line's frontier, so
           // handing the line on releases one waiter per advisor it left unclaimed.
@@ -725,6 +740,14 @@ export function makeConfirmQueue<T>(
         if (mine) endAdvisor(line, mine, mine.tried ? "advisor-busy" : "unknown");
         line.claims.delete(me);
         if (line.holder === me) line.holder = null;
+        // Every claim it walked past has ended, and all of them booked: nothing has freed
+        // an advisor since it met the first (the epoch has not moved, its own claim's end
+        // included). Its walk stands, so it leads again at once, ahead of anybody waiting,
+        // to report the ladder full (`spent`).
+        if (spentAt !== null && spentAt === line.epoch && line.claims.size === 0) {
+          line.pending = null;
+          return { kind: "wait", turn: Promise.resolve(leadTurn(key, line, undefined, true, true)), cancel() {} };
+        }
         if (line.pending === null || line.pending.epoch !== line.epoch) line.pending = { refusal: "race", epoch: line.epoch };
         const parked = waitIn(key, line, ownWaitMs);
         promoteNext(key, line);
@@ -880,6 +903,8 @@ export type LineTurn<T> =
       park(waitMs?: number): Promise<LineTurn<T>>;
       /** #3489: what the line handed this confirm when it released it (`StartFrom`). */
       start?: StartFrom;
+      /** #3489 step 3: its walk stands; see `QueueTurn` `spent`. */
+      spent?: true;
       /**
        * #3338: whether this confirm WAITED behind another for its turn, rather than
        * leading at once or being handed the line at once. A confirm that waited and
@@ -924,6 +949,7 @@ export function asLineTurn<T>(turn: QueueTurn<T>, queued: boolean): LineTurn<T> 
     done: async (verdict, outcome, settlement) => turn.done(verdict, outcome, settlement),
     park: async (waitMs) => asLineTurn(await turn.park(waitMs), true),
     ...(turn.start ? { start: turn.start } : {}),
+    ...(turn.spent ? { spent: true as const } : {}),
     seat: {
       claimedByOthers: async () => seat.claimedByOthers(),
       claim: async (userId, othersRemain) => seat.claim(userId, othersRemain),

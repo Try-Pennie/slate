@@ -114,7 +114,10 @@ type AttemptRef = { kind: "lead"; turn: string } | { kind: "wait"; ticket: strin
 
 const isString = (x: unknown): x is string => typeof x === "string" && x.length > 0 && x.length <= 200;
 /** #3489: a lead answer carries what the line handed it, when it handed anything. */
-const startOf = (t: QueueTurn<unknown>) => (t.kind === "lead" && t.start ? { start: t.start } : {});
+/** What a lead answer carries beyond its turn: what it was handed (#3489) and whether its
+ *  walk stands (step 3, `spent`). */
+const leadFields = (t: QueueTurn<unknown>) =>
+  t.kind !== "lead" ? {} : { ...(t.start ? { start: t.start } : {}), ...(t.spent ? { spent: true } : {}) };
 const isStringList = (x: unknown): x is string[] => Array.isArray(x) && x.length <= 500 && x.every(isString);
 
 /** A leader's verdict as it arrives over the wire, or null when it is not one. */
@@ -229,7 +232,7 @@ export function makeConfirmLineHost(deps: {
     const entered = line.enterNow(key, waitMs);
     if (entered.kind === "lead") {
       const turn = registerLead(entered.turn);
-      const answer = json({ kind: "lead", turn, ...startOf(entered.turn) });
+      const answer = json({ kind: "lead", turn, ...leadFields(entered.turn) });
       attempts.set(attempt, { answer, ref: { kind: "lead", turn }, at: now() });
       return answer;
     }
@@ -272,7 +275,7 @@ export function makeConfirmLineHost(deps: {
       const turn = registerLead(ticket.result);
       const a = attempts.get(ticket.attempt);
       if (a) a.ref = { kind: "lead", turn };
-      return json({ kind: "lead", turn, ...startOf(ticket.result) });
+      return json({ kind: "lead", turn, ...leadFields(ticket.result) });
     }
     return answerFor(ticket.result);
   };

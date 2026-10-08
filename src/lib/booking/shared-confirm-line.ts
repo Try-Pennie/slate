@@ -171,7 +171,16 @@ export function makeSharedConfirmLine<T>(deps: {
    * A lead on the shared line: acknowledged at once, renewed while it works.
    * `queued` (#3338): it was promoted from a ticket, so it waited behind another.
    */
-  const leadOn = async (key: LineKey, stub: LineStub, turn: string, served: LineServed, queued: boolean, start?: StartFrom): Promise<LineTurn<T>> => {
+  const leadOn = async (
+    key: LineKey,
+    stub: LineStub,
+    turn: string,
+    served: LineServed,
+    queued: boolean,
+    start?: StartFrom,
+    /** #3489 step 3: its walk stands (`QueueTurn` `spent`); an older object never says so. */
+    spent = false,
+  ): Promise<LineTurn<T>> => {
     let detached = false;
     let stopped = false;
     let lastClaims: ReadonlySet<string> = new Set();
@@ -211,6 +220,7 @@ export function makeSharedConfirmLine<T>(deps: {
       kind: "lead",
       queued,
       ...(start ? { start } : {}),
+      ...(spent ? { spent: true as const } : {}),
       // The shared line never asks how many wait: a full verdict always reads who is
       // seated (one read, only on the rare full verdict), so nobody arriving between
       // this answer and the report can miss it, and a call is saved on every confirm.
@@ -328,7 +338,7 @@ export function makeSharedConfirmLine<T>(deps: {
       }
       failures = 0;
       if (a.kind === "pending") continue;
-      if (a.kind === "lead" && typeof a.turn === "string") return leadOn(key, stub, a.turn, served, true, readStartFrom(a.start));
+      if (a.kind === "lead" && typeof a.turn === "string") return leadOn(key, stub, a.turn, served, true, readStartFrom(a.start), a.spent === true);
       if (a.kind === "refused" && (a.refusal === "race" || a.refusal === "taken")) {
         deps.record({ ...served });
         return { kind: "refused", refusal: a.refusal, settled: (a.settled ?? null) as T | null };
@@ -357,7 +367,7 @@ export function makeSharedConfirmLine<T>(deps: {
     served: LineServed,
     goneLeft: number,
   ): Promise<LineTurn<T>> => {
-    if (answer.kind === "lead" && typeof answer.turn === "string") return leadOn(key, stub, answer.turn, served, false, readStartFrom(answer.start));
+    if (answer.kind === "lead" && typeof answer.turn === "string") return leadOn(key, stub, answer.turn, served, false, readStartFrom(answer.start), answer.spent === true);
     if (answer.kind === "wait" && typeof answer.ticket === "string") return follow(key, stub, attempt, answer.ticket, now() + waitMs, served, goneLeft);
     if (answer.kind === "gone" && goneLeft > 0) return enterShared(key, waitMs, { ...served, reason: "gone" }, goneLeft - 1, null);
     const t0 = now();

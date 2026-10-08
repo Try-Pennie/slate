@@ -247,9 +247,16 @@ export class RungSpentByClaimsError extends SlotUnavailableError {
  * claims end, "taken" when they all booked, or a turn to read again when one did not.
  */
 export class LadderSpentByClaimsError extends Error {
-  constructor() {
+  /**
+   * What the walk found, as the refusal it would have thrown had the rungs it skipped
+   * been booked rather than claimed: the confirm refuses with exactly this when the line
+   * says its walk stands (`LineTurn.spent`).
+   */
+  readonly refusal: unknown;
+  constructor(refusal: unknown) {
     super("every rung this confirm could book is held by confirms still in flight");
     this.name = "LadderSpentByClaimsError";
+    this.refusal = refusal;
   }
 }
 
@@ -3070,8 +3077,9 @@ async function assignAgentWithTierFallback(
   if (winner) return { ...winner.value, rungsDropped: winner.rungsDropped, ...(spentByClaims ? { pastClaims: true } : {}) };
   // #3489 step 3: a claim in flight may yet free an advisor the walk skipped, so the
   // line, which sees every claim end, answers this confirm rather than a refusal.
-  if (spentByClaims) throw new LadderSpentByClaimsError();
-  throw traced(lastErr ?? new SlotUnavailableError(), trace(ladderStage(rungs)));
+  const refusal = traced(lastErr ?? new SlotUnavailableError(), trace(ladderStage(rungs)));
+  if (spentByClaims) throw new LadderSpentByClaimsError(refusal);
+  throw refusal;
 }
 
 /**
@@ -4292,6 +4300,8 @@ async function inConfirmTurn<R>(
   // #3489 step 3: a lead whose walk found its ladder spent only by claims still in
   // flight PARKS and waits again, and whatever the line answers next is handled
   // exactly as the first answer was: refused, timed out, or a lead that reads again.
+  // What its walk found, kept for the answer that says the walk stands.
+  let walkedPast: LadderSpentByClaimsError | null = null;
   for (;;) {
     if (turn.kind === "refused") {
       const settled = turn.settled;
@@ -4390,6 +4400,14 @@ async function inConfirmTurn<R>(
         // leader's rollback and bookkeeping still run in full first.
       }
     };
+    // #3489 step 3: its walk stands (`LineTurn.spent`): every claim it walked past has
+    // since booked, so the ladder is spent as its own walk found it. It says so and
+    // refuses with what the walk found, rather than walking the whole ladder again.
+    if (lead.spent && walkedPast) {
+      const refusal = walkedPast.refusal;
+      await report(verdictForRefusal(refusal), claimOutcomeOf(refusal));
+      throw refusal;
+    }
     let done: { result: R; verdict: LeaderVerdict<ConfirmTaker> };
     try {
       done = await work({ seat, queued: lead.queued, lostRace, ...(lead.start ? { start: lead.start } : {}) });
@@ -4397,6 +4415,7 @@ async function inConfirmTurn<R>(
       // #3489 step 3: not a refusal. Nothing was reported, so the turn is still this
       // confirm's to end, by parking.
       if (err instanceof LadderSpentByClaimsError && reporting === null) {
+        walkedPast = err;
         log.info("booking", {
           msg: "every rung this confirm could book is held by confirms still in flight; waiting in the line for them",
           bucket_code: line.bucketCode,

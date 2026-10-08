@@ -1083,7 +1083,11 @@ async function main() {
     walker.done({ full: false }, "booked", "s");
   }
 
-  // --- a parked walker with no claim left in flight reads again at once -------------------
+  // --- a parked walker whose skipped claims have all BOOKED: its walk stands --------------
+  // Every rung it walked was spent by the time it reached the bottom: the ones it read had
+  // nobody free, and the ones it skipped were held by claims that have since booked. So it
+  // leads again marked `spent` and reports the ladder full itself, rather than the next
+  // confirm walking the whole ladder again (2.8s of burst 1 in the load model).
   {
     const { timer } = manualTimer();
     const q = makeConfirmQueue<string>({ timer });
@@ -1091,10 +1095,41 @@ async function main() {
     first.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
     const walker = leadOf(await q.enter("slot"));
     walker.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    const behind: QueueTurn<string>[] = [];
+    void q.enter("slot").then((t) => behind.push(t));
     first.done({ full: false }, "booked", "s");
+    await tick();
+    assert(behind.length === 0, "walk stands: the confirm behind the walker still waits");
     const parked = await walker.park();
-    assert(parked.kind === "lead", "no claims: a walker that parks after the claims it skipped have ended reads again rather than waiting on nothing");
+    assert(parked.kind === "lead" && parked.spent === true, `walk stands: a walker whose skipped claims have all booked leads again marked spent (got ${JSON.stringify(parked)})`);
+    leadOf(parked).done({ full: true, refusal: "taken", settled: "seated" });
+    await tick();
+    assert(behind.length === 1 && behind[0]!.kind === "refused", `walk stands: its full verdict answers the confirm behind it (got ${JSON.stringify(behind)})`);
+  }
+  // Control: the claim it skipped ended WITHOUT a booking, so an advisor may be free again
+  // and its walk proves nothing: it reads again, unmarked.
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    first.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    const walker = leadOf(await q.enter("slot"));
+    walker.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    first.done({ full: false }, "advisor-busy");
+    const parked = await walker.park();
+    assert(parked.kind === "lead" && parked.spent === undefined, `walk control: a claim it skipped ended without booking, so it reads again, unmarked (got ${JSON.stringify(parked)})`);
     leadOf(parked).done({ full: true, refusal: "taken", settled: null });
+  }
+  // Control: a walker that never met a spent rung (no claim to walk past) and parks is not
+  // marked either: nothing it skipped could have proved anything.
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const walker = leadOf(await q.enter("slot"));
+    walker.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    const parked = await walker.park();
+    assert(parked.kind === "lead" && parked.spent === undefined, `walk control: a walker that skipped nothing is not marked (got ${JSON.stringify(parked)})`);
+    leadOf(parked).done({ full: false });
   }
 
   // --- an expired claim is an unknown ending, so the pending verdict is discarded ----------

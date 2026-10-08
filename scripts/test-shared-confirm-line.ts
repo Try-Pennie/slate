@@ -558,6 +558,48 @@ async function main() {
     assert(threw, "binding: an answer that is not the protocol's JSON is a failed call, never a guessed one");
   }
 
+  // --- #3489 step 3: walking past claims, parking, and the settlement, through the client --
+  //
+  // The rules are the queue suite's and the wire the object suite's; this proves the CLIENT
+  // sends and reads each field: `canWalk` and `below` go out on claimFirst and `spent` and
+  // `waiting` come back; the settlement rides on done; a park follows its ticket to the
+  // answer, and a lead whose walk stands comes back marked `spent`.
+  {
+    const w = world();
+    const a = w.client();
+    const b = w.client();
+    const first = (await w.settle(a.line.enter(KEY, 10_000))) as LineTurn<string>;
+    if (first.kind !== "lead") throw new Error("step 3 client: the first confirm should lead");
+    const bEnter = w.settle(b.line.enter(KEY, 10_000), 2_000);
+    await w.advance(10);
+    const claimed = await w.settle(first.seat.claimFirst(["p0"], { rung: 0, canWalk: true, below: true }));
+    const sentClaim = w.messages.filter((m) => m.op === "claimFirst").at(-1);
+    assert(sentClaim?.canWalk === true && sentClaim?.below === true && sentClaim?.rung === 0, `step 3 client: canWalk and below go out on claimFirst (sent ${JSON.stringify(sentClaim)})`);
+    assert(claimed !== "unsettled" && claimed.waiting === 1, `step 3 client: how many waited comes back (got ${JSON.stringify(claimed)})`);
+    const walker = (await bEnter) as LineTurn<string>;
+    if (walker.kind !== "lead") throw new Error(`step 3 client: the walker should lead once the first claimed the rung's last advisor (got ${JSON.stringify(walker)})`);
+    const spent = await w.settle(walker.seat.claimFirst(["p0"], { rung: 0, canWalk: true, below: true }));
+    assert(spent !== "unsettled" && spent.spent === true && spent.pool.length === 0, `step 3 client: a rung spent by claims comes back spent (got ${JSON.stringify(spent)})`);
+    await w.settle(first.done({ full: false }, "booked", "seated-now"));
+    const sentDone = w.messages.filter((m) => m.op === "done").at(-1);
+    assert(sentDone?.settlement === "seated-now" && sentDone?.outcome === "booked", `step 3 client: the settlement rides on done (sent ${JSON.stringify(sentDone)})`);
+    const again = (await w.settle(walker.park(10_000), 2_000)) as LineTurn<string>;
+    assert(w.messages.some((m) => m.op === "park" && typeof m.attempt === "string"), "step 3 client: a park goes out with an attempt of its own");
+    assert(again.kind === "lead" && again.spent === true, `step 3 client: a walker whose skipped claims all booked leads again marked spent (got ${JSON.stringify(again)})`);
+    if (again.kind === "lead") await w.settle(again.done({ full: true, refusal: "taken", settled: "seated-now" }));
+  }
+  {
+    // An object that cannot park this turn (an older one answers an unknown op as bad):
+    // the confirm answers retryably rather than reading again on its own.
+    const w = world();
+    const a = w.client();
+    const t = (await w.settle(a.line.enter(KEY, 10_000))) as LineTurn<string>;
+    if (t.kind !== "lead") throw new Error("step 3 client: should lead");
+    w.faults.set("park", "bad");
+    const parked = (await w.settle(t.park(10_000), 2_000)) as LineTurn<string>;
+    assert(parked.kind === "unqueued", `step 3 client: a park the object refuses answers unqueued (got ${JSON.stringify(parked)})`);
+  }
+
   finish();
 }
 

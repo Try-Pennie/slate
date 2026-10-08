@@ -193,7 +193,7 @@ export class SharedResource {
   private busy = 0;
   private queue: { start: () => void }[] = [];
   private readonly clock: VirtualClock;
-  private readonly capacity: number;
+  readonly capacity: number;
   /** How long one unit of work holds one unit of capacity. */
   readonly serviceMs: number;
   constructor(clock: VirtualClock, capacity: number, serviceMs: number) {
@@ -254,8 +254,13 @@ const OWN_CALL_MS = 8_000;
 export interface CallCost {
   /** End to end, with nothing queued ahead of it. */
   latencyMs: number;
-  /** Statements it runs, one after another, each holding one slot. */
+  /** Requests it makes, each holding one slot. */
   queries: number;
+  /**
+   * #3489: the rounds it makes them in, each round's requests at once (the candidate
+   * read: seven requests in three rounds). Absent is one after another, a round each.
+   */
+  depth?: number;
 }
 
 /**
@@ -283,8 +288,9 @@ function pauseWithin(clock: VirtualClock, ms: number, deadlineAt: number, record
   });
 }
 
-/** One call's network and statements, in that order of time: half the network out,
- *  the statements, half the network back. */
+/** One call's network and requests, in that order of time: half the network out, the
+ *  requests round by round (each round's at once, split as evenly as the count allows),
+ *  half the network back. */
 async function spend(
   clock: VirtualClock,
   resource: SharedResource,
@@ -293,16 +299,24 @@ async function spend(
   deadlineAt: number,
   missed: () => Error,
 ): Promise<void> {
-  const networkMs = Math.max(0, cost.latencyMs - cost.queries * resource.serviceMs);
+  const rounds = Math.min(cost.queries, Math.max(1, cost.depth ?? cost.queries));
+  const widthOf = (r: number) => Math.floor(cost.queries / rounds) + (r < cost.queries % rounds ? 1 : 0);
+  // The latency is what the call took ALONE, so the network is what is left of it after
+  // its own requests are served with nothing else queued: a round wider than the slots
+  // takes more than one turn even then.
+  let aloneMs = 0;
+  for (let r = 0; r < rounds; r++) aloneMs += Math.ceil(widthOf(r) / resource.capacity) * resource.serviceMs;
+  const networkMs = Math.max(0, cost.latencyMs - aloneMs);
   await pauseWithin(clock, networkMs / 2, deadlineAt, record, missed);
-  for (let q = 0; q < cost.queries; q++) {
-    const one = callRecordNow(record.name, clock);
-    try {
-      await resource.use(one, deadlineAt, missed);
-    } finally {
-      record.queuedMs += one.queuedMs;
-      if (one.timedOut) record.timedOut = true;
-    }
+  for (let r = 0; r < rounds; r++) {
+    const width = widthOf(r);
+    const asked = Array.from({ length: width }, () => callRecordNow(record.name, clock));
+    const served = await Promise.allSettled(asked.map((one) => resource.use(one, deadlineAt, missed)));
+    // The round's slowest request is what the call waited for.
+    record.queuedMs += asked.reduce((m, one) => Math.max(m, one.queuedMs), 0);
+    if (asked.some((one) => one.timedOut)) record.timedOut = true;
+    const failed = served.find((x) => x.status === "rejected");
+    if (failed) throw (failed as PromiseRejectedResult).reason;
   }
   await pauseWithin(clock, networkMs / 2, deadlineAt, record, missed);
 }

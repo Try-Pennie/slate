@@ -39,7 +39,6 @@ import type { CallCost } from "./confirm-contention-sim.ts";
  * the deps themselves (`classifyDeps`), so a new one is classified before it is priced.
  */
 export const OFF_DATABASE: ReadonlySet<string> = new Set([
-  "verifyFree",
   "createEvent",
   "deleteEvent",
   "updateEventTime",
@@ -65,6 +64,11 @@ export const OFF_DATABASE: ReadonlySet<string> = new Set([
  */
 export const ON_DATABASE: ReadonlySet<string> = new Set([
   "roundRobinCandidates",
+  // The live check reads the advisor by email and their calendar row before it asks
+  // Google (`service.ts` `verifyFree`, `calendar.ts` `freeBusyMany`), and the load test's
+  // stub sits below those reads, so a load run pays them too. Google's own time is still
+  // the profile's, set on the fake.
+  "verifyFree",
   "findActiveBookingsForPerson",
   "resolveBucketByCode",
   "findBookingByIdempotencyKey",
@@ -195,6 +199,14 @@ export interface DatabaseModel {
    */
   requests?: Readonly<Record<string, number>>;
   /**
+   * The rounds a call makes its requests in, each round's at once (`CallCost.depth`), where
+   * that is KNOWN. Unlisted, a call's requests are one after another.
+   */
+  depth?: Readonly<Record<string, number>>;
+  /** The candidate read's requests and rounds, by how many the cache shows free (see `CODE_REQUESTS`). */
+  candidateReadRequests: { noneFree: number; oneFree: number; manyFree: number };
+  candidateReadDepth: { noneFree: number; oneFree: number; manyFree: number };
+  /**
    * The candidate read (`roundRobinCandidates`) costs more the more of the rung the
    * cache says is free: with one free it also reads the reroute holds, with two or more
    * it also ranks them by booking share (`src/lib/availability/service.ts`).
@@ -245,6 +257,45 @@ export interface DatabaseModel {
  *   - one free (the top rung's last advisor): the whole assignment, 662 (burst 2) and 903
  *     (burst 1), less the claim and the emails (45 + 169): 448 and 689, so 570.
  */
+/**
+ * The requests each call makes on the BOOKING API, counted from the code on 2026-10-08
+ * (`realDeps` in `src/lib/booking/service.ts` and what it calls; one awaited supabase-js
+ * call or `.rpc` is one HTTP request, and the client retries nothing):
+ *
+ *   - the candidate read (`roundRobinCandidates`, `availability/service.ts`): the members
+ *     and their users together, then the schedules and a busy page together, then the
+ *     daily cap count, with the business hours (two reads, not the cached reader) beside
+ *     them: 7 requests in 3 rounds with nobody free. One free adds the live reroute holds
+ *     (8 in 4); two or more add the booking share read that ranks them (9 in 5). A read
+ *     narrowed to one handed advisor still reads the whole pool first and is priced as
+ *     one free.
+ *   - the live check (`verifyFree`): the advisor by email, then their calendar row, then
+ *     Google: 2, one after the other.
+ *   - the pool trace (`resolveBucketPool`): members and users at once, 2 in one round. The displayed
+ *     tier: the bucket's slot row, 1 (0 on an edge cache hit, which the load test's
+ *     workers.dev host is not shown to give). The advisor emails: 1.
+ *   - the slot refresh (`invalidateSlots`) and the stray mirror's delete: NONE inline on
+ *     the booking API, which hands both to `afterResponse`. They are deferred work
+ *     (`DeferredModel`), not calls the confirm waits on.
+ *
+ * Everything else not listed here is one request, which latency over a statement already
+ * gives it.
+ */
+const CODE_REQUESTS = {
+  verifyFree: 2,
+  resolveBucketPool: 2,
+  loadEmails: 1,
+  displayedTier: 1,
+  invalidateSlots: 0,
+  deleteGcalMirrorBlock: 0,
+} as const;
+
+/** The rounds of the calls above that make more than one request at a time. */
+const CODE_DEPTH = { verifyFree: 2, resolveBucketPool: 1 } as const;
+
+const CANDIDATE_READ_REQUESTS = { noneFree: 7, oneFree: 8, manyFree: 9 } as const;
+const CANDIDATE_READ_DEPTH = { noneFree: 3, oneFree: 4, manyFree: 5 } as const;
+
 export const LOAD_RUN_DATABASE: DatabaseModel = {
   slots: 2,
   statementMs: 70,
@@ -260,9 +311,22 @@ export const LOAD_RUN_DATABASE: DatabaseModel = {
     resolveBucketPool: 118,
     getUser: 87,
     insertReservation: 93,
-    loadEmails: 169,
+    // The 169ms the run timed after a claim is the emails read AND what followed it, the
+    // live check's two reads (Google answered at once): one statement each, 70 + 140,
+    // which prices the pair 41ms above the run rather than below it.
+    loadEmails: 70,
+    verifyFree: 140,
+    // Handed to `afterResponse` on the booking API (`CODE_REQUESTS`): no time inline.
+    invalidateSlots: 0,
+    deleteGcalMirrorBlock: 0,
   },
+  // The run's person read was four requests at once (each strong id on two columns, the
+  // email, the phone) and its save the seven calls #3495 folded into one.
+  requests: { ...CODE_REQUESTS, findActiveBookingsForPerson: 4, commitFreshBooking: 7 },
+  depth: { ...CODE_DEPTH, findActiveBookingsForPerson: 1 },
   candidateReadMs: { noneFree: 360, oneFree: 570, manyFree: 755 },
+  candidateReadRequests: CANDIDATE_READ_REQUESTS,
+  candidateReadDepth: CANDIDATE_READ_DEPTH,
   syncLaneCallers: 1,
 };
 
@@ -276,9 +340,9 @@ export const LOAD_RUN_DATABASE: DatabaseModel = {
  *     leader's stage under a burst, divided among the requests it makes). On #3514's runs
  *     37689851365 and 37716759688 three attempts timed `complete-reservation` at 491,
  *     371 and 204ms (the 742ms of two attempts, one lost to a race, split evenly). That
- *     stage holds three requests on the booking API (the idempotency read, the save and
- *     the slot refresh; the stray mirror's delete waits for the answer), so the median,
- *     371, is 124 a request. Pricing it instead as the stage less the slot refresh (527)
+ *     stage holds two requests on the booking API (the idempotency read and the save; the
+ *     slot refresh and the stray mirror's delete wait for the answer), so the median,
+ *     371, is 186 a request. Pricing it instead as the stage less the slot refresh (527)
  *     and charging that as six requests made the save's cut read as almost nothing.
  *   - `findActiveBookingsForPerson`: ESTIMATED, not measured. One request where four
  *     ran at once (each strong id on two columns, the email, the phone), so it is
@@ -289,10 +353,11 @@ export const STACK_DATABASE: DatabaseModel = {
   ...LOAD_RUN_DATABASE,
   callMs: {
     ...LOAD_RUN_DATABASE.callMs,
-    commitFreshBooking: 124,
+    commitFreshBooking: 186,
     findActiveBookingsForPerson: 90,
   },
-  requests: { commitFreshBooking: 1, findActiveBookingsForPerson: 1 },
+  requests: { ...CODE_REQUESTS, commitFreshBooking: 1, findActiveBookingsForPerson: 1 },
+  depth: CODE_DEPTH,
 };
 
 /** The shared line object as the run reached it. */
@@ -316,6 +381,11 @@ export interface DeferredModel {
   callerSeen: CallCost;
   /** A booking: the slot cache refresh after the confirm (`post-confirm-recompute`). */
   recompute: CallCost;
+  /** A booking: the webhook's first send, its delivery claim and its outcome (the load
+   *  test skips only the outside POST, `loadtestDeliveryResult`). */
+  webhookSend: CallCost;
+  /** A booking: the stray calendar mirror's delete, handed to `afterResponse`. */
+  mirrorDelete: CallCost;
   /** The shared line switch read a confirm makes on a cold switch cache, at its route's
    *  start and not waited on past its deadline (`shared-line-switch`). */
   switchRead: CallCost;
@@ -326,15 +396,22 @@ export interface DeferredModel {
  * answered): tally p50 315ms, failure page 260, caller seen 174, the switch read p50 402
  * (the followers whose only Supabase call it was). Each is ONE statement: that is what the
  * drain rates above require (a crowd's deferred writes drained at the one statement rate).
- * The slot cache refresh took 676 to 1606ms (p50 1291) after each burst 2 booking and is
- * many statements; how many is not in the tail, so it is TAKEN as its latency over the
- * mean statement (14). It runs once per booking and moves no burst's outcome either way.
+ * The slot cache refresh took 676 to 1606ms (p50 1291) after each burst 2 booking. On a
+ * create it is a SPLICE (`booked-splice.ts`): three reads at once, then four in turn
+ * (schedules, the cap count, busy time, the slot rows), then one write per code whose
+ * offered times changed, which is none while another advisor is still free at the time
+ * and every one of the advisor's codes when they were the last: 7 requests in 5 rounds,
+ * plus those writes, which this leaves out. Taken as 14 (its latency over a statement) until the
+ * code was counted on 2026-10-08. The webhook's first send is its claim and its outcome
+ * (2), the mirror's delete one; neither was in the tail, so each is a statement apiece.
  */
 export const LOAD_RUN_DEFERRED: DeferredModel = {
   tally: { latencyMs: 315, queries: 1 },
   failurePage: { latencyMs: 260, queries: 1 },
   callerSeen: { latencyMs: 174, queries: 1 },
-  recompute: { latencyMs: 1291, queries: 14 },
+  recompute: { latencyMs: 1291, queries: 7, depth: 5 },
+  webhookSend: { latencyMs: 180, queries: 2, depth: 2 },
+  mirrorDelete: { latencyMs: 90, queries: 1 },
   switchRead: { latencyMs: 402, queries: 1 },
 };
 
@@ -406,11 +483,12 @@ export function databaseCosts(
       // member, priced as the run measured a rung with one advisor free.
       const narrowed = (args[6] as { narrowTo?: string } | undefined)?.narrowTo !== undefined;
       const free = narrowed ? 1 : freeOnRung(bucket.code, args[2] as number);
-      const latencyMs = free === 0 ? db.candidateReadMs.noneFree : free === 1 ? db.candidateReadMs.oneFree : db.candidateReadMs.manyFree;
-      return { latencyMs, queries: statementsFor(latencyMs) };
+      const kind = free === 0 ? "noneFree" : free === 1 ? "oneFree" : "manyFree";
+      return { latencyMs: db.candidateReadMs[kind], queries: db.candidateReadRequests[kind], depth: db.candidateReadDepth[kind] };
     }
     const latencyMs = db.callMs[name] ?? db.meanStatementMs;
-    return { latencyMs, queries: db.requests?.[name] ?? statementsFor(latencyMs) };
+    const depth = db.depth?.[name];
+    return { latencyMs, queries: db.requests?.[name] ?? statementsFor(latencyMs), ...(depth !== undefined ? { depth } : {}) };
   };
 }
 
