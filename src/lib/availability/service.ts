@@ -10,7 +10,9 @@ import {
   capCountWindow,
   type MemberAvailability,
 } from "@/lib/availability/compute";
-import { loadBusinessHours } from "@/lib/booking/business-hours-load";
+import { businessHoursFromRows, loadBusinessHours, type BusinessHours } from "@/lib/booking/business-hours-load";
+import type { LadderInputs } from "@/lib/availability/ladder-inputs";
+import { log } from "@/lib/log";
 import { agentIdsFromPool, eligibleFromRoster } from "@/lib/availability/pool";
 import { lowCarrierIds, withoutLowCarriers } from "@/lib/availability/low-exclusion";
 import { poolServesLowExcludedRungs } from "@/lib/routing/tiers";
@@ -23,7 +25,7 @@ import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import { unfairOrderingAlert } from "@/lib/booking/alert-copy";
 import type { Attributes, Booking, Bucket, Criteria, EventType } from "@/lib/db/types";
-import { bufferedReadWindow, dropHeldAgents, parseLiveHolds, type LiveHold } from "@/lib/booking/reroute-hold";
+import { bufferedReadWindow, dropHeldAgents, parseLiveHolds, type LiveHold, type LiveHoldRow } from "@/lib/booking/reroute-hold";
 import { bufferedWindow } from "@/lib/booking/buffered-window";
 import { userIdsOnApprovedTimeOff } from "@/lib/ooo/approved-overlap";
 import type { CurrentAgentPicture, RoundRobinOpts } from "@/lib/booking/orchestration";
@@ -450,6 +452,102 @@ export function computeSlotsFromInputs(
   };
 }
 
+/** The share rows `rankBucketShare` orders by, as the bookings read answers them. */
+type ShareRead = (
+  bucketId: string,
+  candidateIds: string[],
+  anchorMs: number,
+) => Promise<{ data: { assigned_user_id: string | null; starts_at: string; created_at: string }[] | null; error: unknown }>;
+
+/**
+ * Where the candidate read gets its rows (#3489): the reads it always made, or the
+ * ladder read a confirm made ONCE for its whole walk (`ladder_candidate_inputs`). Only
+ * the source differs; `roundRobinCandidates` judges the rows the same way either way.
+ */
+interface CandidateReads {
+  /** The bucket's eligibility before any narrowing (`eligibleAgentIds` live). */
+  eligible: EligibleResolver;
+  members: typeof loadMembersAvailability;
+  businessHours: () => Promise<BusinessHours>;
+  holds: typeof loadLiveHolds;
+  share: ShareRead;
+}
+
+// Each reached at CALL time, as the candidate read always reached them: a module that
+// mocks one of these modules (vitest) supplies only what its own test calls.
+const LIVE_READS: CandidateReads = {
+  eligible: (bucket) => eligibleAgentIds(bucket),
+  members: (...args) => loadMembersAvailability(...args),
+  businessHours: () => loadBusinessHours(),
+  holds: (...args) => loadLiveHolds(...args),
+  share: (...args) => readBucketShare(...args),
+};
+
+/**
+ * The same reads answered from a ladder read (#3489). Each narrows the ladder's rows to
+ * what its live read asks for (the pool, the window, the bucket, the candidates), with
+ * the same filter, so the judge sees the rows it always saw: busy time overlapping the
+ * window (hold blocks left out on request), the live holds near the call, the share
+ * rows of the bucket's candidates in the two pay periods. Eligibility comes from the
+ * SAME roster judge the live read and the booked window splice use (`eligibleFromRoster`).
+ */
+function ladderReads(inputs: LadderInputs): CandidateReads {
+  return {
+    eligible: async (bucket) => eligibleFromRoster(bucket, inputs.orgAgents(bucket.org_id), inputs.membersOf(bucket.id)),
+    members: async (bucket, from, to, resolveEligible = eligibleAgentIds, opts) => {
+      const { ids: userIds, lowIds } = await resolveEligible(bucket);
+      if (userIds.length === 0) return { members: [], lowIds };
+      const pool = new Set(userIds);
+      const fromMs = Date.parse(from);
+      const toMs = Date.parse(to);
+      const schedules = inputs.schedules.filter((sc) => pool.has(sc.user_id));
+      const scheduleIds = new Set(schedules.map((sc) => sc.id));
+      const busy = inputs.busy.filter(
+        (b) =>
+          pool.has(b.user_id) &&
+          Date.parse(b.starts_at) < toMs &&
+          Date.parse(b.ends_at) > fromMs &&
+          !(opts?.excludeHoldBlocks && b.source === "hold"),
+      );
+      return {
+        members: assembleMemberAvailability(
+          userIds,
+          schedules,
+          inputs.rules.filter((r) => scheduleIds.has(r.schedule_id)),
+          busy,
+          parseDayCounts(inputs.dayCounts),
+        ),
+        lowIds,
+      };
+    },
+    businessHours: async () => businessHoursFromRows(inputs.businessHours, inputs.exceptions),
+    holds: async (userIds, startMs, endMs, eventType) => {
+      if (userIds.length === 0) return [];
+      const [from, to] = bufferedWindow(eventType, new Date(startMs).toISOString(), new Date(endMs).toISOString());
+      const who = new Set(userIds);
+      const rows: LiveHoldRow[] = inputs.holds.filter(
+        (h) => who.has(h.agent_user_id) && Date.parse(h.buffered_starts_at) < Date.parse(to) && Date.parse(h.buffered_ends_at) > Date.parse(from),
+      );
+      return parseLiveHolds(rows);
+    },
+    share: async (bucketId, candidateIds, anchorMs) => {
+      const { fromMs, toMs } = shareWindow(anchorMs);
+      const who = new Set(candidateIds);
+      return {
+        data: inputs.shares.filter(
+          (r) =>
+            r.bucket_id === bucketId &&
+            r.assigned_user_id !== null &&
+            who.has(r.assigned_user_id) &&
+            Date.parse(r.starts_at) >= fromMs &&
+            Date.parse(r.starts_at) < toMs,
+        ),
+        error: null,
+      };
+    },
+  };
+}
+
 /**
  * Round-robin candidate order for a specific slot: the cached-free members,
  * ordered least-recently-booked first (the agent booked longest ago, or never,
@@ -486,11 +584,18 @@ export async function roundRobinCandidates(
     new Date(startMs).toISOString(),
     new Date(endMs).toISOString(),
   );
+  // #3489: from the ladder read when the walk made one and this rung's window is inside
+  // it; a rung outside it is read on its own, never judged from rows that stop short.
+  const ladder = opts.inputs;
+  const reads = ladder && ladder.covers(readFrom, readTo) ? ladderReads(ladder) : LIVE_READS;
+  if (ladder && reads === LIVE_READS) {
+    log.warn("availability", { msg: "a rung's window is outside the ladder read's, so it is read on its own", bucket: bucket.code });
+  }
   // The candidate list runs the SAME predicate the booker's display does, so it must
   // see the same org window (#1295): otherwise a direct-API book at a closed hour
   // would find candidates the booker would never have offered.
   const [pool, businessHours] = await Promise.all([
-    loadMembersAvailability(
+    reads.members(
       bucket,
       readFrom,
       readTo,
@@ -498,14 +603,14 @@ export async function roundRobinCandidates(
       // handed, after the Low exclusion, never the named link shortcut.
       ((resolver: EligibleResolver) => (opts.narrowTo !== undefined ? narrowedTo(resolver, opts.narrowTo) : resolver))(
         excludeLow
-          ? lowExcludedResolver(eligibleAgentIds)
+          ? lowExcludedResolver(reads.eligible)
           : onlyUserId !== undefined
             ? namedAgentResolver(onlyUserId)
-            : eligibleAgentIds,
+            : reads.eligible,
       ),
       { excludeHoldBlocks: true },
     ),
-    loadBusinessHours(),
+    reads.businessHours(),
   ]);
   const members = pool.members;
 
@@ -532,7 +637,7 @@ export async function roundRobinCandidates(
     ? judged
     : dropHeldAgents(
         judged,
-        await loadLiveHolds(judged, startMs, endMs, eventType),
+        await reads.holds(judged, startMs, endMs, eventType),
         {
           startMs,
           endMs,
@@ -557,6 +662,7 @@ export async function roundRobinCandidates(
       startMs,
       "verify-on-book candidate order",
       preview,
+      reads.share,
     ),
     memberCount,
   };
@@ -664,30 +770,39 @@ async function rankBucketShare(
   anchorMs: number,
   context: string,
   preview = false,
+  read: ShareRead = readBucketShare,
 ): Promise<string[]> {
   if (candidateIds.length <= 1) return candidateIds;
   const period = payPeriod(anchorMs);
-  const priorStartMs = payPeriod(period.startMs - 1).startMs;
-  const share = bucketShareFromResult(
-    await supabaseAdmin()
-      // cap-safe: one bucket's bookings across two pay periods, scoped to the tier's candidate agents.
-      .from("bookings")
-      .select("assigned_user_id, starts_at, created_at")
-      .eq("bucket_id", bucketId)
-      // #2073: a named link booking was never a share of this bucket's routing,
-      // so counting it would push its agent down the order for leads they never
-      // received through the pool.
-      .eq("kind", "routed")
-      .gte("starts_at", new Date(priorStartMs).toISOString())
-      .lt("starts_at", new Date(period.endMs).toISOString())
-      .in("assigned_user_id", candidateIds)
-      .in("status", ["confirmed", "rescheduled", "completed"]),
-    period.startMs,
-  );
+  const share = bucketShareFromResult(await read(bucketId, candidateIds, anchorMs), period.startMs);
   // A dry-run preview (#380) is not a real assignment, so it must not page on a
   // degraded share.
   if (share.degraded && !preview) await alertUnfairOrdering(context);
   return orderByBucketShare(candidateIds, share);
+}
+
+/** The two pay periods the share is judged over: the slot's, and the one before it. */
+function shareWindow(anchorMs: number): { fromMs: number; toMs: number } {
+  const period = payPeriod(anchorMs);
+  return { fromMs: payPeriod(period.startMs - 1).startMs, toMs: period.endMs };
+}
+
+/** One bucket's bookings across the share window, for its candidates (`rankBucketShare`). */
+async function readBucketShare(bucketId: string, candidateIds: string[], anchorMs: number) {
+  const { fromMs, toMs } = shareWindow(anchorMs);
+  return await supabaseAdmin()
+    // cap-safe: one bucket's bookings across two pay periods, scoped to the tier's candidate agents.
+    .from("bookings")
+    .select("assigned_user_id, starts_at, created_at")
+    .eq("bucket_id", bucketId)
+    // #2073: a named link booking was never a share of this bucket's routing,
+    // so counting it would push its agent down the order for leads they never
+    // received through the pool.
+    .eq("kind", "routed")
+    .gte("starts_at", new Date(fromMs).toISOString())
+    .lt("starts_at", new Date(toMs).toISOString())
+    .in("assigned_user_id", candidateIds)
+    .in("status", ["confirmed", "rescheduled", "completed"]);
 }
 
 export interface RoutingResolution {

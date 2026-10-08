@@ -69,6 +69,9 @@ export const ON_DATABASE: ReadonlySet<string> = new Set([
   // stub sits below those reads, so a load run pays them too. Google's own time is still
   // the profile's, set on the fake.
   "verifyFree",
+  // #3489: the walk's ladder read (`ladder_candidate_inputs`, 0176), one request for
+  // every rung's candidate inputs; a rung judged from it reads nothing of its own.
+  "readLadderInputs",
   "findActiveBookingsForPerson",
   "resolveBucketByCode",
   "findBookingByIdempotencyKey",
@@ -348,6 +351,12 @@ export const LOAD_RUN_DATABASE: DatabaseModel = {
  *     ran at once (each strong id on two columns, the email, the phone), so it is
  *     priced as one statement call (90) until a run on the stack measures the
  *     person decision stage.
+ *   - `readLadderInputs`: ESTIMATED, not measured. One request carrying every rung's
+ *     candidate inputs (the org roster, schedules, two and a half hours of busy time,
+ *     a week of counts, the share rows), so a heavier answer than one statement's:
+ *     priced at 200ms until a run on the stack measures the `ladder-read` stage. A
+ *     rung judged from it reads nothing. The what if grid on #3489 (2026-10-08) put
+ *     the bursts' verdicts within the bar from 150 to 300ms for a one request read.
  */
 export const STACK_DATABASE: DatabaseModel = {
   ...LOAD_RUN_DATABASE,
@@ -355,8 +364,9 @@ export const STACK_DATABASE: DatabaseModel = {
     ...LOAD_RUN_DATABASE.callMs,
     commitFreshBooking: 186,
     findActiveBookingsForPerson: 90,
+    readLadderInputs: 200,
   },
-  requests: { ...CODE_REQUESTS, commitFreshBooking: 1, findActiveBookingsForPerson: 1 },
+  requests: { ...CODE_REQUESTS, commitFreshBooking: 1, findActiveBookingsForPerson: 1, readLadderInputs: 1 },
   depth: CODE_DEPTH,
 };
 
@@ -478,6 +488,8 @@ export function databaseCosts(
     // A call in neither list would be priced on a guess; refuse it by name instead.
     if (!ON_DATABASE.has(name)) throw new Error(`the load model has not classified ${name}: add it to ON_DATABASE or OFF_DATABASE`);
     if (name === "roundRobinCandidates") {
+      // #3489: judged from the walk's ladder read, so nothing of its own is read.
+      if ((args[6] as { inputs?: unknown } | undefined)?.inputs !== undefined) return { latencyMs: 0, queries: 0 };
       const bucket = args[0] as { code: string };
       // #3489: a read narrowed to the one advisor the line handed (`narrowTo`) reads one
       // member, priced as the run measured a rung with one advisor free.

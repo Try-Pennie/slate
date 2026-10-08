@@ -3,6 +3,7 @@
 // tsconfig path aliases, and type-only "@/" imports below are erased anyway.
 import { RerouteRefusedError, type RerouteSwapArgs } from "./reroute.ts";
 import type { RerouteSwapRefusal } from "../db/reroute-hold-refusals.ts";
+import type { LadderInputs } from "../availability/ladder-inputs.ts";
 import { toE164 } from "../phone.ts";
 import { mapWithConcurrency } from "../concurrency.ts";
 import { DateTime } from "luxon";
@@ -1203,6 +1204,18 @@ export interface BookingDeps {
      */
     opts?: RoundRobinOpts,
   ): Promise<{ candidates: string[]; memberCount: number }>;
+  /**
+   * #3489: everything the candidate read needs for every rung of `codes` (a ladder, top
+   * first) in ONE request (`ladder_candidate_inputs`), for a slot at `startIso` whose
+   * requested rung has `eventType`. A walk makes it once and judges each rung from it
+   * (`RoundRobinOpts.inputs`) and takes each lower rung's bucket from it, rather than
+   * reading every rung with seven to nine requests of its own and a bucket read. THROWS
+   * on a failed or unreadable read, as the reads it replaces did.
+   *
+   * Optional: deps without it (the fakes, unless a suite opts in) walk the ladder with
+   * the separate reads, exactly as before.
+   */
+  readLadderInputs?(codes: readonly string[], startIso: string, eventType: EventType): Promise<LadderInputs>;
   /**
    * The ORG's opening hours (#1295, gate 1). Used by the two paths in this module
    * that judge a slot themselves: the in-place reschedule guard, and `checkBookable`,
@@ -2579,9 +2592,11 @@ async function assignAgent(
    * advisor alone, judged through the pool's own resolver (`narrowTo`), and already
    * claimed for it, so it is not claimed again.
    */
-  line: { place?: ClaimPlace; handed?: StartFrom } = {},
+  line: { place?: ClaimPlace; handed?: StartFrom; inputs?: LadderInputs } = {},
 ): Promise<AssignResult & { candidates: string[]; read: string[] }> {
   const handed = line.handed;
+  // #3489: a walk's ladder read, so this rung is judged from rows already in hand.
+  const walk: RoundRobinOpts = { ...(handed ? { narrowTo: handed.advisor } : {}), ...(line.inputs ? { inputs: line.inputs } : {}) };
   const { candidates: ranked, memberCount } = await deps.roundRobinCandidates(
     bucket,
     eventType,
@@ -2589,7 +2604,7 @@ async function assignAgent(
     preview,
     onlyUserId,
     excludeLow,
-    reroute ? { fixedTime: true, forBookingId: reroute.forBookingId } : handed ? { narrowTo: handed.advisor } : undefined,
+    reroute ? { fixedTime: true, forBookingId: reroute.forBookingId } : Object.keys(walk).length > 0 ? walk : undefined,
   );
   const read = (
     reroute
@@ -2729,6 +2744,11 @@ export interface RoundRobinOpts {
    * the read a confirm the line released makes for the advisor it was handed.
    */
   narrowTo?: string;
+  /**
+   * #3489: the walk's ladder read (`BookingDeps.readLadderInputs`), so this rung is judged
+   * from rows already in hand rather than read with seven to nine requests of its own.
+   */
+  inputs?: LadderInputs;
 }
 
 /**
@@ -3005,14 +3025,22 @@ async function assignAgentWithTierFallback(
   let spentByClaims = false;
   // Whether a rung has one below it, which decides whether claiming its last advisor
   // hands the line on (`ClaimPlace.below`).
-  const ladderLength = tierLadder(requested.bucket.code).length;
+  const ladderCodes = tierLadder(requested.bucket.code);
+  const ladderLength = ladderCodes.length;
+  // #3489: the whole ladder's candidate inputs in ONE request, so a walk costs one read
+  // however many rungs it crosses, and a lower rung's bucket is taken from it too. A
+  // read that fails throws here, before any rung, as a failed rung read did.
+  const ladder = deps.readLadderInputs
+    ? await timeStage(deps.profile, "ladder-read", () => deps.readLadderInputs!(ladderCodes, startInstantIso, requested.eventType))
+    : null;
+  const inputs = ladder ? { inputs: ladder } : {};
   const winner = await walkTierLadder<Omit<TierAssignResult, "rungsDropped">>(
     requested.bucket.code,
     // #3489: a confirm handed a rung starts there; the rungs above it were read spent by
     // the leader whose read it was handed.
     (rungCode, i) => (resume && i < resume.rung) || (handed && i < handed.rung) ? Promise.resolve(skipped) : timeRung(rungCode, async (): Promise<RungOutcome<Omit<TierAssignResult, "rungsDropped">>> => {
       const rungStartedAtMs = Date.now();
-      const resolved = i === 0 ? requested : await deps.resolveBucketByCode(rungCode);
+      const resolved = i === 0 ? requested : ladder ? ladder.bucket(rungCode) : await deps.resolveBucketByCode(rungCode);
       if (!resolved) return { hit: false }; // a lower tier with no bucket row: skip
       if (resolved.bucket.is_test && !allowTestBuckets) return { hit: false };
       const { startIso, endIso } = bookingWindow(startInstantIso, resolved.eventType.duration_min);
@@ -3026,7 +3054,7 @@ async function assignAgentWithTierFallback(
       if (handed && i === handed.rung && !exclude.includes(handed.advisor)) {
         try {
           const { userId, email, candidates, read } = await assignAgent(
-            deps, resolved.bucket, resolved.eventType, startIso, endIso, preview, undefined, excludeLow, seat, undefined, exclude, { handed },
+            deps, resolved.bucket, resolved.eventType, startIso, endIso, preview, undefined, excludeLow, seat, undefined, exclude, { handed, ...inputs },
           );
           return {
             hit: true,
@@ -3043,7 +3071,7 @@ async function assignAgentWithTierFallback(
       }
       try {
         const { userId, email, candidates, read } = await assignAgent(
-          deps, resolved.bucket, resolved.eventType, startIso, endIso, preview, undefined, excludeLow, seat, undefined, exclude, { place: { rung: i, canWalk: true, below: i < ladderLength - 1 } },
+          deps, resolved.bucket, resolved.eventType, startIso, endIso, preview, undefined, excludeLow, seat, undefined, exclude, { place: { rung: i, canWalk: true, below: i < ladderLength - 1 }, ...inputs },
         );
         return {
           hit: true,

@@ -93,6 +93,11 @@ export async function loadBusinessHoursExceptions(
       .limit(400),
     "business_hours_exceptions",
   ) ?? []) as BusinessHoursException[];
+  return exceptionsFromRows(rows);
+}
+
+/** The exceptions from rows already read, the unreadable ones reported (#1363). */
+function exceptionsFromRows(rows: BusinessHoursException[]): BusinessHoursException[] {
   const { exceptions, unreadable } = resolveBusinessHoursExceptions(rows);
   if (unreadable.length > 0) {
     // Loud, because an unreadable row shuts NOTHING: the day it was meant to
@@ -113,7 +118,23 @@ export async function loadBusinessHours(): Promise<BusinessHours> {
     await db.from("business_hours").select("weekday, is_open, start_minute, end_minute"),
     "business_hours",
   ) ?? []) as BusinessHoursRow[];
+  const week = weekFromRows(rows);
+  const today = DateTime.now().setZone(BUSINESS_ZONE).toISODate() ?? "1970-01-01";
+  const exceptions = await loadBusinessHoursExceptions(today);
+  return { zone: BUSINESS_ZONE, ...week, exceptions };
+}
 
+/**
+ * The org's business hours from rows ALREADY read (#3489, the ladder read): the same
+ * resolution `loadBusinessHours` applies to its own two reads, throws and warnings
+ * included, so the two can never judge one stored week differently.
+ */
+export function businessHoursFromRows(rows: BusinessHoursRow[], exceptionRows: BusinessHoursException[]): BusinessHours {
+  return { zone: BUSINESS_ZONE, ...weekFromRows(rows), exceptions: exceptionsFromRows(exceptionRows) };
+}
+
+/** The open windows of a stored week, or a throw when the week cannot be trusted. */
+function weekFromRows(rows: BusinessHoursRow[]): Pick<BusinessHours, "rules" | "source"> {
   const resolved = resolveBusinessHours(rows);
   if (!resolved.ok) {
     // A stored week we cannot trust is not something to paper over: widening hours
@@ -127,9 +148,7 @@ export async function loadBusinessHours(): Promise<BusinessHours> {
       rows: rows.length,
     });
   }
-  const today = DateTime.now().setZone(BUSINESS_ZONE).toISODate() ?? "1970-01-01";
-  const exceptions = await loadBusinessHoursExceptions(today);
-  return { zone: BUSINESS_ZONE, rules: resolved.rules, exceptions, source: resolved.source };
+  return { rules: resolved.rules, source: resolved.source };
 }
 
 /**

@@ -52,6 +52,7 @@ import { withinBookingConfirmBudget, BOOKING_CONFIRM_BUDGET_MS } from "../src/li
 import { makeConfirmQueue, isolateLine, CONFIRM_QUEUE_WAIT_MS, CONFIRM_LINE_LOOKAHEAD, type ConfirmLine, type LineTurn } from "../src/lib/booking/confirm-queue.ts";
 import type { Booking, User } from "../src/lib/db/types.ts";
 import type { BookingContext } from "../src/lib/booking/orchestration.ts";
+import type { LadderInputs } from "../src/lib/availability/ladder-inputs.ts";
 import { createAsserter, makeDeps, makeBooking, input, users, bucket as fakeBucket, eventType as fakeEventType } from "./lib/booking-fakes.ts";
 import { VirtualClock, SharedResource, onSharedCapacity, occupy, objectOnClock, type CallRecord, type CallCost } from "./lib/confirm-contention-sim.ts";
 import {
@@ -70,6 +71,7 @@ import {
   type LoadProfile,
 } from "./lib/confirm-load-model.ts";
 import { makeConfirmLineHost, makeConfirmLineObject } from "../src/lib/booking/confirm-line-object.ts";
+import { BURST_LOSER_LAG_MS } from "./loadtest/judge-booking-run.ts";
 import { makeSharedConfirmLine } from "../src/lib/booking/shared-confirm-line.ts";
 import { CONFIRM_CROWD_RULE, type ConfirmCrowdRule } from "../src/lib/confirm-crowd-rule.ts";
 import { makeCommitCostLog } from "../src/lib/booking/commit-cost.ts";
@@ -242,6 +244,12 @@ async function burst(opts: {
    * calibration replays run 37640583621 with: that run's line had none of them.
    */
   olderClient?: boolean;
+  /**
+   * #3489: the confirms read their whole ladder's candidate inputs in one request
+   * (`BookingDeps.readLadderInputs`), as the stack does; the run's code never did, so
+   * the calibration leaves it off.
+   */
+  ladderRead?: boolean;
   model?: {
     profile: LoadProfile;
     arrivals: readonly Arrival[];
@@ -372,6 +380,12 @@ async function burst(opts: {
         groupings.push({ lineGroupOf: (code) => ladderGroupOf(code, store.peek), ensure: opts.grouping.fetch ? () => reader.ensure() : null });
       }
     }
+    const bucketFor = (code: string) => {
+      if (!opts.poolByCode) return { bucket: { ...fakeBucket, code } as typeof fakeBucket, eventType: fakeEventType };
+      return opts.poolByCode[code]
+        ? { bucket: { ...fakeBucket, code, id: `bkt-${code}` } as typeof fakeBucket, eventType: fakeEventType }
+        : null;
+    };
     let personReads = 0;
     // When the last slow reservation delete finished, from the burst's start.
     const cleanup = { endedMs: null as number | null };
@@ -432,12 +446,17 @@ async function burst(opts: {
       // top rung, and a code with no pool has no bucket row. Without one, the
       // requested code keeps the fixture's bucket id, so a lead holding a call in
       // it is in the same bucket.
-      resolveBucketByCode: async (code: string) => {
-        if (!opts.poolByCode) return { bucket: { ...fakeBucket, code } as typeof fakeBucket, eventType: fakeEventType };
-        return opts.poolByCode[code]
-          ? { bucket: { ...fakeBucket, code, id: `bkt-${code}` } as typeof fakeBucket, eventType: fakeEventType }
-          : null;
-      },
+      resolveBucketByCode: async (code: string) => bucketFor(code),
+      // #3489: the walk's one ladder read. The fake candidate read below answers from the
+      // bookings whatever it is handed, so the read carries only the rungs' buckets.
+      ...(opts.ladderRead
+        ? {
+            readLadderInputs: async (codes: readonly string[]) => {
+              const known = new Map(codes.map((code) => [code, bucketFor(code)]));
+              return { bucket: (code: string) => known.get(code) ?? null, covers: () => true } as unknown as LadderInputs;
+            },
+          }
+        : {}),
       roundRobinCandidates: async (b, _e, startMs) => {
         const taken = (id: string) => {
           const slot = `${id}|${new Date(startMs).toISOString()}`;
@@ -724,6 +743,7 @@ async function replay(
     queue: "real",
     isolates: { count: shape.isolates, line },
     ...(over.olderClient ? { olderClient: true } : {}),
+    ...(profile.name.startsWith("stack") ? { ladderRead: true } : {}),
     slowGoogleMs: profile.googleCheckMs || undefined,
     slowEventMs: profile.googleWriteMs || undefined,
     model: {
@@ -774,7 +794,10 @@ async function main() {
     assert(got.twice.length === 0, `load model: no dependency is classified twice (${got.twice.join(", ")})`);
     // Stale is asked of the model's own two lists: the suite's synchronous set also names
     // optional dependencies the base fake leaves out (`lineGroupOf`, `deferSend`).
-    const modelStale = classifyDeps(names, { onDatabase: ON_DATABASE, offDatabase: OFF_DATABASE }).stale;
+    // Optional dependencies the base fake leaves out ON PURPOSE, so a suite walks the
+    // ladder the old way unless it opts in; the load model still prices them.
+    const OPTIONAL_IN_FAKES = ["readLadderInputs"];
+    const modelStale = classifyDeps([...names, ...OPTIONAL_IN_FAKES], { onDatabase: ON_DATABASE, offDatabase: OFF_DATABASE }).stale;
     assert(modelStale.length === 0, `load model: nothing the model classifies is missing from the deps (stale: ${modelStale.join(", ")})`);
     // Control (L1): a dependency nobody classified is caught by name.
     const planted = classifyDeps([...names, "readSomethingNew"], sets);
@@ -894,63 +917,58 @@ async function main() {
     }
     // The person read the run's code made was four requests at once (each strong id on
     // two columns, the email, the phone); the stack's is one.
+    // #3489: the walk's ladder read is one request on the stack, and a rung judged from it
+    // reads nothing of its own, whatever the cache shows free.
+    const stackPrice = databaseCosts(STACK_LOAD_RUN_PROFILE.database, () => 5);
+    assert(stackPrice("readLadderInputs", [])?.queries === 1, `load model (stack): the ladder read is one request (got ${stackPrice("readLadderInputs", [])?.queries})`);
+    const judged = stackPrice("roundRobinCandidates", [{ code: "100" }, null, 0, false, undefined, false, { inputs: {} }]);
+    assert(judged?.queries === 0 && judged.latencyMs === 0, `load model (stack): a rung judged from the ladder read makes no request (got ${JSON.stringify(judged)})`);
     const oldPerson = databaseCosts(LOAD_RUN_PROFILE.database, () => 0)("findActiveBookingsForPerson", []);
     assert(oldPerson?.queries === 4 && oldPerson.depth === 1, `load model (load run): the old person read is four requests at once (got ${oldPerson?.queries} in ${oldPerson?.depth})`);
     assert(OFF_DATABASE.has("verifyFree") === false && ON_DATABASE.has("verifyFree"), "load model: the live check is classified on the database");
   }
 
-  // --- #3489 step 0: the load model, calibrated against load run 37640583621 --
+  // --- #3489: the burst bar, asked of the load model on the stack ---------------------
   //
-  // CALIBRATION, not a target. The model (`scripts/lib/confirm-load-model.ts`) replays
-  // each burst of that run on #3437's crowd rule (walks), on the shared line the run
-  // used, and must give the run's SHAPE: who booked and on which rung, how everybody
-  // else was answered, and when, within a second. A second is about the spread of the
-  // run's own answers inside one outcome (burst 1's 99 SLOT_TAKEN spread 0.2s, burst 3's
-  // 98 retries 3.8s), so matching closer would be fitting noise. These cases describe the
-  // behaviour #3489 exists to change; its later steps REPLACE them with the burst bar's
-  // target (every free advisor booked, the rest told taken within 2s), never keep both.
+  // The model (`scripts/lib/confirm-load-model.ts`) was CALIBRATED against load run
+  // 37640583621 on #3437's own head (#3494): each burst reproduced the run's shape, who
+  // booked on which rung and how everybody else was answered, within a second. That
+  // replays the code the run ran, which this branch no longer has: the one call save
+  // (#3495), the one request person read (#3476), the ladder read and the line's step 3
+  // rules all change what a confirm does. So, as #3489's plan said from the start, the
+  // calibration is REPLACED here by the burst bar's target, never kept beside it: what
+  // the judge asks of each burst (`judgeBurstLeg`), asked of the model of the stack.
+  // The replay of the run's own code is still printed beside each, for the record.
   {
-    const TOLERANCE_MS = 1_000;
-    const near = (a: number, b: number) => Math.abs(a - b) <= TOLERANCE_MS;
-    const shapeOf = (x: Replayed) => `${x.booked.map((b) => b.rungsDropped).join(",")} | ${Object.entries(x.others).map(([k, o]) => `${o.count} ${k}`).join(", ")}`;
     for (const shape of RUN_37640583621) {
-      const tag = `#3489 calibration, ${shape.label}`;
-      const m = shape.measured;
-      // The run's line had none of #3489's rules, so it is replayed as its client was.
-      const got = await replay(shape, LOAD_RUN_PROFILE, "shared", { olderClient: true });
+      const tag = `#3489 burst bar (model, stack load run), ${shape.label}`;
+      // Distinct advisors: the ladder's pools overlap, so one advisor can be free on several rungs.
+      const free = new Set(Object.values(shape.rungs).flatMap((r) => r.free)).size;
+      const want = Math.min(free, shape.arrivals.length);
+      const got = await replay(shape, STACK_LOAD_RUN_PROFILE, "shared");
       assert(!got.doubleBooked, `${tag}: no advisor is booked twice`);
+      assert(got.booked.length === want, `${tag}: every free advisor the crowd can fill is booked, ${want} (got ${describe(got)})`);
       assert(
-        JSON.stringify(got.booked.map((b) => b.rungsDropped)) === JSON.stringify(m.booked.map((b) => b.rungsDropped)),
-        `${tag}: books as many as the run did, on the same rungs (got ${describe(got)})`,
+        Object.keys(got.others).every((k) => k === "SLOT_TAKEN"),
+        `${tag}: everybody else is told the time is taken, never to retry (got ${describe(got)})`,
       );
-      got.booked.forEach((b, k) => {
-        const want = m.booked[k];
-        assert(want !== undefined && near(b.atMs, want.atMs), `${tag}: booking ${k + 1} answered within ${TOLERANCE_MS}ms of the run's ${want?.atMs}ms (got ${b.atMs}ms)`);
-      });
-      const others = got.others[m.others.outcome];
+      const lastBooked = maxOf(got.booked.map((b) => b.atMs));
+      const taken = got.others.SLOT_TAKEN;
       assert(
-        Object.keys(got.others).length === 1 && others?.count === m.others.count,
-        `${tag}: every other confirm answered ${m.others.outcome}, ${m.others.count} of them (got ${describe(got)})`,
+        taken === undefined || taken.maxMs - lastBooked <= BURST_LOSER_LAG_MS,
+        `${tag}: and told within ${BURST_LOSER_LAG_MS}ms of the last booking, the judge's bound (got ${taken ? Math.round(taken.maxMs - lastBooked) : 0}ms)`,
       );
-      assert(
-        others !== undefined && near(others.firstMs, m.others.firstMs) && near(others.p50Ms, m.others.p50Ms),
-        `${tag}: their first and median answers within ${TOLERANCE_MS}ms of the run's ${m.others.firstMs} and ${m.others.p50Ms}ms (got ${others?.firstMs} and ${others?.p50Ms})`,
-      );
-      // The split of the database's measured drain rate (slots over statement time) is
-      // the one TUNED figure, so what the other whole split gives is recorded beside it
-      // (`DatabaseModel.slots` says what it moves).
-      const oneSlot = await replay(shape, LOAD_RUN_PROFILE, "shared", { slots: 1, olderClient: true });
-      console.log(`${tag}: ${describe(got)}; with one slot at the same drain rate: ${shapeOf(oneSlot)}`);
+      const ran = await replay(shape, LOAD_RUN_PROFILE, "shared", { olderClient: true });
+      console.log(`${tag}: ${describe(got)}. The run's own code replayed: ${describe(ran)}`);
     }
-    // Control (L1): the calibration can fail. The tier drop burst's twelve confirms barely
-    // queue, so what decides how many book is each call's own latency, one call after
-    // another: at half the measured latencies the line serves more of the free ladder
-    // than the run did, and the cases above would refuse that shape.
+    // Control (L1): the bar can fail. Priced at the run's own database cost, with none of
+    // the stack's cuts (every rung read with requests of its own, the save as the seven
+    // calls it replaced), the tier drop burst books fewer than its twelve.
     const drop = RUN_37640583621[1]!;
-    const fast = await replay(drop, LOAD_RUN_PROFILE, "shared", { latencyScale: 0.5, olderClient: true });
+    const old = await replay(drop, LOAD_RUN_PROFILE, "shared");
     assert(
-      fast.booked.length > drop.measured.booked.length,
-      `#3489 calibration control: at half the measured call latency the tier drop burst books more than the run's ${drop.measured.booked.length} (got ${describe(fast)})`,
+      old.booked.length < drop.arrivals.length,
+      `#3489 burst bar control: at the run's own database cost the tier drop burst misses the bar (got ${describe(old)})`,
     );
     // What the same model says about the configurations the run did not measure,
     // recorded and not asserted (#3489's PR carries them): the per isolate line, which
