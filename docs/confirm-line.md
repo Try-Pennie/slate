@@ -31,21 +31,25 @@ full", and the line's existing hand on makes the next confirm the leader. It wal
 from the top like any confirm: the advisor just booked reads as busy in the write
 through cache, so it drops that rung for one candidate read, and on a rung with
 unclaimed advisors the #3257 hand on lets the confirms behind it lead at once, one
-per unclaimed advisor. Nothing about the line itself changed: no new verdict field,
-no start rung, no protocol change, no release of the whole crowd at once (each of
-those would bring back #3221 or run 37333201026). It is the same on the per isolate
-line, which production runs, and on the shared line.
+per unclaimed advisor. As #3338 shipped it, nothing about the line itself changed:
+no new verdict field, no start rung, no protocol change, no release of the whole crowd
+at once. #3489 since added a bounded release, a walk past claimed rungs and parking,
+each in the section below, because the line served a walking crowd only one confirm
+every two to three seconds. It is the same on the per isolate line, which production
+runs, and on the shared line.
 
 A confirm whose insert loses the race walks on down the same way, from the rung it
 lost on, but only when what its budget has left covers what the attempt that lost
 cost it. With less left it is told to retry (the dependency timeout, 503).
 
-The honest limit: each step down costs the next confirm its reads before the line,
-and the confirm booking a rung's last advisor holds the line for its whole confirm
-(it may yet fail and free that advisor, #3257). At production speed (about eight
-seconds a confirm) a crowd arriving together behind the top rung's last advisor
-cannot reach the rung below inside its 12 second budget, so it is told to retry
-rather than "taken"; a lead arriving a few seconds behind the first books below.
+The honest limit, as #3338 left it: each step down cost the next confirm its reads
+before the line, and the confirm booking a rung's last advisor held the line for its
+whole confirm (it may yet fail and free that advisor, #3257). Since #3489 a confirm
+that can walk hands the line on at once when it claims a rung's last advisor and a
+rung is below (the section below). At production speed (about eight seconds a
+confirm, most of it Google) a crowd arriving together behind the top rung's last
+advisor still cannot all book inside its 12 second budget, so the rest are told to
+retry rather than "taken"; a lead arriving a few seconds behind the first books below.
 Counted on /admin/routing beside the tier drops (`routing_trace.dropped_behind`).
 
 Told to retry means nothing was started. Any confirm, a follower promoted late
@@ -59,6 +63,48 @@ answer) and are under 14 seconds old, and never less than the confirm's own slow
 Google call. The age bound is what stops one slow chain holding an isolate's later
 confirms out for good, since a refused confirm records nothing (L465). In the simulation, a crowd of 100 at production
 speed: 1 booked, 99 told to retry, 0 told taken, 0 reservations or events left.
+
+## Releasing the crowd, walking past claims, and parking (#3489)
+
+Load run 37640583621 showed #3338's walk working and the line serving it one confirm
+every two to three seconds, so a crowd's tier drop booked four of twelve. Three rules
+were added, all in `makeConfirmQueue`, all optional on protocol 1 (an older client or
+object leaves each field out, and the line keeps its rules from before):
+
+- **The frontier and the release.** A confirm reading a rung names it on `claimFirst`
+  (`ClaimPlace`), so its read becomes the line's frontier. Handing the line on releases
+  one waiting confirm per advisor on the frontier nobody has claimed, each handed its
+  advisor (`StartFrom`) and claimed for it, so two are never handed one. A released
+  confirm reads that advisor alone through the pool's own resolver (`narrowTo`) and,
+  when they cannot take the time, reads the rung in full. How an advisor's claim ended
+  (`ClaimOutcome`) decides whether they go back on the frontier.
+- **Walking past claims (`canWalk`).** To a confirm that can walk (a new booking's walk
+  or a lost race's, never a reschedule, a move or a named link), a rung every candidate
+  of which another confirm in flight has claimed is SPENT, and it walks on. Claiming a
+  rung's last advisor hands the line on when a rung is below (`below`), so the confirms
+  behind walk down at once rather than wait out the whole confirm.
+- **Parking and the held verdict.** A walk that reached the bottom having skipped a rung
+  only for claims PARKS (`park`): it ends its turn without a verdict and waits like a
+  follower. A full verdict reported while claims are in flight is HELD (`pending`), and
+  applied to everybody waiting when the last of them ends booked, answered with the
+  settlement that booking read as it ended (who sits at the instant). Any claim ending
+  WITHOUT a booking bumps the line's `epoch`, which discards the held verdict and lets
+  one confirm read again, since an advisor may be free. A walker that parks once every
+  claim it skipped has already BOOKED (no claim in flight, the epoch unmoved since it
+  met the first spent rung) leads again at once marked `spent`: its own walk proves the
+  ladder spent, so it refuses with what it found rather than the next confirm walking
+  the whole ladder again. A booking reads who is seated only when it saw a crowd.
+
+**One read for the whole ladder.** Each rung used to cost its walker seven to nine
+database requests and each lower rung a bucket read, and request COUNT is what queues a
+crowd (#3492). A walk now makes one (`BookingDeps.readLadderInputs`,
+`ladder_candidate_inputs`, migration 0176): every rung's buckets, the org roster,
+members, schedules, busy time, day counts and live holds over windows wider than any
+rung's, the share rows and the business hours. Each rung is still judged by
+`roundRobinCandidates`, from those rows narrowed to its own pool and window
+(`src/lib/availability/ladder-inputs.ts`); a rung whose window falls outside the read's
+is read on its own and logged. The verdicts the load model gives for the stack, burst
+by burst, are asserted in `test-confirm-contention.ts` against the judge's bar.
 
 ## Where the code is
 
@@ -262,7 +308,14 @@ the same key both ways for sixty codes), `test-unawaited-line-calls.ts` (no unaw
 is the one deliberate exception, see Timings),
 `test-confirm-line-binding.ts` (bound, created and exported in production and the load
 test, the deployed class logging a traced call, and serving the directory only on its
-own path and, when the runtime names it, its own instance).
+own path and, when the runtime names it, its own instance). #3489's rules are in the
+queue suite (release, walk, park, held verdict, a walk that stands), the object suite
+and the client suite (each field on the wire, an older peer's absence of it), and the
+contention suite end to end (the burst bar under the load model, a walk read once). The
+ladder read: `test-ladder-inputs.ts` (the reader refuses every unreadable section, the
+windows), `src/lib/availability/ladder-reads.test.ts` (the same candidates, in the same
+order, with no reads, as the live reads), and `verify-ladder-candidate-inputs-sql.ts`
+(each section against the read it replaces, in a real Postgres).
 
 Against production, `pnpm verify:confirm-line` (#3340) runs daily in
 `burst-counter.yml` and stamps `verdict:confirm-line`: the confirm path's own client
