@@ -1,0 +1,35 @@
+{
+  "_comment": "What find_active_bookings_for_person answers (#3476, migration 0175): an array of bookings rows as to_jsonb renders them, each with its bucket's world as is_test. Only the columns the reader checks are written here; scripts/verify-person-bookings-sql.ts holds the live answer to every bookings column plus is_test, and every key here to the live row's keys.",
+  "rows": [
+    {
+      "id": "20000000-0000-4000-8000-000000000001",
+      "org_id": "00000000-0000-0000-0000-0000000000a0",
+      "bucket_id": "00000000-0000-0000-0000-000000000100",
+      "assigned_user_id": "00000000-0000-0000-0000-00000000000a",
+      "status": "confirmed",
+      "starts_at": "2031-03-04T09:00:00+00:00",
+      "ends_at": "2031-03-04T09:20:00+00:00",
+      "manage_token": "tok-fixture",
+      "external_id": "00QLEAD000001",
+      "salesforce_id": null,
+      "attendee_email": "dana@example.com",
+      "attendee_phone": "+12155550100",
+      "is_test": false
+    },
+    {
+      "id": "20000000-0000-4000-8000-000000000002",
+      "org_id": "00000000-0000-0000-0000-0000000000a0",
+      "bucket_id": "00000000-0000-0000-0000-000000000900",
+      "assigned_user_id": "00000000-0000-0000-0000-00000000000a",
+      "status": "rescheduled",
+      "starts_at": "2031-03-04T09:30:00+00:00",
+      "ends_at": "2031-03-04T09:50:00+00:00",
+      "manage_token": "tok-fixture-2",
+      "external_id": null,
+      "salesforce_id": "00QLEAD000001",
+      "attendee_email": null,
+      "attendee_phone": null,
+      "is_test": true
+    }
+  ]
+}
