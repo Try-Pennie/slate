@@ -195,6 +195,16 @@ export function burstCrowd(kind: BurstKind): number {
 export const DROP_CAPACITY_HEADROOM = 2;
 
 /**
+ * How many of a drop ladder's offered times the burst setup measures for capacity,
+ * furthest first. Each measurement is the booker's own candidate read on every rung of
+ * the ladder, against the branch database rather than the deployment, so it spends no
+ * availability read; it is bounded so a roster where nothing fits refuses in under a
+ * minute. #3529: 24 reached only tomorrow's last hours, so a run launched late in the
+ * afternoon found no slot with room (run 37838336896); it reaches two working days back.
+ */
+export const DROP_SLOTS_TO_MEASURE = 144;
+
+/**
  * #3429: how long one probe of a burst's slot may take. Held, with the moment the
  * burst settles, inside the spacing to the next burst, so no probe overlaps a crowd.
  */
