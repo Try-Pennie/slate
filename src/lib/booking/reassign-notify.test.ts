@@ -128,6 +128,15 @@ function makeDeps(): BookingDeps {
     getUser: async () => targetAgent,
     loadEmails: async (ids: string[]) => new Map(ids.map((id) => [id, "target@x.com"])),
     findBookingByIdempotencyKey: async () => null,
+    // A reassign never makes a fresh booking, so these refuse loudly rather than letting
+    // a cast hide that the fake has no answer for them.
+    readBookingByIdempotencyKey: async () => null,
+    newBookingId: () => {
+      throw new Error("a reassign never mints a fresh booking id");
+    },
+    commitFreshBooking: async () => {
+      throw new Error("a reassign never commits a fresh booking");
+    },
     insertBusyBlocks: noop,
     moveBusyBlock: noop,
     reassignSwap: async () => ({ prevGcalEventId: "old-evt", prevAgentEmail: "old@x.com", updated: true }),

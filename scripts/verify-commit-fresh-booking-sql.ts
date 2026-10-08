@@ -157,7 +157,7 @@ try {
       ('${GENERIC}', '${ORG}', 'https://generic.example/hook', 'generic', true, array['booking.created'], '2031-03-01 00:00:00+00'),
       ('${REGAL}', '${ORG}', 'https://regal.example/hook', 'regal', true, array['booking.created'], '2031-03-01 00:00:01+00');
   `);
-  const stored = JSON.parse(readFileSync(join(FIXTURES, "stored-webhook-time-format.json"), "utf8")) as { starts_at: string };
+  const stored = JSON.parse(readFileSync(join(FIXTURES, "stored-webhook-time-format.json"), "utf8")) as { starts_at: string; ends_at: string };
 
   // --- a commit: every write, in one call -----------------------------------------------------
   const K1 = bookingRow({ start: "15:00", end: "15:20" });
@@ -173,7 +173,7 @@ try {
     eq(payload.booking_id, K1.id, "the webhook names the booking's own id");
     eq(shape(payload.starts_at), shape(stored.starts_at),
       `the webhook's start has the format production stores, never the one TypeScript sent (got ${payload.starts_at})`);
-    eq(shape(payload.ends_at), shape(stored.starts_at), "and so does its end");
+    eq(shape(payload.ends_at), shape(stored.ends_at), "and so does its end, against the stored end");
   }
   eq(count("bookings", `id = '${K1.id}'`), "1", "the booking row is there");
   eq(sql(`select user_id || ':' || source from busy_blocks where booking_id = '${K1.id}';`), `${A}:slate`,
