@@ -236,14 +236,16 @@ describe("a fresh booking's one call save (#3495)", () => {
     for (const code of ["PROTO", "HPEAA", "FATAL", "XERR1"]) {
       rpcResult = { data: null, error: { code, message: "refused" } };
       const err = await realDeps().commitFreshBooking(req).catch((e: unknown) => e);
+      expect(err, code).toBeInstanceOf(Error);
       expect(err, code).not.toBeInstanceOf(CommitRefusedError);
     }
   });
 
   it("control: a lost connection or a shutdown is NOT a refusal, since the save may have committed before it", async () => {
-    // Class 08 (connection exception) and 57P (the server shutting down) are the
-    // codes Postgres can report for a transaction whose COMMIT it never confirmed.
-    for (const code of ["08006", "08003", "57P01", "57P02"]) {
+    // Class 08 (connection exception), 57P (the server shutting down) and 40003
+    // (statement completion unknown) are the codes Postgres can report for a
+    // transaction whose COMMIT it never confirmed.
+    for (const code of ["08006", "08003", "57P01", "57P02", "40003"]) {
       rpcResult = { data: null, error: { code, message: "terminating connection" } };
       const err = await realDeps().commitFreshBooking(req).catch((e: unknown) => e);
       expect(err, code).toBeInstanceOf(Error);

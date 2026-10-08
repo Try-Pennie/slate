@@ -1024,15 +1024,16 @@ const ISOLATE_COMMIT_COSTS = makeCommitCostLog();
  * five capitals, exactly like a system error's own code (EPIPE, EPERM), so one
  * passed through would read a commit whose answer was lost as one that never
  * happened. So the class is held to the ones Postgres defines: two characters starting
- * with a digit, or F0, HV, P0 and XX. Two classes are answers that do NOT say nothing
- * was written: 08, the connection failing, and 57P, the server shutting down, can
- * both arrive for a transaction whose COMMIT was never confirmed, so they are read
- * back. A deadline is never an answer, however it arrives.
+ * with a digit, or F0, HV, P0 and XX. Three are answers that do NOT say nothing was
+ * written: 08, the connection failing, 57P, the server shutting down, and 40003,
+ * statement completion unknown, can each arrive for a transaction whose COMMIT was
+ * never confirmed, so they are read back. A deadline is never an answer, however it
+ * arrives.
  */
 function postgresAnswered(error: { code?: string; message: string }): boolean {
   if (isDeadlineExceeded(error) || typeof error.code !== "string") return false;
   if (/^PGRST\d+$/.test(error.code)) return true;
-  return /^(?:[0-9][0-9A-Z]|F0|HV|P0|XX)[0-9A-Z]{3}$/.test(error.code) && !/^(?:08|57P)/.test(error.code);
+  return /^(?:[0-9][0-9A-Z]|F0|HV|P0|XX)[0-9A-Z]{3}$/.test(error.code) && !/^(?:08|57P|40003$)/.test(error.code);
 }
 
 /**
