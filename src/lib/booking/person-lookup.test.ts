@@ -98,7 +98,7 @@ describe("findActiveBookingsForPerson (the person check's read)", () => {
     answer = { data: null, error: { message: "statement timeout", code: "57014" } };
     await expect(
       findActiveBookingsForPerson({ externalId: "ext-1", salesforceId: null, email: null, phone: null }, { isTest: false }),
-    ).rejects.toThrow(/person booking lookup.*statement timeout|statement timeout/);
+    ).rejects.toThrow("read failed [person booking lookup]: statement timeout");
   });
 
   it("throws on an answer it cannot read, rather than reading it as none", async () => {
@@ -138,7 +138,7 @@ describe("findActiveBookingsByStrongIds (the lookup API's fetch)", () => {
 
   it("throws when the read fails, rather than reading as no call", async () => {
     answer = { data: null, error: { message: "statement timeout", code: "57014" } };
-    await expect(findActiveBookingsByStrongIds(["00Q-lead"])).rejects.toThrow(/statement timeout/);
+    await expect(findActiveBookingsByStrongIds(["00Q-lead"])).rejects.toThrow("read failed [strong id booking lookup]: statement timeout");
   });
 
   it("asks nothing for an empty id set", async () => {
