@@ -235,6 +235,13 @@ async function burst(opts: {
    * request does on the database AFTER it answered is queued there too. Google's time is
    * still `slowGoogleMs` / `slowEventMs`, which the profile sets.
    */
+  /**
+   * #3489 step 3: reach the line as a client from before #3489 would, naming no rung on
+   * `claimFirst` (so no frontier, no release and no walking past claims), which every line
+   * still serves with the rules from before (protocol 1, its fields optional). What the
+   * calibration replays run 37640583621 with: that run's line had none of them.
+   */
+  olderClient?: boolean;
   model?: {
     profile: LoadProfile;
     arrivals: readonly Arrival[];
@@ -289,6 +296,7 @@ async function burst(opts: {
           }));
     const timerOnClock = (ms: number, fire: () => void) => clock.at(clock.now + ms, fire);
     const isolateLines: ConfirmLine<unknown>[] = [];
+    const asReached = (line: ConfirmLine<unknown>): ConfirmLine<unknown> => (opts.olderClient ? asOlderClient(line) : line);
     const isolateCosts = Array.from({ length: opts.isolates?.count ?? 0 }, () => makeCommitCostLog());
     if (opts.isolates) {
       let ids = 0;
@@ -319,7 +327,7 @@ async function burst(opts: {
       };
       for (let k = 0; k < opts.isolates.count; k++) {
         const own = isolateLine(makeConfirmQueue({ timer: timerOnClock, leaseTimer: timerOnClock, now: () => clock.now }));
-        isolateLines.push(
+        isolateLines.push(asReached(
           opts.isolates.line === "isolate"
             ? own
             : makeSharedConfirmLine<unknown>({
@@ -336,7 +344,7 @@ async function burst(opts: {
                 timer: timerOnClock,
                 newId: () => `c${++ids}`,
               }),
-        );
+        ));
       }
     }
     // #3460: each isolate's own pool grouping, the directory every isolate reaches as
@@ -615,6 +623,24 @@ async function burst(opts: {
 const maxOf = (xs: number[]) => xs.reduce((a, b) => Math.max(a, b), 0);
 
 /**
+ * #3489 step 3: a line reached as a client from before #3489 reaches it: `claimFirst`
+ * names no rung, so the line keeps the rules it had then (no frontier, no release, no
+ * walking past a rung others hold). A turn handed back after waiting is wrapped too.
+ */
+function asOlderClient(line: ConfirmLine<unknown>): ConfirmLine<unknown> {
+  const wrap = (turn: LineTurn<unknown>): LineTurn<unknown> =>
+    turn.kind !== "lead"
+      ? turn
+      : {
+          ...turn,
+          seat: { ...turn.seat, claimFirst: (candidates) => turn.seat.claimFirst(candidates) },
+          done: (verdict, outcome) => turn.done(verdict, outcome),
+          park: async (waitMs) => wrap(await turn.park(waitMs)),
+        };
+  return { ...line, enter: async (key, waitMs) => wrap(await line.enter(key, waitMs)) };
+}
+
+/**
  * #3257: the reads a confirm may make AHEAD of a busy line (the replay check):
  * the idempotency read on the booker, the person decision on the booking API.
  */
@@ -654,7 +680,7 @@ async function replay(
   shape: BurstShape,
   profile: LoadProfile,
   line: "shared" | "isolate",
-  over: { slots?: number; statementMs?: number; latencyScale?: number } = {},
+  over: { slots?: number; statementMs?: number; latencyScale?: number; olderClient?: boolean } = {},
 ): Promise<Replayed> {
   const poolByCode = Object.fromEntries(Object.entries(shape.rungs).map(([code, r]) => [code, [...r.free, ...r.busy]]));
   // An advisor the cache shows busy holds the instant with a lead of their own.
@@ -693,6 +719,7 @@ async function replay(
     held,
     queue: "real",
     isolates: { count: shape.isolates, line },
+    ...(over.olderClient ? { olderClient: true } : {}),
     slowGoogleMs: profile.googleCheckMs || undefined,
     slowEventMs: profile.googleWriteMs || undefined,
     model: {
@@ -774,7 +801,8 @@ async function main() {
     for (const shape of RUN_37640583621) {
       const tag = `#3489 calibration, ${shape.label}`;
       const m = shape.measured;
-      const got = await replay(shape, LOAD_RUN_PROFILE, "shared");
+      // The run's line had none of #3489's rules, so it is replayed as its client was.
+      const got = await replay(shape, LOAD_RUN_PROFILE, "shared", { olderClient: true });
       assert(!got.doubleBooked, `${tag}: no advisor is booked twice`);
       assert(
         JSON.stringify(got.booked.map((b) => b.rungsDropped)) === JSON.stringify(m.booked.map((b) => b.rungsDropped)),
@@ -796,7 +824,7 @@ async function main() {
       // The split of the database's measured drain rate (slots over statement time) is
       // the one TUNED figure, so what the other whole split gives is recorded beside it
       // (`DatabaseModel.slots` says what it moves).
-      const oneSlot = await replay(shape, LOAD_RUN_PROFILE, "shared", { slots: 1 });
+      const oneSlot = await replay(shape, LOAD_RUN_PROFILE, "shared", { slots: 1, olderClient: true });
       console.log(`${tag}: ${describe(got)}; with one slot at the same drain rate: ${shapeOf(oneSlot)}`);
     }
     // Control (L1): the calibration can fail. The tier drop burst's twelve confirms barely
@@ -804,7 +832,7 @@ async function main() {
     // another: at half the measured latencies the line serves more of the free ladder
     // than the run did, and the cases above would refuse that shape.
     const drop = RUN_37640583621[1]!;
-    const fast = await replay(drop, LOAD_RUN_PROFILE, "shared", { latencyScale: 0.5 });
+    const fast = await replay(drop, LOAD_RUN_PROFILE, "shared", { latencyScale: 0.5, olderClient: true });
     assert(
       fast.booked.length > drop.measured.booked.length,
       `#3489 calibration control: at half the measured call latency the tier drop burst books more than the run's ${drop.measured.booked.length} (got ${describe(fast)})`,
@@ -1856,11 +1884,12 @@ async function main() {
           dropped.every((b) => b.bucket_id === "bkt-311" && (b.routing_trace as { rungs_dropped?: number }).rungs_dropped === 1),
         `${tag}: each booking below names the rung it was made on`,
       );
-      // #3338: and says it dropped behind the confirm ahead of it in line, so the
-      // branch is counted on /admin/routing (L551).
+      // #3338: and says why it dropped, so the branch is counted on /admin/routing
+      // (L551): behind the confirms ahead of it in line that booked (`line`), or, since
+      // #3489 step 3, past a rung other confirms in flight still held (`claimed`).
       assert(
-        dropped.every((b) => (b.routing_trace as { dropped_behind?: string }).dropped_behind === "line"),
-        `${tag}: each booking below says it dropped behind the line (got ${dropped.map((b) => (b.routing_trace as { dropped_behind?: string }).dropped_behind).join(",")})`,
+        dropped.every((b) => ["line", "claimed"].includes(String((b.routing_trace as { dropped_behind?: string }).dropped_behind))),
+        `${tag}: each booking below says it dropped behind the line or past claims (got ${dropped.map((b) => (b.routing_trace as { dropped_behind?: string }).dropped_behind).join(",")})`,
       );
       const top = bySlot.get(`a|${input.startIso}`);
       assert(top !== undefined && (top.routing_trace as { dropped_behind?: string }).dropped_behind === undefined, `${tag}: the top rung's booking dropped nothing`);

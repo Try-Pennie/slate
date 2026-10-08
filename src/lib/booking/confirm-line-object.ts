@@ -62,7 +62,10 @@ export const CONFIRM_LINE_CLASS = "ConfirmLine";
  * sends every confirm to its isolate's own line for the whole of a gradual deploy (run
  * 37333201026). So a change an older peer CAN ignore keeps it: #3489 added optional fields
  * (a rung on `claimFirst`, an outcome on `done`, a start on a lead) and the `trying`
- * message, and each side reads their absence as the behaviour before them.
+ * message, and step 3 `canWalk` on `claimFirst` (answered `spent` and `waiting`), a
+ * settlement on `done` and the `park` message; each side reads their absence as the
+ * behaviour before them, and an older object answers `park` as an unknown op, which the
+ * client reads as told to retry.
  */
 export const CONFIRM_LINE_PROTOCOL = 1;
 /** The longest one poll is held. A deploy strands a follower for at most this. */
@@ -331,7 +334,10 @@ export function makeConfirmLineHost(deps: {
         // #3489: an optional rung, absent from an older client.
         if (m.rung !== undefined && !(typeof m.rung === "number" && Number.isInteger(m.rung) && m.rung >= 0)) return bad("claimFirst rung must be a whole number");
         const turn = leader(m);
-        const place = typeof m.rung === "number" ? { rung: m.rung } : undefined;
+        // #3489 step 3: and an optional `canWalk` and `below`, which only `true` turns on.
+        const place = typeof m.rung === "number"
+          ? { rung: m.rung, ...(m.canWalk === true ? { canWalk: true } : {}), ...(m.below === true ? { below: true } : {}) }
+          : undefined;
         return turn ? json({ ok: true, ...turn.seat.claimFirst(m.candidates, place) }) : gone();
       }
       case "trying": {
@@ -369,9 +375,38 @@ export function makeConfirmLineHost(deps: {
         // the report is accepted, because there is nothing left for it to settle.
         if (!turn) return json({ ok: true, gone: true });
         turns.delete(m.turn);
-        // #3489: an outcome this side does not know is read as none, `unknown`.
-        turn.done(verdict, readClaimOutcome(m.outcome));
+        // #3489: an outcome this side does not know is read as none, `unknown`. Step 3:
+        // the settlement a booking read as it ended, opaque here like a full verdict's,
+        // and never logged; absent or null is none, so a pending verdict is never answered
+        // from nothing.
+        const settlement = m.settlement !== undefined && m.settlement !== null ? m.settlement : undefined;
+        turn.done(verdict, readClaimOutcome(m.outcome), settlement);
         return json({ ok: true });
+      }
+      case "park": {
+        // #3489 step 3: a lead that walked its ladder spent only by claims in flight ends
+        // its turn WITHOUT a verdict and waits again, on a ticket, like any follower. By
+        // its own attempt, so a retried park never takes a second place.
+        if (!isString(m.turn) || !isString(m.attempt) || typeof m.waitMs !== "number" || !(m.waitMs >= 0)) return bad("park needs turn, attempt and waitMs");
+        const seen = attempts.get(m.attempt);
+        if (seen) return seen.answer;
+        const turn = turns.get(m.turn);
+        if (!turn || !turn.alive()) {
+          turns.delete(m.turn);
+          return gone();
+        }
+        turns.delete(m.turn);
+        const parked = turn.parkNow(m.waitMs);
+        const id = newId();
+        const ticket: Ticket = { attempt: m.attempt, wait: parked, result: null, lastSeenAt: now(), polling: 0 };
+        tickets.set(id, ticket);
+        void parked.turn.then((r) => {
+          ticket.result = r;
+        });
+        armSweep();
+        const answer = json({ kind: "wait", ticket: id });
+        attempts.set(m.attempt, { answer, ref: { kind: "wait", ticket: id }, at: now() });
+        return answer;
       }
       case "giveBack": {
         if (!isString(m.permit)) return bad("giveBack needs a permit");

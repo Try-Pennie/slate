@@ -34,7 +34,7 @@ const report = (bucketCode: string): TierDropReport => ({
       },
     ],
     unreadableStamps: 0,
-    behind: { week: { race: 0, line: 0 }, month: { race: 0, line: 0 } },
+    behind: { week: { race: 0, line: 0, claimed: 0 }, month: { race: 0, line: 0, claimed: 0 } },
   },
   booked: { week: 10, month: 10 },
 });
@@ -89,7 +89,7 @@ describe("drops made behind leads confirming the same time", () => {
   };
 
   it("counts each branch in both windows", () => {
-    render(<TierDropPanel report={withBehind({ week: { race: 1, line: 2 }, month: { race: 3, line: 4 } })} showCodes={false} />);
+    render(<TierDropPanel report={withBehind({ week: { race: 1, line: 2, claimed: 0 }, month: { race: 3, line: 4, claimed: 0 } })} showCodes={false} />);
     const race = screen.getByText(/Lost their advisor to a lead confirming at the same moment/).closest("tr")!;
     expect([...race.querySelectorAll("td")].map((td) => td.textContent)).toEqual(["1", "3"]);
     const line = screen.getByText(/Waited behind leads confirming the same time/).closest("tr")!;
@@ -97,13 +97,13 @@ describe("drops made behind leads confirming the same time", () => {
   });
 
   it("draws both branches at zero rather than leaving them out", () => {
-    render(<TierDropPanel report={withBehind({ week: { race: 0, line: 0 }, month: { race: 0, line: 0 } })} showCodes={false} />);
+    render(<TierDropPanel report={withBehind({ week: { race: 0, line: 0, claimed: 0 }, month: { race: 0, line: 0, claimed: 0 } })} showCodes={false} />);
     const race = screen.getByText(/Lost their advisor to a lead confirming at the same moment/).closest("tr")!;
     expect([...race.querySelectorAll("td")].map((td) => td.textContent)).toEqual(["0", "0"]);
   });
 
   it("is drawn in a month with no tier drop, since a sideways move is not one", () => {
-    render(<TierDropPanel report={withBehind({ week: { race: 0, line: 1 }, month: { race: 0, line: 1 } }, true)} showCodes={false} />);
+    render(<TierDropPanel report={withBehind({ week: { race: 0, line: 1, claimed: 0 }, month: { race: 0, line: 1, claimed: 0 } }, true)} showCodes={false} />);
     expect(screen.getByText(/No lead has dropped a tier/)).toBeTruthy();
     const line = screen.getByText(/Waited behind leads confirming the same time/).closest("tr")!;
     expect([...line.querySelectorAll("td")].map((td) => td.textContent)).toEqual(["1", "1"]);

@@ -185,13 +185,16 @@ async function main() {
     }
     await tick();
     assert(seen.length === 1, "hand on: a leader on the last advisor keeps the rest waiting");
-    // The second books the last advisor while the first is still in flight: the
-    // first could yet fail and free p0, so the third is not refused; it leads.
-    if (t2.kind === "lead") t2.done({ full: true, refusal: "race", settled: "second" });
+    // The second books the last advisor while the first is still in flight. Since
+    // #3489 step 3 (Dan, 2026-10-07) its full verdict is HELD for the third rather than
+    // the third asking for itself: the first could yet fail and free p0, and the line
+    // reads again if it does (the "held" and "discard" cases below).
+    if (t2.kind === "lead") t2.done({ full: true, refusal: "race", settled: "second" }, "booked");
+    await tick();
+    assert(seen.length === 1, "hand on: a full verdict with another claim in flight keeps the third waiting");
+    if (first.kind === "lead") first.done({ full: false }, "booked", "both");
     const t3 = await third;
-    assert(t3.kind === "lead", `hand on: a full verdict with another claim in flight lets the next ask for itself (got ${t3.kind})`);
-    if (first.kind === "lead") first.done({ full: false });
-    if (t3.kind === "lead") t3.done({ full: false });
+    assert(t3.kind === "refused" && t3.settled === "both", `hand on: the first's booking applies it (got ${JSON.stringify(t3)})`);
   }
 
   // --- #3257: once every leader has handed on, a newcomer leads at once --------
@@ -908,6 +911,210 @@ async function main() {
     assert(seen.length === 1 && seen[0]!.kind === "lead" && (seen[0] as { start?: unknown }).start === undefined, `unnamed rung: exactly one waiter leads, handed nothing (got ${seen.length})`);
     for (const t of [leader, leadOf(await waiting[0]!)]) t.done({ full: false });
     leadOf(await waiting[1]!).done({ full: false });
+  }
+
+  // === #3489 step 3: a rung spent by claims, and a full verdict the line holds =======
+  //
+  // Dan, 2026-10-07, on a rung whose last free advisor is claimed but not yet booked:
+  // "Walk down straight away". A confirm that can walk (`canWalk`: a new booking's
+  // walk and a lost race's) treats a rung every candidate of which is claimed as spent,
+  // and a leader claiming a rung's LAST unclaimed advisor hands the line on, so the
+  // confirms behind it walk down at once. A walker that reaches the end of its ladder
+  // having skipped a rung only for claims PARKS instead of refusing, and the line holds
+  // that as a pending full verdict, applied to everybody waiting when the last claim in
+  // flight ends booked. Any other ending discards it and one confirm reads again.
+
+  // --- a walker reads a rung whose every candidate is claimed as spent ------------------
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    const seen: QueueTurn<string>[] = [];
+    const behind = q.enter("slot").then((t) => (seen.push(t), t));
+    await tick();
+    const got = first.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    assert(JSON.stringify(got) === JSON.stringify({ pool: ["a"], unclaimed: 1, waiting: 1 }), `walk: the first claims the rung's one advisor, and hears one confirm waits behind it (got ${JSON.stringify(got)})`);
+    await tick();
+    assert(seen.length === 1 && seen[0]!.kind === "lead", "walk: claiming a rung's last advisor hands the line on to a confirm that can walk past it");
+    const second = leadOf(await behind);
+    const spent = second.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    assert(JSON.stringify(spent) === JSON.stringify({ pool: [], unclaimed: 0, spent: true, waiting: 0 }), `walk: every candidate claimed is a spent rung to a walker (got ${JSON.stringify(spent)})`);
+    assert(!second.seat.claimedByOthers().has("none") && first.seat.claimedByOthers().size === 0, "walk: a spent rung claims nothing for the walker");
+    // Control: a caller that cannot walk keeps today's rule, the insert decides.
+    const stays = second.seat.claimFirst(["a"], { rung: 0 });
+    assert(JSON.stringify(stays) === JSON.stringify({ pool: ["a"], unclaimed: 0 }), `walk control: a confirm that cannot walk is offered the claimed advisor, as before (got ${JSON.stringify(stays)})`);
+    first.done({ full: false }, "booked");
+    second.done({ full: false });
+  }
+
+  // --- on the LAST rung, claiming its last advisor keeps the line ------------------------
+  // Nowhere below to walk to, so handing on would only send a confirm off to read for
+  // nothing; and a walker that still meets it all claimed sees it spent, and parks.
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    const seen: QueueTurn<string>[] = [];
+    void q.enter("slot").then((t) => seen.push(t));
+    await tick();
+    first.seat.claimFirst(["a"], { rung: 3, canWalk: true, below: false });
+    await tick();
+    assert(seen.length === 0, "last rung: claiming its last advisor keeps the confirms behind it waiting");
+    first.done({ full: true, refusal: "race", settled: "first" }, "booked");
+    await tick();
+    assert(seen.length === 1 && seen[0]!.kind === "refused", "last rung: its full verdict answers them, as before");
+  }
+
+  // --- a confirm handed a rung's last advisor does not hold the line when a rung is below --
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    const seen: QueueTurn<string>[] = [];
+    for (let i = 0; i < 3; i++) void q.enter("slot").then((t) => seen.push(t));
+    await tick();
+    first.seat.claimFirst(["a", "b"], { rung: 0, canWalk: true, below: true });
+    await tick();
+    const kinds = seen.map((t) => (t.kind === "lead" ? (t.start ? `handed:${t.start.advisor}` : "reader") : t.kind));
+    assert(JSON.stringify(kinds) === JSON.stringify(["handed:b", "reader"]), `handed: b is handed out and one more confirm walks down past the rung at once (got ${JSON.stringify(kinds)})`);
+    for (const t of seen) if (t.kind === "lead") t.done({ full: false });
+    first.done({ full: false });
+  }
+
+  // --- a walker that parks waits for the claims in flight, answered when they book -----
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    first.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    const walker = leadOf(await q.enter("slot"));
+    walker.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    const later: QueueTurn<string>[] = [];
+    void q.enter("slot").then((t) => later.push(t));
+    const parked = walker.park();
+    const parkedSeen: QueueTurn<string>[] = [];
+    void parked.then((t) => parkedSeen.push(t));
+    await tick();
+    assert(parkedSeen.length === 0 && later.length === 0, "park: the parked walker and those behind it wait while a claim is in flight");
+    first.done({ full: false }, "booked", "seated now");
+    await tick();
+    assert(
+      parkedSeen.length === 1 && parkedSeen[0]!.kind === "refused" && parkedSeen[0]!.refusal === "race" && parkedSeen[0]!.settled === "seated now",
+      `park: the last booking answers the parked walker, from its own settlement (got ${JSON.stringify(parkedSeen)})`,
+    );
+    assert(later.length === 1 && later[0]!.kind === "refused" && (later[0] as { settled?: unknown }).settled === "seated now", `park: and everybody waiting behind it (got ${JSON.stringify(later)})`);
+  }
+
+  // --- a claim that ends without booking discards the pending verdict -------------------
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    first.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    const walker = leadOf(await q.enter("slot"));
+    walker.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    const parked = walker.park();
+    const behind: QueueTurn<string>[] = [];
+    void q.enter("slot").then((t) => behind.push(t));
+    const parkedSeen: QueueTurn<string>[] = [];
+    void parked.then((t) => parkedSeen.push(t));
+    await tick();
+    first.seat.trying("a");
+    first.done({ full: false }, "advisor-busy");
+    await tick();
+    assert(parkedSeen.length === 1 && parkedSeen[0]!.kind === "lead", `discard: the parked walker reads again, since the advisor it waited on is free of claims (got ${JSON.stringify(parkedSeen.map((t) => t.kind))})`);
+    assert(behind.length === 0, "discard: ONE reader, never the whole crowd");
+    leadOf(parkedSeen[0]!).done({ full: true, refusal: "taken", settled: null });
+    await tick();
+    assert(behind.length === 1 && behind[0]!.kind === "refused", "discard: that reader's own verdict answers the rest");
+  }
+
+  // --- a full verdict with another claim in flight is HELD, never a fresh reader ---------
+  //
+  // Replaces #3257's "a full verdict with a claim in flight lets the next ask for
+  // itself" (Dan, 2026-10-07, decision 1): asking for itself re-walked every rung while
+  // the only thing that could change the answer was the claim in flight.
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    first.seat.claim("p0", true);
+    const second = leadOf(await q.enter("slot"));
+    second.seat.claim("p1", false);
+    const third: QueueTurn<string>[] = [];
+    void q.enter("slot").then((t) => third.push(t));
+    second.done({ full: true, refusal: "race", settled: "second" }, "booked");
+    await tick();
+    assert(third.length === 0, "held: a full verdict with another claim in flight keeps the waiting waiting");
+    first.done({ full: false }, "booked", "both seated");
+    await tick();
+    assert(third.length === 1 && third[0]!.kind === "refused" && (third[0] as { settled?: unknown }).settled === "both seated", `held: the last booking applies it, with the settlement read at that moment (got ${JSON.stringify(third)})`);
+  }
+
+  // --- applied only from a settlement read when it applies, never from a stale one -------
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    first.seat.claim("p0", true);
+    const second = leadOf(await q.enter("slot"));
+    second.seat.claim("p1", false);
+    const third: QueueTurn<string>[] = [];
+    void q.enter("slot").then((t) => third.push(t));
+    second.done({ full: true, refusal: "race", settled: "second" }, "booked");
+    // An older client, or a settling read that failed: the last booking brings none.
+    first.done({ full: false }, "booked");
+    await tick();
+    assert(third.length === 1 && third[0]!.kind === "lead", `stale: with no settlement read at the end, one confirm reads for itself (got ${JSON.stringify(third.map((t) => t.kind))})`);
+    leadOf(third[0]!).done({ full: false });
+  }
+
+  // --- a claim that moves to another advisor discards it too ------------------------------
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    first.seat.claimFirst(["a", "b"], { rung: 0, canWalk: true, below: true });
+    first.seat.claimFirst(["b"], { rung: 0, canWalk: true, below: true });
+    const walker = leadOf(await q.enter("slot"));
+    const spent = walker.seat.claimFirst(["a", "b"], { rung: 0, canWalk: true, below: true });
+    assert(JSON.stringify(spent) === JSON.stringify({ pool: ["a"], unclaimed: 1, waiting: 0 }), `moved: the first's move off a frees a for the next (got ${JSON.stringify(spent)})`);
+    first.done({ full: false }, "booked", "s");
+    walker.done({ full: false }, "booked", "s");
+  }
+
+  // --- a parked walker with no claim left in flight reads again at once -------------------
+  {
+    const { timer } = manualTimer();
+    const q = makeConfirmQueue<string>({ timer });
+    const first = leadOf(await q.enter("slot"));
+    first.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    const walker = leadOf(await q.enter("slot"));
+    walker.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    first.done({ full: false }, "booked", "s");
+    const parked = await walker.park();
+    assert(parked.kind === "lead", "no claims: a walker that parks after the claims it skipped have ended reads again rather than waiting on nothing");
+    leadOf(parked).done({ full: true, refusal: "taken", settled: null });
+  }
+
+  // --- an expired claim is an unknown ending, so the pending verdict is discarded ----------
+  {
+    const { timer } = manualTimer();
+    const lease = manualTimer();
+    let t = 0;
+    const q = makeConfirmQueue<string>({ timer, leaseTimer: lease.timer, now: () => t });
+    const first = leadOf(await q.enter("slot"));
+    first.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    const walker = leadOf(await q.enter("slot"));
+    walker.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    walker.renew();
+    const parkedSeen: QueueTurn<string>[] = [];
+    void walker.park().then((x) => parkedSeen.push(x));
+    await tick();
+    t = CONFIRM_CLAIM_LEASE_MS + 1;
+    lease.fireAll();
+    await tick();
+    assert(parkedSeen.length === 1 && parkedSeen[0]!.kind === "lead", `lapsed: the claim the walker waited on lapsed, so it reads again (got ${JSON.stringify(parkedSeen.map((x) => x.kind))})`);
   }
 
   finish();

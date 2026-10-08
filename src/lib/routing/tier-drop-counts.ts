@@ -109,7 +109,7 @@ export function countTierDrops(rows: TierDropRow[], nowMs: number): TierDropCoun
   const month = emptyTally();
   const recent: (TierDropDetail & { ms: number })[] = [];
   let unreadableStamps = 0;
-  const behind = { week: { race: 0, line: 0 }, month: { race: 0, line: 0 } };
+  const behind = { week: { race: 0, line: 0, claimed: 0 }, month: { race: 0, line: 0, claimed: 0 } };
   for (const r of rows) {
     // #3338: any rung drop made behind other confirms, sideways included.
     const how = r.routing_trace?.tier_fallback ? r.routing_trace.dropped_behind : undefined;

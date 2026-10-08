@@ -171,7 +171,7 @@ export function makeSharedConfirmLine<T>(deps: {
    * A lead on the shared line: acknowledged at once, renewed while it works.
    * `queued` (#3338): it was promoted from a ticket, so it waited behind another.
    */
-  const leadOn = async (stub: LineStub, turn: string, served: LineServed, queued: boolean, start?: StartFrom): Promise<LineTurn<T>> => {
+  const leadOn = async (key: LineKey, stub: LineStub, turn: string, served: LineServed, queued: boolean, start?: StartFrom): Promise<LineTurn<T>> => {
     let detached = false;
     let stopped = false;
     let lastClaims: ReadonlySet<string> = new Set();
@@ -228,9 +228,17 @@ export function makeSharedConfirmLine<T>(deps: {
         async claimFirst(candidates, place) {
           const local = { pool: [...candidates], unclaimed: candidates.length };
           if (detached) return local;
-          const a = await timed({ op: "claimFirst", candidates: [...candidates], ...(place ? { rung: place.rung } : {}) });
+          // #3489 step 3: `canWalk` is optional on the wire, and an older object ignores it
+          // and never answers `spent`, which is the behaviour before it.
+          const where = place ? { rung: place.rung, ...(place.canWalk ? { canWalk: true } : {}), ...(place.below ? { below: true } : {}) } : {};
+          const a = await timed({ op: "claimFirst", candidates: [...candidates], ...where });
           if (!a || !Array.isArray(a.pool) || typeof a.unclaimed !== "number") return local;
-          return { pool: a.pool.filter((x): x is string => typeof x === "string"), unclaimed: a.unclaimed };
+          return {
+            pool: a.pool.filter((x): x is string => typeof x === "string"),
+            unclaimed: a.unclaimed,
+            ...(a.spent === true ? { spent: true as const } : {}),
+            ...(typeof a.waiting === "number" && a.waiting >= 0 ? { waiting: a.waiting } : {}),
+          };
         },
         async claimBeside(userId, besides) {
           if (!detached) await timed({ op: "claimBeside", userId, besides: [...besides] });
@@ -242,15 +250,22 @@ export function makeSharedConfirmLine<T>(deps: {
           if (!detached) await timed({ op: "pass" });
         },
       },
-      async done(verdict: LeaderVerdict<T>, outcome?: ClaimOutcome) {
+      async done(verdict: LeaderVerdict<T>, outcome?: ClaimOutcome, settlement?: T) {
         stopped = true;
         cancelBeat();
         await beating;
         if (!detached) {
           // One retry inside the reserve: an unreported full verdict leaves the
           // followers to find out for themselves, and an unreported turn holds the
-          // line until its short lease runs out.
-          const report = { op: "done", turn, verdict, ...(outcome ? { outcome } : {}) };
+          // line until its short lease runs out. #3489 step 3: the settlement, when a
+          // booking read one, rides along; an older object ignores it.
+          const report = {
+            op: "done",
+            turn,
+            verdict: verdict.full ? verdict : { full: false },
+            ...(outcome ? { outcome } : {}),
+            ...(settlement !== undefined && settlement !== null ? { settlement } : {}),
+          };
           const first = await call(stub, report, CONFIRM_LINE_CALL_MS);
           served.lineMs += first.ms;
           if (!first.answer) {
@@ -262,6 +277,27 @@ export function makeSharedConfirmLine<T>(deps: {
         // answer can matter to nobody, and waiting would only hold back the leader's own
         // answer.
         deps.record({ ...served });
+      },
+      async park(waitMs?: number): Promise<LineTurn<T>> {
+        stopped = true;
+        cancelBeat();
+        await beating;
+        const left = waitMs ?? 0;
+        if (!detached) {
+          // #3489 step 3: the turn ends without a verdict and waits again on a ticket,
+          // polled like any follower's, so a deploy moves it as one.
+          const attempt = deps.newId();
+          const r = await call(stub, { op: "park", turn, attempt, waitMs: left }, CONFIRM_LINE_CALL_MS);
+          served.lineMs += r.ms;
+          const a = r.answer;
+          if (a && a.kind === "wait" && typeof a.ticket === "string") return follow(key, stub, attempt, a.ticket, now() + Math.max(0, left - r.ms), served, 0);
+          // An object that could not park this turn (an older one, a deploy, no answer)
+          // knows nothing more about the claims it would have waited on, so the confirm
+          // answers retryably rather than reading again on its own.
+          if (!a) await abandon(stub, attempt);
+        }
+        deps.record({ ...served });
+        return { kind: "unqueued" };
       },
     };
   };
@@ -292,7 +328,7 @@ export function makeSharedConfirmLine<T>(deps: {
       }
       failures = 0;
       if (a.kind === "pending") continue;
-      if (a.kind === "lead" && typeof a.turn === "string") return leadOn(stub, a.turn, served, true, readStartFrom(a.start));
+      if (a.kind === "lead" && typeof a.turn === "string") return leadOn(key, stub, a.turn, served, true, readStartFrom(a.start));
       if (a.kind === "refused" && (a.refusal === "race" || a.refusal === "taken")) {
         deps.record({ ...served });
         return { kind: "refused", refusal: a.refusal, settled: (a.settled ?? null) as T | null };
@@ -321,7 +357,7 @@ export function makeSharedConfirmLine<T>(deps: {
     served: LineServed,
     goneLeft: number,
   ): Promise<LineTurn<T>> => {
-    if (answer.kind === "lead" && typeof answer.turn === "string") return leadOn(stub, answer.turn, served, false, readStartFrom(answer.start));
+    if (answer.kind === "lead" && typeof answer.turn === "string") return leadOn(key, stub, answer.turn, served, false, readStartFrom(answer.start));
     if (answer.kind === "wait" && typeof answer.ticket === "string") return follow(key, stub, attempt, answer.ticket, now() + waitMs, served, goneLeft);
     if (answer.kind === "gone" && goneLeft > 0) return enterShared(key, waitMs, { ...served, reason: "gone" }, goneLeft - 1, null);
     const t0 = now();

@@ -781,9 +781,10 @@ export interface RoutingTrace {
   /** #3338: the confirm dropped a rung BEHIND other confirms for the same time:
    *  `race` when it walked down after losing the insert race on a rung above,
    *  `line` when it waited in the slot's confirm line while the ones ahead of it
-   *  booked and then dropped. Absent for any other booking, so each branch is
+   *  booked and then dropped, `claimed` (#3489 step 3) when it walked past a rung
+   *  whose free advisors other confirms in flight held. Absent for any other booking, so each branch is
    *  counted apart among the drops on /admin/routing (`tier-drop-counts.ts`). */
-  dropped_behind?: "race" | "line";
+  dropped_behind?: "race" | "line" | "claimed";
   /** #3247: one entry per bucket correction, holding the values the top level
    *  carried BEFORE it, so the original routing is never lost when the trace is
    *  rewritten to name the corrected bucket. Written only by reassign_booking_swap. */

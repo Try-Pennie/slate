@@ -39,6 +39,9 @@ function Count({ tally, of, cause }: { tally: TierDropTally; of: number; cause?:
 const BEHIND_LABEL: Record<keyof DropBehindTally, string> = {
   race: "Lost their advisor to a lead confirming at the same moment",
   line: "Waited behind leads confirming the same time",
+  // #3489 step 3: walked down past a tier whose free advisors other leads were still
+  // booking, rather than waiting to see whether one of those bookings failed.
+  claimed: "Walked past advisors other leads were still booking",
 };
 
 /**
