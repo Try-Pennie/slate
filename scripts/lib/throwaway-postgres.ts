@@ -37,8 +37,10 @@ export interface ThrowawayPostgres {
   /**
    * One psql session run CONCURRENTLY with the caller, for proving what two
    * transactions do to each other. Resolves with its exit code and stderr; never rejects.
+   * `user` is who psql connects as: `postgres` unless a suite needs what only the image's
+   * true superuser may do, such as loading auto_explain to read a function's plan (#3476).
    */
-  session(text: string): Promise<{ code: number; stderr: string }>;
+  session(text: string, user?: "postgres" | "supabase_admin"): Promise<{ code: number; stderr: string }>;
   /** Remove the container. */
   stop(): void;
 }
@@ -211,9 +213,9 @@ export function startThrowawayPostgres(name: string, image: string): ThrowawayPo
     verboseError(text, role = SERVER_ROLE) {
       return pg.sqlError(`\\set VERBOSITY verbose\n${text}`, role);
     },
-    session(text) {
+    session(text, user = "postgres") {
       return new Promise((resolve) => {
-        const p = spawn("docker", ["exec", "-i", name, "psql", "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-qtAX", "-f", "-"]);
+        const p = spawn("docker", ["exec", "-i", name, "psql", "-U", user, "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-qtAX", "-f", "-"]);
         let stderr = "";
         p.stderr.on("data", (d) => (stderr += String(d)));
         p.on("error", (err) => resolve({ code: 1, stderr: String(err) }));

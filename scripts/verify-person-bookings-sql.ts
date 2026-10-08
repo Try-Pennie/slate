@@ -179,6 +179,37 @@ try {
   const busyPlusPhone = lookup({ email: "busy@example.com", phone: "+12155550199" }, "real");
   eq(busyPlusPhone.length, 21, "and the bound is per signal: another signal's row still comes back");
 
+  // --- it reaches the indexes, never every active booking ------------------------------------
+  // The person check runs on every confirm, so the function must look each signal up
+  // through its index (scripts/test-person-lookup-indexes.ts) rather than build the set
+  // of every active booking first and filter that. A CTE referenced more than once is
+  // materialized by default, which is exactly that full build. Read from the plan the
+  // database actually ran (auto_explain, nested statements), with sequential scans
+  // switched off so a table this small still has to show which path EXISTS.
+  const planned = await pg.session(`
+    load 'auto_explain';
+    set auto_explain.log_min_duration = 0;
+    set auto_explain.log_nested_statements = on;
+    set auto_explain.log_level = notice;
+    set client_min_messages = notice;
+    set enable_seqscan = off;
+    select find_active_bookings_for_person(array['00QLEAD000001']::text[], 'dana@example.com', '+12155550199', 'real');
+  `, "supabase_admin");
+  const plan = planned.stderr;
+  assert(planned.code === 0 && /Index Cond: \(external_id = /.test(plan) && /Index Cond: \(salesforce_id = /.test(plan),
+    `an id is looked up through the external_id and salesforce_id indexes (plan: ${plan.replace(/\s+/g, " ").slice(0, 600)})`);
+  assert(/Index Cond: \(attendee_phone = /.test(plan), "and a phone through the attendee_phone index");
+  // The email is judged on a bookings scan of its own, never on a prebuilt set. Which
+  // index serves it on a table this small is the planner's choice (the trigram index is
+  // pinned to exist by scripts/test-person-lookup-indexes.ts); what was wrong was that
+  // the predicate could not reach a bookings scan at all.
+  const flat = plan.replace(/\s+/g, " ");
+  // Within ONE plan node: no `->` (the start of another node) between the bookings
+  // scan and the email condition.
+  assert(/Scan (?:using \w+ )?on bookings \w+ \(cost=(?:(?!->).)*?(?:Filter|Index Cond|Recheck Cond): \(attendee_email ~~\* /.test(flat),
+    "and an email is judged on a bookings scan of its own");
+  assert(!/CTE Scan/.test(plan), `and nothing scans a materialized set of every active booking (plan: ${plan.replace(/\s+/g, " ").slice(0, 600)})`);
+
   // --- the world is named, never defaulted (L168) -----------------------------------------------
   for (const bad of ["", "everything"]) {
     const e = pg.verboseError(`select find_active_bookings_for_person(p_ids => array[]::text[], p_email_like => null, p_phone => null, p_world => ${text(bad)});`);

@@ -47,7 +47,11 @@ begin
     raise exception 'find_active_bookings_for_person needs a world of real, test or both, not %', coalesce(p_world, 'none') using errcode = '22023';
   end if;
 
-  with world as (
+  -- NOT MATERIALIZED, or a CTE referenced more than once is built in full first: every
+  -- active booking joined to its bucket on every call, with no index reachable. Inlined,
+  -- each signal's equality reaches its own index (scripts/test-person-lookup-indexes.ts),
+  -- which the real database suite reads off the plan Postgres actually ran.
+  with world as not materialized (
     select b.*
       from bookings b
       join buckets bu on bu.id = b.bucket_id
