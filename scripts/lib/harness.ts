@@ -74,7 +74,10 @@ export function failureCount(): number {
   return failures;
 }
 
-/** Reset the counter (test-only, for isolating harness unit tests). */
+/** Reset the counter and the guard (test-only, for isolating harness unit tests). */
 export function resetHarness(): void {
   failures = 0;
+  // A reset starts over, the #3520 guard included: a finish() made with an injected exit
+  // before it must not disarm the guard for the rest of the process.
+  finished = false;
 }

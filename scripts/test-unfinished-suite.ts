@@ -38,6 +38,12 @@ for (const [fixture, helper] of [
   assert(r.stdout.includes("ok: the one assertion before the stop"), `the assertion before the stop still ran (stdout ${JSON.stringify(r.stdout.slice(0, 200))})`);
 }
 
+// A reset starts the harness over, the guard included: a finish() made with an injected
+// exit and then reset must not leave the process disarmed (the harness's own test does
+// exactly that sequence).
+const reset = run("stops-after-reset.ts");
+assert(reset.code === 1 && reset.stderr.includes("stopped before it called finish()"), `resetHarness() arms the guard again (got ${reset.code})`);
+
 // Control (L1): a suite that reaches finish() is untouched, so the two above fail for
 // the stop and not for the flags or the fixture's imports.
 const done = run("finishes.ts");
