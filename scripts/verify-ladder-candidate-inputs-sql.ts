@@ -26,6 +26,7 @@
 // Run: node --experimental-strip-types scripts/verify-ladder-candidate-inputs-sql.ts
 import { join } from "node:path";
 import { replayEveryMigration, startThrowawayPostgres } from "./lib/throwaway-postgres.ts";
+import { bookingInsertSql, eventTypesInsertSql } from "./lib/seed-sql.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const DIR = join(import.meta.dirname, "..", "supabase", "migrations");
@@ -80,12 +81,20 @@ const nextId = () => uuid("d0", ++seq);
 function booking(o: { bucket: string; user: string; start: string; kind?: string; status?: string; org?: string; et?: string }): string {
   const id = nextId();
   const end = plusMin(o.start, 20);
-  sql(`insert into bookings (id, org_id, bucket_id, event_type_id, assigned_user_id, agent_name, agent_email,
-      starts_at, ends_at, original_starts_at, original_ends_at, timezone, status, attendee_name, attendee_email,
-      gcal_event_id, manage_token, idempotency_key, kind, source)
-    values ('${id}', '${o.org ?? ORG}', '${o.bucket}', '${o.et ?? ET}', '${o.user}', 'Agent', 'agent@example.com',
-      ${at(o.start)}, ${at(end)}, ${at(o.start)}, ${at(end)}, 'America/New_York', '${o.status ?? "confirmed"}', 'Dana Lead',
-      'lead-${id}@example.com', 'gcal-${id}', 'tok-${id}', 'key-${id}', '${o.kind ?? "routed"}', 'booking');`);
+  sql(
+    bookingInsertSql({
+      id,
+      orgId: o.org ?? ORG,
+      bucketId: o.bucket,
+      eventTypeId: o.et ?? ET,
+      assignedUserId: o.user,
+      startIso: o.start,
+      endIso: end,
+      status: o.status,
+      attendeeEmail: `lead-${id}@example.com`,
+      kind: o.kind,
+    }),
+  );
   return id;
 }
 
@@ -136,8 +145,10 @@ try {
       ('${GONE}', '${ORG}', 'gone@example.com', 'agent', true, now() - interval '1 day', '{}'),
       ('${OTHER}', '${ORG2}', 'other@example.com', 'agent', true, null, '{}'),
       ('${NOSCHED}', '${ORG}', 'nosched@example.com', 'agent', true, null, '{}');
-    insert into event_types (id, org_id, name, duration_min, buffer_before_min, buffer_after_min) values
-      ('${ET}', '${ORG}', 'Call', 20, 10, 10), ('${ET2}', '${ORG2}', 'Other call', 30, 0, 0);
+    ${eventTypesInsertSql([
+      { id: ET, orgId: ORG, name: "Call", durationMin: 20, bufferBeforeMin: 10, bufferAfterMin: 10 },
+      { id: ET2, orgId: ORG2, name: "Other call", durationMin: 30 },
+    ])}
     insert into buckets (id, org_id, code, name, event_type_id) values
       ('${B500}', '${ORG}', '500', 'Top', '${ET}'),
       ('${B400}', '${ORG}', '400', 'Middle', '${ET}'),

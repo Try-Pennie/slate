@@ -47,6 +47,8 @@ on:
       - "scripts/verify-*-sql.ts"
       - "scripts/lib/harness.ts"
       - "scripts/lib/throwaway-postgres.ts"
+      # #3489: the rows the suites seed, from one helper.
+      - "scripts/lib/seed-sql.ts"
       - "scripts/lib/migration-replay.ts"
       - "scripts/lib/run-alerter.ts"
       - "scripts/lib/slack-post.ts"

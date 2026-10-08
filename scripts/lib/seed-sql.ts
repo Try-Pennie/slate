@@ -1,0 +1,56 @@
+// The rows the real database suites (`scripts/verify-*-sql.ts`) seed, as SQL, in one
+// place (#3489). Each suite seeded bookings and event types with its own copy of the
+// same insert, and the copies drift: a NOT NULL column added to bookings would fail one
+// suite and pass the copy nobody updated.
+//
+// Imports nothing: the real database workflow runs these suites on bare node with no
+// install (`.github/workflows/db-replay.yml`, pinned by scripts/test-db-replay-workflow.ts).
+
+/** A SQL literal: a quoted, escaped string, or null. */
+export const sqlLiteral = (v: string | null | undefined): string => (v == null ? "null" : `'${v.replace(/'/g, "''")}'`);
+
+/** One booking, as the suites seed one: every NOT NULL column set, the rest optional. */
+export interface SeedBooking {
+  id: string;
+  orgId: string;
+  bucketId: string;
+  eventTypeId: string;
+  assignedUserId: string;
+  startIso: string;
+  endIso: string;
+  status?: string;
+  attendeeEmail?: string | null;
+  attendeePhone?: string | null;
+  externalId?: string | null;
+  salesforceId?: string | null;
+  kind?: string;
+}
+
+/** The insert for one booking, its event, token and idempotency key derived from its id. */
+export function bookingInsertSql(b: SeedBooking): string {
+  return `insert into bookings (id, org_id, bucket_id, event_type_id, assigned_user_id, agent_name, agent_email,
+      starts_at, ends_at, original_starts_at, original_ends_at, timezone, status, attendee_name, attendee_email,
+      attendee_phone, external_id, salesforce_id, gcal_event_id, manage_token, idempotency_key, kind, source)
+    values ('${b.id}', '${b.orgId}', '${b.bucketId}', '${b.eventTypeId}', '${b.assignedUserId}', 'Agent', 'agent@example.com',
+      '${b.startIso}', '${b.endIso}', '${b.startIso}', '${b.endIso}', 'America/New_York', '${b.status ?? "confirmed"}', 'Dana Lead',
+      ${sqlLiteral(b.attendeeEmail)}, ${sqlLiteral(b.attendeePhone)}, ${sqlLiteral(b.externalId)}, ${sqlLiteral(b.salesforceId)},
+      'gcal-${b.id}', 'tok-${b.id}', 'key-${b.id}', '${b.kind ?? "routed"}', 'booking');`;
+}
+
+/** One event type, with its buffers. */
+export interface SeedEventType {
+  id: string;
+  orgId: string;
+  name: string;
+  durationMin: number;
+  bufferBeforeMin?: number;
+  bufferAfterMin?: number;
+}
+
+/** The insert for event types. */
+export function eventTypesInsertSql(rows: readonly SeedEventType[]): string {
+  const values = rows
+    .map((e) => `('${e.id}', '${e.orgId}', ${sqlLiteral(e.name)}, ${e.durationMin}, ${e.bufferBeforeMin ?? 0}, ${e.bufferAfterMin ?? 0})`)
+    .join(", ");
+  return `insert into event_types (id, org_id, name, duration_min, buffer_before_min, buffer_after_min) values ${values};`;
+}

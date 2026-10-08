@@ -21,6 +21,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { startThrowawayPostgres } from "./lib/throwaway-postgres.ts";
+import { eventTypesInsertSql } from "./lib/seed-sql.ts";
 import { CLI_HISTORY_TABLE_SQL, migrationPlan, replayMigrations } from "./lib/migration-replay.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -143,9 +144,11 @@ try {
       ('${A}', '${ORG}', 'a@example.com', 'agent'), ('${B}', '${ORG}', 'b@example.com', 'agent'),
       ('${C}', '${ORG}', 'c@example.com', 'agent'), ('${D}', '${ORG}', 'd@example.com', 'agent'),
       ('${X}', '${ORG2}', 'x@example.com', 'agent');
-    insert into event_types (id, org_id, name, duration_min, buffer_before_min, buffer_after_min) values
-      ('${ET}', '${ORG}', 'Call', 20, 10, 10), ('${ET2}', '${ORG}', 'Other call', 20, 0, 0),
-      ('${ETX}', '${ORG2}', 'Call', 20, 10, 10);
+    ${eventTypesInsertSql([
+      { id: ET, orgId: ORG, name: "Call", durationMin: 20, bufferBeforeMin: 10, bufferAfterMin: 10 },
+      { id: ET2, orgId: ORG, name: "Other call", durationMin: 20 },
+      { id: ETX, orgId: ORG2, name: "Call", durationMin: 20, bufferBeforeMin: 10, bufferAfterMin: 10 },
+    ])}
     insert into buckets (id, org_id, code, name, event_type_id) values
       ('${B100}', '${ORG}', '100', 'Low', '${ET}'), ('${B200}', '${ORG}', '200', 'Mid', '${ET}'),
       ('${B300}', '${ORG}', '300', 'Other type', '${ET2}'), ('${BX}', '${ORG2}', 'X100', 'Low', '${ETX}');
