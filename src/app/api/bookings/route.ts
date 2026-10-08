@@ -152,6 +152,8 @@ async function handlePost(req: NextRequest, facts: ConfirmLineFacts) {
     false,
     FULL_API_CALLERS,
     () => startConfirmPrelude(facts),
+    // #3529: under the load test, auth's wait split by the ceiling it waited on.
+    facts.marks ? (step) => facts.marks?.mark(step) : undefined,
   );
   if (!authd.ok) return authd.response;
   facts.marks?.mark("authed");

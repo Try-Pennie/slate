@@ -31,6 +31,7 @@ import {
   DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
 } from "@/lib/rate-limit-core";
 import type { RateLimitRule } from "@/lib/rate-limit-core";
+import type { AuthStep } from "@/lib/booking/wait-marks";
 
 export type AuthOutcome<C extends BookingApiCaller = FullApiCaller> =
   /** #2645: `caller` is who the key belongs to, `keyId` which of its slots. */
@@ -174,6 +175,11 @@ export async function authorizeBookingApi<C extends BookingApiCaller = FullApiCa
   readPath = false,
   callers: readonly C[] = FULL_API_CALLERS as readonly C[],
   onAuthenticated?: () => void,
+  /**
+   * #3529: told as each ceiling answers (`AuthStep`), so the load test's marks can split
+   * the auth wait by the call it waited on. Never changes what is asked, or in what order.
+   */
+  onStep?: (step: AuthStep) => void,
 ): Promise<AuthOutcome<C>> {
   const auth = authenticateBearer(req.headers.get("authorization"), configuredBookingApiKeys(callers));
   if (!auth.ok) {
@@ -216,16 +222,20 @@ export async function authorizeBookingApi<C extends BookingApiCaller = FullApiCa
   const keyEdgeOk = readPath
     ? await bookingApiReadWithinLimit(auth.caller)
     : await bookingApiWriteWithinLimit(auth.caller);
+  onStep?.("key_edge");
   if (!keyEdgeOk || !(await exactCeilingWithinLimit({ kind: "opaque", key: `key:${auth.caller}` }, hourlyKeyRules))) {
     return refuse("throttled_key", keyBudget, 429, readPath, req.headers, auth.keyId);
   }
+  onStep?.("key_ceiling");
   // #597: a coarse per-IP backstop on top of the per-key ceiling, in its own counter.
   // The key ceiling bounds total volume; this bounds any ONE machine, so a leaked key
   // cannot spend the whole budget from a single host. Per-minute at the edge, and the
   // hourly one exact in the edge counter too (#3416).
   if (hourlyIpRules) {
     const ip = clientIp(req.headers);
-    if (!(await bookingApiIpWithinLimit(ip)) || !(await exactCeilingWithinLimit(
+    const ipEdgeOk = await bookingApiIpWithinLimit(ip);
+    onStep?.("ip_edge");
+    if (!ipEdgeOk || !(await exactCeilingWithinLimit(
         // #1557: an address we cannot read declines to judge here, and the per KEY ceiling
         // above (an id that came from authentication) still bounds the caller.
         { kind: "address", ip, keyPrefix: "ip:", policy: BOOKING_API_IP_LIMITER },

@@ -17,6 +17,7 @@ import {
   LOADTEST_LEGS,
   readLoadtestLeg,
   WAIT_SPAN_FIELDS,
+  AUTH_STEPS,
 } from "../src/lib/booking/wait-marks.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -48,6 +49,45 @@ function clock(start: number) {
   eq(parts.reduce((s, k) => s + Number(f[k]), 0), f.wait_total_ms, "the spans sum to the whole, so none is double counted (L466)");
   eq(f.wait_missing, undefined, "nothing is reported missing when every point was marked");
   eq(f.wait_out_of_order, undefined, "and nothing out of order");
+}
+
+// --- #3529: the auth span split by the ceiling call it waited on ------------------
+// Load run 37785947346 failed its startup bar on one confirm whose auth span was 2.7s,
+// spent in waits before each rate limit object call that the span could not tell
+// apart. Each step inside the span is stamped, and the steps add up to the span.
+{
+  eq([...AUTH_STEPS], ["key_edge", "key_ceiling", "ip_edge"], "the steps inside auth, in the order the authorizer asks them");
+  const c = clock(1_000);
+  const m = makeWaitMarks(c.now, 1_000);
+  m.mark("handler");
+  c.to(1_030); m.mark("key_edge");
+  c.to(1_700); m.mark("key_ceiling");
+  c.to(2_600); m.mark("ip_edge");
+  c.to(2_700); m.mark("authed");
+  const f = m.fields();
+  eq(f.wait_auth_key_edge_ms, 30, "the handler to the per key edge limiter answering");
+  eq(f.wait_auth_key_ceiling_ms, 670, "to the per key exact ceiling answering");
+  eq(f.wait_auth_ip_edge_ms, 900, "to the per address edge limiter answering");
+  eq(f.wait_auth_ip_ceiling_ms, 100, "to the per address exact ceiling answering, which is authed");
+  eq(
+    Number(f.wait_auth_key_edge_ms) + Number(f.wait_auth_key_ceiling_ms) + Number(f.wait_auth_ip_edge_ms) + Number(f.wait_auth_ip_ceiling_ms),
+    f.wait_auth_ms,
+    "the steps sum to the auth span, so none is counted twice (L466)",
+  );
+  assert(!String(f.wait_missing ?? "").includes("key_edge"), "a step is never reported as a missing point of the main sequence");
+}
+{
+  // A route with no per address ceiling (or an older deployment) stamps no steps: the
+  // auth span is reported as before, and no step span is invented from it.
+  const c = clock(0);
+  const m = makeWaitMarks(c.now, 0);
+  m.mark("handler");
+  c.to(50); m.mark("key_edge");
+  c.to(200); m.mark("authed");
+  const f = m.fields();
+  eq(f.wait_auth_ms, 200, "the auth span stands without the steps");
+  eq(f.wait_auth_key_edge_ms, undefined, "and a split with a step missing is withheld whole rather than reported in part");
+  eq(f.wait_missing, "line_start,line_turn,decided,profile", "a missing step is not counted among the missing points");
 }
 
 // --- a point that never happened is NAMED, never scored as zero ----------------
@@ -113,13 +153,16 @@ function clock(start: number) {
 {
   eq(
     [...WAIT_SPAN_FIELDS].join(","),
-    "wait_route_ms,wait_auth_ms,wait_pre_line_ms,wait_line_ms,wait_decide_ms,wait_to_profile_ms,wait_total_ms",
-    "the span names are the points' spans in order, then the whole, from the module that writes them",
+    "wait_route_ms,wait_auth_ms,wait_auth_key_edge_ms,wait_auth_key_ceiling_ms,wait_auth_ip_edge_ms,wait_auth_ip_ceiling_ms,wait_pre_line_ms,wait_line_ms,wait_decide_ms,wait_to_profile_ms,wait_total_ms",
+    "the span names are the points' spans in order, auth's steps beside it, then the whole, from the module that writes them",
   );
   const c = clock(100);
   const m = makeWaitMarks(c.now, 100);
-  for (const [i, p] of WAIT_POINTS.slice(1).entries()) {
-    c.to(200 + i * 10);
+  let t = 200;
+  for (const p of WAIT_POINTS.slice(1)) {
+    if (p === "authed") for (const step of AUTH_STEPS) m.mark((c.to(t), (t += 10), step));
+    c.to(t);
+    t += 10;
     m.mark(p);
   }
   const written = Object.keys(m.fields()).filter((k) => k.startsWith("wait_"));

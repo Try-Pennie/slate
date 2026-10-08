@@ -383,6 +383,24 @@ describe("authorizeBookingApi asks whether a refused key is a retired one (#2879
     expect(onAuthenticated).not.toHaveBeenCalled();
   });
 
+  it("#3529 stamps each step of the ceilings as it answers, so the auth wait can be split", async () => {
+    const log: string[] = [];
+    rateLimit.bookingApiWriteWithinLimit.mockImplementation(async () => (log.push("key edge"), true));
+    rateLimit.exactCeilingWithinLimit.mockImplementation(async (who: unknown) => (log.push((who as { kind: string }).kind === "opaque" ? "key ceiling" : "ip ceiling"), true));
+    rateLimit.bookingApiIpWithinLimit.mockImplementation(async () => (log.push("ip edge"), true));
+    const onStep = (step: string) => void log.push(`step:${step}`);
+    const run = () =>
+      authorizeBookingApi(req("Bearer goodsecret"), DIRECT_BOOKING_API_HOURLY_RATE_RULES, DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES, false, FULL_API_CALLERS, undefined, onStep);
+    expect((await run()).ok).toBe(true);
+    expect(log).toEqual(["key edge", "step:key_edge", "key ceiling", "step:key_ceiling", "ip edge", "step:ip_edge", "ip ceiling"]);
+
+    // A refusal part way stamps only the steps that answered.
+    log.length = 0;
+    rateLimit.exactCeilingWithinLimit.mockImplementation(async () => (log.push("key ceiling"), false));
+    expect((await run()).ok).toBe(false);
+    expect(log).toEqual(["key edge", "step:key_edge", "key ceiling"]);
+  });
+
   it("asks nothing for a request with no credential, a good key, or no key configured", async () => {
     await authorizeBookingApi(req());
     await authorizeBookingApi(req("Bearer goodsecret"));
