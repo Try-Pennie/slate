@@ -7,10 +7,14 @@
  * the palette's one serious colour (DESIGN.md); yellow is reserved for the
  * impersonation marker and must not be reached for here.
  *
+ * The wash is mixed into `--surface`, never into transparent, so the notice paints
+ * its own background: over transparent it inherits whatever sits behind it, and on
+ * the beige page the rose sentence measures 4.39:1, an AA fail.
+ *
  * Written out as one literal on purpose: Tailwind finds classes by scanning source
  * text, so a percentage interpolated in would never be generated. The wash is the
  * tight pair (rose text on a rose wash is 4.33:1 at 12%, an AA fail), so changing
  * the 6 is measured by the contrast guard rather than trusted.
  */
 export const WARNING_NOTICE_CLASS =
-  "flex items-start gap-2.5 rounded-md border border-[var(--error)] bg-[color-mix(in_srgb,var(--error)_6%,transparent)] p-4 text-sm text-[var(--error)] dark:text-fg";
+  "flex items-start gap-2.5 rounded-md border border-[var(--error)] bg-[color-mix(in_srgb,var(--error)_6%,var(--surface))] p-4 text-sm text-[var(--error)] dark:text-fg";

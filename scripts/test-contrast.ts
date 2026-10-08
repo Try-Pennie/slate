@@ -158,6 +158,10 @@ for (const [theme, read] of [
   const pct = m ? Number(m[1]) / 100 : 1;
   const wash = (over: RGB, tint: RGB): RGB =>
     over.map((c, i) => Math.round(tint[i] * pct + c * (1 - pct))) as RGB;
+  // The wash is mixed into the CARD colour rather than into transparent, so the
+  // notice paints its own background and measures the same on a card or on the
+  // page. Over transparent, the rose sentence on the beige page is 4.39:1.
+  assert(/var\(--error\)_\d+%,var\(--surface\)\)/.test(WARNING_NOTICE_CLASS), "the warning paints its own background, not whatever is behind it");
   assert(/\btext-\[var\(--error\)\]/.test(WARNING_NOTICE_CLASS), "the warning sentence is rose on light");
   assert(/\bdark:text-fg\b/.test(WARNING_NOTICE_CLASS), "the warning sentence is the theme's own text on dark");
   const lightWash = wash(r("--surface"), r("--error"));
