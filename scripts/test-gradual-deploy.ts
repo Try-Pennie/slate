@@ -15,6 +15,7 @@ import {
   CRON_STANDBY_VAR,
   EXIT,
   EXIT_END,
+  OBJECT_WORKER_CONFIGS,
   uploadRefusalFromOutput,
   shouldDeployTailWorker,
   RESTORE_ATTEMPTS,
@@ -83,8 +84,8 @@ interface Scenario {
   interfereDuring?: "upload" | "probe:canary" | "heal";
   /** The log tail worker deploy result (default true); "throw" makes it throw. */
   tailWorker?: boolean | "throw";
-  /** #3500: the confirm line worker deploy result (default true); "throw" makes it throw. */
-  lineWorker?: boolean | "throw";
+  /** #3500, #3555: the object workers' deploy: which config fails (default none); "throw" makes it throw. */
+  objectWorkers?: string | "throw";
   /** Every status read after the first THROWS. */
   statusThrowsLater?: boolean;
 }
@@ -144,10 +145,10 @@ async function drive(s: Scenario): Promise<Run> {
       if (s.tailWorker === "throw") throw new Error("planted tail worker throw");
       return s.tailWorker ?? true;
     },
-    lineWorker: async () => {
-      calls.push("line-worker");
-      if (s.lineWorker === "throw") throw new Error("planted line worker throw");
-      return s.lineWorker ?? true;
+    objectWorker: async (config) => {
+      calls.push(`object-worker:${config}`);
+      if (s.objectWorkers === "throw") throw new Error("planted object worker throw");
+      return s.objectWorkers !== config;
     },
     upload: async (kind) => {
       calls.push(`upload:${kind}`);
@@ -219,7 +220,7 @@ async function drive(s: Scenario): Promise<Run> {
     r.calls.join(" | "),
     [
       "status",
-      "line-worker",
+      ...OBJECT_WORKER_CONFIGS.map((c) => `object-worker:${c}`),
       "upload:canary",
       "upload:release",
       "wait",
@@ -230,7 +231,7 @@ async function drive(s: Scenario): Promise<Run> {
       "triggers",
       "tail-worker",
     ].join(" | "),
-    "the order: read what serves, deploy the line worker (#3500), upload both, wait out the cron window, split 10/90, probe the canary, promote, probe, apply triggers, then deploy the log tail worker whole",
+    "the order: read what serves, deploy the object workers (#3500, #3555), upload both, wait out the cron window, split 10/90, probe the canary, promote, probe, apply triggers, then deploy the log tail worker whole",
   );
   eq(r.probes[0].canaryId, CANARY, "the canary probe is pinned to the CANARY version, by its id");
   eq(r.probes[1].canaryId, null, "the promotion probe is not pinned: it asks production as a whole");
@@ -246,23 +247,33 @@ async function drive(s: Scenario): Promise<Run> {
   );
 }
 
-// --- #3500: the confirm line worker goes FIRST, before anything of Slate's is uploaded --
+// --- #3500, #3555: the object workers go FIRST, before anything of Slate's is uploaded --
 //
-// Slate's CONFIRM_LINE binding names it by script, so a Slate version uploaded before it
-// exists would bind nothing. Its failure stops the run with nothing of Slate's changed.
+// Slate binds CONFIRM_LINE and BURST_LIMITER to them by script name, so a Slate version
+// uploaded before they exist would bind nothing. One that fails stops the run with nothing
+// of Slate's changed, and the message names which.
 {
+  eq([...OBJECT_WORKER_CONFIGS], ["wrangler.confirm-line.jsonc", "wrangler.burst-limiter.jsonc"], "the object workers are the line's and the burst limiter's");
   const r = await drive(HAPPY);
-  const at = r.calls.indexOf("line-worker");
-  assert(at >= 0 && at < r.calls.indexOf("upload:canary"), `the line worker is deployed before the first upload (calls ${r.calls.join(" > ")})`);
-  eq(r.calls.filter((c) => c === "line-worker").length, 1, "and exactly once");
-  eq(r.result.exit, EXIT.promoted, "a run whose line worker deployed promotes as before");
+  const first = r.calls.indexOf("upload:canary");
+  for (const c of OBJECT_WORKER_CONFIGS) {
+    const at = r.calls.indexOf(`object-worker:${c}`);
+    assert(at >= 0 && at < first, `${c} is deployed before the first upload (calls ${r.calls.join(" > ")})`);
+  }
+  eq(r.result.exit, EXIT.promoted, "a run whose object workers deployed promotes as before");
 }
-for (const line of [false, "throw"] as const) {
-  const r = await drive({ ...HAPPY, lineWorker: line });
-  eq(r.result.exit, line === false ? EXIT.lineWorkerFailed : EXIT.threwBeforeSplit, `a line worker deploy that ${line === "throw" ? "throws" : "fails"} ends the run before Slate`);
+{
+  // The load run's arm job deploys the same list; a hand kept copy is checked against it.
+  const workflow = readFileSync(join(ROOT, ".github/workflows/loadtest.yml"), "utf8");
+  const listed = workflow.match(/for config in ([^;]+); do\s+npx wrangler deploy -c "\$config" --env loadtest/)?.[1]?.trim().split(/\s+/) ?? null;
+  eq(JSON.stringify(listed), JSON.stringify([...OBJECT_WORKER_CONFIGS]), "the load run's arm job deploys exactly OBJECT_WORKER_CONFIGS, in order");
+}
+for (const failing of [...OBJECT_WORKER_CONFIGS, "throw"] as const) {
+  const r = await drive({ ...HAPPY, objectWorkers: failing });
+  eq(r.result.exit, failing === "throw" ? EXIT.threwBeforeSplit : EXIT.objectWorkerFailed, `an object worker deploy that ${failing === "throw" ? "throws" : `fails (${failing})`} ends the run before Slate`);
   eq(r.result.end, "unchanged", "with Slate unchanged");
   assert(!r.calls.some((c) => c.startsWith("upload:") || c.startsWith("deploy:")), `nothing of Slate's was uploaded or deployed (calls ${r.calls.join(" > ")})`);
-  if (line === false) assert(r.result.message.includes("slate-confirm-line"), "and the message names the line worker");
+  if (failing !== "throw") assert(r.result.message.includes(failing), `and the message names ${failing}`);
 }
 
 // --- the log tail worker goes LAST, after Slate is promoted and healthy (#3191) ------
@@ -323,7 +334,7 @@ for (const bad of [
     probe: async () => outcome("release"),
     triggers: async () => true,
     tailWorker: async () => true,
-    lineWorker: async () => true,
+    objectWorker: async () => true,
     isCronStandby: async () => false,
     record: () => {},
     waitForCronWindow: async () => {},

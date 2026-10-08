@@ -203,15 +203,19 @@ jobs:
           NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.LOADTEST_SUPABASE_PUBLISHABLE_KEY }}
           NEXT_PUBLIC_GOOGLE_HOSTED_DOMAIN: trypennie.com
         run: pnpm cf:build
-      # #3500: the load test's CONFIRM_LINE binding names this worker by script, so it
-      # is deployed first. Idempotent; the fault and cold legs redeploy only Slate, so
-      # the line objects are not restarted under them.
-      - name: Deploy the confirm line worker the load test binds
+      # #3500, #3555: the load test's CONFIRM_LINE and BURST_LIMITER bindings name these
+      # workers by script, so they are deployed first, from the list the production deploy
+      # uses (OBJECT_WORKER_CONFIGS). Idempotent; the fault and cold legs redeploy only
+      # Slate, so the objects are not restarted under them.
+      - name: Deploy the object workers the load test binds
         if: inputs.post_confirm_recompute != 'on'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx wrangler deploy -c wrangler.confirm-line.jsonc --env loadtest
+        run: |
+          for config in wrangler.confirm-line.jsonc wrangler.burst-limiter.jsonc; do
+            npx wrangler deploy -c "$config" --env loadtest
+          done
       # `--var` MERGES with the vars block, so everything in env.loadtest survives
       # and only the arm is added. Nothing commits it
       # (scripts/test-wrangler-loadtest-env.ts refuses that).

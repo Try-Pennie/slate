@@ -245,9 +245,14 @@
 	// flood backstop, not a tightening.
 	"durable_objects": {
 		"bindings": [
+			// #3555: served by its own small Worker (wrangler.burst-limiter.jsonc), deployed
+			// before this one, so waking a counter does not load the whole app and a Slate
+			// deploy does not restart every counter. The class stays exported and its
+			// migration kept here until a deleted_classes migration retires it.
 			{
 				"name": "BURST_LIMITER",
-				"class_name": "BurstLimiter"
+				"class_name": "BurstLimiter",
+				"script_name": "slate-burst-limiter"
 			},
 			// #3325: the confirm line shared across isolates, one object per line group
 			// (src/lib/booking/confirm-line-object.ts). #3500: served by its own small
@@ -408,7 +413,8 @@
 				"bindings": [
 					{
 						"name": "BURST_LIMITER",
-						"class_name": "BurstLimiter"
+						"class_name": "BurstLimiter",
+						"script_name": "slate-burst-limiter-loadtest"
 					},
 					{
 						"name": "CONFIRM_LINE",

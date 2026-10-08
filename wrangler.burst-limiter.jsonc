@@ -1,0 +1,62 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	// The small Worker hosting the burst limiter object (#3555), the exact rate limit
+	// ceilings and the per minute burst windows, so waking an idle counter loads only the
+	// counter's rules and a Slate deploy no longer restarts every counter. Slate binds
+	// BURST_LIMITER to it by script name (wrangler.jsonc). It must be deployed BEFORE
+	// Slate, because Slate's binding names it:
+	//
+	//   npx wrangler deploy -c wrangler.burst-limiter.jsonc                 (production)
+	//   npx wrangler deploy -c wrangler.burst-limiter.jsonc --env loadtest  (load test)
+	//
+	// Both run from the same list as the confirm line worker's (OBJECT_WORKER_CONFIGS in
+	// scripts/lib/gradual-deploy.ts). scripts/test-burst-limiter-worker.ts pins it.
+	"name": "slate-burst-limiter",
+	"main": "worker/burst-limiter/index.ts",
+	"account_id": "3e7f907a9c19e51417873e2cce4fbc5c",
+	"compatibility_date": "2025-08-01",
+	"compatibility_flags": ["nodejs_compat"],
+	// No address at all: only Slate's binding reaches the object.
+	"workers_dev": false,
+	"preview_urls": false,
+	"observability": {
+		"enabled": true
+	},
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "BURST_LIMITER",
+				"class_name": "BurstLimiter"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["BurstLimiter"]
+		}
+	],
+	"env": {
+		// The load test's own copy, so a load run never shares a counter with production.
+		// durable_objects and migrations do not inherit, so both are repeated.
+		"loadtest": {
+			"name": "slate-burst-limiter-loadtest",
+			"workers_dev": false,
+			"preview_urls": false,
+			"durable_objects": {
+				"bindings": [
+					{
+						"name": "BURST_LIMITER",
+						"class_name": "BurstLimiter"
+					}
+				]
+			},
+			"migrations": [
+				{
+					"tag": "v1",
+					"new_sqlite_classes": ["BurstLimiter"]
+				}
+			]
+		}
+	}
+}

@@ -26,6 +26,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeStep, planVerifiedDeploy } from "./lib/deploy-verified.ts";
+import { OBJECT_WORKER_CONFIGS } from "./lib/gradual-deploy.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const BUILD_INFO = join(ROOT, "src", "lib", "build-info.ts");
@@ -90,8 +91,10 @@ try {
     "scripts/stamp-build-info.ts",
     plan.commit,
   ]);
-  // #3500: Slate's CONFIRM_LINE binding names this worker, so it goes first.
-  step("deploy the confirm line worker", "pnpm", ["exec", "wrangler", "deploy", "-c", "wrangler.confirm-line.jsonc"]);
+  // #3500, #3555: Slate's bindings name these workers, so they go first.
+  for (const config of OBJECT_WORKER_CONFIGS) {
+    step(`deploy the object worker ${config}`, "pnpm", ["exec", "wrangler", "deploy", "-c", config]);
+  }
   // pnpm appends these to the script's last command, `opennextjs-cloudflare deploy`,
   // which hands unrecognised flags through to `wrangler deploy`.
   step("build and deploy", "pnpm", ["run", "cf:deploy", ...plan.deployArgs]);
