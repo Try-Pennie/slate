@@ -1,4 +1,4 @@
-import { InfoIcon } from "@/components/icons";
+import { WarningNotice } from "@/components/ui/WarningNotice";
 import { proseCls } from "@/components/ui/styles";
 import { readScheduleForImport, type ScheduleForImportRead } from "@/lib/calcom/client";
 import { loadCalcomRetiredCached } from "@/lib/calcom/retirement";
@@ -68,12 +68,8 @@ export async function CalcomHoursNote({
   if (judgement.kind !== "differs") return null;
 
   return (
-    <div
-      role="status"
-      className="mb-4 flex items-start gap-2.5 rounded-md bg-pennie-sky-soft p-4 text-sm text-fg dark:bg-accent/15"
-    >
-      <InfoIcon width={20} height={20} className="mt-0.5 shrink-0 text-pennie-blue dark:text-pennie-sky" />
-      <p className={proseCls}>{judgement.text}</p>
+    <div className="mb-4">
+      <WarningNotice>{judgement.text}</WarningNotice>
     </div>
   );
 }

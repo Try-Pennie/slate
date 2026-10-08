@@ -14,6 +14,7 @@ vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(
 
 import { CalcomHoursNote } from "./CalcomHoursNote";
 import { CALCOM_HOURS_UNCHECKED } from "@/lib/calcom/hours-mismatch";
+import { WARNING_NOTICE_CLASS } from "@/components/ui/warning-notice-paint";
 
 const SLATE = {
   timezone: "America/Chicago",
@@ -42,6 +43,8 @@ describe("CalcomHoursNote", () => {
     await draw();
     expect(calcom.readScheduleForImport).toHaveBeenCalledWith("advisor@trypennie.com", expect.any(Number));
     expect(screen.getByRole("status").textContent).toContain("cal.com still has you working Friday and not Saturday.");
+    // Dan, 2026-10-08: it reads as a warning, not as information.
+    expect(screen.getByRole("status").className).toBe(WARNING_NOTICE_CLASS);
   });
 
   it("says a comparison it could not make, rather than drawing agreement", async () => {
