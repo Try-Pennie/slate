@@ -2332,6 +2332,7 @@ async function main() {
     assert(!bySlot.has(`d|${input.startIso}`), "handed below: nobody is booked with the advisor Google found busy");
   }
 
+
   // The same race at production speed: the attempt that lost took about eight of
   // the twelve seconds, so the loser has too little left to walk down and is told
   // to retry, never that the time is taken while the rung below has somebody free.

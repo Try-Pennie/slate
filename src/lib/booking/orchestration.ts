@@ -3048,6 +3048,12 @@ async function assignAgentWithTierFallback(
   resume: LadderResume | null = null,
   /** #3489: what the confirm line released this confirm with (`StartFrom`), if anything. */
   handed: StartFrom | null = null,
+  /**
+   * #3529: whether this walk may pass a rung only because its advisors are claimed
+   * (`ClaimPlace.canWalk`). A bucket move may not: it is about one person, and a move
+   * parked behind a crowd answers them as the crowd is answered, never as a move.
+   */
+  canWalk = true,
 ): Promise<TierAssignResult> {
   // Shares walkTierLadder with the availability display cascade (#499), so the two
   // can never drift on the ladder or the rungs-dropped accounting; only the per-rung
@@ -3120,7 +3126,7 @@ async function assignAgentWithTierFallback(
       }
       try {
         const { userId, email, candidates, read } = await assignAgent(
-          deps, resolved.bucket, resolved.eventType, startIso, endIso, preview, undefined, excludeLow, seat, undefined, exclude, { place: { rung: i, canWalk: true, below: i < ladderLength - 1 }, ...inputs },
+          deps, resolved.bucket, resolved.eventType, startIso, endIso, preview, undefined, excludeLow, seat, undefined, exclude, { place: { rung: i, canWalk, below: i < ladderLength - 1 }, ...inputs },
         );
         return {
           hit: true,
@@ -3187,10 +3193,12 @@ async function walkDownAfterLostRace(
   input: Pick<CreateBookingInput, "startIso" | "allowTestBuckets">,
   seat: SharedSeat | null,
   resume: LadderResume,
+  /** #3529: `assignAgentWithTierFallback`'s `canWalk`, the same for every walk one confirm takes. */
+  canWalk: boolean,
 ): Promise<{ tier: TierAssignResult } | { refusedOn: RungTrace[] }> {
   try {
     return {
-      tier: await assignAgentWithTierFallback(deps, requested, input.startIso, input.allowTestBuckets ?? false, false, seat, resume),
+      tier: await assignAgentWithTierFallback(deps, requested, input.startIso, input.allowTestBuckets ?? false, false, seat, resume, null, canWalk),
     };
   } catch (err) {
     if (err instanceof SlotUnavailableError || err instanceof NoEligibleAgentsError) {
@@ -4489,7 +4497,10 @@ async function inConfirmTurn<R>(
     // #3489 step 3: its walk stands (`LineTurn.spent`): every claim it walked past has
     // since booked, so the ladder is spent as its own walk found it. It says so and
     // refuses with what the walk found, rather than walking the whole ladder again.
-    if (lead.spent && walkedPast) {
+    // #3529: unless the person may already sit at the instant (their other submit just
+    // booked), the question every other refusal the line hands out asks first: then it
+    // runs, and its own person decision answers them from the call they hold.
+    if (lead.spent && walkedPast && !(await personMayHoldInstant(deps, line))) {
       const refusal = walkedPast.refusal;
       await report(verdictForRefusal(refusal), claimOutcomeOf(refusal));
       throw refusal;
@@ -4514,6 +4525,21 @@ async function inConfirmTurn<R>(
     }
     await report(done.verdict, "booked");
     return done;
+  }
+}
+
+/**
+ * #3529: whether the person behind this confirm may already hold its instant, asked
+ * before a walk that stands refuses them. Unreadable is a yes: the confirm then runs its
+ * own person decision, which reads for itself, rather than refusing somebody who may
+ * hold the time on a read that never happened.
+ */
+async function personMayHoldInstant(deps: BookingDeps, line: LineStanding): Promise<boolean> {
+  try {
+    return findPersonMatch(line.person, await deps.findActiveBookingsStartingAt(line.startIso)) !== null;
+  } catch (err) {
+    log.warn("booking", { msg: "could not read who holds the instant before a walk that stands refused, so the confirm runs its own person check", bucket_code: line.bucketCode }, err);
+    return true;
   }
 }
 
@@ -4586,6 +4612,12 @@ async function settleSlot(
  */
 export interface HeldTurn {
   seat: SharedSeat | null;
+  /**
+   * #3529: the create is a bucket MOVE (`moveToRequestedBucket`), which never walks past
+   * a rung for claims (`ClaimPlace.canWalk`): one that did parked behind the crowd and
+   * could be answered "taken" where a move's own rule keeps the lead's call.
+   */
+  move?: true;
   /** #3489: what the line released this confirm with (`LineTurn.start`), if anything. */
   start?: StartFrom;
   /** #3338: the confirm waited behind another for this turn (`LineTurn.queued`). */
@@ -4749,7 +4781,7 @@ async function createChecked(
   // (`createBookingWithVerdict`) and already hold their turn here. Only a booker
   // link Salesforce routed joins now, once its bucket is known.
   const ctx: HeldCreate = { input, stableKey, agentLinkUserId, codeSource, bucket, eventType, profile, loadtestWindow, seat: null, queued: false };
-  if (held !== "late") return createHeld({ ...ctx, seat: held.seat, queued: held.queued, lostRace: held.lostRace, start: held.start }, deps);
+  if (held !== "late") return createHeld({ ...ctx, seat: held.seat, queued: held.queued, lostRace: held.lostRace, start: held.start, ...(held.move ? { move: true as const } : {}) }, deps);
   return inConfirmTurn(
     deps,
     {
@@ -4783,6 +4815,8 @@ interface HeldCreate {
   lostRace?: (refusal: LostRaceRefusal) => Promise<void>;
   /** #3489: what the line released this confirm with (`HeldTurn.start`). */
   start?: StartFrom;
+  /** #3529: a bucket move, which never walks past claims (`HeldTurn.move`). */
+  move?: true;
 }
 
 /**
@@ -4873,7 +4907,7 @@ async function createHeld(
   ctx: HeldCreate,
   deps: BookingDeps,
 ): Promise<{ result: BookingResult; verdict: LeaderVerdict<ConfirmTaker> }> {
-  const { input, stableKey, agentLinkUserId, codeSource, bucket, eventType, profile, loadtestWindow, seat, queued, lostRace, start } = ctx;
+  const { input, stableKey, agentLinkUserId, codeSource, bucket, eventType, profile, loadtestWindow, seat, queued, lostRace, start, move } = ctx;
 
   // One call per person, ENFORCED (#1337), not reported after the fact. Runs
   // AFTER the idempotency fast path above on purpose: a double-click's second
@@ -4950,7 +4984,7 @@ async function createHeld(
     tier = await profile.time("assign-and-verify", () =>
       agentLinkUserId !== undefined
         ? assignNamedAgent(checked, { bucket, eventType }, input.startIso, agentLinkUserId)
-        : assignAgentWithTierFallback(checked, { bucket, eventType }, input.startIso, input.allowTestBuckets ?? false, false, seat, null, start ?? null),
+        : assignAgentWithTierFallback(checked, { bucket, eventType }, input.startIso, input.allowTestBuckets ?? false, false, seat, null, start ?? null, !move),
     );
   } catch (err) {
     // #2073: a named link records no routing decision, refused or not: the
@@ -5343,7 +5377,7 @@ async function createHeld(
             // #3529: only what is true ABOVE the rung; its own claimed advisors are offered
             // again by the walk itself (`askedOnRung`).
             unreadAbove: tier.pastClaims === true || tier.unreadAbove === true || tier.handed === true,
-          }),
+          }, !move),
         );
       } catch (err) {
         // The walk's failure is the answer; a rollback that also failed is logged,
@@ -6521,7 +6555,12 @@ async function moveToRequestedBucket(
   // turn then reports that nothing settles (`bookViaApiDecided`), so the create must
   // not tell the line early that the time is taken. One that is not tolerated goes
   // up as itself, and the line hears a lost race as taken either way.
-  const held = opts.held && opts.tolerateRefusal !== false ? { seat: opts.held.seat, queued: opts.held.queued } : opts.held;
+  // #3529: either way it is a move, which never walks past claims.
+  const held: HeldTurn | undefined = opts.held
+    ? opts.tolerateRefusal !== false
+      ? { seat: opts.held.seat, queued: opts.held.queued, move: true }
+      : { ...opts.held, move: true }
+    : undefined;
   let created: Awaited<ReturnType<typeof createBooking>>;
   try {
     created = await createBooking(input, deps, { requested, held });
