@@ -1260,12 +1260,6 @@ describe("loadFailingAgents per-kind paging thresholds (#916)", () => {
   });
 });
 
-// #1187: the #1049 backoff removed the wasted Google calls for calendars
-// established as gone, but those calls were also the incidental signal that
-// something was wrong. A Workspace change that revokes delegation for thirty
-// agents at once now makes the rotation lane QUIETER, not noisier. The lane has
-// to report the size of the population it is skipping, or the scale of a
-// revocation is unreportable.
 describe("runIncrementalSync with the tick's advisor facts (#3489)", () => {
   // The cron tick read every advisor's email and zone with two requests EACH, every
   // minute, before reading their calendars: 180 requests a minute for 90 advisors in
@@ -1312,6 +1306,33 @@ describe("runIncrementalSync with the tick's advisor facts (#3489)", () => {
     expect(out.events).toBe(0);
     expect(reads).toEqual([]);
     expect(calMock.syncEvents).not.toHaveBeenCalled();
+  });
+
+  it("saves the advanced token and the health stamp in ONE write", async () => {
+    // Two writes per advisor per minute were the token and the health stamp, both on
+    // the same row after the same pass. They were split (2026-06-19) only so the token
+    // saved while migration 0038's health columns might not exist yet; the deploy gate
+    // now refuses code ahead of its schema, so one write saves both.
+    calMock.syncEvents.mockResolvedValueOnce({ events: [], nextSyncToken: "tok-2", truncated: false } as never);
+    const { db, updates } = syncFlowDb({ email: "agent@x.com", calendars: [calendar] });
+    admin.current = db;
+    await runIncrementalSync("agent-1", null, { email: "agent@x.com", timeZone: "America/New_York" });
+    const writes = updates.filter((u) => u.table === "agent_calendars");
+    expect(writes).toHaveLength(1);
+    expect(writes[0]!.payload.sync_token).toBe("tok-2");
+    expect(writes[0]!.payload[LANE_COLUMNS.sync.failures]).toBe(0);
+    expect(writes[0]!.payload[LANE_COLUMNS.sync.lastSuccess]).toEqual(expect.any(String));
+  });
+
+  it("a page capped pass still writes its health and never a token", async () => {
+    calMock.syncEvents.mockResolvedValueOnce({ events: [], nextSyncToken: null, truncated: true } as never);
+    const { db, updates } = syncFlowDb({ email: "agent@x.com", calendars: [calendar] });
+    admin.current = db;
+    await runIncrementalSync("agent-1", null, { email: "agent@x.com", timeZone: "America/New_York" });
+    const writes = updates.filter((u) => u.table === "agent_calendars");
+    expect(writes).toHaveLength(1);
+    expect("sync_token" in writes[0]!.payload).toBe(false);
+    expect(writes[0]!.payload[LANE_COLUMNS.sync.failures]).toBe(0);
   });
 
   it("control: without them it reads both, as the push path still does", async () => {
@@ -1378,6 +1399,12 @@ describe("loadAgentSyncFacts (#3489)", () => {
   });
 });
 
+// #1187: the #1049 backoff removed the wasted Google calls for calendars
+// established as gone, but those calls were also the incidental signal that
+// something was wrong. A Workspace change that revokes delegation for thirty
+// agents at once now makes the rotation lane QUIETER, not noisier. The lane has
+// to report the size of the population it is skipping, or the scale of a
+// revocation is unreportable.
 describe("runIncrementalSync reports the calendars it backed off (#1187)", () => {
   /**
    * A wall-clock ms value at which `id` is NOT due for its once-per-interval

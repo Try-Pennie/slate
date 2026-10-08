@@ -781,18 +781,20 @@ async function syncCalendar(
         window,
       );
 
-    // Persist the advanced sync token on its OWN write (correctness-critical:
-    // it's how the next pass resumes instead of re-bootstrapping). Kept separate
-    // from the best-effort diagnostics write so the token still saves even if
-    // the diagnostics columns aren't present yet (e.g. migration not applied).
-    if (result.nextSyncToken) {
-      // write-ok: a refused token save costs the next pass a re-bootstrap, which is expensive and correct. Losing the token can never lose events.
-      await supabaseAdmin()
-        .from("agent_calendars")
-        .update({ sync_token: result.nextSyncToken })
-        .eq("id", cal.id);
-    }
-    await recordCalHealth(cal.id, "sync", prev, { ok: true });
+    // Persist the advanced sync token (correctness-critical: it's how the next pass
+    // resumes from where this one read) in the SAME write as the health stamp, one
+    // request rather than two for every advisor every minute (#3489). It was a
+    // separate write from 2026-06-19 so the token still saved while migration 0038's
+    // health columns might not exist yet; the deploy now refuses code ahead of its
+    // schema, which retired that premise. A refused write leaves the stored token,
+    // so the next pass re-reads the same delta: never a lost event.
+    await recordCalHealth(
+      cal.id,
+      "sync",
+      prev,
+      { ok: true },
+      result.nextSyncToken ? { sync_token: result.nextSyncToken } : {},
+    );
     // A full resync may have purged vanished blocks, which `applyEvents` does not
     // count, so it is treated as a change rather than asked to prove it was not.
     return { events: result.events.length, busyChanged: busyWrites > 0 || full };
