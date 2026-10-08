@@ -55,6 +55,7 @@
 import { DateTime } from "luxon";
 import { slateBucket, leadKey, compareHalves, daysNeeded, normalCdf, MIN_LEADS_PER_HALF, MIN_OUTCOMES_PER_HALF } from "./pilot-split.ts";
 import type { CalcomListedBooking } from "../../src/lib/calcom/upcoming-bookings.ts";
+import type { PilotSettings } from "../../src/lib/salesforce/pilot-settings.ts";
 
 export type Side = "slate" | "calcom";
 
@@ -196,13 +197,8 @@ export interface RegalCall {
   isAiAgent: boolean;
 }
 
-/** `WebsiteConfiguration__c` as Salesforce holds it now. */
-export interface PilotSettings {
-  active: boolean | null;
-  percent: number | null;
-  tiers: string | null;
-  lastModified: string | null;
-}
+/** `WebsiteConfiguration__c` as Salesforce holds it now, read by src/lib/salesforce/pilot-settings.ts. */
+export type { PilotSettings };
 
 export type Read<T> = { ok: true; value: T } | { ok: false; message: string };
 

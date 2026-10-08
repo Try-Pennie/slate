@@ -56,7 +56,7 @@ export function VolumeLearning({
   coverage,
   sourceNotice,
   sourceSetAside,
-  pageShare,
+  pagePilot,
   heldOff,
   notice,
   action,
@@ -84,11 +84,10 @@ export function VolumeLearning({
    */
   sourceSetAside: string | null;
   /**
-   * From `pageBaselinesAtShare()` (#3193): the share of Low the pages' floors are
-   * judged at, in words, and whether they are judged at all. When the share is
-   * unknown the pages are not judged, so the sentence stands in place of the table.
+   * From `pilotPageLine()`: why the pages are not judged, which stands in place of the
+   * table, or null while the pilot sends Slate every Low lead and they are.
    */
-  pageShare: { judged: boolean; text: string };
+  pagePilot: string | null;
   /**
    * From `pagesNotOnSlateLines()` (#2878): one sentence per Low page Slate does not
    * carry yet, said whatever else the section says, so a page missing from the table
@@ -209,15 +208,9 @@ export function VolumeLearning({
 
       <h3 className="mt-6 text-sm font-semibold text-fg">Each Low page on its own</h3>
       <p className="mt-0.5 text-xs text-fg-muted">
-        Each page&apos;s own alarm judges it against cal.com&apos;s floors for that page, scaled to
-        the share of Low bookings Slate carries; learning replaces the floors for the Low tier as
-        a whole.
+        Each page&apos;s own alarm judges it against cal.com&apos;s floors for that page; learning
+        replaces the floors for the Low tier as a whole.
       </p>
-      {pageShare.judged && (
-        <p className="mt-1 text-xs text-fg" data-page-share>
-          {pageShare.text}
-        </p>
-      )}
       {heldOff.map((line) => (
         <p key={line} className="mt-1 text-xs text-fg" data-page-held-off>
           {line}
@@ -228,9 +221,9 @@ export function VolumeLearning({
           {sourceSetAside}
         </p>
       )}
-      {!pageShare.judged ? (
-        <p className="mt-1 text-xs text-fg" role="status" data-page-share>
-          {pageShare.text}
+      {pagePilot !== null ? (
+        <p className="mt-1 text-xs text-fg" role="status" data-page-pilot>
+          {pagePilot}
         </p>
       ) : sourceNotice !== null ? (
         <p className="mt-1 text-xs text-fg" role="status" data-page-sources>

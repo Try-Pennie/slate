@@ -13,7 +13,7 @@ says what was decided, why, and what breaks if it is reversed.
 | [0006](./0006-cal-com-compatibility-is-a-frozen-contract.md) | The cal.com URL and embed contract is frozen and extended, never renamed | `README.md` URL contract, `public/widget.js`, `docs/slate-vs-calcom.md` |
 | [0007](./0007-no-staging-environment.md) | No staging environment; production is the first real environment, with the compensating controls named | `DEPLOY.md`, `docs/review-process.md`, `.github/workflows/smoke-canary.yml` |
 | [0008](./0008-twilio-is-the-routing-source-of-truth.md) | Twilio TaskRouter tags, not Salesforce, are the source of truth for the facts that decide an agent's pools | `src/lib/twilio/`, `AGENTS.md` `verify:twilio-parity` |
-| [0009](./0009-the-pilot-switch-lives-in-salesforce.md) | Which leads book through Slate is a Salesforce record trypennie reads, never a Slate setting or a deploy | `scripts/lib/pilot-settings-read.ts`, `docs/pilot-split-report.md` |
+| [0009](./0009-the-pilot-switch-lives-in-salesforce.md) | Which leads book through Slate is a Salesforce record trypennie reads, never a Slate setting or a deploy | `src/lib/salesforce/pilot-settings.ts`, `docs/pilot-split-report.md` |
 | [0010](./0010-lead-quiet-hours-are-a-gate.md) | No call is offered or booked outside 08:00 to 20:00 on the lead's clock | `src/lib/booking/lead-calling-window.ts` |
 | [0011](./0011-browser-checks-before-merge.md) | Browser checks (axe in both themes, sign in, impersonation, admin saves, booking) run before merge against a production build on a local stack; the canary stays | `AGENTS.md` "What CI covers", `e2e/`, the `browser` leg of `.github/workflows/ci.yml` |
 

@@ -31,7 +31,7 @@ import {
 import { slateBucket, compareHalves } from "./lib/pilot-split.ts";
 import type { CalcomListedBooking } from "../src/lib/calcom/upcoming-bookings.ts";
 import { collectSoqlComplete, type SoqlPage } from "../src/lib/salesforce/rest.ts";
-import { settingsFromRecords } from "./lib/pilot-settings-read.ts";
+import { settingsFromRecords } from "../src/lib/salesforce/pilot-settings.ts";
 
 const H = 3_600_000;
 const D = 24 * H;

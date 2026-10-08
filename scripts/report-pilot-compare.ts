@@ -97,7 +97,7 @@ const errText = (err: unknown) => (err instanceof Error ? err.message : String(e
 
 const { sfToken, querySoqlComplete } = await import("@/lib/salesforce/rest");
 const { chunkSoqlValues, sfInList } = await import("@/lib/salesforce/soql");
-const { readPilotSettings } = await import("./lib/pilot-settings-read.ts");
+const { readPilotSettings } = await import("@/lib/salesforce/pilot-settings");
 const { supabaseAdmin } = await import("@/lib/supabase/admin");
 const { selectAllPages } = await import("@/lib/supabase/paginate");
 const { partnerKeysFrom } = await import("@/lib/booking/partner-keys");
