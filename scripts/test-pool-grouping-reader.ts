@@ -86,7 +86,15 @@ function objectWorld() {
 }
 
 // --- the reader: one bounded fetch per server, compare and set ------------------------
-function readerWorld(opts: { answer?: (m: Message) => Promise<Message> | Message; unbound?: boolean; heldAt?: number | null; heldOrigin?: "read" | "snapshot"; retryMs?: number } = {}) {
+function readerWorld(opts: {
+  answer?: (m: Message) => Promise<Message> | Message;
+  unbound?: boolean;
+  heldAt?: number | null;
+  heldOrigin?: "read" | "snapshot";
+  retryMs?: number;
+  /** #3529: the server's own read, run when the directory has nothing fresh: how long it takes, and whether it lands. */
+  ownRead?: { ms: number; lands: boolean };
+} = {}) {
   let now = T0;
   const pending: { at: number; fire: () => void; live: boolean }[] = [];
   const timer = (ms: number, fire: () => void) => {
@@ -100,6 +108,7 @@ function readerWorld(opts: { answer?: (m: Message) => Promise<Message> | Message
   if (opts.heldAt !== undefined && opts.heldAt !== null) store.install(ENTRIES, opts.heldAt, opts.heldOrigin ?? "read");
   const sent: Message[] = [];
   const started: Promise<unknown>[] = [];
+  const ownReads: number[] = [];
   const directoryStub: DirectoryStub = {
     async send(m) {
       sent.push(m);
@@ -116,6 +125,17 @@ function readerWorld(opts: { answer?: (m: Message) => Promise<Message> | Message
     freshMs: POOL_GROUPING_FRESH_MS,
     retryMs: opts.retryMs ?? POOL_GROUPING_RETRY_MS,
     onFetchStarted: (p) => started.push(p),
+    ...(opts.ownRead
+      ? {
+          readOwn: async () => {
+            ownReads.push(now);
+            const at = now;
+            await new Promise<void>((resolve) => timer(opts.ownRead!.ms, resolve));
+            if (!opts.ownRead!.lands) throw new Error("planted own read failure");
+            store.install(ENTRIES, at, "read");
+          },
+        }
+      : {}),
   });
   const advance = async (ms: number) => {
     const until = now + ms;
@@ -130,7 +150,7 @@ function readerWorld(opts: { answer?: (m: Message) => Promise<Message> | Message
     now = until;
     await new Promise((r) => setImmediate(r));
   };
-  return { store, reader, sent, started, advance, now: () => now, setNow: (t: number) => (now = t) };
+  return { store, reader, sent, started, ownReads, advance, now: () => now, setNow: (t: number) => (now = t) };
 }
 const answering = (snapshot: unknown) => () => ({ kind: "grouping", snapshot });
 
@@ -444,8 +464,62 @@ async function boundedPerServer() {
   eq(lineGroupSourceOf({ group: null, why: "unknown-rung" }, null, { source: "backoff", waitedMs: null, ageMs: null }), "backoff", "retry: a confirm that did not ask again is said as backoff");
 }
 
+// #3529: load run 37841835577, burst 2. The lane publishes once a minute and a snapshot
+// is fresh for one minute from its read's start, so each minute has a gap in which the
+// directory holds only a stale one (77s apart that time). Every confirm of a crowd that
+// lands in the gap keyed by code, the two codes of one ladder formed two lines and raced
+// each other, and three of twelve timed out. Now a server whose directory answer is not
+// fresh reads the grouping itself, at once and within the confirm's own wait, which is
+// the read it already did after the response: the same reads, earlier, and never a
+// longer staleness than a local read's minute.
+async function ownReadFallback() {
+  for (const answer of [answering(groupingSnapshotOf(ENTRIES, T0 - 73_000)), answering(null)]) {
+    const w = readerWorld({ answer, ownRead: { ms: 200, lands: true } });
+    const reading = w.reader.ensure();
+    await w.advance(POOL_GROUPING_FETCH_MS);
+    const r = await reading;
+    eq(r.source, "read", "own read: a server the directory had nothing fresh for reads the grouping itself, inside its wait");
+    eq(w.ownReads.length, 1, "own read: one read");
+    eq(w.store.held()?.origin, "read", "own read: and holds it as its own read, which a local read's minute bounds");
+    eq(w.store.peek("121"), poolKeyDigest(RAW_KEY.get("121")!), "own read: and keys from it");
+  }
+  {
+    // Coalesced: a crowd on one server makes ONE read, however many wait.
+    const w = readerWorld({ answer: answering(null), ownRead: { ms: 200, lands: true } });
+    const all = Array.from({ length: 20 }, () => w.reader.ensure());
+    await w.advance(POOL_GROUPING_FETCH_MS);
+    const got = await Promise.all(all);
+    assert(got.every((g) => g.source === "read"), `own read: every confirm of the crowd keys from it (got ${JSON.stringify([...new Set(got.map((g) => g.source))])})`);
+    eq(w.ownReads.length, 1, "own read: and the crowd costs the server one read");
+  }
+  {
+    // A read slower than the wait answers as before, and still lands for the next.
+    const w = readerWorld({ answer: answering(null), ownRead: { ms: 2_000, lands: true } });
+    const reading = w.reader.ensure();
+    await w.advance(POOL_GROUPING_FETCH_MS);
+    eq((await reading).source, "timeout", "own read: one slower than the wait is a timeout for this confirm");
+    await w.advance(2_000);
+    assert(w.store.fresh(), "own read: and still installs, for the confirms after it");
+  }
+  {
+    // A read that fails is the directory's own answer, never something fresh.
+    const w = readerWorld({ answer: answering(null), ownRead: { ms: 50, lands: false } });
+    const reading = w.reader.ensure();
+    await w.advance(POOL_GROUPING_FETCH_MS);
+    eq((await reading).source, "absent", "own read: a failed read leaves the directory's answer as the reading");
+    assert(!w.store.fresh(), "own read: and installs nothing");
+  }
+  {
+    // Control: a fresh snapshot needs no read of its own.
+    const w = readerWorld({ answer: answering(groupingSnapshotOf(ENTRIES, T0 - 5_000)), ownRead: { ms: 50, lands: true } });
+    eq((await w.reader.ensure()).source, "installed", "own read control: a fresh snapshot installs as before");
+    eq(w.ownReads.length, 0, "own read control: and no own read is made");
+  }
+}
+
 async function main() {
   await readerTests();
+  await ownReadFallback();
   await sameKeyBothWays();
   await timeoutTyping();
   await boundedPerServer();
