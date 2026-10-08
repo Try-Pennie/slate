@@ -530,10 +530,10 @@ export const ALERT_CATALOG: AlertEntry[] = [
     key: "page_volume_share_unknown",
     kind: "condition",
     why:
-      "The per page low volume alarm is standing down because the share of Low Slate " +
-      "carries is unmeasured, unreadable or too small to judge any page at (#3193); a " +
-      "refit that stores a usable share ends it, and the next tick that judges the pages " +
-      "at that share clears it.",
+      "The per page low volume alarm cannot read the pilot switch in Salesforce " +
+      "(WebsiteConfiguration__c), so it cannot tell whether every Low lead comes to Slate " +
+      "and judges no page; the next tick that reads the switch clears it. The key name " +
+      "predates the switch and is kept so the earlier share stand down is settled too.",
   },
   {
     key: "booking_failure_rate",

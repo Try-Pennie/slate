@@ -51,8 +51,12 @@ and Slate is not on that path at all.
   ASSUME the split held and print what Salesforce holds now, exiting on a current
   value that contradicts the assumption (`docs/pilot-compare-report.md`).
 - **Slate cannot see the switch except by reading Salesforce.** The two pilot
-  reports do so through `scripts/lib/pilot-settings-read.ts`, which refuses on any
-  count of records but one.
+  reports, the per page low volume alarm and the admin alerts page do so through
+  `src/lib/salesforce/pilot-settings.ts`, which refuses on any count of records but
+  one. The alarm judges each Low page only while the switch sends Slate every Low
+  lead (`lowPilot` in `src/lib/monitor/page-volume.ts`, mirroring `shouldUseSlate`),
+  because during a split each page books too rarely through Slate for its floors to
+  mean anything.
 - **It is not Slate's kill switch.** Unticking `SlatePilotActive__c` sends leads to
   cal.com. Stopping public booking in Slate (`booking_settings.public_booking_paused`,
   DEPLOY.md "Feature flags and the kill switch") refuses them on the Slate booker
@@ -66,5 +70,5 @@ to one Salesforce record allows.
 
 ## Where the mechanics live
 
-trypennie's `shouldUseSlate`; `scripts/lib/pilot-settings-read.ts`;
+trypennie's `shouldUseSlate`; `src/lib/salesforce/pilot-settings.ts`;
 `docs/pilot-split-report.md` and `docs/pilot-compare-report.md`.

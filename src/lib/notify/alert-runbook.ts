@@ -60,8 +60,8 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // #2090. Events arrive and the edge cannot read them, so the detector behind it
   // judges nobody: a guard that has quietly stopped covering anything.
   regal_calls_unreadable: "a-limit-or-a-guard-is-not-working",
-  // #3193. The per page alarm is running and judging nobody, because the share its
-  // floors are thinned to is not known: a guard that has stopped covering anything.
+  // The per page alarm is running and judging nobody, because the pilot switch in
+  // Salesforce cannot be read: a guard that has stopped covering anything.
   page_volume_share_unknown: "a-limit-or-a-guard-is-not-working",
   // #2944. Calls arrive and their outcome rows are not being written, so the table
   // the show rate reads stops filling: the same first question as a lane gone

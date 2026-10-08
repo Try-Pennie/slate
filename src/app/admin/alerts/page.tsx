@@ -40,20 +40,22 @@ import { CalcomRetirementSwitch } from "@/components/admin/CalcomRetirementSwitc
 import { CALCOM_RETIREMENT_FORM } from "@/lib/calcom/retirement";
 import { loadPutBackCounts, putBackSavedSentence, type PutBackCounts } from "@/lib/calcom/put-back";
 import { VolumeLearning, type PageCoverageView } from "@/components/admin/VolumeLearning";
-import { EARLIEST_RAMP_END, RAMP_END_FORM, baselineInForce, shareInForce, type BaselineInForce } from "@/lib/monitor/volume-relearn";
+import { EARLIEST_RAMP_END, RAMP_END_FORM, baselineInForce, type BaselineInForce } from "@/lib/monitor/volume-relearn";
 import { LEARNING } from "@/lib/monitor/volume-learning";
 import { learningStatusCopy, tierLearningLines } from "@/lib/monitor/volume-relearn-copy";
 import { LOW_TIER } from "@/lib/monitor/volume-tiers";
 import {
   LOW_PAGES_ON_SLATE,
-  pageBaselinesAtShare,
+  lowPilot,
   pageCoverage,
+  pilotPageLine,
   pagesNotOnSlateLines,
   pageSourceStatus,
   type PageSourceMeasure,
 } from "@/lib/monitor/page-volume";
 import { measurePageSources } from "@/lib/monitor/customer-bookings";
 import { MEASURED_PAGE_BASELINES } from "@/lib/monitor/page-volume-baseline";
+import { pilotSettingsCache } from "@/lib/salesforce/pilot-settings";
 import { floorTable } from "@/lib/admin/volume-floor-table";
 import { loadBusinessHours } from "@/lib/booking/business-hours-load";
 import { SubmitButton } from "@/components/ui/SubmitButton";
@@ -260,11 +262,17 @@ export default async function AlertSettingsPage({
 
   // #2738's per page coverage, against the same week the floor tables use. Only the
   // pages Slate carries (#2878): the rest are named as not judged beside the table.
-  // #3193: at the share of Low Slate carries, through the one function the alarm
-  // takes its floors from, so the table counts the hours the alarm can judge.
-  const pageShare = pageBaselinesAtShare(MEASURED_PAGE_BASELINES, shareInForce(learningInput.learning, LOW_TIER));
-  const pageFloors = pageShare.state === "applied" ? pageShare.baselines : null;
-  // With the share unknown there are no floors to count, and the section says why in
+  // The pages are judged only while the pilot switch in Salesforce sends Slate every Low
+  // lead, through the same `lowPilot` the alarm decides by, so the table appears exactly
+  // when the alarm is judging.
+  const pilot = lowPilot(
+    await pilotSettingsCache.read().catch((err: unknown) => {
+      log.error("admin-alerts", { msg: "pilot settings unreadable" }, err instanceof Error ? err : undefined);
+      return null;
+    }),
+  );
+  const pageFloors = pilot.state === "whole" ? MEASURED_PAGE_BASELINES : null;
+  // While they are not judged there are no floors to count, and the section says why in
   // place of the table rather than reading as an unreadable week.
   const coverage: PageCoverageView[] | null =
     week && pageFloors
@@ -776,7 +784,7 @@ export default async function AlertSettingsPage({
           coverage={coverage}
           sourceNotice={sourceNotice}
           sourceSetAside={sourceSetAside}
-          pageShare={{ judged: pageShare.state === "applied", text: pageShare.text }}
+          pagePilot={pilotPageLine(pilot)}
           heldOff={pagesNotOnSlateLines()}
           notice={learningNotice}
           action={setVolumeRampEnd}
