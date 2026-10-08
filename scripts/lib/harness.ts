@@ -13,6 +13,28 @@
 // (scripts/run-tests.ts) executes each test file in its own process.
 
 let failures = 0;
+/** Whether `finish()` was called: what the guard below reads (#3520). */
+let finished = false;
+
+/**
+ * #3520: a suite that STOPS before it calls `finish()` fails. A main() awaiting a promise
+ * that never settles does not crash: node finds the event loop empty and exits 0, and the
+ * runner, which reads only the exit code, counted the suite green with every assertion
+ * after the stop unrun. `beforeExit` fires exactly then, when the loop empties without an
+ * explicit exit, so it is the one place that can tell. A suite that calls `finish()`
+ * exits through it and never reaches this.
+ */
+process.on("beforeExit", () => {
+  // A vitest worker reaches this module only through the shared fakes and is judged by
+  // vitest's own report, never by this exit code.
+  // env-ok: VITEST (set by vitest in its own workers and by nothing else; absent, which every workflow step leaves it, is what keeps the guard on)
+  if (finished || process.env.VITEST) return;
+  console.error(
+    "FAIL: the suite stopped before it called finish(): an await that never settled ended it, " +
+      "so every assertion after that point went unrun",
+  );
+  process.exit(1);
+});
 
 /** Pass/fail check: logs `ok:`/`FAIL:` and counts failures. */
 export function assert(cond: boolean, msg: string): void {
@@ -42,6 +64,7 @@ export function eq<T>(actual: T, expected: T, msg: string): void {
  * terminating the test process.
  */
 export function finish(exit: (code: number) => unknown = process.exit): void {
+  finished = true;
   console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
   exit(failures === 0 ? 0 : 1);
 }
@@ -51,7 +74,10 @@ export function failureCount(): number {
   return failures;
 }
 
-/** Reset the counter (test-only, for isolating harness unit tests). */
+/** Reset the counter and the guard (test-only, for isolating harness unit tests). */
 export function resetHarness(): void {
   failures = 0;
+  // A reset starts over, the #3520 guard included: a finish() made with an injected exit
+  // before it must not disarm the guard for the rest of the process.
+  finished = false;
 }

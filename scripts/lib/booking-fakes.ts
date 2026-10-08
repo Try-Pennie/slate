@@ -36,25 +36,16 @@ import type { BookingEventPayload } from "../../src/lib/webhooks/types.ts";
 import { makeConfirmQueue, isolateLine } from "../../src/lib/booking/confirm-queue.ts";
 import { makeCommitCostLog } from "../../src/lib/booking/commit-cost.ts";
 import { commitFreshModel, type CommitFreshParts } from "./commit-fresh-model.ts";
+import { assert as harnessAssert, finish as harnessFinish } from "./harness.ts";
 
 /**
- * Per-file assertion counter. Each suite is its own process (the runner spawns
- * one per file and reads the exit code), so each owns its failure count and
- * calls finish() to report and exit.
+ * The shared harness's own `assert` and `finish` (`./harness.ts`), so a booking suite
+ * keeps every rule the harness carries, its guard against a suite that stops before
+ * `finish()` (#3520) included. This was a second copy of the counter and summary, which
+ * is how the guard would have reached one copy and not the other.
  */
 export function createAsserter() {
-  let failures = 0;
-  const assert = (cond: boolean, msg: string) => {
-    if (!cond) {
-      console.error("FAIL:", msg);
-      failures++;
-    } else console.log("ok:", msg);
-  };
-  const finish = () => {
-    console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILED`);
-    process.exit(failures === 0 ? 0 : 1);
-  };
-  return { assert, finish };
+  return { assert: harnessAssert, finish: () => harnessFinish() };
 }
 // `is_test: false` as the column really is (NOT NULL, default false, #396): the
 // person gate reads the world off it (#2660), so a fixture missing the field would
