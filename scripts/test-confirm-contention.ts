@@ -453,7 +453,14 @@ async function burst(opts: {
         ? {
             readLadderInputs: async (codes: readonly string[]) => {
               const known = new Map(codes.map((code) => [code, bucketFor(code)]));
-              return { bucket: (code: string) => known.get(code) ?? null, covers: () => true } as unknown as LadderInputs;
+              const pool = await base.resolveBucketPool(fakeBucket);
+              return {
+                bucket: (code: string) => known.get(code) ?? null,
+                covers: () => true,
+                pool: () => pool,
+                user: (id: string) => users[id] ?? null,
+                emails: (ids: readonly string[]) => new Map(ids.flatMap((id) => (users[id]?.email ? [[id, users[id]!.email] as [string, string]] : []))),
+              } as unknown as LadderInputs;
             },
           }
         : {}),

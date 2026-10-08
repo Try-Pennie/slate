@@ -2622,7 +2622,8 @@ async function assignAgent(
 
   const { assignment, anyUnverified, checked } = await selectAgent(
     candidates,
-    (userIds) => deps.loadEmails(userIds),
+    // #3489: from the walk's ladder read when there is one: it holds every advisor's row.
+    (userIds) => (line.inputs ? Promise.resolve(line.inputs.emails(userIds)) : deps.loadEmails(userIds)),
     (emails) => {
       const [fromIso, toIso] = bufferedWindow(eventType, startIso, endIso);
       return deps.verifyFree(emails, fromIso, toIso);
@@ -2946,6 +2947,11 @@ interface TierAssignResult {
    * claims, not behind bookings (`routing_trace.dropped_behind: "claimed"`).
    */
   pastClaims?: boolean;
+  /**
+   * #3489: the ladder read the walk judged its rungs from, so the booking takes the
+   * advisor's row and the routing trace's pool from it rather than reading them again.
+   */
+  ladder?: LadderInputs;
   rungsDropped: number;
   /** #3338: when the walk reached the rung that took it (`Date.now()`), so a lost
    *  race can measure that one rung's cost apart from the rungs dropped above it. */
@@ -3102,7 +3108,7 @@ async function assignAgentWithTierFallback(
       }
     }),
   );
-  if (winner) return { ...winner.value, rungsDropped: winner.rungsDropped, ...(spentByClaims ? { pastClaims: true } : {}) };
+  if (winner) return { ...winner.value, rungsDropped: winner.rungsDropped, ...(spentByClaims ? { pastClaims: true } : {}), ...(ladder ? { ladder } : {}) };
   // #3489 step 3: a claim in flight may yet free an advisor the walk skipped, so the
   // line, which sees every claim end, answers this confirm rather than a refusal.
   const refusal = traced(lastErr ?? new SlotUnavailableError(), trace(ladderStage(rungs)));
@@ -4971,7 +4977,8 @@ async function createHeld(
   const traceExtrasFor = async (t: TierAssignResult): Promise<ReturnType<typeof buildRoutingTraceExtras>> => {
     if (agentLinkUserId !== undefined) return { considered: t.candidates, excluded: [] };
     try {
-      const pool = await profile.time("routing-trace", () => deps.resolveBucketPool(t.bucket));
+      // #3489: the walk's ladder read holds the pool already.
+      const pool = t.ladder ? t.ladder.pool(t.bucket) : await profile.time("routing-trace", () => deps.resolveBucketPool(t.bucket));
       return buildRoutingTraceExtras(pool, t.candidates);
     } catch {
       return { considered: t.candidates, excluded: [] };
@@ -5033,7 +5040,8 @@ async function createHeld(
         null,
       );
     }
-    const agent = await profile.time("load-advisor", () => deps.getUser(userId));
+    // #3489: the walk's ladder read holds the advisor's row; read it only without one.
+    const agent = tier.ladder?.user(userId) ?? (await profile.time("load-advisor", () => deps.getUser(userId)));
     const gcalClientId = await deterministicEventId(idempotencyKey, userId);
     const bookingInsert: BookingInsert = {
       org_id: bookedBucket.org_id,

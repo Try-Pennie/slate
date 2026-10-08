@@ -226,12 +226,12 @@ try {
     );
   }
 
-  // --- the roster: resolveBucketPool's org agents ------------------------------------
-  const oldAgents = rows(`select id, attributes from users where org_id = '${ORG}' and bookable = true and deactivated_at is null`);
-  const agents = got.agents as { id: string; org_id: string; attributes: unknown }[];
+  // --- the roster: resolveBucketPool's org agents, each the WHOLE row getUser reads ----
+  const oldAgents = rows(`select * from users where org_id = '${ORG}' and bookable = true and deactivated_at is null`);
+  const agents = got.agents as Record<string, unknown>[];
   assert(
-    sameRows(agents.map(({ id, attributes }) => ({ id, attributes })), oldAgents) && agents.every((a) => a.org_id === ORG),
-    `roster: the org's bookable advisors who have not left, with their attributes (got ${agents.map((a) => a.id).join(",")})`,
+    sameRows(agents.map((a) => ms(a, "created_at")), (oldAgents as Record<string, unknown>[]).map((a) => ms(a, "created_at"))) && agents.every((a) => a.org_id === ORG),
+    `roster: the org's bookable advisors who have not left, each the whole row the advisor read returns (got ${agents.map((a) => a.id).join(",")})`,
   );
 
   // --- members: resolveBucketPool's active manual members, per bucket ------------------

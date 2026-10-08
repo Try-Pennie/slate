@@ -4,7 +4,7 @@ import { payPeriod } from "@/lib/availability/roundrobin";
 import { bufferedWindow } from "@/lib/booking/buffered-window";
 import { BUSINESS_ZONE, type BusinessHoursException, type BusinessHoursRow } from "@/lib/booking/business-hours";
 import type { LiveHoldRow } from "@/lib/booking/reroute-hold";
-import type { Attributes, Bucket, EventType } from "@/lib/db/types";
+import type { Attributes, Bucket, Criteria, EventType, User } from "@/lib/db/types";
 import type { ResolvedBucket } from "@/lib/availability/service";
 
 /**
@@ -31,6 +31,18 @@ export interface LadderInputs {
   orgAgents(orgId: string): { id: string; attributes: Attributes }[];
   /** A bucket's active manual members. */
   membersOf(bucketId: string): Set<string>;
+  /** The bucket's raw pool, as `resolveBucketPool` reads it, for the routing trace. */
+  pool(bucket: Pick<Bucket, "id" | "org_id" | "criteria">): {
+    orgAgents: { id: string; attributes: Attributes }[];
+    manualMemberIds: Set<string>;
+    criteria: Criteria;
+  };
+  /** A bookable advisor's whole row, as the advisor read (`getUser`) returns it, or
+   *  null for somebody the read did not hold. */
+  user(id: string): User | null;
+  /** The advisors' emails, as the emails read (`loadEmails`) answers: an advisor the
+   *  read does not hold, or one with no email, is left out. */
+  emails(ids: readonly string[]): Map<string, string>;
   readonly schedules: { id: string; user_id: string; timezone: string }[];
   readonly rules: { schedule_id: string; weekday: number; start_minute: number; end_minute: number }[];
   readonly busy: { user_id: string; starts_at: string; ends_at: string; source: string }[];
@@ -140,11 +152,13 @@ export function ladderInputsFrom(data: unknown, windows: LadderWindows): LadderI
   });
 
   const agentsByOrg = new Map<string, { id: string; attributes: Attributes }[]>();
+  const userById = new Map<string, User>();
   section("agents").forEach((r, i) => {
-    need("agents", i, isStr(r.id) && isStr(r.org_id) && isRow(r.attributes), "id, org or attributes");
+    need("agents", i, isStr(r.id) && isStr(r.org_id) && isRow(r.attributes) && isStr(r.email), "id, org, attributes or email");
     const list = agentsByOrg.get(r.org_id as string) ?? [];
     list.push({ id: r.id as string, attributes: r.attributes as Attributes });
     agentsByOrg.set(r.org_id as string, list);
+    userById.set(r.id as string, r as unknown as User);
   });
 
   const members = new Map<string, Set<string>>();
@@ -206,6 +220,20 @@ export function ladderInputsFrom(data: unknown, windows: LadderWindows): LadderI
     covers: (fromIso, toIso) => Date.parse(fromIso) >= busyFromMs && Date.parse(toIso) <= busyToMs,
     orgAgents: (orgId) => agentsByOrg.get(orgId) ?? [],
     membersOf: (bucketId) => members.get(bucketId) ?? new Set<string>(),
+    pool: (bucket) => ({
+      orgAgents: agentsByOrg.get(bucket.org_id) ?? [],
+      manualMemberIds: members.get(bucket.id) ?? new Set<string>(),
+      criteria: bucket.criteria ?? {},
+    }),
+    user: (id) => userById.get(id) ?? null,
+    emails: (ids) => {
+      const m = new Map<string, string>();
+      for (const id of ids) {
+        const email = userById.get(id)?.email;
+        if (email) m.set(id, email);
+      }
+      return m;
+    },
     schedules,
     rules,
     busy,

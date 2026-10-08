@@ -24,7 +24,9 @@
 -- Each section is the read it replaces, with the same filters:
 --
 --   buckets         the bucket row with its event type nested, by code
---   agents          the orgs' bookable advisors who have not left (`resolveBucketPool`)
+--   agents          the orgs' bookable advisors who have not left (`resolveBucketPool`),
+--                   each the whole row, which is what the advisor read returns
+--                   (`getUser`) and where the advisor emails come from (`loadEmails`)
 --   members         the ladder buckets' ACTIVE manual members
 --   schedules       each advisor's schedule (one per advisor, 0074) with its rules
 --   busy            busy blocks overlapping [p_busy_from, p_busy_to), hold blocks
@@ -100,7 +102,7 @@ begin
        where b.id = any(v_bucket_ids)
     ),
     'agents', (
-      select coalesce(jsonb_agg(jsonb_build_object('id', u.id, 'org_id', u.org_id, 'attributes', u.attributes) order by u.id), '[]'::jsonb)
+      select coalesce(jsonb_agg(to_jsonb(u) order by u.id), '[]'::jsonb)
         from users u
        where u.id = any(v_agents)
     ),

@@ -85,6 +85,7 @@ function world() {
   const users: Row[] = ADVISORS.map((id) => ({
     id,
     org_id: ORG,
+    email: `${id}@example.com`,
     attributes: id === "low" ? { debt_team: ["high", "low"] } : id === "manual" ? {} : HIGH,
     bookable: id !== "off",
     deactivated_at: id === "left" ? "2031-02-01T00:00:00.000Z" : null,
@@ -160,7 +161,8 @@ function snapshotOf(w: ReturnType<typeof world>, windows: ReturnType<typeof ladd
   const inWindow = (from: unknown, to: unknown) => Date.parse(String(from)) < Date.parse(windows.busyTo) && Date.parse(String(to)) > Date.parse(windows.busyFrom);
   const data = {
     buckets: [{ ...BUCKET, event_types: EVENT }],
-    agents: roster.map((u) => ({ id: u.id, org_id: u.org_id, attributes: u.attributes })),
+    // The whole row, as the function returns it.
+    agents: roster,
     members: t.bucket_members!.filter((m) => m.active).map((m) => ({ bucket_id: m.bucket_id, user_id: m.user_id })),
     schedules: t.availability_schedules!.filter((s) => ids.has(s.user_id)),
     busy: t.busy_blocks!.filter((b) => ids.has(b.user_id) && inWindow(b.starts_at, b.ends_at)).map(({ id: _id, ...b }) => b),

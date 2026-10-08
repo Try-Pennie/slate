@@ -53,7 +53,10 @@ const good = () => ({
     { id: "b500", org_id: "org1", code: "500", criteria: {}, event_types: { id: "e1", duration_min: 20 } },
     { id: "b400", org_id: "org1", code: "400", criteria: {}, event_types: null },
   ],
-  agents: [{ id: "a", org_id: "org1", attributes: { debt_team: ["high"] } }, { id: "z", org_id: "org2", attributes: {} }],
+  agents: [
+    { id: "a", org_id: "org1", attributes: { debt_team: ["high"] }, email: "a@example.com", name: "Agent A", bookable: true },
+    { id: "z", org_id: "org2", attributes: {}, email: "z@example.com", name: "Agent Z", bookable: true },
+  ],
   members: [{ bucket_id: "b500", user_id: "a" }],
   schedules: [{ id: "s-a", user_id: "a", timezone: "America/New_York", availability_rules: [{ schedule_id: "s-a", weekday: 2, start_minute: 540, end_minute: 1020 }] }],
   busy: [{ user_id: "a", starts_at: minutes(START, 0), ends_at: minutes(START, 20), source: "gcal" }],
@@ -74,6 +77,14 @@ const good = () => ({
   eq(r.orgAgents("nobody").length, 0, "reader: an org with nobody bookable has nobody");
   assert(r.membersOf("b500").has("a") && r.membersOf("b400").size === 0, "reader: active members, by bucket");
   eq(r.rules.length, 1, "reader: the rules, out of their schedules");
+  eq(r.user("a")?.name, "Agent A", "reader: an advisor's whole row, as the advisor read returns it");
+  eq(r.user("nobody"), null, "reader: nobody the read did not hold");
+  eq(JSON.stringify([...r.emails(["a", "nobody"])]), JSON.stringify([["a", "a@example.com"]]), "reader: the emails of the advisors it holds, nobody else, as the emails read answers");
+  const pool = r.pool({ id: "b500", org_id: "org1", criteria: { debt_team: ["high"] } });
+  assert(
+    JSON.stringify(pool.orgAgents.map((a) => a.id)) === JSON.stringify(["a"]) && pool.manualMemberIds.has("a") && JSON.stringify(pool.criteria) === JSON.stringify({ debt_team: ["high"] }),
+    "reader: a bucket's raw pool, as the pool read gives it: its org's roster, its members, its criteria",
+  );
   eq(r.shares.length, 2, "reader: a share row with no advisor is kept, for the share's own reduction to skip");
   assert(r.covers(minutes(START, -10), minutes(START, 30)), "covers: the requested rung's own window");
   assert(!r.covers(minutes(windows.busyFrom, -1), minutes(START, 30)), "covers: not a window starting before the read's");
@@ -89,7 +100,8 @@ const breakers: Breaker[] = [
   ["a section that is not a list", (d) => ({ ...d, holds: {} }), /holds is not a list/],
   ["a row that is not a row", (d) => ({ ...d, agents: ["a"] }), /agents\[0\] is not a row/],
   ["a bucket with no code", (d) => ({ ...d, buckets: [{ ...d.buckets[0], code: "" }] }), /buckets\[0\]/],
-  ["an advisor with no attributes", (d) => ({ ...d, agents: [{ id: "a", org_id: "org1", attributes: null }] }), /agents\[0\]/],
+  ["an advisor with no attributes", (d) => ({ ...d, agents: [{ ...d.agents[0]!, attributes: null }] }), /agents\[0\]/],
+  ["an advisor with no email", (d) => ({ ...d, agents: [{ ...d.agents[0]!, email: null }] }), /agents\[0\]/],
   ["a member with no advisor", (d) => ({ ...d, members: [{ bucket_id: "b500" }] }), /members\[0\]/],
   ["a schedule with no zone", (d) => ({ ...d, schedules: [{ ...d.schedules[0], timezone: null }] }), /schedules\[0\]/],
   ["a rule with a minute that is not a number", (d) => ({ ...d, schedules: [{ ...d.schedules[0], availability_rules: [{ schedule_id: "s-a", weekday: 2, start_minute: "nine", end_minute: 1020 }] }] }), /schedules\[0\]/],
