@@ -2958,6 +2958,13 @@ interface TierAssignResult {
    */
   pastClaims?: boolean;
   /**
+   * #3529: a rung above this one was skipped without this confirm reading it: the line
+   * handed it a lower rung off another confirm's read, or a walk down after a lost race
+   * resumed below rungs it had passed only for claims or never read. Whatever freed an
+   * advisor up there since is unknown to it, so it never proves the ladder spent.
+   */
+  unreadAbove?: boolean;
+  /**
    * #3489: the ladder read the walk judged its rungs from, so the booking takes the
    * advisor's row and the routing trace's pool from it rather than reading them again.
    */
@@ -2969,6 +2976,24 @@ interface TierAssignResult {
   /** #2158: the bucket's legal rule matched nobody, so it was dropped and the
    *  tier's whole pool was used. Carried out here rather than recomputed, so the
    *  trace and the notice describe the pool this booking actually came from. */
+}
+
+/**
+ * #3529: whether a claim that ended without a booking could have freed an advisor this
+ * confirm never asked about, so nothing it found proves the ladder spent. True when the
+ * line handed it the advisor (others claimed that rung by construction), when its walk
+ * skipped a rung only because every advisor on it was claimed (`pastClaims`), and when
+ * it left advisors out of the rung it booked from for another confirm's claim (#3257).
+ * The one judge of a full verdict and of a lost race with nowhere left to walk, so the
+ * two can never disagree about the same tier.
+ */
+function claimsMayFree(tier: TierAssignResult): boolean {
+  return (
+    tier.handed === true ||
+    tier.pastClaims === true ||
+    tier.unreadAbove === true ||
+    tier.read.some((id) => !tier.candidates.includes(id))
+  );
 }
 
 /**
@@ -2992,6 +3017,12 @@ interface LadderResume {
   rung: number;
   askedOnRung: readonly string[];
   taken: readonly string[];
+  /**
+   * #3529: the rungs above `rung` are not known spent: the confirm passed one only for
+   * claims, or never read them (`claimsMayFree`). A walk that then finds nobody parks in
+   * the line (`LadderSpentByClaimsError`) rather than refusing.
+   */
+  unreadAbove: boolean;
 }
 
 /**
@@ -3039,6 +3070,8 @@ async function assignAgentWithTierFallback(
   // #3489 step 3: a rung skipped only because every advisor on it is claimed by a
   // confirm still in flight. A ladder spent with one of those parks, never refuses.
   let spentByClaims = false;
+  // #3529: a rung above the one this walk starts on was never read by it (`unreadAbove`).
+  const unreadAbove = (resume !== null && resume.rung > 0 && resume.unreadAbove) || (handed !== null && handed.rung > 0);
   // Whether a rung has one below it, which decides whether claiming its last advisor
   // hands the line on (`ClaimPlace.below`).
   const ladderCodes = tierLadder(requested.bucket.code);
@@ -3118,11 +3151,20 @@ async function assignAgentWithTierFallback(
       }
     }),
   );
-  if (winner) return { ...winner.value, rungsDropped: winner.rungsDropped, ...(spentByClaims ? { pastClaims: true } : {}), ...(ladder ? { ladder } : {}) };
+  if (winner) {
+    return {
+      ...winner.value,
+      rungsDropped: winner.rungsDropped,
+      ...(spentByClaims ? { pastClaims: true } : {}),
+      ...(unreadAbove ? { unreadAbove: true } : {}),
+      ...(ladder ? { ladder } : {}),
+    };
+  }
   // #3489 step 3: a claim in flight may yet free an advisor the walk skipped, so the
   // line, which sees every claim end, answers this confirm rather than a refusal.
+  // #3529: so may one on a rung above that this walk never read.
   const refusal = traced(lastErr ?? new SlotUnavailableError(), trace(ladderStage(rungs)));
-  if (spentByClaims) throw new LadderSpentByClaimsError(refusal);
+  if (spentByClaims || unreadAbove) throw new LadderSpentByClaimsError(refusal);
   throw refusal;
 }
 
@@ -5249,10 +5291,9 @@ async function createHeld(
     // Nowhere left to walk: the race was on the ladder's last rung, and every
     // advisor this confirm read there it also asked (none was passed over for
     // another confirm's claim, #3257). Then the ladder is spent, whatever the
-    // budget, and the refusal below says so.
-    const nothingLeftToWalk =
-      tier.handed !== true &&
-      tier.rungsDropped >= ladderRungs - 1 && tier.read.every((id) => candidates.includes(id));
+    // budget, and the refusal below says so. #3529: nor did it pass a rung above
+    // only for claims, or skip one unread; then the walk below parks instead.
+    const nothingLeftToWalk = tier.rungsDropped >= ladderRungs - 1 && !claimsMayFree(tier);
     // #2838: a bound hit is paged. #3338: the ladder is spent only when the walk
     // below found nobody (or the race was on the last rung, where there was no walk
     // to take), or for a named link, whose one advisor is its whole ladder. Only
@@ -5299,6 +5340,9 @@ async function createHeld(
             // rest of the read it was handed, which others were booking; those are read again.
             askedOnRung: tier.handed ? [] : candidates,
             taken: [...raceLost, userId],
+            // #3529: only what is true ABOVE the rung; its own claimed advisors are offered
+            // again by the walk itself (`askedOnRung`).
+            unreadAbove: tier.pastClaims === true || tier.unreadAbove === true || tier.handed === true,
           }),
         );
       } catch (err) {
@@ -5481,8 +5525,10 @@ async function createHeld(
   const { candidates } = tier;
   const lastRung = tier.rungsDropped >= ladderRungs - 1;
   const at = candidates.indexOf(result.booking.assigned_user_id ?? chosen.userId);
-  const skippedForClaims = tier.handed === true || tier.read.some((id) => !candidates.includes(id));
-  const full = lastRung && at >= 0 && at === candidates.length - 1 && !skippedForClaims;
+  //
+  // #3529: and never when the walk passed a rung above only because it was claimed: the
+  // confirm holding it may have failed, so the next in line walks from the top.
+  const full = lastRung && at >= 0 && at === candidates.length - 1 && !claimsMayFree(tier);
   return {
     result,
     verdict: full ? { full: true, refusal: "race", settled: { idempotencyKey, result } } : { full: false, booked: { idempotencyKey, result } },

@@ -203,6 +203,8 @@ async function burst(opts: {
   slowEventMs?: number;
   /** When each confirm arrives, from the first; absent means all at once. */
   arriveAtMs?: number[];
+  /** #3529: advisors Google reports busy at the time, though nothing in Slate holds it. */
+  busyAtGoogle?: string[];
   /** The FIRST calendar write for this advisor's email fails at once, an outage
    *  that ends that confirm and frees the advisor it claimed. */
   failFirstEventFor?: string;
@@ -272,7 +274,7 @@ async function burst(opts: {
     const poolFor = (code: string): string[] => (opts.poolByCode ? (opts.poolByCode[code] ?? []) : opts.pool);
     const { deps: base, calls } = makeDeps({
       candidates: opts.pool,
-      freeEmails: new Set(everyone.map((id) => users[id].email)),
+      freeEmails: new Set(everyone.filter((id) => !(opts.busyAtGoogle ?? []).includes(id)).map((id) => users[id].email)),
       existing: opts.existingContext,
     });
     // The bookings table: the active unique index on (agent, start), and the one
@@ -2229,6 +2231,105 @@ async function main() {
       `claimed advisor: confirm 1 books the freed advisor on the requested rung, not a rung below (got ${runs[1].outcome}, ${theirs?.assigned_user_id}, dropped ${theirs?.routing_trace?.rungs_dropped})`,
     );
     assert(!bySlot.has(`c|${input.startIso}`), "claimed advisor: nobody is dropped to the rung below");
+  }
+
+  // #3529: a booking on the ladder's LAST rung that walked past a rung only because
+  // another confirm had claimed it does not prove the slot full. 411 has one advisor
+  // (a), 311 no bucket, 211 one advisor (c). Confirm 0 claims a and hands on, since
+  // there are rungs below; confirm 1 walks past 411 (a is claimed) and books c on the
+  // last rung; confirm 2 waits. Confirm 0's calendar write fails, which frees a, so
+  // confirm 2 must book a rather than be told the time is taken. Before the fix
+  // confirm 1's booking settled the line as full and refused confirm 2.
+  {
+    const { runs, tally, bySlot } = await burst({
+      inputs: [onLadder(0), onLadder(1), onLadder(2)],
+      pool: ["a"],
+      poolByCode: { "411": ["a"], "211": ["c"] },
+      queue: "real",
+      viaApi: false,
+      slowGoogleMs: 1_000,
+      slowEventMs: 2_000,
+      failFirstEventFor: "a@x.com",
+    });
+    assert(runs[0].outcome !== "created", `past claims: confirm 0 fails on its calendar write (got ${runs[0].outcome})`);
+    assert(
+      runs[1].outcome === "created" && runs[1].result?.booking.assigned_user_id === "c" && runs[1].result.booking.routing_trace?.dropped_behind === "claimed",
+      `past claims: confirm 1 walks past the claimed rung and books c on the last (got ${runs[1].outcome}, ${runs[1].result?.booking.assigned_user_id}, ${runs[1].result?.booking.routing_trace?.dropped_behind})`,
+    );
+    assert(
+      runs[2].outcome === "created" && runs[2].result?.booking.assigned_user_id === "a",
+      `past claims: confirm 2 books the freed advisor a, never told the time is taken (got ${runs[2].outcome}, ${runs[2].result?.booking.assigned_user_id}, ${JSON.stringify(tally)})`,
+    );
+    assert(bySlot.has(`a|${input.startIso}`) && bySlot.has(`c|${input.startIso}`), `past claims: both advisors hold the time (got ${[...bySlot.keys()].join(",")})`);
+  }
+
+  // #3529: the same walk past a claimed rung, ending in a LOST RACE on the last rung's
+  // only advisor. Nobody is left after c on 211, but the ladder is not spent: a was
+  // only claimed, and confirm 0's failed calendar write has since freed it. So confirm
+  // 1 waits in the line for that claim (it parks) and books a, rather than being told
+  // the time is taken. Before the fix it read "nowhere left to walk" and refused.
+  {
+    const elsewhereC = makeBooking({
+      id: "elsewhere-c",
+      assigned_user_id: "c",
+      agent_name: "Agent C",
+      agent_email: "c@x.com",
+      starts_at: input.startIso,
+      external_id: "other-isolate-c",
+      salesforce_id: "sf-other-c",
+      attendee_email: "otherc@example.com",
+      attendee_phone: "+12035572222",
+    } as Partial<Booking>);
+    const { runs, tally, bySlot } = await burst({
+      inputs: [onLadder(0), onLadder(1)],
+      pool: ["a"],
+      poolByCode: { "411": ["a"], "211": ["c"] },
+      queue: "real",
+      viaApi: false,
+      heldElsewhere: [elsewhereC],
+      slowGoogleMs: 1_000,
+      slowEventMs: 2_000,
+      failFirstEventFor: "a@x.com",
+    });
+    assert(runs[0].outcome !== "created", `past claims, lost race: confirm 0 fails on its calendar write (got ${runs[0].outcome})`);
+    assert(
+      runs[1].outcome === "created" && runs[1].result?.booking.assigned_user_id === "a",
+      `past claims, lost race: confirm 1 books the freed advisor a, never told the time is taken (got ${runs[1].outcome}, ${runs[1].result?.booking.assigned_user_id}, ${JSON.stringify(tally)})`,
+    );
+    assert(bySlot.has(`a|${input.startIso}`), `past claims, lost race: a holds the time (got ${[...bySlot.keys()].join(",")})`);
+  }
+
+  // #3529: a confirm the line HANDS an advisor on a lower rung never read the rungs
+  // above it; the leader whose read it was handed may have passed them only for claims.
+  // Confirm 0 claims a on 411 and hands on; confirm 1 walks past 411 to 211 and claims
+  // c, leaving d for the line. Confirm 2 arrives later and is handed d, whom Google
+  // finds busy; by then confirm 1 has booked c, so 211 has nobody. Confirm 0's calendar
+  // write failed long before, freeing a. Confirm 2 must park and book a, never be
+  // refused: before the fix the rungs it skipped unread counted as spent.
+  {
+    const { runs, tally, bySlot } = await burst({
+      inputs: [onLadder(0), onLadder(1), onLadder(2)],
+      pool: ["a"],
+      poolByCode: { "411": ["a"], "211": ["c", "d"] },
+      queue: "real",
+      viaApi: false,
+      busyAtGoogle: ["d"],
+      arriveAtMs: [0, 0, 2_500],
+      slowGoogleMs: 1_000,
+      slowEventMs: 2_000,
+      failFirstEventFor: "a@x.com",
+    });
+    assert(runs[0].outcome !== "created", `handed below: confirm 0 fails on its calendar write (got ${runs[0].outcome})`);
+    assert(runs[1].outcome === "created" && runs[1].result?.booking.assigned_user_id === "c", `handed below: confirm 1 books c (got ${runs[1].outcome}, ${runs[1].result?.booking.assigned_user_id})`);
+    assert(
+      runs[2].calls.some((c) => c.name === "verifyFree"),
+      "handed below: confirm 2 asked Google about the advisor it was handed",
+    );
+    assert(
+      runs[2].outcome === "created" && runs[2].result?.booking.assigned_user_id === "a",
+      `handed below: confirm 2 books the freed advisor a, never told the time is taken (got ${runs[2].outcome}, ${runs[2].result?.booking.assigned_user_id}, ${JSON.stringify(tally)})`,
+    );
+    assert(!bySlot.has(`d|${input.startIso}`), "handed below: nobody is booked with the advisor Google found busy");
   }
 
   // The same race at production speed: the attempt that lost took about eight of
