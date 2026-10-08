@@ -470,19 +470,23 @@ export function makeConfirmQueue<T>(
   // #3274: drop every leader whose lease has passed, as if it had reported nothing
   // that settles the slot. Run before anything reads the claims or the holder, so an
   // abandoned confirm can never be counted as booking an advisor or holding the line.
-  // Returns whether the holder was among them, so the caller can hand the line on.
+  // Returns whether any lapsed, so the caller can hand the line on.
+  //
+  // #3529: ANY lapsed claim, not only the holder's or one whose advisor went back on the
+  // frontier. A lapse voids a pending verdict (its end is unknown, so the epoch moves) and
+  // a handed one makes room under `RELEASE_CAP`, and either leaves somebody waiting with
+  // nothing else to wake them before their own wait runs out. `promoteNext` does nothing
+  // while a confirm still holds the line, so an extra call costs nothing.
   const expire = (line: Line<T>): boolean => {
     const t = now();
     let freed = false;
     for (const [who, c] of line.claims) {
       if (c.until > t) continue;
       // #3489: an expired claim said nothing about how it ended.
-      if (endAdvisor(line, c, "unknown")) freed = true;
+      endAdvisor(line, c, "unknown");
       line.claims.delete(who);
-      if (line.holder === who) {
-        line.holder = null;
-        freed = true;
-      }
+      if (line.holder === who) line.holder = null;
+      freed = true;
     }
     return freed;
   };

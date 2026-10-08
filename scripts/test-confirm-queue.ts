@@ -1151,6 +1151,61 @@ async function main() {
     await tick();
     assert(parkedSeen.length === 1 && parkedSeen[0]!.kind === "lead", `lapsed: the claim the walker waited on lapsed, so it reads again (got ${JSON.stringify(parkedSeen.map((x) => x.kind))})`);
   }
+  // #3529: the same lapse on a claim that had said `trying`. Its advisor does not go back
+  // on the frontier (it may have been asked about), but the claim is gone and the verdict
+  // it held is void, so the parked walker must still be woken, not left to time out.
+  {
+    const { timer } = manualTimer();
+    const lease = manualTimer();
+    let t = 0;
+    const q = makeConfirmQueue<string>({ timer, leaseTimer: lease.timer, now: () => t });
+    const first = leadOf(await q.enter("slot"));
+    first.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    first.seat.trying("a");
+    const walker = leadOf(await q.enter("slot"));
+    walker.seat.claimFirst(["a"], { rung: 0, canWalk: true, below: true });
+    walker.renew();
+    const parkedSeen: QueueTurn<string>[] = [];
+    void walker.park().then((x) => parkedSeen.push(x));
+    await tick();
+    assert(parkedSeen.length === 0, "lapsed tried: the parked walker waits while the claim is live");
+    t = CONFIRM_CLAIM_LEASE_MS + 1;
+    lease.fireAll();
+    await tick();
+    assert(parkedSeen.length === 1 && parkedSeen[0]!.kind === "lead", `lapsed tried: a tried claim that lapsed wakes the parked walker to read again (got ${JSON.stringify(parkedSeen.map((x) => x.kind))})`);
+  }
+  // #3529: and a lapsed HANDED claim makes room under the release cap, so a confirm held
+  // back by the cap is released then, not left to time out behind it.
+  {
+    const { timer } = manualTimer();
+    const lease = manualTimer();
+    let t = 0;
+    const q = makeConfirmQueue<string>({ timer, leaseTimer: lease.timer, now: () => t });
+    const first = leadOf(await q.enter("slot"));
+    const pool = Array.from({ length: RELEASE_CAP + 3 }, (_, i) => `p${i}`);
+    const seen: QueueTurn<string>[] = [];
+    for (let i = 0; i < RELEASE_CAP + 1; i++) void q.enter("slot").then((x) => seen.push(x));
+    await tick();
+    first.seat.claimFirst(pool, { rung: 0 });
+    await tick();
+    const handed = seen.filter((x) => x.kind === "lead" && x.start !== undefined);
+    assert(handed.length === RELEASE_CAP && seen.length === RELEASE_CAP, `cap: the release stops at the cap (got ${seen.length} answered, ${handed.length} handed)`);
+    // Every handed confirm says trying and renews, except one that is torn down.
+    first.renew();
+    for (const h of handed.slice(1)) {
+      const lead = leadOf(h);
+      lead.seat.trying(lead.start!.advisor);
+      lead.renew();
+    }
+    leadOf(handed[0]!).seat.trying(leadOf(handed[0]!).start!.advisor);
+    t = CONFIRM_CLAIM_LEASE_MS - 1;
+    first.renew();
+    for (const h of handed.slice(1)) leadOf(h).renew();
+    t = CONFIRM_CLAIM_LEASE_MS + 1;
+    lease.fireAll();
+    await tick();
+    assert(seen.length === RELEASE_CAP + 1, `cap: the handed claim that lapsed frees room, so the one held back is released (got ${seen.length} answered)`);
+  }
 
   finish();
 }
