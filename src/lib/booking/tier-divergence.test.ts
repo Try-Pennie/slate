@@ -164,6 +164,7 @@ function makeDeps(): BookingDeps & CommitFreshParts {
     getUser: async () => agentA,
     loadEmails: async (ids) => new Map(ids.map((id) => [id, "a@x.com"])),
     findBookingByIdempotencyKey: async () => null,
+    readBookingByIdempotencyKey: async () => null,
     insertBooking: async (row) => ({
       ok: true as const,
       booking: { ...row, id: "bk-new" } as unknown as Booking,

@@ -839,6 +839,11 @@ export function makeDeps(opts: FakeOpts) {
     // "nobody yet → race → winner found" sequence.
     findBookingByIdempotencyKey: async (key) =>
       (calls.idempotencyLookups.push(key), insertAttempted ? opts.conflictWinner : opts.existingByKey) ?? null,
+    // The read back's throwing read: the same answer here, through the probe, so a
+    // suite that makes the probe fail or answer differently drives both (#3495).
+    readBookingByIdempotencyKey(key) {
+      return this.findBookingByIdempotencyKey(key);
+    },
     insertBooking: async (row) => {
       insertAttempted = true;
       calls.insertBooking.push(row as unknown as Record<string, unknown>);

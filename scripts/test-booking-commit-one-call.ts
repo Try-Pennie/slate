@@ -164,10 +164,11 @@ async function main() {
       saveAttempted = true;
       throw new Error("the connection closed before the answer");
     };
-    const lookup = made.deps.findBookingByIdempotencyKey;
-    made.deps.findBookingByIdempotencyKey = async (key) => {
+    // The read back's own read, which throws on a failed read (the pre-save probe
+    // fails open to null, which the unique index backs, and is left working here).
+    made.deps.readBookingByIdempotencyKey = async () => {
       if (saveAttempted) throw new Error("read back refused");
-      return lookup(key);
+      return null;
     };
     const lines: string[] = [];
     const [origWarn, origError] = [console.warn, console.error];

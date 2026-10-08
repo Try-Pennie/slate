@@ -1407,7 +1407,15 @@ export interface BookingDeps {
   getUser(userId: string): Promise<User>;
   /** Batched userId -> email resolver for a verify-on-book wave (skips emailless). */
   loadEmails(userIds: string[]): Promise<Map<string, string>>;
+  /** The pre-save idempotency probe: fails OPEN to null on a read error, which the
+   *  unique key index backs (a missed hit re-drives an insert the index refuses). */
   findBookingByIdempotencyKey(key: string): Promise<Booking | null>;
+  /**
+   * #3495: the same read, THROWING on a read error, for the one caller to whom "not
+   * there" and "could not tell" must differ: the read back after a save whose answer
+   * was lost, where null tells the lead their booking failed.
+   */
+  readBookingByIdempotencyKey(key: string): Promise<Booking | null>;
   /**
    * #1341: write a lead's corrected phone onto their booking. Scoped to the one
    * field on purpose, so a manage-token edit can never reach anything else on
@@ -5285,7 +5293,7 @@ async function attemptReservation(
       // A read back that fails leaves it UNKNOWN whether the booking landed. The lead
       // is still told it failed, retryably (their retry finds it by key if it did),
       // but the failure is logged, or it reads exactly like a read that found nothing.
-      const found = await withinOwedCleanup(() => deps.findBookingByIdempotencyKey(key)).catch((readErr: unknown) => {
+      const found = await withinOwedCleanup(() => deps.readBookingByIdempotencyKey(key)).catch((readErr: unknown) => {
         log.error("booking", { msg: "the save got no answer and could not be read back, so whether it landed is unknown", booking_id: bookingId }, readErr);
         return null;
       });

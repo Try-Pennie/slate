@@ -29,6 +29,8 @@ let readRows: unknown[] = [];
 const readTables: string[] = [];
 /** What a `select(...).eq(...).single()` read answers (#3477). */
 let singleResult: { data: unknown; error: { message: string } | null } = { data: null, error: null };
+/** #3495: what a read by idempotency key answers. */
+let keyResult: { data: unknown; error: { message: string; code?: string } | null } = { data: null, error: null };
 /** #3495: what the next `rpc(...)` answers, and every rpc asked. */
 let rpcResult: { data: unknown; error: { message: string; code?: string } | null } = { data: null, error: null };
 const rpcCalls: { fn: string; args: Record<string, unknown> }[] = [];
@@ -52,7 +54,12 @@ vi.mock("@/lib/supabase/admin", () => ({
       }),
       insert: () => ({ select: () => ({ single: async () => result() }) }),
       select: () => ({
-        eq: () => ({ maybeSingle: async () => ({ data: null, error: null }), single: async () => singleResult }),
+        eq: () => ({
+          maybeSingle: async () => ({ data: null, error: null }),
+          single: async () => singleResult,
+          // #3495: the read by idempotency key, `.eq(key).in(status).maybeSingle()`.
+          in: () => ({ maybeSingle: async () => keyResult }),
+        }),
         in: async () => {
           readTables.push(table);
           return readError ? { data: null, error: readError } : { data: readRows, error: null };
@@ -61,6 +68,12 @@ vi.mock("@/lib/supabase/admin", () => ({
       delete: () => ({ eq: () => result() }),
     }),
   }),
+}));
+
+const alertIfMisroute = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock("@/lib/routing/record", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/routing/record")>()),
+  alertIfMisroute,
 }));
 
 import { realDeps } from "./service";
@@ -264,6 +277,36 @@ describe("a fresh booking's one call save (#3495)", () => {
     rpcResult = { data: { status: "conflict", winner: null }, error: null };
     await realDeps().commitFreshBooking({ ...req, webhook: { unbuilt: "the bucket 100 would not read" } });
     expect(rpcCalls[0]?.args.p_webhook).toEqual({ unbuilt: "the bucket 100 would not read" });
+  });
+
+  it("still runs the misroute check when the routing record failed to store", async () => {
+    // Before the one call save, recordRoutingDecision caught a failed insert and still
+    // called the misroute alert, so a lost record never silenced a misroute page.
+    const routing = { orgId: "o1", bookingId: booking.id, bucketCode: "100", chosenAttributes: { tier: ["low"] } };
+    alertIfMisroute.mockClear();
+    for (const failed of [{ routing: "planted refusal" }, {}]) {
+      rpcResult = {
+        data: { status: "committed", booking, enqueue: { subscribers: 0, deliveries: [] }, failed, reservation_deleted: true },
+        error: null,
+      };
+      await realDeps().commitFreshBooking({ ...req, routing } as unknown as CommitFreshInput);
+    }
+    expect(alertIfMisroute).toHaveBeenCalledTimes(2);
+    expect(alertIfMisroute.mock.calls[0]).toEqual([routing]);
+  });
+
+  it("reads a booking back by its key with a read that THROWS when it fails, so a failed read back is never 'not there'", async () => {
+    keyResult = { data: null, error: { message: "statement timeout", code: "57014" } };
+    await expect(realDeps().readBookingByIdempotencyKey("k1")).rejects.toThrow(/statement timeout/);
+    keyResult = { data: { id: "bk-1" }, error: null };
+    expect((await realDeps().readBookingByIdempotencyKey("k1"))?.id).toBe("bk-1");
+    keyResult = { data: null, error: null };
+    expect(await realDeps().readBookingByIdempotencyKey("k1")).toBeNull();
+  });
+
+  it("control: the pre-save idempotency probe still fails open to null, which the unique index backs", async () => {
+    keyResult = { data: null, error: { message: "statement timeout", code: "57014" } };
+    expect(await realDeps().findBookingByIdempotencyKey("k1")).toBeNull();
   });
 
   it("returns the committed booking and hands each delivery's first send to the scheduler", async () => {

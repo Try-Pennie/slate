@@ -671,6 +671,21 @@ export async function findActiveBookingsForPerson(
 }
 
 /**
+ * The active booking holding an idempotency key, at most one by the partial unique
+ * index. Active only, matching that index, so a cancelled booking never blocks (or
+ * gets returned for) a fresh rebook of the same slot. One query behind both readers:
+ * the probe that fails open and the read back that throws (#3495).
+ */
+function activeBookingByIdempotencyKey(key: string) {
+  return supabaseAdmin()
+    .from("bookings")
+    .select("*")
+    .eq("idempotency_key", key)
+    .in("status", ["confirmed", "rescheduled"])
+    .maybeSingle();
+}
+
+/**
  * The most active bookings one instant can hold and still be read whole (#3257).
  * The bookings unique index allows one active booking per advisor per start, so
  * this is a roster bound (100 to 200 advisors by design) with room to spare.
@@ -1470,16 +1485,15 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
     },
 
     findBookingByIdempotencyKey: async (key) => {
-      // Active only — matches the partial unique index, so a cancelled booking
-      // never blocks (or gets returned for) a fresh rebook of the same slot.
       // error-ok: idempotency probe on the crash-safe create path; a null (incl. a read error) re-drives the unique-key-guarded insert, so it can never double-book.
-      const { data } = await supabaseAdmin()
-        .from("bookings")
-        .select("*")
-        .eq("idempotency_key", key)
-        .in("status", ["confirmed", "rescheduled"])
-        .maybeSingle();
+      const { data } = await activeBookingByIdempotencyKey(key);
       return (data as Booking | null) ?? null;
+    },
+
+    // #3495: the read back after a save whose answer was lost. A failed read THROWS,
+    // so the confirm can tell "not there" from "could not tell" and say so.
+    readBookingByIdempotencyKey: async (key) => {
+      return (unwrap(await activeBookingByIdempotencyKey(key), "booking read back by idempotency key") as Booking | null) ?? null;
     },
 
     // #3495: a fresh booking's save after its calendar event, in ONE call. The booking,
@@ -1529,9 +1543,10 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
       if (failed.busy !== undefined) await reportBusyBlockMoveFailure(booking.id, failed.busy);
       if (failed.routing !== undefined) {
         log.error("routing", { msg: "routing_decisions insert failed", booking_id: booking.id }, new Error(failed.routing));
-      } else if (routing) {
-        await alertIfMisroute(routing);
       }
+      // Whether or not its record stored, as recordRoutingDecision always did: a lost
+      // record must never also silence a misroute page.
+      if (routing) await alertIfMisroute(routing);
       // An unbuilt webhook failed its step, so the reader has already refused any
       // deliveries beside it (`readCommitAnswer`); the check here is the type's.
       if (answer.enqueue && !("unbuilt" in webhook)) {
